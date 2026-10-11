@@ -52,4 +52,4 @@ jobs:
           releaseBody: "Download the DMG for your Mac below, or install from Settings → Updates in a running Hunt. The app is not yet signed; on first launch right-click the app and choose Open, or run `xattr -cr /Applications/Hunt.app`."
           releaseDraft: true
           prerelease: false
-          args: --target ${{ matrix.target }} --bundles app,dmg --config tauri.release.conf.json
+          args: --target ${{ matrix.target }} --bundles app,dmg --config src-tauri/tauri.release.conf.json

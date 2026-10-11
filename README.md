@@ -97,7 +97,7 @@ update: the in-app updater reads `latest.json` of the latest *published* release
 The updater artifacts are signed with the key whose public half is in `src-tauri/tauri.conf.json`
 (`plugins.updater.pubkey`); the workflow reads the private key from the repository secrets `TAURI_SIGNING_PRIVATE_KEY`
 and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. A local build only produces them with the same two variables set and
-`--config tauri.release.conf.json`. Losing the key means shipping a new key with a DMG that users install by hand.
+`--config src-tauri/tauri.release.conf.json`. Losing the key means shipping a new key with a DMG that users install by hand.
 
 See [CLAUDE.md](CLAUDE.md) for the conventions contributors and coding agents follow in this repository.
 
@@ -222,3 +222,13 @@ revert, shelve, unshelve), and the panel marks the diagram "Outdated" once such 
 
 Decisions that shape the codebase are recorded in [`docs/adr/`](docs/adr), one file per decision with Context,
 Decision and Consequences. Read them before changing the parts they cover.
+
+## License
+
+Hunt is released under the [MIT License](LICENSE).
+
+The file icons in `src/diff/catppuccinIcons/` are the [Catppuccin VSCode icons](https://github.com/catppuccin/vscode-icons)
+(MIT, see the `LICENSE` file in that folder). Release bundles ship the Claude Agent SDK and the ACP adapter from npm
+under their own terms: `@anthropic-ai/claude-agent-sdk` is © Anthropic PBC and governed by the
+[Claude Code legal agreements](https://code.claude.com/docs/en/legal-and-compliance); `@agentclientprotocol/*` is
+Apache-2.0; `zod` is MIT; `diff` is BSD-3-Clause. Using Hunt requires a Claude account whose terms apply to the agent.

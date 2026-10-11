@@ -15,6 +15,7 @@
   <a href="https://react.dev"><img alt="React 19" src="https://img.shields.io/badge/React-19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"></a>
   <a href="https://www.rust-lang.org"><img alt="Rust" src="https://img.shields.io/badge/Rust-stable-000000?style=for-the-badge&logo=rust&logoColor=white"></a>
   <a href="https://agentclientprotocol.com"><img alt="ACP" src="https://img.shields.io/badge/protocol-ACP-8A2BE2?style=for-the-badge"></a>
+  <a href="https://github.com/unshoppable/hunt/releases/latest"><img alt="Download" src="https://img.shields.io/github/v/release/unshoppable/hunt?style=for-the-badge&label=download&color=0A84FF&logo=apple&logoColor=white"></a>
   <a href="https://www.apple.com/macos"><img alt="macOS" src="https://img.shields.io/badge/platform-macOS-111111?style=for-the-badge&logo=apple&logoColor=white"></a>
 </p>
 
@@ -49,6 +50,17 @@ decision records that steer the agent.
 
 ## Getting started
 
+### Install
+
+Download the latest DMG from the [releases page](https://github.com/unshoppable/hunt/releases/latest), open it and
+drag Hunt into Applications. There is one DMG per architecture (`aarch64` for Apple Silicon, `x86_64` for Intel).
+The app is not signed yet: on first launch right-click it and choose *Open*, or run `xattr -cr /Applications/Hunt.app`.
+
+### Update
+
+Hunt checks the releases page once per launch and shows a dot on the gear button when a newer version exists.
+*Settings → Updates* downloads and installs it; the new version runs after *Restart now* or the next launch.
+
 ### Requirements
 
 - macOS
@@ -69,6 +81,23 @@ npm run tauri dev
 ```sh
 npm run check   # typecheck, lint, vitest and cargo test
 ```
+
+### Release
+
+```sh
+npm run tauri build -- --bundles dmg   # local DMG in src-tauri/target/release/bundle/dmg/
+```
+
+Pushing a `v*` tag runs [`release.yml`](.github/workflows/release.yml), which builds the DMGs for Apple Silicon and
+Intel plus the updater artifacts (`Hunt.app.tar.gz`, its `.sig` and `latest.json`) and attaches them to a draft
+GitHub Release. Bump `version` in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` first, then
+`git tag v0.2.0 && git push origin v0.2.0` and publish the draft. Publishing is what makes running installs offer the
+update: the in-app updater reads `latest.json` of the latest *published* release.
+
+The updater artifacts are signed with the key whose public half is in `src-tauri/tauri.conf.json`
+(`plugins.updater.pubkey`); the workflow reads the private key from the repository secrets `TAURI_SIGNING_PRIVATE_KEY`
+and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. A local build only produces them with the same two variables set and
+`--config tauri.release.conf.json`. Losing the key means shipping a new key with a DMG that users install by hand.
 
 See [CLAUDE.md](CLAUDE.md) for the conventions contributors and coding agents follow in this repository.
 

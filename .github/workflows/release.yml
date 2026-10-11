@@ -1,0 +1,55 @@
+# Builds the macOS DMGs on every v* tag and attaches them, with the updater artifacts (Hunt.app.tar.gz, its
+# .sig and latest.json), to a draft GitHub Release. Publish the draft by hand after checking the assets;
+# running installs then offer the update (see docs/adr/0002-in-app-updates-from-github-releases.md).
+# TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD sign the updater artifacts with the key
+# whose public half is in tauri.conf.json. Code signing is enabled by adding
+# APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_ID,
+# APPLE_PASSWORD and APPLE_TEAM_ID as repository secrets and passing them through `env`.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+          - target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Hunt ${{ github.ref_name }}"
+          releaseBody: "Download the DMG for your Mac below, or install from Settings → Updates in a running Hunt. The app is not yet signed; on first launch right-click the app and choose Open, or run `xattr -cr /Applications/Hunt.app`."
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }} --bundles app,dmg --config tauri.release.conf.json

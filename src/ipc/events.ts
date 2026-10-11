@@ -20,6 +20,8 @@ type EventPayloads = {
   "diff:ready": { label: string };
   /** Sent by the window whose settings store changed (see app/bootstrap.ts); `source` is its label. */
   "settings:changed": { source: string };
+  /** Sent by the main window to the open settings window (see settings/openSettingsWindow.ts) to switch its page. */
+  "settings:show-page": { page: "updates" };
   "lsp:diagnostics": LspDiagnosticsEvent;
   "lsp:exited": LspExitedEvent;
 };

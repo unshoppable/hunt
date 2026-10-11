@@ -1,6 +1,8 @@
 import { useEffect, useId, useState, type CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useSettingsSync } from "../app/bootstrap";
+import { listenTo } from "../ipc/events";
+import { appVersion, checkForUpdate, installUpdate, relaunchApp, type Update } from "../ipc/updater";
 import { resolveFileIcon, useFileIconUrl } from "../diff/fileIcons";
 import {
   AI_LANGUAGE_PRESETS,
@@ -19,10 +21,13 @@ import {
   type PaneSettings,
 } from "../state/settings";
 import { HEADER_BAR } from "../ui/bars";
-import { BUTTON_SM, GHOST_BUTTON, ICON_BUTTON_SM, PRIMARY_BUTTON, SECONDARY_BUTTON_SM } from "../ui/buttons";
+import { BUTTON_SM, GHOST_BUTTON, ICON_BUTTON_SM, PRIMARY_BUTTON, PRIMARY_BUTTON_SM, SECONDARY_BUTTON_SM } from "../ui/buttons";
 import { PlusIcon, TrashIcon } from "../ui/icons";
 import { useSecondaryWindow } from "../ui/nativeWindow";
+import { errorText, useLoad } from "../ui/useLoad";
 import { IconPicker } from "./IconPicker";
+import { type SettingsPage } from "./openSettingsWindow";
+import { NO_PROGRESS, applyDownloadEvent, describeProgress, downloadFraction, type DownloadProgress } from "./updateProgress";
 
 type Section = { pane: PaneKey; title: string; hint: string; fields: (keyof PaneSettings)[] };
 
@@ -36,13 +41,19 @@ const SECTIONS: Section[] = [
 
 /**
  * The pages that are not a pane: what Hunt asks the agent for on its own, how sessions are deleted, where the
- * guardrails window keeps its files, and which icon a file gets.
+ * guardrails window keeps its files, which icon a file gets, and whether a newer Hunt exists.
  */
 const AGENT_PAGE = "agent";
 const SESSIONS_PAGE = "sessions";
 const GUARDRAILS_PAGE = "guardrails";
 const FILE_ICONS_PAGE = "fileIcons";
-type Page = PaneKey | typeof AGENT_PAGE | typeof SESSIONS_PAGE | typeof GUARDRAILS_PAGE | typeof FILE_ICONS_PAGE;
+const UPDATES_PAGE: SettingsPage = "updates";
+type Page = PaneKey | typeof AGENT_PAGE | typeof SESSIONS_PAGE | typeof GUARDRAILS_PAGE | typeof FILE_ICONS_PAGE | SettingsPage;
+
+/** The page another window asked for in the URL hash (see openSettingsWindow.ts), else the first one. */
+function initialPage(): Page {
+  return window.location.hash === `#${UPDATES_PAGE}` ? UPDATES_PAGE : NAV_GROUPS[0].pages[0].key;
+}
 
 /** The navigation sidebar: small group headings, one entry per page. */
 const NAV_GROUPS: { title: string; pages: { key: Page; title: string }[] }[] = [
@@ -53,6 +64,7 @@ const NAV_GROUPS: { title: string; pages: { key: Page; title: string }[] }[] = [
       { key: SESSIONS_PAGE, title: "Sessions" },
       { key: GUARDRAILS_PAGE, title: "Guardrails" },
       { key: FILE_ICONS_PAGE, title: "File icons" },
+      { key: UPDATES_PAGE, title: "Updates" },
     ],
   },
   { title: "Panes", pages: SECTIONS.map((section) => ({ key: section.pane, title: section.title })) },
@@ -85,7 +97,7 @@ export function SettingsWindow() {
   const resetGuardrailDirs = useSettingsStore((state) => state.resetGuardrailDirs);
   const resetIconRules = useSettingsStore((state) => state.resetIconRules);
   const setConfirmSessionDelete = useSettingsStore((state) => state.setConfirmSessionDelete);
-  const [activePage, setActivePage] = useState<Page>(NAV_GROUPS[0].pages[0].key);
+  const [activePage, setActivePage] = useState<Page>(initialPage);
   const activeSection = SECTIONS.find((section) => section.pane === activePage);
   const resetAll = () => {
     resetPanes();
@@ -97,6 +109,11 @@ export function SettingsWindow() {
 
   useSettingsSync();
   useSecondaryWindow("settings", closeWindow);
+
+  useEffect(() => {
+    const subscription = listenTo("settings:show-page", ({ page }) => setActivePage(page), { target: getCurrentWindow().label });
+    return () => void subscription.then((unlisten) => unlisten());
+  }, []);
 
   return (
     <div className="flex h-full flex-col bg-(--surface-chat)">
@@ -125,6 +142,8 @@ export function SettingsWindow() {
             <GuardrailsSection />
           ) : activePage === FILE_ICONS_PAGE ? (
             <FileIconsSection />
+          ) : activePage === UPDATES_PAGE ? (
+            <UpdatesSection />
           ) : (
             <AgentSection />
           )}
@@ -278,6 +297,107 @@ function GuardrailsSection() {
 const PREVIEW_PATH_EXAMPLE = "apps/api/src/user/user.service.ts";
 
 /** Which icon a file gets: an ordered list of glob rules over the worktree-relative path, with a live preview. */
+/** What one update check and the install that may follow are at: the phases follow each other in this order. */
+type UpdateState =
+  | { phase: "checking" }
+  | { phase: "current" }
+  | { phase: "available"; update: Update }
+  | { phase: "downloading"; update: Update; progress: DownloadProgress }
+  | { phase: "installed"; update: Update }
+  | { phase: "error"; message: string };
+
+/**
+ * The running version and whether the release feed has a newer one; checks once when the page opens. An update is
+ * downloaded and installed here and takes effect when Hunt restarts, from the button or the next launch.
+ */
+function UpdatesSection() {
+  const [version, setVersion] = useState<string | null>(null);
+  const [state, setState] = useState<UpdateState>({ phase: "checking" });
+  const [checkCount, setCheckCount] = useState(0);
+
+  useLoad(appVersion, { onValue: setVersion, onError: () => setVersion(null) }, []);
+  useLoad(
+    checkForUpdate,
+    {
+      onValue: (update) => setState(update ? { phase: "available", update } : { phase: "current" }),
+      onError: (reason) => setState({ phase: "error", message: errorText(reason) }),
+    },
+    [checkCount],
+  );
+
+  const checkAgain = () => {
+    setState({ phase: "checking" });
+    setCheckCount((count) => count + 1);
+  };
+  const install = async (update: Update) => {
+    setState({ phase: "downloading", update, progress: NO_PROGRESS });
+    try {
+      await installUpdate(update, (event) => {
+        setState((current) => (current.phase === "downloading" ? { ...current, progress: applyDownloadEvent(current.progress, event) } : current));
+      });
+      setState({ phase: "installed", update });
+    } catch (reason) {
+      setState({ phase: "error", message: errorText(reason) });
+    }
+  };
+  const relaunch = () => void relaunchApp().catch((reason: unknown) => setState({ phase: "error", message: errorText(reason) }));
+
+  const status =
+    state.phase === "checking" ? "Checking for updates…"
+    : state.phase === "current" ? "Hunt is up to date."
+    : state.phase === "available" ? `Hunt ${state.update.version} is available.`
+    : state.phase === "downloading" ? `Downloading Hunt ${state.update.version}…`
+    : state.phase === "installed" ? `Hunt ${state.update.version} is installed and starts with the next launch.`
+    : "Could not check for updates.";
+  const notes = state.phase === "available" || state.phase === "downloading" || state.phase === "installed" ? state.update.body?.trim() : undefined;
+
+  return (
+    <section>
+      <PageHeader title="Updates" hint={version ? `Hunt ${version}` : "Hunt"} isDefault onReset={() => undefined} />
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1 text-sm text-neutral-100">{status}</div>
+          {state.phase === "available" ? (
+            <button type="button" onClick={() => void install(state.update)} className={`${PRIMARY_BUTTON_SM} shrink-0`}>
+              Download and install
+            </button>
+          ) : state.phase === "installed" ? (
+            <button type="button" onClick={relaunch} className={`${PRIMARY_BUTTON_SM} shrink-0`}>
+              Restart now
+            </button>
+          ) : (
+            <button type="button" onClick={checkAgain} disabled={state.phase === "checking" || state.phase === "downloading"} className={`${SECONDARY_BUTTON_SM} shrink-0`}>
+              {state.phase === "error" ? "Try again" : "Check again"}
+            </button>
+          )}
+        </div>
+        {state.phase === "downloading" ? <DownloadProgressBar progress={state.progress} /> : null}
+        {state.phase === "error" ? <p className="text-[13px] leading-snug break-words text-red-300">{state.message}</p> : null}
+        {notes ? (
+          <div className="rounded-md border border-(--line) bg-(--surface-inset) px-3 py-2">
+            <h4 className="text-[12px] font-medium tracking-wide text-neutral-500 uppercase">What's new</h4>
+            <p className="mt-1 text-[13px] leading-snug whitespace-pre-wrap text-neutral-300">{notes}</p>
+          </div>
+        ) : null}
+        <p className="text-[13px] leading-snug text-neutral-500">Updates come from the GitHub releases of unshoppable/hunt. The download replaces the app in place; the new version runs once Hunt restarts.</p>
+      </div>
+    </section>
+  );
+}
+
+/** Progress of an update download; pulses at full width while the total size is unknown. */
+function DownloadProgressBar({ progress }: { progress: DownloadProgress }) {
+  const fraction = downloadFraction(progress);
+  return (
+    <div className="flex flex-col gap-1">
+      <div role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={fraction === null ? undefined : Math.round(fraction * 100)} className="h-1.5 overflow-hidden rounded-full bg-white/8">
+        <div className={`h-full rounded-full bg-blue-500 transition-[width] ${fraction === null ? "w-full animate-pulse" : ""}`} style={fraction === null ? undefined : { width: `${fraction * 100}%` }} />
+      </div>
+      <span className="text-[12px] text-neutral-500">{describeProgress(progress)}</span>
+    </div>
+  );
+}
+
 function FileIconsSection() {
   const rules = useSettingsStore((state) => state.iconRules);
   const setIconRules = useSettingsStore((state) => state.setIconRules);

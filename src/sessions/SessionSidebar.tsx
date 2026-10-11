@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionView } from "../ipc/types";
+import { checkForUpdate } from "../ipc/updater";
 import { useHuntStore } from "../state/store";
 import { useSettingsStore } from "../state/settings";
 import { openSettingsWindow } from "../settings/openSettingsWindow";
@@ -10,6 +11,7 @@ import { HEADER_BAR } from "../ui/bars";
 import { ICON_BUTTON, PRIMARY_BUTTON_SM } from "../ui/buttons";
 import { SearchField } from "../ui/SearchField";
 import { GitHubIcon, PlusIcon, TrashIcon } from "../ui/icons";
+import { useLoad } from "../ui/useLoad";
 
 export function SessionSidebar() {
   const fileIconUrl = useFileIconUrl();
@@ -26,6 +28,17 @@ export function SessionSidebar() {
   const rows = useMemo(() => filterSessionRows(groupSessions(sessions), query), [sessions, query]);
   /** The session the confirmation dialog is open for, with the question it shows. */
   const [pendingDelete, setPendingDelete] = useState<{ sessionId: string; question: string } | null>(null);
+  /** Version of the newer Hunt the release feed offers; shown as a dot on the gear. */
+  const [availableVersion, setAvailableVersion] = useState<string | null>(null);
+
+  // One quiet check per launch; a failed check shows nothing here, the Updates settings page reports it. Dev builds
+  // carry no release version, so they do not check.
+  useLoad(
+    checkForUpdate,
+    { onValue: (update) => setAvailableVersion(update?.version ?? null), onError: () => setAvailableVersion(null) },
+    [],
+    { isEnabled: !import.meta.env.DEV },
+  );
 
   /**
    * Deletes the session (a top-level session takes its sub sessions and worktree along), after confirmation unless
@@ -81,12 +94,13 @@ export function SessionSidebar() {
         <span data-tauri-drag-region="" className="flex items-center gap-1">
           <button
             type="button"
-            onClick={() => void openSettingsWindow()}
-            className={ICON_BUTTON}
-            title="Settings (⌘,)"
-            aria-label="Settings"
+            onClick={() => void openSettingsWindow(availableVersion ? "updates" : undefined)}
+            className={`${ICON_BUTTON} relative`}
+            title={availableVersion ? `Settings · Hunt ${availableVersion} is available (⌘,)` : "Settings (⌘,)"}
+            aria-label={availableVersion ? `Settings, Hunt ${availableVersion} is available` : "Settings"}
           >
             <GearIcon />
+            {availableVersion ? <span aria-hidden="true" className="absolute top-1.5 right-1.5 size-2 rounded-full bg-blue-500 ring-2 ring-(--sidebar-bg)" /> : null}
           </button>
           <button
             type="button"

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+	<path fill="#af667e" d="M4.5 4.5H12c.83 0 1.5.67 1.5 1.5v6c0 .83-.67 1.5-1.5 1.5H2A1.5 1.5 0 01.5 12V3.5a1 1 0 011-1h5a1 1 0 011 1v1Z"/>
+	<path fill="#f38ba8" d="M1.87 8l.7-2.74a1 1 0 01.96-.76h10.94a1 1 0 01.97 1.24l-1.75 7a1 1 0 01-.97.76H2Z"/>
+	<g fill="none" stroke="#6b4253" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+	<g stroke-linecap="round" stroke-linejoin="round">
+		<path d="M13.1667 10.5c0.2482 0.3719 0.3087 1.0536 0.3333 1.5v1.5c0 1.1506 -0.8494 2 -2 2c-1.1506 0 -2 -0.8494 -2 -2V12c0.0246 -0.4464 0.0852 -1.1281 0.3333 -1.5Z"/>
+		<path d="M12.5 10.5v-1c0 -0.5523 -0.4477 -1 -1 -1c-0.5523 0 -1 0.4477 -1 1v1 M7.5 12.5h2 M13.5 12.5h2 M11.5 15.5V13 M8 15.5l1.5 -1 M15 15.5l-1.5 -1 M8 9.5l1.5 1 M15 9.5l-1.5 1"/>
+	</g>
+	</g>
+	<g fill="none" stroke="#cdd6f4" stroke-linecap="round" stroke-linejoin="round">
+	<g fill="none" stroke-linecap="round" stroke-linejoin="round">
+		<path fill="#cdd6f4" fill-opacity="0.35" d="M13.1667 10.5c0.2482 0.3719 0.3087 1.0536 0.3333 1.5v1.5c0 1.1506 -0.8494 2 -2 2c-1.1506 0 -2 -0.8494 -2 -2V12c0.0246 -0.4464 0.0852 -1.1281 0.3333 -1.5Z"/>
+		<path d="M12.5 10.5v-1c0 -0.5523 -0.4477 -1 -1 -1c-0.5523 0 -1 0.4477 -1 1v1 M7.5 12.5h2 M13.5 12.5h2 M11.5 15.5V13 M8 15.5l1.5 -1 M15 15.5l-1.5 -1 M8 9.5l1.5 1 M15 9.5l-1.5 1"/>
+	</g>
+	</g>
+</svg>

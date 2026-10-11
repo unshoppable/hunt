@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+	<path fill="#74c7ec" d="M4.5 4.5H12c.83 0 1.5.67 1.5 1.5v6c0 .83-.67 1.5-1.5 1.5H2A1.5 1.5 0 01.5 12V3.5a1 1 0 011-1h5a1 1 0 011 1v1Z"/>
+	<g fill="none" stroke="#395a6f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+	<g stroke-linecap="round" stroke-linejoin="round">
+		<path d="M12.0001 15.5c-1.933 0 -3.4999 -1.4998 -3.4999 -3.4999c0 -2.0001 1.567 -3.4999 3.4999 -3.4999c2.0001 0 3.4999 1.5 3.4999 3.4999C15.5 14.0002 14.0002 15.5 12.0001 15.5Z"/>
+		<path d="M8.5002 12.0001H15.5 M11.5562 9.0002c-1.3793 2.0106 -1.4478 4.0095 0.0868 6.3391 M12.4544 9.0002c1.3606 1.9791 1.4496 3.9803 -0.062 6.3391"/>
+	</g>
+	</g>
+	<g fill="none" stroke="#cdd6f4" stroke-linecap="round" stroke-linejoin="round">
+	<g fill="none" stroke-linecap="round" stroke-linejoin="round">
+		<path fill="#cdd6f4" fill-opacity="0.35" d="M12.0001 15.5c-1.933 0 -3.4999 -1.4998 -3.4999 -3.4999c0 -2.0001 1.567 -3.4999 3.4999 -3.4999c2.0001 0 3.4999 1.5 3.4999 3.4999C15.5 14.0002 14.0002 15.5 12.0001 15.5Z"/>
+		<path d="M8.5002 12.0001H15.5 M11.5562 9.0002c-1.3793 2.0106 -1.4478 4.0095 0.0868 6.3391 M12.4544 9.0002c1.3606 1.9791 1.4496 3.9803 -0.062 6.3391"/>
+	</g>
+	</g>
+</svg>

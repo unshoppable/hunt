@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+	<path stroke="#89b4fa" stroke-linecap="round" stroke-linejoin="round" stroke-width=".79" transform="matrix(1.26652 0 0 1.26466 -1.313 -1.572)" fill="#89b4fa" fill-opacity="0.35" d="M7.5 13.5v-8h3.05c0.95 0 1.95 1 1.95 2c0 1 -1 2 -1.95 2H7.5Z"/>
+		<path fill="none" stroke="#89b4fa" stroke-linecap="round" stroke-linejoin="round" stroke-width=".79" transform="matrix(1.26652 0 0 1.26466 -1.313 -1.572)" d="M10.5 9.5c0.4 0 0.86 0.34 1 0.7l1 3.3"/>
+	<path stroke="#7f849c" stroke-linecap="round" stroke-linejoin="round" fill="#7f849c" fill-opacity="0.35" d="M5.6504 4.1331c2.3027 0 4.1692 -1.0173 4.1692 -1.9474c0 -0.9301 -1.8665 -1.6858 -4.1692 -1.6858c-2.3027 0 -4.1692 0.7557 -4.1692 1.6858c0 0.9301 1.8665 1.9474 4.1692 1.9474"/>
+		<path fill="none" stroke="#7f849c" stroke-linecap="round" stroke-linejoin="round" d="M6.1892 7.0311c-0.1788 0.0093 -0.3588 0.014 -0.5388 0.014c-0.72 0 -1.44 -0.0745 -2.0846 -0.2234C2.2766 6.5237 1.4812 5.8262 1.4812 5.2231 M6.1892 9.9282c-0.1788 0.0095 -0.3588 0.0143 -0.5388 0.0143c-0.72 0 -1.44 -0.0763 -2.0846 -0.2289C2.2766 9.423 1.4812 8.8635 1.4812 8.2604 M1.4812 2.2293V8.2604 M9.8197 2.2293v1.5078"/>
+</svg>

@@ -1,0 +1,76 @@
+import type { SelectionContext, SessionView } from "../ipc/types";
+import { baseName } from "../ui/path";
+
+/** File name and line range a sub chat was opened from, e.g. `store.ts:L10-L12`. */
+export function describeSubChatSource(selection: SelectionContext): string {
+  const fileName = baseName(selection.path);
+  const lines = selection.startLine === selection.endLine ? `L${selection.startLine}` : `L${selection.startLine}-L${selection.endLine}`;
+  return `${fileName}:${lines}`;
+}
+
+/** Second line under a session title: the branch, or for a sub chat the file it was started from. */
+export function sessionSubtitle(session: SessionView): string {
+  if (!session.parentId) return session.branch;
+  return session.selection ? describeSubChatSource(session.selection) : "sub session";
+}
+
+export type SessionRow = { session: SessionView; isSubChat: boolean };
+
+/** Top-level sessions in store order, each followed by its sub chats; a sub chat whose parent is gone is listed on top level. */
+export function groupSessions(sessions: SessionView[]): SessionRow[] {
+  const ids = new Set(sessions.map((session) => session.id));
+  const rows: SessionRow[] = [];
+  for (const session of sessions) {
+    if (session.parentId && ids.has(session.parentId)) continue;
+    rows.push({ session, isSubChat: false });
+    for (const child of sessions) {
+      if (child.parentId === session.id) {
+        rows.push({ session: child, isSubChat: true });
+      }
+    }
+  }
+  return rows;
+}
+
+/** Case-insensitive match of every whitespace-separated word of `query` against the title, subtitle and branch. */
+function matchesQuery(session: SessionView, words: string[]): boolean {
+  const haystack = `${session.title} ${sessionSubtitle(session)} ${session.branch}`.toLowerCase();
+  return words.every((word) => haystack.includes(word));
+}
+
+/**
+ * Rows that match the sidebar search. A top-level session stays when it or one of its sub chats matches, and keeps
+ * all its sub chats when it matches itself; otherwise only the matching sub chats are kept. A blank query keeps everything.
+ */
+export function filterSessionRows(rows: SessionRow[], query: string): SessionRow[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return rows;
+  const result: SessionRow[] = [];
+  let index = 0;
+  while (index < rows.length) {
+    const parent = rows[index];
+    const children: SessionRow[] = [];
+    index += 1;
+    while (index < rows.length && rows[index].isSubChat) {
+      children.push(rows[index]);
+      index += 1;
+    }
+    if (matchesQuery(parent.session, words)) {
+      result.push(parent, ...children);
+      continue;
+    }
+    const matching = children.filter((child) => matchesQuery(child.session, words));
+    if (matching.length > 0) {
+      result.push(parent, ...matching);
+    }
+  }
+  return result;
+}
+
+const TITLE_LENGTH = 48;
+
+/** Session title derived from the first prompt: its first line, trimmed to a sidebar-friendly length. */
+export function titleFromPrompt(text: string): string {
+  const firstLine = (text.split("\n").find((line) => line.trim()) ?? text).trim();
+  return firstLine.length > TITLE_LENGTH ? `${firstLine.slice(0, TITLE_LENGTH - 1).trimEnd()}…` : firstLine;
+}

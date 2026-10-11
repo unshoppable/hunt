@@ -1,0 +1,200 @@
+import { create } from "zustand";
+import { EMPTY_LAYOUT, activateTab, closeTab, findPane, moveActiveTab, openInPane, openInRightSplit, panesShowing, type Direction, type PaneLayout } from "./paneGrid";
+
+/**
+ * A caret position the pane shows once `path` is open in it; with `endLine`, the lines `line..endLine` are selected
+ * instead. `nonce` tells repeated requests apart.
+ */
+export type PendingPosition = { paneId: string; path: string; line: number; column: number; endLine?: number; nonce: number };
+
+/** A caret position in a file, with the pane it was seen in (1-based line and column). */
+export type Location = { paneId: string; path: string; line: number; column: number };
+
+/** Where navigation came from (`back`) and where it went before stepping back (`forward`), newest last. */
+export type NavigationHistory = { back: Location[]; forward: Location[] };
+
+export type IdeSession = {
+  layout: PaneLayout;
+  activePaneId: string | null;
+  /** Files with unsaved edits. */
+  dirtyPaths: string[];
+  pendingPosition: PendingPosition | null;
+  /** The project tree expands to and selects this file (⇧⌘2). */
+  revealRequest: { path: string; nonce: number } | null;
+  history: NavigationHistory;
+};
+
+export const EMPTY_IDE_SESSION: IdeSession = { layout: EMPTY_LAYOUT, activePaneId: null, dirtyPaths: [], pendingPosition: null, revealRequest: null, history: { back: [], forward: [] } };
+
+/** Oldest locations fall off the back stack beyond this many. */
+const HISTORY_LIMIT = 100;
+
+let nonceCounter = 0;
+
+/** The caret each pane last reported, by `sessionId:paneId`; kept outside the store so cursor moves do not re-render. */
+const carets = new Map<string, Location>();
+
+/** Records where the caret of `paneId` is; the next navigation away from there can be undone with `navigateBack`. */
+export function noteCaret(sessionId: string, location: Location): void {
+  carets.set(`${sessionId}:${location.paneId}`, location);
+}
+
+function caretOf(sessionId: string, paneId: string | null): Location | null {
+  return paneId ? (carets.get(`${sessionId}:${paneId}`) ?? null) : null;
+}
+
+function isSameSpot(a: Location | null, b: Location | null): boolean {
+  return !!a && !!b && a.path === b.path && a.line === b.line;
+}
+
+function pushed(stack: Location[], location: Location): Location[] {
+  if (isSameSpot(stack[stack.length - 1] ?? null, location)) return stack;
+  return [...stack, location].slice(-HISTORY_LIMIT);
+}
+
+/**
+ * The layout with `path` shown: a pane already holding the file as a tab is reused (the preferred pane first),
+ * otherwise the file opens as a new tab in the preferred pane, in the active pane, or in a first pane.
+ */
+function show(session: IdeSession, path: string, preferredPaneId: string | null): { layout: PaneLayout; paneId: string } {
+  const holders = panesShowing(session.layout, path);
+  const holder = holders.find((pane) => pane.id === preferredPaneId) ?? holders.find((pane) => pane.id === session.activePaneId) ?? holders[0];
+  const paneId = holder?.id ?? (preferredPaneId && findPane(session.layout, preferredPaneId) ? preferredPaneId : session.activePaneId);
+  return openInPane(session.layout, paneId, path);
+}
+
+function pendingFor(paneId: string, path: string, line: number | undefined, column: number | undefined, fallback: PendingPosition | null, endLine?: number): PendingPosition | null {
+  if (!line) return fallback;
+  nonceCounter += 1;
+  return { paneId, path, line, column: column ?? 1, endLine, nonce: nonceCounter };
+}
+
+export type OpenOptions = {
+  /** Target pane; the active pane when omitted or gone. */
+  paneId?: string | null;
+  /** 1-based caret position to reveal after opening. */
+  line?: number;
+  column?: number;
+  /** Selects the lines `line..endLine` (inclusive) instead of placing the caret. */
+  endLine?: number;
+  /** Opens the file right of the target pane instead of in it (WebStorm's "Open in Right Split"). */
+  inRightSplit?: boolean;
+};
+
+type IdeState = {
+  sessions: Record<string, IdeSession>;
+  openFile: (sessionId: string, path: string, options?: OpenOptions) => void;
+  activatePane: (sessionId: string, paneId: string) => void;
+  activateTab: (sessionId: string, paneId: string, path: string) => void;
+  closeTab: (sessionId: string, paneId: string, path: string) => void;
+  /** Closes every tab of every pane (⇧⌘W). */
+  closeAllTabs: (sessionId: string) => void;
+  /** Returns to where the last navigation came from (the mouse's back button, ⌘[); `navigateForward` undoes that. */
+  navigateBack: (sessionId: string) => void;
+  navigateForward: (sessionId: string) => void;
+  /** Moves the active tab of the active pane like WebStorm's "Move Right/Left/Up/Down". */
+  moveActiveTab: (sessionId: string, direction: Direction) => void;
+  setDirty: (sessionId: string, path: string, isDirty: boolean) => void;
+  clearPendingPosition: (sessionId: string, nonce: number) => void;
+  revealActiveFile: (sessionId: string) => void;
+};
+
+export const useIdeStore = create<IdeState>((set, get) => {
+  function update(sessionId: string, updater: (session: IdeSession) => IdeSession) {
+    set((state) => ({ sessions: { ...state.sessions, [sessionId]: updater(state.sessions[sessionId] ?? EMPTY_IDE_SESSION) } }));
+  }
+
+  return {
+    sessions: {},
+
+    openFile: (sessionId, path, options = {}) => {
+      update(sessionId, (session) => {
+        const target = options.paneId === undefined ? session.activePaneId : options.paneId;
+        const { layout, paneId } = options.inRightSplit ? openInRightSplit(session.layout, target, path) : show(session, path, target);
+        const pendingPosition = pendingFor(paneId, path, options.line, options.column, session.pendingPosition, options.endLine);
+        // Leaving a file, or jumping to a position, is a navigation the back button undoes.
+        const origin = caretOf(sessionId, target);
+        const isNavigation = !!origin && (origin.path !== path || !!options.line);
+        const history = isNavigation ? { back: pushed(session.history.back, origin), forward: [] } : session.history;
+        return { ...session, layout, activePaneId: paneId, pendingPosition, history };
+      });
+    },
+
+    navigateBack: (sessionId) => {
+      update(sessionId, (session) => step(sessionId, session, "back"));
+    },
+
+    navigateForward: (sessionId) => {
+      update(sessionId, (session) => step(sessionId, session, "forward"));
+    },
+
+    activatePane: (sessionId, paneId) => {
+      update(sessionId, (session) => (session.activePaneId === paneId || !findPane(session.layout, paneId) ? session : { ...session, activePaneId: paneId }));
+    },
+
+    activateTab: (sessionId, paneId, path) => {
+      update(sessionId, (session) => ({ ...session, layout: activateTab(session.layout, paneId, path), activePaneId: paneId }));
+    },
+
+    closeTab: (sessionId, paneId, path) => {
+      update(sessionId, (session) => {
+        const layout = closeTab(session.layout, paneId, path);
+        const activePaneId = session.activePaneId && findPane(layout, session.activePaneId) ? session.activePaneId : (layout.rows[0]?.panes[0]?.id ?? null);
+        return { ...session, layout, activePaneId };
+      });
+    },
+
+    closeAllTabs: (sessionId) => {
+      update(sessionId, (session) => ({ ...session, layout: EMPTY_LAYOUT, activePaneId: null, pendingPosition: null, history: { back: [], forward: [] } }));
+    },
+
+    moveActiveTab: (sessionId, direction) => {
+      const session = get().sessions[sessionId];
+      if (!session?.activePaneId) return;
+      const moved = moveActiveTab(session.layout, session.activePaneId, direction);
+      if (!moved) return;
+      update(sessionId, (current) => ({ ...current, layout: moved.layout, activePaneId: moved.paneId }));
+    },
+
+    setDirty: (sessionId, path, isDirty) => {
+      update(sessionId, (session) => {
+        const has = session.dirtyPaths.includes(path);
+        if (has === isDirty) return session;
+        return { ...session, dirtyPaths: isDirty ? [...session.dirtyPaths, path] : session.dirtyPaths.filter((candidate) => candidate !== path) };
+      });
+    },
+
+    clearPendingPosition: (sessionId, nonce) => {
+      update(sessionId, (session) => (session.pendingPosition?.nonce === nonce ? { ...session, pendingPosition: null } : session));
+    },
+
+    revealActiveFile: (sessionId) => {
+      update(sessionId, (session) => {
+        const pane = session.activePaneId ? findPane(session.layout, session.activePaneId) : null;
+        if (!pane?.activePath) return session;
+        nonceCounter += 1;
+        return { ...session, revealRequest: { path: pane.activePath, nonce: nonceCounter } };
+      });
+    },
+  };
+});
+
+/**
+ * Moves one step through the history: the newest location of `direction` is shown (in the pane it was seen in
+ * when that still holds the file) and the current caret goes onto the opposite stack, so the step can be undone.
+ */
+function step(sessionId: string, session: IdeSession, direction: "back" | "forward"): IdeSession {
+  const stack = session.history[direction];
+  const location = stack[stack.length - 1];
+  if (!location) return session;
+  const opposite = direction === "back" ? "forward" : "back";
+  const current = caretOf(sessionId, session.activePaneId);
+  const history = { ...session.history, [direction]: stack.slice(0, -1), [opposite]: current ? pushed(session.history[opposite], current) : session.history[opposite] };
+  const { layout, paneId } = show(session, location.path, location.paneId);
+  const pendingPosition = pendingFor(paneId, location.path, location.line, location.column, session.pendingPosition);
+  return { ...session, layout, activePaneId: paneId, pendingPosition, history };
+}
+
+export function useIdeSession(sessionId: string): IdeSession {
+  return useIdeStore((state) => state.sessions[sessionId] ?? EMPTY_IDE_SESSION);
+}

@@ -1,0 +1,74 @@
+import { describe, expect, it } from "vitest";
+import type { SessionView } from "../ipc/types";
+import { filterSessionRows, groupSessions, titleFromPrompt } from "./sessionLabels";
+
+function session(id: string, title: string, branch: string, parentId: string | null = null, path?: string): SessionView {
+  return {
+    id,
+    title,
+    repoPath: "/repo",
+    worktreePath: `/repo/${id}`,
+    branch,
+    baseRef: "main",
+    baseCommit: "abc",
+    acpSessionId: null,
+    createdAt: "2026-10-11T00:00:00Z",
+    isLive: false,
+    parentId,
+    selection: path ? { path, startLine: 1, endLine: 1, text: "" } : null,
+    summary: [],
+    touchedFiles: [],
+    worktreeChangedAt: null,
+    pullRequest: null,
+    diffBase: null,
+    reviewComments: [],
+  };
+}
+
+const sessions = [
+  session("a", "Fix the login form", "feat/login"),
+  session("a1", "Validate the email", "feat/login", "a", "src/auth/email.ts"),
+  session("a2", "Password rules", "feat/login", "a", "src/auth/password.ts"),
+  session("b", "Analyse the repo", "feat/analysis"),
+  session("orphan", "Lost child", "feat/x", "gone"),
+];
+
+const ids = (rows: ReturnType<typeof groupSessions>) => rows.map(({ session, isSubChat }) => `${isSubChat ? "  " : ""}${session.id}`);
+
+describe("groupSessions", () => {
+  it("lists each top-level session followed by its sub chats and orphans on top level", () => {
+    expect(ids(groupSessions(sessions))).toEqual(["a", "  a1", "  a2", "b", "orphan"]);
+  });
+});
+
+describe("filterSessionRows", () => {
+  const rows = groupSessions(sessions);
+
+  it("keeps everything for a blank query", () => {
+    expect(filterSessionRows(rows, "   ")).toBe(rows);
+  });
+
+  it("keeps a matching top-level session with all its sub chats", () => {
+    expect(ids(filterSessionRows(rows, "LOGIN form"))).toEqual(["a", "  a1", "  a2"]);
+  });
+
+  it("keeps the parent of a matching sub chat but drops its other sub chats", () => {
+    expect(ids(filterSessionRows(rows, "password"))).toEqual(["a", "  a2"]);
+  });
+
+  it("matches the branch and the sub chat file name", () => {
+    expect(ids(filterSessionRows(rows, "feat/analysis"))).toEqual(["b"]);
+    expect(ids(filterSessionRows(rows, "email.ts"))).toEqual(["a", "  a1"]);
+  });
+
+  it("requires every word to match", () => {
+    expect(ids(filterSessionRows(rows, "login repo"))).toEqual([]);
+  });
+});
+
+describe("titleFromPrompt", () => {
+  it("uses the first non-empty line and shortens it with an ellipsis", () => {
+    expect(titleFromPrompt("\n  hello world \nsecond")).toBe("hello world");
+    expect(titleFromPrompt("x".repeat(60))).toBe(`${"x".repeat(47)}…`);
+  });
+});

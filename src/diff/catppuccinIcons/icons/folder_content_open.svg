@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+	<path fill="#659fad" d="M4.5 4.5H12c.83 0 1.5.67 1.5 1.5v6c0 .83-.67 1.5-1.5 1.5H2A1.5 1.5 0 01.5 12V3.5a1 1 0 011-1h5a1 1 0 011 1v1Z"/>
+	<path fill="#89dceb" d="M1.87 8l.7-2.74a1 1 0 01.96-.76h10.94a1 1 0 01.97 1.24l-1.75 7a1 1 0 01-.97.76H2Z"/>
+	<g fill="none" stroke="#41626e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+	<path stroke-linecap="round" stroke-linejoin="round" d="M9.0385 8.5H14.9615A0.5385 0.5385 0 0 1 15.5 9.0385V14.4231A1.0769 1.0769 0 0 1 14.4231 15.5H9.5769A1.0769 1.0769 0 0 1 8.5 14.4231V9.0385A0.5385 0.5385 0 0 1 9.0385 8.5Z M12 10v0 M12 13.5v0"/>
+		<path stroke-linecap="round" stroke-linejoin="round" d="M8.5 12H15.5"/>
+	</g>
+	<g fill="none" stroke="#cdd6f4" stroke-linecap="round" stroke-linejoin="round">
+	<path stroke-linecap="round" stroke-linejoin="round" fill="#cdd6f4" fill-opacity="0.35" d="M9.0385 8.5H14.9615A0.5385 0.5385 0 0 1 15.5 9.0385V14.4231A1.0769 1.0769 0 0 1 14.4231 15.5H9.5769A1.0769 1.0769 0 0 1 8.5 14.4231V9.0385A0.5385 0.5385 0 0 1 9.0385 8.5Z M12 10v0 M12 13.5v0"/>
+		<path fill="none" stroke-linecap="round" stroke-linejoin="round" d="M8.5 12H15.5"/>
+	</g>
+</svg>

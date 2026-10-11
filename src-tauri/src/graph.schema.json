@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hunt component diagram",
+  "description": "File-level component diagram of a Hunt session's changes: one node per file, edges are dependencies between files. Rendered by the Hunt client from `.hunt/graph.json`.",
+  "type": "object",
+  "required": ["nodes", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+    "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": ["path", "review"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "description": "Worktree-relative path of a project file; identifies the node and is referenced by edges. Never a path under `node_modules`: installed packages are not part of the diagram." },
+        "description": { "type": "string", "maxLength": 200, "description": "One sentence on the file's role in the change." },
+        "review": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4,
+          "description": "How much a human should review this file, judged by its weight in the system rather than by the size of its change: 4 for interfaces and contracts (endpoints, IPC, public types), data models and schemas, migrations, authentication, authorization, payments, security, architecture decisions and central abstractions many files depend on; 3 for files with many dependents or widely used helpers; 2 for ordinary feature code with few dependents; 1 for leaf files, tests, styling and boilerplate. Shown as a signal-strength icon on the node."
+        },
+        "reviewReason": { "type": "string", "maxLength": 200, "description": "One sentence naming the criterion behind `review`, e.g. `Defines the public response types every client parses.`; shown when the icon is hovered." }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": ["source", "target", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "source": { "type": "string", "description": "`path` of the dependent file, e.g. the one that imports." },
+        "target": { "type": "string", "description": "`path` of the file it depends on." },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30,
+          "description": "One to three words naming what the dependency is for, e.g. `business logic`, `shape response`, `types only`, `persistence`, `rendering`; never the name of the imported symbol or file (`PaginatedResult`, `user.service` are rejected and replaced)."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 600,
+          "description": "Two to four sentences: how `source` uses `target` (which functions, types or data it takes and where in the flow) and what that use achieves for the change. Shown when the edge or one of its files is hovered."
+        }
+      }
+    }
+  }
+}

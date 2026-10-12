@@ -5,23 +5,31 @@ const file = (touchedBy: string[]) => ({ path: "a.ts", status: "M", touchedBy })
 
 describe("isOwnChange", () => {
   it("is true for a file the session touched, whoever else did", () => {
-    expect(isOwnChange(file(["s1"]), "s1", "p")).toBe(true);
-    expect(isOwnChange(file(["s2", "s1"]), "s1", null)).toBe(true);
+    expect(isOwnChange(file(["s1"]), "s1", "p", "worktree")).toBe(true);
+    expect(isOwnChange(file(["s2", "s1"]), "s1", null, "worktree")).toBe(true);
+    expect(isOwnChange(file(["s2", "s1"]), "s1", null, "checkout")).toBe(true);
   });
 
   it("is false for a file only another session touched", () => {
-    expect(isOwnChange(file(["s2"]), "s1", null)).toBe(false);
-    expect(isOwnChange(file(["s2"]), "s1", "p")).toBe(false);
+    expect(isOwnChange(file(["s2"]), "s1", null, "worktree")).toBe(false);
+    expect(isOwnChange(file(["s2"]), "s1", "p", "worktree")).toBe(false);
+    expect(isOwnChange(file(["s2"]), "s1", "p", "checkout")).toBe(false);
   });
 
   it("gives a sub session the files its parent touched", () => {
-    expect(isOwnChange(file(["p"]), "s1", "p")).toBe(true);
-    expect(isOwnChange(file(["p"]), "s1", null)).toBe(false);
+    expect(isOwnChange(file(["p"]), "s1", "p", "worktree")).toBe(true);
+    expect(isOwnChange(file(["p"]), "s1", "p", "checkout")).toBe(true);
+    expect(isOwnChange(file(["p"]), "s1", null, "worktree")).toBe(false);
   });
 
-  it("gives unattributed changes to every session of the worktree", () => {
-    expect(isOwnChange(file([]), "s1", null)).toBe(true);
-    expect(isOwnChange(file([]), "s1", "p")).toBe(true);
+  it("gives unattributed changes to every session of a Hunt-owned worktree", () => {
+    expect(isOwnChange(file([]), "s1", null, "worktree")).toBe(true);
+    expect(isOwnChange(file([]), "s1", "p", "worktree")).toBe(true);
+  });
+
+  it("gives unattributed changes of the repository's own checkout to no session", () => {
+    expect(isOwnChange(file([]), "s1", null, "checkout")).toBe(false);
+    expect(isOwnChange(file([]), "s1", "p", "checkout")).toBe(false);
   });
 });
 

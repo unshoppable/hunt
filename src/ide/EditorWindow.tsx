@@ -17,7 +17,7 @@ import { HEADER_BAR } from "../ui/bars";
  * The built-in editor as a window of its own (see editorWindows.ts), opened by ⌘click in the diff or "Go to File"
  * while the inspector shows another tab. It boots hidden, usually ahead of its first request, and appears with the
  * first file; it keeps its own tabs, takes further files as the `editor:open` event, asks before unsaved edits are
- * lost and, closed on ⌘W, Escape without open tabs or the traffic light, only hides so the next request is instant.
+ * lost and, closed on ⌘W, Escape or the traffic light, only hides so the next request is instant.
  * It destroys itself once its session was removed.
  */
 export function EditorWindow({ sessionId, initialRequest }: { sessionId: string; initialRequest: EditorOpenRequest | null }) {
@@ -82,10 +82,9 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
   const closeWindowRef = useRef(closeWindow);
   closeWindowRef.current = closeWindow;
 
-  // Escape closes the window like ⌘W once no tab is open (see IdePanel.tsx); with tabs it belongs to the editor. The
+  // Escape reaches the window only when nothing in the editor took it (a selection, the find widget, a popover). The
   // window does not show itself on readiness: it starts hidden and appears with each request (see below).
-  const hasOpenTabs = openPaths.length > 0;
-  useSecondaryWindow("editor", closeWindow, { isEscapeTaken: hasOpenTabs, isReady: false });
+  useSecondaryWindow("editor", closeWindow, { isReady: false });
 
   // The window starts hidden (see editorWindows.ts) and appears with its first requested file; it is pointless once
   // its session is gone (removed together with its worktree).

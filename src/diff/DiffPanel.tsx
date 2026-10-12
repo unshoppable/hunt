@@ -8,8 +8,9 @@ import { isOwnChange, type ChangeScope } from "./attribution";
 import { ChangeList } from "./ChangeList";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { CodeDiffEditor, type CodeDiffEditorHandle } from "./CodeDiffEditor";
-import { BUTTON_SM, GHOST_BUTTON_SM, SECONDARY, SECONDARY_BUTTON_SM } from "../ui/buttons";
+import { BUTTON_XS, GHOST_BUTTON_XS, SECONDARY, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { openInEditorWindow } from "../ide/editorWindows";
+import { selectionChatsFor } from "../ide/selectionChats";
 import { confirmDestructive } from "../ui/confirm";
 import { baseName } from "../ui/path";
 import { useDismiss } from "../ui/useDismiss";
@@ -18,6 +19,12 @@ import { errorText, useLoad } from "../ui/useLoad";
 type ContextMenuState = { x: number; y: number; file: ChangedFile };
 
 type DiffMode = "split" | "unified";
+
+/** Task of a sub chat opened from a changelist row: the chat is about the whole file, not a selection in it. */
+function wholeFileTask(file: ChangedFile): string {
+  const change = file.status === "D" ? "deleted it" : file.status === "A" || file.status === "?" ? "added it" : "changed it";
+  return `The user opened this chat from the changelist about the whole file \`${file.path}\`; the current work ${change}. Answer questions about the file and its changes, and edit the file when asked to.`;
+}
 
 /** Files that do not exist at the base commit are removed instead of restored. */
 function revertLabel(file: ChangedFile): string {
@@ -31,16 +38,21 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const diffLineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
   const diffFontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
-  /** Another session (parent or sub session) works in the same worktree, so the changelist can be scoped. */
-  const isSharedWorktree = useHuntStore((state) =>
-    state.sessions.some((candidate) => candidate.id !== sessionId && candidate.worktreePath === session?.worktreePath),
+  /**
+   * The changelist can be scoped to the session's own changes: another session (parent or sub session) works in the
+   * same worktree, or the session works in the repository's own checkout, which also holds the user's other work.
+   */
+  const isSharedWorktree = useHuntStore(
+    (state) =>
+      session?.workspace === "checkout" ||
+      state.sessions.some((candidate) => candidate.id !== sessionId && candidate.worktreePath === session?.worktreePath),
   );
   const [files, setFiles] = useState<ChangedFileView[]>([]);
   const [scope, setScope] = useState<ChangeScope>("own");
   const visibleFiles = useMemo(() => {
     if (!isSharedWorktree || scope === "all") return files;
-    return files.filter((file) => isOwnChange(file, sessionId, session?.parentId ?? null));
-  }, [files, scope, isSharedWorktree, sessionId, session?.parentId]);
+    return files.filter((file) => isOwnChange(file, sessionId, session?.parentId ?? null, session?.workspace ?? "worktree"));
+  }, [files, scope, isSharedWorktree, sessionId, session?.parentId, session?.workspace]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [diff, setDiff] = useState<FileDiff | null>(null);
   /** A newer version from disk that arrived while the editor had unsaved changes. */
@@ -142,6 +154,27 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     [sessionId, selectedPath, markDirty, noteWorktreeChanged],
   );
 
+  /**
+   * Opens the sub chat about the whole of `file` beside its agent button in the changelist: the existing whole-file
+   * chat with its conversation, or a new one whose agent gets the file's current content with every prompt.
+   */
+  const askAgentAboutFile = (file: ChangedFile, button: HTMLElement) => {
+    const rect = button.getBoundingClientRect();
+    const anchor = { x: rect.right + 6, y: rect.top };
+    const fileChat = selectionChatsFor(useHuntStore.getState().sessions, sessionId, file.path).find((chat) => !!chat.selection.task);
+    if (fileChat) {
+      subChat.open({ selection: fileChat.selection, anchor }, fileChat.sessionId);
+      return;
+    }
+    commands
+      .readFileDiff(sessionId, file.path)
+      .then((result) => {
+        const text = result.newContent ?? result.oldContent ?? "";
+        subChat.open({ selection: { path: file.path, startLine: 1, endLine: Math.max(1, text.split("\n").length), text, task: wholeFileTask(file) }, anchor });
+      })
+      .catch((reason) => setError(errorText(reason)));
+  };
+
   const openContextMenu = (event: MouseEvent, file: ChangedFile) => {
     event.preventDefault();
     setContextMenu({ x: event.clientX, y: event.clientY, file });
@@ -175,6 +208,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
         hasUnsavedChanges={isDirty}
         onSelect={selectFile}
         onContextMenu={openContextMenu}
+        onAskAgent={askAgentAboutFile}
         onWorktreeChanged={() => {
           setLocalVersion((version) => version + 1);
           noteWorktreeChanged(sessionId);
@@ -193,19 +227,19 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
             type="button"
             disabled={!isDirty}
             onClick={() => editorRef.current?.save()}
-            className={`${BUTTON_SM} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
+            className={`${BUTTON_XS} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
             title="Save (⌘S inside the editor)"
           >
             Save
           </button>
-          <button type="button" onClick={() => setMode(mode === "split" ? "unified" : "split")} className={SECONDARY_BUTTON_SM}>
+          <button type="button" onClick={() => setMode(mode === "split" ? "unified" : "split")} className={SECONDARY_BUTTON_XS}>
             {mode === "split" ? "Split" : "Unified"}
           </button>
           <button
             type="button"
             disabled={!files.length}
             onClick={() => void commands.openChangedFilesDiffInWebstorm(sessionId)}
-            className={SECONDARY_BUTTON_SM}
+            className={SECONDARY_BUTTON_XS}
             title="Open all changed files in WebStorm's directory diff"
           >
             Diff in WebStorm
@@ -221,11 +255,11 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
                 setExternalDiff(null);
                 markDirty(false);
               }}
-              className={SECONDARY_BUTTON_SM}
+              className={SECONDARY_BUTTON_XS}
             >
               Reload from disk
             </button>
-            <button type="button" onClick={() => setExternalDiff(null)} className={GHOST_BUTTON_SM}>
+            <button type="button" onClick={() => setExternalDiff(null)} className={GHOST_BUTTON_XS}>
               Keep my version
             </button>
           </div>

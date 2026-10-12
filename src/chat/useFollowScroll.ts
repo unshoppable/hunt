@@ -1,4 +1,4 @@
-import { useEffect, type RefObject } from "react";
+import { useCallback, useEffect, useRef, type RefObject } from "react";
 
 /** Distance from the end, in pixels, within which the view counts as scrolled to the bottom (covers subpixel rounding). */
 const BOTTOM_THRESHOLD = 8;
@@ -21,9 +21,11 @@ export function shouldFollow(wasFollowing: boolean, previousTop: number, metrics
  * Keeps `scrollRef` pinned to its newest content: every growth of `contentRef` (loaded history, streamed text,
  * async highlighting, images) and every shrink of the viewport (growing prompt box, window resize) scrolls to the
  * end, until the user scrolls up to read; scrolling back to the end follows again. A change of `resetKey`
- * (e.g. the shown session) jumps to the end and follows again.
+ * (e.g. the shown session) jumps to the end and follows again. The returned function does the same on demand,
+ * e.g. when the user sends a prompt.
  */
-export function useFollowScroll(scrollRef: RefObject<HTMLElement | null>, contentRef: RefObject<HTMLElement | null>, resetKey: unknown) {
+export function useFollowScroll(scrollRef: RefObject<HTMLElement | null>, contentRef: RefObject<HTMLElement | null>, resetKey: unknown): () => void {
+  const followEndRef = useRef(() => {});
   useEffect(() => {
     const element = scrollRef.current;
     const content = contentRef.current;
@@ -43,6 +45,10 @@ export function useFollowScroll(scrollRef: RefObject<HTMLElement | null>, conten
         scrollToEnd();
       }
     });
+    followEndRef.current = () => {
+      isFollowing = true;
+      scrollToEnd();
+    };
     scrollToEnd();
     observer.observe(content);
     observer.observe(element);
@@ -50,6 +56,8 @@ export function useFollowScroll(scrollRef: RefObject<HTMLElement | null>, conten
     return () => {
       observer.disconnect();
       element.removeEventListener("scroll", onScroll);
+      followEndRef.current = () => {};
     };
   }, [scrollRef, contentRef, resetKey]);
+  return useCallback(() => followEndRef.current(), []);
 }

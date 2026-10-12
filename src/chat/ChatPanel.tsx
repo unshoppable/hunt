@@ -1,13 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useIdeStore } from "../ide/ideStore";
-import { commands } from "../ipc/commands";
 import { useHuntStore } from "../state/store";
 import { findSelectOption, listChoices, listModes } from "./configOptions";
 import { MessageList } from "./MessageList";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { PromptInput, type ConfigSelect } from "./PromptInput";
 import { CLEAR_COMMAND } from "./slashCommands";
-import { screenshotUrl } from "./ScreenshotPicker";
 import { describeSelection, SelectionCard } from "./SelectionCard";
 import { useFileIconUrl } from "../diff/fileIcons";
 import { useFollowScroll } from "./useFollowScroll";
@@ -16,8 +14,9 @@ import { useSettingsStore } from "../state/settings";
 import { openGuardrailsWindow } from "../guardrails/openGuardrailsWindow";
 import { ensureAdrInstruction } from "../guardrails/adrInstruction";
 import { HEADER_BAR } from "../ui/bars";
-import { PRIMARY_BUTTON, SECONDARY_BUTTON, SECONDARY_BUTTON_SM } from "../ui/buttons";
-import { ExternalIcon, ShieldIcon } from "../ui/icons";
+import { PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../ui/buttons";
+import { ShieldIcon } from "../ui/icons";
+import { OpenInWebstormButton } from "./OpenInWebstormButton";
 
 /** Order in which shift+tab cycles the session mode, as in the terminal; modes the agent does not offer are skipped. */
 const MODE_CYCLE = ["default", "acceptEdits", "plan", "auto"];
@@ -31,6 +30,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const chat = useHuntStore((state) => state.chats[sessionId]);
   const isCreating = useHuntStore((state) => state.creatingIds.includes(sessionId));
   const sendPrompt = useHuntStore((state) => state.sendPrompt);
+  const takeQueue = useHuntStore((state) => state.takeQueue);
+  const unqueuePrompt = useHuntStore((state) => state.unqueuePrompt);
   const cancelPrompt = useHuntStore((state) => state.cancelPrompt);
   const setMode = useHuntStore((state) => state.setMode);
   const setConfigOption = useHuntStore((state) => state.setConfigOption);
@@ -86,7 +87,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     void ensureAdrInstruction(sessionId, worktreePath);
   }, [sessionId, worktreePath]);
 
-  useFollowScroll(scrollRef, columnRef, `${sessionId}:${hasSession}`);
+  const followEnd = useFollowScroll(scrollRef, columnRef, `${sessionId}:${hasSession}`);
 
   if (!session) return null;
 
@@ -104,16 +105,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         <div data-tauri-drag-region="" className="min-w-0 flex-1">
           <div data-tauri-drag-region="" className="truncate text-sm font-semibold">{session.title}</div>
         </div>
-        <button
-          type="button"
-          onClick={() => void commands.openWorktreeInWebstorm(sessionId)}
-          disabled={isCreating}
-          className={SECONDARY_BUTTON}
-        >
-          <ExternalIcon />
-          Open in WebStorm
-        </button>
-        <button type="button" onClick={() => void openGuardrailsWindow(sessionId)} disabled={isCreating} className={SECONDARY_BUTTON}>
+        <OpenInWebstormButton sessionId={sessionId} disabled={isCreating} />
+        <button type="button" onClick={() => void openGuardrailsWindow(sessionId)} disabled={isCreating} className={SECONDARY_BUTTON_MD}>
           <ShieldIcon />
           Guardrails
         </button>
@@ -144,11 +137,11 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
       {session.selection ? (
         <div className="px-9 pt-2">
           <div className="chat-column flex items-center gap-3 rounded-xl border border-(--line) bg-(--surface-inset) px-4 py-2 text-[13px]">
-            <img src={fileIconUrl(session.selection.path)} alt="" className="size-4 shrink-0" />
+            <img src={fileIconUrl(session.selection.path)} alt="" className="size-[18px] shrink-0" />
             <span className="min-w-0 flex-1 truncate font-mono text-neutral-300" title={describeSelection(session.selection)}>
               {describeSelection(session.selection)}
             </span>
-            <button type="button" onClick={openSelectionInEditor} className={SECONDARY_BUTTON_SM} title="Show the selected lines in the Editor tab">
+            <button type="button" onClick={openSelectionInEditor} className={SECONDARY_BUTTON_XS} title="Show the selected lines in the Editor tab">
               Open in editor
             </button>
           </div>
@@ -158,30 +151,38 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         <PromptInput
           isBusy={isBusy}
           isBlocked={hasPermission}
+          queue={chat?.queue ?? []}
+          onTakeQueue={() => takeQueue(sessionId)}
+          onUnqueue={(promptId) => unqueuePrompt(sessionId, promptId)}
           modeId={modeId}
           modes={modes}
           configSelects={configSelects}
           commands={[CLEAR_COMMAND, ...(chat?.commands ?? [])]}
-          onSend={(text, images) => void sendPrompt(sessionId, text, images.map((image) => image.path), images.map(screenshotUrl))}
-          onCancel={() => void cancelPrompt(sessionId)}
-          onClear={() => void sendPrompt(sessionId, "/clear")}
+          onSend={(text, images) => {
+            followEnd();
+            void sendPrompt(sessionId, text, images);
+          }}
+          onClear={() => {
+            followEnd();
+            void sendPrompt(sessionId, "/clear");
+          }}
           onCycleMode={cycleMode}
           onModeChange={(nextModeId) => void setMode(sessionId, nextModeId)}
           onConfigChange={(configId, value) => void setConfigOption(sessionId, configId, value)}
           pullRequest={session.pullRequest}
           contextUsage={chat?.contextUsage}
         />
-      ) : isCreating ? (
+      ) : isCreating || chat?.isLoading ? (
         <div className="px-5 pb-4 pt-2">
           <div className="chat-column rounded-xl border border-(--line) bg-(--surface-inset) px-4 py-3 text-sm text-neutral-400">
-            {session.parentId ? "Starting the agent…" : "Creating the worktree and starting the agent…"}
+            {isCreating && !session.parentId ? "Creating the worktree and starting the agent…" : "Starting the agent…"}
           </div>
         </div>
       ) : (
         <div className="px-5 pb-4 pt-2">
           <div className="chat-column flex items-center justify-between rounded-xl border border-(--line) bg-(--surface-inset) px-4 py-3 text-sm text-neutral-400">
             <span>Agent is not running.</span>
-            <button type="button" onClick={() => void selectSession(sessionId)} className={PRIMARY_BUTTON}>
+            <button type="button" onClick={() => void selectSession(sessionId)} className={PRIMARY_BUTTON_MD}>
               Resume
             </button>
           </div>

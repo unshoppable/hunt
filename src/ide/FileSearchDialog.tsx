@@ -10,10 +10,17 @@ import { SearchIcon } from "../ui/icons";
 import { Modal } from "../ui/Modal";
 import { splitPath } from "../ui/path";
 import { errorText, useLoad } from "../ui/useLoad";
+import { usePopupSize } from "../ui/usePopupSize";
+import { useViewportSize } from "../ui/useViewportSize";
 import { searchFiles, parseQuery, type FileMatch } from "./fileSearch";
 
 /** Timeout for the second Shift press of "double shift", and the interval of a second press when Shift stays down. */
 const DOUBLE_SHIFT_MS = 400;
+
+const MIN_SIZE = { width: 520, height: 240 };
+/** The largest share of the window's width and height the dialog may take. */
+const MAX_WIDTH_SHARE = 0.94;
+const MAX_HEIGHT_SHARE = 0.84;
 
 /**
  * Calls `onTrigger` for ⌘P and for double shift (two plain Shift presses within 400 ms with nothing in between),
@@ -54,7 +61,7 @@ export function useFileSearchShortcut(onTrigger: () => void) {
  * With an empty query the open files are listed. The selected file is previewed below the list like in WebStorm's
  * "Search Everywhere", with its path and an "Open In Right Split" action in the footer. ↑/↓ move the selection,
  * Enter opens (`name:12` places the caret on line 12), ⇧Enter opens in a right split, Esc or a click on the
- * backdrop closes.
+ * backdrop closes. Dragging a side or the bottom edge resizes the dialog; the size is remembered across sessions.
  */
 export function FileSearchDialog({
   sessionId,
@@ -76,6 +83,8 @@ export function FileSearchDialog({
   const [error, setError] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const listRef = useRef<HTMLUListElement>(null);
+  const viewport = useViewportSize();
+  const { size, grips } = usePopupSize("fileSearch", { min: MIN_SIZE, max: { width: viewport.width * MAX_WIDTH_SHARE, height: viewport.height * MAX_HEIGHT_SHARE } });
   /** Where the mouse was last seen over the list; the rows scrolling under a resting mouse must not change the selection. */
   const mouseRef = useRef<{ x: number; y: number } | null>(null);
 
@@ -123,11 +132,13 @@ export function FileSearchDialog({
     event.preventDefault();
   };
 
+  // Without a preview the dialog is as tall as its list, up to the remembered height.
+  const style = { width: size.width, height: selectedMatch ? size.height : undefined, maxHeight: size.height };
   return (
-    <Modal label="Go to file" onClose={onClose} align="top" className="max-h-[84vh] w-[960px] max-w-[94vw] bg-(--surface-inspector)">
+    <Modal label="Go to file" onClose={onClose} align="top" className="bg-(--surface-inspector)" style={style} resize={grips}>
       {/* `contents` keeps the rows in the dialog's own column layout; the keys bubble up through it. */}
       <div className="contents" onKeyDown={onKeyDown}>
-        <div className="flex items-center gap-2 border-b border-(--line) px-3">
+        <div className="flex shrink-0 items-center gap-2 border-b border-(--line) px-3">
           <SearchIcon className="size-4 shrink-0 text-neutral-500" />
           <input
             value={query}
@@ -142,8 +153,9 @@ export function FileSearchDialog({
           />
           <span className="text-[13px] text-neutral-500">{files ? `${files.length} files` : "Loading…"}</span>
         </div>
-        {error ? <p className="px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
-        <ul ref={listRef} className={`min-h-0 shrink-0 overflow-auto py-1 text-[13px] ${selectedMatch ? "max-h-[36vh]" : "max-h-[70vh]"}`}>
+        {error ? <p className="shrink-0 px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
+        {/* With a preview the list leaves it at least half of the dialog; without one it takes the whole height. */}
+        <ul ref={listRef} className={`min-h-0 overflow-auto py-1 text-[13px] ${selectedMatch ? "max-h-[45%] shrink-0" : ""}`}>
           {matches.map((match, index) => (
             <li
               key={match.path}
@@ -273,7 +285,7 @@ function FilePreview({ sessionId, path, line }: { sessionId: string; path: strin
 
   const isStale = loaded?.path !== path;
   return (
-    <div className="relative h-[44vh] shrink-0 border-t border-(--line)">
+    <div className="relative min-h-0 flex-1 border-t border-(--line)">
       <div ref={hostRef} className={`absolute inset-0 ${isStale ? "invisible" : ""}`} />
       {error ? <p className="absolute inset-x-0 top-0 px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
       {isStale && !error ? <p className="absolute inset-x-0 top-0 px-3 py-2 text-[13px] text-neutral-500">Loading…</p> : null}

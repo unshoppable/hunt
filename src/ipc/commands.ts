@@ -6,6 +6,7 @@ import type {
   FileDiff,
   GithubViewer,
   GraphStatus,
+  PlanUsage,
   PullRequest,
   PullRequestDetails,
   PullRequestRef,
@@ -16,6 +17,7 @@ import type {
   SessionNotification,
   SessionView,
   Shelf,
+  Workspace,
 } from "./types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
@@ -26,6 +28,8 @@ export function assetUrl(path: string): string {
 export const commands = {
   listSessions: () => invoke<SessionView[]>("list_sessions"),
   listBranches: (repoPath: string) => invoke<string[]>("list_branches", { repoPath }),
+  /** The branch the repository's checkout is on; `HEAD` when it is detached. */
+  currentBranch: (repoPath: string) => invoke<string>("current_branch", { repoPath }),
   /** Open pull requests of the repository's GitHub remote, newest first; needs the `gh` CLI to be installed and logged in. */
   listPullRequests: (repoPath: string) => invoke<PullRequest[]>("list_pull_requests", { repoPath }),
   /** The GitHub account `gh` is logged in as for the repository's host; rejects when `gh` is missing or logged out. */
@@ -45,13 +49,25 @@ export const commands = {
    * that pull request's review and `diffBaseRef` is then the pull request's target branch, whose merge base with
    * `baseRef` becomes the diff base.
    */
-  createSession: (id: string, repoPath: string, baseRef: string, title: string, pullRequest: PullRequestRef | null, diffBaseRef: string | null) =>
-    invoke<SessionView>("create_session", { id, repoPath, baseRef, title, pullRequest, diffBaseRef }),
+  createSession: (
+    id: string,
+    repoPath: string,
+    baseRef: string,
+    title: string,
+    pullRequest: PullRequestRef | null,
+    diffBaseRef: string | null,
+    workspace: Workspace,
+  ) => invoke<SessionView>("create_session", { id, repoPath, baseRef, title, pullRequest, diffBaseRef, workspace }),
   /** Starts the sub session `id` (a fresh UUID the caller picked) in the parent's worktree; a `selection` (sub chat from the diff) goes into the agent's context. */
   createSubSession: (id: string, parentId: string, title: string, selection: SelectionContext | null) =>
     invoke<SessionView>("create_sub_session", { id, parentId, title, selection }),
+  /** Gives the session a new title; a session created without a prompt is named after its first one. */
+  renameSession: (id: string, title: string) => invoke<SessionView>("rename_session", { id, title }),
   openSession: (id: string) => invoke<SessionView>("open_session", { id }),
+  clearSession: (id: string) => invoke<SessionView>("clear_session", { id }),
   closeSession: (id: string, removeWorktree: boolean) => invoke<void>("close_session", { id, removeWorktree }),
+  /** Prepares the worktree's `node_modules` again after a failed attempt; progress arrives through `sessions:changed`. */
+  prepareDependencies: (id: string) => invoke<void>("prepare_dependencies", { id }),
   /** Sends the text plus the image files at `images` (absolute paths) as one user turn. */
   sendPrompt: (id: string, text: string, images: string[]) => invoke<string>("send_prompt", { id, text, images }),
   sessionHistory: (id: string) => invoke<SessionNotification[]>("session_history", { id }),
@@ -77,6 +93,10 @@ export const commands = {
   dropShelf: (id: string, reference: string) => invoke<void>("drop_shelf", { id, reference }),
   /** Language (English name, e.g. `German`) of the agent output Hunt asks for itself: diagram labels, summaries, titles. */
   setAiLanguage: (language: string) => invoke<void>("set_ai_language", { language }),
+  /** System prompt addition for every agent session started afterwards; empty switches it off. */
+  setSystemPrompt: (prompt: string) => invoke<void>("set_system_prompt", { prompt }),
+  /** The claude.ai plan limits of the signed-in account; spawns a short-lived Claude Code process (~1 s). */
+  getPlanUsage: () => invoke<PlanUsage>("get_plan_usage"),
   /** Every image in the macOS screenshot folder, newest first. */
   listScreenshots: () => invoke<Screenshot[]>("list_screenshots"),
   openWorktreeInWebstorm: (id: string) => invoke<void>("open_worktree_in_webstorm", { id }),

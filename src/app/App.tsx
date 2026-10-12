@@ -9,6 +9,8 @@ import { GraphPanel } from "../graph/GraphPanel";
 import { IdePanel } from "../ide/IdePanel";
 import { PullRequestPanel } from "../review/PullRequestPanel";
 import { keepDiffWindowWarm } from "../graph/diffWindows";
+import { keepGuardrailsWindowWarm } from "../guardrails/openGuardrailsWindow";
+import { keepSettingsWindowWarm } from "../settings/openSettingsWindow";
 import { keepEditorWindowWarm, openInEditorWindow } from "../ide/editorWindows";
 import { FileSearchDialog, useFileSearchShortcut } from "../ide/FileSearchDialog";
 import { EMPTY_IDE_SESSION, useIdeStore } from "../ide/ideStore";
@@ -17,7 +19,7 @@ import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes"
 import { HEADER_BAR } from "../ui/bars";
 import { TAB_ACTIVE, TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons";
 import { restoreWindowBounds, useRememberWindowBounds } from "../ui/windowBounds";
-import { useAiLanguageSync, useBackendEvents, usePaneStyles, useSettingsSync } from "./bootstrap";
+import { useAgentPreferencesSync, useBackendEvents, usePaneStyles, useSettingsSync } from "./bootstrap";
 
 export function App() {
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
@@ -42,7 +44,7 @@ export function App() {
 
   usePaneStyles();
   useSettingsSync();
-  useAiLanguageSync();
+  useAgentPreferencesSync();
   useBackendEvents();
   useRememberWindowBounds("main");
 
@@ -59,8 +61,14 @@ export function App() {
   // The active session's editor window boots hidden, so ⌘click in the diff only has to show it (see ide/editorWindows.ts).
   useEffect(() => keepEditorWindowWarm(isCreatingActive ? null : activeSessionId), [activeSessionId, isCreatingActive]);
 
+  // Likewise the guardrails window, so the "Guardrails" button in the chat header only has to show it.
+  useEffect(() => keepGuardrailsWindowWarm(isCreatingActive ? null : activeSessionId), [activeSessionId, isCreatingActive]);
+
   // A diff window boots hidden ahead of time, so a click on a changed file in the diagram only has to fill and show it (see graph/diffWindows.ts).
   useEffect(() => keepDiffWindowWarm(), []);
+
+  // The settings window boots hidden too, so ⌘, and the gear button only have to show it (see settings/openSettingsWindow.ts).
+  useEffect(() => keepSettingsWindowWarm(), []);
 
   return (
     <>
@@ -71,7 +79,7 @@ export function App() {
         <PaneSeparator />
         <Panel id="chat" minSize={360} className="flex">
           <section className="flex min-w-0 flex-1 flex-col">
-            {/* Without an open session the chat pane shows the start view, so the first prompt creates a session right away. */}
+            {/* Without an open session the chat pane shows the start view, so the first prompt or the choice of a repository creates a session right away. */}
             {activeSessionId && !draft ? (
               <ChatPanel sessionId={activeSessionId} />
             ) : (

@@ -12,7 +12,7 @@ import type { ChangeStat, DiffOpenRequest, FileDiff } from "../ipc/types";
 import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { HEADER_BAR } from "../ui/bars";
-import { BUTTON_SM, SECONDARY, SECONDARY_BUTTON_SM } from "../ui/buttons";
+import { BUTTON_XS, SECONDARY, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { useSecondaryWindow } from "../ui/nativeWindow";
 import { baseName } from "../ui/path";
@@ -184,15 +184,15 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
           type="button"
           disabled={!isDirty}
           onClick={() => editorRef.current?.save()}
-          className={`${BUTTON_SM} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
+          className={`${BUTTON_XS} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
           title="Save (⌘S inside the editor)"
         >
           Save
         </button>
-        <button type="button" onClick={() => setMode(mode === "split" ? "unified" : "split")} className={SECONDARY_BUTTON_SM}>
+        <button type="button" onClick={() => setMode(mode === "split" ? "unified" : "split")} className={SECONDARY_BUTTON_XS}>
           {mode === "split" ? "Split" : "Unified"}
         </button>
-        <button type="button" onClick={() => void openInEditorWindow(sessionId, { path })} className={SECONDARY_BUTTON_SM} title="Open the file in the editor window">
+        <button type="button" onClick={() => void openInEditorWindow(sessionId, { path })} className={SECONDARY_BUTTON_XS} title="Open the file in the editor window">
           Open in editor
         </button>
       </div>

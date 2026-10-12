@@ -1,12 +1,13 @@
 {
   "name": "hunt",
   "private": true,
+  "license": "MIT",
   "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
     "lint": "eslint .",
     "test": "vitest run",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
@@ -40,6 +41,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@types/node": "^22.20.5",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.2",

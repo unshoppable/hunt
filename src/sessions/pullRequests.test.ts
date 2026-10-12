@@ -26,9 +26,9 @@ function pullRequest(number: number, title: string, author: string, headRefName:
 }
 
 const pullRequests = [
-  pullRequest(261, "Export all participants", "hido", "fixes/christmas-2025"),
-  pullRequest(258, "Feat/hyphens", "yannick", "feat/hyphens", ["bug"]),
-  pullRequest(12, "fix(med): dropdown filters", "hido", "feature/med/623-scope-filter"),
+  pullRequest(261, "Export all reports", "alice", "fixes/csv-export"),
+  pullRequest(258, "Feat/hyphens", "carol", "feat/hyphens", ["bug"]),
+  pullRequest(12, "fix(ui): dropdown filters", "alice", "feature/ui/42-scope-filter"),
 ];
 
 describe("filterPullRequests", () => {
@@ -37,7 +37,7 @@ describe("filterPullRequests", () => {
   });
 
   it("matches the title case-insensitively", () => {
-    expect(filterPullRequests(pullRequests, "PARTICIPANTS").map((pr) => pr.number)).toEqual([261]);
+    expect(filterPullRequests(pullRequests, "REPORTS").map((pr) => pr.number)).toEqual([261]);
   });
 
   it("matches the number with and without the hash", () => {
@@ -46,20 +46,20 @@ describe("filterPullRequests", () => {
   });
 
   it("matches the author, the branch and a label, and requires every word", () => {
-    expect(filterPullRequests(pullRequests, "hido").map((pr) => pr.number)).toEqual([261, 12]);
-    expect(filterPullRequests(pullRequests, "hido med").map((pr) => pr.number)).toEqual([12]);
+    expect(filterPullRequests(pullRequests, "alice").map((pr) => pr.number)).toEqual([261, 12]);
+    expect(filterPullRequests(pullRequests, "alice ui").map((pr) => pr.number)).toEqual([12]);
     expect(filterPullRequests(pullRequests, "bug").map((pr) => pr.number)).toEqual([258]);
-    expect(filterPullRequests(pullRequests, "hido hyphens")).toEqual([]);
+    expect(filterPullRequests(pullRequests, "alice hyphens")).toEqual([]);
   });
 });
 
 describe("findPullRequestBranch", () => {
-  const branches = ["main", "feat/hyphens", "origin/main", "origin/feat/hyphens", "origin/fixes/christmas-2025", "fork/feature/med/623-scope-filter"];
+  const branches = ["main", "feat/hyphens", "origin/main", "origin/feat/hyphens", "origin/fixes/csv-export", "fork/feature/ui/42-scope-filter"];
 
   it("prefers the local branch, then origin, then any remote", () => {
     expect(findPullRequestBranch(branches, "feat/hyphens")).toBe("feat/hyphens");
-    expect(findPullRequestBranch(branches, "fixes/christmas-2025")).toBe("origin/fixes/christmas-2025");
-    expect(findPullRequestBranch(branches, "feature/med/623-scope-filter")).toBe("fork/feature/med/623-scope-filter");
+    expect(findPullRequestBranch(branches, "fixes/csv-export")).toBe("origin/fixes/csv-export");
+    expect(findPullRequestBranch(branches, "feature/ui/42-scope-filter")).toBe("fork/feature/ui/42-scope-filter");
   });
 
   it("is null for a branch that was never fetched", () => {

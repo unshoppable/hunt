@@ -20,7 +20,7 @@
   --sidebar-bg: #191a1c;
   --sidebar-font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
   --chat-font-size: 14px;
-  --chat-line-height: 1.7;
+  --chat-line-height: 1.8;
   --chat-indent: 0px;
   --chat-bg: #21252d;
   --chat-font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -36,17 +36,18 @@
   --diff-font-family: "Code Monospace V2", "Code Monospace", ui-monospace, SFMono-Regular, Menlo, Monaco, "JetBrains Mono", monospace;
 }
 
-/* Shared surfaces: chat tone for dialogs and the window, inspector for the right pane, inset for inputs, lists and cards. */
+/* Shared surfaces: chat tone for dialogs and the window, inspector for the right pane, input for every text field, inset for lists and cards. */
 :root {
   --surface-chat: #21252d;
   --surface-inspector: #272c35;
+  --surface-input: #2d323c;
   --surface-inset: #1b1e25;
   --line: #363c47;
   --row-hover: rgba(255, 255, 255, 0.05);
   --row-active: rgba(255, 255, 255, 0.09);
   /* The selected row of the project tree (WebStorm's selection blue), over any folder color. */
   --tree-selection: #2e436e;
-  /* A four-pointed sparkle with a small companion star (the SparkleIcon of ui/icons.tsx); the symbol for the agent. */
+  /* A four-pointed sparkle with a small companion star (the agent button of ui/AgentButton.tsx); the symbol for the agent. */
   --sparkle-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.5c.4 2.9 2.6 5.1 5.5 5.5-2.9.4-5.1 2.6-5.5 5.5-.4-2.9-2.6-5.1-5.5-5.5 2.9-.4 5.1-2.6 5.5-5.5Z'/%3E%3Cpath d='M12.5 10.5c.2 1.1 1 1.9 2 2-1 .2-1.8 1-2 2-.2-1-1-1.8-2-2 1-.2 1.8-1 2-2Z'/%3E%3C/svg%3E");
   /* Blue to violet, for the agent symbol. */
   --agent-gradient: linear-gradient(135deg, #38bdf8 0%, #6366f1 50%, #a855f7 100%);
@@ -78,12 +79,11 @@ input[type="radio"] {
   cursor: pointer;
 }
 
-/* WebKit draws the caret as tall as the font's ascent + descent (about 1.2em for SF) unless the line box is shorter;
-   a 1.15 line box clamps it to cap height through descender so it no longer towers above the placeholder. Unlayered,
-   so it wins over leading-* utilities in every window. */
+/* Multi-line input spacing; the placeholder shares the line box so it sits on the text baseline. Unlayered, so it
+   wins over leading-* utilities in every window. */
 textarea,
 textarea::placeholder {
-  line-height: 1.15;
+  line-height: 1.5;
 }
 /* WebKit paints the placeholder over the caret, so its first glyph must start right of the caret column. */
 textarea::placeholder {
@@ -209,26 +209,106 @@ body,
   background: #55302f;
 }
 
-/* Sub chat glyph left of the line numbers (see ide/selectionChatMarkers.ts): a small icon button with the agent sparkle in
-   the blue-violet agent gradient on the first line of a selection a sub chat was opened from; a click reopens the chat in
-   its popover. Monaco sizes the node to the line height and the glyph margin width; the button centres on it. */
-.monaco-editor .hunt-chat-glyph {
+/* Agent button (ui/AgentButton.tsx, ide/selectionAskButton.ts): a small square surface with the agent sparkle in the
+   blue-violet agent gradient; it glows on hover and breathes while the agent it stands for is working. The gutter
+   sub chat button below paints the same look on Monaco's decoration node. `--agent-button-size` and
+   `--agent-sparkle-size` scale a host's instance. */
+.hunt-agent-button {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  width: var(--agent-button-size, 22px);
+  height: var(--agent-button-size, 22px);
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface-inspector);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
   cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
 }
-.monaco-editor .hunt-chat-glyph::before {
+.hunt-agent-button::before {
   content: "";
   position: absolute;
   inset: 0;
-  width: min(22px, 100%);
-  height: min(22px, 100%);
+  width: var(--agent-sparkle-size, 15px);
+  height: var(--agent-sparkle-size, 15px);
   margin: auto;
+  background: var(--agent-gradient);
+  mask: var(--sparkle-mask) center / contain no-repeat;
+  transition: transform 120ms ease;
+}
+.hunt-agent-button:hover {
+  border-color: #7c6cff;
+  box-shadow: 0 0 0 3px rgba(124, 108, 255, 0.22), 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+.hunt-agent-button:hover::before {
+  transform: scale(1.12);
+}
+/* With a label the sparkle keeps its square on the left and the text follows; a hidden label leaves the square. */
+.hunt-agent-button-labelled {
+  width: auto;
+  min-width: var(--agent-button-size, 22px);
+  align-items: center;
+  padding-left: calc(var(--agent-button-size, 22px) - 2px);
+}
+.hunt-agent-button-labelled::before {
+  right: auto;
+  left: calc((var(--agent-button-size, 22px) - var(--agent-sparkle-size, 15px)) / 2 - 1px);
+  margin: auto 0;
+}
+.hunt-agent-button-label {
+  padding-right: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--color-neutral-200, #e5e5e5);
+}
+.hunt-agent-button.hunt-agent-button-busy {
+  border-color: #7c6cff;
+  animation: agent-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+/* The agent button's violet glow on an ordinary button (ui/buttons.ts AGENT_GLOW), e.g. the Guardrails "New" button. */
+.hunt-agent-glow {
+  box-shadow: 0 0 0 3px rgba(124, 108, 255, 0.22), 0 1px 4px rgba(0, 0, 0, 0.3);
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+.hunt-agent-glow:hover,
+.hunt-agent-glow:focus-visible {
+  box-shadow: 0 0 0 4px rgba(124, 108, 255, 0.4), 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+/* The breathing glow of a busy agent button. */
+@keyframes agent-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px rgba(124, 108, 255, 0.1), 0 1px 4px rgba(0, 0, 0, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(124, 108, 255, 0.4), 0 1px 4px rgba(0, 0, 0, 0.3);
+  }
+}
+
+/* Sub chat button right of the line numbers (see ide/selectionChatMarkers.ts): a small icon button with the agent
+   sparkle in the blue-violet agent gradient on the first line of a selection a sub chat was opened from; a click
+   reopens the chat in its popover. Monaco stretches the node over the whole line decorations column; the button
+   takes 22px of it after the change stripe zone (the column's plain 10px) so the two never overlap. */
+.monaco-editor .margin-view-overlays .hunt-chat-glyph {
+  width: 22px !important;
+  margin-left: 10px;
+  cursor: pointer;
+}
+.monaco-editor .margin-view-overlays .hunt-chat-glyph::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  height: min(22px, 100%);
+  margin: auto 0;
   border-radius: 6px;
   border: 1px solid var(--line);
   background: var(--surface-inspector);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
-.monaco-editor .hunt-chat-glyph::after {
+.monaco-editor .margin-view-overlays .hunt-chat-glyph::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -239,62 +319,65 @@ body,
   mask: var(--sparkle-mask) center / contain no-repeat;
   transition: transform 120ms ease;
 }
-.monaco-editor .hunt-chat-glyph:hover::before {
+.monaco-editor .margin-view-overlays .hunt-chat-glyph.hunt-chat-glyph-busy::before {
+  border-color: #7c6cff;
+  animation: agent-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+.monaco-editor .margin-view-overlays .hunt-chat-glyph:hover::before {
   border-color: #7c6cff;
   box-shadow: 0 0 0 3px rgba(124, 108, 255, 0.22), 0 1px 4px rgba(0, 0, 0, 0.3);
 }
-.monaco-editor .hunt-chat-glyph:hover::after {
+.monaco-editor .margin-view-overlays .hunt-chat-glyph:hover::after {
   transform: scale(1.12);
 }
 
 /* "+" of a pull request review (see review/addCommentGlyph.ts): GitHub's blue square on the hovered line, in the
-   lines-decorations column right of the line numbers and overlapping the text's left edge; grey when the comment
-   lands in the review summary as a note instead of inline. The margin paints under the text layer, so the overlays
-   so the margin is lifted above it; Monaco's inline `contain: strict` on it would clip the overhang. */
-.monaco-editor .margin {
-  z-index: 1;
-  contain: size layout style !important;
-}
-.monaco-editor .margin-view-overlays .harness-review-add {
+   glyph margin left of the line numbers, centred on the cell; grey when the comment lands in the review summary as
+   a note instead of inline. */
+.monaco-editor .harness-review-add {
   cursor: pointer;
   z-index: 3;
 }
-.monaco-editor .margin-view-overlays .harness-review-add::before {
+.monaco-editor .harness-review-add::before {
   content: "";
   position: absolute;
-  top: calc(50% - 11px);
-  right: -11px;
-  width: 22px;
-  height: 22px;
+  inset: 0;
+  width: min(18px, 100%);
+  height: min(18px, 100%);
+  margin: auto;
   border-radius: 4px;
   background: #2f81f7;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
   transition: transform 120ms ease;
 }
-.monaco-editor .margin-view-overlays .harness-review-add::after {
+.monaco-editor .harness-review-add::after {
   content: "";
   position: absolute;
-  top: calc(50% - 6px);
-  right: -6px;
-  width: 12px;
-  height: 12px;
+  inset: 0;
+  width: 10px;
+  height: 10px;
+  margin: auto;
   background: #fff;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M6 1.5v9M1.5 6h9' stroke='%23000' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
 }
-.monaco-editor .margin-view-overlays .harness-review-add:hover::before {
+.monaco-editor .harness-review-add:hover::before {
   transform: scale(1.1);
 }
-.monaco-editor .margin-view-overlays .harness-review-add--note::before {
+.monaco-editor .harness-review-add--note::before {
   background: #6e7681;
 }
 /* Lines a review comment is being dragged over or written for: GitHub's yellow tint over gutter and text and a
-   blue bar at the text's left edge, which the open comment box continues (see review/ReviewCommentZones.tsx). */
+   bar at the text's left edge in the color of the "+" (blue inline, grey note), which the open comment box
+   continues (see review/ReviewCommentZones.tsx). */
 .monaco-editor .harness-review-range {
   z-index: 1;
   background: rgba(187, 128, 9, 0.3);
 }
 .monaco-editor .view-overlays .harness-review-range {
   box-shadow: inset 2px 0 0 #2f81f7;
+}
+.monaco-editor .view-overlays .harness-review-range--note {
+  box-shadow: inset 2px 0 0 #6e7681;
 }
 .monaco-editor .margin-view-overlays .harness-review-range {
   background: rgba(187, 128, 9, 0.3);
@@ -310,6 +393,9 @@ body,
   left: var(--zone-content-left);
   width: 2px;
   background: #2f81f7;
+}
+[data-review-composer="note"]::before {
+  background: #6e7681;
 }
 
 /* Comment cards and the comment box under a line (see review/lineZone.ts): an overlay widget that the zone places
@@ -339,36 +425,11 @@ body,
 .hunt-ask-button--above {
   margin-top: -2px;
 }
-.hunt-ask-button button {
+.hunt-ask-button .hunt-agent-button {
   position: absolute;
   top: 50%;
   left: 0;
   transform: translateY(-50%);
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: var(--surface-inspector);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-  cursor: pointer;
-}
-.hunt-ask-button button::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  width: 15px;
-  height: 15px;
-  margin: auto;
-  background: var(--agent-gradient);
-  mask: var(--sparkle-mask) center / contain no-repeat;
-  transition: transform 120ms ease;
-}
-.hunt-ask-button button:hover {
-  border-color: #7c6cff;
-  box-shadow: 0 0 0 3px rgba(124, 108, 255, 0.22), 0 2px 8px rgba(0, 0, 0, 0.35);
-}
-.hunt-ask-button button:hover::before {
-  transform: scale(1.12);
 }
 
 /* The selected usage's name in the preview of the usages popup (see ide/UsagesPopover.tsx): WebStorm's search result tint. */
@@ -510,7 +571,7 @@ body,
 .chat textarea,
 .chat textarea::placeholder {
   font: inherit;
-  line-height: 1.15;
+  line-height: 1.5;
 }
 .chat-column {
   width: 100%;

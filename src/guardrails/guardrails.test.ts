@@ -1,11 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_GUARDRAIL_DIRS, type GuardrailDirs } from "../state/settings";
-import { adrNumber, creationTask, expandedForInstructions, foldersOf, generationTask, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailTemplate, instructionTreeRows, isInsideFolder, kindHelp, nextAdrNumber, slugify, type Guardrail, type GuardrailListing } from "./guardrails";
+import { adrNumber, creationTask, expandedForTree, foldersOf, generationTask, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailTask, guardrailTemplate, guardrailTreeRows, isInsideFolder, kindHelp, newGuardrailLocation, nextAdrNumber, ownerFolderOf, slugify, treeFolders, type Guardrail, type GuardrailListing } from "./guardrails";
 
 const adr = (name: string): Guardrail => ({ kind: "adr", path: `docs/adr/${name}.md`, name, folder: "" });
 const instruction = (folder: string): Guardrail => ({ kind: "instruction", path: folder ? `${folder}/CLAUDE.md` : "CLAUDE.md", name: "CLAUDE.md", folder: "" });
 const rule = (folder: string, name: string): Guardrail => ({ kind: "rule", path: `.claude/rules/${folder ? `${folder}/` : ""}${name}.md`, name, folder });
-const listing = (adrs: Guardrail[] = [], dirs: Partial<GuardrailDirs> = {}): GuardrailListing => ({ instruction: [], rule: [], skill: [], agent: [], adr: adrs, dirs: { ...DEFAULT_GUARDRAIL_DIRS, ...dirs }, folders: [] });
+const skill = (dir: string, name: string): Guardrail => ({ kind: "skill", path: `${dir}/${name}/SKILL.md`, name, folder: "" });
+const listing = (adrs: Guardrail[] = [], dirs: Partial<GuardrailDirs> = {}, more: Partial<GuardrailListing> = {}): GuardrailListing => ({
+  instruction: [],
+  rule: [],
+  skill: [],
+  agent: [],
+  adr: adrs,
+  dirs: { ...DEFAULT_GUARDRAIL_DIRS, ...dirs },
+  folders: [],
+  foundDirs: { rule: [], skill: [] },
+  ...more,
+});
 
 describe("slugify", () => {
   it("lowercases, strips accents and joins words with dashes", () => {
@@ -39,6 +50,9 @@ describe("guardrailPath", () => {
     expect(guardrailPath("skill", "Deploy Staging", listing())).toBe(".claude/skills/deploy-staging/SKILL.md");
     expect(guardrailPath("agent", "Code Reviewer", listing())).toBe(".claude/agents/code-reviewer.md");
     expect(guardrailPath("adr", "Use Postgres", listing([adr("0003-x")]))).toBe("docs/adr/0004-use-postgres.md");
+    expect(guardrailPath("rule", "Naming", listing(), { folder: "api/http" })).toBe(".claude/rules/api/http/naming.md");
+    expect(guardrailPath("rule", "Naming", listing(), { dir: "src/api/.claude/rules" })).toBe("src/api/.claude/rules/naming.md");
+    expect(guardrailPath("skill", "Deploy", listing(), { dir: "src/api/.claude/skills" })).toBe("src/api/.claude/skills/deploy/SKILL.md");
   });
 
   it("follows the folders from the settings", () => {
@@ -135,12 +149,39 @@ describe("generationTask", () => {
     expect(task).toContain("Choose <name> yourself");
     expect(task).toContain("as short as possible and as long as necessary");
     expect(creationTask("skill", listing())).toContain("`.claude/skills/<name>/SKILL.md`");
-    expect(creationTask("adr", listing([adr("0007-use-postgres")]), new Date("2026-10-11T12:00:00Z"))).toContain("`docs/adr/0008-<name>.md`; the heading starts with the number 8 and the record is dated 2026-10-11");
+    expect(creationTask("rule", listing(), "", { folder: "api" })).toContain("Put it at `.claude/rules/api/<name>.md`.");
+    const nested = creationTask("rule", listing(), "", { dir: "src/api/.claude/rules" });
+    expect(nested).toContain("Put it at `src/api/.claude/rules/<name>.md`");
+    expect(nested).toContain("The directory belongs to `src/api`");
+    expect(creationTask("rule", listing())).not.toContain("The directory belongs to");
+    expect(creationTask("instruction", listing(), "", { dir: "src/api" })).toContain("Put it at `src/api/CLAUDE.md`.");
+    expect(creationTask("instruction", listing())).toContain("Put it at `CLAUDE.md`.");
+    expect(creationTask("adr", listing([adr("0007-use-postgres")]), "", {}, new Date("2026-10-11T12:00:00Z"))).toContain("`docs/adr/0008-<name>.md`; the heading starts with the number 8 and the record is dated 2026-10-11");
+  });
+
+  it("keeps the name the user typed", () => {
+    const task = creationTask("skill", listing(), "Release Notes");
+    expect(task).toContain("`.claude/skills/release-notes/SKILL.md`");
+    expect(task).toContain("The user chose the name `release-notes`");
+    expect(task).not.toContain("<name>");
   });
 
   it("names the folder a nested CLAUDE.md applies to", () => {
     expect(generationTask("instruction", "src/api/CLAUDE.md")).toContain("below `src/api`");
     expect(generationTask("instruction", "CLAUDE.md")).toContain("root CLAUDE.md");
+  });
+});
+
+describe("guardrailTask", () => {
+  it("offers every kind at its configured place and asks back while the kind is unclear", () => {
+    const task = guardrailTask(listing([adr("0007-use-postgres")], { rule: "docs/rules" }), new Date("2026-10-11T12:00:00Z"));
+    expect(task).toContain("- Instruction: a `CLAUDE.md`");
+    expect(task).toContain("`docs/rules/<name>.md`");
+    expect(task).toContain("`.claude/skills/<name>/SKILL.md`");
+    expect(task).toContain("`.claude/agents/<name>.md`");
+    expect(task).toContain("`docs/adr/0008-<name>.md`; the heading starts with the number 8 and the record is dated 2026-10-11");
+    expect(task).toContain("write nothing yet: ask one short question");
+    expect(task).toContain("as short as possible and as long as necessary");
   });
 });
 
@@ -163,22 +204,93 @@ describe("foldersOf", () => {
   });
 });
 
-describe("expandedForInstructions", () => {
-  it("opens the root and the folders leading to each CLAUDE.md", () => {
-    expect([...expandedForInstructions([instruction(""), instruction("src/api/v2")])].sort()).toEqual(["", "src", "src/api", "src/api/v2"]);
+describe("ownerFolderOf", () => {
+  it("names the folder whose .claude holds the directory", () => {
+    expect(ownerFolderOf(".claude/rules", ".claude/rules")).toBe("");
+    expect(ownerFolderOf("src/api/.claude/rules", ".claude/rules")).toBe("src/api");
+    expect(ownerFolderOf("src/api/rules", ".claude/rules")).toBeNull();
+    expect(ownerFolderOf(".claude", ".claude/rules")).toBeNull();
   });
 });
 
-describe("instructionTreeRows", () => {
-  const folders = ["docs", "src", "src/api", "src/ui"];
-  const label = (row: ReturnType<typeof instructionTreeRows>[number]) => `${"  ".repeat(row.depth)}${row.type === "folder" ? `${row.name}/${row.hasInstruction ? "*" : ""}` : row.entry.path}`;
+describe("newGuardrailLocation", () => {
+  const found = listing([], {}, { foundDirs: { rule: [".claude/rules", "src/api/.claude/rules"], skill: [] } });
 
-  it("lists subfolders before a folder's own CLAUDE.md and hides closed folders", () => {
-    const rows = instructionTreeRows(folders, [instruction(""), instruction("src/api")], new Set(["", "src", "src/api"]), "harness");
+  it("stays inside the kind directory a folder is or lies in", () => {
+    expect(newGuardrailLocation("rule", ".claude/rules", found)).toEqual({ dir: ".claude/rules", folder: "" });
+    expect(newGuardrailLocation("rule", ".claude/rules/backend/sql", found)).toEqual({ dir: ".claude/rules", folder: "backend/sql" });
+    expect(newGuardrailLocation("rule", "src/api/.claude/rules", found)).toEqual({ dir: "src/api/.claude/rules", folder: "" });
+  });
+
+  it("starts a kind directory in any other folder, inside a .claude the one it leads to", () => {
+    expect(newGuardrailLocation("rule", "src/ui", found)).toEqual({ dir: "src/ui/.claude/rules", folder: "" });
+    expect(newGuardrailLocation("skill", "", found)).toEqual({ dir: ".claude/skills", folder: "" });
+    expect(newGuardrailLocation("skill", ".claude", found)).toEqual({ dir: ".claude/skills", folder: "" });
+    expect(newGuardrailLocation("skill", "src/api/.claude", found)).toEqual({ dir: "src/api/.claude/skills", folder: "" });
+  });
+});
+
+describe("treeFolders", () => {
+  const folders = [".claude", ".claude/agents", ".claude/rules", ".claude/skills", ".claude/skills/deploy", "src", "src/api", "src/api/.claude", "src/api/.claude/rules", "src/api/.claude/rules/http"];
+
+  it("shows, inside a .claude, only the way to the kind's own directory and adds the way to ignored directories", () => {
+    const found = listing([], {}, { folders, foundDirs: { rule: [".claude/rules", "src/api/.claude/rules", "lib/.claude/rules"], skill: [] } });
+    expect(treeFolders("rule", found)).toEqual([
+      ".claude",
+      ".claude/rules",
+      "lib",
+      "lib/.claude",
+      "lib/.claude/rules",
+      "src",
+      "src/api",
+      "src/api/.claude",
+      "src/api/.claude/rules",
+      "src/api/.claude/rules/http",
+    ]);
+  });
+
+  it("leaves out a .claude without the kind's directory and the folders of the skills themselves", () => {
+    const found = listing([], {}, { folders, foundDirs: { rule: [], skill: [".claude/skills"] } });
+    expect(treeFolders("skill", found)).toEqual([".claude", ".claude/skills", "src", "src/api"]);
+  });
+
+  it("keeps every worktree folder for instructions", () => {
+    expect(treeFolders("instruction", listing([], {}, { folders }))).toEqual(folders);
+  });
+});
+
+describe("expandedForTree", () => {
+  it("opens the root and the folders leading to each entry and directory", () => {
+    expect([...expandedForTree([instruction(""), instruction("src/api/v2")])].sort()).toEqual(["", "src", "src/api", "src/api/v2"]);
+    expect([...expandedForTree([skill("src/.claude/skills", "deploy")], ["lib/.claude/rules"])].sort()).toEqual(["", "lib", "lib/.claude", "lib/.claude/rules", "src", "src/.claude", "src/.claude/skills"]);
+  });
+});
+
+describe("guardrailTreeRows", () => {
+  const folders = ["docs", "src", "src/api", "src/ui"];
+  const label = (row: ReturnType<typeof guardrailTreeRows>[number]) => `${"  ".repeat(row.depth)}${row.type === "folder" ? `${row.name}/${row.hasEntry ? "*" : ""}` : row.entry.path}`;
+
+  it("lists subfolders before a folder's own entries and hides closed folders", () => {
+    const rows = guardrailTreeRows(folders, [instruction(""), instruction("src/api")], new Set(["", "src", "src/api"]), "harness");
     expect(rows.map(label)).toEqual(["harness/*", "  docs/", "  src/", "    api/*", "      src/api/CLAUDE.md", "    ui/", "  CLAUDE.md"]);
   });
 
+  it("lists rules under their folder and skills under the skills directory", () => {
+    const rows = guardrailTreeRows(
+      [".claude", ".claude/rules", ".claude/rules/api", ".claude/skills"],
+      [rule("", "general"), rule("api", "naming"), skill(".claude/skills", "deploy")],
+      new Set(["", ".claude", ".claude/rules", ".claude/rules/api", ".claude/skills"]),
+      "harness",
+    );
+    expect(rows.map(label)).toEqual(["harness/", "  .claude/", "    rules/*", "      api/*", "        .claude/rules/api/naming.md", "      .claude/rules/general.md", "    skills/*", "      .claude/skills/deploy/SKILL.md"]);
+  });
+
   it("shows only the root when it is closed", () => {
-    expect(instructionTreeRows(folders, [instruction("")], new Set(), "harness").map(label)).toEqual(["harness/*"]);
+    expect(guardrailTreeRows(folders, [instruction("")], new Set(), "harness").map(label)).toEqual(["harness/*"]);
+  });
+
+  it("tells which folders hold entries somewhere below them", () => {
+    const rows = guardrailTreeRows(folders, [instruction("src/api")], new Set(["", "src"]), "harness");
+    expect(rows.filter((row) => row.type === "folder").map((row) => `${row.name}${row.holdsEntries ? "+" : "-"}`)).toEqual(["harness+", "docs-", "src+", "api+", "ui-"]);
   });
 });

@@ -3,15 +3,20 @@ import { createPortal } from "react-dom";
 import { assetUrl, commands } from "../ipc/commands";
 import type { Screenshot } from "../ipc/types";
 import { useHoverAnchor } from "../ui/hoverAnchor";
-import { CLEAR_BUTTON, GHOST_BUTTON_SM, PRIMARY_BUTTON_SM } from "../ui/buttons";
+import { CLEAR_BUTTON, GHOST_BUTTON_XS, PRIMARY_BUTTON_XS } from "../ui/buttons";
 import { ImageIcon } from "../ui/icons";
 import { Modal } from "../ui/Modal";
 import { errorText, useLoad } from "../ui/useLoad";
+import { usePopupSize } from "../ui/usePopupSize";
+import { useViewportSize } from "../ui/useViewportSize";
 
 const POPOVER_WIDTH = 340;
 const POPOVER_ITEMS = 8;
 const GAP = 8;
 const MARGIN = 12;
+const DIALOG_MIN_SIZE = { width: 480, height: 320 };
+/** The largest share of the window's width and height the dialog may take. */
+const DIALOG_MAX_SHARE = 0.92;
 
 /** URL the webview can load a screenshot file from (Tauri's asset protocol). */
 export function screenshotUrl(screenshot: Screenshot): string {
@@ -165,6 +170,8 @@ function ScreenshotDialog({
 }) {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const picked = (screenshots ?? []).filter((screenshot) => selected.has(screenshot.path));
+  const viewport = useViewportSize();
+  const { size, isHeightSet, grips } = usePopupSize("screenshots", { min: DIALOG_MIN_SIZE, max: { width: viewport.width * DIALOG_MAX_SHARE, height: viewport.height * DIALOG_MAX_SHARE } });
 
   function toggle(path: string) {
     setSelected((current) => {
@@ -199,7 +206,13 @@ function ScreenshotDialog({
   }, []);
 
   return (
-    <Modal label="Attach screenshots" onClose={onClose} className="max-h-[80vh] w-[760px] max-w-[92vw] bg-(--surface-inspector)">
+    <Modal
+      label="Attach screenshots"
+      onClose={onClose}
+      className="bg-(--surface-inspector)"
+      style={{ width: size.width, maxHeight: size.height, height: isHeightSet ? size.height : undefined }}
+      resize={grips}
+    >
       <div className="flex h-11 items-center justify-between border-b border-(--line) px-4">
         <span className="text-sm font-medium text-neutral-100">Screenshots</span>
         <span className="text-[13px] text-neutral-500">{screenshots ? `${screenshots.length} images` : "Loading…"}</span>
@@ -243,10 +256,10 @@ function ScreenshotDialog({
         </div>
       </div>
       <div className="flex items-center justify-end gap-2 border-t border-(--line) px-3 py-2.5">
-        <button type="button" onClick={onClose} className={GHOST_BUTTON_SM}>
+        <button type="button" onClick={onClose} className={GHOST_BUTTON_XS}>
           Cancel
         </button>
-        <button type="button" onClick={attach} disabled={!picked.length} className={PRIMARY_BUTTON_SM}>
+        <button type="button" onClick={attach} disabled={!picked.length} className={PRIMARY_BUTTON_XS}>
           {picked.length > 1 ? `Attach ${picked.length} screenshots` : "Attach screenshot"}
         </button>
       </div>

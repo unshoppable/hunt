@@ -683,9 +683,9 @@ mod tests {
     fn list_json(viewer: &str, latest_reviews: &str, review_requests: &str) -> Vec<u8> {
         format!(
             r#"{{"data":{{"viewer":{{"login":"{viewer}"}},"repository":{{"pullRequests":{{"nodes":[{{
-                "number":261,"title":"export all participants","url":"https://github.com/o/r/pull/261","isDraft":false,
-                "createdAt":"2026-09-01T08:00:00Z","updatedAt":"2026-09-11T12:56:54Z","headRefName":"fixes/christmas-2025",
-                "baseRefName":"main","body":null,"author":{{"login":"hido"}},"additions":10,"deletions":2,"changedFiles":3,
+                "number":261,"title":"export all reports","url":"https://github.com/o/r/pull/261","isDraft":false,
+                "createdAt":"2026-09-01T08:00:00Z","updatedAt":"2026-09-11T12:56:54Z","headRefName":"fixes/csv-export",
+                "baseRefName":"main","body":null,"author":{{"login":"alice"}},"additions":10,"deletions":2,"changedFiles":3,
                 "totalCommentsCount":11,"reviewDecision":null,"labels":{{"nodes":[]}},"latestReviews":{{"nodes":[{latest_reviews}]}},
                 "reviewRequests":{{"nodes":[{review_requests}]}},"commits":{{"nodes":[{{"commit":{{"statusCheckRollup":null}}}}]}}
             }}]}}}}}}}}"#
@@ -695,14 +695,14 @@ mod tests {
 
     #[test]
     fn parse_pull_requests_flattens_the_author_and_keeps_the_order() {
-        let json = br#"{"data":{"viewer":{"login":"yannick"},"repository":{"pullRequests":{"nodes":[
-            {"number":261,"title":"export all participants","url":"https://github.com/o/r/pull/261","isDraft":false,
+        let json = br#"{"data":{"viewer":{"login":"carol"},"repository":{"pullRequests":{"nodes":[
+            {"number":261,"title":"export all reports","url":"https://github.com/o/r/pull/261","isDraft":false,
              "createdAt":"2026-09-01T08:00:00Z","updatedAt":"2026-09-11T12:56:54Z",
-             "headRefName":"fixes/christmas-2025","baseRefName":"main",
-             "body":"- [x] export\n- [ ] import\n1. [ ] docs\n-[ ] not a task\n- [ ]neither","author":{"login":"hido"},
+             "headRefName":"fixes/csv-export","baseRefName":"main",
+             "body":"- [x] export\n- [ ] import\n1. [ ] docs\n-[ ] not a task\n- [ ]neither","author":{"login":"alice"},
              "additions":562,"deletions":291,"changedFiles":13,"totalCommentsCount":11,"reviewDecision":"APPROVED",
              "labels":{"nodes":[{"name":"bug","color":"d73a4a"}]},
-             "latestReviews":{"nodes":[{"author":{"login":"yannick"},"state":"APPROVED"}]},
+             "latestReviews":{"nodes":[{"author":{"login":"carol"},"state":"APPROVED"}]},
              "reviewRequests":{"nodes":[{"requestedReviewer":{"login":"bob"}},{"requestedReviewer":{}}]},
              "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
                {"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":"SKIPPED"},
@@ -718,8 +718,8 @@ mod tests {
         assert_eq!(pull_requests.len(), 2);
         let first = &pull_requests[0];
         assert_eq!(first.number, 261);
-        assert_eq!(first.author, "hido");
-        assert_eq!(first.head_ref_name, "fixes/christmas-2025");
+        assert_eq!(first.author, "alice");
+        assert_eq!(first.head_ref_name, "fixes/csv-export");
         assert_eq!(first.base_ref_name, "main");
         assert!(!first.is_draft);
         assert_eq!(first.created_at, "2026-09-01T08:00:00Z");
@@ -744,22 +744,22 @@ mod tests {
     #[test]
     fn viewer_review_prefers_an_outstanding_request_over_an_earlier_review() {
         let viewer_review = |latest_reviews: &str, review_requests: &str| {
-            parse_pull_requests(&list_json("yannick", latest_reviews, review_requests)).unwrap()[0].viewer_review
+            parse_pull_requests(&list_json("carol", latest_reviews, review_requests)).unwrap()[0].viewer_review
         };
-        let commented = r#"{"author":{"login":"yannick"},"state":"COMMENTED"}"#;
-        assert_eq!(viewer_review(commented, r#"{"requestedReviewer":{"login":"yannick"}}"#), Some(ViewerReview::Requested));
+        let commented = r#"{"author":{"login":"carol"},"state":"COMMENTED"}"#;
+        assert_eq!(viewer_review(commented, r#"{"requestedReviewer":{"login":"carol"}}"#), Some(ViewerReview::Requested));
         let other_requests = r#"{"requestedReviewer":{"login":"bob"}},{"requestedReviewer":{}}"#;
         assert_eq!(viewer_review(commented, other_requests), Some(ViewerReview::Commented));
-        let changes = r#"{"author":{"login":"yannick"},"state":"CHANGES_REQUESTED"}"#;
+        let changes = r#"{"author":{"login":"carol"},"state":"CHANGES_REQUESTED"}"#;
         assert_eq!(viewer_review(changes, ""), Some(ViewerReview::ChangesRequested));
-        assert_eq!(viewer_review(r#"{"author":{"login":"yannick"},"state":"DISMISSED"}"#, ""), None);
+        assert_eq!(viewer_review(r#"{"author":{"login":"carol"},"state":"DISMISSED"}"#, ""), None);
         assert_eq!(viewer_review(r#"{"author":{"login":"bob"},"state":"APPROVED"}"#, ""), None);
         assert_eq!(viewer_review("", ""), None);
     }
 
     #[test]
     fn parse_pull_requests_rejects_a_repository_gh_cannot_see() {
-        let json = br#"{"data":{"viewer":{"login":"yannick"},"repository":null}}"#;
+        let json = br#"{"data":{"viewer":{"login":"carol"},"repository":null}}"#;
         assert!(parse_pull_requests(json).unwrap_err().contains("not a GitHub repository"));
     }
 
@@ -796,10 +796,10 @@ mod tests {
 
     #[test]
     fn parse_viewer_reads_the_login_and_avatar() {
-        let json = br#"{"login":"yannick","id":1,"avatar_url":"https://avatars.githubusercontent.com/u/1?v=4","type":"User"}"#;
+        let json = br#"{"login":"carol","id":1,"avatar_url":"https://avatars.githubusercontent.com/u/1?v=4","type":"User"}"#;
         let viewer = parse_viewer(json).unwrap();
-        assert_eq!(viewer, GithubViewer { login: "yannick".into(), avatar_url: "https://avatars.githubusercontent.com/u/1?v=4".into() });
-        assert_eq!(serde_json::to_string(&viewer).unwrap(), r#"{"login":"yannick","avatarUrl":"https://avatars.githubusercontent.com/u/1?v=4"}"#);
+        assert_eq!(viewer, GithubViewer { login: "carol".into(), avatar_url: "https://avatars.githubusercontent.com/u/1?v=4".into() });
+        assert_eq!(serde_json::to_string(&viewer).unwrap(), r#"{"login":"carol","avatarUrl":"https://avatars.githubusercontent.com/u/1?v=4"}"#);
     }
 
     #[test]

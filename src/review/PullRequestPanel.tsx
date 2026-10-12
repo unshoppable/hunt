@@ -5,7 +5,7 @@ import type { PullRequestDetails } from "../ipc/types";
 import { useHuntStore } from "../state/store";
 import { MarkdownText } from "../chat/MessageList";
 import { formatRelativeTime } from "../chat/ScreenshotPicker";
-import { SECONDARY_BUTTON_SM } from "../ui/buttons";
+import { SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { ExternalIcon, GitHubIcon } from "../ui/icons";
 import { errorText, useLoad } from "../ui/useLoad";
 import { REVIEW_STATE_LABELS, buildTimeline, type TimelineEntry } from "./timeline";
@@ -62,7 +62,7 @@ export function PullRequestPanel({ sessionId }: { sessionId: string }) {
             <h2 className="min-w-0 flex-1 text-[26px] leading-tight font-semibold text-neutral-100 break-words">
               {details.title} <span className="font-normal text-neutral-500">#{details.number}</span>
             </h2>
-            <button type="button" onClick={() => void openUrl(details.url)} className={`${SECONDARY_BUTTON_SM} shrink-0`} title="Open on GitHub">
+            <button type="button" onClick={() => void openUrl(details.url)} className={`${SECONDARY_BUTTON_XS} shrink-0`} title="Open on GitHub">
               <GitHubIcon className="size-4" />
               Open on GitHub
               <ExternalIcon className="size-3" />

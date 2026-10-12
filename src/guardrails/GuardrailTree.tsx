@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import { folderIconUrl, useFileIconUrl } from "../diff/fileIcons";
 import { ChevronIcon, PlusIcon, TrashIcon } from "../ui/icons";
 import { useEscapeToClose } from "../ui/useEscapeToClose";
-import { expandedForInstructions, folderOf, instructionTreeRows, type Guardrail } from "./guardrails";
+import { expandedForTree, folderOf, guardrailTreeRows, isInsideFolder, KIND_LABELS, treeParentOf, type Guardrail, type GuardrailKind } from "./guardrails";
 
 /** Indentation of a tree row per folder level, in pixels. */
 const ROW_INDENT = 14;
@@ -11,7 +11,7 @@ const ROW_INDENT = 14;
 const DRAG_THRESHOLD = 4;
 
 type Drag = {
-  /** The CLAUDE.md being dragged. */
+  /** The file being dragged. */
   path: string;
   x: number;
   y: number;
@@ -20,49 +20,59 @@ type Drag = {
 };
 
 /**
- * The folders of the worktree as a tree with the CLAUDE.md files in them. Folders on the way to a CLAUDE.md start
- * out open, every other one closed; the chevron toggles. A folder without a CLAUDE.md shows "+" while hovered to
- * create one there and every folder but the root a trash button to delete it with everything in it; a CLAUDE.md
- * row opens the file, shows its trash button while hovered, and can be dragged onto another folder (one without a
- * CLAUDE.md of its own) to move it there.
+ * The folders of the worktree as a tree with the guardrails of `kind` in them: the CLAUDE.md of each folder, or the
+ * rules (with their subfolders) and skills of each `.claude` directory (`kindDirs`). Folders on the way to an entry
+ * start out open, every other one closed; the chevron toggles. While hovered, a folder shows "+" to create an entry
+ * there (a CLAUDE.md only where there is none yet) and, when it may be deleted (any but the root for instructions,
+ * the kind's directories and their subfolders otherwise), a trash button that deletes it with everything in it. An entry row opens the file, shows its trash button while hovered,
+ * and, when `onMove` is set, can be dragged onto a folder `canDropInto` accepts to move it there.
  */
-export function InstructionTree({
+export function GuardrailTree({
+  kind,
   projectName,
   folders,
-  instructions,
+  kindDirs,
+  entries,
   selectedPath,
   dirtyPaths,
   onSelect,
   onCreate,
   onMove,
+  canDropInto,
   onDelete,
   onDeleteFolder,
 }: {
+  kind: GuardrailKind;
   projectName: string;
   folders: string[];
-  instructions: Guardrail[];
+  /** The kind's directories (`.claude/rules` at the root and below folders); empty for instructions. */
+  kindDirs: string[];
+  entries: Guardrail[];
   selectedPath: string | null;
   dirtyPaths: string[];
   onSelect: (path: string) => void;
-  /** Creates a CLAUDE.md in the folder (`""` is the root). */
+  /** Creates an entry in the folder (`""` is the root). */
   onCreate: (folder: string) => void;
-  onMove: (path: string, folder: string) => void;
+  onMove?: (path: string, folder: string) => void;
+  /** Whether the file at `path` may be dropped into `folder`. */
+  canDropInto?: (path: string, folder: string) => boolean;
   onDelete: (entry: Guardrail) => void;
   /** Deletes the folder with everything in it. */
   onDeleteFolder: (folder: string) => void;
 }) {
   const fileIconUrl = useFileIconUrl();
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => expandedForInstructions(instructions));
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => expandedForTree(entries, kindDirs));
   const [drag, setDrag] = useState<Drag | null>(null);
-  const knownPaths = useRef(new Set(instructions.map((entry) => entry.path)));
+  const knownPaths = useRef(new Set(entries.map((entry) => entry.path)));
+  const labels = KIND_LABELS[kind];
 
-  // A CLAUDE.md that appeared (created or moved here) opens the folders on its way; folders the user closed stay closed otherwise.
+  // An entry that appeared (created or moved here) opens the folders on its way; folders the user closed stay closed otherwise.
   useEffect(() => {
-    const added = instructions.filter((entry) => !knownPaths.current.has(entry.path));
-    knownPaths.current = new Set(instructions.map((entry) => entry.path));
+    const added = entries.filter((entry) => !knownPaths.current.has(entry.path));
+    knownPaths.current = new Set(entries.map((entry) => entry.path));
     if (!added.length) return;
-    setExpanded((current) => new Set([...current, ...expandedForInstructions(added)]));
-  }, [instructions]);
+    setExpanded((current) => new Set([...current, ...expandedForTree(added)]));
+  }, [entries]);
 
   // Escape drops a drag in progress.
   useEscapeToClose(() => setDrag(null), !!drag);
@@ -79,18 +89,25 @@ export function InstructionTree({
     });
   };
 
-  const rows = instructionTreeRows(folders, instructions, expanded, projectName);
-  const withInstruction = new Set(instructions.map((entry) => folderOf(entry.path)));
+  const rows = guardrailTreeRows(folders, entries, expanded, projectName);
+  /** Whether `folder` is one of the kind's directories or lies below one. */
+  const isKindFolder = (folder: string) => kindDirs.some((dir) => folder === dir || isInsideFolder(folder, dir));
 
-  /** The folder row under the pointer the dragged file may go into: not its own folder and not one holding a CLAUDE.md already. */
+  /** The folder row under the pointer the dragged file may go into: not its own folder, and one the caller accepts. */
   const dropTargetAt = (x: number, y: number, path: string): string | null => {
     const row = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-folder]");
     if (!row) return null;
     const folder = row.dataset.folder ?? "";
-    return folder !== folderOf(path) && !withInstruction.has(folder) ? folder : null;
+    return folder !== folderOf(path) && (canDropInto?.(path, folder) ?? true) ? folder : null;
   };
 
-  const dragged = drag ? instructions.find((entry) => entry.path === drag.path) : null;
+  const dragged = drag ? entries.find((entry) => entry.path === drag.path) : null;
+
+  /** The actions of a folder row: a new entry (a CLAUDE.md only where the folder has none) and deletion where allowed. */
+  const actionsOf = (row: Extract<ReturnType<typeof guardrailTreeRows>[number], { type: "folder" }>): FolderActions => ({
+    onCreate: kind === "instruction" && row.hasEntry ? null : () => onCreate(row.path),
+    onDelete: (kind === "instruction" ? !!row.path : isKindFolder(row.path)) ? () => onDeleteFolder(row.path) : null,
+  });
 
   return (
     <>
@@ -103,11 +120,12 @@ export function InstructionTree({
               name={row.name}
               depth={row.depth}
               isExpanded={expanded.has(row.path)}
-              hasInstruction={row.hasInstruction}
+              isKindDir={kindDirs.includes(row.path)}
+              isEmpty={!row.holdsEntries}
               isDropTarget={drag?.over === row.path}
+              entryLabel={labels.item}
               onToggle={() => toggle(row.path)}
-              onCreate={() => onCreate(row.path)}
-              onDelete={row.path ? () => onDeleteFolder(row.path) : null}
+              actions={actionsOf(row)}
             />
           ) : (
             <FileRow
@@ -119,12 +137,12 @@ export function InstructionTree({
               isDragged={drag?.path === row.entry.path}
               onSelect={() => onSelect(row.entry.path)}
               onDelete={() => onDelete(row.entry)}
-              onDragStart={(x, y) => setDrag({ path: row.entry.path, x, y, over: null })}
+              onDragStart={onMove ? (x, y) => setDrag({ path: row.entry.path, x, y, over: null }) : null}
               onDragMove={(x, y) => setDrag((current) => (current ? { ...current, x, y, over: dropTargetAt(x, y, current.path) } : current))}
               onDragEnd={(x, y) => {
                 const target = x === null || y === null ? null : dropTargetAt(x, y, row.entry.path);
                 if (target !== null) {
-                  onMove(row.entry.path, target);
+                  onMove?.(row.entry.path, target);
                 }
                 setDrag(null);
               }}
@@ -135,75 +153,68 @@ export function InstructionTree({
       {drag && dragged ? (
         <div className="pointer-events-none fixed z-30 flex items-center gap-1.5 rounded-md border border-neutral-600 bg-(--surface-inspector) px-2 py-1 text-[13px] text-neutral-200 shadow-lg shadow-black/40" style={{ left: drag.x + 12, top: drag.y + 12 }}>
           <img src={fileIconUrl(dragged.path)} alt="" className="size-4" />
-          {dragged.path}
+          {dragged.kind === "skill" ? treeParentOf(dragged) : dragged.path}
         </div>
       ) : null}
     </>
   );
 }
 
-/**
- * A folder of the tree; while hovered it shows the "+" when the folder has no CLAUDE.md yet and the trash when it
- * can be deleted.
- */
+type FolderActions = { onCreate: (() => void) | null; onDelete: (() => void) | null };
+
+const ROW_ACTION = "inline-flex size-7 items-center justify-center rounded-md opacity-0 transition-colors group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-blue-400/60 outline-none";
+
+/** A folder of the tree; while hovered it shows the actions it has. One of the kind's directories is set off in colour, an empty branch dimmed. */
 function FolderRow({
   path,
   name,
   depth,
   isExpanded,
-  hasInstruction,
+  isKindDir,
+  isEmpty,
   isDropTarget,
+  entryLabel,
   onToggle,
-  onCreate,
-  onDelete,
+  actions,
 }: {
   path: string;
   name: string;
   depth: number;
   isExpanded: boolean;
-  hasInstruction: boolean;
+  isKindDir: boolean;
+  /** No entry lies anywhere below the folder; it is dimmed so that the branches worth opening stand out. */
+  isEmpty: boolean;
   isDropTarget: boolean;
+  /** The entry a "+" creates, with its article (`a rule`). */
+  entryLabel: string;
   onToggle: () => void;
-  onCreate: () => void;
-  /** Null for the root, which cannot be deleted. */
-  onDelete: (() => void) | null;
+  actions: FolderActions;
 }) {
-  const buttonCount = (hasInstruction ? 0 : 1) + (onDelete ? 1 : 0);
+  const buttonCount = [actions.onCreate, actions.onDelete].filter(Boolean).length;
+  const place = path || name;
   return (
     <li className="group relative" data-folder={path}>
       <button
         type="button"
         onClick={onToggle}
         aria-expanded={isExpanded}
-        title={path || name}
+        title={place}
         style={{ paddingLeft: 4 + depth * ROW_INDENT, paddingRight: 4 + buttonCount * 28 }}
-        className={`flex w-full items-center gap-1 rounded-md py-1 text-left ${isDropTarget ? "bg-blue-500/25 text-white ring-1 ring-blue-400/60 ring-inset" : "text-neutral-300 hover:bg-(--row-hover) hover:text-white"}`}
+        className={`flex w-full items-center gap-1 rounded-md py-1 text-left ${isDropTarget ? "bg-blue-500/25 text-white ring-1 ring-blue-400/60 ring-inset" : `${isKindDir ? "text-blue-200" : isEmpty ? "text-neutral-500" : "text-neutral-300"} hover:bg-(--row-hover) hover:text-white`}`}
       >
         <ChevronIcon expanded={isExpanded} className="size-3.5 shrink-0 text-neutral-500" />
-        <img src={folderIconUrl(name)} alt="" className="size-4 shrink-0" />
+        <img src={folderIconUrl(name)} alt="" className={`size-4 shrink-0 ${isEmpty ? "opacity-50" : ""}`} />
         <span className="min-w-0 flex-1 truncate">{name}</span>
       </button>
       {buttonCount ? (
         <span className="absolute top-1/2 right-0.5 flex -translate-y-1/2 items-center">
-          {hasInstruction ? null : (
-            <button
-              type="button"
-              onClick={onCreate}
-              title={`Add a CLAUDE.md to ${path || name}`}
-              aria-label={`Add a CLAUDE.md to ${path || name}`}
-              className="inline-flex size-7 items-center justify-center rounded-md text-neutral-400 opacity-0 transition-colors group-hover:opacity-100 hover:bg-(--row-hover) hover:text-white focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-blue-400/60 outline-none"
-            >
+          {actions.onCreate ? (
+            <button type="button" onClick={actions.onCreate} title={`Add ${entryLabel} to ${place}`} aria-label={`Add ${entryLabel} to ${place}`} className={`${ROW_ACTION} text-neutral-400 hover:bg-(--row-hover) hover:text-white`}>
               <PlusIcon />
             </button>
-          )}
-          {onDelete ? (
-            <button
-              type="button"
-              onClick={onDelete}
-              title={`Delete ${path} with everything in it`}
-              aria-label={`Delete ${path} with everything in it`}
-              className="inline-flex size-7 items-center justify-center rounded-md text-red-400 opacity-0 transition-colors group-hover:opacity-100 hover:bg-red-400/15 hover:text-red-300 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-blue-400/60 outline-none"
-            >
+          ) : null}
+          {actions.onDelete ? (
+            <button type="button" onClick={actions.onDelete} title={`Delete ${place} with everything in it`} aria-label={`Delete ${place} with everything in it`} className={`${ROW_ACTION} text-red-400 hover:bg-red-400/15 hover:text-red-300`}>
               <TrashIcon />
             </button>
           ) : null}
@@ -213,7 +224,7 @@ function FolderRow({
   );
 }
 
-/** A CLAUDE.md of the tree: a click opens it, holding the button and moving drags it; the trash shows up while hovered. */
+/** An entry of the tree: a click opens it, holding the button and moving drags it (when `onDragStart` is set); the trash shows up while hovered. */
 function FileRow({
   entry,
   depth,
@@ -233,7 +244,7 @@ function FileRow({
   isDragged: boolean;
   onSelect: () => void;
   onDelete: () => void;
-  onDragStart: (x: number, y: number) => void;
+  onDragStart: ((x: number, y: number) => void) | null;
   onDragMove: (x: number, y: number) => void;
   /** Ends a drag at the pointer position, or without one when the drag was cancelled. */
   onDragEnd: (x: number | null, y: number | null) => void;
@@ -257,7 +268,7 @@ function FileRow({
     const current = press.current;
     if (!current) return;
     if (!current.isDragging) {
-      if (Math.hypot(event.clientX - current.x, event.clientY - current.y) < DRAG_THRESHOLD) return;
+      if (!onDragStart || Math.hypot(event.clientX - current.x, event.clientY - current.y) < DRAG_THRESHOLD) return;
       current.isDragging = true;
       onDragStart(event.clientX, event.clientY);
     }

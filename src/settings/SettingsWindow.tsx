@@ -9,6 +9,7 @@ import {
   DEFAULT_AI_LANGUAGE,
   DEFAULT_GUARDRAIL_DIRS,
   DEFAULT_PANES,
+  DEFAULT_SYSTEM_PROMPT,
   FONT_FAMILY_PRESETS,
   PANE_RANGES,
   isIconRulesDefault,
@@ -21,7 +22,7 @@ import {
   type PaneSettings,
 } from "../state/settings";
 import { HEADER_BAR } from "../ui/bars";
-import { BUTTON_SM, GHOST_BUTTON, ICON_BUTTON_SM, PRIMARY_BUTTON, PRIMARY_BUTTON_SM, SECONDARY_BUTTON_SM } from "../ui/buttons";
+import { BUTTON_XS, GHOST_BUTTON_MD, ICON_BUTTON_SM, PRIMARY_BUTTON_MD, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { PlusIcon, TrashIcon } from "../ui/icons";
 import { useSecondaryWindow } from "../ui/nativeWindow";
 import { errorText, useLoad } from "../ui/useLoad";
@@ -49,6 +50,9 @@ const GUARDRAILS_PAGE = "guardrails";
 const FILE_ICONS_PAGE = "fileIcons";
 const UPDATES_PAGE: SettingsPage = "updates";
 type Page = PaneKey | typeof AGENT_PAGE | typeof SESSIONS_PAGE | typeof GUARDRAILS_PAGE | typeof FILE_ICONS_PAGE | SettingsPage;
+
+/** Whether the window was booted ahead of time (`?warm=1`) and stays hidden until the main window shows it. */
+const isWarm = new URLSearchParams(window.location.search).has("warm");
 
 /** The page another window asked for in the URL hash (see openSettingsWindow.ts), else the first one. */
 function initialPage(): Page {
@@ -88,7 +92,8 @@ const FIELD_LABELS: Record<keyof PaneSettings, { label: string; unit: string }> 
 
 /**
  * The settings as a window of their own (see openSettingsWindow.ts), opened from the sidebar's gear button or ⌘,. It
- * boots hidden and shows once rendered; the traffic light, Escape, ⌘W and "Done" close it. Every window keeps its own
+ * boots hidden, usually ahead of time, and shows once rendered or, when booted ahead, once the main window shows it; the
+ * traffic light, Escape, ⌘W and "Done" only hide it so the next open is instant. Every window keeps its own
  * copy of the settings store, so changes made here reach the others through `useSettingsSync`.
  */
 export function SettingsWindow() {
@@ -108,7 +113,7 @@ export function SettingsWindow() {
   };
 
   useSettingsSync();
-  useSecondaryWindow("settings", closeWindow);
+  useSecondaryWindow("settings", closeWindow, { isReady: !isWarm });
 
   useEffect(() => {
     const subscription = listenTo("settings:show-page", ({ page }) => setActivePage(page), { target: getCurrentWindow().label });
@@ -151,10 +156,10 @@ export function SettingsWindow() {
       </div>
 
       <div className="flex justify-between border-t border-(--line) px-4 py-3">
-        <button type="button" onClick={resetAll} className={GHOST_BUTTON}>
+        <button type="button" onClick={resetAll} className={GHOST_BUTTON_MD}>
           Reset all to defaults
         </button>
-        <button type="button" onClick={() => void closeWindow()} className={PRIMARY_BUTTON}>
+        <button type="button" onClick={() => void closeWindow()} className={PRIMARY_BUTTON_MD}>
           Done
         </button>
       </div>
@@ -162,12 +167,12 @@ export function SettingsWindow() {
   );
 }
 
-/** Closes the window; a focused text field commits its value first (they save on blur). */
+/** Hides the window; a focused text field commits its value first (they save on blur). */
 async function closeWindow(): Promise<void> {
   if (document.activeElement instanceof HTMLElement) {
     document.activeElement.blur();
   }
-  await getCurrentWindow().destroy();
+  await getCurrentWindow().hide();
 }
 
 /** A sidebar entry selecting one settings page. */
@@ -204,7 +209,7 @@ function PageHeader({ title, hint, isDefault, onReset }: { title: string; hint: 
         <p className="mt-0.5 text-[13px] text-neutral-500">{hint}</p>
       </div>
       {isDefault ? null : (
-        <button type="button" onClick={onReset} className={`${BUTTON_SM} shrink-0 text-neutral-500 hover:bg-(--row-hover) hover:text-neutral-200`}>
+        <button type="button" onClick={onReset} className={`${BUTTON_XS} shrink-0 text-neutral-500 hover:bg-(--row-hover) hover:text-neutral-200`}>
           Reset
         </button>
       )}
@@ -230,15 +235,21 @@ function PaneSection({ pane, title, hint, fields }: Section) {
   );
 }
 
-/** Settings for what Hunt asks the agent on its own, without a prompt from the user. */
+/** Settings for what Hunt tells the agent on its own: the language of its own requests and the system prompt addition. */
 function AgentSection() {
   const aiLanguage = useSettingsStore((state) => state.aiLanguage);
   const setAiLanguage = useSettingsStore((state) => state.setAiLanguage);
-  const isDefault = aiLanguage === DEFAULT_AI_LANGUAGE;
+  const systemPrompt = useSettingsStore((state) => state.systemPrompt);
+  const setSystemPrompt = useSettingsStore((state) => state.setSystemPrompt);
+  const isDefault = aiLanguage === DEFAULT_AI_LANGUAGE && systemPrompt === DEFAULT_SYSTEM_PROMPT;
+  const reset = () => {
+    setAiLanguage(DEFAULT_AI_LANGUAGE);
+    setSystemPrompt(DEFAULT_SYSTEM_PROMPT);
+  };
 
   return (
     <section>
-      <PageHeader title="Agent" hint="Output Hunt requests itself, without a prompt from you" isDefault={isDefault} onReset={() => setAiLanguage(DEFAULT_AI_LANGUAGE)} />
+      <PageHeader title="Agent" hint="What Hunt tells the agent on its own, without a prompt from you" isDefault={isDefault} onReset={reset} />
       <div className="flex flex-col gap-2">
         <TextRow
           label="Language"
@@ -248,6 +259,11 @@ function AgentSection() {
           presets={AI_LANGUAGE_PRESETS.map((language) => ({ value: language }))}
         />
         <p className="text-[13px] leading-snug text-neutral-500">Applies to the labels and descriptions of the architecture diagram and to session summaries and titles. Your own prompts are answered in the language you write in.</p>
+      </div>
+      <div className="mt-5 flex flex-col gap-2">
+        <div className="text-sm text-neutral-100">System prompt</div>
+        <TextArea ariaLabel="System prompt addition for every agent session" value={systemPrompt} onChange={setSystemPrompt} />
+        <p className="text-[13px] leading-snug text-neutral-500">Appended to Claude Code's own system prompt in every session started from now on, after the instructions of your CLAUDE.md files. Leave it empty to add nothing.</p>
       </div>
     </section>
   );
@@ -358,15 +374,15 @@ function UpdatesSection() {
         <div className="flex items-center gap-3">
           <div className="min-w-0 flex-1 text-sm text-neutral-100">{status}</div>
           {state.phase === "available" ? (
-            <button type="button" onClick={() => void install(state.update)} className={`${PRIMARY_BUTTON_SM} shrink-0`}>
+            <button type="button" onClick={() => void install(state.update)} className={`${PRIMARY_BUTTON_XS} shrink-0`}>
               Download and install
             </button>
           ) : state.phase === "installed" ? (
-            <button type="button" onClick={relaunch} className={`${PRIMARY_BUTTON_SM} shrink-0`}>
+            <button type="button" onClick={relaunch} className={`${PRIMARY_BUTTON_XS} shrink-0`}>
               Restart now
             </button>
           ) : (
-            <button type="button" onClick={checkAgain} disabled={state.phase === "checking" || state.phase === "downloading"} className={`${SECONDARY_BUTTON_SM} shrink-0`}>
+            <button type="button" onClick={checkAgain} disabled={state.phase === "checking" || state.phase === "downloading"} className={`${SECONDARY_BUTTON_XS} shrink-0`}>
               {state.phase === "error" ? "Try again" : "Check again"}
             </button>
           )}
@@ -432,7 +448,7 @@ function FileIconsSection() {
           onChange={(event) => setFilter(event.target.value)}
           placeholder={`Filter ${rules.length} rules by glob or icon`}
           aria-label="Filter rules"
-          className="w-full rounded border border-neutral-600 bg-(--surface-inset) px-2 py-1 text-sm text-neutral-200 outline-none placeholder:text-neutral-600 focus:border-neutral-400"
+          className="w-full rounded border border-neutral-600 bg-(--surface-input) px-2 py-1 text-sm text-neutral-200 outline-none placeholder:text-neutral-600 focus:border-neutral-400"
         />
         <ul className="flex flex-col gap-1.5">
           {rules.map((rule, index) =>
@@ -450,7 +466,7 @@ function FileIconsSection() {
           )}
         </ul>
         <div>
-          <button type="button" onClick={() => setIconRules([...current(), { glob: "", icon: "" }])} className={SECONDARY_BUTTON_SM}>
+          <button type="button" onClick={() => setIconRules([...current(), { glob: "", icon: "" }])} className={SECONDARY_BUTTON_XS}>
             <PlusIcon />
             Add rule
           </button>
@@ -507,7 +523,7 @@ function IconPreviewRow({ rules }: { rules: IconRule[] }) {
         spellCheck={false}
         onChange={(event) => setPath(event.target.value)}
         placeholder="Path to try, e.g. apps/api/src/main.ts"
-        className="w-72 truncate rounded border border-neutral-600 bg-(--surface-inset) px-2 py-1 font-mono text-sm text-neutral-200 outline-none focus:border-neutral-400"
+        className="w-72 truncate rounded border border-neutral-600 bg-(--surface-input) px-2 py-1 font-mono text-sm text-neutral-200 outline-none focus:border-neutral-400"
         aria-label="Path to preview the icon of"
       />
       <div className="flex w-40 items-center gap-2 text-[13px] text-neutral-400">
@@ -556,7 +572,7 @@ function DraftInput({
           event.currentTarget.blur();
         }
       }}
-      className={`truncate rounded border border-neutral-600 bg-(--surface-inset) px-2 py-1 font-mono text-sm text-neutral-200 outline-none placeholder:font-sans placeholder:text-neutral-600 focus:border-neutral-400 ${className}`}
+      className={`truncate rounded border border-neutral-600 bg-(--surface-input) px-2 py-1 font-mono text-sm text-neutral-200 outline-none placeholder:font-sans placeholder:text-neutral-600 focus:border-neutral-400 ${className}`}
       aria-label={ariaLabel}
     />
   );
@@ -622,7 +638,7 @@ function TextRow({
           }
         }}
         style={inputStyle}
-        className={`w-56 truncate rounded border border-neutral-600 bg-(--surface-inset) px-2 py-1 text-sm text-neutral-200 outline-none focus:border-neutral-400 ${isMonospace ? "font-mono" : ""}`}
+        className={`w-56 truncate rounded border border-neutral-600 bg-(--surface-input) px-2 py-1 text-sm text-neutral-200 outline-none focus:border-neutral-400 ${isMonospace ? "font-mono" : ""}`}
         aria-label={ariaLabel}
       />
       {presets ? (
@@ -640,6 +656,38 @@ function TextRow({
   );
 }
 
+/** Multi-line free text that commits when the field loses focus; ⌘↩ commits too. */
+function TextArea({ ariaLabel, value, onChange }: { ariaLabel: string; value: string; onChange: (value: string) => void }) {
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => setDraft(value), [value]);
+
+  // Leaving the field unchanged stores nothing (a store write reaches every window).
+  const commit = () => {
+    if (draft.trim() !== value) {
+      onChange(draft);
+    }
+    setDraft(value);
+  };
+
+  return (
+    <textarea
+      value={draft}
+      spellCheck={false}
+      rows={14}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" && event.metaKey) {
+          event.currentTarget.blur();
+        }
+      }}
+      className="min-h-40 w-full resize-y rounded border border-neutral-600 bg-(--surface-input) px-2 py-1.5 font-mono text-[13px] leading-snug text-neutral-200 outline-none focus:border-neutral-400"
+      aria-label={ariaLabel}
+    />
+  );
+}
+
 function NumberRow({ pane, field }: { pane: PaneKey; field: NumericPaneSetting }) {
   const value = useSettingsStore((state) => state.panes[pane][field]);
   const setPaneSetting = useSettingsStore((state) => state.setPaneSetting);
@@ -651,7 +699,7 @@ function NumberRow({ pane, field }: { pane: PaneKey; field: NumericPaneSetting }
   return (
     <div className="flex items-center gap-3">
       <div className="min-w-0 flex-1 text-sm text-neutral-100">{label}</div>
-      <div className="flex items-center rounded border border-neutral-600 bg-(--surface-inset)">
+      <div className="flex items-center rounded border border-neutral-600 bg-(--surface-input)">
         <StepButton label="−" onClick={() => setPaneSetting(pane, field, value - range.step)} disabled={value <= range.min} />
         <input
           type="number"
@@ -677,7 +725,7 @@ function ColorRow({ pane }: { pane: PaneKey }) {
   return (
     <div className="flex items-center gap-3">
       <div className="min-w-0 flex-1 text-sm text-neutral-100">{FIELD_LABELS.background.label}</div>
-      <label className="flex items-center gap-2 rounded border border-neutral-600 bg-(--surface-inset) px-2 py-1">
+      <label className="flex items-center gap-2 rounded border border-neutral-600 bg-(--surface-input) px-2 py-1">
         <input
           type="color"
           value={value}

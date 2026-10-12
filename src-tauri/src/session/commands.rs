@@ -12,7 +12,7 @@ use agent_client_protocol::schema::v1::{
 };
 use base64::Engine;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::acp::{connect, publish_update, LiveHandles, PermissionRegistry, SessionRegistry, SessionStart};
@@ -23,8 +23,9 @@ use crate::ide;
 use crate::lsp::{self, LspRegistry};
 use crate::screenshots::{self, Screenshot};
 use crate::session::attribution;
+use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus};
 use crate::session::review;
-use crate::session::store::{self, SelectionContext, SessionRecord};
+use crate::session::store::{self, SelectionContext, SessionRecord, Workspace};
 use crate::session::summary;
 use crate::workspace;
 
@@ -34,6 +35,15 @@ pub struct SessionView {
     #[serde(flatten)]
     pub record: SessionRecord,
     pub is_live: bool,
+    /// Progress of preparing the worktree's `node_modules`; `None` when nothing was or is being prepared.
+    pub dependencies: Option<DependencyStatus>,
+}
+
+impl SessionView {
+    fn new(app: &AppHandle, record: SessionRecord, is_live: bool) -> Self {
+        let dependencies = app.state::<DependencyRegistry>().status(&record.worktree_path);
+        SessionView { record, is_live, dependencies }
+    }
 }
 
 #[tauri::command]
@@ -41,7 +51,10 @@ pub async fn list_sessions(app: AppHandle, registry: State<'_, SessionRegistry>)
     let live = registry.live.lock().await;
     let mut sessions: Vec<SessionView> = store::load_sessions(&app)?
         .into_iter()
-        .map(|record| SessionView { is_live: live.contains_key(&record.id), record })
+        .map(|record| {
+            let is_live = live.contains_key(&record.id);
+            SessionView::new(&app, record, is_live)
+        })
         .collect();
     sessions.sort_by(|left, right| right.record.created_at.cmp(&left.record.created_at));
     Ok(sessions)
@@ -50,6 +63,12 @@ pub async fn list_sessions(app: AppHandle, registry: State<'_, SessionRegistry>)
 #[tauri::command]
 pub async fn list_branches(repo_path: String) -> Result<Vec<String>, String> {
     git::list_branches(Path::new(&repo_path)).await
+}
+
+/// The branch the repository's checkout is on; `HEAD` when it is detached.
+#[tauri::command]
+pub async fn current_branch(repo_path: String) -> Result<String, String> {
+    git::current_branch(Path::new(&repo_path)).await
 }
 
 #[tauri::command]
@@ -152,9 +171,10 @@ fn review_session_id(record: &SessionRecord) -> Uuid {
     record.parent_id.unwrap_or(record.id)
 }
 
-/// Creates the session `id` in a fresh worktree off `base_ref`. The UI picks the id so it can list the session before
-/// this returns. `pull_request` marks it as the review of that pull request; `diff_base_ref` is then the pull
-/// request's target branch, whose merge base with `base_ref` becomes the diff base.
+/// Creates the session `id`: with `workspace` `Worktree` in a fresh worktree off `base_ref`, with `Checkout` in the
+/// repository's own checkout on its current branch, where `base_ref` is ignored. The UI picks the id so it can list
+/// the session before this returns. `pull_request` marks it as the review of that pull request; `diff_base_ref` is
+/// then the pull request's target branch, whose merge base with the base becomes the diff base.
 #[tauri::command]
 pub async fn create_session(
     app: AppHandle,
@@ -166,22 +186,35 @@ pub async fn create_session(
     title: String,
     pull_request: Option<PullRequestRef>,
     diff_base_ref: Option<String>,
+    workspace: Workspace,
 ) -> Result<SessionView, String> {
     ensure_new_id(&app, id)?;
     let repo_path = PathBuf::from(repo_path);
+    let (worktree_path, branch, base_ref) = match workspace {
+        Workspace::Worktree => {
+            let branch = format!("hunt/{}", build_branch_slug(&title, id));
+            (store::worktrees_dir(&app)?.join(id.to_string()), branch, base_ref)
+        }
+        Workspace::Checkout => {
+            let branch = git::current_branch(&repo_path).await?;
+            (repo_path.clone(), branch.clone(), branch)
+        }
+    };
     let base_commit = git::rev_parse(&repo_path, &base_ref).await?;
     let diff_base = match &diff_base_ref {
         Some(reference) => Some(git::merge_base(&repo_path, reference, &base_commit).await?),
         None => None,
     };
-    let branch = format!("hunt/{}", build_branch_slug(&title, id));
-    let worktree_path = store::worktrees_dir(&app)?.join(id.to_string());
 
-    git::worktree_add(&repo_path, &branch, &worktree_path, &base_commit).await?;
+    if workspace == Workspace::Worktree {
+        git::worktree_add(&repo_path, &branch, &worktree_path, &base_commit).await?;
+        dependencies::ensure(&app, repo_path.clone(), worktree_path.clone());
+    }
 
     let mut record = SessionRecord::new(id, title, repo_path, worktree_path.clone(), branch, base_ref, base_commit);
     record.pull_request = pull_request;
     record.diff_base = diff_base;
+    record.workspace = workspace;
     store::upsert_session(&app, record.clone())?;
     announce_sessions_changed(&app);
     let view = activate(&app, &registry, &watchers, record, SessionStart::New { cwd: worktree_path }).await?;
@@ -212,6 +245,20 @@ pub async fn create_sub_session(
     Ok(view)
 }
 
+/// Gives the session `id` the title `title`; the UI names a session created without a prompt after its first one.
+/// The branch keeps the slug of the title the session was created with.
+#[tauri::command]
+pub async fn rename_session(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, title: String) -> Result<SessionView, String> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("failed to rename session: the title is empty".into());
+    }
+    let record = store::update_session(&app, id, |stored| stored.title = title)?.ok_or_else(|| format!("failed to rename session: the session {id} is not stored"))?;
+    announce_sessions_changed(&app);
+    let is_live = registry.live.lock().await.contains_key(&id);
+    Ok(SessionView::new(&app, record, is_live))
+}
+
 /// Rejects a session id the UI picked when a stored session carries it already.
 fn ensure_new_id(app: &AppHandle, id: Uuid) -> Result<(), String> {
     if store::find_session(app, id).is_ok() {
@@ -229,20 +276,56 @@ pub async fn open_session(
     id: Uuid,
 ) -> Result<SessionView, String> {
     let record = store::find_session(&app, id)?;
-    if registry.live.lock().await.contains_key(&id) {
-        return Ok(SessionView { record, is_live: true });
+    // An open while another one runs (the sidebar and a sub chat popover, or a double click) waits for that one.
+    if !registry.claim_start(id).await {
+        return Ok(SessionView::new(&app, store::find_session(&app, id)?, true));
     }
-    if !registry.connecting.lock().await.insert(id) {
-        return Err("session is already being opened".into());
-    }
+    dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone());
 
     let start = match &record.acp_session_id {
         Some(acp_session_id) => SessionStart::Load { cwd: record.worktree_path.clone(), acp_session_id: acp_session_id.clone() },
         None => SessionStart::New { cwd: record.worktree_path.clone() },
     };
     let activated = activate(&app, &registry, &watchers, record, start).await;
-    registry.connecting.lock().await.remove(&id);
+    registry.end_start(id).await;
     activated
+}
+
+/// Starts the conversation of `id` over, like `/clear` in the terminal: the agent is restarted with a new session
+/// and the session record gets its ID. Clearing inside the running agent would move it to a conversation Hunt
+/// does not know, so a later resume would not find the one the agent continued.
+#[tauri::command]
+pub async fn clear_session(
+    app: AppHandle,
+    registry: State<'_, SessionRegistry>,
+    watchers: State<'_, WatcherRegistry>,
+    permissions: State<'_, PermissionRegistry>,
+    id: Uuid,
+) -> Result<SessionView, String> {
+    let record = store::find_session(&app, id)?;
+    drop_pending_permissions(&permissions, id);
+    let finished = registry.live.lock().await.remove(&id).and_then(|mut live| live.shutdown());
+    // The ended agent task clears the registries on its way out; the new agent registers only after that.
+    if let Some(finished) = finished {
+        let _ = finished.await;
+    }
+    if !registry.claim_start(id).await {
+        return Err("failed to clear session: its agent was started again meanwhile".into());
+    }
+    let start = SessionStart::New { cwd: record.worktree_path.clone() };
+    let activated = activate(&app, &registry, &watchers, record, start).await;
+    registry.end_start(id).await;
+    activated
+}
+
+/// Prepares the worktree's `node_modules` again, after a failed attempt or for a session created before Hunt did
+/// this; the result shows up in the session list.
+#[tauri::command]
+pub async fn prepare_dependencies(app: AppHandle, id: Uuid) -> Result<(), String> {
+    let record = store::find_session(&app, id)?;
+    dependencies::ensure(&app, record.repo_path, record.worktree_path);
+    announce_sessions_changed(&app);
+    Ok(())
 }
 
 /// Connects the agent of `record` with `start` (its selection, if any, goes into the system prompt), stores the
@@ -284,7 +367,7 @@ async fn activate(
     if let Err(error) = graph::watch(app, watchers, id, &record.worktree_path) {
         eprintln!("watching the graph of session {id} failed: {error}");
     }
-    Ok(SessionView { record, is_live: true })
+    Ok(SessionView::new(app, record, true))
 }
 
 #[tauri::command]
@@ -303,7 +386,7 @@ pub async fn close_session(
 }
 
 /// Stops the agent of `id` and, with `remove_worktree`, deletes the session record together with its sub chats,
-/// worktree and branch.
+/// worktree and branch; a session in the repository's own checkout only loses its records.
 async fn end_session(
     app: &AppHandle,
     registry: &SessionRegistry,
@@ -328,9 +411,13 @@ async fn end_session(
         stop_agent(app, registry, watchers, permissions, child.id).await;
         store::remove_session(app, child.id)?;
     }
+    if record.workspace == Workspace::Checkout {
+        return store::remove_session(app, id);
+    }
 
     // The language server holds files of the worktree open; it must be gone before the directory is removed.
     lsp::stop_for_worktree(lsp, &record.worktree_path).await;
+    app.state::<DependencyRegistry>().forget(&record.worktree_path);
     // A moved or deleted repository must not make the session undeletable.
     let removal = git::worktree_remove(&record.repo_path, &record.worktree_path).await;
     if removal.is_ok() {

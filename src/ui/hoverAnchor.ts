@@ -18,9 +18,9 @@ export type HoverAnchorState<Key> = {
 /**
  * Tracks which element the mouse rests on: `enter` arms a short delay before the element becomes the anchor,
  * `leave` arms a short delay before the anchor is hidden again, `keep` cancels that so the popover itself can
- * be hovered and its text selected. One anchor at a time, so a list shares one instance.
+ * be hovered and its text selected. One anchor at a time, so a list shares one instance. `openDelay` is in ms.
  */
-export function useHoverAnchor<Key>(): HoverAnchorState<Key> {
+export function useHoverAnchor<Key>(openDelay = OPEN_DELAY): HoverAnchorState<Key> {
   const [anchor, setAnchor] = useState<HoverAnchor<Key> | null>(null);
   const timerRef = useRef<number | null>(null);
 
@@ -36,7 +36,7 @@ export function useHoverAnchor<Key>(): HoverAnchorState<Key> {
     timerRef.current = window.setTimeout(() => {
       timerRef.current = null;
       setAnchor({ key, rect: element.getBoundingClientRect() });
-    }, OPEN_DELAY);
+    }, openDelay);
   }
 
   function leave() {

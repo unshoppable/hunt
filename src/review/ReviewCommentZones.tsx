@@ -5,15 +5,14 @@ import { MarkdownText } from "../chat/MessageList";
 import type { ChangeBlock } from "../diff/lineDiff";
 import { commands } from "../ipc/commands";
 import type { ReviewComment } from "../ipc/types";
-import { GHOST_BUTTON_SM } from "../ui/buttons";
+import { GHOST_BUTTON_XS } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
-import { rangeDecoration } from "./addCommentGlyph";
+import { rangeDecoration, type CommentTarget } from "./addCommentGlyph";
 import { LineZone } from "./lineZone";
-import { CommentEditorPanel, ReviewCommentComposer } from "./ReviewCommentComposer";
+import { CommentEditorPanel, NOTE_HINT, ReviewCommentComposer } from "./ReviewCommentComposer";
 import { isInsideHunk, useReviewComments, type LineSpan } from "./reviewComments";
 
 const COMPOSER_KEY = "composer";
-const NOTE_HINT = "Outside the diff · posted as a note in the review summary";
 
 type ReviewCommentZonesProps = {
   editor: monaco.editor.ICodeEditor;
@@ -22,8 +21,8 @@ type ReviewCommentZonesProps = {
   path: string;
   /** Change blocks of the file against the diff base, for telling inline comments from notes. */
   blocks: ChangeBlock[];
-  /** Lines a new comment is being written for, or null while no comment box is open. */
-  composer: LineSpan | null;
+  /** Lines a new comment is being written for and the line its box opens under, or null while no box is open. */
+  composer: CommentTarget | null;
   onCloseComposer: () => void;
 };
 
@@ -39,7 +38,7 @@ export function ReviewCommentZones({ editor, sessionId, path, blocks, composer, 
 
   const entries = comments.map((comment) => ({ key: comment.id, line: comment.line }));
   if (composer) {
-    entries.push({ key: COMPOSER_KEY, line: composer.line });
+    entries.push({ key: COMPOSER_KEY, line: composer.underLine });
   }
   const signature = entries.map((entry) => `${entry.key}@${entry.line}`).join("\n");
 
@@ -76,14 +75,15 @@ export function ReviewCommentZones({ editor, sessionId, path, blocks, composer, 
     [editor],
   );
 
-  // Tints the composer's lines, as GitHub does, for as long as the box is open.
-  const composerStart = composer?.startLine ?? null;
-  const composerEnd = composer?.line ?? null;
+  // Tints the composer's lines, as GitHub does, for as long as the box is open; the bar's color follows the "+".
+  const composerStart = composer?.span.startLine ?? null;
+  const composerEnd = composer?.span.line ?? null;
+  const isComposerInline = composer ? isInsideHunk(blocks, composer.span.startLine, composer.span.line) : false;
   useEffect(() => {
     if (composerStart === null || composerEnd === null) return;
-    const tint = editor.createDecorationsCollection([rangeDecoration({ startLine: composerStart, line: composerEnd })]);
+    const tint = editor.createDecorationsCollection([rangeDecoration({ startLine: composerStart, line: composerEnd }, isComposerInline)]);
     return () => tint.clear();
-  }, [editor, composerStart, composerEnd]);
+  }, [editor, composerStart, composerEnd, isComposerInline]);
 
   const composerZone = composer ? zones.get(COMPOSER_KEY) : undefined;
   return (
@@ -97,9 +97,9 @@ export function ReviewCommentZones({ editor, sessionId, path, blocks, composer, 
         ? createPortal(
             <ReviewCommentComposer
               sessionId={sessionId}
-              span={composer}
-              hint={isInsideHunk(blocks, composer.startLine, composer.line) ? null : NOTE_HINT}
-              onSubmit={(body) => commands.addReviewComment(sessionId, path, composer.startLine, composer.line, body)}
+              span={composer.span}
+              isInline={isComposerInline}
+              onSubmit={(body) => commands.addReviewComment(sessionId, path, composer.span.startLine, composer.span.line, body)}
               onClose={onCloseComposer}
             />,
             composerZone.domNode,
@@ -131,10 +131,10 @@ function ReviewCommentCard({ sessionId, comment, isInline }: { sessionId: string
       actions={
         isEditing ? null : (
           <>
-            <button type="button" onClick={() => setIsEditing(true)} className={GHOST_BUTTON_SM}>
+            <button type="button" onClick={() => setIsEditing(true)} className={GHOST_BUTTON_XS}>
               Edit
             </button>
-            <button type="button" onClick={() => void remove()} className={GHOST_BUTTON_SM}>
+            <button type="button" onClick={() => void remove()} className={GHOST_BUTTON_XS}>
               Delete
             </button>
           </>

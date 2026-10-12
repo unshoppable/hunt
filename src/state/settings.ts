@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import responseStylePrompt from "../../prompts/response-style.md?raw";
 
 /** The four configurable panes of the window. */
 export type PaneKey = "sidebar" | "chat" | "changelist" | "diff";
@@ -41,7 +42,7 @@ export const FONT_FAMILY_PRESETS: { label: string; value: string }[] = [
  */
 export const DEFAULT_PANES: Record<PaneKey, PaneSettings> = {
   sidebar: { fontSize: 14, lineHeight: 1.5, indent: 16, background: "#191a1c", fontFamily: UI_FONT_FAMILY },
-  chat: { fontSize: 14, lineHeight: 1.7, indent: 0, background: "#21252d", fontFamily: UI_FONT_FAMILY },
+  chat: { fontSize: 14, lineHeight: 1.8, indent: 0, background: "#21252d", fontFamily: UI_FONT_FAMILY },
   changelist: { fontSize: 12, lineHeight: 2, indent: 14, background: "#191a1c", fontFamily: UI_FONT_FAMILY },
   diff: { fontSize: 16, lineHeight: 2, indent: 0, background: "#33373f", fontFamily: CODE_FONT_FAMILY },
 };
@@ -57,10 +58,40 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 /** How the changelist groups files: one flat list or a folder tree. */
 export type ChangelistView = "flat" | "tree";
 
-/** Outer size of the usages popup (see ide/UsagesPopover.tsx) in px; the popup remembers how the user resized it. */
-export type UsagesPopupSize = { width: number; height: number };
+/** Outer size of a floating popup or dialog in px; the popup remembers how the user resized it. */
+export type PopupSize = { width: number; height: number };
 
-export const DEFAULT_USAGES_POPUP_SIZE: UsagesPopupSize = { width: 1040, height: 600 };
+/** The floating popups and dialogs whose size the user may drag; each remembers its last size (see ui/usePopupSize.ts). */
+export type PopupKey = "usages" | "fileSearch" | "subChat" | "screenshots" | "pullRequests" | "fileFilter" | "change";
+
+/**
+ * Size each popup opens with until the user resizes it. A popup that is as tall as its content treats the height as
+ * the most it may take (sub chat, pull requests, file filter, change); the window caps every size.
+ */
+export const DEFAULT_POPUP_SIZES: Record<PopupKey, PopupSize> = {
+  usages: { width: 1040, height: 600 },
+  fileSearch: { width: 960, height: 760 },
+  subChat: { width: 640, height: 760 },
+  screenshots: { width: 760, height: 640 },
+  pullRequests: { width: 760, height: 560 },
+  fileFilter: { width: 320, height: 384 },
+  change: { width: 720, height: 320 },
+};
+
+function roundedSize(size: PopupSize): PopupSize {
+  return { width: Math.round(size.width), height: Math.round(size.height) };
+}
+
+function withDefaultPopupSizes(sizes: Partial<Record<PopupKey, PopupSize>> | undefined): Record<PopupKey, PopupSize> {
+  const result = { ...DEFAULT_POPUP_SIZES };
+  for (const key of Object.keys(DEFAULT_POPUP_SIZES) as PopupKey[]) {
+    const stored = sizes?.[key];
+    if (stored) {
+      result[key] = stored;
+    }
+  }
+  return result;
+}
 
 /**
  * Language of the agent output Hunt asks for without a user prompt (diagram labels, session summaries and
@@ -68,6 +99,12 @@ export const DEFAULT_USAGES_POPUP_SIZE: UsagesPopupSize = { width: 1040, height:
  */
 export const DEFAULT_AI_LANGUAGE = "German";
 export const AI_LANGUAGE_PRESETS = ["German", "English", "French", "Spanish", "Italian", "Dutch", "Portuguese"];
+
+/**
+ * Response-style instructions Hunt appends to the agent's system prompt in every session; the backend embeds
+ * the same file (`src-tauri/src/preferences.rs`). Free text; an empty prompt switches the addition off.
+ */
+export const DEFAULT_SYSTEM_PROMPT = responseStylePrompt.trim();
 
 /** The kinds of guardrail that live in a folder of their own, set below. */
 export type GuardrailDirKind = "rule" | "skill" | "agent" | "adr";
@@ -169,8 +206,10 @@ export function isIconRulesDefault(rules: readonly IconRule[]): boolean {
 type SettingsState = {
   panes: Record<PaneKey, PaneSettings>;
   changelistView: ChangelistView;
-  usagesPopupSize: UsagesPopupSize;
+  popupSizes: Record<PopupKey, PopupSize>;
   aiLanguage: string;
+  /** System prompt addition for every agent session; see `DEFAULT_SYSTEM_PROMPT`. */
+  systemPrompt: string;
   guardrailDirs: GuardrailDirs;
   iconRules: IconRule[];
   /** Whether the chat shows the session summary box above the messages. */
@@ -181,8 +220,9 @@ type SettingsState = {
   resetPane: (pane: PaneKey) => void;
   resetPanes: () => void;
   setChangelistView: (view: ChangelistView) => void;
-  setUsagesPopupSize: (size: UsagesPopupSize) => void;
+  setPopupSize: (key: PopupKey, size: PopupSize) => void;
   setAiLanguage: (language: string) => void;
+  setSystemPrompt: (prompt: string) => void;
   setGuardrailDir: (kind: GuardrailDirKind, dir: string) => void;
   resetGuardrailDirs: () => void;
   setIconRules: (rules: IconRule[]) => void;
@@ -204,12 +244,16 @@ const VERSION_3_CODE_FONT_FAMILY = '"Code Monospace", ui-monospace, SFMono-Regul
 /** Changelist line height that was the default up to version 4; a stored match is lifted to the current default. */
 const VERSION_4_CHANGELIST_LINE_HEIGHT = 1.5;
 
+/** Chat line height that was the default up to version 7; a stored match is lifted to the current default. */
+const VERSION_7_CHAT_LINE_HEIGHT = 1.7;
+
 /** What `persist` writes to storage: every user preference, each optional because older versions did not have it. */
 export type PersistedState = {
   panes?: Partial<Record<PaneKey, Partial<PaneSettings>>>;
   changelistView?: ChangelistView;
-  usagesPopupSize?: UsagesPopupSize;
+  popupSizes?: Partial<Record<PopupKey, PopupSize>>;
   aiLanguage?: string;
+  systemPrompt?: string;
   guardrailDirs?: Partial<GuardrailDirs>;
   iconRules?: IconRule[];
   showSummary?: boolean;
@@ -239,6 +283,12 @@ function liftDefaultChangelistLineHeight(panes: PersistedState["panes"]): Persis
   return { ...panes, changelist: { ...panes.changelist, lineHeight: DEFAULT_PANES.changelist.lineHeight } };
 }
 
+/** Rewrites the chat line height still set to a previous version's default so users who never changed it follow the new one. */
+function liftDefaultChatLineHeight(panes: PersistedState["panes"]): PersistedState["panes"] {
+  if (panes?.chat?.lineHeight !== VERSION_7_CHAT_LINE_HEIGHT) return panes;
+  return { ...panes, chat: { ...panes.chat, lineHeight: DEFAULT_PANES.chat.lineHeight } };
+}
+
 function clampNumeric(key: NumericPaneSetting, value: number): number {
   const range = PANE_RANGES[key];
   const steps = Math.round((value - range.min) / range.step);
@@ -255,22 +305,49 @@ function withDefaults(panes: Partial<Record<PaneKey, Partial<PaneSettings>>> | u
 }
 
 /** Current version of the persisted shape; `migrateSettings` brings older ones up to date. */
-export const SETTINGS_VERSION = 6;
+export const SETTINGS_VERSION = 8;
+
+/** Shape persisted up to version 6, which kept one field per resizable popup. */
+type Version6State = PersistedState & { usagesPopupSize?: PopupSize; fileSearchDialogSize?: PopupSize; subChatPopoverSize?: PopupSize };
+
+/** Moves the per-popup size fields of versions 5 and 6 into `popupSizes`. */
+function gatherPopupSizes(stored: Version6State): PersistedState {
+  const { usagesPopupSize, fileSearchDialogSize, subChatPopoverSize, ...rest } = stored;
+  const popupSizes: Partial<Record<PopupKey, PopupSize>> = { ...rest.popupSizes };
+  if (usagesPopupSize) {
+    popupSizes.usages = usagesPopupSize;
+  }
+  if (fileSearchDialogSize) {
+    popupSizes.fileSearch = fileSearchDialogSize;
+  }
+  if (subChatPopoverSize) {
+    popupSizes.subChat = subChatPopoverSize;
+  }
+  return { ...rest, popupSizes };
+}
 
 /**
  * Brings a persisted state of an earlier `version` to the current shape: version 0 only knew one font size per pane,
- * versions 1 to 4 had defaults that are lifted to the current ones where the user never changed them. Version 5 and
- * 6 pass through; version 6 only added `guardrailDirs`, `showSummary`, `iconRules` and `confirmSessionDelete`, which
- * `mergeSettings` fills in from the defaults.
+ * versions 1 to 4 and 7 had defaults that are lifted to the current ones where the user never changed them, versions
+ * 5 and 6 kept the size of each resizable popup in its own field. Fields a version did not have (`guardrailDirs`,
+ * `showSummary`, `iconRules`, `confirmSessionDelete`, …) are filled in from the defaults by `mergeSettings`.
  */
 export function migrateSettings(persisted: unknown, version: number): PersistedState {
-  if (version >= 5) return persisted as PersistedState;
+  if (version >= 8) return persisted as PersistedState;
+  if (version >= 7) {
+    const stored = persisted as PersistedState;
+    return { ...stored, panes: liftDefaultChatLineHeight(stored.panes) };
+  }
+  if (version >= 5) {
+    const gathered = gatherPopupSizes(persisted as Version6State);
+    return { ...gathered, panes: liftDefaultChatLineHeight(gathered.panes) };
+  }
   if (version >= 1) {
     const stored = persisted as PersistedState;
     const previous = version === 1 ? VERSION_1_BACKGROUNDS : VERSION_2_BACKGROUNDS;
     const backgrounds = version < 3 ? liftDefaultBackgrounds(stored.panes, previous) : stored.panes;
     const fonts = version < 4 ? liftDefaultCodeFont(backgrounds) : backgrounds;
-    return { ...stored, panes: liftDefaultChangelistLineHeight(fonts) };
+    return { ...stored, panes: liftDefaultChatLineHeight(liftDefaultChangelistLineHeight(fonts)) };
   }
   const legacy = persisted as LegacyState & { changelistView?: ChangelistView };
   return {
@@ -285,12 +362,18 @@ export function migrateSettings(persisted: unknown, version: number): PersistedS
 }
 
 /**
- * Layers the persisted state over `current` (the defaults with the actions). Panes and guardrail folders gain
- * entries over time, so stored ones are layered over the defaults per key instead of replacing them.
+ * Layers the persisted state over `current` (the defaults with the actions). Panes, guardrail folders and popup sizes
+ * gain entries over time, so stored ones are layered over the defaults per key instead of replacing them.
  */
-export function mergeSettings<T extends Pick<SettingsState, "panes" | "guardrailDirs">>(persisted: unknown, current: T): T {
+export function mergeSettings<T extends Pick<SettingsState, "panes" | "guardrailDirs" | "popupSizes">>(persisted: unknown, current: T): T {
   const stored = persisted as PersistedState | undefined;
-  return { ...current, ...stored, panes: withDefaults(stored?.panes), guardrailDirs: { ...DEFAULT_GUARDRAIL_DIRS, ...stored?.guardrailDirs } };
+  return {
+    ...current,
+    ...stored,
+    panes: withDefaults(stored?.panes),
+    guardrailDirs: { ...DEFAULT_GUARDRAIL_DIRS, ...stored?.guardrailDirs },
+    popupSizes: withDefaultPopupSizes(stored?.popupSizes),
+  };
 }
 
 /** User preferences that survive restarts (persisted in localStorage under `hunt-settings`). */
@@ -299,8 +382,9 @@ export const useSettingsStore = create<SettingsState>()(
     (set) => ({
       panes: DEFAULT_PANES,
       changelistView: "tree",
-      usagesPopupSize: DEFAULT_USAGES_POPUP_SIZE,
+      popupSizes: DEFAULT_POPUP_SIZES,
       aiLanguage: DEFAULT_AI_LANGUAGE,
+      systemPrompt: DEFAULT_SYSTEM_PROMPT,
       guardrailDirs: DEFAULT_GUARDRAIL_DIRS,
       iconRules: DEFAULT_ICON_RULES,
       showSummary: true,
@@ -321,8 +405,9 @@ export const useSettingsStore = create<SettingsState>()(
       resetPane: (pane) => set((state) => ({ panes: { ...state.panes, [pane]: DEFAULT_PANES[pane] } })),
       resetPanes: () => set({ panes: DEFAULT_PANES }),
       setChangelistView: (changelistView) => set({ changelistView }),
-      setUsagesPopupSize: (usagesPopupSize) => set({ usagesPopupSize: { width: Math.round(usagesPopupSize.width), height: Math.round(usagesPopupSize.height) } }),
+      setPopupSize: (key, size) => set((state) => ({ popupSizes: { ...state.popupSizes, [key]: roundedSize(size) } })),
       setAiLanguage: (language) => set((state) => (language.trim() ? { aiLanguage: language.trim() } : state)),
+      setSystemPrompt: (prompt) => set({ systemPrompt: prompt.trim() }),
       setGuardrailDir: (kind, dir) =>
         set((state) => {
           const normalized = normalizeGuardrailDir(dir);
@@ -340,8 +425,9 @@ export const useSettingsStore = create<SettingsState>()(
       partialize: (state) => ({
         panes: state.panes,
         changelistView: state.changelistView,
-        usagesPopupSize: state.usagesPopupSize,
+        popupSizes: state.popupSizes,
         aiLanguage: state.aiLanguage,
+        systemPrompt: state.systemPrompt,
         guardrailDirs: state.guardrailDirs,
         iconRules: state.iconRules,
         showSummary: state.showSummary,

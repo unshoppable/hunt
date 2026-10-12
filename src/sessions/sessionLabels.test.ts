@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionView } from "../ipc/types";
-import { filterSessionRows, groupSessions, titleFromPrompt } from "./sessionLabels";
+import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, titleFromPrompt } from "./sessionLabels";
 
 function session(id: string, title: string, branch: string, parentId: string | null = null, path?: string): SessionView {
   return {
@@ -22,6 +22,8 @@ function session(id: string, title: string, branch: string, parentId: string | n
     pullRequest: null,
     diffBase: null,
     reviewComments: [],
+    workspace: "worktree",
+    dependencies: null,
   };
 }
 
@@ -70,5 +72,39 @@ describe("titleFromPrompt", () => {
   it("uses the first non-empty line and shortens it with an ellipsis", () => {
     expect(titleFromPrompt("\n  hello world \nsecond")).toBe("hello world");
     expect(titleFromPrompt("x".repeat(60))).toBe(`${"x".repeat(47)}…`);
+  });
+});
+
+describe("sessionMarks", () => {
+  it("letters top-level sessions and numbers sub sessions per parent", () => {
+    const marks = sessionMarks(sessions);
+    expect(Object.fromEntries(marks)).toEqual({ a: "A", a1: "1", a2: "2", b: "B", orphan: "C" });
+  });
+
+  it("renumbers after a deletion", () => {
+    const marks = sessionMarks(sessions.filter((candidate) => candidate.id !== "a1" && candidate.id !== "b"));
+    expect(Object.fromEntries(marks)).toEqual({ a: "A", a2: "1", orphan: "B" });
+  });
+
+  it("continues past Z with two letters", () => {
+    const many = Array.from({ length: 28 }, (_, index) => session(`s${index}`, "t", "b"));
+    const marks = sessionMarks(many);
+    expect([marks.get("s25"), marks.get("s26"), marks.get("s27")]).toEqual(["Z", "AA", "AB"]);
+  });
+});
+
+describe("cycleSessionId", () => {
+  const rows = groupSessions(sessions);
+
+  it("steps through the rows in sidebar order and wraps around", () => {
+    expect(cycleSessionId(rows, "a2", 1)).toBe("b");
+    expect(cycleSessionId(rows, "orphan", 1)).toBe("a");
+    expect(cycleSessionId(rows, "a", -1)).toBe("orphan");
+  });
+
+  it("starts at the first or last row without an active row", () => {
+    expect(cycleSessionId(rows, null, 1)).toBe("a");
+    expect(cycleSessionId(rows, "hidden", -1)).toBe("orphan");
+    expect(cycleSessionId([], null, 1)).toBeNull();
   });
 });

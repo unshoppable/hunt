@@ -3,6 +3,7 @@ import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
 import { useHuntStore } from "../state/store";
 import { repoName } from "../ui/path";
+import { DependencyBanner } from "./DependencyBanner";
 import { workspaceFor } from "./documents";
 import { EditorGrid } from "./EditorGrid";
 import { EMPTY_IDE_SESSION, useIdeSession, useIdeStore } from "./ideStore";
@@ -158,7 +159,8 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
           />
         </Panel>
         <PaneSeparator />
-        <Panel id="editors" minSize={300} className="flex">
+        <Panel id="editors" minSize={300} className="flex flex-col">
+          <DependencyBanner sessionId={sessionId} status={session.dependencies} />
           <EditorGrid sessionId={sessionId} workspace={workspace} ide={ide} onOpenSubChat={subChat.open} onToggleSubChat={subChat.toggle} />
         </Panel>
       </PersistentGroup>

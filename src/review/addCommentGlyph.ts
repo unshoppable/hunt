@@ -14,6 +14,13 @@ const LINE_TARGETS = new Set<monaco.editor.MouseTargetType>([
   monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS,
 ]);
 
+/** What a click or drag of the "+" asks for: the lines to comment on and the line the comment box opens under. */
+export type CommentTarget = {
+  span: LineSpan;
+  /** Line the "+" was released on; the box opens under it, so a drag upwards opens it at the top of the span. */
+  underLine: number;
+};
+
 type Drag = {
   /** Line the "+" was pressed on. */
   anchor: number;
@@ -23,25 +30,28 @@ type Drag = {
   clientX: number;
 };
 
-/** Whole-line decoration marking the lines `startLine..line` as GitHub does: yellow tint over gutter and text, blue bar at the text's left edge. */
-export function rangeDecoration(span: LineSpan): monaco.editor.IModelDeltaDecoration {
+/**
+ * Whole-line decoration marking the lines `startLine..line` as GitHub does: yellow tint over gutter and text and a
+ * bar at the text's left edge, blue where the comment is posted inline (`isInline`), grey where it becomes a note.
+ */
+export function rangeDecoration(span: LineSpan, isInline: boolean): monaco.editor.IModelDeltaDecoration {
+  const className = isInline ? RANGE_CLASS : `${RANGE_CLASS} ${RANGE_CLASS}--note`;
   return {
     range: { startLineNumber: span.startLine, startColumn: 1, endLineNumber: span.line, endColumn: 1 },
-    options: { isWholeLine: true, className: RANGE_CLASS, marginClassName: RANGE_CLASS, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
+    options: { isWholeLine: true, className, marginClassName: RANGE_CLASS, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
   };
 }
 
 /**
- * GitHub's "+" on the hovered line of a pull request review, in the lines-decorations column right of the line
- * numbers, straddling the text's left edge: blue where a comment is posted inline (`isInline`), grey where it
- * becomes a note in the review summary. A click reports the line, or the selected lines when the selection spans
+ * GitHub's "+" on the hovered line of a pull request review, in the glyph margin left of the line numbers: blue
+ * where a comment is posted inline (`isInline`), grey where it becomes a note in the review summary. A click reports the line, or the selected lines when the selection spans
  * several and holds the clicked one; dragging the "+" over other lines reports the dragged range, marked while the
- * drag lasts with a "+" at both ends.
+ * drag lasts with a "+" at both ends. The reported target's box opens under the line the "+" was released on.
  */
 export class AddCommentGlyph {
   private readonly decorations: monaco.editor.IEditorDecorationsCollection;
   private readonly disposables: monaco.IDisposable[] = [];
-  private readonly clickListeners = new Set<(span: LineSpan) => void>();
+  private readonly clickListeners = new Set<(target: CommentTarget) => void>();
   /** Line the "+" is shown on. */
   private shownLine: number | null = null;
   private drag: Drag | null = null;
@@ -57,8 +67,7 @@ export class AddCommentGlyph {
     private readonly isInline: (span: LineSpan) => boolean,
   ) {
     this.decorations = editor.createDecorationsCollection();
-    // The "+" overhangs into the text area, where Monaco would take a press as a click into the text: the press is
-    // caught in the capture phase, before Monaco's own listener, when it lands on the "+" node.
+    // The press is caught in the capture phase, before Monaco's own listener moves the cursor or starts a selection.
     this.domNode = editor.getContainerDomNode();
     this.domNode.addEventListener("mousedown", this.onDomMouseDown, true);
     this.disposables.push(
@@ -75,7 +84,7 @@ export class AddCommentGlyph {
     );
   }
 
-  onDidClick(listener: (span: LineSpan) => void): monaco.IDisposable {
+  onDidClick(listener: (target: CommentTarget) => void): monaco.IDisposable {
     this.clickListeners.add(listener);
     return { dispose: () => this.clickListeners.delete(listener) };
   }
@@ -127,7 +136,7 @@ export class AddCommentGlyph {
     return {
       range: { startLineNumber: line, startColumn: 1, endLineNumber: line, endColumn: 1 },
       options: {
-        linesDecorationsClassName: isInline ? GLYPH_CLASS : `${GLYPH_CLASS} ${GLYPH_CLASS}--note`,
+        glyphMarginClassName: isInline ? GLYPH_CLASS : `${GLYPH_CLASS} ${GLYPH_CLASS}--note`,
         stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
       },
     };
@@ -160,7 +169,7 @@ export class AddCommentGlyph {
     const span = drag.anchor === drag.current ? this.spanAt(drag.anchor) : { startLine: Math.min(drag.anchor, drag.current), line: Math.max(drag.anchor, drag.current) };
     this.show(drag.current);
     for (const listener of this.clickListeners) {
-      listener(span);
+      listener({ span, underLine: drag.current });
     }
   };
 
@@ -188,7 +197,7 @@ export class AddCommentGlyph {
     const span = { startLine: Math.min(anchor, current), line: Math.max(anchor, current) };
     const isInline = this.isInline(span);
     const glyphs = anchor === current ? [this.glyphDecoration(anchor, isInline)] : [this.glyphDecoration(anchor, isInline), this.glyphDecoration(current, isInline)];
-    this.decorations.set([rangeDecoration(span), ...glyphs]);
+    this.decorations.set([rangeDecoration(span, isInline), ...glyphs]);
   }
 
   /** Stops a running drag without reporting it; the hover glyph is restored on the next mouse move. */

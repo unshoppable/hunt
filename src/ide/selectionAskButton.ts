@@ -28,6 +28,7 @@ export class SelectionAskButton implements monaco.editor.IContentWidget {
     this.domNode.className = "hunt-ask-button";
     const button = document.createElement("button");
     button.type = "button";
+    button.className = "hunt-agent-button";
     button.title = "Ask Claude about selection";
     button.setAttribute("aria-label", "Ask Claude about selection");
     this.domNode.appendChild(button);

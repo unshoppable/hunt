@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { commands } from "../ipc/commands";
 import { INPUT } from "./styles";
-import { GHOST_BUTTON, PRIMARY_BUTTON } from "../ui/buttons";
+import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
 import { Modal } from "../ui/Modal";
 
 /** Asks for a shelf name and parks the given files on the shelf. */
@@ -55,10 +55,10 @@ export function ShelveDialog({
       />
       {error ? <p className="mb-3 text-[13px] text-red-400">{error}</p> : null}
       <div className="flex justify-end gap-2">
-        <button type="button" onClick={onClose} disabled={isBusy} className={GHOST_BUTTON}>
+        <button type="button" onClick={onClose} disabled={isBusy} className={GHOST_BUTTON_MD}>
           Cancel
         </button>
-        <button type="button" onClick={() => void submit()} disabled={isBusy || !name.trim()} className={PRIMARY_BUTTON}>
+        <button type="button" onClick={() => void submit()} disabled={isBusy || !name.trim()} className={PRIMARY_BUTTON_MD}>
           {isBusy ? "Shelving…" : "Shelve"}
         </button>
       </div>

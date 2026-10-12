@@ -3,7 +3,7 @@ import { MarkdownText } from "../chat/MessageList";
 import { commands } from "../ipc/commands";
 import type { GithubViewer } from "../ipc/types";
 import { useHuntStore } from "../state/store";
-import { ICON_BUTTON_XS, PRIMARY_BUTTON_SM, SECONDARY_BUTTON_SM } from "../ui/buttons";
+import { ICON_BUTTON_XS, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import {
   BoldIcon,
   BulletListIcon,
@@ -21,12 +21,15 @@ import { useLoad } from "../ui/useLoad";
 import { applyMarkdownAction, type MarkdownAction } from "./markdownEdits";
 import { useReviewDraftCount, type LineSpan } from "./reviewComments";
 
+/** Hint on a comment whose lines lie outside the diff hunks. */
+export const NOTE_HINT = "Outside the diff · posted as a note in the review summary";
+
 type ReviewCommentComposerProps = {
   sessionId: string;
   /** Lines of the new file version the comment is for. */
   span: LineSpan;
-  /** Muted note after the title, e.g. that the lines lie outside the diff; null for none. */
-  hint: string | null;
+  /** Whether the comment lies inside a diff hunk and is posted inline; otherwise it becomes a note, which the title says. */
+  isInline: boolean;
   /** Saves the draft; rejects with the message to show. */
   onSubmit: (body: string) => Promise<unknown>;
   onClose: () => void;
@@ -35,14 +38,19 @@ type ReviewCommentComposerProps = {
 /**
  * GitHub's "add a comment" box under a diff line: a card with the viewer's avatar and "Add a comment on line R15"
  * (or "lines R15 to R28") above a `CommentEditorPanel` whose primary action starts the review or adds to it. The
- * outer element carries `data-review-composer` (the range's blue bar runs along it) and sits 10px right of the code's
- * left edge via `--zone-content-left`.
+ * outer element carries `data-review-composer` ("inline" or "note": the range's blue or grey bar runs along it) and
+ * sits 10px right of the code's left edge via `--zone-content-left`.
  */
-export function ReviewCommentComposer({ sessionId, span, hint, onSubmit, onClose }: ReviewCommentComposerProps) {
+export function ReviewCommentComposer({ sessionId, span, isInline, onSubmit, onClose }: ReviewCommentComposerProps) {
   const hasDrafts = useReviewDraftCount(sessionId) > 0;
   const title = span.startLine === span.line ? `Add a comment on line R${span.line}` : `Add a comment on lines R${span.startLine} to R${span.line}`;
+  const hint = isInline ? null : NOTE_HINT;
   return (
-    <div data-review-composer className="py-2 pr-3 text-[13px] leading-[1.5] text-neutral-200" style={{ paddingLeft: "calc(var(--zone-content-left) + 10px)" }}>
+    <div
+      data-review-composer={isInline ? "inline" : "note"}
+      className="py-2 pr-3 text-[13px] leading-[1.5] text-neutral-200"
+      style={{ paddingLeft: "calc(var(--zone-content-left) + 10px)" }}
+    >
       <div className="rounded-md border border-(--line) bg-(--surface-inset) shadow-md">
         <div className="flex items-center gap-2 px-3 py-2.5">
           <ViewerAvatar sessionId={sessionId} />
@@ -138,7 +146,7 @@ const MODES = [
 ] as const;
 /** GitHub's comment field: the UI sans font at 14px on a surface a shade darker than the panel. */
 const TEXTAREA =
-  "w-full resize-none rounded-md border border-(--line) bg-black/20 px-2.5 py-2 text-sm text-neutral-200 outline-none placeholder:text-neutral-500 focus:border-blue-400/60";
+  "w-full resize-none rounded-md border border-(--line) bg-(--surface-input) px-2.5 py-2 text-sm text-neutral-200 outline-none placeholder:text-neutral-500 focus:border-blue-400/60";
 
 type CommentEditorPanelProps = {
   initial?: string;
@@ -283,10 +291,10 @@ export function CommentEditorPanel({ initial = "", submitLabel, onSubmit, onClos
       </div>
       {error ? <p className="whitespace-pre-wrap text-[13px] text-red-400">{error}</p> : null}
       <div className="flex items-center justify-end gap-2">
-        <button type="button" onClick={onClose} disabled={isSaving} className={SECONDARY_BUTTON_SM}>
+        <button type="button" onClick={onClose} disabled={isSaving} className={SECONDARY_BUTTON_XS}>
           Cancel
         </button>
-        <button type="button" onClick={() => void submit()} disabled={!canSubmit} className={PRIMARY_BUTTON_SM} title="⌘⏎">
+        <button type="button" onClick={() => void submit()} disabled={!canSubmit} className={PRIMARY_BUTTON_XS} title="⌘⏎">
           {isSaving ? "Saving…" : submitLabel}
         </button>
       </div>

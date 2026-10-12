@@ -19,11 +19,22 @@ export type GuardrailListRow = { type: "folder"; folder: string; name: string; d
 export type GuardrailListing = Record<GuardrailKind, Guardrail[]> & {
   /** The folders (see settings) the listing was read from and new guardrails go into. */
   dirs: GuardrailDirs;
-  /** Every folder of the worktree holding a project file (see `foldersOf`), for the instruction tree. */
+  /** Every folder of the worktree holding a project file (see `foldersOf`), for the trees. */
   folders: string[];
+  /**
+   * Every rules and skills directory of the worktree: the configured one at the root (when it has content) and the
+   * same path below any folder (`src/api/.claude/rules`), which Claude Code loads once it works in that folder.
+   */
+  foundDirs: Record<TreeDirKind, string[]>;
 };
 
-export type InstructionRow = { type: "folder"; path: string; name: string; depth: number; hasInstruction: boolean } | { type: "file"; entry: Guardrail; depth: number };
+/** Kinds whose directory Claude Code also reads below any folder of the worktree; their tabs show the folder tree. */
+export type TreeDirKind = "rule" | "skill";
+
+export type TreeRow =
+  /** `hasEntry`: an entry is listed directly under the folder; `holdsEntries`: one is anywhere at or below it. */
+  | { type: "folder"; path: string; name: string; depth: number; hasEntry: boolean; holdsEntries: boolean }
+  | { type: "file"; entry: Guardrail; depth: number };
 
 /** Name of the instruction files Claude Code reads on its own, at the root and in any folder. */
 const INSTRUCTION_FILE = "CLAUDE.md";
@@ -112,24 +123,64 @@ export function generationTask(kind: GuardrailKind, path: string): string {
 }
 
 /**
- * What the agent of the "New …" button is asked to do: create a guardrail of `kind` in the listing's folder under a
- * name it chooses from the user's messages, so that a later agent finds the file by its name. `today` dates an ADR.
+ * What the agent of the page of a new file is asked to do: create a guardrail of `kind` in the listing's folder,
+ * named after `name` or, when that is blank, under a name it chooses from the user's messages, so that a later agent
+ * finds the file by its name. `location` is the directory the file goes into (by default the kind's configured one)
+ * and, for a rule, the folder below it; for a CLAUDE.md it is the folder the file belongs to, which fixes the name.
+ * `today` dates an ADR.
  */
-export function creationTask(kind: CreatableKind, listing: GuardrailListing, today = new Date()): string {
-  const dir = listing.dirs[kind];
-  const location = (() => {
-    switch (kind) {
-      case "rule":
-        return `\`${dir}/<name>.md\`, or in a subfolder of \`${dir}\` when the existing rules are grouped by topic`;
-      case "skill":
-        return `\`${dir}/<name>/SKILL.md\``;
-      case "agent":
-        return `\`${dir}/<name>.md\``;
-      case "adr":
-        return `\`${dir}/${String(nextAdrNumber(listing.adr)).padStart(4, "0")}-<name>.md\`; the heading starts with the number ${nextAdrNumber(listing.adr)} and the record is dated ${today.toISOString().slice(0, 10)}`;
-    }
-  })();
-  return `Create ${kindContent(kind, "")} Put it at ${location}. Choose <name> yourself: a short kebab-case name that says what the file is about, so that an agent finds the file later by its name alone; look at the existing files in \`${dir}\` and follow their naming, and never overwrite one of them. Base the content on what you find in the repository and on the user's messages, which say what the file should contain. Write the file with your file-editing tools and answer with the path you chose and a short summary of what you wrote. ${CONTEXT_RULE}`;
+export function creationTask(kind: GuardrailKind, listing: GuardrailListing, name = "", location: Partial<GuardrailLocation> = {}, today = new Date()): string {
+  if (kind === "instruction") {
+    const path = location.dir ? `${location.dir}/${INSTRUCTION_FILE}` : INSTRUCTION_FILE;
+    return `Create ${kindContent(kind, path)} Put it at \`${path}\`. Base the content on what you find in the repository and on the user's messages, which say what the file should contain. Write the file with your file-editing tools and answer with a short summary of what you wrote. ${CONTEXT_RULE}`;
+  }
+  const dir = location.dir ?? listing.dirs[kind];
+  const folder = location.folder ?? "";
+  const slug = slugify(name);
+  const place = placeOf(kind, listing, slug || "<name>", { dir, folder }, today);
+  const naming = slug
+    ? `The user chose the name \`${slug}\`; never overwrite an existing file in \`${dir}\`.`
+    : `Choose <name> yourself: a short kebab-case name that says what the file is about, so that an agent finds the file later by its name alone; look at the existing files in \`${dir}\` and follow their naming, and never overwrite one of them.`;
+  const owner = ownerFolderOf(dir, listing.dirs[kind]);
+  const scope = owner ? ` The directory belongs to \`${owner}\`: Claude Code loads the file once it works on a file below that folder.` : "";
+  return `Create ${kindContent(kind, "")} Put it at ${place}.${scope} ${naming} Base the content on what you find in the repository and on the user's messages, which say what the file should contain. Write the file with your file-editing tools and answer with the path you chose and a short summary of what you wrote. ${CONTEXT_RULE}`;
+}
+
+/** Where a new guardrail of `kind` named `file` goes, as the agent creating it is told; an ADR's place also names its number and date. */
+function placeOf(kind: CreatableKind, listing: GuardrailListing, file: string, { dir, folder }: GuardrailLocation, today: Date): string {
+  switch (kind) {
+    case "rule":
+      return folder ? `\`${dir}/${folder}/${file}.md\`` : `\`${dir}/${file}.md\`, or in a subfolder of \`${dir}\` when the existing rules are grouped by topic`;
+    case "skill":
+      return `\`${dir}/${file}/SKILL.md\``;
+    case "agent":
+      return `\`${dir}/${file}.md\``;
+    case "adr":
+      return `\`${dir}/${String(nextAdrNumber(listing.adr)).padStart(4, "0")}-${file}.md\`; the heading starts with the number ${nextAdrNumber(listing.adr)} and the record is dated ${today.toISOString().slice(0, 10)}`;
+  }
+}
+
+/** Selection path of the "New" button's chat: it names no file, so no file content comes with the user's messages. */
+export const GUARDRAIL_CHAT_PATH = ".claude";
+
+/**
+ * What the agent of the "New" button is asked to do: turn the user's description into the guardrail kind that fits
+ * (instruction, rule, skill, agent or ADR) and write it where it belongs; while the kind, the content or the scope is
+ * unclear, it asks the user instead of writing. `today` dates an ADR.
+ */
+export function guardrailTask(listing: GuardrailListing, today = new Date()): string {
+  const creatable: CreatableKind[] = ["rule", "skill", "agent", "adr"];
+  const kinds = [
+    `- Instruction: a \`CLAUDE.md\` at the repository root, or in the folder whose code it concerns. ${kindHelp("instruction").use} Add to the existing CLAUDE.md of that folder rather than creating a second one.`,
+    ...creatable.map((kind) => `- ${KIND_LABELS[kind].singular}: ${kindContent(kind, "")} Put it at ${placeOf(kind, listing, "<name>", { dir: listing.dirs[kind], folder: "" }, today)}. ${kindHelp(kind).use}`),
+  ];
+  return [
+    "The user describes a guardrail for this repository. Turn the description into exactly one guardrail of the kind that fits and write it where it belongs:",
+    ...kinds,
+    "Decide the kind from the user's message and from the repository. When the message leaves open which kind fits, what the guardrail should say or which part of the code it applies to, write nothing yet: ask one short question, naming the kinds in question with one sentence on how they differ, and continue once the user answered.",
+    "Before writing, read the existing files of that kind and follow their naming and structure. Extend an existing file when the request belongs there instead of adding a duplicate, and never overwrite or delete other content. Choose <name> as a short kebab-case name that says what the file is about, so that an agent finds the file by its name alone.",
+    `Write the file with your file-editing tools and answer with the kind you chose, the path and a short summary of what you wrote. ${CONTEXT_RULE}`,
+  ].join("\n");
 }
 
 /** Whether `path` is an instruction file: `CLAUDE.md` at the root or in any folder. */
@@ -153,11 +204,93 @@ export function foldersOf(files: string[]): string[] {
   return [...folders].sort((left, right) => left.localeCompare(right));
 }
 
-/** The folders the instruction tree starts out open: the root and every folder on the way to a CLAUDE.md. */
-export function expandedForInstructions(instructions: Guardrail[]): Set<string> {
+/** The folder row of the tree an entry is listed under: its own folder; for a skill the folder holding the skill folders. */
+export function treeParentOf(entry: Guardrail): string {
+  return entry.kind === "skill" ? folderOf(folderOf(entry.path)) : folderOf(entry.path);
+}
+
+/** Whether `folder` is `dir` itself or lies below it. */
+function isAtOrBelow(folder: string, dir: string): boolean {
+  return folder === dir || isInsideFolder(folder, dir);
+}
+
+/**
+ * The folder (`""` for the root) whose `.claude` holds `dir`, which is `kindDir` (the configured `.claude/rules`)
+ * at the root or below a folder; null when `dir` is not such a directory.
+ */
+export function ownerFolderOf(dir: string, kindDir: string): string | null {
+  if (dir === kindDir) return "";
+  return dir.endsWith(`/${kindDir}`) ? dir.slice(0, -kindDir.length - 1) : null;
+}
+
+/** Where a new guardrail goes: its kind's directory and, for a rule, the folder below it. */
+export type GuardrailLocation = { dir: string; folder: string };
+
+/**
+ * The folder whose kind directory `folder` is on the way to, when `folder` is a container of the kind directory
+ * `kindDir` (`.claude` or `src/api/.claude` for `.claude/rules`): `""` for the root, null when it is no container.
+ */
+function containerOwnerOf(folder: string, kindDir: string): string | null {
+  const segments = kindDir.split("/");
+  for (let count = segments.length - 1; count > 0; count--) {
+    const prefix = segments.slice(0, count).join("/");
+    if (folder === prefix) return "";
+    if (folder.endsWith(`/${prefix}`)) return folder.slice(0, -prefix.length - 1);
+  }
+  return null;
+}
+
+/** The kind directory `kindDir` of `owner` (`""` for the root). */
+function kindDirOf(owner: string, kindDir: string): string {
+  return owner ? `${owner}/${kindDir}` : kindDir;
+}
+
+/**
+ * Where the "+" of the tree folder `folder` creates a file of `kind`: inside the kind's directory the folder is or
+ * lies in, in the directory a container (`.claude`) leads to, otherwise in a new `<folder>/<kind dir>` (which
+ * Claude Code loads once it works in that folder).
+ */
+export function newGuardrailLocation(kind: TreeDirKind, folder: string, listing: GuardrailListing): GuardrailLocation {
+  const dir = listing.foundDirs[kind].find((candidate) => isAtOrBelow(folder, candidate));
+  if (dir) return { dir, folder: folder === dir ? "" : folder.slice(dir.length + 1) };
+  const owner = containerOwnerOf(folder, listing.dirs[kind]) ?? folder;
+  return { dir: kindDirOf(owner, listing.dirs[kind]), folder: "" };
+}
+
+/**
+ * The folders of the tree of `kind`: the worktree's folders and every folder on the way to one of the kind's
+ * directories (so that a git-ignored `.claude` still shows). A container (`.claude`) shows only when it holds one
+ * of the kind's directories, and inside it only that directory; the folders of a skill are left out since the
+ * skill itself is the entry.
+ */
+export function treeFolders(kind: GuardrailKind, listing: GuardrailListing): string[] {
+  const folders = new Set(listing.folders);
+  if (kind !== "rule" && kind !== "skill") return [...folders];
+  const kindDir = listing.dirs[kind];
+  const dirs = listing.foundDirs[kind];
+  for (const dir of dirs) {
+    for (let folder = dir; folder; folder = folderOf(folder)) {
+      folders.add(folder);
+    }
+  }
+  const isHidden = (folder: string) => {
+    if (kind === "skill" && dirs.some((dir) => isInsideFolder(folder, dir))) return true;
+    for (let candidate = folder; candidate; candidate = folderOf(candidate)) {
+      const owner = containerOwnerOf(candidate, kindDir);
+      if (owner === null) continue;
+      const own = kindDirOf(owner, kindDir);
+      return !dirs.includes(own) || (candidate !== folder && !isAtOrBelow(folder, own));
+    }
+    return false;
+  };
+  return [...folders].filter((folder) => !isHidden(folder)).sort((left, right) => left.localeCompare(right));
+}
+
+/** The folders a tree starts out open: the root and every folder on the way to an entry or to one of `dirs`, those included. */
+export function expandedForTree(entries: Guardrail[], dirs: string[] = []): Set<string> {
   const expanded = new Set([""]);
-  for (const entry of instructions) {
-    for (let folder = folderOf(entry.path); folder; folder = folderOf(folder)) {
+  for (const start of [...entries.map(treeParentOf), ...dirs]) {
+    for (let folder = start; folder; folder = folderOf(folder)) {
       expanded.add(folder);
     }
   }
@@ -165,27 +298,35 @@ export function expandedForInstructions(instructions: Guardrail[]): Set<string> 
 }
 
 /**
- * The rows of the instruction tree: the root (shown as `projectName`), then below each open folder its subfolders by
- * name and, last, its own CLAUDE.md. A closed folder hides everything below it.
+ * The rows of a tree: the root (shown as `projectName`), then below each open folder its subfolders by name and,
+ * last, the entries listed under it (see `treeParentOf`). A closed folder hides everything below it; a folder row
+ * tells whether entries lie anywhere below it, so that empty branches can be set off.
  */
-export function instructionTreeRows(folders: string[], instructions: Guardrail[], expanded: ReadonlySet<string>, projectName: string): InstructionRow[] {
+export function guardrailTreeRows(folders: string[], entries: Guardrail[], expanded: ReadonlySet<string>, projectName: string): TreeRow[] {
   const children = new Map<string, string[]>();
   for (const folder of folders) {
     const parent = folderOf(folder);
     children.set(parent, [...(children.get(parent) ?? []), folder]);
   }
-  const byFolder = new Map(instructions.map((entry) => [folderOf(entry.path), entry]));
+  const byFolder = new Map<string, Guardrail[]>();
+  const holding = new Set<string>();
+  for (const entry of entries) {
+    const parent = treeParentOf(entry);
+    byFolder.set(parent, [...(byFolder.get(parent) ?? []), entry]);
+    for (let folder = parent; folder; folder = folderOf(folder)) {
+      holding.add(folder);
+    }
+  }
 
-  const rows: InstructionRow[] = [];
+  const rows: TreeRow[] = [];
   const walk = (folder: string, name: string, depth: number) => {
-    rows.push({ type: "folder", path: folder, name, depth, hasInstruction: byFolder.has(folder) });
+    rows.push({ type: "folder", path: folder, name, depth, hasEntry: byFolder.has(folder), holdsEntries: !folder || holding.has(folder) });
     if (!expanded.has(folder)) return;
     for (const child of children.get(folder) ?? []) {
       walk(child, child.slice(folder ? folder.length + 1 : 0), depth + 1);
     }
-    const own = byFolder.get(folder);
-    if (own) {
-      rows.push({ type: "file", entry: own, depth: depth + 1 });
+    for (const entry of byFolder.get(folder) ?? []) {
+      rows.push({ type: "file", entry, depth: depth + 1 });
     }
   };
   walk("", projectName, 0);
@@ -218,9 +359,10 @@ export function nextAdrNumber(existing: Guardrail[]): number {
 /**
  * Path of a new guardrail named `title` in the listing's folders, null when `title` yields no usable file name. For
  * an instruction file `title` is the folder it goes into (empty for the repository root); the existing ADRs decide
- * the ADR's number.
+ * the ADR's number. `location` names the directory (by default the kind's configured one) and, for a rule, the
+ * folder below it.
  */
-export function guardrailPath(kind: GuardrailKind, title: string, listing: GuardrailListing): string | null {
+export function guardrailPath(kind: GuardrailKind, title: string, listing: GuardrailListing, location: Partial<GuardrailLocation> = {}): string | null {
   if (kind === "instruction") {
     if (!title.trim()) return INSTRUCTION_FILE;
     const dir = normalizeGuardrailDir(title);
@@ -228,11 +370,13 @@ export function guardrailPath(kind: GuardrailKind, title: string, listing: Guard
   }
   const slug = slugify(title);
   if (!slug) return null;
+  const dir = location.dir ?? listing.dirs[kind];
+  const folder = location.folder ?? "";
   switch (kind) {
     case "rule":
-      return `${listing.dirs.rule}/${slug}.md`;
+      return `${dir}/${folder ? `${folder}/` : ""}${slug}.md`;
     case "skill":
-      return `${listing.dirs.skill}/${slug}/SKILL.md`;
+      return `${dir}/${slug}/SKILL.md`;
     case "agent":
       return `${listing.dirs.agent}/${slug}.md`;
     case "adr":
@@ -276,9 +420,9 @@ export function guardrailDeleteTarget(entry: Guardrail): string {
 export function guardrailListRows(entries: Guardrail[], collapsed: ReadonlySet<string> = new Set()): GuardrailListRow[] {
   type Node = { folders: Map<string, Node>; entries: Guardrail[] };
   const root: Node = { folders: new Map(), entries: [] };
-  for (const entry of entries) {
+  const nodeOf = (folder: string): Node => {
     let node = root;
-    for (const segment of entry.folder ? entry.folder.split("/") : []) {
+    for (const segment of folder ? folder.split("/") : []) {
       let child = node.folders.get(segment);
       if (!child) {
         child = { folders: new Map(), entries: [] };
@@ -286,7 +430,10 @@ export function guardrailListRows(entries: Guardrail[], collapsed: ReadonlySet<s
       }
       node = child;
     }
-    node.entries.push(entry);
+    return node;
+  };
+  for (const entry of entries) {
+    nodeOf(entry.folder).entries.push(entry);
   }
 
   const rows: GuardrailListRow[] = [];
@@ -347,26 +494,41 @@ async function listFilesOrEmpty(sessionId: string): Promise<string[]> {
 
 /** Reads the instruction files of the session's worktree and its rules, skills, agents and ADRs from the folders in `dirs`. */
 export async function listGuardrails(sessionId: string, dirs: GuardrailDirs): Promise<GuardrailListing> {
-  const [files, ruleFiles, skillEntries, agentEntries, adrEntries] = await Promise.all([
-    listFilesOrEmpty(sessionId),
-    markdownFilesBelow(sessionId, dirs.rule),
-    listDirOrEmpty(sessionId, dirs.skill),
-    listDirOrEmpty(sessionId, dirs.agent),
-    listDirOrEmpty(sessionId, dirs.adr),
-  ]);
+  const [files, agentEntries, adrEntries] = await Promise.all([listFilesOrEmpty(sessionId), listDirOrEmpty(sessionId, dirs.agent), listDirOrEmpty(sessionId, dirs.adr)]);
+  const folders = foldersOf(files);
+  // The configured directory at the root is always read; deeper ones are those the project files reveal.
+  const dirsOfKind = (dir: string) => [dir, ...folders.filter((folder) => folder.endsWith(`/${dir}`))];
+
   // Shallow files first, so the root CLAUDE.md leads the list.
   const instructions: Guardrail[] = files.filter(isInstructionFile).map((path) => ({ kind: "instruction", path, name: INSTRUCTION_FILE, folder: folderOf(path) }));
   instructions.sort((left, right) => left.path.split("/").length - right.path.split("/").length || left.path.localeCompare(right.path));
-  const rules: Guardrail[] = ruleFiles.map((path) => {
-    const { dir: folder, name } = splitPath(path.slice(dirs.rule.length + 1, -3));
-    return { kind: "rule", path, name, folder };
-  });
+
+  const rules: Guardrail[] = [];
+  const ruleDirs: string[] = [];
+  for (const dir of dirsOfKind(dirs.rule)) {
+    const files = await markdownFilesBelow(sessionId, dir);
+    if (!files.length) continue;
+    ruleDirs.push(dir);
+    for (const path of files) {
+      const { dir: folder, name } = splitPath(path.slice(dir.length + 1, -3));
+      rules.push({ kind: "rule", path, name, folder });
+    }
+  }
 
   const skills: Guardrail[] = [];
-  for (const entry of skillEntries.filter((entry) => entry.isDir)) {
-    const files = await listDirOrEmpty(sessionId, `${dirs.skill}/${entry.name}`);
-    if (!files.some((file) => file.name === "SKILL.md")) continue;
-    skills.push({ kind: "skill", path: `${dirs.skill}/${entry.name}/SKILL.md`, name: entry.name, folder: "" });
+  const skillDirs: string[] = [];
+  for (const dir of dirsOfKind(dirs.skill)) {
+    const entries = await listDirOrEmpty(sessionId, dir);
+    let hasSkill = false;
+    for (const entry of entries.filter((entry) => entry.isDir)) {
+      const files = await listDirOrEmpty(sessionId, `${dir}/${entry.name}`);
+      if (!files.some((file) => file.name === "SKILL.md")) continue;
+      skills.push({ kind: "skill", path: `${dir}/${entry.name}/SKILL.md`, name: entry.name, folder: "" });
+      hasSkill = true;
+    }
+    if (hasSkill) {
+      skillDirs.push(dir);
+    }
   }
 
   const agents: Guardrail[] = markdownEntries(agentEntries).map((entry) => ({ kind: "agent", path: `${dirs.agent}/${entry.name}`, name: entry.name.slice(0, -3), folder: "" }));
@@ -375,5 +537,5 @@ export async function listGuardrails(sessionId: string, dirs: GuardrailDirs): Pr
   const adrs: Guardrail[] = markdownEntries(adrEntries).map((entry) => ({ kind: "adr", path: `${dirs.adr}/${entry.name}`, name: entry.name.slice(0, -3), folder: "" }));
   adrs.sort((left, right) => (adrNumber(right.name) ?? 0) - (adrNumber(left.name) ?? 0) || left.name.localeCompare(right.name));
 
-  return { instruction: instructions, rule: rules, skill: skills, agent: agents, adr: adrs, dirs, folders: foldersOf(files) };
+  return { instruction: instructions, rule: rules, skill: skills, agent: agents, adr: adrs, dirs, folders, foundDirs: { rule: ruleDirs, skill: skillDirs } };
 }

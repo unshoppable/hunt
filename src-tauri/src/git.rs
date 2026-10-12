@@ -94,6 +94,11 @@ pub async fn merge_base(repo: &Path, base: &str, head: &str) -> Result<String, S
     Ok(run_git(repo, &["merge-base", base, head]).await?.trim().to_string())
 }
 
+/// Name of the branch `repo`'s checkout is on; `HEAD` when it is detached.
+pub async fn current_branch(repo: &Path) -> Result<String, String> {
+    Ok(run_git(repo, &["rev-parse", "--abbrev-ref", "HEAD"]).await?.trim().to_string())
+}
+
 /// Local and remote branch names, local first, without duplicates.
 pub async fn list_branches(repo: &Path) -> Result<Vec<String>, String> {
     let output = run_git(

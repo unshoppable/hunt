@@ -26,7 +26,8 @@
 Hunt wraps [Claude Code](https://claude.com/claude-code) in a desktop app built on the
 [Agent Client Protocol](https://agentclientprotocol.com) (ACP). The shell is Tauri 2 (Rust), the UI is React 19.
 
-Every session runs in its own git worktree, so the changes of parallel sessions never mix. Sub sessions share
+Every session runs in its own git worktree, so the changes of parallel sessions never mix; a session can instead run
+in the repository's own checkout, where the changelist shows only what the session changed. Sub sessions share
 their parent's worktree and are told apart by the files they touched. Around the chat sit the tools you need to
 judge what the agent did: a changelist with diffs, a Monaco-based editor with a real language server, a GitHub pull
 request review flow, a dependency graph of the change and an editor for the rules, skills and architectural
@@ -53,7 +54,7 @@ decision records that steer the agent.
 ### Install
 
 Download the latest DMG from the [releases page](https://github.com/unshoppable/hunt/releases/latest), open it and
-drag Hunt into Applications. There is one DMG per architecture (`aarch64` for Apple Silicon, `x86_64` for Intel).
+drag Hunt into Applications. Hunt ships for Apple Silicon only.
 The app is not signed yet: on first launch right-click it and choose *Open*, or run `xattr -cr /Applications/Hunt.app`.
 
 ### Update
@@ -88,11 +89,13 @@ npm run check   # typecheck, lint, vitest and cargo test
 npm run tauri build -- --bundles dmg   # local DMG in src-tauri/target/release/bundle/dmg/
 ```
 
-Pushing a `v*` tag runs [`release.yml`](.github/workflows/release.yml), which builds the DMGs for Apple Silicon and
-Intel plus the updater artifacts (`Hunt.app.tar.gz`, its `.sig` and `latest.json`) and attaches them to a draft
-GitHub Release. Bump `version` in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` first, then
-`git tag v0.2.0 && git push origin v0.2.0` and publish the draft. Publishing is what makes running installs offer the
-update: the in-app updater reads `latest.json` of the latest *published* release.
+Releases are cut from *Actions → Release → Run workflow* on `master` ([`release.yml`](.github/workflows/release.yml)).
+The run derives the next version from the Conventional Commits since the last tag (`feat` → minor, `fix`/`perf` →
+patch, `!` or `BREAKING CHANGE` → major; the `bump` input overrides it), rewrites every version file, commits and tags,
+builds the Apple Silicon DMG plus the updater artifacts (`Hunt.app.tar.gz`, its `.sig` and `latest.json`) and publishes
+the GitHub Release once the build is green. Publishing is what makes running installs offer the update: the in-app
+updater reads `latest.json` of the latest *published* release. `node scripts/release/release.ts --dry-run` shows what
+the next run would do.
 
 The updater artifacts are signed with the key whose public half is in `src-tauri/tauri.conf.json`
 (`plugins.updater.pubkey`); the workflow reads the private key from the repository secrets `TAURI_SIGNING_PRIVATE_KEY`
@@ -108,22 +111,38 @@ See [CLAUDE.md](CLAUDE.md) for the conventions contributors and coding agents fo
 `src-tauri/src/acp/` spawns `@agentclientprotocol/claude-agent-acp` per session and forwards every
 `session/update` to the UI as the `acp:update` event; permission requests become `acp:permission`.
 
+A session starts in the start view of the chat pane ("New" in the sidebar), which preselects the repository used
+last. Choosing a repository there, from the folder dialog or the list of recently used ones, creates the session right
+away, so the sidebar lists it and the diff, editor and graph panes work before anything was asked; such a session is
+titled after its repository until its first prompt names it (`rename_session`). With the preselected repository the
+first prompt creates the session and titles it; "PR review" starts a review session on a pull request's branch.
+
 A sub session is a fresh agent session in the worktree of an existing session. "sub session" on a session in the
 sidebar starts one with a title; selecting text on the right side of a diff and choosing "Ask Claude about
 selection" in the context menu starts one as a sub chat with the selected lines in its system prompt. Sub sessions
 run in the background, are listed under their parent in the sidebar and are removed together with it. Every code
-view of the worktree marks the first line of such a selection with a glyph that reopens the sub chat in its popover;
-the sub session's chat pane offers "Open in editor" for the selected lines.
+view of the worktree marks the first line of such a selection with a button right of the line number that reopens the
+sub chat in its popover; the sub session's chat pane offers "Open in editor" for the selected lines.
 
-The language of every output Hunt asks the agent for on its own (session summaries and titles in
-`src-tauri/src/session/summary.rs`, the dependency graph) is the "Agent" setting in the settings dialog, German by
-default; the frontend pushes it to `src-tauri/src/preferences.rs` at start and on change.
+The "Agent" page of the settings dialog holds what Hunt tells the agent on its own: the language of every output
+Hunt asks for itself (session summaries and titles in `src-tauri/src/session/summary.rs`, the dependency graph),
+German by default, and the system prompt addition of every new session, by default the response-style instructions
+in `prompts/response-style.md` (plain language for software engineers). The frontend pushes both to
+`src-tauri/src/preferences.rs` at start and on change; `src-tauri/src/acp/connection.rs` appends the prompt, the
+diagram instructions and the selection context of a sub session to Claude Code's system prompt via the ACP
+`systemPrompt` meta.
 
 ### Worktrees and changes
 
 `src-tauri/src/git.rs` creates `hunt/<slug>-<id>` worktrees under the app data directory, lists their changes
 against the session's diff base (`HEAD`, or the merge base of a reviewed pull request) and supports shelving and
 reverting them.
+
+A new worktree has no `node_modules`, so `src-tauri/src/session/dependencies.rs` prepares it in the background:
+when the repository has an installed `node_modules`, it is cloned with one APFS `clonefile` call (copy-on-write,
+seconds instead of minutes, no extra disk space); when the worktree's lockfile differs from the repository's, or
+there is nothing to clone, the package manager the lockfile belongs to (npm, pnpm, yarn or bun) installs on top.
+The editor shows the progress above its panes and the language server restarts once the modules exist.
 
 Sessions sharing a worktree tell their changes apart by file: `src-tauri/src/session/attribution.rs` snapshots the
 worktree (`git write-tree` through a scratch index) when a tool call that may write starts and finishes, and records
@@ -179,9 +198,13 @@ static method, parameter, global/local variable, …), colored by the user's Web
 
 "Guardrails" in the chat header opens a window of its own over the repository's rules (`.claude/rules/*.md`,
 `CLAUDE.md`), skills (`.claude/skills/<name>/SKILL.md`) and architectural decision records
-(`docs/adr/NNNN-title.md`, or the existing ADR folder), one tab each (`src/guardrails/`). Entries open in a Markdown
-editor; "New …" creates a file from a template (ADRs are numbered after the highest existing one), ⌘S or "Save"
-writes it.
+(`docs/adr/NNNN-title.md`, or the existing ADR folder), one tab each (`src/guardrails/`). Instructions, rules and
+skills are shown in a tree of the worktree's folders, since Claude Code also reads a `.claude/rules` or
+`.claude/skills` below any folder once it works on a file there; the "+" of a folder creates an entry in that
+folder's `.claude`. Entries open in a Markdown editor. "New …" and "+" open the page of a new file with the kind's
+template (ADRs are numbered after the highest existing one) and its agent chat; the file is written only once the
+template was edited or the agent wrote it, so no template file and no empty folder is ever left behind. ⌘S or
+"Save" writes an open file.
 
 Opening a session checks that the worktree's root `CLAUDE.md` names the ADR folder and otherwise offers once to
 append an "Architectural decisions" section with the `ls`/`grep` lookup (`src/guardrails/adrInstruction.ts`);

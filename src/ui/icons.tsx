@@ -1,6 +1,5 @@
 /** Small stroke icons for buttons; they inherit the text color and size via `className`. */
 
-import { useId } from "react";
 
 export function CloseIcon({ className = "size-3.5" }: { className?: string }) {
   return (
@@ -19,10 +18,34 @@ export function SearchIcon({ className = "size-4" }: { className?: string }) {
   );
 }
 
+/** The agent sparkle (see `--sparkle-mask` in index.css) filled with the text color, for buttons on an accent surface. */
+export function SparkleIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="currentColor" aria-hidden="true">
+      <path d="M8 1.5c.4 2.9 2.6 5.1 5.5 5.5-2.9.4-5.1 2.6-5.5 5.5-.4-2.9-2.6-5.1-5.5-5.5 2.9-.4 5.1-2.6 5.5-5.5Z" />
+      <path d="M12.5 10.5c.2 1.1 1 1.9 2 2-1 .2-1.8 1-2 2-.2-1-1-1.8-2-2 1-.2 1.8-1 2-2Z" />
+    </svg>
+  );
+}
+
 export function PlusIcon({ className = "size-3.5" }: { className?: string }) {
   return (
     <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
       <path d="M8 3v10M3 8h10" />
+    </svg>
+  );
+}
+
+/**
+ * Rotating ring for in-progress states: a faint track and a quarter arc in the text color. Drawn as SVG so the
+ * stroke stays uniform and the rotation centre exact at any size; a bordered box of fractional width snaps its
+ * sides to different pixels and wobbles while it spins.
+ */
+export function Spinner({ className = "size-3" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={`animate-spin ${className}`} fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.5" className="opacity-25" />
+      <circle cx="8" cy="8" r="6.5" strokeDasharray="10.2 30.6" transform="rotate(-90 8 8)" />
     </svg>
   );
 }
@@ -122,28 +145,6 @@ export function InfoIcon({ className = "size-3.5" }: { className?: string }) {
     </svg>
   );
 }
-
-/**
- * Four-pointed sparkle in the blue-violet agent gradient (the `--agent-gradient` and `--sparkle-mask` of index.css), the
- * symbol for the agent on buttons that hand work to it. The fill is the gradient, not the text color.
- */
-export function SparkleIcon({ className = "size-3.5" }: { className?: string }) {
-  const gradientId = useId();
-  return (
-    <svg viewBox="0 0 16 16" className={className} fill={`url(#${gradientId})`} aria-hidden="true">
-      <defs>
-        <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#38bdf8" />
-          <stop offset="50%" stopColor="#6366f1" />
-          <stop offset="100%" stopColor="#a855f7" />
-        </linearGradient>
-      </defs>
-      <path d="M8 1.5c.4 2.9 2.6 5.1 5.5 5.5-2.9.4-5.1 2.6-5.5 5.5-.4-2.9-2.6-5.1-5.5-5.5 2.9-.4 5.1-2.6 5.5-5.5Z" />
-      <path d="M12.5 10.5c.2 1.1 1 1.9 2 2-1 .2-1.8 1-2 2-.2-1-1-1.8-2-2 1-.2 1.8-1 2-2Z" />
-    </svg>
-  );
-}
-
 /** Trash can, for delete buttons. */
 export function TrashIcon({ className = "size-3.5" }: { className?: string }) {
   return (
@@ -157,6 +158,27 @@ export function EraserIcon({ className = "size-3.5" }: { className?: string }) {
   return (
     <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M9.5 2.5 2.75 9.25a1 1 0 0 0 0 1.4l2.6 2.6a1 1 0 0 0 1.4 0L13.5 6.5a1 1 0 0 0 0-1.4l-2.6-2.6a1 1 0 0 0-1.4 0ZM6 6l4 4M8.5 13.5h5" />
+    </svg>
+  );
+}
+
+/** A git branch forking off a line, for branch names. */
+export function BranchIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="6" cy="5" r="2" />
+      <circle cx="6" cy="19" r="2" />
+      <circle cx="18" cy="8" r="2" />
+      <path d="M6 7v10M18 10a6 6 0 0 1-6 6H6" />
+    </svg>
+  );
+}
+
+/** A bound book, the common symbol for a repository. */
+export function RepoIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20M10 2v8l3-3 3 3V2" />
     </svg>
   );
 }
@@ -260,6 +282,25 @@ export function MentionIcon({ className = "size-4" }: { className?: string }) {
     <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
       <circle cx="8" cy="8" r="2.5" />
       <path d="M10.5 8v1a1.75 1.75 0 0 0 3.5 0V8a6 6 0 1 0-2.6 4.95" />
+    </svg>
+  );
+}
+
+/** WebStorm's product logo: a gradient tile with the black "WS" square, drawn in its own colors. */
+export function WebstormIcon({ className = "size-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} aria-hidden="true">
+      <defs>
+        <linearGradient id="webstorm-tile" x1="0" y1="16" x2="16" y2="0" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#07C3F2" />
+          <stop offset="0.55" stopColor="#087CFA" />
+          <stop offset="1" stopColor="#FCF84A" />
+        </linearGradient>
+      </defs>
+      <rect width="16" height="16" rx="3.5" fill="url(#webstorm-tile)" />
+      <rect x="3" y="3" width="10" height="10" rx="0.5" fill="#000" />
+      <text x="4" y="8.6" fill="#fff" fontFamily="system-ui, sans-serif" fontSize="4.6" fontWeight="700">WS</text>
+      <rect x="4" y="10.6" width="3.8" height="0.9" fill="#fff" />
     </svg>
   );
 }

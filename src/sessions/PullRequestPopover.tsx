@@ -5,8 +5,11 @@ import type { CheckSummary, PullRequest, PullRequestLabel, ViewerReview } from "
 import { formatRelativeTime } from "../chat/ScreenshotPicker";
 import { SearchField } from "../ui/SearchField";
 import { CheckIcon, CloseIcon, CommentIcon, ExternalIcon } from "../ui/icons";
+import { ResizeGrips } from "../ui/ResizeGrips";
 import { useDismiss } from "../ui/useDismiss";
 import { errorText, useLoad } from "../ui/useLoad";
+import { usePopupSize } from "../ui/usePopupSize";
+import { useViewportSize } from "../ui/useViewportSize";
 import { filterPullRequests } from "./pullRequests";
 
 type PullRequestPopoverProps = {
@@ -32,11 +35,16 @@ const REVIEW_DECISIONS: Record<string, { label: string; className: string }> = {
   CHANGES_REQUESTED: { label: "Changes requested", className: "text-red-300" },
 };
 
+const MIN_SIZE = { width: 420, height: 200 };
+/** Space the popover keeps from the window's edges. */
+const MARGIN = 16;
+
 /**
  * Anchored list of the repository's open pull requests, filtered by a search box like the session sidebar's. Each
  * row carries the metadata GitHub's own list shows (labels, review state, tasks, checks, comments) and marks
  * whether the signed-in user already reviewed it. Loads once when shown; a row hands its pull request to
- * `onSelect`, the arrow at its end opens it on GitHub.
+ * `onSelect`, the arrow at its end opens it on GitHub. It hangs below its button's right edge and is as tall as
+ * its rows up to the remembered height; dragging its left or bottom edge resizes it.
  */
 export function PullRequestPopover({ repoPath, anchorRef, onSelect, onClose }: PullRequestPopoverProps) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -44,6 +52,8 @@ export function PullRequestPopover({ repoPath, anchorRef, onSelect, onClose }: P
   const [pullRequests, setPullRequests] = useState<PullRequest[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const rows = useMemo(() => filterPullRequests(pullRequests ?? [], query), [pullRequests, query]);
+  const viewport = useViewportSize();
+  const { size, isHeightSet, grips } = usePopupSize("pullRequests", { min: MIN_SIZE, max: { width: viewport.width - 2 * MARGIN, height: viewport.height * 0.7 } });
 
   useDismiss(rootRef, onClose, { anchorRefs: [anchorRef] });
   useLoad(() => commands.listPullRequests(repoPath), { onValue: setPullRequests, onError: (reason) => setError(errorText(reason)) }, [repoPath]);
@@ -53,7 +63,8 @@ export function PullRequestPopover({ repoPath, anchorRef, onSelect, onClose }: P
       ref={rootRef}
       role="dialog"
       aria-label="Open pull requests"
-      className="absolute top-full right-0 z-50 mt-1.5 flex max-h-[70vh] w-[760px] max-w-[calc(100cqw-2rem)] flex-col overflow-hidden rounded-xl border border-neutral-600 bg-(--surface-chat) text-sm shadow-2xl shadow-black/50"
+      className="absolute top-full right-0 z-50 mt-1.5 flex max-w-[calc(100cqw-2rem)] flex-col overflow-hidden rounded-xl border border-neutral-600 bg-(--surface-chat) text-sm shadow-2xl shadow-black/50"
+      style={{ width: size.width, maxHeight: size.height, height: isHeightSet ? size.height : undefined }}
     >
       <SearchField value={query} onChange={setQuery} placeholder="Search pull requests" ariaLabel="Search pull requests" autoFocus className="mx-2 mt-2 mb-2" />
       <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-x-hidden overflow-y-auto px-2 pb-2">
@@ -99,6 +110,7 @@ export function PullRequestPopover({ repoPath, anchorRef, onSelect, onClose }: P
           </li>
         ))}
       </ul>
+      <ResizeGrips edges={{ left: true, bottom: true }} {...grips} />
     </div>
   );
 }

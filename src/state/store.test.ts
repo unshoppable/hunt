@@ -5,7 +5,8 @@ import type { SessionView } from "../ipc/types";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { agentSetupOf, useHuntStore } from "./store";
+import { useAgentDefaultsStore } from "./agentDefaults";
+import { agentSetupOf, createEmptyChat, useHuntStore } from "./store";
 
 const SESSION = "11111111-1111-1111-1111-111111111111";
 
@@ -184,15 +185,114 @@ function storedSession(id: string, title: string): SessionView {
     pullRequest: null,
     diffBase: null,
     reviewComments: [],
+    workspace: "worktree",
+    dependencies: null,
   };
 }
 
-const TARGET = { repoPath: "/repo", baseRef: "main", pullRequest: null, diffBaseRef: null };
+const TARGET = { repoPath: "/repo", baseRef: "main", workspace: "worktree" as const, pullRequest: null, diffBaseRef: null };
 const START = { setup: { configValues: { model: "fable", effort: "high" }, modeId: "plan" }, prompt: { text: "build it", images: [] } };
+
+describe("unseen activity", () => {
+  const OTHER = "22222222-2222-2222-2222-222222222222";
+
+  beforeEach(() => {
+    useHuntStore.setState({ chats: {}, sessions: [storedSession(SESSION, "Build it")], creatingIds: [], activeSessionId: OTHER, draft: null });
+    vi.mocked(invoke).mockReset();
+    vi.mocked(invoke).mockResolvedValue(undefined);
+  });
+
+  it("marks a turn that ended in a background session until the session is opened", async () => {
+    await useHuntStore.getState().sendPrompt(SESSION, "go");
+    expect(useHuntStore.getState().chats[SESSION].hasUnseenActivity).toBe(true);
+
+    await useHuntStore.getState().selectSession(SESSION);
+    expect(useHuntStore.getState().chats[SESSION].hasUnseenActivity).toBe(false);
+  });
+
+  it("leaves the active session alone", async () => {
+    useHuntStore.setState({ activeSessionId: SESSION });
+    await useHuntStore.getState().sendPrompt(SESSION, "go");
+    expect(useHuntStore.getState().chats[SESSION].hasUnseenActivity).toBe(false);
+  });
+});
+
+describe("prompt queue", () => {
+  const SESSION = "11111111-1111-1111-1111-111111111111";
+
+  /** A `send_prompt` call the test finishes by hand with the given stop reason. */
+  function deferredTurn() {
+    let finish: (stopReason: string) => void = () => {};
+    const turn = new Promise<string>((resolve) => {
+      finish = resolve;
+    });
+    return { turn, finish: (stopReason: string) => finish(stopReason) };
+  }
+
+  beforeEach(() => {
+    useHuntStore.setState({ chats: {}, sessions: [storedSession(SESSION, "Build it")], creatingIds: [], activeSessionId: SESSION, draft: null });
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("queues a prompt sent during a turn and sends it once the turn ends", async () => {
+    const first = deferredTurn();
+    const second = deferredTurn();
+    vi.mocked(invoke).mockReturnValueOnce(first.turn).mockReturnValueOnce(second.turn);
+
+    const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
+    await useHuntStore.getState().sendPrompt(SESSION, "two");
+    expect(useHuntStore.getState().chats[SESSION].queue.map((prompt) => prompt.text)).toEqual(["two"]);
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
+
+    first.finish("EndTurn");
+    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledTimes(2));
+    const chat = useHuntStore.getState().chats[SESSION];
+    expect(chat.queue).toEqual([]);
+    expect(chat.isBusy).toBe(true);
+    expect(chat.items.filter((item) => item.kind === "user").map((item) => item.kind === "user" && item.text)).toEqual(["one", "two"]);
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "two", images: [] });
+
+    second.finish("EndTurn");
+    await firstSend;
+    expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(false);
+  });
+
+  it("keeps queued prompts unsent when the turn was cancelled", async () => {
+    const first = deferredTurn();
+    vi.mocked(invoke).mockReturnValueOnce(first.turn);
+
+    const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
+    await useHuntStore.getState().sendPrompt(SESSION, "two");
+    first.finish("Cancelled");
+    await firstSend;
+
+    const chat = useHuntStore.getState().chats[SESSION];
+    expect(chat.isBusy).toBe(false);
+    expect(chat.queue.map((prompt) => prompt.text)).toEqual(["two"]);
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands the queue over and takes single prompts out", async () => {
+    const first = deferredTurn();
+    vi.mocked(invoke).mockReturnValueOnce(first.turn);
+    void useHuntStore.getState().sendPrompt(SESSION, "one");
+    await useHuntStore.getState().sendPrompt(SESSION, "two");
+    await useHuntStore.getState().sendPrompt(SESSION, "three");
+
+    const [two] = useHuntStore.getState().chats[SESSION].queue;
+    useHuntStore.getState().unqueuePrompt(SESSION, two.id);
+    expect(useHuntStore.getState().chats[SESSION].queue.map((prompt) => prompt.text)).toEqual(["three"]);
+
+    expect(useHuntStore.getState().takeQueue(SESSION).map((prompt) => prompt.text)).toEqual(["three"]);
+    expect(useHuntStore.getState().chats[SESSION].queue).toEqual([]);
+    expect(useHuntStore.getState().takeQueue(SESSION)).toEqual([]);
+  });
+});
 
 describe("createSession", () => {
   beforeEach(() => {
-    useHuntStore.setState({ chats: {}, sessions: [], creatingIds: [], activeSessionId: null, draft: { parentId: null } });
+    useHuntStore.setState({ chats: {}, sessions: [], creatingIds: [], activeSessionId: null, draft: { parentId: null }, untitledIds: [] });
+    useAgentDefaultsStore.setState({ recentRepoPaths: [] });
     vi.mocked(invoke).mockReset();
   });
 
@@ -214,8 +314,9 @@ describe("createSession", () => {
     expect(pending.creatingIds).toEqual([pending.sessions[0].id]);
     expect(pending.activeSessionId).toBe(pending.sessions[0].id);
     expect(pending.draft).toBeNull();
+    expect(useAgentDefaultsStore.getState().recentRepoPaths).toEqual(["/repo"]);
     expect(pending.chats[pending.sessions[0].id].items).toEqual([{ kind: "user", id: expect.any(String), text: "build it", images: [] }]);
-    expect(vi.mocked(invoke).mock.calls).toEqual([["create_session", { id: pending.sessions[0].id, repoPath: "/repo", baseRef: "main", title: "Build it", pullRequest: null, diffBaseRef: null }]]);
+    expect(vi.mocked(invoke).mock.calls).toEqual([["create_session", { id: pending.sessions[0].id, repoPath: "/repo", baseRef: "main", title: "Build it", pullRequest: null, diffBaseRef: null, workspace: "worktree" }]]);
 
     finish();
     const id = await creation;
@@ -234,6 +335,40 @@ describe("createSession", () => {
     expect(done.chats[id].items).toHaveLength(1);
   });
 
+  it("names a session created without a title after its repository until its first prompt names it", async () => {
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      if (command === "create_session") return Promise.resolve(storedSession((args as { id: string }).id, "repo"));
+      if (command === "rename_session") return Promise.resolve(storedSession((args as { id: string }).id, (args as { title: string }).title));
+      if (command === "send_prompt") return Promise.resolve("end_turn");
+      return Promise.resolve(undefined);
+    });
+
+    const id = await useHuntStore.getState().createSession(TARGET, null, { ...START, prompt: null });
+    expect(useHuntStore.getState().sessions[0].title).toBe("repo");
+    expect(useHuntStore.getState().untitledIds).toEqual([id]);
+    expect(vi.mocked(invoke).mock.calls[0]).toEqual(["create_session", { id, repoPath: "/repo", baseRef: "main", title: "repo", pullRequest: null, diffBaseRef: null, workspace: "worktree" }]);
+
+    await useHuntStore.getState().sendPrompt(id, "Fix the login bug\nwith details");
+    await vi.waitFor(() => expect(useHuntStore.getState().sessions[0].title).toBe("Fix the login bug"));
+    expect(useHuntStore.getState().untitledIds).toEqual([]);
+    expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).toContain("rename_session");
+
+    vi.mocked(invoke).mockClear();
+    await useHuntStore.getState().sendPrompt(id, "And the logout");
+    expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).not.toContain("rename_session");
+  });
+
+  it("keeps the title of a session created with one", async () => {
+    vi.mocked(invoke).mockImplementation((command, args) =>
+      command === "create_session" ? Promise.resolve(storedSession((args as { id: string }).id, "#12 Review")) : Promise.resolve("end_turn"),
+    );
+
+    const id = await useHuntStore.getState().createSession(TARGET, "#12 Review", { ...START, prompt: null });
+    expect(useHuntStore.getState().untitledIds).toEqual([]);
+    await useHuntStore.getState().sendPrompt(id, "Look at the diff");
+    expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).not.toContain("rename_session");
+  });
+
   it("brings the start view back with the error and the prompt when the backend could not create the session", async () => {
     vi.mocked(invoke).mockImplementation((command) => (command === "create_session" ? Promise.reject("failed to add worktree") : Promise.resolve([])));
 
@@ -245,6 +380,7 @@ describe("createSession", () => {
     expect(state.chats).toEqual({});
     expect(state.activeSessionId).toBeNull();
     expect(state.draft).toEqual({ parentId: null, error: "failed to add worktree", prompt: START.prompt });
+    expect(state.untitledIds).toEqual([]);
   });
 
   it("keeps a session being created when the stored list is reloaded without it", async () => {
@@ -285,6 +421,66 @@ describe("createSubSession", () => {
   });
 });
 
+describe("closeSession", () => {
+  beforeEach(() => {
+    const sub = { ...storedSession("sub", "Sub"), parentId: "parent" };
+    useHuntStore.setState({
+      chats: { parent: createEmptyChat(), sub: createEmptyChat(), other: createEmptyChat() },
+      sessions: [sub, storedSession("parent", "Parent"), storedSession("other", "Other")],
+      creatingIds: [],
+      removingIds: [],
+      activeSessionId: "parent",
+      draft: null,
+    });
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("takes the session and its sub sessions off the list before the backend finished", async () => {
+    let finish!: () => void;
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "close_session" ? new Promise<void>((resolve) => { finish = resolve; }) : Promise.resolve([storedSession("other", "Other")]),
+    );
+
+    const closing = useHuntStore.getState().closeSession("parent", true);
+
+    const pending = useHuntStore.getState();
+    expect(pending.sessions.map((session) => session.id)).toEqual(["other"]);
+    expect(pending.removingIds).toEqual(["parent", "sub"]);
+    expect(pending.activeSessionId).toBeNull();
+    expect(Object.keys(pending.chats)).toEqual(["other"]);
+
+    finish();
+    await closing;
+    expect(useHuntStore.getState().removingIds).toEqual([]);
+    expect(vi.mocked(invoke).mock.calls).toEqual([["close_session", { id: "parent", removeWorktree: true }], ["list_sessions"]]);
+  });
+
+  it("keeps a session the backend still deletes out of a concurrent reload", async () => {
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "close_session" ? new Promise(() => {}) : Promise.resolve([storedSession("parent", "Parent"), storedSession("other", "Other")]),
+    );
+
+    void useHuntStore.getState().closeSession("parent", true);
+    await useHuntStore.getState().refreshSessions();
+
+    expect(useHuntStore.getState().sessions.map((session) => session.id)).toEqual(["other"]);
+  });
+
+  it("lists the session again with the error when the deletion failed", async () => {
+    vi.mocked(invoke).mockImplementation((command) =>
+      command === "close_session" ? Promise.reject("failed to remove the worktree") : Promise.resolve([storedSession("parent", "Parent"), storedSession("other", "Other")]),
+    );
+
+    await useHuntStore.getState().closeSession("parent", true);
+
+    const state = useHuntStore.getState();
+    expect(state.sessions.map((session) => session.id)).toEqual(["parent", "other"]);
+    expect(state.removingIds).toEqual([]);
+    expect(state.activeSessionId).toBe("parent");
+    expect(state.chats.parent.error).toBe("Deleting the session failed: failed to remove the worktree");
+  });
+});
+
 describe("agentSetupOf", () => {
   it("takes the chat's select options and mode", () => {
     useHuntStore.setState({ chats: {} });
@@ -299,5 +495,36 @@ describe("agentSetupOf", () => {
     applyUpdate("parent", notification({ sessionUpdate: "current_mode_update", currentModeId: "plan" }));
 
     expect(agentSetupOf(useHuntStore.getState().chats.parent)).toEqual({ configValues: { model: "fable", effort: "high" }, modeId: "plan" });
+  });
+});
+
+describe("clearing", () => {
+  beforeEach(() => {
+    useHuntStore.setState({ chats: {}, sessions: [storedSession(SESSION, "Build it")], creatingIds: [], activeSessionId: SESSION, draft: null });
+    vi.mocked(invoke).mockReset();
+    vi.mocked(invoke).mockResolvedValue(undefined);
+  });
+
+  it("restarts the agent for /clear instead of sending it", async () => {
+    await useHuntStore.getState().sendPrompt(SESSION, " /clear ");
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("clear_session", { id: SESSION });
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("send_prompt", expect.anything());
+    expect(useHuntStore.getState().chats[SESSION].items).toEqual([]);
+  });
+
+  it("queues /clear while a turn runs and restarts once it ended", async () => {
+    let finishTurn: (stopReason: string) => void = () => {};
+    vi.mocked(invoke).mockReturnValueOnce(new Promise<string>((resolve) => {
+      finishTurn = resolve;
+    }));
+    const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
+    await useHuntStore.getState().sendPrompt(SESSION, "/clear");
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
+
+    finishTurn("end_turn");
+    await firstSend;
+    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("clear_session", { id: SESSION }));
+    expect(useHuntStore.getState().chats[SESSION].queue).toEqual([]);
   });
 });

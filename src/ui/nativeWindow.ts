@@ -73,13 +73,12 @@ export async function createWindow(kind: WindowKind, label: string, options: Win
 /**
  * The behaviour every secondary window shares: its bounds are remembered as `kind`, it shows itself once mounted
  * and `isReady` (at once by default), and the traffic light, Escape and ⌘W call `close` (which decides whether the
- * window really goes, e.g. after asking about unsaved edits). Escape is ignored while `isEscapeTaken` is set, e.g.
- * by a popover that closes on Escape itself.
+ * window really goes, e.g. after asking about unsaved edits). Both keys listen in the bubble phase; whatever takes
+ * Escape itself (a popover, a Monaco widget, a selection) stops its propagation and keeps the window open.
  */
-export function useSecondaryWindow(kind: WindowKind, close: () => void | Promise<void>, options: { isEscapeTaken?: boolean; isReady?: boolean } = {}): void {
+export function useSecondaryWindow(kind: WindowKind, close: () => void | Promise<void>, options: { isReady?: boolean } = {}): void {
   const closeRef = useRef(close);
   closeRef.current = close;
-  const isEscapeTaken = options.isEscapeTaken ?? false;
   const isReady = options.isReady ?? true;
 
   useRememberWindowBounds(kind);
@@ -91,14 +90,15 @@ export function useSecondaryWindow(kind: WindowKind, close: () => void | Promise
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      const isCloseKey = (event.key === "Escape" && !isEscapeTaken) || (event.key.toLowerCase() === "w" && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey);
-      if (!isCloseKey || event.defaultPrevented) return;
+      // A focused Monaco editor calls preventDefault on every Escape, so for Escape only a stopped propagation counts as taken.
+      const isCloseKey = event.key === "Escape" || (event.key.toLowerCase() === "w" && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.defaultPrevented);
+      if (!isCloseKey) return;
       event.preventDefault();
       void closeRef.current();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isEscapeTaken]);
+  }, []);
 
   useEffect(() => {
     const subscription = getCurrentWindow().onCloseRequested((event) => {

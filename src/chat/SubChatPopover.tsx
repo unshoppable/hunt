@@ -1,18 +1,27 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { SelectionRequest } from "../diff/selectionContext";
 import type { SelectionContext } from "../ipc/types";
+import { useAgentDefaultsStore } from "../state/agentDefaults";
+import { useSettingsStore } from "../state/settings";
 import { agentSetupOf, useHuntStore } from "../state/store";
+import { DeleteSessionDialog } from "../sessions/DeleteSessionDialog";
+import { findSelectOption, listChoices } from "./configOptions";
 import { MessageList } from "./MessageList";
+import { PillSelect } from "./PillSelect";
 import { PermissionPrompt } from "./PermissionPrompt";
+import { appendPromptTexts, QueuedPrompts, useReturnedPrompts } from "./QueuedPrompts";
 import { describeLines, describeSelection, SelectionCard } from "./SelectionCard";
 import { useFollowScroll } from "./useFollowScroll";
 import { titleFromPrompt } from "../sessions/sessionLabels";
-import { CLEAR_BUTTON, GHOST_BUTTON_SM, ICON_BUTTON_SM, PRIMARY_BUTTON_SM, SEND_BUTTON, STOP_BUTTON } from "../ui/buttons";
-import { CloseIcon, EraserIcon } from "../ui/icons";
+import { DANGER_CLEAR_BUTTON, GHOST_BUTTON_XS, ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SEND_BUTTON } from "../ui/buttons";
+import { CloseIcon, TrashIcon } from "../ui/icons";
+import { ResizeGrips } from "../ui/ResizeGrips";
 import { useAutoGrow } from "../ui/useAutoGrow";
+import { usePopupSize } from "../ui/usePopupSize";
+import { useViewportSize } from "../ui/useViewportSize";
 
-const WIDTH = 640;
-const MAX_HEIGHT = 760;
+const MIN_SIZE = { width: 420, height: 240 };
+/** Space the popover keeps from the window's edges. */
 const MARGIN = 12;
 
 /** The popover a code view shows: a new sub chat about `request`, or the existing sub session `subSessionId` about it. */
@@ -69,13 +78,20 @@ type SubChatPopoverProps = {
  * Floating chat next to a code selection. A new sub session is created with the first question, takes over the
  * parent chat's agent settings and mode, and then behaves like any session: it runs in the background, shows up
  * under its parent in the sidebar and can be opened there in full. Closing the popover keeps the session; the
- * glyph on the selection's first line reopens it with the whole conversation.
+ * glyph on the selection's first line reopens it with the whole conversation. The model pill in the footer picks the
+ * model of a new sub chat or switches the model of the existing one. The popover is resized by dragging
+ * its right or bottom edge (the size is remembered across sessions); until it is dragged taller, it is as tall as
+ * its content, up to the remembered height. A question sent while a turn runs is queued for the end of that turn.
  */
 export function SubChatPopover({ parentSessionId, request, subSessionId: initialSubSessionId, title, placeholder, hasSidebar = true, onClose }: SubChatPopoverProps) {
   const [subSessionId, setSubSessionId] = useState<string | null>(initialSubSessionId ?? null);
   const [text, setText] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+  /** Model picked for a sub chat that does not exist yet; `null` keeps the parent's model. */
+  const [pickedModel, setPickedModel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Whether the "Delete session" dialog for the sub session is open. */
+  const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -85,9 +101,13 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   const loadHistory = useHuntStore((state) => state.loadHistory);
   const resumeSession = useHuntStore((state) => state.resumeSession);
   const sendPrompt = useHuntStore((state) => state.sendPrompt);
-  const cancelPrompt = useHuntStore((state) => state.cancelPrompt);
+  const takeQueue = useHuntStore((state) => state.takeQueue);
+  const unqueuePrompt = useHuntStore((state) => state.unqueuePrompt);
   const answerPermission = useHuntStore((state) => state.answerPermission);
+  const setConfigOption = useHuntStore((state) => state.setConfigOption);
+  const knownOptions = useAgentDefaultsStore((state) => state.knownOptions);
   const selectSession = useHuntStore((state) => state.selectSession);
+  const closeSession = useHuntStore((state) => state.closeSession);
   const activeSessionId = useHuntStore((state) => state.activeSessionId);
   const chat = useHuntStore((state) => (subSessionId ? state.chats[subSessionId] : undefined));
   const parentChat = useHuntStore((state) => state.chats[parentSessionId]);
@@ -96,6 +116,37 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   const isBusy = isCreating || (chat?.isBusy ?? false);
   const isLive = !subSessionId || (subSession?.isLive ?? false);
   const [isResuming, setIsResuming] = useState(false);
+  const queue = chat?.queue ?? [];
+
+  // The sub session's own options once it announced them, before that the parent's, in a secondary window without
+  // the parent's chat the options the agent announced last.
+  const configOptions = [chat?.configOptions, parentChat?.configOptions, knownOptions].find((options) => options?.length) ?? [];
+  const modelOption = findSelectOption(configOptions, "model");
+  const model = modelOption ? (subSessionId ? modelOption.currentValue : (pickedModel ?? modelOption.currentValue)) : null;
+
+  function changeModel(value: string) {
+    if (subSessionId) {
+      void setConfigOption(subSessionId, "model", value);
+    } else {
+      setPickedModel(value);
+    }
+  }
+
+  const viewport = useViewportSize();
+  // Once the height was dragged, the popover keeps that height instead of following its content.
+  const { size, shift, isHeightSet, grips } = usePopupSize("subChat", {
+    min: MIN_SIZE,
+    max: { width: viewport.width - 2 * MARGIN, height: viewport.height - 2 * MARGIN },
+    room: (rendered) => ({ left: left - MARGIN, top: top - MARGIN, right: viewport.width - MARGIN - left - rendered.width, bottom: viewport.height - MARGIN - top - rendered.height }),
+  });
+  // The popover opens at the anchor, moved up or left as far as its remembered size needs to stay inside the window's
+  // margin, so that it can grow with its content without moving. From there a dragged left or top edge moves it by `shift`.
+  const [origin] = useState(() => ({
+    x: Math.max(MARGIN, Math.min(request.anchor.x, window.innerWidth - size.width - MARGIN)),
+    y: Math.max(MARGIN, Math.min(request.anchor.y, window.innerHeight - size.height - MARGIN)),
+  }));
+  const left = Math.max(MARGIN, Math.min(origin.x + shift.x, viewport.width - size.width - MARGIN));
+  const top = Math.max(MARGIN, Math.min(origin.y + shift.y, viewport.height - size.height - MARGIN));
 
   async function resume() {
     if (!subSessionId || isResuming) return;
@@ -134,19 +185,51 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
     }
   }, [hasPermission]);
 
-  useFollowScroll(scrollRef, contentRef, subSessionId);
+  const followEnd = useFollowScroll(scrollRef, contentRef, subSessionId);
   useAutoGrow(textareaRef, text, 5);
+  useReturnedPrompts(
+    chat?.isBusy ?? false,
+    queue,
+    () => (subSessionId ? takeQueue(subSessionId) : []),
+    (prompts) => setText((current) => appendPromptTexts(current, prompts)),
+  );
+
+  function takeBack(promptId: string, promptText: string) {
+    if (!subSessionId) return;
+    unqueuePrompt(subSessionId, promptId);
+    setText((current) => appendPromptTexts(current, [{ id: promptId, text: promptText, images: [] }]));
+  }
 
   function showInMainPane(id: string) {
     void selectSession(id);
     onClose();
   }
 
+  /** Deletes the sub session with its history and closes the popover; the glyph on the selection disappears with it. */
+  function deleteSubSession() {
+    if (!subSessionId) return;
+    setIsConfirmingDelete(false);
+    void closeSession(subSessionId, true);
+    onClose();
+  }
+
+  /** Asks before deleting unless the user turned the dialog off (see DeleteSessionDialog). */
+  function requestDelete() {
+    if (!subSessionId) return;
+    if (useSettingsStore.getState().confirmSessionDelete) {
+      setIsConfirmingDelete(true);
+    } else {
+      deleteSubSession();
+    }
+  }
+
+  /** Sends the question; while a turn of the sub session runs, it is queued instead. */
   async function submit() {
     const trimmed = text.trim();
-    if (!trimmed || isBusy) return;
+    if (!trimmed || (isBusy && !subSessionId)) return;
     setText("");
     setError(null);
+    followEnd();
     if (subSessionId) {
       void sendPrompt(subSessionId, trimmed);
       return;
@@ -154,7 +237,8 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
     // The first question creates the session, which starts with the parent's agent setup and sends the question itself.
     setIsCreating(true);
     try {
-      const setup = parentChat ? agentSetupOf(parentChat) : { configValues: {}, modeId: "default" };
+      const parentSetup = parentChat ? agentSetupOf(parentChat) : { configValues: {}, modeId: "default" };
+      const setup = pickedModel ? { ...parentSetup, configValues: { ...parentSetup.configValues, model: pickedModel } } : parentSetup;
       const id = await createSubSession(parentSessionId, titleFromPrompt(trimmed), request.selection, { setup, prompt: { text: trimmed, images: [] } }, false);
       setSubSessionId(id);
     } catch (reason) {
@@ -165,16 +249,9 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
     }
   }
 
-  /** Escape stops a running turn, otherwise closes the popover. */
-  const onEscape = () => {
-    if (subSessionId && chat?.isBusy) {
-      void cancelPrompt(subSessionId);
-    } else {
-      onClose();
-    }
-  };
-  const onEscapeRef = useRef(onEscape);
-  onEscapeRef.current = onEscape;
+  // Escape closes the popover like every floating surface; a running turn goes on and the glyph reopens the chat.
+  const onEscapeRef = useRef(onClose);
+  onEscapeRef.current = onClose;
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     // The popover owns the keyboard: the main chat's esc / shift+tab shortcuts must not fire from here.
@@ -187,8 +264,9 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
 
   // Escape pressed outside the popover (e.g. in the code view) belongs to it as well, taken in the capture phase like
   // every popover's (see useDismiss) so that the window-wide Escape shortcuts stay quiet. With a permission pending
-  // it only moves the focus here, where the prompt answers the next Escape.
+  // it only moves the focus here, where the prompt answers the next Escape. The delete dialog takes its own Escape.
   useEffect(() => {
+    if (isConfirmingDelete) return;
     function onWindowKeyDown(event: globalThis.KeyboardEvent) {
       if (event.key !== "Escape" || rootRef.current?.contains(event.target as Node)) return;
       event.preventDefault();
@@ -201,7 +279,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
     }
     window.addEventListener("keydown", onWindowKeyDown, true);
     return () => window.removeEventListener("keydown", onWindowKeyDown, true);
-  }, [hasPermission]);
+  }, [hasPermission, isConfirmingDelete]);
 
   function onTextareaKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -210,9 +288,6 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
     }
   }
 
-  const maxHeight = Math.min(MAX_HEIGHT, window.innerHeight - 2 * MARGIN);
-  const left = Math.max(MARGIN, Math.min(request.anchor.x, window.innerWidth - WIDTH - MARGIN));
-  const top = Math.max(MARGIN, Math.min(request.anchor.y, window.innerHeight - maxHeight - MARGIN));
   const lines = describeLines(request.selection);
   /** A stopped sub session has nothing to show between the header and the footer. */
   const showsSelection = !subSessionId && !title;
@@ -224,12 +299,12 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
       role="dialog"
       tabIndex={-1}
       aria-label={title ?? `Sub chat about ${describeSelection(request.selection)}`}
-      style={{ left, top, width: WIDTH, maxHeight }}
+      style={{ left, top, width: size.width, maxHeight: size.height, height: isHeightSet ? size.height : undefined }}
       onKeyDown={onKeyDown}
       onMouseDown={(event) => event.stopPropagation()}
       className="chat fixed z-50 flex flex-col overflow-hidden rounded-xl border border-neutral-600 bg-(--surface-chat) text-sm shadow-2xl shadow-black/50 outline-none"
     >
-      <header className="flex items-center gap-2 border-b border-(--line) px-3 py-2.5">
+      <header className="flex items-center gap-2 border-b border-(--line) pr-9 pl-12 py-2.5">
         <span className="min-w-0 flex-1 truncate text-[13px] text-neutral-400" title={describeSelection(request.selection)}>
           {title ?? (
             <>
@@ -241,7 +316,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
           <button
             type="button"
             onClick={() => showInMainPane(subSessionId)}
-            className={GHOST_BUTTON_SM}
+            className={GHOST_BUTTON_XS}
             title="Show this sub chat in the main pane"
           >
             Open in sidebar
@@ -252,7 +327,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
         </button>
       </header>
 
-      <div ref={scrollRef} className={`min-h-0 flex-1 overflow-y-auto px-4 ${hasBody ? "py-3" : ""}`}>
+      <div ref={scrollRef} className={`min-h-0 flex-1 overflow-y-auto px-12 ${hasBody ? "py-3" : ""}`}>
         <div ref={contentRef} className="flex flex-col gap-3">
           {showsSelection ? <SelectionCard selection={request.selection} isOpen label={lines} /> : null}
           {chat?.isLoading ? <p className="text-neutral-500">Loading session…</p> : null}
@@ -269,61 +344,61 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
       </div>
 
       {isLive ? (
-        <div className="flex items-end gap-2 border-t border-(--line) px-4 py-2">
-          <textarea
-            ref={textareaRef}
-            value={text}
-            disabled={Boolean(chat?.permission)}
-            onChange={(event) => setText(event.target.value)}
-            onKeyDown={onTextareaKeyDown}
-            rows={1}
-            placeholder={subSessionId ? "Follow up…" : (placeholder ?? "Ask about the selected code…")}
-            className="block min-w-0 flex-1 resize-none bg-transparent py-1 outline-none placeholder:text-neutral-600 disabled:opacity-50"
-          />
-          {subSessionId ? (
-            <button
-              type="button"
-              onClick={() => void sendPrompt(subSessionId, "/clear")}
-              disabled={isBusy || hasPermission}
-              title="Clear conversation (/clear)"
-              className={CLEAR_BUTTON}
-            >
-              <EraserIcon />
-            </button>
-          ) : null}
-          {isBusy && subSessionId ? (
-            <button
-              type="button"
-              onClick={() => void cancelPrompt(subSessionId)}
-              title="Stop (esc)"
-              className={STOP_BUTTON}
-            >
-              <svg viewBox="0 0 16 16" className="size-3" fill="currentColor" aria-hidden="true">
-                <rect x="3" y="3" width="10" height="10" rx="1.5" />
-              </svg>
-            </button>
-          ) : (
+        <div className="border-t border-(--line) bg-(--surface-input) px-12 py-3">
+          <QueuedPrompts queue={queue} onTakeBack={(prompt) => takeBack(prompt.id, prompt.text)} />
+          <div className="flex items-end gap-2">
+            <textarea
+              ref={textareaRef}
+              value={text}
+              disabled={Boolean(chat?.permission)}
+              onChange={(event) => setText(event.target.value)}
+              onKeyDown={onTextareaKeyDown}
+              rows={1}
+              placeholder={chat?.isBusy ? "Enter queues the question for after this turn" : subSessionId ? "Follow up…" : (placeholder ?? "Ask about the selected code…")}
+              className="block min-w-0 flex-1 resize-none bg-transparent py-[calc((36px-1lh)/2)] outline-none placeholder:text-neutral-600 disabled:opacity-50"
+            />
+            {modelOption && model ? (
+              <PillSelect
+                title={modelOption.name}
+                value={model}
+                options={listChoices(modelOption).map((choice) => ({ id: choice.value, name: choice.name }))}
+                onChange={changeModel}
+                disabled={isCreating}
+              />
+            ) : null}
+            {subSessionId ? (
+              <button type="button" onClick={requestDelete} disabled={isCreating} title="Delete this sub chat" aria-label="Delete this sub chat" className={DANGER_CLEAR_BUTTON}>
+                <TrashIcon />
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => void submit()}
-              disabled={!text.trim() || isBusy}
-              title="Send (enter)"
+              disabled={!text.trim() || isCreating || hasPermission}
+              title={chat?.isBusy ? "Queue for after this turn (enter)" : "Send (enter)"}
               className={SEND_BUTTON}
             >
               <svg viewBox="0 0 16 16" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M8 13V3M4 7l4-4 4 4" />
               </svg>
             </button>
-          )}
+          </div>
         </div>
       ) : (
-        <div className="flex items-center justify-between gap-2 border-t border-(--line) px-4 py-2 text-[13px] text-neutral-400">
-          <span>Agent is not running.</span>
-          <button type="button" disabled={isResuming} onClick={() => void resume()} className={PRIMARY_BUTTON_SM}>
+        <div className="flex items-center justify-between gap-2 border-t border-(--line) px-12 py-2 text-[13px] text-neutral-400">
+          <span className="flex-1">Agent is not running.</span>
+          <button type="button" onClick={requestDelete} title="Delete this sub chat" aria-label="Delete this sub chat" className={DANGER_CLEAR_BUTTON}>
+            <TrashIcon />
+          </button>
+          <button type="button" disabled={isResuming} onClick={() => void resume()} className={PRIMARY_BUTTON_XS}>
             {isResuming ? "Resuming…" : "Resume"}
           </button>
         </div>
       )}
+      {isConfirmingDelete && subSession ? (
+        <DeleteSessionDialog question={`Delete sub session "${subSession.title}"?`} onConfirm={deleteSubSession} onClose={() => setIsConfirmingDelete(false)} />
+      ) : null}
+      <ResizeGrips edges={{ left: true, top: true, right: true, bottom: true }} {...grips} />
     </div>
   );
 }

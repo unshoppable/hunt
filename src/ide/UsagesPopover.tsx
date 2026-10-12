@@ -7,11 +7,14 @@ import { useFileIconUrl } from "../diff/fileIcons";
 import { PREVIEW_EDITOR_OPTIONS, monacoLanguage } from "../diff/monaco";
 import { commands } from "../ipc/commands";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
-import { CODE_FONT_FAMILY, useSettingsStore, type UsagesPopupSize } from "../state/settings";
+import { CODE_FONT_FAMILY } from "../state/settings";
 import { STATUS_BAR } from "../ui/bars";
 import { ChevronIcon, CopyIcon, ExternalIcon, EyeIcon } from "../ui/icons";
 import { baseName } from "../ui/path";
+import { trackDrag } from "../ui/pointerDrag";
+import { ResizeGrips } from "../ui/ResizeGrips";
 import { useDismiss } from "../ui/useDismiss";
+import { usePopupSize } from "../ui/usePopupSize";
 import type { Workspace } from "./documents";
 import { KindIcon } from "./KindIcon";
 import type { Declaration } from "./languageService";
@@ -19,11 +22,8 @@ import { kindLabel, sliceRuns, stepSelection, usageCountLabel, type Usage } from
 
 /** Space the popup keeps from the overlay's edges. */
 const EDGE_GAP = 4;
-const MIN_WIDTH = 520;
-const MIN_HEIGHT = 280;
+const MIN_SIZE = { width: 520, height: 280 };
 const ROW_HEIGHT = 28;
-/** Width of the invisible strips along the right and bottom edge that resize the popup. */
-const RESIZE_GRIP = 5;
 
 /** The symbol whose usages are listed; `usages` is null while the search runs. */
 export type UsagesQuery = {
@@ -44,10 +44,7 @@ type UsagesPopoverProps = {
   onClose: () => void;
 };
 
-/** The largest size the popup may take inside the overlay. */
-type Bounds = { maxWidth: number; maxHeight: number };
-
-/** Where the popup sits relative to the anchor; dragging the title bar changes it. */
+/** Where the popup sits relative to the anchor; dragging the title bar or its left or top edge changes it. */
 type Offset = { x: number; y: number };
 
 /** The anchor in overlay coordinates and the overlay's size, recomputed when the editor relayouts. */
@@ -57,20 +54,12 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(value, max));
 }
 
-/** `size` kept inside the editor and above the minimum size. */
-function fitSize(size: UsagesPopupSize, bounds: Bounds): UsagesPopupSize {
-  return {
-    width: Math.max(Math.min(MIN_WIDTH, bounds.maxWidth), Math.min(size.width, bounds.maxWidth)),
-    height: Math.max(Math.min(MIN_HEIGHT, bounds.maxHeight), Math.min(size.height, bounds.maxHeight)),
-  };
-}
-
 /**
  * WebStorm's "Show Usages" popup for a ⌘clicked declaration: a title naming the symbol with its parameter types, a
  * toolbar, one row per usage (file, enclosing declaration, line, the highlighted line with the name in bold), a
  * read-only preview of the selected usage and the selected file's project-relative path in the footer. ↑ / ↓ move
  * the selection, Enter or a double click opens the usage in the pane, Esc or a click outside closes the popup.
- * The popup is moved by dragging its title bar, resized by dragging its right or bottom edge (the size is remembered
+ * The popup is moved by dragging its title bar, resized by dragging any edge or corner (the size is remembered
  * across sessions) and the split between list and preview by dragging the separator. It is rendered into the IDE
  * panel's root (the overlay), so it can be moved over the project tree and the other panes, not only the editor.
  */
@@ -78,27 +67,29 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
   const rootRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
-  const storedSize = useSettingsStore((state) => state.usagesPopupSize);
-  const setUsagesPopupSize = useSettingsStore((state) => state.setUsagesPopupSize);
   const overlay = useMemo(() => overlayOf(editor), [editor]);
   const [{ anchor, viewport }, setPlacement] = useState(() => placementOf(editor, overlay, query.anchor));
   const [offset, setOffset] = useState<Offset>({ x: 0, y: 0 });
-  const [size, setSize] = useState(storedSize);
   const [selected, setSelected] = useState(0);
   const [showPreview, setShowPreview] = useState(true);
   const usages = query.usages;
   const selectedUsage = usages?.[selected] ?? null;
   const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
-  const bounds: Bounds = { maxWidth: viewport.width - EDGE_GAP * 2, maxHeight: viewport.height - EDGE_GAP * 2 };
-  const fitted = fitSize(size, bounds);
-  // The whole popup stays inside the overlay, whatever the anchor line and the drag offset.
+  const maxSize = { width: viewport.width - EDGE_GAP * 2, height: viewport.height - EDGE_GAP * 2 };
+  // A dragged edge stops at the overlay's edge, so the opposite edge stays put.
+  const { size, shift, grips } = usePopupSize("usages", {
+    min: MIN_SIZE,
+    max: maxSize,
+    room: (rendered) => ({ left: position.left - EDGE_GAP, top: position.top - EDGE_GAP, right: EDGE_GAP + maxSize.width - position.left - rendered.width, bottom: EDGE_GAP + maxSize.height - position.top - rendered.height }),
+  });
+  // The whole popup stays inside the overlay, whatever the anchor line, the drag offset and the resize shift.
   const position = {
-    left: clamp(anchor.left + offset.x, EDGE_GAP, Math.max(EDGE_GAP, EDGE_GAP + bounds.maxWidth - fitted.width)),
-    top: clamp(anchor.top + offset.y, EDGE_GAP, Math.max(EDGE_GAP, EDGE_GAP + bounds.maxHeight - fitted.height)),
+    left: clamp(anchor.left + offset.x + shift.x, EDGE_GAP, Math.max(EDGE_GAP, EDGE_GAP + maxSize.width - size.width)),
+    top: clamp(anchor.top + offset.y + shift.y, EDGE_GAP, Math.max(EDGE_GAP, EDGE_GAP + maxSize.height - size.height)),
   };
 
-  const latest = useRef({ fitted, position, anchor, bounds });
-  latest.current = { fitted, position, anchor, bounds };
+  const latest = useRef({ position, anchor, shift });
+  latest.current = { position, anchor, shift };
 
   useEffect(() => {
     const subscription = editor.onDidLayoutChange(() => setPlacement(placementOf(editor, overlay, query.anchor)));
@@ -154,43 +145,6 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
     };
   }, [editor, workspace, selectedUsage, lineHeight, showPreview]);
 
-  /** Tracks a pointer drag on `event.currentTarget` until the pointer is released. */
-  const trackDrag = (event: ReactPointerEvent<HTMLElement>, onMove: (dx: number, dy: number) => void, onEnd: () => void) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const target = event.currentTarget;
-    const origin = { x: event.clientX, y: event.clientY };
-    const handleMove = (move: PointerEvent) => onMove(move.clientX - origin.x, move.clientY - origin.y);
-    const handleEnd = () => {
-      target.removeEventListener("pointermove", handleMove);
-      target.removeEventListener("pointerup", handleEnd);
-      target.removeEventListener("pointercancel", handleEnd);
-      onEnd();
-    };
-    target.setPointerCapture(event.pointerId);
-    target.addEventListener("pointermove", handleMove);
-    target.addEventListener("pointerup", handleEnd);
-    target.addEventListener("pointercancel", handleEnd);
-  };
-
-  /** Drags the popup's edge: `axes` names the dimensions the grip changes; the final size is remembered. */
-  const beginResize = (event: ReactPointerEvent<HTMLDivElement>, axes: { x?: boolean; y?: boolean }) => {
-    const { fitted: origin, position: start, bounds: limits } = latest.current;
-    // The left and top edge stay put, so the popup may only grow up to the overlay's right and bottom edge.
-    const maxWidth = EDGE_GAP + limits.maxWidth - start.left;
-    const maxHeight = EDGE_GAP + limits.maxHeight - start.top;
-    trackDrag(
-      event,
-      (dx, dy) => {
-        setSize({
-          width: axes.x ? Math.min(origin.width + dx, maxWidth) : origin.width,
-          height: axes.y ? Math.min(origin.height + dy, maxHeight) : origin.height,
-        });
-      },
-      () => setUsagesPopupSize(latest.current.fitted),
-    );
-  };
-
   /** Drags the popup by its title bar; the offset is kept relative to the anchor so the popup follows a relayout. */
   const beginMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
@@ -200,8 +154,8 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
       (dx, dy) => setOffset({ x: start.x + dx, y: start.y + dy }),
       () => {
         // Snaps the offset to where the popup ended up, so a drag past the overlay's edge does not leave slack.
-        const { position: end, anchor: origin } = latest.current;
-        setOffset({ x: end.left - origin.left, y: end.top - origin.top });
+        const { position: end, anchor: origin, shift: moved } = latest.current;
+        setOffset({ x: end.left - origin.left - moved.x, y: end.top - origin.top - moved.y });
       },
     );
   };
@@ -254,7 +208,7 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
       aria-label="Usages"
       tabIndex={-1}
       className="hunt-usages-popover absolute z-20 flex flex-col overflow-hidden rounded-md border border-neutral-600 bg-(--surface-inspector) text-[13px] shadow-xl shadow-black/50 outline-none"
-      style={{ top: position.top, left: position.left, width: fitted.width, height: fitted.height }}
+      style={{ top: position.top, left: position.left, width: size.width, height: size.height }}
       onKeyDown={onKeyDown}
       onMouseDown={(event) => event.stopPropagation()}
     >
@@ -304,9 +258,7 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
       <div className={`${STATUS_BAR} text-neutral-400`} title={selectedUsage?.path ?? query.path}>
         <span className="truncate">{selectedUsage?.path ?? query.path}</span>
       </div>
-      <div className="absolute top-0 right-0 bottom-0 cursor-ew-resize" style={{ width: RESIZE_GRIP }} onPointerDown={(event) => beginResize(event, { x: true })} />
-      <div className="absolute right-0 bottom-0 left-0 cursor-ns-resize" style={{ height: RESIZE_GRIP }} onPointerDown={(event) => beginResize(event, { y: true })} />
-      <div className="absolute right-0 bottom-0 cursor-nwse-resize" style={{ width: RESIZE_GRIP * 2, height: RESIZE_GRIP * 2 }} onPointerDown={(event) => beginResize(event, { x: true, y: true })} />
+      <ResizeGrips edges={{ left: true, top: true, right: true, bottom: true }} {...grips} />
     </div>,
     overlay,
   );

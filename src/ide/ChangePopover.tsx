@@ -4,10 +4,11 @@ import { computeInnerChanges, rangeLength } from "../diff/lineDiff";
 import { PREVIEW_EDITOR_OPTIONS } from "../diff/monaco";
 import type { ChangeMarkers, Marker } from "./changeMarkers";
 import { CopyIcon } from "../ui/icons";
+import { ResizeGrips } from "../ui/ResizeGrips";
 import { useDismiss } from "../ui/useDismiss";
+import { usePopupSize } from "../ui/usePopupSize";
 
-const MAX_VISIBLE_LINES = 12;
-const MAX_WIDTH = 720;
+const MIN_SIZE = { width: 320, height: 120 };
 const EDGE_GAP = 12;
 
 type Position = { top: number; left: number; maxWidth: number };
@@ -25,12 +26,14 @@ type ChangePopoverProps = {
  * WebStorm's change popup for one gutter marker: a toolbar (previous / next change, rollback, copy) above the lines
  * the block had at HEAD, shown read-only on the deletion tint with the original line numbers. It sits over the
  * block's first line, follows the editor's scrolling and closes on Esc, a click outside or when the line leaves
- * the viewport.
+ * the viewport. It is as tall as the lines up to the remembered height; dragging its right or bottom edge resizes it.
  */
 export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }: ChangePopoverProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const codeRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<Position | null>(() => anchorOf(editor, marker));
+  const layout = editor.getLayoutInfo();
+  const { size, isHeightSet, grips } = usePopupSize("change", { min: MIN_SIZE, max: { width: position?.maxWidth ?? layout.width, height: layout.height - 2 } });
   const { block } = marker;
   const originalLines = markers.headLines.slice(block.original.start - 1, block.original.end - 1);
   const index = markers.markers.indexOf(marker);
@@ -61,7 +64,7 @@ export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }
     if (!root || !position) return;
     const height = editor.getLayoutInfo().height;
     root.style.top = `${Math.max(0, Math.min(position.top, height - root.offsetHeight - 2))}px`;
-  }, [editor, position, originalLines.length]);
+  }, [editor, position, originalLines.length, size.height, isHeightSet]);
 
   useDismiss(rootRef, onClose);
 
@@ -82,7 +85,7 @@ export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }
       lineNumbersMinChars: String(block.original.end - 1).length + 1,
       lineDecorationsWidth: 8,
       renderLineHighlight: "none",
-      scrollbar: { ...PREVIEW_EDITOR_OPTIONS.scrollbar, vertical: originalLines.length > MAX_VISIBLE_LINES ? "auto" : "hidden" },
+      scrollbar: { ...PREVIEW_EDITOR_OPTIONS.scrollbar, vertical: "auto" },
     });
     const shift = firstLine - 1;
     const inner = computeInnerChanges(block, markers.headLines, model.getLinesContent()).original;
@@ -128,7 +131,7 @@ export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }
       role="dialog"
       aria-label="Change"
       className="hunt-change-popover absolute z-20 flex flex-col overflow-hidden rounded-md border border-neutral-600 bg-(--surface-inspector) shadow-xl shadow-black/50"
-      style={{ top: position.top, left: position.left, width: Math.min(MAX_WIDTH, position.maxWidth) }}
+      style={{ top: position.top, left: position.left, width: size.width, maxHeight: size.height, height: isHeightSet ? size.height : undefined }}
       onMouseDown={(event) => event.stopPropagation()}
     >
       <div className="flex shrink-0 items-center gap-0.5 border-b border-(--line) px-2 py-2 text-neutral-300">
@@ -147,7 +150,8 @@ export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }
         </ToolbarButton>
         <span className="ml-auto pr-1 text-[12px] text-neutral-500">{summary ?? `${count ? index + 1 : 0} / ${count}`}</span>
       </div>
-      {originalLines.length ? <div ref={codeRef} style={{ height: Math.min(originalLines.length, MAX_VISIBLE_LINES) * lineHeight }} /> : null}
+      {originalLines.length ? <div ref={codeRef} className="min-h-0 shrink" style={{ height: originalLines.length * lineHeight }} /> : null}
+      <ResizeGrips edges={{ right: true, bottom: true }} {...grips} />
     </div>
   );
 }

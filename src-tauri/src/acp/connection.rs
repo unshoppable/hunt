@@ -15,7 +15,7 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{
     on_receive_notification, on_receive_request, AcpAgent, AcpAgentConfig, Agent, Client,
-    ConnectionTo, Error,
+    ConnectionTo, Error, ErrorCode,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -23,6 +23,8 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::session::attribution;
+
+const ACP_SCRIPT: &str = "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
 
 /// A running agent process bound to one Hunt session.
 pub struct LiveSession {
@@ -63,10 +65,37 @@ impl LiveSession {
 #[derive(Default)]
 pub struct SessionRegistry {
     pub live: tokio::sync::Mutex<HashMap<Uuid, LiveSession>>,
-    pub connecting: tokio::sync::Mutex<HashSet<Uuid>>,
+    connecting: tokio::sync::Mutex<HashSet<Uuid>>,
+    start_ended: tokio::sync::Notify,
 }
 
 impl SessionRegistry {
+    /// Claims the start of the agent of `id`; while another start of it runs, waits for that one to end. Returns
+    /// `false` when the agent is live, so there is nothing to start. A claim is given back with `end_start`.
+    pub async fn claim_start(&self, id: Uuid) -> bool {
+        loop {
+            // Registered before the check, so an `end_start` between the check and the wait is not missed.
+            let ended = self.start_ended.notified();
+            {
+                // The start inserts its live session before it ends its claim, so under this lock one of both is seen.
+                let mut connecting = self.connecting.lock().await;
+                if self.live.lock().await.contains_key(&id) {
+                    return false;
+                }
+                if connecting.insert(id) {
+                    return true;
+                }
+            }
+            ended.await;
+        }
+    }
+
+    /// Ends the start of `id`'s agent, successful or not, and wakes the starts waiting for it.
+    pub async fn end_start(&self, id: Uuid) {
+        self.connecting.lock().await.remove(&id);
+        self.start_ended.notify_waiters();
+    }
+
     /// Shuts every session down and waits (bounded) until their agent processes are gone.
     pub async fn shutdown_all(&self) {
         let mut receivers = Vec::new();
@@ -147,8 +176,7 @@ struct AgentTask {
     worktree: PathBuf,
     history: Arc<Mutex<Vec<SessionNotification>>>,
     start: SessionStart,
-    language: String,
-    context_prompt: Option<String>,
+    system_prompt: String,
     ready: ReadyHandoff,
     shutdown: oneshot::Receiver<()>,
     finished: oneshot::Sender<()>,
@@ -173,7 +201,7 @@ pub async fn connect(
     start: SessionStart,
     context_prompt: Option<String>,
 ) -> Result<LiveSession, String> {
-    let script = acp_script_path(&app)?;
+    let script = bundled_script_path(&app, ACP_SCRIPT)?;
     let agent = AcpAgent::new(AcpAgentConfig::new("node").arg(script.to_string_lossy()));
 
     let (ready, ready_receiver) = ReadyHandoff::new();
@@ -190,8 +218,7 @@ pub async fn connect(
         worktree,
         history: history.clone(),
         start,
-        language: crate::preferences::ai_language(&app),
-        context_prompt,
+        system_prompt: system_prompt_append(&app, context_prompt),
         ready,
         shutdown: shutdown_receiver,
         finished: finished_sender,
@@ -212,7 +239,7 @@ pub async fn connect(
 /// Runs the agent process until it exits or the session is shut down: forwards its notifications and permission
 /// requests, hands the established session to `connect`, and announces the end to the registries and the UI.
 async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
-    let AgentTask { app, hunt_session_id, worktree, history, start, language, context_prompt, ready, shutdown, finished } = task;
+    let AgentTask { app, hunt_session_id, worktree, history, start, system_prompt, ready, shutdown, finished } = task;
     let notify_app = app.clone();
     let permission_app = app.clone();
     let session_ready = ready.clone();
@@ -240,7 +267,7 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
             on_receive_request!(),
         )
         .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
-            run_session(connection, start, language, context_prompt, session_ready, shutdown).await
+            run_session(connection, start, system_prompt, session_ready, shutdown).await
         })
         .await;
 
@@ -259,13 +286,12 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
 async fn run_session(
     connection: ConnectionTo<Agent>,
     start: SessionStart,
-    language: String,
-    context_prompt: Option<String>,
+    system_prompt: String,
     ready: ReadyHandoff,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<(), Error> {
     // A failed setup is not fired here: it surfaces as the connection's result, which fires the handoff with it.
-    let (acp_session_id, config_options) = establish(&connection, start, language, context_prompt).await?;
+    let (acp_session_id, config_options) = establish(&connection, start, &system_prompt).await?;
     ready.fire(Ok((acp_session_id, config_options, connection.clone())));
 
     tokio::select! {
@@ -278,7 +304,7 @@ async fn run_session(
 /// Removes a session whose agent process ended from the registries so it can be reopened.
 async fn forget_live_session(app: &AppHandle, hunt_session_id: Uuid) {
     app.state::<SessionRegistry>().live.lock().await.remove(&hunt_session_id);
-    app.state::<SessionRegistry>().connecting.lock().await.remove(&hunt_session_id);
+    app.state::<SessionRegistry>().end_start(hunt_session_id).await;
     crate::graph::unwatch(&app.state::<crate::graph::WatcherRegistry>(), hunt_session_id);
     attribution::forget_session(app, hunt_session_id);
     app.state::<PermissionRegistry>()
@@ -289,12 +315,13 @@ async fn forget_live_session(app: &AppHandle, hunt_session_id: Uuid) {
 }
 
 /// Initializes the protocol and creates or loads the session; returns its ID and config options.
-/// `language` is the one the diagram instructions ask for, `context_prompt` is appended after them.
+/// `system_prompt` is appended to the agent's own system prompt (see `system_prompt_append`).
+/// A conversation the agent no longer has (its transcript was cleaned up or never written) is replaced by a new
+/// one, so the session stays usable; the caller stores the new ID.
 async fn establish(
     connection: &ConnectionTo<Agent>,
     start: SessionStart,
-    language: String,
-    context_prompt: Option<String>,
+    system_prompt: &str,
 ) -> Result<(SessionId, Vec<SessionConfigOption>), Error> {
     let mut capability_meta = Meta::new();
     capability_meta.insert("terminal_output".into(), serde_json::Value::Bool(true));
@@ -307,28 +334,55 @@ async fn establish(
         .await?;
 
     match start {
-        SessionStart::New { cwd } => {
-            let response = connection
-                .send_request(NewSessionRequest::new(cwd).meta(build_session_meta(&language, context_prompt.as_deref())))
-                .block_task()
-                .await?;
-            Ok((response.session_id, response.config_options.unwrap_or_default()))
-        }
+        SessionStart::New { cwd } => new_session(connection, cwd, system_prompt).await,
         SessionStart::Load { cwd, acp_session_id } => {
             let session_id = SessionId::new(acp_session_id);
-            let request = LoadSessionRequest::new(session_id.clone(), cwd)
-                .meta(build_session_meta(&language, context_prompt.as_deref()));
-            let response = connection.send_request(request).block_task().await?;
-            Ok((session_id, response.config_options.unwrap_or_default()))
+            let request = LoadSessionRequest::new(session_id.clone(), cwd.clone())
+                .meta(build_session_meta(system_prompt));
+            match connection.send_request(request).block_task().await {
+                Ok(response) => Ok((session_id, response.config_options.unwrap_or_default())),
+                Err(error) if error.code == ErrorCode::ResourceNotFound => {
+                    eprintln!("the agent no longer has the conversation {session_id}, starting a new one: {error}");
+                    new_session(connection, cwd, system_prompt).await
+                }
+                Err(error) => Err(error),
+            }
         }
     }
 }
 
-/// System prompt additions: the diagram instructions in the user's AI language plus the optional selection context.
-fn build_session_meta(language: &str, context_prompt: Option<&str>) -> Meta {
+/// Creates a new session in `cwd` on the initialized connection; returns its ID and config options.
+async fn new_session(
+    connection: &ConnectionTo<Agent>,
+    cwd: PathBuf,
+    system_prompt: &str,
+) -> Result<(SessionId, Vec<SessionConfigOption>), Error> {
+    let response = connection
+        .send_request(NewSessionRequest::new(cwd).meta(build_session_meta(system_prompt)))
+        .block_task()
+        .await?;
+    Ok((response.session_id, response.config_options.unwrap_or_default()))
+}
+
+/// Everything Hunt appends to the agent's system prompt: the user's response-style prompt from the settings (if
+/// not cleared), the diagram instructions in the user's AI language and the optional selection context.
+fn system_prompt_append(app: &AppHandle, context_prompt: Option<String>) -> String {
+    let style = crate::preferences::system_prompt(app);
+    let diagram = crate::graph::system_prompt(&crate::preferences::ai_language(app));
+    let mut append = String::new();
+    if !style.is_empty() {
+        append.push_str(&style);
+        append.push_str("\n\n");
+    }
+    append.push_str(&diagram);
+    append.push_str(context_prompt.as_deref().unwrap_or_default());
+    append
+}
+
+/// The `session/new` and `session/load` meta the adapter reads the system prompt addition from.
+fn build_session_meta(system_prompt: &str) -> Meta {
     let mut meta = Meta::new();
-    let append = format!("{}{}", crate::graph::system_prompt(language), context_prompt.unwrap_or_default());
-    meta.insert("systemPrompt".into(), serde_json::json!({ "append": append }));
+    meta.insert("systemPrompt".into(), serde_json::json!({ "append": system_prompt }));
     meta
 }
 
@@ -359,23 +413,21 @@ async fn ask_permission(
     }
 }
 
-/// Resolves the ACP agent entry point: the npm package next to the app in development,
-/// the bundled resource copy in a release build.
-fn acp_script_path(app: &AppHandle) -> Result<PathBuf, String> {
-    const SCRIPT: &str = "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
-
-    let development_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join(SCRIPT);
+/// Resolves a script shipped with the app by its repo-relative path (`tauri.conf.json` bundles it under the same
+/// path): the copy next to the app in development, the bundled resource copy in a release build.
+pub fn bundled_script_path(app: &AppHandle, script: &str) -> Result<PathBuf, String> {
+    let development_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join(script);
     if cfg!(debug_assertions) && development_path.exists() {
         return Ok(development_path);
     }
 
     let resource_path = app
         .path()
-        .resolve(SCRIPT, tauri::path::BaseDirectory::Resource)
-        .map_err(|error| format!("failed to resolve the claude-agent-acp resource: {error}"))?;
+        .resolve(script, tauri::path::BaseDirectory::Resource)
+        .map_err(|error| format!("failed to resolve the {script} resource: {error}"))?;
     if resource_path.exists() {
         return Ok(resource_path);
     }
 
-    Err(format!("claude-agent-acp is not installed at {}", resource_path.display()))
+    Err(format!("{script} is not installed at {}", resource_path.display()))
 }

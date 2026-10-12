@@ -3,6 +3,7 @@ import { commands } from "../ipc/commands";
 import type { ChangedFile, ChangedFileView } from "../ipc/types";
 import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
+import { selectionChatsFor, useBusyChatIds } from "../ide/selectionChats";
 import { otherTouchers, type ChangeScope } from "./attribution";
 import { buildChangeTree, type FolderNode, type TreeNode } from "./changeTree";
 import { Checkbox, type CheckState } from "./Checkbox";
@@ -10,10 +11,13 @@ import { folderIconUrl, useFileIconUrl } from "./fileIcons";
 import { useReviewDraftCount } from "../review/reviewComments";
 import { ReviewDialog } from "./ReviewDialog";
 import { ShelfList } from "./ShelfList";
+import { sessionMarks } from "../sessions/sessionLabels";
+import { SessionMark } from "../sessions/SessionMark";
 import { ShelveDialog } from "./ShelveDialog";
 import { baseName, dirName } from "../ui/path";
 import { STATUS_NAME_CLASS } from "./styles";
-import { ICON_BUTTON_SM, PRIMARY_BUTTON_SM, SECONDARY_BUTTON_SM, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
+import { AgentButton } from "../ui/AgentButton";
+import { ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 
 type Tab = "changes" | "shelf";
@@ -31,7 +35,8 @@ export type ScopeControl = { value: ChangeScope; hiddenCount: number; includesPa
 
 /**
  * The changelist: changed files as a flat list or folder tree with checkboxes, plus the shelf tab and either the shelve
- * action for the checked files or, in a pull request review, the submission of the review.
+ * action for the checked files or, in a pull request review, the submission of the review. Every file row has an
+ * agent button that opens a sub chat about the whole file; it shows on hover, or always once such a chat exists.
  */
 export function ChangeList({
   sessionId,
@@ -41,6 +46,7 @@ export function ChangeList({
   hasUnsavedChanges,
   onSelect,
   onContextMenu,
+  onAskAgent,
   onWorktreeChanged,
 }: {
   sessionId: string;
@@ -52,6 +58,8 @@ export function ChangeList({
   hasUnsavedChanges: boolean;
   onSelect: (path: string) => void;
   onContextMenu: (event: MouseEvent, file: ChangedFile) => void;
+  /** Opens the sub chat about the whole file next to its agent button. */
+  onAskAgent: (file: ChangedFile, button: HTMLElement) => void;
   /** Called after a shelve or unshelve so the owner reloads the worktree state. */
   onWorktreeChanged: () => void;
 }) {
@@ -80,20 +88,47 @@ export function ChangeList({
 
   const tree = useMemo(() => buildChangeTree(files), [files]);
   const filesByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
+  const busyChatIds = useBusyChatIds();
+  const marks = useMemo(() => sessionMarks(sessions), [sessions]);
+  /**
+   * Paths with a whole-file sub chat (a selection with a task), whose agent button stays visible, mapped to whether
+   * that chat's agent is running a turn, which makes the button pulse.
+   */
+  const fileChats = useMemo(() => {
+    const result = new Map<string, boolean>();
+    for (const file of files) {
+      const chats = selectionChatsFor(sessions, sessionId, file.path).filter((chat) => !!chat.selection.task);
+      if (!chats.length) continue;
+      result.set(file.path, chats.some((chat) => busyChatIds.has(chat.sessionId)));
+    }
+    return result;
+  }, [files, sessions, sessionId, busyChatIds]);
 
-  /** Badge for a file other sessions of the worktree changed: `null` when only this session or its parent did. */
+  /**
+   * Marks of the other sessions of the worktree that changed a file: `null` when only this session or its parent did.
+   * A sub session of another family carries its parent's letter, e.g. `B2`; a deleted session shows `?`.
+   */
   const renderOwnerBadge = (path: string) => {
     const file = filesByPath.get(path);
     if (!file) return null;
-    const titles = otherTouchers(file, sessionId, parentId).map((id) => sessions.find((session) => session.id === id)?.title ?? "a deleted session");
-    if (!titles.length) return null;
+    const owners = otherTouchers(file, sessionId, parentId).map((id) => {
+      const owner = sessions.find((candidate) => candidate.id === id);
+      if (!owner) return { id, mark: "?", title: "a deleted session" };
+      const isOtherFamily = !!owner.parentId && owner.parentId !== sessionId && owner.parentId !== parentId;
+      const parentMark = isOtherFamily && owner.parentId ? (marks.get(owner.parentId) ?? "") : "";
+      return { id, mark: `${parentMark}${marks.get(id) ?? "?"}`, title: owner.title };
+    });
+    if (!owners.length) return null;
     const isShared = file.touchedBy.includes(sessionId) || (!!parentId && file.touchedBy.includes(parentId));
+    const titles = owners.map((owner) => `${owner.mark} ${owner.title}`).join(", ");
     return (
       <span
-        className="max-w-24 shrink-0 truncate rounded bg-amber-400/15 px-1 text-[0.75em] leading-tight text-amber-300"
-        title={isShared ? `Also changed by: ${titles.join(", ")}. The diff shows those changes as well.` : `Changed by: ${titles.join(", ")}`}
+        className="flex shrink-0 items-center gap-0.5"
+        title={isShared ? `Also changed by: ${titles}. The diff shows those changes as well.` : `Changed by: ${titles}`}
       >
-        {isShared ? "shared" : titles.join(", ")}
+        {owners.map((owner) => (
+          <SessionMark key={owner.id} sessionId={owner.id} mark={owner.mark} />
+        ))}
       </span>
     );
   };
@@ -165,7 +200,11 @@ export function ChangeList({
   };
 
   const renderFile = (file: ChangedFile, name: string, depth: number, showDirectory: boolean) => (
-    <li key={file.path} className={`flex items-center gap-1.5 pr-2 hover:bg-(--row-hover) ${selectedPath === file.path ? "bg-(--row-active)" : ""}`} style={{ paddingLeft: `calc(8px + ${depth} * var(--changelist-indent))` }}>
+    <li
+      key={file.path}
+      className={`group flex items-center gap-1.5 pr-1 hover:bg-(--row-hover) ${selectedPath === file.path ? "bg-(--row-active)" : ""}`}
+      style={{ paddingLeft: `calc(12px + ${depth} * var(--changelist-indent))` }}
+    >
       <Checkbox state={excluded.has(file.path) ? "unchecked" : "checked"} onChange={() => setChecked([file], excluded.has(file.path))} />
       <button
         type="button"
@@ -179,13 +218,22 @@ export function ChangeList({
         {renderOwnerBadge(file.path)}
         {showDirectory ? <span className="ml-auto truncate pl-1 text-[0.85em] text-neutral-600">{dirName(file.path)}</span> : null}
       </button>
+      <AgentButton
+        onClick={(event) => onAskAgent(file, event.currentTarget)}
+        isBusy={fileChats.get(file.path) ?? false}
+        size={24}
+        sparkleSize={20}
+        className={`-my-1 transition-opacity focus-visible:opacity-100 ${fileChats.has(file.path) ? "" : "opacity-0 group-hover:opacity-100"}`}
+        title={fileChats.has(file.path) ? "Show the agent's chat about this file" : "Ask the agent about this file"}
+        aria-label={fileChats.has(file.path) ? "Show the agent's chat about this file" : "Ask the agent about this file"}
+      />
     </li>
   );
 
   const renderFolder = (folder: FolderNode, depth: number) => {
     const isCollapsed = collapsed.has(folder.path);
     return (
-      <li key={`dir:${folder.path}`} className="flex items-center gap-1.5 pr-2 hover:bg-(--row-hover)" style={{ paddingLeft: `calc(8px + ${depth} * var(--changelist-indent))` }}>
+      <li key={`dir:${folder.path}`} className="flex items-center gap-1.5 pr-2 hover:bg-(--row-hover)" style={{ paddingLeft: `calc(12px + ${depth} * var(--changelist-indent))` }}>
         <Checkbox state={stateOf(folder.files)} onChange={() => toggleGroup(folder.files)} />
         <button type="button" onClick={() => toggleCollapsed(folder.path)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" title={folder.path}>
           <ChevronIcon expanded={!isCollapsed} />
@@ -217,7 +265,7 @@ export function ChangeList({
             {view === "flat" ? <TreeIcon /> : <ListIcon />}
           </button>
         ) : null}
-        <button type="button" onClick={() => void commands.openWorktreeInWebstorm(sessionId)} className={SECONDARY_BUTTON_SM} title="Open worktree in WebStorm">
+        <button type="button" onClick={() => void commands.openWorktreeInWebstorm(sessionId)} className={SECONDARY_BUTTON_XS} title="Open worktree in WebStorm">
           WebStorm
         </button>
       </div>
@@ -226,7 +274,7 @@ export function ChangeList({
         <ShelfList sessionId={sessionId} version={shelfVersion} onChanged={worktreeChanged} />
       ) : (
         <>
-          <div className="flex items-center gap-2 px-2 py-2 text-[13px] text-neutral-400">
+          <div className="flex items-center gap-2 px-3 py-2 text-[13px] text-neutral-400">
             <Checkbox state={files.length ? stateOf(files) : "unchecked"} onChange={() => toggleGroup(files)} title="Select all" />
             <span>
               {files.length} changed{checkedPaths.length !== files.length ? ` · ${checkedPaths.length} selected` : ""}
@@ -235,7 +283,7 @@ export function ChangeList({
               <button
                 type="button"
                 onClick={() => scope.onChange(scope.value === "own" ? "all" : "own")}
-                className={`${SECONDARY_BUTTON_SM} ml-auto`}
+                className={`${SECONDARY_BUTTON_XS} ml-auto`}
                 title={
                   scope.value === "own"
                     ? "Show every uncommitted change in the shared worktree"
@@ -258,13 +306,13 @@ export function ChangeList({
               type="button"
               disabled={!pullRequest}
               onClick={openReviewDialog}
-              className={PRIMARY_BUTTON_SM}
+              className={PRIMARY_BUTTON_XS}
               title={pullRequest ? `Submit a review of pull request #${pullRequest.number}` : "Only a session started from a pull request can submit a review"}
             >
               {draftCount ? `Submit review (${draftCount})…` : "Submit review…"}
             </button>
             {pullRequest ? null : (
-              <button type="button" disabled={!checkedPaths.length} onClick={() => void openShelveDialog()} className={SECONDARY_BUTTON_SM} title="Move the checked files to the shelf">
+              <button type="button" disabled={!checkedPaths.length} onClick={() => void openShelveDialog()} className={SECONDARY_BUTTON_XS} title="Move the checked files to the shelf">
                 Shelve…
               </button>
             )}

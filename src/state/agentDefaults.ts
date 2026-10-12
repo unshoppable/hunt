@@ -10,12 +10,23 @@ type AgentDefaultsState = {
    * exists. The repository remembered last comes last, so `commandsFor` can fall back to it for an unknown repository.
    */
   knownCommands: Record<string, AvailableCommand[]>;
-  /** Values picked for new sessions by config ID (`model`, `effort`) plus `mode`. */
+  /** Values picked for new sessions by config ID (`model`, `effort`) plus `mode` and `workspace` (`worktree` or `checkout`). */
   preferred: Record<string, string>;
+  /** Repositories top-level sessions were started in, most recent first; the start view preselects the first and offers the rest. */
+  recentRepoPaths: string[];
   rememberOptions: (options: SessionConfigOption[]) => void;
   rememberCommands: (repoPath: string, commands: AvailableCommand[]) => void;
+  rememberRepoPath: (repoPath: string) => void;
   setPreferred: (id: string, value: string) => void;
 };
+
+/** How many recently used repositories the start view offers. */
+export const RECENT_REPO_LIMIT = 8;
+
+/** `paths` with `repoPath` moved to the front, deduplicated and cut to `RECENT_REPO_LIMIT`. */
+export function withRecentRepoPath(paths: string[], repoPath: string): string[] {
+  return [repoPath, ...paths.filter((path) => path !== repoPath)].slice(0, RECENT_REPO_LIMIT);
+}
 
 /** Agent settings applied to every new session; survives restarts under `hunt-agent-defaults`. */
 export const useAgentDefaultsStore = create<AgentDefaultsState>()(
@@ -24,6 +35,7 @@ export const useAgentDefaultsStore = create<AgentDefaultsState>()(
       knownOptions: [],
       knownCommands: {},
       preferred: {},
+      recentRepoPaths: [],
       rememberOptions: (options) => {
         if (options.length) {
           set({ knownOptions: options });
@@ -35,6 +47,9 @@ export const useAgentDefaultsStore = create<AgentDefaultsState>()(
           const others = Object.fromEntries(Object.entries(state.knownCommands).filter(([path]) => path !== repoPath));
           return { knownCommands: { ...others, [repoPath]: commands } };
         });
+      },
+      rememberRepoPath: (repoPath) => {
+        set((state) => ({ recentRepoPaths: withRecentRepoPath(state.recentRepoPaths, repoPath) }));
       },
       setPreferred: (id, value) =>
         set((state) => ({ preferred: { ...state.preferred, [id]: value } })),

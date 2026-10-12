@@ -53,13 +53,21 @@ export function useSettingsSync(): void {
   }, []);
 }
 
-/** Tells the backend which language its own prompts (diagram, summaries, titles) ask for, at start and on every change. */
-export function useAiLanguageSync(): void {
+/**
+ * Pushes the agent preferences to the backend at start and on every change: the language its own prompts
+ * (diagram, summaries, titles) ask for and the system prompt addition of every new session.
+ */
+export function useAgentPreferencesSync(): void {
   const aiLanguage = useSettingsStore((state) => state.aiLanguage);
+  const systemPrompt = useSettingsStore((state) => state.systemPrompt);
 
   useEffect(() => {
     commands.setAiLanguage(aiLanguage).catch((reason) => console.error("failed to set the AI language", reason));
   }, [aiLanguage]);
+
+  useEffect(() => {
+    commands.setSystemPrompt(systemPrompt).catch((reason) => console.error("failed to set the system prompt", reason));
+  }, [systemPrompt]);
 }
 
 /** Feeds the backend's events into the Hunt store for as long as the component is mounted. */

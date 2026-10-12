@@ -30,3 +30,17 @@ export function useSelectionChats(sessionId: string, path: string | null): Selec
   const sessions = useHuntStore((state) => state.sessions);
   return useMemo(() => (path ? selectionChatsFor(sessions, sessionId, path) : []), [sessions, sessionId, path]);
 }
+
+/**
+ * IDs of the chats whose agent is running a turn right now; agent icons pulse for them. The store selector yields
+ * the IDs as one sorted string so that a change elsewhere in a chat does not re-render the caller.
+ */
+export function useBusyChatIds(): ReadonlySet<string> {
+  const joined = useHuntStore((state) =>
+    Object.keys(state.chats)
+      .filter((id) => state.chats[id].isBusy)
+      .sort()
+      .join("\n"),
+  );
+  return useMemo(() => new Set(joined ? joined.split("\n") : []), [joined]);
+}

@@ -7,7 +7,7 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   ...reactHooks.configs.recommended,
   {
-    files: ["src/**/*.{ts,tsx}"],
+    files: ["src/**/*.{ts,tsx}", "scripts/**/*.ts"],
     rules: {
       // Guard clauses stay on one line; every other body is braced (see CLAUDE.md).
       curly: ["error", "multi-line"],
@@ -19,7 +19,7 @@ export default tseslint.config(
   },
   {
     // Fixtures assert on values they just built; a non-null assertion is the shortest honest way to say so.
-    files: ["src/**/*.test.ts"],
+    files: ["src/**/*.test.ts", "scripts/**/*.test.ts"],
     rules: { "@typescript-eslint/no-non-null-assertion": "off" },
   },
 );

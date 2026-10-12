@@ -40,7 +40,14 @@ export type SessionView = {
   diffBase: string | null;
   /** Review comments drafted for the pull request and not yet submitted; a sub session drafts into its parent's list. */
   reviewComments: ReviewComment[];
+  /** Where the session works: a worktree Hunt created and owns, or the repository's own checkout. */
+  workspace: Workspace;
+  /** Progress of preparing the worktree's `node_modules`; `null` when nothing was or is being prepared. */
+  dependencies: DependencyStatus | null;
 };
+
+/** What the preparation of a worktree's `node_modules` (clone from the repository, else install) is doing or ended with. */
+export type DependencyStatus = { phase: "running" | "ready" | "failed"; message: string };
 
 /**
  * A review comment drafted in Hunt and not yet submitted, on lines `startLine..line` of the new version of `path`
@@ -55,6 +62,12 @@ export type ReviewComment = {
   body: string;
   createdAt: string;
 };
+
+/**
+ * Where a session works: `worktree` is a `hunt/<slug>-<id>` worktree created off the base branch and deleted with the
+ * session, `checkout` is the repository's own checkout on whatever branch it has, which Hunt leaves alone.
+ */
+export type Workspace = "worktree" | "checkout";
 
 /** The pull request a session reviews: enough to show it and to open it on GitHub. */
 export type PullRequestRef = {
@@ -291,4 +304,16 @@ export type Screenshot = {
   path: string;
   /** Last modification as unix milliseconds. */
   modifiedAt: number;
+};
+
+/** The claude.ai plan limits in display order: 5-hour, weekly, weekly per model; empty without plan limits (API key). */
+export type PlanUsage = { subscriptionType: string | null; windows: UsageWindow[] };
+
+export type UsageWindow = {
+  /** `5h`, `Week` or a model name such as `Fable`. */
+  label: string;
+  /** Percentage of the window used, 0–100. */
+  utilization: number;
+  /** ISO 8601 time the window resets. */
+  resetsAt: string | null;
 };

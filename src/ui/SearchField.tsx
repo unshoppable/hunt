@@ -20,7 +20,7 @@ export function SearchField({ value, onChange, placeholder = "Search", ariaLabel
   const [initialFocus] = useState(autoFocus);
 
   return (
-    <label className={`relative flex h-10 shrink-0 items-center rounded-md border border-white/10 bg-white/4 text-neutral-200 focus-within:border-white/20 ${className}`}>
+    <label className={`relative flex h-10 shrink-0 items-center rounded-md border border-white/10 bg-(--surface-input) text-neutral-200 focus-within:border-white/20 ${className}`}>
       <SearchIcon className="pointer-events-none absolute left-3 size-4.5 text-neutral-500" />
       <input
         ref={inputRef}

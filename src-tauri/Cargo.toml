@@ -2,7 +2,8 @@
 name = "hunt"
 version = "0.2.0"
 description = "Hunt — desktop client for Claude Code"
-authors = ["you"]
+authors = ["Yannick Boetzkes"]
+license = "MIT"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

@@ -7,11 +7,11 @@ import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, monacoLanguage, setupMonaco } 
 import { anchorBelowLine, type SelectionRequest } from "./selectionContext";
 import { attachSelectionAgent } from "../ide/selectionAgent";
 import { SelectionChatMarkers } from "../ide/selectionChatMarkers";
-import { useSelectionChats } from "../ide/selectionChats";
+import { useBusyChatIds, useSelectionChats } from "../ide/selectionChats";
 import { computeChangeBlocks } from "./lineDiff";
-import { AddCommentGlyph } from "../review/addCommentGlyph";
+import { AddCommentGlyph, type CommentTarget } from "../review/addCommentGlyph";
 import { ReviewCommentZones } from "../review/ReviewCommentZones";
-import { isInsideHunk, useReviewedPullRequest, type LineSpan } from "../review/reviewComments";
+import { isInsideHunk, useReviewedPullRequest } from "../review/reviewComments";
 import { SplitDiffView } from "./SplitDiffView";
 
 setupMonaco();
@@ -61,13 +61,14 @@ export function CodeDiffEditor({ ref, sessionId, diff, mode, fontSize, lineHeigh
   const modifiedEditorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const chatMarkersRef = useRef<SelectionChatMarkers | null>(null);
   const selectionChats = useSelectionChats(sessionId, diff.path);
+  const busyChatIds = useBusyChatIds();
   /** The editable right side once it exists; the review comment zones render into it. */
   const [modifiedEditor, setModifiedEditor] = useState<monaco.editor.ICodeEditor | null>(null);
   const pullRequest = useReviewedPullRequest(sessionId);
   const isReviewRef = useRef(!!pullRequest);
   isReviewRef.current = !!pullRequest;
-  /** Lines a review comment is being written for. */
-  const [composer, setComposer] = useState<LineSpan | null>(null);
+  /** Lines a review comment is being written for and the line its box sits under. */
+  const [composer, setComposer] = useState<CommentTarget | null>(null);
   /** Change blocks of the saved state, which decide whether a review comment on a line is posted inline. */
   const blocks = useMemo(() => computeChangeBlocks(diff.oldContent ?? "", diff.newContent ?? ""), [diff.oldContent, diff.newContent]);
   const blocksRef = useRef(blocks);
@@ -87,6 +88,8 @@ export function CodeDiffEditor({ ref, sessionId, diff, mode, fontSize, lineHeigh
   onToggleSubChatRef.current = onToggleSubChat;
   const selectionChatsRef = useRef(selectionChats);
   selectionChatsRef.current = selectionChats;
+  const busyChatIdsRef = useRef(busyChatIds);
+  busyChatIdsRef.current = busyChatIds;
 
   /** Text the editable editor starts with; carried over when the mode switches so unsaved edits survive. */
   const [modifiedValue, setModifiedValue] = useState(diff.newContent ?? "");
@@ -110,8 +113,8 @@ export function CodeDiffEditor({ ref, sessionId, diff, mode, fontSize, lineHeigh
   }));
 
   useEffect(() => {
-    chatMarkersRef.current?.set(diff.path, selectionChats);
-  }, [diff.path, selectionChats]);
+    chatMarkersRef.current?.set(diff.path, selectionChats, busyChatIds);
+  }, [diff.path, selectionChats, busyChatIds]);
 
   useEffect(() => {
     savedContentRef.current = diff.newContent ?? "";
@@ -148,11 +151,11 @@ export function CodeDiffEditor({ ref, sessionId, diff, mode, fontSize, lineHeigh
     attachSideFeatures(modifiedEditor);
     // The right side always shows the working-tree version of `diff.path`, which the selections' lines refer to.
     const chatMarkers = new SelectionChatMarkers(modifiedEditor, () => diff.path);
-    chatMarkers.set(diff.path, selectionChatsRef.current);
+    chatMarkers.set(diff.path, selectionChatsRef.current, busyChatIdsRef.current);
     chatMarkersRef.current = chatMarkers;
     chatMarkers.onDidClickChat((chat) => onOpenSubChatRef.current({ selection: chat.selection, anchor: anchorBelowLine(modifiedEditor, chat.selection.startLine) }, chat.sessionId));
     const addCommentGlyph = isReviewRef.current ? new AddCommentGlyph(modifiedEditor, () => diff.path, (span) => isInsideHunk(blocksRef.current, span.startLine, span.line)) : null;
-    addCommentGlyph?.onDidClick((span) => setComposer(span));
+    addCommentGlyph?.onDidClick((target) => setComposer(target));
     setModifiedEditor(modifiedEditor);
     modifiedEditor.onDidDispose(() => {
       chatMarkers.dispose();

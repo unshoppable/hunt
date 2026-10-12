@@ -5,6 +5,7 @@ mod graph;
 mod ide;
 mod lsp;
 mod menu;
+mod plan_usage;
 mod preferences;
 mod screenshots;
 mod workspace;
@@ -13,6 +14,7 @@ mod session;
 use acp::{PermissionRegistry, SessionRegistry};
 use graph::WatcherRegistry;
 use session::attribution::AttributionRegistry;
+use session::dependencies::DependencyRegistry;
 use session::summary::SummaryRegistry;
 use tauri::Manager;
 
@@ -27,6 +29,7 @@ pub fn run() {
         .manage(PermissionRegistry::default())
         .manage(WatcherRegistry::default())
         .manage(SummaryRegistry::default())
+        .manage(DependencyRegistry::default())
         .manage(preferences::Preferences::default())
         .menu(|app| menu::build(app))
         .manage(AttributionRegistry::default())
@@ -34,6 +37,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             session::commands::list_sessions,
             session::commands::list_branches,
+            session::commands::current_branch,
             session::commands::list_pull_requests,
             session::commands::github_viewer,
             session::commands::view_pull_request,
@@ -43,7 +47,10 @@ pub fn run() {
             session::commands::delete_review_comment,
             session::commands::create_session,
             session::commands::create_sub_session,
+            session::commands::rename_session,
             session::commands::open_session,
+            session::commands::clear_session,
+            session::commands::prepare_dependencies,
             session::commands::close_session,
             session::commands::send_prompt,
             session::commands::session_history,
@@ -78,6 +85,8 @@ pub fn run() {
             lsp::lsp_notify,
             lsp::lsp_cancel,
             preferences::set_ai_language,
+            preferences::set_system_prompt,
+            plan_usage::get_plan_usage,
         ])
         .on_window_event(|window, event| {
             // The other windows (editor, diff, guardrails, settings) belong to the main window: closing it closes them too, which ends the app.

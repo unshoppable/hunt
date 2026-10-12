@@ -41,6 +41,9 @@ export class ChangeMarkers {
   /** Bumped per model load so a late HEAD response of an earlier model is ignored. */
   private generation = 0;
   private headText: string | null = null;
+  /** Whether the base content of the current model has arrived (as text or as "not in the base"). */
+  private isHeadLoaded = false;
+  private currentBlocks: ChangeBlock[] = [];
   private currentMarkers: Marker[] = [];
 
   constructor(
@@ -58,6 +61,14 @@ export class ChangeMarkers {
 
   get markers(): Marker[] {
     return this.currentMarkers;
+  }
+
+  /**
+   * Change blocks of the model against the base content. A file absent from the base is one block holding all its
+   * lines (every line is new, as in its diff), although no stripe marks it.
+   */
+  get blocks(): ChangeBlock[] {
+    return this.currentBlocks;
   }
 
   /** Lines of the HEAD content the markers are relative to; empty while nothing is loaded. */
@@ -113,6 +124,7 @@ export class ChangeMarkers {
     this.contentSubscription?.dispose();
     this.contentSubscription = null;
     this.headText = null;
+    this.isHeadLoaded = false;
     this.applyDiff();
 
     const model = this.editor.getModel();
@@ -122,6 +134,7 @@ export class ChangeMarkers {
       .then((text) => {
         if (generation !== this.generation) return;
         this.headText = text;
+        this.isHeadLoaded = true;
         this.applyDiff();
       })
       .catch(() => {});
@@ -144,11 +157,17 @@ export class ChangeMarkers {
 
   private applyDiff(): void {
     const model = this.editor.getModel();
-    if (!model || this.headText === null) {
+    if (!model || !this.isHeadLoaded) {
+      this.currentBlocks = [];
+      this.currentMarkers = [];
+      this.decorations.clear();
+    } else if (this.headText === null) {
+      this.currentBlocks = computeChangeBlocks("", model.getValue());
       this.currentMarkers = [];
       this.decorations.clear();
     } else {
-      this.currentMarkers = markersFor(computeChangeBlocks(this.headText, model.getValue()), model.getLineCount());
+      this.currentBlocks = computeChangeBlocks(this.headText, model.getValue());
+      this.currentMarkers = markersFor(this.currentBlocks, model.getLineCount());
       this.decorations.set(this.currentMarkers.flatMap(toDecorations));
     }
     for (const listener of this.changeListeners) {

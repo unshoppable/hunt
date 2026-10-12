@@ -14,12 +14,12 @@ import { noteCaret, useIdeStore, type PendingPosition } from "./ideStore";
 import { findUsages, navigationAt, symbolPathAt, type SymbolCrumb } from "./languageService";
 import { panesShowing, type Pane } from "./paneGrid";
 import type { ChangeBlock } from "../diff/lineDiff";
-import { AddCommentGlyph } from "../review/addCommentGlyph";
+import { AddCommentGlyph, type CommentTarget } from "../review/addCommentGlyph";
 import { ReviewCommentZones } from "../review/ReviewCommentZones";
-import { isInsideHunk, useReviewedPullRequest, type LineSpan } from "../review/reviewComments";
+import { isInsideHunk, useReviewedPullRequest } from "../review/reviewComments";
 import { attachSelectionAgent } from "./selectionAgent";
 import { SelectionChatMarkers } from "./selectionChatMarkers";
-import { useSelectionChats } from "./selectionChats";
+import { useBusyChatIds, useSelectionChats } from "./selectionChats";
 import { UsagesPopover, type UsagesQuery } from "./UsagesPopover";
 import type { Usage } from "./usages";
 import { STATUS_BAR } from "../ui/bars";
@@ -28,6 +28,8 @@ import { baseName } from "../ui/path";
 import { errorText, useLoad } from "../ui/useLoad";
 
 const SYMBOL_PATH_DELAY_MS = 150;
+/** Empty space the editor can scroll past the last line, instead of Monaco's default of a whole viewport. */
+const EDITOR_OVERSCROLL_PX = 400;
 
 type EditorPaneProps = {
   sessionId: string;
@@ -93,6 +95,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
   /** Change marker whose popup is open. */
   const [shownMarker, setShownMarker] = useState<Marker | null>(null);
   const selectionChats = useSelectionChats(sessionId, pane.activePath);
+  const busyChatIds = useBusyChatIds();
   /** Declaration whose usages popup is open. */
   const [usagesQuery, setUsagesQuery] = useState<UsagesQuery | null>(null);
   const pullRequest = useReviewedPullRequest(sessionId);
@@ -100,8 +103,8 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null);
   /** Change blocks of the shown file against the diff base, as the change markers computed them. */
   const [blocks, setBlocks] = useState<ChangeBlock[]>([]);
-  /** Lines a review comment is being written for. */
-  const [composer, setComposer] = useState<LineSpan | null>(null);
+  /** Lines a review comment is being written for and the line its box sits under. */
+  const [composer, setComposer] = useState<CommentTarget | null>(null);
 
   const isReview = !!pullRequest;
   const latest = useRef({ sessionId, workspace, pane, isReview, openFile, activatePane, noteWorktreeChanged, onOpenSubChat, onToggleSubChat });
@@ -120,6 +123,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
       lineNumbersMinChars: 2,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
+      padding: { bottom: EDITOR_OVERSCROLL_PX },
       overviewRulerLanes: 0,
       hideCursorInOverviewRuler: true,
       overviewRulerBorder: false,
@@ -202,7 +206,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
     const addCommentGlyph = new AddCommentGlyph(
       editor,
       (model) => (latest.current.isReview ? latest.current.workspace.pathOf(model.uri) : null),
-      (span) => isInsideHunk(markers.markers.map((marker) => marker.block), span.startLine, span.line),
+      (span) => isInsideHunk(markers.blocks, span.startLine, span.line),
     );
     setEditor(editor);
 
@@ -210,13 +214,13 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
     const subscriptions = [
       markers.onDidClickMarker((marker) => setShownMarker(marker)),
       markers.onDidChange(() => {
-        setBlocks(markers.markers.map((marker) => marker.block));
+        setBlocks(markers.blocks);
         addCommentGlyph.refresh();
       }),
       chatMarkers.onDidClickChat((chat) =>
         latest.current.onOpenSubChat({ selection: chat.selection, anchor: anchorBelowLine(editor, chat.selection.startLine) }, chat.sessionId),
       ),
-      addCommentGlyph.onDidClick((span) => setComposer(span)),
+      addCommentGlyph.onDidClick((target) => setComposer(target)),
       editor.onDidChangeModelContent(() => {
         setShownMarker(null);
         setUsagesQuery(null);
@@ -275,8 +279,8 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
   }, [fontSize, lineHeight, fontFamily]);
 
   useEffect(() => {
-    chatMarkersRef.current?.set(pane.activePath, selectionChats);
-  }, [pane.activePath, selectionChats]);
+    chatMarkersRef.current?.set(pane.activePath, selectionChats, busyChatIds);
+  }, [pane.activePath, selectionChats, busyChatIds]);
 
   // Shows the active tab's model and applies a pending caret position once the model is in place.
   const activePath = pane.activePath;

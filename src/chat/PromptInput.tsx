@@ -1,10 +1,12 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AvailableCommand, PullRequestRef, Screenshot } from "../ipc/types";
-import type { ContextUsage, PromptDraft } from "../state/store";
+import type { ContextUsage, PromptDraft, QueuedPrompt } from "../state/store";
+import { UsageBar } from "../ui/UsageBar";
 import { PillSelect, type PillOption } from "./PillSelect";
+import { appendPromptTexts, QueuedPrompts, useReturnedPrompts } from "./QueuedPrompts";
 import { ScreenshotTrigger, screenshotUrl } from "./ScreenshotPicker";
-import { CLEAR_BUTTON, SEND_BUTTON, STOP_BUTTON } from "../ui/buttons";
+import { CLEAR_BUTTON, SEND_BUTTON } from "../ui/buttons";
 import { CloseIcon, EraserIcon, GitHubIcon } from "../ui/icons";
 import { useAutoGrow } from "../ui/useAutoGrow";
 import { useDismiss } from "../ui/useDismiss";
@@ -24,17 +26,21 @@ const MODE_CLASS: Record<string, string | undefined> = {
 /**
  * The prompt box: a rounded card with the text area, attached screenshots, slash-command suggestions and a toolbar of
  * model, effort and mode pills. Used inside a session and, with an `extension` bar for repository and branch, as the
- * start view's composer. The screenshot picker sits in the left margin of the box.
+ * start view's composer. The screenshot picker sits in the left margin of the box. While the agent is busy, sending
+ * queues the prompt (shown above the box) for the end of the running turn; the send button therefore never turns into
+ * a stop button, Escape stops the turn.
  */
 export function PromptInput({
   isBusy,
   isBlocked,
+  queue = [],
+  onTakeQueue = () => [],
+  onUnqueue = () => {},
   modeId,
   modes,
   configSelects,
   commands,
   onSend,
-  onCancel,
   onClear,
   onCycleMode,
   onModeChange,
@@ -49,12 +55,17 @@ export function PromptInput({
   isBusy: boolean;
   /** A pending permission request owns the keyboard; the prompt is disabled until it is answered. */
   isBlocked: boolean;
+  /** Prompts sent while the agent was busy, waiting for the running turn to end. */
+  queue?: QueuedPrompt[];
+  /** Empties the queue and returns its prompts; they come back into the box when the turn was stopped or failed. */
+  onTakeQueue?: () => QueuedPrompt[];
+  /** Takes one prompt out of the queue, after the box took it back. */
+  onUnqueue?: (promptId: string) => void;
   modeId: string;
   modes: PillOption[];
   configSelects: ConfigSelect[];
   commands: AvailableCommand[];
   onSend: (text: string, images: Screenshot[]) => void;
-  onCancel: () => void;
   /** Clears the conversation like typing `/clear`; the clear button is only shown when this is given. */
   onClear?: () => void;
   onCycleMode: () => void;
@@ -64,7 +75,7 @@ export function PromptInput({
   pullRequest?: PullRequestRef | null;
   /** Secondary bar attached below the box, e.g. the repository and base branch of a session to be created. */
   extension?: ReactNode;
-  /** Fill level of the context window shown under the box; nothing is shown while it is unknown. */
+  /** Fill level of the context window shown in the toolbar; nothing is shown while it is unknown. */
   contextUsage?: ContextUsage | null;
   /** Text and attachments the box starts with, e.g. a prompt whose session could not be created. */
   initialDraft?: PromptDraft | null;
@@ -83,7 +94,7 @@ export function PromptInput({
   const slashQuery = isSuggestionsDismissed ? null : slashQueryOf(text);
   const suggestions = slashQuery === null ? [] : matchCommands(commands, slashQuery);
   const selectedSuggestion = suggestions[Math.min(suggestionIndex, suggestions.length - 1)];
-  const canSend = Boolean(text.trim() || attachments.length) && !isBusy && !isBlocked;
+  const canSend = Boolean(text.trim() || attachments.length) && !isBlocked;
 
   useDismiss(suggestionsRef, () => setIsSuggestionsDismissed(true), { anchorRefs: [textareaRef], isEnabled: suggestions.length > 0 });
   useAutoGrow(textareaRef, text, 8);
@@ -94,13 +105,21 @@ export function PromptInput({
     }
   }, [isBlocked]);
 
+  useReturnedPrompts(isBusy, queue, onTakeQueue, takeBack);
+
   function submit() {
     const trimmed = text.trim();
     const images = attachments;
-    if ((!trimmed && !images.length) || isBusy || isBlocked) return;
+    if ((!trimmed && !images.length) || isBlocked) return;
     onSend(trimmed, images);
     setText("");
     setAttachments([]);
+  }
+
+  /** Puts `prompts` back into the box, after the text and attachments it holds. */
+  function takeBack(prompts: QueuedPrompt[]) {
+    setText((current) => appendPromptTexts(current, prompts));
+    addAttachments(prompts.flatMap((prompt) => prompt.images));
   }
 
   /** Attaches `screenshots` that are not attached yet and returns the focus to the text. */
@@ -149,9 +168,16 @@ export function PromptInput({
   }
 
   return (
-    <div className="px-9 pb-4 pt-2">
+    <div className="px-9 pb-6 pt-2">
       <div className="chat-column min-w-[400px]">
-        <div className="relative z-10 rounded-2xl border border-(--line) bg-(--surface-inset) shadow-lg shadow-black/20 focus-within:border-neutral-500">
+        <QueuedPrompts
+          queue={queue}
+          onTakeBack={(prompt) => {
+            onUnqueue(prompt.id);
+            takeBack([prompt]);
+          }}
+        />
+        <div className="relative z-10 rounded-2xl border border-(--line) bg-(--surface-input) shadow-lg shadow-black/20 focus-within:border-neutral-500">
           {attachments.length ? (
             <div className="flex flex-wrap gap-2 px-3 pt-3">
               {attachments.map((attachment) => (
@@ -180,8 +206,8 @@ export function PromptInput({
             }}
             onKeyDown={onKeyDown}
             rows={2}
-            placeholder={placeholder}
-            className="block w-full resize-none bg-transparent px-4 pb-1 pt-3 outline-none placeholder:text-neutral-600 disabled:opacity-50"
+            placeholder={isBusy ? "Enter queues the prompt for after this turn" : placeholder}
+            className="block w-full resize-none bg-transparent px-4 py-3 outline-none placeholder:text-neutral-600 disabled:opacity-50"
           />
           {suggestions.length ? (
             <ul
@@ -210,7 +236,7 @@ export function PromptInput({
               ))}
             </ul>
           ) : null}
-          <div className="flex items-center px-2 pb-2">
+          <div className="flex items-center border-t border-white/15 px-2 py-1.5">
             {configSelects.map((select) => (
               <Fragment key={select.id}>
                 <PillSelect title={select.name} value={select.value} options={select.choices} onChange={(value) => onConfigChange(select.id, value)} />
@@ -225,6 +251,7 @@ export function PromptInput({
               className={MODE_CLASS[modeId] ?? ""}
             />
             <span className="flex-1" />
+            {contextUsage ? <ContextMeter usage={contextUsage} /> : null}
             {pullRequest ? (
               <button
                 type="button"
@@ -248,48 +275,52 @@ export function PromptInput({
                 <EraserIcon />
               </button>
             ) : null}
-            {isBusy ? (
-              <button
-                type="button"
-                onClick={onCancel}
-                title="Stop (esc)"
-                className={STOP_BUTTON}
-              >
-                <svg viewBox="0 0 16 16" className="size-3" fill="currentColor" aria-hidden="true">
-                  <rect x="3" y="3" width="10" height="10" rx="1.5" />
-                </svg>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={submit}
-                disabled={!canSend}
-                title="Send (enter)"
-                className={SEND_BUTTON}
-              >
-                <svg viewBox="0 0 16 16" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M8 13V3M4 7l4-4 4 4" />
-                </svg>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!canSend}
+              title={isBusy ? "Queue for after this turn (enter); esc stops the turn" : "Send (enter)"}
+              className={SEND_BUTTON}
+            >
+              <svg viewBox="0 0 16 16" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M8 13V3M4 7l4-4 4 4" />
+              </svg>
+            </button>
           </div>
         </div>
         {extension}
-        {contextUsage ? (
-          <div className="flex justify-end px-2 pt-1.5 text-[12px] text-neutral-500" title="Context window: used / size">
-            {formatContextUsage(contextUsage)}
-          </div>
-        ) : null}
         {hint ? <div className="px-1 pt-4 text-[13px] text-neutral-500">{hint}</div> : null}
       </div>
     </div>
   );
 }
 
+/** Fill level of the context window as a bar plus `42.3k / 200k (21%)`. */
+function ContextMeter({ usage }: { usage: ContextUsage }) {
+  const percent = contextPercent(usage);
+  return (
+    <div
+      role="meter"
+      aria-label="Context window"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={percent}
+      title="Context window: used / size"
+      className="mr-3 flex shrink-0 items-center gap-2 text-[12px] text-neutral-500 tabular-nums"
+    >
+      <UsageBar percent={percent} className="h-1.5 w-16" />
+      {formatContextUsage(usage)}
+    </div>
+  );
+}
+
+function contextPercent({ used, size }: ContextUsage): number {
+  return size > 0 ? Math.round((used / size) * 100) : 0;
+}
+
 /** `42.3k / 200k (21%)`: tokens in context, window size and fill level. */
-export function formatContextUsage({ used, size }: ContextUsage): string {
-  const percent = size > 0 ? Math.round((used / size) * 100) : 0;
-  return `${formatTokens(used)} / ${formatTokens(size)} (${percent}%)`;
+export function formatContextUsage(usage: ContextUsage): string {
+  return `${formatTokens(usage.used)} / ${formatTokens(usage.size)} (${contextPercent(usage)}%)`;
 }
 
 /** Token counts as `9.5k`, `200k` or `1M`: one decimal below ten units, none above. */
@@ -305,5 +336,5 @@ function trimScaled(value: number): string {
 
 /** Thin vertical rule between the toolbar pills. */
 function PillSeparator() {
-  return <span aria-hidden="true" className="mx-1.5 h-4 w-px shrink-0 bg-(--line)" />;
+  return <span aria-hidden="true" className="mx-1.5 h-4 w-px shrink-0 bg-white/15" />;
 }

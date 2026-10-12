@@ -52,6 +52,19 @@ pub struct SessionRecord {
     /// a sub session drafts into its parent's list.
     #[serde(default)]
     pub review_comments: Vec<ReviewComment>,
+    /// Where the session works: in a worktree Hunt created and owns, or in the repository's own checkout.
+    #[serde(default)]
+    pub workspace: Workspace,
+}
+
+/// Where a session works. `Worktree` is a `hunt/<slug>-<id>` worktree Hunt creates off the base branch and deletes
+/// with the session; `Checkout` is the repository's own checkout on whatever branch it has, which Hunt leaves alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Workspace {
+    #[default]
+    Worktree,
+    Checkout,
 }
 
 impl SessionRecord {
@@ -89,6 +102,7 @@ impl SessionRecord {
             pull_request: None,
             diff_base: None,
             review_comments: Vec::new(),
+            workspace: Workspace::Worktree,
         }
     }
 
@@ -109,6 +123,7 @@ impl SessionRecord {
         record.selection = selection;
         record.pull_request = parent.pull_request.clone();
         record.diff_base = parent.diff_base.clone();
+        record.workspace = parent.workspace;
         record
     }
 }

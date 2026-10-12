@@ -32,6 +32,37 @@ export function groupSessions(sessions: SessionView[]): SessionRow[] {
   return rows;
 }
 
+/** Spreadsheet-style letters for a 0-based index: 0 → A, 25 → Z, 26 → AA. */
+function letterFor(index: number): string {
+  let letters = "";
+  for (let rest = index; rest >= 0; rest = Math.floor(rest / 26) - 1) {
+    letters = String.fromCharCode(65 + (rest % 26)) + letters;
+  }
+  return letters;
+}
+
+/**
+ * Short marks that identify sessions in the sidebar and wherever a session is referenced: top-level sessions get
+ * letters (A, B, …) in sidebar order, sub sessions get numbers (1, 2, …) counted per parent. Marks are derived from
+ * the current list, so they shift when a session is added or deleted.
+ */
+export function sessionMarks(sessions: SessionView[]): Map<string, string> {
+  const marks = new Map<string, string>();
+  let topLevelCount = 0;
+  let subCount = 0;
+  for (const { session, isSubChat } of groupSessions(sessions)) {
+    if (isSubChat) {
+      subCount += 1;
+      marks.set(session.id, String(subCount));
+    } else {
+      marks.set(session.id, letterFor(topLevelCount));
+      topLevelCount += 1;
+      subCount = 0;
+    }
+  }
+  return marks;
+}
+
 /** Case-insensitive match of every whitespace-separated word of `query` against the title, subtitle and branch. */
 function matchesQuery(session: SessionView, words: string[]): boolean {
   const haystack = `${session.title} ${sessionSubtitle(session)} ${session.branch}`.toLowerCase();
@@ -65,6 +96,17 @@ export function filterSessionRows(rows: SessionRow[], query: string): SessionRow
     }
   }
   return result;
+}
+
+/**
+ * Session `step` rows away from the active one (1 = next, -1 = previous), wrapping around at both ends. Without an
+ * active row in the list, stepping forward starts at the first row and stepping back at the last.
+ */
+export function cycleSessionId(rows: SessionRow[], activeId: string | null, step: 1 | -1): string | null {
+  if (rows.length === 0) return null;
+  const index = rows.findIndex(({ session }) => session.id === activeId);
+  const next = index === -1 ? (step === 1 ? 0 : rows.length - 1) : (index + step + rows.length) % rows.length;
+  return rows[next].session.id;
 }
 
 const TITLE_LENGTH = 48;

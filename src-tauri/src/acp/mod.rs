@@ -1,5 +1,5 @@
 mod connection;
 
 pub use connection::{
-    connect, publish_update, LiveHandles, PermissionRegistry, SessionRegistry, SessionStart,
+    bundled_script_path, connect, publish_update, LiveHandles, PermissionRegistry, SessionRegistry, SessionStart,
 };

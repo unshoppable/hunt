@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useSettingsStore } from "../state/settings";
-import { GHOST_BUTTON, PRIMARY_BUTTON } from "../ui/buttons";
+import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
 import { Modal } from "../ui/Modal";
 
 /**
@@ -28,10 +28,10 @@ export function DeleteSessionDialog({ question, onConfirm, onClose }: { question
         Don't ask again
       </label>
       <div className="flex justify-end gap-2">
-        <button type="button" onClick={onClose} className={GHOST_BUTTON}>
+        <button type="button" onClick={onClose} className={GHOST_BUTTON_MD}>
           Cancel
         </button>
-        <button type="button" onClick={confirm} autoFocus className={PRIMARY_BUTTON}>
+        <button type="button" onClick={confirm} autoFocus className={PRIMARY_BUTTON_MD}>
           Delete
         </button>
       </div>

@@ -91,3 +91,5 @@ Follow an existing decision; if a change contradicts one, say so and propose a n
 - Comments describe what the code does or a constraint it cannot show, never the change that was made.
 - Named exports only; components are PascalCase `.tsx`, modules camelCase `.ts`.
 - Prefer a plain truthiness check over `isUndefined`/`isNull` unless a falsy value is legitimate.
+- Commit messages follow Conventional Commits (`type(scope): description`). `feat`, `fix`, `perf`, `revert` and a
+  `!`/`BREAKING CHANGE` footer decide the next release version (ADR 0003); other types do not release.

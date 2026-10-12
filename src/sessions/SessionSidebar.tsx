@@ -5,13 +5,16 @@ import { useHuntStore } from "../state/store";
 import { useSettingsStore } from "../state/settings";
 import { openSettingsWindow } from "../settings/openSettingsWindow";
 import { useFileIconUrl } from "../diff/fileIcons";
-import { filterSessionRows, groupSessions, sessionSubtitle } from "./sessionLabels";
+import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, sessionSubtitle } from "./sessionLabels";
+import { SessionMark } from "./SessionMark";
 import { DeleteSessionDialog } from "./DeleteSessionDialog";
+import { PlanUsageBar } from "./PlanUsageBar";
 import { HEADER_BAR } from "../ui/bars";
-import { ICON_BUTTON, PRIMARY_BUTTON_SM } from "../ui/buttons";
+import { ICON_BUTTON, PRIMARY_BUTTON_XS } from "../ui/buttons";
 import { SearchField } from "../ui/SearchField";
-import { GitHubIcon, PlusIcon, TrashIcon } from "../ui/icons";
+import { BranchIcon, GitHubIcon, PlusIcon, RepoIcon, TrashIcon } from "../ui/icons";
 import { useLoad } from "../ui/useLoad";
+import { repoName } from "../ui/path";
 
 export function SessionSidebar() {
   const fileIconUrl = useFileIconUrl();
@@ -26,6 +29,9 @@ export function SessionSidebar() {
   const rootRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   const rows = useMemo(() => filterSessionRows(groupSessions(sessions), query), [sessions, query]);
+  const marks = useMemo(() => sessionMarks(sessions), [sessions]);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
   /** The session the confirmation dialog is open for, with the question it shows. */
   const [pendingDelete, setPendingDelete] = useState<{ sessionId: string; question: string } | null>(null);
   /** Version of the newer Hunt the release feed offers; shown as a dot on the gear. */
@@ -51,7 +57,9 @@ export function SessionSidebar() {
     }
     const question = isSubChat
       ? `Delete sub session "${session.title}"?`
-      : `Delete session "${session.title}", its sub sessions and its worktree?`;
+      : session.workspace === "checkout"
+        ? `Delete session "${session.title}" and its sub sessions? The repository's checkout keeps its changes.`
+        : `Delete session "${session.title}", its sub sessions and its worktree?`;
     setPendingDelete({ sessionId: session.id, question });
   };
   const deleteSessionRef = useRef(deleteSession);
@@ -63,6 +71,19 @@ export function SessionSidebar() {
       if (event.key !== "," || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
       event.preventDefault();
       void openSettingsWindow();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // Ctrl+Tab selects the next session in the visible list, Ctrl+Shift+Tab the previous one, wrapping at both ends.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Tab" || !event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
+      event.preventDefault();
+      const { activeSessionId, draft, selectSession } = useHuntStore.getState();
+      const id = cycleSessionId(rowsRef.current, draft ? null : activeSessionId, event.shiftKey ? -1 : 1);
+      if (id) void selectSession(id);
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -105,7 +126,7 @@ export function SessionSidebar() {
           <button
             type="button"
             onClick={() => startDraft()}
-            className={PRIMARY_BUTTON_SM}
+            className={PRIMARY_BUTTON_XS}
           >
             <PlusIcon className="size-3" />
             New
@@ -118,6 +139,7 @@ export function SessionSidebar() {
         {rows.map(({ session, isSubChat }) => {
           const isActive = session.id === activeSessionId;
           const isBusy = chats[session.id]?.isBusy ?? false;
+          const hasUnseenActivity = !isActive && (chats[session.id]?.hasUnseenActivity ?? false);
           // A session the backend still creates has no worktree or agent yet: nothing can be started in or done to it.
           const isCreating = creatingIds.includes(session.id);
           return (
@@ -128,10 +150,10 @@ export function SessionSidebar() {
                 className={`group flex w-full flex-col items-start rounded-lg py-1.5 pr-2 text-left transition-colors ${isActive ? "bg-(--row-active)" : "hover:bg-(--row-hover)"}`}
                 style={{ paddingLeft: isSubChat ? "calc(10px + var(--sidebar-indent))" : 10 }}
               >
-                <span className="flex w-full items-center gap-2">
-                  <span className={`size-2 shrink-0 rounded-full ${session.isLive ? "bg-emerald-400" : "bg-neutral-600"}`} />
+                <span className="relative flex w-full items-center gap-2">
+                  <SessionMark sessionId={session.id} mark={marks.get(session.id) ?? ""} />
                   <span className={`min-w-0 flex-1 truncate text-[0.875em] ${isSubChat ? "text-neutral-300" : "font-medium text-neutral-100"}`}>{session.title}</span>
-                  {isCreating ? <span className="shrink-0 text-[0.75em] text-neutral-500">Starting</span> : isBusy ? <span className="shrink-0 text-[0.75em] text-sky-400">Working</span> : null}
+                  {isCreating ? <span className="shrink-0 text-[0.75em] text-neutral-500">Starting</span> : null}
                   {!isSubChat && !isCreating ? (
                     <span
                       role="button"
@@ -146,44 +168,65 @@ export function SessionSidebar() {
                       <PlusIcon className="size-4" />
                     </span>
                   ) : null}
-                </span>
-                <span className={`mt-0.5 flex w-full min-w-0 items-center gap-1 pl-4 text-[0.8125em] text-neutral-500 ${isSubChat ? "font-mono" : ""}`} title={isSubChat ? session.selection?.path : undefined}>
-                  {isSubChat && session.selection ? (
-                    <img src={fileIconUrl(session.selection.path)} alt="" className="size-3.5 shrink-0" />
-                  ) : null}
-                  {!isSubChat && session.pullRequest ? <GitHubIcon className="size-3.5 shrink-0" /> : null}
-                  <span className="truncate">{isCreating && !isSubChat ? "Creating worktree…" : sessionSubtitle(session)}</span>
-                </span>
-                <span className={`mt-0.5 flex items-center gap-1 pl-2.5 text-[0.8125em] ${isCreating ? "invisible" : ""}`}>
-                  {isBusy ? (
+                  {!isCreating ? (
+                    // Opaque backdrop so the button covers a long title; the row tint is layered over the sidebar colour.
                     <span
-                      role="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void cancelPrompt(session.id);
-                      }}
-                      className="rounded-md px-1.5 py-0.5 text-neutral-500 transition-colors hover:bg-white/10 hover:text-white"
+                      className={`absolute top-1/2 hidden -translate-y-1/2 rounded-md group-hover:flex ${isSubChat ? "-right-1" : "right-6"}`}
+                      style={{ background: `linear-gradient(var(${isActive ? "--row-active" : "--row-hover"}), var(${isActive ? "--row-active" : "--row-hover"})), var(--sidebar-bg)` }}
                     >
-                      stop
+                      <span
+                        role="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          deleteSession(session, isSubChat);
+                        }}
+                        className="flex size-7 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-red-400/10 hover:text-red-400"
+                        title="Delete session"
+                        aria-label="Delete session"
+                      >
+                        <TrashIcon className="size-3.5" />
+                      </span>
                     </span>
                   ) : null}
-                  <span
-                    role="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      deleteSession(session, isSubChat);
-                    }}
-                    className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-neutral-500 transition-colors hover:bg-red-400/10 hover:text-red-400"
-                  >
-                    <TrashIcon className="size-3.5" />
-                    delete
-                  </span>
                 </span>
+                <span className={`mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500 ${isSubChat ? "font-mono tracking-tighter" : ""}`} title={isSubChat ? session.selection?.path : undefined}>
+                  {isSubChat && session.selection ? (
+                    <img src={fileIconUrl(session.selection.path)} alt="" className="size-4 shrink-0" />
+                  ) : null}
+                  {!isSubChat ? (session.pullRequest ? <GitHubIcon className="size-4 shrink-0" /> : <BranchIcon className="size-4 shrink-0" />) : null}
+                  <span className="truncate">{isCreating && !isSubChat ? (session.workspace === "checkout" ? "Starting…" : "Creating worktree…") : sessionSubtitle(session)}</span>
+                </span>
+                {!isSubChat ? (
+                  <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500" title={session.repoPath}>
+                    <RepoIcon className="size-4 shrink-0" />
+                    <span className="truncate">{repoName(session.repoPath)}</span>
+                  </span>
+                ) : null}
+                {!isCreating && (isBusy || hasUnseenActivity) ? (
+                  <span className="mt-0.5 flex w-full items-center gap-1 pl-2.5 text-[0.8125em]">
+                    {isBusy ? (
+                      <span
+                        role="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void cancelPrompt(session.id);
+                        }}
+                        className="rounded-md px-1.5 py-0.5 text-neutral-500 transition-colors hover:bg-white/10 hover:text-white"
+                      >
+                        stop
+                      </span>
+                    ) : null}
+                    {hasUnseenActivity ? (
+                      <span className="ml-auto mr-1.5 size-2 shrink-0 rounded-full bg-sky-400" role="status" aria-label="Unseen activity" />
+                    ) : null}
+                  </span>
+                ) : null}
               </button>
             </li>
           );
         })}
       </ul>
+      <PlanUsageBar />
       {pendingDelete ? (
         <DeleteSessionDialog
           question={pendingDelete.question}

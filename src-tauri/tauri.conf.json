@@ -47,7 +47,8 @@
       "../node_modules/@agentclientprotocol/": "node_modules/@agentclientprotocol/",
       "../node_modules/@anthropic-ai/": "node_modules/@anthropic-ai/",
       "../node_modules/zod/": "node_modules/zod/",
-      "../node_modules/diff/": "node_modules/diff/"
+      "../node_modules/diff/": "node_modules/diff/",
+      "../scripts/planUsage.mjs": "scripts/planUsage.mjs"
     }
   },
   "plugins": {

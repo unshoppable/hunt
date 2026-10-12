@@ -24,7 +24,8 @@ The app has no Apple Developer signing or notarization; adding them is out of sc
   public key is `plugins.updater.pubkey` in `tauri.conf.json`. `createUpdaterArtifacts` lives in the CI-only
   `tauri.release.conf.json` so that a local `npm run tauri build` keeps working without the private key.
 - The release stays a draft until published by hand, as before. Publishing is the moment running installs start to
-  offer the update.
+  offer the update. *Superseded by ADR 0003: the release workflow publishes the draft itself once every target
+  built.*
 - The UI is the *Updates* page of the settings window: current version, one check when the page opens, "Download and
   install", then "Restart now". The main window checks once per launch (not in dev builds) and marks the gear button
   with a dot that opens that page. A failed background check is silent; the page reports errors.

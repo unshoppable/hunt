@@ -95,7 +95,7 @@ export function IconPicker({ value, onChange, className = "" }: { value: string;
                 pick(matches[0]);
               }
             }}
-            className="m-1.5 shrink-0 rounded border border-neutral-600 bg-(--surface-chat) px-2 py-1 text-sm text-neutral-200 outline-none placeholder:text-neutral-600 focus:border-neutral-400"
+            className="m-1.5 shrink-0 rounded border border-neutral-600 bg-(--surface-input) px-2 py-1 text-sm text-neutral-200 outline-none placeholder:text-neutral-600 focus:border-neutral-400"
           />
           <ul className="min-h-0 flex-1 overflow-y-auto p-1">
             {matches.map((icon) => (

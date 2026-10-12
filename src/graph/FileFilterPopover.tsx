@@ -5,15 +5,23 @@ import { folderIconUrl, useFileIconUrl } from "../diff/fileIcons";
 import { STATUS_NAME_CLASS } from "../diff/styles";
 import type { ChangedFile } from "../ipc/types";
 import { baseName } from "../ui/path";
+import { ResizeGrips } from "../ui/ResizeGrips";
 import { useDismiss } from "../ui/useDismiss";
+import { usePopupSize } from "../ui/usePopupSize";
+import { useViewportSize } from "../ui/useViewportSize";
 
 /** One visible row of the tree; `depth` is the indentation level. */
 type Row = { node: TreeNode; depth: number };
+
+const MIN_SIZE = { width: 220, height: 120 };
+/** The largest share of the window's width and height the popover may take. */
+const MAX_SHARE = 0.8;
 
 /**
  * Popover below the "Files" button: the changelist as a folder tree with a checkbox per file and folder. Every file
  * starts checked; unchecking hides the file from the diagram, a folder checkbox toggles everything below it.
  * Closes on Escape or a click outside; a press on the button that opened it (`anchorRef`) closes without reopening.
+ * It is as tall as its rows up to the remembered height; dragging its right or bottom edge resizes it.
  */
 export function FileFilterPopover({
   files,
@@ -34,6 +42,8 @@ export function FileFilterPopover({
   const rootRef = useRef<HTMLDivElement>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const tree = useMemo(() => buildChangeTree(files), [files]);
+  const viewport = useViewportSize();
+  const { size, isHeightSet, grips } = usePopupSize("fileFilter", { min: MIN_SIZE, max: { width: viewport.width * MAX_SHARE, height: viewport.height * MAX_SHARE } });
 
   useDismiss(rootRef, onClose, { anchorRefs: [anchorRef] });
 
@@ -87,7 +97,11 @@ export function FileFilterPopover({
   const indent = (depth: number) => ({ paddingLeft: `calc(8px + ${depth} * 14px)` });
 
   return (
-    <div ref={rootRef} className="absolute top-full left-0 z-20 mt-1 flex w-80 max-h-96 flex-col rounded-md border border-neutral-600 bg-(--surface-inset) text-[13px] shadow-lg">
+    <div
+      ref={rootRef}
+      className="absolute top-full left-0 z-20 mt-1 flex flex-col rounded-md border border-neutral-600 bg-(--surface-inset) text-[13px] shadow-lg"
+      style={{ width: size.width, maxHeight: size.height, height: isHeightSet ? size.height : undefined }}
+    >
       <div className="flex items-center gap-2 border-b border-(--line) px-2 py-2 text-neutral-400">
         <Checkbox state={files.length ? stateOf(files) : "unchecked"} onChange={() => toggleGroup(files)} title="Show all files" />
         <span>
@@ -118,6 +132,7 @@ export function FileFilterPopover({
         )}
         {!files.length ? <li className="px-3 py-2 text-neutral-500">No uncommitted changes.</li> : null}
       </ul>
+      <ResizeGrips edges={{ right: true, bottom: true }} {...grips} />
     </div>
   );
 }

@@ -108,7 +108,6 @@ export class SplitDiffController {
       lineHeight: options.lineHeight,
       fontFamily: options.fontFamily,
       lineDecorationsWidth: 10,
-      // Sub chat glyphs (see ide/selectionChatMarkers.ts) sit in the editable side's gutter, next to the line numbers.
       glyphMargin: true,
       lineNumbersMinChars: 2,
     }) as EditorWithHiddenAreas;

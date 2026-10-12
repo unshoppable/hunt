@@ -22,6 +22,8 @@ function session(id: string, parentId: string | null, reviewComments: ReviewComm
     pullRequest: { number: 7, url: "https://github.com/o/r/pull/7" },
     diffBase: "merge-base",
     reviewComments,
+    workspace: "worktree",
+    dependencies: null,
   };
 }
 

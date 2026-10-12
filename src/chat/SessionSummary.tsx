@@ -1,6 +1,6 @@
 import type { SessionView } from "../ipc/types";
 import { useSettingsStore } from "../state/settings";
-import { BUTTON, SECONDARY } from "../ui/buttons";
+import { BUTTON_MD, SECONDARY } from "../ui/buttons";
 
 /** Box above the messages with the session's summary bullets; shown while the "Summary" setting is on. */
 export function SessionSummary({ session }: { session: SessionView }) {
@@ -35,7 +35,7 @@ export function SessionSummaryToggle() {
       aria-pressed={showSummary}
       title={showSummary ? "Hide the summary box" : "Show the summary box"}
       onClick={toggleSummary}
-      className={`${BUTTON} ${showSummary ? "border border-white/15 bg-white/12 text-white hover:bg-white/15 active:bg-white/10" : SECONDARY}`}
+      className={`${BUTTON_MD} ${showSummary ? "border border-white/15 bg-white/12 text-white hover:bg-white/15 active:bg-white/10" : SECONDARY}`}
     >
       <InfoIcon />
       Summary

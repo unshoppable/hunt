@@ -1,6 +1,6 @@
 /**
  * Moves the localStorage entries of the time the application was called harness (`harness-settings`,
- * `harness.lastRepoPath`, pane layouts, …) to their Hunt names, so settings and layouts survive the rename. An entry
+ * `harness-agent-defaults`, pane layouts, …) to their Hunt names, so settings and layouts survive the rename. An entry
  * already stored under the new name wins. Every window's bootstrap imports this module first, before any store hydrates.
  */
 export function renameLegacyKeys(storage: Pick<Storage, "length" | "key" | "getItem" | "setItem" | "removeItem">): void {

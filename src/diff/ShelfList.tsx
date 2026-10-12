@@ -3,7 +3,7 @@ import { commands } from "../ipc/commands";
 import type { Shelf } from "../ipc/types";
 import { useFileIconUrl } from "./fileIcons";
 import { STATUS_NAME_CLASS } from "./styles";
-import { DANGER, ICON_BUTTON_BASE_SM, SECONDARY_BUTTON_SM } from "../ui/buttons";
+import { DANGER, ICON_BUTTON_BASE_SM, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { ChevronIcon, CloseIcon } from "../ui/icons";
 import { confirmDestructive } from "../ui/confirm";
 import { baseName, dirName } from "../ui/path";
@@ -81,7 +81,7 @@ export function ShelfList({ sessionId, version, onChanged }: { sessionId: string
                   type="button"
                   disabled={isBusy}
                   onClick={() => run(shelf.reference, () => commands.unshelve(sessionId, shelf.reference, false))}
-                  className={SECONDARY_BUTTON_SM}
+                  className={SECONDARY_BUTTON_XS}
                   title="Restore the files and remove the shelf"
                 >
                   Unshelve
@@ -90,7 +90,7 @@ export function ShelfList({ sessionId, version, onChanged }: { sessionId: string
                   type="button"
                   disabled={isBusy}
                   onClick={() => run(shelf.reference, () => commands.unshelve(sessionId, shelf.reference, true))}
-                  className={SECONDARY_BUTTON_SM}
+                  className={SECONDARY_BUTTON_XS}
                   title="Restore the files but keep the shelf"
                 >
                   Apply

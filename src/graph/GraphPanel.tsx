@@ -6,7 +6,7 @@ import type { ArchitectureGraph, ChangeStat, ChangedFile, GraphEdge, GraphStatus
 import { useHuntStore } from "../state/store";
 import { STATUS_BAR } from "../ui/bars";
 import { errorText, useLoad } from "../ui/useLoad";
-import { PRIMARY_BUTTON_SM, SECONDARY_BUTTON_SM } from "../ui/buttons";
+import { PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { DependencyCard, type OutgoingDependency } from "./DependencyCard";
 import { buildDiagram, litByHover, type DiagramNode } from "./diagram";
 import { openDiffWindow } from "./diffWindows";
@@ -195,7 +195,7 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex items-center gap-2 border-b border-(--line) px-3 py-2.5 text-[13px]">
           <div className="relative">
-            <button ref={filterButtonRef} type="button" onClick={() => setIsFilterOpen((value) => !value)} className={SECONDARY_BUTTON_SM} title="Choose which changed files the diagram shows">
+            <button ref={filterButtonRef} type="button" onClick={() => setIsFilterOpen((value) => !value)} className={SECONDARY_BUTTON_XS} title="Choose which changed files the diagram shows">
               Files
               <span className="text-neutral-400">
                 {diagram.hiddenCount ? `${files.length - diagram.hiddenCount}/${files.length}` : files.length}
@@ -214,7 +214,7 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
           <span className={`min-w-0 flex-1 truncate ${isGraphUnusable || isOutdated ? "text-amber-300/90" : "text-neutral-500"}`} title={generatedAt ? `Diagram generated ${generatedAt}` : undefined}>
             {hint}
           </span>
-          <button type="button" disabled={!isLive || isBusy} onClick={() => void refreshGraph(sessionId)} className={PRIMARY_BUTTON_SM}>
+          <button type="button" disabled={!isLive || isBusy} onClick={() => void refreshGraph(sessionId)} className={PRIMARY_BUTTON_XS}>
             {isBusy ? "Working…" : graph ? "Update diagram" : "Generate diagram"}
           </button>
         </div>

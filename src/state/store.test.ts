@@ -209,6 +209,7 @@ function storedSession(id: string, title: string): SessionView {
     diffBase: null,
     reviewComments: [],
     workspace: "worktree",
+    remote: null,
     dependencies: null,
   };
 }
@@ -553,6 +554,126 @@ describe("agentSetupOf", () => {
     applyUpdate("parent", notification({ sessionUpdate: "current_mode_update", currentModeId: "plan" }));
 
     expect(agentSetupOf(useHuntStore.getState().chats.parent)).toEqual({ configValues: { model: "fable", effort: "high" }, modeId: "plan" });
+  });
+});
+
+describe("remote sessions", () => {
+  const remote = {
+    vm: { project: "p", zone: "z", instance: "vm-hunt" },
+    worktreePath: `/srv/worktrees/${SESSION}`,
+    repo: "o/r",
+    branch: "hunt/x",
+    handoffHead: "abc",
+    handedOffAt: "2026-10-12T20:00:00Z",
+    localMode: "default",
+  };
+
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("shows the mode the agent reports in its mode option", () => {
+    useHuntStore.setState({ chats: {} });
+    useHuntStore.getState().applyUpdate(SESSION, notification({
+      sessionUpdate: "config_option_update",
+      configOptions: [{ id: "mode", name: "Mode", type: "select", currentValue: "bypassPermissions", options: [{ value: "bypassPermissions", name: "Bypass" }] }],
+    }));
+    expect(useHuntStore.getState().chats[SESSION].modeId).toBe("bypassPermissions");
+  });
+
+  it("takes the turn state the relay reports after a reconnect", () => {
+    useHuntStore.setState({ chats: {} });
+    const { applyUpdate } = useHuntStore.getState();
+    applyUpdate(SESSION, notification({ sessionUpdate: "session_info_update", _meta: { hunt: { turn: "running" } } }));
+    expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(true);
+    applyUpdate(SESSION, notification({ sessionUpdate: "session_info_update", _meta: { hunt: { turn: "idle" } } }));
+    expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(false);
+    applyUpdate(SESSION, notification({ sessionUpdate: "session_info_update", title: "unrelated" }));
+    expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(false);
+  });
+
+  it("connects a disconnected remote session before sending the prompt", async () => {
+    const stopped = { ...storedSession(SESSION, "Remote"), isLive: false, remote };
+    useHuntStore.setState({ chats: {}, sessions: [stopped], creatingIds: [], activeSessionId: SESSION, draft: null, untitledIds: [] });
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "open_session") return Promise.resolve({ ...stopped, isLive: true });
+      if (command === "list_sessions") return Promise.resolve([{ ...stopped, isLive: true }]);
+      if (command === "send_prompt") return Promise.resolve("EndTurn");
+      return Promise.resolve(undefined);
+    });
+
+    await useHuntStore.getState().sendPrompt(SESSION, "go on");
+
+    const calls = vi.mocked(invoke).mock.calls.map(([command]) => command);
+    expect(calls.indexOf("open_session")).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("send_prompt")).toBeGreaterThan(calls.indexOf("open_session"));
+  });
+
+  it("keeps the prompt in the queue when the VM cannot be reached", async () => {
+    const stopped = { ...storedSession(SESSION, "Remote"), isLive: false, remote };
+    useHuntStore.setState({ chats: {}, sessions: [stopped], creatingIds: [], activeSessionId: SESSION, draft: null, untitledIds: [] });
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "open_session") return Promise.reject("failed to start the VM vm-hunt");
+      if (command === "list_sessions") return Promise.resolve([stopped]);
+      return Promise.resolve(undefined);
+    });
+
+    await useHuntStore.getState().sendPrompt(SESSION, "go on");
+
+    const chat = useHuntStore.getState().chats[SESSION];
+    expect(chat.queue.map((prompt) => prompt.text)).toEqual(["go on"]);
+    expect(chat.error).toBe("failed to start the VM vm-hunt");
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("send_prompt", expect.anything());
+  });
+
+  it("keeps the conversation while a remote session reconnects until the replay replaces it", async () => {
+    const stopped = { ...storedSession(SESSION, "Remote"), isLive: false, remote };
+    useHuntStore.setState({ chats: {}, sessions: [stopped], creatingIds: [], activeSessionId: SESSION, draft: null, untitledIds: [] });
+    const { applyUpdate } = useHuntStore.getState();
+    applyUpdate(SESSION, notification({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "before" } }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "answer" } }));
+    const itemsBefore = useHuntStore.getState().chats[SESSION].items;
+    let itemsWhileConnecting: unknown = null;
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "open_session") {
+        itemsWhileConnecting = useHuntStore.getState().chats[SESSION].items;
+        applyUpdate(SESSION, notification({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "replayed" } }));
+        return Promise.resolve({ ...stopped, isLive: true });
+      }
+      if (command === "list_sessions") return Promise.resolve([{ ...stopped, isLive: true }]);
+      return Promise.resolve(undefined);
+    });
+
+    await useHuntStore.getState().resumeSession(SESSION);
+
+    expect(itemsWhileConnecting).toBe(itemsBefore);
+    const chat = useHuntStore.getState().chats[SESSION];
+    expect(chat.items).toHaveLength(1);
+    expect(JSON.stringify(chat.items)).toContain("replayed");
+    expect(chat.isStale).toBe(false);
+  });
+
+  it("keeps the conversation next to the error when the connect fails, and starts empty when nothing is replayed", async () => {
+    const stopped = { ...storedSession(SESSION, "Remote"), isLive: false, remote };
+    useHuntStore.setState({ chats: {}, sessions: [stopped], creatingIds: [], activeSessionId: SESSION, draft: null, untitledIds: [] });
+    useHuntStore.getState().applyUpdate(SESSION, notification({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "answer" } }));
+    vi.mocked(invoke).mockImplementation((command) => (command === "open_session" ? Promise.reject("failed to start the VM vm-hunt") : Promise.resolve([stopped])));
+
+    await useHuntStore.getState().resumeSession(SESSION);
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ error: "failed to start the VM vm-hunt", isStale: false, isLoading: false });
+    expect(useHuntStore.getState().chats[SESSION].items).toHaveLength(1);
+
+    vi.mocked(invoke).mockImplementation((command) => Promise.resolve(command === "open_session" ? { ...stopped, isLive: true } : [stopped]));
+    await useHuntStore.getState().resumeSession(SESSION);
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ items: [], isStale: false, isLoading: false, error: null });
+  });
+
+  it("does not report a dropped VM connection as an error", () => {
+    useHuntStore.setState({ chats: {}, sessions: [{ ...storedSession(SESSION, "Remote"), remote }] });
+    useHuntStore.getState().ensureChat(SESSION);
+    useHuntStore.getState().applyClosed({ huntSessionId: SESSION, error: "Process exited with exit status: 255" });
+    expect(useHuntStore.getState().chats[SESSION].error).toBeNull();
+    expect(useHuntStore.getState().sessions[0].isLive).toBe(false);
   });
 });
 

@@ -121,6 +121,13 @@ pub struct PendingPermission {
     pub answer: oneshot::Sender<String>,
 }
 
+/// How Hunt reaches the agent: a `claude-agent-acp` process on this machine, or the relay of a session handed off to
+/// a VM, reached by running `ssh` with `ssh_args` (see `remote::ssh::Ssh::stream_args`).
+pub enum AgentTransport {
+    Local,
+    Remote { ssh_args: Vec<String> },
+}
+
 /// How the agent session is brought up: fresh, or loaded from Claude Code's transcript.
 pub enum SessionStart {
     New { cwd: PathBuf },
@@ -175,10 +182,14 @@ impl ReadyHandoff {
 struct AgentTask {
     app: AppHandle,
     hunt_session_id: Uuid,
-    worktree: PathBuf,
+    /// The local worktree whose changes are attributed to this session; `None` for a remote session.
+    worktree: Option<PathBuf>,
     history: Arc<Mutex<Vec<SessionNotification>>>,
     start: SessionStart,
     system_prompt: String,
+    /// Whether a conversation the agent no longer has may be replaced by a new one; a relay never loses its session,
+    /// so a remote session reports the error instead.
+    may_start_over: bool,
     ready: ReadyHandoff,
     shutdown: oneshot::Receiver<()>,
     finished: oneshot::Sender<()>,
@@ -195,27 +206,34 @@ pub fn publish_update(
     let _ = app.emit("acp:update", UpdateEvent { hunt_session_id, notification });
 }
 
-/// Spawns the agent, initializes the protocol and creates or loads the session.
+/// Spawns the agent (or the SSH stream to its relay), initializes the protocol and creates or loads the session.
 /// Resolves once the session is usable; the connection keeps running in the background.
 pub async fn connect(
     app: AppHandle,
     hunt_session_id: Uuid,
     start: SessionStart,
     context_prompt: Option<String>,
+    transport: AgentTransport,
 ) -> Result<LiveSession, String> {
-    let script = bundled_script_path(&app, ACP_SCRIPT)?;
-    let mut config = AcpAgentConfig::new("node").arg(script.to_string_lossy());
-    if let Some(token) = accounts::active_token(&app).await? {
-        config = config.env(accounts::TOKEN_ENV, token);
-    }
-    let agent = AcpAgent::new(config);
+    let is_local = matches!(transport, AgentTransport::Local);
+    let agent = match transport {
+        AgentTransport::Local => {
+            let script = bundled_script_path(&app, ACP_SCRIPT)?;
+            let mut config = AcpAgentConfig::new("node").arg(script.to_string_lossy());
+            if let Some(token) = accounts::active_token(&app).await? {
+                config = config.env(accounts::TOKEN_ENV, token);
+            }
+            AcpAgent::new(config)
+        }
+        AgentTransport::Remote { ssh_args } => AcpAgent::new(AcpAgentConfig::new("ssh").args(ssh_args)),
+    };
 
     let (ready, ready_receiver) = ReadyHandoff::new();
     let (shutdown_sender, shutdown_receiver) = oneshot::channel::<()>();
     let (finished_sender, finished_receiver) = oneshot::channel::<()>();
 
     let worktree = match &start {
-        SessionStart::New { cwd } | SessionStart::Load { cwd, .. } => cwd.clone(),
+        SessionStart::New { cwd } | SessionStart::Load { cwd, .. } => is_local.then(|| cwd.clone()),
     };
     let history: Arc<Mutex<Vec<SessionNotification>>> = Arc::default();
     let task = AgentTask {
@@ -225,6 +243,7 @@ pub async fn connect(
         history: history.clone(),
         start,
         system_prompt: system_prompt_append(&app, context_prompt),
+        may_start_over: is_local,
         ready,
         shutdown: shutdown_receiver,
         finished: finished_sender,
@@ -245,7 +264,7 @@ pub async fn connect(
 /// Runs the agent process until it exits or the session is shut down: forwards its notifications and permission
 /// requests, hands the established session to `connect`, and announces the end to the registries and the UI.
 async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
-    let AgentTask { app, hunt_session_id, worktree, history, start, system_prompt, ready, shutdown, finished } = task;
+    let AgentTask { app, hunt_session_id, worktree, history, start, system_prompt, may_start_over, ready, shutdown, finished } = task;
     let notify_app = app.clone();
     let permission_app = app.clone();
     let session_ready = ready.clone();
@@ -256,7 +275,9 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
         .on_receive_notification(
             async move |mut notification: SessionNotification, _connection| {
                 graph::hide_replayed_refresh(&mut notification);
-                attribution::observe(&notify_app, hunt_session_id, &worktree, &notification);
+                if let Some(worktree) = &worktree {
+                    attribution::observe(&notify_app, hunt_session_id, worktree, &notification);
+                }
                 publish_update(&notify_app, hunt_session_id, &history, notification);
                 Ok(())
             },
@@ -274,7 +295,7 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
             on_receive_request!(),
         )
         .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
-            run_session(connection, start, system_prompt, session_ready, shutdown).await
+            run_session(connection, start, system_prompt, may_start_over, session_ready, shutdown).await
         })
         .await;
 
@@ -294,11 +315,12 @@ async fn run_session(
     connection: ConnectionTo<Agent>,
     start: SessionStart,
     system_prompt: String,
+    may_start_over: bool,
     ready: ReadyHandoff,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<(), Error> {
     // A failed setup is not fired here: it surfaces as the connection's result, which fires the handoff with it.
-    let (acp_session_id, config_options) = establish(&connection, start, &system_prompt).await?;
+    let (acp_session_id, config_options) = establish(&connection, start, &system_prompt, may_start_over).await?;
     ready.fire(Ok((acp_session_id, config_options, connection.clone())));
 
     tokio::select! {
@@ -323,12 +345,13 @@ async fn forget_live_session(app: &AppHandle, hunt_session_id: Uuid) {
 
 /// Initializes the protocol and creates or loads the session; returns its ID and config options.
 /// `system_prompt` is appended to the agent's own system prompt (see `system_prompt_append`).
-/// A conversation the agent no longer has (its transcript was cleaned up or never written) is replaced by a new
-/// one, so the session stays usable; the caller stores the new ID.
+/// With `may_start_over`, a conversation the agent no longer has (its transcript was cleaned up or never written) is
+/// replaced by a new one, so the session stays usable; the caller stores the new ID.
 async fn establish(
     connection: &ConnectionTo<Agent>,
     start: SessionStart,
     system_prompt: &str,
+    may_start_over: bool,
 ) -> Result<(SessionId, Vec<SessionConfigOption>), Error> {
     let mut capability_meta = Meta::new();
     capability_meta.insert("terminal_output".into(), serde_json::Value::Bool(true));
@@ -348,7 +371,7 @@ async fn establish(
                 .meta(build_session_meta(system_prompt));
             match connection.send_request(request).block_task().await {
                 Ok(response) => Ok((session_id, response.config_options.unwrap_or_default())),
-                Err(error) if error.code == ErrorCode::ResourceNotFound => {
+                Err(error) if may_start_over && error.code == ErrorCode::ResourceNotFound => {
                     eprintln!("the agent no longer has the conversation {session_id}, starting a new one: {error}");
                     new_session(connection, cwd, system_prompt).await
                 }
@@ -377,7 +400,7 @@ const GUARDRAIL_OFFER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_D
 /// Everything Hunt appends to the agent's system prompt: the user's response-style prompt from the settings (if
 /// not cleared), the guardrail offer, the diagram instructions in the user's AI language and the optional selection
 /// context.
-fn system_prompt_append(app: &AppHandle, context_prompt: Option<String>) -> String {
+pub fn system_prompt_append(app: &AppHandle, context_prompt: Option<String>) -> String {
     let style = crate::preferences::system_prompt(app);
     let diagram = crate::graph::system_prompt(&crate::preferences::ai_language(app));
     let mut append = String::new();

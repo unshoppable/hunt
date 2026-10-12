@@ -1,0 +1,89 @@
+# Container of one Hunt remote session. The relay (relay/main.ts, run by a fixed Node 24) owns the session's socket and
+# drives claude-agent-acp, which runs the native Claude Code CLI. Repositories get the Node and npm versions they pin
+# through Volta. `hunt-ctl install` builds the image on the VM as hunt-agent:<bundle hash>, with the bundle (Hunt's
+# remote/ folder) as the build context:
+#
+#   docker build -f image/Dockerfile -t hunt-agent:<hash> .
+#
+# Plain Dockerfile syntax only: the VM's Docker may fall back to the legacy builder.
+FROM debian:bookworm-slim
+
+ARG NODE_VERSION=24.18.1
+ARG NODE_SHA256=d6c664df3f3f61458e8c277585571328522d705166723a7c7823a9253a4d15a0
+ARG NPM_VERSION=11.16.0
+ARG VOLTA_VERSION=2.0.2
+ARG VOLTA_SHA256=6cec054c911fb925b629a09455775af6e95dc0f5694a4c28b63979ab9ef18037
+ARG TERRAFORM_VERSION=1.15.8
+ARG TERRAFORM_SHA256=d25ce7b6902013ad905db3d2eab0be4cd905887fe88b81a6171b8d5503c31f3d
+
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+# The pinned downloads below are x86_64 builds, like the VM.
+RUN test "$(dpkg --print-architecture)" = amd64 || { echo "hunt-agent images are built for linux/amd64 only" >&2; exit 1; }; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl g++ git git-lfs jq make procps python3 unzip xz-utils; \
+    rm -rf /var/lib/apt/lists/*; \
+    git lfs install --system; \
+    git config --system safe.directory '*'
+
+# Same uid and gid as the VM's `hunt` user, which owns the mounted worktree, repository and ~/.claude.
+RUN groupadd --gid 2000 agent; \
+    useradd --uid 2000 --gid 2000 --create-home --home-dir /home/agent --shell /bin/bash agent
+
+# Node for the relay and the adapter, independent of the Node a repository pins. Its corepack serves `hunt-ctl deps`
+# and the agent; the script runs on whatever `node` Volta resolves.
+RUN curl -fsSLo /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
+    echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum --check --quiet; \
+    mkdir -p /opt/hunt/node; \
+    tar -xJf /tmp/node.tar.xz -C /opt/hunt/node --strip-components=1 --no-same-owner; \
+    rm /tmp/node.tar.xz; \
+    ln -s /opt/hunt/node/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
+
+RUN curl -fsSLo /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"; \
+    echo "${TERRAFORM_SHA256}  /tmp/terraform.zip" | sha256sum --check --quiet; \
+    unzip -q /tmp/terraform.zip terraform -d /usr/local/bin; \
+    rm /tmp/terraform.zip
+
+# Volta's shims come first on PATH, so `node` and `npm` follow a repository's `volta` pins and default to the versions
+# installed here; profile.d puts them back after /etc/profile resets PATH in login shells, which Claude Code's shell
+# snapshot uses. The agent owns VOLTA_HOME so that Volta can fetch other pinned versions at runtime.
+ENV VOLTA_HOME=/opt/volta
+RUN curl -fsSLo /tmp/volta.tar.gz "https://github.com/volta-cli/volta/releases/download/v${VOLTA_VERSION}/volta-${VOLTA_VERSION}-linux.tar.gz"; \
+    echo "${VOLTA_SHA256}  /tmp/volta.tar.gz" | sha256sum --check --quiet; \
+    mkdir -p /opt/volta/bin; \
+    tar -xzf /tmp/volta.tar.gz -C /opt/volta/bin --no-same-owner; \
+    rm /tmp/volta.tar.gz; \
+    /opt/volta/bin/volta install "node@${NODE_VERSION}" "npm@${NPM_VERSION}"; \
+    chown -R agent:agent /opt/volta; \
+    echo 'export PATH="/opt/volta/bin:${PATH}"' > /etc/profile.d/volta.sh
+
+# claude-agent-acp in the version Hunt's package-lock.json pins. The Claude Agent SDK brings the native Claude Code CLI
+# as the optional dependency for this platform; without it the adapter cannot run, so the build fails.
+COPY image/acp-version /opt/hunt/acp-version
+RUN export PATH="/opt/hunt/node/bin:${PATH}"; \
+    npm install --prefix /opt/hunt/acp --save-exact --omit=dev --no-audit --no-fund --no-update-notifier \
+        "@agentclientprotocol/claude-agent-acp@$(tr -d '[:space:]' < /opt/hunt/acp-version)"; \
+    rm -rf /root/.npm; \
+    cli=/opt/hunt/acp/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude; \
+    test -x "${cli}" || { echo "${cli} is missing: npm did not install the native Claude Code CLI" >&2; exit 1; }; \
+    ln -s "${cli}" /usr/local/bin/claude
+
+COPY relay/ /opt/hunt/relay/
+
+ENV HOME=/home/agent \
+    SHELL=/bin/bash \
+    PATH=/opt/volta/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    CLAUDE_CONFIG_DIR=/home/agent/.claude \
+    HUNT_CONFIG=/home/agent/.claude/hunt-session.json \
+    HUNT_SOCKET_DIR=/run/hunt/socket \
+    HUNT_ADAPTER=/opt/hunt/acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js \
+    DISABLE_TELEMETRY=1 \
+    DISABLE_ERROR_REPORTING=1 \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    DISABLE_AUTOUPDATER=1
+
+RUN test -f "${HUNT_ADAPTER}"
+
+USER agent
+WORKDIR /home/agent
+ENTRYPOINT ["/opt/hunt/node/bin/node", "/opt/hunt/relay/main.ts"]

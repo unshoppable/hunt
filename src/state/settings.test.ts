@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { CODE_FONT_FAMILY, DEFAULT_GRAPH_AGENT, DEFAULT_GUARDRAIL_DIRS, DEFAULT_PANES, DEFAULT_POPUP_SIZES, SETTINGS_VERSION, mergeSettings, migrateSettings, normalizeGuardrailDir } from "./settings";
+import {
+  CODE_FONT_FAMILY,
+  DEFAULT_GRAPH_AGENT,
+  DEFAULT_GUARDRAIL_DIRS,
+  DEFAULT_PANES,
+  DEFAULT_POPUP_SIZES,
+  DEFAULT_REMOTE,
+  SETTINGS_VERSION,
+  configuredVm,
+  mergeSettings,
+  migrateSettings,
+  normalizeGuardrailDir,
+  normalizeRemote,
+} from "./settings";
 
 describe("normalizeGuardrailDir", () => {
   it("strips surrounding whitespace, leading ./ and trailing slashes", () => {
@@ -75,6 +88,7 @@ describe("mergeSettings", () => {
     graphAgent: DEFAULT_GRAPH_AGENT,
     guardrailDirs: DEFAULT_GUARDRAIL_DIRS,
     popupSizes: DEFAULT_POPUP_SIZES,
+    remote: DEFAULT_REMOTE,
     aiLanguage: "German",
     showSummary: true,
     confirmSessionDelete: true,
@@ -103,11 +117,29 @@ describe("mergeSettings", () => {
     expect(merged.popupSizes).toEqual({ ...DEFAULT_POPUP_SIZES, usages: { width: 900, height: 500 } });
   });
 
+  it("keeps the default file patterns when only the VM was stored", () => {
+    const merged = mergeSettings({ remote: { project: "p", zone: "z", instance: "vm" } }, current);
+    expect(merged.remote).toEqual({ project: "p", zone: "z", instance: "vm", filePatterns: DEFAULT_REMOTE.filePatterns });
+  });
+
   it("returns the defaults when nothing is persisted", () => {
     const merged = mergeSettings(undefined, current);
     expect(merged.panes).toEqual(DEFAULT_PANES);
     expect(merged.graphAgent).toEqual(DEFAULT_GRAPH_AGENT);
     expect(merged.guardrailDirs).toEqual(DEFAULT_GUARDRAIL_DIRS);
     expect(merged.popupSizes).toEqual(DEFAULT_POPUP_SIZES);
+  });
+});
+
+describe("remote settings", () => {
+  it("offers a VM only once project, zone and instance are set", () => {
+    expect(configuredVm(DEFAULT_REMOTE)).toBeNull();
+    expect(configuredVm({ ...DEFAULT_REMOTE, project: "p", zone: "z" })).toBeNull();
+    expect(configuredVm({ ...DEFAULT_REMOTE, project: " p ", zone: "z", instance: "vm" })).toEqual({ project: "p", zone: "z", instance: "vm" });
+  });
+
+  it("drops blank, absolute and worktree-leaving file patterns", () => {
+    const remote = normalizeRemote({ ...DEFAULT_REMOTE, filePatterns: [" **/.env.private ", "", "/etc/hosts", "../secret", "config/*.local"] });
+    expect(remote.filePatterns).toEqual(["**/.env.private", "config/*.local"]);
   });
 });

@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import { configDefaults } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 // @ts-expect-error type error without @types/node package
@@ -8,6 +9,9 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
+
+  // Tauri copies `remote/` into src-tauri/target as a bundle resource; the copies' tests must not run a second time.
+  test: { exclude: [...configDefaults.exclude, "src-tauri/**"] },
 
   // ELK is loaded lazily by the architecture panel; pre-bundling it avoids a dev reload on first use.
   optimizeDeps: { include: ["elkjs/lib/elk-api.js"] },

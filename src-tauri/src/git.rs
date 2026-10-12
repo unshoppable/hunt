@@ -2,6 +2,7 @@
 //! worktree against `HEAD`, and committing, pushing or shelving them. Everything shells out to
 //! the `git` CLI so hooks, config and credential behavior match the terminal.
 
+use std::ffi::OsStr;
 use std::ops::RangeInclusive;
 use std::path::Path;
 
@@ -48,16 +49,16 @@ pub struct Shelf {
 /// Runs git in `cwd`. Exit code 1 is accepted for `diff` and `grep` commands, where it only means "has changes"
 /// or "no match".
 pub async fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    run_git_with_env(cwd, args, &[]).await
+    run_git_with_env::<&Path>(cwd, args, &[]).await
 }
 
 /// `run_git` with extra environment variables for the git process.
-async fn run_git_with_env(cwd: &Path, args: &[&str], envs: &[(&str, &Path)]) -> Result<String, String> {
+pub async fn run_git_with_env<V: AsRef<OsStr>>(cwd: &Path, args: &[&str], envs: &[(&str, V)]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(cwd)
         .args(args)
-        .envs(envs.iter().copied())
+        .envs(envs.iter().map(|(key, value)| (*key, value.as_ref())))
         .output()
         .await
         .map_err(|error| format!("failed to run git: {error}"))?;
@@ -79,7 +80,7 @@ async fn run_git_with_input(cwd: &Path, args: &[&str], envs: &[(&str, &Path)], i
         .arg("-C")
         .arg(cwd)
         .args(args)
-        .envs(envs.iter().copied())
+        .envs(envs.iter().map(|(key, value)| (*key, value.as_os_str())))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -163,6 +164,16 @@ pub async fn delete_branch(repo: &Path, branch: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Deletes every ref below `prefix`, which ends with `/` (e.g. `refs/hunt/<id>/`).
+pub async fn delete_refs(repo: &Path, prefix: &str) -> Result<(), String> {
+    let commands = run_git(repo, &["for-each-ref", "--format=delete %(refname)", prefix]).await?;
+    if commands.trim().is_empty() {
+        return Ok(());
+    }
+    run_git_with_input(repo, &["update-ref", "--stdin"], &[], &commands).await?;
+    Ok(())
+}
+
 /// Adds `.hunt/` to the repository's `info/exclude` (shared by all worktrees) so the diagram folder never shows up in
 /// git; an entry for the folder's former name `.harness/` is replaced.
 pub async fn exclude_hunt_dir(worktree: &Path) -> Result<(), String> {
@@ -206,6 +217,24 @@ impl SnapshotStore {
 /// The tree is built through a scratch copy of the index, so neither the real index nor HEAD change.
 /// The copy carries the stat cache, which lets git skip rehashing files that did not change.
 pub async fn snapshot_tree(worktree: &Path, store: &SnapshotStore) -> Result<String, String> {
+    tree_through_scratch_index(worktree, &store.envs()).await
+}
+
+/// Tree object of the current working tree like `snapshot_tree`, but written to the repository's own objects, so it
+/// can be pushed and compared with trees of commits.
+pub async fn worktree_tree(worktree: &Path) -> Result<String, String> {
+    tree_through_scratch_index(worktree, &[]).await
+}
+
+/// A commit of the current working tree (tracked and untracked files, ignored ones excluded) on top of `HEAD`, for
+/// moving uncommitted work to another machine; neither the index nor any branch changes.
+pub async fn snapshot_commit(worktree: &Path, message: &str) -> Result<String, String> {
+    let tree = worktree_tree(worktree).await?;
+    Ok(run_git(worktree, &["commit-tree", &tree, "-p", "HEAD", "-m", message]).await?.trim().to_string())
+}
+
+/// Writes the tree of the working tree through a scratch copy of the index, with `envs` added to every git call.
+async fn tree_through_scratch_index(worktree: &Path, envs: &[(&str, &Path)]) -> Result<String, String> {
     let index_path = run_git(worktree, &["rev-parse", "--git-path", "index"]).await?;
     let index_path = worktree.join(index_path.trim());
     let scratch_index = std::env::temp_dir().join(format!("hunt-index-{}", uuid::Uuid::new_v4()));
@@ -213,11 +242,11 @@ pub async fn snapshot_tree(worktree: &Path, store: &SnapshotStore) -> Result<Str
         std::fs::copy(&index_path, &scratch_index).map_err(|error| error.to_string())?;
     }
 
-    let [objects, alternates] = store.envs();
-    let envs = [("GIT_INDEX_FILE", scratch_index.as_path()), objects, alternates];
+    let mut all_envs = vec![("GIT_INDEX_FILE", scratch_index.as_path())];
+    all_envs.extend_from_slice(envs);
     let result = async {
-        run_git_with_env(worktree, &["add", "-A", "--", "."], &envs).await?;
-        run_git_with_env(worktree, &["write-tree"], &envs).await
+        run_git_with_env(worktree, &["add", "-A", "--", "."], &all_envs).await?;
+        run_git_with_env(worktree, &["write-tree"], &all_envs).await
     }
     .await;
     let _ = std::fs::remove_file(&scratch_index);
@@ -546,6 +575,21 @@ mod tests {
     }
 
     /// A repository with one committed file; commits need an identity, which the test sets locally.
+    #[tokio::test]
+    async fn delete_refs_removes_only_the_refs_below_the_prefix() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        for name in ["refs/hunt/a/handoff", "refs/hunt/a/retrieve", "refs/hunt/ab/handoff"] {
+            git(repo, &["update-ref", name, "HEAD"]).await;
+        }
+
+        delete_refs(repo, "refs/hunt/a/").await.unwrap();
+        delete_refs(repo, "refs/hunt/missing/").await.unwrap();
+
+        let left = run_git(repo, &["for-each-ref", "--format=%(refname)", "refs/hunt/"]).await.unwrap();
+        assert_eq!(left.trim(), "refs/hunt/ab/handoff");
+    }
+
     async fn fixture() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path();

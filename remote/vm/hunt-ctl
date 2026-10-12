@@ -1,0 +1,616 @@
+#!/usr/bin/env bash
+# hunt-ctl: the VM side of Hunt's remote sessions. Hunt runs it over SSH as `sudo -n hunt-ctl <command> …`. Every
+# command prints one JSON document on stdout; progress and errors go to stderr, errors with a non-zero exit. Git runs as
+# the host user `hunt`, whose uid 2000 the containers' user `agent` shares. Without arguments it lists the commands.
+# shellcheck disable=SC2016 # jq programs and `sh -c` scripts are single-quoted on purpose.
+set -Eeuo pipefail
+shopt -s inherit_errexit nullglob
+
+readonly HOST_USER=hunt
+readonly CONTAINER_USER=2000:2000
+readonly CONTAINER_MEMORY=8g
+readonly RELEASES=/srv/hunt/releases
+readonly CURRENT=/srv/hunt/current
+readonly SESSIONS=/srv/hunt/sessions
+readonly SOCKETS=/srv/hunt/sockets
+readonly REPOS=/srv/repos
+readonly WORKTREES=/srv/worktrees
+readonly CLAUDE_HOMES=/srv/claude
+readonly NPM_CACHE=/srv/cache/npm
+readonly STATE_DIR=/var/lib/hunt
+readonly ACTIVITY_FILE=/var/lib/hunt/activity
+readonly IDLE_CONFIG=/etc/hunt/idle.conf
+readonly UNIT_DIR=/etc/systemd/system
+# A relay whose status.json heartbeat is older than this is gone.
+readonly HEARTBEAT_MAX_AGE_MS=120000
+# Seconds `docker stop` gives the relay to close the adapter, which writes the transcript, before Docker kills it.
+readonly STOP_TIMEOUT=30
+# Exit status of failures that were reported already; the ERR trap stays quiet for them.
+readonly REPORTED=3
+
+# Removed when hunt-ctl exits.
+temporary_paths=()
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: hunt-ctl <command> [arguments]
+
+  install <dir>          install the bundle in <dir>: release, image hunt-agent:<hash>, systemd units
+  install-units          (re)install the systemd units, idle defaults and hunt-ctl link of the current release
+  version                hash of the current release
+  repo <owner>/<repo>    create the bare repository unless it exists
+  prepare <id> --repo <owner>/<repo> --branch <branch> --snapshot <ref> --git-name <name> --git-email <email>
+                         check the session's branch out as its worktree, with the snapshot's changes applied
+  deps <id>              install the worktree's dependencies (npm, pnpm or yarn, by lockfile)
+  start <id>             start the session's container; a new one takes the Claude token from stdin
+  wait <id> [--timeout <seconds>]
+                         wait until the session's relay serves its socket (default 120 seconds)
+  stop <id>              stop the session's container
+  clear <id>             restart the session's relay with a new conversation; the Claude token comes from stdin
+  snapshot <id>          record the worktree's state as refs/hunt/<id>/retrieve
+  status <id>            container state, relay status and session metadata
+  destroy <id>           remove the session's container, worktree, refs, branch and files
+USAGE
+  exit 2
+}
+
+die() {
+  printf 'hunt-ctl: %s\n' "$*" >&2
+  exit "$REPORTED"
+}
+
+# ERR trap: names the command that failed. A failing subshell stays quiet; the command that ran it is reported.
+report_failure() {
+  local status=$1 line=$2 command=$3
+  (( status != REPORTED && BASH_SUBSHELL == 0 )) || return 0
+  printf 'hunt-ctl: line %s: `%s` failed with exit status %s\n' "$line" "$command" "$status" >&2
+}
+
+on_exit() {
+  local path
+  touch "$ACTIVITY_FILE" 2>/dev/null || true
+  for path in "${temporary_paths[@]}"; do
+    rm -rf -- "${path:?}"
+  done
+}
+
+# Prints the JSON document `jq -n` builds from the arguments as the command's result.
+emit() {
+  jq -cn "$@" >&3
+}
+
+# Runs a command as the host user that owns repositories, worktrees and the containers' files.
+as_hunt() {
+  runuser -u "$HOST_USER" -- "$@"
+}
+
+now_ms() {
+  date +%s%3N
+}
+
+require_id() {
+  [[ $1 =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "invalid session id: $1"
+}
+
+# <owner>/<repo> from the characters Hunt keeps in repository keys; no part starts with a dot.
+require_repository_key() {
+  local part='[A-Za-z0-9_-][A-Za-z0-9_.-]*'
+  [[ $1 =~ ^$part/$part$ ]] || die "invalid repository: $1 (expected <owner>/<repo>)"
+}
+
+# Rejects empty values and line breaks, which container.env cannot carry.
+require_line() {
+  [[ -n $2 && $2 != *[$'\n\r']* ]] || die "invalid $1: expected one non-empty line"
+}
+
+require_prepared() {
+  [[ -f $SESSIONS/$1/meta.json && -d $WORKTREES/$1 ]] || die "session $1 is not prepared on this VM"
+}
+
+# Prints field $2 of meta.json of session $1.
+meta() {
+  jq -er --arg field "$2" '.[$field] | strings' "$SESSIONS/$1/meta.json" || die "meta.json of session $1 has no $2"
+}
+
+current_hash() {
+  [[ -f $CURRENT/.hash ]] || die "no Hunt release is installed; run hunt-ctl install first"
+  tr -d '[:space:]' <"$CURRENT/.hash"
+}
+
+# Prints the JSON object in file $1 on one line, or null when the file is missing or holds anything else.
+read_object() {
+  local text=
+  if [[ -f $1 ]]; then
+    text=$(jq -c 'select(type == "object")' "$1" 2>/dev/null) || text=
+  fi
+  if [[ -z $text || $text == *$'\n'* ]]; then
+    text=null
+  fi
+  printf '%s\n' "$text"
+}
+
+# Prints Docker's state of container $1 (created, running, restarting, exited, …) or `missing`.
+container_state() {
+  local listing name state
+  listing=$(docker ps --all --filter "name=$1" --format '{{.Names}} {{.State}}')
+  while read -r name state; do
+    if [[ $name == "$1" ]]; then
+      printf '%s\n' "$state"
+      return
+    fi
+  done <<<"$listing"
+  echo missing
+}
+
+# Creates the host folders the containers of session $1 mount, owned by the uid the containers run as.
+ensure_session_dirs() {
+  install -d -m 0755 "$SESSIONS" "$CLAUDE_HOMES" "${NPM_CACHE%/*}"
+  install -d -m 0700 "$SESSIONS/$1"
+  install -d -o "$HOST_USER" -g "$HOST_USER" -m 0700 "$CLAUDE_HOMES/$1"
+  install -d -o "$HOST_USER" -g "$HOST_USER" -m 0755 "$SOCKETS" "$SOCKETS/$1" "$NPM_CACHE"
+}
+
+# Sets the caller's array `mounts` to the bind mounts every container of session $1 gets: the worktree and the bare
+# repository under their host paths, ~/.claude and the npm cache.
+session_mounts() {
+  local worktree=$WORKTREES/$1 repository
+  repository=$REPOS/$(meta "$1" repo).git
+  mounts=(
+    --mount "type=bind,src=$worktree,dst=$worktree"
+    --mount "type=bind,src=$repository,dst=$repository"
+    --mount "type=bind,src=$CLAUDE_HOMES/$1,dst=/home/agent/.claude"
+    --mount "type=bind,src=$NPM_CACHE,dst=/home/agent/.npm"
+  )
+}
+
+# Prints the Claude Code OAuth token Hunt sends on stdin: the Claude account picked in Hunt by whoever starts the
+# session. The VM keeps it only in the session's container.env and container.
+read_claude_token() {
+  local token=
+  IFS= read -r token || true
+  [[ -n $token && $token != *[[:space:]]* ]] || die "no Claude Code OAuth token on stdin: pick a Claude account in Hunt, the local login cannot run on the VM"
+  printf '%s' "$token"
+}
+
+# Rewrites container.env of session $1: the Claude Code token $2 and the git identity of meta.json.
+write_container_env() {
+  local file=$SESSIONS/$1/container.env token=$2 git_name git_email
+  git_name=$(meta "$1" gitName)
+  git_email=$(meta "$1" gitEmail)
+  rm -f -- "${file:?}.tmp"
+  (
+    umask 077
+    printf '%s=%s\n' CLAUDE_CODE_OAUTH_TOKEN "$token" GIT_AUTHOR_NAME "$git_name" GIT_AUTHOR_EMAIL "$git_email" \
+      GIT_COMMITTER_NAME "$git_name" GIT_COMMITTER_EMAIL "$git_email" HUNT_SESSION_ID "$1" >"$file.tmp"
+  )
+  mv -f "$file.tmp" "$file"
+}
+
+# Starts the container of session $1 unless it runs. A stopped container is created anew: Docker reads container.env
+# only when it creates a container, so only a new one gets a rotated token. Everything a session keeps lives in its
+# mounts.
+start_container() {
+  local id=$1 name=hunt-$1 state image token
+  local -a mounts
+  ensure_session_dirs "$id"
+  state=$(container_state "$name")
+  case $state in
+    running | restarting) return ;;
+  esac
+  token=$(read_claude_token)
+  write_container_env "$id" "$token"
+  # The previous relay's status would pass for the new one's until the new relay replaces it.
+  rm -f -- "${SOCKETS:?}/${id:?}/status.json"
+  if [[ $state != missing ]]; then
+    docker rm --force "$name" >/dev/null
+  fi
+  image=$(meta "$id" image)
+  session_mounts "$id"
+  docker run --detach --init --restart unless-stopped --pull never --name "$name" --memory "$CONTAINER_MEMORY" \
+    --env-file "$SESSIONS/$id/container.env" --user "$CONTAINER_USER" "${mounts[@]}" \
+    --mount "type=bind,src=$SOCKETS/$id,dst=/run/hunt/socket" --workdir "$WORKTREES/$id" "$image" >/dev/null
+}
+
+# Whether a connection to the Unix socket $1 succeeds.
+socket_accepts() {
+  [[ -S $1 ]] && timeout 5 socat -u OPEN:/dev/null "UNIX-CONNECT:$1" 2>/dev/null
+}
+
+# Fails with message $2, followed by the last log lines of container $1.
+fail_wait() {
+  printf 'hunt-ctl: %s\nlast log lines of %s:\n' "$2" "$1" >&2
+  docker logs --tail 20 "$1" >&2 2>&1 || true
+  exit "$REPORTED"
+}
+
+# Waits up to $2 seconds until the relay of session $1 is ready with a fresh heartbeat and its socket takes connections,
+# then prints its status.json as the command's result. $3, the JSON of an acpSessionId, makes it also wait until the
+# relay serves another session. A connected client proves the socket: probing it would replace that client.
+wait_until_ready() {
+  local id=$1 timeout=$2 previous=${3-} name=hunt-$1
+  local status_file=$SOCKETS/$1/status.json socket=$SOCKETS/$1/acp.sock
+  local deadline=$((SECONDS + timeout)) stopped_polls=0 status verdict state
+  while :; do
+    status=$(read_object "$status_file")
+    verdict=$(jq -r --argjson now "$(now_ms)" --argjson maxAge "$HEARTBEAT_MAX_AGE_MS" --argjson previous "${previous:-null}" \
+      --arg needsNewSession "${previous:+yes}" '
+        if . == null or (.heartbeatAt // 0) < $now - $maxAge then "stale"
+        elif .state == "failed" then "failed"
+        elif .state != "ready" then "starting"
+        elif $needsNewSession == "yes" and (.acpSessionId == null or .acpSessionId == $previous) then "starting"
+        elif .clientConnected == true then "connected"
+        else "ready" end' <<<"$status")
+    case $verdict in
+      failed) fail_wait "$name" "the agent failed to start: $(jq -r '.error // "no reason given"' <<<"$status")" ;;
+      connected)
+        printf '%s\n' "$status" >&3
+        return
+        ;;
+      ready)
+        if socket_accepts "$socket"; then
+          printf '%s\n' "$status" >&3
+          return
+        fi
+        ;;
+    esac
+    state=$(container_state "$name")
+    case $state in
+      running | restarting) stopped_polls=0 ;;
+      missing) die "container $name does not exist; run hunt-ctl start first" ;;
+      *) (( ++stopped_polls < 4 )) || fail_wait "$name" "container $name is $state" ;;
+    esac
+    (( SECONDS < deadline )) || fail_wait "$name" "the agent in $name was not ready within ${timeout}s (relay status: $verdict)"
+    sleep 0.5
+  done
+}
+
+# Installs the systemd units, the idle defaults and the hunt-ctl link of the current release and (re)starts them.
+install_units() {
+  local unit
+  [[ -d $CURRENT/vm/systemd ]] || die "no Hunt release is installed; run hunt-ctl install first"
+  for unit in "$CURRENT"/vm/systemd/*.service "$CURRENT"/vm/systemd/*.timer; do
+    install -m 0644 "$unit" "$UNIT_DIR/"
+  done
+  if [[ ! -f $IDLE_CONFIG ]]; then
+    install -d -m 0755 "${IDLE_CONFIG%/*}"
+    printf 'IDLE_MINUTES=30\nBOOT_GRACE_MINUTES=15\n' >"$IDLE_CONFIG"
+  fi
+  ln -sfn "$CURRENT/vm/hunt-ctl" /usr/local/bin/hunt-ctl
+  systemctl daemon-reload
+  systemctl enable hunt-firewall.service hunt-boot.service hunt-idle.timer
+  # Restarting re-runs the oneshot units, so the metadata server block and the socket folder are in place afterwards.
+  systemctl restart hunt-firewall.service hunt-boot.service
+  systemctl start hunt-idle.timer
+}
+
+# Creates the bare repository of <owner>/<repo> $1 as `hunt` unless it exists; Hunt's .hunt/ stays untracked in its
+# worktrees.
+ensure_repository() {
+  local path=$REPOS/$1.git
+  install -d -m 0755 "$REPOS"
+  install -d -o "$HOST_USER" -g "$HOST_USER" -m 0755 "$REPOS/${1%/*}"
+  if [[ ! -f $path/HEAD ]]; then
+    as_hunt git init --quiet --bare --initial-branch=main "$path"
+  fi
+  if ! grep -qsxF '.hunt/' "$path/info/exclude"; then
+    as_hunt sh -c 'mkdir -p "$1/info" && echo .hunt/ >>"$1/info/exclude"' sh "$path"
+  fi
+}
+
+# Removes worktree $2 of the bare repository $1 with its bookkeeping, also when it is locked, modified or half gone.
+remove_worktree() {
+  local listing
+  listing=$(as_hunt git -C "$1" worktree list --porcelain)
+  grep -qxF "worktree $2" <<<"$listing" || return 0
+  as_hunt git -C "$1" worktree remove --force --force "$2" 2>/dev/null && return 0
+  as_hunt git -C "$1" worktree unlock "$2" 2>/dev/null || true
+  rm -rf -- "${2:?}"
+  as_hunt git -C "$1" worktree prune
+}
+
+cmd_install() {
+  (( $# == 1 )) || usage
+  local source=$1 hash release staging
+  [[ -f $source/.hash && -f $source/image/Dockerfile && -f $source/vm/hunt-ctl ]] || die "$source is not a Hunt remote bundle"
+  hash=$(tr -d '[:space:]' <"$source/.hash")
+  [[ $hash =~ ^[0-9a-f]{16}$ ]] || die "invalid bundle hash in $source/.hash: $hash"
+
+  install -d -m 0755 "$RELEASES"
+  exec 9>"$STATE_DIR/install.lock"
+  flock --wait 1800 9 || die "another hunt-ctl install did not finish within 30 minutes"
+
+  release=$RELEASES/$hash
+  if [[ ! -d $release ]]; then
+    staging=$(mktemp -d "$RELEASES/.$hash.XXXXXX")
+    temporary_paths+=("$staging")
+    # Copied without ownership: the release belongs to root, whoever uploaded the bundle.
+    cp -R "$source/." "$staging/"
+    chmod -R go-w "$staging"
+    chmod 0755 "$staging" "$staging/vm/hunt-ctl" "$staging/vm/hunt-idle-check"
+    mv -T "$staging" "$release"
+  fi
+  if ! docker image inspect "hunt-agent:$hash" >/dev/null 2>&1; then
+    docker build --tag "hunt-agent:$hash" --file "$release/image/Dockerfile" "$release"
+  fi
+  ln -sfn "$release" "$CURRENT.new"
+  mv -T "$CURRENT.new" "$CURRENT"
+  install_units
+  emit --arg hash "$hash" '{hash: $hash}'
+}
+
+cmd_install_units() {
+  (( $# == 0 )) || usage
+  install_units
+  emit '{}'
+}
+
+cmd_version() {
+  (( $# == 0 )) || usage
+  local hash
+  if [[ ! -f $CURRENT/.hash ]]; then
+    emit '{hash: null}'
+    return
+  fi
+  hash=$(current_hash)
+  emit --arg hash "$hash" '{hash: $hash}'
+}
+
+cmd_repo() {
+  (( $# == 1 )) || usage
+  require_repository_key "$1"
+  ensure_repository "$1"
+  emit --arg path "$REPOS/$1.git" '{path: $path}'
+}
+
+cmd_prepare() {
+  (( $# )) || usage
+  local id=$1 repo='' branch='' snapshot='' git_name='' git_email=''
+  require_id "$id"
+  shift
+  while (( $# )); do
+    (( $# >= 2 )) || usage
+    case $1 in
+      --repo) repo=$2 ;;
+      --branch) branch=$2 ;;
+      --snapshot) snapshot=$2 ;;
+      --git-name) git_name=$2 ;;
+      --git-email) git_email=$2 ;;
+      *) usage ;;
+    esac
+    shift 2
+  done
+  require_repository_key "$repo"
+  git check-ref-format --branch "$branch" >/dev/null 2>&1 || die "invalid branch: $branch"
+  [[ -n $snapshot && $snapshot != -* ]] || die "invalid snapshot: $snapshot"
+  require_line "git name" "$git_name"
+  require_line "git email" "$git_email"
+
+  local repository=$REPOS/$repo.git worktree=$WORKTREES/$id hash snapshot_commit created_at
+  [[ -f $repository/HEAD ]] || die "repository $repo does not exist on this VM; create it with hunt-ctl repo and push"
+  [[ ! -e $worktree ]] || die "session $id is prepared already"
+  hash=$(current_hash)
+  as_hunt git -C "$repository" rev-parse --quiet --verify "refs/heads/$branch^{commit}" >/dev/null || die "branch $branch is missing in $repo"
+  snapshot_commit=$(as_hunt git -C "$repository" rev-parse --quiet --verify "$snapshot^{commit}") || die "snapshot $snapshot is missing in $repo"
+  ensure_repository "$repo"
+  ensure_session_dirs "$id"
+
+  # Written first, so that destroy finds the repository and branch of a half-prepared session.
+  created_at=$(now_ms)
+  jq -n --arg repo "$repo" --arg branch "$branch" --arg worktree "$worktree" --arg image "hunt-agent:$hash" \
+    --arg gitName "$git_name" --arg gitEmail "$git_email" --argjson createdAt "$created_at" \
+    '{repo: $repo, branch: $branch, worktree: $worktree, image: $image, gitName: $gitName, gitEmail: $gitEmail, createdAt: $createdAt}' \
+    >"$SESSIONS/$id/meta.json.tmp"
+  mv -f "$SESSIONS/$id/meta.json.tmp" "$SESSIONS/$id/meta.json"
+
+  # LFS files stay pointers until `git lfs checkout`, which fills in what the repository's LFS store holds. It reads the
+  # LFS files of HEAD's tree, so HEAD points at the snapshot meanwhile; afterwards the branch is checked out again and
+  # the snapshot's changes stay uncommitted, as they were locally.
+  install -d -o "$HOST_USER" -g "$HOST_USER" -m 0755 "$WORKTREES"
+  as_hunt env GIT_LFS_SKIP_SMUDGE=1 git -C "$repository" worktree add --quiet --lock "$worktree" "$branch"
+  as_hunt env GIT_LFS_SKIP_SMUDGE=1 git -C "$worktree" read-tree -u -m HEAD "$snapshot_commit"
+  as_hunt git -C "$worktree" update-ref --no-deref HEAD "$snapshot_commit"
+  as_hunt git -C "$worktree" lfs checkout
+  as_hunt git -C "$worktree" symbolic-ref HEAD "refs/heads/$branch"
+  as_hunt git -C "$worktree" reset -q
+  emit --arg worktree "$worktree" '{worktree: $worktree}'
+}
+
+cmd_deps() {
+  (( $# == 1 )) || usage
+  local id=$1 worktree lockfile digest marker image deps_state
+  local -a install_command mounts
+  require_id "$id"
+  require_prepared "$id"
+  worktree=$WORKTREES/$id
+  if [[ -f $worktree/package-lock.json ]]; then
+    lockfile=package-lock.json install_command=(npm ci)
+  elif [[ -f $worktree/pnpm-lock.yaml ]]; then
+    lockfile=pnpm-lock.yaml install_command=(corepack pnpm install --frozen-lockfile)
+  elif [[ -f $worktree/yarn.lock ]]; then
+    lockfile=yarn.lock install_command=(corepack yarn install --immutable)
+  else
+    emit '{installed: false}'
+    return
+  fi
+  digest=$(sha256sum <"$worktree/$lockfile")
+  marker=$SESSIONS/$id/deps.${digest%% *}
+  if [[ -e $marker ]]; then
+    emit '{installed: false}'
+    return
+  fi
+
+  image=$(meta "$id" image)
+  ensure_session_dirs "$id"
+  session_mounts "$id"
+  # A previous run that lost its hunt-ctl (e.g. a dropped SSH connection) would race this one in node_modules.
+  deps_state=$(container_state "hunt-deps-$id")
+  if [[ $deps_state != missing ]]; then
+    docker rm --force "hunt-deps-$id" >/dev/null
+  fi
+  docker run --rm --init --pull never --name "hunt-deps-$id" --memory "$CONTAINER_MEMORY" --user "$CONTAINER_USER" "${mounts[@]}" \
+    --workdir "$worktree" --env CI=1 --env CYPRESS_INSTALL_BINARY=0 --entrypoint "${install_command[0]}" "$image" "${install_command[@]:1}"
+  rm -f -- "${SESSIONS:?}/${id:?}"/deps.*
+  touch "$marker"
+  emit '{installed: true}'
+}
+
+cmd_start() {
+  (( $# == 1 )) || usage
+  require_id "$1"
+  require_prepared "$1"
+  start_container "$1"
+  emit '{container: "running"}'
+}
+
+cmd_wait() {
+  (( $# )) || usage
+  local id=$1 timeout=120
+  require_id "$id"
+  shift
+  while (( $# )); do
+    case $1 in
+      --timeout)
+        [[ ${2-} =~ ^[1-9][0-9]*$ ]] || die "invalid --timeout: ${2-}"
+        timeout=$2
+        shift 2
+        ;;
+      *) usage ;;
+    esac
+  done
+  wait_until_ready "$id" "$timeout"
+}
+
+cmd_stop() {
+  (( $# == 1 )) || usage
+  local state
+  require_id "$1"
+  state=$(container_state "hunt-$1")
+  if [[ $state != missing ]]; then
+    docker stop -t "$STOP_TIMEOUT" "hunt-$1" >/dev/null
+  fi
+  emit '{}'
+}
+
+cmd_clear() {
+  (( $# == 1 )) || usage
+  local id=$1 config previous state
+  require_id "$id"
+  require_prepared "$id"
+  config=$CLAUDE_HOMES/$id/hunt-session.json
+  [[ -f $config ]] || die "session $id has no $config"
+  previous=$(jq -c '.acpSessionId // null' "$config")
+  state=$(container_state "hunt-$id")
+  # The relay rewrites the file, so it must not run while the id is cleared; it creates a new session for a null id.
+  if [[ $state != missing ]]; then
+    docker stop -t "$STOP_TIMEOUT" "hunt-$id" >/dev/null
+  fi
+  as_hunt sh -c 'jq ".acpSessionId = null" "$1" >"$1.clear" && chmod --reference="$1" "$1.clear" && mv -f "$1.clear" "$1"' sh "$config"
+  start_container "$id"
+  wait_until_ready "$id" 120 "$previous"
+}
+
+cmd_snapshot() {
+  (( $# == 1 )) || usage
+  local id=$1 worktree git_name git_email scratch head tree commit
+  require_id "$id"
+  require_prepared "$id"
+  worktree=$WORKTREES/$id
+  git_name=$(meta "$id" gitName)
+  git_email=$(meta "$id" gitEmail)
+  scratch=$(as_hunt mktemp -d -t hunt-snapshot.XXXXXX)
+  temporary_paths+=("$scratch")
+  # A scratch index leaves the worktree's own index, and with it what the agent staged, untouched.
+  head=$(as_hunt git -C "$worktree" rev-parse --verify HEAD)
+  as_hunt env GIT_INDEX_FILE="$scratch/index" git -C "$worktree" read-tree HEAD
+  as_hunt env GIT_INDEX_FILE="$scratch/index" git -C "$worktree" add -A
+  tree=$(as_hunt env GIT_INDEX_FILE="$scratch/index" git -C "$worktree" write-tree)
+  commit=$(as_hunt env GIT_AUTHOR_NAME="$git_name" GIT_AUTHOR_EMAIL="$git_email" GIT_COMMITTER_NAME="$git_name" \
+    GIT_COMMITTER_EMAIL="$git_email" git -C "$worktree" commit-tree -p "$head" -m "Hunt retrieve snapshot" "$tree")
+  as_hunt git -C "$worktree" update-ref "refs/hunt/$id/retrieve" "$commit"
+  emit --arg snapshot "$commit" --arg head "$head" '{snapshot: $snapshot, head: $head}'
+}
+
+cmd_status() {
+  (( $# == 1 )) || usage
+  local id=$1 container status meta_json
+  require_id "$id"
+  container=$(container_state "hunt-$id")
+  case $container in
+    missing) ;;
+    running | restarting | paused) container=running ;;
+    *) container=exited ;;
+  esac
+  status=$(read_object "$SOCKETS/$id/status.json")
+  meta_json=$(read_object "$SESSIONS/$id/meta.json")
+  emit --arg container "$container" --argjson status "$status" --argjson meta "$meta_json" '{container: $container, status: $status, meta: $meta}'
+}
+
+cmd_destroy() {
+  (( $# == 1 )) || usage
+  local id=$1 worktree repo='' branch='' name state repository refs
+  local -a repositories
+  require_id "$id"
+  worktree=$WORKTREES/$id
+  for name in "hunt-$id" "hunt-deps-$id"; do
+    state=$(container_state "$name")
+    if [[ $state != missing ]]; then
+      docker rm --force "$name" >/dev/null
+    fi
+  done
+  if [[ -f $SESSIONS/$id/meta.json ]]; then
+    repo=$(jq -r '.repo // empty' "$SESSIONS/$id/meta.json")
+    branch=$(jq -r '.branch // empty' "$SESSIONS/$id/meta.json")
+  fi
+  if [[ -n $repo ]]; then
+    repositories=("$REPOS/$repo.git")
+  else
+    # Without meta.json the session's repository is unknown; its refs and worktree are looked for in every one.
+    repositories=("$REPOS"/*/*.git)
+  fi
+  for repository in "${repositories[@]}"; do
+    [[ -f $repository/HEAD ]] || continue
+    remove_worktree "$repository" "$worktree"
+    refs=$(as_hunt git -C "$repository" for-each-ref --format='delete %(refname)' "refs/hunt/$id/")
+    if [[ -n $branch ]] && as_hunt git -C "$repository" show-ref --verify --quiet "refs/heads/$branch"; then
+      refs+=$'\n'"delete refs/heads/$branch"
+    fi
+    if [[ -n ${refs//[[:space:]]/} ]]; then
+      as_hunt git -C "$repository" update-ref --stdin <<<"$refs"
+    fi
+  done
+  rm -rf -- "${worktree:?}" "${CLAUDE_HOMES:?}/${id:?}" "${SOCKETS:?}/${id:?}" "${SESSIONS:?}/${id:?}"
+  emit '{}'
+}
+
+main() {
+  (( $# )) || usage
+  (( EUID == 0 )) || die "must run as root: sudo -n hunt-ctl $*"
+  cd /
+  umask 022
+  # stdout carries only the result (fd 3); everything else the commands print goes to stderr.
+  exec 3>&1 1>&2
+  install -d -m 0755 "$STATE_DIR"
+  touch "$ACTIVITY_FILE"
+  trap on_exit EXIT
+  local command=$1
+  shift
+  case $command in
+    install) cmd_install "$@" ;;
+    install-units) cmd_install_units "$@" ;;
+    version) cmd_version "$@" ;;
+    repo) cmd_repo "$@" ;;
+    prepare) cmd_prepare "$@" ;;
+    deps) cmd_deps "$@" ;;
+    start) cmd_start "$@" ;;
+    wait) cmd_wait "$@" ;;
+    stop) cmd_stop "$@" ;;
+    clear) cmd_clear "$@" ;;
+    snapshot) cmd_snapshot "$@" ;;
+    status) cmd_status "$@" ;;
+    destroy) cmd_destroy "$@" ;;
+    *) usage ;;
+  esac
+}
+
+trap 'report_failure $? $LINENO "$BASH_COMMAND"' ERR
+main "$@"

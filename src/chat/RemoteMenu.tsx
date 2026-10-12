@@ -1,0 +1,79 @@
+import { useRef, useState } from "react";
+import { useIdeStore } from "../ide/ideStore";
+import { useAccountsStore } from "../state/accounts";
+import { configuredVm, useSettingsStore } from "../state/settings";
+import { useHuntStore } from "../state/store";
+import { SECONDARY_BUTTON_MD } from "../ui/buttons";
+import { CloudIcon } from "../ui/icons";
+import { useDismiss } from "../ui/useDismiss";
+import { handOffBlocker, retrieveBlocker } from "./remoteSession";
+
+const MENU_ITEM = "block w-full rounded px-2 py-1 text-left enabled:hover:bg-(--row-hover) disabled:opacity-40";
+
+/**
+ * Chat header button of the session's place: hands a local session off to the VM from the settings, or brings a
+ * remote one back. Hidden while no VM is set up and the session runs locally.
+ */
+export function RemoteMenu({ sessionId }: { sessionId: string }) {
+  const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
+  const sessions = useHuntStore((state) => state.sessions);
+  const chat = useHuntStore((state) => state.chats[sessionId]);
+  const isCreating = useHuntStore((state) => state.creatingIds.includes(sessionId));
+  const handOffSession = useHuntStore((state) => state.handOffSession);
+  const retrieveSession = useHuntStore((state) => state.retrieveSession);
+  const remoteSettings = useSettingsStore((state) => state.remote);
+  const hasUnsavedEdits = useIdeStore((state) => (state.sessions[sessionId]?.dirtyPaths.length ?? 0) > 0);
+  const hasClaudeAccount = useAccountsStore((state) => Boolean(state.accounts?.activeId));
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  useDismiss(menuRef, () => setIsMenuOpen(false), { anchorRefs: [buttonRef], closeOnWindowBlur: true, isEnabled: isMenuOpen });
+
+  const vm = configuredVm(remoteSettings);
+  if (!session || (!vm && !session.remote)) return null;
+  const isRemote = Boolean(session.remote);
+  const isRunning = Boolean(chat?.remoteStep) || Boolean(chat?.isLoading);
+  const blocker = isRemote ? retrieveBlocker(chat) : handOffBlocker(session, sessions, chat, { hasUnsavedEdits, hasClaudeAccount });
+  const instance = session.remote?.vm.instance ?? vm?.instance ?? "";
+
+  function run(action: (id: string) => Promise<void>) {
+    setIsMenuOpen(false);
+    void action(sessionId);
+  }
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => setIsMenuOpen((current) => !current)}
+        disabled={isCreating || isRunning}
+        aria-haspopup="menu"
+        aria-expanded={isMenuOpen}
+        title={isRemote ? `Runs on the VM ${instance}` : "Run this session on the remote VM"}
+        className={`${SECONDARY_BUTTON_MD} ${isRemote ? "text-sky-300" : ""}`}
+      >
+        <CloudIcon className="size-4" />
+        {isRemote ? "On VM" : "Remote"}
+      </button>
+      {isMenuOpen ? (
+        <div
+          ref={menuRef}
+          role="menu"
+          className="absolute top-full right-0 z-50 mt-1 w-64 rounded border border-neutral-600 bg-(--surface-inset) p-1 text-[13px] font-normal shadow-lg"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            disabled={Boolean(blocker)}
+            onClick={() => run(isRemote ? retrieveSession : handOffSession)}
+            className={MENU_ITEM}
+          >
+            {isRemote ? "Bring back from the VM" : "Hand off to the VM"}
+            <span className="block text-[12px] text-neutral-500">{blocker ?? (isRemote ? `The session continues here. Runs on ${instance}.` : `The agent continues on ${instance}, also while Hunt is closed.`)}</span>
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}

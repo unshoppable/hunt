@@ -42,6 +42,8 @@ export type SessionView = {
   reviewComments: ReviewComment[];
   /** Where the session works: a worktree Hunt created and owns, or the repository's own checkout. */
   workspace: Workspace;
+  /** Set while the session is handed off to a VM: its agent runs there and the local worktree waits for its retrieval. */
+  remote: RemoteTarget | null;
   /** Progress of preparing the worktree's `node_modules`; `null` when nothing was or is being prepared. */
   dependencies: DependencyStatus | null;
 };
@@ -108,6 +110,37 @@ export type ReviewThreadComment = {
  * session, `checkout` is the repository's own checkout on whatever branch it has, which Hunt leaves alone.
  */
 export type Workspace = "worktree" | "checkout";
+
+/** A Compute Engine VM that runs remote sessions. */
+export type VmRef = { project: string; zone: string; instance: string };
+
+/** Where a session handed off to a VM runs (mirror of `RemoteTarget` in src-tauri/src/remote/mod.rs). */
+export type RemoteTarget = {
+  vm: VmRef;
+  /** The session's worktree on the VM; tool calls of its agent name files below this path. */
+  worktreePath: string;
+  /** `<owner>/<repo>` of the repository on the VM. */
+  repo: string;
+  branch: string;
+  handoffHead: string;
+  handedOffAt: string;
+  /** The permission mode the session had locally, which the retrieval restores; null for older handoffs. */
+  localMode: string | null;
+};
+
+/** A step of a handoff, a retrieval or a connect to a remote session that takes long enough to show. */
+export type RemoteStep =
+  | "startingVm"
+  | "connecting"
+  | "installingRuntime"
+  | "transferringCode"
+  | "installingDependencies"
+  | "startingAgent"
+  | "stoppingAgent"
+  | "retrievingCode";
+
+/** The step a remote operation on a session is at; `null` once it ended. */
+export type RemoteProgressEvent = { huntSessionId: string; step: RemoteStep | null };
 
 /** The pull request a session reviews: enough to show it and to open it on GitHub. */
 export type PullRequestRef = {

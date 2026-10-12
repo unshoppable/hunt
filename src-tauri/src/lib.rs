@@ -8,6 +8,7 @@ mod lsp;
 mod menu;
 mod plan_usage;
 mod preferences;
+mod remote;
 mod screenshots;
 mod workspace;
 mod session;
@@ -54,6 +55,8 @@ pub fn run() {
             session::commands::rename_session,
             session::commands::open_session,
             session::commands::clear_session,
+            session::commands::hand_off_session,
+            session::commands::retrieve_session,
             session::commands::prepare_dependencies,
             session::commands::close_session,
             session::commands::send_prompt,

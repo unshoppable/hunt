@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Powers the VM off once Hunt's remote sessions have been idle for IDLE_MINUTES; hunt-idle.timer runs it every minute.
+# With --dry-run it prints its decision ("keep: <reason>" or "poweroff: <reason>") instead of acting on it.
+#
+# The VM stays up while
+#   - it booted less than BOOT_GRACE_MINUTES ago,
+#   - hunt-ctl runs, or ran within IDLE_MINUTES (the mtime of /var/lib/hunt/activity),
+#   - a relay with a fresh heartbeat has a running turn, or a turn ended, a client sent something or a permission
+#     request arrived within IDLE_MINUTES (an unanswered permission request counts as idle after that),
+#   - an interactive login had input within IDLE_MINUTES (the IDLE column of `w`).
+# A heartbeat older than two minutes means the relay is gone; its status does not count. IDLE_MINUTES and
+# BOOT_GRACE_MINUTES come from /etc/hunt/idle.conf (defaults 30 and 15). The HUNT_IDLE_* variables point it at other
+# files, for tests.
+set -euo pipefail
+shopt -s nullglob
+
+config=${HUNT_IDLE_CONFIG:-/etc/hunt/idle.conf}
+sockets_dir=${HUNT_IDLE_SOCKETS_DIR:-/srv/hunt/sockets}
+activity_file=${HUNT_IDLE_ACTIVITY_FILE:-/var/lib/hunt/activity}
+uptime_file=${HUNT_IDLE_UPTIME_FILE:-/proc/uptime}
+readonly HEARTBEAT_MAX_AGE_MS=120000
+
+IDLE_MINUTES=30
+BOOT_GRACE_MINUTES=15
+
+# Reads IDLE_MINUTES and BOOT_GRACE_MINUTES from the config file; other lines and malformed values are ignored.
+read_config() {
+  local key value
+  [[ -r $config ]] || return 0
+  while IFS='=' read -r key value || [[ -n $key ]]; do
+    key=${key//[[:space:]]/}
+    value=${value//[[:space:]\"\']/}
+    if [[ $key =~ ^(IDLE_MINUTES|BOOT_GRACE_MINUTES)$ && $value =~ ^[0-9]+$ ]]; then
+      printf -v "$key" '%d' "$((10#$value))"
+    fi
+  done <"$config"
+}
+
+# Prints the minutes since the most recent input of any interactive login, read from the IDLE column of `w`
+# ("12.00s", "4:05" for minutes:seconds, "1:05m" for hours:minutes, "3days"); prints nothing without logins.
+login_idle_minutes() {
+  LC_ALL=C w | awk '
+    function minutes(idle, parts) {
+      if (idle ~ /days$/) return idle * 1440
+      if (idle ~ /^[0-9]+:[0-9]+m$/) { split(idle, parts, ":"); return parts[1] * 60 + parts[2] }
+      if (idle ~ /^[0-9]+:[0-9]+$/) { split(idle, parts, ":"); return parts[1] + 0 }
+      return 0
+    }
+    !column { for (i = 1; i <= NF; i++) if ($i == "IDLE") column = i; next }
+    { idle = minutes($column); if (least == "" || idle < least) least = idle }
+    END { if (least != "") print least }'
+}
+
+decide() {
+  local now_ms uptime modified activity_age file reason session login_idle
+  now_ms=$(date +%s%3N)
+  read -r uptime _ <"$uptime_file"
+  uptime=${uptime%.*}
+  if (( uptime < BOOT_GRACE_MINUTES * 60 )); then
+    echo "keep: booted $((uptime / 60)) min ago, within the grace period of $BOOT_GRACE_MINUTES min"
+    return
+  fi
+
+  if [[ -e $activity_file ]]; then
+    modified=$(stat -c %Y "$activity_file")
+    activity_age=$((now_ms / 1000 - modified))
+    if (( activity_age < IDLE_MINUTES * 60 )); then
+      echo "keep: hunt-ctl ran $((activity_age / 60)) min ago"
+      return
+    fi
+  fi
+  if pgrep -x hunt-ctl >/dev/null; then
+    echo "keep: hunt-ctl is running"
+    return
+  fi
+
+  for file in "$sockets_dir"/*/status.json; do
+    reason=$(jq -r --argjson now "$now_ms" --argjson idle "$((IDLE_MINUTES * 60000))" --argjson maxAge "$HEARTBEAT_MAX_AGE_MS" '
+      def within($time): ($time // 0) > $now - $idle;
+      if (.heartbeatAt // 0) < $now - $maxAge then empty
+      elif .turn == "running" then "a turn is running"
+      elif within(.lastTurnEndedAt) then "a turn ended within \($idle / 60000) min"
+      elif within(.lastClientActivityAt) then "a client sent something within \($idle / 60000) min"
+      elif within(.pendingPermissionSince) then "a permission request arrived within \($idle / 60000) min"
+      else empty end' "$file" 2>/dev/null) || continue
+    if [[ -n $reason ]]; then
+      session=${file%/status.json}
+      echo "keep: session ${session##*/}: $reason"
+      return
+    fi
+  done
+
+  login_idle=$(login_idle_minutes)
+  if [[ -n $login_idle ]] && (( login_idle < IDLE_MINUTES )); then
+    echo "keep: an interactive login had input $login_idle min ago"
+    return
+  fi
+  echo "poweroff: no turn, client, permission request, login or hunt-ctl activity for $IDLE_MINUTES min"
+}
+
+dry_run=false
+case ${1-} in
+  --dry-run) dry_run=true ;;
+  "") ;;
+  *)
+    echo "usage: hunt-idle-check [--dry-run]" >&2
+    exit 2
+    ;;
+esac
+read_config
+decision=$(decide)
+if $dry_run; then
+  echo "$decision"
+elif [[ $decision == poweroff:* ]]; then
+  echo "hunt-idle-check: ${decision#poweroff: }; powering off"
+  systemctl poweroff
+fi

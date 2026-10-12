@@ -16,12 +16,17 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
-use crate::acp::{connect, publish_update, LiveHandles, PermissionRegistry, SessionRegistry, SessionStart};
+use crate::accounts;
+use crate::acp::{
+    bundled_script_path, connect, publish_update, system_prompt_append, AgentTransport, LiveHandles, PermissionRegistry, SessionRegistry,
+    SessionStart,
+};
 use crate::git::{self, ChangedFile, FileDiff, Shelf};
 use crate::github::{self, GithubViewer, PullRequest, PullRequestDetails, PullRequestRef, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread};
 use crate::graph::{self, WatcherRegistry};
 use crate::ide;
 use crate::lsp::{self, LspRegistry};
+use crate::remote::{self, RemoteStep, VmRef};
 use crate::screenshots::{self, Screenshot};
 use crate::session::attribution::{self, FileVersion};
 use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus};
@@ -108,7 +113,7 @@ pub async fn list_review_threads(app: AppHandle, session_id: Uuid) -> Result<Vec
 /// cleared once GitHub accepted the review.
 #[tauri::command]
 pub async fn submit_pull_request_review(app: AppHandle, id: Uuid, event: ReviewEvent, body: String) -> Result<(), String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     let Some(pull_request) = record.pull_request.clone() else {
         return Err("failed to submit review: the session does not review a pull request".into());
     };
@@ -171,7 +176,7 @@ pub async fn add_review_comment(
 /// Replaces the text of the drafted review comment `comment_id`.
 #[tauri::command]
 pub async fn update_review_comment(app: AppHandle, id: Uuid, comment_id: Uuid, body: String) -> Result<(), String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     let body = body.trim().to_string();
     if body.is_empty() {
         return Err("failed to update review comment: the comment is empty".into());
@@ -193,7 +198,7 @@ pub async fn update_review_comment(app: AppHandle, id: Uuid, comment_id: Uuid, b
 /// Discards the drafted review comment `comment_id` and the drafted replies to it.
 #[tauri::command]
 pub async fn delete_review_comment(app: AppHandle, id: Uuid, comment_id: Uuid) -> Result<(), String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     let reply_target = Some(ReplyTarget::Draft(comment_id));
     store::update_session(&app, review_session_id(&record), |review| {
         review.review_comments.retain(|comment| comment.id != comment_id && comment.reply_to != reply_target)
@@ -206,7 +211,7 @@ pub async fn delete_review_comment(app: AppHandle, id: Uuid, comment_id: Uuid) -
 /// review.
 #[tauri::command]
 pub async fn reply_to_review_thread(app: AppHandle, id: Uuid, thread_id: String, body: String) -> Result<(), String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     if record.pull_request.is_none() {
         return Err("failed to reply to review thread: the session does not review a pull request".into());
     }
@@ -216,7 +221,7 @@ pub async fn reply_to_review_thread(app: AppHandle, id: Uuid, thread_id: String,
 /// Marks the review thread `thread_id` of the session's pull request as resolved, or as unresolved again.
 #[tauri::command]
 pub async fn resolve_review_thread(app: AppHandle, id: Uuid, thread_id: String, is_resolved: bool) -> Result<(), String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     if record.pull_request.is_none() {
         return Err("failed to resolve review thread: the session does not review a pull request".into());
     }
@@ -274,7 +279,7 @@ pub async fn create_session(
     record.workspace = workspace;
     store::upsert_session(&app, record.clone())?;
     announce_sessions_changed(&app);
-    let view = activate(&app, &registry, &watchers, record, SessionStart::New { cwd: worktree_path }).await?;
+    let view = activate(&app, &registry, &watchers, record, SessionStart::New { cwd: worktree_path }, AgentTransport::Local).await?;
     announce_sessions_changed(&app);
     Ok(view)
 }
@@ -293,11 +298,11 @@ pub async fn create_sub_session(
     selection: Option<SelectionContext>,
 ) -> Result<SessionView, String> {
     ensure_new_id(&app, id)?;
-    let parent = store::find_session(&app, parent_id)?;
+    let parent = local_session(&app, parent_id)?;
     let record = SessionRecord::sub_session(id, title, &parent, selection);
     store::upsert_session(&app, record.clone())?;
     announce_sessions_changed(&app);
-    let view = activate(&app, &registry, &watchers, record, SessionStart::New { cwd: parent.worktree_path }).await?;
+    let view = activate(&app, &registry, &watchers, record, SessionStart::New { cwd: parent.worktree_path }, AgentTransport::Local).await?;
     announce_sessions_changed(&app);
     Ok(view)
 }
@@ -337,15 +342,26 @@ pub async fn open_session(
     if !registry.claim_start(id).await {
         return Ok(SessionView::new(&app, store::find_session(&app, id)?, true));
     }
+    if record.remote.is_some() {
+        let activated = activate_remote(&app, &registry, &watchers, record).await;
+        registry.end_start(id).await;
+        finish_progress(&app, id);
+        return activated;
+    }
     dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone());
 
-    let start = match &record.acp_session_id {
-        Some(acp_session_id) => SessionStart::Load { cwd: record.worktree_path.clone(), acp_session_id: acp_session_id.clone() },
-        None => SessionStart::New { cwd: record.worktree_path.clone() },
-    };
-    let activated = activate(&app, &registry, &watchers, record, start).await;
+    let start = local_start(&record);
+    let activated = activate(&app, &registry, &watchers, record, start, AgentTransport::Local).await;
     registry.end_start(id).await;
     activated
+}
+
+/// How the local agent of `record` starts: loading its conversation when it has one.
+fn local_start(record: &SessionRecord) -> SessionStart {
+    match &record.acp_session_id {
+        Some(acp_session_id) => SessionStart::Load { cwd: record.worktree_path.clone(), acp_session_id: acp_session_id.clone() },
+        None => SessionStart::New { cwd: record.worktree_path.clone() },
+    }
 }
 
 /// Starts the conversation of `id` over, like `/clear` in the terminal: the agent is restarted with a new session
@@ -360,6 +376,11 @@ pub async fn clear_session(
     id: Uuid,
 ) -> Result<SessionView, String> {
     let record = store::find_session(&app, id)?;
+    // Fetched before anything stops: without a token the remote conversation keeps running as it is.
+    let claude_token = match record.remote {
+        Some(_) => remote_claude_token(&app, "clear session").await?,
+        None => String::new(),
+    };
     drop_pending_permissions(&permissions, id);
     let finished = registry.live.lock().await.remove(&id).and_then(|mut live| live.shutdown());
     // The ended agent task clears the registries on its way out; the new agent registers only after that.
@@ -369,8 +390,24 @@ pub async fn clear_session(
     if !registry.claim_start(id).await {
         return Err("failed to clear session: its agent was started again meanwhile".into());
     }
+    if let Some(target) = record.remote.clone() {
+        let activated = async {
+            let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
+            let progress = progress_reporter(&app, id);
+            remote::vm::ensure_running(&target.vm, &ssh, &progress).await?;
+            let status = remote::hunt_ctl_with_input(&ssh, &["clear", &id.to_string()], format!("{claude_token}\n").as_bytes()).await?;
+            let acp_session_id = status["acpSessionId"].as_str().map(str::to_string).ok_or("failed to clear session: the relay reports no new session")?;
+            let record = store::update_session(&app, id, |stored| stored.acp_session_id = Some(acp_session_id))?
+                .ok_or_else(|| "failed to clear session: the session was closed meanwhile".to_string())?;
+            activate_remote(&app, &registry, &watchers, record).await
+        }
+        .await;
+        registry.end_start(id).await;
+        finish_progress(&app, id);
+        return activated;
+    }
     let start = SessionStart::New { cwd: record.worktree_path.clone() };
-    let activated = activate(&app, &registry, &watchers, record, start).await;
+    let activated = activate(&app, &registry, &watchers, record, start, AgentTransport::Local).await;
     registry.end_start(id).await;
     activated
 }
@@ -379,7 +416,7 @@ pub async fn clear_session(
 /// this; the result shows up in the session list.
 #[tauri::command]
 pub async fn prepare_dependencies(app: AppHandle, id: Uuid) -> Result<(), String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     dependencies::ensure(&app, record.repo_path, record.worktree_path);
     announce_sessions_changed(&app);
     Ok(())
@@ -395,10 +432,12 @@ async fn activate(
     watchers: &WatcherRegistry,
     record: SessionRecord,
     start: SessionStart,
+    transport: AgentTransport,
 ) -> Result<SessionView, String> {
     let id = record.id;
+    let is_local = matches!(transport, AgentTransport::Local);
     let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt);
-    let mut live = connect(app.clone(), id, start, context_prompt).await?;
+    let mut live = connect(app.clone(), id, start, context_prompt, transport).await?;
     let acp_session_id = live.acp_session_id.to_string();
 
     // The store check and the registry insert happen under the registry lock, so `stop_agent` cannot slip in
@@ -416,6 +455,9 @@ async fn activate(
     };
     sessions.insert(id, live);
     drop(sessions);
+    if !is_local {
+        return Ok(SessionView::new(app, record, true));
+    }
 
     // Every start renews the exclude entry, so repositories of older sessions learn the diagram folder's current name.
     if let Err(error) = git::exclude_hunt_dir(&record.worktree_path).await {
@@ -425,6 +467,312 @@ async fn activate(
         eprintln!("watching the graph of session {id} failed: {error}");
     }
     Ok(SessionView::new(app, record, true))
+}
+
+/// Connects to the relay of the remote session `record`: starts its VM when it is off, makes sure its container runs
+/// and opens the ACP stream over SSH. The relay may have started a new conversation (`/clear`, or a transcript it could
+/// not load); the record then gets that conversation's ID.
+async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: &WatcherRegistry, record: SessionRecord) -> Result<SessionView, String> {
+    let id = record.id;
+    let target = record.remote.clone().ok_or("failed to connect the remote session: it runs locally")?;
+    let progress = progress_reporter(app, id);
+    progress(RemoteStep::Connecting);
+    let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
+    remote::vm::ensure_running(&target.vm, &ssh, &progress).await?;
+    run_pending_cleanups(app, &ssh, &target.vm).await;
+    progress(RemoteStep::StartingAgent);
+    // Only a new container reads the token, so a running one stays reachable with the local login selected.
+    let claude_token = accounts::active_token(app).await?.unwrap_or_default();
+    remote::hunt_ctl_with_input(&ssh, &["start", &id.to_string()], format!("{claude_token}\n").as_bytes()).await?;
+    let status = remote::hunt_ctl(&ssh, &["wait", &id.to_string(), "--timeout", "180"]).await?;
+    let acp_session_id = status["acpSessionId"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| record.acp_session_id.clone())
+        .ok_or("failed to connect the remote session: its relay reports no conversation")?;
+
+    let socket = format!("UNIX-CONNECT:/srv/hunt/sockets/{id}/acp.sock");
+    let ssh_args = ssh.stream_args(&remote::shell_command("sudo", &["-n", "-u", "hunt", "socat", "-", &socket]));
+    let start = SessionStart::Load { cwd: target.worktree_path.clone(), acp_session_id };
+    activate(app, registry, watchers, record, start, AgentTransport::Remote { ssh_args }).await
+}
+
+/// The OAuth token of the active Claude account, which a new container on the VM runs Claude Code with. The local login
+/// stays in this Mac's keychain, so it fails with `what` (the action) and a hint where to pick an account.
+async fn remote_claude_token(app: &AppHandle, what: &str) -> Result<String, String> {
+    accounts::active_token(app).await?.ok_or_else(|| {
+        format!("failed to {what}: the agent on the VM needs a Claude account; pick one in the sidebar or add one under Settings → Agent")
+    })
+}
+
+/// What Hunt tells the agent of a remote session on top of its usual system prompt addition.
+const REMOTE_PROMPT: &str = "\n\n## Remote session\nThis session runs in a container on a remote VM. Git remotes such as GitHub are not \
+reachable from here: commit locally and do not push. The user brings the commits back to their machine.\n";
+
+/// Moves the session `id` to the VM `vm`: its agent stops here, its branch, uncommitted work, transcript and the
+/// ignored files matching `file_patterns` go to the VM, and the chat continues with the agent there. On failure the
+/// session stays local and its agent starts again.
+#[tauri::command]
+pub async fn hand_off_session(
+    app: AppHandle,
+    registry: State<'_, SessionRegistry>,
+    watchers: State<'_, WatcherRegistry>,
+    permissions: State<'_, PermissionRegistry>,
+    lsp: State<'_, LspRegistry>,
+    id: Uuid,
+    vm: VmRef,
+    file_patterns: Vec<String>,
+) -> Result<SessionView, String> {
+    let record = local_session(&app, id)?;
+    ensure_hand_off_allowed(&app, &record)?;
+    vm.validate()?;
+    let claude_token = remote_claude_token(&app, "hand off the session").await?;
+    let (config_values, local_mode) = match live_session(&registry, id).await {
+        Ok(handles) => {
+            let history = handles.history.lock().unwrap();
+            let local_mode = shown_config_values(&history, &[MODE_CONFIG_ID]).pop().map(|(_, value)| value);
+            (shown_config_values(&history, &[MODEL_CONFIG_ID, EFFORT_CONFIG_ID]), local_mode)
+        }
+        Err(_) => (Vec::new(), None),
+    };
+    stop_agent_and_wait(&app, &registry, &watchers, &permissions, id).await;
+    if !registry.claim_start(id).await {
+        return Err("failed to hand off the session: its agent was started again meanwhile".into());
+    }
+
+    let handed_off = async {
+        let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt);
+        let system_prompt = format!("{}{REMOTE_PROMPT}", system_prompt_append(&app, context_prompt));
+        let bundle_dir = bundled_script_path(&app, "remote")?;
+        let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
+        let request = remote::handoff::HandoffRequest {
+            hunt_session_id: id,
+            worktree: &record.worktree_path,
+            acp_session_id: record.acp_session_id.as_deref(),
+            vm: &vm,
+            bundle_dir: &bundle_dir,
+            ssh_dir: &ssh_dir,
+            claude_dir: &claude_dir,
+            file_patterns: &file_patterns,
+            system_prompt: &system_prompt,
+            config_values: &config_values,
+            claude_token: &claude_token,
+            local_mode: local_mode.as_deref(),
+        };
+        remote::handoff::hand_off(request, &progress_reporter(&app, id)).await
+    }
+    .await;
+
+    let activated = match handed_off {
+        Ok(handed_off) => {
+            lsp::forget_session(&lsp, id);
+            lsp::stop_for_worktree(&lsp, &record.worktree_path).await;
+            let stored = store::update_session(&app, id, |stored| {
+                stored.remote = Some(handed_off.target.clone());
+                if let Some(acp_session_id) = &handed_off.acp_session_id {
+                    stored.acp_session_id = Some(acp_session_id.clone());
+                }
+            });
+            announce_sessions_changed(&app);
+            match stored {
+                Ok(Some(record)) => activate_remote(&app, &registry, &watchers, record).await,
+                Ok(None) => Err("failed to hand off the session: it was closed meanwhile".into()),
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) => {
+            // The session stays local, so its agent comes back and the chat can go on.
+            let start = local_start(&record);
+            if let Err(restart_error) = activate(&app, &registry, &watchers, record, start, AgentTransport::Local).await {
+                eprintln!("restarting the agent of session {id} after a failed handoff failed: {restart_error}");
+            }
+            Err(error)
+        }
+    };
+    registry.end_start(id).await;
+    finish_progress(&app, id);
+    announce_sessions_changed(&app);
+    activated
+}
+
+/// Rejects sessions that cannot run on a VM yet: sub sessions and sessions with sub sessions (they share one worktree),
+/// sessions in the repository's own checkout, and pull request reviews.
+fn ensure_hand_off_allowed(app: &AppHandle, record: &SessionRecord) -> Result<(), String> {
+    if record.parent_id.is_some() {
+        return Err("failed to hand off the session: a sub session runs where its parent runs".into());
+    }
+    if record.workspace != Workspace::Worktree {
+        return Err("failed to hand off the session: sessions in the repository's own checkout stay local".into());
+    }
+    if record.pull_request.is_some() {
+        return Err("failed to hand off the session: pull request reviews stay local".into());
+    }
+    if store::load_sessions(app)?.iter().any(|session| session.parent_id == Some(record.id)) {
+        return Err("failed to hand off the session: close its sub sessions first".into());
+    }
+    Ok(())
+}
+
+/// Brings the remote session `id` back: its container stops, its commits, uncommitted work and transcript come back
+/// into the local worktree, the VM side is removed and the chat continues with a local agent.
+#[tauri::command]
+pub async fn retrieve_session(
+    app: AppHandle,
+    registry: State<'_, SessionRegistry>,
+    watchers: State<'_, WatcherRegistry>,
+    permissions: State<'_, PermissionRegistry>,
+    id: Uuid,
+) -> Result<SessionView, String> {
+    let record = store::find_session(&app, id)?;
+    let target = record.remote.clone().ok_or("failed to retrieve the session: it runs locally")?;
+    stop_agent_and_wait(&app, &registry, &watchers, &permissions, id).await;
+    if !registry.claim_start(id).await {
+        return Err("failed to retrieve the session: its agent was started again meanwhile".into());
+    }
+
+    let activated = async {
+        let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
+        let request = remote::retrieve::RetrieveRequest { hunt_session_id: id, worktree: &record.worktree_path, target: &target, ssh_dir: &ssh_dir, claude_dir: &claude_dir };
+        let retrieved = remote::retrieve::retrieve(request, &progress_reporter(&app, id)).await?;
+        let record = store::update_session(&app, id, |stored| {
+            stored.remote = None;
+            if let Some(acp_session_id) = &retrieved.acp_session_id {
+                stored.acp_session_id = Some(acp_session_id.clone());
+            }
+        })?
+        .ok_or_else(|| "failed to retrieve the session: it was closed meanwhile".to_string())?;
+        announce_sessions_changed(&app);
+        destroy_remote(&app, &target.vm, id).await;
+        dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone());
+        let start = local_start(&record);
+        let view = activate(&app, &registry, &watchers, record, start, AgentTransport::Local).await?;
+        let mode = target.restored_mode();
+        set_mode(&registry, id, mode.to_string())
+            .await
+            .map_err(|error| format!("failed to restore the permission mode {mode} of the retrieved session: {error}"))?;
+        Ok(view)
+    }
+    .await;
+    registry.end_start(id).await;
+    finish_progress(&app, id);
+    announce_sessions_changed(&app);
+    activated
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteProgressEvent {
+    hunt_session_id: Uuid,
+    /// The step that runs now; `None` once the operation ended.
+    step: Option<RemoteStep>,
+}
+
+/// Reports the steps of a remote operation on session `id` to the UI as `remote:progress`.
+fn progress_reporter(app: &AppHandle, id: Uuid) -> impl Fn(RemoteStep) + Send + Sync {
+    let app = app.clone();
+    move |step| {
+        let _ = app.emit("remote:progress", RemoteProgressEvent { hunt_session_id: id, step: Some(step) });
+    }
+}
+
+/// Tells the UI that the remote operation on session `id` ended, successful or not.
+fn finish_progress(app: &AppHandle, id: Uuid) {
+    let _ = app.emit("remote:progress", RemoteProgressEvent { hunt_session_id: id, step: None });
+}
+
+/// Where Hunt keeps its SSH key and known hosts for the VM; a path without spaces, which ssh options cannot hold.
+fn ssh_dir() -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "failed to find the home folder: HOME is not set".to_string())?;
+    Ok(PathBuf::from(home).join(".ssh").join("hunt"))
+}
+
+/// Claude Code's configuration folder, where transcripts, the global `CLAUDE.md` and skills live.
+fn claude_dir() -> Result<PathBuf, String> {
+    if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    let home = std::env::var("HOME").map_err(|_| "failed to find the home folder: HOME is not set".to_string())?;
+    Ok(PathBuf::from(home).join(".claude"))
+}
+
+/// A remote session deleted while its VM was off; its container and worktree are removed on the next connect.
+#[derive(Clone, serde::Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct PendingCleanup {
+    vm: VmRef,
+    hunt_session_id: Uuid,
+}
+
+fn pending_cleanups_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(store::app_data_dir(app)?.join("remote-cleanups.json"))
+}
+
+fn load_pending_cleanups(app: &AppHandle) -> Vec<PendingCleanup> {
+    let Ok(path) = pending_cleanups_path(app) else { return Vec::new() };
+    std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+}
+
+fn save_pending_cleanups(app: &AppHandle, cleanups: &[PendingCleanup]) {
+    let saved = pending_cleanups_path(app).and_then(|path| {
+        let bytes = serde_json::to_vec(cleanups).map_err(|error| error.to_string())?;
+        std::fs::write(path, bytes).map_err(|error| error.to_string())
+    });
+    if let Err(error) = saved {
+        eprintln!("saving the pending remote cleanups failed: {error}");
+    }
+}
+
+/// Removes the session's container, worktree and transcript from the VM when it runs; otherwise remembers the removal
+/// for the next connect. Failures are only logged: the local session must stay deletable.
+async fn destroy_remote(app: &AppHandle, vm: &VmRef, id: Uuid) {
+    let destroyed = async {
+        if remote::vm::status(vm).await? != "RUNNING" {
+            return Err("the VM is not running".to_string());
+        }
+        let ssh = remote::ssh::Ssh::open(vm, &ssh_dir()?).await?;
+        remote::hunt_ctl(&ssh, &["destroy", &id.to_string()]).await.map(|_| ())
+    }
+    .await;
+    if let Err(error) = destroyed {
+        eprintln!("removing session {id} from the VM {} failed, retrying on the next connect: {error}", vm.instance);
+        let mut cleanups = load_pending_cleanups(app);
+        let cleanup = PendingCleanup { vm: vm.clone(), hunt_session_id: id };
+        if !cleanups.contains(&cleanup) {
+            cleanups.push(cleanup);
+            save_pending_cleanups(app, &cleanups);
+        }
+    }
+}
+
+/// Runs the removals remembered for `vm` now that `ssh` reaches it.
+async fn run_pending_cleanups(app: &AppHandle, ssh: &remote::ssh::Ssh, vm: &VmRef) {
+    let cleanups = load_pending_cleanups(app);
+    if !cleanups.iter().any(|cleanup| &cleanup.vm == vm) {
+        return;
+    }
+    let mut remaining = Vec::new();
+    for cleanup in cleanups {
+        if &cleanup.vm != vm {
+            remaining.push(cleanup);
+            continue;
+        }
+        if let Err(error) = remote::hunt_ctl(ssh, &["destroy", &cleanup.hunt_session_id.to_string()]).await {
+            eprintln!("removing session {} from the VM failed: {error}", cleanup.hunt_session_id);
+            remaining.push(cleanup);
+        }
+    }
+    save_pending_cleanups(app, &remaining);
+}
+
+/// Ends the agent of `id` like `stop_agent` and waits until its task finished, so a new start cannot race it.
+async fn stop_agent_and_wait(app: &AppHandle, registry: &SessionRegistry, watchers: &WatcherRegistry, permissions: &PermissionRegistry, id: Uuid) {
+    drop_pending_permissions(permissions, id);
+    let finished = registry.live.lock().await.remove(&id).and_then(|mut live| live.shutdown());
+    if let Some(finished) = finished {
+        let _ = finished.await;
+    }
+    graph::unwatch(watchers, id);
+    attribution::forget_session(app, id);
 }
 
 #[tauri::command]
@@ -459,6 +807,9 @@ async fn end_session(
     }
 
     let record = store::find_session(app, id)?;
+    if let Some(target) = &record.remote {
+        destroy_remote(app, &target.vm, id).await;
+    }
     // A sub chat only owns its record; the worktree belongs to its parent.
     if record.parent_id.is_some() {
         return store::remove_session(app, id);
@@ -486,6 +837,10 @@ async fn end_session(
     } else if record.worktree_path.exists() {
         std::fs::remove_dir_all(&record.worktree_path)
             .map_err(|error| format!("failed to remove the worktree {}: {error}", record.worktree_path.display()))?;
+    }
+    // Handoffs and retrievals leave snapshot refs behind, which keep their commits alive.
+    if let Err(error) = git::delete_refs(&record.repo_path, &format!("refs/hunt/{id}/")).await {
+        eprintln!("deleting the refs of session {id} failed: {error}");
     }
     store::remove_session(app, id)?;
     forget_edit_log_if_unused(app, &record.worktree_path);
@@ -538,7 +893,7 @@ pub async fn send_prompt(
         return Err("the prompt is empty".into());
     }
     let record = store::find_session(&app, id)?;
-    if let Some(selection) = record.selection.as_ref().filter(|selection| selection.task.is_some()) {
+    if let Some(selection) = record.selection.as_ref().filter(|selection| selection.task.is_some() && record.remote.is_none()) {
         if let Some(block) = worktree_file(&record, &selection.path).ok().and_then(|target| file_context_block(&target)) {
             blocks.insert(0, block);
         }
@@ -566,7 +921,7 @@ pub async fn refresh_graph(
     model: String,
     effort: String,
 ) -> Result<String, String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     let prompt = graph::refresh_prompt(&crate::preferences::ai_language(&app), record.diff_base());
     let blocks = vec![ContentBlock::Text(TextContent::new(prompt))];
     let LiveHandles { connection, acp_session_id, history } = live_session(&registry, id).await?;
@@ -599,6 +954,7 @@ pub async fn refresh_graph(
 /// Agent config options a diagram refresh switches for its turn.
 const MODEL_CONFIG_ID: &str = "model";
 const EFFORT_CONFIG_ID: &str = "effort";
+const MODE_CONFIG_ID: &str = "mode";
 
 /// The values of the select options `config_ids` as the chat shows them, taken from the last option list in `history`,
 /// in the order of `config_ids`; options the list lacks are left out.
@@ -707,7 +1063,12 @@ pub async fn cancel_prompt(
 
 #[tauri::command]
 pub async fn set_session_mode(registry: State<'_, SessionRegistry>, id: Uuid, mode_id: String) -> Result<(), String> {
-    let LiveHandles { connection, acp_session_id, .. } = live_session(&registry, id).await?;
+    set_mode(&registry, id, mode_id).await
+}
+
+/// Switches the permission mode of the running agent of `id`; the agent announces it as a `config_option_update`.
+async fn set_mode(registry: &SessionRegistry, id: Uuid, mode_id: String) -> Result<(), String> {
+    let LiveHandles { connection, acp_session_id, .. } = live_session(registry, id).await?;
 
     connection
         .send_request(SetSessionModeRequest::new(acp_session_id, mode_id))
@@ -769,7 +1130,7 @@ pub struct ChangedFileView {
 
 #[tauri::command]
 pub async fn list_changed_files(app: AppHandle, id: Uuid) -> Result<Vec<ChangedFileView>, String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     let files = git::changed_files(&record.worktree_path, record.diff_base()).await?;
     let mut touched_by = store::touched_by(&app, &record.worktree_path)?;
     Ok(files
@@ -781,7 +1142,7 @@ pub async fn list_changed_files(app: AppHandle, id: Uuid) -> Result<Vec<ChangedF
 /// Added and removed lines of every changed file of the session (untracked files count as all added).
 #[tauri::command]
 pub async fn change_stats(app: AppHandle, id: Uuid) -> Result<Vec<git::ChangeStat>, String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     git::change_stats(&record.worktree_path, record.diff_base()).await
 }
 
@@ -801,9 +1162,19 @@ pub async fn read_file_history(app: AppHandle, id: Uuid, path: String) -> Result
 /// The stored record of `id` and the absolute location of the worktree-relative `path` in its worktree. Every
 /// command that takes a path from the UI resolves it here: absolute paths and `..` segments are rejected.
 fn session_file(app: &AppHandle, id: Uuid, path: &str) -> Result<(SessionRecord, PathBuf), String> {
-    let record = store::find_session(app, id)?;
+    let record = local_session(app, id)?;
     let target = worktree_file(&record, path)?;
     Ok((record, target))
+}
+
+/// The stored record of `id` for a command that works on the local worktree or starts work next to it; a session
+/// handed off to a VM keeps its local worktree untouched until it is retrieved.
+fn local_session(app: &AppHandle, id: Uuid) -> Result<SessionRecord, String> {
+    let record = store::find_session(app, id)?;
+    if record.remote.is_some() {
+        return Err(format!("failed to use the worktree of session {id}: the session runs on a remote VM"));
+    }
+    Ok(record)
 }
 
 /// The absolute location of the worktree-relative `path` in the worktree of `record`; rejects paths that would
@@ -896,7 +1267,7 @@ pub async fn revert_file(app: AppHandle, id: Uuid, path: String) -> Result<(), S
 
 #[tauri::command]
 pub async fn shelve_files(app: AppHandle, id: Uuid, paths: Vec<String>, name: String) -> Result<(), String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     git::shelve_files(&record.worktree_path, &paths, &name).await?;
     store::forget_touched_files(&app, &record.worktree_path, &paths)?;
     store::note_worktree_changed(&app, id)
@@ -904,27 +1275,27 @@ pub async fn shelve_files(app: AppHandle, id: Uuid, paths: Vec<String>, name: St
 
 #[tauri::command]
 pub async fn list_shelves(app: AppHandle, id: Uuid) -> Result<Vec<Shelf>, String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     git::list_shelves(&record.worktree_path, &record.branch).await
 }
 
 /// Restores a shelf into the worktree; `keep` leaves the shelf in place instead of dropping it.
 #[tauri::command]
 pub async fn unshelve(app: AppHandle, id: Uuid, reference: String, keep: bool) -> Result<(), String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     git::unshelve(&record.worktree_path, &reference, keep).await?;
     store::note_worktree_changed(&app, id)
 }
 
 #[tauri::command]
 pub async fn drop_shelf(app: AppHandle, id: Uuid, reference: String) -> Result<(), String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     git::drop_shelf(&record.worktree_path, &reference).await
 }
 
 #[tauri::command]
 pub async fn open_worktree_in_webstorm(app: AppHandle, id: Uuid) -> Result<(), String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     ide::open_path(&record.worktree_path).await
 }
 
@@ -940,7 +1311,7 @@ pub async fn open_file_in_webstorm(app: AppHandle, id: Uuid, path: String, line:
 /// The current side is a read-only copy: edits belong in the worktree, not in the snapshot.
 #[tauri::command]
 pub async fn open_changed_files_diff_in_webstorm(app: AppHandle, id: Uuid) -> Result<(), String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     let files = git::changed_files(&record.worktree_path, record.diff_base()).await?;
 
     let snapshot_dir = std::env::temp_dir().join("hunt").join(id.to_string());
@@ -982,14 +1353,14 @@ fn create_parent_dir(path: &Path) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn read_graph(app: AppHandle, id: Uuid) -> Result<Option<serde_json::Value>, String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     graph::read_graph(&record.worktree_path)
 }
 
 /// When the session's diagram was generated and whether files of its worktree changed since.
 #[tauri::command]
 pub async fn graph_status(app: AppHandle, id: Uuid) -> Result<graph::GraphStatus, String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     let changed_at = store::worktree_changed_at(&app, &record.worktree_path)?;
     graph::status(&record.worktree_path, changed_at)
 }
@@ -1027,7 +1398,7 @@ pub async fn list_dir(app: AppHandle, id: Uuid, path: String) -> Result<Vec<work
 /// Every project file of the worktree for the file search (⌘P / double shift).
 #[tauri::command]
 pub async fn list_files(app: AppHandle, id: Uuid) -> Result<Vec<String>, String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     git::list_files(&record.worktree_path).await
 }
 
@@ -1041,7 +1412,7 @@ pub async fn read_file(app: AppHandle, id: Uuid, path: String) -> Result<String,
 /// Worktree files containing `word` as a whole word; candidates for the editor's usage search.
 #[tauri::command]
 pub async fn search_word(app: AppHandle, id: Uuid, word: String) -> Result<Vec<String>, String> {
-    let record = store::find_session(&app, id)?;
+    let record = local_session(&app, id)?;
     git::files_containing_word(&record.worktree_path, &word).await
 }
 

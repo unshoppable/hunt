@@ -1,0 +1,13 @@
+# Recreates the folder of the sessions' sockets (mounted into each container) with the owner the relays write as.
+[Unit]
+Description=Prepare the socket folder of Hunt's remote sessions
+After=docker.service
+RequiresMountsFor=/srv
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/install -d -o hunt -g hunt -m 0755 /srv/hunt/sockets
+
+[Install]
+WantedBy=multi-user.target

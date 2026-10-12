@@ -266,6 +266,30 @@ The modification time of `graph.json` is the time the diagram was generated; eve
 revert, shelve, unshelve), and the panel marks the diagram "Outdated" once such a change is newer than the diagram
 (`graph_status` command).
 
+#### Remote sessions
+
+A session can move to a Compute Engine VM and keep working there while Hunt is closed ("Remote" in the chat header,
+set up under *Settings → Remote VM*). `src-tauri/src/remote/` reaches the VM over SSH through an IAP tunnel with the
+gcloud login and a key Hunt registers with OS Login, starts the VM when it is off, and installs the VM side from this
+repository's `remote/` folder, which ships with the app, whenever the VM runs another version of it.
+
+A handoff (`hand_off_session`) stops the local agent and pushes the branch plus a snapshot commit of the uncommitted
+work (`refs/hunt/<id>/handoff`) into a bare repository on the VM; the VM needs no access to GitHub. The Git LFS
+objects of the checkout, the ignored files matching the settings' patterns (default `**/.env.private`) and the Claude
+Code transcript follow, the transcript with its paths moved to the VM. `remote/vm/hunt-ctl` checks the branch out into
+`/srv/worktrees/<id>`, installs the dependencies and starts one container per session from `remote/image/` with the
+OAuth token of the selected Claude account, which Hunt passes on stdin; the local login stays on the Mac, so a remote
+session needs a token account. The container's entrypoint is the relay (`remote/relay/`): it owns the ACP adapter,
+loads the conversation once and serves it over a Unix socket. Hunt's agent process for the session is then `ssh … socat` to that socket, so the chat works as before;
+a client that connects later gets the conversation replayed, and the relay reports a running turn. Diff, editor,
+graph and guardrails stay local and wait until the session comes back.
+
+Bringing it back (`retrieve_session`) stops the container, snapshots the VM's worktree on top of the agent's commits
+(`refs/hunt/<id>/retrieve`), fetches it and applies it to the local worktree, which must still hold the handoff
+snapshot; the branch moves to the agent's last commit and the transcript returns. The VM shuts itself down after 30
+minutes without a running turn, client activity or terminal login (`remote/vm/hunt-idle-check`); the next prompt
+starts it again.
+
 &nbsp;
 
 ### 📁 Project layout
@@ -279,6 +303,8 @@ revert, shelve, unshelve), and the panel marks the diagram "Outdated" once such 
 | `src-tauri/src/lsp.rs` | One `tsgo --lsp` process per worktree |
 | `src-tauri/src/workspace.rs` | Project tree and file access |
 | `src-tauri/src/graph.rs` | Dependency graph prompt and status |
+| `src-tauri/src/remote/` | SSH to the VM, handoff and retrieval of remote sessions |
+| `remote/` | VM side of remote sessions: relay, container image, `hunt-ctl` |
 | `src/ipc/` | Every Tauri command, event and shared type |
 | `src/state/` | Zustand stores and chat reducers |
 | `src/chat/`, `src/diff/`, `src/ide/`, `src/graph/`, `src/guardrails/`, `src/review/`, `src/sessions/`, `src/settings/` | One folder per tab or window |

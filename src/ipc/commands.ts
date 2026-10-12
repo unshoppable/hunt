@@ -21,6 +21,7 @@ import type {
   SessionNotification,
   SessionView,
   Shelf,
+  VmRef,
   Workspace,
 } from "./types";
 
@@ -81,6 +82,8 @@ export const commands = {
   renameSession: (id: string, title: string) => invoke<SessionView>("rename_session", { id, title }),
   openSession: (id: string) => invoke<SessionView>("open_session", { id }),
   clearSession: (id: string) => invoke<SessionView>("clear_session", { id }),
+  handOffSession: (id: string, vm: VmRef, filePatterns: string[]) => invoke<SessionView>("hand_off_session", { id, vm, filePatterns }),
+  retrieveSession: (id: string) => invoke<SessionView>("retrieve_session", { id }),
   closeSession: (id: string, removeWorktree: boolean) => invoke<void>("close_session", { id, removeWorktree }),
   /** Prepares the worktree's `node_modules` again after a failed attempt; progress arrives through `sessions:changed`. */
   prepareDependencies: (id: string) => invoke<void>("prepare_dependencies", { id }),

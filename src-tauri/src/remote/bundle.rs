@@ -1,0 +1,100 @@
+//! The software Hunt runs on the VM, shipped with the app as the `remote/` folder of this repository: the relay, the
+//! container image and `hunt-ctl`. Hunt installs it whenever the VM runs a different version, so the VM never needs
+//! access to GitHub and always matches the app that talks to it.
+
+use std::path::Path;
+
+use sha2::{Digest, Sha256};
+
+use super::ssh::Ssh;
+use super::{shell_command, tar_create, Progress, RemoteStep};
+
+/// Names left out of the bundle and its hash.
+const SKIPPED: [&str; 2] = ["node_modules", ".DS_Store"];
+
+/// The bundle's version: the first 16 hex digits of a SHA-256 over every file below `dir`, relative path and content,
+/// in path order.
+pub fn hash(dir: &Path) -> Result<String, String> {
+    let mut files = Vec::new();
+    collect_files(dir, "", &mut files)?;
+    files.sort();
+    let mut hasher = Sha256::new();
+    for relative in &files {
+        let content = std::fs::read(dir.join(relative)).map_err(|error| format!("failed to read {relative} of the remote bundle: {error}"))?;
+        hasher.update(relative.as_bytes());
+        hasher.update([0]);
+        hasher.update(&content);
+        hasher.update([0]);
+    }
+    Ok(hasher.finalize().iter().take(8).map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Adds the paths of every file below `dir` (relative, `/`-separated, prefixed with `prefix`) to `files`.
+fn collect_files(dir: &Path, prefix: &str, files: &mut Vec<String>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|error| format!("failed to read {}: {error}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if SKIPPED.contains(&name.as_str()) {
+            continue;
+        }
+        let relative = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, &relative, files)?;
+        } else {
+            files.push(relative);
+        }
+    }
+    Ok(())
+}
+
+/// Installs the bundle in `dir` on the VM unless the VM runs that version already; returns its hash. The first
+/// install of a version builds the container image, which takes a few minutes.
+pub async fn ensure_installed(ssh: &Ssh, dir: &Path, progress: Progress<'_>) -> Result<String, String> {
+    let hash = hash(dir)?;
+    let installed = ssh.run("cat /srv/hunt/current/.hash 2>/dev/null || true").await?;
+    if installed.trim() == hash {
+        return Ok(hash);
+    }
+
+    progress(RemoteStep::InstallingRuntime);
+    let archive = tar_create(dir, &[".".to_string()]).await?;
+    // Unpacked into a folder of its own, so two installs at once cannot mix their files, and installed from there by
+    // `hunt-ctl` of this very bundle, which copies it into the releases.
+    let incoming = format!("/srv/hunt/incoming/{}", uuid::Uuid::new_v4());
+    let script = format!(
+        "set -e; mkdir -p {incoming}; trap 'rm -rf {incoming}' EXIT; tar -xzf - -C {incoming}; printf %s {hash} > {incoming}/.hash; \
+         chmod +x {incoming}/vm/hunt-ctl {incoming}/vm/hunt-idle-check; {incoming}/vm/hunt-ctl install {incoming}"
+    );
+    ssh.run_with_input(&shell_command("sudo", &["-n", "sh", "-c", &script]), &archive)
+        .await
+        .map_err(|error| format!("failed to install the remote runtime: {error}"))?;
+    Ok(hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hash_covers_paths_and_contents_but_skips_node_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("relay")).unwrap();
+        std::fs::create_dir_all(dir.path().join("node_modules/x")).unwrap();
+        std::fs::write(dir.path().join("relay/main.ts"), "a").unwrap();
+        std::fs::write(dir.path().join("node_modules/x/index.js"), "ignored").unwrap();
+
+        let first = hash(dir.path()).unwrap();
+        assert_eq!(first.len(), 16);
+        std::fs::write(dir.path().join("node_modules/x/index.js"), "changed").unwrap();
+        assert_eq!(hash(dir.path()).unwrap(), first);
+
+        std::fs::write(dir.path().join("relay/main.ts"), "b").unwrap();
+        let second = hash(dir.path()).unwrap();
+        assert_ne!(second, first);
+
+        std::fs::rename(dir.path().join("relay/main.ts"), dir.path().join("relay/other.ts")).unwrap();
+        assert_ne!(hash(dir.path()).unwrap(), second);
+    }
+}

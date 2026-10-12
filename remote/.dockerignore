@@ -1,0 +1,5 @@
+# The agent image (image/Dockerfile) takes only image/acp-version and relay/ from the bundle.
+.hash
+vm
+**/*.test.ts
+relay/fixtures

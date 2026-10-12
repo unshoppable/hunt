@@ -27,13 +27,15 @@ export function App() {
   const draft = useHuntStore((state) => state.draft);
   /** The active session is still being created: it has no worktree yet, so the inspector and the file search wait. */
   const isCreatingActive = useHuntStore((state) => Boolean(state.activeSessionId && state.creatingIds.includes(state.activeSessionId)));
+  /** The VM the active session runs on; its worktree is not local, so the inspector, the file search and the editor wait. */
+  const activeRemoteInstance = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.remote?.vm.instance ?? null);
   const rightTab = useHuntStore((state) => state.rightTab);
   const setRightTab = useHuntStore((state) => state.setRightTab);
   const openFile = useIdeStore((state) => state.openFile);
   const ideLayout = useIdeStore((state) => (activeSessionId ? state.sessions[activeSessionId]?.layout : null) ?? EMPTY_IDE_SESSION.layout);
   const openPaths = useMemo(() => [...new Set(allPanes(ideLayout).flatMap((pane) => pane.tabs))], [ideLayout]);
   const [isFileSearchOpen, setIsFileSearchOpen] = useState(false);
-  const canSearchFiles = Boolean(activeSessionId) && !draft && !isCreatingActive;
+  const canSearchFiles = Boolean(activeSessionId) && !draft && !isCreatingActive && !activeRemoteInstance;
 
   // ⌘P / double shift: "Go to File" for the active session's worktree.
   useFileSearchShortcut(() => {
@@ -60,10 +62,11 @@ export function App() {
   }, [refreshSessions]);
 
   // The active session's editor window boots hidden, so ⌘click in the diff only has to show it (see ide/editorWindows.ts).
-  useEffect(() => keepEditorWindowWarm(isCreatingActive ? null : activeSessionId), [activeSessionId, isCreatingActive]);
+  const hasLocalWorktree = !isCreatingActive && !activeRemoteInstance;
+  useEffect(() => keepEditorWindowWarm(hasLocalWorktree ? activeSessionId : null), [activeSessionId, hasLocalWorktree]);
 
   // Likewise the guardrails window, so the "Guardrails" button in the chat header only has to show it.
-  useEffect(() => keepGuardrailsWindowWarm(isCreatingActive ? null : activeSessionId), [activeSessionId, isCreatingActive]);
+  useEffect(() => keepGuardrailsWindowWarm(hasLocalWorktree ? activeSessionId : null), [activeSessionId, hasLocalWorktree]);
 
   // A diff window boots hidden ahead of time, so a click on a changed file in the diagram only has to fill and show it (see graph/diffWindows.ts).
   useEffect(() => keepDiffWindowWarm(), []);
@@ -98,7 +101,11 @@ export function App() {
               <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} label="PR Description" />
             </nav>
             <div className="min-h-0 flex-1">
-              {!activeSessionId || draft || isCreatingActive ? null : rightTab === "diff" ? (
+              {!activeSessionId || draft || isCreatingActive ? null : activeRemoteInstance ? (
+                <div className="flex h-full items-center justify-center px-8 text-center text-sm text-neutral-500">
+                  This session runs on the VM {activeRemoteInstance}. Diff, editor, graph and review work again once you bring it back.
+                </div>
+              ) : rightTab === "diff" ? (
                 <DiffPanel key={activeSessionId} sessionId={activeSessionId} />
               ) : rightTab === "editor" ? (
                 <IdePanel sessionId={activeSessionId} />

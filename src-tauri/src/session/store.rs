@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::git::DIFF_BASE;
 use crate::github::{PullRequestRef, ReviewComment};
+use crate::remote::RemoteTarget;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +56,10 @@ pub struct SessionRecord {
     /// Where the session works: in a worktree Hunt created and owns, or in the repository's own checkout.
     #[serde(default)]
     pub workspace: Workspace,
+    /// Set while the session is handed off to a VM: its agent runs there, and the local worktree waits unchanged
+    /// for the session to be retrieved.
+    #[serde(default)]
+    pub remote: Option<RemoteTarget>,
 }
 
 /// Where a session works. `Worktree` is a `hunt/<slug>-<id>` worktree Hunt creates off the base branch and deletes
@@ -103,6 +108,7 @@ impl SessionRecord {
             diff_base: None,
             review_comments: Vec::new(),
             workspace: Workspace::Worktree,
+            remote: None,
         }
     }
 
@@ -379,6 +385,18 @@ mod tests {
         assert_eq!(loaded[0].title, "first");
         assert_eq!(loaded[1].title, "renamed");
         assert!(!dir.path().join("sessions.json.tmp").exists());
+    }
+
+    #[test]
+    fn a_record_stored_before_remote_sessions_existed_loads_as_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stored = serde_json::to_value(record("old")).unwrap();
+        stored.as_object_mut().unwrap().remove("remote");
+        std::fs::write(dir.path().join("sessions.json"), serde_json::to_vec(&vec![stored]).unwrap()).unwrap();
+
+        let loaded = store_in(&dir).load().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded[0].remote.is_none());
     }
 
     #[test]

@@ -1,10 +1,24 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AttributionEvent, ClosedEvent, DiffOpenRequest, EditorOpenRequest, GraphChangedEvent, LspDiagnosticsEvent, LspExitedEvent, PermissionEvent, SummaryEvent, UpdateEvent } from "./types";
+import type {
+  AttributionEvent,
+  ClosedEvent,
+  DiffOpenRequest,
+  EditorOpenRequest,
+  GraphChangedEvent,
+  LspDiagnosticsEvent,
+  LspExitedEvent,
+  PermissionEvent,
+  RemoteProgressEvent,
+  SummaryEvent,
+  UpdateEvent,
+} from "./types";
 
 type EventPayloads = {
   "acp:update": UpdateEvent;
   "acp:permission": PermissionEvent;
   "acp:closed": ClosedEvent;
+  /** A handoff, retrieval or connect of a remote session moved on to another step, or ended. */
+  "remote:progress": RemoteProgressEvent;
   "graph:changed": GraphChangedEvent;
   "session:summary": SummaryEvent;
   "attribution:changed": AttributionEvent;

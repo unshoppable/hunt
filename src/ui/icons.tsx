@@ -202,6 +202,15 @@ export function BranchIcon({ className = "size-3.5" }: { className?: string }) {
   );
 }
 
+/** A cloud, for sessions that run on a remote VM. */
+export function CloudIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />
+    </svg>
+  );
+}
+
 /** A bound book, the common symbol for a repository. */
 export function RepoIcon({ className = "size-3.5" }: { className?: string }) {
   return (

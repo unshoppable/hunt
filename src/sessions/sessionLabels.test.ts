@@ -23,6 +23,7 @@ function session(id: string, title: string, branch: string, parentId: string | n
     diffBase: null,
     reviewComments: [],
     workspace: "worktree",
+    remote: null,
     dependencies: null,
   };
 }

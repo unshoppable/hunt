@@ -1,0 +1,384 @@
+//! Moving a session from the local worktree to the VM: its branch and uncommitted work (as a snapshot commit), the
+//! Git LFS objects of its checkout, the ignored files it needs to run, and its Claude Code transcript. Afterwards
+//! `hunt-ctl` installs the dependencies and starts the session's container with the relay.
+
+use std::path::{Path, PathBuf};
+
+use glob::{MatchOptions, Pattern};
+use serde_json::json;
+use uuid::Uuid;
+
+use super::ssh::Ssh;
+use super::transcript;
+use super::{bundle, hunt_ctl, hunt_ctl_with_input, shell_command, tar_create, vm, Progress, RemoteStep, RemoteTarget, VmRef};
+use crate::git;
+
+/// Where the container's `~/.claude` lives; transcripts there name this path.
+pub const REMOTE_CLAUDE_DIR: &str = "/home/agent/.claude";
+
+/// The permission mode the relay runs the agent in: nobody is there to answer permission requests.
+pub const REMOTE_MODE: &str = "bypassPermissions";
+
+/// Everything a handoff needs from the session and the settings.
+pub struct HandoffRequest<'a> {
+    pub hunt_session_id: Uuid,
+    pub worktree: &'a Path,
+    pub acp_session_id: Option<&'a str>,
+    pub vm: &'a VmRef,
+    /// The `remote/` folder shipped with the app.
+    pub bundle_dir: &'a Path,
+    /// Hunt's SSH key and known hosts.
+    pub ssh_dir: &'a Path,
+    /// The local `~/.claude`.
+    pub claude_dir: &'a Path,
+    /// Ignored files to copy, as glob patterns relative to the worktree root.
+    pub file_patterns: &'a [String],
+    /// What Hunt appends to Claude Code's system prompt.
+    pub system_prompt: &'a str,
+    /// Agent config values (`model`, `effort`) the session had locally.
+    pub config_values: &'a [(String, String)],
+    /// The OAuth token of the Claude account the container runs Claude Code with.
+    pub claude_token: &'a str,
+    /// The permission mode of the local agent, which the retrieval restores.
+    pub local_mode: Option<&'a str>,
+}
+
+/// The result of a handoff: where the session runs now and the ACP session id its relay serves.
+pub struct HandedOff {
+    pub target: RemoteTarget,
+    pub acp_session_id: Option<String>,
+}
+
+/// Moves the session to the VM and starts it there. On failure the VM side is removed again; the local worktree is
+/// left as it was.
+pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Result<HandedOff, String> {
+    let id = request.hunt_session_id.to_string();
+    let worktree = request.worktree;
+    ensure_movable(worktree).await?;
+    let patterns = compile_patterns(request.file_patterns)?;
+    let branch = git::current_branch(worktree).await?;
+    if branch == "HEAD" {
+        return Err("failed to hand off the session: its worktree has no branch checked out".into());
+    }
+    let head = git::rev_parse(worktree, "HEAD").await?;
+    let snapshot = git::snapshot_commit(worktree, "Hunt handoff snapshot").await?;
+    let handoff_ref = format!("refs/hunt/{id}/handoff");
+    git::run_git(worktree, &["update-ref", &handoff_ref, &snapshot]).await?;
+    let repo = repository_key(worktree).await;
+    let (git_name, git_email) = git_identity(worktree).await?;
+
+    progress(RemoteStep::Connecting);
+    let ssh = Ssh::open(request.vm, request.ssh_dir).await?;
+    vm::ensure_running(request.vm, &ssh, progress).await?;
+    bundle::ensure_installed(&ssh, request.bundle_dir, progress).await?;
+
+    progress(RemoteStep::TransferringCode);
+    let repo_path = hunt_ctl(&ssh, &["repo", &repo]).await?["path"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or("failed to create the repository on the VM: hunt-ctl returned no path")?;
+    push(worktree, &ssh, &repo_path, &branch, &handoff_ref).await?;
+
+    let remote_worktree = format!("/srv/worktrees/{id}");
+    let started = async {
+        upload_lfs_objects(worktree, &ssh, &repo_path, &["HEAD", &handoff_ref]).await?;
+        let prepare_args = ["prepare", &id, "--repo", &repo, "--branch", &branch, "--snapshot", &handoff_ref, "--git-name", &git_name, "--git-email", &git_email];
+        hunt_ctl(&ssh, &prepare_args).await?;
+        upload_ignored_files(worktree, &ssh, &remote_worktree, &patterns).await?;
+        upload_claude_dir(&request, &ssh, &remote_worktree).await?;
+
+        progress(RemoteStep::InstallingDependencies);
+        hunt_ctl(&ssh, &["deps", &id]).await?;
+        progress(RemoteStep::StartingAgent);
+        hunt_ctl_with_input(&ssh, &["start", &id], format!("{}\n", request.claude_token).as_bytes()).await?;
+        hunt_ctl(&ssh, &["wait", &id, "--timeout", "180"]).await
+    }
+    .await;
+    let status = match started {
+        Ok(status) => status,
+        Err(error) => {
+            if let Err(cleanup) = hunt_ctl(&ssh, &["destroy", &id]).await {
+                eprintln!("removing session {id} from the VM after a failed handoff failed: {cleanup}");
+            }
+            return Err(error);
+        }
+    };
+
+    let target = RemoteTarget {
+        vm: request.vm.clone(),
+        worktree_path: PathBuf::from(&remote_worktree),
+        repo,
+        branch,
+        handoff_head: head,
+        handed_off_at: chrono::Utc::now(),
+        local_mode: request.local_mode.map(str::to_string),
+    };
+    let acp_session_id = status["acpSessionId"].as_str().map(str::to_string);
+    Ok(HandedOff { target, acp_session_id })
+}
+
+/// Refuses worktrees whose state a snapshot cannot carry: an unfinished merge, rebase, cherry-pick or revert,
+/// unresolved conflicts, or submodules.
+async fn ensure_movable(worktree: &Path) -> Result<(), String> {
+    for (reference, operation) in [("MERGE_HEAD", "merge"), ("REBASE_HEAD", "rebase"), ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert")] {
+        if git::run_git(worktree, &["rev-parse", "-q", "--verify", reference]).await.is_ok() {
+            return Err(format!("failed to hand off the session: finish or abort the {operation} in its worktree first"));
+        }
+    }
+    let rebase_dir = git::run_git(worktree, &["rev-parse", "--git-path", "rebase-merge"]).await?;
+    if worktree.join(rebase_dir.trim()).exists() {
+        return Err("failed to hand off the session: finish or abort the rebase in its worktree first".into());
+    }
+    if !git::run_git(worktree, &["ls-files", "--unmerged"]).await?.trim().is_empty() {
+        return Err("failed to hand off the session: its worktree has unresolved conflicts".into());
+    }
+    if worktree.join(".gitmodules").exists() {
+        return Err("failed to hand off the session: repositories with submodules cannot run remotely yet".into());
+    }
+    Ok(())
+}
+
+/// `<owner>/<repo>` of the `origin` remote, or `local/<folder of the main checkout>` without one.
+async fn repository_key(worktree: &Path) -> String {
+    let url = git::run_git(worktree, &["remote", "get-url", "origin"]).await.unwrap_or_default();
+    if let Some(key) = repository_key_from_url(url.trim()) {
+        return key;
+    }
+    let common = git::run_git(worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await.unwrap_or_default();
+    let checkout = PathBuf::from(common.trim());
+    let name = checkout.parent().and_then(Path::file_name).map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = sanitize_segment(&name);
+    format!("local/{}", if name.is_empty() { "repository" } else { name.as_str() })
+}
+
+/// `owner/repo` from an ssh or https remote URL; `None` when the URL has no such tail.
+fn repository_key_from_url(url: &str) -> Option<String> {
+    let path = url.trim_end_matches('/').trim_end_matches(".git");
+    let path = path.rsplit_once(':').map(|(_, tail)| tail).unwrap_or(path);
+    let mut segments = path.rsplit('/').filter(|segment| !segment.is_empty());
+    let repo = sanitize_segment(segments.next()?);
+    let owner = sanitize_segment(segments.next()?);
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
+}
+
+/// `segment` reduced to the characters `hunt-ctl` accepts in repository paths.
+fn sanitize_segment(segment: &str) -> String {
+    segment
+        .chars()
+        .map(|character| if character.is_ascii_alphanumeric() || "-_.".contains(character) { character } else { '-' })
+        .collect::<String>()
+        .trim_start_matches('.')
+        .to_string()
+}
+
+/// The author name and email the worktree commits with; the session's container commits under the same identity.
+async fn git_identity(worktree: &Path) -> Result<(String, String), String> {
+    let name = git::run_git(worktree, &["config", "user.name"]).await.unwrap_or_default();
+    let email = git::run_git(worktree, &["config", "user.email"]).await.unwrap_or_default();
+    if name.trim().is_empty() || email.trim().is_empty() {
+        return Err("failed to hand off the session: git has no user.name or user.email for its repository".into());
+    }
+    Ok((name.trim().to_string(), email.trim().to_string()))
+}
+
+/// Pushes the branch, the snapshot and the origin's default branch into the bare repository on the VM. The
+/// repository's own pre-push hooks are skipped: they guard pushes to the team's remote, not this transfer.
+async fn push(worktree: &Path, ssh: &Ssh, repo_path: &str, branch: &str, handoff_ref: &str) -> Result<(), String> {
+    let mut refspecs = vec![format!("+HEAD:refs/heads/{branch}"), format!("+{handoff_ref}:{handoff_ref}")];
+    if let Some(default_branch) = origin_default_branch(worktree).await {
+        refspecs.push(format!("+refs/remotes/origin/{default_branch}:refs/remotes/origin/{default_branch}"));
+    }
+    let url = ssh.git_url(repo_path);
+    let mut args = vec!["push", "--no-verify", "--quiet", "--receive-pack=sudo -n -u hunt git-receive-pack", url.as_str()];
+    args.extend(refspecs.iter().map(String::as_str));
+    let ssh_command = ssh.git_ssh_command();
+    git::run_git_with_env(worktree, &args, &[("GIT_SSH_COMMAND", ssh_command.as_str())])
+        .await
+        .map_err(|error| format!("failed to push the session to the VM: {error}"))?;
+    Ok(())
+}
+
+/// The branch `origin/HEAD` points to, or `main`/`master` when the remote-tracking ref of one of them exists.
+async fn origin_default_branch(worktree: &Path) -> Option<String> {
+    if let Ok(head) = git::run_git(worktree, &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).await {
+        if let Some(branch) = head.trim().strip_prefix("refs/remotes/origin/") {
+            return Some(branch.to_string());
+        }
+    }
+    for candidate in ["main", "master"] {
+        if git::run_git(worktree, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{candidate}")]).await.is_ok() {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// The local Git LFS store of the repository of `worktree`.
+pub async fn lfs_objects_dir(worktree: &Path) -> Result<PathBuf, String> {
+    let common = git::run_git(worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await?;
+    Ok(PathBuf::from(common.trim()).join("lfs").join("objects"))
+}
+
+/// Object ids of the Git LFS files in the trees of `references`; empty when git-lfs is missing or unused.
+pub async fn lfs_object_ids(worktree: &Path, references: &[&str]) -> Vec<String> {
+    let mut ids = Vec::new();
+    for reference in references {
+        let Ok(output) = git::run_git(worktree, &["lfs", "ls-files", "--long", reference]).await else { continue };
+        for line in output.lines() {
+            if let Some(id) = line.split_whitespace().next().filter(|id| id.len() == 64 && id.chars().all(|character| character.is_ascii_hexdigit())) {
+                if !ids.iter().any(|known| known == id) {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+    }
+    ids
+}
+
+/// Path of the LFS object `id` relative to an LFS objects folder.
+pub fn lfs_object_path(id: &str) -> String {
+    format!("{}/{}/{id}", &id[0..2], &id[2..4])
+}
+
+/// Copies the LFS objects of `references` that exist locally into the bare repository on the VM.
+async fn upload_lfs_objects(worktree: &Path, ssh: &Ssh, repo_path: &str, references: &[&str]) -> Result<(), String> {
+    let ids = lfs_object_ids(worktree, references).await;
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let objects_dir = lfs_objects_dir(worktree).await?;
+    let present: Vec<String> = ids.iter().map(|id| lfs_object_path(id)).filter(|path| objects_dir.join(path).is_file()).collect();
+    if present.is_empty() {
+        return Ok(());
+    }
+    let archive = tar_create(&objects_dir, &present).await?;
+    let target = format!("{repo_path}/lfs/objects");
+    let script = format!("mkdir -p {target} && tar -xzf - -C {target}", target = super::shell_quote(&target));
+    ssh.run_with_input(&shell_command("sudo", &["-n", "-u", "hunt", "sh", "-c", &script]), &archive).await?;
+    Ok(())
+}
+
+/// The glob patterns from the settings; absolute patterns and `..` segments are rejected.
+fn compile_patterns(patterns: &[String]) -> Result<Vec<Pattern>, String> {
+    patterns
+        .iter()
+        .map(|pattern| pattern.trim())
+        .filter(|pattern| !pattern.is_empty())
+        .map(|pattern| {
+            if pattern.starts_with('/') || pattern.split('/').any(|segment| segment == "..") {
+                return Err(format!("failed to use the file pattern {pattern:?}: it must stay inside the worktree"));
+            }
+            Pattern::new(pattern).map_err(|error| format!("failed to use the file pattern {pattern:?}: {error}"))
+        })
+        .collect()
+}
+
+/// Whether the worktree-relative `path` matches one of `patterns`; `*` stays within a folder, `**` crosses folders.
+fn matches_any(patterns: &[Pattern], path: &str) -> bool {
+    let options = MatchOptions { case_sensitive: true, require_literal_separator: true, require_literal_leading_dot: false };
+    patterns.iter().any(|pattern| pattern.matches_with(path, options))
+}
+
+/// Copies the ignored files of the worktree that match `patterns` (e.g. `.env.private`) to the same paths on the VM.
+async fn upload_ignored_files(worktree: &Path, ssh: &Ssh, remote_worktree: &str, patterns: &[Pattern]) -> Result<(), String> {
+    if patterns.is_empty() {
+        return Ok(());
+    }
+    let output = git::run_git(worktree, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]).await?;
+    let files: Vec<String> = output
+        .split('\0')
+        .filter(|path| !path.is_empty() && !path.ends_with('/'))
+        .filter(|path| matches_any(patterns, path))
+        .map(str::to_string)
+        .collect();
+    if files.is_empty() {
+        return Ok(());
+    }
+    let archive = tar_create(worktree, &files).await?;
+    ssh.run_with_input(&shell_command("sudo", &["-n", "-u", "hunt", "tar", "-xzf", "-", "-C", remote_worktree]), &archive).await?;
+    Ok(())
+}
+
+/// Fills the container's `~/.claude`: the session's transcript with its paths moved to the VM, the user's global
+/// `CLAUDE.md` and skills, and `hunt-session.json` for the relay.
+async fn upload_claude_dir(request: &HandoffRequest<'_>, ssh: &Ssh, remote_worktree: &str) -> Result<(), String> {
+    let staging = std::env::temp_dir().join(format!("hunt-handoff-{}", Uuid::new_v4()));
+    let result = async {
+        std::fs::create_dir_all(&staging).map_err(|error| format!("failed to create {}: {error}", staging.display()))?;
+        let local_worktree = request.worktree.display().to_string();
+        let local_project = request.claude_dir.join("projects").join(transcript::project_slug(&local_worktree));
+        let remote_slug = transcript::project_slug(remote_worktree);
+        let replacements = vec![
+            (local_worktree, remote_worktree.to_string()),
+            (local_project.display().to_string(), format!("{REMOTE_CLAUDE_DIR}/projects/{remote_slug}")),
+        ];
+        let has_transcript = match request.acp_session_id {
+            Some(acp_session_id) => transcript::copy_session(&local_project, &staging.join("projects").join(&remote_slug), acp_session_id, &replacements)?,
+            None => false,
+        };
+
+        let instructions = request.claude_dir.join("CLAUDE.md");
+        if instructions.is_file() {
+            std::fs::copy(&instructions, staging.join("CLAUDE.md")).map_err(|error| format!("failed to copy {}: {error}", instructions.display()))?;
+        }
+        let skills = request.claude_dir.join("skills");
+        if skills.is_dir() {
+            transcript::copy_rewritten(&skills, &staging.join("skills"), &[])?;
+        }
+
+        let config_options: serde_json::Map<String, serde_json::Value> =
+            request.config_values.iter().map(|(config_id, value)| (config_id.clone(), json!(value))).collect();
+        let session = json!({
+            "huntSessionId": request.hunt_session_id.to_string(),
+            "acpSessionId": if has_transcript { request.acp_session_id } else { None },
+            "cwd": remote_worktree,
+            "systemPromptAppend": request.system_prompt,
+            "modeId": REMOTE_MODE,
+            "configOptions": config_options,
+        });
+        let session = serde_json::to_vec_pretty(&session).map_err(|error| error.to_string())?;
+        std::fs::write(staging.join("hunt-session.json"), session).map_err(|error| format!("failed to write hunt-session.json: {error}"))?;
+
+        let archive = tar_create(&staging, &[".".to_string()]).await?;
+        let target = format!("/srv/claude/{}", request.hunt_session_id);
+        ssh.run_with_input(&shell_command("sudo", &["-n", "-u", "hunt", "tar", "-xzf", "-", "-C", &target]), &archive).await?;
+        Ok(())
+    }
+    .await;
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repository_key_reads_owner_and_name_from_ssh_and_https_urls() {
+        assert_eq!(repository_key_from_url("git@github.com:unshoppable/app-framework.git").as_deref(), Some("unshoppable/app-framework"));
+        assert_eq!(repository_key_from_url("https://github.com/unshoppable/infrastructure").as_deref(), Some("unshoppable/infrastructure"));
+        assert_eq!(repository_key_from_url("ssh://git@host:2222/team/repo.git/").as_deref(), Some("team/repo"));
+        assert_eq!(repository_key_from_url("repo"), None);
+    }
+
+    #[test]
+    fn patterns_match_nested_files_and_reject_paths_outside_the_worktree() {
+        let patterns = compile_patterns(&["**/.env.private".to_string(), "config/*.local".to_string(), " ".to_string()]).unwrap();
+        assert!(matches_any(&patterns, ".env.private"));
+        assert!(matches_any(&patterns, "apps/med/.env.private"));
+        assert!(matches_any(&patterns, "config/app.local"));
+        assert!(!matches_any(&patterns, "config/nested/app.local"));
+        assert!(!matches_any(&patterns, "apps/med/.env"));
+        assert!(compile_patterns(&["../secrets".to_string()]).is_err());
+        assert!(compile_patterns(&["/etc/passwd".to_string()]).is_err());
+    }
+
+    #[test]
+    fn lfs_object_path_splits_the_id_like_git_lfs() {
+        let id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        assert_eq!(lfs_object_path(id), format!("01/23/{id}"));
+    }
+}

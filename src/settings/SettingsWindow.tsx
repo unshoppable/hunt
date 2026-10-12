@@ -11,6 +11,7 @@ import {
   DEFAULT_GRAPH_AGENT,
   DEFAULT_GUARDRAIL_DIRS,
   DEFAULT_PANES,
+  DEFAULT_REMOTE,
   DEFAULT_SYSTEM_PROMPT,
   FONT_FAMILY_PRESETS,
   PANE_RANGES,
@@ -56,11 +57,12 @@ const SECTIONS: Section[] = [
  */
 const AGENT_PAGE = "agent";
 const SESSIONS_PAGE = "sessions";
+const REMOTE_PAGE = "remote";
 const GUARDRAILS_PAGE = "guardrails";
 const FILE_ICONS_PAGE = "fileIcons";
 const FOLDER_ICONS_PAGE = "folderIcons";
 const UPDATES_PAGE: SettingsPage = "updates";
-type Page = PaneKey | typeof AGENT_PAGE | typeof SESSIONS_PAGE | typeof GUARDRAILS_PAGE | typeof FILE_ICONS_PAGE | typeof FOLDER_ICONS_PAGE | SettingsPage;
+type Page = PaneKey | typeof AGENT_PAGE | typeof SESSIONS_PAGE | typeof REMOTE_PAGE | typeof GUARDRAILS_PAGE | typeof FILE_ICONS_PAGE | typeof FOLDER_ICONS_PAGE | SettingsPage;
 
 /** Whether the window was booted ahead of time (`?warm=1`) and stays hidden until the main window shows it. */
 const isWarm = new URLSearchParams(window.location.search).has("warm");
@@ -77,6 +79,7 @@ const NAV_GROUPS: { title: string; pages: { key: Page; title: string }[] }[] = [
     pages: [
       { key: AGENT_PAGE, title: "Agent" },
       { key: SESSIONS_PAGE, title: "Sessions" },
+      { key: REMOTE_PAGE, title: "Remote VM" },
       { key: GUARDRAILS_PAGE, title: "Guardrails" },
       { key: FILE_ICONS_PAGE, title: "File icons" },
       { key: FOLDER_ICONS_PAGE, title: "Folder icons" },
@@ -158,6 +161,8 @@ export function SettingsWindow() {
             <PaneSection key={activeSection.pane} {...activeSection} />
           ) : activePage === SESSIONS_PAGE ? (
             <SessionsSection />
+          ) : activePage === REMOTE_PAGE ? (
+            <RemoteSection />
           ) : activePage === GUARDRAILS_PAGE ? (
             <GuardrailsSection />
           ) : activePage === FILE_ICONS_PAGE ? (
@@ -466,6 +471,38 @@ function SessionsSection() {
           Ask before deleting a session
         </label>
         <p className="text-[13px] leading-snug text-neutral-500">Deleting a session also removes its sub sessions and its worktree. Without the question, the delete button and ⌘W act at once.</p>
+      </div>
+    </section>
+  );
+}
+
+/** The VM remote sessions run on and the ignored files a handoff copies along (see src-tauri/src/remote). */
+function RemoteSection() {
+  const remote = useSettingsStore((state) => state.remote);
+  const setRemote = useSettingsStore((state) => state.setRemote);
+  const isDefault = JSON.stringify(remote) === JSON.stringify(DEFAULT_REMOTE);
+
+  return (
+    <section>
+      <PageHeader title="Remote VM" hint="Where a session runs once you hand it off" isDefault={isDefault} onReset={() => setRemote(DEFAULT_REMOTE)} />
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-1">
+          <TextRow label="Google Cloud project" value={remote.project} onChange={(project) => setRemote({ project })} isMonospace />
+          <TextRow label="Zone" value={remote.zone} onChange={(zone) => setRemote({ zone })} isMonospace />
+          <TextRow label="VM instance" value={remote.instance} onChange={(instance) => setRemote({ instance })} isMonospace />
+          <p className="text-[13px] leading-snug text-neutral-500">
+            Hunt reaches the VM over SSH through an IAP tunnel with your gcloud login and starts it when it is off. The chat header offers the handoff
+            once all three fields are set.
+          </p>
+        </div>
+        <div className="flex flex-col gap-1">
+          <div className="text-sm text-neutral-100">Ignored files to copy</div>
+          <TextArea ariaLabel="Ignored files to copy" value={remote.filePatterns.join("\n")} onChange={(text) => setRemote({ filePatterns: text.split("\n") })} />
+          <p className="text-[13px] leading-snug text-neutral-500">
+            One glob per line, relative to the worktree, such as **/.env.private. Git leaves ignored files out of the branch; these are copied to the VM as
+            they are. Changes the agent makes to them stay on the VM.
+          </p>
+        </div>
       </div>
     </section>
   );

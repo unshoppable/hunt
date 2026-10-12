@@ -23,6 +23,8 @@ import { HEADER_BAR } from "../ui/bars";
 import { PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { ShieldIcon } from "../ui/icons";
 import { OpenInWebstormButton } from "./OpenInWebstormButton";
+import { RemoteMenu } from "./RemoteMenu";
+import { REMOTE_STEP_LABELS } from "./remoteSession";
 
 /** Order in which shift+tab cycles the session mode, as in the terminal; modes the agent does not offer are skipped. */
 const MODE_CYCLE = ["default", "acceptEdits", "plan", "auto"];
@@ -105,8 +107,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   });
 
   // Opening a session checks once that its CLAUDE.md points the agent at the ADR folder and offers to add the section.
-  // A session still being created has no record in the backend yet, so its files cannot be read.
-  const worktreePath = session?.worktreePath;
+  // A session still being created has no record in the backend yet, and a remote session no local files to read.
+  const worktreePath = session?.remote ? undefined : session?.worktreePath;
   useEffect(() => {
     if (!worktreePath || isCreating) return;
     void ensureAdrInstruction(sessionId, worktreePath);
@@ -115,6 +117,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const followEnd = useFollowScroll(scrollRef, columnRef, `${sessionId}:${hasSession}`);
 
   if (!session) return null;
+  /** A remote session not connected right now takes prompts anyway: the first one starts its VM and connects. */
+  const canPromptRemote = Boolean(session.remote) && !session.isLive && !isCreating && !chat?.isLoading;
 
   /** Shows the lines the sub chat is about, selected, in the "Editor" tab. */
   /**
@@ -144,11 +148,14 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         <div data-tauri-drag-region="" className="min-w-0 flex-1">
           <div data-tauri-drag-region="" className="truncate text-sm font-semibold">{session.title}</div>
         </div>
-        <OpenInWebstormButton sessionId={sessionId} disabled={isCreating} />
-        <button type="button" onClick={() => void openGuardrailsWindow(sessionId)} disabled={isCreating} className={SECONDARY_BUTTON_MD}>
-          <ShieldIcon />
-          Guardrails
-        </button>
+        {session.remote ? null : <OpenInWebstormButton sessionId={sessionId} disabled={isCreating} />}
+        <RemoteMenu sessionId={sessionId} />
+        {session.remote ? null : (
+          <button type="button" onClick={() => void openGuardrailsWindow(sessionId)} disabled={isCreating} className={SECONDARY_BUTTON_MD}>
+            <ShieldIcon />
+            Guardrails
+          </button>
+        )}
         <SessionSummaryToggle />
       </header>
 
@@ -156,13 +163,13 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
         <div ref={columnRef} className="chat-column">
-          {chat?.isLoading ? <p className="text-neutral-500">Loading session…</p> : null}
           {session.selection ? (
             <div className="mb-5">
               <SelectionCard selection={session.selection} />
             </div>
           ) : null}
-          <MessageList items={chat?.items ?? []} plan={chat?.plan ?? []} isBusy={(isBusy && !chat?.isHiddenTurn) || isCreating} isVerbose={isVerbose} basePath={session.worktreePath} />
+          <MessageList items={chat?.items ?? []} plan={chat?.plan ?? []} isBusy={(isBusy && !chat?.isHiddenTurn) || isCreating} isVerbose={isVerbose} basePath={session.remote?.worktreePath ?? session.worktreePath} />
+          {chat?.isLoading ? <p className="text-neutral-500">{chat.remoteStep ? REMOTE_STEP_LABELS[chat.remoteStep] : "Loading session…"}</p> : null}
           {chat?.permission ? (
             <PermissionPrompt
               permission={chat.permission}
@@ -177,8 +184,12 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         <div className="px-9 pt-2">
           <div className="chat-column flex items-center gap-3">
             {chat?.contextUsage ? <ContextMeter usage={chat.contextUsage} /> : null}
-            <SaveGuardrailButton isSuggested={!!guardrailSuggestion} isDisabled={hasPermission} onOpen={(bounds) => void openGuardrailChat(bounds)} />
+            {session.remote ? null : <SaveGuardrailButton isSuggested={!!guardrailSuggestion} isDisabled={hasPermission} onOpen={(bounds) => void openGuardrailChat(bounds)} />}
           </div>
+        </div>
+      ) : canPromptRemote ? (
+        <div className="px-9 pt-2">
+          <p className="chat-column text-[13px] text-neutral-500">Runs on the VM {session.remote?.vm.instance}. Your next prompt starts the VM and connects again.</p>
         </div>
       ) : null}
       {session.selection ? (
@@ -194,7 +205,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           </div>
         </div>
       ) : null}
-      {session.isLive ? (
+      {session.isLive || canPromptRemote ? (
         <PromptInput
           isBusy={isBusy}
           isBlocked={hasPermission}
@@ -221,7 +232,11 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
       ) : isCreating || chat?.isLoading ? (
         <div className="px-5 pb-4 pt-2">
           <div className="chat-column rounded-xl border border-(--line) bg-(--surface-inset) px-4 py-3 text-sm text-neutral-400">
-            {isCreating && !session.parentId ? "Creating the worktree and starting the agent…" : "Starting the agent…"}
+            {chat?.remoteStep
+              ? REMOTE_STEP_LABELS[chat.remoteStep]
+              : isCreating && !session.parentId
+                ? "Creating the worktree and starting the agent…"
+                : "Starting the agent…"}
           </div>
         </div>
       ) : (

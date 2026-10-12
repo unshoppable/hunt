@@ -10,6 +10,8 @@ import type {
   PermissionEvent,
   PlanEntry,
   PullRequestRef,
+  RemoteProgressEvent,
+  RemoteStep,
   Screenshot,
   SelectionContext,
   SessionView,
@@ -21,7 +23,7 @@ import { repoName } from "../ui/path";
 import { titleFromPrompt } from "../sessions/sessionLabels";
 import { useAgentDefaultsStore } from "./agentDefaults";
 import { usePlanUsageStore } from "./planUsage";
-import { useSettingsStore } from "./settings";
+import { configuredVm, useSettingsStore } from "./settings";
 
 export type SessionMode = { id: string; name: string; description?: string | null };
 
@@ -91,6 +93,7 @@ function placeholderSession(id: string, title: string, target: WorktreeTarget, p
     diffBase: null,
     reviewComments: [],
     workspace: target.workspace,
+    remote: null,
     dependencies: null,
   };
 }
@@ -140,6 +143,10 @@ export type SessionChat = {
    * ahead of `loadHistory`, which then still rebuilds it from the backend.
    */
   hasHistory: boolean;
+  /** The step a handoff, retrieval or connect of a remote session is at; `null` while none runs. */
+  remoteStep: RemoteStep | null;
+  /** The items show the conversation from before a restart of the agent; its first update replaces them (see `restartChat`). */
+  isStale: boolean;
 };
 
 type HuntState = {
@@ -166,6 +173,10 @@ type HuntState = {
   resumeSession: (id: string) => Promise<void>;
   /** Starts the conversation over (`/clear`): the agent is restarted with a new, empty conversation. */
   clearSession: (id: string) => Promise<void>;
+  /** Hands the session off to the VM from the settings; the chat starts over and fills again from the relay's replay. */
+  handOffSession: (id: string) => Promise<void>;
+  /** Brings a remote session back into its local worktree; the chat starts over and fills again from the local agent. */
+  retrieveSession: (id: string) => Promise<void>;
   /** Opens the start view in which the first prompt or the choice of a repository creates the session, or a sub session of `parentId`. */
   startDraft: (parentId?: string) => void;
   /**
@@ -214,6 +225,7 @@ type HuntState = {
   applyUpdate: (huntSessionId: string, notification: SessionNotification) => void;
   applyPermission: (event: PermissionEvent) => void;
   applyClosed: (event: ClosedEvent) => void;
+  applyRemoteProgress: (event: RemoteProgressEvent) => void;
   applyGraphChanged: (huntSessionId: string) => void;
   applySummary: (event: SummaryEvent) => void;
   /** Reloads the changes of every open session that works in the worktree a tool call just changed. */
@@ -239,7 +251,15 @@ export function createEmptyChat(): SessionChat {
     isGeneratingGraph: false,
     isHiddenTurn: false,
     hasHistory: false,
+    remoteStep: null,
+    isStale: false,
   };
+}
+
+/** The turn state the relay of a remote session reports in `_meta.hunt.turn` of a `session_info_update`, if any. */
+function huntTurnOf(meta: unknown): "running" | "idle" | null {
+  const turn = (meta as { hunt?: { turn?: unknown } } | null | undefined)?.hunt?.turn;
+  return turn === "running" || turn === "idle" ? turn : null;
 }
 
 /** Stop reason the backend reports for a turn the user interrupted (the Debug form of the ACP `StopReason::Cancelled`). */
@@ -403,10 +423,17 @@ function reduceChat(chat: SessionChat, notification: SessionNotification): Sessi
       return { ...chat, commands: update.availableCommands };
     case "current_mode_update":
       return { ...chat, modeId: update.currentModeId };
-    case "config_option_update":
-      return { ...chat, configOptions: update.configOptions };
+    case "config_option_update": {
+      // The `mode` option carries the current mode too, so a loaded session shows the mode its agent resumed in.
+      const mode = update.configOptions.find((option) => option.id === "mode");
+      return { ...chat, configOptions: update.configOptions, modeId: mode?.type === "select" ? mode.currentValue : chat.modeId };
+    }
     case "usage_update":
       return { ...chat, contextUsage: { used: update.used, size: update.size } };
+    case "session_info_update": {
+      const turn = huntTurnOf(update._meta);
+      return turn ? { ...chat, isBusy: turn === "running" } : chat;
+    }
     default:
       return chat;
   }
@@ -472,17 +499,28 @@ export const useHuntStore = create<HuntState>((set, get) => {
 
   /**
    * Starts the agent of `id` through `start` with an empty chat, which is complete as soon as the agent runs: the
-   * agent's conversation starts fresh. A failed start leaves its error in the chat.
+   * agent's conversation starts fresh. With `keepsItems` the chat goes on showing its conversation until the first
+   * update of the started agent, which replays the conversation it loads, replaces it; a start that sends nothing
+   * leaves the chat empty. A failed start leaves its error in the chat, next to the conversation it kept.
    */
-  async function restartChat(id: string, start: () => Promise<SessionView>) {
-    updateChat(id, (chat) => ({ ...createEmptyChat(), modeId: chat.modeId, isLoading: true, hasHistory: true }));
+  async function restartChat(id: string, start: () => Promise<SessionView>, keepsItems = false) {
+    updateChat(id, (chat) =>
+      keepsItems && chat.items.length
+        ? { ...chat, isLoading: true, isStale: true, isBusy: false, isHiddenTurn: false, permission: null, error: null }
+        : { ...replacedChat(chat), isLoading: true, remoteStep: null },
+    );
     try {
       await start();
-      updateChat(id, (chat) => ({ ...chat, isLoading: false }));
+      updateChat(id, (chat) => ({ ...(chat.isStale ? replacedChat(chat) : chat), isLoading: false }));
       await get().refreshSessions();
     } catch (error) {
-      updateChat(id, (chat) => ({ ...chat, isLoading: false, error: String(error) }));
+      updateChat(id, (chat) => ({ ...chat, isLoading: false, isStale: false, error: String(error) }));
     }
+  }
+
+  /** The empty chat a restarted agent fills; the mode and a running remote operation carry over. */
+  function replacedChat(chat: SessionChat): SessionChat {
+    return { ...createEmptyChat(), modeId: chat.modeId, hasHistory: true, isLoading: chat.isLoading, remoteStep: chat.remoteStep };
   }
 
   /** Runs the turn of `prompt`, shown as the user's message in the chat. */
@@ -610,9 +648,21 @@ export const useHuntStore = create<HuntState>((set, get) => {
       }
     },
 
-    resumeSession: (id) => restartChat(id, () => commands.openSession(id)),
+    resumeSession: (id) => restartChat(id, () => commands.openSession(id), true),
 
     clearSession: (id) => restartChat(id, () => commands.clearSession(id)),
+
+    handOffSession: async (id) => {
+      const { remote } = useSettingsStore.getState();
+      const vm = configuredVm(remote);
+      if (!vm) {
+        updateChat(id, (chat) => ({ ...chat, error: "Set up the remote VM in Settings → Remote first." }));
+        return;
+      }
+      await restartChat(id, () => commands.handOffSession(id, vm, remote.filePatterns), true);
+    },
+
+    retrieveSession: (id) => restartChat(id, () => commands.retrieveSession(id), true),
 
     loadHistory: async (id) => {
       // The agent survives a webview reload but this store does not: rebuild the chat from the backend's history.
@@ -639,6 +689,7 @@ export const useHuntStore = create<HuntState>((set, get) => {
     createSubSession: async (parentId, title, selection, start, isActivated) => {
       const parent = get().sessions.find((candidate) => candidate.id === parentId);
       if (!parent) throw new Error(`failed to create sub session: the session ${parentId} is not listed`);
+      if (parent.remote) throw new Error("failed to create sub session: its parent runs on the remote VM");
       const id = crypto.randomUUID();
       const target: WorktreeTarget = {
         repoPath: parent.repoPath,
@@ -699,6 +750,16 @@ export const useHuntStore = create<HuntState>((set, get) => {
         updateChat(id, (chat) => ({ ...chat, queue: [...chat.queue, { id: nextItemId(), text, images }] }));
         return;
       }
+      const session = get().sessions.find((candidate) => candidate.id === id);
+      if (session?.remote && !session.isLive) {
+        // The VM shuts down when idle; a prompt starts it and the connection again. A failed start keeps the prompt
+        // in the queue, so the composer can take it back.
+        await get().resumeSession(id);
+        if (!get().sessions.find((candidate) => candidate.id === id)?.isLive) {
+          updateChat(id, (chat) => ({ ...chat, queue: [...chat.queue, { id: nextItemId(), text, images }] }));
+          return;
+        }
+      }
       if (get().untitledIds.includes(id) && !isClearPrompt(text)) {
         void nameAfterPrompt(id, text);
       }
@@ -718,6 +779,7 @@ export const useHuntStore = create<HuntState>((set, get) => {
     },
 
     refreshGraph: async (id) => {
+      if (get().sessions.find((candidate) => candidate.id === id)?.remote) return;
       updateChat(id, (chat) => ({ ...chat, isGeneratingGraph: true, isHiddenTurn: true }));
       const { model, effort } = useSettingsStore.getState().graphAgent;
       const request = () => commands.refreshGraph(id, model, effort).finally(() => updateChat(id, (chat) => ({ ...chat, isGeneratingGraph: false })));
@@ -764,7 +826,7 @@ export const useHuntStore = create<HuntState>((set, get) => {
       if (notification.update.sessionUpdate === "config_option_update") {
         useAgentDefaultsStore.getState().rememberOptions(notification.update.configOptions);
       }
-      updateChat(huntSessionId, (chat) => reduceChat(chat, notification));
+      updateChat(huntSessionId, (chat) => reduceChat(chat.isStale ? replacedChat(chat) : chat, notification));
       if (notification.update.sessionUpdate === "available_commands_update") {
         rememberCommandsOf(huntSessionId);
       }
@@ -779,17 +841,23 @@ export const useHuntStore = create<HuntState>((set, get) => {
 
     applyClosed: (event) => {
       if (!get().chats[event.huntSessionId]) return;
+      // A remote session loses its connection whenever its idle VM shuts down; the chat says so without an error.
+      const isRemote = Boolean(get().sessions.find((session) => session.id === event.huntSessionId)?.remote);
       updateChat(event.huntSessionId, (chat) => ({
         ...chat,
         isBusy: false,
         permission: null,
-        error: event.error ? `Agent stopped: ${event.error}` : chat.error,
+        error: event.error && !isRemote ? `Agent stopped: ${event.error}` : chat.error,
       }));
       set((state) => ({
         sessions: state.sessions.map((session) =>
           session.id === event.huntSessionId ? { ...session, isLive: false } : session,
         ),
       }));
+    },
+
+    applyRemoteProgress: (event) => {
+      updateChat(event.huntSessionId, (chat) => ({ ...chat, remoteStep: event.step }));
     },
 
     applyGraphChanged: (huntSessionId) => {

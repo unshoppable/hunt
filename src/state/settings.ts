@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import responseStylePrompt from "../../prompts/response-style.md?raw";
-import type { ReviewLevel } from "../ipc/types";
+import type { ReviewLevel, VmRef } from "../ipc/types";
 
 /** The four configurable panes of the window. */
 export type PaneKey = "sidebar" | "chat" | "changelist" | "diff";
@@ -132,6 +132,31 @@ export const DEFAULT_SYSTEM_PROMPT = responseStylePrompt.trim();
  */
 export type GraphAgent = { model: string; effort: string };
 export const DEFAULT_GRAPH_AGENT: GraphAgent = { model: "claude-opus-5-5", effort: "high" };
+
+/**
+ * The VM remote sessions run on, and the ignored files a handoff copies along as glob patterns relative to the
+ * worktree (`*` stays within a folder, `**` crosses folders). Handoffs are offered once project, zone and instance
+ * are set.
+ */
+export type RemoteSettings = { project: string; zone: string; instance: string; filePatterns: string[] };
+export const DEFAULT_REMOTE: RemoteSettings = { project: "", zone: "", instance: "", filePatterns: ["**/.env.private"] };
+
+/** The VM of `remote`, or `null` while its project, zone or instance is missing. */
+export function configuredVm(remote: RemoteSettings): VmRef | null {
+  const project = remote.project.trim();
+  const zone = remote.zone.trim();
+  const instance = remote.instance.trim();
+  if (!project || !zone || !instance) return null;
+  return { project, zone, instance };
+}
+
+/** `remote` with trimmed fields and without blank, absolute or worktree-leaving file patterns. */
+export function normalizeRemote(remote: RemoteSettings): RemoteSettings {
+  const filePatterns = remote.filePatterns
+    .map((pattern) => pattern.trim())
+    .filter((pattern) => pattern && !pattern.startsWith("/") && !pattern.split("/").includes(".."));
+  return { project: remote.project.trim(), zone: remote.zone.trim(), instance: remote.instance.trim(), filePatterns };
+}
 
 /** The kinds of guardrail that live in a folder of their own, set below. */
 export type GuardrailDirKind = "rule" | "skill" | "agent" | "adr";
@@ -277,6 +302,7 @@ type SettingsState = {
   showSummary: boolean;
   /** Whether deleting a session asks for confirmation first; the dialog's "Don't ask again" turns it off. */
   confirmSessionDelete: boolean;
+  remote: RemoteSettings;
   setPaneSetting: <K extends keyof PaneSettings>(pane: PaneKey, key: K, value: PaneSettings[K]) => void;
   resetPane: (pane: PaneKey) => void;
   resetPanes: () => void;
@@ -298,6 +324,7 @@ type SettingsState = {
   resetFolderIconRules: () => void;
   toggleSummary: () => void;
   setConfirmSessionDelete: (confirm: boolean) => void;
+  setRemote: (patch: Partial<RemoteSettings>) => void;
 };
 
 /** Shape persisted by version 0, which only knew one font size per pane. */
@@ -334,6 +361,7 @@ export type PersistedState = {
   folderIconRules?: FolderIconRule[];
   showSummary?: boolean;
   confirmSessionDelete?: boolean;
+  remote?: Partial<RemoteSettings>;
 };
 
 /** Rewrites backgrounds still set to a previous version's default so users who never picked a color follow the new one. */
@@ -475,7 +503,7 @@ function migrateToVersion8(persisted: unknown, version: number): PersistedState 
  * Layers the persisted state over `current` (the defaults with the actions). Panes, guardrail folders and popup sizes
  * gain entries over time, so stored ones are layered over the defaults per key instead of replacing them.
  */
-export function mergeSettings<T extends Pick<SettingsState, "panes" | "graphAgent" | "guardrailDirs" | "popupSizes">>(persisted: unknown, current: T): T {
+export function mergeSettings<T extends Pick<SettingsState, "panes" | "graphAgent" | "guardrailDirs" | "popupSizes" | "remote">>(persisted: unknown, current: T): T {
   const stored = persisted as PersistedState | undefined;
   return {
     ...current,
@@ -484,6 +512,7 @@ export function mergeSettings<T extends Pick<SettingsState, "panes" | "graphAgen
     graphAgent: { ...DEFAULT_GRAPH_AGENT, ...stored?.graphAgent },
     guardrailDirs: { ...DEFAULT_GUARDRAIL_DIRS, ...stored?.guardrailDirs },
     popupSizes: withDefaultPopupSizes(stored?.popupSizes),
+    remote: { ...DEFAULT_REMOTE, ...stored?.remote },
   };
 }
 
@@ -507,6 +536,7 @@ export const useSettingsStore = create<SettingsState>()(
       folderIconRules: DEFAULT_FOLDER_ICON_RULES,
       showSummary: true,
       confirmSessionDelete: true,
+      remote: DEFAULT_REMOTE,
       setPaneSetting: (pane, key, value) =>
         set((state) => {
           if (key === "background") {
@@ -556,6 +586,7 @@ export const useSettingsStore = create<SettingsState>()(
       resetFolderIconRules: () => set({ folderIconRules: DEFAULT_FOLDER_ICON_RULES }),
       toggleSummary: () => set((state) => ({ showSummary: !state.showSummary })),
       setConfirmSessionDelete: (confirmSessionDelete) => set({ confirmSessionDelete }),
+      setRemote: (patch) => set((state) => ({ remote: normalizeRemote({ ...state.remote, ...patch }) })),
     }),
     {
       name: "hunt-settings",
@@ -577,6 +608,7 @@ export const useSettingsStore = create<SettingsState>()(
         folderIconRules: state.folderIconRules,
         showSummary: state.showSummary,
         confirmSessionDelete: state.confirmSessionDelete,
+        remote: state.remote,
       }),
       migrate: migrateSettings,
       merge: mergeSettings,

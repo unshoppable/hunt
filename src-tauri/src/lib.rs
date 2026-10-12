@@ -1,3 +1,4 @@
+mod accounts;
 mod acp;
 mod git;
 mod github;
@@ -91,6 +92,11 @@ pub fn run() {
             preferences::set_ai_language,
             preferences::set_system_prompt,
             plan_usage::get_plan_usage,
+            accounts::list_accounts,
+            accounts::sign_in_account,
+            accounts::cancel_sign_in,
+            accounts::remove_account,
+            accounts::set_active_account,
         ])
         .on_window_event(|window, event| {
             // The other windows (editor, diff, guardrails, settings) belong to the main window: closing it closes them too, which ends the app.

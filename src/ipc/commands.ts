@@ -2,6 +2,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type {
   ChangeStat,
   ChangedFileView,
+  ClaudeAccounts,
   DirEntry,
   FileDiff,
   FileVersion,
@@ -114,6 +115,19 @@ export const commands = {
   setSystemPrompt: (prompt: string) => invoke<void>("set_system_prompt", { prompt }),
   /** The claude.ai plan limits of the signed-in account; spawns a short-lived Claude Code process (~1 s). */
   getPlanUsage: () => invoke<PlanUsage>("get_plan_usage"),
+  /** The Claude accounts and the one every Claude Code process starts with. */
+  listAccounts: () => invoke<ClaudeAccounts>("list_accounts"),
+  /**
+   * Runs `claude setup-token`, opens its sign-in in a private browser window with `email` filled in and makes the token
+   * the active account; signing in again renews the token. Rejects when the sign-in fails, times out or `cancelSignIn`
+   * stops it.
+   */
+  signInAccount: (email: string) => invoke<ClaudeAccounts>("sign_in_account", { email }),
+  cancelSignIn: () => invoke<void>("cancel_sign_in"),
+  /** Removes the account and its token; removing the active one switches to the local login. */
+  removeAccount: (id: string) => invoke<ClaudeAccounts>("remove_account", { id }),
+  /** The account every Claude Code process started from now on uses; null selects the local login. */
+  setActiveAccount: (id: string | null) => invoke<ClaudeAccounts>("set_active_account", { id }),
   /** Every image in the macOS screenshot folder, newest first. */
   listScreenshots: () => invoke<Screenshot[]>("list_screenshots"),
   openWorktreeInWebstorm: (id: string) => invoke<void>("open_worktree_in_webstorm", { id }),

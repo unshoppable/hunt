@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { UsageWindow } from "../ipc/types";
+import { useAccountsStore } from "../state/accounts";
 import { formatTimeUntil, usageColor, usePlanUsageStore } from "../state/planUsage";
 import { UsageBar } from "../ui/UsageBar";
 
 /**
  * The claude.ai plan limits under the session list: `5h 8% · Week 48% · Fable 94%`, each above a fill bar colored
- * from green to red by the level and the time left until the window resets (`1d 5h`, updated every minute). Reads them at start and when the window regains focus after a while; a click reads
- * them again right away. Renders nothing without plan limits (API key, Bedrock, Vertex) or before the first read.
+ * from green to red by the level and the time left until the window resets (`1d 5h`, updated every minute). Reads them at start and when the window regains focus after a while; a click or
+ * a switch of the Claude account reads them again right away. Renders nothing without plan limits (API key, Bedrock, Vertex) or before the first read.
  */
 export function PlanUsageBar() {
   const usage = usePlanUsageStore((state) => state.usage);
@@ -16,7 +17,17 @@ export function PlanUsageBar() {
   const refresh = usePlanUsageStore((state) => state.refresh);
   const refreshIfStale = usePlanUsageStore((state) => state.refreshIfStale);
 
+  const activeAccountId = useAccountsStore((state) => state.accounts?.activeId);
+  const shownAccountIdRef = useRef(activeAccountId);
   const [now, setNow] = useState(() => Date.now());
+
+  // `undefined` means the accounts are not loaded yet; the first load is no switch.
+  useEffect(() => {
+    const shownAccountId = shownAccountIdRef.current;
+    shownAccountIdRef.current = activeAccountId;
+    if (shownAccountId === undefined || shownAccountId === activeAccountId) return;
+    refresh(true);
+  }, [activeAccountId, refresh]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000);

@@ -22,6 +22,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use crate::accounts;
 use crate::graph;
 use crate::session::attribution;
 
@@ -203,7 +204,11 @@ pub async fn connect(
     context_prompt: Option<String>,
 ) -> Result<LiveSession, String> {
     let script = bundled_script_path(&app, ACP_SCRIPT)?;
-    let agent = AcpAgent::new(AcpAgentConfig::new("node").arg(script.to_string_lossy()));
+    let mut config = AcpAgentConfig::new("node").arg(script.to_string_lossy());
+    if let Some(token) = accounts::active_token(&app).await? {
+        config = config.env(accounts::TOKEN_ENV, token);
+    }
+    let agent = AcpAgent::new(config);
 
     let (ready, ready_receiver) = ReadyHandoff::new();
     let (shutdown_sender, shutdown_receiver) = oneshot::channel::<()>();

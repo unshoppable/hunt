@@ -10,6 +10,8 @@ type EventPayloads = {
   "attribution:changed": AttributionEvent;
   /** The backend added or removed sessions; every window reloads its list. */
   "sessions:changed": undefined;
+  /** The backend added, removed or switched the Claude account (see settings/SettingsWindow.tsx). */
+  "accounts:changed": undefined;
   /** Sent by the main window to a session's editor window (see ide/editorWindows.ts). */
   "editor:open": EditorOpenRequest;
   /** Sent by an editor window to every window once it takes `editor:open` events. */

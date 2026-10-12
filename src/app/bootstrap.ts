@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { applyMonacoBackground } from "../diff/monaco";
 import { commands } from "../ipc/commands";
 import { listenTo } from "../ipc/events";
+import { useAccountsStore } from "../state/accounts";
 import { useSettingsStore, type PaneKey } from "../state/settings";
 import { useHuntStore } from "../state/store";
 
@@ -68,6 +69,16 @@ export function useAgentPreferencesSync(): void {
   useEffect(() => {
     commands.setSystemPrompt(systemPrompt).catch((reason) => console.error("failed to set the system prompt", reason));
   }, [systemPrompt]);
+}
+
+/** Loads the Claude accounts and reloads them whenever the backend announces a change (`accounts:changed`). */
+export function useAccountsSync(): void {
+  useEffect(() => {
+    const { load } = useAccountsStore.getState();
+    void load();
+    const subscription = listenTo("accounts:changed", () => void load());
+    return () => void subscription.then((unlisten) => unlisten());
+  }, []);
 }
 
 /** Feeds the backend's events into the Hunt store for as long as the component is mounted. */

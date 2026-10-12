@@ -14,6 +14,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use uuid::Uuid;
 
+use crate::accounts;
 use crate::preferences::ENGLISH_TERMS;
 use crate::session::store;
 
@@ -217,7 +218,11 @@ fn truncate_middle(text: &str, max_chars: usize) -> String {
 /// Runs `claude -p` with tools disabled and the output schema enforced; the prompt goes in via stdin.
 async fn run_claude(app: &AppHandle, prompt: &str, language: &str) -> Result<SummaryOutput, String> {
     let cwd = store::app_data_dir(app)?;
-    let mut child = Command::new("claude")
+    let mut command = Command::new("claude");
+    if let Some(token) = accounts::active_token(app).await? {
+        command.env(accounts::TOKEN_ENV, token);
+    }
+    let mut child = command
         .args(["-p", "--model", MODEL, "--no-session-persistence", "--setting-sources", "", "--tools", ""])
         .args(["--output-format", "json", "--json-schema", OUTPUT_SCHEMA, "--system-prompt", &system_prompt(language)])
         .current_dir(cwd)

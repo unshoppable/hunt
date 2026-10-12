@@ -346,7 +346,7 @@ async fn read_loop(server: Arc<LspServer>, mut stdout: ChildStdout, events: Arc<
 
 /// Sends SIGKILL to the process group led by `child` (every shim layer plus the native server). `child` is not
 /// reaped yet, so its id still names that group.
-fn kill_group(child: &mut Child) {
+pub fn kill_group(child: &mut Child) {
     if let Some(pid) = child.id() {
         // SAFETY: plain syscall without pointers; a negative pid addresses the whole group.
         unsafe {

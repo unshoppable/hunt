@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tokio::process::Command;
 
+use crate::accounts;
 use crate::acp::bundled_script_path;
 use crate::session::store;
 
@@ -68,7 +69,11 @@ struct ModelWindow {
 pub async fn get_plan_usage(app: AppHandle) -> Result<PlanUsage, String> {
     let script = bundled_script_path(&app, SCRIPT)?;
     let cwd = store::app_data_dir(&app)?;
-    let child = Command::new("node")
+    let mut command = Command::new("node");
+    if let Some(token) = accounts::active_token(&app).await? {
+        command.env(accounts::TOKEN_ENV, token);
+    }
+    let child = command
         .arg(script)
         .current_dir(cwd)
         .stdin(Stdio::null())

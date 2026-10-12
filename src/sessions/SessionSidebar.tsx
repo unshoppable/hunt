@@ -3,6 +3,7 @@ import type { SessionView } from "../ipc/types";
 import { checkForUpdate } from "../ipc/updater";
 import { useHuntStore } from "../state/store";
 import { useSettingsStore } from "../state/settings";
+import { accountOptions, LOCAL_LOGIN, useAccountsStore } from "../state/accounts";
 import { openSettingsWindow } from "../settings/openSettingsWindow";
 import { useFileIconUrl } from "../diff/fileIcons";
 import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, sessionSubtitle } from "./sessionLabels";
@@ -11,6 +12,7 @@ import { DeleteSessionDialog } from "./DeleteSessionDialog";
 import { PlanUsageBar } from "./PlanUsageBar";
 import { HEADER_BAR } from "../ui/bars";
 import { ICON_BUTTON, PRIMARY_BUTTON_XS } from "../ui/buttons";
+import { Dropdown } from "../ui/Dropdown";
 import { SearchField } from "../ui/SearchField";
 import { BranchIcon, GitHubIcon, PlusIcon, RepoIcon, TrashIcon } from "../ui/icons";
 import { useLoad } from "../ui/useLoad";
@@ -111,8 +113,8 @@ export function SessionSidebar() {
     <div ref={rootRef} className="flex min-w-0 flex-1 flex-col bg-(--sidebar-bg)">
       {/* The macOS traffic lights sit in this row (see tauri.conf.json), so it starts further right and drags the window. */}
       <div data-tauri-drag-region="" className={`${HEADER_BAR} justify-between pr-3 pl-23`}>
-        <span data-tauri-drag-region="" className="truncate text-sm font-semibold tracking-wide text-neutral-300">Sessions</span>
-        <span data-tauri-drag-region="" className="flex items-center gap-1">
+        <AccountSwitcher />
+        <span data-tauri-drag-region="" className="flex shrink-0 items-center gap-1">
           <button
             type="button"
             onClick={() => void openSettingsWindow(availableVersion ? "updates" : undefined)}
@@ -238,5 +240,26 @@ function GearIcon() {
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
     </svg>
+  );
+}
+
+/**
+ * The Claude account every Claude Code process Hunt starts uses, as a dropdown to switch it; accounts are added in the
+ * settings. Turns red with the error as tooltip when the last load or switch failed.
+ */
+function AccountSwitcher() {
+  const accounts = useAccountsStore((state) => state.accounts);
+  const error = useAccountsStore((state) => state.error);
+  const select = useAccountsStore((state) => state.select);
+
+  return (
+    <Dropdown
+      title={error ? `Claude account: ${error}` : "Claude account of every Claude Code process Hunt starts"}
+      value={accounts?.activeId ?? LOCAL_LOGIN}
+      options={accountOptions(accounts)}
+      onChange={(id) => void select(id)}
+      disabled={!accounts}
+      className={`mr-1 flex h-7 max-w-max min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 text-sm font-medium outline-none transition-colors hover:bg-(--row-hover) hover:text-neutral-100 ${error ? "text-red-300" : "text-neutral-300"}`}
+    />
   );
 }

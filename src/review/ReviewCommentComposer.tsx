@@ -1,8 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentType, type KeyboardEvent, type MouseEvent } from "react";
 import { MarkdownText } from "../chat/MessageList";
-import { commands } from "../ipc/commands";
-import type { GithubViewer } from "../ipc/types";
-import { useHuntStore } from "../state/store";
 import { ICON_BUTTON_XS, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import {
   BoldIcon,
@@ -17,18 +14,21 @@ import {
   TaskListIcon,
 } from "../ui/icons";
 import { useAutoGrow } from "../ui/useAutoGrow";
-import { useLoad } from "../ui/useLoad";
+import { ViewerAvatar } from "./Avatar";
 import { applyMarkdownAction, type MarkdownAction } from "./markdownEdits";
-import { useReviewDraftCount, type LineSpan } from "./reviewComments";
+import { isFileSpan, useReviewDraftCount, type LineSpan } from "./reviewComments";
 
 /** Hint on a comment whose lines lie outside the diff hunks. */
 export const NOTE_HINT = "Outside the diff · posted as a note in the review summary";
 
 type ReviewCommentComposerProps = {
   sessionId: string;
-  /** Lines of the new file version the comment is for. */
+  /** Lines of the new file version the comment is for, or `FILE_SPAN` for the whole file. */
   span: LineSpan;
-  /** Whether the comment lies inside a diff hunk and is posted inline; otherwise it becomes a note, which the title says. */
+  /**
+   * Whether the comment is posted on the diff (lines inside a hunk, or a changed file); otherwise it becomes a note,
+   * which the title says.
+   */
   isInline: boolean;
   /** Saves the draft; rejects with the message to show. */
   onSubmit: (body: string) => Promise<unknown>;
@@ -37,13 +37,17 @@ type ReviewCommentComposerProps = {
 
 /**
  * GitHub's "add a comment" box under a diff line: a card with the viewer's avatar and "Add a comment on line R15"
- * (or "lines R15 to R28") above a `CommentEditorPanel` whose primary action starts the review or adds to it. The
- * outer element carries `data-review-composer` ("inline" or "note": the range's blue or grey bar runs along it) and
- * sits 10px right of the code's left edge via `--zone-content-left`.
+ * (or "lines R15 to R28", or "this file" above the first line) above a `CommentEditorPanel` whose primary action
+ * starts the review or adds to it. The outer element carries `data-review-composer` ("inline" or "note": the range's
+ * blue or grey bar runs along it) and sits 10px right of the code's left edge via `--zone-content-left`.
  */
 export function ReviewCommentComposer({ sessionId, span, isInline, onSubmit, onClose }: ReviewCommentComposerProps) {
   const hasDrafts = useReviewDraftCount(sessionId) > 0;
-  const title = span.startLine === span.line ? `Add a comment on line R${span.line}` : `Add a comment on lines R${span.startLine} to R${span.line}`;
+  const title = isFileSpan(span)
+    ? "Add a comment on this file"
+    : span.startLine === span.line
+      ? `Add a comment on line R${span.line}`
+      : `Add a comment on lines R${span.startLine} to R${span.line}`;
   const hint = isInline ? null : NOTE_HINT;
   return (
     <div
@@ -53,7 +57,7 @@ export function ReviewCommentComposer({ sessionId, span, isInline, onSubmit, onC
     >
       <div className="rounded-md border border-(--line) bg-(--surface-inset) shadow-md">
         <div className="flex items-center gap-2 px-3 py-2.5">
-          <ViewerAvatar sessionId={sessionId} />
+          <ViewerAvatar sessionId={sessionId} size="size-6" />
           <span className="font-semibold text-neutral-100">{title}</span>
           {hint ? <span className="truncate text-neutral-500">{hint}</span> : null}
         </div>
@@ -62,33 +66,6 @@ export function ReviewCommentComposer({ sessionId, span, isInline, onSubmit, onC
         </div>
       </div>
     </div>
-  );
-}
-
-/** One `gh api user` per repository; a failed load is forgotten so that the next box tries again. */
-const viewerLoads = new Map<string, Promise<GithubViewer>>();
-
-function loadViewer(repoPath: string): Promise<GithubViewer> {
-  const cached = viewerLoads.get(repoPath);
-  if (cached) return cached;
-  const load = commands.githubViewer(repoPath).catch((reason) => {
-    viewerLoads.delete(repoPath);
-    throw reason;
-  });
-  viewerLoads.set(repoPath, load);
-  return load;
-}
-
-/** The 24px avatar of the GitHub account `gh` is logged in as; a neutral circle while it loads or when it cannot be fetched. */
-function ViewerAvatar({ sessionId }: { sessionId: string }) {
-  const repoPath = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.repoPath ?? null);
-  const [viewer, setViewer] = useState<GithubViewer | null>(null);
-  const [hasImageFailed, setHasImageFailed] = useState(false);
-  useLoad(() => (repoPath ? loadViewer(repoPath) : Promise.resolve(null)), { onValue: setViewer, onError: () => setViewer(null) }, [repoPath]);
-  return (
-    <span className="size-6 shrink-0 overflow-hidden rounded-full bg-neutral-700" title={viewer?.login}>
-      {viewer && !hasImageFailed ? <img src={viewer.avatarUrl} alt="" onError={() => setHasImageFailed(true)} className="size-full object-cover" /> : null}
-    </span>
   );
 }
 
@@ -148,24 +125,31 @@ const MODES = [
 const TEXTAREA =
   "w-full resize-none rounded-md border border-(--line) bg-(--surface-input) px-2.5 py-2 text-sm text-neutral-200 outline-none placeholder:text-neutral-500 focus:border-blue-400/60";
 
+/** A way to save the text of a `CommentEditorPanel`; `onSubmit` rejects with the message to show. */
+export type CommentAction = { label: string; onSubmit: (body: string) => Promise<unknown> };
+
 type CommentEditorPanelProps = {
   initial?: string;
   submitLabel: string;
   /** Saves the text; rejects with the message to show. */
   onSubmit: (body: string) => Promise<unknown>;
+  /** A second way to save the text, as a secondary button left of the primary one (GitHub's "Add single comment"). */
+  secondaryAction?: CommentAction;
   onClose: () => void;
 };
 
 /**
  * GitHub's comment editor: a bordered panel with Write / Preview tabs and the markdown toolbar on the right over the
- * textarea (or the rendered markdown), and Cancel plus the primary action right-aligned under the panel. ⌘⏎ submits,
- * Escape closes, the toolbar's ⌘ shortcuts work in the textarea. Used inside the card of `ReviewCommentComposer` and
- * bare for editing a draft.
+ * textarea (or the rendered markdown), and Cancel, the optional secondary action and the primary action right-aligned
+ * under the panel. ⌘⏎ runs the primary action, Escape closes, the toolbar's ⌘ shortcuts work in the textarea. Used
+ * inside the card of `ReviewCommentComposer`, for replies, and bare for editing a draft.
  */
-export function CommentEditorPanel({ initial = "", submitLabel, onSubmit, onClose }: CommentEditorPanelProps) {
+export function CommentEditorPanel({ initial = "", submitLabel, onSubmit, secondaryAction, onClose }: CommentEditorPanelProps) {
   const [body, setBody] = useState(initial);
   const [mode, setMode] = useState<(typeof MODES)[number][0]>("write");
-  const [isSaving, setIsSaving] = useState(false);
+  // The action whose save is running, null while none is.
+  const [saving, setSaving] = useState<"primary" | "secondary" | null>(null);
+  const isSaving = saving !== null;
   const [error, setError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingSelection = useRef<[number, number] | null>(null);
@@ -197,15 +181,16 @@ export function CommentEditorPanel({ initial = "", submitLabel, onSubmit, onClos
     setBody(next.text);
   }
 
-  async function submit() {
-    if (!canSubmit) return;
-    setIsSaving(true);
+  async function submit(action: "primary" | "secondary" = "primary") {
+    const save = action === "primary" ? onSubmit : secondaryAction?.onSubmit;
+    if (!canSubmit || !save) return;
+    setSaving(action);
     setError(null);
     try {
-      await onSubmit(body.trim());
+      await save(body.trim());
     } catch (reason) {
       setError(String(reason));
-      setIsSaving(false);
+      setSaving(null);
       return;
     }
     onClose();
@@ -294,8 +279,13 @@ export function CommentEditorPanel({ initial = "", submitLabel, onSubmit, onClos
         <button type="button" onClick={onClose} disabled={isSaving} className={SECONDARY_BUTTON_XS}>
           Cancel
         </button>
+        {secondaryAction ? (
+          <button type="button" onClick={() => void submit("secondary")} disabled={!canSubmit} className={SECONDARY_BUTTON_XS}>
+            {saving === "secondary" ? "Saving…" : secondaryAction.label}
+          </button>
+        ) : null}
         <button type="button" onClick={() => void submit()} disabled={!canSubmit} className={PRIMARY_BUTTON_XS} title="⌘⏎">
-          {isSaving ? "Saving…" : submitLabel}
+          {saving === "primary" ? "Saving…" : submitLabel}
         </button>
       </div>
     </div>

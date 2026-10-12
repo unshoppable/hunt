@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ArchitectureGraph } from "../ipc/types";
 import { buildDiagram } from "./diagram";
 import { LABEL_HEIGHT, labelWidth, layoutDiagram, orthogonalPath } from "./layout";
+
+// Node has no Web Worker; ELK's in-thread stand-in runs the layouts instead.
+const elkWorker = (await import("elkjs/lib/elk-worker.js")) as unknown as { Worker: typeof Worker };
+vi.stubGlobal("Worker", elkWorker.Worker);
 
 const graph: ArchitectureGraph = {
   nodes: [{ path: "a.ts" }, { path: "b.ts" }, { path: "c.ts" }],
@@ -94,7 +98,7 @@ describe("layoutDiagram", () => {
         return { left: x, right: x + node.width!, top: y, bottom: y + node.height! };
       });
     for (const edge of edges) {
-      const { points, label, labelCenter } = edge.data!;
+      const { points, label = "", labelCenter } = edge.data!;
       const box = { left: labelCenter!.x - labelWidth(label) / 2, right: labelCenter!.x + labelWidth(label) / 2, top: labelCenter!.y - LABEL_HEIGHT / 2, bottom: labelCenter!.y + LABEL_HEIGHT / 2 };
       const carrier = points.slice(1).find((to, index) => {
         const from = points[index];

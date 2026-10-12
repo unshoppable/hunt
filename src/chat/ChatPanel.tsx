@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useIdeStore } from "../ide/ideStore";
 import { useHuntStore } from "../state/store";
-import { findSelectOption, listChoices, listModes } from "./configOptions";
+import { findSelectOption, listChoiceOptions, listModes } from "./configOptions";
 import { MessageList } from "./MessageList";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { PromptInput, type ConfigSelect } from "./PromptInput";
@@ -10,9 +10,15 @@ import { describeSelection, SelectionCard } from "./SelectionCard";
 import { useFileIconUrl } from "../diff/fileIcons";
 import { useFollowScroll } from "./useFollowScroll";
 import { SessionSummary, SessionSummaryToggle } from "./SessionSummary";
+import type { SelectionRequest } from "../diff/selectionContext";
 import { useSettingsStore } from "../state/settings";
 import { openGuardrailsWindow } from "../guardrails/openGuardrailsWindow";
 import { ensureAdrInstruction } from "../guardrails/adrInstruction";
+import { GUARDRAIL_CHAT_PATH, guardrailTask, KIND_LABELS, listGuardrails } from "../guardrails/guardrails";
+import { buildGuardrailRequest, buildTranscript, findGuardrailSuggestion, transcriptTail } from "./guardrailSuggestion";
+import { SubChatPopover, useSubChatPopover } from "./SubChatPopover";
+import { SaveGuardrailButton } from "./SaveGuardrailButton";
+import { ContextMeter } from "./ContextMeter";
 import { HEADER_BAR } from "../ui/bars";
 import { PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { ShieldIcon } from "../ui/icons";
@@ -23,6 +29,18 @@ const MODE_CYCLE = ["default", "acceptEdits", "plan", "auto"];
 
 /** Agent config options shown as dropdowns in the prompt toolbar, in display order. */
 const TOOLBAR_CONFIG_IDS = ["model", "effort"];
+
+/** Lines of this session's conversation the guardrail chat shows as the context its agent gets. */
+const CONTEXT_PREVIEW_LINES = 8;
+
+/** Gap between the guardrail chat and the "Guardrail" button below it when the chat opens at its default place. */
+const GUARDRAIL_CHAT_GAP = 24;
+
+/** Where the guardrail chat's bottom right corner goes: above the "Guardrail" button, moved by where the user last left it. */
+function guardrailChatAnchor(bounds: DOMRect): SelectionRequest["anchor"] {
+  const { x, y } = useSettingsStore.getState().guardrailChatOffset;
+  return { x: bounds.right + x, y: bounds.top - GUARDRAIL_CHAT_GAP + y, corner: "bottomRight" };
+}
 
 export function ChatPanel({ sessionId }: { sessionId: string }) {
   const fileIconUrl = useFileIconUrl();
@@ -39,12 +57,18 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const selectSession = useHuntStore((state) => state.selectSession);
   const setRightTab = useHuntStore((state) => state.setRightTab);
   const openFile = useIdeStore((state) => state.openFile);
+  const guardrailChat = useSubChatPopover();
+  const [guardrailRequest, setGuardrailRequest] = useState("");
+  /** The end of this session's conversation, shown in the guardrail chat as the context its agent gets. */
+  const [guardrailContext, setGuardrailContext] = useState("");
   const showSummary = useSettingsStore((state) => state.showSummary);
+  const setGuardrailChatOffset = useSettingsStore((state) => state.setGuardrailChatOffset);
   const scrollRef = useRef<HTMLDivElement>(null);
   const columnRef = useRef<HTMLDivElement>(null);
   const [isVerbose, setIsVerbose] = useState(false);
   const hasSession = Boolean(session);
   const isBusy = chat?.isBusy ?? false;
+  const guardrailSuggestion = isBusy ? null : findGuardrailSuggestion(chat?.items ?? []);
   const hasPermission = Boolean(chat?.permission);
   const modeId = chat?.modeId ?? "default";
   const modes = listModes(chat?.configOptions ?? []);
@@ -52,7 +76,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const configSelects: ConfigSelect[] = TOOLBAR_CONFIG_IDS.flatMap((id) => {
     const option = findSelectOption(chat?.configOptions ?? [], id);
     if (!option) return [];
-    return [{ id, name: option.name, value: option.currentValue, choices: listChoices(option).map((choice) => ({ id: choice.value, name: choice.name })) }];
+    return [{ id, name: option.name, value: option.currentValue, choices: listChoiceOptions(option) }];
   });
 
   function cycleMode() {
@@ -81,17 +105,32 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   });
 
   // Opening a session checks once that its CLAUDE.md points the agent at the ADR folder and offers to add the section.
+  // A session still being created has no record in the backend yet, so its files cannot be read.
   const worktreePath = session?.worktreePath;
   useEffect(() => {
-    if (!worktreePath) return;
+    if (!worktreePath || isCreating) return;
     void ensureAdrInstruction(sessionId, worktreePath);
-  }, [sessionId, worktreePath]);
+  }, [sessionId, worktreePath, isCreating]);
 
   const followEnd = useFollowScroll(scrollRef, columnRef, `${sessionId}:${hasSession}`);
 
   if (!session) return null;
 
   /** Shows the lines the sub chat is about, selected, in the "Editor" tab. */
+  /**
+   * Opens the guardrail sub chat right above the "Guardrail" button, flush with its right edge: its first question is
+   * prefilled with the guardrail the agent suggested (or the bare request), and its agent gets the whole conversation
+   * of this session as context.
+   */
+  async function openGuardrailChat(bounds: DOMRect) {
+    const listing = await listGuardrails(sessionId, useSettingsStore.getState().guardrailDirs);
+    const transcript = buildTranscript(chat?.items ?? []);
+    const task = `${guardrailTask(listing)}\n\n## Conversation the guardrail comes from\nThe user opened this chat from the session below; use it as the context of the request.\n\n${transcript}`;
+    setGuardrailContext(transcriptTail(transcript, CONTEXT_PREVIEW_LINES));
+    setGuardrailRequest(buildGuardrailRequest(guardrailSuggestion, guardrailSuggestion ? KIND_LABELS[guardrailSuggestion.kind].singular : ""));
+    guardrailChat.open({ selection: { path: GUARDRAIL_CHAT_PATH, startLine: 1, endLine: 1, text: "", task }, anchor: guardrailChatAnchor(bounds) });
+  }
+
   function openSelectionInEditor() {
     if (!session?.selection) return;
     const { path, startLine, endLine } = session.selection;
@@ -123,7 +162,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
               <SelectionCard selection={session.selection} />
             </div>
           ) : null}
-          <MessageList items={chat?.items ?? []} plan={chat?.plan ?? []} isBusy={isBusy || isCreating} isVerbose={isVerbose} basePath={session.worktreePath} />
+          <MessageList items={chat?.items ?? []} plan={chat?.plan ?? []} isBusy={(isBusy && !chat?.isHiddenTurn) || isCreating} isVerbose={isVerbose} basePath={session.worktreePath} />
           {chat?.permission ? (
             <PermissionPrompt
               permission={chat.permission}
@@ -134,6 +173,14 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         </div>
       </div>
 
+      {session.isLive ? (
+        <div className="px-9 pt-2">
+          <div className="chat-column flex items-center gap-3">
+            {chat?.contextUsage ? <ContextMeter usage={chat.contextUsage} /> : null}
+            <SaveGuardrailButton isSuggested={!!guardrailSuggestion} isDisabled={hasPermission} onOpen={(bounds) => void openGuardrailChat(bounds)} />
+          </div>
+        </div>
+      ) : null}
       {session.selection ? (
         <div className="px-9 pt-2">
           <div className="chat-column flex items-center gap-3 rounded-xl border border-(--line) bg-(--surface-inset) px-4 py-2 text-[13px]">
@@ -170,7 +217,6 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           onModeChange={(nextModeId) => void setMode(sessionId, nextModeId)}
           onConfigChange={(configId, value) => void setConfigOption(sessionId, configId, value)}
           pullRequest={session.pullRequest}
-          contextUsage={chat?.contextUsage}
         />
       ) : isCreating || chat?.isLoading ? (
         <div className="px-5 pb-4 pt-2">
@@ -188,6 +234,22 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           </div>
         </div>
       )}
+      {guardrailChat.shown ? (
+        <SubChatPopover
+          key={guardrailChat.shown.key}
+          parentSessionId={sessionId}
+          request={guardrailChat.shown.request}
+          title="New guardrail"
+          placeholder="Describe the guardrail you want: what should Claude know or do, and where?"
+          context={{ label: "This conversation", text: guardrailContext }}
+          initialText={guardrailRequest}
+          onPlaced={(offset) => {
+            const { x, y } = useSettingsStore.getState().guardrailChatOffset;
+            setGuardrailChatOffset({ x: x + offset.x, y: y + offset.y });
+          }}
+          onClose={guardrailChat.close}
+        />
+      ) : null}
     </div>
   );
 }

@@ -8,6 +8,7 @@ import { formatRelativeTime } from "../chat/ScreenshotPicker";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { ExternalIcon, GitHubIcon } from "../ui/icons";
 import { errorText, useLoad } from "../ui/useLoad";
+import { Avatar } from "./Avatar";
 import { REVIEW_STATE_LABELS, buildTimeline, type TimelineEntry } from "./timeline";
 
 /** Badge colors of a pull request state as GitHub shows them: green open, purple merged, red closed, grey draft. */
@@ -174,17 +175,5 @@ function CommentCard({
         </div>
       </div>
     </div>
-  );
-}
-
-/** GitHub avatar of a login; the first letter stands in while it loads or when it cannot be fetched (bots, offline). */
-function Avatar({ login, size }: { login: string; size: string }) {
-  const [hasFailed, setHasFailed] = useState(false);
-  const initial = login.replace(/^app\//, "").charAt(0).toUpperCase();
-  return (
-    <span className={`relative flex ${size} shrink-0 items-center justify-center overflow-hidden rounded-full bg-neutral-700 text-[12px] font-semibold text-neutral-200`} title={login}>
-      {initial}
-      {hasFailed ? null : <img src={`https://github.com/${login}.png?size=64`} alt="" onError={() => setHasFailed(true)} className="absolute inset-0 size-full object-cover" />}
-    </span>
   );
 }

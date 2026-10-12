@@ -14,7 +14,7 @@ const GROUP_PADDING = "[top=34,left=16,bottom=16,right=16]";
  * on that route: the label sits on a segment that is long enough for it and clear of the nodes.
  */
 export type DependencyEdgeData = {
-  label: string;
+  label?: string;
   description?: string;
   points: XYPosition[];
   labelCenter: XYPosition | null;
@@ -22,27 +22,47 @@ export type DependencyEdgeData = {
   isHovered?: boolean;
   /** Another edge or file is hovered and this edge is not part of it; the view then fades it. */
   isMuted?: boolean;
+  /** The edge points at a file without changes, shown for context; the view draws it dashed. */
+  isToContext?: boolean;
 };
 export type DependencyEdge = Edge<DependencyEdgeData, "dependency">;
 
 type ElkEngine = InstanceType<typeof ElkConstructor>;
 let elkPromise: Promise<ElkEngine> | null = null;
 
-/** The ELK engine, loaded on first use because its bundle is large. */
+/** The ELK engine, loaded on first use because its bundle is large; it lays out in a Web Worker, so a large diagram never blocks the page. */
 function elk(): Promise<ElkEngine> {
   if (!elkPromise) {
-    elkPromise = import("elkjs/lib/elk.bundled.js").then((module) => new module.default());
+    elkPromise = Promise.all([import("elkjs/lib/elk-api.js"), import("elkjs/lib/elk-worker.min.js?url")]).then(
+      ([api, worker]) => new api.default({ workerUrl: worker.default }),
+    );
   }
   return elkPromise;
 }
+
+/** The last requested layout; ELK lays out one diagram at a time, in the order they were requested. */
+let lastLayout: Promise<unknown> = Promise.resolve();
 
 /**
  * Lays the diagram out top-down (dependents above their dependencies) with ELK's layered algorithm, folder groups
  * as compound nodes, and returns React Flow nodes (groups before their files) and edges. Edges leaving the same
  * file share one trunk and split near their targets, and the layers are compacted towards short edges, so a
  * dependency chain reads as a stack with few parallel lines.
+ * A layout waits for the one requested before it; when `signal` aborts in the meantime it rejects without running,
+ * so a burst of requests (unchecking files one after another) lays out only the newest diagram.
  */
-export async function layoutDiagram(diagram: Diagram): Promise<{ nodes: DiagramFlowNode[]; edges: DependencyEdge[] }> {
+export function layoutDiagram(diagram: Diagram, signal?: AbortSignal): Promise<{ nodes: DiagramFlowNode[]; edges: DependencyEdge[] }> {
+  const start = () => {
+    signal?.throwIfAborted();
+    return runLayout(diagram);
+  };
+  const layout = lastLayout.then(start, start);
+  lastLayout = layout;
+  return layout;
+}
+
+/** One ELK run of `layoutDiagram`. */
+async function runLayout(diagram: Diagram): Promise<{ nodes: DiagramFlowNode[]; edges: DependencyEdge[] }> {
   const toElkNode = (node: DiagramNode): ElkNode => ({ id: node.path, width: node.width, height: node.height });
   const elkGraph: ElkNode = {
     id: "root",
@@ -73,7 +93,7 @@ export async function layoutDiagram(diagram: Diagram): Promise<{ nodes: DiagramF
       id: edge.id,
       sources: [edge.source],
       targets: [edge.target],
-      labels: [{ text: edge.label, width: labelWidth(edge.label), height: LABEL_HEIGHT, layoutOptions: INLINE_LABEL }],
+      labels: edge.label ? [{ text: edge.label, width: labelWidth(edge.label), height: LABEL_HEIGHT, layoutOptions: INLINE_LABEL }] : [],
     })),
   };
 
@@ -133,6 +153,7 @@ export async function layoutDiagram(diagram: Diagram): Promise<{ nodes: DiagramF
   }));
   const nodes: DiagramFlowNode[] = [...groupNodes, ...fileNodes];
 
+  const contextPaths = new Set(diagram.nodes.filter((node) => !node.isChanged).map((node) => node.path));
   const edges: DependencyEdge[] = diagram.edges.map((edge) => ({
     id: edge.id,
     type: "dependency",
@@ -143,10 +164,13 @@ export async function layoutDiagram(diagram: Diagram): Promise<{ nodes: DiagramF
       description: edge.description,
       points: routes.get(edge.id)?.points ?? [],
       labelCenter: routes.get(edge.id)?.labelCenter ?? null,
+      isToContext: contextPaths.has(edge.target),
     },
     markerEnd: edgeMarker(false),
     // React Flow lets the mouse through an unselectable edge; the panel needs its hover for the description.
     selectable: true,
+    // Behind the folder areas (-1) and the files (0); the panel keeps these levels fixed, also while hovered.
+    zIndex: -2,
   }));
 
   return { nodes, edges };

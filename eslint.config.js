@@ -3,7 +3,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 
 /** Lint rules the hand-formatted code must satisfy; formatting is not linted (there is no formatter). */
 export default tseslint.config(
-  { ignores: ["dist/**", "node_modules/**", "src-tauri/**", "src/diff/catppuccinIcons/**", "tools/**"] },
+  { ignores: ["dist/**", "node_modules/**", "src-tauri/**", "src/diff/atomIcons/**", "tools/**"] },
   ...tseslint.configs.recommended,
   ...reactHooks.configs.recommended,
   {

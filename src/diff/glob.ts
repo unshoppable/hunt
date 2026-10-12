@@ -78,3 +78,31 @@ export function matchesGlob(glob: string, path: string): boolean {
   }
   return regExp.test(path.replace(/^(\.\/|\/)+/, ""));
 }
+
+/** The globs of a list typed by the user, separated by commas or whitespace; commas and spaces inside `{a,b}` do not separate. */
+export function splitGlobs(text: string): string[] {
+  const globs: string[] = [];
+  let current = "";
+  let depth = 0;
+  for (const char of text) {
+    const isSpace = /\s/.test(char);
+    if (depth === 0 && (isSpace || char === ",")) {
+      if (current) {
+        globs.push(current);
+      }
+      current = "";
+      continue;
+    }
+    if (isSpace) continue;
+    if (char === "{") {
+      depth++;
+    } else if (char === "}" && depth > 0) {
+      depth--;
+    }
+    current += char;
+  }
+  if (current) {
+    globs.push(current);
+  }
+  return globs;
+}

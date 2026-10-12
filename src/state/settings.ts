@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import responseStylePrompt from "../../prompts/response-style.md?raw";
+import type { ReviewLevel } from "../ipc/types";
 
 /** The four configurable panes of the window. */
 export type PaneKey = "sidebar" | "chat" | "changelist" | "diff";
@@ -58,6 +59,12 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 /** How the changelist groups files: one flat list or a folder tree. */
 export type ChangelistView = "flat" | "tree";
 
+/** Whose line changes the diff viewer shows for a file several sessions changed: this session's or every session's. */
+export type DiffLineScope = "own" | "all";
+
+/** Which files the changelist of a session in a shared worktree lists: only its own changes or every change. */
+export type ChangelistScope = "own" | "all";
+
 /** Outer size of a floating popup or dialog in px; the popup remembers how the user resized it. */
 export type PopupSize = { width: number; height: number };
 
@@ -77,6 +84,19 @@ export const DEFAULT_POPUP_SIZES: Record<PopupKey, PopupSize> = {
   fileFilter: { width: 320, height: 384 },
   change: { width: 720, height: 320 },
 };
+
+/** Distance in px between where a popup opened by default and where the user last left it. */
+export type PopupOffset = { x: number; y: number };
+
+/** Which files the dependency graph hides besides the ones unchecked in its file filter. */
+export type GraphFilter = {
+  /** Files the agent rated below this review level are hidden; files without a rating stay. 1 hides nothing. */
+  minReview: ReviewLevel;
+  /** Globs over the worktree-relative path as typed, separated by commas or whitespace; matching files are hidden. */
+  hiddenGlobs: string;
+};
+
+export const DEFAULT_GRAPH_FILTER: GraphFilter = { minReview: 1, hiddenGlobs: "" };
 
 function roundedSize(size: PopupSize): PopupSize {
   return { width: Math.round(size.width), height: Math.round(size.height) };
@@ -105,6 +125,13 @@ export const AI_LANGUAGE_PRESETS = ["German", "English", "French", "Spanish", "I
  * the same file (`src-tauri/src/preferences.rs`). Free text; an empty prompt switches the addition off.
  */
 export const DEFAULT_SYSTEM_PROMPT = responseStylePrompt.trim();
+
+/**
+ * Model and effort the agent switches to while it writes the architecture diagram, as agent config values: a model
+ * option such as `opus` or a full model ID, an effort level such as `high`. The chat's own choice applies again after.
+ */
+export type GraphAgent = { model: string; effort: string };
+export const DEFAULT_GRAPH_AGENT: GraphAgent = { model: "claude-opus-5-5", effort: "high" };
 
 /** The kinds of guardrail that live in a folder of their own, set below. */
 export type GuardrailDirKind = "rule" | "skill" | "agent" | "adr";
@@ -143,21 +170,21 @@ const BACKEND_DIRS = "{backend,server,api,*-api,*-backend,*-server}";
  * Hunt icons from tools/icons/custom; other files keep the icon their name gives them (see diff/fileIcons.ts).
  */
 export const DEFAULT_ICON_RULES: IconRule[] = [
-  { glob: `**/${FRONTEND_DIRS}/**/*.service.ts`, icon: "angular-service" },
-  { glob: `**/${FRONTEND_DIRS}/**/*.guard.ts`, icon: "angular-guard" },
-  { glob: `**/${FRONTEND_DIRS}/**/*.pipe.ts`, icon: "angular-pipe" },
-  { glob: `**/${FRONTEND_DIRS}/**/*.module.ts`, icon: "angular" },
-  { glob: `**/${BACKEND_DIRS}/**/*.service.ts`, icon: "nest-service" },
-  { glob: `**/${BACKEND_DIRS}/**/*.guard.ts`, icon: "nest-guard" },
-  { glob: `**/${BACKEND_DIRS}/**/*.pipe.ts`, icon: "nest-pipe" },
-  { glob: `**/${BACKEND_DIRS}/**/*.module.ts`, icon: "nest" },
-  { glob: "*.component.ts", icon: "angular-component" },
-  { glob: "*.directive.ts", icon: "angular-directive" },
-  { glob: "*.controller.ts", icon: "nest-controller" },
-  { glob: "*.middleware.ts", icon: "nest-middleware" },
-  { glob: "*.decorator.ts", icon: "nest-decorator" },
-  { glob: "*.gateway.ts", icon: "nest-gateway" },
-  { glob: "*.filter.ts", icon: "nest-filter" },
+  { glob: `**/${FRONTEND_DIRS}/**/*.service.ts`, icon: "angular2service" },
+  { glob: `**/${FRONTEND_DIRS}/**/*.guard.ts`, icon: "angular2guard" },
+  { glob: `**/${FRONTEND_DIRS}/**/*.pipe.ts`, icon: "angular2pipe" },
+  { glob: `**/${FRONTEND_DIRS}/**/*.module.ts`, icon: "angular2module" },
+  { glob: `**/${BACKEND_DIRS}/**/*.service.ts`, icon: "nestservice" },
+  { glob: `**/${BACKEND_DIRS}/**/*.guard.ts`, icon: "nestguard" },
+  { glob: `**/${BACKEND_DIRS}/**/*.pipe.ts`, icon: "nestpipe" },
+  { glob: `**/${BACKEND_DIRS}/**/*.module.ts`, icon: "nestmodule" },
+  { glob: "*.component.ts", icon: "angular2component" },
+  { glob: "*.directive.ts", icon: "angular2directive" },
+  { glob: "*.controller.ts", icon: "nestcontroller" },
+  { glob: "*.middleware.ts", icon: "nestmiddleware" },
+  { glob: "*.decorator.ts", icon: "nestdecorator" },
+  { glob: "*.gateway.ts", icon: "nestgateway" },
+  { glob: "*.filter.ts", icon: "nestfilter" },
   { glob: "*.page.ts", icon: "page" },
   { glob: "*.{dialog,modal}.ts", icon: "dialog" },
   { glob: "*.{store,state,actions,reducer,effects,selectors}.ts", icon: "store" },
@@ -190,8 +217,8 @@ export const DEFAULT_ICON_RULES: IconRule[] = [
   { glob: "*.{util,utils,utilities,helper,helpers}.ts", icon: "utils" },
   { glob: "*.{query,queries}.ts", icon: "queries" },
   { glob: "*.{gql,graphql}.ts", icon: "graphql" },
-  { glob: "*.config.ts", icon: "typescript-config" },
-  { glob: "*.{spec-sqlite,spec-postgresql}.ts", icon: "typescript-test" },
+  { glob: "*.config.ts", icon: "tsconfig" },
+  { glob: "*.{spec-sqlite,spec-postgresql}.ts", icon: "testtsfiles" },
 ];
 
 /** Trims both fields; a rule may be incomplete while it is being typed (an empty glob matches nothing). */
@@ -203,15 +230,49 @@ export function isIconRulesDefault(rules: readonly IconRule[]): boolean {
   return rules.length === DEFAULT_ICON_RULES.length && rules.every((rule, index) => rule.glob === DEFAULT_ICON_RULES[index].glob && rule.icon === DEFAULT_ICON_RULES[index].icon);
 }
 
+/**
+ * One folder icon rule: folders whose worktree-relative path matches `glob` (see diff/glob.ts) get the vendored
+ * folder icon named `icon`, a closed `folder_*` icon whose open state is `<icon>_open` (see diff/fileIcons.ts). With
+ * `includeSubfolders` every folder below a matching one gets the icon too. The first matching rule wins.
+ */
+export type FolderIconRule = { glob: string; icon: string; includeSubfolders: boolean };
+
+/** Folders that hold a user interface take the icon Atom gives `frontend` and `client`; their subfolders keep their own. */
+export const DEFAULT_FOLDER_ICON_RULES: FolderIconRule[] = [{ glob: "{ui,admin-ui}", icon: "folder_client", includeSubfolders: false }];
+
+function normalizeFolderIconRule(rule: FolderIconRule): FolderIconRule {
+  return { ...normalizeIconRule(rule), includeSubfolders: rule.includeSubfolders };
+}
+
+export function isFolderIconRulesDefault(rules: readonly FolderIconRule[]): boolean {
+  return (
+    rules.length === DEFAULT_FOLDER_ICON_RULES.length &&
+    rules.every((rule, index) => {
+      const fallback = DEFAULT_FOLDER_ICON_RULES[index];
+      return rule.glob === fallback.glob && rule.icon === fallback.icon && rule.includeSubfolders === fallback.includeSubfolders;
+    })
+  );
+}
+
 type SettingsState = {
   panes: Record<PaneKey, PaneSettings>;
   changelistView: ChangelistView;
+  diffLineScope: DiffLineScope;
+  /** Sessions whose changelist lists every change, keyed by session id; every other session lists only its own. */
+  changelistScopes: Record<string, ChangelistScope>;
+  /** Changed files unchecked in the dependency graph's file filter, keyed by session id; every other file is shown. */
+  graphExcludedFiles: Record<string, string[]>;
   popupSizes: Record<PopupKey, PopupSize>;
+  /** How far the guardrail chat's bottom right corner sits from its default place above the "Guardrail" button. */
+  guardrailChatOffset: PopupOffset;
+  graphFilter: GraphFilter;
   aiLanguage: string;
   /** System prompt addition for every agent session; see `DEFAULT_SYSTEM_PROMPT`. */
   systemPrompt: string;
+  graphAgent: GraphAgent;
   guardrailDirs: GuardrailDirs;
   iconRules: IconRule[];
+  folderIconRules: FolderIconRule[];
   /** Whether the chat shows the session summary box above the messages. */
   showSummary: boolean;
   /** Whether deleting a session asks for confirmation first; the dialog's "Don't ask again" turns it off. */
@@ -220,13 +281,21 @@ type SettingsState = {
   resetPane: (pane: PaneKey) => void;
   resetPanes: () => void;
   setChangelistView: (view: ChangelistView) => void;
+  setDiffLineScope: (scope: DiffLineScope) => void;
+  setChangelistScope: (sessionId: string, scope: ChangelistScope) => void;
+  setGraphExcludedFiles: (sessionId: string, paths: string[]) => void;
   setPopupSize: (key: PopupKey, size: PopupSize) => void;
+  setGuardrailChatOffset: (offset: PopupOffset) => void;
+  setGraphFilter: (patch: Partial<GraphFilter>) => void;
   setAiLanguage: (language: string) => void;
   setSystemPrompt: (prompt: string) => void;
+  setGraphAgent: (key: keyof GraphAgent, value: string) => void;
   setGuardrailDir: (kind: GuardrailDirKind, dir: string) => void;
   resetGuardrailDirs: () => void;
   setIconRules: (rules: IconRule[]) => void;
   resetIconRules: () => void;
+  setFolderIconRules: (rules: FolderIconRule[]) => void;
+  resetFolderIconRules: () => void;
   toggleSummary: () => void;
   setConfirmSessionDelete: (confirm: boolean) => void;
 };
@@ -251,11 +320,18 @@ const VERSION_7_CHAT_LINE_HEIGHT = 1.7;
 export type PersistedState = {
   panes?: Partial<Record<PaneKey, Partial<PaneSettings>>>;
   changelistView?: ChangelistView;
+  diffLineScope?: DiffLineScope;
+  changelistScopes?: Record<string, ChangelistScope>;
+  graphExcludedFiles?: Record<string, string[]>;
   popupSizes?: Partial<Record<PopupKey, PopupSize>>;
+  guardrailChatOffset?: PopupOffset;
+  graphFilter?: GraphFilter;
   aiLanguage?: string;
   systemPrompt?: string;
+  graphAgent?: Partial<GraphAgent>;
   guardrailDirs?: Partial<GuardrailDirs>;
   iconRules?: IconRule[];
+  folderIconRules?: FolderIconRule[];
   showSummary?: boolean;
   confirmSessionDelete?: boolean;
 };
@@ -305,7 +381,7 @@ function withDefaults(panes: Partial<Record<PaneKey, Partial<PaneSettings>>> | u
 }
 
 /** Current version of the persisted shape; `migrateSettings` brings older ones up to date. */
-export const SETTINGS_VERSION = 8;
+export const SETTINGS_VERSION = 9;
 
 /** Shape persisted up to version 6, which kept one field per resizable popup. */
 type Version6State = PersistedState & { usagesPopupSize?: PopupSize; fileSearchDialogSize?: PopupSize; subChatPopoverSize?: PopupSize };
@@ -326,13 +402,47 @@ function gatherPopupSizes(stored: Version6State): PersistedState {
   return { ...rest, popupSizes };
 }
 
+/** Catppuccin icon names the default icon rules used up to version 8, mapped to their Atom Material counterparts. */
+const CATPPUCCIN_TO_ATOM_ICONS: Record<string, string> = {
+  "angular-service": "angular2service",
+  "angular-guard": "angular2guard",
+  "angular-pipe": "angular2pipe",
+  angular: "angular2module",
+  "angular-component": "angular2component",
+  "angular-directive": "angular2directive",
+  "nest-service": "nestservice",
+  "nest-guard": "nestguard",
+  "nest-pipe": "nestpipe",
+  nest: "nestmodule",
+  "nest-controller": "nestcontroller",
+  "nest-middleware": "nestmiddleware",
+  "nest-decorator": "nestdecorator",
+  "nest-gateway": "nestgateway",
+  "nest-filter": "nestfilter",
+  "typescript-config": "tsconfig",
+  "typescript-test": "testtsfiles",
+};
+
+/** Points icon rules that name a Catppuccin icon of the old default rules at the Atom Material icon that replaced it. */
+function renameCatppuccinIcons(stored: PersistedState): PersistedState {
+  if (!stored.iconRules) return stored;
+  return { ...stored, iconRules: stored.iconRules.map((rule) => ({ ...rule, icon: CATPPUCCIN_TO_ATOM_ICONS[rule.icon] ?? rule.icon })) };
+}
+
 /**
  * Brings a persisted state of an earlier `version` to the current shape: version 0 only knew one font size per pane,
  * versions 1 to 4 and 7 had defaults that are lifted to the current ones where the user never changed them, versions
- * 5 and 6 kept the size of each resizable popup in its own field. Fields a version did not have (`guardrailDirs`,
- * `showSummary`, `iconRules`, `confirmSessionDelete`, …) are filled in from the defaults by `mergeSettings`.
+ * 5 and 6 kept the size of each resizable popup in its own field, versions up to 8 named Catppuccin icons in their icon
+ * rules. Fields a version did not have (`guardrailDirs`, `showSummary`, `iconRules`, `folderIconRules`,
+ * `confirmSessionDelete`, `diffLineScope`, `changelistScopes`, `graphExcludedFiles`, …) are filled in from the defaults
+ * by `mergeSettings`.
  */
 export function migrateSettings(persisted: unknown, version: number): PersistedState {
+  if (version >= 9) return persisted as PersistedState;
+  return renameCatppuccinIcons(migrateToVersion8(persisted, version));
+}
+
+function migrateToVersion8(persisted: unknown, version: number): PersistedState {
   if (version >= 8) return persisted as PersistedState;
   if (version >= 7) {
     const stored = persisted as PersistedState;
@@ -365,12 +475,13 @@ export function migrateSettings(persisted: unknown, version: number): PersistedS
  * Layers the persisted state over `current` (the defaults with the actions). Panes, guardrail folders and popup sizes
  * gain entries over time, so stored ones are layered over the defaults per key instead of replacing them.
  */
-export function mergeSettings<T extends Pick<SettingsState, "panes" | "guardrailDirs" | "popupSizes">>(persisted: unknown, current: T): T {
+export function mergeSettings<T extends Pick<SettingsState, "panes" | "graphAgent" | "guardrailDirs" | "popupSizes">>(persisted: unknown, current: T): T {
   const stored = persisted as PersistedState | undefined;
   return {
     ...current,
     ...stored,
     panes: withDefaults(stored?.panes),
+    graphAgent: { ...DEFAULT_GRAPH_AGENT, ...stored?.graphAgent },
     guardrailDirs: { ...DEFAULT_GUARDRAIL_DIRS, ...stored?.guardrailDirs },
     popupSizes: withDefaultPopupSizes(stored?.popupSizes),
   };
@@ -382,11 +493,18 @@ export const useSettingsStore = create<SettingsState>()(
     (set) => ({
       panes: DEFAULT_PANES,
       changelistView: "tree",
+      diffLineScope: "all",
+      changelistScopes: {},
+      graphExcludedFiles: {},
       popupSizes: DEFAULT_POPUP_SIZES,
+      guardrailChatOffset: { x: 0, y: 0 },
+      graphFilter: DEFAULT_GRAPH_FILTER,
       aiLanguage: DEFAULT_AI_LANGUAGE,
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
+      graphAgent: DEFAULT_GRAPH_AGENT,
       guardrailDirs: DEFAULT_GUARDRAIL_DIRS,
       iconRules: DEFAULT_ICON_RULES,
+      folderIconRules: DEFAULT_FOLDER_ICON_RULES,
       showSummary: true,
       confirmSessionDelete: true,
       setPaneSetting: (pane, key, value) =>
@@ -405,9 +523,27 @@ export const useSettingsStore = create<SettingsState>()(
       resetPane: (pane) => set((state) => ({ panes: { ...state.panes, [pane]: DEFAULT_PANES[pane] } })),
       resetPanes: () => set({ panes: DEFAULT_PANES }),
       setChangelistView: (changelistView) => set({ changelistView }),
+      setDiffLineScope: (diffLineScope) => set({ diffLineScope }),
+      setChangelistScope: (sessionId, scope) =>
+        set((state) => {
+          const { [sessionId]: _previous, ...rest } = state.changelistScopes;
+          return { changelistScopes: scope === "all" ? { ...rest, [sessionId]: scope } : rest };
+        }),
+      setGraphExcludedFiles: (sessionId, paths) =>
+        set((state) => {
+          const { [sessionId]: _previous, ...rest } = state.graphExcludedFiles;
+          return { graphExcludedFiles: paths.length ? { ...rest, [sessionId]: [...paths].sort() } : rest };
+        }),
       setPopupSize: (key, size) => set((state) => ({ popupSizes: { ...state.popupSizes, [key]: roundedSize(size) } })),
+      setGuardrailChatOffset: (offset) => set({ guardrailChatOffset: { x: Math.round(offset.x), y: Math.round(offset.y) } }),
+      setGraphFilter: (patch) =>
+        set((state) => {
+          const next = { ...state.graphFilter, ...patch };
+          return { graphFilter: { ...next, hiddenGlobs: next.hiddenGlobs.trim() } };
+        }),
       setAiLanguage: (language) => set((state) => (language.trim() ? { aiLanguage: language.trim() } : state)),
       setSystemPrompt: (prompt) => set({ systemPrompt: prompt.trim() }),
+      setGraphAgent: (key, value) => set((state) => (value.trim() ? { graphAgent: { ...state.graphAgent, [key]: value.trim() } } : state)),
       setGuardrailDir: (kind, dir) =>
         set((state) => {
           const normalized = normalizeGuardrailDir(dir);
@@ -416,6 +552,8 @@ export const useSettingsStore = create<SettingsState>()(
       resetGuardrailDirs: () => set({ guardrailDirs: DEFAULT_GUARDRAIL_DIRS }),
       setIconRules: (rules) => set({ iconRules: rules.map(normalizeIconRule) }),
       resetIconRules: () => set({ iconRules: DEFAULT_ICON_RULES }),
+      setFolderIconRules: (rules) => set({ folderIconRules: rules.map(normalizeFolderIconRule) }),
+      resetFolderIconRules: () => set({ folderIconRules: DEFAULT_FOLDER_ICON_RULES }),
       toggleSummary: () => set((state) => ({ showSummary: !state.showSummary })),
       setConfirmSessionDelete: (confirmSessionDelete) => set({ confirmSessionDelete }),
     }),
@@ -425,11 +563,18 @@ export const useSettingsStore = create<SettingsState>()(
       partialize: (state) => ({
         panes: state.panes,
         changelistView: state.changelistView,
+        diffLineScope: state.diffLineScope,
+        changelistScopes: state.changelistScopes,
+        graphExcludedFiles: state.graphExcludedFiles,
         popupSizes: state.popupSizes,
+        guardrailChatOffset: state.guardrailChatOffset,
+        graphFilter: state.graphFilter,
         aiLanguage: state.aiLanguage,
         systemPrompt: state.systemPrompt,
+        graphAgent: state.graphAgent,
         guardrailDirs: state.guardrailDirs,
         iconRules: state.iconRules,
+        folderIconRules: state.folderIconRules,
         showSummary: state.showSummary,
         confirmSessionDelete: state.confirmSessionDelete,
       }),

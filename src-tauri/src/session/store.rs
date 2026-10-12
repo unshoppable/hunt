@@ -152,7 +152,7 @@ impl SelectionContext {
                 task, self.path
             ),
             None => format!(
-                "\n## Selected code\nThe user opened this chat from a selection in the diff of `{}` (lines {}-{}, current working-tree version). \
+                "\n## Selected code\nThe user opened this chat from a selection in `{}` (lines {}-{}, current working-tree version). \
 Questions refer to this selection unless stated otherwise.\n```\n{}\n```\n",
                 self.path, self.start_line, self.end_line, self.text
             ),

@@ -1,7 +1,5 @@
 import { commands } from "../ipc/commands";
-import { baseName } from "../ui/path";
 import type { GraphEdge } from "../ipc/types";
-import { roleOfFile, roleOfNames } from "./roles";
 
 /** Files whose import statements the diagram reads; `resolve_imports` only knows TypeScript/JavaScript specifiers. */
 const SCRIPT_EXTENSIONS = new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs"]);
@@ -63,30 +61,13 @@ function importedNames(clause: string, isStatementType: boolean): ImportedName[]
   return names.filter(({ name }) => /^\w+$/.test(name));
 }
 
-/**
- * What the import of `target` is for, as far as the import statement and the target's file name tell: `types only`
- * for type imports, the role named by the file (`business logic` for `user.service.ts`), else the role the imported
- * names imply (`error handling` for `NotFoundException`, `hook` for `useUsers`). Never a symbol or file name.
- */
-export function importLabel(statement: Pick<ImportStatement, "names" | "isTypeOnly">, target: string): string {
-  if (statement.isTypeOnly) return "types only";
-  return roleOfFile(target) ?? roleOfNames(statement.names, target);
-}
-
-/** Every imported name in full, for the edge's hover text, with a note that this is all the import statement tells. */
-export function importDescription(names: string[], target: string): string {
-  const file = baseName(target);
-  const imports = names.length ? `Imports ${names.join(", ")} from ${file}.` : `Imports ${file} without naming anything from it.`;
-  return `${imports} Read from the import statement; update the diagram for the agent's explanation of this dependency.`;
-}
-
 export function isScriptFile(path: string): boolean {
   return SCRIPT_EXTENSIONS.has(path.split(".").pop() ?? "");
 }
 
 /**
- * Edges for the relative imports of `sources` that point at one of `targets`, read from the worktree. Files that
- * cannot be read (deleted, binary) contribute nothing.
+ * Unlabeled edges for the relative imports of `sources` that point at one of `targets`, read from the worktree; only
+ * the agent knows what a dependency is used for. Files that cannot be read (deleted, binary) contribute nothing.
  */
 export async function collectImportEdges(sessionId: string, sources: string[], targets: Set<string>): Promise<GraphEdge[]> {
   const perSource = await Promise.all(
@@ -104,13 +85,7 @@ export async function collectImportEdges(sessionId: string, sources: string[], t
         source,
         statements.map((statement) => statement.specifier),
       );
-      const edges: GraphEdge[] = [];
-      statements.forEach((statement, index) => {
-        const target = resolved[index];
-        if (!target || target === source || !targets.has(target)) return;
-        edges.push({ source, target, label: importLabel(statement, target), description: importDescription(statement.names, target) });
-      });
-      return edges;
+      return resolved.filter((target): target is string => target !== null && target !== source && targets.has(target)).map((target) => ({ source, target }));
     }),
   );
   return perSource.flat();

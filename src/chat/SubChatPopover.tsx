@@ -1,20 +1,21 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import type { SelectionRequest } from "../diff/selectionContext";
 import type { SelectionContext } from "../ipc/types";
 import { useAgentDefaultsStore } from "../state/agentDefaults";
 import { useSettingsStore } from "../state/settings";
 import { agentSetupOf, useHuntStore } from "../state/store";
 import { DeleteSessionDialog } from "../sessions/DeleteSessionDialog";
-import { findSelectOption, listChoices } from "./configOptions";
+import { findSelectOption, listChoiceOptions } from "./configOptions";
 import { MessageList } from "./MessageList";
 import { PillSelect } from "./PillSelect";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { appendPromptTexts, QueuedPrompts, useReturnedPrompts } from "./QueuedPrompts";
-import { describeLines, describeSelection, SelectionCard } from "./SelectionCard";
+import { ContextCard, describeLines, describeSelection, SelectionCard } from "./SelectionCard";
 import { useFollowScroll } from "./useFollowScroll";
 import { titleFromPrompt } from "../sessions/sessionLabels";
 import { DANGER_CLEAR_BUTTON, GHOST_BUTTON_XS, ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SEND_BUTTON } from "../ui/buttons";
 import { CloseIcon, TrashIcon } from "../ui/icons";
+import { trackDrag } from "../ui/pointerDrag";
 import { ResizeGrips } from "../ui/ResizeGrips";
 import { useAutoGrow } from "../ui/useAutoGrow";
 import { usePopupSize } from "../ui/usePopupSize";
@@ -23,6 +24,11 @@ import { useViewportSize } from "../ui/useViewportSize";
 const MIN_SIZE = { width: 420, height: 240 };
 /** Space the popover keeps from the window's edges. */
 const MARGIN = 12;
+/**
+ * Floating surfaces of the window (popovers, menus, dialogs) and buttons that toggle the popover; a mouse press on
+ * one of them does not close it.
+ */
+const FLOATING_SURFACE = '[role="dialog"], [role="menu"], [role="listbox"], [data-popover-toggle]';
 
 /** The popover a code view shows: a new sub chat about `request`, or the existing sub session `subSessionId` about it. */
 export type ShownSubChat = { key: number; request: SelectionRequest; subSessionId?: string };
@@ -69,23 +75,29 @@ type SubChatPopoverProps = {
   title?: string;
   /** Placeholder of the first question's textarea. */
   placeholder?: string;
+  /** Context the new sub chat's agent gets besides the question, shown as a card until the first question is sent. */
+  context?: { label: string; text: string };
+  /** Text the first question's textarea starts with; the caret is placed after it. */
+  initialText?: string;
   /** Whether the window has the sidebar the "Open in sidebar" button switches to; off in secondary windows. */
   hasSidebar?: boolean;
+  /** Called after the user moved or resized the popover, with how far its anchored corner now sits from the anchor. */
+  onPlaced?: (offset: { x: number; y: number }) => void;
   onClose: () => void;
 };
 
 /**
  * Floating chat next to a code selection. A new sub session is created with the first question, takes over the
  * parent chat's agent settings and mode, and then behaves like any session: it runs in the background, shows up
- * under its parent in the sidebar and can be opened there in full. Closing the popover keeps the session; the
- * glyph on the selection's first line reopens it with the whole conversation. The model pill in the footer picks the
- * model of a new sub chat or switches the model of the existing one. The popover is resized by dragging
- * its right or bottom edge (the size is remembered across sessions); until it is dragged taller, it is as tall as
- * its content, up to the remembered height. A question sent while a turn runs is queued for the end of that turn.
+ * under its parent in the sidebar and can be opened there in full. Escape and a mouse press outside every floating
+ * surface close the popover; closing keeps the session, and the glyph on the selection's first line reopens it with
+ * the whole conversation. The model pill in the footer picks the model of a new sub chat or switches the model of the
+ * existing one. The popover is resized by dragging its right or bottom edge (the size is remembered across sessions);
+ * until it is dragged taller, it is as tall as its content, up to the remembered height. A question sent while a turn runs is queued for the end of that turn.
  */
-export function SubChatPopover({ parentSessionId, request, subSessionId: initialSubSessionId, title, placeholder, hasSidebar = true, onClose }: SubChatPopoverProps) {
+export function SubChatPopover({ parentSessionId, request, subSessionId: initialSubSessionId, title, placeholder, context, initialText = "", hasSidebar = true, onPlaced, onClose }: SubChatPopoverProps) {
   const [subSessionId, setSubSessionId] = useState<string | null>(initialSubSessionId ?? null);
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText);
   const [isCreating, setIsCreating] = useState(false);
   /** Model picked for a sub chat that does not exist yet; `null` keeps the parent's model. */
   const [pickedModel, setPickedModel] = useState<string | null>(null);
@@ -139,14 +151,70 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
     max: { width: viewport.width - 2 * MARGIN, height: viewport.height - 2 * MARGIN },
     room: (rendered) => ({ left: left - MARGIN, top: top - MARGIN, right: viewport.width - MARGIN - left - rendered.width, bottom: viewport.height - MARGIN - top - rendered.height }),
   });
-  // The popover opens at the anchor, moved up or left as far as its remembered size needs to stay inside the window's
-  // margin, so that it can grow with its content without moving. From there a dragged left or top edge moves it by `shift`.
-  const [origin] = useState(() => ({
-    x: Math.max(MARGIN, Math.min(request.anchor.x, window.innerWidth - size.width - MARGIN)),
-    y: Math.max(MARGIN, Math.min(request.anchor.y, window.innerHeight - size.height - MARGIN)),
-  }));
-  const left = Math.max(MARGIN, Math.min(origin.x + shift.x, viewport.width - size.width - MARGIN));
-  const top = Math.max(MARGIN, Math.min(origin.y + shift.y, viewport.height - size.height - MARGIN));
+  // The popover opens with its anchored corner at the anchor, its remembered size counted from there, moved as far as
+  // needed to stay inside the window's margin, so that it can grow with its content without moving. From there a
+  // dragged left or top edge moves it by `shift`.
+  const isBottomRight = request.anchor.corner === "bottomRight";
+  const [origin] = useState(() => {
+    const x = isBottomRight ? request.anchor.x - size.width : request.anchor.x;
+    const y = isBottomRight ? request.anchor.y - size.height : request.anchor.y;
+    return {
+      x: Math.max(MARGIN, Math.min(x, window.innerWidth - size.width - MARGIN)),
+      y: Math.max(MARGIN, Math.min(y, window.innerHeight - size.height - MARGIN)),
+    };
+  });
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  // A popover as tall as its content may be moved down as far as its rendered height, not its remembered one, allows.
+  const [renderedHeight, setRenderedHeight] = useState(size.height);
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    setRenderedHeight(root.offsetHeight);
+    const observer = new ResizeObserver(() => setRenderedHeight(root.offsetHeight));
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, []);
+  // A bottom-anchored popover as tall as its content keeps its bottom edge in place and grows upwards; `slack` is the
+  // remembered height its content does not use yet.
+  const slack = isBottomRight && !isHeightSet ? Math.max(0, size.height - renderedHeight) : 0;
+  const latestSlack = useRef(slack);
+  // A dragged height drops the slack; the offset takes it over so that the popover does not jump.
+  useLayoutEffect(() => {
+    if (!isHeightSet || !latestSlack.current) return;
+    const taken = latestSlack.current;
+    setOffset((current) => ({ x: current.x, y: current.y + taken }));
+  }, [isHeightSet]);
+  useLayoutEffect(() => {
+    latestSlack.current = slack;
+  });
+  const left = Math.max(MARGIN, Math.min(origin.x + offset.x + shift.x, viewport.width - size.width - MARGIN));
+  const top = Math.max(MARGIN, Math.min(origin.y + slack + offset.y + shift.y, viewport.height - (isHeightSet ? size.height : renderedHeight) - MARGIN));
+  const height = isHeightSet ? size.height : renderedHeight;
+  const latestPlace = useRef({ left, top, shift, slack, height });
+  latestPlace.current = { left, top, shift, slack, height };
+
+  /** Hands `onPlaced` the anchored corner's distance from the anchor. */
+  function reportPlace() {
+    if (!onPlaced) return;
+    const { left: placedLeft, top: placedTop, height: placedHeight } = latestPlace.current;
+    const corner = isBottomRight ? { x: placedLeft + size.width, y: placedTop + placedHeight } : { x: placedLeft, y: placedTop };
+    onPlaced({ x: corner.x - request.anchor.x, y: corner.y - request.anchor.y });
+  }
+
+  /** Drags the popover by its header; on release the offset snaps to where it stopped at the window's margin. */
+  function beginMove(event: ReactPointerEvent<HTMLElement>) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+    const start = { ...offset };
+    trackDrag(
+      event,
+      (dx, dy) => setOffset({ x: start.x + dx, y: start.y + dy }),
+      () => {
+        const { left: endLeft, top: endTop, shift: moved, slack: unused } = latestPlace.current;
+        setOffset({ x: endLeft - origin.x - moved.x, y: endTop - origin.y - unused - moved.y });
+        reportPlace();
+      },
+    );
+  }
 
   async function resume() {
     if (!subSessionId || isResuming) return;
@@ -173,6 +241,8 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
 
   useEffect(() => {
     textareaRef.current?.focus();
+    textareaRef.current?.setSelectionRange(initialText.length, initialText.length);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // A pending permission disables the textarea; the popover itself takes the focus so its keys still arrive here.
@@ -281,6 +351,17 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
     return () => window.removeEventListener("keydown", onWindowKeyDown, true);
   }, [hasPermission, isConfirmingDelete]);
 
+  // A mouse press outside every floating surface closes the popover as well.
+  useEffect(() => {
+    if (isConfirmingDelete) return;
+    function onWindowMouseDown(event: MouseEvent) {
+      if (event.target instanceof Element && event.target.closest(FLOATING_SURFACE)) return;
+      onEscapeRef.current();
+    }
+    window.addEventListener("mousedown", onWindowMouseDown, true);
+    return () => window.removeEventListener("mousedown", onWindowMouseDown, true);
+  }, [isConfirmingDelete]);
+
   function onTextareaKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -291,7 +372,8 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   const lines = describeLines(request.selection);
   /** A stopped sub session has nothing to show between the header and the footer. */
   const showsSelection = !subSessionId && !title;
-  const hasBody = showsSelection || Boolean(chat && (chat.isLoading || chat.items.length || chat.permission || chat.error)) || Boolean(error);
+  const showsContext = !subSessionId && Boolean(context?.text);
+  const hasBody = showsSelection || showsContext || Boolean(chat && (chat.isLoading || chat.items.length || chat.permission || chat.error)) || Boolean(error);
 
   return (
     <div
@@ -304,7 +386,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
       onMouseDown={(event) => event.stopPropagation()}
       className="chat fixed z-50 flex flex-col overflow-hidden rounded-xl border border-neutral-600 bg-(--surface-chat) text-sm shadow-2xl shadow-black/50 outline-none"
     >
-      <header className="flex items-center gap-2 border-b border-(--line) pr-9 pl-12 py-2.5">
+      <header className="flex cursor-grab items-center gap-2 border-b border-(--line) pr-9 pl-12 py-2.5 select-none active:cursor-grabbing" onPointerDown={beginMove}>
         <span className="min-w-0 flex-1 truncate text-[13px] text-neutral-400" title={describeSelection(request.selection)}>
           {title ?? (
             <>
@@ -330,6 +412,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
       <div ref={scrollRef} className={`min-h-0 flex-1 overflow-y-auto px-12 ${hasBody ? "py-3" : ""}`}>
         <div ref={contentRef} className="flex flex-col gap-3">
           {showsSelection ? <SelectionCard selection={request.selection} isOpen label={lines} /> : null}
+          {showsContext && context ? <ContextCard label={context.label} text={context.text} /> : null}
           {chat?.isLoading ? <p className="text-neutral-500">Loading session…</p> : null}
           {chat ? <MessageList items={chat.items} plan={chat.plan} isBusy={chat.isBusy} isVerbose={false} basePath={parent?.worktreePath ?? ""} /> : null}
           {subSessionId && chat?.permission ? (
@@ -361,7 +444,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
               <PillSelect
                 title={modelOption.name}
                 value={model}
-                options={listChoices(modelOption).map((choice) => ({ id: choice.value, name: choice.name }))}
+                options={listChoiceOptions(modelOption)}
                 onChange={changeModel}
                 disabled={isCreating}
               />
@@ -398,7 +481,14 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
       {isConfirmingDelete && subSession ? (
         <DeleteSessionDialog question={`Delete sub session "${subSession.title}"?`} onConfirm={deleteSubSession} onClose={() => setIsConfirmingDelete(false)} />
       ) : null}
-      <ResizeGrips edges={{ left: true, top: true, right: true, bottom: true }} {...grips} />
+      <ResizeGrips
+        edges={{ left: true, top: true, right: true, bottom: true }}
+        {...grips}
+        onEnd={() => {
+          grips.onEnd();
+          reportPlace();
+        }}
+      />
     </div>
   );
 }

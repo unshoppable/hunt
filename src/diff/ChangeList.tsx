@@ -7,7 +7,7 @@ import { selectionChatsFor, useBusyChatIds } from "../ide/selectionChats";
 import { otherTouchers, type ChangeScope } from "./attribution";
 import { buildChangeTree, type FolderNode, type TreeNode } from "./changeTree";
 import { Checkbox, type CheckState } from "./Checkbox";
-import { folderIconUrl, useFileIconUrl } from "./fileIcons";
+import { useFileIconUrl, useFolderIconUrl } from "./fileIcons";
 import { useReviewDraftCount } from "../review/reviewComments";
 import { ReviewDialog } from "./ReviewDialog";
 import { ShelfList } from "./ShelfList";
@@ -19,6 +19,7 @@ import { STATUS_NAME_CLASS } from "./styles";
 import { AgentButton } from "../ui/AgentButton";
 import { ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
+import { SwapIcon } from "../ui/icons";
 
 type Tab = "changes" | "shelf";
 
@@ -64,6 +65,7 @@ export function ChangeList({
   onWorktreeChanged: () => void;
 }) {
   const fileIconUrl = useFileIconUrl();
+  const folderIconUrl = useFolderIconUrl();
   const view = useSettingsStore((state) => state.changelistView);
   const setView = useSettingsStore((state) => state.setChangelistView);
   const sessions = useHuntStore((state) => state.sessions);
@@ -213,7 +215,7 @@ export function ChangeList({
         className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
         title={`${file.path} (${file.status})`}
       >
-        <img src={fileIconUrl(file.path)} alt="" className="size-4 shrink-0" />
+        <img src={fileIconUrl(file.path)} alt="" className="size-[17px] shrink-0" />
         <span className={`truncate ${STATUS_NAME_CLASS[file.status] ?? "text-neutral-200"}`}>{name}</span>
         {renderOwnerBadge(file.path)}
         {showDirectory ? <span className="ml-auto truncate pl-1 text-[0.85em] text-neutral-600">{dirName(file.path)}</span> : null}
@@ -237,7 +239,7 @@ export function ChangeList({
         <Checkbox state={stateOf(folder.files)} onChange={() => toggleGroup(folder.files)} />
         <button type="button" onClick={() => toggleCollapsed(folder.path)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" title={folder.path}>
           <ChevronIcon expanded={!isCollapsed} />
-          <img src={folderIconUrl(baseName(folder.name), !isCollapsed)} alt="" className="size-4 shrink-0" />
+          <img src={folderIconUrl(folder.path, !isCollapsed)} alt="" className="size-[17px] shrink-0" />
           <span className="truncate text-neutral-300">{folder.name}</span>
           <span className="pl-1 text-[0.85em] text-neutral-600">{folder.files.length}</span>
         </button>
@@ -292,7 +294,8 @@ export function ChangeList({
                       : "Show only the changes made by this session"
                 }
               >
-                {scope.value === "own" ? `Show all${scope.hiddenCount ? ` (+${scope.hiddenCount})` : ""}` : scope.includesParent ? "This and parent" : "Only this session"}
+                <SwapIcon />
+                {scope.value === "own" ? `Show all${scope.hiddenCount ? ` (+${scope.hiddenCount})` : ""}` : "Show own"}
               </button>
             ) : null}
           </div>

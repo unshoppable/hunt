@@ -1,24 +1,32 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Background, Controls, ReactFlow, ReactFlowProvider, useEdgesState, useNodesState, type EdgeTypes, type NodeTypes } from "@xyflow/react";
+import { Background, Controls, MiniMap, ReactFlow, ReactFlowProvider, useEdgesState, useNodesState, useReactFlow, type EdgeTypes, type NodeTypes } from "@xyflow/react";
 import { openInEditorWindow } from "../ide/editorWindows";
 import { commands } from "../ipc/commands";
 import type { ArchitectureGraph, ChangeStat, ChangedFile, GraphEdge, GraphStatus } from "../ipc/types";
+import { splitGlobs } from "../diff/glob";
+import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { STATUS_BAR } from "../ui/bars";
+import { ChevronIcon, Spinner } from "../ui/icons";
+import { useHoverAnchor } from "../ui/hoverAnchor";
 import { errorText, useLoad } from "../ui/useLoad";
-import { PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
+import { useReviewCommentCounts } from "../review/reviewComments";
+import { PRIMARY_BUTTON_LG, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { DependencyCard, type OutgoingDependency } from "./DependencyCard";
 import { buildDiagram, litByHover, type DiagramNode } from "./diagram";
 import { openDiffWindow } from "./diffWindows";
 import { FileFilterPopover } from "./FileFilterPopover";
+import { GraphFilters } from "./GraphFilters";
 import { collectImportEdges } from "./imports";
 import { edgeMarker, layoutDiagram, type DependencyEdge, type DiagramFlowNode } from "./layout";
-import { AliasChip, DependencyEdgeView, FileNodeView, FolderGroupView, GraphActionsContext, REVIEW_LABELS, ReviewBars, type GraphActions } from "./nodes";
+import { AliasChip, CommentCountsContext, DependencyEdgeView, FileNodeView, FolderGroupView, REVIEW_LABELS, ReviewBars, fileNodeMinWidth } from "./nodes";
 import { parseGraph } from "./schema";
 
 const NODE_TYPES: NodeTypes = { file: FileNodeView, folder: FolderGroupView };
 const EDGE_TYPES: EdgeTypes = { dependency: DependencyEdgeView };
 const EMPTY_GRAPH: ArchitectureGraph = { nodes: [], edges: [] };
+/** How long the mouse rests on a file before it counts as hovered; crossing a file on the way to the card does not. */
+const FILE_HOVER_DELAY = 100;
 
 /**
  * Component diagram of the session's uncommitted changes: one node per changed file, sized by its changed lines,
@@ -26,16 +34,20 @@ const EMPTY_GRAPH: ArchitectureGraph = { nodes: [], edges: [] };
  * edges; hovering an edge shows what the dependency is used for, hovering a file lights up the files it depends on
  * and lists them in a card. Unchanged files the agent added for context are dimmed, and files of the same folder
  * share a translucent group area. A click on a changed file opens its diff in a window of its own; the "Files" popover hides files
- * from the diagram. Path prefixes many files share are replaced by a term, explained in the legend above the footer.
+ * from the diagram, the relevance and glob filters beside it hide files by the agent's review rating and by path. Directories read as their module and a shortened folder path, the full path shows on hover; the
+ * legend above the footer lists the modules' root folders.
  */
 export function GraphPanel({ sessionId }: { sessionId: string }) {
   const graphVersion = useHuntStore((state) => state.chats[sessionId]?.graphVersion ?? 0);
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
   const isBusy = useHuntStore((state) => state.chats[sessionId]?.isBusy ?? false);
+  const isGeneratingGraph = useHuntStore((state) => state.chats[sessionId]?.isGeneratingGraph ?? false);
   const isLive = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId)?.isLive ?? false);
   const refreshGraph = useHuntStore((state) => state.refreshGraph);
+  const graphFilter = useSettingsStore((state) => state.graphFilter);
 
-  const [graph, setGraph] = useState<ArchitectureGraph | null>(null);
+  /** Undefined until `graph.json` was read, null when there is none. */
+  const [graph, setGraph] = useState<ArchitectureGraph | null | undefined>(undefined);
   const [problems, setProblems] = useState<string[]>([]);
   /** When the diagram was generated and whether files changed since; refetched with the diagram and with every edit. */
   const [status, setStatus] = useState<GraphStatus | null>(null);
@@ -43,12 +55,15 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
   const [stats, setStats] = useState<ChangeStat[]>([]);
   /** Edges read from the import statements of the changed files. */
   const [importEdges, setImportEdges] = useState<GraphEdge[]>([]);
-  /** Changed files unchecked in the filter popover; new files start checked. */
-  const [excluded, setExcluded] = useState<Set<string>>(() => new Set());
+  /** Changed files unchecked in the filter popover, remembered per session; new files start checked. */
+  const excludedPaths = useSettingsStore((state) => state.graphExcludedFiles[sessionId]);
+  const excluded = useMemo(() => new Set(excludedPaths), [excludedPaths]);
+  const setGraphExcludedFiles = useSettingsStore((state) => state.setGraphExcludedFiles);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** Path of the hovered file; the dependency card places itself next to its box. */
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  /** The hovered file; the dependency card places itself next to its box and stays while the mouse is on the card. */
+  const fileHover = useHoverAnchor<string>(FILE_HOVER_DELAY);
+  const hoveredId = fileHover.anchor?.key ?? null;
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
   const filterButtonRef = useRef<HTMLButtonElement>(null);
   const [showProblems, setShowProblems] = useState(false);
@@ -56,9 +71,9 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
   const [layoutVersion, setLayoutVersion] = useState(0);
   const [nodes, setNodes, onNodesChange] = useNodesState<DiagramFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<DependencyEdge>([]);
+  const commentCounts = useReviewCommentCounts(sessionId);
 
   useEffect(() => {
-    setExcluded(new Set());
     setIsFilterOpen(false);
   }, [sessionId]);
 
@@ -113,10 +128,23 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
     [sessionId, files, graph],
   );
 
-  const diagram = useMemo(() => buildDiagram(graph ?? EMPTY_GRAPH, importEdges, files, stats, excluded), [graph, importEdges, files, stats, excluded]);
+  // Opening the tab while there is no diagram yet generates one as soon as the agent is idle, once per visit.
+  const hasAutoGeneratedRef = useRef(false);
+  useEffect(() => {
+    if (graph !== null || !files.length || !isLive || isBusy || hasAutoGeneratedRef.current) return;
+    hasAutoGeneratedRef.current = true;
+    void refreshGraph(sessionId);
+  }, [graph, files, isLive, isBusy, refreshGraph, sessionId]);
+
+  const diagramFilter = useMemo(() => ({ minReview: graphFilter.minReview, hiddenGlobs: splitGlobs(graphFilter.hiddenGlobs) }), [graphFilter]);
+  const diagram = useMemo(
+    () => buildDiagram(graph ?? EMPTY_GRAPH, importEdges, files, stats, excluded, diagramFilter, fileNodeMinWidth),
+    [graph, importEdges, files, stats, excluded, diagramFilter],
+  );
+  const checkedCount = files.filter((file) => !excluded.has(file.path)).length;
 
   useLoad(
-    () => layoutDiagram(diagram),
+    (signal) => layoutDiagram(diagram, signal),
     {
       onValue: (flow) => {
         setNodes(flow.nodes);
@@ -155,20 +183,12 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
     return diagram.edges.filter((edge) => edge.source === hoveredId).map((edge) => ({ edge, target: byPath.get(edge.target) ?? null }));
   }, [hoveredId, diagram]);
 
-  const actions = useMemo<GraphActions>(
-    () => ({
-      openDiff: (node) => void openDiffWindow(sessionId, node.path),
-      openFile: (node) => void openInEditorWindow(sessionId, { path: node.path }),
-    }),
-    [sessionId],
-  );
-
   /** A changed file shows its diff; a context file has none and opens in the editor window instead. */
   const activate = (node: DiagramNode) => {
     if (node.isChanged) {
-      actions.openDiff(node);
+      void openDiffWindow(sessionId, node.path);
     } else {
-      actions.openFile(node);
+      void openInEditorWindow(sessionId, { path: node.path });
     }
   };
 
@@ -178,51 +198,79 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
   /** Files of the worktree changed after the agent wrote the diagram, so its nodes and edges no longer match the changes. */
   const isOutdated = Boolean(graph) && Boolean(status?.isOutdated);
   const generatedAt = status?.generatedAt ? new Date(status.generatedAt).toLocaleString() : null;
-  const hint = isGraphUnusable
-    ? "The agent's diagram does not match the schema and is left out; update the diagram to get its labels."
-    : isOutdated
-      ? "Files changed since the diagram was generated; update it to match the current changes."
-      : graph
-        ? "Hover a file to see what it depends on, click it to see its diff."
-        : "Edges show the imports between the changed files; generate the diagram for the agent's labels and context files.";
+  const hint = isGeneratingGraph
+    ? "The agent is generating the diagram; its labels, review ratings and context files appear when it is done."
+    : isGraphUnusable
+      ? "The agent's diagram does not match the schema and is left out; update the diagram to get its labels."
+      : isOutdated
+        ? "Files changed since the diagram was generated; update it to match the current changes."
+        : graph
+          ? null
+          : "Edges show the imports between the changed files; generate the diagram for the agent's labels, review ratings and context files.";
 
   const changedShown = diagram.nodes.filter((node) => node.isChanged).length;
   const contextShown = diagram.nodes.length - changedShown;
   const hasReviewRatings = diagram.nodes.some((node) => node.review);
+  const isRated = Boolean(graph?.nodes.some((node) => node.review));
 
   return (
-    <GraphActionsContext.Provider value={actions}>
-      <div className="flex h-full min-h-0 flex-col">
-        <div className="flex items-center gap-2 border-b border-(--line) px-3 py-2.5 text-[13px]">
-          <div className="relative">
-            <button ref={filterButtonRef} type="button" onClick={() => setIsFilterOpen((value) => !value)} className={SECONDARY_BUTTON_XS} title="Choose which changed files the diagram shows">
-              Files
-              <span className="text-neutral-400">
-                {diagram.hiddenCount ? `${files.length - diagram.hiddenCount}/${files.length}` : files.length}
-              </span>
-            </button>
-            {isFilterOpen ? <FileFilterPopover files={files} excluded={excluded} onChange={setExcluded} onClose={() => setIsFilterOpen(false)} anchorRef={filterButtonRef} /> : null}
-          </div>
-          {isOutdated ? (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center gap-3 border-b border-(--line) px-3 py-2.5 text-[13px]">
+        <div className="relative">
+          <button
+            ref={filterButtonRef}
+            type="button"
+            onClick={() => setIsFilterOpen((value) => !value)}
+            aria-haspopup="dialog"
+            aria-expanded={isFilterOpen}
+            className={SECONDARY_BUTTON_XS}
+            title="Choose which changed files the diagram shows"
+          >
+            Files
+            <span className="text-neutral-400">
+              {checkedCount < files.length ? `${checkedCount}/${files.length}` : files.length}
+            </span>
+            <ChevronIcon expanded className="size-3 text-neutral-400" />
+          </button>
+          {isFilterOpen ? (
+            <FileFilterPopover files={files} excluded={excluded} onChange={(next) => setGraphExcludedFiles(sessionId, [...next])} onClose={() => setIsFilterOpen(false)} anchorRef={filterButtonRef} />
+          ) : null}
+        </div>
+        <GraphFilters hasRatings={isRated} />
+        <span
+          className={`flex min-w-0 flex-1 items-center gap-2 ${isGeneratingGraph ? "text-neutral-400" : isGraphUnusable || isOutdated ? "text-amber-300/90" : "text-neutral-500"}`}
+          title={generatedAt ? `Diagram generated ${generatedAt}` : undefined}
+        >
+          {isGeneratingGraph ? <Spinner className="size-5 shrink-0" /> : null}
+          {hint ? <span className="truncate">{hint}</span> : null}
+        </span>
+        {graph ? (
+          isOutdated ? (
             <span
               className="shrink-0 rounded-md border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[12px] font-medium text-amber-300"
               title={generatedAt ? `Generated ${generatedAt}; files changed since.` : "Files changed since the diagram was generated."}
             >
               Outdated
             </span>
-          ) : null}
-          <span className={`min-w-0 flex-1 truncate ${isGraphUnusable || isOutdated ? "text-amber-300/90" : "text-neutral-500"}`} title={generatedAt ? `Diagram generated ${generatedAt}` : undefined}>
-            {hint}
-          </span>
-          <button type="button" disabled={!isLive || isBusy} onClick={() => void refreshGraph(sessionId)} className={PRIMARY_BUTTON_XS}>
-            {isBusy ? "Working…" : graph ? "Update diagram" : "Generate diagram"}
-          </button>
-        </div>
+          ) : (
+            <span
+              className="shrink-0 rounded-md border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[12px] font-medium text-emerald-300"
+              title={generatedAt ? `Generated ${generatedAt}; no files changed since.` : "No files changed since the diagram was generated."}
+            >
+              Up to date
+            </span>
+          )
+        ) : null}
+        <button type="button" disabled={!isLive || isBusy} onClick={() => void refreshGraph(sessionId)} className={PRIMARY_BUTTON_LG}>
+          {isGeneratingGraph ? "Generating…" : isBusy ? "Working…" : graph ? "Update diagram" : "Generate diagram"}
+        </button>
+      </div>
 
-        <div className="relative min-h-0 flex-1 overflow-hidden">
-          {error ? <p className="absolute inset-x-3 top-3 z-10 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-[13px] text-red-300">{error}</p> : null}
-          <ReactFlowProvider key={layoutVersion}>
-            {diagram.nodes.length ? (
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        {error ? <p className="absolute inset-x-3 top-3 z-10 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-[13px] text-red-300">{error}</p> : null}
+        <ReactFlowProvider key={layoutVersion}>
+          {diagram.nodes.length ? (
+            <CommentCountsContext value={commentCounts}>
               <ReactFlow
                 nodes={nodes}
                 edges={edges}
@@ -231,8 +279,8 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
                 nodeTypes={NODE_TYPES}
                 edgeTypes={EDGE_TYPES}
                 onNodeClick={(_event, node) => node.type === "file" && activate(node.data)}
-                onNodeMouseEnter={(_event, node) => node.type === "file" && setHoveredId(node.id)}
-                onNodeMouseLeave={() => setHoveredId(null)}
+                onNodeMouseEnter={(event, node) => node.type === "file" && fileHover.enter(node.id, event.currentTarget as HTMLElement)}
+                onNodeMouseLeave={(_event, node) => node.type === "file" && fileHover.leave()}
                 onEdgeMouseEnter={(_event, edge) => setHoveredEdgeId(edge.id)}
                 onEdgeMouseLeave={() => setHoveredEdgeId(null)}
                 fitView
@@ -242,67 +290,100 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
                 nodesDraggable={false}
                 nodesConnectable={false}
                 elementsSelectable={false}
+                zIndexMode="manual"
                 proOptions={{ hideAttribution: true }}
               >
                 <Background gap={24} color="#2f343d" />
                 <Controls showInteractive={false} />
+                <DiagramMiniMap />
               </ReactFlow>
-            ) : (
-              <div className="flex h-full items-center justify-center p-6 text-center text-sm text-neutral-500">
-                {files.length ? "Every changed file is hidden by the filter." : "No uncommitted changes. The diagram shows the changed files of this session once there are some."}
-              </div>
-            )}
-            {hoveredNode && dependencies.length ? <DependencyCard node={hoveredNode} dependencies={dependencies} lit={lit} /> : null}
-          </ReactFlowProvider>
-        </div>
-
-        {showProblems && problems.length ? (
-          <ul className="max-h-32 overflow-auto border-t border-(--line) bg-amber-500/5 px-3 py-2.5 text-[13px] text-amber-200/90">
-            {problems.map((problem, position) => (
-              <li key={position}>{problem}</li>
-            ))}
-          </ul>
-        ) : null}
-
-        {diagram.legend.length ? (
-          <div className={`${STATUS_BAR} gap-4 font-mono text-neutral-500`}>
-            {diagram.legend.map((entry) => (
-              <span key={entry.alias} className="flex shrink-0 items-center gap-1.5" title={`${entry.alias} stands for ${entry.prefix}`}>
-                <AliasChip alias={entry.alias} />
-                <span>= {entry.prefix}</span>
-              </span>
-            ))}
-          </div>
-        ) : null}
-
-        <div className={`${STATUS_BAR} gap-3 text-neutral-500`}>
-          <span className="shrink-0">
-            {changedShown} changed{diagram.hiddenCount ? ` (${diagram.hiddenCount} hidden)` : ""} · {contextShown} for context · {diagram.edges.length} dependencies
-          </span>
-          <span className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden">
-            <span className="flex shrink-0 items-center gap-1">
-              <span className="inline-block h-2 w-3 rounded-sm border border-white/40 bg-(--surface-inset)" />
-              changed, sized by changed lines
-            </span>
-            <span className="flex shrink-0 items-center gap-1">
-              <span className="inline-block h-2 w-3 rounded-sm border border-dashed border-neutral-500 opacity-60" />
-              unchanged, for context
-            </span>
-            {hasReviewRatings ? (
-              <span className="flex shrink-0 items-center gap-1" title={`Review relevance rated by the agent: 1 ${REVIEW_LABELS[1]}, 4 ${REVIEW_LABELS[4]}.`}>
-                <ReviewBars level={1} className="size-3" />
-                <ReviewBars level={4} className="size-3" />
-                review relevance, red to green
-              </span>
-            ) : null}
-          </span>
-          {problems.length ? (
-            <button type="button" onClick={() => setShowProblems((value) => !value)} className="shrink-0 text-amber-300/90 hover:text-amber-200">
-              {problems.length} schema {problems.length === 1 ? "problem" : "problems"}
-            </button>
+            </CommentCountsContext>
+          ) : (
+            <div className="flex h-full items-center justify-center p-6 text-center text-sm text-neutral-500">
+              {files.length ? "Every changed file is hidden by the filters." : "No uncommitted changes. The diagram shows the changed files of this session once there are some."}
+            </div>
+          )}
+          {hoveredNode && dependencies.length ? (
+            <DependencyCard
+              node={hoveredNode}
+              dependencies={dependencies}
+              lit={lit}
+              onMouseEnter={fileHover.keep}
+              onMouseLeave={fileHover.leave}
+              onOpen={activate}
+            />
           ) : null}
-        </div>
+        </ReactFlowProvider>
       </div>
-    </GraphActionsContext.Provider>
+
+      {showProblems && problems.length ? (
+        <ul className="max-h-32 overflow-auto border-t border-(--line) bg-amber-500/5 px-3 py-2.5 text-[13px] text-amber-200/90">
+          {problems.map((problem, position) => (
+            <li key={position}>{problem}</li>
+          ))}
+        </ul>
+      ) : null}
+
+      {diagram.legend.length ? (
+        <div className={`${STATUS_BAR} gap-4 font-mono text-neutral-500`}>
+          {diagram.legend.map((entry) => (
+            <span key={entry.alias} className="flex shrink-0 items-center gap-1.5" title={`${entry.alias} stands for ${entry.prefix}`}>
+              <AliasChip alias={entry.alias} />
+              <span>= {entry.prefix}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      <div className={`${STATUS_BAR} gap-3 text-neutral-500`}>
+        <span className="shrink-0">
+          {changedShown} changed{diagram.hiddenCount ? ` (${diagram.hiddenCount} hidden)` : ""} · {contextShown} for context · {diagram.edges.length} dependencies
+        </span>
+        <span className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden">
+          <span className="flex shrink-0 items-center gap-1">
+            <span className="inline-block h-2 w-3 rounded-sm border border-white/40 bg-(--surface-inset)" />
+            changed, sized by changed lines
+          </span>
+          <span className="flex shrink-0 items-center gap-1">
+            <span className="inline-block h-2 w-3 rounded-sm border border-dashed border-neutral-500 opacity-60" />
+            unchanged, for context
+          </span>
+          {hasReviewRatings ? (
+            <span className="flex shrink-0 items-center gap-1" title={`Review relevance rated by the agent: 1 ${REVIEW_LABELS[1]}, 4 ${REVIEW_LABELS[4]}.`}>
+              <ReviewBars level={1} className="size-3" />
+              <ReviewBars level={4} className="size-3" />
+              review relevance, red to green
+            </span>
+          ) : null}
+        </span>
+        {problems.length ? (
+          <button type="button" onClick={() => setShowProblems((value) => !value)} className="shrink-0 text-amber-300/90 hover:text-amber-200">
+            {problems.length} schema {problems.length === 1 ? "problem" : "problems"}
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
+}
+
+/** Overview of the whole diagram in the bottom-right corner: drag or scroll it to move and zoom the view, click to center there. */
+function DiagramMiniMap() {
+  const { getZoom, setCenter } = useReactFlow();
+  return (
+    <MiniMap<DiagramFlowNode>
+      pannable
+      zoomable
+      ariaLabel="Diagram overview"
+      nodeColor={miniMapNodeColor}
+      nodeBorderRadius={4}
+      maskStrokeWidth={1}
+      onClick={(_event, position) => void setCenter(position.x, position.y, { zoom: getZoom(), duration: 200 })}
+      className="overflow-hidden rounded-md border border-(--line)"
+    />
+  );
+}
+
+function miniMapNodeColor(node: DiagramFlowNode): string {
+  if (node.type === "folder") return "rgba(255, 255, 255, 0.05)";
+  return node.data.isChanged ? "#8a919e" : "#525967";
 }

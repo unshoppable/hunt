@@ -63,6 +63,24 @@ export const PREVIEW_EDITOR_OPTIONS: monaco.editor.IStandaloneEditorConstruction
   wordWrap: "off",
 };
 
+/**
+ * Scroll track of an editable code editor (a diff's right side, the IDE editor), split into two lanes: change marks
+ * (see `changeMark`) in the left one, the language server's markers in the right one, where Monaco always draws markers.
+ */
+export const SCROLL_TRACK_OPTIONS: monaco.editor.IEditorOptions = {
+  overviewRulerLanes: 2,
+  hideCursorInOverviewRuler: true,
+  overviewRulerBorder: false,
+};
+
+/** Green mark in the scroll track's left lane (see `SCROLL_TRACK_OPTIONS`) for the changed lines `startLine` to `endLine`. */
+export function changeMark(startLine: number, endLine: number): monaco.editor.IModelDeltaDecoration {
+  return {
+    range: { startLineNumber: startLine, startColumn: 1, endLineNumber: endLine, endColumn: 1 },
+    options: { overviewRuler: { color: "#2ea043", position: monaco.editor.OverviewRulerLane.Left } },
+  };
+}
+
 let isSetUp = false;
 
 /** Bundles Monaco with Vite instead of the loader's CDN default and registers the language workers; runs once. */

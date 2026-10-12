@@ -1,5 +1,6 @@
 import * as monaco from "monaco-editor";
 import { computeChangeBlocks, computeRevertEdit, type ChangeBlock } from "../diff/lineDiff";
+import { changeMark } from "../diff/monaco";
 import { markersFor, type Marker } from "./markerLayout";
 
 export type { Marker, MarkerKind } from "./markerLayout";
@@ -27,9 +28,10 @@ function toDecorations(marker: Marker): monaco.editor.IModelDeltaDecoration[] {
 }
 
 /**
- * WebStorm-style change stripes next to the line numbers of an editor: the editor's model is diffed against the
- * file's HEAD content (`headTextOf`), recomputed shortly after every edit and whenever the shown model changes.
- * A click on a stripe reports its marker; `revert` puts a block back to its HEAD lines.
+ * WebStorm-style change stripes next to the line numbers of an editor, each repeated as a mark in the scroll track
+ * (see `changeMark`): the editor's model is diffed against the file's HEAD content (`headTextOf`), recomputed shortly
+ * after every edit and whenever the shown model changes. A click on a stripe reports its marker; `revert` puts a block
+ * back to its HEAD lines.
  */
 export class ChangeMarkers {
   private readonly decorations: monaco.editor.IEditorDecorationsCollection;
@@ -168,7 +170,7 @@ export class ChangeMarkers {
     } else {
       this.currentBlocks = computeChangeBlocks(this.headText, model.getValue());
       this.currentMarkers = markersFor(this.currentBlocks, model.getLineCount());
-      this.decorations.set(this.currentMarkers.flatMap(toDecorations));
+      this.decorations.set([...this.currentMarkers.flatMap(toDecorations), ...this.currentMarkers.map((marker) => changeMark(marker.startLine, marker.endLine))]);
     }
     for (const listener of this.changeListeners) {
       listener();

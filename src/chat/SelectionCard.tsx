@@ -31,3 +31,16 @@ export function SelectionCard({ selection, isOpen = false, label }: { selection:
     </details>
   );
 }
+
+/** Collapsible card showing text a sub chat's agent gets as context besides the question, e.g. the parent chat's end. */
+export function ContextCard({ label, text }: { label: string; text: string }) {
+  return (
+    <details open className="overflow-hidden rounded-lg border border-(--line) bg-(--surface-inset)">
+      <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-1.5 text-[13px] text-neutral-400 marker:content-none hover:bg-(--row-hover)">
+        <span className="text-neutral-500">Context</span>
+        <span className="min-w-0 truncate text-neutral-300">{label}</span>
+      </summary>
+      <div className="max-h-48 overflow-auto whitespace-pre-wrap border-t border-(--line) px-3 py-2 text-[13px] leading-snug text-neutral-300">{text}</div>
+    </details>
+  );
+}

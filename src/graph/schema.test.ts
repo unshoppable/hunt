@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isThirdPartyPath, isWorktreePath, parseGraph, parseReviewLevel } from "./schema";
+import { isSymbolLikeLabel, isThirdPartyPath, isWorktreePath, parseGraph, parseReviewLevel } from "./schema";
 
 const valid = {
   nodes: [
-    { path: "src/state/store.ts", description: "Holds the sessions.", review: 4, reviewReason: "Central store every view reads." },
+    { path: "src/state/store.ts", review: 4, reviewReason: "Central store every view reads." },
     { path: "src/app/App.tsx", review: 2 },
   ],
   edges: [{ source: "src/app/App.tsx", target: "src/state/store.ts", label: "session state", description: "Reads the session list and the active session from the store." }],
@@ -44,7 +44,7 @@ describe("parseGraph", () => {
     const parsed = parseGraph(valid);
     expect(parsed.problems).toEqual([]);
     expect(parsed.graph.nodes).toEqual([
-      { path: "src/state/store.ts", description: "Holds the sessions.", review: 4, reviewReason: "Central store every view reads." },
+      { path: "src/state/store.ts", review: 4, reviewReason: "Central store every view reads." },
       { path: "src/app/App.tsx", review: 2 },
     ]);
     expect(parsed.graph.edges).toEqual(valid.edges);
@@ -97,11 +97,11 @@ describe("parseGraph", () => {
       ],
     });
     expect(parsed.graph.nodes.map((node) => node.path)).toEqual(["a.ts", "b.ts"]);
-    expect(parsed.graph.edges).toEqual([{ source: "a.ts", target: "b.ts", label: "depends on" }]);
+    expect(parsed.graph.edges).toEqual([{ source: "a.ts", target: "b.ts" }]);
     expect(parsed.problems).toHaveLength(5);
   });
 
-  it("replaces a label that names a symbol or file with the target's role", () => {
+  it("drops a label that names a symbol or file", () => {
     const parsed = parseGraph({
       nodes: [],
       edges: [
@@ -110,8 +110,23 @@ describe("parseGraph", () => {
         { source: "a.ts", target: "lib/other.ts", label: "Antwortformat" },
       ],
     });
-    expect(parsed.graph.edges.map((edge) => edge.label)).toEqual(["business logic", "depends on", "Antwortformat"]);
+    expect(parsed.graph.edges.map((edge) => edge.label)).toEqual([undefined, undefined, "Antwortformat"]);
     expect(parsed.graph.edges[0].description).toBe("Calls it.");
     expect(parsed.problems.filter((problem) => problem.includes("instead of a purpose"))).toHaveLength(2);
+  });
+});
+
+describe("isSymbolLikeLabel", () => {
+  it("flags identifiers and file names, not purposes", () => {
+    expect(isSymbolLikeLabel("PaginatedResult", "a.ts", "b.ts")).toBe(true);
+    expect(isSymbolLikeLabel("useUsers", "a.ts", "b.ts")).toBe(true);
+    expect(isSymbolLikeLabel("MAX_PAGE_SIZE", "a.ts", "b.ts")).toBe(true);
+    expect(isSymbolLikeLabel("user.service.ts", "a.ts", "b.ts")).toBe(true);
+    expect(isSymbolLikeLabel("user.service", "a.ts", "user/user.service.ts")).toBe(true);
+    expect(isSymbolLikeLabel("UserService", "a.ts", "user/user.service.ts")).toBe(true);
+    expect(isSymbolLikeLabel("Antwortformat", "a.ts", "b.ts")).toBe(false);
+    expect(isSymbolLikeLabel("ORM-Lebenszyklus", "a.ts", "b.ts")).toBe(false);
+    expect(isSymbolLikeLabel("Paginierung erben", "a.ts", "b.ts")).toBe(false);
+    expect(isSymbolLikeLabel("GraphQL", "a.ts", "b.ts")).toBe(false);
   });
 });

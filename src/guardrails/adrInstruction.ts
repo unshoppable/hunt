@@ -39,9 +39,10 @@ const pending = new Set<string>();
 
 /**
  * Makes sure the worktree's root CLAUDE.md tells the agent where the ADRs are: when it does not, the user is asked once
- * whether to add the section, and on agreement it is appended (the file is created when missing). Once the section is
- * in the file nothing is asked again; a decline holds until the app restarts. Failures are reported to the console
- * only, because the check is a courtesy on opening a session and must not disturb the chat.
+ * whether to add the section, and on agreement it is appended to the file as it is then (the file is created when
+ * missing). Once the section is in the file nothing is asked again; a decline holds until the app restarts. A file
+ * that exists but cannot be read is never written. Failures are reported to the console only, because the check is a
+ * courtesy on opening a session and must not disturb the chat.
  */
 export async function ensureAdrInstruction(sessionId: string, worktreePath: string): Promise<void> {
   if (declined.has(worktreePath) || pending.has(worktreePath)) return;
@@ -60,7 +61,9 @@ export async function ensureAdrInstruction(sessionId: string, worktreePath: stri
       declined.add(worktreePath);
       return;
     }
-    await commands.writeFile(sessionId, INSTRUCTION_FILE, withAdrSection(content, adrDir));
+    const latest = await readInstructionFile(sessionId);
+    if (hasAdrInstruction(latest, adrDir)) return;
+    await commands.writeFile(sessionId, INSTRUCTION_FILE, withAdrSection(latest, adrDir));
   } catch (error) {
     console.error(`failed to add the ADR section to ${INSTRUCTION_FILE}:`, error);
   } finally {
@@ -68,11 +71,9 @@ export async function ensureAdrInstruction(sessionId: string, worktreePath: stri
   }
 }
 
-/** The root CLAUDE.md of the session's worktree, empty when there is none. */
+/** The root CLAUDE.md of the session's worktree, empty when there is none; rejects when the worktree or the file cannot be read. */
 async function readInstructionFile(sessionId: string): Promise<string> {
-  try {
-    return await commands.readFile(sessionId, INSTRUCTION_FILE);
-  } catch {
-    return "";
-  }
+  const entries = await commands.listDir(sessionId, "");
+  if (!entries.some((entry) => entry.name === INSTRUCTION_FILE && !entry.isDir)) return "";
+  return commands.readFile(sessionId, INSTRUCTION_FILE);
 }

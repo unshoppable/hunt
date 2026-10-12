@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CODE_FONT_FAMILY, DEFAULT_GUARDRAIL_DIRS, DEFAULT_PANES, DEFAULT_POPUP_SIZES, SETTINGS_VERSION, mergeSettings, migrateSettings, normalizeGuardrailDir } from "./settings";
+import { CODE_FONT_FAMILY, DEFAULT_GRAPH_AGENT, DEFAULT_GUARDRAIL_DIRS, DEFAULT_PANES, DEFAULT_POPUP_SIZES, SETTINGS_VERSION, mergeSettings, migrateSettings, normalizeGuardrailDir } from "./settings";
 
 describe("normalizeGuardrailDir", () => {
   it("strips surrounding whitespace, leading ./ and trailing slashes", () => {
@@ -54,6 +54,15 @@ describe("migrateSettings", () => {
     expect(migrated).not.toHaveProperty("usagesPopupSize");
   });
 
+  it("points icon rules of version 8 that name a Catppuccin icon at its Atom Material counterpart", () => {
+    const stored = { iconRules: [{ glob: "*.service.ts", icon: "nest-service" }, { glob: "*.spec.ts", icon: "typescript-test" }, { glob: "*.dto.ts", icon: "dto" }] };
+    expect(migrateSettings(stored, 8).iconRules).toEqual([
+      { glob: "*.service.ts", icon: "nestservice" },
+      { glob: "*.spec.ts", icon: "testtsfiles" },
+      { glob: "*.dto.ts", icon: "dto" },
+    ]);
+  });
+
   it("passes the current version through untouched", () => {
     const stored = { panes: { chat: { fontSize: 18 } }, aiLanguage: "English", later: true };
     expect(migrateSettings(stored, SETTINGS_VERSION)).toBe(stored);
@@ -61,7 +70,15 @@ describe("migrateSettings", () => {
 });
 
 describe("mergeSettings", () => {
-  const current = { panes: DEFAULT_PANES, guardrailDirs: DEFAULT_GUARDRAIL_DIRS, popupSizes: DEFAULT_POPUP_SIZES, aiLanguage: "German", showSummary: true, confirmSessionDelete: true };
+  const current = {
+    panes: DEFAULT_PANES,
+    graphAgent: DEFAULT_GRAPH_AGENT,
+    guardrailDirs: DEFAULT_GUARDRAIL_DIRS,
+    popupSizes: DEFAULT_POPUP_SIZES,
+    aiLanguage: "German",
+    showSummary: true,
+    confirmSessionDelete: true,
+  };
 
   it("layers the persisted state over the defaults", () => {
     const merged = mergeSettings({ aiLanguage: "English", panes: { chat: { fontSize: 18 } } }, current);
@@ -71,8 +88,15 @@ describe("mergeSettings", () => {
     expect(merged.panes.chat).toEqual({ ...DEFAULT_PANES.chat, fontSize: 18 });
   });
 
-  it("fills a missing pane, guardrail folder and popup size from the defaults", () => {
-    const merged = mergeSettings({ panes: { chat: { fontSize: 18 } }, guardrailDirs: { adr: "decisions" }, popupSizes: { usages: { width: 900, height: 500 } } }, current);
+  it("fills a missing pane, guardrail folder, popup size and diagram agent value from the defaults", () => {
+    const persisted = {
+      panes: { chat: { fontSize: 18 } },
+      graphAgent: { model: "fable" },
+      guardrailDirs: { adr: "decisions" },
+      popupSizes: { usages: { width: 900, height: 500 } },
+    };
+    const merged = mergeSettings(persisted, current);
+    expect(merged.graphAgent).toEqual({ ...DEFAULT_GRAPH_AGENT, model: "fable" });
     expect(merged.panes.sidebar).toEqual(DEFAULT_PANES.sidebar);
     expect(merged.panes.diff).toEqual(DEFAULT_PANES.diff);
     expect(merged.guardrailDirs).toEqual({ ...DEFAULT_GUARDRAIL_DIRS, adr: "decisions" });
@@ -82,6 +106,7 @@ describe("mergeSettings", () => {
   it("returns the defaults when nothing is persisted", () => {
     const merged = mergeSettings(undefined, current);
     expect(merged.panes).toEqual(DEFAULT_PANES);
+    expect(merged.graphAgent).toEqual(DEFAULT_GRAPH_AGENT);
     expect(merged.guardrailDirs).toEqual(DEFAULT_GUARDRAIL_DIRS);
     expect(merged.popupSizes).toEqual(DEFAULT_POPUP_SIZES);
   });

@@ -10,13 +10,13 @@ export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
 
   // ELK is loaded lazily by the architecture panel; pre-bundling it avoids a dev reload on first use.
-  optimizeDeps: { include: ["elkjs/lib/elk.bundled.js"] },
+  optimizeDeps: { include: ["elkjs/lib/elk-api.js"] },
 
   build: {
     // The main window and the editor, diff, guardrails and settings windows (see ui/nativeWindow.ts) are separate pages.
     rollupOptions: { input: ["index.html", "editor.html", "diff.html", "guardrails.html", "settings.html"] },
-    // Keep the ~650 Catppuccin icon SVGs (src/diff/catppuccinIcons) as separate asset files instead of inlining them
-    assetsInlineLimit: (filePath: string) => (filePath.includes("catppuccinIcons") ? false : undefined),
+    // Keep the ~2,500 Atom Material icon SVGs (src/diff/atomIcons) as separate asset files instead of inlining them
+    assetsInlineLimit: (filePath: string) => (filePath.includes("atomIcons") ? false : undefined),
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

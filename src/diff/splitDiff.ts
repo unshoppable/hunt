@@ -13,7 +13,7 @@ import {
   type Side,
   type UnchangedRegion,
 } from "./lineDiff";
-import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME } from "./monaco";
+import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, changeMark } from "./monaco";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const GRADIENT_ID = "hunt-diff-change";
@@ -24,11 +24,25 @@ const MINIMUM_HIDDEN_LINES = 3;
 const REDIFF_DELAY_MS = 120;
 const REVERT_ARROW_SIZE = 16;
 const ORIGINAL_LEFT_PADDING = 16;
+const FOLD_GLYPH_CLASS = "split-diff__fold";
 
 /** Monaco keeps `setHiddenAreas` out of the public typings although every code editor implements it. */
 type EditorWithHiddenAreas = monaco.editor.IStandaloneCodeEditor & { setHiddenAreas(ranges: monaco.IRange[]): void };
 
-export type SplitDiffOptions = { original: string; modified: string; language: string; fontSize: number; lineHeight: number; fontFamily: string };
+/**
+ * With `readOnly`, the modified side cannot be edited and the gutter has no revert arrows. With `collapseUnchanged`,
+ * unchanged stretches start collapsed instead of expanded.
+ */
+export type SplitDiffOptions = {
+  original: string;
+  modified: string;
+  language: string;
+  fontSize: number;
+  lineHeight: number;
+  fontFamily: string;
+  readOnly?: boolean;
+  collapseUnchanged?: boolean;
+};
 
 const SHARED_EDITOR_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = {
   ...EDITOR_APPEARANCE_OPTIONS,
@@ -44,15 +58,21 @@ const SHARED_EDITOR_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions 
   renderLineHighlight: "line",
   scrollbar: { alwaysConsumeMouseWheel: false },
   links: false,
+  stickyScroll: { enabled: false },
   // Dragging always selects; moving selected text by drag would fight with selecting for the sub chat.
   dragAndDrop: false,
+  // Monaco's translate3d hints put the gutter and text area into their own compositing layers. On macOS WebKit such
+  // layers can skip color matching to the display profile, so the editor background (and the line-number column next
+  // to it) shows lighter than the page on a non-sRGB display. The hints are only a scrolling optimisation.
+  disableLayerHinting: true,
 };
 
 /**
  * WebStorm-style side-by-side diff: the read-only original on the left, its line numbers on the right edge next
  * to the connector gutter, the editable modified text on the right. Lines are never padded to align the sides;
  * instead both editors scroll in step through the change blocks and the connectors bend between them.
- * Unchanged stretches collapse into a "hidden lines" bar that expands on click.
+ * Unchanged stretches can collapse into a "hidden lines" bar that expands on click; an expanded stretch has a fold
+ * glyph on its first modified line that collapses it again.
  */
 export class SplitDiffController {
   readonly original: EditorWithHiddenAreas;
@@ -67,16 +87,24 @@ export class SplitDiffController {
   private readonly revertLayer: HTMLElement;
   private readonly originalDecorations: monaco.editor.IEditorDecorationsCollection;
   private readonly modifiedDecorations: monaco.editor.IEditorDecorationsCollection;
+  private readonly foldDecorations: monaco.editor.IEditorDecorationsCollection;
   private readonly disposables: monaco.IDisposable[] = [];
   /** Hidden-lines bar zones per side, keyed by zone id, so a click on a bar can find its region. */
   private zoneRegions: Record<Side, Map<string, UnchangedRegion>> = { original: new Map(), modified: new Map() };
   private blocks: ChangeBlock[] = [];
+  /** Collapsed unchanged stretches, each behind a hidden-lines bar. */
   private hiddenRegions: UnchangedRegion[] = [];
+  /** Expanded unchanged stretches, each with a fold glyph. */
+  private shownRegions: UnchangedRegion[] = [];
+  private isCollapsingUnchanged: boolean;
   private frame = 0;
   private rediffTimer: ReturnType<typeof setTimeout> | null = null;
   private isSyncingScroll = false;
+  private readonly isReadOnly: boolean;
 
   constructor(root: HTMLElement, options: SplitDiffOptions) {
+    this.isReadOnly = !!options.readOnly;
+    this.isCollapsingUnchanged = !!options.collapseUnchanged;
     const originalElement = createElement("div", "split-diff__editor");
     this.numbersElement = createElement("div", "split-diff__numbers");
     this.gutterElement = createElement("div", "split-diff__gutter");
@@ -103,16 +131,20 @@ export class SplitDiffController {
     }) as EditorWithHiddenAreas;
     this.modified = monaco.editor.create(modifiedElement, {
       ...SHARED_EDITOR_OPTIONS,
+      ...SCROLL_TRACK_OPTIONS,
       model: this.modifiedModel,
       fontSize: options.fontSize,
       lineHeight: options.lineHeight,
       fontFamily: options.fontFamily,
+      readOnly: this.isReadOnly,
+      domReadOnly: this.isReadOnly,
       lineDecorationsWidth: 10,
       glyphMargin: true,
       lineNumbersMinChars: 2,
     }) as EditorWithHiddenAreas;
     this.originalDecorations = this.original.createDecorationsCollection();
     this.modifiedDecorations = this.modified.createDecorationsCollection();
+    this.foldDecorations = this.modified.createDecorationsCollection();
 
     const svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("class", "split-diff__connectors");
@@ -132,6 +164,7 @@ export class SplitDiffController {
       this.modified.onDidChangeHiddenAreas(() => this.scheduleRedraw()),
       this.original.onMouseDown((event) => this.onMouseDown("original", event)),
       this.modified.onMouseDown((event) => this.onMouseDown("modified", event)),
+      this.modified.onMouseUp((event) => this.onMouseUp(event)),
       this.modifiedModel.onDidChangeContent(() => this.scheduleRediff()),
     );
 
@@ -169,6 +202,15 @@ export class SplitDiffController {
       this.cancelRediff();
       this.applyDiff(true);
     }
+  }
+
+  /** Collapses every unchanged stretch or expands them all; stretches toggled one by one follow suit. */
+  setCollapseUnchanged(isCollapsed: boolean): void {
+    if (isCollapsed === this.isCollapsingUnchanged) return;
+    this.isCollapsingUnchanged = isCollapsed;
+    this.resetRegions();
+    this.applyHiddenRegions();
+    this.scheduleRedraw();
   }
 
   /** `lineHeight` is a multiple of the font size (Monaco treats values below 8 as a factor). */
@@ -210,17 +252,22 @@ export class SplitDiffController {
     }
   }
 
-  /** Recomputes the blocks; `resetHiddenRegions` collapses unchanged stretches afresh, otherwise existing ones only shrink. */
-  private applyDiff(resetHiddenRegions: boolean): void {
+  /** Recomputes the blocks; `resetRegions` finds the unchanged stretches afresh, otherwise existing ones only shrink. */
+  private applyDiff(resetRegions: boolean): void {
     const originalLines = this.originalModel.getLinesContent();
     const modifiedLines = this.modifiedModel.getLinesContent();
     this.blocks = computeChangeBlocks(this.originalModel.getValue(), this.modifiedModel.getValue());
 
-    this.hiddenRegions = resetHiddenRegions
-      ? computeUnchangedRegions(this.blocks, originalLines.length, modifiedLines.length, CONTEXT_LINES, MINIMUM_HIDDEN_LINES)
-      : this.hiddenRegions
+    if (resetRegions) {
+      this.resetRegions();
+    } else {
+      const clip = (regions: UnchangedRegion[]) =>
+        regions
           .map((region) => clipUnchangedRegion(region, this.blocks, originalLines.length, modifiedLines.length, CONTEXT_LINES))
           .filter((region): region is UnchangedRegion => region !== null);
+      this.hiddenRegions = clip(this.hiddenRegions);
+      this.shownRegions = clip(this.shownRegions);
+    }
 
     this.applyDecorations(originalLines, modifiedLines);
     this.applyHiddenRegions();
@@ -236,6 +283,11 @@ export class SplitDiffController {
       }
       if (rangeLength(block.modified) > 0) {
         modified.push(lineDecoration(block.modified, "split-diff-line-insert", "split-diff-margin-insert"));
+        modified.push(changeMark(block.modified.start, block.modified.end - 1));
+      } else {
+        // A deletion is marked on the line above its seam.
+        const line = Math.max(1, block.modified.start - 1);
+        modified.push(changeMark(line, line));
       }
       const inner = computeInnerChanges(block, originalLines, modifiedLines);
       original.push(...inner.original.map((range) => charDecoration(range, "split-diff-char-delete")));
@@ -245,7 +297,21 @@ export class SplitDiffController {
     this.modifiedDecorations.set(modified);
   }
 
+  /** Splits the unchanged stretches of the current blocks into collapsed and expanded ones by `isCollapsingUnchanged`. */
+  private resetRegions(): void {
+    const regions = computeUnchangedRegions(this.blocks, this.originalModel.getLineCount(), this.modifiedModel.getLineCount(), CONTEXT_LINES, MINIMUM_HIDDEN_LINES);
+    this.hiddenRegions = this.isCollapsingUnchanged ? regions : [];
+    this.shownRegions = this.isCollapsingUnchanged ? [] : regions;
+  }
+
+  /** Hides the collapsed stretches behind their bars on both sides and puts a fold glyph on each expanded one. */
   private applyHiddenRegions(): void {
+    this.foldDecorations.set(
+      this.shownRegions.map((region) => ({
+        range: toRange({ start: region.modified.start, end: region.modified.start + 1 }),
+        options: { glyphMarginClassName: `${FOLD_GLYPH_CLASS} codicon codicon-fold`, glyphMarginHoverMessage: { value: "Collapse unchanged lines" } },
+      })),
+    );
     for (const side of ["original", "modified"] as const) {
       const editor = side === "original" ? this.original : this.modified;
       editor.setHiddenAreas(this.hiddenRegions.map((region) => toRange(region[side])));
@@ -276,6 +342,20 @@ export class SplitDiffController {
     const region = this.zoneRegions[side].get(target.detail.viewZoneId);
     if (!region) return;
     this.hiddenRegions = this.hiddenRegions.filter((candidate) => candidate !== region);
+    this.shownRegions = sortRegions([...this.shownRegions, region]);
+    this.applyHiddenRegions();
+    this.scheduleRedraw();
+  }
+
+  /** A click on an expanded stretch's fold glyph collapses it; on mouse up, as the mouse down already moved the caret. */
+  private onMouseUp(event: monaco.editor.IEditorMouseEvent): void {
+    const { target } = event;
+    if (event.event.rightButton || target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return;
+    if (!target.element?.classList.contains(FOLD_GLYPH_CLASS)) return;
+    const region = this.shownRegions.find((candidate) => candidate.modified.start === target.position.lineNumber);
+    if (!region) return;
+    this.shownRegions = this.shownRegions.filter((candidate) => candidate !== region);
+    this.hiddenRegions = sortRegions([...this.hiddenRegions, region]);
     this.applyHiddenRegions();
     this.scheduleRedraw();
   }
@@ -370,7 +450,7 @@ export class SplitDiffController {
       path.setAttribute("fill", fill);
       paths.push(path);
       // The arrow sits at the modified side's top, which may lie outside the gutter while the connector still shows.
-      if (right[0] < -REVERT_ARROW_SIZE || right[0] > height) continue;
+      if (this.isReadOnly || right[0] < -REVERT_ARROW_SIZE || right[0] > height) continue;
       arrows.push(createRevertArrow(block, right[0], rangeLength(block.modified) === 0 ? 0 : lineHeight, () => this.revertBlock(block)));
     }
     this.shapes.replaceChildren(...paths);
@@ -399,6 +479,10 @@ function createHiddenBar(region: UnchangedRegion): HTMLElement {
   const count = rangeLength(region.original);
   bar.textContent = `${count} hidden ${count === 1 ? "line" : "lines"} · click to show`;
   return bar;
+}
+
+function sortRegions(regions: UnchangedRegion[]): UnchangedRegion[] {
+  return regions.sort((first, second) => first.original.start - second.original.start);
 }
 
 function toRange(range: LineRange): monaco.IRange {

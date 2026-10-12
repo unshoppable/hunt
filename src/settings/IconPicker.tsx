@@ -6,23 +6,33 @@ const POPOVER_WIDTH = 288;
 const POPOVER_MAX_HEIGHT = 360;
 
 /**
- * Picks one of the vendored file icons: a field showing the chosen icon with its name opens a popover that lists
+ * Picks one of `icons` (every vendored icon by default): a field showing the chosen icon with its name opens a popover that lists
  * every icon as image and name, narrowed down by a search box; Enter takes the first match. The popover is fixed
  * to the viewport so the settings page's scrolling does not clip it.
  */
-export function IconPicker({ value, onChange, className = "" }: { value: string; onChange: (icon: string) => void; className?: string }) {
+export function IconPicker({
+  value,
+  onChange,
+  icons = ICON_NAMES,
+  className = "",
+}: {
+  value: string;
+  onChange: (icon: string) => void;
+  icons?: readonly string[];
+  className?: string;
+}) {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [position, setPosition] = useState<{ left: number; top?: number; bottom?: number } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
-  const url = iconUrl(value);
+  const url = icons.includes(value) ? iconUrl(value) : null;
   const isUnknown = Boolean(value) && !url;
 
   const matches = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return needle ? ICON_NAMES.filter((icon) => icon.includes(needle)) : ICON_NAMES;
-  }, [query]);
+    return needle ? icons.filter((icon) => icon.includes(needle)) : icons;
+  }, [icons, query]);
 
   const close = () => {
     setIsOpen(false);

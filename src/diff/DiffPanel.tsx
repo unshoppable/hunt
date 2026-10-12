@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { commands } from "../ipc/commands";
-import type { ChangedFile, ChangedFileView, FileDiff } from "../ipc/types";
+import type { ChangedFile, ChangedFileView, FileDiff, FileVersion } from "../ipc/types";
 import { useHuntStore } from "../state/store";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
 import { useSettingsStore } from "../state/settings";
-import { isOwnChange, type ChangeScope } from "./attribution";
+import { isOwnChange, otherTouchers, type ChangeScope } from "./attribution";
+import { ownContent } from "./ownChanges";
 import { ChangeList } from "./ChangeList";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { CodeDiffEditor, type CodeDiffEditorHandle } from "./CodeDiffEditor";
-import { BUTTON_XS, GHOST_BUTTON_XS, SECONDARY, SECONDARY_BUTTON_XS } from "../ui/buttons";
+import { BUTTON_XS, GHOST_BUTTON_XS, SECONDARY, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
 import { openInEditorWindow } from "../ide/editorWindows";
 import { selectionChatsFor } from "../ide/selectionChats";
+import { useReviewedPullRequest } from "../review/reviewComments";
 import { confirmDestructive } from "../ui/confirm";
 import { baseName } from "../ui/path";
 import { useDismiss } from "../ui/useDismiss";
@@ -34,6 +36,7 @@ function revertLabel(file: ChangedFile): string {
 export function DiffPanel({ sessionId }: { sessionId: string }) {
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
   const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
+  const pullRequest = useReviewedPullRequest(sessionId);
   const diffFontSize = useSettingsStore((state) => state.panes.diff.fontSize);
   const diffLineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
   const diffFontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
@@ -48,7 +51,9 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
       state.sessions.some((candidate) => candidate.id !== sessionId && candidate.worktreePath === session?.worktreePath),
   );
   const [files, setFiles] = useState<ChangedFileView[]>([]);
-  const [scope, setScope] = useState<ChangeScope>("own");
+  const scope = useSettingsStore((state) => state.changelistScopes[sessionId] ?? "own");
+  const setChangelistScope = useSettingsStore((state) => state.setChangelistScope);
+  const setScope = useCallback((next: ChangeScope) => setChangelistScope(sessionId, next), [setChangelistScope, sessionId]);
   const visibleFiles = useMemo(() => {
     if (!isSharedWorktree || scope === "all") return files;
     return files.filter((file) => isOwnChange(file, sessionId, session?.parentId ?? null, session?.workspace ?? "worktree"));
@@ -60,7 +65,19 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const [isDirty, setIsDirty] = useState(false);
   const isDirtyRef = useRef(false);
   const editorRef = useRef<CodeDiffEditorHandle>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
+  /** Offset from the header's left edge of the right side's line numbers in split mode; null in unified mode. */
+  const [lineNumbersLeft, setLineNumbersLeft] = useState<number | null>(null);
+  const alignWithLineNumbers = useCallback((clientX: number | null) => {
+    const header = headerRef.current;
+    setLineNumbersLeft(clientX === null || !header ? null : clientX - header.getBoundingClientRect().left);
+  }, []);
   const [mode, setMode] = useState<DiffMode>("split");
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  /** Whether the diff of a file other sessions changed too shows every change or only the lines of this session and its parent. */
+  const lineScope = useSettingsStore((state) => state.diffLineScope);
+  const setLineScope = useSettingsStore((state) => state.setDiffLineScope);
+  const [history, setHistory] = useState<{ path: string; versions: FileVersion[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
@@ -78,7 +95,6 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     closeSubChat();
-    setScope("own");
   }, [sessionId, closeSubChat]);
 
   // The first changelist loads at once; reloads after edits wait, so a burst of them loads once.
@@ -127,6 +143,40 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     [sessionId, selectedPath, editVersion, localVersion],
     { isEnabled: !!selectedPath },
   );
+
+  const parentId = session?.parentId ?? null;
+  const selectedFile = files.find((file) => file.path === selectedPath);
+  const isOwnView = lineScope === "own" && !!selectedFile && otherTouchers(selectedFile, sessionId, parentId).length > 0;
+
+  useLoad(
+    () => commands.readFileHistory(sessionId, selectedPath ?? ""),
+    {
+      onValue: (versions) => setHistory({ path: selectedPath ?? "", versions }),
+      onError: (reason) => setError(errorText(reason)),
+    },
+    [sessionId, selectedPath, editVersion, localVersion],
+    { isEnabled: isOwnView && !!selectedPath },
+  );
+
+  const isOwn = useCallback((id: string | null) => !!id && (id === sessionId || id === parentId), [sessionId, parentId]);
+  /** This session or its parent touched the file, but its loaded history holds none of their versions, e.g. from before it was recorded. */
+  const isOwnHistoryMissing =
+    isOwnView &&
+    history?.path === selectedFile.path &&
+    selectedFile.touchedBy.some(isOwn) &&
+    !history.versions.some((version) => isOwn(version.sessionId));
+  /**
+   * The diff with only the lines this session and its parent changed, once the file's history is loaded. Without their
+   * versions in the history the lines cannot be told apart, so it is the full diff.
+   */
+  const ownDiff = useMemo(() => {
+    if (!isOwnView || !diff || history?.path !== diff.path) return null;
+    if (isOwnHistoryMissing) return diff;
+    return { ...diff, newContent: ownContent(diff.oldContent, history.versions, diff.newContent, isOwn) };
+  }, [isOwnView, isOwnHistoryMissing, diff, history, isOwn]);
+  const shownDiff = isOwnView ? ownDiff : diff;
+  const canCommentOnFile = !!pullRequest && !!shownDiff && !isOwnView;
+  const commentButtonLeft = canCommentOnFile ? lineNumbersLeft : null;
 
   const selectFile = async (path: string) => {
     if (path === selectedPath) return;
@@ -218,32 +268,47 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
       <PaneSeparator />
       <Panel id="viewer" minSize={240} className="flex">
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center gap-2 border-b border-(--line) px-3 py-2.5 text-[13px]">
-          <span className="min-w-0 flex-1 truncate font-mono text-neutral-300">
+        {/* In split mode the file comment button starts where the right side's line numbers do. */}
+        <div ref={headerRef} className="flex items-center border-b border-(--line) py-2.5 pr-3 text-[13px]">
+          <span
+            className="min-w-0 truncate pr-2 pl-3 font-mono text-neutral-300"
+            style={commentButtonLeft === null ? { flex: "1 1 0%" } : { width: commentButtonLeft, flexShrink: 0 }}
+          >
             {selectedPath ?? "No file selected"}
             {isDirty ? <span className="ml-1 text-amber-300" title="Unsaved changes">●</span> : null}
           </span>
-          <button
-            type="button"
-            disabled={!isDirty}
-            onClick={() => editorRef.current?.save()}
-            className={`${BUTTON_XS} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
-            title="Save (⌘S inside the editor)"
-          >
-            Save
-          </button>
-          <button type="button" onClick={() => setMode(mode === "split" ? "unified" : "split")} className={SECONDARY_BUTTON_XS}>
-            {mode === "split" ? "Split" : "Unified"}
-          </button>
-          <button
-            type="button"
-            disabled={!files.length}
-            onClick={() => void commands.openChangedFilesDiffInWebstorm(sessionId)}
-            className={SECONDARY_BUTTON_XS}
-            title="Open all changed files in WebStorm's directory diff"
-          >
-            Diff in WebStorm
-          </button>
+          <div className={`flex items-center gap-2 ${commentButtonLeft === null ? "" : "flex-1"}`}>
+            {canCommentOnFile ? (
+              <button type="button" onClick={() => editorRef.current?.commentOnFile()} className={SECONDARY_BUTTON_XS} title="Comment on the whole file; it goes out with your review">
+                Comment on file
+              </button>
+            ) : null}
+            {commentButtonLeft === null ? null : <span className="flex-1" />}
+            <button
+              type="button"
+              disabled={!isDirty}
+              onClick={() => editorRef.current?.save()}
+              className={`${BUTTON_XS} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
+              title="Save (⌘S inside the editor)"
+            >
+              Save
+            </button>
+            <button type="button" onClick={() => setMode(mode === "split" ? "unified" : "split")} className={SECONDARY_BUTTON_XS}>
+              {mode === "split" ? "Split" : "Unified"}
+            </button>
+            <button type="button" onClick={() => setIsCollapsed(!isCollapsed)} className={SECONDARY_BUTTON_XS} title={isCollapsed ? "Show every unchanged line" : "Collapse every unchanged stretch"}>
+              {isCollapsed ? "Expand all" : "Collapse unchanged"}
+            </button>
+            <button
+              type="button"
+              disabled={!files.length}
+              onClick={() => void commands.openChangedFilesDiffInWebstorm(sessionId)}
+              className={SECONDARY_BUTTON_XS}
+              title="Open all changed files in WebStorm's directory diff"
+            >
+              Diff in WebStorm
+            </button>
+          </div>
         </div>
         {externalDiff ? (
           <div className="flex items-center gap-3 border-b border-(--line) bg-amber-950/40 px-3 py-2.5 text-[13px] text-amber-200">
@@ -265,25 +330,59 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
           </div>
         ) : null}
         {error ? <p className="border-b border-(--line) px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
+        {isOwnHistoryMissing ? (
+          <p className="border-b border-(--line) px-3 py-2 text-[13px] text-neutral-400">
+            {parentId ? "This session or its parent" : "This session"} changed this file before Hunt recorded edits line by line, so this shows the
+            changes of all sessions.
+          </p>
+        ) : null}
         <div className="relative min-h-0 flex-1 bg-(--diff-bg)">
-          {diff ? (
+          {selectedFile && otherTouchers(selectedFile, sessionId, parentId).length ? (
+            <div className="absolute top-2 right-6 z-10 flex gap-0.5 rounded-md border border-neutral-600 bg-(--surface-inset) p-0.5 text-[13px] shadow-lg shadow-black/40">
+              <button
+                type="button"
+                disabled={isDirty}
+                onClick={() => setLineScope("own")}
+                className={`${TAB_BUTTON_SM} ${lineScope === "own" ? TAB_ACTIVE : TAB_INACTIVE} disabled:opacity-50`}
+                title={isDirty ? "Save or discard your edits first" : `Show only the lines ${parentId ? "this session and its parent" : "this session"} changed (read-only)`}
+              >
+                Own
+              </button>
+              <button
+                type="button"
+                onClick={() => setLineScope("all")}
+                className={`${TAB_BUTTON_SM} ${lineScope === "all" ? TAB_ACTIVE : TAB_INACTIVE}`}
+                title="Show the changes of all sessions"
+              >
+                All
+              </button>
+            </div>
+          ) : null}
+          {isOwnView && !ownDiff ? (
+            <p className="p-3 text-[13px] text-neutral-500">Loading the history of this file…</p>
+          ) : ownDiff && ownDiff.newContent === (ownDiff.oldContent ?? "") ? (
+            <p className="p-3 text-[13px] text-neutral-500">{parentId ? "This session and its parent did not change this file." : "This session did not change this file."}</p>
+          ) : shownDiff ? (
             <CodeDiffEditor
-              key={`${sessionId}:${diff.path}`}
+              key={`${sessionId}:${shownDiff.path}:${isOwnView ? "own" : "all"}`}
               ref={editorRef}
               sessionId={sessionId}
-              diff={diff}
+              diff={shownDiff}
               mode={mode}
+              collapseUnchanged={isCollapsed}
               fontSize={diffFontSize}
               lineHeight={diffLineHeight}
               fontFamily={diffFontFamily}
+              readOnly={isOwnView}
               onSave={saveFile}
               onDirtyChange={markDirty}
-              onNavigate={(line, column) => void openInEditorWindow(sessionId, { path: diff.path, line, column })}
+              onNavigate={(line, column, name) => void openInEditorWindow(sessionId, { path: shownDiff.path, line, column, definitionOf: name })}
               onOpenInIde={(line, column) =>
-                commands.openFileInWebstorm(sessionId, diff.path, line, column).catch((reason) => setError(String(reason)))
+                commands.openFileInWebstorm(sessionId, shownDiff.path, line, column).catch((reason) => setError(String(reason)))
               }
               onOpenSubChat={subChat.open}
               onToggleSubChat={subChat.toggle}
+              onLineNumbersLeftChange={alignWithLineNumbers}
             />
           ) : (
             <p className="p-3 text-[13px] text-neutral-500">

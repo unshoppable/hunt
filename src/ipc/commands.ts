@@ -4,14 +4,17 @@ import type {
   ChangedFileView,
   DirEntry,
   FileDiff,
+  FileVersion,
   GithubViewer,
   GraphStatus,
   PlanUsage,
   PullRequest,
   PullRequestDetails,
   PullRequestRef,
+  ReplyTarget,
   ReviewComment,
   ReviewEvent,
+  ReviewThread,
   Screenshot,
   SelectionContext,
   SessionNotification,
@@ -36,14 +39,26 @@ export const commands = {
   githubViewer: (repoPath: string) => invoke<GithubViewer>("github_viewer", { repoPath }),
   /** Description and conversation of the pull request the session reviews; rejects when it reviews none. */
   viewPullRequest: (sessionId: string) => invoke<PullRequestDetails>("view_pull_request", { sessionId }),
+  /** Review threads of the pull request the session reviews, with their replies; rejects when it reviews none. */
+  listReviewThreads: (sessionId: string) => invoke<ReviewThread[]>("list_review_threads", { sessionId }),
   /** Submits a review of the pull request the session reviews; `body` is its summary comment. */
   submitPullRequestReview: (sessionId: string, event: ReviewEvent, body: string) =>
     invoke<void>("submit_pull_request_review", { id: sessionId, event, body }),
-  /** Drafts a review comment on lines `startLine..line` of the new version of `path`; it goes out with the next review. */
-  addReviewComment: (sessionId: string, path: string, startLine: number, line: number, body: string) =>
-    invoke<ReviewComment>("add_review_comment", { id: sessionId, path, startLine, line, body }),
+  /**
+   * Drafts a review comment on lines `startLine..line` of the new version of `path`, or on the whole file when both are
+   * 0 (`FILE_SPAN`); it goes out with the next review. With `replyTo` it answers a thread or draft, and `path` and the
+   * lines are those of what it answers.
+   */
+  addReviewComment: (sessionId: string, path: string, startLine: number, line: number, body: string, replyTo: ReplyTarget | null = null) =>
+    invoke<ReviewComment>("add_review_comment", { id: sessionId, path, startLine, line, body, replyTo }),
   updateReviewComment: (sessionId: string, commentId: string, body: string) => invoke<void>("update_review_comment", { id: sessionId, commentId, body }),
+  /** Discards a draft and the drafted replies to it. */
   deleteReviewComment: (sessionId: string, commentId: string) => invoke<void>("delete_review_comment", { id: sessionId, commentId }),
+  /** Posts a reply to a review thread of the session's pull request right away, outside of a review. */
+  replyToReviewThread: (sessionId: string, threadId: string, body: string) => invoke<void>("reply_to_review_thread", { id: sessionId, threadId, body }),
+  /** Marks a review thread of the session's pull request as resolved, or as unresolved again. */
+  resolveReviewThread: (sessionId: string, threadId: string, isResolved: boolean) =>
+    invoke<void>("resolve_review_thread", { id: sessionId, threadId, isResolved }),
   /**
    * Creates the session `id` (a fresh UUID the caller picked) in a new worktree off `baseRef`. `pullRequest` marks it as
    * that pull request's review and `diffBaseRef` is then the pull request's target branch, whose merge base with
@@ -80,6 +95,8 @@ export const commands = {
   /** Added and removed line counts of every uncommitted change, sorted by path. */
   changeStats: (id: string) => invoke<ChangeStat[]>("change_stats", { id }),
   readFileDiff: (id: string, path: string) => invoke<FileDiff>("read_file_diff", { id, path }),
+  /** Versions of `path` in the edit log of the session's worktree, oldest first. */
+  readFileHistory: (id: string, path: string) => invoke<FileVersion[]>("read_file_history", { id, path }),
   writeFile: (id: string, path: string, content: string) => invoke<void>("write_file", { id, path, content }),
   revertFile: (id: string, path: string) => invoke<void>("revert_file", { id, path }),
   /** Deletes a worktree file, or a folder with everything in it. */
@@ -109,7 +126,7 @@ export const commands = {
   /** When the diagram was generated and whether the worktree's sessions changed files since. */
   graphStatus: (id: string) => invoke<GraphStatus>("graph_status", { id }),
   /** Sends the standard diagram prompt as a hidden turn and resolves with the stop reason once the agent finished. */
-  refreshGraph: (id: string) => invoke<string>("refresh_graph", { id }),
+  refreshGraph: (id: string, model: string, effort: string) => invoke<string>("refresh_graph", { id, model, effort }),
   /** Entries of a worktree directory (`path` relative, empty for the root): folders first, then files. */
   listDir: (id: string, path: string) => invoke<DirEntry[]>("list_dir", { id, path }),
   /** Every project file of the worktree (tracked and untracked, ignored excluded), sorted, for the file search. */

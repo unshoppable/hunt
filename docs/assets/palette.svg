@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 28" width="1400" height="28">
+  <!-- Catppuccin Macchiato accents, rosewater to lavender. -->
+  <clipPath id="bar"><rect width="1400" height="28" rx="14"/></clipPath>
+  <g clip-path="url(#bar)">
+    <rect x="0" width="101" height="28" fill="#f4dbd6"/>
+    <rect x="100" width="101" height="28" fill="#f0c6c6"/>
+    <rect x="200" width="101" height="28" fill="#f5bde6"/>
+    <rect x="300" width="101" height="28" fill="#c6a0f6"/>
+    <rect x="400" width="101" height="28" fill="#ed8796"/>
+    <rect x="500" width="101" height="28" fill="#ee99a0"/>
+    <rect x="600" width="101" height="28" fill="#f5a97f"/>
+    <rect x="700" width="101" height="28" fill="#eed49f"/>
+    <rect x="800" width="101" height="28" fill="#a6da95"/>
+    <rect x="900" width="101" height="28" fill="#8bd5ca"/>
+    <rect x="1000" width="101" height="28" fill="#91d7e3"/>
+    <rect x="1100" width="101" height="28" fill="#7dc4e4"/>
+    <rect x="1200" width="101" height="28" fill="#8aadf4"/>
+    <rect x="1300" width="101" height="28" fill="#b7bdf8"/>
+  </g>
+</svg>

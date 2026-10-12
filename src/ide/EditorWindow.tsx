@@ -10,14 +10,16 @@ import { workspaceFor } from "./documents";
 import { FileSearchDialog, useFileSearchShortcut } from "./FileSearchDialog";
 import { IdePanel } from "./IdePanel";
 import { EMPTY_IDE_SESSION, useIdeSession, useIdeStore } from "./ideStore";
+import { resolveDefinition } from "./languageService";
 import { allPanes } from "./paneGrid";
 import { HEADER_BAR } from "../ui/bars";
 
 /**
- * The built-in editor as a window of its own (see editorWindows.ts), opened by ⌘click in the diff or "Go to File"
- * while the inspector shows another tab. It boots hidden, usually ahead of its first request, and appears with the
- * first file; it keeps its own tabs, takes further files as the `editor:open` event, asks before unsaved edits are
- * lost and, closed on ⌘W, Escape or the traffic light, only hides so the next request is instant.
+ * The built-in editor as a window of its own (see editorWindows.ts), opened by ⌘click on a name in the diff (it
+ * shows the name's declaration) or "Go to File" while the inspector shows another tab. It boots hidden, usually
+ * ahead of its first request, and appears with the first file; it keeps its own tabs, takes further files as the
+ * `editor:open` event, asks before unsaved edits are lost and, closed on ⌘W, Escape or the traffic light, only hides
+ * so the next request is instant.
  * It destroys itself once its session was removed.
  */
 export function EditorWindow({ sessionId, initialRequest }: { sessionId: string; initialRequest: EditorOpenRequest | null }) {
@@ -53,11 +55,23 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
     if (initialRequest) {
       openFile(sessionId, initialRequest.path, { line: initialRequest.line, column: initialRequest.column, inRightSplit: initialRequest.inRightSplit });
     }
+    const open = ({ path, line, column, inRightSplit }: EditorOpenRequest) => {
+      openFile(sessionId, path, { line, column, inRightSplit });
+      setRequestCount((count) => count + 1);
+    };
     const subscription = listenTo(
       "editor:open",
       (request) => {
-        openFile(sessionId, request.path, { line: request.line, column: request.column, inRightSplit: request.inRightSplit });
-        setRequestCount((count) => count + 1);
+        if (!request.definitionOf) {
+          open(request);
+          return;
+        }
+        const worktreePath = useHuntStore.getState().sessions.find((candidate) => candidate.id === sessionId)?.worktreePath;
+        if (!worktreePath) return;
+        const position = { lineNumber: request.line ?? 1, column: request.column ?? 1 };
+        resolveDefinition(workspaceFor(sessionId, worktreePath), request.path, position, request.definitionOf)
+          .then((target) => target && open({ ...target, inRightSplit: request.inRightSplit }))
+          .catch(() => {});
       },
       { target: getCurrentWindow().label },
     );

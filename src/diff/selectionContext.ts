@@ -1,8 +1,11 @@
 import type * as monaco from "monaco-editor";
 import type { SelectionContext } from "../ipc/types";
 
-/** A selection handed to the sub chat plus the viewport point to anchor its popover at. */
-export type SelectionRequest = { selection: SelectionContext; anchor: { x: number; y: number } };
+/**
+ * A selection handed to the sub chat plus the viewport point to anchor its popover at; `corner` names the popover
+ * corner placed at that point, the top left one by default.
+ */
+export type SelectionRequest = { selection: SelectionContext; anchor: { x: number; y: number; corner?: "topLeft" | "bottomRight" } };
 
 /** Inclusive line span of a selection; a selection ending at column 1 does not include that line. */
 export function selectedLineSpan(selection: monaco.IRange): { startLine: number; endLine: number } {

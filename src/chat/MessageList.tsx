@@ -1,4 +1,5 @@
 import { isValidElement, useState, type ReactNode } from "react";
+import { stripGuardrailMarker } from "./guardrailSuggestion";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CodeBlock } from "../code/CodeBlock";
@@ -72,9 +73,6 @@ export function MessageList({
             </div>
           );
         }
-        if (item.kind === "status") {
-          return <StatusLine key={item.id} text={item.text} />;
-        }
         return item.kind === "agent" ? <AgentMessage key={item.id} text={item.text} /> : null;
       })}
       {plan.length ? <PlanCard entries={plan} /> : null}
@@ -83,19 +81,9 @@ export function MessageList({
   );
 }
 
-/** A turn Hunt sent itself (such as a graph refresh): a quiet divider instead of a user bubble. */
-function StatusLine({ text }: { text: string }) {
-  return (
-    <div className="flex items-center gap-3 text-[13px] text-neutral-500">
-      <span className="h-px flex-1 bg-(--line)" />
-      <span className="shrink-0">{text}</span>
-      <span className="h-px flex-1 bg-(--line)" />
-    </div>
-  );
-}
-
 /** Markdown-rendered agent turn with a copy button that appears on hover. */
-function AgentMessage({ text }: { text: string }) {
+function AgentMessage({ text: reply }: { text: string }) {
+  const text = stripGuardrailMarker(reply);
   const [isCopied, setIsCopied] = useState(false);
 
   function copy() {

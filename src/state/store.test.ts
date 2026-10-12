@@ -6,6 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentDefaultsStore } from "./agentDefaults";
+import { DEFAULT_GRAPH_AGENT } from "./settings";
 import { agentSetupOf, createEmptyChat, useHuntStore } from "./store";
 
 const SESSION = "11111111-1111-1111-1111-111111111111";
@@ -126,6 +127,28 @@ describe("acp update reducer", () => {
     applyUpdate(SESSION, notification({ sessionUpdate: "usage_update", used: 51_000, size: 200_000 }));
 
     expect(useHuntStore.getState().chats[SESSION].contextUsage).toEqual({ used: 51_000, size: 200_000 });
+  });
+
+  it("leaves the agent's output of a turn Hunt sent itself out of the chat until the user's next turn", () => {
+    const { applyUpdate } = useHuntStore.getState();
+    const hidden = { hunt: { hidden: true } };
+    applyUpdate(SESSION, notification({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "Update the diagram" }, _meta: hidden }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Reading the diff" } }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "tool_call", toolCallId: "toolu_3", title: "Write .hunt/graph.json", kind: "edit", status: "pending" }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "tool_call_update", toolCallId: "toolu_3", status: "completed" }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "plan", entries: [{ content: "Write the graph", priority: "medium", status: "pending" }] }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Diagram updated." } }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "usage_update", used: 1_000, size: 200_000 }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "Next question" } }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Answer" } }));
+
+    const chat = useHuntStore.getState().chats[SESSION];
+    expect(chat.items.map((item) => [item.kind, "text" in item ? item.text : null])).toEqual([
+      ["user", "Next question"],
+      ["agent", "Answer"],
+    ]);
+    expect(chat.plan).toEqual([]);
+    expect(chat.contextUsage).toEqual({ used: 1_000, size: 200_000 });
   });
 
   it("ignores a closed event for a session whose chat was deleted", () => {
@@ -254,6 +277,41 @@ describe("prompt queue", () => {
 
     second.finish("EndTurn");
     await firstSend;
+    expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(false);
+  });
+
+  it("shows neither a diagram refresh nor the agent's output, and the next prompt ends the hidden turn", async () => {
+    vi.mocked(invoke).mockImplementation(async () => {
+      useHuntStore.getState().applyUpdate(SESSION, notification({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Diagram updated." } }));
+      return "EndTurn";
+    });
+
+    await useHuntStore.getState().refreshGraph(SESSION);
+    await useHuntStore.getState().refreshGraph(SESSION);
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ items: [], isHiddenTurn: true });
+
+    await useHuntStore.getState().sendPrompt(SESSION, "next");
+    const chat = useHuntStore.getState().chats[SESSION];
+    expect(chat.isHiddenTurn).toBe(false);
+    expect(chat.items.map((item) => item.kind)).toEqual(["user", "agent"]);
+  });
+
+  it("marks the chat as generating the diagram until the graph turn ends, not while a queued prompt runs after it", async () => {
+    const graphTurn = deferredTurn();
+    const promptTurn = deferredTurn();
+    vi.mocked(invoke).mockReturnValueOnce(graphTurn.turn).mockReturnValueOnce(promptTurn.turn);
+
+    const refresh = useHuntStore.getState().refreshGraph(SESSION);
+    expect(useHuntStore.getState().chats[SESSION].isGeneratingGraph).toBe(true);
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("refresh_graph", { id: SESSION, ...DEFAULT_GRAPH_AGENT });
+    await useHuntStore.getState().sendPrompt(SESSION, "next");
+
+    graphTurn.finish("EndTurn");
+    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledTimes(2));
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ isGeneratingGraph: false, isBusy: true });
+
+    promptTurn.finish("EndTurn");
+    await refresh;
     expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(false);
   });
 

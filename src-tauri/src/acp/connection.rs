@@ -22,6 +22,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use crate::graph;
 use crate::session::attribution;
 
 const ACP_SCRIPT: &str = "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
@@ -248,7 +249,8 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
         .builder()
         .name("hunt")
         .on_receive_notification(
-            async move |notification: SessionNotification, _connection| {
+            async move |mut notification: SessionNotification, _connection| {
+                graph::hide_replayed_refresh(&mut notification);
                 attribution::observe(&notify_app, hunt_session_id, &worktree, &notification);
                 publish_update(&notify_app, hunt_session_id, &history, notification);
                 Ok(())
@@ -364,8 +366,12 @@ async fn new_session(
     Ok((response.session_id, response.config_options.unwrap_or_default()))
 }
 
+/// Asks the agent to offer recording an answer the user accepted as an ADR, skill, rule, agent or instruction.
+const GUARDRAIL_OFFER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/guardrail-offer.md"));
+
 /// Everything Hunt appends to the agent's system prompt: the user's response-style prompt from the settings (if
-/// not cleared), the diagram instructions in the user's AI language and the optional selection context.
+/// not cleared), the guardrail offer, the diagram instructions in the user's AI language and the optional selection
+/// context.
 fn system_prompt_append(app: &AppHandle, context_prompt: Option<String>) -> String {
     let style = crate::preferences::system_prompt(app);
     let diagram = crate::graph::system_prompt(&crate::preferences::ai_language(app));
@@ -374,6 +380,7 @@ fn system_prompt_append(app: &AppHandle, context_prompt: Option<String>) -> Stri
         append.push_str(&style);
         append.push_str("\n\n");
     }
+    append.push_str(GUARDRAIL_OFFER_PROMPT);
     append.push_str(&diagram);
     append.push_str(context_prompt.as_deref().unwrap_or_default());
     append

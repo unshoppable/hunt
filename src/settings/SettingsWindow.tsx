@@ -1,28 +1,35 @@
-import { useEffect, useId, useState, type CSSProperties } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useSettingsSync } from "../app/bootstrap";
 import { listenTo } from "../ipc/events";
 import { appVersion, checkForUpdate, installUpdate, relaunchApp, type Update } from "../ipc/updater";
-import { resolveFileIcon, useFileIconUrl } from "../diff/fileIcons";
+import { FOLDER_ICON_NAMES, resolveFileIcon, resolveFolderIcon, useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import {
   AI_LANGUAGE_PRESETS,
   DEFAULT_AI_LANGUAGE,
+  DEFAULT_GRAPH_AGENT,
   DEFAULT_GUARDRAIL_DIRS,
   DEFAULT_PANES,
   DEFAULT_SYSTEM_PROMPT,
   FONT_FAMILY_PRESETS,
   PANE_RANGES,
+  isFolderIconRulesDefault,
   isIconRulesDefault,
   useSettingsStore,
   type GuardrailDirs,
   type GuardrailDirKind,
+  type FolderIconRule,
   type IconRule,
   type NumericPaneSetting,
   type PaneKey,
   type PaneSettings,
 } from "../state/settings";
+import { findSelectOption, listChoices } from "../chat/configOptions";
+import { useAgentDefaultsStore } from "../state/agentDefaults";
 import { HEADER_BAR } from "../ui/bars";
 import { BUTTON_XS, GHOST_BUTTON_MD, ICON_BUTTON_SM, PRIMARY_BUTTON_MD, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
+import { OptionMenu, optionId } from "../ui/Dropdown";
+import { filterOptions, stepEnabled } from "../ui/floatingMenu";
 import { PlusIcon, TrashIcon } from "../ui/icons";
 import { useSecondaryWindow } from "../ui/nativeWindow";
 import { errorText, useLoad } from "../ui/useLoad";
@@ -42,14 +49,15 @@ const SECTIONS: Section[] = [
 
 /**
  * The pages that are not a pane: what Hunt asks the agent for on its own, how sessions are deleted, where the
- * guardrails window keeps its files, which icon a file gets, and whether a newer Hunt exists.
+ * guardrails window keeps its files, which icon a file or folder gets, and whether a newer Hunt exists.
  */
 const AGENT_PAGE = "agent";
 const SESSIONS_PAGE = "sessions";
 const GUARDRAILS_PAGE = "guardrails";
 const FILE_ICONS_PAGE = "fileIcons";
+const FOLDER_ICONS_PAGE = "folderIcons";
 const UPDATES_PAGE: SettingsPage = "updates";
-type Page = PaneKey | typeof AGENT_PAGE | typeof SESSIONS_PAGE | typeof GUARDRAILS_PAGE | typeof FILE_ICONS_PAGE | SettingsPage;
+type Page = PaneKey | typeof AGENT_PAGE | typeof SESSIONS_PAGE | typeof GUARDRAILS_PAGE | typeof FILE_ICONS_PAGE | typeof FOLDER_ICONS_PAGE | SettingsPage;
 
 /** Whether the window was booted ahead of time (`?warm=1`) and stays hidden until the main window shows it. */
 const isWarm = new URLSearchParams(window.location.search).has("warm");
@@ -68,6 +76,7 @@ const NAV_GROUPS: { title: string; pages: { key: Page; title: string }[] }[] = [
       { key: SESSIONS_PAGE, title: "Sessions" },
       { key: GUARDRAILS_PAGE, title: "Guardrails" },
       { key: FILE_ICONS_PAGE, title: "File icons" },
+      { key: FOLDER_ICONS_PAGE, title: "Folder icons" },
       { key: UPDATES_PAGE, title: "Updates" },
     ],
   },
@@ -101,6 +110,7 @@ export function SettingsWindow() {
   const setAiLanguage = useSettingsStore((state) => state.setAiLanguage);
   const resetGuardrailDirs = useSettingsStore((state) => state.resetGuardrailDirs);
   const resetIconRules = useSettingsStore((state) => state.resetIconRules);
+  const resetFolderIconRules = useSettingsStore((state) => state.resetFolderIconRules);
   const setConfirmSessionDelete = useSettingsStore((state) => state.setConfirmSessionDelete);
   const [activePage, setActivePage] = useState<Page>(initialPage);
   const activeSection = SECTIONS.find((section) => section.pane === activePage);
@@ -109,6 +119,7 @@ export function SettingsWindow() {
     setAiLanguage(DEFAULT_AI_LANGUAGE);
     resetGuardrailDirs();
     resetIconRules();
+    resetFolderIconRules();
     setConfirmSessionDelete(true);
   };
 
@@ -147,6 +158,8 @@ export function SettingsWindow() {
             <GuardrailsSection />
           ) : activePage === FILE_ICONS_PAGE ? (
             <FileIconsSection />
+          ) : activePage === FOLDER_ICONS_PAGE ? (
+            <FolderIconsSection />
           ) : activePage === UPDATES_PAGE ? (
             <UpdatesSection />
           ) : (
@@ -235,17 +248,36 @@ function PaneSection({ pane, title, hint, fields }: Section) {
   );
 }
 
-/** Settings for what Hunt tells the agent on its own: the language of its own requests and the system prompt addition. */
+/**
+ * Settings for what Hunt tells the agent on its own: the language of its own requests, the system prompt addition and
+ * the model and effort of the diagram turns.
+ */
 function AgentSection() {
   const aiLanguage = useSettingsStore((state) => state.aiLanguage);
   const setAiLanguage = useSettingsStore((state) => state.setAiLanguage);
   const systemPrompt = useSettingsStore((state) => state.systemPrompt);
   const setSystemPrompt = useSettingsStore((state) => state.setSystemPrompt);
-  const isDefault = aiLanguage === DEFAULT_AI_LANGUAGE && systemPrompt === DEFAULT_SYSTEM_PROMPT;
+  const graphAgent = useSettingsStore((state) => state.graphAgent);
+  const setGraphAgent = useSettingsStore((state) => state.setGraphAgent);
+  const knownOptions = useAgentDefaultsStore((state) => state.knownOptions);
+  const isDefault =
+    aiLanguage === DEFAULT_AI_LANGUAGE &&
+    systemPrompt === DEFAULT_SYSTEM_PROMPT &&
+    graphAgent.model === DEFAULT_GRAPH_AGENT.model &&
+    graphAgent.effort === DEFAULT_GRAPH_AGENT.effort;
   const reset = () => {
     setAiLanguage(DEFAULT_AI_LANGUAGE);
     setSystemPrompt(DEFAULT_SYSTEM_PROMPT);
+    setGraphAgent("model", DEFAULT_GRAPH_AGENT.model);
+    setGraphAgent("effort", DEFAULT_GRAPH_AGENT.effort);
   };
+  // The choices the agent offered last; the default model ID is not among them, since the agent lists it by alias.
+  const choicesOf = (configId: string) => {
+    const option = findSelectOption(knownOptions, configId);
+    const choices = option ? listChoices(option).filter((choice) => choice.value !== "default") : [];
+    return choices.map((choice) => ({ value: choice.value, label: choice.name }));
+  };
+  const modelPresets = [{ value: DEFAULT_GRAPH_AGENT.model }, ...choicesOf("model").filter((choice) => choice.value !== DEFAULT_GRAPH_AGENT.model)];
 
   return (
     <section>
@@ -264,6 +296,25 @@ function AgentSection() {
         <div className="text-sm text-neutral-100">System prompt</div>
         <TextArea ariaLabel="System prompt addition for every agent session" value={systemPrompt} onChange={setSystemPrompt} />
         <p className="text-[13px] leading-snug text-neutral-500">Appended to Claude Code's own system prompt in every session started from now on, after the instructions of your CLAUDE.md files. Leave it empty to add nothing.</p>
+      </div>
+      <div className="mt-5 flex flex-col gap-2">
+        <TextRow
+          label="Diagram model"
+          ariaLabel="Model the agent writes the architecture diagram with"
+          value={graphAgent.model}
+          onChange={(value) => setGraphAgent("model", value)}
+          presets={modelPresets}
+          isMonospace
+        />
+        <TextRow
+          label="Diagram effort"
+          ariaLabel="Effort the agent writes the architecture diagram with"
+          value={graphAgent.effort}
+          onChange={(value) => setGraphAgent("effort", value)}
+          presets={choicesOf("effort")}
+          isMonospace
+        />
+        <p className="text-[13px] leading-snug text-neutral-500">The session's agent switches to this model and effort while it updates the architecture diagram and goes back to the chat's choice afterwards. A model option such as <code>opus</code> follows Claude Code to newer versions; a full model ID such as <code>claude-opus-5-5</code> stays on that version.</p>
       </div>
     </section>
   );
@@ -311,6 +362,27 @@ function GuardrailsSection() {
 
 /** Example path the preview starts with; it hits the default NestJS service rule. */
 const PREVIEW_PATH_EXAMPLE = "apps/api/src/user/user.service.ts";
+
+/** Example folder the folder icon preview starts with; it hits the default user interface rule. */
+const PREVIEW_FOLDER_EXAMPLE = "apps/admin-ui";
+
+/**
+ * Positional edits of an ordered rule list. Each starts from the store's current rules (`current`), not the rendered
+ * ones: two fields of a row may commit before a re-render.
+ */
+function ruleListEdits<T extends object>(current: () => T[], set: (rules: T[]) => void) {
+  return {
+    update: (index: number, patch: Partial<T>) => set(current().map((rule, position) => (position === index ? { ...rule, ...patch } : rule))),
+    remove: (index: number) => set(current().filter((_, position) => position !== index)),
+    move: (index: number, offset: -1 | 1) => {
+      const next = [...current()];
+      const [rule] = next.splice(index, 1);
+      next.splice(index + offset, 0, rule);
+      set(next);
+    },
+    add: (rule: T) => set([...current(), rule]),
+  };
+}
 
 /** Which icon a file gets: an ordered list of glob rules over the worktree-relative path, with a live preview. */
 /** What one update check and the install that may follow are at: the phases follow each other in this order. */
@@ -422,16 +494,7 @@ function FileIconsSection() {
   const needle = filter.trim().toLowerCase();
   const isShown = (rule: IconRule) => !needle || rule.glob.toLowerCase().includes(needle) || rule.icon.toLowerCase().includes(needle);
 
-  // Edits start from the store's current rules, not the rendered ones: two fields of a row may commit before a re-render.
-  const current = () => useSettingsStore.getState().iconRules;
-  const update = (index: number, patch: Partial<IconRule>) => setIconRules(current().map((rule, position) => (position === index ? { ...rule, ...patch } : rule)));
-  const remove = (index: number) => setIconRules(current().filter((_, position) => position !== index));
-  const move = (index: number, offset: -1 | 1) => {
-    const next = [...current()];
-    const [rule] = next.splice(index, 1);
-    next.splice(index + offset, 0, rule);
-    setIconRules(next);
-  };
+  const { update, remove, move, add } = ruleListEdits(() => useSettingsStore.getState().iconRules, setIconRules);
 
   return (
     <section>
@@ -466,7 +529,7 @@ function FileIconsSection() {
           )}
         </ul>
         <div>
-          <button type="button" onClick={() => setIconRules([...current(), { glob: "", icon: "" }])} className={SECONDARY_BUTTON_XS}>
+          <button type="button" onClick={() => add({ glob: "", icon: "" })} className={SECONDARY_BUTTON_XS}>
             <PlusIcon />
             Add rule
           </button>
@@ -477,24 +540,81 @@ function FileIconsSection() {
   );
 }
 
-/** One rule: its glob, the icon picker and the buttons that order and delete it. */
+/**
+ * Which icon a folder gets: an ordered list of glob rules over the worktree-relative folder path, each for the matching
+ * folder alone or for every folder below it too, with a live preview.
+ */
+function FolderIconsSection() {
+  const rules = useSettingsStore((state) => state.folderIconRules);
+  const setFolderIconRules = useSettingsStore((state) => state.setFolderIconRules);
+  const resetFolderIconRules = useSettingsStore((state) => state.resetFolderIconRules);
+  const { update, remove, move, add } = ruleListEdits(() => useSettingsStore.getState().folderIconRules, setFolderIconRules);
+
+  return (
+    <section>
+      <PageHeader title="Folder icons" hint="Which icon a folder gets, by glob over its path relative to the repository root" isDefault={isFolderIconRulesDefault(rules)} onReset={resetFolderIconRules} />
+      <div className="flex flex-col gap-4">
+        <p className="text-[13px] leading-snug text-neutral-500">
+          Rules are tried top to bottom; the first whose glob matches wins, otherwise the folder name decides. A glob without a slash matches the folder name at any depth. With
+          “Subfolders” every folder below a matching one gets the icon too; without it only the matching folder does.
+        </p>
+        <ul className="flex flex-col gap-1.5">
+          {rules.map((rule, index) => (
+            // Rows are positional: a rule has no identity of its own, and keying by index keeps the drafts with their row while typing.
+            <IconRuleRow
+              key={index}
+              rule={rule}
+              icons={FOLDER_ICON_NAMES}
+              globExample="apps/admin-ui"
+              onChange={(patch) => update(index, patch)}
+              onRemove={() => remove(index)}
+              onMoveUp={index > 0 ? () => move(index, -1) : undefined}
+              onMoveDown={index < rules.length - 1 ? () => move(index, 1) : undefined}
+            >
+              <label className="flex shrink-0 items-center gap-1.5 text-[13px] text-neutral-300" title="Also give every folder below a matching one this icon">
+                <input type="checkbox" checked={rule.includeSubfolders} onChange={(event) => update(index, { includeSubfolders: event.target.checked })} className="hunt-checkbox" />
+                Subfolders
+              </label>
+            </IconRuleRow>
+          ))}
+        </ul>
+        <div>
+          <button type="button" onClick={() => add({ glob: "", icon: "", includeSubfolders: false })} className={SECONDARY_BUTTON_XS}>
+            <PlusIcon />
+            Add rule
+          </button>
+        </div>
+        <FolderIconPreviewRow rules={rules} />
+      </div>
+    </section>
+  );
+}
+
+/** One rule: its glob, the icon picker over `icons`, extra controls (`children`) and the buttons that order and delete it. */
 function IconRuleRow({
   rule,
+  icons,
+  globExample = "apps/api/**",
   onChange,
   onRemove,
   onMoveUp,
   onMoveDown,
+  children,
 }: {
   rule: IconRule;
+  icons?: readonly string[];
+  globExample?: string;
   onChange: (patch: Partial<IconRule>) => void;
   onRemove: () => void;
   onMoveUp: (() => void) | undefined;
   onMoveDown: (() => void) | undefined;
+  children?: ReactNode;
 }) {
   return (
     <li className="flex items-center gap-2">
-      <DraftInput value={rule.glob} onCommit={(glob) => onChange({ glob })} placeholder="Glob, e.g. apps/api/**" ariaLabel="Glob" title={rule.glob} className="min-w-0 flex-1" />
-      <IconPicker value={rule.icon} onChange={(icon) => onChange({ icon })} className="w-52" />
+      <DraftInput value={rule.glob} onCommit={(glob) => onChange({ glob })} placeholder={`Glob, e.g. ${globExample}`} ariaLabel="Glob" title={rule.glob} className="min-w-0 flex-1" />
+      <IconPicker value={rule.icon} onChange={(icon) => onChange({ icon })} icons={icons} className="w-52" />
+      {children}
       <button type="button" onClick={onMoveUp} disabled={!onMoveUp} className={ICON_BUTTON_SM} aria-label="Move rule up">
         <ArrowIcon direction="up" />
       </button>
@@ -529,6 +649,32 @@ function IconPreviewRow({ rules }: { rules: IconRule[] }) {
       <div className="flex w-40 items-center gap-2 text-[13px] text-neutral-400">
         {trimmed ? <img src={fileIconUrl(trimmed)} alt="" className="size-4 shrink-0" /> : <span className="size-4 shrink-0" />}
         <span className="truncate font-mono">{trimmed ? resolveFileIcon(trimmed, rules) : ""}</span>
+      </div>
+    </div>
+  );
+}
+
+/** Shows which icon a folder of the user's choosing gets under the current rules, closed, as they type. */
+function FolderIconPreviewRow({ rules }: { rules: FolderIconRule[] }) {
+  const folderIconUrl = useFolderIconUrl();
+  const [path, setPath] = useState(PREVIEW_FOLDER_EXAMPLE);
+  const trimmed = path.trim();
+
+  return (
+    <div className="flex items-center gap-3 border-t border-(--line) pt-4">
+      <div className="min-w-0 flex-1 text-sm text-neutral-100">Preview</div>
+      <input
+        type="text"
+        value={path}
+        spellCheck={false}
+        onChange={(event) => setPath(event.target.value)}
+        placeholder="Folder to try, e.g. apps/admin-ui/src"
+        className="w-72 truncate rounded border border-neutral-600 bg-(--surface-input) px-2 py-1 font-mono text-sm text-neutral-200 outline-none focus:border-neutral-400"
+        aria-label="Folder to preview the icon of"
+      />
+      <div className="flex w-40 items-center gap-2 text-[13px] text-neutral-400">
+        {trimmed ? <img src={folderIconUrl(trimmed)} alt="" className="size-4 shrink-0" /> : <span className="size-4 shrink-0" />}
+        <span className="truncate font-mono">{trimmed ? resolveFolderIcon(trimmed, rules) : ""}</span>
       </div>
     </div>
   );
@@ -590,7 +736,8 @@ function ArrowIcon({ direction }: { direction: "up" | "down" }) {
  * Row with a free-text field that commits when it is left (Enter leaves it). The store decides what to keep, so the
  * field shows the stored value afterwards: a rejected value (empty, or an absolute or `..` path for a folder) snaps
  * back, a normalized one (trimmed, `./` stripped) takes its stored form. A store change from outside (reset, preset)
- * replaces the draft. `presets` fill a datalist of suggestions.
+ * replaces the draft. `presets` are suggested below the field: all of them on a click or ↓, the matching ones while
+ * typing; ↑/↓ highlight one, Enter or a click takes it.
  */
 function TextRow({
   label,
@@ -610,7 +757,13 @@ function TextRow({
   inputStyle?: CSSProperties;
 }) {
   const [draft, setDraft] = useState(value);
+  const [isSuggesting, setIsSuggesting] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const inputRef = useRef<HTMLInputElement>(null);
   const listId = useId();
+  const presetOptions = (presets ?? []).map((preset) => ({ id: preset.value, name: preset.label ?? preset.value, description: preset.label ? preset.value : null }));
+  const suggestions = filterOptions(presetOptions, draft === value ? "" : draft);
+  const showsSuggestions = isSuggesting && suggestions.length > 0;
 
   useEffect(() => setDraft(value), [value]);
 
@@ -622,33 +775,80 @@ function TextRow({
     setDraft(value);
   };
 
+  function suggest(index: number) {
+    if (!presets) return;
+    setActiveIndex(index);
+    setIsSuggesting(true);
+  }
+
+  function pick(index: number) {
+    const preset = suggestions[index];
+    if (!preset) return;
+    setIsSuggesting(false);
+    setDraft(preset.id);
+    if (preset.id !== value) {
+      onChange(preset.id);
+    }
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (showsSuggestions && activeIndex >= 0) {
+        pick(activeIndex);
+      } else {
+        event.currentTarget.blur();
+      }
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    if (showsSuggestions) {
+      setActiveIndex(stepEnabled(suggestions, activeIndex, event.key === "ArrowDown" ? 1 : -1));
+    } else {
+      suggest(stepEnabled(suggestions, -1, 1));
+    }
+  }
+
   return (
     <div className="flex items-center gap-3">
       <div className="min-w-0 flex-1 text-sm text-neutral-100">{label}</div>
       <input
+        ref={inputRef}
         type="text"
-        list={presets ? listId : undefined}
+        role={presets ? "combobox" : undefined}
+        aria-autocomplete={presets ? "list" : undefined}
+        aria-expanded={presets ? showsSuggestions : undefined}
+        aria-controls={showsSuggestions ? listId : undefined}
+        aria-activedescendant={showsSuggestions && activeIndex >= 0 ? optionId(listId, activeIndex) : undefined}
         value={draft}
         spellCheck={false}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.currentTarget.blur();
-          }
+        onChange={(event) => {
+          setDraft(event.target.value);
+          suggest(-1);
         }}
+        onClick={() => suggest(-1)}
+        onBlur={() => {
+          setIsSuggesting(false);
+          commit();
+        }}
+        onKeyDown={onKeyDown}
         style={inputStyle}
         className={`w-56 truncate rounded border border-neutral-600 bg-(--surface-input) px-2 py-1 text-sm text-neutral-200 outline-none focus:border-neutral-400 ${isMonospace ? "font-mono" : ""}`}
         aria-label={ariaLabel}
       />
-      {presets ? (
-        <datalist id={listId}>
-          {presets.map((preset) => (
-            <option key={preset.value} value={preset.value}>
-              {preset.label}
-            </option>
-          ))}
-        </datalist>
+      {showsSuggestions ? (
+        <OptionMenu
+          id={listId}
+          label={ariaLabel}
+          options={suggestions}
+          selectedId={value}
+          activeIndex={activeIndex}
+          onActivate={setActiveIndex}
+          onPick={pick}
+          onClose={() => setIsSuggesting(false)}
+          anchorRef={inputRef}
+        />
       ) : null}
       {/* Keeps the field aligned with the unit column of NumberRow. */}
       <span className="w-6" />

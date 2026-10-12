@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { folderIconUrl, useFileIconUrl } from "../diff/fileIcons";
+import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { ChevronIcon, PlusIcon, TrashIcon } from "../ui/icons";
 import { useEscapeToClose } from "../ui/useEscapeToClose";
 import { expandedForTree, folderOf, guardrailTreeRows, isInsideFolder, KIND_LABELS, treeParentOf, type Guardrail, type GuardrailKind } from "./guardrails";
@@ -190,6 +190,7 @@ function FolderRow({
   onToggle: () => void;
   actions: FolderActions;
 }) {
+  const folderIconUrl = useFolderIconUrl();
   const buttonCount = [actions.onCreate, actions.onDelete].filter(Boolean).length;
   const place = path || name;
   return (
@@ -203,7 +204,7 @@ function FolderRow({
         className={`flex w-full items-center gap-1 rounded-md py-1 text-left ${isDropTarget ? "bg-blue-500/25 text-white ring-1 ring-blue-400/60 ring-inset" : `${isKindDir ? "text-blue-200" : isEmpty ? "text-neutral-500" : "text-neutral-300"} hover:bg-(--row-hover) hover:text-white`}`}
       >
         <ChevronIcon expanded={isExpanded} className="size-3.5 shrink-0 text-neutral-500" />
-        <img src={folderIconUrl(name)} alt="" className={`size-4 shrink-0 ${isEmpty ? "opacity-50" : ""}`} />
+        <img src={folderIconUrl(place)} alt="" className={`size-4 shrink-0 ${isEmpty ? "opacity-50" : ""}`} />
         <span className="min-w-0 flex-1 truncate">{name}</span>
       </button>
       {buttonCount ? (

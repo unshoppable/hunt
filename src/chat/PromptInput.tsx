@@ -1,19 +1,19 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AvailableCommand, PullRequestRef, Screenshot } from "../ipc/types";
-import type { ContextUsage, PromptDraft, QueuedPrompt } from "../state/store";
-import { UsageBar } from "../ui/UsageBar";
-import { PillSelect, type PillOption } from "./PillSelect";
+import type { PromptDraft, QueuedPrompt } from "../state/store";
+import { PillSelect } from "./PillSelect";
 import { appendPromptTexts, QueuedPrompts, useReturnedPrompts } from "./QueuedPrompts";
 import { ScreenshotTrigger, screenshotUrl } from "./ScreenshotPicker";
 import { CLEAR_BUTTON, SEND_BUTTON } from "../ui/buttons";
+import type { DropdownOption } from "../ui/floatingMenu";
 import { CloseIcon, EraserIcon, GitHubIcon } from "../ui/icons";
 import { useAutoGrow } from "../ui/useAutoGrow";
 import { useDismiss } from "../ui/useDismiss";
 import { matchCommands, slashQueryOf } from "./slashCommands";
 
 /** One agent config dropdown (model, effort, …) shown in the prompt toolbar. */
-export type ConfigSelect = { id: string; name: string; value: string; choices: PillOption[] };
+export type ConfigSelect = { id: string; name: string; value: string; choices: DropdownOption[] };
 
 /** Accent color of the mode pill, matching the Claude Code dark theme (autoAccept, planMode, warning, error); manual mode stays neutral. */
 const MODE_CLASS: Record<string, string | undefined> = {
@@ -47,7 +47,6 @@ export function PromptInput({
   onConfigChange,
   pullRequest,
   extension,
-  contextUsage,
   initialDraft = null,
   placeholder = "Ask anything, / for commands",
   hint = "",
@@ -62,7 +61,7 @@ export function PromptInput({
   /** Takes one prompt out of the queue, after the box took it back. */
   onUnqueue?: (promptId: string) => void;
   modeId: string;
-  modes: PillOption[];
+  modes: DropdownOption[];
   configSelects: ConfigSelect[];
   commands: AvailableCommand[];
   onSend: (text: string, images: Screenshot[]) => void;
@@ -75,8 +74,6 @@ export function PromptInput({
   pullRequest?: PullRequestRef | null;
   /** Secondary bar attached below the box, e.g. the repository and base branch of a session to be created. */
   extension?: ReactNode;
-  /** Fill level of the context window shown in the toolbar; nothing is shown while it is unknown. */
-  contextUsage?: ContextUsage | null;
   /** Text and attachments the box starts with, e.g. a prompt whose session could not be created. */
   initialDraft?: PromptDraft | null;
   placeholder?: string;
@@ -251,7 +248,6 @@ export function PromptInput({
               className={MODE_CLASS[modeId] ?? ""}
             />
             <span className="flex-1" />
-            {contextUsage ? <ContextMeter usage={contextUsage} /> : null}
             {pullRequest ? (
               <button
                 type="button"
@@ -293,45 +289,6 @@ export function PromptInput({
       </div>
     </div>
   );
-}
-
-/** Fill level of the context window as a bar plus `42.3k / 200k (21%)`. */
-function ContextMeter({ usage }: { usage: ContextUsage }) {
-  const percent = contextPercent(usage);
-  return (
-    <div
-      role="meter"
-      aria-label="Context window"
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={percent}
-      title="Context window: used / size"
-      className="mr-3 flex shrink-0 items-center gap-2 text-[12px] text-neutral-500 tabular-nums"
-    >
-      <UsageBar percent={percent} className="h-1.5 w-16" />
-      {formatContextUsage(usage)}
-    </div>
-  );
-}
-
-function contextPercent({ used, size }: ContextUsage): number {
-  return size > 0 ? Math.round((used / size) * 100) : 0;
-}
-
-/** `42.3k / 200k (21%)`: tokens in context, window size and fill level. */
-export function formatContextUsage(usage: ContextUsage): string {
-  return `${formatTokens(usage.used)} / ${formatTokens(usage.size)} (${contextPercent(usage)}%)`;
-}
-
-/** Token counts as `9.5k`, `200k` or `1M`: one decimal below ten units, none above. */
-function formatTokens(count: number): string {
-  if (count >= 1_000_000) return `${trimScaled(count / 1_000_000)}M`;
-  if (count >= 1000) return `${trimScaled(count / 1000)}k`;
-  return String(count);
-}
-
-function trimScaled(value: number): string {
-  return value < 10 ? value.toFixed(1).replace(/\.0$/, "") : String(Math.round(value));
 }
 
 /** Thin vertical rule between the toolbar pills. */

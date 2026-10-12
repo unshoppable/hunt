@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { commands } from "../ipc/commands";
 import type { ReviewEvent } from "../ipc/types";
+import { reloadReviewThreads } from "../review/reviewComments";
 import { INPUT } from "./styles";
 import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
 import { Modal } from "../ui/Modal";
@@ -14,7 +15,7 @@ const EVENTS: { id: ReviewEvent; label: string; hint: string }[] = [
 
 /**
  * Submits a review of pull request `pullRequestNumber`: a summary comment with one of GitHub's verdicts, plus the
- * `draftCount` comments drafted on lines of the files. Without drafts only an approval may go without a comment,
+ * `draftCount` comments drafted on lines or whole files. Without drafts only an approval may go without a comment,
  * as on GitHub.
  */
 export function ReviewDialog({
@@ -26,7 +27,7 @@ export function ReviewDialog({
 }: {
   sessionId: string;
   pullRequestNumber: number;
-  /** Review comments drafted under lines of the files; they go out with the review. */
+  /** Review comments drafted on lines or whole files; they go out with the review. */
   draftCount: number;
   onClose: () => void;
   /** Called once GitHub accepted the review, right before the dialog closes. */
@@ -49,6 +50,8 @@ export function ReviewDialog({
       setIsSubmitting(false);
       return;
     }
+    // The submitted drafts come back as review threads.
+    reloadReviewThreads(sessionId);
     onSubmitted();
     onClose();
   }
@@ -58,7 +61,7 @@ export function ReviewDialog({
       <h2 className="mb-1 text-base font-semibold">Submit review</h2>
       <p className="mb-3 text-[13px] text-neutral-400">
         Pull request #{pullRequestNumber}
-        {draftCount ? ` · ${draftCount} drafted ${draftCount === 1 ? "comment goes" : "comments go"} out with this review: inline on diff lines, as notes in the summary elsewhere.` : ""}
+        {draftCount ? ` · ${draftCount} drafted ${draftCount === 1 ? "comment goes" : "comments go"} out with this review: on diff lines and changed files, as notes in the summary elsewhere.` : ""}
       </p>
       <label className="mb-1 block text-[13px] text-neutral-400">Comment</label>
       <textarea

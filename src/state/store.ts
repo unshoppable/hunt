@@ -21,8 +21,9 @@ import { repoName } from "../ui/path";
 import { titleFromPrompt } from "../sessions/sessionLabels";
 import { useAgentDefaultsStore } from "./agentDefaults";
 import { usePlanUsageStore } from "./planUsage";
+import { useSettingsStore } from "./settings";
 
-export type SessionMode = { id: string; name: string };
+export type SessionMode = { id: string; name: string; description?: string | null };
 
 /** Fill level of the agent's context window in tokens, as last reported by the agent. */
 export type ContextUsage = { used: number; size: number };
@@ -96,11 +97,11 @@ function placeholderSession(id: string, title: string, target: WorktreeTarget, p
 
 /** Full mode catalog of claude-agent-acp, used until the agent announces its `mode` config option; `current_mode_update` keeps the selection in sync. */
 export const SESSION_MODES: SessionMode[] = [
-  { id: "default", name: "Manual" },
-  { id: "acceptEdits", name: "Accept edits" },
-  { id: "plan", name: "Plan" },
-  { id: "auto", name: "Auto" },
-  { id: "bypassPermissions", name: "Bypass permissions" },
+  { id: "default", name: "Manual", description: "Always ask before making changes" },
+  { id: "acceptEdits", name: "Accept edits", description: "Automatically accept all file edits" },
+  { id: "plan", name: "Plan", description: "Create a plan before making changes" },
+  { id: "auto", name: "Auto", description: "Claude handles permission decisions" },
+  { id: "bypassPermissions", name: "Bypass permissions", description: "Accepts all permissions" },
 ];
 
 export type SessionChat = {
@@ -127,6 +128,13 @@ export type SessionChat = {
   editVersion: number;
   /** Bumped when the watcher reports a rewritten graph file. */
   graphVersion: number;
+  /** A diagram refresh turn is running; the graph panel shows it as generating. */
+  isGeneratingGraph: boolean;
+  /**
+   * Whether the latest turn is one Hunt sent itself (a diagram refresh). The chat shows neither its prompt nor its
+   * output nor a working indicator; the next turn of the user ends it.
+   */
+  isHiddenTurn: boolean;
   /**
    * Whether `items` hold the whole conversation. False for a chat record that live events or `ensureChat` created
    * ahead of `loadHistory`, which then still rebuilds it from the backend.
@@ -191,7 +199,7 @@ type HuntState = {
   takeQueue: (id: string) => QueuedPrompt[];
   /** Takes the queued prompt `promptId` out of the queue. */
   unqueuePrompt: (id: string, promptId: string) => void;
-  /** Asks the agent for a fresh component diagram; the chat shows a status line instead of the prompt. */
+  /** Asks the agent for a fresh component diagram as a hidden turn (see `SessionChat.isHiddenTurn`). */
   refreshGraph: (id: string) => Promise<void>;
   cancelPrompt: (id: string) => Promise<void>;
   setMode: (id: string, modeId: string) => Promise<void>;
@@ -228,12 +236,11 @@ export function createEmptyChat(): SessionChat {
     error: null,
     editVersion: 0,
     graphVersion: 0,
+    isGeneratingGraph: false,
+    isHiddenTurn: false,
     hasHistory: false,
   };
 }
-
-/** Status line of a graph refresh turn; the backend records the same label in the session history. */
-const GRAPH_TURN_LABEL = "Updating the component diagram";
 
 /** Stop reason the backend reports for a turn the user interrupted (the Debug form of the ACP `StopReason::Cancelled`). */
 const CANCELLED_STOP_REASON = "Cancelled";
@@ -287,19 +294,15 @@ function appendUserBlock(items: ChatItem[], block: ContentBlock): ChatItem[] {
   return last?.kind === "user" ? [...items.slice(0, -1), updated] : [...items, updated];
 }
 
-/** Hidden chunks (sent by Hunt itself) become one status item per turn instead of a user bubble. */
-function appendHiddenBlock(items: ChatItem[], label: string): ChatItem[] {
-  const last = items[items.length - 1];
-  if (last?.kind === "status" && last.text === label) return items;
-  return [...items, { kind: "status", id: nextItemId(), text: label }];
-}
+/** Updates that carry the agent's output for the running turn; the chat leaves them out of a turn Hunt sent itself. */
+const TURN_OUTPUT_UPDATES = new Set<SessionNotification["update"]["sessionUpdate"]>(["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan"]);
 
-function hiddenLabel(meta: unknown): string | null {
+/** Whether a user message chunk belongs to a turn Hunt sent itself. */
+function isHiddenChunk(meta: unknown): boolean {
   const chunkMeta = meta as HuntChunkMeta | null | undefined;
   // Turns replayed from a transcript older than the name Hunt still carry the meta under `harness`.
   const hunt = chunkMeta?.hunt ?? chunkMeta?.harness;
-  if (!hunt?.hidden) return null;
-  return hunt.label ?? "Working";
+  return Boolean(hunt?.hidden);
 }
 
 function toToolCallView(toolCall: ToolCall): ToolCallView {
@@ -376,11 +379,11 @@ function mergeToolCallUpdate(items: ChatItem[], update: ToolCallUpdate): ChatIte
 
 function reduceChat(chat: SessionChat, notification: SessionNotification): SessionChat {
   const update = notification.update;
+  if (TURN_OUTPUT_UPDATES.has(update.sessionUpdate) && chat.isHiddenTurn) return chat;
   switch (update.sessionUpdate) {
-    case "user_message_chunk": {
-      const label = hiddenLabel(update._meta);
-      return { ...chat, items: label ? appendHiddenBlock(chat.items, label) : appendUserBlock(chat.items, update.content) };
-    }
+    case "user_message_chunk":
+      if (isHiddenChunk(update._meta)) return { ...chat, isHiddenTurn: true };
+      return { ...chat, items: appendUserBlock(chat.items, update.content), isHiddenTurn: false };
     case "agent_message_chunk":
       return { ...chat, items: appendChunk(chat.items, "agent", describeContentBlock(update.content)) };
     case "agent_thought_chunk":
@@ -426,13 +429,19 @@ export const useHuntStore = create<HuntState>((set, get) => {
   }
 
   /**
-   * Shows `item` for the turn (none when it is shown already), runs `request` and marks the chat busy meanwhile. A
-   * turn that ends while another session is active leaves the chat marked as having unseen activity; every ended turn
+   * Shows `item` for the turn (none when it is shown already or the turn is hidden), runs `request` and marks the chat
+   * busy meanwhile. A shown item ends a hidden turn before it. A turn that ends while another session is active leaves the chat marked as having unseen activity; every ended turn
    * refreshes the plan usage (throttled, see `state/planUsage.ts`). A completed turn sends the next queued prompt in
    * the same step, so the chat never shows as idle in between; a stopped or failed turn leaves the queue alone.
    */
   async function runTurn(id: string, item: ChatItem | null, request: () => Promise<string>) {
-    updateChat(id, (chat) => ({ ...chat, items: item ? [...chat.items, item] : chat.items, isBusy: true, error: null }));
+    updateChat(id, (chat) => ({
+      ...chat,
+      items: item ? [...chat.items, item] : chat.items,
+      isHiddenTurn: item ? false : chat.isHiddenTurn,
+      isBusy: true,
+      error: null,
+    }));
     let next: QueuedPrompt | null = null;
     try {
       const stopReason = await request();
@@ -709,7 +718,10 @@ export const useHuntStore = create<HuntState>((set, get) => {
     },
 
     refreshGraph: async (id) => {
-      await runTurn(id, { kind: "status", id: nextItemId(), text: GRAPH_TURN_LABEL }, () => commands.refreshGraph(id));
+      updateChat(id, (chat) => ({ ...chat, isGeneratingGraph: true, isHiddenTurn: true }));
+      const { model, effort } = useSettingsStore.getState().graphAgent;
+      const request = () => commands.refreshGraph(id, model, effort).finally(() => updateChat(id, (chat) => ({ ...chat, isGeneratingGraph: false })));
+      await runTurn(id, null, request);
     },
 
     cancelPrompt: async (id) => {

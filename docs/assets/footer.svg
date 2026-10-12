@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 75" width="600" height="75" fill="none" stroke="#6e6c7e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- The H of the Hunt icon as an outline, standing on a line. -->
+  <path transform="translate(159.04 -9.66) scale(0.08)" vector-effect="non-scaling-stroke"
+    d="M280 322a40 40 0 0 1 40-40h24a40 40 0 0 1 40 40v138h256v-198a40 40 0 0 1 40-40h24a40 40 0 0 1 40 40v440a40 40 0 0 1-40 40h-24a40 40 0 0 1-40-40v-138h-256v198a40 40 0 0 1-40 40h-24a40 40 0 0 1-40-40z"/>
+  <path d="M0.75 54.5h598.5"/>
+</svg>

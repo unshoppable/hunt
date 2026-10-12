@@ -9,6 +9,7 @@ import { openInEditorWindow } from "../ide/editorWindows";
 import { commands } from "../ipc/commands";
 import { listenTo } from "../ipc/events";
 import type { ChangeStat, DiffOpenRequest, FileDiff } from "../ipc/types";
+import { useReviewedPullRequest } from "../review/reviewComments";
 import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { HEADER_BAR } from "../ui/bars";
@@ -74,6 +75,7 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
   const ensureChat = useHuntStore((state) => state.ensureChat);
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
   const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
+  const pullRequest = useReviewedPullRequest(sessionId);
   const fontSize = useSettingsStore((state) => state.panes.diff.fontSize);
   const lineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
   const fontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
@@ -83,10 +85,18 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
   const [stat, setStat] = useState<ChangeStat | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<DiffMode>("split");
+  const [isCollapsed, setIsCollapsed] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const isDirtyRef = useRef(false);
   const editorRef = useRef<CodeDiffEditorHandle>(null);
   const subChat = useSubChatPopover();
+  const headerRef = useRef<HTMLDivElement>(null);
+  /** Offset from the header's left edge of the right side's line numbers in split mode; null in unified mode. */
+  const [lineNumbersLeft, setLineNumbersLeft] = useState<number | null>(null);
+  const alignWithLineNumbers = useCallback((clientX: number | null) => {
+    const header = headerRef.current;
+    setLineNumbersLeft(clientX === null || !header ? null : clientX - header.getBoundingClientRect().left);
+  }, []);
 
   const markDirty = useCallback((value: boolean) => {
     isDirtyRef.current = value;
@@ -173,28 +183,45 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
 
   return (
     <div className="flex h-full flex-col bg-(--surface-inspector)">
-      {/* The macOS traffic lights sit in this row (see ui/nativeWindow.ts), so it starts further right and drags the window. */}
-      <div data-tauri-drag-region="" className={`${HEADER_BAR} gap-2 border-b border-(--line) pr-3 pl-23 text-xs`}>
-        <span data-tauri-drag-region="" className="min-w-0 flex-1 truncate font-mono text-neutral-300" title={path}>
+      {/* The macOS traffic lights sit in this row (see ui/nativeWindow.ts), so it starts further right and drags the
+          window. In split mode the file comment button and the line counts start where the right side's line numbers do. */}
+      <div ref={headerRef} data-tauri-drag-region="" className={`${HEADER_BAR} border-b border-(--line) pr-3 text-xs`}>
+        <span
+          data-tauri-drag-region=""
+          className="min-w-0 truncate pr-2 pl-23 font-mono text-neutral-300"
+          style={lineNumbersLeft === null ? { flex: "1 1 0%" } : { width: lineNumbersLeft, flexShrink: 0 }}
+          title={path}
+        >
           {path}
           {isDirty ? <span className="ml-1 text-amber-300" title="Unsaved changes">●</span> : null}
         </span>
-        {stat ? <ChangeBadge added={stat.added} removed={stat.removed} /> : null}
-        <button
-          type="button"
-          disabled={!isDirty}
-          onClick={() => editorRef.current?.save()}
-          className={`${BUTTON_XS} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
-          title="Save (⌘S inside the editor)"
-        >
-          Save
-        </button>
-        <button type="button" onClick={() => setMode(mode === "split" ? "unified" : "split")} className={SECONDARY_BUTTON_XS}>
-          {mode === "split" ? "Split" : "Unified"}
-        </button>
-        <button type="button" onClick={() => void openInEditorWindow(sessionId, { path })} className={SECONDARY_BUTTON_XS} title="Open the file in the editor window">
-          Open in editor
-        </button>
+        <div data-tauri-drag-region="" className={`flex items-center gap-2 self-stretch ${lineNumbersLeft === null ? "" : "flex-1"}`}>
+          {pullRequest ? (
+            <button type="button" onClick={() => editorRef.current?.commentOnFile()} className={SECONDARY_BUTTON_XS} title="Comment on the whole file; it goes out with your review">
+              Comment on file
+            </button>
+          ) : null}
+          {stat ? <ChangeBadge added={stat.added} removed={stat.removed} /> : null}
+          {lineNumbersLeft === null ? null : <span data-tauri-drag-region="" className="flex-1 self-stretch" />}
+          <button
+            type="button"
+            disabled={!isDirty}
+            onClick={() => editorRef.current?.save()}
+            className={`${BUTTON_XS} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
+            title="Save (⌘S inside the editor)"
+          >
+            Save
+          </button>
+          <button type="button" onClick={() => setMode(mode === "split" ? "unified" : "split")} className={SECONDARY_BUTTON_XS}>
+            {mode === "split" ? "Split" : "Unified"}
+          </button>
+          <button type="button" onClick={() => setIsCollapsed(!isCollapsed)} className={SECONDARY_BUTTON_XS} title={isCollapsed ? "Show every unchanged line" : "Collapse every unchanged stretch"}>
+            {isCollapsed ? "Expand all" : "Collapse unchanged"}
+          </button>
+          <button type="button" onClick={() => void openInEditorWindow(sessionId, { path })} className={SECONDARY_BUTTON_XS} title="Open the file in the editor window">
+            Open in editor
+          </button>
+        </div>
       </div>
       {error ? <p className="border-b border-(--line) px-3 py-2 text-xs text-red-400">{error}</p> : null}
       <div className="relative min-h-0 flex-1 bg-(--diff-bg)">
@@ -205,15 +232,17 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
             sessionId={sessionId}
             diff={diff}
             mode={mode}
+            collapseUnchanged={isCollapsed}
             fontSize={fontSize}
             lineHeight={lineHeight}
             fontFamily={fontFamily}
             onSave={saveFile}
             onDirtyChange={markDirty}
-            onNavigate={(line, column) => void openInEditorWindow(sessionId, { path, line, column })}
+            onNavigate={(line, column, name) => void openInEditorWindow(sessionId, { path, line, column, definitionOf: name })}
             onOpenInIde={(line, column) => commands.openFileInWebstorm(sessionId, path, line, column).catch((reason) => setError(String(reason)))}
             onOpenSubChat={subChat.open}
             onToggleSubChat={subChat.toggle}
+            onLineNumbersLeftChange={alignWithLineNumbers}
           />
         ) : (
           <p className="p-3 text-xs text-neutral-500">Loading diff…</p>

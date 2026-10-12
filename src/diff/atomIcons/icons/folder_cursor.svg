@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16px" height="16px">
+  <path fill="#767676"
+        d="M10,4H4C2.9,4,2,4.9,2,6v12c0,1.1,0.9,2,2,2h16c1.1,0,2-0.9,2-2V8c0-1.1-0.9-2-2-2h-8L10,4z"/>
+  <g fill="#bababa" transform="scale(0.6) translate(8 8)">
+    <path d="M22,28l8-14V24Z"/>
+    <path d="M14,14l8-4.675L30,14Z"/>
+    <path d="M14,14l8,4V28l-8-4Z"/>
+  </g>
+</svg>

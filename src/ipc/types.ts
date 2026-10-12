@@ -51,8 +51,9 @@ export type DependencyStatus = { phase: "running" | "ready" | "failed"; message:
 
 /**
  * A review comment drafted in Hunt and not yet submitted, on lines `startLine..line` of the new version of `path`
- * (a single-line comment has `startLine === line`). Posted inline when the lines lie in a hunk of the pull request's
- * diff, otherwise as a note in the review summary.
+ * (a single-line comment has `startLine === line`), or on the whole file when both are 0. Posted inline when the
+ * lines lie in a hunk of the pull request's diff, on the file when the file is part of it, otherwise as a note in the
+ * review summary. A reply carries the path and lines of what it answers and goes out with it.
  */
 export type ReviewComment = {
   id: string;
@@ -61,6 +62,45 @@ export type ReviewComment = {
   line: number;
   body: string;
   createdAt: string;
+  /** What the comment answers; null for a comment that opens a thread. */
+  replyTo: ReplyTarget | null;
+};
+
+/** What a drafted reply answers: a review thread on GitHub (its node ID) or a drafted comment that opens a thread. */
+export type ReplyTarget = { kind: "thread" | "draft"; id: string };
+
+/**
+ * A review thread of the pull request on GitHub: comments on lines `startLine..line` of `side` of `path` (both 0 for a
+ * thread on the whole file), oldest first; the first comment opened the thread, the others reply to it.
+ */
+export type ReviewThread = {
+  id: string;
+  path: string;
+  side: DiffSide;
+  startLine: number;
+  line: number;
+  isResolved: boolean;
+  /** The commented code changed after the first comment; GitHub still maps the thread to `line`. */
+  isOutdated: boolean;
+  /** Whether the signed-in user may answer the thread, resolve it, or mark it as unresolved again. */
+  viewerCanReply: boolean;
+  viewerCanResolve: boolean;
+  viewerCanUnresolve: boolean;
+  comments: ReviewThreadComment[];
+};
+
+/** Side of a pull request's diff: lines of `left` number the base version of a file, lines of `right` the new one. */
+export type DiffSide = "left" | "right";
+
+export type ReviewThreadComment = {
+  id: string;
+  /** GitHub login of the author; `ghost` for a deleted account. */
+  author: string;
+  /** Empty for a deleted account. */
+  avatarUrl: string;
+  body: string;
+  createdAt: string;
+  url: string;
 };
 
 /**
@@ -218,26 +258,33 @@ export type FileDiff = {
   unified: string;
 };
 
+/**
+ * One version of a file in the worktree's edit log: its content (`null` when the file did not exist) and the session
+ * whose tool call produced it (`null` for the oldest version and for changes made between tool calls).
+ */
+export type FileVersion = { sessionId: string | null; content: string | null };
+
 /** One entry of a worktree directory listing. */
 export type DirEntry = { name: string; isDir: boolean };
 
 /** Added and removed lines of one uncommitted change; an untracked file counts every line as added. */
 export type ChangeStat = { path: string; added: number; removed: number };
 
-/** How much a human should review a file, 4 being the most: interfaces, data models, auth, payments, central abstractions. */
+/** How much a human should review a file, 4 being the most: its relevance (reuse, architecture, business logic) weighed with how drastic its change is. */
 export type ReviewLevel = 1 | 2 | 3 | 4;
 
 /**
  * One file of the component diagram; the worktree-relative `path` identifies the node. `review` is the agent's rating of
  * the file's review relevance and `reviewReason` the one-sentence criterion behind it.
  */
-export type GraphNode = { path: string; description?: string; review?: ReviewLevel; reviewReason?: string };
+export type GraphNode = { path: string; review?: ReviewLevel; reviewReason?: string };
 
 /**
- * `source` depends on `target` (both node paths). `label` names what the dependency is for in one to three words
- * (`business logic`, `types only`), `description` says in a few sentences how `source` uses `target` and what for.
+ * `source` depends on `target` (both node paths). `label` states how `source` uses `target` in one or two verbs and a
+ * noun (`calls business logic`, `uses types`), `description` says in a few sentences how and what for. Both come
+ * from the agent; an edge read from an import statement has neither.
  */
-export type GraphEdge = { source: string; target: string; label: string; description?: string };
+export type GraphEdge = { source: string; target: string; label?: string; description?: string };
 
 /** The validated content of `.hunt/graph.json` (see src-tauri/src/graph.schema.json). */
 export type ArchitectureGraph = { nodes: GraphNode[]; edges: GraphEdge[] };
@@ -247,7 +294,7 @@ export type GraphStatus = { generatedAt: string | null; isOutdated: boolean };
 
 /** `_meta` Hunt attaches to the chunks of a user turn it sent itself; the chat shows `label` instead of the text. `harness` is the key older transcripts used. */
 export type HuntChunkMeta = { hunt?: HiddenChunk; harness?: HiddenChunk };
-type HiddenChunk = { hidden?: boolean; label?: string };
+type HiddenChunk = { hidden?: boolean };
 
 export type UpdateEvent = { huntSessionId: string; notification: SessionNotification };
 export type PermissionEvent = { huntSessionId: string; requestId: string; request: RequestPermissionRequest };
@@ -274,9 +321,7 @@ export type ChatItem =
   | { kind: "user"; id: string; text: string; images: string[] }
   | { kind: "agent"; id: string; text: string }
   | { kind: "thought"; id: string; text: string }
-  | { kind: "tool"; id: string; toolCall: ToolCallView }
-  /** A turn Hunt sent on the user's behalf, shown as a status line. */
-  | { kind: "status"; id: string; text: string };
+  | { kind: "tool"; id: string; toolCall: ToolCallView };
 
 export type PendingPermission = {
   requestId: string;
@@ -291,8 +336,12 @@ export type LspDiagnosticsEvent = { worktreePath: string; uri: string; diagnosti
 /** The language server process of `worktreePath` ended; the next request starts a new one. */
 export type LspExitedEvent = { worktreePath: string };
 
-/** A file to show in an editor window, with an optional 1-based caret position. */
-export type EditorOpenRequest = { path: string; line?: number; column?: number; inRightSplit?: boolean };
+/**
+ * A file to show in an editor window, with an optional 1-based caret position. With `definitionOf` (the name
+ * ⌘clicked at the position, e.g. in a diff) the window shows that name's declaration instead, or nothing when the
+ * language server knows none inside the worktree.
+ */
+export type EditorOpenRequest = { path: string; line?: number; column?: number; inRightSplit?: boolean; definitionOf?: string };
 
 /** A changed file of a session to show in a diff window (see graph/diffWindows.ts). */
 export type DiffOpenRequest = { sessionId: string; path: string };

@@ -1,27 +1,42 @@
+<h3 align="center">
+  <img src="src-tauri/icons/icon.png" width="100" alt="Hunt logo"/><br/>
+  <img src="docs/assets/transparent.png" height="30" width="0px"/>
+  Hunt
+  <img src="docs/assets/transparent.png" height="30" width="0px"/>
+</h3>
+
+<h6 align="center">
+  <a href="#-features">Features</a>
+  ·
+  <a href="#install">Install</a>
+  ·
+  <a href="#-how-it-works">How it works</a>
+  ·
+  <a href="https://github.com/unshoppable/hunt/releases">Releases</a>
+</h6>
+
 <p align="center">
-  <img src="src-tauri/icons/icon.png" alt="Hunt" width="160" height="160">
+  <img src="docs/assets/palette.svg" width="400" alt=""/>
 </p>
 
-<h1 align="center">Hunt</h1>
-
 <p align="center">
-  A native desktop client for Claude Code.<br>
-  One git worktree per session, a built-in IDE, pull request reviews and a dependency graph of every change.
+  <a href="https://github.com/unshoppable/hunt/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/unshoppable/hunt?style=for-the-badge&labelColor=363a4f&color=a6da95&logo=github&logoColor=cad3f5"></a>
+  <a href="https://www.apple.com/macos"><img alt="macOS" src="https://img.shields.io/badge/platform-macOS-b7bdf8?style=for-the-badge&labelColor=363a4f&logo=apple&logoColor=cad3f5"></a>
+  <a href="https://tauri.app"><img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-91d7e3?style=for-the-badge&labelColor=363a4f&logo=tauri&logoColor=cad3f5"></a>
+  <a href="https://react.dev"><img alt="React 19" src="https://img.shields.io/badge/React-19-8aadf4?style=for-the-badge&labelColor=363a4f&logo=react&logoColor=cad3f5"></a>
+  <a href="https://agentclientprotocol.com"><img alt="ACP" src="https://img.shields.io/badge/protocol-ACP-c6a0f6?style=for-the-badge&labelColor=363a4f"></a>
 </p>
 
+&nbsp;
+
 <p align="center">
-  <a href="https://github.com/unshoppable/hunt"><img alt="Version" src="https://img.shields.io/badge/version-0.1.0-2ea44f?style=for-the-badge"></a>
-  <a href="https://tauri.app"><img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8D8?style=for-the-badge&logo=tauri&logoColor=white"></a>
-  <a href="https://react.dev"><img alt="React 19" src="https://img.shields.io/badge/React-19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"></a>
-  <a href="https://www.rust-lang.org"><img alt="Rust" src="https://img.shields.io/badge/Rust-stable-000000?style=for-the-badge&logo=rust&logoColor=white"></a>
-  <a href="https://agentclientprotocol.com"><img alt="ACP" src="https://img.shields.io/badge/protocol-ACP-8A2BE2?style=for-the-badge"></a>
-  <a href="https://github.com/unshoppable/hunt/releases/latest"><img alt="Download" src="https://img.shields.io/github/v/release/unshoppable/hunt?style=for-the-badge&label=download&color=0A84FF&logo=apple&logoColor=white"></a>
-  <a href="https://www.apple.com/macos"><img alt="macOS" src="https://img.shields.io/badge/platform-macOS-111111?style=for-the-badge&logo=apple&logoColor=white"></a>
+  A native desktop client for Claude Code. One git worktree per session, a built-in IDE, pull request reviews and a
+  dependency graph of every change.
 </p>
 
----
+&nbsp;
 
-## What is Hunt?
+### 🧭 What is Hunt?
 
 Hunt wraps [Claude Code](https://claude.com/claude-code) in a desktop app built on the
 [Agent Client Protocol](https://agentclientprotocol.com) (ACP). The shell is Tauri 2 (Rust), the UI is React 19.
@@ -33,7 +48,9 @@ judge what the agent did: a changelist with diffs, a Monaco-based editor with a 
 request review flow, a dependency graph of the change and an editor for the rules, skills and architectural
 decision records that steer the agent.
 
-## Features
+&nbsp;
+
+### ✨ Features
 
 - **Isolated sessions.** Each session gets a `hunt/<slug>-<id>` worktree; shelve, revert and commit per file.
 - **Sub sessions.** Start a background agent in an existing worktree, or ask Claude about a selected diff range.
@@ -49,20 +66,22 @@ decision records that steer the agent.
   new entries.
 - **Native windows.** Editor, diff, guardrails and settings open as separate macOS windows that stay in sync.
 
-## Getting started
+&nbsp;
 
-### Install
+### 🚀 Getting started
+
+#### Install
 
 Download the latest DMG from the [releases page](https://github.com/unshoppable/hunt/releases/latest), open it and
 drag Hunt into Applications. Hunt ships for Apple Silicon only.
 The app is not signed yet: on first launch right-click it and choose *Open*, or run `xattr -cr /Applications/Hunt.app`.
 
-### Update
+#### Update
 
 Hunt checks the releases page once per launch and shows a dot on the gear button when a newer version exists.
 *Settings → Updates* downloads and installs it; the new version runs after *Restart now* or the next launch.
 
-### Requirements
+#### Requirements
 
 - macOS
 - Node ≥ 20 and a Rust toolchain (`rustup`)
@@ -70,20 +89,20 @@ Hunt checks the releases page once per launch and shows a dot on the gear button
 - Optional: the `gh` CLI, logged in, for pull request reviews
 - Optional: WebStorm via JetBrains Toolbox, for "Open in WebStorm"
 
-### Run
+#### Run
 
 ```sh
 npm install
 npm run tauri dev
 ```
 
-### Verify
+#### Verify
 
 ```sh
 npm run check   # typecheck, lint, vitest and cargo test
 ```
 
-### Release
+#### Release
 
 ```sh
 npm run tauri build -- --bundles dmg   # local DMG in src-tauri/target/release/bundle/dmg/
@@ -104,9 +123,11 @@ and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. A local build only produces them with 
 
 See [CLAUDE.md](CLAUDE.md) for the conventions contributors and coding agents follow in this repository.
 
-## How it works
+&nbsp;
 
-### Sessions and the agent
+### 🧩 How it works
+
+#### Sessions and the agent
 
 `src-tauri/src/acp/` spawns `@agentclientprotocol/claude-agent-acp` per session and forwards every
 `session/update` to the UI as the `acp:update` event; permission requests become `acp:permission`.
@@ -132,7 +153,7 @@ in `prompts/response-style.md` (plain language for software engineers). The fron
 diagram instructions and the selection context of a sub session to Claude Code's system prompt via the ACP
 `systemPrompt` meta.
 
-### Worktrees and changes
+#### Worktrees and changes
 
 `src-tauri/src/git.rs` creates `hunt/<slug>-<id>` worktrees under the app data directory, lists their changes
 against the session's diff base (`HEAD`, or the merge base of a reviewed pull request) and supports shelving and
@@ -149,10 +170,17 @@ worktree (`git write-tree` through a scratch index) when a tool call that may wr
 the paths that differ as touched by that session. The changelist of a shared worktree shows only the session's own
 files by default ("Show all" lifts the filter); a sub session's own files include those of its parent, so it sees
 the parent's changelist plus its own and hides only sibling sub sessions. Unattributed changes count as the
-top-level session's; files touched by several sessions carry a "shared" badge because their diff shows every
-session's changes. Committing, shelving or reverting a file clears its attribution.
+top-level session's; files other sessions touched carry those sessions' marks. Committing, shelving or reverting a
+file clears its attribution.
 
-### Pull request reviews
+Every snapshot that differs from the previous one also goes into the worktree's edit log with the session that made
+the difference. Log and snapshot objects live in Hunt's app data (`edit-log/<id>/`, objects written through
+`GIT_OBJECT_DIRECTORY` with the repository's objects as alternates), never in the repository, and are deleted with
+the last session of the worktree. For a file other sessions changed too, the diff offers "All changes" and "This
+session": the latter replays the file's versions from the log (`src/diff/ownChanges.ts`) and shows, read-only, only
+the lines the session and its parent changed.
+
+#### Pull request reviews
 
 `src-tauri/src/github.rs` lists the open pull requests of a repository and reads one with its conversation through
 the `gh` CLI. The "PR review" button of the new-session view (`src/sessions/PullRequestPopover.tsx`) shows them with
@@ -167,9 +195,20 @@ code views hovering a line shows GitHub's "+" in the gutter (`src/review/addComm
 comment box under the line, and drafted comments stay there as cards (`src/review/ReviewCommentZones.tsx`, stored
 as `reviewComments` in `sessions.json`) until the review goes out. A draft on a line of a diff hunk (blue "+") is
 posted inline through the REST API (`src-tauri/src/session/review.rs`); a draft elsewhere (grey "+") becomes a note
-in the review summary with the commented lines as a code block.
+in the review summary with the commented lines as a code block. "Comment on file" in the header of the diff views
+drafts a comment on the whole file, shown above its first line; GitHub's REST API cannot take those with a review,
+so the review is then created pending, gets them through GraphQL and is submitted there (`src-tauri/src/github.rs`).
+The review threads already on GitHub show as cards under their lines as well, with the avatar of whoever opened them
+before the lines and every reply below; resolved threads stay collapsed. They are loaded through GraphQL
+(`list_review_threads`) into `src/state/reviewThreads.ts` when a file shows and they are older than 30 seconds, and
+right after a review was submitted. A draft's card carries the avatar of the account `gh` is logged in as.
+Every card ends in GitHub's "Write a reply". A reply is drafted like a comment ("Start a review" / "Add review
+comment", stored with `replyTo`) and shows as "Pending" in its card until the review goes out: a reply to a draft
+joins the thread that draft opens (or its note), a reply to a thread on GitHub is added to the pending review through
+GraphQL. While nothing is drafted, "Add single comment" posts a reply to a GitHub thread right away. "Resolve
+conversation" resolves a GitHub thread (or unresolves it) at once; a reply whose thread is gone keeps a card of its own.
 
-### Editor
+#### Editor
 
 The "Editor" tab is a small built-in IDE for the worktree: a lazily listed project tree
 (`src-tauri/src/workspace.rs`) and Monaco editor panes with tabs and a symbol breadcrumb (`src/ide/`). A folder's
@@ -185,7 +224,7 @@ static method, parameter, global/local variable, …), colored by the user's Web
 
 | Shortcut | Action |
 | --- | --- |
-| ⌘click | Go to declaration in the same pane (in the diff: open the file in the editor window) |
+| ⌘click | Go to declaration in the same pane (in the diff: in the editor window) |
 | ⇧⌘click | Open the position in WebStorm |
 | ⌘E / ⌘R | Move the active tab to the pane on the left / right, creating it when needed |
 | ⇧⌘E / ⇧⌘R | Move the active tab to the pane above / below |
@@ -194,7 +233,7 @@ static method, parameter, global/local variable, …), colored by the user's Web
 | ⌘S | Save |
 | ⌘P or double shift | "Go to File": fuzzy search over `git ls-files`; `name:12` jumps to line 12 |
 
-### Guardrails
+#### Guardrails
 
 "Guardrails" in the chat header opens a window of its own over the repository's rules (`.claude/rules/*.md`,
 `CLAUDE.md`), skills (`.claude/skills/<name>/SKILL.md`) and architectural decision records
@@ -210,21 +249,26 @@ Opening a session checks that the worktree's root `CLAUDE.md` names the ADR fold
 append an "Architectural decisions" section with the `ls`/`grep` lookup (`src/guardrails/adrInstruction.ts`);
 without it Claude Code never reads the records. A decline is remembered until the app restarts.
 
-### Dependency graph
+#### Dependency graph
 
 The Dependency Graph tab asks the agent (hidden turn, standard prompt in `src-tauri/src/graph.rs`) to write
 `.hunt/graph.json` (git-excluded, schema in `src-tauri/src/graph.schema.json`): one node per changed file plus the
-unchanged files that explain the change, and one edge per dependency with a label naming what it is for and a
-description of how it is used. `src/graph/` validates it, fills pairs the agent left out with edges read from the
-import statements (labelled by the target file's role, e.g. `business logic` for `*.service.ts`) and lays it out
-with ELK inside React Flow.
+unchanged files that explain the change, and one edge per dependency with a label stating how the source uses the
+target (one to three words, a verb, a noun or both, in the AI language from the settings) and a description of how
+it is used. The refresh prompt names the session's diff base: `HEAD`, or the merge base of a reviewed pull request.
+For the refresh turn the session's agent switches to the model and effort from Settings → Agent (default
+`claude-opus-5-5` with `high`) and back to the chat's choice afterwards.
+`src/graph/` validates it, fills pairs the agent left out with unlabeled edges read from the import statements and
+lays it out with ELK inside React Flow.
 
 The modification time of `graph.json` is the time the diagram was generated; every session records in
 `sessions.json` when it last changed worktree files (agent edits via the change attribution, saves in Hunt panes,
 revert, shelve, unshelve), and the panel marks the diagram "Outdated" once such a change is newer than the diagram
 (`graph_status` command).
 
-## Project layout
+&nbsp;
+
+### 📁 Project layout
 
 | Path | Owns |
 | --- | --- |
@@ -241,17 +285,35 @@ revert, shelve, unshelve), and the panel marks the diagram "Outdated" once such 
 | `src/ui/` | Primitives shared by every feature |
 | `docs/adr/` | Architectural decision records |
 
-## Architectural decisions
+&nbsp;
+
+### 🧠 Architectural decisions
 
 Decisions that shape the codebase are recorded in [`docs/adr/`](docs/adr), one file per decision with Context,
 Decision and Consequences. Read them before changing the parts they cover.
 
-## License
+&nbsp;
+
+### 📜 License
 
 Hunt is released under the [MIT License](LICENSE).
 
-The file icons in `src/diff/catppuccinIcons/` are the [Catppuccin VSCode icons](https://github.com/catppuccin/vscode-icons)
-(MIT, see the `LICENSE` file in that folder). Release bundles ship the Claude Agent SDK and the ACP adapter from npm
+The file icons in `src/diff/atomIcons/` are the [Atom Material Icons](https://github.com/mallowigi/iconGenerator) in
+pastel colors (MIT, see the `LICENSE` file in that folder). Release bundles ship the Claude Agent SDK and the ACP adapter from npm
 under their own terms: `@anthropic-ai/claude-agent-sdk` is © Anthropic PBC and governed by the
 [Claude Code legal agreements](https://code.claude.com/docs/en/legal-and-compliance); `@agentclientprotocol/*` is
 Apache-2.0; `zod` is MIT; `diff` is BSD-3-Clause. Using Hunt requires a Claude account whose terms apply to the agent.
+
+&nbsp;
+
+<p align="center">
+  <img src="docs/assets/footer.svg" alt=""/>
+</p>
+
+<p align="center">
+  Copyright &copy; 2026-present Yannick Boetzkes
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-b7bdf8?style=for-the-badge&labelColor=363a4f"></a>
+</p>

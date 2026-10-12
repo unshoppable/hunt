@@ -3,18 +3,30 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { commands } from "../ipc/commands";
 import { useHuntStore, type AgentSetup, type PromptDraft, type SessionStart, type WorktreeTarget } from "../state/store";
 import { commandsFor, useAgentDefaultsStore } from "../state/agentDefaults";
-import { findSelectOption, listChoices, listModes } from "../chat/configOptions";
+import { findSelectOption, listChoiceOptions, listModes } from "../chat/configOptions";
 import { PromptInput, type ConfigSelect } from "../chat/PromptInput";
 import type { PullRequest, Screenshot, Workspace } from "../ipc/types";
 import { dirName, repoName } from "../ui/path";
 import { errorText, useLoad } from "../ui/useLoad";
 import { HEADER_BAR } from "../ui/bars";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { BranchIcon, CheckIcon, GitHubIcon } from "../ui/icons";
+import { Dropdown } from "../ui/Dropdown";
+import type { DropdownOption } from "../ui/floatingMenu";
+import { BranchIcon, CheckIcon, ChevronDownIcon, GitHubIcon } from "../ui/icons";
 import { useDismiss } from "../ui/useDismiss";
 import { PullRequestPopover } from "./PullRequestPopover";
 import { findPullRequestBranch } from "./pullRequests";
 import { titleFromPrompt } from "./sessionLabels";
+
+/** Where a session can work; "New environment" (issue #2) is announced but not built yet, hence disabled. */
+const WORKSPACE_OPTIONS: DropdownOption[] = [
+  { id: "worktree", name: "Worktree", description: "A fresh worktree off the base branch" },
+  { id: "checkout", name: "Current checkout", description: "The repository's checkout as it is" },
+  { id: "environment", name: "New environment", description: "Not available yet", isDisabled: true },
+];
+
+/** Trigger of a dropdown in the bar below the composer. */
+const BAR_DROPDOWN = "flex h-8 min-w-0 items-center gap-1.5 rounded-md pl-2.5 pr-1.5 outline-none transition-colors hover:bg-(--row-hover) hover:text-neutral-200 disabled:opacity-50";
 
 /** Agent config options offered in the toolbar, in display order. */
 const TOOLBAR_CONFIG_IDS = ["model", "effort"];
@@ -169,7 +181,7 @@ export function NewSessionView({
   const configSelects: ConfigSelect[] = TOOLBAR_CONFIG_IDS.flatMap((id) => {
     const option = findSelectOption(knownOptions, id);
     if (!option) return [];
-    const choices = listChoices(option).map((choice) => ({ id: choice.value, name: choice.name }));
+    const choices = listChoiceOptions(option);
     const value = preferred[id] && choices.some((choice) => choice.id === preferred[id]) ? preferred[id] : option.currentValue;
     return [{ id, name: option.name, value, choices }];
   });
@@ -236,51 +248,24 @@ export function NewSessionView({
         ) : null}
       </div>
       <div className="flex min-w-0 items-center gap-3">
-        {/* "New environment" (issue #2) is announced but not built yet, hence disabled. */}
-        <label
+        <Dropdown
           title="Where the session works: a fresh worktree off the base branch, or the repository's checkout as it is"
-          className="relative flex h-8 shrink-0 items-center gap-1.5 rounded-md pl-2.5 transition-colors hover:bg-(--row-hover) hover:text-neutral-200"
-        >
-          <WorkspaceIcon />
-          <select value={workspace} onChange={(event) => setPreferred("workspace", event.target.value)} className="appearance-none bg-transparent pr-6 outline-none">
-            <option value="worktree">Worktree</option>
-            <option value="checkout">Current checkout</option>
-            <option value="environment" disabled>
-              New environment
-            </option>
-          </select>
-          <span className="pointer-events-none absolute right-1.5 text-neutral-500">
-            <ChevronDownIcon />
-          </span>
-        </label>
-        <label
+          value={workspace}
+          options={WORKSPACE_OPTIONS}
+          onChange={(id) => setPreferred("workspace", id)}
+          icon={<WorkspaceIcon />}
+          className={`${BAR_DROPDOWN} shrink-0`}
+        />
+        <Dropdown
           title={isCheckout ? "Branch the checkout is on; the session works on it as it is" : "Base branch the worktree is created from"}
-          className="relative flex h-8 items-center gap-1.5 rounded-md pl-2.5 transition-colors hover:bg-(--row-hover) hover:text-neutral-200 has-disabled:opacity-50"
-        >
-          <BranchIcon className="size-4 shrink-0" />
-          <select
-            value={startRef}
-            disabled={isCheckout || !branches.length}
-            onChange={(event) => setBaseRef(event.target.value)}
-            className="max-w-64 appearance-none truncate bg-transparent pr-6 outline-none"
-          >
-            {isCheckout ? (
-              <option value={currentBranch}>{currentBranch || "Current branch"}</option>
-            ) : (
-              <>
-                {!branches.length ? <option value="">{repoPath ? "No branches" : "Base branch"}</option> : null}
-                {branches.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </>
-            )}
-          </select>
-          <span className="pointer-events-none absolute right-1.5 text-neutral-500">
-            <ChevronDownIcon />
-          </span>
-        </label>
+          value={startRef}
+          options={isCheckout ? [] : branches.map((name) => ({ id: name, name }))}
+          onChange={setBaseRef}
+          disabled={isCheckout || !branches.length}
+          placeholder={isCheckout ? "Current branch" : repoPath ? "No branches" : "Base branch"}
+          icon={<BranchIcon className="size-4 shrink-0" />}
+          className={`${BAR_DROPDOWN} max-w-72`}
+        />
       </div>
     </div>
   );
@@ -462,14 +447,6 @@ function RepositoryMenu({
         Choose another repository…
       </button>
     </div>
-  );
-}
-
-function ChevronDownIcon() {
-  return (
-    <svg viewBox="0 0 16 16" className="size-3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="m4 6 4 4 4-4" />
-    </svg>
   );
 }
 

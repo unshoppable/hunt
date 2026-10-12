@@ -1,45 +1,38 @@
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useLayoutEffect, useRef, useState } from "react";
 import { BaseEdge, EdgeLabelRenderer, Handle, Position, getSmoothStepPath, type EdgeProps, type NodeProps } from "@xyflow/react";
-import { folderIconUrl, useFileIconUrl } from "../diff/fileIcons";
+import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { STATUS_NAME_CLASS } from "../diff/styles";
+import { CommentIcon } from "../ui/icons";
+import { HoverTooltip } from "../ui/HoverTooltip";
 import { baseName } from "../ui/path";
 import type { ReviewLevel } from "../ipc/types";
 import type { DiagramNode, ShortPath } from "./diagram";
 import type { DependencyEdge, FileNode, FolderGroupNode } from "./layout";
 import { EDGE_COLOR, EDGE_COLOR_HIGHLIGHTED, LABEL_HEIGHT, MAX_LABEL_WIDTH, orthogonalPath } from "./layout";
 
-/** What a file does when activated: show its diff in the overlay or open it in the editor window. */
-export type GraphActions = {
-  openDiff: (node: DiagramNode) => void;
-  openFile: (node: DiagramNode) => void;
-};
-
-export const GraphActionsContext = createContext<GraphActions>({ openDiff: () => {}, openFile: () => {} });
-
 const HANDLE_STYLE = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 };
 
-/** Nodes at least this tall have room for the description below the path. */
-const DESCRIPTION_MIN_HEIGHT = 92;
+/** Review comments per file path (see `useReviewCommentCounts`), counted in the bottom-right corner of each file box. */
+export const CommentCountsContext = createContext<Map<string, number>>(new Map());
 
 /**
- * One file: icon, name colored by git status, directory (left out inside a folder group, whose label names it) and,
- * on taller boxes, the agent's description; the line counts and review bars sit in the top-right corner, the editor
- * button appears in the bottom-right corner on hover. Context files without changes are dashed and dimmed.
+ * One file: icon, name colored by git status and directory below the name; the line counts and review bars sit in the top-right corner,
+ * the count of review comments in the bottom-right one. Context files without changes are dashed and dimmed.
  */
 export function FileNodeView({ data, selected }: NodeProps<FileNode>) {
   const fileIconUrl = useFileIconUrl();
-  const actions = useContext(GraphActionsContext);
-  const showDescription = Boolean(data.description) && data.height >= DESCRIPTION_MIN_HEIGHT;
+  const commentCount = useContext(CommentCountsContext).get(data.path) ?? 0;
 
   return (
     <div
-      className={`group relative flex h-full w-full items-stretch overflow-hidden rounded-lg border bg-(--surface-inset) text-neutral-100 transition-shadow ${
+      className={`relative flex h-full w-full items-stretch overflow-hidden rounded-lg border bg-(--surface-inset) text-neutral-100 transition-shadow ${
         selected ? "border-white/60 shadow-[0_0_0_3px_rgba(255,255,255,0.12)]" : data.isChanged ? "border-white/25" : "border-dashed border-(--line) opacity-45"
       }`}
     >
       <Handle type="target" position={Position.Top} style={HANDLE_STYLE} />
       <Handle type="source" position={Position.Bottom} style={HANDLE_STYLE} />
       <CornerStats data={data} className="absolute top-2 right-3" />
+      <CommentCount count={commentCount} className="absolute right-3 bottom-2" />
       <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 px-3 py-2">
         <div className="flex items-center gap-1.5">
           <img src={fileIconUrl(data.path)} alt="" className="size-4 shrink-0" />
@@ -47,25 +40,33 @@ export function FileNodeView({ data, selected }: NodeProps<FileNode>) {
           <span className="flex-1" />
           <CornerStats data={data} className="invisible" isGhost />
         </div>
-        {data.shortDirectory ? (
-          <span className="truncate font-mono text-[12px] text-neutral-500">
-            <DirectoryLabel short={data.shortDirectory} />
-          </span>
-        ) : null}
-        {showDescription ? <span className="line-clamp-2 text-[12px] leading-snug text-neutral-400">{data.description}</span> : null}
+        <div className="flex items-center gap-1.5">
+          <HoverTooltip text={data.directory} className="flex min-w-0">
+            <DirectoryLabel short={data.shortDirectory} className="text-[12px] text-neutral-500" />
+          </HoverTooltip>
+          <span className="flex-1" />
+          <CommentCount count={commentCount} className="invisible" isGhost />
+        </div>
       </div>
-      <button
-        type="button"
-        title={`Open ${data.path} in the editor`}
-        onClick={(event) => {
-          event.stopPropagation();
-          actions.openFile(data);
-        }}
-        className="nodrag absolute right-1 bottom-1 flex size-6 items-center justify-center rounded-md border border-(--line) bg-(--surface-inset) text-neutral-500 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-(--row-hover) hover:text-white"
-      >
-        <OpenIcon />
-      </button>
     </div>
+  );
+}
+
+/**
+ * Review comments of a file as a speech bubble with their count, pinned to the bottom-right corner of the box; nothing
+ * while there are none. The directory row renders an invisible copy (`isGhost`) so the directory truncates before it.
+ */
+function CommentCount({ count, className, isGhost = false }: { count: number; className: string; isGhost?: boolean }) {
+  if (!count) return null;
+  return (
+    <span
+      className={`flex shrink-0 items-center gap-1 text-[12px] text-neutral-400 tabular-nums ${className}`}
+      title={isGhost ? undefined : `${count} review ${count === 1 ? "comment" : "comments"}`}
+      aria-hidden={isGhost}
+    >
+      <CommentIcon className="size-3.5" />
+      {count}
+    </span>
   );
 }
 
@@ -83,33 +84,106 @@ function CornerStats({ data, className, isGhost = false }: { data: DiagramNode; 
   );
 }
 
-/** Translucent area behind the files of one folder, labeled with the folder path in its top-left corner. */
+/** Border, horizontal padding, icon and the gaps around the file name in `FileNodeView`'s name row, in px. */
+const NAME_ROW_CHROME = 2 * 1 + 2 * 12 + 16 + 2 * 6;
+/** `gap-1.5` before the corner stats and between their badge and review bars, `gap-1` inside the badge. */
+const STATS_GAP = 6;
+const BADGE_GAP = 4;
+/** `size-3.5` of the review bars. */
+const REVIEW_BARS_WIDTH = 14;
+
+/**
+ * Smallest box width at which `FileNodeView` shows the file name of `node` in full next to its corner stats. Mirrors
+ * the name row's markup, so a change there has to be made here as well.
+ */
+export function fileNodeMinWidth(node: DiagramNode): number {
+  const rootStyle = getComputedStyle(document.documentElement);
+  const sans = rootStyle.fontFamily;
+  const mono = rootStyle.getPropertyValue("--font-mono") || "monospace";
+  let width = NAME_ROW_CHROME + textWidth(node.name, `500 13px ${sans}`);
+  if (!node.isChanged && !node.review) return width;
+  width += STATS_GAP;
+  if (node.isChanged && !node.added && !node.removed) {
+    width += textWidth("binary", `12px ${sans}`);
+  } else if (node.isChanged) {
+    const counts = [node.added ? `+${node.added}` : "", node.removed ? `−${node.removed}` : ""].filter(Boolean);
+    width += counts.reduce((sum, count) => sum + textWidth(count, `12px ${mono}`), 0) + (counts.length - 1) * BADGE_GAP;
+  }
+  if (node.review) {
+    width += (node.isChanged ? STATS_GAP : 0) + REVIEW_BARS_WIDTH;
+  }
+  return width;
+}
+
+let measureContext: CanvasRenderingContext2D | null = null;
+
+/** Rendered width of `text` in the CSS font shorthand `font`, measured on a shared canvas. */
+function textWidth(text: string, font: string): number {
+  measureContext ??= document.createElement("canvas").getContext("2d");
+  if (!measureContext) return 0;
+  measureContext.font = font;
+  return measureContext.measureText(text).width;
+}
+
+/**
+ * Translucent area behind the files of one folder, labeled with the folder's module and short path in its top-left
+ * corner; only the label catches the mouse, to show the full path. The edges run behind the area; the label sits on
+ * an opaque copy of the area's tint, so an edge stops at the label instead of crossing its icon and text.
+ */
 export function FolderGroupView({ data }: NodeProps<FolderGroupNode>) {
+  const folderIconUrl = useFolderIconUrl();
   return (
-    <div className="pointer-events-none h-full w-full rounded-xl border border-white/8 bg-white/[0.035]" title={data.directory}>
-      <div className="flex items-center gap-1.5 px-3 pt-2.5 text-[12px] text-neutral-500">
-        <img src={folderIconUrl(baseName(data.directory))} alt="" className="size-3.5 opacity-70" />
-        <span className="truncate font-mono">
+    <div className="pointer-events-none h-full w-full rounded-xl border border-white/8 bg-white/[0.035]">
+      <div className="px-2 pt-2">
+        <HoverTooltip
+          text={data.directory}
+          className="pointer-events-auto flex w-fit max-w-full items-center gap-1.5 rounded-md bg-(--xy-background-color) bg-linear-to-b from-white/[0.035] to-white/[0.035] px-1 py-0.5 text-[12px] text-neutral-500"
+        >
+          <img src={folderIconUrl(data.directory)} alt="" className="size-3.5 opacity-70" />
           <DirectoryLabel short={data.shortDirectory} />
-        </span>
-        <span className="text-neutral-600">{data.nodePaths.length}</span>
+          <span className="text-neutral-600">{data.nodePaths.length}</span>
+        </HoverTooltip>
       </div>
     </div>
   );
 }
 
-/** A directory with its legend alias set off as a chip; the root directory reads `.`. */
-export function DirectoryLabel({ short }: { short: ShortPath }) {
-  if (!short.alias) return <>{short.rest || "."}</>;
+/**
+ * A one-line directory label with its module name set off as a chip; the root directory reads `.`. Shows every folder
+ * while they fit the width of the diagram node around it and the short form with `…` otherwise, re-checked whenever
+ * the node is resized.
+ */
+export function DirectoryLabel({ short, className = "" }: { short: ShortPath; className?: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [nodeWidth, setNodeWidth] = useState(0);
+  const [elidedFor, setElidedFor] = useState<string | null>(null);
+  const fitKey = `${short.full}@${nodeWidth}`;
+  const isElided = elidedFor === fitKey;
+  const folders = isElided ? short.rest : short.full;
+
+  useLayoutEffect(() => {
+    const node = ref.current?.closest(".react-flow__node");
+    if (!node) return;
+    const observer = new ResizeObserver(([entry]) => setNodeWidth(entry.contentRect.width));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  useLayoutEffect(() => {
+    const label = ref.current;
+    if (isElided || !label || label.scrollWidth <= label.clientWidth) return;
+    setElidedFor(fitKey);
+  }, [fitKey, isElided]);
+
   return (
-    <>
-      <AliasChip alias={short.alias} />
-      {short.rest ? `/${short.rest}` : null}
-    </>
+    <span ref={ref} className={`truncate font-mono ${className}`}>
+      {short.alias ? <AliasChip alias={short.alias} /> : null}
+      {short.alias ? (folders ? `/${folders}` : null) : folders || "."}
+    </span>
   );
 }
 
-/** The legend term that stands for a path prefix, styled the same in the file labels and the legend. */
+/** A module name, styled the same in the directory labels and the legend. */
 export function AliasChip({ alias }: { alias: string }) {
   return <span className="rounded-sm bg-white/10 px-1 text-neutral-300">{alias}</span>;
 }
@@ -149,14 +223,16 @@ export function ChangeBadge({ added, removed }: { added: number; removed: number
 
 /** Gap between the label box and the description popover above it. */
 const POPOVER_GAP = 6;
-/** Opacity of an edge and its label while another edge or file is hovered. */
+/** Opacity of an edge while another edge or file is hovered. */
 const MUTED_OPACITY = 0.3;
+/** Dash pattern of an edge that points at an unchanged context file, matching the file's dashed border. */
+const CONTEXT_EDGE_DASH = "5 4";
 
 /**
  * A dependency on ELK's orthogonal route with its label centered on the box ELK reserved on it. The edge is
  * `selected` while it or its source file is hovered and is then drawn brighter with a boxed label; while something
- * else is hovered it fades, so the lit edges stand out. At rest the label is plain text on a backdrop that keeps the
- * line from running through it. Its description floats above the label only while the mouse is on the edge or
+ * else is hovered it fades, so the lit edges stand out. An edge to an unchanged context file is dashed. At rest the label is plain text on a backdrop that keeps the
+ * line from running through it; a faded label fades only its text, so the backdrop stays opaque. Its description floats above the label only while the mouse is on the edge or
  * its label, so one popover shows at a time; a hovered file lists its dependencies in the `DependencyCard` instead.
  */
 export function DependencyEdgeView({ id, source, target, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, markerEnd, selected }: EdgeProps<DependencyEdge>) {
@@ -174,7 +250,13 @@ export function DependencyEdgeView({ id, source, target, sourceX, sourceY, targe
         id={id}
         path={path}
         markerEnd={markerEnd}
-        style={{ stroke: isHighlighted ? EDGE_COLOR_HIGHLIGHTED : EDGE_COLOR, strokeWidth: isHighlighted ? 1.8 : 1.2, opacity: isMuted ? MUTED_OPACITY : 1, transition: "opacity 150ms" }}
+        style={{
+          stroke: isHighlighted ? EDGE_COLOR_HIGHLIGHTED : EDGE_COLOR,
+          strokeWidth: isHighlighted ? 1.8 : 1.2,
+          strokeDasharray: data?.isToContext ? CONTEXT_EDGE_DASH : undefined,
+          opacity: isMuted ? MUTED_OPACITY : 1,
+          transition: "opacity 150ms",
+        }}
       />
       {data?.label ? (
         <EdgeLabelRenderer>
@@ -183,9 +265,9 @@ export function DependencyEdgeView({ id, source, target, sourceX, sourceY, targe
             title={data.label}
             onMouseEnter={() => setIsLabelHovered(true)}
             onMouseLeave={() => setIsLabelHovered(false)}
-            style={{ transform: `translate(-50%, -50%) translate(${labelCenter.x}px, ${labelCenter.y}px)`, maxWidth: MAX_LABEL_WIDTH, opacity: isMuted ? MUTED_OPACITY : 1 }}
-            className={`nodrag nopan pointer-events-auto absolute truncate rounded-md border px-2 py-[3px] text-[12px] leading-[18px] transition-opacity duration-150 ${
-              isHighlighted ? "border-white/30 bg-(--surface-inset) text-neutral-100" : "border-transparent bg-(--surface-chat) text-neutral-400"
+            style={{ transform: `translate(-50%, -50%) translate(${labelCenter.x}px, ${labelCenter.y}px)`, maxWidth: MAX_LABEL_WIDTH }}
+            className={`nodrag nopan pointer-events-auto absolute truncate rounded-md border px-2 py-[3px] text-[12px] leading-[18px] transition-colors duration-150 ${
+              isHighlighted ? "border-white/30 bg-(--surface-inset) text-neutral-100" : `border-transparent bg-(--surface-chat) ${isMuted ? "text-neutral-400/30" : "text-neutral-400"}`
             }`}
           >
             {data.label}
@@ -204,13 +286,5 @@ export function DependencyEdgeView({ id, source, target, sourceX, sourceY, targe
         </EdgeLabelRenderer>
       ) : null}
     </>
-  );
-}
-
-function OpenIcon() {
-  return (
-    <svg viewBox="0 0 12 12" className="size-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M7 2h3v3M10 2 5.5 6.5M8.5 7v2.5h-6v-6H5" />
-    </svg>
   );
 }

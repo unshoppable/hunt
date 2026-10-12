@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import associations from "./catppuccinIcons/associations.json";
-import { DEFAULT_ICON_RULES, type IconRule } from "../state/settings";
-import { fileIconUrl, folderIconUrl, iconUrl, resolveFileIcon, rootFolderIconUrl } from "./fileIcons";
+import associations from "./atomIcons/associations.json";
+import { DEFAULT_FOLDER_ICON_RULES, DEFAULT_ICON_RULES, type FolderIconRule, type IconRule } from "../state/settings";
+import { FOLDER_ICON_NAMES, fileIconUrl, folderIconUrl, iconUrl, resolveFileIcon, resolveFolderIcon, rootFolderIconUrl } from "./fileIcons";
 
-const shipped = new Set(Object.keys(import.meta.glob("./catppuccinIcons/icons/*.svg")).map((path) => path.slice(path.lastIndexOf("/") + 1, -".svg".length)));
+const shipped = new Set(Object.keys(import.meta.glob("./atomIcons/icons/*.svg")).map((path) => path.slice(path.lastIndexOf("/") + 1, -".svg".length)));
 
-describe("vendored Catppuccin icon set", () => {
+describe("vendored Atom Material icon set", () => {
   it("ships an SVG for every association, every open folder state and the fallbacks", () => {
     expect(Object.values(associations.fileNames).filter((icon) => !shipped.has(icon))).toEqual([]);
     expect(Object.values(associations.fileExtensions).filter((icon) => !shipped.has(icon))).toEqual([]);
@@ -22,23 +22,23 @@ describe("vendored Catppuccin icon set", () => {
 
 describe("resolveFileIcon", () => {
   it("gives backend building blocks NestJS icons and frontend ones Angular icons by default", () => {
-    expect(resolveFileIcon("apps/backend/src/user/user.service.ts", DEFAULT_ICON_RULES)).toBe("nest-service");
-    expect(resolveFileIcon("apps/api/src/auth/auth.guard.ts", DEFAULT_ICON_RULES)).toBe("nest-guard");
-    expect(resolveFileIcon("apps/api/src/app.module.ts", DEFAULT_ICON_RULES)).toBe("nest");
-    expect(resolveFileIcon("apps/storefront-ui/src/app/user/user.service.ts", DEFAULT_ICON_RULES)).toBe("angular-service");
-    expect(resolveFileIcon("web-frontend/src/app/auth/auth.guard.ts", DEFAULT_ICON_RULES)).toBe("angular-guard");
-    expect(resolveFileIcon("web-frontend/src/app/app.module.ts", DEFAULT_ICON_RULES)).toBe("angular");
+    expect(resolveFileIcon("apps/backend/src/user/user.service.ts", DEFAULT_ICON_RULES)).toBe("nestservice");
+    expect(resolveFileIcon("apps/api/src/auth/auth.guard.ts", DEFAULT_ICON_RULES)).toBe("nestguard");
+    expect(resolveFileIcon("apps/api/src/app.module.ts", DEFAULT_ICON_RULES)).toBe("nestmodule");
+    expect(resolveFileIcon("apps/storefront-ui/src/app/user/user.service.ts", DEFAULT_ICON_RULES)).toBe("angular2service");
+    expect(resolveFileIcon("web-frontend/src/app/auth/auth.guard.ts", DEFAULT_ICON_RULES)).toBe("angular2guard");
+    expect(resolveFileIcon("web-frontend/src/app/app.module.ts", DEFAULT_ICON_RULES)).toBe("angular2module");
   });
 
   it("recognizes each framework's unmistakable file kinds anywhere", () => {
-    expect(resolveFileIcon("libs/shared/src/user.controller.ts", DEFAULT_ICON_RULES)).toBe("nest-controller");
-    expect(resolveFileIcon("libs/shared/src/events.gateway.ts", DEFAULT_ICON_RULES)).toBe("nest-gateway");
-    expect(resolveFileIcon("libs/shared/src/user.component.ts", DEFAULT_ICON_RULES)).toBe("angular-component");
+    expect(resolveFileIcon("libs/shared/src/user.controller.ts", DEFAULT_ICON_RULES)).toBe("nestcontroller");
+    expect(resolveFileIcon("libs/shared/src/events.gateway.ts", DEFAULT_ICON_RULES)).toBe("nestgateway");
+    expect(resolveFileIcon("libs/shared/src/user.component.ts", DEFAULT_ICON_RULES)).toBe("angular2component");
   });
 
   it("leaves files no rule matches to the file name", () => {
     expect(resolveFileIcon("apps/backend/src/user/user.dto.ts", DEFAULT_ICON_RULES)).toBe("dto");
-    expect(resolveFileIcon("apps/backend/src/main.ts", DEFAULT_ICON_RULES)).toBe("typescript");
+    expect(resolveFileIcon("apps/backend/src/user/user.ts", DEFAULT_ICON_RULES)).toBe("typescript");
     expect(resolveFileIcon("libs/shared/src/user.service.ts", DEFAULT_ICON_RULES)).toBe("service");
     expect(resolveFileIcon("user.service.ts", [])).toBe("typescript");
   });
@@ -66,18 +66,18 @@ describe("iconUrl", () => {
 
 describe("fileIconUrl", () => {
   it("applies the current icon rules to a worktree-relative path", () => {
-    expect(fileIconUrl("apps/api/src/user.controller.ts")).toMatch(/\/nest-controller\.svg$/);
+    expect(fileIconUrl("apps/api/src/user.controller.ts")).toMatch(/\/nestcontroller\.svg$/);
   });
 
   it("resolves well-known file names and extensions", () => {
-    expect(fileIconUrl("package.json")).toMatch(/\/package-json\.svg$/);
+    expect(fileIconUrl("package.json")).toMatch(/\/npm\.svg$/);
     expect(fileIconUrl("main.rs")).toMatch(/\/rust\.svg$/);
-    expect(fileIconUrl("README.md")).toMatch(/\/readme\.svg$/);
-    expect(fileIconUrl(".gitignore")).toMatch(/\/git\.svg$/);
+    expect(fileIconUrl("README.md")).toMatch(/\/readme_dark\.svg$/);
+    expect(fileIconUrl(".gitignore")).toMatch(/\/gitignore\.svg$/);
   });
 
   it("prefers the longest matching extension chain", () => {
-    expect(fileIconUrl("user.spec.ts")).toMatch(/\/typescript-test\.svg$/);
+    expect(fileIconUrl("user.spec.ts")).toMatch(/\/testtsfiles\.svg$/);
     expect(fileIconUrl("user.ts")).toMatch(/\/typescript\.svg$/);
   });
 
@@ -89,7 +89,7 @@ describe("fileIconUrl", () => {
     expect(resolveFileIcon("address.embeddable.ts", DEFAULT_ICON_RULES)).toBe("embeddable");
     expect(resolveFileIcon("money.value-object.ts", DEFAULT_ICON_RULES)).toBe("value-object");
     expect(resolveFileIcon("user.query.ts", DEFAULT_ICON_RULES)).toBe("queries");
-    expect(resolveFileIcon("user.spec-sqlite.ts", DEFAULT_ICON_RULES)).toBe("typescript-test");
+    expect(resolveFileIcon("user.spec-sqlite.ts", DEFAULT_ICON_RULES)).toBe("testtsfiles");
     expect(resolveFileIcon("user.repository.ts", [])).toBe("typescript");
   });
 
@@ -112,5 +112,38 @@ describe("folderIconUrl", () => {
     expect(folderIconUrl("some-unknown-dir")).toMatch(/\/_folder\.svg$/);
     expect(folderIconUrl("some-unknown-dir", true)).toMatch(/\/_folder_open\.svg$/);
     expect(rootFolderIconUrl(true)).toMatch(/\/_root_open\.svg$/);
+  });
+});
+
+describe("resolveFolderIcon", () => {
+  const rules: FolderIconRule[] = [
+    { glob: "apps/backend", icon: "folder_server", includeSubfolders: true },
+    { glob: "admin-ui", icon: "folder_admin", includeSubfolders: false },
+  ];
+
+  it("gives a matching folder the rule's icon, at any depth for a glob without a slash", () => {
+    expect(resolveFolderIcon("apps/backend", rules)).toBe("folder_server");
+    expect(resolveFolderIcon("admin-ui", rules)).toBe("folder_admin");
+    expect(resolveFolderIcon("apps/admin-ui", rules)).toBe("folder_admin");
+  });
+
+  it("passes the icon on to subfolders only for a rule that includes them", () => {
+    expect(resolveFolderIcon("apps/backend/src/users", rules)).toBe("folder_server");
+    expect(resolveFolderIcon("apps/admin-ui/src", rules)).toBe("folder_src");
+    expect(resolveFolderIcon("apps/admin-ui/some-unknown-dir", rules)).toBe("_folder");
+  });
+
+  it("skips a rule whose icon is not a shipped folder icon", () => {
+    expect(resolveFolderIcon("admin-ui", [{ glob: "admin-ui", icon: "typescript", includeSubfolders: false }])).toBe("_folder");
+    expect(FOLDER_ICON_NAMES).toContain("folder_client");
+    expect(FOLDER_ICON_NAMES.some((icon) => icon.endsWith("_open"))).toBe(false);
+  });
+
+  it("gives ui and admin-ui folders the client icon by default, not their subfolders", () => {
+    expect(resolveFolderIcon("apps/ui", DEFAULT_FOLDER_ICON_RULES)).toBe("folder_client");
+    expect(resolveFolderIcon("admin-ui", DEFAULT_FOLDER_ICON_RULES)).toBe("folder_client");
+    expect(resolveFolderIcon("admin-ui/components", DEFAULT_FOLDER_ICON_RULES)).toBe("folder_components");
+    expect(resolveFolderIcon("backend", DEFAULT_FOLDER_ICON_RULES)).toBe("folder_server");
+    expect(folderIconUrl("apps/ui", true)).toMatch(/\/folder_client_open\.svg$/);
   });
 });

@@ -14,6 +14,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use uuid::Uuid;
 
+use crate::preferences::ENGLISH_TERMS;
 use crate::session::store;
 
 const MODEL: &str = "haiku";
@@ -28,7 +29,7 @@ fn system_prompt(language: &str) -> String {
     format!(
         "You maintain a running list of what the user wants from a coding session with an AI coding agent: \
 their goals, requirements and constraints, never the agent's actions. You write the list and the title in {language}, \
-whatever language the user writes in. You answer only with the requested JSON."
+whatever language the user writes in. {ENGLISH_TERMS} You answer only with the requested JSON."
     )
 }
 

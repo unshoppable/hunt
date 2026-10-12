@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ArchitectureGraph, ChangeStat, ChangedFile } from "../ipc/types";
-import { MAX_NODE_HEIGHT, MAX_NODE_WIDTH, MIN_NODE_HEIGHT, MIN_NODE_WIDTH, buildDiagram, buildLegend, litByHover, mergeEdges, nodeSize, shortenDirectory } from "./diagram";
+import { MAX_NODE_HEIGHT, MAX_NODE_WIDTH, MIN_NODE_HEIGHT, MIN_NODE_WIDTH, buildDiagram, labelDirectories, litByHover, mergeEdges, nodeSize } from "./diagram";
 
 const graph: ArchitectureGraph = {
-  nodes: [{ path: "src/a.ts", description: "Entry.", review: 4, reviewReason: "Public entry point." }, { path: "src/lib/b.ts" }, { path: "src/lib/c.ts" }, { path: "src/lonely.ts" }],
+  nodes: [{ path: "src/a.ts", review: 4, reviewReason: "Public entry point." }, { path: "src/lib/b.ts" }, { path: "src/lib/c.ts" }, { path: "src/lonely.ts" }],
   edges: [
     { source: "src/a.ts", target: "src/lib/b.ts", label: "uses b", description: "Calls b() for the main work." },
     { source: "src/lib/b.ts", target: "src/lib/c.ts", label: "uses c" },
@@ -40,10 +40,6 @@ describe("mergeEdges", () => {
     ]);
   });
 
-  it("takes the import label where the agent's label was repaired to the placeholder", () => {
-    const merged = mergeEdges([{ source: "a", target: "b", label: "depends on", description: "Agent text." }], [{ source: "a", target: "b", label: "function calls" }]);
-    expect(merged).toEqual([{ source: "a", target: "b", label: "function calls", description: "Agent text." }]);
-  });
 });
 
 describe("buildDiagram", () => {
@@ -64,10 +60,18 @@ describe("buildDiagram", () => {
   it("sizes changed files by their changed lines and keeps context files small", () => {
     const diagram = buildDiagram(graph, [], changed, stats, new Set());
     const byPath = new Map(diagram.nodes.map((node) => [node.path, node]));
-    expect(byPath.get("src/a.ts")).toMatchObject({ isChanged: true, status: "M", added: 30, removed: 10, width: MAX_NODE_WIDTH, description: "Entry.", name: "a.ts", directory: "src", shortDirectory: null });
+    expect(byPath.get("src/a.ts")).toMatchObject({ isChanged: true, status: "M", added: 30, removed: 10, width: MAX_NODE_WIDTH, name: "a.ts", directory: "src", shortDirectory: { alias: null, rest: "src", full: "src" } });
     expect(byPath.get("src/new.ts")!.width).toBeLessThan(MAX_NODE_WIDTH);
     expect(byPath.get("src/new.ts")!.width).toBeGreaterThan(MIN_NODE_WIDTH);
     expect(byPath.get("src/lib/b.ts")).toMatchObject({ isChanged: false, added: 0, removed: 0, width: MIN_NODE_WIDTH, height: MIN_NODE_HEIGHT });
+  });
+
+  it("widens a box to the width its content needs", () => {
+    const diagram = buildDiagram(graph, [], changed, stats, new Set(), undefined, (node) => (node.path === "src/new.ts" ? 412.3 : 0));
+    const byPath = new Map(diagram.nodes.map((node) => [node.path, node]));
+    expect(byPath.get("src/new.ts")!.width).toBe(413);
+    expect(byPath.get("src/a.ts")!.width).toBe(MAX_NODE_WIDTH);
+    expect(byPath.get("src/lib/b.ts")!.width).toBe(MIN_NODE_WIDTH);
   });
 
   it("hides excluded changed files together with the context that only they reach", () => {
@@ -77,11 +81,30 @@ describe("buildDiagram", () => {
     expect(diagram.hiddenCount).toBe(1);
   });
 
+  it("hides files rated below the minimum, keeps unrated ones and lets hidden files block the way to context", () => {
+    const rated: ArchitectureGraph = { ...graph, nodes: [{ path: "src/a.ts", review: 2 }, { path: "src/lib/b.ts", review: 4 }, { path: "src/lib/c.ts" }, { path: "src/lonely.ts", review: 1 }] };
+    const atTwo = buildDiagram(rated, [], changed, stats, new Set(), { minReview: 2, hiddenGlobs: [] });
+    expect(atTwo.nodes.map((node) => node.path)).toEqual(["src/a.ts", "src/new.ts", "src/lib/b.ts", "src/lib/c.ts"]);
+    expect(atTwo.edges.map((edge) => edge.id)).toEqual(["src/a.ts->src/lib/b.ts", "src/lib/b.ts->src/lib/c.ts"]);
+    const atThree = buildDiagram(rated, [], changed, stats, new Set(), { minReview: 3, hiddenGlobs: [] });
+    expect(atThree.nodes.map((node) => node.path)).toEqual(["src/new.ts"]);
+    expect(atThree.hiddenCount).toBe(1);
+  });
+
+  it("hides changed and context files matching a glob", () => {
+    const withoutLib = buildDiagram(graph, [], changed, stats, new Set(), { minReview: 1, hiddenGlobs: ["src/lib/**"] });
+    expect(withoutLib.nodes.map((node) => node.path)).toEqual(["src/a.ts", "src/new.ts"]);
+    expect(withoutLib.hiddenCount).toBe(0);
+    const withoutNew = buildDiagram(graph, [], changed, stats, new Set(["src/a.ts"]), { minReview: 1, hiddenGlobs: ["*.spec.ts", "new.ts"] });
+    expect(withoutNew.nodes).toEqual([]);
+    expect(withoutNew.hiddenCount).toBe(2);
+  });
+
   it("groups the shown files of a folder once two of them are shown", () => {
     const diagram = buildDiagram(graph, [], changed, stats, new Set());
     expect(diagram.groups).toEqual([
-      { id: "folder:src", directory: "src", shortDirectory: { alias: null, rest: "src" }, nodePaths: ["src/a.ts", "src/new.ts", "src/lonely.ts"] },
-      { id: "folder:src/lib", directory: "src/lib", shortDirectory: { alias: null, rest: "src/lib" }, nodePaths: ["src/lib/b.ts", "src/lib/c.ts"] },
+      { id: "folder:src", directory: "src", shortDirectory: { alias: null, rest: "src", full: "src" }, nodePaths: ["src/a.ts", "src/new.ts", "src/lonely.ts"] },
+      { id: "folder:src/lib", directory: "src/lib", shortDirectory: { alias: null, rest: "src/lib", full: "src/lib" }, nodePaths: ["src/lib/b.ts", "src/lib/c.ts"] },
     ]);
     expect(diagram.nodes.find((node) => node.path === "src/lib/b.ts")!.groupId).toBe("folder:src/lib");
     const alone = buildDiagram(graph, [], changed, stats, new Set(["src/new.ts"]));
@@ -89,7 +112,7 @@ describe("buildDiagram", () => {
     expect(buildDiagram({ nodes: [], edges: [] }, [], [changed[0]], stats, new Set()).groups).toEqual([]);
   });
 
-  it("abbreviates the directories of files under a shared prefix and lists the prefix in the legend", () => {
+  it("labels directories by their module and lists the modules in the legend", () => {
     const monorepo: ChangedFile[] = [
       { path: "apps/backend/src/app/user/user.seeder.ts", status: "M" },
       { path: "apps/backend/src/app/user/user.service.ts", status: "M" },
@@ -100,16 +123,15 @@ describe("buildDiagram", () => {
     ];
     const diagram = buildDiagram({ nodes: [], edges: [] }, [], monorepo, [], new Set());
     expect(diagram.legend).toEqual([
-      { alias: "backend", prefix: "apps/backend/src" },
-      { alias: "web", prefix: "apps/web/src/pages" },
+      { alias: "backend", prefix: "apps/backend" },
+      { alias: "web", prefix: "apps/web" },
     ]);
     const byPath = new Map(diagram.nodes.map((node) => [node.path, node.shortDirectory]));
-    // Grouped files leave the directory to their group label.
-    expect(byPath.get("apps/backend/src/app/user/user.seeder.ts")).toBeNull();
-    expect(byPath.get("apps/web/src/pages/index.tsx")).toBeNull();
-    expect(byPath.get("apps/backend/src/common/db.ts")).toEqual({ alias: "backend", rest: "common" });
-    expect(byPath.get("README.md")).toEqual({ alias: null, rest: "" });
-    expect(diagram.groups.find((group) => group.id === "folder:apps/web/src/pages")!.shortDirectory).toEqual({ alias: "web", rest: "" });
+    expect(byPath.get("apps/backend/src/app/user/user.seeder.ts")).toEqual({ alias: "backend", rest: "user", full: "user" });
+    expect(byPath.get("apps/web/src/pages/index.tsx")).toEqual({ alias: "web", rest: "pages", full: "pages" });
+    expect(byPath.get("apps/backend/src/common/db.ts")).toEqual({ alias: "backend", rest: "common", full: "common" });
+    expect(byPath.get("README.md")).toEqual({ alias: null, rest: "", full: "" });
+    expect(diagram.groups.find((group) => group.id === "folder:apps/web/src/pages")!.shortDirectory).toEqual({ alias: "web", rest: "pages", full: "pages" });
   });
 
   it("works without a graph: changed files appear as unconnected nodes", () => {
@@ -120,27 +142,63 @@ describe("buildDiagram", () => {
   });
 });
 
-describe("buildLegend", () => {
-  it("skips generic names and prefixes too short to be worth an alias", () => {
-    expect(buildLegend(["src/graph", "src/graph", "src/ide", "src/ide", "src", ""])).toEqual([]);
-    expect(buildLegend(["src/graph/sub/deep", "src/graph/sub/deep"])).toEqual([{ alias: "graph", prefix: "src/graph/sub/deep" }]);
-    // `frontend` would hide only `/src`, which is not worth a legend entry.
-    expect(buildLegend(["backend/src/app", "backend/src/app", "frontend/src", "frontend/src/x"])).toEqual([{ alias: "backend", prefix: "backend/src/app" }]);
+describe("labelDirectories", () => {
+  const labelsOf = (directories: string[]) => {
+    const { labelOf } = labelDirectories(directories);
+    return Object.fromEntries(directories.map((directory) => [directory, labelOf(directory)]));
+  };
+
+  it("names a module by its folders before the source tree and keeps the first and last folders below it", () => {
+    const api = "apps/ppp-rl/backend/src/app/api/workforce/employee/import";
+    const directories = [api, `${api}/adapters/vivendi-pep`, `${api}/adapters/vivendi-pep/__tests__`, "libs/ppp-rl/angular/swagger/src/lib"];
+    expect(labelDirectories(directories).legend).toEqual([
+      { alias: "ppp-rl-backend", prefix: "apps/ppp-rl/backend" },
+      { alias: "ppp-rl-angular-swagger", prefix: "libs/ppp-rl/angular/swagger" },
+    ]);
+    expect(labelsOf(directories)).toEqual({
+      [api]: { alias: "ppp-rl-backend", rest: "api/…/import", full: "api/workforce/employee/import" },
+      [`${api}/adapters/vivendi-pep`]: { alias: "ppp-rl-backend", rest: "api/…/vivendi-pep", full: "api/workforce/employee/import/adapters/vivendi-pep" },
+      [`${api}/adapters/vivendi-pep/__tests__`]: { alias: "ppp-rl-backend", rest: "api/…/vivendi-pep/__tests__", full: "api/workforce/employee/import/adapters/vivendi-pep/__tests__" },
+      "libs/ppp-rl/angular/swagger/src/lib": { alias: "ppp-rl-angular-swagger", rest: "", full: "" },
+    });
   });
 
-  it("needs two files under a prefix and uses an alias only once", () => {
-    expect(buildLegend(["apps/backend/src", "apps/web/src"])).toEqual([]);
-    expect(buildLegend(["apps/backend/src", "apps/backend/src", "packages/backend/lib", "packages/backend/lib"])).toEqual([{ alias: "backend", prefix: "apps/backend/src" }]);
+  it("shows short folder paths in full and takes more trailing folders until labels differ", () => {
+    expect(labelsOf(["apps/x/src/a/b/c", "apps/x/src/a/b/c/d/e/dto", "apps/x/src/a/b/c/f/e/dto", "apps/x/src/a/b/g/e/dto"])).toEqual({
+      "apps/x/src/a/b/c": { alias: "x", rest: "a/b/c", full: "a/b/c" },
+      "apps/x/src/a/b/c/d/e/dto": { alias: "x", rest: "a/…/d/e/dto", full: "a/b/c/d/e/dto" },
+      "apps/x/src/a/b/c/f/e/dto": { alias: "x", rest: "a/…/f/e/dto", full: "a/b/c/f/e/dto" },
+      // Hiding only `b` is not worth an ellipsis.
+      "apps/x/src/a/b/g/e/dto": { alias: "x", rest: "a/b/g/e/dto", full: "a/b/g/e/dto" },
+    });
   });
-});
 
-describe("shortenDirectory", () => {
-  it("replaces the prefix of a directory at or below it and leaves other directories alone", () => {
-    const legend = [{ alias: "backend", prefix: "apps/backend/src" }];
-    expect(shortenDirectory("apps/backend/src", legend)).toEqual({ alias: "backend", rest: "" });
-    expect(shortenDirectory("apps/backend/src/app", legend)).toEqual({ alias: "backend", rest: "app" });
-    expect(shortenDirectory("apps/backend/srcs", legend)).toEqual({ alias: null, rest: "apps/backend/srcs" });
-    expect(shortenDirectory("", legend)).toEqual({ alias: null, rest: "" });
+  it("labels a directory below a module root without a source folder by that module", () => {
+    expect(labelsOf(["apps/x/src/y", "apps/x/test/e2e", "apps/x"])).toEqual({
+      "apps/x/src/y": { alias: "x", rest: "y", full: "y" },
+      "apps/x/test/e2e": { alias: "x", rest: "test/e2e", full: "test/e2e" },
+      "apps/x": { alias: "x", rest: "", full: "" },
+    });
+  });
+
+  it("drops a leading source folder outside modules and keeps folders that are nothing but source folders", () => {
+    const directories = ["src/graph", "src", "src/lib", "src-tauri/src/session", "docs/adr", ""];
+    expect(labelDirectories(directories).legend).toEqual([]);
+    expect(labelsOf(directories)).toEqual({
+      "src/graph": { alias: null, rest: "graph", full: "graph" },
+      src: { alias: null, rest: "src", full: "src" },
+      "src/lib": { alias: null, rest: "src/lib", full: "src/lib" },
+      "src-tauri/src/session": { alias: "src-tauri", rest: "session", full: "session" },
+      "docs/adr": { alias: null, rest: "docs/adr", full: "docs/adr" },
+      "": { alias: null, rest: "", full: "" },
+    });
+  });
+
+  it("keeps the container folders of modules that would share a name", () => {
+    expect(labelDirectories(["apps/foo/src/a", "libs/foo/src/b"]).legend).toEqual([
+      { alias: "apps-foo", prefix: "apps/foo" },
+      { alias: "libs-foo", prefix: "libs/foo" },
+    ]);
   });
 });
 

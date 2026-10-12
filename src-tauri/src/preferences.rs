@@ -8,6 +8,11 @@ use tauri::{AppHandle, Manager, State};
 /// Language of the agent output Hunt asks for on its own: diagram labels, session summaries, titles.
 pub const DEFAULT_AI_LANGUAGE: &str = "German";
 
+/// Follows every instruction that sets the AI language: developers mix English technical terms into their own
+/// language, and translated stand-ins (German "Hilfen" for utils) read worse than the terms themselves.
+pub const ENGLISH_TERMS: &str = "Keep the English technical terms and abbreviations developers use in that language \
+untranslated, e.g. utils, helper, service, store, hook, endpoint, payload, parser; never invent a translation for them.";
+
 /// Response-style instructions appended to the agent's system prompt in every session; the frontend imports the
 /// same file (`prompts/response-style.md`) as its default, so the settings dialog can tell a default from an edit.
 pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/response-style.md"));

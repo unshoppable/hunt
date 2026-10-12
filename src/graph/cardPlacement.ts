@@ -9,8 +9,10 @@ export type Size = { width: number; height: number };
  */
 export type Obstacles = { rects: Rect[]; points: XYPosition[] };
 
-/** Space between the card and the hovered file, and between the card and the canvas edge. */
+/** Space between the card and the canvas edge. */
 export const CARD_GAP = 8;
+/** Space between the card and the hovered file; short enough for the mouse to cross before the hover is released. */
+export const ANCHOR_GAP = 24;
 /** Distance between two grid spots tried when no spot next to the file is free. */
 const GRID_STEP = 24;
 /** Penalty of one sampled edge point under the card, comparable to a small patch of a covered box. */
@@ -25,7 +27,7 @@ const POINT_PENALTY = 100;
  * farther away.
  */
 export function placeCard({ canvas, card, anchor, obstacles }: { canvas: Size; card: Size; anchor: Rect; obstacles: Obstacles }): XYPosition {
-  const blocked: Obstacles = { rects: [inflate(anchor, CARD_GAP), ...obstacles.rects], points: obstacles.points };
+  const blocked: Obstacles = { rects: [inflate(anchor, ANCHOR_GAP), ...obstacles.rects], points: obstacles.points };
   let best: { spot: XYPosition; penalty: number; distance: number } | null = null;
   for (const candidate of [...spotsNextTo(anchor, card), ...gridSpots(canvas, card)]) {
     const spot = clampToCanvas(candidate, card, canvas);
@@ -41,14 +43,14 @@ export function placeCard({ canvas, card, anchor, obstacles }: { canvas: Size; c
 
 function spotsNextTo(anchor: Rect, card: Size): XYPosition[] {
   return [
-    { x: anchor.left - CARD_GAP - card.width, y: anchor.top },
-    { x: anchor.right + CARD_GAP, y: anchor.top },
-    { x: anchor.left, y: anchor.top - CARD_GAP - card.height },
-    { x: anchor.left, y: anchor.bottom + CARD_GAP },
-    { x: anchor.left - CARD_GAP - card.width, y: anchor.bottom - card.height },
-    { x: anchor.right + CARD_GAP, y: anchor.bottom - card.height },
-    { x: anchor.right - card.width, y: anchor.top - CARD_GAP - card.height },
-    { x: anchor.right - card.width, y: anchor.bottom + CARD_GAP },
+    { x: anchor.left - ANCHOR_GAP - card.width, y: anchor.top },
+    { x: anchor.right + ANCHOR_GAP, y: anchor.top },
+    { x: anchor.left, y: anchor.top - ANCHOR_GAP - card.height },
+    { x: anchor.left, y: anchor.bottom + ANCHOR_GAP },
+    { x: anchor.left - ANCHOR_GAP - card.width, y: anchor.bottom - card.height },
+    { x: anchor.right + ANCHOR_GAP, y: anchor.bottom - card.height },
+    { x: anchor.right - card.width, y: anchor.top - ANCHOR_GAP - card.height },
+    { x: anchor.right - card.width, y: anchor.bottom + ANCHOR_GAP },
   ];
 }
 

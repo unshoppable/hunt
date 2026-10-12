@@ -1,10 +1,9 @@
 import { useMemo, useRef, useState, type RefObject } from "react";
 import { buildChangeTree, type FolderNode, type TreeNode } from "../diff/changeTree";
 import { Checkbox, type CheckState } from "../diff/Checkbox";
-import { folderIconUrl, useFileIconUrl } from "../diff/fileIcons";
+import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { STATUS_NAME_CLASS } from "../diff/styles";
 import type { ChangedFile } from "../ipc/types";
-import { baseName } from "../ui/path";
 import { ResizeGrips } from "../ui/ResizeGrips";
 import { useDismiss } from "../ui/useDismiss";
 import { usePopupSize } from "../ui/usePopupSize";
@@ -19,7 +18,8 @@ const MAX_SHARE = 0.8;
 
 /**
  * Popover below the "Files" button: the changelist as a folder tree with a checkbox per file and folder. Every file
- * starts checked; unchecking hides the file from the diagram, a folder checkbox toggles everything below it.
+ * starts checked; unchecking hides the file from the diagram, a folder checkbox toggles everything below it. The
+ * relevance and glob filters play no part here: the count and the checkboxes reflect only the checked files.
  * Closes on Escape or a click outside; a press on the button that opened it (`anchorRef`) closes without reopening.
  * It is as tall as its rows up to the remembered height; dragging its right or bottom edge resizes it.
  */
@@ -39,6 +39,7 @@ export function FileFilterPopover({
   anchorRef: RefObject<HTMLButtonElement | null>;
 }) {
   const fileIconUrl = useFileIconUrl();
+  const folderIconUrl = useFolderIconUrl();
   const rootRef = useRef<HTMLDivElement>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const tree = useMemo(() => buildChangeTree(files), [files]);
@@ -93,7 +94,7 @@ export function FileFilterPopover({
     });
   };
 
-  const shownCount = files.length - files.filter((file) => excluded.has(file.path)).length;
+  const checkedCount = files.filter((file) => !excluded.has(file.path)).length;
   const indent = (depth: number) => ({ paddingLeft: `calc(8px + ${depth} * 14px)` });
 
   return (
@@ -105,7 +106,7 @@ export function FileFilterPopover({
       <div className="flex items-center gap-2 border-b border-(--line) px-2 py-2 text-neutral-400">
         <Checkbox state={files.length ? stateOf(files) : "unchecked"} onChange={() => toggleGroup(files)} title="Show all files" />
         <span>
-          {shownCount} of {files.length} shown
+          {checkedCount} of {files.length} shown
         </span>
       </div>
       <ul className="min-h-0 flex-1 overflow-y-auto py-1 leading-6">
@@ -115,7 +116,7 @@ export function FileFilterPopover({
               <Checkbox state={stateOf(node.files)} onChange={() => toggleGroup(node.files)} />
               <button type="button" onClick={() => toggleCollapsed(node.path)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" title={node.path}>
                 <ChevronIcon expanded={!collapsed.has(node.path)} />
-                <img src={folderIconUrl(baseName(node.name))} alt="" className="size-4 shrink-0" />
+                <img src={folderIconUrl(node.path)} alt="" className="size-4 shrink-0" />
                 <span className="truncate text-neutral-300">{node.name}</span>
                 <span className="pl-1 text-[12px] text-neutral-600">{node.files.length}</span>
               </button>
@@ -123,7 +124,11 @@ export function FileFilterPopover({
           ) : (
             <li key={node.file.path} className="flex items-center gap-1.5 pr-2 hover:bg-(--row-hover)" style={indent(depth)}>
               <Checkbox state={excluded.has(node.file.path) ? "unchecked" : "checked"} onChange={() => setChecked([node.file], excluded.has(node.file.path))} />
-              <label className="flex min-w-0 flex-1 items-center gap-1.5" title={`${node.file.path} (${node.file.status})`} onClick={() => setChecked([node.file], excluded.has(node.file.path))}>
+              <label
+                className="flex min-w-0 flex-1 items-center gap-1.5"
+                title={`${node.file.path} (${node.file.status})`}
+                onClick={() => setChecked([node.file], excluded.has(node.file.path))}
+              >
                 <img src={fileIconUrl(node.file.path)} alt="" className="size-4 shrink-0" />
                 <span className={`truncate ${STATUS_NAME_CLASS[node.file.status] ?? "text-neutral-200"}`}>{node.name}</span>
               </label>

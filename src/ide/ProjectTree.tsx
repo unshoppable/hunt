@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { commands } from "../ipc/commands";
 import type { DirEntry } from "../ipc/types";
-import { folderIconUrl, rootFolderIconUrl, useFileIconUrl } from "../diff/fileIcons";
+import { rootFolderIconUrl, useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { STATUS_NAME_CLASS } from "../diff/styles";
 import { useDismiss } from "../ui/useDismiss";
 import { errorText, useLoad } from "../ui/useLoad";
@@ -258,6 +258,7 @@ function TreeRow({
   onContextMenu?: (event: MouseEvent) => void;
 }) {
   const fileIconUrl = useFileIconUrl();
+  const folderIconUrl = useFolderIconUrl();
   return (
     <li
       data-path={path}
@@ -265,11 +266,11 @@ function TreeRow({
       onClick={onClick}
       onContextMenu={onContextMenu}
       title={path || name}
-      className={`flex cursor-pointer items-center gap-1 pr-2 outline-none select-none ${isSelected ? "bg-(--tree-selection)" : "hover:bg-[linear-gradient(var(--row-hover),var(--row-hover))]"}`}
+      className={`flex cursor-pointer items-center gap-[5px] pr-2 outline-none select-none ${isSelected ? "bg-(--tree-selection)" : "hover:bg-[linear-gradient(var(--row-hover),var(--row-hover))]"}`}
       style={{ paddingLeft: `calc(6px + ${depth} * var(--changelist-indent))`, backgroundColor: !isSelected && color ? FOLDER_COLORS[color].background : undefined }}
     >
       {isDir ? <ChevronIcon expanded={isExpanded} /> : <span className="size-4 shrink-0" />}
-      <img src={!isDir ? fileIconUrl(path) : path ? folderIconUrl(name, isExpanded) : rootFolderIconUrl(isExpanded)} alt="" className="size-4 shrink-0" />
+      <img src={!isDir ? fileIconUrl(path) : path ? folderIconUrl(path, isExpanded) : rootFolderIconUrl(isExpanded)} alt="" className="size-[17px] shrink-0" />
       <span className={`truncate ${isDir ? "text-neutral-300" : (STATUS_NAME_CLASS[status ?? ""] ?? "text-neutral-200")}`}>{name}</span>
     </li>
   );

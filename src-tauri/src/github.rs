@@ -248,6 +248,49 @@ pub struct PullRequestReview {
     pub submitted_at: String,
 }
 
+/// A review thread of a pull request: comments on lines `start_line..=line` of `side` of `path` (both 0 for a thread
+/// on the whole file), oldest first; the first comment opened the thread, the others reply to it.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewThread {
+    /// GraphQL node ID.
+    pub id: String,
+    pub path: String,
+    pub side: DiffSide,
+    pub start_line: u32,
+    pub line: u32,
+    pub is_resolved: bool,
+    /// The commented code changed after the first comment; GitHub still maps the thread to `line`.
+    pub is_outdated: bool,
+    /// Whether the signed-in user may answer the thread, resolve it, or mark it as unresolved again.
+    pub viewer_can_reply: bool,
+    pub viewer_can_resolve: bool,
+    pub viewer_can_unresolve: bool,
+    pub comments: Vec<ReviewThreadComment>,
+}
+
+/// Side of a pull request's diff: lines of `Left` number the base version of a file, lines of `Right` the new one.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all(serialize = "camelCase", deserialize = "UPPERCASE"))]
+pub enum DiffSide {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewThreadComment {
+    /// GraphQL node ID.
+    pub id: String,
+    /// GitHub login of the author; `ghost` for a deleted account.
+    pub author: String,
+    /// Empty for a deleted account.
+    pub avatar_url: String,
+    pub body: String,
+    pub created_at: String,
+    pub url: String,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GhPullRequestDetails {
@@ -294,6 +337,78 @@ struct GhReview {
     submitted_at: String,
 }
 
+/// The GraphQL response of `THREADS_QUERY`, in GitHub's own shape.
+#[derive(Deserialize)]
+struct GqlThreadsResponse {
+    #[serde(default)]
+    data: Option<GqlThreadsData>,
+}
+
+#[derive(Deserialize)]
+struct GqlThreadsData {
+    /// `None` when the remote is not a GitHub repository the user can see.
+    #[serde(default)]
+    repository: Option<GqlThreadsRepository>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlThreadsRepository {
+    #[serde(default)]
+    pull_request: Option<GqlThreadsPullRequest>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlThreadsPullRequest {
+    review_threads: GqlNodes<GqlThread>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlThread {
+    id: String,
+    path: String,
+    /// `null` when GitHub can no longer map the thread to a line of the diff, and for a thread on the whole file.
+    #[serde(default)]
+    line: Option<u32>,
+    #[serde(default)]
+    start_line: Option<u32>,
+    diff_side: DiffSide,
+    /// `LINE` or `FILE`.
+    subject_type: String,
+    is_resolved: bool,
+    is_outdated: bool,
+    #[serde(default)]
+    viewer_can_reply: bool,
+    #[serde(default)]
+    viewer_can_resolve: bool,
+    #[serde(default)]
+    viewer_can_unresolve: bool,
+    comments: GqlNodes<GqlThreadComment>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlThreadComment {
+    id: String,
+    /// `null` for a deleted account.
+    #[serde(default)]
+    author: Option<GqlActor>,
+    /// `null` when GitHub reports no text.
+    #[serde(default)]
+    body: Option<String>,
+    created_at: String,
+    url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlActor {
+    login: String,
+    avatar_url: String,
+}
+
 /// Asks for the open pull requests and the signed-in user in one round trip; `gh` fills `owner` and `name` from the
 /// repository's remote. The order is GitHub's default for its list: newest first.
 const LIST_QUERY: &str = r#"query($owner: String!, $name: String!) {
@@ -316,6 +431,20 @@ const LIST_QUERY: &str = r#"query($owner: String!, $name: String!) {
   }
 }"#;
 const DETAIL_JSON_FIELDS: &str = "number,title,body,author,url,state,isDraft,createdAt,headRefName,baseRefName,comments,reviews";
+/// Asks for the review threads of a pull request with their comments; `gh` fills `owner` and `name` from the
+/// repository's remote.
+const THREADS_QUERY: &str = r#"query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes {
+          id path line startLine diffSide subjectType isResolved isOutdated viewerCanReply viewerCanResolve viewerCanUnresolve
+          comments(first: 100) { nodes { id author { login avatarUrl(size: 64) } body createdAt url } }
+        }
+      }
+    }
+  }
+}"#;
 
 /// Runs `gh` with `args` in `repo` and returns its stdout; `what` names the operation in the error message.
 async fn run_gh(repo: &Path, args: &[&str], what: &str) -> Result<Vec<u8>, String> {
@@ -412,7 +541,8 @@ impl ReviewEvent {
 }
 
 /// A review comment drafted in Hunt and not yet submitted, anchored at lines `start_line..=line` of the new version
-/// of `path` (a single-line comment has `start_line == line`). Stored with the session until the review is submitted.
+/// of `path` (a single-line comment has `start_line == line`), or at the whole file when both are 0. Stored with the
+/// session until the review is submitted. A reply carries the path and lines of what it answers.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewComment {
@@ -423,15 +553,50 @@ pub struct ReviewComment {
     pub line: u32,
     pub body: String,
     pub created_at: DateTime<Utc>,
+    /// What the comment answers; `None` for a comment that opens a thread.
+    #[serde(default)]
+    pub reply_to: Option<ReplyTarget>,
 }
 
-/// An inline comment of a review as the GitHub API takes it: on lines `start_line..=line` of the new version of
-/// `path`, which must lie inside a hunk of the pull request's diff.
+impl ReviewComment {
+    /// Whether the comment is on the whole file rather than on lines of it.
+    pub fn is_on_file(&self) -> bool {
+        self.line == 0
+    }
+}
+
+/// What a drafted reply answers: a review thread on GitHub (its GraphQL node ID) or a drafted comment that opens a
+/// thread. Serialized as `{ "kind": "thread" | "draft", "id": … }`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "id", rename_all = "camelCase")]
+pub enum ReplyTarget {
+    Thread(String),
+    Draft(Uuid),
+}
+
+/// A thread a review opens on lines `start_line..=line` of the new version of `path`, which must lie inside a hunk of
+/// the pull request's diff, or on the whole file when both are 0, which must then be part of the diff. `replies`
+/// answer its first comment, oldest first.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InlineComment {
+pub struct NewThread {
     pub path: String,
     pub start_line: u32,
     pub line: u32,
+    pub body: String,
+    pub replies: Vec<String>,
+}
+
+impl NewThread {
+    /// Whether the REST API can create the thread with the review: a thread on lines without replies.
+    fn is_plain_line_thread(&self) -> bool {
+        self.line != 0 && self.replies.is_empty()
+    }
+}
+
+/// A reply of a review to the review thread `thread_id` (a GraphQL node ID) already on GitHub.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadReply {
+    pub thread_id: String,
     pub body: String,
 }
 
@@ -446,21 +611,172 @@ pub async fn submit_review(repo: &Path, number: u64, event: ReviewEvent, body: &
     Ok(())
 }
 
-/// Submits a review with inline `comments` through the REST API, which `gh pr review` cannot do; without comments
-/// this is `submit_review`. With comments the summary may be empty, as in GitHub's own review dialog.
-pub async fn submit_review_with_comments(repo: &Path, number: u64, event: ReviewEvent, body: &str, comments: &[InlineComment]) -> Result<(), String> {
-    if comments.is_empty() {
+/// Submits a review that opens `threads` and adds `replies` to threads already on GitHub, which `gh pr review` cannot
+/// do; without either this is `submit_review`. With comments the summary may be empty, as in GitHub's own review dialog.
+pub async fn submit_review_with_comments(
+    repo: &Path,
+    number: u64,
+    event: ReviewEvent,
+    body: &str,
+    threads: &[NewThread],
+    replies: &[ThreadReply],
+) -> Result<(), String> {
+    if threads.is_empty() && replies.is_empty() {
         return submit_review(repo, number, event, body).await;
     }
     let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/{number}/reviews");
-    let payload = serde_json::to_vec(&review_payload(event, body, comments)).map_err(|error| format!("failed to submit review: {error}"))?;
-    run_gh_with_input(repo, &["api", "--method", "POST", &endpoint, "--input", "-"], &payload, "submit review").await?;
+    let (plain, other): (Vec<&NewThread>, Vec<&NewThread>) = threads.iter().partition(|thread| thread.is_plain_line_thread());
+    if other.is_empty() && replies.is_empty() {
+        let payload = serde_json::to_vec(&review_payload(Some(event), body, &plain)).map_err(|error| format!("failed to submit review: {error}"))?;
+        run_gh_with_input(repo, &["api", "--method", "POST", &endpoint, "--input", "-"], &payload, "submit review").await?;
+        return Ok(());
+    }
+    // The REST API takes only line comments without replies with a review, so it only creates the review, pending;
+    // GraphQL adds the other threads and the replies and submits it. GitHub allows one pending review per user and
+    // pull request: a failure deletes it.
+    let payload = serde_json::to_vec(&review_payload(None, "", &plain)).map_err(|error| format!("failed to submit review: {error}"))?;
+    let stdout = run_gh_with_input(repo, &["api", "--method", "POST", &endpoint, "--input", "-"], &payload, "submit review").await?;
+    let pending: CreatedReview = serde_json::from_slice(&stdout).map_err(|error| format!("failed to submit review: {error}"))?;
+    let result = complete_pending_review(repo, &pending.node_id, event, body, &other, replies).await;
+    if result.is_err() {
+        let request = graphql_request(DELETE_REVIEW_MUTATION, serde_json::json!({ "review": pending.node_id }));
+        if let Err(error) = run_graphql(repo, &request, "discard the pending review").await {
+            eprintln!("{error}");
+        }
+    }
+    result
+}
+
+/// The part of the REST API's answer to creating a review that GraphQL mutations address it by.
+#[derive(Deserialize)]
+struct CreatedReview {
+    node_id: String,
+}
+
+/// Adds `threads` with their replies and the `replies` to existing threads to the pending review `review_id` (a
+/// GraphQL node ID) and submits it.
+async fn complete_pending_review(
+    repo: &Path,
+    review_id: &str,
+    event: ReviewEvent,
+    body: &str,
+    threads: &[&NewThread],
+    replies: &[ThreadReply],
+) -> Result<(), String> {
+    for thread in threads {
+        let stdout = run_graphql(repo, &add_thread_request(review_id, thread), "add review thread").await?;
+        let thread_id = parse_added_thread_id(&stdout)?;
+        for reply in &thread.replies {
+            run_graphql(repo, &add_reply_request(Some(review_id), &thread_id, reply), "add reply").await?;
+        }
+    }
+    for reply in replies {
+        run_graphql(repo, &add_reply_request(Some(review_id), &reply.thread_id, &reply.body), "add reply").await?;
+    }
+    run_graphql(repo, &submit_review_request(review_id, event, body), "submit review").await?;
     Ok(())
 }
 
-/// Request body of `POST /pulls/{number}/reviews`: every comment sits on the new side (`RIGHT`); a multi-line one
-/// also names its first line. An empty summary is left out rather than sent as an empty string.
-fn review_payload(event: ReviewEvent, body: &str, comments: &[InlineComment]) -> serde_json::Value {
+/// Posts `body` as a reply to the review thread `thread_id` (a GraphQL node ID) right away, outside of a review.
+pub async fn reply_to_thread(repo: &Path, thread_id: &str, body: &str) -> Result<(), String> {
+    if body.trim().is_empty() {
+        return Err("failed to reply to review thread: the reply is empty".into());
+    }
+    run_graphql(repo, &add_reply_request(None, thread_id, body), "reply to review thread").await?;
+    Ok(())
+}
+
+/// Marks the review thread `thread_id` (a GraphQL node ID) as resolved, or as unresolved again.
+pub async fn set_thread_resolved(repo: &Path, thread_id: &str, is_resolved: bool) -> Result<(), String> {
+    let (mutation, what) = if is_resolved {
+        (RESOLVE_THREAD_MUTATION, "resolve review thread")
+    } else {
+        (UNRESOLVE_THREAD_MUTATION, "unresolve review thread")
+    };
+    run_graphql(repo, &graphql_request(mutation, serde_json::json!({ "thread": thread_id })), what).await?;
+    Ok(())
+}
+
+const ADD_THREAD_MUTATION: &str = r#"mutation($review: ID!, $path: String!, $body: String!, $line: Int, $side: DiffSide, $startLine: Int, $startSide: DiffSide, $subjectType: PullRequestReviewThreadSubjectType) {
+  addPullRequestReviewThread(input: {pullRequestReviewId: $review, path: $path, body: $body, line: $line, side: $side, startLine: $startLine, startSide: $startSide, subjectType: $subjectType}) { thread { id } }
+}"#;
+const ADD_REPLY_MUTATION: &str = r#"mutation($review: ID, $thread: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: {pullRequestReviewId: $review, pullRequestReviewThreadId: $thread, body: $body}) { comment { id } }
+}"#;
+const RESOLVE_THREAD_MUTATION: &str = r#"mutation($thread: ID!) {
+  resolveReviewThread(input: {threadId: $thread}) { thread { id } }
+}"#;
+const UNRESOLVE_THREAD_MUTATION: &str = r#"mutation($thread: ID!) {
+  unresolveReviewThread(input: {threadId: $thread}) { thread { id } }
+}"#;
+const SUBMIT_REVIEW_MUTATION: &str = r#"mutation($review: ID!, $event: PullRequestReviewEvent!, $body: String) {
+  submitPullRequestReview(input: {pullRequestReviewId: $review, event: $event, body: $body}) { pullRequestReview { id } }
+}"#;
+const DELETE_REVIEW_MUTATION: &str = r#"mutation($review: ID!) {
+  deletePullRequestReview(input: {pullRequestReviewId: $review}) { clientMutationId }
+}"#;
+
+/// Adds `thread` to the pending review `review_id`: on its lines of the new side, or on the whole file. Variables a
+/// thread does not need are left out, so GitHub treats them as absent.
+fn add_thread_request(review_id: &str, thread: &NewThread) -> serde_json::Value {
+    let mut variables = serde_json::json!({ "review": review_id, "path": thread.path, "body": thread.body });
+    if thread.line == 0 {
+        variables["subjectType"] = serde_json::json!("FILE");
+    } else {
+        variables["line"] = serde_json::json!(thread.line);
+        variables["side"] = serde_json::json!("RIGHT");
+        if thread.start_line < thread.line {
+            variables["startLine"] = serde_json::json!(thread.start_line);
+            variables["startSide"] = serde_json::json!("RIGHT");
+        }
+    }
+    graphql_request(ADD_THREAD_MUTATION, variables)
+}
+
+/// Adds `body` as a reply to the review thread `thread_id`: to the pending review `review_id`, or posted right away
+/// without one.
+fn add_reply_request(review_id: Option<&str>, thread_id: &str, body: &str) -> serde_json::Value {
+    let mut variables = serde_json::json!({ "thread": thread_id, "body": body });
+    if let Some(review_id) = review_id {
+        variables["review"] = serde_json::json!(review_id);
+    }
+    graphql_request(ADD_REPLY_MUTATION, variables)
+}
+
+/// The node ID of the thread in the answer to `ADD_THREAD_MUTATION`.
+fn parse_added_thread_id(json: &[u8]) -> Result<String, String> {
+    let response: serde_json::Value = serde_json::from_slice(json).map_err(|error| format!("failed to add review thread: {error}"))?;
+    response["data"]["addPullRequestReviewThread"]["thread"]["id"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "failed to add review thread: GitHub returned no thread".to_string())
+}
+
+/// Request body of `gh api graphql --input -`.
+fn graphql_request(query: &str, variables: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "query": query, "variables": variables })
+}
+
+/// Submits the pending review `review_id` with `event`; an empty summary is left out, as in `review_payload`.
+fn submit_review_request(review_id: &str, event: ReviewEvent, body: &str) -> serde_json::Value {
+    let mut variables = serde_json::json!({ "review": review_id, "event": event.api_name() });
+    if !body.trim().is_empty() {
+        variables["body"] = serde_json::json!(body);
+    }
+    graphql_request(SUBMIT_REVIEW_MUTATION, variables)
+}
+
+/// Sends the GraphQL `request` (see `graphql_request`); `gh` fails on errors in the response as well.
+async fn run_graphql(repo: &Path, request: &serde_json::Value, what: &str) -> Result<Vec<u8>, String> {
+    let input = serde_json::to_vec(request).map_err(|error| format!("failed to {what}: {error}"))?;
+    run_gh_with_input(repo, &["api", "graphql", "--input", "-"], &input, what).await
+}
+
+/// Request body of `POST /pulls/{number}/reviews` with the line threads `comments` (see
+/// `NewThread::is_plain_line_thread`): every comment sits on the new side (`RIGHT`); a multi-line one also names its
+/// first line. Without an `event` the review stays pending. An empty summary is left out rather than sent as an empty
+/// string.
+fn review_payload(event: Option<ReviewEvent>, body: &str, comments: &[&NewThread]) -> serde_json::Value {
     let comments: Vec<serde_json::Value> = comments
         .iter()
         .map(|comment| {
@@ -472,7 +788,10 @@ fn review_payload(event: ReviewEvent, body: &str, comments: &[InlineComment]) ->
             value
         })
         .collect();
-    let mut payload = serde_json::json!({ "event": event.api_name(), "comments": comments });
+    let mut payload = serde_json::json!({ "comments": comments });
+    if let Some(event) = event {
+        payload["event"] = serde_json::json!(event.api_name());
+    }
     if !body.trim().is_empty() {
         payload["body"] = serde_json::json!(body);
     }
@@ -522,6 +841,70 @@ fn parse_pull_request_details(json: &[u8]) -> Result<PullRequestDetails, String>
                 submitted_at: review.submitted_at,
             })
             .collect(),
+    })
+}
+
+/// Review threads of pull request `number` of the GitHub repository `repo` is a clone of, in GitHub's order: the
+/// first 100, each with its first 100 comments. A thread GitHub no longer maps to a line of the diff is left out.
+pub async fn review_threads(repo: &Path, number: u64) -> Result<Vec<ReviewThread>, String> {
+    let query = format!("query={THREADS_QUERY}");
+    let number = format!("number={number}");
+    let args = ["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-F", &number, "-f", &query];
+    let stdout = run_gh(repo, &args, "list review threads").await?;
+    parse_review_threads(&stdout)
+}
+
+/// The review threads in the JSON `THREADS_QUERY` returns (see `review_threads`).
+fn parse_review_threads(json: &[u8]) -> Result<Vec<ReviewThread>, String> {
+    let response: GqlThreadsResponse = serde_json::from_slice(json).map_err(|error| format!("failed to parse review threads: {error}"))?;
+    let repository = response
+        .data
+        .and_then(|data| data.repository)
+        .ok_or("failed to list review threads: the remote is not a GitHub repository you can see")?;
+    let pull_request = repository.pull_request.ok_or("failed to list review threads: the pull request does not exist")?;
+    Ok(pull_request.review_threads.nodes.into_iter().filter_map(flatten_thread).collect())
+}
+
+/// The thread with its lines on `diff_side`; `None` for a line thread without a line and a thread without comments.
+fn flatten_thread(thread: GqlThread) -> Option<ReviewThread> {
+    let (start_line, line) = if thread.subject_type == "FILE" {
+        (0, 0)
+    } else {
+        let line = thread.line?;
+        (thread.start_line.unwrap_or(line).min(line), line)
+    };
+    let comments: Vec<ReviewThreadComment> = thread
+        .comments
+        .nodes
+        .into_iter()
+        .map(|comment| {
+            let (author, avatar_url) =
+                comment.author.map_or_else(|| ("ghost".into(), String::new()), |actor| (actor.login, actor.avatar_url));
+            ReviewThreadComment {
+                id: comment.id,
+                author,
+                avatar_url,
+                body: comment.body.unwrap_or_default(),
+                created_at: comment.created_at,
+                url: comment.url,
+            }
+        })
+        .collect();
+    if comments.is_empty() {
+        return None;
+    }
+    Some(ReviewThread {
+        id: thread.id,
+        path: thread.path,
+        side: thread.diff_side,
+        start_line,
+        line,
+        is_resolved: thread.is_resolved,
+        is_outdated: thread.is_outdated,
+        viewer_can_reply: thread.viewer_can_reply,
+        viewer_can_resolve: thread.viewer_can_resolve,
+        viewer_can_unresolve: thread.viewer_can_unresolve,
+        comments,
     })
 }
 
@@ -651,13 +1034,13 @@ fn strip_list_marker(line: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
-    fn inline(path: &str, start_line: u32, line: u32, body: &str) -> InlineComment {
-        InlineComment { path: path.into(), start_line, line, body: body.into() }
+    fn thread(path: &str, start_line: u32, line: u32, body: &str) -> NewThread {
+        NewThread { path: path.into(), start_line, line, body: body.into(), replies: Vec::new() }
     }
 
     #[test]
     fn review_payload_names_the_event_and_puts_every_comment_on_the_new_side() {
-        let payload = review_payload(ReviewEvent::RequestChanges, "Please fix", &[inline("src/a.ts", 12, 12, "typo")]);
+        let payload = review_payload(Some(ReviewEvent::RequestChanges), "Please fix", &[&thread("src/a.ts", 12, 12, "typo")]);
         assert_eq!(payload["event"], "REQUEST_CHANGES");
         assert_eq!(payload["body"], "Please fix");
         assert_eq!(payload["comments"][0]["path"], "src/a.ts");
@@ -669,13 +1052,84 @@ mod tests {
 
     #[test]
     fn review_payload_adds_the_start_line_of_a_multi_line_comment_and_omits_an_empty_body() {
-        let payload = review_payload(ReviewEvent::Comment, "  ", &[inline("src/a.ts", 3, 5, "extract")]);
+        let payload = review_payload(Some(ReviewEvent::Comment), "  ", &[&thread("src/a.ts", 3, 5, "extract")]);
         assert_eq!(payload["event"], "COMMENT");
         assert!(payload.get("body").is_none());
         assert_eq!(payload["comments"][0]["start_line"], 3);
         assert_eq!(payload["comments"][0]["start_side"], "RIGHT");
         assert_eq!(payload["comments"][0]["line"], 5);
-        assert_eq!(review_payload(ReviewEvent::Approve, "", &[])["event"], "APPROVE");
+        assert_eq!(review_payload(Some(ReviewEvent::Approve), "", &[])["event"], "APPROVE");
+    }
+
+    #[test]
+    fn review_payload_without_an_event_leaves_the_review_pending() {
+        let payload = review_payload(None, "", &[&thread("src/a.ts", 3, 3, "rename")]);
+        assert!(payload.get("event").is_none());
+        assert!(payload.get("body").is_none());
+        assert_eq!(payload["comments"][0]["line"], 3);
+    }
+
+    #[test]
+    fn submit_review_request_names_the_pending_review_and_the_event_and_omits_an_empty_body() {
+        let request = submit_review_request("PRR_1", ReviewEvent::RequestChanges, "Please fix");
+        assert!(request["query"].as_str().unwrap().contains("submitPullRequestReview"));
+        assert_eq!(request["variables"], serde_json::json!({ "review": "PRR_1", "event": "REQUEST_CHANGES", "body": "Please fix" }));
+        let request = submit_review_request("PRR_1", ReviewEvent::Comment, " ");
+        assert_eq!(request["variables"], serde_json::json!({ "review": "PRR_1", "event": "COMMENT" }));
+    }
+
+    #[test]
+    fn only_a_line_thread_without_replies_goes_through_the_rest_api() {
+        assert!(thread("src/a.ts", 3, 3, "rename").is_plain_line_thread());
+        assert!(!thread("src/a.ts", 0, 0, "split").is_plain_line_thread());
+        let answered = NewThread { replies: vec!["and this".into()], ..thread("src/a.ts", 3, 3, "rename") };
+        assert!(!answered.is_plain_line_thread());
+    }
+
+    #[test]
+    fn add_thread_request_puts_lines_on_the_new_side_and_a_file_thread_on_the_file() {
+        let request = add_thread_request("PRR_1", &thread("src/a.ts", 12, 12, "typo"));
+        assert!(request["query"].as_str().unwrap().contains("addPullRequestReviewThread"));
+        assert_eq!(request["variables"], serde_json::json!({ "review": "PRR_1", "path": "src/a.ts", "body": "typo", "line": 12, "side": "RIGHT" }));
+        let request = add_thread_request("PRR_1", &thread("src/a.ts", 3, 5, "extract"));
+        assert_eq!(
+            request["variables"],
+            serde_json::json!({ "review": "PRR_1", "path": "src/a.ts", "body": "extract", "line": 5, "side": "RIGHT", "startLine": 3, "startSide": "RIGHT" })
+        );
+        let request = add_thread_request("PRR_1", &thread("src/a.ts", 0, 0, "split"));
+        assert_eq!(request["variables"], serde_json::json!({ "review": "PRR_1", "path": "src/a.ts", "body": "split", "subjectType": "FILE" }));
+    }
+
+    #[test]
+    fn add_reply_request_names_the_pending_review_only_when_there_is_one() {
+        let request = add_reply_request(Some("PRR_1"), "PRRT_1", "Agreed");
+        assert!(request["query"].as_str().unwrap().contains("addPullRequestReviewThreadReply"));
+        assert_eq!(request["variables"], serde_json::json!({ "review": "PRR_1", "thread": "PRRT_1", "body": "Agreed" }));
+        let request = add_reply_request(None, "PRRT_1", "Agreed");
+        assert_eq!(request["variables"], serde_json::json!({ "thread": "PRRT_1", "body": "Agreed" }));
+    }
+
+    #[test]
+    fn parse_added_thread_id_reads_the_new_thread_or_fails() {
+        assert_eq!(parse_added_thread_id(br#"{"data":{"addPullRequestReviewThread":{"thread":{"id":"PRRT_9"}}}}"#).unwrap(), "PRRT_9");
+        let error = parse_added_thread_id(br#"{"data":{"addPullRequestReviewThread":{"thread":null}}}"#).unwrap_err();
+        assert_eq!(error, "failed to add review thread: GitHub returned no thread");
+    }
+
+    #[test]
+    fn review_comment_reads_drafts_without_a_reply_target_and_round_trips_one() {
+        let json = r#"{"id":"6f9619ff-8b86-d011-b42d-00cf4fc964ff","path":"a.ts","startLine":1,"line":1,"body":"x","createdAt":"2026-10-12T10:00:00Z"}"#;
+        let draft: ReviewComment = serde_json::from_str(json).unwrap();
+        assert_eq!(draft.reply_to, None);
+        let reply = ReviewComment { reply_to: Some(ReplyTarget::Thread("PRRT_1".into())), ..draft.clone() };
+        let value = serde_json::to_value(&reply).unwrap();
+        assert_eq!(value["replyTo"], serde_json::json!({ "kind": "thread", "id": "PRRT_1" }));
+        let parent = Uuid::new_v4();
+        let reply = ReviewComment { reply_to: Some(ReplyTarget::Draft(parent)), ..draft };
+        let value = serde_json::to_value(&reply).unwrap();
+        assert_eq!(value["replyTo"], serde_json::json!({ "kind": "draft", "id": parent.to_string() }));
+        let back: ReviewComment = serde_json::from_value(value).unwrap();
+        assert_eq!(back.reply_to, Some(ReplyTarget::Draft(parent)));
     }
 
     /// A list response with one pull request as seen by `viewer`; `latest_reviews` and `review_requests` are the
@@ -800,6 +1254,43 @@ mod tests {
         let viewer = parse_viewer(json).unwrap();
         assert_eq!(viewer, GithubViewer { login: "carol".into(), avatar_url: "https://avatars.githubusercontent.com/u/1?v=4".into() });
         assert_eq!(serde_json::to_string(&viewer).unwrap(), r#"{"login":"carol","avatarUrl":"https://avatars.githubusercontent.com/u/1?v=4"}"#);
+    }
+
+    #[test]
+    fn parse_review_threads_reads_lines_sides_and_replies_and_drops_unmapped_threads() {
+        let json = br#"{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+          {"id":"T1","path":"src/a.ts","line":46,"startLine":39,"diffSide":"RIGHT","subjectType":"LINE","isResolved":false,"isOutdated":false,
+           "viewerCanReply":true,"viewerCanResolve":true,"viewerCanUnresolve":false,
+           "comments":{"nodes":[
+             {"id":"C1","author":{"login":"carol","avatarUrl":"https://avatars/carol"},"body":"Why?","createdAt":"2026-10-01T10:00:00Z","url":"u1"},
+             {"id":"C2","author":null,"body":null,"createdAt":"2026-10-02T10:00:00Z","url":"u2"}]}},
+          {"id":"T2","path":"src/a.ts","line":12,"startLine":null,"diffSide":"LEFT","subjectType":"LINE","isResolved":true,"isOutdated":true,
+           "comments":{"nodes":[{"id":"C3","author":{"login":"dave","avatarUrl":"https://avatars/dave"},"body":"Gone","createdAt":"2026-10-03T10:00:00Z","url":"u3"}]}},
+          {"id":"T3","path":"src/b.ts","line":null,"startLine":null,"diffSide":"RIGHT","subjectType":"FILE","isResolved":false,"isOutdated":false,
+           "comments":{"nodes":[{"id":"C4","author":{"login":"carol","avatarUrl":"https://avatars/carol"},"body":"File","createdAt":"2026-10-04T10:00:00Z","url":"u4"}]}},
+          {"id":"T4","path":"src/b.ts","line":null,"startLine":null,"diffSide":"RIGHT","subjectType":"LINE","isResolved":false,"isOutdated":true,
+           "comments":{"nodes":[{"id":"C5","author":{"login":"carol","avatarUrl":"https://avatars/carol"},"body":"Old","createdAt":"2026-10-05T10:00:00Z","url":"u5"}]}}
+        ]}}}}}"#;
+        let threads = parse_review_threads(json).unwrap();
+        let spans: Vec<_> = threads.iter().map(|thread| (thread.id.as_str(), thread.side, thread.start_line, thread.line)).collect();
+        assert_eq!(spans, [("T1", DiffSide::Right, 39, 46), ("T2", DiffSide::Left, 12, 12), ("T3", DiffSide::Right, 0, 0)]);
+        assert_eq!(threads[0].comments[1].author, "ghost");
+        assert_eq!(threads[0].comments[1].avatar_url, "");
+        assert_eq!(threads[0].comments[1].body, "");
+        assert!(threads[1].is_resolved && threads[1].is_outdated);
+        assert!(threads[0].viewer_can_reply && threads[0].viewer_can_resolve && !threads[0].viewer_can_unresolve);
+        assert!(!threads[1].viewer_can_reply);
+        let json = serde_json::to_value(&threads[1]).unwrap();
+        assert_eq!(json["side"], "left");
+        assert_eq!(json["startLine"], 12);
+        assert_eq!(json["comments"][0]["avatarUrl"], "https://avatars/dave");
+        assert_eq!(json["viewerCanResolve"], false);
+    }
+
+    #[test]
+    fn parse_review_threads_rejects_a_missing_pull_request() {
+        let json = br#"{"data":{"repository":{"pullRequest":null}}}"#;
+        assert_eq!(parse_review_threads(json).unwrap_err(), "failed to list review threads: the pull request does not exist");
     }
 
     #[test]

@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 
 use agent_client_protocol::schema::v1::{
     CancelNotification, ConfigOptionUpdate, ContentBlock, ContentChunk, EmbeddedResource, EmbeddedResourceResource, ImageContent, Meta,
-    PromptRequest, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest, TextContent,
-    TextResourceContents,
+    PromptRequest, SessionConfigId, SessionConfigKind, SessionConfigOption, SessionId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionModeRequest, TextContent, TextResourceContents,
 };
+use agent_client_protocol::{Agent, ConnectionTo};
 use base64::Engine;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -17,12 +18,12 @@ use uuid::Uuid;
 
 use crate::acp::{connect, publish_update, LiveHandles, PermissionRegistry, SessionRegistry, SessionStart};
 use crate::git::{self, ChangedFile, FileDiff, Shelf};
-use crate::github::{self, GithubViewer, PullRequest, PullRequestDetails, PullRequestRef, ReviewComment, ReviewEvent};
+use crate::github::{self, GithubViewer, PullRequest, PullRequestDetails, PullRequestRef, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread};
 use crate::graph::{self, WatcherRegistry};
 use crate::ide;
 use crate::lsp::{self, LspRegistry};
 use crate::screenshots::{self, Screenshot};
-use crate::session::attribution;
+use crate::session::attribution::{self, FileVersion};
 use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus};
 use crate::session::review;
 use crate::session::store::{self, SelectionContext, SessionRecord, Workspace};
@@ -92,9 +93,19 @@ pub async fn view_pull_request(app: AppHandle, session_id: Uuid) -> Result<PullR
     github::view_pull_request(&record.repo_path, pull_request.number).await
 }
 
+/// Review threads of the pull request the session reviews, with their replies, as the diff shows them.
+#[tauri::command]
+pub async fn list_review_threads(app: AppHandle, session_id: Uuid) -> Result<Vec<ReviewThread>, String> {
+    let record = store::find_session(&app, session_id)?;
+    let Some(pull_request) = record.pull_request else {
+        return Err("failed to list review threads: the session does not review a pull request".into());
+    };
+    github::review_threads(&record.repo_path, pull_request.number).await
+}
+
 /// Submits a review of the pull request the session reviews: `body` is its summary comment, the session's drafted
-/// review comments go with it (inline where GitHub takes them, as notes in the summary otherwise) and are cleared
-/// once GitHub accepted the review.
+/// review comments and replies go with it (inline where GitHub takes them, as notes in the summary otherwise) and are
+/// cleared once GitHub accepted the review.
 #[tauri::command]
 pub async fn submit_pull_request_review(app: AppHandle, id: Uuid, event: ReviewEvent, body: String) -> Result<(), String> {
     let record = store::find_session(&app, id)?;
@@ -103,8 +114,8 @@ pub async fn submit_pull_request_review(app: AppHandle, id: Uuid, event: ReviewE
     };
     let review_id = review_session_id(&record);
     let drafts = store::find_session(&app, review_id)?.review_comments;
-    let (body, inline) = review::prepare(&record, &drafts, &body).await?;
-    github::submit_review_with_comments(&record.repo_path, pull_request.number, event, &body, &inline).await?;
+    let prepared = review::prepare(&record, &drafts, &body).await?;
+    github::submit_review_with_comments(&record.repo_path, pull_request.number, event, &prepared.body, &prepared.threads, &prepared.replies).await?;
     if !drafts.is_empty() {
         store::update_session(&app, review_id, |review| review.review_comments.clear())?;
         announce_sessions_changed(&app);
@@ -113,24 +124,46 @@ pub async fn submit_pull_request_review(app: AppHandle, id: Uuid, event: ReviewE
 }
 
 /// Drafts a review comment on lines `start_line..=line` of the new version of `path` for the session's pull
-/// request; it shows under the line in every code view until the review is submitted.
+/// request, or on the whole file when both are 0; it shows under the line (a file comment above the first line) in
+/// every code view until the review is submitted. With `reply_to` it answers a thread on GitHub or a drafted comment
+/// that opens a thread, and `path` and the lines are those of what it answers.
 #[tauri::command]
-pub async fn add_review_comment(app: AppHandle, id: Uuid, path: String, start_line: u32, line: u32, body: String) -> Result<ReviewComment, String> {
+pub async fn add_review_comment(
+    app: AppHandle,
+    id: Uuid,
+    path: String,
+    start_line: u32,
+    line: u32,
+    body: String,
+    reply_to: Option<ReplyTarget>,
+) -> Result<ReviewComment, String> {
     let (record, _) = session_file(&app, id, &path)?;
     if record.pull_request.is_none() {
         return Err("failed to add review comment: the session does not review a pull request".into());
     }
-    if start_line == 0 || line < start_line {
+    let is_on_file = start_line == 0 && line == 0;
+    if !is_on_file && (start_line == 0 || line < start_line) {
         return Err(format!("failed to add review comment: lines {start_line}-{line} are not a line range"));
     }
     let body = body.trim().to_string();
     if body.is_empty() {
         return Err("failed to add review comment: the comment is empty".into());
     }
-    let comment = ReviewComment { id: Uuid::new_v4(), path, start_line, line, body, created_at: chrono::Utc::now() };
+    let comment = ReviewComment { id: Uuid::new_v4(), path, start_line, line, body, created_at: chrono::Utc::now(), reply_to };
     let stored = comment.clone();
-    store::update_session(&app, review_session_id(&record), |review| review.review_comments.push(stored))?
-        .ok_or_else(|| "failed to add review comment: the session no longer exists".to_string())?;
+    let mut is_answerable = true;
+    store::update_session(&app, review_session_id(&record), |review| {
+        if let Some(ReplyTarget::Draft(parent_id)) = &stored.reply_to {
+            is_answerable = review.review_comments.iter().any(|draft| draft.id == *parent_id && draft.reply_to.is_none());
+        }
+        if is_answerable {
+            review.review_comments.push(stored);
+        }
+    })?
+    .ok_or_else(|| "failed to add review comment: the session no longer exists".to_string())?;
+    if !is_answerable {
+        return Err("failed to add review comment: the comment it answers no longer exists".into());
+    }
     announce_sessions_changed(&app);
     Ok(comment)
 }
@@ -157,13 +190,37 @@ pub async fn update_review_comment(app: AppHandle, id: Uuid, comment_id: Uuid, b
     Ok(())
 }
 
-/// Discards the drafted review comment `comment_id`.
+/// Discards the drafted review comment `comment_id` and the drafted replies to it.
 #[tauri::command]
 pub async fn delete_review_comment(app: AppHandle, id: Uuid, comment_id: Uuid) -> Result<(), String> {
     let record = store::find_session(&app, id)?;
-    store::update_session(&app, review_session_id(&record), |review| review.review_comments.retain(|comment| comment.id != comment_id))?;
+    let reply_target = Some(ReplyTarget::Draft(comment_id));
+    store::update_session(&app, review_session_id(&record), |review| {
+        review.review_comments.retain(|comment| comment.id != comment_id && comment.reply_to != reply_target)
+    })?;
     announce_sessions_changed(&app);
     Ok(())
+}
+
+/// Posts `body` as a reply to the review thread `thread_id` of the session's pull request right away, outside of a
+/// review.
+#[tauri::command]
+pub async fn reply_to_review_thread(app: AppHandle, id: Uuid, thread_id: String, body: String) -> Result<(), String> {
+    let record = store::find_session(&app, id)?;
+    if record.pull_request.is_none() {
+        return Err("failed to reply to review thread: the session does not review a pull request".into());
+    }
+    github::reply_to_thread(&record.repo_path, &thread_id, body.trim()).await
+}
+
+/// Marks the review thread `thread_id` of the session's pull request as resolved, or as unresolved again.
+#[tauri::command]
+pub async fn resolve_review_thread(app: AppHandle, id: Uuid, thread_id: String, is_resolved: bool) -> Result<(), String> {
+    let record = store::find_session(&app, id)?;
+    if record.pull_request.is_none() {
+        return Err("failed to resolve review thread: the session does not review a pull request".into());
+    }
+    github::set_thread_resolved(&record.repo_path, &thread_id, is_resolved).await
 }
 
 /// The session whose record holds the review drafts: a sub session drafts into its parent's list.
@@ -412,7 +469,9 @@ async fn end_session(
         store::remove_session(app, child.id)?;
     }
     if record.workspace == Workspace::Checkout {
-        return store::remove_session(app, id);
+        store::remove_session(app, id)?;
+        forget_edit_log_if_unused(app, &record.worktree_path);
+        return Ok(());
     }
 
     // The language server holds files of the worktree open; it must be gone before the directory is removed.
@@ -429,7 +488,21 @@ async fn end_session(
             .map_err(|error| format!("failed to remove the worktree {}: {error}", record.worktree_path.display()))?;
     }
     store::remove_session(app, id)?;
+    forget_edit_log_if_unused(app, &record.worktree_path);
     removal
+}
+
+/// Deletes the edit log of `worktree` when no stored session works in it any more; a failure is only logged.
+fn forget_edit_log_if_unused(app: &AppHandle, worktree: &Path) {
+    let result = store::load_sessions(app).and_then(|sessions| {
+        if sessions.iter().any(|session| session.worktree_path == worktree) {
+            return Ok(());
+        }
+        attribution::forget_worktree(app, worktree)
+    });
+    if let Err(error) = result {
+        eprintln!("deleting the edit log of {} failed: {error}", worktree.display());
+    }
 }
 
 /// Tells every window that the stored sessions changed in a way the sidebar must reload: a session was added
@@ -481,16 +554,69 @@ fn file_context_block(target: &Path) -> Option<ContentBlock> {
     Some(ContentBlock::Resource(EmbeddedResource::new(EmbeddedResourceResource::TextResourceContents(TextResourceContents::new(text, uri)))))
 }
 
-/// Asks the agent to rewrite the component diagram with the standard prompt. The turn is recorded as hidden,
-/// so the chat shows a status line instead of the prompt text, and it leaves the session summary alone.
+/// Asks the agent to rewrite the component diagram with the standard prompt. The turn runs with the agent config
+/// values `model` and `effort` from the diagram settings; afterwards the agent gets back the model and effort the chat
+/// showed before. The turn is recorded as hidden, so the chat shows neither the prompt text nor the agent's output,
+/// and it leaves the session summary alone.
 #[tauri::command]
-pub async fn refresh_graph(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid) -> Result<String, String> {
-    let blocks = vec![ContentBlock::Text(TextContent::new(graph::refresh_prompt(&crate::preferences::ai_language(&app))))];
-    run_turn(&app, &registry, id, blocks, Some(graph::hidden_turn_meta(GRAPH_TURN_LABEL))).await
+pub async fn refresh_graph(
+    app: AppHandle,
+    registry: State<'_, SessionRegistry>,
+    id: Uuid,
+    model: String,
+    effort: String,
+) -> Result<String, String> {
+    let record = store::find_session(&app, id)?;
+    let prompt = graph::refresh_prompt(&crate::preferences::ai_language(&app), record.diff_base());
+    let blocks = vec![ContentBlock::Text(TextContent::new(prompt))];
+    let LiveHandles { connection, acp_session_id, history } = live_session(&registry, id).await?;
+
+    // The model goes first: switching it resets the effort.
+    let graph_config = [(MODEL_CONFIG_ID, model.as_str()), (EFFORT_CONFIG_ID, effort.as_str())];
+    let chat_config = shown_config_values(&history.lock().unwrap(), &graph_config.map(|(config_id, _)| config_id));
+    let outcome = async {
+        for (config_id, value) in graph_config {
+            set_config_option(&connection, &acp_session_id, config_id, value).await?;
+        }
+        run_turn(&app, &registry, id, blocks, Some(graph::hidden_turn_meta())).await
+    }
+    .await;
+    let restored = async {
+        for (config_id, value) in &chat_config {
+            let options = set_config_option(&connection, &acp_session_id, config_id, value).await?;
+            let update = SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(options));
+            publish_update(&app, id, &history, SessionNotification::new(acp_session_id.clone(), update));
+        }
+        Ok::<(), String>(())
+    }
+    .await;
+
+    let stop_reason = outcome?;
+    restored?;
+    Ok(stop_reason)
 }
 
-/// Status line the chat shows for a diagram refresh turn; the frontend matches the same string.
-const GRAPH_TURN_LABEL: &str = "Updating the component diagram";
+/// Agent config options a diagram refresh switches for its turn.
+const MODEL_CONFIG_ID: &str = "model";
+const EFFORT_CONFIG_ID: &str = "effort";
+
+/// The values of the select options `config_ids` as the chat shows them, taken from the last option list in `history`,
+/// in the order of `config_ids`; options the list lacks are left out.
+fn shown_config_values(history: &[SessionNotification], config_ids: &[&str]) -> Vec<(String, String)> {
+    let latest = history.iter().rev().find_map(|notification| match &notification.update {
+        SessionUpdate::ConfigOptionUpdate(update) => Some(&update.config_options),
+        _ => None,
+    });
+    let Some(options) = latest else { return Vec::new() };
+    config_ids
+        .iter()
+        .filter_map(|config_id| {
+            let option = options.iter().find(|option| &*option.id.0 == *config_id)?;
+            let SessionConfigKind::Select(select) = &option.kind else { return None };
+            Some((config_id.to_string(), select.current_value.0.to_string()))
+        })
+        .collect()
+}
 
 /// Records `blocks` as a user turn, sends them and resolves with the stop reason once the agent finished.
 /// `hidden_meta` marks the recorded chunks as a hidden turn; a visible turn is summarized afterwards.
@@ -603,15 +729,26 @@ pub async fn set_session_config_option(
 ) -> Result<(), String> {
     let LiveHandles { connection, acp_session_id, history } = live_session(&registry, id).await?;
 
-    let response = connection
-        .send_request(SetSessionConfigOptionRequest::new(acp_session_id.clone(), config_id, value.as_str()))
-        .block_task()
-        .await
-        .map_err(|error| format!("failed to set the session config option: {error}"))?;
-
-    let update = SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(response.config_options));
+    let options = set_config_option(&connection, &acp_session_id, &config_id, &value).await?;
+    let update = SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(options));
     publish_update(&app, id, &history, SessionNotification::new(acp_session_id, update));
     Ok(())
+}
+
+/// Sets the session config option `config_id` to `value` and returns the agent's full option list.
+async fn set_config_option(
+    connection: &ConnectionTo<Agent>,
+    acp_session_id: &SessionId,
+    config_id: &str,
+    value: &str,
+) -> Result<Vec<SessionConfigOption>, String> {
+    let request = SetSessionConfigOptionRequest::new(acp_session_id.clone(), SessionConfigId::new(config_id), value);
+    let response = connection
+        .send_request(request)
+        .block_task()
+        .await
+        .map_err(|error| format!("failed to set the session config option {config_id}: {error}"))?;
+    Ok(response.config_options)
 }
 
 #[tauri::command]
@@ -654,6 +791,13 @@ pub async fn read_file_diff(app: AppHandle, id: Uuid, path: String) -> Result<Fi
     git::file_diff(&record.worktree_path, record.diff_base(), &path).await
 }
 
+/// The versions of `path` in the edit log of the session's worktree, oldest first, each with the session that wrote it.
+#[tauri::command]
+pub async fn read_file_history(app: AppHandle, id: Uuid, path: String) -> Result<Vec<FileVersion>, String> {
+    let (record, _) = session_file(&app, id, &path)?;
+    attribution::file_history(&app, &record.worktree_path, &path).await
+}
+
 /// The stored record of `id` and the absolute location of the worktree-relative `path` in its worktree. Every
 /// command that takes a path from the UI resolves it here: absolute paths and `..` segments are rejected.
 fn session_file(app: &AppHandle, id: Uuid, path: &str) -> Result<(SessionRecord, PathBuf), String> {
@@ -673,11 +817,14 @@ fn worktree_file(record: &SessionRecord, path: &str) -> Result<PathBuf, String> 
 /// The change counts as the session's own, like an edit by its agent.
 #[tauri::command]
 pub async fn write_file(app: AppHandle, id: Uuid, path: String, content: String) -> Result<(), String> {
-    let (_, target) = session_file(&app, id, &path)?;
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    std::fs::write(&target, content).map_err(|error| format!("failed to write {path}: {error}"))?;
+    let (record, target) = session_file(&app, id, &path)?;
+    attribution::record_write(&app, &record.worktree_path, id, || {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        std::fs::write(&target, content).map_err(|error| format!("failed to write {path}: {error}"))
+    })
+    .await?;
     store::add_touched_files(&app, id, std::slice::from_ref(&path))?;
     store::note_worktree_changed(&app, id)
 }
@@ -908,6 +1055,25 @@ pub async fn resolve_imports(app: AppHandle, id: Uuid, from: String, specifiers:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::schema::v1::SessionConfigSelectOption;
+
+    #[test]
+    fn shown_config_values_reads_the_last_recorded_option_list() {
+        let select = |id: &'static str, value: &'static str| {
+            SessionConfigOption::select(id, id, value, vec![SessionConfigSelectOption::new(value, value)])
+        };
+        let update = |options: Vec<SessionConfigOption>| {
+            SessionNotification::new("acp-session", SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(options)))
+        };
+        let history = vec![
+            update(vec![select("model", "sonnet"), select("effort", "low")]),
+            update(vec![select("effort", "xhigh"), select("model", "fable")]),
+        ];
+
+        let shown = shown_config_values(&history, &["model", "effort", "fast"]);
+        assert_eq!(shown, vec![("model".to_string(), "fable".to_string()), ("effort".to_string(), "xhigh".to_string())]);
+        assert!(shown_config_values(&[], &["model"]).is_empty());
+    }
 
     #[test]
     fn build_branch_slug_lowercases_and_collapses_separators() {

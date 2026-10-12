@@ -68,6 +68,15 @@ export function ChevronIcon({ expanded, className = "size-3.5" }: { expanded: bo
   );
 }
 
+/** A downward chevron, for buttons that open a dropdown. */
+export function ChevronDownIcon({ className = "size-3" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m4 6 4 4 4-4" />
+    </svg>
+  );
+}
+
 /** Arrow out of a box, for actions that open something in another app. */
 export function ExternalIcon({ className = "size-3.5" }: { className?: string }) {
   return (
@@ -115,6 +124,15 @@ export function EyeIcon({ className = "size-3.5" }: { className?: string }) {
   );
 }
 
+/** Two opposing arrows, for buttons that switch between two states. */
+export function SwapIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2.5 5.5h10M10 3l2.5 2.5L10 8M13.5 10.5h-10M6 8l-2.5 2.5L6 13" />
+    </svg>
+  );
+}
+
 /** A framed picture, for image attachments. */
 export function ImageIcon({ className = "size-4" }: { className?: string }) {
   return (
@@ -132,6 +150,16 @@ export function ShieldIcon({ className = "size-3.5" }: { className?: string }) {
     <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M8 1.75 2.75 3.9v4.1c0 3 2.2 5.2 5.25 6.25C11.05 13.2 13.25 11 13.25 8V3.9L8 1.75Z" />
       <path d="m5.75 8 1.6 1.6L10.5 6.4" />
+    </svg>
+  );
+}
+
+/** A floppy disk, for saving something for later. */
+export function SaveIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2.75 3.75a1 1 0 0 1 1-1h7.1l2.4 2.4v7.1a1 1 0 0 1-1 1h-8.5a1 1 0 0 1-1-1v-8.5Z" />
+      <path d="M5.25 2.75v3h5v-3M5.25 13.25v-4h5.5v4" />
     </svg>
   );
 }

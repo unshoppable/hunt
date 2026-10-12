@@ -1,22 +1,22 @@
+import { matchesGlob } from "../diff/glob";
 import type { ArchitectureGraph, ChangeStat, ChangedFile, GraphEdge, ReviewLevel } from "../ipc/types";
-import { FALLBACK_EDGE_LABEL } from "./schema";
+import { dirName } from "../ui/path";
 
-/** Smallest and largest node box; a changed file grows with its share of the changed lines. */
+/** Smallest and largest node box; a changed file grows with its share of the changed lines, any box beyond them to show its name in full. */
 export const MIN_NODE_WIDTH = 180;
 export const MAX_NODE_WIDTH = 300;
 export const MIN_NODE_HEIGHT = 56;
 export const MAX_NODE_HEIGHT = 100;
 /** A folder gets a group area once this many shown files sit directly in it. */
 const MIN_GROUP_NODES = 2;
-/** A path prefix gets a legend alias once this many shown files sit under it. */
-const MIN_ALIAS_NODES = 2;
-/** An alias must hide at least this many characters of its prefix: `apps/` is worth a legend entry, `src/` is not. */
-const MIN_ALIAS_SAVING = 5;
-/**
- * Directory names that never become an alias because they say nothing about the files below them; the legend
- * uses the next distinctive name instead, e.g. `backend` for `apps/backend/src`.
- */
-const GENERIC_DIRECTORIES = new Set(["src", "lib", "libs", "app", "apps", "packages", "modules", "services", "internal", "pkg", "cmd", "test", "tests", "spec", "__tests__", "dist", "build", "out"]);
+/** The ellipsis in a directory label stands for at least this many folders; hiding a single one saves too little. */
+const MIN_ELIDED_FOLDERS = 2;
+/** Folders that hold several modules, e.g. `apps` in `apps/backend/src`; module names leave them out. */
+const CONTAINER_FOLDERS = new Set(["apps", "packages", "libs", "modules", "services", "projects", "crates"]);
+/** Folders that open a module's source tree, e.g. `src` and `app` in `apps/backend/src/app`; a module root ends before the first. */
+const SOURCE_FOLDERS = new Set(["src", "lib", "app", "source", "sources", "main", "java", "kotlin", "internal", "pkg", "cmd"]);
+/** Folders whose name says little without their parent; a label ending in one keeps the parent, e.g. `vivendi-pep/__tests__`. */
+const GENERIC_FOLDERS = new Set([...SOURCE_FOLDERS, "test", "tests", "spec", "__tests__", "__mocks__", "dist", "build", "out"]);
 
 /**
  * One file in the diagram. Changed files come from the changelist and are sized by their changed lines; the other
@@ -27,9 +27,8 @@ export type DiagramNode = {
   name: string;
   /** Directory part of `path`, empty for root files. */
   directory: string;
-  /** `directory` with its legend prefix replaced by the alias; null for a grouped file, whose group label names the folder. */
-  shortDirectory: ShortPath | null;
-  description?: string;
+  /** `directory` as the label under the file name shows it. */
+  shortDirectory: ShortPath;
   /** The agent's rating of how much a human should review the file, and the criterion behind it. */
   review?: ReviewLevel;
   reviewReason?: string;
@@ -47,22 +46,36 @@ export type DiagramNode = {
 /** A translucent area around the shown files of one folder, so the module they belong to is visible. */
 export type DiagramGroup = { id: string; directory: string; shortDirectory: ShortPath; nodePaths: string[] };
 
-/** A legend term standing for a path prefix shared by several shown files, e.g. `backend` for `apps/backend/src`. */
+/** A module in the legend: its name `alias` stands for its root folder `prefix`, e.g. `ppp-rl-backend` for `apps/ppp-rl/backend`. */
 export type PathAlias = { alias: string; prefix: string };
-/** A directory with its legend prefix replaced: `alias` is the term (null when no entry applies), `rest` the path below the prefix. */
-export type ShortPath = { alias: string | null; rest: string };
+/**
+ * A directory as labels show it: `alias` names its module (null outside any), `full` the folders below the module's source
+ * tree and `rest` the same with middle folders elided as `…` when there are many.
+ */
+export type ShortPath = { alias: string | null; rest: string; full: string };
 
-export type DiagramEdge = { id: string; source: string; target: string; label: string; description?: string };
+export type DiagramEdge = { id: string; source: string; target: string; label?: string; description?: string };
 
 export type Diagram = {
   nodes: DiagramNode[];
   groups: DiagramGroup[];
   edges: DiagramEdge[];
-  /** Path prefixes the file labels abbreviate. */
+  /** Modules the directory labels name whose name differs from their root folder. */
   legend: PathAlias[];
-  /** Changed files the filter leaves out. */
+  /** Changed files the filters leave out. */
   hiddenCount: number;
 };
+
+/** The relevance and glob filters: files the agent rated below `minReview` and files matching one of `hiddenGlobs` are hidden. */
+export type DiagramFilter = { minReview: ReviewLevel; hiddenGlobs: string[] };
+
+const NO_FILTER: DiagramFilter = { minReview: 1, hiddenGlobs: [] };
+
+/** Whether `filter` hides the file at `path` the agent rated `review`; a file without a rating passes the minimum. */
+export function isFilteredOut(path: string, review: ReviewLevel | undefined, filter: DiagramFilter): boolean {
+  if (review && review < filter.minReview) return true;
+  return filter.hiddenGlobs.some((glob) => matchesGlob(glob, path));
+}
 
 /** Files and edges that light up while a file is hovered; the dependency card keeps clear of all of them. */
 export type LitElements = { nodePaths: Set<string>; edgeIds: Set<string> };
@@ -83,16 +96,9 @@ export function nodeSize(lines: number, maxLines: number): { width: number; heig
   };
 }
 
-/**
- * Agent edges plus the import edges of file pairs the agent did not describe; the agent's label is the better one,
- * unless it was repaired to the placeholder, where the import label says more.
- */
+/** Agent edges plus the unlabeled import edges of file pairs the agent did not describe. */
 export function mergeEdges(agentEdges: GraphEdge[], importEdges: GraphEdge[]): GraphEdge[] {
-  const importByPair = new Map(importEdges.map((edge) => [`${edge.source}->${edge.target}`, edge]));
-  const merged = agentEdges.map((edge) => {
-    const imported = importByPair.get(`${edge.source}->${edge.target}`);
-    return edge.label === FALLBACK_EDGE_LABEL && imported ? { ...edge, label: imported.label } : edge;
-  });
+  const merged = [...agentEdges];
   const described = new Set(agentEdges.map((edge) => `${edge.source}->${edge.target}`));
   for (const edge of importEdges) {
     const pair = `${edge.source}->${edge.target}`;
@@ -104,20 +110,30 @@ export function mergeEdges(agentEdges: GraphEdge[], importEdges: GraphEdge[]): G
 }
 
 /**
- * Merges the changelist with the agent-written graph and the imports read from the files: every changed file not
- * in `excluded` is a node, agent nodes without changes are kept only while an edge path connects them to a shown
- * changed file, and edges need both endpoints shown. Changed files the agent left out still appear.
+ * Merges the changelist with the agent-written graph and the imports read from the files: every changed file neither
+ * in `excluded` nor hidden by `filter` is a node, agent nodes without changes are kept only while an edge path through
+ * files `filter` keeps connects them to a shown changed file, and edges need both endpoints shown. Changed files the
+ * agent left out still appear. A box is at least `minWidth` of its node wide, the width its content needs.
  */
-export function buildDiagram(graph: ArchitectureGraph, importEdges: GraphEdge[], changedFiles: ChangedFile[], stats: ChangeStat[], excluded: Set<string>): Diagram {
+export function buildDiagram(
+  graph: ArchitectureGraph,
+  importEdges: GraphEdge[],
+  changedFiles: ChangedFile[],
+  stats: ChangeStat[],
+  excluded: Set<string>,
+  filter: DiagramFilter = NO_FILTER,
+  minWidth: (node: DiagramNode) => number = () => 0,
+): Diagram {
   const changedByPath = new Map(changedFiles.map((file) => [file.path, file]));
   const statsByPath = new Map(stats.map((stat) => [stat.path, stat]));
   const agentNodes = new Map(graph.nodes.map((node) => [node.path, node]));
   const allEdges = mergeEdges(graph.edges, importEdges);
 
-  const shownChanged = changedFiles.filter((file) => !excluded.has(file.path));
+  const isHidden = (path: string) => isFilteredOut(path, agentNodes.get(path)?.review, filter);
+  const shownChanged = changedFiles.filter((file) => !excluded.has(file.path) && !isHidden(file.path));
   const shown = new Set(shownChanged.map((file) => file.path));
 
-  // Context files reachable from the shown changed files through other context files; hidden changed files block the way.
+  // Context files reachable from the shown changed files through other context files; hidden files block the way.
   const neighbours = new Map<string, string[]>();
   for (const edge of allEdges) {
     neighbours.set(edge.source, [...(neighbours.get(edge.source) ?? []), edge.target]);
@@ -127,7 +143,7 @@ export function buildDiagram(graph: ArchitectureGraph, importEdges: GraphEdge[],
   while (queue.length) {
     const current = queue.shift()!;
     for (const next of neighbours.get(current) ?? []) {
-      if (shown.has(next) || changedByPath.has(next)) continue;
+      if (shown.has(next) || changedByPath.has(next) || isHidden(next)) continue;
       shown.add(next);
       queue.push(next);
     }
@@ -146,12 +162,11 @@ export function buildDiagram(graph: ArchitectureGraph, importEdges: GraphEdge[],
     const agentNode = agentNodes.get(path);
     const segments = path.split("/");
     const directory = segments.slice(0, -1).join("/");
-    return {
+    const node: DiagramNode = {
       path,
       name: segments[segments.length - 1],
       directory,
-      shortDirectory: shortenDirectory(directory, legend),
-      description: agentNode?.description,
+      shortDirectory: labelOf(directory),
       review: agentNode?.review,
       reviewReason: agentNode?.reviewReason,
       isChanged: Boolean(changed),
@@ -160,13 +175,14 @@ export function buildDiagram(graph: ArchitectureGraph, importEdges: GraphEdge[],
       removed: changed ? (stat?.removed ?? 0) : 0,
       ...nodeSize(lines, maxLines),
     };
+    return { ...node, width: Math.max(node.width, Math.ceil(minWidth(node))) };
   };
 
   const contextPaths = graph.nodes.map((node) => node.path).filter((path) => shown.has(path) && !changedByPath.has(path));
   const shownPaths = [...shownChanged.map((file) => file.path), ...contextPaths];
-  const legend = buildLegend(shownPaths.map((path) => path.split("/").slice(0, -1).join("/")));
+  const { legend, labelOf } = labelDirectories(shownPaths.map(dirName));
   const nodes = shownPaths.map(toNode);
-  const groups = groupByFolder(nodes, legend);
+  const groups = groupByFolder(nodes, labelOf);
   const edges = allEdges
     .filter((edge) => shown.has(edge.source) && shown.has(edge.target))
     .map((edge) => ({ id: `${edge.source}->${edge.target}`, source: edge.source, target: edge.target, label: edge.label, description: edge.description }));
@@ -175,10 +191,10 @@ export function buildDiagram(graph: ArchitectureGraph, importEdges: GraphEdge[],
 }
 
 /**
- * One group per folder with at least `MIN_GROUP_NODES` of `nodes`, in order of first appearance; sets `groupId` on the
- * members and clears their `shortDirectory`, since the group label names the folder.
+ * One group per folder with at least `MIN_GROUP_NODES` of `nodes`, in order of first appearance, labeled by `labelOf`;
+ * sets `groupId` on the members.
  */
-export function groupByFolder(nodes: DiagramNode[], legend: PathAlias[] = []): DiagramGroup[] {
+export function groupByFolder(nodes: DiagramNode[], labelOf: (directory: string) => ShortPath): DiagramGroup[] {
   const byDirectory = new Map<string, DiagramNode[]>();
   for (const node of nodes) {
     byDirectory.set(node.directory, [...(byDirectory.get(node.directory) ?? []), node]);
@@ -189,64 +205,81 @@ export function groupByFolder(nodes: DiagramNode[], legend: PathAlias[] = []): D
     const id = `folder:${directory}`;
     for (const member of members) {
       member.groupId = id;
-      member.shortDirectory = null;
     }
-    groups.push({ id, directory: directory || ".", shortDirectory: shortenDirectory(directory, legend), nodePaths: members.map((member) => member.path) });
+    groups.push({ id, directory: directory || ".", shortDirectory: labelOf(directory), nodePaths: members.map((member) => member.path) });
   }
   return groups;
 }
 
 /**
- * Legend of the path prefixes worth abbreviating in `directories` (one entry per file, so a directory counts as often
- * as it has files). Walking down from the root, the first directory name that is not generic becomes the alias of
- * the longest prefix all files below it share, e.g. `backend` for `apps/backend/src`; an alias needs
- * `MIN_ALIAS_NODES` files and must save `MIN_ALIAS_SAVING` characters, and a name is used only once.
+ * Labels for `directories` and the legend of the modules they name. A module root is the folder before a directory's
+ * first source folder, named by its folders without the container ones, e.g. `ppp-rl-backend` for
+ * `apps/ppp-rl/backend/src`. A directory at or below a root reads as the module plus its folders below the source
+ * tree, any other directory as its folders after the leading source ones. Long folder paths keep the first folder and
+ * the fewest trailing ones that still tell the directories apart, e.g. `ppp-rl-backend` + `api/…/import` for
+ * `apps/ppp-rl/backend/src/app/api/workforce/employee/import`. `labelOf` reads a directory outside `directories` as is.
  */
-export function buildLegend(directories: string[]): PathAlias[] {
-  const legend: PathAlias[] = [];
-  const usedAliases = new Set<string>();
-  const visit = (parent: string[], members: string[][]) => {
-    const byChild = new Map<string, string[][]>();
-    for (const segments of members) {
-      const child = segments[parent.length];
-      if (!child) continue;
-      byChild.set(child, [...(byChild.get(child) ?? []), segments]);
+export function labelDirectories(directories: string[]): { legend: PathAlias[]; labelOf: (directory: string) => ShortPath } {
+  const distinct = [...new Set(directories)];
+  const roots = [...new Set(distinct.map(moduleRoot).filter((root): root is string => Boolean(root)))];
+  const modules = nameModules(roots);
+  const longestFirst = [...modules].sort((first, second) => second.prefix.length - first.prefix.length);
+  const entries = distinct.map((directory) => {
+    const segments = directory ? directory.split("/") : [];
+    const owner = longestFirst.find((candidate) => directory === candidate.prefix || directory.startsWith(`${candidate.prefix}/`));
+    const below = withoutSourceFolders(segments.slice(owner ? owner.prefix.split("/").length : 0));
+    const folders = owner || below.length ? below : segments;
+    let tail = 1;
+    while (tail < folders.length && GENERIC_FOLDERS.has(folders[folders.length - tail])) {
+      tail++;
     }
-    for (const [child, group] of byChild) {
-      if (group.length < MIN_ALIAS_NODES) continue;
-      const path = [...parent, child];
-      if (GENERIC_DIRECTORIES.has(child)) {
-        visit(path, group);
-        continue;
-      }
-      if (usedAliases.has(child)) continue;
-      const prefix = commonPrefix(group).join("/");
-      if (prefix.length - child.length < MIN_ALIAS_SAVING) continue;
-      usedAliases.add(child);
-      legend.push({ alias: child, prefix });
+    return { directory, alias: owner?.alias ?? null, folders, tail };
+  });
+  // Labels two directories share take one more trailing folder until they differ or show every folder.
+  for (;;) {
+    const byLabel = new Map<string, typeof entries>();
+    for (const entry of entries) {
+      const key = `${entry.alias ?? ""}\n${elide(entry.folders, entry.tail)}`;
+      byLabel.set(key, [...(byLabel.get(key) ?? []), entry]);
     }
-  };
-  visit([], directories.filter(Boolean).map((directory) => directory.split("/")));
-  return legend;
-}
-
-/** The leading segments every path in `paths` shares. */
-function commonPrefix(paths: string[][]): string[] {
-  const [first, ...rest] = paths;
-  let length = first.length;
-  for (const other of rest) {
-    let shared = 0;
-    while (shared < length && shared < other.length && other[shared] === first[shared]) {
-      shared++;
+    const ambiguous = [...byLabel.values()].filter((shared) => shared.length > 1).flat().filter((entry) => entry.tail < entry.folders.length);
+    if (!ambiguous.length) break;
+    for (const entry of ambiguous) {
+      entry.tail++;
     }
-    length = shared;
   }
-  return first.slice(0, length);
+  const labels = new Map(entries.map((entry) => [entry.directory, { alias: entry.alias, rest: elide(entry.folders, entry.tail), full: entry.folders.join("/") }]));
+  return {
+    legend: modules.filter((entry) => entry.alias !== entry.prefix),
+    labelOf: (directory) => labels.get(directory) ?? { alias: null, rest: directory, full: directory },
+  };
 }
 
-/** `directory` with its legend prefix replaced by the alias; unchanged (alias null) when no entry applies. */
-export function shortenDirectory(directory: string, legend: PathAlias[]): ShortPath {
-  const entry = legend.find((candidate) => directory === candidate.prefix || directory.startsWith(`${candidate.prefix}/`));
-  if (!entry) return { alias: null, rest: directory };
-  return { alias: entry.alias, rest: directory.slice(entry.prefix.length + 1) };
+/** The folders of `directory` before its first source folder, unless they are all container folders; null then. */
+function moduleRoot(directory: string): string | null {
+  const segments = directory.split("/");
+  const before = segments.slice(0, Math.max(0, segments.findIndex((segment) => SOURCE_FOLDERS.has(segment))));
+  return before.some((segment) => !CONTAINER_FOLDERS.has(segment)) ? before.join("/") : null;
+}
+
+/** Names module `roots` by their folders without the container ones; roots that would share a name keep all their folders. */
+function nameModules(roots: string[]): PathAlias[] {
+  const nameOf = (root: string) => root.split("/").filter((segment) => !CONTAINER_FOLDERS.has(segment)).join("-");
+  const counts = new Map<string, number>();
+  for (const root of roots) {
+    counts.set(nameOf(root), (counts.get(nameOf(root)) ?? 0) + 1);
+  }
+  return roots.map((root) => ({ alias: (counts.get(nameOf(root)) ?? 0) > 1 ? root.split("/").join("-") : nameOf(root), prefix: root }));
+}
+
+/** `segments` from the first one that is not a source folder on. */
+function withoutSourceFolders(segments: string[]): string[] {
+  const start = segments.findIndex((segment) => !SOURCE_FOLDERS.has(segment));
+  return start < 0 ? [] : segments.slice(start);
+}
+
+/** `folders` joined with `/`; when that hides at least `MIN_ELIDED_FOLDERS`, only the first and the last `tail` around `…`. */
+function elide(folders: string[], tail: number): string {
+  if (folders.length - 1 - tail < MIN_ELIDED_FOLDERS) return folders.join("/");
+  return [folders[0], "…", ...folders.slice(-tail)].join("/");
 }

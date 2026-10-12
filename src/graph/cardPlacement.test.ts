@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CARD_GAP, placeCard, type Obstacles, type Rect } from "./cardPlacement";
+import { ANCHOR_GAP, placeCard, type Obstacles, type Rect } from "./cardPlacement";
 
 const canvas = { width: 1200, height: 800 };
 const card = { width: 300, height: 200 };
@@ -10,29 +10,29 @@ const line = (x: number, top: number, bottom: number) => Array.from({ length: (b
 
 describe("placeCard", () => {
   it("sits to the left of the file, top-aligned, when nothing lit is there", () => {
-    expect(placeCard({ canvas, card, anchor, obstacles: nothing })).toEqual({ x: 500 - CARD_GAP - 300, y: 300 });
+    expect(placeCard({ canvas, card, anchor, obstacles: nothing })).toEqual({ x: 500 - ANCHOR_GAP - 300, y: 300 });
   });
 
   it("moves to the right when a lit edge runs along the file's left side", () => {
     const obstacles: Obstacles = { rects: [], points: line(450, 300, 600) };
-    expect(placeCard({ canvas, card, anchor, obstacles })).toEqual({ x: 700 + CARD_GAP, y: 300 });
+    expect(placeCard({ canvas, card, anchor, obstacles })).toEqual({ x: 700 + ANCHOR_GAP, y: 300 });
   });
 
   it("moves above the file when lit edges leave it on both sides", () => {
     const obstacles: Obstacles = { rects: [], points: [...line(450, 300, 600), ...line(750, 300, 600)] };
-    expect(placeCard({ canvas, card, anchor, obstacles })).toEqual({ x: 500, y: 300 - CARD_GAP - 200 });
+    expect(placeCard({ canvas, card, anchor, obstacles })).toEqual({ x: 500, y: 300 - ANCHOR_GAP - 200 });
   });
 
   it("moves below when a lit file sits above and lit edges run down both sides", () => {
     const above: Rect = { left: 500, top: 60, right: 700, bottom: 150 };
     const obstacles: Obstacles = { rects: [above], points: [...line(450, 300, 600), ...line(850, 300, 600)] };
-    expect(placeCard({ canvas, card, anchor, obstacles })).toEqual({ x: 500, y: 360 + CARD_GAP });
+    expect(placeCard({ canvas, card, anchor, obstacles })).toEqual({ x: 500, y: 360 + ANCHOR_GAP });
   });
 
   it("keeps the card inside the canvas and off the file when the file sits at the canvas border", () => {
     const atBorder: Rect = { left: 20, top: 20, right: 220, bottom: 80 };
     const spot = placeCard({ canvas, card, anchor: atBorder, obstacles: nothing });
-    expect(spot).toEqual({ x: 220 + CARD_GAP, y: 20 });
+    expect(spot).toEqual({ x: 220 + ANCHOR_GAP, y: 20 });
   });
 
   it("moves to the nearest free grid spot when every spot next to the file covers something lit", () => {
@@ -50,6 +50,6 @@ describe("placeCard", () => {
     const small: Rect = { left: 505, top: 100, right: 515, bottom: 110 };
     const obstacles: Obstacles = { rects: [everywhere, small], points: [] };
     const spot = placeCard({ canvas, card, anchor, obstacles });
-    expect(spot).toEqual({ x: 500 - CARD_GAP - 300, y: 300 });
+    expect(spot).toEqual({ x: 500 - ANCHOR_GAP - 300, y: 300 });
   });
 });

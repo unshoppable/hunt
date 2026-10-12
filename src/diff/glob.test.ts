@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { globToRegExp, matchesGlob } from "./glob";
+import { globToRegExp, matchesGlob, splitGlobs } from "./glob";
 
 describe("matchesGlob", () => {
   it("matches a glob without a slash against the file name in any folder", () => {
@@ -54,5 +54,17 @@ describe("matchesGlob", () => {
     expect(globToRegExp("*.ts").flags).toBe("i");
     expect(globToRegExp("*.ts").source.startsWith("^")).toBe(true);
     expect(globToRegExp("*.ts").source.endsWith("$")).toBe(true);
+  });
+});
+
+describe("splitGlobs", () => {
+  it("separates globs at commas and whitespace", () => {
+    expect(splitGlobs("*.spec.ts, *.test.ts  docs/**")).toEqual(["*.spec.ts", "*.test.ts", "docs/**"]);
+    expect(splitGlobs(" ,, ")).toEqual([]);
+  });
+
+  it("keeps the alternatives of braces together", () => {
+    expect(splitGlobs("*.{spec,test}.ts, {a, b}/**")).toEqual(["*.{spec,test}.ts", "{a,b}/**"]);
+    expect(splitGlobs("*.{a,{b,c}}.ts x")).toEqual(["*.{a,{b,c}}.ts", "x"]);
   });
 });

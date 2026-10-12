@@ -13,6 +13,8 @@ export function SplitDiffView({
   fontSize,
   lineHeight,
   fontFamily,
+  readOnly,
+  collapseUnchanged,
   onEditorsCreated,
 }: {
   original: string;
@@ -23,12 +25,16 @@ export function SplitDiffView({
   lineHeight: number;
   /** CSS font family of the code. */
   fontFamily: string;
+  /** The modified side cannot be edited and has no revert arrows. */
+  readOnly?: boolean;
+  /** Collapses every unchanged stretch into a hidden-lines bar; false expands them all. */
+  collapseUnchanged: boolean;
   /** Receives both editors right after they were created; only `modified` is editable. */
   onEditorsCreated: (original: editor.IStandaloneCodeEditor, modified: editor.IStandaloneCodeEditor) => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<SplitDiffController | null>(null);
-  const initialRef = useRef({ original, modified, language, fontSize, lineHeight, fontFamily, onEditorsCreated });
+  const initialRef = useRef({ original, modified, language, fontSize, lineHeight, fontFamily, readOnly, collapseUnchanged, onEditorsCreated });
 
   useEffect(() => {
     if (!rootRef.current) return;
@@ -50,6 +56,10 @@ export function SplitDiffView({
   useEffect(() => {
     controllerRef.current?.setTextMetrics(fontSize, lineHeight, fontFamily);
   }, [fontSize, lineHeight, fontFamily]);
+
+  useEffect(() => {
+    controllerRef.current?.setCollapseUnchanged(collapseUnchanged);
+  }, [collapseUnchanged]);
 
   return <div ref={rootRef} className="split-diff" />;
 }

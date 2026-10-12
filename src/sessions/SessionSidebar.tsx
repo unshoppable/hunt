@@ -139,7 +139,6 @@ export function SessionSidebar() {
         {rows.map(({ session, isSubChat }) => {
           const isActive = session.id === activeSessionId;
           const isBusy = chats[session.id]?.isBusy ?? false;
-          const hasUnseenActivity = !isActive && (chats[session.id]?.hasUnseenActivity ?? false);
           // A session the backend still creates has no worktree or agent yet: nothing can be started in or done to it.
           const isCreating = creatingIds.includes(session.id);
           return (
@@ -202,23 +201,18 @@ export function SessionSidebar() {
                     <span className="truncate">{repoName(session.repoPath)}</span>
                   </span>
                 ) : null}
-                {!isCreating && (isBusy || hasUnseenActivity) ? (
+                {!isCreating && isBusy ? (
                   <span className="mt-0.5 flex w-full items-center gap-1 pl-2.5 text-[0.8125em]">
-                    {isBusy ? (
-                      <span
-                        role="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void cancelPrompt(session.id);
-                        }}
-                        className="rounded-md px-1.5 py-0.5 text-neutral-500 transition-colors hover:bg-white/10 hover:text-white"
-                      >
-                        stop
-                      </span>
-                    ) : null}
-                    {hasUnseenActivity ? (
-                      <span className="ml-auto mr-1.5 size-2 shrink-0 rounded-full bg-sky-400" role="status" aria-label="Unseen activity" />
-                    ) : null}
+                    <span
+                      role="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void cancelPrompt(session.id);
+                      }}
+                      className="rounded-md px-1.5 py-0.5 text-neutral-500 transition-colors hover:bg-white/10 hover:text-white"
+                    >
+                      stop
+                    </span>
                   </span>
                 ) : null}
               </button>

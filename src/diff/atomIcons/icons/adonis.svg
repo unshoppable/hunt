@@ -1,0 +1,10 @@
+<svg  width="16px" height="16px" viewBox="0 0 36 33" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <g stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+    <g transform="translate(0, 2)">
+      <polygon id="Path"
+               stroke="#fc8589" stroke-width="2" points="20 0.736 5.618 29.5 34.382 29.5"></polygon>
+      <polygon id="Shape"
+               fill="#fc8589" fill-rule="nonzero" points="12 0.5 24 24.5 0 24.5"></polygon>
+    </g>
+  </g>
+</svg>

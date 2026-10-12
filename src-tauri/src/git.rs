@@ -71,6 +71,33 @@ async fn run_git_with_env(cwd: &Path, args: &[&str], envs: &[(&str, &Path)]) -> 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// `run_git_with_env` that writes `input` to the git process's stdin, for the `--batch` and `--stdin` modes.
+async fn run_git_with_input(cwd: &Path, args: &[&str], envs: &[(&str, &Path)], input: &str) -> Result<String, String> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .envs(envs.iter().copied())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to run git: {error}"))?;
+    let mut stdin = child.stdin.take().ok_or("failed to open the stdin of git")?;
+    let input = input.to_string();
+    let writer = tokio::spawn(async move { stdin.write_all(input.as_bytes()).await });
+    let output = child.wait_with_output().await.map_err(|error| format!("failed to run git: {error}"))?;
+    writer.await.map_err(|error| error.to_string())?.map_err(|error| format!("failed to write to git: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("git {} failed: {stderr}", args.join(" ")));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// The ref every changelist and diff of a worktree compares against: its uncommitted changes.
 pub const DIFF_BASE: &str = "HEAD";
 
@@ -155,10 +182,30 @@ pub async fn exclude_hunt_dir(worktree: &Path) -> Result<(), String> {
     std::fs::write(&exclude_path, content).map_err(|error| error.to_string())
 }
 
-/// Tree object of the current working tree: tracked and untracked files, ignored files excluded.
+/// Object store for worktree snapshots outside the repository: new objects go to `objects`, the repository's own
+/// objects stay readable as alternates, so a snapshot neither adds objects to the repository nor copies its files.
+pub struct SnapshotStore {
+    objects: std::path::PathBuf,
+    alternates: std::path::PathBuf,
+}
+
+impl SnapshotStore {
+    /// Opens the store in `objects` (created when missing) for the repository of `worktree`.
+    pub async fn open(worktree: &Path, objects: &Path) -> Result<Self, String> {
+        std::fs::create_dir_all(objects).map_err(|error| format!("failed to create the snapshot store: {error}"))?;
+        let alternates = run_git(worktree, &["rev-parse", "--git-path", "objects"]).await?;
+        Ok(Self { objects: objects.to_path_buf(), alternates: worktree.join(alternates.trim()) })
+    }
+
+    fn envs(&self) -> [(&'static str, &Path); 2] {
+        [("GIT_OBJECT_DIRECTORY", self.objects.as_path()), ("GIT_ALTERNATE_OBJECT_DIRECTORIES", self.alternates.as_path())]
+    }
+}
+
+/// Tree object of the current working tree in `store`: tracked and untracked files, ignored files excluded.
 /// The tree is built through a scratch copy of the index, so neither the real index nor HEAD change.
 /// The copy carries the stat cache, which lets git skip rehashing files that did not change.
-pub async fn snapshot_tree(worktree: &Path) -> Result<String, String> {
+pub async fn snapshot_tree(worktree: &Path, store: &SnapshotStore) -> Result<String, String> {
     let index_path = run_git(worktree, &["rev-parse", "--git-path", "index"]).await?;
     let index_path = worktree.join(index_path.trim());
     let scratch_index = std::env::temp_dir().join(format!("hunt-index-{}", uuid::Uuid::new_v4()));
@@ -166,7 +213,8 @@ pub async fn snapshot_tree(worktree: &Path) -> Result<String, String> {
         std::fs::copy(&index_path, &scratch_index).map_err(|error| error.to_string())?;
     }
 
-    let envs: [(&str, &Path); 1] = [("GIT_INDEX_FILE", scratch_index.as_path())];
+    let [objects, alternates] = store.envs();
+    let envs = [("GIT_INDEX_FILE", scratch_index.as_path()), objects, alternates];
     let result = async {
         run_git_with_env(worktree, &["add", "-A", "--", "."], &envs).await?;
         run_git_with_env(worktree, &["write-tree"], &envs).await
@@ -176,10 +224,32 @@ pub async fn snapshot_tree(worktree: &Path) -> Result<String, String> {
     Ok(result?.trim().to_string())
 }
 
-/// Paths that differ between two tree objects, as `snapshot_tree` returns them.
-pub async fn changed_paths_between(worktree: &Path, before: &str, after: &str) -> Result<Vec<String>, String> {
-    let output = run_git(worktree, &["diff-tree", "-r", "--name-only", "--no-renames", before, after]).await?;
+/// Paths that differ between two tree objects of `store`, as `snapshot_tree` returns them.
+pub async fn changed_paths_between(worktree: &Path, store: &SnapshotStore, before: &str, after: &str) -> Result<Vec<String>, String> {
+    let output = run_git_with_env(worktree, &["diff-tree", "-r", "--name-only", "--no-renames", before, after], &store.envs()).await?;
     Ok(output.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect())
+}
+
+/// Blob id of `path` in each of `trees` (objects of `store`), `None` where the tree has no such file.
+pub async fn blob_ids_at(worktree: &Path, store: &SnapshotStore, trees: &[String], path: &str) -> Result<Vec<Option<String>>, String> {
+    let input: String = trees.iter().map(|tree| format!("{tree}:{path}\n")).collect();
+    let output = run_git_with_input(worktree, &["cat-file", "--batch-check=%(objectname) %(objecttype)"], &store.envs(), &input).await?;
+    let ids: Vec<Option<String>> = output
+        .lines()
+        .map(|line| match line.split_once(' ') {
+            Some((id, "blob")) => Some(id.to_string()),
+            _ => None,
+        })
+        .collect();
+    if ids.len() != trees.len() {
+        return Err(format!("failed to look up {path} in the snapshots: expected {} answers, got {}", trees.len(), ids.len()));
+    }
+    Ok(ids)
+}
+
+/// Content of the blob `id` of `store`, decoded lossily as UTF-8.
+pub async fn read_blob(worktree: &Path, store: &SnapshotStore, id: &str) -> Result<String, String> {
+    run_git_with_env(worktree, &["cat-file", "blob", id], &store.envs()).await
 }
 
 /// Every project file for the file search: tracked and untracked files, ignored files and files deleted from
@@ -468,6 +538,13 @@ mod tests {
         run_git(repo, args).await.unwrap();
     }
 
+    /// A snapshot store in a temporary directory, which must outlive the store.
+    async fn snapshot_store(repo: &Path) -> (tempfile::TempDir, SnapshotStore) {
+        let objects = tempfile::tempdir().unwrap();
+        let store = SnapshotStore::open(repo, objects.path()).await.unwrap();
+        (objects, store)
+    }
+
     /// A repository with one committed file; commits need an identity, which the test sets locally.
     async fn fixture() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -507,14 +584,17 @@ mod tests {
         std::fs::write(repo.join("ignored.log"), "noise\n").unwrap();
         std::fs::write(repo.join(".gitignore"), "ignored.log\n").unwrap();
 
-        let tree = snapshot_tree(repo).await.unwrap();
-        let changed = changed_paths_between(repo, &head_tree, &tree).await.unwrap();
+        let (_objects, store) = snapshot_store(repo).await;
+        let tree = snapshot_tree(repo, &store).await.unwrap();
+        let changed = changed_paths_between(repo, &store, &head_tree, &tree).await.unwrap();
         assert_eq!(changed, vec![".gitignore".to_string(), "new.txt".to_string(), "tracked.txt".to_string()]);
 
         // Nothing was staged: the real index still equals HEAD.
         let staged = run_git(repo, &["diff", "--cached", "--name-only"]).await.unwrap();
         assert_eq!(staged.trim(), "");
-        assert_eq!(snapshot_tree(repo).await.unwrap(), tree);
+        assert_eq!(snapshot_tree(repo, &store).await.unwrap(), tree);
+        // The snapshot's objects live in the store, not in the repository.
+        assert!(run_git(repo, &["cat-file", "-e", &tree]).await.is_err());
     }
 
     #[tokio::test]
@@ -566,12 +646,30 @@ mod tests {
     async fn snapshot_tree_records_deletions() {
         let dir = fixture().await;
         let repo = dir.path();
-        let before = snapshot_tree(repo).await.unwrap();
+        let (_objects, store) = snapshot_store(repo).await;
+        let before = snapshot_tree(repo, &store).await.unwrap();
 
         std::fs::remove_file(repo.join("other.txt")).unwrap();
 
-        let after = snapshot_tree(repo).await.unwrap();
-        assert_eq!(changed_paths_between(repo, &before, &after).await.unwrap(), vec!["other.txt".to_string()]);
+        let after = snapshot_tree(repo, &store).await.unwrap();
+        assert_eq!(changed_paths_between(repo, &store, &before, &after).await.unwrap(), vec!["other.txt".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn blob_ids_at_finds_each_version_of_a_file() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        let (_objects, store) = snapshot_store(repo).await;
+        let first = snapshot_tree(repo, &store).await.unwrap();
+        std::fs::write(repo.join("tracked.txt"), "two\n").unwrap();
+        let second = snapshot_tree(repo, &store).await.unwrap();
+        std::fs::remove_file(repo.join("tracked.txt")).unwrap();
+        let third = snapshot_tree(repo, &store).await.unwrap();
+
+        let ids = blob_ids_at(repo, &store, &[first, second, third], "tracked.txt").await.unwrap();
+        let contents = [read_blob(repo, &store, ids[0].as_deref().unwrap()).await.unwrap(), read_blob(repo, &store, ids[1].as_deref().unwrap()).await.unwrap()];
+        assert_eq!(contents, ["one\n".to_string(), "two\n".to_string()]);
+        assert_eq!(ids[2], None);
     }
 
     #[tokio::test]

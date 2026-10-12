@@ -160,6 +160,12 @@ export function mapLine(blocks: ChangeBlock[], from: Side, line: number): number
   return line + shift;
 }
 
+/** Maps an unchanged `line` of `from` to the same line on the other side; null for lines inside a change block. */
+export function mapUnchangedLine(blocks: ChangeBlock[], from: Side, line: number): number | null {
+  const isChanged = blocks.some((block) => line >= block[from].start && line < block[from].end);
+  return isChanged ? null : mapLine(blocks, from, line);
+}
+
 /** Single replacement in Monaco's coordinates: 1-based lines and columns, the end column exclusive. */
 export type TextEdit = { startLine: number; startColumn: number; endLine: number; endColumn: number; text: string };
 

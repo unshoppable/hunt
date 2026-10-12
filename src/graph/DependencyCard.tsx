@@ -16,13 +16,28 @@ const EDGE_SAMPLE_STEP = 6;
  * Card next to the hovered file listing what it depends on: one row per outgoing edge with the target's name, the
  * edge label and its description. It is only shown for files with at least one outgoing edge. The card measures
  * every lit element of the canvas (`lit`: the files, the edges with their labels, wherever the layout put them) and
- * takes the closest spot that covers none of them, see `placeCard`; it stays inside the canvas, fades in briefly and
- * lets the mouse through so the file below stays hovered. The spot is chosen once per hovered file and zoom level
- * and then pinned to the file: panning the canvas moves the card along with it, the canvas clips it at its border.
+ * takes the closest spot that covers none of them, see `placeCard`; it stays inside the canvas and fades in briefly.
+ * The mouse can move onto the card to read or scroll it: `onMouseEnter` and `onMouseLeave` keep and release the
+ * hover. A click on a file name calls `onOpen` with that file, the same as a click on its box. The spot is chosen once
+ * per hovered file and zoom level and then pinned to the file: panning the canvas moves the card along with it, the
+ * canvas clips it at its border.
  * Needs a `ReactFlowProvider` around it to follow the viewport.
  */
-export function DependencyCard({ node, dependencies, lit }: { node: DiagramNode; dependencies: OutgoingDependency[]; lit: LitElements }) {
-  const fileIconUrl = useFileIconUrl();
+export function DependencyCard({
+  node,
+  dependencies,
+  lit,
+  onMouseEnter,
+  onMouseLeave,
+  onOpen,
+}: {
+  node: DiagramNode;
+  dependencies: OutgoingDependency[];
+  lit: LitElements;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+  onOpen: (node: DiagramNode) => void;
+}) {
   const cardRef = useRef<HTMLDivElement>(null);
   const store = useStoreApi();
   const viewport = useViewport();
@@ -71,29 +86,51 @@ export function DependencyCard({ node, dependencies, lit }: { node: DiagramNode;
     <div
       ref={cardRef}
       style={{ left: spot.x, top: spot.y, width: CARD_WIDTH }}
-      className="pointer-events-none absolute z-10 flex animate-fade-in max-h-[calc(100%-1rem)] max-w-[calc(100%-1rem)] flex-col overflow-hidden rounded-md border border-white/15 bg-(--surface-inset) text-[13px] leading-snug text-neutral-200 shadow-lg shadow-black/40"
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      className="absolute z-10 flex animate-fade-in max-h-[calc(100%-1rem)] max-w-[calc(100%-1rem)] flex-col overflow-hidden rounded-md border border-white/15 bg-(--surface-inset) text-[13px] leading-snug text-neutral-200 shadow-lg shadow-black/40"
     >
       <div className="flex items-center gap-1.5 border-b border-(--line) px-2.5 py-1.5">
-        <img src={fileIconUrl(node.path)} alt="" className="size-3.5 shrink-0" />
-        <span className="truncate font-medium text-neutral-100">{node.name}</span>
+        <FileButton node={node} onOpen={onOpen} />
         <span className="shrink-0 text-neutral-500">
           {dependencies.length === 1 ? "depends on 1 file" : `depends on ${dependencies.length} files`}
         </span>
       </div>
-      <ul className="min-h-0 divide-y divide-(--line) overflow-hidden">
+      <ul className="min-h-0 divide-y divide-(--line) overflow-y-auto">
         {dependencies.map(({ edge, target }) => (
           <li key={edge.id} className="px-2.5 py-1.5">
             <div className="flex items-center gap-1.5">
               <span className="text-neutral-500">→</span>
-              {target ? <img src={fileIconUrl(target.path)} alt="" className="size-3.5 shrink-0" /> : null}
-              <span className="min-w-0 flex-1 truncate font-medium text-neutral-100">{target?.name ?? baseName(edge.target)}</span>
-              <span className="shrink-0 rounded-md border border-white/20 px-2 py-[3px] text-[12px] leading-[18px] text-neutral-100">{edge.label}</span>
+              {target ? (
+                <FileButton node={target} onOpen={onOpen} />
+              ) : (
+                <span className="min-w-0 flex-1 truncate font-medium text-neutral-100">{baseName(edge.target)}</span>
+              )}
+              {edge.label ? (
+                <span className="ml-auto shrink-0 rounded-md border border-white/20 px-2 py-[3px] text-[12px] leading-[18px] text-neutral-100">{edge.label}</span>
+              ) : null}
             </div>
             {edge.description ? <p className="mt-1 text-neutral-300">{edge.description}</p> : null}
           </li>
         ))}
       </ul>
     </div>
+  );
+}
+
+/** Icon and name of a file; a click opens it through `onOpen`. */
+function FileButton({ node, onOpen }: { node: DiagramNode; onOpen: (node: DiagramNode) => void }) {
+  const fileIconUrl = useFileIconUrl();
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(node)}
+      title={node.isChanged ? `Show the diff of ${node.path}` : `Open ${node.path} in the editor`}
+      className="flex min-w-0 items-center gap-1.5 font-medium text-neutral-100 hover:underline"
+    >
+      <img src={fileIconUrl(node.path)} alt="" className="size-3.5 shrink-0" />
+      <span className="truncate">{node.name}</span>
+    </button>
   );
 }
 

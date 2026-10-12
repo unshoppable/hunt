@@ -15,9 +15,10 @@ type LoadOptions = {
 /**
  * Loads `load()` whenever `deps` change and hands the result to `onValue`, or a rejection to `onError`, unless the
  * deps changed again or the component unmounted in the meantime; a stale result never overwrites a newer one.
+ * `signal` aborts at that moment, so a load that has not started its work yet can skip it.
  * The handlers are read when the result arrives, so they may be fresh closures.
  */
-export function useLoad<T>(load: () => Promise<T>, handlers: LoadHandlers<T>, deps: DependencyList, options: LoadOptions = {}): void {
+export function useLoad<T>(load: (signal: AbortSignal) => Promise<T>, handlers: LoadHandlers<T>, deps: DependencyList, options: LoadOptions = {}): void {
   const { delayMs = 0, isEnabled = true } = options;
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
@@ -26,19 +27,20 @@ export function useLoad<T>(load: () => Promise<T>, handlers: LoadHandlers<T>, de
 
   useEffect(() => {
     if (!isEnabled) return;
-    let isCurrent = true;
+    const controller = new AbortController();
+    const { signal } = controller;
     const delay = delayMsRef.current;
     const run = () => {
-      load()
-        .then((value) => isCurrent && handlersRef.current.onValue(value))
-        .catch((reason) => isCurrent && handlersRef.current.onError(reason));
+      load(signal)
+        .then((value) => !signal.aborted && handlersRef.current.onValue(value))
+        .catch((reason) => !signal.aborted && handlersRef.current.onError(reason));
     };
     const timer = delay ? globalThis.setTimeout(run, delay) : undefined;
     if (!delay) {
       run();
     }
     return () => {
-      isCurrent = false;
+      controller.abort();
       globalThis.clearTimeout(timer);
     };
     // The loader is a closure over the deps; listing it would rerun the load on every render.

@@ -1,10 +1,10 @@
 import { useMemo } from "react";
-import { useSettingsStore, type IconRule } from "../state/settings";
-import associations from "./catppuccinIcons/associations.json";
+import { useSettingsStore, type FolderIconRule, type IconRule } from "../state/settings";
+import associations from "./atomIcons/associations.json";
 import { matchesGlob } from "./glob";
 import { baseName } from "../ui/path";
 
-const svgs = import.meta.glob("./catppuccinIcons/icons/*.svg", {
+const svgs = import.meta.glob("./atomIcons/icons/*.svg", {
   query: "?url",
   import: "default",
   eager: true,
@@ -19,9 +19,13 @@ for (const [path, url] of Object.entries(svgs)) {
 /** Every vendored icon name, sorted; the icon rule picker lists them. */
 export const ICON_NAMES: readonly string[] = [...urlByIcon.keys()].sort();
 
+/** The closed folder icons that ship an open state, sorted; the folder icon rule picker lists them. */
+export const FOLDER_ICON_NAMES: readonly string[] = ICON_NAMES.filter((icon) => icon.startsWith("folder_") && urlByIcon.has(`${icon}_open`));
+const folderIcons = new Set(FOLDER_ICON_NAMES);
+
 function urlOf(icon: string): string {
   const url = urlByIcon.get(icon);
-  if (!url) throw new Error(`Catppuccin icon ${icon} is not vendored; run tools/icons/syncCatppuccinIcons.mjs`);
+  if (!url) throw new Error(`Atom icon ${icon} is not vendored; run tools/icons/syncAtomIcons.mjs`);
   return url;
 }
 
@@ -80,10 +84,38 @@ export function fileIconUrl(path: string): string {
   return urlOf(resolveFileIcon(path, useSettingsStore.getState().iconRules));
 }
 
-/** URL of the Catppuccin icon for a directory name, in its open state if `isOpen`; falls back to the generic folder icon. */
-export function folderIconUrl(folderName: string, isOpen = false): string {
-  const icon = (associations.folderNames as Record<string, string>)[folderName.toLowerCase()] ?? "_folder";
+/**
+ * Closed-state icon name for a worktree-relative folder path: the first rule that names a shipped folder icon and whose
+ * glob matches the path, or with `includeSubfolders` the path of a folder above it, wins; otherwise the folder name
+ * decides, falling back to the generic folder icon.
+ */
+export function resolveFolderIcon(path: string, rules: readonly FolderIconRule[]): string {
+  const segments = path.split("/").filter(Boolean);
+  const ancestors = segments.slice(0, -1).map((_, index) => segments.slice(0, index + 1).join("/"));
+  for (const rule of rules) {
+    if (!folderIcons.has(rule.icon)) continue;
+    if (matchesGlob(rule.glob, path)) return rule.icon;
+    if (rule.includeSubfolders && ancestors.some((ancestor) => matchesGlob(rule.glob, ancestor))) return rule.icon;
+  }
+  return (associations.folderNames as Record<string, string>)[baseName(path).toLowerCase()] ?? "_folder";
+}
+
+function folderUrl(icon: string, isOpen: boolean): string {
   return urlOf(isOpen ? `${icon}_open` : icon);
+}
+
+/**
+ * Resolver from a worktree-relative folder path (a bare folder name works too) to its icon URL, in the open state if
+ * `isOpen`, bound to the folder icon rules of the settings; the component re-renders when the rules change.
+ */
+export function useFolderIconUrl(): (path: string, isOpen?: boolean) => string {
+  const rules = useSettingsStore((state) => state.folderIconRules);
+  return useMemo(() => (path: string, isOpen = false) => folderUrl(resolveFolderIcon(path, rules), isOpen), [rules]);
+}
+
+/** Icon URL for a worktree-relative folder path under the current folder icon rules, outside of rendering (see useFolderIconUrl). */
+export function folderIconUrl(path: string, isOpen = false): string {
+  return folderUrl(resolveFolderIcon(path, useSettingsStore.getState().folderIconRules), isOpen);
 }
 
 /** URL of the project root icon, in its open state if `isOpen`. */

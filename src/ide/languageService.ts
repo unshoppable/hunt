@@ -45,6 +45,21 @@ export async function navigationAt(model: monaco.editor.ITextModel, position: mo
   return null;
 }
 
+/**
+ * The declaration a ⌘click on `name` at `position` of the worktree file `path` jumps to, for clicks outside the
+ * editor (diffs) whose text may differ from the file. Null when the file has another word there, the click sits on
+ * the declaration itself, or the language server knows no declaration inside the worktree.
+ */
+export async function resolveDefinition(workspace: Workspace, path: string, position: monaco.IPosition, name: string): Promise<{ path: string; line: number; column: number } | null> {
+  const { model } = await workspace.open(path);
+  if (model.getWordAtPosition(position)?.word !== name) return null;
+  const navigation = await navigationAt(model, position);
+  if (navigation?.type !== "definition") return null;
+  const targetPath = workspace.pathOf(navigation.target.uri);
+  if (!targetPath) return null;
+  return { path: targetPath, line: navigation.target.range.startLineNumber, column: navigation.target.range.startColumn };
+}
+
 function isInside(uri: monaco.Uri, client: LspClient): boolean {
   return uri.scheme === "file" && uri.path.startsWith(`${client.worktreePath}/`);
 }

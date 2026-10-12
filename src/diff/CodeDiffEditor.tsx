@@ -3,15 +3,18 @@ import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import type { FileDiff } from "../ipc/types";
 import { attachIdeLink } from "./ideLink";
-import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, monacoLanguage, setupMonaco } from "./monaco";
+import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, changeMark, monacoLanguage, setupMonaco } from "./monaco";
+import { mirrorDiagnostics } from "./diagnostics";
 import { anchorBelowLine, type SelectionRequest } from "./selectionContext";
+import { workspaceFor } from "../ide/documents";
 import { attachSelectionAgent } from "../ide/selectionAgent";
 import { SelectionChatMarkers } from "../ide/selectionChatMarkers";
 import { useBusyChatIds, useSelectionChats } from "../ide/selectionChats";
-import { computeChangeBlocks } from "./lineDiff";
+import { computeChangeBlocks, mapUnchangedLine, type Side } from "./lineDiff";
 import { AddCommentGlyph, type CommentTarget } from "../review/addCommentGlyph";
 import { ReviewCommentZones } from "../review/ReviewCommentZones";
-import { isInsideHunk, useReviewedPullRequest } from "../review/reviewComments";
+import { FILE_SPAN, isInsideHunk, useReviewedPullRequest } from "../review/reviewComments";
+import { useHuntStore } from "../state/store";
 import { SplitDiffView } from "./SplitDiffView";
 
 setupMonaco();
@@ -19,6 +22,8 @@ setupMonaco();
 export type CodeDiffEditorHandle = {
   /** Saves the current editor content, same as Cmd/Ctrl+S inside the editor. */
   save: () => void;
+  /** Scrolls to the top and opens the box for a review comment on the whole file there; only in a pull request review. */
+  commentOnFile: () => void;
 };
 
 type CodeDiffEditorProps = {
@@ -27,17 +32,30 @@ type CodeDiffEditorProps = {
   sessionId: string;
   diff: FileDiff;
   mode: "split" | "unified";
+  /**
+   * Collapses every unchanged stretch into a hidden-lines bar; false expands them all. Either way single stretches
+   * expand on a click on their bar and collapse again on their fold glyph.
+   */
+  collapseUnchanged: boolean;
   fontSize: number;
   /** Line height as a multiple of the font size. */
   lineHeight: number;
   /** CSS font family of the code. */
   fontFamily: string;
+  /**
+   * Shows the diff without editing, saving or reverting. `diff.newContent` then need not be the file on disk, so the
+   * right side has no sub chat glyphs, review comments, editor links or selection agent; the left side keeps them.
+   */
+  readOnly?: boolean;
   /** Called with the current editor content on Cmd/Ctrl+S. */
   onSave: (content: string) => void;
   /** Reports whether the editor content differs from `diff.newContent`. */
   onDirtyChange: (isDirty: boolean) => void;
-  /** Called with the clicked 1-based position on ⌘click in either side (open in the built-in editor). */
-  onNavigate: (line: number, column: number) => void;
+  /**
+   * Called on ⌘click on a name in either side (go to its declaration) with the name and its 1-based position in the
+   * saved right side (`diff.newContent`); a click on a changed line of the left side has no such position and is ignored.
+   */
+  onNavigate: (line: number, column: number, name: string) => void;
   /** Called with the clicked 1-based position on ⇧⌘click in either side (open in WebStorm). */
   onOpenInIde: (line: number, column: number) => void;
   /**
@@ -47,6 +65,11 @@ type CodeDiffEditorProps = {
   onOpenSubChat: (request: SelectionRequest, subSessionId?: string) => void;
   /** Opens or closes the sub chat popover from the floating button at the end of a selection on either side. */
   onToggleSubChat: (request: SelectionRequest) => void;
+  /**
+   * Reports the client x of the left edge of the editable right side's line numbers in split mode, again whenever
+   * its layout changes, and null in unified mode or without an editable side; hosts line header content up with it.
+   */
+  onLineNumbersLeftChange?: (clientX: number | null) => void;
 };
 
 /**
@@ -57,13 +80,31 @@ type CodeDiffEditorProps = {
  * offer the agent features of the editor panes: the context menu entry and the floating button on a selection (a
  * selection on the left side hands over the committed lines).
  */
-export function CodeDiffEditor({ ref, sessionId, diff, mode, fontSize, lineHeight, fontFamily, onSave, onDirtyChange, onNavigate, onOpenInIde, onOpenSubChat, onToggleSubChat }: CodeDiffEditorProps) {
+export function CodeDiffEditor({
+  ref,
+  sessionId,
+  diff,
+  mode,
+  collapseUnchanged,
+  fontSize,
+  lineHeight,
+  fontFamily,
+  readOnly = false,
+  onSave,
+  onDirtyChange,
+  onNavigate,
+  onOpenInIde,
+  onOpenSubChat,
+  onToggleSubChat,
+  onLineNumbersLeftChange,
+}: CodeDiffEditorProps) {
   const modifiedEditorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const chatMarkersRef = useRef<SelectionChatMarkers | null>(null);
   const selectionChats = useSelectionChats(sessionId, diff.path);
   const busyChatIds = useBusyChatIds();
   /** The editable right side once it exists; the review comment zones render into it. */
   const [modifiedEditor, setModifiedEditor] = useState<monaco.editor.ICodeEditor | null>(null);
+  const worktreePath = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId)?.worktreePath);
   const pullRequest = useReviewedPullRequest(sessionId);
   const isReviewRef = useRef(!!pullRequest);
   isReviewRef.current = !!pullRequest;
@@ -80,12 +121,14 @@ export function CodeDiffEditor({ ref, sessionId, diff, mode, fontSize, lineHeigh
   const onOpenInIdeRef = useRef(onOpenInIde);
   const onOpenSubChatRef = useRef(onOpenSubChat);
   const onToggleSubChatRef = useRef(onToggleSubChat);
+  const onLineNumbersLeftChangeRef = useRef(onLineNumbersLeftChange);
   onSaveRef.current = onSave;
   onDirtyChangeRef.current = onDirtyChange;
   onNavigateRef.current = onNavigate;
   onOpenInIdeRef.current = onOpenInIde;
   onOpenSubChatRef.current = onOpenSubChat;
   onToggleSubChatRef.current = onToggleSubChat;
+  onLineNumbersLeftChangeRef.current = onLineNumbersLeftChange;
   const selectionChatsRef = useRef(selectionChats);
   selectionChatsRef.current = selectionChats;
   const busyChatIdsRef = useRef(busyChatIds);
@@ -105,16 +148,40 @@ export function CodeDiffEditor({ ref, sessionId, diff, mode, fontSize, lineHeigh
 
   useImperativeHandle(ref, () => ({
     save: () => {
+      if (readOnly) return;
       const content = modifiedEditorRef.current?.getValue();
       if (content !== undefined) {
         onSaveRef.current(content);
       }
+    },
+    commentOnFile: () => {
+      const editor = modifiedEditorRef.current;
+      if (readOnly || !isReviewRef.current || !editor) return;
+      editor.setScrollTop(0);
+      setComposer({ span: FILE_SPAN, underLine: 0 });
     },
   }));
 
   useEffect(() => {
     chatMarkersRef.current?.set(diff.path, selectionChats, busyChatIds);
   }, [diff.path, selectionChats, busyChatIds]);
+
+  // Reports where the right side's line numbers start. Right after a mode switch `modifiedEditor` may still be the
+  // disposed editor of the other mode, whose node is detached.
+  useEffect(() => {
+    if (mode !== "split" || !modifiedEditor) {
+      onLineNumbersLeftChangeRef.current?.(null);
+      return;
+    }
+    const container = modifiedEditor.getContainerDomNode();
+    const report = () => {
+      if (!container.isConnected) return;
+      onLineNumbersLeftChangeRef.current?.(container.getBoundingClientRect().left + modifiedEditor.getLayoutInfo().lineNumbersLeft);
+    };
+    report();
+    const subscription = modifiedEditor.onDidLayoutChange(report);
+    return () => subscription.dispose();
+  }, [mode, modifiedEditor]);
 
   useEffect(() => {
     savedContentRef.current = diff.newContent ?? "";
@@ -125,13 +192,31 @@ export function CodeDiffEditor({ ref, sessionId, diff, mode, fontSize, lineHeigh
     }
   }, [diff.newContent]);
 
+  // The editable side shows the diagnostics of the file as saved, which the workspace document holds (see diagnostics.ts).
+  useEffect(() => {
+    if (!modifiedEditor || !worktreePath) return;
+    const diagnostics = mirrorDiagnostics(modifiedEditor, workspaceFor(sessionId, worktreePath), diff.path);
+    return () => diagnostics.dispose();
+  }, [modifiedEditor, sessionId, worktreePath, diff.path]);
+
+  // Keeps that document at the saved content after saves here and changes by agents.
+  useEffect(() => {
+    if (readOnly || !worktreePath) return;
+    void workspaceFor(sessionId, worktreePath).reloadFromDisk([diff.path]);
+  }, [readOnly, sessionId, worktreePath, diff.path, diff.newContent]);
+
   /**
-   * ⌘click opens the position in the built-in editor, ⇧⌘click in WebStorm (Monaco's own go-to-definition stays
-   * off); the context menu and the floating selection button hand a selection to the agent.
+   * ⌘click on a name reports it to `onNavigate`, ⇧⌘click opens the position in WebStorm (Monaco's own
+   * go-to-definition stays off); the context menu and the floating selection button hand a selection to the agent.
    */
-  const attachSideFeatures = (sideEditor: monaco.editor.IStandaloneCodeEditor) => {
+  const attachSideFeatures = (sideEditor: monaco.editor.IStandaloneCodeEditor, side: Side) => {
     const link = attachIdeLink(sideEditor, {
-      onNavigate: (line, column) => onNavigateRef.current(line, column),
+      onNavigate: (line, column) => {
+        const name = sideEditor.getModel()?.getWordAtPosition({ lineNumber: line, column })?.word;
+        const savedLine = side === "modified" ? line : mapUnchangedLine(blocksRef.current, "original", line);
+        if (!name || !savedLine) return;
+        onNavigateRef.current(savedLine, column, name);
+      },
       onOpenInIde: (line, column) => onOpenInIdeRef.current(line, column),
     });
     const agent = attachSelectionAgent(sideEditor, {
@@ -147,8 +232,9 @@ export function CodeDiffEditor({ ref, sessionId, diff, mode, fontSize, lineHeigh
 
   const setupEditors = (originalEditor: monaco.editor.IStandaloneCodeEditor, modifiedEditor: monaco.editor.IStandaloneCodeEditor) => {
     modifiedEditorRef.current = modifiedEditor;
-    attachSideFeatures(originalEditor);
-    attachSideFeatures(modifiedEditor);
+    attachSideFeatures(originalEditor, "original");
+    if (readOnly) return;
+    attachSideFeatures(modifiedEditor, "modified");
     // The right side always shows the working-tree version of `diff.path`, which the selections' lines refer to.
     const chatMarkers = new SelectionChatMarkers(modifiedEditor, () => diff.path);
     chatMarkers.set(diff.path, selectionChatsRef.current, busyChatIdsRef.current);
@@ -179,33 +265,51 @@ export function CodeDiffEditor({ ref, sessionId, diff, mode, fontSize, lineHeigh
   const unifiedOptions = useMemo<monaco.editor.IDiffEditorConstructionOptions>(
     () => ({
       ...EDITOR_APPEARANCE_OPTIONS,
+      ...SCROLL_TRACK_OPTIONS,
       fontSize,
       lineHeight,
       fontFamily,
       renderSideBySide: false,
       useInlineViewWhenSpaceIsLimited: false,
       originalEditable: false,
-      readOnly: false,
+      readOnly,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
       renderOverviewRuler: false,
       glyphMargin: true,
       lineNumbersMinChars: 2,
       hideUnchangedRegions: { enabled: true, contextLineCount: 3 },
+      stickyScroll: { enabled: false },
       diffAlgorithm: "advanced",
       automaticLayout: true,
       links: false,
       dragAndDrop: false,
     }),
-    [fontSize, lineHeight, fontFamily],
+    [fontSize, lineHeight, fontFamily, readOnly],
   );
 
   const diffEditorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null);
+  const collapseUnchangedRef = useRef(collapseUnchanged);
+  collapseUnchangedRef.current = collapseUnchanged;
   const handleUnifiedMount: DiffOnMount = (diffEditor) => {
     diffEditorRef.current = diffEditor;
+    // Monaco always starts with collapsed stretches; they exist once the first diff is computed and keep their
+    // state through later diffs.
+    const firstDiff = diffEditor.onDidUpdateDiff(() => {
+      firstDiff.dispose();
+      setUnchangedRegionsCollapsed(diffEditor, collapseUnchangedRef.current);
+    });
+    const changeMarks = diffEditor.getModifiedEditor().createDecorationsCollection();
+    diffEditor.onDidUpdateDiff(() => changeMarks.set((diffEditor.getLineChanges() ?? []).map(lineChangeMark)));
     // The standalone diff editor builds both sides as standalone editors; only its typing hides the actions API of the left one.
     setupEditors(diffEditor.getOriginalEditor() as monaco.editor.IStandaloneCodeEditor, diffEditor.getModifiedEditor());
   };
+
+  useEffect(() => {
+    if (diffEditorRef.current) {
+      setUnchangedRegionsCollapsed(diffEditorRef.current, collapseUnchanged);
+    }
+  }, [collapseUnchanged]);
 
   const language = monacoLanguage(diff.path);
   const reviewZones =
@@ -216,7 +320,17 @@ export function CodeDiffEditor({ ref, sessionId, diff, mode, fontSize, lineHeigh
   if (mode === "split") {
     return (
       <>
-        <SplitDiffView original={diff.oldContent ?? ""} modified={modifiedValue} language={language} fontSize={fontSize} lineHeight={lineHeight} fontFamily={fontFamily} onEditorsCreated={setupEditors} />
+        <SplitDiffView
+          original={diff.oldContent ?? ""}
+          modified={modifiedValue}
+          language={language}
+          fontSize={fontSize}
+          lineHeight={lineHeight}
+          fontFamily={fontFamily}
+          readOnly={readOnly}
+          collapseUnchanged={collapseUnchanged}
+          onEditorsCreated={setupEditors}
+        />
         {reviewZones}
       </>
     );
@@ -241,6 +355,27 @@ export function CodeDiffEditor({ ref, sessionId, diff, mode, fontSize, lineHeigh
   );
 }
 
+/** Monaco keeps these diff editor methods out of the public typings. */
+type DiffEditorWithUnchangedRegions = monaco.editor.IStandaloneDiffEditor & { collapseAllUnchangedRegions(): void; showAllUnchangedRegions(): void };
+
+/** Scroll track mark of a change in the inline diff; a deletion (no modified lines) is marked on the line above its seam. */
+function lineChangeMark(change: monaco.editor.ILineChange): monaco.editor.IModelDeltaDecoration {
+  if (!change.modifiedEndLineNumber) {
+    const line = Math.max(1, change.modifiedStartLineNumber);
+    return changeMark(line, line);
+  }
+  return changeMark(change.modifiedStartLineNumber, change.modifiedEndLineNumber);
+}
+
+function setUnchangedRegionsCollapsed(diffEditor: monaco.editor.IStandaloneDiffEditor, isCollapsed: boolean): void {
+  const editor = diffEditor as DiffEditorWithUnchangedRegions;
+  if (isCollapsed) {
+    editor.collapseAllUnchangedRegions();
+  } else {
+    editor.showAllUnchangedRegions();
+  }
+}
+
 /**
  * Detaches and disposes the diff models before `DiffEditor` disposes the widget on unmount. The library would
  * dispose the models first, which Monaco rejects ("TextModel got disposed before DiffEditorWidget model got reset").
@@ -249,6 +384,7 @@ function UnifiedDiffView({ diffEditorRef, children }: { diffEditorRef: RefObject
   useEffect(
     () => () => {
       const diffEditor = diffEditorRef.current;
+      diffEditorRef.current = null;
       const model = diffEditor?.getModel();
       if (!diffEditor || !model) return;
       diffEditor.setModel(null);

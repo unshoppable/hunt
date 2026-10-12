@@ -3,7 +3,8 @@ import { lspClientForModel, onPushedDiagnostics, type LspClient } from "./client
 import { hoverMarkdown, resolvedFields, toLspPosition, toLspRange, toMonacoCompletion, toMonacoPosition, toMonacoRange, toMonacoSignatureHelp, type CompletionItem, type CompletionList, type Diagnostic, type DocumentDiagnosticReport, type DocumentHighlight, type Hover, type InlayHint, type SignatureHelp } from "./protocol";
 
 const LANGUAGES = ["typescript", "javascript"];
-const MARKER_OWNER = "lsp";
+/** Owner of the markers made from the language server's diagnostics. */
+export const MARKER_OWNER = "lsp";
 /** Characters after which the server is asked for completions on its own: member access, string and path starts, decorators, JSX, private names, `import ` keyword lists, JSDoc tags. */
 const COMPLETION_TRIGGERS = [".", '"', "'", "`", "/", "@", "<", "#", " ", "*"];
 const SIGNATURE_TRIGGERS = ["(", ",", "<"];

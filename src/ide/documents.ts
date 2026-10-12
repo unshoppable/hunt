@@ -102,7 +102,8 @@ export class Workspace {
     return document;
   }
 
-  private load(path: string): Promise<Document> {
+  /** Loads the file like `open` but without its imports, for callers that need only the document and its diagnostics. */
+  load(path: string): Promise<Document> {
     const existing = this.documents.get(path);
     if (existing) return Promise.resolve(existing);
     const pending = this.loading.get(path);

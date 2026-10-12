@@ -447,25 +447,21 @@ body,
 }
 
 /* Side-by-side diff (see diff/splitDiff.ts): editor | original line numbers | connector gutter | editor. Clipped, so
-   that revert arrows positioned past the gutter never make the enclosing pane (an overflow: auto panel) scrollable. */
+   that revert arrows positioned past the gutter never make the enclosing pane (an overflow: auto panel) scrollable.
+   The own compositing layer keeps the empty columns (original gutter, line numbers, connectors) color-matched like the
+   editor text: on macOS WebKit with a non-sRGB display they otherwise paint the raw sRGB value, visibly lighter. */
 .split-diff {
   position: absolute;
   inset: 0;
   display: flex;
   overflow: hidden;
   background: var(--diff-bg);
+  will-change: transform;
 }
 .split-diff__editor {
   position: relative;
   flex: 1 1 0;
   min-width: 0;
-}
-/* Monaco promotes the gutter to its own compositing layer (an inline translate3d layer hint). On macOS WebKit such a
-   small layer without text is not color-matched to the display profile, so the empty 16px gutter of the original side
-   shows the raw sRGB value next to the color-managed text layer: visibly lighter on a non-sRGB display. Painting the
-   gutter with the page instead keeps both the same color; the hint is only a scrolling optimisation. */
-.split-diff .monaco-editor .margin {
-  transform: none !important;
 }
 .split-diff__numbers {
   position: relative;
@@ -523,6 +519,13 @@ body,
   background: #3b4250;
   color: #f3f4f6;
 }
+.split-diff__fold {
+  color: #9ca3af;
+  cursor: pointer;
+}
+.split-diff__fold:hover {
+  color: #f3f4f6;
+}
 .split-diff__hidden {
   display: flex;
   align-items: center;
@@ -559,6 +562,15 @@ body,
 
 .react-flow.dark {
   --xy-background-color: var(--surface-inspector);
+  /* Minimap: the visible part keeps the canvas color, the rest is darkened and the viewport outlined. */
+  --xy-minimap-background-color: var(--surface-inspector);
+  --xy-minimap-mask-background-color: rgba(0, 0, 0, 0.4);
+  --xy-minimap-mask-stroke-color: rgba(255, 255, 255, 0.3);
+}
+/* Edge labels and their description popovers stay above the edges (z-index -2), folders (-1) and files (0); the graph
+   keeps these levels fixed (zIndexMode "manual"). */
+.react-flow__edgelabel-renderer {
+  z-index: 1;
 }
 
 /* Chat pane: proportional type in a centered reading column; tool activity stays monospace. */

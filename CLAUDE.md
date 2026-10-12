@@ -77,13 +77,6 @@ each subsystem does and which file owns it; this file says how code here is writ
 3. For an event: `emit` in Rust, the payload in `EventPayloads` (`src/ipc/events.ts`), wiring in
    `src/app/bootstrap.ts`.
 
-## Architectural decisions
-
-Architectural decisions are recorded in `docs/adr/NNNN-title.md`, one per file (Context, Decision, Consequences).
-Before making or questioning an architectural decision, check for an existing one: `ls docs/adr/` lists them by
-number and title, `grep -ril <topic> docs/adr/` finds those mentioning a topic (try a synonym when nothing matches).
-Follow an existing decision; if a change contradicts one, say so and propose a new ADR instead of silently diverging.
-
 ## Style
 
 - Loops and non-guard bodies always use braces; a guard clause whose body is a single `return`/`continue`/`break`/
@@ -92,4 +85,4 @@ Follow an existing decision; if a change contradicts one, say so and propose a n
 - Named exports only; components are PascalCase `.tsx`, modules camelCase `.ts`.
 - Prefer a plain truthiness check over `isUndefined`/`isNull` unless a falsy value is legitimate.
 - Commit messages follow Conventional Commits (`type(scope): description`). `feat`, `fix`, `perf`, `revert` and a
-  `!`/`BREAKING CHANGE` footer decide the next release version (ADR 0003); other types do not release.
+  `!`/`BREAKING CHANGE` footer decide the next release version; other types do not release.

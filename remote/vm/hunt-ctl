@@ -98,6 +98,10 @@ usage: hunt-ctl <command> [arguments]
   preview stop <id>      stop the preview's processes, services and route; data stays
   preview reset <id>     stop the preview and delete its data, so the next start initializes it again
   edge-reset             (boot) forget every preview and (re)start the edge proxy with no routes
+  session-config <id> --domain <domain>
+                         (session VM) write the session's environment, /etc/hunt/session.env, and the configuration
+                         of the VM's preview proxy, /etc/hunt/caddy.json, from the preview section of its hunt.json
+                         (version 2), and (re)load the proxy; prints the text of the repository's HUNT.md
 USAGE
   exit 2
 }
@@ -1214,6 +1218,47 @@ cmd_edge_reset() {
   emit '{}'
 }
 
+# ---- Session VM -----------------------------------------------------------------------------------------------------
+# A session VM runs one session, whose agent starts the app as a developer would locally. The VM's preview proxy
+# (hunt-proxy.service, Caddy on :8080) serves `<short>.<domain>` and `<short>-<port>.<domain>`, which the gateway forwards
+# with their Host header, from the dev servers on the VM. session-config derives its configuration and the session's
+# environment, which the relay reads when it starts and every command of the agent inherits, from the `preview` section
+# of the session's hunt.json (contract version 2, remote/session/config.ts).
+
+readonly SESSION_ENV=/etc/hunt/session.env
+readonly PROXY_CONFIG=/etc/hunt/caddy.json
+# The Node the relay runs on, independent of the Node a repository pins.
+readonly HUNT_NODE=/opt/hunt/node/bin/node
+
+cmd_session_config() {
+  (( $# >= 1 )) || usage
+  local id=$1 domain='' result
+  require_id "$id"
+  shift
+  while (( $# )); do
+    (( $# >= 2 )) || usage
+    case $1 in
+      --domain) domain=$2 ;;
+      *) usage ;;
+    esac
+    shift 2
+  done
+  [[ $domain =~ $DOMAIN_PATTERN ]] || die "invalid preview domain: $domain"
+  [[ -d $WORKTREES/$id ]] || die "session $id has no worktree on this VM"
+  [[ -f $CURRENT/session/configCli.ts ]] || die "no Hunt release with session VMs is installed; run hunt-ctl install first"
+  [[ -x $HUNT_NODE ]] || die "$HUNT_NODE is missing; this VM is no session VM"
+  install -d -m 0755 "${SESSION_ENV%/*}"
+  # The CLI reads hunt.json and HUNT.md without following symlinks and writes both files only when both are valid.
+  if ! result=$("$HUNT_NODE" "$CURRENT/session/configCli.ts" --worktree "$WORKTREES/$id" --short "${id:0:8}" \
+    --domain "$domain" --env-out "$SESSION_ENV" --caddy-out "$PROXY_CONFIG"); then
+    jq -r '.problems[]?' <<<"$result" >&2 2>/dev/null || true
+    die "the preview section of hunt.json or HUNT.md is not valid (see above)"
+  fi
+  systemctl enable --quiet hunt-proxy.service
+  systemctl reload-or-restart hunt-proxy.service
+  emit --argjson result "$result" '{hunt_md: ($result.hunt_md // null)}'
+}
+
 main() {
   (( $# )) || usage
   (( EUID == 0 )) || die "must run as root: sudo -n hunt-ctl $*"
@@ -1268,6 +1313,7 @@ main() {
     destroy) cmd_destroy "$@" ;;
     preview) cmd_preview "$@" ;;
     edge-reset) cmd_edge_reset "$@" ;;
+    session-config) cmd_session_config "$@" ;;
     *) usage ;;
   esac
 }

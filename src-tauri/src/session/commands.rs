@@ -603,17 +603,30 @@ pub async fn read_preview_log(app: AppHandle, id: Uuid, name: String, offset: Op
     serde_json::from_value(chunk).map_err(|error| format!("failed to read the log: {error}"))
 }
 
-/// What Hunt tells the agent of a remote session on top of its usual system prompt addition.
-const REMOTE_PROMPT: &str = "\n\n## Remote session\nThis session runs in a container on a remote VM. The user brings its \
-commits back to their machine.\n\n\
-### Preview\nWhen the user opens the preview, Hunt runs the `preview` section of the repository's hunt.json in this \
-container: its services (Postgres, Redis or Elasticsearch) answer on 127.0.0.1 at their usual ports, and its dev processes \
-serve the app the user opens in the browser. `hunt-preview status` lists the processes, `hunt-preview logs <process>` \
-shows their output (`hunt-preview logs setup` the prepare and init steps), `hunt-preview restart <process>` restarts \
-one and `hunt-preview start <process>` starts an optional one; do not start these dev servers a second time yourself. \
-A process with a port must listen on 0.0.0.0, not only on 127.0.0.1, or the browser cannot reach it. Check changes to \
-the user interface with the Playwright tools against http://localhost:<port>; the screenshots you take show up in the \
-user's chat.\n";
+/// What Hunt tells the agent of a remote session on top of its usual system prompt addition, whatever the repository.
+const REMOTE_PROMPT: &str = "\n\n## Remote session\nThis session runs on a VM of its own. The user brings its commits back \
+to their machine.\n\n\
+### Running the app\nStart the app exactly as a developer would locally: the repository's README, CLAUDE.md and \
+package.json say how, and Docker with Docker Compose works as usual. Dev servers must listen on 0.0.0.0, not only on \
+127.0.0.1 or localhost; port 8080 belongs to Hunt's preview proxy. Run every long-running process in the tmux session \
+`app`, one window per process, and pipe each window to a log file, where you read its output:\n\n\
+```sh\n\
+mkdir -p ~/logs\n\
+tmux has-session -t app 2>/dev/null || tmux new-session -d -s app\n\
+tmux new-window -t app -n <name> '<command>'\n\
+tmux pipe-pane -o -t app:<name> 'cat >> ~/logs/<name>.log'\n\
+```\n\n\
+`tmux list-windows -t app` shows what runs; to restart a process, close its window with `tmux kill-window -t \
+app:<name>` and start it again. The user can watch these windows too.\n\n\
+### Preview\nThe user opens the app at `$HUNT_PREVIEW_URL`, which serves the main port the repository's hunt.json names; \
+every other port of this VM is at `$HUNT_PREVIEW_URL_TEMPLATE` with `{port}` replaced by the port number. On every \
+one of these hosts, the path prefixes of hunt.json's `routes` go to their own port, and the variables hunt.json sets \
+are in your environment already. Check changes to the user interface with the Playwright \
+tools against http://localhost:<port>; the screenshots you take show up in the user's chat.\n\n\
+### After a restart\nThe VM shuts down while the session is idle and starts again with the next prompt. Files, Docker \
+images and volumes stay, but containers and dev servers are gone: when the task needs the app, check what runs \
+(`docker ps`, `tmux list-windows -t app`) and start the rest again.\n\n\
+The repository's HUNT.md, its instructions for Hunt sessions, follows at the end when it has one.\n";
 
 /// The Git part of `REMOTE_PROMPT` when Hunt hands the user's GitHub token to the container.
 const REMOTE_GIT_PUSH_PROMPT: &str = "\n### Git\n`origin` is the repository on GitHub. git, Git LFS and `gh` act with the user's \
@@ -623,6 +636,17 @@ branch naming rules; when the current branch does not fit them, create a fitting
 /// The Git part of `REMOTE_PROMPT` without a GitHub token.
 const REMOTE_GIT_LOCAL_PROMPT: &str = "\n### Git\nThere is no GitHub token for this session, so pushing fails: commit locally \
 and do not push.\n";
+
+/// What Hunt appends to the system prompt of a remote session: `base`, the usual addition, then `REMOTE_PROMPT`, the Git
+/// part that fits whether the agent has the user's GitHub token, and the repository's HUNT.md under a heading of its own.
+fn remote_system_prompt(base: &str, has_github_token: bool, hunt_md: Option<&str>) -> String {
+    let git_prompt = if has_github_token { REMOTE_GIT_PUSH_PROMPT } else { REMOTE_GIT_LOCAL_PROMPT };
+    let prompt = format!("{base}{REMOTE_PROMPT}{git_prompt}");
+    match hunt_md.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) => format!("{prompt}\n### The repository's HUNT.md\n{text}\n"),
+        None => prompt,
+    }
+}
 
 /// Moves the session `id` to the VM `vm`: its agent stops here, its branch, uncommitted work, transcript and the
 /// ignored files matching `file_patterns` go to the VM, and the chat continues with the agent there. On failure the
@@ -658,8 +682,9 @@ pub async fn hand_off_session(
 
     let handed_off = async {
         let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt);
-        let git_prompt = if github_token.is_some() { REMOTE_GIT_PUSH_PROMPT } else { REMOTE_GIT_LOCAL_PROMPT };
-        let system_prompt = format!("{}{REMOTE_PROMPT}{git_prompt}", system_prompt_append(&app, context_prompt));
+        let hunt_md = remote::read_hunt_md(&record.worktree_path)?;
+        let base_prompt = system_prompt_append(&app, context_prompt);
+        let system_prompt = remote_system_prompt(&base_prompt, github_token.is_some(), hunt_md.as_deref());
         let token_input = remote::token_input(&claude_token, github_token.as_deref());
         let bundle_dir = bundled_script_path(&app, "remote")?;
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
@@ -1611,6 +1636,21 @@ mod tests {
         let shown = shown_config_values(&history, &["model", "effort", "fast"]);
         assert_eq!(shown, vec![("model".to_string(), "fable".to_string()), ("effort".to_string(), "xhigh".to_string())]);
         assert!(shown_config_values(&[], &["model"]).is_empty());
+    }
+
+    #[test]
+    fn remote_system_prompt_appends_the_git_part_and_the_hunt_md_of_the_repository() {
+        let with_token = remote_system_prompt("BASE", true, Some("\n# Preview\nStart the UIs.\n\n"));
+        assert_eq!(
+            with_token,
+            format!("BASE{REMOTE_PROMPT}{REMOTE_GIT_PUSH_PROMPT}\n### The repository's HUNT.md\n# Preview\nStart the UIs.\n")
+        );
+
+        let without_token = remote_system_prompt("BASE", false, None);
+        assert_eq!(without_token, format!("BASE{REMOTE_PROMPT}{REMOTE_GIT_LOCAL_PROMPT}"));
+        assert_eq!(remote_system_prompt("BASE", false, Some(" \n")), without_token);
+        assert!(REMOTE_PROMPT.contains("$HUNT_PREVIEW_URL_TEMPLATE` with `{port}`"));
+        assert!(REMOTE_PROMPT.contains("tmux pipe-pane -o -t app:<name> 'cat >> ~/logs/<name>.log'\n```"));
     }
 
     #[test]

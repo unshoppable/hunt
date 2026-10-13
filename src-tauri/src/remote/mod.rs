@@ -129,6 +129,24 @@ pub fn token_input(claude_token: &str, github_token: Option<&str>) -> String {
     format!("{claude_token}\n{}\n", github_token.unwrap_or_default())
 }
 
+/// The most of a repository's HUNT.md that goes into a remote session's system prompt; `remote/session/configCli.ts`
+/// takes as much on the VM.
+const HUNT_MD_MAX_BYTES: u64 = 20 * 1024;
+
+/// The text of the HUNT.md in `worktree`, the repository's instructions for Hunt sessions, or None when it has none.
+pub fn read_hunt_md(worktree: &Path) -> Result<Option<String>, String> {
+    let path = worktree.join("HUNT.md");
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("failed to read HUNT.md: {error}")),
+    };
+    if !metadata.is_file() || metadata.len() > HUNT_MD_MAX_BYTES {
+        return Err(format!("failed to read HUNT.md: it must be a file of at most {HUNT_MD_MAX_BYTES} bytes"));
+    }
+    std::fs::read_to_string(&path).map(Some).map_err(|error| format!("failed to read HUNT.md: {error}"))
+}
+
 /// Runs `hunt-ctl` with `args` on the VM as root and returns its JSON output.
 pub async fn hunt_ctl(ssh: &ssh::Ssh, args: &[&str]) -> Result<serde_json::Value, String> {
     hunt_ctl_with_input(ssh, args, &[]).await
@@ -227,6 +245,20 @@ mod tests {
         assert_eq!(token_input("sk-ant-oat01", Some("github_pat_1")), "sk-ant-oat01\ngithub_pat_1\n");
         assert_eq!(token_input("sk-ant-oat01", None), "sk-ant-oat01\n\n");
         assert_eq!(token_input("", None), "\n\n");
+    }
+
+    #[test]
+    fn read_hunt_md_reads_the_file_and_rejects_a_large_one() {
+        let dir = std::env::temp_dir().join(format!("hunt-md-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_hunt_md(&dir), Ok(None));
+
+        std::fs::write(dir.join("HUNT.md"), "# Preview\n").unwrap();
+        assert_eq!(read_hunt_md(&dir), Ok(Some("# Preview\n".to_string())));
+
+        std::fs::write(dir.join("HUNT.md"), "x".repeat(20 * 1024 + 1)).unwrap();
+        assert_eq!(read_hunt_md(&dir), Err("failed to read HUNT.md: it must be a file of at most 20480 bytes".to_string()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

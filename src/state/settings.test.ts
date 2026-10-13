@@ -7,6 +7,7 @@ import {
   DEFAULT_POPUP_SIZES,
   DEFAULT_REMOTE,
   SETTINGS_VERSION,
+  configuredPreviewDomain,
   configuredVm,
   mergeSettings,
   migrateSettings,
@@ -119,7 +120,7 @@ describe("mergeSettings", () => {
 
   it("keeps the default file patterns when only the VM was stored", () => {
     const merged = mergeSettings({ remote: { project: "p", zone: "z", instance: "vm" } }, current);
-    expect(merged.remote).toEqual({ project: "p", zone: "z", instance: "vm", filePatterns: DEFAULT_REMOTE.filePatterns });
+    expect(merged.remote).toEqual({ project: "p", zone: "z", instance: "vm", filePatterns: DEFAULT_REMOTE.filePatterns, previewDomain: "" });
   });
 
   it("returns the defaults when nothing is persisted", () => {
@@ -141,5 +142,14 @@ describe("remote settings", () => {
   it("drops blank, absolute and worktree-leaving file patterns", () => {
     const remote = normalizeRemote({ ...DEFAULT_REMOTE, filePatterns: [" **/.env.private ", "", "/etc/hosts", "../secret", "config/*.local"] });
     expect(remote.filePatterns).toEqual(["**/.env.private", "config/*.local"]);
+  });
+
+  it("reduces the preview domain to a lowercase host name and offers previews only for one", () => {
+    const remote = normalizeRemote({ ...DEFAULT_REMOTE, previewDomain: " HTTPS://Hunt.Example.com/ " });
+    expect(remote.previewDomain).toBe("hunt.example.com");
+    expect(configuredPreviewDomain(remote)).toBe("hunt.example.com");
+    expect(configuredPreviewDomain(DEFAULT_REMOTE)).toBeNull();
+    expect(configuredPreviewDomain({ ...DEFAULT_REMOTE, previewDomain: "localhost" })).toBeNull();
+    expect(configuredPreviewDomain({ ...DEFAULT_REMOTE, previewDomain: "a_b.example.com" })).toBeNull();
   });
 });

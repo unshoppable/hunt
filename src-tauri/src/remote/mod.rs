@@ -5,6 +5,7 @@
 
 pub mod bundle;
 pub mod handoff;
+pub mod preview;
 pub mod retrieve;
 pub mod ssh;
 pub mod transcript;
@@ -79,6 +80,7 @@ pub enum RemoteStep {
     StartingAgent,
     StoppingAgent,
     RetrievingCode,
+    StartingPreview,
 }
 
 /// Receives the steps of a running remote operation.

@@ -26,6 +26,7 @@ use crate::github::{self, GithubViewer, PullRequest, PullRequestDetails, PullReq
 use crate::graph::{self, WatcherRegistry};
 use crate::ide;
 use crate::lsp::{self, LspRegistry};
+use crate::remote::preview::{PreviewLogChunk, PreviewStatus};
 use crate::remote::{self, RemoteStep, VmRef};
 use crate::screenshots::{self, Screenshot};
 use crate::session::attribution::{self, FileVersion};
@@ -505,9 +506,101 @@ async fn remote_claude_token(app: &AppHandle, what: &str) -> Result<String, Stri
     })
 }
 
+/// Starts the preview of the remote session `id` on `domain`: the VM, the runtime, the session's container, then the
+/// services and dev processes its repository's hunt.json declares, with the optional processes in `with`. A container
+/// from a release without previews is created anew, which ends the chat's connection; the next prompt connects again.
+#[tauri::command]
+pub async fn start_preview(app: AppHandle, id: Uuid, domain: String, with: Vec<String>) -> Result<PreviewStatus, String> {
+    let record = store::find_session(&app, id)?;
+    let target = record.remote.ok_or("failed to start the preview: the session runs locally")?;
+    let domain = remote::preview::validate_domain(&domain)?;
+    let progress = progress_reporter(&app, id);
+    let started = async {
+        progress(RemoteStep::Connecting);
+        let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
+        remote::vm::ensure_running(&target.vm, &ssh, &progress).await?;
+        remote::bundle::ensure_installed(&ssh, &bundled_script_path(&app, "remote")?, &progress).await?;
+        // Only a container that is created reads the token, so a running one starts with the local login selected too.
+        let token_input = format!("{}\n", accounts::active_token(&app).await?.unwrap_or_default());
+        progress(RemoteStep::StartingAgent);
+        remote::hunt_ctl_with_input(&ssh, &["start", &id.to_string()], token_input.as_bytes()).await?;
+        progress(RemoteStep::StartingPreview);
+        let mut args = vec!["preview".to_string(), "start".into(), id.to_string(), "--domain".into(), domain.clone()];
+        for process in &with {
+            args.extend(["--with".to_string(), process.clone()]);
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        remote::hunt_ctl_with_input(&ssh, &args, token_input.as_bytes()).await?;
+        let status = remote::hunt_ctl(&ssh, &["preview", "status", &id.to_string()]).await?;
+        remote::preview::parse_status(&status, id, &domain)
+    }
+    .await;
+    finish_progress(&app, id);
+    started
+}
+
+/// The preview of the remote session `id` with its URLs on `domain`. A VM that is off has none; it is not started.
+/// A connected session proves a running VM, so only an unconnected one asks Compute Engine.
+#[tauri::command]
+pub async fn preview_status(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, domain: String) -> Result<PreviewStatus, String> {
+    let record = store::find_session(&app, id)?;
+    let Some(target) = record.remote else { return Ok(remote::preview::stopped_status()) };
+    let domain = remote::preview::validate_domain(&domain)?;
+    let is_connected = registry.live.lock().await.contains_key(&id);
+    if !is_connected && remote::vm::status(&target.vm).await? != "RUNNING" {
+        return Ok(remote::preview::stopped_status());
+    }
+    let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
+    let status = remote::hunt_ctl(&ssh, &["preview", "status", &id.to_string()]).await?;
+    remote::preview::parse_status(&status, id, &domain)
+}
+
+/// Stops the preview of the remote session `id`: its processes, services and route. Its data stays for the next start.
+#[tauri::command]
+pub async fn stop_preview(app: AppHandle, id: Uuid) -> Result<(), String> {
+    let target = store::find_session(&app, id)?.remote.ok_or("failed to stop the preview: the session runs locally")?;
+    if remote::vm::status(&target.vm).await? != "RUNNING" {
+        return Ok(());
+    }
+    let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
+    remote::hunt_ctl(&ssh, &["preview", "stop", &id.to_string()]).await?;
+    Ok(())
+}
+
+/// Restarts one process of the preview of the remote session `id`.
+#[tauri::command]
+pub async fn restart_preview_process(app: AppHandle, id: Uuid, process: String) -> Result<(), String> {
+    let target = store::find_session(&app, id)?.remote.ok_or("failed to restart the process: the session runs locally")?;
+    let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
+    remote::hunt_ctl(&ssh, &["preview", "restart", &id.to_string(), &process]).await?;
+    Ok(())
+}
+
+/// The part of the log `name` (a process, or `setup` for the prepare and init steps) of the remote session `id`'s
+/// preview that starts at `offset`; without an offset its last 64 KiB.
+#[tauri::command]
+pub async fn read_preview_log(app: AppHandle, id: Uuid, name: String, offset: Option<u64>) -> Result<PreviewLogChunk, String> {
+    let target = store::find_session(&app, id)?.remote.ok_or("failed to read the log: the session runs locally")?;
+    let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
+    let id = id.to_string();
+    let offset = offset.map(|offset| offset.to_string());
+    let mut args = vec!["preview", "logs", id.as_str(), name.as_str()];
+    if let Some(offset) = &offset {
+        args.extend(["--offset", offset.as_str()]);
+    }
+    let chunk = remote::hunt_ctl(&ssh, &args).await?;
+    serde_json::from_value(chunk).map_err(|error| format!("failed to read the log: {error}"))
+}
+
 /// What Hunt tells the agent of a remote session on top of its usual system prompt addition.
 const REMOTE_PROMPT: &str = "\n\n## Remote session\nThis session runs in a container on a remote VM. Git remotes such as GitHub are not \
-reachable from here: commit locally and do not push. The user brings the commits back to their machine.\n";
+reachable from here: commit locally and do not push. The user brings the commits back to their machine.\n\n\
+### Preview\nWhen the user opens the preview, Hunt runs the `preview` section of the repository's hunt.json in this \
+container: its services (such as Postgres and Redis) answer on 127.0.0.1 at their usual ports, and its dev processes \
+serve the app the user opens in the browser. `hunt-preview status` lists the processes, `hunt-preview logs <process>` \
+shows their output and `hunt-preview restart <process>` restarts one; do not start these dev servers a second time \
+yourself. Check changes to the user interface with the Playwright tools against http://localhost:<port>; the \
+screenshots you take show up in the user's chat.\n";
 
 /// Moves the session `id` to the VM `vm`: its agent stops here, its branch, uncommitted work, transcript and the
 /// ignored files matching `file_patterns` go to the VM, and the chat continues with the agent there. On failure the

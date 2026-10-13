@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 import { useIdeStore } from "../ide/ideStore";
 import { useAccountsStore } from "../state/accounts";
-import { configuredVm, useSettingsStore } from "../state/settings";
+import { usePreviewStore } from "../state/preview";
+import { configuredPreviewDomain, configuredVm, useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { SECONDARY_BUTTON_MD } from "../ui/buttons";
 import { CloudIcon } from "../ui/icons";
@@ -21,6 +22,7 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
   const isCreating = useHuntStore((state) => state.creatingIds.includes(sessionId));
   const handOffSession = useHuntStore((state) => state.handOffSession);
   const retrieveSession = useHuntStore((state) => state.retrieveSession);
+  const openPreview = usePreviewStore((state) => state.open);
   const remoteSettings = useSettingsStore((state) => state.remote);
   const hasUnsavedEdits = useIdeStore((state) => (state.sessions[sessionId]?.dirtyPaths.length ?? 0) > 0);
   const hasClaudeAccount = useAccountsStore((state) => Boolean(state.accounts?.activeId));
@@ -34,6 +36,7 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
   const isRemote = Boolean(session.remote);
   const isRunning = Boolean(chat?.remoteStep) || Boolean(chat?.isLoading);
   const blocker = isRemote ? retrieveBlocker(chat) : handOffBlocker(session, sessions, chat, { hasUnsavedEdits, hasClaudeAccount });
+  const previewDomain = configuredPreviewDomain(remoteSettings);
   const instance = session.remote?.vm.instance ?? vm?.instance ?? "";
 
   function run(action: (id: string) => Promise<void>) {
@@ -72,6 +75,12 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
             {isRemote ? "Bring back from the VM" : "Hand off to the VM"}
             <span className="block text-[12px] text-neutral-500">{blocker ?? (isRemote ? `The session continues here. Runs on ${instance}.` : `The agent continues on ${instance}, also while Hunt is closed.`)}</span>
           </button>
+          {isRemote && previewDomain ? (
+            <button type="button" role="menuitem" onClick={() => run(openPreview)} className={MENU_ITEM}>
+              Open preview
+              <span className="block text-[12px] text-neutral-500">{`Starts what hunt.json declares and opens https://${sessionId.slice(0, 8)}.${previewDomain}.`}</span>
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>

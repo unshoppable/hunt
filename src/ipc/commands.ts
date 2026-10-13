@@ -1,7 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type {
-  ChangeStat,
   ChangedFileView,
+  ChangeStat,
   ClaudeAccounts,
   DirEntry,
   FileDiff,
@@ -9,6 +9,8 @@ import type {
   GithubViewer,
   GraphStatus,
   PlanUsage,
+  PreviewLogChunk,
+  PreviewStatus,
   PullRequest,
   PullRequestDetails,
   PullRequestRef,
@@ -84,6 +86,14 @@ export const commands = {
   clearSession: (id: string) => invoke<SessionView>("clear_session", { id }),
   handOffSession: (id: string, vm: VmRef, filePatterns: string[]) => invoke<SessionView>("hand_off_session", { id, vm, filePatterns }),
   retrieveSession: (id: string) => invoke<SessionView>("retrieve_session", { id }),
+  /** Starts the remote session's preview on `domain` (VM, runtime, container, services, dev processes) with the optional processes in `withProcesses`. */
+  startPreview: (id: string, domain: string, withProcesses: string[]) => invoke<PreviewStatus>("start_preview", { id, domain, with: withProcesses }),
+  /** The remote session's preview; a VM that is off reports none and stays off. */
+  previewStatus: (id: string, domain: string) => invoke<PreviewStatus>("preview_status", { id, domain }),
+  stopPreview: (id: string) => invoke<void>("stop_preview", { id }),
+  restartPreviewProcess: (id: string, process: string) => invoke<void>("restart_preview_process", { id, process }),
+  /** The preview log `name` (a process or `setup`) from byte `offset` on; without an offset its last 64 KiB. */
+  readPreviewLog: (id: string, name: string, offset: number | null) => invoke<PreviewLogChunk>("read_preview_log", { id, name, offset }),
   closeSession: (id: string, removeWorktree: boolean) => invoke<void>("close_session", { id, removeWorktree }),
   /** Prepares the worktree's `node_modules` again after a failed attempt; progress arrives through `sessions:changed`. */
   prepareDependencies: (id: string) => invoke<void>("prepare_dependencies", { id }),

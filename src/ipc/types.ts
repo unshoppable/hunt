@@ -137,7 +137,37 @@ export type RemoteStep =
   | "installingDependencies"
   | "startingAgent"
   | "stoppingAgent"
-  | "retrievingCode";
+  | "retrievingCode"
+  | "startingPreview";
+
+/** The preview of a remote session (mirror of `PreviewStatus` in src-tauri/src/remote/preview.rs). */
+export type PreviewStatus = {
+  /** Whether a preview runs or starts. */
+  active: boolean;
+  /** `preparing`, `init`, `starting`, `ready`, `degraded`, `failed` or `stopped`. */
+  state: string;
+  step: string | null;
+  error: string | null;
+  /** Built by Hunt from the session id and the preview domain; the VM reports only ports. */
+  mainUrl: string | null;
+  processes: PreviewProcess[];
+  services: PreviewService[];
+};
+
+export type PreviewProcess = {
+  name: string;
+  /** `starting`, `ready`, `crashed` or `stopped`. */
+  state: string;
+  url: string | null;
+  restarts: number;
+  exitCode: number | null;
+  optional: boolean;
+};
+
+export type PreviewService = { name: string; state: string };
+
+/** A part of a preview log: `text` starts at byte `offset` of a log of `size` bytes; `reset` after a rotation. */
+export type PreviewLogChunk = { size: number; offset: number; text: string; reset: boolean };
 
 /** The step a remote operation on a session is at; `null` once it ended. */
 export type RemoteProgressEvent = { huntSessionId: string; step: RemoteStep | null };

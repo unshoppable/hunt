@@ -1,4 +1,5 @@
-# Recreates the folder of the sessions' sockets (mounted into each container) with the owner the relays write as.
+# Recreates the folder of the sessions' sockets (mounted into each container) with the owner the relays write as, and
+# starts the edge proxy of session previews with no routes: after a boot no preview runs until Hunt starts it again.
 [Unit]
 Description=Prepare the socket folder of Hunt's remote sessions
 After=docker.service
@@ -8,6 +9,7 @@ RequiresMountsFor=/srv
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/bin/install -d -o hunt -g hunt -m 0755 /srv/hunt/sockets
+ExecStart=-/usr/local/bin/hunt-ctl edge-reset
 
 [Install]
 WantedBy=multi-user.target

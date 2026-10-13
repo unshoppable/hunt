@@ -496,6 +496,13 @@ function RemoteSection() {
           </p>
         </div>
         <div className="flex flex-col gap-1">
+          <TextRow label="Preview domain" value={remote.previewDomain} onChange={(previewDomain) => setRemote({ previewDomain })} isMonospace />
+          <p className="text-[13px] leading-snug text-neutral-500">
+            A remote session's preview opens at https://&lt;id&gt;.&lt;domain&gt;, served by the VM behind your load balancer. It runs what the repository's hunt.json
+            declares; without a domain Hunt offers no preview.
+          </p>
+        </div>
+        <div className="flex flex-col gap-1">
           <div className="text-sm text-neutral-100">Ignored files to copy</div>
           <TextArea ariaLabel="Ignored files to copy" value={remote.filePatterns.join("\n")} onChange={(text) => setRemote({ filePatterns: text.split("\n") })} />
           <p className="text-[13px] leading-snug text-neutral-500">

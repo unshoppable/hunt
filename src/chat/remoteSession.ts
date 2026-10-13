@@ -11,6 +11,7 @@ export const REMOTE_STEP_LABELS: Record<RemoteStep, string> = {
   startingAgent: "Starting the agent on the VM…",
   stoppingAgent: "Stopping the agent on the VM…",
   retrievingCode: "Bringing the code back…",
+  startingPreview: "Starting the preview on the VM…",
 };
 
 /** Why nothing may move while the chat waits for something; `null` when it does not. */

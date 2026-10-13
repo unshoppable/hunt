@@ -8,9 +8,12 @@
 #   - a relay with a fresh heartbeat has a running turn, or a turn ended, a client sent something or a permission
 #     request arrived within IDLE_MINUTES (an unanswered permission request counts as idle after that),
 #   - an interactive login had input within IDLE_MINUTES (the IDLE column of `w`).
-# A heartbeat older than two minutes means the relay is gone; its status does not count. IDLE_MINUTES and
-# BOOT_GRACE_MINUTES come from /etc/hunt/idle.conf (defaults 30 and 15). The HUNT_IDLE_* variables point it at other
-# files, for tests.
+#   - someone opened a preview page or sent a request other than GET within IDLE_MINUTES (Caddy's access log of the
+#     edge proxy; health checks are not logged), but only while an agent was active within PREVIEW_MAX_MINUTES, so
+#     that a forgotten browser tab cannot keep the VM running.
+# A heartbeat older than two minutes means the relay is gone; its status does not count. IDLE_MINUTES,
+# BOOT_GRACE_MINUTES and PREVIEW_MAX_MINUTES come from /etc/hunt/idle.conf (defaults 30, 15 and 120). The HUNT_IDLE_*
+# variables point it at other files, for tests.
 set -euo pipefail
 shopt -s nullglob
 
@@ -18,19 +21,22 @@ config=${HUNT_IDLE_CONFIG:-/etc/hunt/idle.conf}
 sockets_dir=${HUNT_IDLE_SOCKETS_DIR:-/srv/hunt/sockets}
 activity_file=${HUNT_IDLE_ACTIVITY_FILE:-/var/lib/hunt/activity}
 uptime_file=${HUNT_IDLE_UPTIME_FILE:-/proc/uptime}
+edge_log=${HUNT_IDLE_EDGE_LOG:-/var/log/hunt-edge/access.log}
 readonly HEARTBEAT_MAX_AGE_MS=120000
 
 IDLE_MINUTES=30
 BOOT_GRACE_MINUTES=15
+PREVIEW_MAX_MINUTES=120
 
-# Reads IDLE_MINUTES and BOOT_GRACE_MINUTES from the config file; other lines and malformed values are ignored.
+# Reads IDLE_MINUTES, BOOT_GRACE_MINUTES and PREVIEW_MAX_MINUTES from the config file; other lines and malformed values
+# are ignored.
 read_config() {
   local key value
   [[ -r $config ]] || return 0
   while IFS='=' read -r key value || [[ -n $key ]]; do
     key=${key//[[:space:]]/}
     value=${value//[[:space:]\"\']/}
-    if [[ $key =~ ^(IDLE_MINUTES|BOOT_GRACE_MINUTES)$ && $value =~ ^[0-9]+$ ]]; then
+    if [[ $key =~ ^(IDLE_MINUTES|BOOT_GRACE_MINUTES|PREVIEW_MAX_MINUTES)$ && $value =~ ^[0-9]+$ ]]; then
       printf -v "$key" '%d' "$((10#$value))"
     fi
   done <"$config"
@@ -51,8 +57,31 @@ login_idle_minutes() {
     END { if (least != "") print least }'
 }
 
+# Prints the time in ms of the newest page load or non-GET request in the edge's access log; nothing without one.
+last_preview_request_ms() {
+  [[ -f $edge_log ]] || return 0
+  tail -c 262144 "$edge_log" | jq -Rr '
+    fromjson? | select(.request.method as $method | ($method != "GET" and $method != "HEAD" and $method != "OPTIONS")
+      or ((.request.headers["Sec-Fetch-Mode"] // [])[0] == "navigate")) | .ts * 1000 | floor' 2>/dev/null | tail -n 1
+}
+
+# Prints the time in ms of the newest agent activity (a running turn counts as now) of relays with a fresh heartbeat.
+last_agent_activity_ms() {
+  local now_ms=$1 file newest=0 time
+  for file in "$sockets_dir"/*/status.json; do
+    time=$(jq -r --argjson now "$now_ms" --argjson maxAge "$HEARTBEAT_MAX_AGE_MS" '
+      if (.heartbeatAt // 0) < $now - $maxAge then 0
+      elif .turn == "running" then $now
+      else [.lastTurnEndedAt // 0, .lastClientActivityAt // 0] | max end' "$file" 2>/dev/null) || continue
+    if [[ $time =~ ^[0-9]+$ ]] && (( time > newest )); then
+      newest=$time
+    fi
+  done
+  echo "$newest"
+}
+
 decide() {
-  local now_ms uptime modified activity_age file reason session login_idle
+  local now_ms uptime modified activity_age file reason session login_idle preview_ms agent_ms
   now_ms=$(date +%s%3N)
   read -r uptime _ <"$uptime_file"
   uptime=${uptime%.*}
@@ -89,6 +118,15 @@ decide() {
       return
     fi
   done
+
+  preview_ms=$(last_preview_request_ms)
+  if [[ $preview_ms =~ ^[0-9]+$ ]] && (( preview_ms > now_ms - IDLE_MINUTES * 60000 )); then
+    agent_ms=$(last_agent_activity_ms "$now_ms")
+    if (( agent_ms > now_ms - PREVIEW_MAX_MINUTES * 60000 )); then
+      echo "keep: a preview page was used $(((now_ms - preview_ms) / 60000)) min ago"
+      return
+    fi
+  fi
 
   login_idle=$(login_idle_minutes)
   if [[ -n $login_idle ]] && (( login_idle < IDLE_MINUTES )); then

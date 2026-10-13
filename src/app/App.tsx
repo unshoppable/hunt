@@ -16,6 +16,7 @@ import { FileSearchDialog, useFileSearchShortcut } from "../ide/FileSearchDialog
 import { EMPTY_IDE_SESSION, useIdeStore } from "../ide/ideStore";
 import { allPanes } from "../ide/paneGrid";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
+import { PreviewPanel } from "../preview/PreviewPanel";
 import { HEADER_BAR } from "../ui/bars";
 import { TAB_ACTIVE, TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons";
 import { restoreWindowBounds, useRememberWindowBounds } from "../ui/windowBounds";
@@ -102,9 +103,7 @@ export function App() {
             </nav>
             <div className="min-h-0 flex-1">
               {!activeSessionId || draft || isCreatingActive ? null : activeRemoteInstance ? (
-                <div className="flex h-full items-center justify-center px-8 text-center text-sm text-neutral-500">
-                  This session runs on the VM {activeRemoteInstance}. Diff, editor, graph and review work again once you bring it back.
-                </div>
+                <PreviewPanel key={activeSessionId} sessionId={activeSessionId} />
               ) : rightTab === "diff" ? (
                 <DiffPanel key={activeSessionId} sessionId={activeSessionId} />
               ) : rightTab === "editor" ? (

@@ -134,12 +134,20 @@ export type GraphAgent = { model: string; effort: string };
 export const DEFAULT_GRAPH_AGENT: GraphAgent = { model: "claude-opus-5-5", effort: "high" };
 
 /**
- * The VM remote sessions run on, and the ignored files a handoff copies along as glob patterns relative to the
- * worktree (`*` stays within a folder, `**` crosses folders). Handoffs are offered once project, zone and instance
- * are set.
+ * The VM remote sessions run on, the ignored files a handoff copies along as glob patterns relative to the worktree
+ * (`*` stays within a folder, `**` crosses folders), and the domain under which a session's preview opens as
+ * `https://<id>.<domain>`. Handoffs are offered once project, zone and instance are set, previews once the domain is.
  */
-export type RemoteSettings = { project: string; zone: string; instance: string; filePatterns: string[] };
-export const DEFAULT_REMOTE: RemoteSettings = { project: "", zone: "", instance: "", filePatterns: ["**/.env.private"] };
+export type RemoteSettings = { project: string; zone: string; instance: string; filePatterns: string[]; previewDomain: string };
+export const DEFAULT_REMOTE: RemoteSettings = { project: "", zone: "", instance: "", filePatterns: ["**/.env.private"], previewDomain: "" };
+
+/** Host names of at least two labels, as the backend accepts them. */
+const PREVIEW_DOMAIN_PATTERN = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** The preview domain of `remote`, or `null` while it is empty or no host name. */
+export function configuredPreviewDomain(remote: RemoteSettings): string | null {
+  return PREVIEW_DOMAIN_PATTERN.test(remote.previewDomain) ? remote.previewDomain : null;
+}
 
 /** The VM of `remote`, or `null` while its project, zone or instance is missing. */
 export function configuredVm(remote: RemoteSettings): VmRef | null {
@@ -150,12 +158,21 @@ export function configuredVm(remote: RemoteSettings): VmRef | null {
   return { project, zone, instance };
 }
 
-/** `remote` with trimmed fields and without blank, absolute or worktree-leaving file patterns. */
+/**
+ * `remote` with trimmed fields, without blank, absolute or worktree-leaving file patterns, and with the preview domain
+ * lowercased and stripped of a scheme, leading dots and trailing slashes or dots.
+ */
 export function normalizeRemote(remote: RemoteSettings): RemoteSettings {
   const filePatterns = remote.filePatterns
     .map((pattern) => pattern.trim())
     .filter((pattern) => pattern && !pattern.startsWith("/") && !pattern.split("/").includes(".."));
-  return { project: remote.project.trim(), zone: remote.zone.trim(), instance: remote.instance.trim(), filePatterns };
+  const previewDomain = (remote.previewDomain ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^[a-z]+:\/\//, "")
+    .replace(/^\.+/, "")
+    .replace(/[/.]+$/, "");
+  return { project: remote.project.trim(), zone: remote.zone.trim(), instance: remote.instance.trim(), filePatterns, previewDomain };
 }
 
 /** The kinds of guardrail that live in a folder of their own, set below. */

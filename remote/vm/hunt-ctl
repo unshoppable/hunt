@@ -12,6 +12,8 @@ shopt -s inherit_errexit nullglob
 readonly HOST_USER=hunt
 readonly CONTAINER_USER=2000:2000
 readonly CONTAINER_MEMORY=8g
+# Memory limit of a session's container while its preview runs: the agent plus the dev servers.
+readonly PREVIEW_MEMORY=12g
 readonly CONTAINER_PIDS=4096
 readonly RELEASES=/srv/hunt/releases
 readonly CURRENT=/srv/hunt/current
@@ -20,6 +22,20 @@ readonly SOCKETS=/srv/hunt/sockets
 readonly WORKTREES=/srv/worktrees
 readonly CLAUDE_HOMES=/srv/claude
 readonly NPM_CACHE=/srv/cache/npm
+readonly PREVIEW_DIR=/srv/hunt/preview
+readonly EDGE_NAME=hunt-edge
+readonly EDGE_CONFIG_DIR=/etc/hunt-edge
+readonly EDGE_LOG_DIR=/var/log/hunt-edge
+# The port the load balancer's instance group serves (named port `http`) and its health path; Terraform uses the same.
+readonly EDGE_PORT=8080
+readonly EDGE_HEALTH_PATH=/hunt-healthz
+readonly EDGE_USER=2001:2001
+readonly EDGE_IMAGE=caddy:2-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+readonly REDIS_IMAGE=redis:7.2-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
+# Google's load balancer proxies and health checkers, the only clients the edge serves.
+readonly -a LB_RANGES=(35.191.0.0/16 130.211.0.0/22)
+# Memory the containers' limits leave to the VM itself.
+readonly MEMORY_RESERVE_MB=4096
 readonly STATE_DIR=/var/lib/hunt
 readonly ACTIVITY_FILE=/var/lib/hunt/activity
 readonly IDLE_CONFIG=/etc/hunt/idle.conf
@@ -33,6 +49,8 @@ readonly REPORTED=3
 
 # Removed when hunt-ctl exits.
 temporary_paths=()
+# Whether the command counts as activity for hunt-idle-check; read-only queries Hunt polls do not.
+counts_as_activity=true
 
 usage() {
   cat >&2 <<'USAGE'
@@ -62,6 +80,17 @@ usage: hunt-ctl <command> [arguments]
   snapshot <id>          record the worktree's state as refs/hunt/<id>/retrieve
   status <id>            container state, relay status and session metadata
   destroy <id>           remove the session's containers, network, worktree and files
+  preview start <id> --domain <domain> [--with <process>]…
+                         start the session's preview from the `preview` section of its hunt.json; a container from
+                         an older release is created anew, with the Claude token from stdin
+  preview status <id>    the preview's URLs, services and the relay's preview state
+  preview logs <id> <process|setup> [--offset <bytes>] [--limit <bytes>]
+                         part of a preview log, by default its last 64 KiB
+  preview restart <id> <process>
+                         restart one preview process
+  preview stop <id>      stop the preview's processes, services and route; data stays
+  preview reset <id>     stop the preview and delete its data, so the next start initializes it again
+  edge-reset             (boot) forget every preview and (re)start the edge proxy with no routes
 USAGE
   exit 2
 }
@@ -80,7 +109,9 @@ report_failure() {
 
 on_exit() {
   local path
-  touch "$ACTIVITY_FILE" 2>/dev/null || true
+  if $counts_as_activity; then
+    touch "$ACTIVITY_FILE" 2>/dev/null || true
+  fi
   for path in "${temporary_paths[@]}"; do
     rm -rf -- "${path:?}"
   done
@@ -250,11 +281,11 @@ write_container_env() {
   mv -f "$file.tmp" "$file"
 }
 
-# Starts the container of session $1 unless it runs. A stopped container is created anew: Docker reads container.env
-# only when it creates a container, so only a new one gets a rotated token. Everything a session keeps lives in its
-# mounts.
+# Starts the container of session $1 unless it runs. A stopped container is created anew, from the current release's
+# image: Docker reads container.env only when it creates a container, so only a new one gets a rotated token, and the
+# relay is as new as the bundle Hunt installed last. Everything a session keeps lives in its mounts.
 start_container() {
-  local id=$1 name=hunt-$1 state image token
+  local id=$1 name=hunt-$1 state image token memory
   local -a mounts flags
   ensure_session_dirs "$id"
   state=$(container_state "$name")
@@ -268,13 +299,23 @@ start_container() {
   if [[ $state != missing ]]; then
     docker rm --force "$name" >/dev/null
   fi
-  image=$(meta "$id" image)
+  image=hunt-agent:$(current_hash)
+  jq --arg image "$image" '.image = $image' "$SESSIONS/$id/meta.json" >"$SESSIONS/$id/meta.json.tmp"
+  mv -f "$SESSIONS/$id/meta.json.tmp" "$SESSIONS/$id/meta.json"
   session_mounts "$id"
   ensure_session_network "$id"
   mapfile -t flags < <(container_flags "$id")
-  docker run --detach --init --restart unless-stopped --pull never --name "$name" --memory "$CONTAINER_MEMORY" \
+  memory=$CONTAINER_MEMORY
+  if [[ -f $SESSIONS/$id/preview-plan.json ]]; then
+    memory=$PREVIEW_MEMORY
+  fi
+  docker run --detach --init --restart unless-stopped --pull never --name "$name" --memory "$memory" --memory-swap "$memory" \
     --stop-timeout "$STOP_TIMEOUT" "${flags[@]}" --env-file "$SESSIONS/$id/container.env" --user "$CONTAINER_USER" \
     "${mounts[@]}" --mount "type=bind,src=$SOCKETS/$id,dst=/run/hunt/socket" --workdir "$WORKTREES/$id" "$image" >/dev/null
+  # A new container has a new address; the relay resumes the preview's processes on its own.
+  if [[ -f $SESSIONS/$id/preview-routes.json ]]; then
+    edge_sync
+  fi
 }
 
 # Whether a connection to the Unix socket $1 succeeds.
@@ -373,9 +414,15 @@ cmd_install() {
   if ! docker image inspect "hunt-agent:$hash" >/dev/null 2>&1; then
     docker build --tag "hunt-agent:$hash" --file "$release/image/Dockerfile" "$release"
   fi
+  if ! docker image inspect "hunt-postgres18:$hash" >/dev/null 2>&1; then
+    docker build --tag "hunt-postgres18:$hash" --file "$release/image/services/postgres18.Dockerfile" "$release/image/services"
+  fi
+  docker pull --quiet "$REDIS_IMAGE" >/dev/null
+  docker pull --quiet "$EDGE_IMAGE" >/dev/null
   ln -sfn "$release" "$CURRENT.new"
   mv -T "$CURRENT.new" "$CURRENT"
   install_units
+  ensure_edge
   emit --arg hash "$hash" '{hash: $hash}'
 }
 
@@ -611,6 +658,7 @@ cmd_stop() {
   (( $# == 1 )) || usage
   local state
   require_id "$1"
+  stop_preview "$1"
   state=$(container_state "hunt-$1")
   if [[ $state != missing ]]; then
     docker stop -t "$STOP_TIMEOUT" "hunt-$1" >/dev/null
@@ -678,14 +726,19 @@ cmd_status() {
 # removed as root without following symlinks.
 destroy_session() {
   local id=$1 name state
+  if [[ -f $SESSIONS/$id/preview-routes.json ]]; then
+    rm -f -- "$SESSIONS/$id/preview-routes.json"
+    edge_sync
+  fi
   for name in "hunt-$id" "hunt-deps-$id"; do
     state=$(container_state "$name")
     if [[ $state != missing ]]; then
       docker rm --force "$name" >/dev/null
     fi
   done
+  remove_preview_services "$id"
   docker network rm "$(session_network "$id")" >/dev/null 2>&1 || true
-  rm -rf -- "${WORKTREES:?}/${id:?}" "${CLAUDE_HOMES:?}/${id:?}" "${SOCKETS:?}/${id:?}" "${SESSIONS:?}/${id:?}"
+  rm -rf -- "${WORKTREES:?}/${id:?}" "${CLAUDE_HOMES:?}/${id:?}" "${SOCKETS:?}/${id:?}" "${SESSIONS:?}/${id:?}" "${PREVIEW_DIR:?}/${id:?}"
 }
 
 cmd_destroy() {
@@ -695,16 +748,403 @@ cmd_destroy() {
   emit '{}'
 }
 
+# ---- Previews -------------------------------------------------------------------------------------------------------
+# A session's preview runs the `preview` section of its repository's hunt.json: services from Hunt's catalog in their
+# own containers on the session's network, and the dev processes inside the session's container, supervised by the
+# relay (remote/relay/preview/). The edge proxy (Caddy, container hunt-edge on the host network) routes the preview
+# hosts from the load balancer to the session's container. Everything taken from hunt.json is validated twice: by the
+# relay's contract in a sandbox (planCli.ts) and again here before it reaches Docker or Caddy.
+
+readonly DOMAIN_PATTERN='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+readonly PROCESS_PATTERN='^[a-z][a-z0-9-]{0,23}$'
+
+# Prints the service containers of session $1, one name per line.
+preview_service_containers() {
+  docker ps --all --filter "label=hunt.session=$1" --filter "label=hunt.role=service" --format '{{.Names}}'
+}
+
+remove_preview_services() {
+  local name
+  while read -r name; do
+    [[ -n $name ]] && docker rm --force "$name" >/dev/null
+  done < <(preview_service_containers "$1")
+}
+
+# Checks the plan $1 that planCli.ts made for session $2 and domain $3 once more, field by field, before Docker and
+# Caddy see it.
+check_plan() {
+  local short=${2:0:8} domain_pattern=${3//./\\.}
+  jq -e --arg host "^${short}(-[0-9]{4,5})?\\.${domain_pattern}\$" --arg name "$PROCESS_PATTERN" '
+    def port_ok: type == "number" and . == floor and . >= 1024 and . <= 65535
+      and . != 2019 and . != 5432 and . != 6379 and (. < 9200 or . > 9249);
+    (.services | type == "array" and length <= 4 and all(
+      (.name | type == "string" and test($name))
+      and (.kind == "postgres-18" or .kind == "redis-7.2")
+      and (.memoryMb | type == "number" and . >= 64 and . <= 4096)
+      and (.env | type == "object" and all(to_entries[]; (.key == "POSTGRES_USER" or .key == "POSTGRES_PASSWORD" or .key == "POSTGRES_DB")
+        and (.value | type == "string" and test("^[^\n\r]*$"))))))
+    and (.services | map(.memoryMb) | add // 0) <= 4096
+    and (.routes | type == "array" and length >= 1 and all(
+      (.host | type == "string" and test($host)) and (.port | port_ok) and (.protocol == "http" or .protocol == "https")))
+    and (.urls.main | type == "string")' <<<"$1" >/dev/null || die "the preview plan failed hunt-ctl's checks"
+}
+
+# Fails unless the memory limits of the running containers plus $1 MB leave MEMORY_RESERVE_MB of the VM free.
+require_memory() {
+  local extra_mb=$1 total_kb used=0 limit
+  total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+  while read -r limit; do
+    used=$((used + limit))
+  done < <(docker ps --quiet | xargs -r docker inspect --format '{{.HostConfig.Memory}}')
+  (( used / 1048576 + extra_mb <= total_kb / 1024 - MEMORY_RESERVE_MB )) ||
+    die "the VM has not enough memory for this preview; stop another preview or session first"
+}
+
+# Starts the catalog service $2 (kind $3, $4 MB, env JSON $5) of session $1 unless it runs.
+start_preview_service() {
+  local id=$1 name=$2 kind=$3 memory_mb=$4 env_json=$5 container image env_file data
+  local -a args=() extra=()
+  container=hunt-svc-$id-$name
+  [[ $(container_state "$container") == running ]] && return
+  [[ $(container_state "$container") == missing ]] || docker rm --force "$container" >/dev/null
+  env_file=$SESSIONS/$id/service-$name.env
+  (umask 077 && jq -r 'to_entries[] | "\(.key)=\(.value)"' <<<"$env_json" >"$env_file")
+  case $kind in
+    postgres-18)
+      image=hunt-postgres18:$(current_hash)
+      data=$PREVIEW_DIR/$id/data/$name
+      install -d -o "$HOST_USER" -g "$HOST_USER" -m 0700 "$data"
+      extra=(--mount "type=bind,src=$data,dst=/var/lib/postgresql" --shm-size 256m)
+      args=(postgres -c shared_buffers=256MB -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c max_connections=200)
+      ;;
+    redis-7.2)
+      image=$REDIS_IMAGE
+      args=(redis-server --save '' --appendonly no --maxmemory "$((memory_mb * 3 / 4))mb" --maxmemory-policy noeviction)
+      ;;
+    *) die "unknown service kind: $kind" ;;
+  esac
+  docker run --detach --name "$container" --label "hunt.session=$id" --label hunt.role=service --restart no \
+    --network "$(session_network "$id")" --network-alias "$name" --user "$CONTAINER_USER" --cap-drop ALL \
+    --security-opt no-new-privileges --pids-limit 512 --memory "${memory_mb}m" --memory-swap "${memory_mb}m" \
+    --env-file "$env_file" "${extra[@]}" "$image" "${args[@]}" >/dev/null
+}
+
+# Waits up to 90 seconds until service container $1 of kind $2 answers.
+wait_preview_service() {
+  local container=$1 kind=$2 deadline=$((SECONDS + 90))
+  until case $kind in
+    postgres-18) docker exec "$container" pg_isready -q -h 127.0.0.1 -p 5432 ;;
+    redis-7.2) [[ $(docker exec "$container" redis-cli ping 2>/dev/null) == PONG ]] ;;
+  esac; do
+    (( SECONDS < deadline )) || die "the preview service $container did not start within 90 seconds"
+    sleep 1
+  done
+}
+
+# Sends the JSON request $2 to the relay of session $1 on its preview socket and prints the answer.
+relay_request() {
+  local socket=$SOCKETS/$1/preview.sock answer
+  [[ -S $socket && ! -L $socket ]] || die "the session's relay has no preview socket; it runs an older runtime and needs a restart"
+  answer=$(printf '%s\n' "$2" | as_hunt timeout 60 socat -t 60 - "UNIX-CONNECT:$socket") || die "the relay did not answer on its preview socket"
+  jq -e '.ok == true' <<<"$answer" >/dev/null 2>&1 || die "the relay refused the request: $(jq -r '.error // "no reason given"' <<<"$answer" 2>/dev/null)"
+  printf '%s\n' "$answer"
+}
+
+# Stops session $1's preview: its processes (when the relay runs), services and route. Its data stays.
+stop_preview() {
+  local id=$1 name
+  if [[ $(container_state "hunt-$id") == running && -S $SOCKETS/$id/preview.sock && -f $SESSIONS/$id/preview-plan.json ]]; then
+    relay_request "$id" '{"op":"stop"}' >/dev/null || true
+  fi
+  while read -r name; do
+    [[ -n $name ]] && docker stop --time 20 "$name" >/dev/null
+  done < <(preview_service_containers "$id")
+  if [[ -f $SESSIONS/$id/preview-routes.json ]]; then
+    rm -f -- "$SESSIONS/$id/preview-routes.json"
+    edge_sync
+  fi
+  rm -f -- "$SESSIONS/$id/preview-plan.json"
+  if [[ $(container_state "hunt-$id") == running ]]; then
+    docker update --memory "$CONTAINER_MEMORY" --memory-swap "$CONTAINER_MEMORY" "hunt-$id" >/dev/null || true
+  fi
+}
+
+# Writes the edge's Caddy configuration for the routes in the JSON array $1 ({host, port, protocol, ip}). Caddy serves
+# only the load balancer's ranges, passes the original Host header, removes IAP's credentials before a request reaches
+# a session's dev server, and answers the health check for hosts that are no preview.
+write_edge_config() {
+  local ranges
+  ranges=$(printf '%s\n' "${LB_RANGES[@]}" | jq -R . | jq -cs .)
+  jq -n --argjson routes "$1" --argjson ranges "$ranges" --arg listen ":$EDGE_PORT" --arg health "$EDGE_HEALTH_PATH" '
+    def proxy: {
+      handler: "reverse_proxy",
+      upstreams: [{dial: "\(.ip):\(.port)"}],
+      headers: {request: {
+        delete: ["X-Goog-Iap-Jwt-Assertion", "X-Goog-Authenticated-User-Email", "X-Goog-Authenticated-User-Id"],
+        replace: {Cookie: [{search_regexp: "(^|;\\s*)(__Host-)?GCP_IAP[^=]*=[^;]*", replace: ""}]}}}
+    } + (if .protocol == "https" then {transport: {protocol: "http", tls: {insecure_skip_verify: true}}} else {} end);
+    {
+      admin: {listen: "unix//tmp/caddy-admin.sock"},
+      logging: {logs: {
+        default: {level: "WARN", exclude: ["http.log.access.preview"]},
+        access: {
+          writer: {output: "file", filename: "/var/log/hunt-edge/access.log", roll_size_mb: 20, roll_keep: 2},
+          encoder: {format: "filter", wrap: {format: "json"}, fields: {
+            "request>headers>Cookie": {filter: "delete"},
+            "request>headers>X-Goog-Iap-Jwt-Assertion": {filter: "delete"}}},
+          include: ["http.log.access.preview"]}}},
+      apps: {http: {servers: {preview: {
+        listen: [$listen],
+        automatic_https: {disable: true},
+        trusted_proxies: {source: "static", ranges: $ranges},
+        logs: {default_logger_name: "preview"},
+        routes: ([$routes[] | {
+            match: [{host: [.host]}],
+            terminal: true,
+            handle: [{handler: "subroute", routes: [
+              {match: [{not: [{remote_ip: {ranges: $ranges}}]}], handle: [{handler: "static_response", status_code: 403}], terminal: true},
+              {handle: [proxy]}]}]}]
+          + [{match: [{path: [$health]}], terminal: true,
+              handle: [{handler: "vars", log_skip: true}, {handler: "static_response", status_code: 200, body: "ok"}]},
+             {handle: [{handler: "vars", log_skip: true}, {handler: "static_response", status_code: 404}]}])}}}}
+    }' >"$EDGE_CONFIG_DIR/caddy.json.tmp"
+  mv -f "$EDGE_CONFIG_DIR/caddy.json.tmp" "$EDGE_CONFIG_DIR/caddy.json"
+}
+
+# Starts the edge proxy unless it runs with the pinned image.
+ensure_edge() {
+  local state
+  install -d -m 0755 "$EDGE_CONFIG_DIR"
+  install -d -o "${EDGE_USER%:*}" -g "${EDGE_USER#*:}" -m 0755 "$EDGE_LOG_DIR"
+  [[ -f $EDGE_CONFIG_DIR/caddy.json ]] || write_edge_config '[]'
+  state=$(container_state "$EDGE_NAME")
+  if [[ $state == running && $(docker inspect --format '{{.Config.Image}}' "$EDGE_NAME") == "$EDGE_IMAGE" ]]; then
+    return
+  fi
+  [[ $state == missing ]] || docker rm --force "$EDGE_NAME" >/dev/null
+  docker run --detach --name "$EDGE_NAME" --restart on-failure:5 --network host --user "$EDGE_USER" --read-only \
+    --tmpfs /tmp --tmpfs /data --tmpfs /config --cap-drop ALL --security-opt no-new-privileges --memory 256m \
+    --pids-limit 256 --mount "type=bind,src=$EDGE_CONFIG_DIR,dst=/etc/hunt-edge,readonly" \
+    --mount "type=bind,src=$EDGE_LOG_DIR,dst=/var/log/hunt-edge" "$EDGE_IMAGE" caddy run --config /etc/hunt-edge/caddy.json >/dev/null
+}
+
+# Rebuilds the edge's routes from every session with a running preview, at its container's current address.
+edge_sync() {
+  local file id address routes='[]'
+  for file in "$SESSIONS"/*/preview-routes.json; do
+    id=${file#"$SESSIONS"/}
+    id=${id%%/*}
+    address=$(docker inspect --format "{{with index .NetworkSettings.Networks \"$(session_network "$id")\"}}{{.IPAddress}}{{end}}" "hunt-$id" 2>/dev/null) || continue
+    [[ $address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+    routes=$(jq -c --arg ip "$address" --argjson known "$routes" '$known + [.[] | {host, port, protocol, ip: $ip}]' "$file")
+  done
+  write_edge_config "$routes"
+  ensure_edge
+  docker exec "$EDGE_NAME" caddy reload --config /etc/hunt-edge/caddy.json --address unix//tmp/caddy-admin.sock >/dev/null
+}
+
+cmd_preview_start() {
+  local id=$1 domain='' hunt_json plan generation_file generation extra_mb name kind memory env_json recreated=false turn
+  local -a with_args=()
+  require_id "$id"
+  shift
+  while (( $# )); do
+    (( $# >= 2 )) || usage
+    case $1 in
+      --domain) domain=$2 ;;
+      --with)
+        [[ $2 =~ $PROCESS_PATTERN ]] || die "invalid process: $2"
+        with_args+=(--with "$2")
+        ;;
+      *) usage ;;
+    esac
+    shift 2
+  done
+  require_prepared "$id"
+  [[ $domain =~ $DOMAIN_PATTERN ]] || die "invalid preview domain: $domain"
+  [[ $(container_state "hunt-$id") == running ]] || die "the session's container is not running; run hunt-ctl start first"
+  if [[ ! -S $SOCKETS/$id/preview.sock ]]; then
+    # The container comes from a release without previews. It is created anew from the current one (the Claude token
+    # comes from stdin, as for start), which restarts the agent: only while no turn runs.
+    turn=$(read_object --agent "$SOCKETS/$id/status.json" | jq -r '.turn // "idle"')
+    [[ $turn != running ]] || die "the agent is working; open the preview once its turn has ended"
+    docker rm --force "hunt-$id" >/dev/null
+    start_container "$id"
+    wait_until_ready "$id" 180 3>/dev/null
+    recreated=true
+  fi
+
+  # Read in the session's container, so that a symlink the agent left can point only at what the agent sees anyway.
+  hunt_json=$(docker exec --user "$CONTAINER_USER" "hunt-$id" head -c 262144 "$WORKTREES/$id/hunt.json") ||
+    die "the repository has no hunt.json in its root"
+  plan=$(printf '%s' "$hunt_json" | sandbox --stdin -- /opt/hunt/node/bin/node /opt/hunt/relay/preview/planCli.ts \
+    --session "$id" --domain "$domain" "${with_args[@]}") || die "the preview section of hunt.json is not valid (see above)"
+  check_plan "$plan" "$id" "$domain"
+
+  if [[ ! -f $SESSIONS/$id/preview-plan.json ]]; then
+    extra_mb=$(( $(numfmt --from=iec "${PREVIEW_MEMORY^^}") / 1048576 - $(numfmt --from=iec "${CONTAINER_MEMORY^^}") / 1048576 ))
+    extra_mb=$((extra_mb + $(jq '[.services[].memoryMb] | add // 0' <<<"$plan")))
+    require_memory "$extra_mb"
+  fi
+
+  install -d -m 0755 "$PREVIEW_DIR" "$PREVIEW_DIR/$id"
+  generation_file=$PREVIEW_DIR/$id/generation
+  if [[ ! -d $PREVIEW_DIR/$id/data ]]; then
+    install -d -o "$HOST_USER" -g "$HOST_USER" -m 0700 "$PREVIEW_DIR/$id/data"
+    date +%s%N >"$generation_file"
+  fi
+  generation=$(tr -d '[:space:]' <"$generation_file")
+  while IFS=$'\t' read -r name kind memory env_json; do
+    start_preview_service "$id" "$name" "$kind" "$memory" "$env_json"
+  done < <(jq -r '.services[] | [.name, .kind, (.memoryMb | tostring), (.env | tojson)] | @tsv' <<<"$plan")
+  while IFS=$'\t' read -r name kind; do
+    wait_preview_service "hunt-svc-$id-$name" "$kind"
+  done < <(jq -r '.services[] | [.name, .kind] | @tsv' <<<"$plan")
+
+  (umask 077 && printf '%s\n' "$plan" >"$SESSIONS/$id/preview-plan.json")
+  docker update --memory "$PREVIEW_MEMORY" --memory-swap "$PREVIEW_MEMORY" "hunt-$id" >/dev/null
+  relay_request "$id" "$(jq -cn --argjson plan "$plan" --arg generation "$generation" '{op: "apply", plan: $plan, dataGeneration: $generation}')" >/dev/null
+  jq -c '[.routes[] | {host, port, protocol}]' <<<"$plan" >"$SESSIONS/$id/preview-routes.json"
+  edge_sync
+  emit --argjson recreated "$recreated" '{state: "starting", recreated: $recreated}'
+}
+
+cmd_preview_status() {
+  (( $# == 1 )) || usage
+  local id=$1 plan=null relay services='{}' name
+  require_id "$id"
+  if [[ -f $SESSIONS/$id/preview-plan.json ]]; then
+    plan=$(jq -c . "$SESSIONS/$id/preview-plan.json")
+  fi
+  relay=$(read_object --agent "$SOCKETS/$id/preview/preview.json")
+  while read -r name; do
+    [[ -n $name ]] || continue
+    services=$(jq -c --arg name "${name#"hunt-svc-$id-"}" --arg state "$(container_state "$name")" '. + {($name): $state}' <<<"$services")
+  done < <(preview_service_containers "$id")
+  emit --argjson plan "$plan" --argjson relay "$relay" --argjson services "$services" '{
+    active: ($plan != null),
+    processes: [$plan.processes[]? | {name, port: (.port // null), main: (.main // false), optional: (.optional // false)}],
+    services: $services,
+    relay: $relay}'
+}
+
+cmd_preview_logs() {
+  (( $# >= 2 )) || usage
+  local id=$1 name=$2 offset='' limit=65536 file size text
+  require_id "$id"
+  [[ $name == setup || $name =~ $PROCESS_PATTERN ]] || die "invalid log name: $name"
+  shift 2
+  while (( $# )); do
+    (( $# >= 2 )) || usage
+    case $1 in
+      --offset)
+        [[ $2 =~ ^[0-9]+$ ]] || die "invalid --offset: $2"
+        offset=$2
+        ;;
+      --limit)
+        [[ $2 =~ ^[1-9][0-9]{0,6}$ && $2 -le 1048576 ]] || die "invalid --limit: $2"
+        limit=$2
+        ;;
+      *) usage ;;
+    esac
+    shift 2
+  done
+  file=$SOCKETS/$id/preview/logs/$name.log
+  if [[ ! -f $file || -L $file ]]; then
+    emit '{size: 0, offset: 0, text: "", reset: false}'
+    return
+  fi
+  size=$(as_hunt stat -c %s "$file")
+  local reset=false
+  if [[ -z $offset ]] || (( offset > size )); then
+    [[ -n $offset ]] && reset=true
+    offset=$(( size > limit ? size - limit : 0 ))
+  fi
+  text=$(as_hunt tail -c "+$((offset + 1))" "$file" | head -c "$limit" | jq -Rs .)
+  emit --argjson size "$size" --argjson offset "$offset" --argjson text "$text" --argjson reset "$reset" \
+    '{size: $size, offset: $offset, text: $text, reset: $reset}'
+}
+
+cmd_preview_restart() {
+  (( $# == 2 )) || usage
+  require_id "$1"
+  [[ $2 =~ $PROCESS_PATTERN ]] || die "invalid process: $2"
+  [[ -f $SESSIONS/$1/preview-plan.json ]] || die "session $1 has no running preview"
+  relay_request "$1" "$(jq -cn --arg process "$2" '{op: "restart", process: $process}')" >/dev/null
+  emit '{}'
+}
+
+cmd_preview_stop() {
+  (( $# == 1 )) || usage
+  require_id "$1"
+  stop_preview "$1"
+  emit '{}'
+}
+
+cmd_preview_reset() {
+  (( $# == 1 )) || usage
+  require_id "$1"
+  stop_preview "$1"
+  remove_preview_services "$1"
+  rm -rf -- "${PREVIEW_DIR:?}/${1:?}"
+  emit '{}'
+}
+
+cmd_preview() {
+  (( $# )) || usage
+  local subcommand=$1
+  shift
+  case $subcommand in
+    start) cmd_preview_start "$@" ;;
+    status) cmd_preview_status "$@" ;;
+    logs) cmd_preview_logs "$@" ;;
+    restart) cmd_preview_restart "$@" ;;
+    stop) cmd_preview_stop "$@" ;;
+    reset) cmd_preview_reset "$@" ;;
+    *) usage ;;
+  esac
+}
+
+# At boot no preview runs: the services stay down and the relays do not resume them, so routes and plans are dropped.
+cmd_edge_reset() {
+  (( $# == 0 )) || usage
+  local file id name
+  for file in "$SESSIONS"/*/preview-plan.json "$SESSIONS"/*/preview-routes.json; do
+    rm -f -- "$file"
+  done
+  while read -r name; do
+    [[ -n $name ]] && docker rm --force "$name" >/dev/null
+  done < <(docker ps --all --filter label=hunt.role=service --format '{{.Names}}')
+  install -d -m 0755 "$EDGE_CONFIG_DIR"
+  write_edge_config '[]'
+  if [[ $(container_state "$EDGE_NAME") != missing ]]; then
+    docker rm --force "$EDGE_NAME" >/dev/null
+  fi
+  ensure_edge
+  for id in "$SESSIONS"/*/; do
+    id=${id%/}
+    id=${id##*/}
+    [[ $(container_state "hunt-$id") == running ]] &&
+      docker update --memory "$CONTAINER_MEMORY" --memory-swap "$CONTAINER_MEMORY" "hunt-$id" >/dev/null 2>&1 || true
+  done
+  emit '{}'
+}
+
 main() {
   (( $# )) || usage
   (( EUID == 0 )) || die "must run as root: sudo -n hunt-ctl $*"
   cd /
   umask 022
-  install -d -m 0755 "$STATE_DIR"
-  touch "$ACTIVITY_FILE"
-  trap on_exit EXIT
   local command=$1
   shift
+  case "$command ${1-}" in
+    "version "* | "status "* | "preview status" | "preview logs" | "edge-reset "*) counts_as_activity=false ;;
+  esac
+  install -d -m 0755 "$STATE_DIR"
+  if $counts_as_activity; then
+    touch "$ACTIVITY_FILE"
+  fi
+  trap on_exit EXIT
   # Streaming commands pass raw data on stdout; the others print one JSON document there.
   case $command in
     receive-pack)
@@ -742,6 +1182,8 @@ main() {
     snapshot) cmd_snapshot "$@" ;;
     status) cmd_status "$@" ;;
     destroy) cmd_destroy "$@" ;;
+    preview) cmd_preview "$@" ;;
+    edge-reset) cmd_edge_reset "$@" ;;
     *) usage ;;
   esac
 }

@@ -987,7 +987,9 @@ cmd_deps() {
   require_prepared "$id"
   worktree=$(worktree_of "$id")
   if [[ -f $worktree/package-lock.json ]]; then
-    lockfile=package-lock.json install_command=(npm ci)
+    # npm install instead of npm ci: it keeps an existing node_modules and only changes what the lockfile changed.
+    # --no-save leaves package.json and the lockfile untouched; the audit would ask the registry cache, which has none.
+    lockfile=package-lock.json install_command=(npm install --no-save --prefer-offline --no-audit --no-fund)
   elif [[ -f $worktree/pnpm-lock.yaml ]]; then
     lockfile=pnpm-lock.yaml install_command=(corepack pnpm install --frozen-lockfile)
   elif [[ -f $worktree/yarn.lock ]]; then

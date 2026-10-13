@@ -382,8 +382,9 @@ only the VM changed takes its version, one both sides changed keeps the local ve
 `<name>.remote-<id>.md`, and `MEMORY.md` takes the VM's added and removed lines.
 
 The labels and metadata of the session VMs are the directory of remote sessions. At its start and from the sidebar's
-*Refresh remote sessions* button, Hunt lists them (`adopt_session_vms`, `src-tauri/src/remote/adoption.rs`) and adopts
-every VM whose `hunt-session-id` no local session has: VMs the gateway's poller started for `swf` issues
+*Refresh remote sessions* button, Hunt lists those in the zone of the settings, the zone whose VMs the gateway routes
+previews to (`adopt_session_vms`, `src-tauri/src/remote/adoption.rs`), and adopts every VM whose `hunt-session-id` no
+local session has: VMs the gateway's poller started for `swf` issues
 (`hunt-origin=swf`, `hunt-issue`) and other people's handoffs. An adopted session gets a record with origin `swf` or
 `desktop`, its title, branch and repository from the metadata and the local checkout among the recently used
 repositories whose `origin` is that repository; the sidebar labels it `swf #<issue>` or `remote`. Its worktree path on

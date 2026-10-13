@@ -225,12 +225,24 @@ pub struct SessionVm {
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Every session VM of `project`, in any zone.
-pub async fn list_session_vms(project: &str) -> Result<Vec<SessionVm>, String> {
+/// The session VMs of `project` in `zone`, or in any zone without one.
+pub async fn list_session_vms(project: &str, zone: Option<&str>) -> Result<Vec<SessionVm>, String> {
     let project = format!("--project={project}");
-    let filter = format!("--filter=labels.{SESSION_LABEL}:*");
+    let filter = format!("--filter={}", list_filter(zone)?);
     let output = gcloud(&["compute", "instances", "list", &project, &filter, "--format=json"]).await?;
     parse_session_vms(&output)
+}
+
+/// The gcloud filter that lists the session VMs in `zone`, or in any zone without one; rejects a zone that is not a
+/// Compute Engine name, which could change the filter.
+fn list_filter(zone: Option<&str>) -> Result<String, String> {
+    let labels = format!("labels.{SESSION_LABEL}:*");
+    let Some(zone) = zone else { return Ok(labels) };
+    let is_allowed = |character: char| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-';
+    if zone.is_empty() || !zone.chars().all(is_allowed) {
+        return Err(format!("failed to list the session VMs: the zone {zone:?} is not a valid Compute Engine name"));
+    }
+    Ok(format!("{labels} AND zone:({zone})"))
 }
 
 #[derive(Deserialize)]
@@ -334,6 +346,15 @@ mod tests {
         assert!(vms[1].labels.is_empty() && vms[1].metadata.is_empty());
         assert_eq!(parse_session_vms("[]").unwrap(), Vec::new());
         assert!(parse_session_vms("not json").is_err());
+    }
+
+    #[test]
+    fn list_filter_limits_the_listing_to_a_valid_zone() {
+        assert_eq!(list_filter(None).unwrap(), "labels.hunt-session:*");
+        assert_eq!(list_filter(Some("europe-west1-c")).unwrap(), "labels.hunt-session:* AND zone:(europe-west1-c)");
+        for invalid in ["", "europe-west1-c) OR (name:*", "Europe-West1"] {
+            assert!(list_filter(Some(invalid)).is_err(), "{invalid}");
+        }
     }
 
     #[test]

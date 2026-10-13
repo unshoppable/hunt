@@ -30,11 +30,16 @@ pub struct AdoptableSession {
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// The session VMs of `project` to adopt, in the order listed: every VM that names a session (`hunt-session-id`) none
-/// of `known` is, whose name and `hunt-session` label belong to that session and whose `hunt-repo` is an
-/// `<owner>/<repo>`. VMs that fail these checks are no sessions Hunt can continue and stay alone.
-pub fn sessions_to_adopt(vms: &[SessionVm], project: &str, known: &HashSet<Uuid>) -> Vec<AdoptableSession> {
-    vms.iter().filter_map(|listed| adoptable(listed, project)).filter(|session| !known.contains(&session.id)).collect()
+/// The session VMs of `project` to adopt, in the order listed: every VM in `zone`, the zone of the settings and of the
+/// gateway that routes their previews, that names a session (`hunt-session-id`) none of `known` is, whose name and
+/// `hunt-session` label belong to that session and whose `hunt-repo` is an `<owner>/<repo>`. VMs that fail these checks
+/// are no sessions Hunt can continue and stay alone.
+pub fn sessions_to_adopt(vms: &[SessionVm], project: &str, zone: &str, known: &HashSet<Uuid>) -> Vec<AdoptableSession> {
+    vms.iter()
+        .filter(|listed| listed.zone == zone)
+        .filter_map(|listed| adoptable(listed, project))
+        .filter(|session| !known.contains(&session.id))
+        .collect()
 }
 
 fn adoptable(listed: &SessionVm, project: &str) -> Option<AdoptableSession> {
@@ -153,6 +158,7 @@ mod tests {
     use super::*;
 
     const ID: &str = "ab12cd34-0000-4000-8000-000000000001";
+    const ZONE: &str = "europe-west1-c";
 
     fn listed(name: &str, labels: &[(&str, &str)], metadata: &[(&str, &str)]) -> SessionVm {
         let pairs = |entries: &[(&str, &str)]| {
@@ -160,7 +166,7 @@ mod tests {
         };
         SessionVm {
             name: name.into(),
-            zone: "europe-west1-c".into(),
+            zone: ZONE.into(),
             status: "TERMINATED".into(),
             labels: pairs(labels),
             metadata: pairs(metadata),
@@ -190,7 +196,7 @@ mod tests {
             &[("hunt-session-id", "00000000-1111-4000-8000-000000000002"), ("hunt-repo", "acme/app")],
         );
         desktop.status = "RUNNING".into();
-        let adopted = sessions_to_adopt(&[swf_vm(), desktop], "acme-hunt", &HashSet::new());
+        let adopted = sessions_to_adopt(&[swf_vm(), desktop], "acme-hunt", ZONE, &HashSet::new());
 
         assert_eq!(adopted.len(), 2);
         assert_eq!(adopted[0].id, Uuid::parse_str(ID).unwrap());
@@ -204,9 +210,9 @@ mod tests {
     }
 
     #[test]
-    fn sessions_to_adopt_skips_known_sessions_and_vms_that_do_not_belong_to_their_session() {
+    fn sessions_to_adopt_skips_known_sessions_vms_of_other_zones_and_vms_that_do_not_belong_to_their_session() {
         let known = HashSet::from([Uuid::parse_str(ID).unwrap()]);
-        assert!(sessions_to_adopt(&[swf_vm()], "acme-hunt", &known).is_empty());
+        assert!(sessions_to_adopt(&[swf_vm()], "acme-hunt", ZONE, &known).is_empty());
 
         let mut wrong_name = swf_vm();
         wrong_name.name = "vm-hunt-medc".into();
@@ -222,15 +228,17 @@ mod tests {
         bad_repo.metadata.insert("hunt-repo".into(), "../etc".into());
         let mut bad_zone = swf_vm();
         bad_zone.zone = "Europe West".into();
-        let vms = [wrong_name, wrong_label, no_id, bad_id, no_repo, bad_repo, bad_zone];
-        assert!(sessions_to_adopt(&vms, "acme-hunt", &HashSet::new()).is_empty());
+        let mut other_zone = swf_vm();
+        other_zone.zone = "us-central1-a".into();
+        let vms = [wrong_name, wrong_label, no_id, bad_id, no_repo, bad_repo, bad_zone, other_zone];
+        assert!(sessions_to_adopt(&vms, "acme-hunt", ZONE, &HashSet::new()).is_empty());
     }
 
     #[test]
     fn a_swf_vm_without_title_is_named_after_its_issue() {
         let mut vm = swf_vm();
         vm.metadata.remove("hunt-title");
-        assert_eq!(sessions_to_adopt(&[vm], "acme-hunt", &HashSet::new())[0].title, "Issue #123 of acme/app");
+        assert_eq!(sessions_to_adopt(&[vm], "acme-hunt", ZONE, &HashSet::new())[0].title, "Issue #123 of acme/app");
     }
 
     #[test]

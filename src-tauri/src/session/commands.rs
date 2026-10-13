@@ -561,11 +561,11 @@ pub async fn list_session_vms(project: String) -> Result<Vec<SessionVm>, String>
     if project.trim().is_empty() {
         return Err("failed to list the session VMs: no Google Cloud project is set".into());
     }
-    remote::vm::list_session_vms(project.trim()).await
+    remote::vm::list_session_vms(project.trim(), None).await
 }
 
-/// Adopts the session VMs of the project in `settings` that no local session knows (see `remote::adoption`): each
-/// becomes a remote session of this Mac in the local checkout of its repository, found among `repo_paths` and the
+/// Adopts the session VMs of the project and zone in `settings` that no local session knows (see `remote::adoption`):
+/// each becomes a remote session of this Mac in the local checkout of its repository, found among `repo_paths` and the
 /// repositories of the stored sessions, or without one when none matches. Adopted sessions still without a checkout
 /// get another chance to find one. VMs this Mac deletes or deleted are left out. Returns the IDs of the new sessions.
 #[tauri::command]
@@ -574,12 +574,13 @@ pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths:
     if project.is_empty() {
         return Err("failed to adopt the session VMs: no Google Cloud project is set".into());
     }
+    let zone = settings.zone.trim();
     let preview_domain = remote::preview::validate_domain(&settings.preview_domain)?;
-    let vms = remote::vm::list_session_vms(&project).await?;
+    let vms = remote::vm::list_session_vms(&project, Some(zone)).await?;
     let sessions = store::load_sessions(&app)?;
     let mut known: HashSet<Uuid> = sessions.iter().map(|session| session.id).collect();
     known.extend(deleted_session_vms(&app));
-    let adoptable = remote::adoption::sessions_to_adopt(&vms, &project, &known);
+    let adoptable = remote::adoption::sessions_to_adopt(&vms, &project, zone, &known);
     let without_checkout: Vec<&SessionRecord> = sessions
         .iter()
         .filter(|session| session.remote.as_ref().is_some_and(RemoteTarget::is_adopted) && session.repo_path.as_os_str().is_empty())

@@ -56,6 +56,32 @@ describe("acp update reducer", () => {
     expect(items[0]).toMatchObject({ kind: "user", text: "Look at this", images: ["data:image/png;base64,AAAA"] });
   });
 
+  it("streams the agent's images and text into one message", () => {
+    const { applyUpdate } = useHuntStore.getState();
+    applyUpdate(SESSION, notification({ sessionUpdate: "agent_message_chunk", content: { type: "image", data: "AAAA", mimeType: "image/png" } }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Before and after the fix." } }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "agent_message_chunk", content: { type: "image", data: "BBBB", mimeType: "image/webp" } }));
+
+    const items = useHuntStore.getState().chats[SESSION].items;
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "agent",
+      text: "Before and after the fix.",
+      images: ["data:image/png;base64,AAAA", "data:image/webp;base64,BBBB"],
+    });
+  });
+
+  it("shows a placeholder instead of an image that is not PNG, JPEG, GIF or WebP in base64", () => {
+    const { applyUpdate } = useHuntStore.getState();
+    applyUpdate(SESSION, notification({ sessionUpdate: "user_message_chunk", content: { type: "image", data: "PHN2Zz4=", mimeType: "image/svg+xml" } }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "agent_message_chunk", content: { type: "image", data: "<svg onload=alert(1)>", mimeType: "image/png" } }));
+
+    expect(useHuntStore.getState().chats[SESSION].items).toEqual([
+      { kind: "user", id: expect.any(String), text: "[unsupported image]", images: [] },
+      { kind: "agent", id: expect.any(String), text: "[unsupported image]", images: [] },
+    ]);
+  });
+
   it("merges tool_call_update fields and exposes terminal output from _meta", () => {
     const { applyUpdate } = useHuntStore.getState();
     applyUpdate(SESSION, notification({

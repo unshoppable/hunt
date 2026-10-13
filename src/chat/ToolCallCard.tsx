@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { ToolCallContent } from "@agentclientprotocol/sdk";
 import type { ToolCallView } from "../ipc/types";
 import { InlineDiff } from "../diff/InlineDiff";
+import { ChatImages } from "./ChatImages";
 import { describeToolResult, formatToolTitle } from "./toolDisplay";
 
 /** Status dot per tool state: green done, red failed, pulsing while running. */
@@ -13,14 +14,15 @@ const STATUS_DOT: Record<string, string> = {
 };
 
 /**
- * One tool use as a compact row: status dot, tool name, argument and a short result label.
- * Clicking the row unfolds the output or diff; `isVerbose` (ctrl+o) unfolds every row at once.
- * `basePath` is stripped from arguments so worktree paths read as repo-relative paths.
+ * One tool use as a compact row: status dot, tool name, argument and a short result label, with the images the tool
+ * returned as thumbnails below it, folded or not. Clicking the row unfolds the output or diff; `isVerbose` (ctrl+o)
+ * unfolds every row at once. `basePath` is stripped from arguments so worktree paths read as repo-relative paths.
  */
 export function ToolCallCard({ toolCall, isVerbose, basePath }: { toolCall: ToolCallView; isVerbose: boolean; basePath: string }) {
   const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
   const title = formatToolTitle(toolCall);
-  const result = describeToolResult(toolCall);
+  // Checking image data takes time in proportion to its size, so the result is kept until the tool call changes.
+  const result = useMemo(() => describeToolResult(toolCall), [toolCall]);
   const isFailed = toolCall.status === "failed";
   const hasBody = Boolean(result.text) || result.diffs.length > 0;
   const isExpanded = hasBody && (expandedOverride ?? (isVerbose || !result.isCollapsedByDefault));
@@ -41,6 +43,7 @@ export function ToolCallCard({ toolCall, isVerbose, basePath }: { toolCall: Tool
         {result.summary ? <span className={`shrink-0 ${isFailed ? "text-red-300" : "text-neutral-500"}`}>{result.summary}</span> : null}
         {hasBody ? <Chevron expanded={isExpanded} /> : null}
       </button>
+      <ChatImages urls={result.images} className="pr-3 pb-2 pl-7" />
       {isExpanded ? (
         <div className="flex flex-col gap-1.5 border-t border-(--line) px-3 py-2">
           {result.diffs.map((diff, index) => (

@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import { CodeBlock } from "../code/CodeBlock";
 import { monacoLanguageForFence } from "../diff/monaco";
 import type { ChatItem, PlanEntry } from "../ipc/types";
+import { ChatImages } from "./ChatImages";
 import { ToolCallCard } from "./ToolCallCard";
 import { WorkingIndicator } from "./WorkingIndicator";
 
@@ -62,18 +63,12 @@ export function MessageList({
         if (item.kind === "user") {
           return (
             <div key={item.id} className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-(--row-active) px-4 py-2.5 whitespace-pre-wrap break-words text-neutral-100">
-              {item.images.length ? (
-                <div className={`flex flex-wrap gap-2 ${item.text ? "mb-2" : ""}`}>
-                  {item.images.map((url, index) => (
-                    <img key={index} src={url} alt="" className="max-h-48 max-w-full rounded-lg border border-white/10 object-contain" />
-                  ))}
-                </div>
-              ) : null}
+              <ChatImages urls={item.images} className={item.text ? "mb-2" : ""} />
               {item.text}
             </div>
           );
         }
-        return item.kind === "agent" ? <AgentMessage key={item.id} text={item.text} /> : null;
+        return item.kind === "agent" ? <AgentMessage key={item.id} text={item.text} images={item.images} /> : null;
       })}
       {plan.length ? <PlanCard entries={plan} /> : null}
       {isBusy ? <WorkingIndicator /> : null}
@@ -81,8 +76,8 @@ export function MessageList({
   );
 }
 
-/** Markdown-rendered agent turn with a copy button that appears on hover. */
-function AgentMessage({ text: reply }: { text: string }) {
+/** Markdown-rendered agent turn with its images below and a copy button for the text that appears on hover. */
+function AgentMessage({ text: reply, images }: { text: string; images: string[] }) {
   const text = stripGuardrailMarker(reply);
   const [isCopied, setIsCopied] = useState(false);
 
@@ -95,16 +90,19 @@ function AgentMessage({ text: reply }: { text: string }) {
 
   return (
     <div className="group flex flex-col gap-1">
-      <MarkdownText text={text} />
-      <button
-        type="button"
-        onClick={copy}
-        className="-ml-2 inline-flex h-7 w-fit items-center gap-1 rounded-md px-2 text-[13px] font-medium text-neutral-500 opacity-0 transition-opacity hover:bg-(--row-hover) hover:text-neutral-300 group-hover:opacity-100"
-        title="Copy message"
-      >
-        <CopyIcon />
-        {isCopied ? "Copied" : "Copy"}
-      </button>
+      {text ? <MarkdownText text={text} /> : null}
+      <ChatImages urls={images} className={text ? "mt-1" : ""} />
+      {text ? (
+        <button
+          type="button"
+          onClick={copy}
+          className="-ml-2 inline-flex h-7 w-fit items-center gap-1 rounded-md px-2 text-[13px] font-medium text-neutral-500 opacity-0 transition-opacity hover:bg-(--row-hover) hover:text-neutral-300 group-hover:opacity-100"
+          title="Copy message"
+        >
+          <CopyIcon />
+          {isCopied ? "Copied" : "Copy"}
+        </button>
+      ) : null}
     </div>
   );
 }

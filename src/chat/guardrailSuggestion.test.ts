@@ -3,7 +3,7 @@ import type { ChatItem } from "../ipc/types";
 import { buildGuardrailRequest, buildTranscript, findGuardrailSuggestion, stripGuardrailMarker, transcriptTail } from "./guardrailSuggestion";
 
 const user = (text: string): ChatItem => ({ kind: "user", id: text, text, images: [] });
-const agent = (text: string): ChatItem => ({ kind: "agent", id: text, text });
+const agent = (text: string): ChatItem => ({ kind: "agent", id: text, text, images: [] });
 
 describe("findGuardrailSuggestion", () => {
   it("returns the kind and summary the last reply marks", () => {

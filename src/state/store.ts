@@ -19,6 +19,7 @@ import type {
   SummaryEvent,
   ToolCallView,
 } from "../ipc/types";
+import { imageDataUrl, imagePlaceholder } from "../chat/imageData";
 import { repoName } from "../ui/path";
 import { titleFromPrompt } from "../sessions/sessionLabels";
 import { useAgentDefaultsStore } from "./agentDefaults";
@@ -293,25 +294,36 @@ function describeContentBlock(block: ContentBlock): string {
   }
 }
 
-function appendChunk(items: ChatItem[], kind: "agent" | "thought", text: string): ChatItem[] {
+function appendThought(items: ChatItem[], text: string): ChatItem[] {
   const last = items[items.length - 1];
-  if (last && last.kind === kind) {
+  if (last && last.kind === "thought") {
     return [...items.slice(0, -1), { ...last, text: last.text + text }];
   }
-  return [...items, { kind, id: nextItemId(), text }];
+  return [...items, { kind: "thought", id: nextItemId(), text }];
+}
+
+/** A user turn or an agent reply: the items that show images next to their text. */
+type MessageItem = Extract<ChatItem, { kind: "user" | "agent" }>;
+
+/** `message` with `block` added; an image block adds its data URL, or its placeholder text when the chat does not show it. */
+function withBlock(message: MessageItem, block: ContentBlock): MessageItem {
+  if (block.type !== "image") return { ...message, text: message.text + describeContentBlock(block) };
+  const url = imageDataUrl(block);
+  return url ? { ...message, images: [...message.images, url] } : { ...message, text: message.text + imagePlaceholder(block) };
+}
+
+/** Adds one block to the last item when it is a message of `kind`, or starts a new message of `kind` with it. */
+function appendMessageBlock(items: ChatItem[], kind: MessageItem["kind"], block: ContentBlock): ChatItem[] {
+  const last = items[items.length - 1];
+  if (last?.kind === kind) return [...items.slice(0, -1), withBlock(last, block)];
+  return [...items, withBlock({ kind, id: nextItemId(), text: "", images: [] }, block)];
 }
 
 /** Adds one block of a user turn to the last user item; an image block becomes a data URL the bubble can show. */
 function appendUserBlock(items: ChatItem[], block: ContentBlock): ChatItem[] {
   // A resource block is the file content Hunt attaches to a prompt (see the backend's `send_prompt`), not something the user typed.
   if (block.type === "resource") return items;
-  const last = items[items.length - 1];
-  const target = last?.kind === "user" ? last : { kind: "user" as const, id: nextItemId(), text: "", images: [] };
-  const updated =
-    block.type === "image"
-      ? { ...target, images: [...target.images, `data:${block.mimeType};base64,${block.data}`] }
-      : { ...target, text: target.text + describeContentBlock(block) };
-  return last?.kind === "user" ? [...items.slice(0, -1), updated] : [...items, updated];
+  return appendMessageBlock(items, "user", block);
 }
 
 /** Updates that carry the agent's output for the running turn; the chat leaves them out of a turn Hunt sent itself. */
@@ -405,9 +417,9 @@ function reduceChat(chat: SessionChat, notification: SessionNotification): Sessi
       if (isHiddenChunk(update._meta)) return { ...chat, isHiddenTurn: true };
       return { ...chat, items: appendUserBlock(chat.items, update.content), isHiddenTurn: false };
     case "agent_message_chunk":
-      return { ...chat, items: appendChunk(chat.items, "agent", describeContentBlock(update.content)) };
+      return { ...chat, items: appendMessageBlock(chat.items, "agent", update.content) };
     case "agent_thought_chunk":
-      return { ...chat, items: appendChunk(chat.items, "thought", describeContentBlock(update.content)) };
+      return { ...chat, items: appendThought(chat.items, describeContentBlock(update.content)) };
     case "tool_call":
       return { ...chat, items: [...chat.items, { kind: "tool", id: nextItemId(), toolCall: toToolCallView(update) }] };
     case "tool_call_update": {

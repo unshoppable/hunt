@@ -1,15 +1,18 @@
 import type { ToolCallContent } from "@agentclientprotocol/sdk";
 import type { ToolCallView } from "../ipc/types";
+import { imageDataUrl, imagePlaceholder } from "./imageData";
 
 export type ToolTitle = { name: string; argument: string | null };
 
 type DiffContent = Extract<ToolCallContent, { type: "diff" }>;
 
 export type ToolResult = {
-  /** Short trailing label of the tool row, e.g. `120 lines`, `3 files` or `+12 −3`. */
+  /** Short trailing label of the tool row, e.g. `120 lines`, `3 files`, `+12 −3` or `4 lines, 1 image`. */
   summary: string | null;
-  /** Text output of the tool (terminal output or text content blocks). */
+  /** Text output of the tool (terminal output or text content blocks, with a placeholder for an image the chat does not show). */
   text: string;
+  /** `data:` URLs of the images the tool returned, e.g. a browser screenshot or a PNG file it read. */
+  images: string[];
   diffs: DiffContent[];
   /** Bodies stay folded behind the summary unless expanded; failures open by default. */
   isCollapsedByDefault: boolean;
@@ -47,24 +50,43 @@ function stripPrefix(text: string, prefix: string): string | null {
 
 export function describeToolResult(toolCall: ToolCallView): ToolResult {
   const diffs = toolCall.content.filter((entry): entry is DiffContent => entry.type === "diff");
-  const texts = toolCall.content
-    .filter((entry): entry is Extract<ToolCallContent, { type: "content" }> => entry.type === "content")
-    .map((entry) => (entry.content.type === "text" ? entry.content.text : `[${entry.content.type}]`));
+  const { texts, images } = readContent(toolCall.content);
   const text = [toolCall.terminalOutput ?? "", ...texts].filter(Boolean).join("\n");
   const lineCount = countLines(text);
   const isFailed = toolCall.status === "failed";
   const isDone = toolCall.status === "completed" || isFailed;
 
   if (diffs.length) {
-    return { summary: describeDiffs(diffs), text: "", diffs, isCollapsedByDefault: !isFailed };
+    return { summary: describeDiffs(diffs), text: "", images, diffs, isCollapsedByDefault: !isFailed };
   }
-  if (!text) {
-    if (isFailed) return { summary: "Error", text: "", diffs, isCollapsedByDefault: false };
-    if (isDone) return { summary: "no output", text: "", diffs, isCollapsedByDefault: true };
-    return { summary: null, text: "", diffs, isCollapsedByDefault: true };
+  if (!text && !images.length) {
+    if (isFailed) return { summary: "Error", text: "", images, diffs, isCollapsedByDefault: false };
+    if (isDone) return { summary: "no output", text: "", images, diffs, isCollapsedByDefault: true };
+    return { summary: null, text: "", images, diffs, isCollapsedByDefault: true };
   }
   const unit = toolCall.kind === "search" && (toolCall.title.startsWith("Find") || toolCall.title.includes(" -l ")) ? "file" : "line";
-  return { summary: isFailed ? "Error" : pluralize(lineCount, unit), text, diffs, isCollapsedByDefault: !isFailed };
+  const textSummary = isFailed ? "Error" : text ? pluralize(lineCount, unit) : null;
+  const imageSummary = images.length ? pluralize(images.length, "image") : null;
+  return { summary: [textSummary, imageSummary].filter(Boolean).join(", "), text, images, diffs, isCollapsedByDefault: !isFailed };
+}
+
+/** The texts and image `data:` URLs of a tool's content blocks; an image the chat does not show adds its placeholder to the texts. */
+function readContent(content: ToolCallContent[]): { texts: string[]; images: string[] } {
+  const texts: string[] = [];
+  const images: string[] = [];
+  for (const entry of content) {
+    if (entry.type !== "content") continue;
+    const block = entry.content;
+    const url = block.type === "image" ? imageDataUrl(block) : null;
+    if (url) {
+      images.push(url);
+    } else if (block.type === "image") {
+      texts.push(imagePlaceholder(block));
+    } else {
+      texts.push(block.type === "text" ? block.text : `[${block.type}]`);
+    }
+  }
+  return { texts, images };
 }
 
 /** `+12 −3` for edits, `+18` for a fresh write. */

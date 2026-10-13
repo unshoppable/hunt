@@ -380,9 +380,13 @@ export type ToolCallView = {
   terminalOutput?: string;
 };
 
+/**
+ * An entry of the chat. The `images` of a message are URLs it shows: asset URLs of screenshots the user attached, or
+ * `data:` URLs of image blocks that `imageDataUrl` (chat/imageData.ts) accepted.
+ */
 export type ChatItem =
   | { kind: "user"; id: string; text: string; images: string[] }
-  | { kind: "agent"; id: string; text: string }
+  | { kind: "agent"; id: string; text: string; images: string[] }
   | { kind: "thought"; id: string; text: string }
   | { kind: "tool"; id: string; toolCall: ToolCallView };
 

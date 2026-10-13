@@ -1,0 +1,6 @@
+[Unit]
+Description=Power off the session VM once its session is idle
+
+[Service]
+Type=oneshot
+ExecStart=/srv/hunt/current/vm/hunt-idle-check

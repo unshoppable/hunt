@@ -1,13 +1,13 @@
-# Blocks the GCE metadata server (169.254.169.254) for containers, except DNS, which GCE serves from the same address
-# and containers inherit as their resolver. It runs before Docker, so the block exists before Docker restarts the
-# sessions' containers at boot; Docker keeps an existing DOCKER-USER chain. DOCKER-USER filters only traffic Docker
-# forwards, so the VM itself keeps its service account. Each rule stands alone, so their order does not matter; ICMP,
-# TCP and UDP cover all a container's non-root user can send.
-# The INPUT rules keep containers off the VM's own services (sshd, Docker's published ports, everything on the host):
-# a connection a container opens towards the host through its session bridge (hs-<id>) or docker0 is dropped, while
-# replies to connections the host opens keep flowing.
+# Blocks the GCE metadata server (169.254.169.254) for containers on the gateway, except DNS, which GCE serves from the
+# same address and containers inherit as their resolver: the gateway's service account may start session VMs, and no
+# container needs it. The edge proxy runs in the host network and keeps its access. It runs before Docker, so the block
+# exists before Docker restarts containers at boot; Docker keeps an existing DOCKER-USER chain. Each rule stands alone,
+# so their order does not matter; ICMP, TCP and UDP cover all a container's non-root user can send.
+# The INPUT rules keep containers off the gateway's own services (sshd, hunt-wake, Docker's published ports): a
+# connection a container opens towards the host through a Docker bridge (docker0, or hs-<id> of networks Hunt created
+# in earlier versions) is dropped, while replies to connections the host opens keep flowing.
 [Unit]
-Description=Block the metadata server for Hunt's containers, except DNS
+Description=Block the metadata server for containers on Hunt's gateway, except DNS
 Before=docker.service
 
 [Service]

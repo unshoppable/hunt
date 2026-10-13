@@ -1,8 +1,0 @@
-{
-  "name": "hunt-playwright-mcp",
-  "private": true,
-  "description": "Playwright's MCP server in the hunt-agent image (see image/Dockerfile); npm ci installs it from package-lock.json.",
-  "dependencies": {
-    "@playwright/mcp": "0.0.83"
-  }
-}

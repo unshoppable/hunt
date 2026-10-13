@@ -1,8 +1,0 @@
-[
-  {
-    "name": "playwright",
-    "command": "/opt/hunt/node/bin/node",
-    "args": ["/opt/hunt/playwright/node_modules/@playwright/mcp/cli.js", "--headless", "--browser", "chromium", "--isolated"],
-    "env": [{ "name": "PLAYWRIGHT_BROWSERS_PATH", "value": "/opt/hunt/ms-playwright" }]
-  }
-]

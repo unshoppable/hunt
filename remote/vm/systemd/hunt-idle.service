@@ -1,7 +1,0 @@
-[Unit]
-Description=Power off the VM once Hunt's remote sessions are idle
-RequiresMountsFor=/srv
-
-[Service]
-Type=oneshot
-ExecStart=/srv/hunt/current/vm/hunt-idle-check

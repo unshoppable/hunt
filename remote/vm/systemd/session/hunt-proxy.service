@@ -1,6 +1,7 @@
 # The preview proxy of a session VM: Caddy on :8080 serves the session's preview hosts, which the gateway forwards, from
 # the dev servers on the VM, as `hunt-ctl session-config` writes it to /etc/hunt/caddy.json and enables this unit. The
-# admin API listens on a socket in the runtime folder, through which a reload applies a new configuration in place.
+# admin API listens on a socket in the runtime folder, through which a reload applies a new configuration in place. The
+# access log in the logs folder, /var/log/hunt-proxy/access.log, tells the idle check about preview page views.
 [Unit]
 Description=Preview proxy of Hunt's session VM
 After=network-online.target
@@ -12,6 +13,7 @@ Type=notify
 DynamicUser=yes
 RuntimeDirectory=hunt-proxy
 StateDirectory=hunt-proxy
+LogsDirectory=hunt-proxy
 Environment=XDG_DATA_HOME=/var/lib/hunt-proxy XDG_CONFIG_HOME=/var/lib/hunt-proxy
 ExecStart=/usr/bin/caddy run --config /etc/hunt/caddy.json
 ExecReload=/usr/bin/caddy reload --config /etc/hunt/caddy.json --address unix//run/hunt-proxy/admin.sock --force

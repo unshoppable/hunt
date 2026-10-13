@@ -1,5 +1,5 @@
 [Unit]
-Description=Check every minute whether Hunt's remote sessions are idle
+Description=Check every minute whether the session on this VM is idle
 
 [Timer]
 OnBootSec=1min

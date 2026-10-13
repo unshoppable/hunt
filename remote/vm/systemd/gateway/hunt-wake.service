@@ -1,0 +1,18 @@
+# Wakes stopped session VMs for their previews (remote/gateway/wake.ts): the edge proxy hands every request it cannot
+# deliver to a session VM to 127.0.0.1:9180, and the service starts the VM with the gateway's service account.
+[Unit]
+Description=Wake Hunt session VMs for preview requests
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+DynamicUser=yes
+ExecStart=/opt/hunt/node/bin/node /srv/hunt/current/gateway/wake.ts
+Restart=on-failure
+RestartSec=2s
+PrivateDevices=yes
+ProtectHome=yes
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

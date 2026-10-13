@@ -295,9 +295,19 @@ repository's `hunt.json` describes: services from Hunt's catalog, environment, `
 with ports. `contract.ts` checks that section and builds a plan from it (`planCli.ts`, which `hunt-ctl` runs in a
 sandbox). `supervisor.ts` runs a plan it receives on `preview.sock` (`control.ts`): it forwards `127.0.0.1:5432` and
 `:6379` to the service containers, runs the `prepare` steps, the `init` steps once per data generation and then every
-process in a process group of its own, with readiness checks and restarts with backoff. `preview.json`, the applied plan
-and one log per process lie in the socket folder's `preview/`; a relay restart within the same boot resumes the plan.
-The agent checks and restarts the processes and reads their logs with `hunt-preview` (`cli.ts`).
+process in a process group of its own, with readiness checks and restarts with backoff. A process with a port has to
+listen on 0.0.0.0: the readiness check, like the edge proxy, connects to the container's address. `preview.json`, the
+applied plan and one log per process lie in the socket folder's `preview/`; a relay restart within the same boot
+resumes the plan. The agent checks and restarts the processes and reads their logs with `hunt-preview` (`cli.ts`).
+
+*Open preview* (cloud menu, or the preview panel to the right of a remote session's chat) runs `hunt-ctl preview
+start` with the preview domain from *Settings → Remote VM*. It reads `hunt.json` inside the session's container, starts
+the services as containers on the session's network, raises the container's memory limit and hands the plan to the
+relay. The edge proxy `hunt-edge` (Caddy on port 8080 of the VM) serves `https://<short id>.<domain>` and
+`https://<short id>-<port>.<domain>` to the load balancer, which lets only IAP's access group through, and removes
+IAP's headers and cookies before a request reaches a dev server; `<short id>` is the first 8 hex digits of the session
+ID. `src/preview/PreviewPanel.tsx` shows the state, the links and one log per process. Page views and requests other
+than GET keep the VM awake, for at most two hours without a turn.
 
 Bringing it back (`retrieve_session`) stops the container, snapshots the VM's worktree on top of the agent's commits
 (`refs/hunt/<id>/retrieve`), fetches it and applies it to the local worktree, which must still hold the handoff
@@ -318,11 +328,11 @@ starts it again.
 | `src-tauri/src/lsp.rs` | One `tsgo --lsp` process per worktree |
 | `src-tauri/src/workspace.rs` | Project tree and file access |
 | `src-tauri/src/graph.rs` | Dependency graph prompt and status |
-| `src-tauri/src/remote/` | SSH to the VM, handoff and retrieval of remote sessions |
-| `remote/` | VM side of remote sessions: relay, container image, `hunt-ctl` |
+| `src-tauri/src/remote/` | SSH to the VM, handoff and retrieval of remote sessions, previews |
+| `remote/` | VM side of remote sessions: relay with the preview supervisor, container image, `hunt-ctl` |
 | `src/ipc/` | Every Tauri command, event and shared type |
 | `src/state/` | Zustand stores and chat reducers |
-| `src/chat/`, `src/diff/`, `src/ide/`, `src/graph/`, `src/guardrails/`, `src/review/`, `src/sessions/`, `src/settings/` | One folder per tab or window |
+| `src/chat/`, `src/diff/`, `src/ide/`, `src/graph/`, `src/guardrails/`, `src/preview/`, `src/review/`, `src/sessions/`, `src/settings/` | One folder per tab or window |
 | `src/ui/` | Primitives shared by every feature |
 | `docs/adr/` | Architectural decision records |
 

@@ -1,5 +1,6 @@
 # Container of one Hunt remote session. The relay (relay/main.ts, run by a fixed Node 24) owns the session's sockets,
 # drives claude-agent-acp, which runs the native Claude Code CLI, and supervises the preview's processes (relay/preview/).
+# Claude Code gets a headless browser through Playwright's MCP server.
 # Repositories get the Node and npm versions they pin through Volta. `hunt-ctl install` builds the image on the VM as
 # hunt-agent:<bundle hash>, with the bundle (Hunt's remote/ folder) as the build context:
 #
@@ -15,6 +16,7 @@ ARG VOLTA_VERSION=2.0.2
 ARG VOLTA_SHA256=6cec054c911fb925b629a09455775af6e95dc0f5694a4c28b63979ab9ef18037
 ARG TERRAFORM_VERSION=1.15.8
 ARG TERRAFORM_SHA256=d25ce7b6902013ad905db3d2eab0be4cd905887fe88b81a6171b8d5503c31f3d
+ARG PGDG_KEY_SHA256=0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
@@ -25,6 +27,16 @@ RUN test "$(dpkg --print-architecture)" = amd64 || { echo "hunt-agent images are
     rm -rf /var/lib/apt/lists/*; \
     git lfs install --system; \
     git config --system safe.directory '*'
+
+# psql, pg_dump and pg_restore 18 for the preview's init steps, from the PostgreSQL apt repository (PGDG), whose
+# signing key is pinned like the downloads below.
+RUN install -d -m 0755 /etc/apt/keyrings; \
+    curl -fsSLo /etc/apt/keyrings/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc; \
+    echo "${PGDG_KEY_SHA256}  /etc/apt/keyrings/pgdg.asc" | sha256sum --check --quiet; \
+    echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" >/etc/apt/sources.list.d/pgdg.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends postgresql-client-18; \
+    rm -rf /var/lib/apt/lists/*
 
 # Same uid and gid as the VM's `hunt` user, which owns the mounted worktree, repository and ~/.claude.
 RUN groupadd --gid 2000 agent; \
@@ -68,6 +80,17 @@ RUN export PATH="/opt/hunt/node/bin:${PATH}"; \
     test -x "${cli}" || { echo "${cli} is missing: npm did not install the native Claude Code CLI" >&2; exit 1; }; \
     ln -s "${cli}" /usr/local/bin/claude
 
+# Playwright's MCP server for the agent's browser checks of the preview, in the versions
+# image/playwright/package-lock.json pins, with Chrome for Testing and the system libraries it needs. The browser lies
+# in a root-owned folder of its own, so a repository's own Playwright never mixes its browsers in; the relay offers the
+# server to Claude Code as listed in /opt/hunt/mcp-servers.json.
+COPY image/playwright/package.json image/playwright/package-lock.json /opt/hunt/playwright/
+RUN export PATH="/opt/hunt/node/bin:${PATH}" PLAYWRIGHT_BROWSERS_PATH=/opt/hunt/ms-playwright; \
+    npm ci --prefix /opt/hunt/playwright --omit=dev --no-audit --no-fund --no-update-notifier; \
+    node /opt/hunt/playwright/node_modules/@playwright/mcp/cli.js install-browser --with-deps --no-shell chromium; \
+    rm -rf /root/.npm /var/lib/apt/lists/*
+COPY image/mcp-servers.json /opt/hunt/mcp-servers.json
+
 COPY relay/ /opt/hunt/relay/
 
 # `hunt-preview` gives the agent the state of the session's preview, restarts of its processes and their logs.
@@ -81,6 +104,7 @@ ENV HOME=/home/agent \
     HUNT_CONFIG=/home/agent/.claude/hunt-session.json \
     HUNT_SOCKET_DIR=/run/hunt/socket \
     HUNT_ADAPTER=/opt/hunt/acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js \
+    HUNT_MCP_SERVERS=/opt/hunt/mcp-servers.json \
     DISABLE_TELEMETRY=1 \
     DISABLE_ERROR_REPORTING=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \

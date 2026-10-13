@@ -309,8 +309,9 @@ start_container() {
   if [[ -f $SESSIONS/$id/preview-plan.json ]]; then
     memory=$PREVIEW_MEMORY
   fi
+  # The agent's headless Chromium needs more shared memory than Docker's default 64 MB.
   docker run --detach --init --restart unless-stopped --pull never --name "$name" --memory "$memory" --memory-swap "$memory" \
-    --stop-timeout "$STOP_TIMEOUT" "${flags[@]}" --env-file "$SESSIONS/$id/container.env" --user "$CONTAINER_USER" \
+    --shm-size 1g --stop-timeout "$STOP_TIMEOUT" "${flags[@]}" --env-file "$SESSIONS/$id/container.env" --user "$CONTAINER_USER" \
     "${mounts[@]}" --mount "type=bind,src=$SOCKETS/$id,dst=/run/hunt/socket" --workdir "$WORKTREES/$id" "$image" >/dev/null
   # A new container has a new address; the relay resumes the preview's processes on its own.
   if [[ -f $SESSIONS/$id/preview-routes.json ]]; then

@@ -1,12 +1,15 @@
 /**
- * The readiness check of a preview process: it accepts a TCP connection on its port, and when it has a `ready` path, a
- * GET of that path answers with a status below 500. HTTPS is not verified: dev servers sign their own certificates.
+ * The readiness check of a preview process: it accepts a TCP connection on its port at the session container's address,
+ * which the edge proxy dials, and when it has a `ready` path, a GET of that path answers with a status below 500. HTTPS
+ * is not verified: dev servers sign their own certificates.
  */
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { createConnection } from "node:net";
+import { networkInterfaces } from "node:os";
 import type { Protocol } from "./contract.ts";
 
+const LOOPBACK = "127.0.0.1";
 const CONNECT_TIMEOUT_MS = 2_000;
 /** Dev servers often build a page on its first request, so the answer may take a while. */
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -17,13 +20,27 @@ export interface ProbeTarget {
   ready: string | null;
 }
 
-/** One check against `host` (127.0.0.1 in the session container); never rejects. A process without a port is ready. */
-export async function probeReady(target: ProbeTarget, host = "127.0.0.1"): Promise<boolean> {
-  if (target.port === null) return true;
-  if (!(await accepts(host, target.port))) return false;
-  if (!target.ready) return true;
-  const status = await statusOf(host, target.port, target.protocol, target.ready);
-  return status !== null && status >= 200 && status < 500;
+/** `loopback-only`: the port is closed at the checked address but open on 127.0.0.1, so the edge proxy cannot reach it. */
+export type Readiness = "ready" | "waiting" | "loopback-only";
+
+/** One check of `target` at `address`; never rejects. A process without a port is ready. */
+export async function checkReadiness(target: ProbeTarget, address = LOOPBACK): Promise<Readiness> {
+  if (target.port === null) return "ready";
+  if (!(await accepts(address, target.port))) {
+    return address !== LOOPBACK && (await accepts(LOOPBACK, target.port)) ? "loopback-only" : "waiting";
+  }
+  if (!target.ready) return "ready";
+  const status = await statusOf(address, target.port, target.protocol, target.ready);
+  return status !== null && status >= 200 && status < 500 ? "ready" : "waiting";
+}
+
+/** The container's first IPv4 address outside the loopback, its address on the session network; 127.0.0.1 without one. */
+export function previewAddress(interfaces = networkInterfaces()): string {
+  for (const entries of Object.values(interfaces)) {
+    const entry = entries?.find((candidate) => candidate.family === "IPv4" && !candidate.internal);
+    if (entry) return entry.address;
+  }
+  return LOOPBACK;
 }
 
 function accepts(host: string, port: number): Promise<boolean> {

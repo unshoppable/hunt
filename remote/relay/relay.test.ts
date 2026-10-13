@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ConfigChanges, HuntSessionConfig } from "./config.ts";
+import type { ConfigChanges, HuntSessionConfig, McpServerEntry } from "./config.ts";
 import { label, textOf, turnOf, updateOf } from "./fixtures/messages.ts";
 import {
   classify,
@@ -35,6 +35,9 @@ const INITIALIZE_RESULT = {
   agentInfo: { name: "@agentclientprotocol/claude-agent-acp", version: "0.89.1" },
   authMethods: [],
 };
+const MCP_SERVERS: McpServerEntry[] = [
+  { name: "playwright", command: "/opt/hunt/node/bin/node", args: ["cli.js", "--headless"], env: [{ name: "PLAYWRIGHT_BROWSERS_PATH", value: "/opt/b" }] },
+];
 const CONFIG: HuntSessionConfig = {
   acpSessionId: SESSION_ID,
   cwd: "/srv/worktrees/7c0c6f2e",
@@ -108,6 +111,7 @@ function createHarness(config: Partial<HuntSessionConfig> = {}, loadConfig = () 
       queueMicrotask(() => relay.handleAgentMessage(responseMessage(request.id, handler(isRecord(request.params) ? request.params : {}))));
     },
     loadConfig,
+    mcpServers: MCP_SERVERS,
     persistConfig: (changes) => {
       persisted.push(changes);
     },
@@ -192,7 +196,7 @@ describe("start", () => {
       "session/set_config_option",
       "session/set_config_option",
     ]);
-    const setup = { cwd: CONFIG.cwd, mcpServers: [], _meta: { systemPrompt: { append: "Commit locally only." } } };
+    const setup = { cwd: CONFIG.cwd, mcpServers: MCP_SERVERS, _meta: { systemPrompt: { append: "Commit locally only." } } };
     expect(harness.requestsTo("session/load")[0].params).toEqual({ sessionId: SESSION_ID, ...setup });
     expect(harness.requestsTo("session/set_mode")[0].params).toEqual({ sessionId: SESSION_ID, modeId: "bypassPermissions" });
     expect(harness.requestsTo("session/set_config_option").map((request) => request.params)).toEqual([
@@ -214,7 +218,7 @@ describe("start", () => {
 
     await harness.relay.start();
 
-    const setup = { cwd: CONFIG.cwd, mcpServers: [], _meta: { systemPrompt: { append: "Commit locally only." } } };
+    const setup = { cwd: CONFIG.cwd, mcpServers: MCP_SERVERS, _meta: { systemPrompt: { append: "Commit locally only." } } };
     expect(harness.requestsTo("session/new")[0].params).toEqual(setup);
     expect(harness.requestsTo("session/set_mode")[0].params).toEqual({ sessionId: "acp-new", modeId: "bypassPermissions" });
     expect(harness.persisted).toEqual([{ acpSessionId: "acp-new" }]);

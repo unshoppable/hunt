@@ -17,7 +17,7 @@ import { chmodSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { readConfig, updateConfigFile } from "./config.ts";
+import { readConfig, readMcpServers, updateConfigFile, type McpServerEntry } from "./config.ts";
 import { ERROR_CODES, errorOutcome, responseMessage } from "./jsonRpc.ts";
 import { createLineDecoder, encodeLine, parseLine } from "./ndjson.ts";
 import { startPreviewRuntime, type PreviewRuntime } from "./preview/runtime.ts";
@@ -46,6 +46,16 @@ function dispatch(handle: () => void): void {
     handle();
   } catch (error) {
     log(`failed to handle a message: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+  }
+}
+
+/** The image's MCP servers (`HUNT_MCP_SERVERS`); a session runs without them rather than not at all. */
+function loadMcpServers(): McpServerEntry[] {
+  try {
+    return readMcpServers(process.env.HUNT_MCP_SERVERS);
+  } catch (error) {
+    log(messageOf(error));
+    return [];
   }
 }
 
@@ -103,6 +113,7 @@ function main(): void {
       adapter.stdin.write(encodeLine(message));
     },
     loadConfig: () => readConfig(configPath),
+    mcpServers: loadMcpServers(),
     persistConfig: (changes) => updateConfigFile(configPath, changes),
     onStatusChange: () => writeStatus(),
     now: () => Date.now(),

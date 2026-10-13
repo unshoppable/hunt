@@ -5,7 +5,7 @@
  * are rewritten in both directions, so the adapter sees only relay IDs and every client only its own. `main.ts` wires
  * `sendToAgent` and `ClientConnection` to the adapter's stdio and the Unix socket.
  */
-import type { ConfigChanges, HuntSessionConfig } from "./config.ts";
+import type { ConfigChanges, HuntSessionConfig, McpServerEntry } from "./config.ts";
 import {
   classify,
   ERROR_CODES,
@@ -38,6 +38,8 @@ export interface ClientConnection {
 export interface RelayDependencies {
   sendToAgent(message: JsonRpcMessage): void;
   loadConfig(): HuntSessionConfig;
+  /** MCP servers the adapter starts for the session, passed on `session/new` and `session/load`. */
+  mcpServers: McpServerEntry[];
   /** Writes `changes` back to `hunt-session.json`; may throw. */
   persistConfig(changes: ConfigChanges): void;
   /** Called whenever a field of `status()` other than `heartbeatAt` changed. */
@@ -121,7 +123,7 @@ export class Relay {
       this.answerWaitingInitializes();
 
       const config = this.deps.loadConfig();
-      const setup = { cwd: config.cwd, mcpServers: [], _meta: { systemPrompt: { append: config.systemPromptAppend } } };
+      const setup = { cwd: config.cwd, mcpServers: this.deps.mcpServers, _meta: { systemPrompt: { append: config.systemPromptAppend } } };
       if (config.acpSessionId) {
         this.sessionId = config.acpSessionId;
         this.publishStatus();

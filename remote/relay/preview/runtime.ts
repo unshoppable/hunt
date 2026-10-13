@@ -10,7 +10,7 @@ import { messageOf } from "../relay.ts";
 import { serveControl } from "./control.ts";
 import { startForward } from "./forward.ts";
 import { LogFile, logPath } from "./logs.ts";
-import { probeReady } from "./probe.ts";
+import { checkReadiness, previewAddress } from "./probe.ts";
 import { signalGroup, spawnShell } from "./shell.ts";
 import { PreviewSupervisor } from "./supervisor.ts";
 
@@ -42,10 +42,11 @@ export function startPreviewRuntime(options: PreviewRuntimeOptions): PreviewRunt
   const { stateDir, log } = options;
   mkdirSync(join(stateDir, "logs"), { recursive: true });
   const baseEnv = inheritedEnv(options.env);
+  const address = previewAddress();
   const supervisor = new PreviewSupervisor({
     spawn: spawnShell,
     signalGroup,
-    probe: (spec) => probeReady(spec),
+    probe: (spec) => checkReadiness(spec, address),
     startForward: (forward) => startForward(forward),
     openLog: (name) => new LogFile(logPath(stateDir, name), { onError: log }),
     readState: (name) => readJson(join(stateDir, name), log),

@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { isRecord } from "../jsonRpc.ts";
 import { messageOf } from "../relay.ts";
 import { parsePlan, previewUrlEnv, SETUP_LOG, type PlanForward, type PlanProcess, type PlanStep, type PlanUrls, type PreviewPlan } from "./contract.ts";
+import type { Readiness } from "./probe.ts";
 
 export const STOP_GRACE_MS = 10_000;
 export const READY_INTERVAL_MS = 1_000;
@@ -91,7 +92,7 @@ export interface SupervisorDependencies {
   /** Signals the process group `pgid`; false when none of its processes is left. Signal 0 only checks. */
   signalGroup(pgid: number, signal: GroupSignal): boolean;
   /** One readiness check of a process; never rejects. */
-  probe(process: PlanProcess): Promise<boolean>;
+  probe(process: PlanProcess): Promise<Readiness>;
   startForward(forward: PlanForward): Promise<ForwardHandle>;
   openLog(name: string): LogSink;
   /** The parsed file in the state directory; undefined when it is missing or unreadable. */
@@ -477,7 +478,7 @@ export class PreviewSupervisor {
 
 interface RunnerContext {
   groups: Groups;
-  probe(process: PlanProcess): Promise<boolean>;
+  probe(process: PlanProcess): Promise<Readiness>;
   spawn(request: SpawnRequest): ChildHandle;
   output: LogSink;
   cwd: string;
@@ -506,6 +507,8 @@ class ProcessRunner {
   private startedAt = 0;
   /** Counts spawns, so a readiness check of an earlier spawn is ignored. */
   private attempt = 0;
+  /** Whether the log says already that this spawn listens on 127.0.0.1 only. */
+  private hasNotedLoopback = false;
   /** The readiness check while the process runs, the restart delay after a crash. */
   private timer: unknown = null;
   /** The end of a process group: a stop, or what a crashed process left behind. */
@@ -578,6 +581,7 @@ class ProcessRunner {
   private spawn(): void {
     const attempt = ++this.attempt;
     this.state = "starting";
+    this.hasNotedLoopback = false;
     this.readyAt = null;
     this.startedAt = this.context.groups.now();
     this.context.note(`${this.spec.name} starts: ${this.spec.run}`);
@@ -596,19 +600,23 @@ class ProcessRunner {
     this.timer = this.context.groups.setTimer(() => {
       this.timer = null;
       void this.context.probe(this.spec).then(
-        (isReady) => this.probed(attempt, isReady),
-        () => this.probed(attempt, false),
+        (readiness) => this.probed(attempt, readiness),
+        () => this.probed(attempt, "waiting"),
       );
     }, READY_INTERVAL_MS);
   }
 
-  private probed(attempt: number, isReady: boolean): void {
+  private probed(attempt: number, readiness: Readiness): void {
     if (attempt !== this.attempt || !this.child || this.stoppingChild || this.state !== "starting") return;
-    if (isReady) {
+    if (readiness === "ready") {
       this.markReady();
-    } else {
-      this.checkReadiness(attempt);
+      return;
     }
+    if (readiness === "loopback-only" && !this.hasNotedLoopback) {
+      this.hasNotedLoopback = true;
+      this.context.note(`${this.spec.name} listens on 127.0.0.1:${this.spec.port} only, where the preview cannot reach it; let it listen on 0.0.0.0`);
+    }
+    this.checkReadiness(attempt);
   }
 
   private markReady(): void {

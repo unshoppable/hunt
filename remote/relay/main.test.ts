@@ -122,7 +122,18 @@ describe("main", () => {
     const adapterLog = join(dir, "adapter.log");
     const config = { huntSessionId: "7c0c6f2e", acpSessionId: "acp-1", cwd: dir, systemPromptAppend: "Commit locally only.", configOptions: { model: "opus" } };
     writeFileSync(configPath, JSON.stringify(config));
-    const env = { ...process.env, HOME: dir, HUNT_ADAPTER: FAKE_ADAPTER, HUNT_CONFIG: configPath, HUNT_SOCKET_DIR: dir, FAKE_ADAPTER_LOG: adapterLog };
+    const mcpServersPath = join(dir, "mcp-servers.json");
+    const mcpServers = [{ name: "playwright", command: "/opt/hunt/node/bin/node", args: ["cli.js"], env: [] }];
+    writeFileSync(mcpServersPath, JSON.stringify(mcpServers));
+    const env = {
+      ...process.env,
+      HOME: dir,
+      HUNT_ADAPTER: FAKE_ADAPTER,
+      HUNT_CONFIG: configPath,
+      HUNT_SOCKET_DIR: dir,
+      HUNT_MCP_SERVERS: mcpServersPath,
+      FAKE_ADAPTER_LOG: adapterLog,
+    };
     const child = spawn(process.execPath, [MAIN], { env, stdio: ["ignore", "ignore", "pipe"] });
     relay = child;
     let output = "";
@@ -184,7 +195,7 @@ describe("main", () => {
     expect(received.find((message) => message.method === "session/load")?.params).toEqual({
       sessionId: "acp-1",
       cwd: dir,
-      mcpServers: [],
+      mcpServers,
       _meta: { systemPrompt: { append: "Commit locally only." } },
     });
     expect(received.find((message) => message.id === "permission-1")).toMatchObject({ result: { outcome: { optionId: "allow" } } });

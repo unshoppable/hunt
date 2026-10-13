@@ -1,8 +1,9 @@
 import { once } from "node:events";
 import { createServer as createHttpServer, Server as HttpServer } from "node:http";
 import { createServer, type AddressInfo, type Server } from "node:net";
+import type { NetworkInterfaceInfo } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { probeReady } from "./probe.ts";
+import { checkReadiness, previewAddress, type Readiness } from "./probe.ts";
 
 const servers: Server[] = [];
 
@@ -33,19 +34,19 @@ async function closedPort(): Promise<number> {
   return port;
 }
 
-describe("probeReady", () => {
-  it("is false while nothing listens on the port", async () => {
+describe("checkReadiness", () => {
+  it("waits while nothing listens on the port", async () => {
     const port = await closedPort();
 
-    expect(await probeReady({ port, protocol: "http", ready: null })).toBe(false);
-    expect(await probeReady({ port, protocol: "http", ready: "/health" })).toBe(false);
+    expect(await checkReadiness({ port, protocol: "http", ready: null })).toBe("waiting");
+    expect(await checkReadiness({ port, protocol: "http", ready: "/health" })).toBe("waiting");
   });
 
-  it("is true once the port accepts connections when there is no ready path, and false when the ready path gets no answer", async () => {
+  it("is ready once the port accepts connections when there is no ready path, and waits when the ready path gets no answer", async () => {
     const port = await listen(createServer((socket) => socket.destroy()));
 
-    expect(await probeReady({ port, protocol: "http", ready: null })).toBe(true);
-    expect(await probeReady({ port, protocol: "http", ready: "/health" })).toBe(false);
+    expect(await checkReadiness({ port, protocol: "http", ready: null })).toBe("ready");
+    expect(await checkReadiness({ port, protocol: "http", ready: "/health" })).toBe("waiting");
   });
 
   it("gets the ready path and takes every answer below 500", async () => {
@@ -59,17 +60,17 @@ describe("probeReady", () => {
       }),
     );
 
-    const answers: [number, boolean][] = [];
+    const answers: [number, Readiness][] = [];
     for (const status of [200, 302, 404, 500, 503]) {
-      answers.push([status, await probeReady({ port, protocol: "http", ready: `/${status}` })]);
+      answers.push([status, await checkReadiness({ port, protocol: "http", ready: `/${status}` })]);
     }
 
     expect(answers).toEqual([
-      [200, true],
-      [302, true],
-      [404, true],
-      [500, false],
-      [503, false],
+      [200, "ready"],
+      [302, "ready"],
+      [404, "ready"],
+      [500, "waiting"],
+      [503, "waiting"],
     ]);
     expect(requests[0]).toBe("GET /200 hunt-preview");
   });
@@ -77,11 +78,35 @@ describe("probeReady", () => {
   it("takes the status of a large answer without reading its body", async () => {
     const port = await listen(createHttpServer((_request, response) => response.end(Buffer.alloc(8 * 1024 * 1024, "x"))));
 
-    expect(await probeReady({ port, protocol: "http", ready: "/" })).toBe(true);
-    expect(await probeReady({ port, protocol: "http", ready: "/" })).toBe(true);
+    expect(await checkReadiness({ port, protocol: "http", ready: "/" })).toBe("ready");
+    expect(await checkReadiness({ port, protocol: "http", ready: "/" })).toBe("ready");
   });
 
   it("counts a process without a port as ready", async () => {
-    expect(await probeReady({ port: null, protocol: "http", ready: null })).toBe(true);
+    expect(await checkReadiness({ port: null, protocol: "http", ready: null })).toBe("ready");
+  });
+
+  it.skipIf(previewAddress() === "127.0.0.1")("tells a port open on 127.0.0.1 only from a closed one at the container's address", async () => {
+    const port = await listen(createServer((socket) => socket.destroy()));
+
+    expect(await checkReadiness({ port, protocol: "http", ready: null }, previewAddress())).toBe("loopback-only");
+    expect(await checkReadiness({ port: await closedPort(), protocol: "http", ready: null }, previewAddress())).toBe("waiting");
+  });
+});
+
+describe("previewAddress", () => {
+  it("takes the first IPv4 address outside the loopback and falls back to 127.0.0.1", () => {
+    const entry = (address: string, internal: boolean): NetworkInterfaceInfo =>
+      address.includes(":")
+        ? { address, family: "IPv6", internal, netmask: "", mac: "", cidr: null, scopeid: 0 }
+        : { address, family: "IPv4", internal, netmask: "", mac: "", cidr: null };
+
+    expect(
+      previewAddress({
+        lo: [entry("127.0.0.1", true)],
+        eth0: [entry("fe80::1", false), entry("172.18.0.2", false)],
+      }),
+    ).toBe("172.18.0.2");
+    expect(previewAddress({ lo: [entry("127.0.0.1", true)] })).toBe("127.0.0.1");
   });
 });

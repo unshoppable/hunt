@@ -22,7 +22,8 @@
  * - `prepare` runs at every start, `init` once per data generation; each holds at most 10 steps `{name, run, cwd?, env?}`.
  * - `processes`: name → `{run, cwd?, env?, port?, protocol?, ready?, main?, optional?}`, at most 8, exactly one `main`
  *   with a port. `protocol` (`http` or `https`) is what the process serves on its port; `ready` is a path that must
- *   answer below 500 before the process counts as ready; `optional` processes run only when requested.
+ *   answer below 500 before the process counts as ready; `optional` processes run only when requested. A process with a
+ *   port listens on 0.0.0.0: the readiness check, like the edge proxy, connects to the container's address.
  * - Names match `^[a-z][a-z0-9-]{0,23}$` (no process is called `setup`, the steps' log); ports are integers from 1024 to
  *   65535, unique and not reserved (isReservedPort); `cwd` is relative to the worktree, without `..`; `run` is one line
  *   of bash. Unknown fields are errors.

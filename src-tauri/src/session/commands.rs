@@ -598,9 +598,10 @@ reachable from here: commit locally and do not push. The user brings the commits
 ### Preview\nWhen the user opens the preview, Hunt runs the `preview` section of the repository's hunt.json in this \
 container: its services (such as Postgres and Redis) answer on 127.0.0.1 at their usual ports, and its dev processes \
 serve the app the user opens in the browser. `hunt-preview status` lists the processes, `hunt-preview logs <process>` \
-shows their output and `hunt-preview restart <process>` restarts one; do not start these dev servers a second time \
-yourself. Check changes to the user interface with the Playwright tools against http://localhost:<port>; the \
-screenshots you take show up in the user's chat.\n";
+shows their output (`hunt-preview logs setup` the prepare and init steps) and `hunt-preview restart <process>` restarts \
+one; do not start these dev servers a second time yourself. A process with a port must listen on 0.0.0.0, not only on \
+127.0.0.1, or the browser cannot reach it. Check changes to the user interface with the Playwright tools against \
+http://localhost:<port>; the screenshots you take show up in the user's chat.\n";
 
 /// Moves the session `id` to the VM `vm`: its agent stops here, its branch, uncommitted work, transcript and the
 /// ignored files matching `file_patterns` go to the VM, and the chat continues with the agent there. On failure the

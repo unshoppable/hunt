@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildPlan, type PlanForward, type PreviewPlan } from "./contract.ts";
+import type { Readiness } from "./probe.ts";
 import {
   CRASH_WINDOW_MS,
   PreviewSupervisor,
@@ -141,7 +142,7 @@ function createHarness(options: HarnessOptions = {}) {
   const children: FakeChild[] = [];
   const files = new Map(options.files ?? []);
   const logs = new Map<string, string>();
-  const readiness = new Map<string, boolean>();
+  const readiness = new Map<string, Readiness>();
   const forwards: { forward: PlanForward; isClosed: boolean }[] = [];
   const messages: string[] = [];
   let statusWrites = 0;
@@ -165,7 +166,7 @@ function createHarness(options: HarnessOptions = {}) {
       }
       return true;
     },
-    probe: async (process) => readiness.get(process.name) ?? false,
+    probe: async (process) => readiness.get(process.name) ?? "waiting",
     startForward: async (forward) => {
       if (options.forwardError) throw new Error(options.forwardError);
       const record = { forward, isClosed: false };
@@ -289,7 +290,7 @@ describe("PreviewSupervisor", () => {
 
     await harness.clock.advance(READY_INTERVAL_MS * 3);
     expect(harness.supervisor.status().state).toBe("starting");
-    harness.readiness.set("api", true);
+    harness.readiness.set("api", "ready");
     await harness.clock.advance(READY_INTERVAL_MS);
     const status = harness.supervisor.status();
     expect(status).toMatchObject({ state: "ready", processes: { api: { state: "ready", readyAt: START + 4 * READY_INTERVAL_MS } } });
@@ -313,6 +314,23 @@ describe("PreviewSupervisor", () => {
     await harness.clock.advance(READY_INTERVAL_MS * 10);
 
     expect(harness.statusWrites()).toBe(writes);
+  });
+
+  it("notes once per start that a process listens on 127.0.0.1 only and keeps checking it", async () => {
+    const harness = createHarness();
+    await startedPreview(harness);
+    harness.readiness.set("api", "loopback-only");
+
+    await harness.clock.advance(READY_INTERVAL_MS * 3);
+    expect(harness.supervisor.status().processes.api.state).toBe("starting");
+    harness.readiness.set("api", "ready");
+    await harness.clock.advance(READY_INTERVAL_MS);
+
+    expect(harness.notes("api")).toEqual([
+      "api starts: npm run api",
+      "api listens on 127.0.0.1:3000 only, where the preview cannot reach it; let it listen on 0.0.0.0",
+      "api is ready",
+    ]);
   });
 
   it("skips the init steps while init.json records them for the data generation and init hash", async () => {

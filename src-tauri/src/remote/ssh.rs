@@ -209,6 +209,6 @@ mod tests {
         assert!(command.starts_with("ssh -T -l jane_example_com -i /Users/jane/.ssh/hunt/id_ed25519"));
         assert!(command.contains("'ProxyCommand=gcloud compute start-iap-tunnel %h 22 --listen-on-stdin --project=acme-staging --zone=europe-west1-c --verbosity=warning'"));
         assert!(command.contains("'ControlPath=~/.ssh/hunt-%C'"));
-        assert_eq!(ssh().git_url("/srv/repos/acme/app.git"), "ssh://vm-hunt/srv/repos/acme/app.git");
+        assert_eq!(ssh().git_url("/srv/worktrees/0123"), "ssh://vm-hunt/srv/worktrees/0123");
     }
 }

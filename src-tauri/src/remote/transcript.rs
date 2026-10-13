@@ -33,16 +33,21 @@ pub fn ensure_session_id(acp_session_id: &str) -> Result<(), String> {
 }
 
 /// Copies every file below `from_dir` into `to_dir` (created as needed), rewriting the text of UTF-8 files with
-/// `replacements`; other files are copied as they are. Existing files in `to_dir` are overwritten.
+/// `replacements`; other files are copied as they are. Existing files in `to_dir` are overwritten. Symlinks and special
+/// files stay behind: the files may come from the VM, and a link there could point anywhere on this machine.
 pub fn copy_rewritten(from_dir: &Path, to_dir: &Path, replacements: &[(String, String)]) -> Result<(), String> {
     std::fs::create_dir_all(to_dir).map_err(|error| format!("failed to create {}: {error}", to_dir.display()))?;
     let entries = std::fs::read_dir(from_dir).map_err(|error| format!("failed to read {}: {error}", from_dir.display()))?;
     for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
         let source = entry.path();
         let target = to_dir.join(entry.file_name());
-        if source.is_dir() {
+        if file_type.is_dir() {
             copy_rewritten(&source, &target, replacements)?;
+            continue;
+        }
+        if !file_type.is_file() {
             continue;
         }
         let bytes = std::fs::read(&source).map_err(|error| format!("failed to read {}: {error}", source.display()))?;
@@ -60,7 +65,7 @@ pub fn copy_rewritten(from_dir: &Path, to_dir: &Path, replacements: &[(String, S
 pub fn copy_session(from_dir: &Path, to_dir: &Path, acp_session_id: &str, replacements: &[(String, String)]) -> Result<bool, String> {
     ensure_session_id(acp_session_id)?;
     let transcript = from_dir.join(format!("{acp_session_id}.jsonl"));
-    if !transcript.is_file() {
+    if !std::fs::symlink_metadata(&transcript).is_ok_and(|metadata| metadata.is_file()) {
         return Ok(false);
     }
     std::fs::create_dir_all(to_dir).map_err(|error| format!("failed to create {}: {error}", to_dir.display()))?;
@@ -68,7 +73,7 @@ pub fn copy_session(from_dir: &Path, to_dir: &Path, acp_session_id: &str, replac
     let target = to_dir.join(format!("{acp_session_id}.jsonl"));
     std::fs::write(&target, rewrite(&text, replacements)).map_err(|error| format!("failed to write {}: {error}", target.display()))?;
     let folder = from_dir.join(acp_session_id);
-    if folder.is_dir() {
+    if std::fs::symlink_metadata(&folder).is_ok_and(|metadata| metadata.is_dir()) {
         copy_rewritten(&folder, &to_dir.join(acp_session_id), replacements)?;
     }
     Ok(true)
@@ -116,5 +121,22 @@ mod tests {
         assert!(!to.path().join("other.jsonl").exists());
         assert!(!copy_session(from.path(), to.path(), "missing", &replacements).unwrap());
         assert!(copy_session(from.path(), to.path(), "../abc", &replacements).is_err());
+    }
+
+    #[test]
+    fn copy_rewritten_leaves_symlinks_behind() {
+        let from = tempfile::tempdir().unwrap();
+        let to = tempfile::tempdir().unwrap();
+        let secrets = tempfile::tempdir().unwrap();
+        std::fs::write(secrets.path().join("id_ed25519"), "secret").unwrap();
+        std::fs::write(from.path().join("note.txt"), "kept").unwrap();
+        std::os::unix::fs::symlink(secrets.path(), from.path().join("keys")).unwrap();
+        std::os::unix::fs::symlink(secrets.path().join("id_ed25519"), from.path().join("key.txt")).unwrap();
+
+        copy_rewritten(from.path(), to.path(), &[]).unwrap();
+
+        assert_eq!(std::fs::read_to_string(to.path().join("note.txt")).unwrap(), "kept");
+        assert!(!to.path().join("keys").exists());
+        assert!(!to.path().join("key.txt").exists());
     }
 }

@@ -3,6 +3,9 @@
 # sessions' containers at boot; Docker keeps an existing DOCKER-USER chain. DOCKER-USER filters only traffic Docker
 # forwards, so the VM itself keeps its service account. Each rule stands alone, so their order does not matter; ICMP,
 # TCP and UDP cover all a container's non-root user can send.
+# The INPUT rules keep containers off the VM's own services (sshd, Docker's published ports, everything on the host):
+# a connection a container opens towards the host through its session bridge (hs-<id>) or docker0 is dropped, while
+# replies to connections the host opens keep flowing.
 [Unit]
 Description=Block the metadata server for Hunt's containers, except DNS
 Before=docker.service
@@ -14,6 +17,8 @@ ExecStart=-/usr/sbin/iptables -w -N DOCKER-USER
 ExecStart=/bin/sh -c 'iptables -w -C DOCKER-USER -d 169.254.169.254 -p tcp ! --dport 53 -j DROP 2>/dev/null || iptables -w -I DOCKER-USER -d 169.254.169.254 -p tcp ! --dport 53 -j DROP'
 ExecStart=/bin/sh -c 'iptables -w -C DOCKER-USER -d 169.254.169.254 -p udp ! --dport 53 -j DROP 2>/dev/null || iptables -w -I DOCKER-USER -d 169.254.169.254 -p udp ! --dport 53 -j DROP'
 ExecStart=/bin/sh -c 'iptables -w -C DOCKER-USER -d 169.254.169.254 -p icmp -j DROP 2>/dev/null || iptables -w -I DOCKER-USER -d 169.254.169.254 -p icmp -j DROP'
+ExecStart=/bin/sh -c 'iptables -w -C INPUT -i hs-+ -m conntrack --ctstate NEW -j DROP 2>/dev/null || iptables -w -I INPUT -i hs-+ -m conntrack --ctstate NEW -j DROP'
+ExecStart=/bin/sh -c 'iptables -w -C INPUT -i docker0 -m conntrack --ctstate NEW -j DROP 2>/dev/null || iptables -w -I INPUT -i docker0 -m conntrack --ctstate NEW -j DROP'
 
 [Install]
 WantedBy=multi-user.target

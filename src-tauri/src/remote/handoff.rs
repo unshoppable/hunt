@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::ssh::Ssh;
 use super::transcript;
-use super::{bundle, hunt_ctl, hunt_ctl_with_input, shell_command, tar_create, vm, Progress, RemoteStep, RemoteTarget, VmRef};
+use super::{bundle, hunt_ctl, hunt_ctl_with_input, tar_create, vm, Progress, RemoteStep, RemoteTarget, VmRef};
 use crate::git;
 
 /// Where the container's `~/.claude` lives; transcripts there name this path.
@@ -73,18 +73,17 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     bundle::ensure_installed(&ssh, request.bundle_dir, progress).await?;
 
     progress(RemoteStep::TransferringCode);
-    let repo_path = hunt_ctl(&ssh, &["repo", &repo]).await?["path"]
+    let remote_worktree = hunt_ctl(&ssh, &["init", &id, "--repo", &repo]).await?["path"]
         .as_str()
         .map(str::to_string)
-        .ok_or("failed to create the repository on the VM: hunt-ctl returned no path")?;
-    push(worktree, &ssh, &repo_path, &branch, &handoff_ref).await?;
+        .ok_or("failed to create the session's repository on the VM: hunt-ctl returned no path")?;
 
-    let remote_worktree = format!("/srv/worktrees/{id}");
     let started = async {
-        upload_lfs_objects(worktree, &ssh, &repo_path, &["HEAD", &handoff_ref]).await?;
-        let prepare_args = ["prepare", &id, "--repo", &repo, "--branch", &branch, "--snapshot", &handoff_ref, "--git-name", &git_name, "--git-email", &git_email];
+        push(worktree, &ssh, &remote_worktree, &branch, &handoff_ref).await?;
+        upload_lfs_objects(worktree, &ssh, &id, &["HEAD", &handoff_ref]).await?;
+        let prepare_args = ["prepare", &id, "--branch", &branch, "--snapshot", &handoff_ref, "--git-name", &git_name, "--git-email", &git_email];
         hunt_ctl(&ssh, &prepare_args).await?;
-        upload_ignored_files(worktree, &ssh, &remote_worktree, &patterns).await?;
+        upload_ignored_files(worktree, &ssh, &id, &patterns).await?;
         upload_claude_dir(&request, &ssh, &remote_worktree).await?;
 
         progress(RemoteStep::InstallingDependencies);
@@ -184,15 +183,16 @@ async fn git_identity(worktree: &Path) -> Result<(String, String), String> {
     Ok((name.trim().to_string(), email.trim().to_string()))
 }
 
-/// Pushes the branch, the snapshot and the origin's default branch into the bare repository on the VM. The
-/// repository's own pre-push hooks are skipped: they guard pushes to the team's remote, not this transfer.
-async fn push(worktree: &Path, ssh: &Ssh, repo_path: &str, branch: &str, handoff_ref: &str) -> Result<(), String> {
+/// Pushes the branch, the snapshot and the origin's default branch into the session's own repository on the VM, through
+/// `hunt-ctl receive-pack`, which runs git there in a sandbox. The repository's own pre-push hooks are skipped: they
+/// guard pushes to the team's remote, not this transfer.
+async fn push(worktree: &Path, ssh: &Ssh, remote_worktree: &str, branch: &str, handoff_ref: &str) -> Result<(), String> {
     let mut refspecs = vec![format!("+HEAD:refs/heads/{branch}"), format!("+{handoff_ref}:{handoff_ref}")];
     if let Some(default_branch) = origin_default_branch(worktree).await {
         refspecs.push(format!("+refs/remotes/origin/{default_branch}:refs/remotes/origin/{default_branch}"));
     }
-    let url = ssh.git_url(repo_path);
-    let mut args = vec!["push", "--no-verify", "--quiet", "--receive-pack=sudo -n -u hunt git-receive-pack", url.as_str()];
+    let url = ssh.git_url(remote_worktree);
+    let mut args = vec!["push", "--no-verify", "--quiet", "--receive-pack=sudo -n hunt-ctl receive-pack", url.as_str()];
     args.extend(refspecs.iter().map(String::as_str));
     let ssh_command = ssh.git_ssh_command();
     git::run_git_with_env(worktree, &args, &[("GIT_SSH_COMMAND", ssh_command.as_str())])
@@ -243,8 +243,8 @@ pub fn lfs_object_path(id: &str) -> String {
     format!("{}/{}/{id}", &id[0..2], &id[2..4])
 }
 
-/// Copies the LFS objects of `references` that exist locally into the bare repository on the VM.
-async fn upload_lfs_objects(worktree: &Path, ssh: &Ssh, repo_path: &str, references: &[&str]) -> Result<(), String> {
+/// Copies the LFS objects of `references` that exist locally into the session's repository on the VM.
+async fn upload_lfs_objects(worktree: &Path, ssh: &Ssh, id: &str, references: &[&str]) -> Result<(), String> {
     let ids = lfs_object_ids(worktree, references).await;
     if ids.is_empty() {
         return Ok(());
@@ -255,9 +255,7 @@ async fn upload_lfs_objects(worktree: &Path, ssh: &Ssh, repo_path: &str, referen
         return Ok(());
     }
     let archive = tar_create(&objects_dir, &present).await?;
-    let target = format!("{repo_path}/lfs/objects");
-    let script = format!("mkdir -p {target} && tar -xzf - -C {target}", target = super::shell_quote(&target));
-    ssh.run_with_input(&shell_command("sudo", &["-n", "-u", "hunt", "sh", "-c", &script]), &archive).await?;
+    hunt_ctl_with_input(ssh, &["lfs-put", id], &archive).await?;
     Ok(())
 }
 
@@ -283,7 +281,7 @@ fn matches_any(patterns: &[Pattern], path: &str) -> bool {
 }
 
 /// Copies the ignored files of the worktree that match `patterns` (e.g. `.env.private`) to the same paths on the VM.
-async fn upload_ignored_files(worktree: &Path, ssh: &Ssh, remote_worktree: &str, patterns: &[Pattern]) -> Result<(), String> {
+async fn upload_ignored_files(worktree: &Path, ssh: &Ssh, id: &str, patterns: &[Pattern]) -> Result<(), String> {
     if patterns.is_empty() {
         return Ok(());
     }
@@ -298,7 +296,7 @@ async fn upload_ignored_files(worktree: &Path, ssh: &Ssh, remote_worktree: &str,
         return Ok(());
     }
     let archive = tar_create(worktree, &files).await?;
-    ssh.run_with_input(&shell_command("sudo", &["-n", "-u", "hunt", "tar", "-xzf", "-", "-C", remote_worktree]), &archive).await?;
+    hunt_ctl_with_input(ssh, &["put-files", id], &archive).await?;
     Ok(())
 }
 
@@ -343,8 +341,7 @@ async fn upload_claude_dir(request: &HandoffRequest<'_>, ssh: &Ssh, remote_workt
         std::fs::write(staging.join("hunt-session.json"), session).map_err(|error| format!("failed to write hunt-session.json: {error}"))?;
 
         let archive = tar_create(&staging, &[".".to_string()]).await?;
-        let target = format!("/srv/claude/{}", request.hunt_session_id);
-        ssh.run_with_input(&shell_command("sudo", &["-n", "-u", "hunt", "tar", "-xzf", "-", "-C", &target]), &archive).await?;
+        hunt_ctl_with_input(ssh, &["put-files", &request.hunt_session_id.to_string(), "--claude"], &archive).await?;
         Ok(())
     }
     .await;

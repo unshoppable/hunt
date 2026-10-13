@@ -10,7 +10,7 @@ use uuid::Uuid;
 use super::handoff::{lfs_object_ids, lfs_object_path, lfs_objects_dir, REMOTE_CLAUDE_DIR, REMOTE_MODE};
 use super::ssh::Ssh;
 use super::transcript;
-use super::{hunt_ctl, shell_command, shell_quote, tar_extract, vm, Progress, RemoteStep, RemoteTarget};
+use super::{hunt_ctl, shell_command, tar_extract, vm, Progress, RemoteStep, RemoteTarget};
 use crate::git;
 
 /// Everything a retrieval needs from the session.
@@ -25,11 +25,6 @@ pub struct RetrieveRequest<'a> {
 /// The ACP session id the transcript continues under, as the relay left it.
 pub struct Retrieved {
     pub acp_session_id: Option<String>,
-}
-
-/// The bare repository on the VM that holds the session's branch.
-pub fn repository_path(target: &RemoteTarget) -> String {
-    format!("/srv/repos/{}.git", target.repo)
 }
 
 /// Stops the session on the VM and applies its state to the local worktree. The VM side stays in place; the caller
@@ -60,9 +55,8 @@ pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> R
     progress(RemoteStep::RetrievingCode);
     if !is_applied {
         hunt_ctl(&ssh, &["snapshot", &id]).await?;
-        let repo_path = repository_path(target);
-        fetch(worktree, &ssh, &repo_path, &retrieve_ref).await?;
-        download_lfs_objects(worktree, &ssh, &repo_path, &retrieve_ref).await?;
+        fetch(worktree, &ssh, &target.worktree_path.display().to_string(), &retrieve_ref).await?;
+        download_lfs_objects(worktree, &ssh, &id, &retrieve_ref).await?;
         apply_tree_change(worktree, &handoff_ref, &retrieve_ref).await?;
     }
     move_branch(worktree, &id, &target.branch, &target.handoff_head, &retrieve_ref).await?;
@@ -72,12 +66,13 @@ pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> R
     Ok(Retrieved { acp_session_id })
 }
 
-/// Fetches the retrieval snapshot (and with it the commits the agent made) into `retrieve_ref`.
-async fn fetch(worktree: &Path, ssh: &Ssh, repo_path: &str, retrieve_ref: &str) -> Result<(), String> {
-    let url = ssh.git_url(repo_path);
+/// Fetches the retrieval snapshot (and with it the commits the agent made) into `retrieve_ref`, through
+/// `hunt-ctl upload-pack`, which runs git on the VM in a sandbox.
+async fn fetch(worktree: &Path, ssh: &Ssh, remote_worktree: &str, retrieve_ref: &str) -> Result<(), String> {
+    let url = ssh.git_url(remote_worktree);
     let refspec = format!("+{retrieve_ref}:{retrieve_ref}");
     let ssh_command = ssh.git_ssh_command();
-    let args = ["fetch", "--no-tags", "--quiet", "--upload-pack=sudo -n -u hunt git-upload-pack", url.as_str(), refspec.as_str()];
+    let args = ["fetch", "--no-tags", "--quiet", "--upload-pack=sudo -n hunt-ctl upload-pack", url.as_str(), refspec.as_str()];
     git::run_git_with_env(worktree, &args, &[("GIT_SSH_COMMAND", ssh_command.as_str())])
         .await
         .map_err(|error| format!("failed to fetch the session from the VM: {error}"))?;
@@ -85,7 +80,7 @@ async fn fetch(worktree: &Path, ssh: &Ssh, repo_path: &str, retrieve_ref: &str) 
 }
 
 /// Copies the LFS objects of `reference` that the local store lacks from the VM.
-async fn download_lfs_objects(worktree: &Path, ssh: &Ssh, repo_path: &str, reference: &str) -> Result<(), String> {
+async fn download_lfs_objects(worktree: &Path, ssh: &Ssh, id: &str, reference: &str) -> Result<(), String> {
     let objects_dir = lfs_objects_dir(worktree).await?;
     let missing: Vec<String> = lfs_object_ids(worktree, &[reference])
         .await
@@ -96,9 +91,8 @@ async fn download_lfs_objects(worktree: &Path, ssh: &Ssh, repo_path: &str, refer
     if missing.is_empty() {
         return Ok(());
     }
-    let paths: Vec<String> = missing.iter().map(|path| shell_quote(path)).collect();
-    let script = format!("cd {}/lfs/objects && tar -czf - {}", shell_quote(repo_path), paths.join(" "));
-    let archive = ssh.run_with_input(&shell_command("sudo", &["-n", "-u", "hunt", "sh", "-c", &script]), &[]).await?;
+    let list = format!("{}\n", missing.join("\n"));
+    let archive = ssh.run_with_input(&shell_command("sudo", &["-n", "hunt-ctl", "lfs-get", id]), list.as_bytes()).await?;
     std::fs::create_dir_all(&objects_dir).map_err(|error| format!("failed to create {}: {error}", objects_dir.display()))?;
     tar_extract(&archive, &objects_dir).await
 }
@@ -145,21 +139,16 @@ pub(crate) async fn finish_worktree(worktree: &Path, retrieve_ref: &str) -> Resu
 /// Copies the session's project folder back from the VM with its paths moved to the local worktree; returns the ACP
 /// session id the relay last served.
 async fn retrieve_transcript(request: &RetrieveRequest<'_>, ssh: &Ssh) -> Result<Option<String>, String> {
-    let id = request.hunt_session_id;
-    let config = ssh.run(&shell_command("sudo", &["-n", "cat", &format!("/srv/claude/{id}/hunt-session.json")])).await?;
-    let config: serde_json::Value = serde_json::from_str(&config).map_err(|error| format!("failed to read the relay's session file: {error}"))?;
-    let acp_session_id = config["acpSessionId"].as_str().map(str::to_string);
-
+    let id = request.hunt_session_id.to_string();
     let remote_worktree = request.target.worktree_path.display().to_string();
     let remote_slug = transcript::project_slug(&remote_worktree);
-    let remote_project = format!("/srv/claude/{id}/projects/{remote_slug}");
-    let script = format!("if cd {} 2>/dev/null; then tar -czf - .; else tar -czf - -T /dev/null; fi", shell_quote(&remote_project));
-    let archive = ssh.run_with_input(&shell_command("sudo", &["-n", "-u", "hunt", "sh", "-c", &script]), &[]).await?;
+    let archive = ssh.run_with_input(&shell_command("sudo", &["-n", "hunt-ctl", "get-claude", &id, "--project", &remote_slug]), &[]).await?;
 
     let staging = std::env::temp_dir().join(format!("hunt-retrieve-{}", Uuid::new_v4()));
     let result = async {
         std::fs::create_dir_all(&staging).map_err(|error| format!("failed to create {}: {error}", staging.display()))?;
         tar_extract(&archive, &staging).await?;
+        let acp_session_id = relay_session_id(&staging.join("hunt-session.json"))?;
         let local_worktree = request.worktree.display().to_string();
         let local_project = request.claude_dir.join("projects").join(transcript::project_slug(&local_worktree));
         let mut replacements = vec![
@@ -167,12 +156,25 @@ async fn retrieve_transcript(request: &RetrieveRequest<'_>, ssh: &Ssh) -> Result
             (format!("{REMOTE_CLAUDE_DIR}/projects/{remote_slug}"), local_project.display().to_string()),
         ];
         replacements.extend(mode_replacement(request.target.restored_mode()));
-        transcript::copy_rewritten(&staging, &local_project, &replacements)
+        let project = staging.join("projects").join(&remote_slug);
+        if std::fs::symlink_metadata(&project).is_ok_and(|metadata| metadata.is_dir()) {
+            transcript::copy_rewritten(&project, &local_project, &replacements)?;
+        }
+        Ok(acp_session_id)
     }
     .await;
     let _ = std::fs::remove_dir_all(&staging);
-    result?;
-    Ok(acp_session_id)
+    result
+}
+
+/// The ACP session id in the relay's `hunt-session.json`, a regular file of the archive the VM sent.
+fn relay_session_id(path: &Path) -> Result<Option<String>, String> {
+    if !std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+        return Err("failed to read the relay's session file: the VM sent none".into());
+    }
+    let text = std::fs::read_to_string(path).map_err(|error| format!("failed to read the relay's session file: {error}"))?;
+    let config: serde_json::Value = serde_json::from_str(&text).map_err(|error| format!("failed to read the relay's session file: {error}"))?;
+    Ok(config["acpSessionId"].as_str().map(str::to_string))
 }
 
 /// Every record the agent wrote on the VM carries `REMOTE_MODE`, and a local agent resumes in the mode of the last

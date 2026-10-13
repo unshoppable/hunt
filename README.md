@@ -274,15 +274,21 @@ gcloud login and a key Hunt registers with OS Login, starts the VM when it is of
 repository's `remote/` folder, which ships with the app, whenever the VM runs another version of it.
 
 A handoff (`hand_off_session`) stops the local agent and pushes the branch plus a snapshot commit of the uncommitted
-work (`refs/hunt/<id>/handoff`) into a bare repository on the VM; the VM needs no access to GitHub. The Git LFS
-objects of the checkout, the ignored files matching the settings' patterns (default `**/.env.private`) and the Claude
-Code transcript follow, the transcript with its paths moved to the VM. `remote/vm/hunt-ctl` checks the branch out into
-`/srv/worktrees/<id>`, installs the dependencies and starts one container per session from `remote/image/` with the
-OAuth token of the selected Claude account, which Hunt passes on stdin; the local login stays on the Mac, so a remote
-session needs a token account. The container's entrypoint is the relay (`remote/relay/`): it owns the ACP adapter,
-loads the conversation once and serves it over a Unix socket. Hunt's agent process for the session is then `ssh … socat` to that socket, so the chat works as before;
-a client that connects later gets the conversation replayed, and the relay reports a running turn. Diff, editor,
-graph and guardrails stay local and wait until the session comes back.
+work (`refs/hunt/<id>/handoff`) into the session's own repository on the VM, `/srv/worktrees/<id>`; the VM needs no
+access to GitHub. The Git LFS objects of the checkout, the ignored files matching the settings' patterns (default
+`**/.env.private`) and the Claude Code transcript follow, the transcript with its paths moved to the VM.
+`remote/vm/hunt-ctl` checks the branch out there, installs the dependencies and starts one container per session from
+`remote/image/` with the OAuth token of the selected Claude account, which Hunt passes on stdin; the local login stays
+on the Mac, so a remote session needs a token account. The container's entrypoint is the relay (`remote/relay/`): it
+owns the ACP adapter, loads the conversation once and serves it over a Unix socket. Hunt's agent process for the
+session is then `ssh … socat` to that socket, so the chat works as before; a client that connects later gets the
+conversation replayed, and the relay reports a running turn. Diff, editor, graph and guardrails stay local and wait
+until the session comes back.
+
+Sessions on the VM are kept apart: every git, tar or file operation `hunt-ctl` runs on a session's files happens in a
+throwaway container without network that sees only that session, so its hooks, Git config and symlinks never act on the
+host; each session's containers get their own Docker network, and `hunt-firewall.service` keeps them off the VM's own
+services and the metadata server. Files that come back from the VM are copied without following symlinks.
 
 Bringing it back (`retrieve_session`) stops the container, snapshots the VM's worktree on top of the agent's commits
 (`refs/hunt/<id>/retrieve`), fetches it and applies it to the local worktree, which must still hold the handoff

@@ -69,6 +69,7 @@ pub fn run() {
             session::commands::snooze_remote_cleanup,
             session::commands::preview_status,
             session::commands::list_session_vms,
+            session::commands::adopt_session_vms,
             session::commands::open_terminal,
             session::commands::write_terminal,
             session::commands::resize_terminal,

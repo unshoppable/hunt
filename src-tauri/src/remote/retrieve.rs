@@ -1,7 +1,8 @@
 //! Bringing a session back from its VM: its relay stops, the agent's commits and uncommitted work come back as a
 //! snapshot on top of the VM's `HEAD`, the Git LFS objects they need follow, and the transcript returns with its paths
 //! moved back. The local worktree must still hold what the handoff left there; a retrieval interrupted after the
-//! snapshot was applied can be repeated.
+//! snapshot was applied can be repeated. A session this Mac adopted has no local worktree yet: it gets a new one in
+//! the local checkout of its repository, on the branch the VM has checked out.
 
 use std::path::Path;
 
@@ -9,7 +10,7 @@ use uuid::Uuid;
 
 use super::handoff::{lfs_object_ids, lfs_object_path, lfs_objects_dir, REMOTE_CLAUDE_DIR, REMOTE_MODE};
 use super::ssh::Ssh;
-use super::{memory, transcript};
+use super::{adoption, memory, transcript};
 use super::{hunt_ctl, shell_command, tar_extract, vm, Progress, RemoteStep, RemoteTarget};
 use crate::git;
 
@@ -22,16 +23,23 @@ pub struct RetrieveRequest<'a> {
     pub claude_dir: &'a Path,
     /// The base of the repository memory the handoff sent; see `memory::merge`.
     pub memory_base: &'a Path,
+    /// For a session this Mac adopted: the local repository in which the retrieval creates the worktree `worktree`.
+    pub adopted_into: Option<&'a Path>,
 }
 
-/// The ACP session id the transcript continues under, as the relay left it.
+/// The ACP session id the transcript continues under, as the relay left it, and for an adopted session the branch its
+/// new worktree has checked out.
 pub struct Retrieved {
     pub acp_session_id: Option<String>,
+    pub branch: Option<String>,
 }
 
 /// Stops the session on its VM and applies its state to the local worktree. The VM stays; the caller deletes it once
 /// the session runs locally again.
 pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> Result<Retrieved, String> {
+    if let Some(repo) = request.adopted_into {
+        return retrieve_adopted(&request, repo, progress).await;
+    }
     let id = request.hunt_session_id.to_string();
     let worktree = request.worktree;
     let target = request.target;
@@ -51,21 +59,116 @@ pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> R
     progress(RemoteStep::Connecting);
     let ssh = Ssh::open(&target.vm, request.ssh_dir).await?;
     vm::ensure_running(&target.vm, &ssh, progress).await?;
+    let remote_worktree = remote_worktree(&request, &ssh).await?;
     progress(RemoteStep::StoppingAgent);
     hunt_ctl(&ssh, &["stop", &id]).await?;
 
     progress(RemoteStep::RetrievingCode);
     if !is_applied {
         hunt_ctl(&ssh, &["snapshot", &id]).await?;
-        fetch(worktree, &ssh, &target.worktree_path.display().to_string(), &retrieve_ref).await?;
+        fetch(worktree, &ssh, &remote_worktree, &retrieve_ref).await?;
         download_lfs_objects(worktree, &ssh, &id, &retrieve_ref).await?;
         apply_tree_change(worktree, &handoff_ref, &retrieve_ref).await?;
     }
     move_branch(worktree, &id, &target.branch, &target.handoff_head, &retrieve_ref).await?;
     finish_worktree(worktree, &retrieve_ref).await?;
 
-    let acp_session_id = retrieve_transcript(&request, &ssh).await?;
-    Ok(Retrieved { acp_session_id })
+    let acp_session_id = retrieve_transcript(&request, &ssh, &remote_worktree).await?;
+    Ok(Retrieved { acp_session_id, branch: None })
+}
+
+/// Retrieves the adopted session of `request` into a new worktree of the local repository `repo`, on the branch the VM
+/// has checked out. A failed retrieval removes that worktree again, so it can be repeated.
+async fn retrieve_adopted(request: &RetrieveRequest<'_>, repo: &Path, progress: Progress<'_>) -> Result<Retrieved, String> {
+    let id = request.hunt_session_id.to_string();
+    let worktree = request.worktree;
+    let target = request.target;
+    let retrieve_ref = format!("refs/hunt/{id}/retrieve");
+    if worktree.exists() {
+        return Err(format!("failed to bring back the session: {} exists already", worktree.display()));
+    }
+
+    progress(RemoteStep::Connecting);
+    let ssh = Ssh::open(&target.vm, request.ssh_dir).await?;
+    vm::ensure_running(&target.vm, &ssh, progress).await?;
+    let remote_worktree = remote_worktree(request, &ssh).await?;
+    let checked_out = remote_branch(&ssh, &remote_worktree).await;
+    let fallback = format!("hunt/{}", vm::short_id(request.hunt_session_id));
+    let branch = local_branch_name(repo, &[checked_out.as_deref(), Some(target.branch.as_str()), Some(fallback.as_str())]).await?;
+    progress(RemoteStep::StoppingAgent);
+    hunt_ctl(&ssh, &["stop", &id]).await?;
+
+    progress(RemoteStep::RetrievingCode);
+    hunt_ctl(&ssh, &["snapshot", &id]).await?;
+    fetch(repo, &ssh, &remote_worktree, &retrieve_ref).await?;
+    download_lfs_objects(repo, &ssh, &id, &retrieve_ref).await?;
+    create_worktree_from_snapshot(repo, worktree, &branch, &retrieve_ref).await?;
+    match retrieve_transcript(request, &ssh, &remote_worktree).await {
+        Ok(acp_session_id) => Ok(Retrieved { acp_session_id, branch: Some(branch) }),
+        Err(error) => {
+            remove_worktree(repo, worktree, &branch).await;
+            Err(error)
+        }
+    }
+}
+
+/// The worktree of the session on its running VM: the one the record names, or for an adopted session that never
+/// reached its VM the one the VM records.
+async fn remote_worktree(request: &RetrieveRequest<'_>, ssh: &Ssh) -> Result<String, String> {
+    if !request.target.worktree_path.as_os_str().is_empty() {
+        return Ok(request.target.worktree_path.display().to_string());
+    }
+    Ok(adoption::read_session_meta(ssh, request.hunt_session_id).await?.worktree)
+}
+
+/// The branch the session's worktree on the VM has checked out; `None` when it is detached or git fails.
+async fn remote_branch(ssh: &Ssh, remote_worktree: &str) -> Option<String> {
+    let command = shell_command("sudo", &["-n", "-u", "agent", "git", "-C", remote_worktree, "symbolic-ref", "--short", "-q", "HEAD"]);
+    let branch = ssh.run(&command).await.ok()?;
+    Some(branch.trim().to_string()).filter(|branch| !branch.is_empty())
+}
+
+/// The first of `candidates` that is a valid branch name; fails when that branch exists in `repo` already, since the
+/// new worktree must not take over someone's branch.
+async fn local_branch_name(repo: &Path, candidates: &[Option<&str>]) -> Result<String, String> {
+    let names = candidates.iter().flatten().map(|candidate| candidate.trim());
+    for candidate in names.filter(|candidate| !candidate.is_empty() && !candidate.starts_with('-')) {
+        if git::run_git(repo, &["check-ref-format", "--branch", candidate]).await.is_err() {
+            continue;
+        }
+        if git::run_git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{candidate}")]).await.is_ok() {
+            let repo = repo.display();
+            return Err(format!("failed to bring back the session: the branch {candidate} exists in {repo} already; rename or delete it first"));
+        }
+        return Ok(candidate.to_string());
+    }
+    Err("failed to bring back the session: it has no valid branch name".into())
+}
+
+/// Creates the worktree `worktree` of `repo` on the new branch `branch` at the commit the agent left on the VM (the
+/// parent of the retrieval snapshot), with the snapshot's uncommitted work applied; removes it again on failure.
+async fn create_worktree_from_snapshot(repo: &Path, worktree: &Path, branch: &str, retrieve_ref: &str) -> Result<(), String> {
+    git::worktree_add(repo, branch, worktree, &format!("{retrieve_ref}^")).await?;
+    let applied = async {
+        apply_tree_change(worktree, "HEAD", retrieve_ref).await?;
+        finish_worktree(worktree, retrieve_ref).await
+    }
+    .await;
+    if let Err(error) = applied {
+        remove_worktree(repo, worktree, branch).await;
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Removes the worktree and branch a failed retrieval of an adopted session created; failures are only logged.
+async fn remove_worktree(repo: &Path, worktree: &Path, branch: &str) {
+    if let Err(error) = git::worktree_remove(repo, worktree).await {
+        eprintln!("removing the worktree {} after a failed retrieval failed: {error}", worktree.display());
+    }
+    if let Err(error) = git::delete_branch(repo, branch).await {
+        eprintln!("deleting the branch {branch} after a failed retrieval failed: {error}");
+    }
 }
 
 /// Fetches the retrieval snapshot (and with it the commits the agent made) into `retrieve_ref`, through
@@ -141,10 +244,9 @@ pub(crate) async fn finish_worktree(worktree: &Path, retrieve_ref: &str) -> Resu
 /// Copies the session's project folder back from the VM with its paths moved to the local worktree and merges its
 /// memory into the repository's local one; returns the ACP session id the relay last served. A failed merge is only
 /// logged: the session comes back regardless.
-async fn retrieve_transcript(request: &RetrieveRequest<'_>, ssh: &Ssh) -> Result<Option<String>, String> {
+async fn retrieve_transcript(request: &RetrieveRequest<'_>, ssh: &Ssh, remote_worktree: &str) -> Result<Option<String>, String> {
     let id = request.hunt_session_id.to_string();
-    let remote_worktree = request.target.worktree_path.display().to_string();
-    let remote_slug = transcript::project_slug(&remote_worktree);
+    let remote_slug = transcript::project_slug(remote_worktree);
     let archive = ssh.run_with_input(&shell_command("sudo", &["-n", "hunt-ctl", "get-claude", &id, "--project", &remote_slug]), &[]).await?;
 
     let staging = std::env::temp_dir().join(format!("hunt-retrieve-{}", Uuid::new_v4()));
@@ -155,7 +257,7 @@ async fn retrieve_transcript(request: &RetrieveRequest<'_>, ssh: &Ssh) -> Result
         let local_worktree = request.worktree.display().to_string();
         let local_project = request.claude_dir.join("projects").join(transcript::project_slug(&local_worktree));
         let mut replacements = vec![
-            (remote_worktree.clone(), local_worktree),
+            (remote_worktree.to_string(), local_worktree),
             (format!("{REMOTE_CLAUDE_DIR}/projects/{remote_slug}"), local_project.display().to_string()),
         ];
         replacements.extend(mode_replacement(request.target.restored_mode()));
@@ -307,5 +409,57 @@ mod tests {
         // Repeating the branch move after an interrupted retrieval changes nothing.
         move_branch(local, "x", "main", &handoff_head, "refs/hunt/x/retrieve").await.unwrap();
         assert_eq!(git(local, &["rev-parse", "HEAD"]).await, remote_head);
+    }
+
+    /// An adopted session: the local repository only knows the default branch, the VM has the session's branch with a
+    /// commit of the agent and uncommitted work on top.
+    #[tokio::test]
+    async fn retrieval_of_an_adopted_session_creates_a_worktree_on_the_vms_branch() {
+        let local_dir = tempfile::tempdir().unwrap();
+        let local = local_dir.path().join("repo");
+        std::fs::create_dir_all(&local).unwrap();
+        git(&local, &["init", "-q", "-b", "main"]).await;
+        git(&local, &["config", "user.email", "test@example.com"]).await;
+        git(&local, &["config", "user.name", "Test"]).await;
+        std::fs::write(local.join("tracked.txt"), "one\n").unwrap();
+        std::fs::write(local.join("gone.txt"), "temporary\n").unwrap();
+        git(&local, &["add", "."]).await;
+        git(&local, &["commit", "-q", "-m", "init"]).await;
+
+        let vm_dir = tempfile::tempdir().unwrap();
+        let remote = vm_dir.path().join("worktree");
+        git(vm_dir.path(), &["clone", "-q", local.to_str().unwrap(), remote.to_str().unwrap()]).await;
+        git(&remote, &["config", "user.email", "agent@example.com"]).await;
+        git(&remote, &["config", "user.name", "Agent"]).await;
+        git(&remote, &["checkout", "-q", "-b", "hunt/123-fix"]).await;
+        std::fs::write(remote.join("tracked.txt"), "two\n").unwrap();
+        git(&remote, &["commit", "-q", "-am", "agent work"]).await;
+        std::fs::write(remote.join("tracked.txt"), "three\n").unwrap();
+        std::fs::write(remote.join("new.txt"), "fresh\n").unwrap();
+        std::fs::remove_file(remote.join("gone.txt")).unwrap();
+        let remote_head = git(&remote, &["rev-parse", "HEAD"]).await;
+        let snapshot = git::snapshot_commit(&remote, "Hunt retrieve snapshot").await.unwrap();
+        git(&remote, &["update-ref", "refs/hunt/x/retrieve", &snapshot]).await;
+        git(&local, &["fetch", "-q", remote.to_str().unwrap(), "+refs/hunt/x/retrieve:refs/hunt/x/retrieve"]).await;
+
+        let branch = local_branch_name(&local, &[Some(" hunt/123-fix "), Some("hunt/ab12cd34")]).await.unwrap();
+        assert_eq!(branch, "hunt/123-fix");
+        let worktree = local_dir.path().join("worktrees").join("x");
+        create_worktree_from_snapshot(&local, &worktree, &branch, "refs/hunt/x/retrieve").await.unwrap();
+
+        assert_eq!(git(&worktree, &["rev-parse", "HEAD"]).await, remote_head);
+        assert_eq!(git(&worktree, &["symbolic-ref", "--short", "HEAD"]).await, "hunt/123-fix");
+        assert_eq!(read(&worktree, "tracked.txt").as_deref(), Some("three\n"));
+        assert_eq!(read(&worktree, "new.txt").as_deref(), Some("fresh\n"));
+        assert_eq!(read(&worktree, "gone.txt"), None);
+        assert_eq!(status(&worktree).await, status(&remote).await);
+        assert_eq!(git(&local, &["symbolic-ref", "--short", "HEAD"]).await, "main");
+
+        // The branch exists now, so a second adoption of it must not take it over; invalid names are skipped.
+        let taken = local_branch_name(&local, &[Some("hunt/123-fix")]).await;
+        assert!(taken.unwrap_err().contains("the branch hunt/123-fix exists"));
+        let valid = local_branch_name(&local, &[None, Some("bad..name"), Some("-x"), Some("hunt/ab12cd34")]).await;
+        assert_eq!(valid.unwrap(), "hunt/ab12cd34");
+        assert!(local_branch_name(&local, &[Some(""), None]).await.is_err());
     }
 }

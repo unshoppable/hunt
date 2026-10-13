@@ -5,6 +5,7 @@ import { useHuntStore } from "../state/store";
 import { BUTTON_MD, DANGER, GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
 import { Modal } from "../ui/Modal";
 import { errorText } from "../ui/useLoad";
+import { confirmVmLoss } from "./confirmVmLoss";
 import { idleDays, isStaleRemote } from "./staleRemote";
 
 /** How often the main window looks for remote sessions that are idle long enough to ask about. */
@@ -13,7 +14,7 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 /**
  * Asks, one session at a time, whether to retrieve or delete a remote session that has been idle on the VM for a week
  * (`isStaleRemote`), since it takes space there until then. "Later" asks again three days later. Checks at launch and
- * every six hours.
+ * every six hours. For an adopted session both answers ask once more, naming the VM others may work on.
  */
 export function StaleRemoteDialog() {
   const sessions = useHuntStore((state) => state.sessions);
@@ -32,13 +33,14 @@ export function StaleRemoteDialog() {
 
   const session = sessions.find((candidate) => !answeredIds.has(candidate.id) && isStaleRemote(candidate, now));
   if (!session) return null;
-  const blocker = retrieveBlocker(chats[session.id]);
+  const blocker = retrieveBlocker(session, chats[session.id]);
   const days = idleDays(session, now);
 
-  const answer = (action: () => Promise<void>) => {
+  const answer = async (action: "delete" | "bringBack") => {
+    if (!(await confirmVmLoss(session, action))) return;
     setError(null);
     setAnsweredIds((ids) => new Set(ids).add(session.id));
-    void action();
+    void (action === "delete" ? closeSession(session.id, true) : retrieveSession(session.id));
   };
 
   const later = async () => {
@@ -64,10 +66,10 @@ export function StaleRemoteDialog() {
         <button type="button" onClick={() => void later()} className={GHOST_BUTTON_MD}>
           Later
         </button>
-        <button type="button" onClick={() => answer(() => closeSession(session.id, true))} className={`${BUTTON_MD} ${DANGER}`}>
+        <button type="button" onClick={() => void answer("delete")} className={`${BUTTON_MD} ${DANGER}`}>
           Delete
         </button>
-        <button type="button" onClick={() => answer(() => retrieveSession(session.id))} disabled={!!blocker} autoFocus className={PRIMARY_BUTTON_MD}>
+        <button type="button" onClick={() => void answer("bringBack")} disabled={!!blocker} autoFocus className={PRIMARY_BUTTON_MD}>
           Retrieve
         </button>
       </div>

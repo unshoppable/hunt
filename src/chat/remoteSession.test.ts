@@ -63,8 +63,31 @@ describe("handOffBlocker", () => {
 });
 
 describe("retrieveBlocker", () => {
-  it("waits for the agent only", () => {
-    expect(retrieveBlocker(createEmptyChat())).toBeNull();
-    expect(retrieveBlocker({ ...createEmptyChat(), isBusy: true })).toMatch(/turn/);
+  const vm = { project: "p", zone: "z", instance: "vm-hunt-s-top00000" };
+  const remote = {
+    vm,
+    worktreePath: "/home/agent/app",
+    repo: "acme/app",
+    branch: "hunt/top",
+    handoffHead: "",
+    handedOffAt: "2026-10-13T10:00:00Z",
+    localMode: null,
+    lastActiveAt: null,
+    cleanupAskedAt: null,
+    previewDomain: null,
+    origin: "handoff" as const,
+    issue: null,
+  };
+
+  it("waits for the agent", () => {
+    const handedOff = session("top", { remote });
+    expect(retrieveBlocker(handedOff, createEmptyChat())).toBeNull();
+    expect(retrieveBlocker(handedOff, { ...createEmptyChat(), isBusy: true })).toMatch(/turn/);
+  });
+
+  it("needs a local checkout for an adopted session", () => {
+    const adopted = session("top", { repoPath: "", remote: { ...remote, origin: "swf", issue: 12 } });
+    expect(retrieveBlocker(adopted, createEmptyChat())).toMatch(/local checkout of acme\/app/);
+    expect(retrieveBlocker({ ...adopted, repoPath: "/src/app" }, createEmptyChat())).toBeNull();
   });
 });

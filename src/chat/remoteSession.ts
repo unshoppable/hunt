@@ -1,4 +1,5 @@
 import type { RemoteStep, SessionView } from "../ipc/types";
+import { missingCheckoutBlocker } from "../sessions/remoteOrigin";
 import type { SessionChat } from "../state/store";
 
 /** What the chat shows while a step of a handoff, a retrieval or a connect to the VM runs. */
@@ -41,7 +42,10 @@ export function handOffBlocker(session: SessionView, sessions: SessionView[], ch
   return waitingChatBlocker(chat);
 }
 
-/** Why the remote session with `chat` cannot be brought back right now, or `null` when it can. */
-export function retrieveBlocker(chat: SessionChat | undefined): string | null {
-  return waitingChatBlocker(chat);
+/**
+ * Why the remote `session` with `chat` cannot be brought back right now, or `null` when it can: an adopted session needs
+ * a local checkout of its repository, and nothing may wait in its chat.
+ */
+export function retrieveBlocker(session: SessionView, chat: SessionChat | undefined): string | null {
+  return missingCheckoutBlocker(session) ?? waitingChatBlocker(chat);
 }

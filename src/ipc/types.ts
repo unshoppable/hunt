@@ -128,18 +128,37 @@ export type VmRef = { project: string; zone: string; instance: string };
 export type VmSettings = { project: string; zone: string; gateway: string; template: string; machineType: string | null; previewDomain: string };
 
 /** A session VM as Compute Engine lists it, with its labels and metadata (mirror of `SessionVm` in src-tauri/src/remote/vm.rs). */
-export type SessionVm = { name: string; zone: string; status: string; labels: Record<string, string>; metadata: Record<string, string> };
+export type SessionVm = {
+  name: string;
+  zone: string;
+  status: string;
+  labels: Record<string, string>;
+  metadata: Record<string, string>;
+  /** When Compute Engine created the VM; null when the listing lacks a readable time. */
+  createdAt: string | null;
+};
+
+/**
+ * Who started a remote session on its VM: `handoff` is this Mac, whose local worktree waits for the session; `desktop`
+ * is another person's Hunt and `swf` the gateway's poller for a GitHub issue, whose VMs this Mac adopted.
+ */
+export type RemoteOrigin = "handoff" | "desktop" | "swf";
 
 /** Where a session handed off to a VM runs (mirror of `RemoteTarget` in src-tauri/src/remote/mod.rs). */
 export type RemoteTarget = {
   /** The session's own VM, `vm-hunt-s-<short>`. */
   vm: VmRef;
-  /** The session's worktree on the VM; tool calls of its agent name files below this path. */
+  /**
+   * The session's worktree on the VM; tool calls of its agent name files below this path. Empty for an adopted session
+   * until Hunt first reached its VM.
+   */
   worktreePath: string;
   /** `<owner>/<repo>` of the repository on the VM. */
   repo: string;
   branch: string;
+  /** The commit the local branch had at the handoff; empty for an adopted session. */
   handoffHead: string;
+  /** When the session went to its VM; for an adopted session when this Mac adopted it. */
   handedOffAt: string;
   /** The permission mode the session had locally, which the retrieval restores; null for older handoffs. */
   localMode: string | null;
@@ -149,7 +168,11 @@ export type RemoteTarget = {
   cleanupAskedAt: string | null;
   /** The preview domain the session was handed off with, which its URLs use; null for older handoffs. */
   previewDomain: string | null;
+  origin: RemoteOrigin;
+  /** The GitHub issue a `swf` session works on. */
+  issue: number | null;
 };
+
 
 /** A step of a handoff, a retrieval or a connect to a remote session that takes long enough to show. */
 export type RemoteStep =

@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::git::DIFF_BASE;
 use crate::github::{PullRequestRef, ReviewComment};
+use crate::remote::adoption::AdoptableSession;
 use crate::remote::{RemoteTarget, VmRef};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +116,33 @@ impl SessionRecord {
             remote: None,
             leftover_vm: None,
         }
+    }
+
+    /// A remote session this Mac adopts from the listing of its VM: its agent runs there and nothing of it exists here
+    /// yet. `repo_path` is the local checkout of its repository (empty without one), `worktree_path` where bringing it
+    /// back creates its worktree; the VM's preview URLs use `preview_domain`. Its worktree path on the VM is filled in
+    /// once Hunt reaches the VM.
+    pub fn adopted(session: &AdoptableSession, repo_path: PathBuf, worktree_path: PathBuf, preview_domain: String) -> Self {
+        let now = chrono::Utc::now();
+        let target = RemoteTarget {
+            vm: session.vm.clone(),
+            worktree_path: PathBuf::new(),
+            repo: session.repo.clone(),
+            branch: session.branch.clone(),
+            handoff_head: String::new(),
+            handed_off_at: now,
+            local_mode: None,
+            last_active_at: None,
+            cleanup_asked_at: None,
+            preview_domain: Some(preview_domain),
+            origin: session.origin,
+            issue: session.issue,
+        };
+        let branch = session.branch.clone();
+        let mut record = Self::new(session.id, session.title.clone(), repo_path, worktree_path, branch.clone(), branch, String::new());
+        record.created_at = session.created_at.unwrap_or(now);
+        record.remote = Some(target);
+        record
     }
 
     /// A fresh sub chat of `parent`: it shares the parent's repository, worktree and branch and carries the
@@ -234,6 +262,17 @@ impl Store {
         self.load()?.into_iter().find(|session| session.id == id).ok_or_else(|| format!("unknown session {id}"))
     }
 
+    /// Stores `record` unless a record of its id exists; returns whether it did.
+    fn insert(&self, record: SessionRecord) -> Result<bool, String> {
+        let mut sessions = self.load()?;
+        if sessions.iter().any(|session| session.id == record.id) {
+            return Ok(false);
+        }
+        sessions.push(record);
+        self.save(&sessions)?;
+        Ok(true)
+    }
+
     fn upsert(&self, record: SessionRecord) -> Result<(), String> {
         let mut sessions = self.load()?;
         match sessions.iter_mut().find(|session| session.id == record.id) {
@@ -273,6 +312,11 @@ pub fn find_session(app: &AppHandle, id: Uuid) -> Result<SessionRecord, String> 
 
 pub fn upsert_session(app: &AppHandle, record: SessionRecord) -> Result<(), String> {
     Store::open(app)?.upsert(record)
+}
+
+/// Stores `record` unless a session of its id exists; returns whether it did.
+pub fn insert_session(app: &AppHandle, record: SessionRecord) -> Result<bool, String> {
+    Store::open(app)?.insert(record)
 }
 
 /// Applies `update` to the stored record of `id` and returns the result; `None` when the session no longer exists.
@@ -424,6 +468,48 @@ mod tests {
         let remote = loaded[0].remote.as_ref().unwrap();
         assert_eq!((remote.vm.instance.as_str(), remote.preview_domain.as_deref(), remote.local_mode.as_deref()), ("vm-hunt-medc", None, None));
         assert!(loaded[0].leftover_vm.is_none());
+    }
+
+    #[test]
+    fn insert_keeps_an_existing_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in(&dir);
+        let first = record("first");
+        assert!(store.insert(first.clone()).unwrap());
+        let mut renamed = first.clone();
+        renamed.title = "renamed".into();
+        assert!(!store.insert(renamed).unwrap());
+        assert_eq!(store.load().unwrap().iter().map(|session| session.title.as_str()).collect::<Vec<_>>(), ["first"]);
+    }
+
+    #[test]
+    fn an_adopted_record_runs_remotely_without_a_local_worktree_yet() {
+        let session = AdoptableSession {
+            id: Uuid::parse_str("ab12cd34-0000-4000-8000-000000000001").unwrap(),
+            vm: VmRef { project: "acme".into(), zone: "europe-west1-c".into(), instance: "vm-hunt-s-ab12cd34".into() },
+            title: "Fix login".into(),
+            repo: "acme/app".into(),
+            branch: "hunt/123-fix-login".into(),
+            origin: crate::remote::RemoteOrigin::Swf,
+            issue: Some(123),
+            is_running: false,
+            created_at: chrono::DateTime::from_timestamp(1_760_000_000, 0),
+        };
+        let adopted = SessionRecord::adopted(&session, PathBuf::new(), "/worktrees/ab12cd34".into(), "hunt.example.com".into());
+        let remote = adopted.remote.as_ref().unwrap();
+        assert!(remote.is_adopted() && remote.worktree_path.as_os_str().is_empty() && remote.handoff_head.is_empty());
+        assert_eq!((remote.issue, remote.preview_domain.as_deref()), (Some(123), Some("hunt.example.com")));
+        assert_eq!((remote.branch.as_str(), adopted.branch.as_str()), ("hunt/123-fix-login", "hunt/123-fix-login"));
+        assert_eq!((adopted.title.as_str(), adopted.created_at), ("Fix login", session.created_at.unwrap()));
+        assert!(adopted.repo_path.as_os_str().is_empty() && adopted.acp_session_id.is_none());
+
+        // Records stored before adoptions existed were handed off by this Mac.
+        let mut stored = serde_json::to_value(&adopted).unwrap();
+        let object = stored["remote"].as_object_mut().unwrap();
+        object.remove("origin");
+        object.remove("issue");
+        let loaded: SessionRecord = serde_json::from_value(stored).unwrap();
+        assert!(!loaded.remote.unwrap().is_adopted());
     }
 
     #[test]

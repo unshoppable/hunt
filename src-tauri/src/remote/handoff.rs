@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::ssh::{self, Ssh};
 use super::vm::SessionMetadata;
-use super::{bundle, hunt_ctl, hunt_ctl_with_input, tar_create, vm, Progress, RemoteStep, RemoteTarget, VmSettings};
+use super::{bundle, hunt_ctl, hunt_ctl_with_input, tar_create, vm, Progress, RemoteOrigin, RemoteStep, RemoteTarget, VmSettings};
 use super::{memory, transcript};
 use crate::git;
 
@@ -153,6 +153,8 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
         last_active_at: None,
         cleanup_asked_at: None,
         preview_domain: Some(settings.preview_domain.clone()),
+        origin: RemoteOrigin::Handoff,
+        issue: None,
     };
     let acp_session_id = status["acpSessionId"].as_str().map(str::to_string);
     Ok(HandedOff { target, acp_session_id })
@@ -181,8 +183,7 @@ async fn ensure_movable(worktree: &Path) -> Result<(), String> {
 
 /// `<owner>/<repo>` of the `origin` remote, or `local/<folder of the main checkout>` without one.
 async fn repository_key(worktree: &Path) -> String {
-    let url = git::run_git(worktree, &["remote", "get-url", "origin"]).await.unwrap_or_default();
-    if let Some(key) = repository_key_from_url(url.trim()) {
+    if let Some(key) = origin_repository_key(worktree).await {
         return key;
     }
     let common = git::run_git(worktree, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await.unwrap_or_default();
@@ -190,6 +191,13 @@ async fn repository_key(worktree: &Path) -> String {
     let name = checkout.parent().and_then(Path::file_name).map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
     let name = sanitize_segment(&name);
     format!("local/{}", if name.is_empty() { "repository" } else { name.as_str() })
+}
+
+/// `<owner>/<repo>` of the `origin` remote of the repository at `repo`, as session VMs record it in `hunt-repo`; `None`
+/// without such a remote.
+pub async fn origin_repository_key(repo: &Path) -> Option<String> {
+    let url = git::run_git(repo, &["remote", "get-url", "origin"]).await.ok()?;
+    repository_key_from_url(url.trim())
 }
 
 /// `owner/repo` from an ssh or https remote URL; `None` when the URL has no such tail.

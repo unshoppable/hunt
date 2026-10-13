@@ -98,6 +98,11 @@ export const commands = {
   /** The session VMs of `project` with their labels and metadata, for adopting VMs without a local session. */
   listSessionVms: (project: string) => invoke<SessionVm[]>("list_session_vms", { project }),
   /**
+   * Adopts the session VMs of the project in `settings` that no local session knows, each in the local checkout of its
+   * repository among `repoPaths` and the stored sessions' repositories; resolves with the IDs of the new sessions.
+   */
+  adoptSessionVms: (settings: VmSettings, repoPaths: string[]) => invoke<string[]>("adopt_session_vms", { settings, repoPaths }),
+  /**
    * Opens a terminal with `cols` × `rows` cells on the VM of the remote session `id`, attached to the tmux session of
    * the app's processes. The caller picks `terminalId` and listens before it calls, since the output (`terminal:output`,
    * then `terminal:exit`, both sent to this window only) may arrive before the promise resolves. A VM that is off stays off.

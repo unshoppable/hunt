@@ -14,7 +14,10 @@ use super::{gcloud, Progress, RemoteStep, VmRef};
 pub const SESSION_VM_PREFIX: &str = "vm-hunt-s-";
 
 /// The label that marks session VMs; its value is the session's short id.
-const SESSION_LABEL: &str = "hunt-session";
+pub const SESSION_LABEL: &str = "hunt-session";
+
+/// The label that names who started a session VM: `desktop` (a handoff from Hunt) or `swf` (the gateway's poller).
+pub const ORIGIN_LABEL: &str = "hunt-origin";
 
 /// The file the startup script of a session VM writes once the VM has everything `hunt-ctl install` needs.
 const READY_STAMP: &str = "/var/lib/hunt/session-ready";
@@ -64,7 +67,7 @@ pub async fn create(vm: &VmRef, id: Uuid, template: &str, machine_type: Option<&
         format!("--source-instance-template={template}"),
         format!("--zone={}", vm.zone),
         format!("--project={}", vm.project),
-        format!("--labels=hunt-role=session,{SESSION_LABEL}={},hunt-origin=desktop", short_id(id)),
+        format!("--labels=hunt-role=session,{SESSION_LABEL}={},{ORIGIN_LABEL}=desktop", short_id(id)),
         // Returns once the request is accepted; waiting through gcloud would need permissions on zone operations.
         "--async".into(),
     ];
@@ -218,6 +221,8 @@ pub struct SessionVm {
     pub labels: BTreeMap<String, String>,
     /// The metadata items, such as `hunt-session-id`, `hunt-repo`, `hunt-branch` and `hunt-title`.
     pub metadata: BTreeMap<String, String>,
+    /// When Compute Engine created the VM; `None` when the listing lacks a readable time.
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Every session VM of `project`, in any zone.
@@ -239,6 +244,8 @@ struct ListedInstance {
     labels: BTreeMap<String, String>,
     #[serde(default)]
     metadata: ListedMetadata,
+    #[serde(default, rename = "creationTimestamp")]
+    creation_timestamp: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -265,6 +272,9 @@ fn parse_session_vms(output: &str) -> Result<Vec<SessionVm>, String> {
             status: instance.status,
             labels: instance.labels,
             metadata: instance.metadata.items.into_iter().map(|item| (item.key, item.value)).collect(),
+            created_at: chrono::DateTime::parse_from_rfc3339(&instance.creation_timestamp)
+                .ok()
+                .map(|time| time.with_timezone(&chrono::Utc)),
         })
         .collect())
 }
@@ -304,6 +314,7 @@ mod tests {
             "name": "vm-hunt-s-ab12cd34",
             "zone": "https://www.googleapis.com/compute/v1/projects/acme/zones/europe-west1-c",
             "status": "TERMINATED",
+            "creationTimestamp": "2026-10-12T03:04:05.678-07:00",
             "labels": {"hunt-session": "ab12cd34", "hunt-origin": "swf"},
             "metadata": {"fingerprint": "x", "kind": "compute#metadata", "items": [
               {"key": "hunt-session-id", "value": "ab12cd34-0000-4000-8000-000000000001"},
@@ -317,7 +328,9 @@ mod tests {
         assert_eq!((vms[0].name.as_str(), vms[0].zone.as_str(), vms[0].status.as_str()), ("vm-hunt-s-ab12cd34", "europe-west1-c", "TERMINATED"));
         assert_eq!(vms[0].labels.get("hunt-origin").map(String::as_str), Some("swf"));
         assert_eq!(vms[0].metadata.get("hunt-title").map(String::as_str), Some("Fix login, then logout"));
+        assert_eq!(vms[0].created_at.map(|time| time.to_rfc3339()).as_deref(), Some("2026-10-12T10:04:05.678+00:00"));
         assert_eq!(vms[1].zone, "europe-west1-b");
+        assert_eq!(vms[1].created_at, None);
         assert!(vms[1].labels.is_empty() && vms[1].metadata.is_empty());
         assert_eq!(parse_session_vms("[]").unwrap(), Vec::new());
         assert!(parse_session_vms("not json").is_err());

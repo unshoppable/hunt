@@ -1,9 +1,11 @@
 //! Sessions handed off to a VM of their own: SSH through an IAP tunnel (`ssh.rs`), creating, starting and deleting the
 //! session VMs (`vm.rs`), the software Hunt installs on them and on the gateway from this repository's `remote/` folder
 //! (`bundle.rs`), and moving a session's git state and Claude Code transcript there and back (`handoff.rs`,
-//! `retrieve.rs`, `transcript.rs`), previews (`preview.rs`) and terminals attached to the VM's tmux session
-//! (`terminal.rs`). Knows nothing about Tauri; `session/commands.rs` owns the commands.
+//! `retrieve.rs`, `transcript.rs`), adopting session VMs no local session knows (`adoption.rs`), previews
+//! (`preview.rs`) and terminals attached to the VM's tmux session (`terminal.rs`). Knows nothing about Tauri;
+//! `session/commands.rs` owns the commands.
 
+pub mod adoption;
 pub mod bundle;
 pub mod handoff;
 pub mod memory;
@@ -116,6 +118,12 @@ pub struct RemoteTarget {
     /// The domain the session's preview URLs were set up with at the handoff; `None` for older handoffs.
     #[serde(default)]
     pub preview_domain: Option<String>,
+    /// Who started the session on its VM: this Mac, or someone else whose VM this Mac adopted.
+    #[serde(default)]
+    pub origin: RemoteOrigin,
+    /// The GitHub issue a `swf` session works on.
+    #[serde(default)]
+    pub issue: Option<u64>,
 }
 
 impl RemoteTarget {
@@ -123,6 +131,25 @@ impl RemoteTarget {
     pub fn restored_mode(&self) -> &str {
         self.local_mode.as_deref().unwrap_or("default")
     }
+
+    /// Whether this Mac adopted the session from a VM listing instead of handing it off: there is no local worktree
+    /// waiting for it, and other people may work on it too.
+    pub fn is_adopted(&self) -> bool {
+        self.origin != RemoteOrigin::Handoff
+    }
+}
+
+/// Who started a remote session on its VM.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteOrigin {
+    /// This Mac handed the session off; its local worktree waits for the retrieval.
+    #[default]
+    Handoff,
+    /// Another person's Hunt handed it off (VM label `hunt-origin=desktop`).
+    Desktop,
+    /// The gateway's poller started it for a GitHub issue labelled `swf` (VM label `hunt-origin=swf`).
+    Swf,
 }
 
 /// The time of the agent's last work the relay reports in its status (`hunt-ctl wait` or `status`): `now` while a turn

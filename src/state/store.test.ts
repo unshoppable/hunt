@@ -6,7 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
 import { useAgentDefaultsStore } from "./agentDefaults";
-import { DEFAULT_GRAPH_AGENT } from "./settings";
+import { DEFAULT_GRAPH_AGENT, DEFAULT_REMOTE, useSettingsStore } from "./settings";
 import { agentSetupOf, createEmptyChat, useHuntStore } from "./store";
 
 const SESSION = "11111111-1111-1111-1111-111111111111";
@@ -610,10 +610,36 @@ describe("remote sessions", () => {
     lastActiveAt: null,
     cleanupAskedAt: null,
     previewDomain: null,
+    origin: "handoff" as const,
+    issue: null,
   };
 
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
+  });
+
+  it("adopts session VMs only with complete settings and keeps the failure", async () => {
+    useHuntStore.setState({ remoteSync: { isRunning: false, error: null } });
+    useSettingsStore.setState({ remote: DEFAULT_REMOTE });
+    await useHuntStore.getState().syncRemoteSessions();
+    expect(vi.mocked(invoke)).not.toHaveBeenCalled();
+
+    const vm = { project: "acme-hunt", zone: "europe-west1-c", previewDomain: "hunt.example.com" };
+    useSettingsStore.setState({ remote: { ...DEFAULT_REMOTE, ...vm, gatewayInstance: "vm-hunt-medc" } });
+    useAgentDefaultsStore.setState({ recentRepoPaths: ["/src/app"] });
+    vi.mocked(invoke).mockImplementation((command) => (command === "adopt_session_vms" ? Promise.reject("failed to run gcloud") : Promise.resolve([])));
+    await useHuntStore.getState().syncRemoteSessions();
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("adopt_session_vms", {
+      settings: { ...vm, gateway: "vm-hunt-medc", template: "tpl-hunt-session", machineType: null },
+      repoPaths: ["/src/app"],
+    });
+    expect(useHuntStore.getState().remoteSync).toEqual({ isRunning: false, error: "failed to run gcloud" });
+
+    vi.mocked(invoke).mockImplementation((command) => Promise.resolve(command === "adopt_session_vms" ? ["new-id"] : []));
+    await useHuntStore.getState().syncRemoteSessions();
+    expect(useHuntStore.getState().remoteSync).toEqual({ isRunning: false, error: null });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("list_sessions");
+    useSettingsStore.setState({ remote: DEFAULT_REMOTE });
   });
 
   it("shows the mode the agent reports in its mode option", () => {

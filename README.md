@@ -355,6 +355,17 @@ memory is merged into the local one three-way against what the handoff sent (`sr
 only the VM changed takes its version, one both sides changed keeps the local version with the VM's next to it as
 `<name>.remote-<id>.md`, and `MEMORY.md` takes the VM's added and removed lines.
 
+The labels and metadata of the session VMs are the directory of remote sessions. At its start and from the sidebar's
+*Refresh remote sessions* button, Hunt lists them (`adopt_session_vms`, `src-tauri/src/remote/adoption.rs`) and adopts
+every VM whose `hunt-session-id` no local session has: VMs the gateway's poller started for `swf` issues
+(`hunt-origin=swf`, `hunt-issue`) and other people's handoffs. An adopted session gets a record with origin `swf` or
+`desktop`, its title, branch and repository from the metadata and the local checkout among the recently used
+repositories whose `origin` is that repository; the sidebar labels it `swf #<issue>` or `remote`. Its worktree path on
+the VM comes from `/srv/hunt/sessions/<id>/meta.json` once Hunt reaches the VM, and the relay replays its conversation
+on `session/load`. Bringing it back creates a new worktree in the local checkout on the branch the VM has checked out
+and is offered only once a checkout is known. Deleting or bringing back an adopted session asks first, naming its VM,
+since other people may work on it; VMs this Mac deleted or still has to delete are never adopted again.
+
 A remote session keeps its VM, which costs only its disk while it is off, until it is retrieved or deleted. Hunt records when its agent last worked (a
 prompt it sent, a turn that ended, or the relay's last turn when it connects) and, once that is seven days ago, asks in
 the main window whether to retrieve or delete it (`src/sessions/StaleRemoteDialog.tsx`); "Later" asks again three days

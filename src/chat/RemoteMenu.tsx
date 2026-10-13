@@ -7,14 +7,16 @@ import { useHuntStore } from "../state/store";
 import { SECONDARY_BUTTON_MD } from "../ui/buttons";
 import { CloudIcon } from "../ui/icons";
 import { useDismiss } from "../ui/useDismiss";
+import { confirmVmLoss } from "../sessions/confirmVmLoss";
+import { isAdopted } from "../sessions/remoteOrigin";
 import { handOffBlocker, retrieveBlocker } from "./remoteSession";
 
 const MENU_ITEM = "block w-full rounded px-2 py-1 text-left enabled:hover:bg-(--row-hover) disabled:opacity-40";
 
 /**
  * Chat header button of the session's place: hands a local session off to a VM of its own, created from the settings,
- * or brings a remote one back, which deletes its VM. Hidden while the remote settings are incomplete and the session
- * runs locally.
+ * or brings a remote one back, which deletes its VM; an adopted session asks first, since others may work on it. Hidden
+ * while the remote settings are incomplete and the session runs locally.
  */
 export function RemoteMenu({ sessionId }: { sessionId: string }) {
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
@@ -36,7 +38,7 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
   if (!session || (!vmSettings && !session.remote)) return null;
   const isRemote = Boolean(session.remote);
   const isRunning = Boolean(chat?.remoteStep) || Boolean(chat?.isLoading);
-  const blocker = isRemote ? retrieveBlocker(chat) : handOffBlocker(session, sessions, chat, { hasUnsavedEdits, hasClaudeAccount });
+  const blocker = isRemote ? retrieveBlocker(session, chat) : handOffBlocker(session, sessions, chat, { hasUnsavedEdits, hasClaudeAccount });
   const previewDomain = session.remote?.previewDomain ?? null;
   const instance = session.remote?.vm.instance ?? "";
 
@@ -44,6 +46,16 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
     setIsMenuOpen(false);
     void action(sessionId);
   }
+
+  async function bringBack() {
+    setIsMenuOpen(false);
+    if (!session || !(await confirmVmLoss(session, "bringBack"))) return;
+    await retrieveSession(sessionId);
+  }
+
+  const bringBackHint = isAdopted(session)
+    ? `The session continues here in a new worktree and its VM ${instance} is deleted, also for others working on it.`
+    : `The session continues here and its VM is deleted. Runs on ${instance}.`;
 
   return (
     <div className="relative shrink-0">
@@ -70,12 +82,12 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
             type="button"
             role="menuitem"
             disabled={Boolean(blocker)}
-            onClick={() => run(isRemote ? retrieveSession : handOffSession)}
+            onClick={() => (isRemote ? void bringBack() : run(handOffSession))}
             className={MENU_ITEM}
           >
             {isRemote ? "Bring back from the VM" : "Hand off to the VM"}
             <span className="block text-[12px] text-neutral-500">
-              {blocker ?? (isRemote ? `The session continues here and its VM is deleted. Runs on ${instance}.` : "The agent continues on its own VM, also while Hunt is closed.")}
+              {blocker ?? (isRemote ? bringBackHint : "The agent continues on its own VM, also while Hunt is closed.")}
             </span>
           </button>
           {isRemote && previewDomain ? (

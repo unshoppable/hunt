@@ -674,7 +674,7 @@ function SwfRows() {
       {error ? <p className="text-[13px] leading-snug break-words text-red-300">{error}</p> : null}
       <p className="text-[13px] leading-snug text-neutral-500">
         The gateway's poller hunt-swf checks these repositories every 2 minutes for open issues labelled swf and starts a session VM for each, at most this many at
-        once. Its GitHub and Claude tokens come from Secret Manager (hunt-swf-github-token, hunt-swf-claude-token). Without repositories the poller stays idle.
+        once. Its GitHub and Claude tokens come from Secret Manager (HUNT_SWF_GITHUB_TOKEN, HUNT_SWF_CLAUDE_TOKEN). Without repositories the poller stays idle.
         Changes reach the gateway only with "Apply to gateway".
       </p>
     </div>

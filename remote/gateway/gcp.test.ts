@@ -55,7 +55,7 @@ describe("metadata parsing", () => {
 
   it("decodes a secret's payload and rejects empty values and values with whitespace inside", () => {
     const payload = (text: string) => JSON.stringify({ name: "projects/1/secrets/s/versions/3", payload: { data: Buffer.from(text).toString("base64") } });
-    expect(parseSecretPayload(payload("ghp_abc\n"), "hunt-swf-github-token")).toBe("ghp_abc");
+    expect(parseSecretPayload(payload("ghp_abc\n"), "HUNT_SWF_GITHUB_TOKEN")).toBe("ghp_abc");
     expect(() => parseSecretPayload(payload("  \n"), "s")).toThrow("failed to read the secret s: its latest version is empty or contains whitespace");
     expect(() => parseSecretPayload(payload("two words"), "s")).toThrow("contains whitespace");
     expect(() => parseSecretPayload("{}", "s")).toThrow("has no payload");
@@ -99,19 +99,19 @@ describe("createMetadata", () => {
 
 describe("readSecret", () => {
   it("reads the latest version of the secret in the gateway's project with the access token", async () => {
-    const url = "https://secretmanager.googleapis.com/v1/projects/medconomy-hunt/secrets/hunt-swf-claude-token/versions/latest:access";
+    const url = "https://secretmanager.googleapis.com/v1/projects/medconomy-hunt/secrets/HUNT_SWF_CLAUDE_TOKEN/versions/latest:access";
     const { fetchImpl, requests } = fakeFetch({ [`GET ${url}`]: () => Response.json({ payload: { data: Buffer.from("sk-ant-oat01-x").toString("base64") } }) });
 
-    expect(await readSecret(fixedMetadata, "hunt-swf-claude-token", fetchImpl)).toBe("sk-ant-oat01-x");
+    expect(await readSecret(fixedMetadata, "HUNT_SWF_CLAUDE_TOKEN", fetchImpl)).toBe("sk-ant-oat01-x");
     expect(requests[0].authorization).toBe("Bearer token-1");
   });
 
   it("names the secret but not its value when access is denied", async () => {
-    const url = "https://secretmanager.googleapis.com/v1/projects/medconomy-hunt/secrets/hunt-swf-github-token/versions/latest:access";
+    const url = "https://secretmanager.googleapis.com/v1/projects/medconomy-hunt/secrets/HUNT_SWF_GITHUB_TOKEN/versions/latest:access";
     const { fetchImpl } = fakeFetch({ [`GET ${url}`]: () => new Response('{"error": {"code": 403,\n "message": "Permission denied"}}', { status: 403 }) });
 
-    await expect(readSecret(fixedMetadata, "hunt-swf-github-token", fetchImpl)).rejects.toThrow(
-      'failed to read the secret hunt-swf-github-token: HTTP 403 {"error": {"code": 403, "message": "Permission denied"}}',
+    await expect(readSecret(fixedMetadata, "HUNT_SWF_GITHUB_TOKEN", fetchImpl)).rejects.toThrow(
+      'failed to read the secret HUNT_SWF_GITHUB_TOKEN: HTTP 403 {"error": {"code": 403, "message": "Permission denied"}}',
     );
   });
 });

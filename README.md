@@ -409,7 +409,7 @@ the relay runs the turn without a client. The prompt asks the agent to implement
 open a pull request with `Closes #<issue>`, comment its link on the issue and replace `swf:running` with `swf:done`, or
 with `swf:failed` and a comment when it cannot finish. A setup that fails gets `swf:failed` and a comment with the
 error; its VM stays for inspection. The poller's GitHub token and the Claude Code OAuth token its sessions run with come
-from Secret Manager (`hunt-swf-github-token`, `hunt-swf-claude-token`) and never reach a log line, a comment or a
+from Secret Manager (`HUNT_SWF_GITHUB_TOKEN`, `HUNT_SWF_CLAUDE_TOKEN`) and never reach a log line, a comment or a
 command line; `journalctl -u hunt-swf` on the gateway shows one line per decision.
 
 The labels and metadata of the session VMs are the directory of remote sessions. At its start and from the sidebar's

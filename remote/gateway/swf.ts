@@ -14,7 +14,7 @@
  * agent opens the pull request and sets `swf:done` or `swf:failed` itself. When the setup fails, the poller sets
  * `swf:failed` with the error and leaves the VM for inspection; Hunt desktops adopt the VM either way.
  *
- * The GitHub token (`hunt-swf-github-token`) and the Claude Code OAuth token (`hunt-swf-claude-token`) come from Secret
+ * The GitHub token (`HUNT_SWF_GITHUB_TOKEN`) and the Claude Code OAuth token (`HUNT_SWF_CLAUDE_TOKEN`) come from Secret
  * Manager; project, zone and access token from the metadata server; the preview domain from what `hunt-ctl install`
  * wrote. One log line per decision goes to stdout (journald); tokens never appear in logs or comments. SIGHUP (the
  * unit's reload, after an install) makes the poller exit once the sessions it sets up are running, so that systemd
@@ -55,8 +55,8 @@ export const ORIGIN_LABEL = "hunt-origin";
 export const ORIGIN = "swf";
 const DOMAIN_FILE = "/etc/hunt/preview-domain";
 const DOMAIN_PATTERN = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-const GITHUB_SECRET = "hunt-swf-github-token";
-const CLAUDE_SECRET = "hunt-swf-claude-token";
+const GITHUB_SECRET = "HUNT_SWF_GITHUB_TOKEN";
+const CLAUDE_SECRET = "HUNT_SWF_CLAUDE_TOKEN";
 /** Secrets are read again after this long, so a new version takes effect without a restart. */
 const SECRETS_TTL_MS = 10 * 60_000;
 const CREATE_TIMEOUT_MS = 2 * 60_000;

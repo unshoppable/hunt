@@ -49,12 +49,18 @@ fn collect_files(dir: &Path, prefix: &str, files: &mut Vec<String>) -> Result<()
     Ok(())
 }
 
-/// Installs the bundle in `dir` on the VM unless the VM runs that version already, passing `install_args` to
-/// `hunt-ctl install` (the gateway's `--domain`); returns its hash.
-pub async fn ensure_installed(ssh: &Ssh, dir: &Path, install_args: &[&str], progress: Progress<'_>) -> Result<String, String> {
+/// Prints the hash of the VM's last complete install, which `hunt-ctl install` writes as its last step, and the
+/// gateway's preview domain, one line each; a missing file gives an empty line.
+const INSTALL_STATE_COMMAND: &str =
+    r#"printf '%s\n' "$(cat /var/lib/hunt/installed-hash 2>/dev/null)" "$(cat /etc/hunt/preview-domain 2>/dev/null)""#;
+
+/// Installs the bundle in `dir` on the VM unless the VM completed an install of that version; returns its hash. The
+/// gateway passes its preview `domain`, which `hunt-ctl install` writes into its edge proxy, and installs again when
+/// the domain changed.
+pub async fn ensure_installed(ssh: &Ssh, dir: &Path, domain: Option<&str>, progress: Progress<'_>) -> Result<String, String> {
     let hash = hash(dir)?;
-    let installed = ssh.run("cat /srv/hunt/current/.hash 2>/dev/null || true").await?;
-    if installed.trim() == hash {
+    let state = ssh.run(INSTALL_STATE_COMMAND).await?;
+    if is_installed(&state, &hash, domain) {
         return Ok(hash);
     }
 
@@ -63,7 +69,9 @@ pub async fn ensure_installed(ssh: &Ssh, dir: &Path, install_args: &[&str], prog
     // Unpacked into a folder of its own, so two installs at once cannot mix their files, and installed from there by
     // `hunt-ctl` of this very bundle, which copies it into the releases.
     let incoming = format!("/srv/hunt/incoming/{}", uuid::Uuid::new_v4());
-    let install = shell_command(&format!("{incoming}/vm/hunt-ctl"), &[&["install", incoming.as_str()], install_args].concat());
+    let mut install_args = vec!["install", incoming.as_str()];
+    install_args.extend(domain.map(|domain| ["--domain", domain]).into_iter().flatten());
+    let install = shell_command(&format!("{incoming}/vm/hunt-ctl"), &install_args);
     let script = format!(
         "set -e; mkdir -p {incoming}; trap 'rm -rf {incoming}' EXIT; tar -xzf - -C {incoming}; printf %s {hash} > {incoming}/.hash; \
          find {incoming}/vm -maxdepth 1 -type f -name 'hunt-*' -exec chmod +x {{}} +; {install}"
@@ -72,6 +80,14 @@ pub async fn ensure_installed(ssh: &Ssh, dir: &Path, install_args: &[&str], prog
         .await
         .map_err(|error| format!("failed to install the remote runtime: {error}"))?;
     Ok(hash)
+}
+
+/// Whether `state`, the installed hash and the preview domain the VM reports on one line each, shows a complete install
+/// of `hash` and, when given, `domain`.
+fn is_installed(state: &str, hash: &str, domain: Option<&str>) -> bool {
+    let mut lines = state.lines().map(str::trim);
+    let (installed_hash, installed_domain) = (lines.next().unwrap_or_default(), lines.next().unwrap_or_default());
+    installed_hash == hash && domain.is_none_or(|domain| installed_domain == domain)
 }
 
 #[cfg(test)]
@@ -97,5 +113,16 @@ mod tests {
 
         std::fs::rename(dir.path().join("relay/main.ts"), dir.path().join("relay/other.ts")).unwrap();
         assert_ne!(hash(dir.path()).unwrap(), second);
+    }
+
+    #[test]
+    fn is_installed_needs_the_complete_install_of_the_hash_and_the_gateways_domain() {
+        assert!(is_installed("0123456789abcdef\n\n", "0123456789abcdef", None));
+        assert!(is_installed("0123456789abcdef\nhunt.example.com\n", "0123456789abcdef", Some("hunt.example.com")));
+        assert!(!is_installed("0123456789abcdef\nold.example.com\n", "0123456789abcdef", Some("hunt.example.com")));
+        assert!(!is_installed("0123456789abcdef\n\n", "0123456789abcdef", Some("hunt.example.com")));
+        assert!(!is_installed("fedcba9876543210\nhunt.example.com\n", "0123456789abcdef", Some("hunt.example.com")));
+        assert!(!is_installed("\n\n", "0123456789abcdef", None));
+        assert!(!is_installed("", "0123456789abcdef", None));
     }
 }

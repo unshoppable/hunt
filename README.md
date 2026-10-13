@@ -277,8 +277,9 @@ from the instance template `tpl-hunt-session`, labels it `hunt-role=session`, `h
 (`src-tauri/src/remote/vm.rs`). `src-tauri/src/remote/` reaches the VMs over SSH through an IAP tunnel with the gcloud
 login and a key Hunt registers with OS Login, starts a session's VM when it is off, waits on a new VM until its startup
 script wrote `/var/lib/hunt/session-ready`, and installs the VM side from this repository's `remote/` folder, which
-ships with the app, on the session's VM and on the gateway (`hunt-ctl install <dir> --domain <domain>`) whenever they
-run another version of it.
+ships with the app, on the session's VM and on the gateway (`hunt-ctl install <dir> --domain <domain>`) unless their
+last complete install, which `hunt-ctl` records as its last step in `/var/lib/hunt/installed-hash`, was of this version
+(and, on the gateway, of this preview domain).
 
 A handoff (`hand_off_session`) stops the local agent and pushes the branch plus a snapshot commit of the uncommitted
 work (`refs/hunt/<id>/handoff`) into the session's repository on its VM, `/home/agent/<repository name>`, so the handoff

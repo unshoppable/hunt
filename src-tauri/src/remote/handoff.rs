@@ -93,10 +93,10 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     let gateway = settings.gateway_vm();
     let gateway_ssh = Ssh::open(&gateway, request.ssh_dir).await?;
     vm::ensure_running(&gateway, &gateway_ssh, progress).await?;
-    bundle::ensure_installed(&gateway_ssh, request.bundle_dir, &["--domain", &settings.preview_domain], progress).await?;
+    bundle::ensure_installed(&gateway_ssh, request.bundle_dir, Some(&settings.preview_domain), progress).await?;
     vm::ensure_running(&session_vm, &ssh, progress).await?;
     vm::wait_until_ready(&session_vm, &ssh, progress).await?;
-    bundle::ensure_installed(&ssh, request.bundle_dir, &[], progress).await?;
+    bundle::ensure_installed(&ssh, request.bundle_dir, None, progress).await?;
 
     progress(RemoteStep::TransferringCode);
     let remote_worktree = hunt_ctl(&ssh, &["init", &id, "--repo", &repo]).await?["path"]

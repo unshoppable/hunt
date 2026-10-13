@@ -139,7 +139,9 @@ export const DEFAULT_GRAPH_AGENT: GraphAgent = { model: "claude-opus-5-5", effor
  * `gatewayInstance` runs all the time and routes `https://<short>.<domain>` and `https://<short>-<port>.<domain>` of
  * `previewDomain` to the session VMs. `filePatterns` are the ignored files a handoff copies along, as glob patterns
  * relative to the worktree (`*` stays within a folder, `**` crosses folders). Handoffs are offered once project, zone,
- * gateway, template and preview domain are set.
+ * gateway, template and preview domain are set. The gateway's poller `hunt-swf` starts a session VM for every open
+ * issue labelled `swf` in the `<owner>/<repo>` repositories of `swfRepos`, at most `swfMaxSessions` at once; Settings
+ * writes both to the gateway on request (`applySwfConfig`).
  */
 export type RemoteSettings = {
   project: string;
@@ -149,7 +151,12 @@ export type RemoteSettings = {
   machineType: string;
   filePatterns: string[];
   previewDomain: string;
+  swfRepos: string[];
+  swfMaxSessions: number;
 };
+export const DEFAULT_SWF_MAX_SESSIONS = 2;
+/** The most `swf` sessions the gateway may run at once; the backend and `hunt-ctl swf-config` accept no more. */
+export const SWF_MAX_SESSIONS_LIMIT = 10;
 export const DEFAULT_REMOTE: RemoteSettings = {
   project: "",
   zone: "",
@@ -158,7 +165,30 @@ export const DEFAULT_REMOTE: RemoteSettings = {
   machineType: "",
   filePatterns: ["**/.env.private"],
   previewDomain: "",
+  swfRepos: [],
+  swfMaxSessions: DEFAULT_SWF_MAX_SESSIONS,
 };
+
+/** `<owner>/<repo>` with the characters `hunt-ctl` accepts in repository keys; no part starts with a dot. */
+const REPOSITORY_KEY_PATTERN = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\/[A-Za-z0-9_-][A-Za-z0-9_.-]*$/;
+
+/** The `<owner>/<repo>` entries of `repos`, trimmed, without invalid entries and repeats (GitHub ignores case). */
+export function normalizeSwfRepos(repos: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const repo of repos.map((entry) => entry.trim())) {
+    if (!REPOSITORY_KEY_PATTERN.test(repo) || seen.has(repo.toLowerCase())) continue;
+    seen.add(repo.toLowerCase());
+    result.push(repo);
+  }
+  return result;
+}
+
+/** `value` as a whole number between 0 and `SWF_MAX_SESSIONS_LIMIT`; the default when it is no number. */
+function clampSwfMaxSessions(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_SWF_MAX_SESSIONS;
+  return Math.min(SWF_MAX_SESSIONS_LIMIT, Math.max(0, Math.round(value)));
+}
 
 /** Host names of at least two labels, as the backend accepts them. */
 const PREVIEW_DOMAIN_PATTERN = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -201,6 +231,8 @@ export function normalizeRemote(remote: RemoteSettings): RemoteSettings {
     machineType: remote.machineType.trim(),
     filePatterns,
     previewDomain,
+    swfRepos: normalizeSwfRepos(remote.swfRepos ?? []),
+    swfMaxSessions: clampSwfMaxSessions(remote.swfMaxSessions ?? DEFAULT_SWF_MAX_SESSIONS),
   };
 }
 
@@ -455,7 +487,7 @@ function withDefaults(panes: Partial<Record<PaneKey, Partial<PaneSettings>>> | u
 }
 
 /** Current version of the persisted shape; `migrateSettings` brings older ones up to date. */
-export const SETTINGS_VERSION = 10;
+export const SETTINGS_VERSION = 11;
 
 /** Shape persisted up to version 6, which kept one field per resizable popup. */
 type Version6State = PersistedState & { usagesPopupSize?: PopupSize; fileSearchDialogSize?: PopupSize; subChatPopoverSize?: PopupSize };
@@ -513,18 +545,26 @@ function gatewayFromSharedVm(stored: PersistedState): PersistedState {
   return { ...stored, remote: instance === undefined ? rest : { ...rest, gatewayInstance: instance } };
 }
 
+/** Gives remote settings stored up to version 10 the poller's repositories (none) and its default session limit. */
+function withSwfDefaults(stored: PersistedState): PersistedState {
+  if (!stored.remote) return stored;
+  return { ...stored, remote: { swfRepos: [], swfMaxSessions: DEFAULT_SWF_MAX_SESSIONS, ...stored.remote } };
+}
+
 /**
  * Brings a persisted state of an earlier `version` to the current shape: version 0 only knew one font size per pane,
  * versions 1 to 4 and 7 had defaults that are lifted to the current ones where the user never changed them, versions
  * 5 and 6 kept the size of each resizable popup in its own field, versions up to 8 named Catppuccin icons in their icon
- * rules, versions up to 9 named the VM all remote sessions shared, which is the gateway now. Fields a version did not
- * have (`guardrailDirs`, `showSummary`, `iconRules`, `folderIconRules`, `confirmSessionDelete`, `diffLineScope`,
- * `changelistScopes`, `graphExcludedFiles`, the session template, …) are filled in from the defaults by `mergeSettings`.
+ * rules, versions up to 9 named the VM all remote sessions shared, which is the gateway now, and versions up to 10 had
+ * no repositories and session limit for the gateway's poller. Fields a version did not have (`guardrailDirs`,
+ * `showSummary`, `iconRules`, `folderIconRules`, `confirmSessionDelete`, `diffLineScope`, `changelistScopes`,
+ * `graphExcludedFiles`, the session template, …) are filled in from the defaults by `mergeSettings`.
  */
 export function migrateSettings(persisted: unknown, version: number): PersistedState {
-  if (version >= 10) return persisted as PersistedState;
-  if (version >= 9) return gatewayFromSharedVm(persisted as PersistedState);
-  return gatewayFromSharedVm(renameCatppuccinIcons(migrateToVersion8(persisted, version)));
+  if (version >= 11) return persisted as PersistedState;
+  if (version >= 10) return withSwfDefaults(persisted as PersistedState);
+  if (version >= 9) return withSwfDefaults(gatewayFromSharedVm(persisted as PersistedState));
+  return withSwfDefaults(gatewayFromSharedVm(renameCatppuccinIcons(migrateToVersion8(persisted, version))));
 }
 
 function migrateToVersion8(persisted: unknown, version: number): PersistedState {

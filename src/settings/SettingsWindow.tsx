@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEv
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAccountsSync, useSettingsSync } from "../app/bootstrap";
 import { commands } from "../ipc/commands";
-import type { GithubTokenStatus } from "../ipc/types";
+import type { GithubTokenStatus, SwfConfig } from "../ipc/types";
 import { listenTo } from "../ipc/events";
 import { appVersion, checkForUpdate, installUpdate, relaunchApp, type Update } from "../ipc/updater";
 import { FOLDER_ICON_NAMES, resolveFileIcon, resolveFolderIcon, useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
@@ -16,6 +16,8 @@ import {
   DEFAULT_SYSTEM_PROMPT,
   FONT_FAMILY_PRESETS,
   PANE_RANGES,
+  SWF_MAX_SESSIONS_LIMIT,
+  configuredVmSettings,
   isFolderIconRulesDefault,
   isIconRulesDefault,
   useSettingsStore,
@@ -595,6 +597,7 @@ function RemoteSection() {
             template, gateway and preview domain are set.
           </p>
         </div>
+        <SwfRows />
         <GithubTokenRow />
         <div className="flex flex-col gap-1">
           <div className="text-sm text-neutral-100">Ignored files to copy</div>
@@ -606,6 +609,106 @@ function RemoteSection() {
         </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * The repositories and the session limit of the gateway's issue poller hunt-swf, which "Apply to gateway" writes to the
+ * gateway (see src-tauri/src/remote/swf.rs); the settings keep them for the next apply.
+ */
+function SwfRows() {
+  const remote = useSettingsStore((state) => state.remote);
+  const setRemote = useSettingsStore((state) => state.setRemote);
+  const vmSettings = configuredVmSettings(remote);
+  const [isApplying, setIsApplying] = useState(false);
+  const [applied, setApplied] = useState<SwfConfig | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function apply() {
+    // The store's state, since a field that loses focus to this button commits its value in the same click.
+    const current = useSettingsStore.getState().remote;
+    const settings = configuredVmSettings(current);
+    if (!settings || isApplying) return;
+    setIsApplying(true);
+    try {
+      setApplied(await commands.applySwfConfig(settings, current.swfRepos, current.swfMaxSessions));
+      setError(null);
+    } catch (reason) {
+      setApplied(null);
+      setError(errorText(reason));
+    } finally {
+      setIsApplying(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="text-sm text-neutral-100">GitHub issues (swf)</div>
+      <TextRow
+        label="Repositories"
+        value={remote.swfRepos.join(", ")}
+        onChange={(text) => setRemote({ swfRepos: text.split(",") })}
+        placeholder="owner/repo, owner/repo"
+        isMonospace
+      />
+      <CountRow label="Max parallel sessions" value={remote.swfMaxSessions} min={0} max={SWF_MAX_SESSIONS_LIMIT} onChange={(swfMaxSessions) => setRemote({ swfMaxSessions })} />
+      <div className="flex items-center justify-end gap-2 py-1 pr-9">
+        {isApplying ? (
+          <span className="flex min-w-0 items-center gap-2 text-[13px] text-neutral-400">
+            <Spinner />
+            Installing on the gateway…
+          </span>
+        ) : applied ? (
+          <span className="min-w-0 text-[13px] text-neutral-400">{appliedText(applied)}</span>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => void apply()}
+          disabled={!vmSettings || isApplying}
+          title={vmSettings ? undefined : "Set project, zone, template, gateway and preview domain first"}
+          className={PRIMARY_BUTTON_XS}
+        >
+          Apply to gateway
+        </button>
+      </div>
+      {error ? <p className="text-[13px] leading-snug break-words text-red-300">{error}</p> : null}
+      <p className="text-[13px] leading-snug text-neutral-500">
+        The gateway's poller hunt-swf checks these repositories every 2 minutes for open issues labelled swf and starts a session VM for each, at most this many at
+        once. Its GitHub and Claude tokens come from Secret Manager (hunt-swf-github-token, hunt-swf-claude-token). Without repositories the poller stays idle.
+        Changes reach the gateway only with "Apply to gateway".
+      </p>
+    </div>
+  );
+}
+
+/** What the gateway stored, in one line. */
+function appliedText(config: SwfConfig): string {
+  if (!config.repos.length) return "Applied: the poller is idle.";
+  return `Applied: ${config.repos.join(", ")}, at most ${config.maxSessions} at once.`;
+}
+
+/** A whole number between `min` and `max` with − and + buttons. */
+function CountRow({ label, value, min, max, onChange }: { label: string; value: number; min: number; max: number; onChange: (value: number) => void }) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="min-w-0 flex-1 text-sm text-neutral-100">{label}</div>
+      <div className="flex items-center rounded border border-neutral-600 bg-(--surface-input)">
+        <StepButton label="−" onClick={() => onChange(value - 1)} disabled={value <= min} />
+        <input
+          type="number"
+          min={min}
+          max={max}
+          step={1}
+          value={value}
+          onChange={(event) => onChange(Number(event.target.value))}
+          aria-label={label}
+          className="w-14 bg-transparent py-1 text-center text-sm tabular-nums outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+        />
+        <StepButton label="+" onClick={() => onChange(value + 1)} disabled={value >= max} />
+      </div>
+      {/* Keeps the field aligned with the unit column of NumberRow. */}
+      <span className="w-6" />
+    </div>
   );
 }
 

@@ -127,6 +127,13 @@ export type VmRef = { project: string; zone: string; instance: string };
  */
 export type VmSettings = { project: string; zone: string; gateway: string; template: string; machineType: string | null; previewDomain: string };
 
+/**
+ * What the gateway's poller `hunt-swf` reads from `/etc/hunt/swf.json` (mirror of `SwfConfig` in
+ * src-tauri/src/remote/swf.rs): the `<owner>/<repo>` repositories whose open issues labelled `label` it starts sessions
+ * for, at most `maxSessions` at once, on VMs created from `template` with `machineType` or the template's.
+ */
+export type SwfConfig = { repos: string[]; maxSessions: number; label: string; template: string; machineType: string | null };
+
 /** A session VM as Compute Engine lists it, with its labels and metadata (mirror of `SessionVm` in src-tauri/src/remote/vm.rs). */
 export type SessionVm = {
   name: string;

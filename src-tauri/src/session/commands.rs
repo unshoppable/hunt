@@ -635,6 +635,18 @@ pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths:
     Ok(adopted)
 }
 
+/// Writes the configuration of the gateway's issue poller to the gateway of `settings`: open issues labelled `swf` in
+/// `repos` get a session VM each, created like a handoff's, at most `max_sessions` at once. Returns what the gateway
+/// stored.
+#[tauri::command]
+pub async fn apply_swf_config(app: AppHandle, settings: VmSettings, repos: Vec<String>, max_sessions: u32) -> Result<remote::swf::SwfConfig, String> {
+    // No session VM is involved; the nil ID only satisfies the check of the session VM's name.
+    let settings = VmSettings { preview_domain: settings.validate(Uuid::nil())?, ..settings };
+    let config = remote::swf::SwfConfig::new(&settings, repos, max_sessions);
+    let bundle_dir = bundled_script_path(&app, "remote")?;
+    remote::swf::apply(&settings, &bundle_dir, &ssh_dir()?, &config, &|_| {}).await
+}
+
 /// The worktree of the remote session `id` on its running VM behind `ssh`: the one `target` names, or for an adopted
 /// session that never reached its VM the one the VM records, which the session's record keeps from then on.
 async fn remote_worktree(app: &AppHandle, id: Uuid, target: &RemoteTarget, ssh: &Ssh) -> Result<String, String> {

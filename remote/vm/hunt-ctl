@@ -817,7 +817,8 @@ cmd_prepare() {
   require_line "git email" "$git_email"
   [[ -z $origin || $origin =~ ^https://github\.com/[A-Za-z0-9_-][A-Za-z0-9._-]*/[A-Za-z0-9_-][A-Za-z0-9._-]*\.git$ ]] || die "invalid origin: $origin"
   if [[ -n $upstream ]]; then
-    [[ -n $origin && $upstream != -* ]] && git check-ref-format --branch "$upstream" >/dev/null 2>&1 || die "invalid upstream: $upstream"
+    [[ -n $origin && $upstream != -* ]] || die "invalid upstream: $upstream"
+    git check-ref-format --branch "$upstream" >/dev/null 2>&1 || die "invalid upstream: $upstream"
   fi
   [[ -z $hooks_path || ( $hooks_path =~ ^[A-Za-z0-9_.][A-Za-z0-9._/-]*$ && /$hooks_path/ != */../* ) ]] || die "invalid hooks path: $hooks_path"
 

@@ -28,6 +28,7 @@ use crate::github_token;
 use crate::graph::{self, WatcherRegistry};
 use crate::ide;
 use crate::lsp::{self, LspRegistry};
+use crate::remote::diff::RemoteChanges;
 use crate::remote::preview::PreviewStatus;
 use crate::remote::ssh::Ssh;
 use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize};
@@ -651,6 +652,39 @@ async fn remote_worktree(app: &AppHandle, id: Uuid, target: &RemoteTarget, ssh: 
     })?;
     announce_sessions_changed(app);
     Ok(meta.worktree)
+}
+
+/// The changes of the remote session `id` on its VM since its handoff (or, for a session the poller started, since its
+/// default branch), read-only. A VM that is off reports none and stays off unless `start_vm` is set.
+#[tauri::command]
+pub async fn remote_changes(
+    app: AppHandle,
+    registry: State<'_, SessionRegistry>,
+    id: Uuid,
+    start_vm: bool,
+) -> Result<RemoteChanges, String> {
+    let target = store::find_session(&app, id)?.remote.ok_or("failed to list the changes on the VM: the session runs locally")?;
+    let is_connected = registry.live.lock().await.contains_key(&id);
+    if !is_connected && !start_vm && remote::vm::status(&target.vm).await? != "RUNNING" {
+        return Ok(RemoteChanges::vm_off());
+    }
+    let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
+    if !is_connected && start_vm {
+        remote::vm::ensure_running(&target.vm, &ssh, &|_: RemoteStep| {}).await?;
+    }
+    let worktree = remote_worktree(&app, id, &target, &ssh).await?;
+    remote::diff::changed_files(&ssh, &worktree, id, &target.handoff_head).await
+}
+
+/// The diff of the worktree-relative `path` of the remote session `id` on its VM against `base`, the commit
+/// `remote_changes` compared against.
+#[tauri::command]
+pub async fn read_remote_file_diff(app: AppHandle, id: Uuid, base: String, path: String) -> Result<FileDiff, String> {
+    git::ensure_inside_worktree(&path)?;
+    let target = store::find_session(&app, id)?.remote.ok_or("failed to read the diff on the VM: the session runs locally")?;
+    let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
+    let worktree = remote_worktree(&app, id, &target, &ssh).await?;
+    remote::diff::file_diff(&ssh, &worktree, &base, &path).await
 }
 
 /// A chunk of a terminal's output as base64 of its bytes, which may end inside a UTF-8 or an escape sequence.

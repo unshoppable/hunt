@@ -70,6 +70,8 @@ pub fn run() {
             session::commands::preview_status,
             session::commands::list_session_vms,
             session::commands::adopt_session_vms,
+            session::commands::remote_changes,
+            session::commands::read_remote_file_diff,
             session::commands::open_terminal,
             session::commands::write_terminal,
             session::commands::resize_terminal,

@@ -5,6 +5,7 @@ import { SessionSidebar } from "../sessions/SessionSidebar";
 import { NewSessionView } from "../sessions/NewSessionView";
 import { ChatPanel } from "../chat/ChatPanel";
 import { DiffPanel } from "../diff/DiffPanel";
+import { RemoteDiffPanel } from "../diff/RemoteDiffPanel";
 import { GraphPanel } from "../graph/GraphPanel";
 import { IdePanel } from "../ide/IdePanel";
 import { PullRequestPanel } from "../review/PullRequestPanel";
@@ -105,6 +106,7 @@ export function App() {
               {activeRemoteInstance ? (
                 <>
                   <TabButton isActive={remoteTab === "preview"} onClick={() => setRemoteTab("preview")} label="Preview" />
+                  <TabButton isActive={remoteTab === "diff"} onClick={() => setRemoteTab("diff")} label="Diff" />
                   <TabButton isActive={remoteTab === "terminal"} onClick={() => setRemoteTab("terminal")} label="Terminal" />
                 </>
               ) : (
@@ -121,6 +123,7 @@ export function App() {
                 // The terminal stays mounted while the preview shows, so switching tabs keeps its connection.
                 <Fragment key={activeSessionId}>
                   {remoteTab === "preview" ? <PreviewPanel sessionId={activeSessionId} /> : null}
+                  {remoteTab === "diff" ? <RemoteDiffPanel sessionId={activeSessionId} /> : null}
                   <TerminalPanel sessionId={activeSessionId} isVisible={remoteTab === "terminal"} />
                 </Fragment>
               ) : rightTab === "diff" ? (

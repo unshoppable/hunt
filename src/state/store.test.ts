@@ -642,6 +642,16 @@ describe("remote sessions", () => {
     useSettingsStore.setState({ remote: DEFAULT_REMOTE });
   });
 
+  it("reloads the changes once a turn on the relay ends, whoever sent it", () => {
+    useHuntStore.setState({ chats: {} });
+    const { applyUpdate } = useHuntStore.getState();
+    applyUpdate(SESSION, notification({ sessionUpdate: "session_info_update", _meta: { hunt: { turn: "idle" } } }));
+    expect(useHuntStore.getState().chats[SESSION].editVersion).toBe(0);
+    applyUpdate(SESSION, notification({ sessionUpdate: "session_info_update", _meta: { hunt: { turn: "running" } } }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "session_info_update", _meta: { hunt: { turn: "idle" } } }));
+    expect(useHuntStore.getState().chats[SESSION].editVersion).toBe(1);
+  });
+
   it("shows the mode the agent reports in its mode option", () => {
     useHuntStore.setState({ chats: {} });
     useHuntStore.getState().applyUpdate(SESSION, notification({

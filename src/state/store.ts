@@ -35,8 +35,8 @@ export type ContextUsage = { used: number; size: number };
 /** Views of the inspector pane: the changelist diff, the built-in editor or the component diagram. */
 export type RightTab = "diff" | "editor" | "graph" | "pullRequest";
 
-/** Views of the inspector pane while it shows a remote session: its preview or a terminal on its VM. */
-export type RemoteTab = "preview" | "terminal";
+/** Views of the inspector pane while it shows a remote session: its preview, its changes on the VM or a terminal there. */
+export type RemoteTab = "preview" | "diff" | "terminal";
 
 /** The last adoption of session VMs (see `syncRemoteSessions`): whether one runs and what the last one failed with. */
 export type RemoteSync = { isRunning: boolean; error: string | null };
@@ -463,7 +463,10 @@ function reduceChat(chat: SessionChat, notification: SessionNotification): Sessi
       return { ...chat, contextUsage: { used: update.used, size: update.size } };
     case "session_info_update": {
       const turn = huntTurnOf(update._meta);
-      return turn ? { ...chat, isBusy: turn === "running" } : chat;
+      if (!turn) return chat;
+      // A turn that ends, whoever on the relay sent it, may have changed the worktree on the VM.
+      const hasEnded = turn === "idle" && chat.isBusy;
+      return { ...chat, isBusy: turn === "running", editVersion: hasEnded ? chat.editVersion + 1 : chat.editVersion };
     }
     default:
       return chat;

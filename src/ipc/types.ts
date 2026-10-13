@@ -173,6 +173,12 @@ export type RemoteTarget = {
   issue: number | null;
 };
 
+/**
+ * The changes of a remote session on its VM (mirror of `RemoteChanges` in src-tauri/src/remote/diff.rs): the commit
+ * they are compared against (the merge base with the handoff head or the default branch) and the changed files, sorted
+ * by path. While the VM is off, `base` is null and `files` is empty.
+ */
+export type RemoteChanges = { vmRunning: boolean; base: string | null; files: ChangedFile[] };
 
 /** A step of a handoff, a retrieval or a connect to a remote session that takes long enough to show. */
 export type RemoteStep =

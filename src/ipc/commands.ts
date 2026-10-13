@@ -14,6 +14,7 @@ import type {
   PullRequest,
   PullRequestDetails,
   PullRequestRef,
+  RemoteChanges,
   ReplyTarget,
   ReviewComment,
   ReviewEvent,
@@ -102,6 +103,10 @@ export const commands = {
    * repository among `repoPaths` and the stored sessions' repositories; resolves with the IDs of the new sessions.
    */
   adoptSessionVms: (settings: VmSettings, repoPaths: string[]) => invoke<string[]>("adopt_session_vms", { settings, repoPaths }),
+  /** The remote session's changes on its VM, read-only; a VM that is off reports none and stays off unless `startVm` is set. */
+  remoteChanges: (id: string, startVm: boolean) => invoke<RemoteChanges>("remote_changes", { id, startVm }),
+  /** The diff of `path` of the remote session on its VM against `base`, the commit `remoteChanges` compared against. */
+  readRemoteFileDiff: (id: string, base: string, path: string) => invoke<FileDiff>("read_remote_file_diff", { id, base, path }),
   /**
    * Opens a terminal with `cols` × `rows` cells on the VM of the remote session `id`, attached to the tmux session of
    * the app's processes. The caller picks `terminalId` and listens before it calls, since the output (`terminal:output`,

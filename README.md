@@ -345,6 +345,13 @@ window that opened it as base64 chunks (`terminal:output`, then `terminal:exit`)
 shown, stays connected while the preview tab shows, and ends with the session's panel, its window or a reload; tmux
 keeps the processes running. A VM that is off is not started for it.
 
+The *Diff* tab of a remote session (`src/diff/RemoteDiffPanel.tsx`) shows its changes on the VM read-only: committed
+and uncommitted, against the merge base of the VM's `HEAD` with the handoff head (for a session the poller started,
+with the origin's default branch). `src-tauri/src/remote/diff.rs` runs one bash script per request as `agent` in the
+worktree on the VM and returns the shapes of the local changelist (`ChangedFile`, `FileDiff`). The list reloads after
+every turn that ends on the relay, whoever sent it, and on *Refresh*; a VM that is off starts only on request. Revert,
+shelve and review comments stay switched off until the session is brought back.
+
 Bringing it back (`retrieve_session`) stops the relay, snapshots the VM's worktree on top of the agent's commits
 (`refs/hunt/<id>/retrieve`), fetches it and applies it to the local worktree, which must still hold the handoff
 snapshot; the branch moves to the agent's last commit and the transcript returns. Then Hunt deletes the VM with its

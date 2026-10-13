@@ -108,6 +108,8 @@ Session VM and gateway:
   version                hash of the current release
 
 Session VM:
+  install-tools <dir>    install only the agent's tools of the bundle in <dir>, as install does, without a release or
+                         units; the image build of the session VMs bakes them into the image
   init <id> --repo <owner>/<repo>
                          create the session's empty repository /home/agent/<repo> (removing what an earlier handoff
                          left)
@@ -341,6 +343,20 @@ cmd_install() {
   printf '%s\n' "$hash" >"$INSTALLED_HASH_FILE.tmp"
   mv -f "$INSTALLED_HASH_FILE.tmp" "$INSTALLED_HASH_FILE"
   emit --arg hash "$hash" '{hash: $hash}'
+}
+
+# Installs the agent's tools of the bundle in $1 as cmd_install does, but leaves releases, units and the installed hash
+# alone, so that an image built from the VM holds the tools and a later install of a bundle with the same versions skips
+# them.
+cmd_install_tools() {
+  (( $# == 1 )) || usage
+  local source=$1
+  [[ -f $source/vm/hunt-ctl && -f $source/session/acp-version ]] || die "$source is not a Hunt remote bundle"
+  install -d -m 0755 "$STATE_DIR"
+  exec 9>"$STATE_DIR/install.lock"
+  flock --wait 1800 9 || die "another hunt-ctl install did not finish within 30 minutes"
+  install_agent_tools "$source"
+  emit '{installed: true}'
 }
 
 # Installs the systemd units of the current release for the VM's role, the hunt-ctl link and, on a session VM, the
@@ -1282,8 +1298,8 @@ main() {
   role=$(read_role)
   case $command in
     install | install-units | version) ;;
-    init | clone | receive-pack | upload-pack | lfs-put | lfs-get | put-files | get-claude | prepare | deps | session-config | \
-      start | wait | stop | clear | snapshot | status | preview-status | destroy)
+    install-tools | init | clone | receive-pack | upload-pack | lfs-put | lfs-get | put-files | get-claude | prepare | deps | \
+      session-config | start | wait | stop | clear | snapshot | status | preview-status | destroy)
       [[ $role == session ]] || die "hunt-ctl $command runs on session VMs only; this VM is the gateway"
       ;;
     swf-config)
@@ -1292,7 +1308,7 @@ main() {
     *) usage ;;
   esac
   case $command in
-    version | status | preview-status) counts_as_activity=false ;;
+    version | status | preview-status | install-tools) counts_as_activity=false ;;
   esac
   install -d -m 0755 "$STATE_DIR"
   if $counts_as_activity; then
@@ -1323,6 +1339,7 @@ main() {
   case $command in
     install) cmd_install "$@" ;;
     install-units) cmd_install_units "$@" ;;
+    install-tools) cmd_install_tools "$@" ;;
     version) cmd_version "$@" ;;
     init) cmd_init "$@" ;;
     clone) cmd_clone "$@" ;;

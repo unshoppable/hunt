@@ -301,21 +301,38 @@ people, can be attached at once: each gets every update live, their prompts run 
 request goes to all of them; the first answer counts, and the relay withdraws the request from the others. Diff,
 editor, graph and guardrails stay local and wait until the session comes back.
 
-Sessions on the VM are kept apart: every git, tar or file operation `hunt-ctl` runs on a session's files happens in a
-throwaway container without network that sees only that session, so its hooks, Git config and symlinks never act on the
-host; each session's containers get their own Docker network, and `hunt-firewall.service` keeps them off the VM's own
-services and the metadata server. Files that come back from the VM are copied without following symlinks.
+Every session has a VM of its own, which is the isolation boundary: the agent works there as the user `agent`, with
+Docker and Docker Compose, and starts the app as a developer would locally. `remote/vm/hunt-ctl` runs every git, tar
+or file operation in the session's files as `agent`, so the agent's hooks, Git config and symlinks act with no more
+rights than the agent has anyway. Files that come back from the VM are copied without following symlinks.
 
-The relay also supervises the session's preview (`remote/relay/preview/`), which the `preview` section of the
-repository's `hunt.json` describes: services from Hunt's catalog, environment, `prepare` and `init` steps and processes
-with ports. `contract.ts` checks that section and builds a plan from it (`planCli.ts`, which `hunt-ctl` runs in a
-sandbox). `supervisor.ts` runs a plan it receives on `preview.sock` (`control.ts`): it forwards `127.0.0.1:5432`,
-`:6379` and `:9200` to the service containers (Postgres 18, Redis 7.2, Elasticsearch 9), runs the `prepare` steps, the
-`init` steps once per data generation and then every process in a process group of its own, with readiness checks and
-restarts with backoff. A process with a port has to listen on 0.0.0.0: the readiness check, like the edge proxy,
-connects to the container's address. `preview.json`, the applied plan and one log per process lie in the socket folder's
-`preview/`; a relay restart within the same boot resumes the plan. The agent checks and restarts the processes and reads
-their logs with `hunt-preview` (`cli.ts`).
+`/etc/hunt/role` tells `hunt-ctl` whether it runs on a session VM or on the gateway. On a session VM, `hunt-ctl
+install` puts the release under `/srv/hunt/releases/<hash>` and adds what the agent works with besides the VM's base
+image: build tools, gh, Terraform, Volta for the Node and npm versions a repository pins, the ACP adapter in the version
+`remote/session/acp-version` pins, with the native Claude Code CLI, and Playwright's MCP server with Chromium
+(`remote/session/playwright/`, offered to Claude Code through `remote/session/mcp-servers.json`); a tool that is at its
+version already is skipped. The relay runs as `hunt-relay.service` (`remote/vm/systemd/session/`) with the agent's
+environment (`remote/vm/agent.env`), the session's variables and the tokens of `/etc/hunt/secrets.env`, which only root
+reads. A restart of the relay, such as `/clear`, leaves the dev servers and the tmux session the agent started running.
+Login shells of `agent`, such as the terminal's tmux session, get the same environment without the tokens
+(`/etc/profile.d/hunt.sh`).
+
+`hunt-ctl session-config` reads the `preview` section of the repository's `hunt.json` (contract version 2,
+`remote/session/config.ts`): `env` with the placeholders `${HUNT_PREVIEW_URL}` and `${HUNT_PREVIEW_URL_<port>}`,
+`main`, `routes` (path prefix → port on every preview host) and `tls` (ports that speak HTTPS). It writes the session's
+environment, `/etc/hunt/session.env`, and the configuration of the VM's preview proxy, `hunt-proxy.service` (Caddy on
+port 8080), which serves `<short id>.<domain>` from the main port and `<short id>-<port>.<domain>` from that port on
+127.0.0.1, keeps the Host header and logs every request to `/var/log/hunt-proxy/access.log`. `hunt-ctl preview-status`
+reports the main port, the ports that listen on all or the loopback addresses and whether the main port answers.
+
+The gateway keeps no sessions. Its edge proxy `hunt-edge` (Caddy in Docker on port 8080 behind the load balancer)
+serves only the load balancer's address ranges, removes IAP's headers and cookies and forwards every preview host with
+its Host header to `vm-hunt-s-<short id>.<zone>.c.<project>.internal:8080`: the session VMs' internal DNS names are the
+whole routing table. A request it cannot deliver (502, 503 or 504, because the VM is off or still booting) goes to
+`hunt-wake.service` on 127.0.0.1:9180 (`remote/gateway/wake.ts`). It looks the VM up through the Compute Engine API
+with the gateway's service account, starts or resumes it for a page load, at most once every 30 seconds and never for
+a script's request of a tab already open, and answers with a page that reloads every 5 seconds until the VM answers.
+`hunt-firewall.service` keeps containers on the gateway off the metadata server, whose token can start VMs.
 
 *Open preview* (cloud menu, or the preview panel to the right of a remote session's chat) runs `hunt-ctl preview
 start` with the preview domain from *Settings → Remote VM*. It reads `hunt.json` inside the session's container, starts
@@ -345,9 +362,11 @@ only the VM changed takes its version, one both sides changed keeps the local ve
 A remote session takes space on the VM until it is retrieved or deleted. Hunt records when its agent last worked (a
 prompt it sent, a turn that ended, or the relay's last turn when it connects) and, once that is seven days ago, asks in
 the main window whether to retrieve or delete it (`src/sessions/StaleRemoteDialog.tsx`); "Later" asks again three days
-later. `hunt-ctl install` also removes Docker's build cache and empties the shared npm cache above 10 GB. The VM shuts itself down after 30
-minutes without a running turn, client activity or terminal login (`remote/vm/hunt-idle-check`); the next prompt
-starts it again.
+later. A session VM shuts itself down after 30 minutes without a running turn, client activity, terminal input or
+`hunt-ctl` run (`remote/vm/hunt-idle-check`, every minute through `hunt-idle.timer`); a preview page view or a request
+other than GET counts too, for at most two hours after the agent last worked. Dev servers and containers the agent left
+running do not count. The disk keeps everything: the next prompt or preview page starts the VM again, and the agent
+restarts the app's containers and dev servers.
 
 &nbsp;
 
@@ -363,7 +382,7 @@ starts it again.
 | `src-tauri/src/workspace.rs` | Project tree and file access |
 | `src-tauri/src/graph.rs` | Dependency graph prompt and status |
 | `src-tauri/src/remote/` | SSH to the VM, handoff and retrieval of remote sessions, previews, terminals |
-| `remote/` | VM side of remote sessions: relay with the preview supervisor, container image, `hunt-ctl` |
+| `remote/` | VM side of remote sessions: `hunt-ctl`, the relay, the session VM's configuration, the gateway's wake service |
 | `src/ipc/` | Every Tauri command, event and shared type |
 | `src/state/` | Zustand stores and chat reducers |
 | `src/chat/`, `src/diff/`, `src/ide/`, `src/graph/`, `src/guardrails/`, `src/preview/`, `src/review/`, `src/sessions/`, `src/settings/`, `src/terminal/` | One folder per tab or window |

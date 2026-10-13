@@ -36,8 +36,8 @@ pub struct Retrieved {
     pub branch: Option<String>,
 }
 
-/// Stops the session on its VM and applies its state to the local worktree. The VM stays; the caller deletes it (for a
-/// session of an older Hunt, the session's files on the gateway) once the session runs locally again.
+/// Stops the session on its VM and applies its state to the local worktree. The VM stays; the caller deletes it once the
+/// session runs locally again.
 pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> Result<Retrieved, String> {
     if let Some(repo) = request.adopted_into {
         return retrieve_adopted(&request, repo, progress).await;
@@ -110,17 +110,14 @@ async fn retrieve_adopted(request: &RetrieveRequest<'_>, repo: &Path, progress: 
     }
 }
 
-/// Starts the session's VM when it is off and connects; a session VM gets this app's runtime first, so that its
-/// `hunt-ctl` knows the commands the retrieval runs. A session of an older Hunt runs on the gateway, whose `hunt-ctl`
-/// stays as it is (see `super::legacy`).
+/// Starts the session's VM when it is off and connects; the VM gets this app's runtime first, so that its `hunt-ctl`
+/// knows the commands the retrieval runs.
 async fn connect(request: &RetrieveRequest<'_>, progress: Progress<'_>) -> Result<Ssh, String> {
     let target = request.target;
     progress(RemoteStep::Connecting);
     let ssh = Ssh::open(&target.vm, request.ssh_dir).await?;
     vm::ensure_running(&target.vm, &ssh, progress).await?;
-    if !target.is_legacy(request.hunt_session_id) {
-        bundle::ensure_installed(&ssh, request.bundle_dir, None, progress).await?;
-    }
+    bundle::ensure_installed(&ssh, request.bundle_dir, None, progress).await?;
     Ok(ssh)
 }
 

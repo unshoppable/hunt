@@ -478,10 +478,8 @@ async fn activate(
 }
 
 /// Connects to the relay of the remote session `record`: starts its VM when it is off (it stops itself when idle), brings
-/// its runtime to this app's version, makes sure its relay runs and opens the ACP stream over SSH; a session of an older
-/// Hunt is reached on the gateway through its old socket, with nothing installed there (`remote::legacy`). The relay
-/// may have started a new conversation (`/clear`, or a transcript it could not load); the record then gets that
-/// conversation's ID.
+/// its runtime to this app's version, makes sure its relay runs and opens the ACP stream over SSH. The relay may have
+/// started a new conversation (`/clear`, or a transcript it could not load); the record then gets that conversation's ID.
 async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: &WatcherRegistry, record: SessionRecord) -> Result<SessionView, String> {
     let id = record.id;
     let target = record.remote.clone().ok_or("failed to connect the remote session: it runs locally")?;
@@ -490,9 +488,7 @@ async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: 
     let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
     remote::vm::ensure_running(&target.vm, &ssh, &progress).await?;
     // A VM handed off by an older release gets this app's relay and hunt-ctl; a relay that runs keeps running.
-    if !target.is_legacy(id) {
-        remote::bundle::ensure_installed(&ssh, &bundled_script_path(app, "remote")?, None, &progress).await?;
-    }
+    remote::bundle::ensure_installed(&ssh, &bundled_script_path(app, "remote")?, None, &progress).await?;
     // An adopted session learns its worktree on the VM with its first connect; the chat works without it.
     let (record, target) = if target.worktree_path.as_os_str().is_empty() {
         match remote_worktree(app, id, &target, &ssh).await {
@@ -519,11 +515,7 @@ async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: 
         .or_else(|| record.acp_session_id.clone())
         .ok_or("failed to connect the remote session: its relay reports no conversation")?;
 
-    let relay_command = if target.is_legacy(id) {
-        remote::legacy::relay_command(id)
-    } else {
-        remote::shell_command("sudo", &["-n", "-u", "agent", "socat", "-", RELAY_SOCKET])
-    };
+    let relay_command = remote::shell_command("sudo", &["-n", "-u", "agent", "socat", "-", RELAY_SOCKET]);
     let ssh_args = ssh.stream_args(&relay_command);
     let start = SessionStart::Load { cwd: target.worktree_path.clone(), acp_session_id };
     activate(app, registry, watchers, record, start, AgentTransport::Remote { ssh_args }).await
@@ -919,7 +911,7 @@ fn ensure_hand_off_allowed(app: &AppHandle, record: &SessionRecord) -> Result<()
     if sessions.iter().any(|session| session.parent_id == Some(record.id)) {
         return Err("failed to hand off the session: close its sub sessions first".into());
     }
-    remote::legacy::ensure_none(sessions.iter().map(|session| (session.id, session.title.as_str(), session.remote.as_ref())))
+    Ok(())
 }
 
 /// Brings the remote session `id` back: its relay stops, its commits, uncommitted work and transcript come back into the
@@ -1064,19 +1056,13 @@ fn change_pending_cleanups(app: &AppHandle, change: impl FnOnce(&mut Vec<Pending
     }
 }
 
-/// Ends the remote side `target` of session `id` for good: the base of its memory merge goes, and its VM is deleted,
-/// or for a session of an older Hunt its files and containers on the gateway. Failures are only logged.
+/// Ends the remote side `target` of session `id` for good: the base of its memory merge goes, and its VM is deleted.
+/// Failures are only logged.
 async fn forget_remote(app: &AppHandle, target: &RemoteTarget, id: Uuid) {
     if let Ok(path) = memory_base_path(app, id) {
         let _ = std::fs::remove_file(path);
     }
-    if !target.is_legacy(id) {
-        delete_session_vm(app, &target.vm, id).await;
-        return;
-    }
-    if let Err(error) = async { remote::legacy::destroy(target, id, &ssh_dir()?).await }.await {
-        eprintln!("removing session {id} from the gateway {} failed: {error}", target.vm.instance);
-    }
+    delete_session_vm(app, &target.vm, id).await;
 }
 
 /// Sessions whose VM this run of Hunt asked Compute Engine to delete. The VM stays listed while it shuts down, and an

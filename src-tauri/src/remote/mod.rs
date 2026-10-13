@@ -3,14 +3,12 @@
 //! (`bundle.rs`), and moving a session's git state and Claude Code transcript there and back (`handoff.rs`,
 //! `retrieve.rs`, `transcript.rs`), adopting session VMs no local session knows (`adoption.rs`), the changes on a VM
 //! (`diff.rs`), previews (`preview.rs`), terminals attached to the VM's tmux session (`terminal.rs`), the configuration
-//! of the gateway's GitHub issue poller (`swf.rs`) and sessions an older Hunt handed off to the gateway (`legacy.rs`).
-//! Knows nothing about Tauri; `session/commands.rs` owns the commands.
+//! of the gateway's GitHub issue poller (`swf.rs`). Knows nothing about Tauri; `session/commands.rs` owns the commands.
 
 pub mod adoption;
 pub mod bundle;
 pub mod diff;
 pub mod handoff;
-pub mod legacy;
 pub mod memory;
 pub mod preview;
 pub mod retrieve;
@@ -140,12 +138,6 @@ impl RemoteTarget {
     /// waiting for it, and other people may work on it too.
     pub fn is_adopted(&self) -> bool {
         self.origin != RemoteOrigin::Handoff
-    }
-
-    /// Whether session `id` was handed off before every session got a VM of its own and runs on the gateway under the
-    /// `hunt-ctl` of that time (see `legacy`): its record names a VM other than `vm-hunt-s-<short id>`.
-    pub fn is_legacy(&self, id: uuid::Uuid) -> bool {
-        !vm::is_session_vm(&self.vm, id)
     }
 }
 

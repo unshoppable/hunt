@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::handoff::{lfs_object_ids, lfs_object_path, lfs_objects_dir, REMOTE_CLAUDE_DIR, REMOTE_MODE};
 use super::ssh::Ssh;
-use super::{adoption, memory, transcript};
+use super::{adoption, bundle, memory, transcript};
 use super::{hunt_ctl, shell_command, tar_extract, vm, Progress, RemoteStep, RemoteTarget};
 use crate::git;
 
@@ -19,6 +19,8 @@ pub struct RetrieveRequest<'a> {
     pub hunt_session_id: Uuid,
     pub worktree: &'a Path,
     pub target: &'a RemoteTarget,
+    /// The `remote/` folder shipped with the app.
+    pub bundle_dir: &'a Path,
     pub ssh_dir: &'a Path,
     pub claude_dir: &'a Path,
     /// The base of the repository memory the handoff sent; see `memory::merge`.
@@ -34,8 +36,8 @@ pub struct Retrieved {
     pub branch: Option<String>,
 }
 
-/// Stops the session on its VM and applies its state to the local worktree. The VM stays; the caller deletes it once
-/// the session runs locally again.
+/// Stops the session on its VM and applies its state to the local worktree. The VM stays; the caller deletes it (for a
+/// session of an older Hunt, the session's files on the gateway) once the session runs locally again.
 pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> Result<Retrieved, String> {
     if let Some(repo) = request.adopted_into {
         return retrieve_adopted(&request, repo, progress).await;
@@ -56,9 +58,7 @@ pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> R
         return Err("failed to retrieve the session: its local worktree changed since the handoff; revert or shelve those changes first".into());
     }
 
-    progress(RemoteStep::Connecting);
-    let ssh = Ssh::open(&target.vm, request.ssh_dir).await?;
-    vm::ensure_running(&target.vm, &ssh, progress).await?;
+    let ssh = connect(&request, progress).await?;
     let remote_worktree = remote_worktree(&request, &ssh).await?;
     progress(RemoteStep::StoppingAgent);
     hunt_ctl(&ssh, &["stop", &id]).await?;
@@ -88,9 +88,7 @@ async fn retrieve_adopted(request: &RetrieveRequest<'_>, repo: &Path, progress: 
         return Err(format!("failed to bring back the session: {} exists already", worktree.display()));
     }
 
-    progress(RemoteStep::Connecting);
-    let ssh = Ssh::open(&target.vm, request.ssh_dir).await?;
-    vm::ensure_running(&target.vm, &ssh, progress).await?;
+    let ssh = connect(request, progress).await?;
     let remote_worktree = remote_worktree(request, &ssh).await?;
     let checked_out = remote_branch(&ssh, &remote_worktree).await;
     let fallback = format!("hunt/{}", vm::short_id(request.hunt_session_id));
@@ -110,6 +108,20 @@ async fn retrieve_adopted(request: &RetrieveRequest<'_>, repo: &Path, progress: 
             Err(error)
         }
     }
+}
+
+/// Starts the session's VM when it is off and connects; a session VM gets this app's runtime first, so that its
+/// `hunt-ctl` knows the commands the retrieval runs. A session of an older Hunt runs on the gateway, whose `hunt-ctl`
+/// stays as it is (see `super::legacy`).
+async fn connect(request: &RetrieveRequest<'_>, progress: Progress<'_>) -> Result<Ssh, String> {
+    let target = request.target;
+    progress(RemoteStep::Connecting);
+    let ssh = Ssh::open(&target.vm, request.ssh_dir).await?;
+    vm::ensure_running(&target.vm, &ssh, progress).await?;
+    if !target.is_legacy(request.hunt_session_id) {
+        bundle::ensure_installed(&ssh, request.bundle_dir, None, progress).await?;
+    }
+    Ok(ssh)
 }
 
 /// The worktree of the session on its running VM: the one the record names, or for an adopted session that never

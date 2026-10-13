@@ -279,7 +279,8 @@ login and a key Hunt registers with OS Login, starts a session's VM when it is o
 script wrote `/var/lib/hunt/session-ready`, and installs the VM side from this repository's `remote/` folder, which
 ships with the app, on the session's VM and on the gateway (`hunt-ctl install <dir> --domain <domain>`) unless their
 last complete install, which `hunt-ctl` records as its last step in `/var/lib/hunt/installed-hash`, was of this version
-(and, on the gateway, of this preview domain).
+(and, on the gateway, of this preview domain). The session's VM gets it at the handoff and again whenever Hunt connects
+to the session or brings it back; a relay that runs keeps running and starts on the new release with its next start.
 
 A handoff (`hand_off_session`) stops the local agent and pushes the branch plus a snapshot commit of the uncommitted
 work (`refs/hunt/<id>/handoff`) into the session's repository on its VM, `/home/agent/<repository name>`, so the handoff

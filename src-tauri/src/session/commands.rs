@@ -477,10 +477,11 @@ async fn activate(
     Ok(SessionView::new(app, record, true))
 }
 
-/// Connects to the relay of the remote session `record`: starts its VM when it is off (it stops itself when idle), makes
-/// sure its relay runs and opens the ACP stream over SSH; a session of an older Hunt is reached on the gateway through
-/// its old socket (`remote::legacy`). The relay may have started a new conversation (`/clear`, or a transcript it could
-/// not load); the record then gets that conversation's ID.
+/// Connects to the relay of the remote session `record`: starts its VM when it is off (it stops itself when idle), brings
+/// its runtime to this app's version, makes sure its relay runs and opens the ACP stream over SSH; a session of an older
+/// Hunt is reached on the gateway through its old socket, with nothing installed there (`remote::legacy`). The relay
+/// may have started a new conversation (`/clear`, or a transcript it could not load); the record then gets that
+/// conversation's ID.
 async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: &WatcherRegistry, record: SessionRecord) -> Result<SessionView, String> {
     let id = record.id;
     let target = record.remote.clone().ok_or("failed to connect the remote session: it runs locally")?;
@@ -488,6 +489,10 @@ async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: 
     progress(RemoteStep::Connecting);
     let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
     remote::vm::ensure_running(&target.vm, &ssh, &progress).await?;
+    // A VM handed off by an older release gets this app's relay and hunt-ctl; a relay that runs keeps running.
+    if !target.is_legacy(id) {
+        remote::bundle::ensure_installed(&ssh, &bundled_script_path(app, "remote")?, None, &progress).await?;
+    }
     // An adopted session learns its worktree on the VM with its first connect; the chat works without it.
     let (record, target) = if target.worktree_path.as_os_str().is_empty() {
         match remote_worktree(app, id, &target, &ssh).await {
@@ -956,10 +961,12 @@ pub async fn retrieve_session(
     let activated = async {
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
         let memory_base = memory_base_path(&app, id)?;
+        let bundle_dir = bundled_script_path(&app, "remote")?;
         let request = remote::retrieve::RetrieveRequest {
             hunt_session_id: id,
             worktree: &record.worktree_path,
             target: &target,
+            bundle_dir: &bundle_dir,
             ssh_dir: &ssh_dir,
             claude_dir: &claude_dir,
             memory_base: &memory_base,

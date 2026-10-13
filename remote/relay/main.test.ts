@@ -1,16 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { label, textOf, turnOf } from "./fixtures/messages.ts";
+import { FAKE_ADAPTER, MAIN, socketTempDir, WAIT_MS, waitForStatus } from "./fixtures/relayProcess.ts";
 import { createLineDecoder, encodeLine, parseLine } from "./ndjson.ts";
-
-const MAIN = fileURLToPath(new URL("./main.ts", import.meta.url));
-const FAKE_ADAPTER = fileURLToPath(new URL("./fixtures/fakeAdapter.ts", import.meta.url));
-const WAIT_MS = 10_000;
 
 type Message = Record<string, unknown>;
 
@@ -19,11 +14,6 @@ interface TestClient {
   /** Resolves with the messages received since the last call, up to and including the first one `isLast` accepts. */
   readUntil(isLast: (message: Message) => boolean): Promise<Message[]>;
   close(): void;
-}
-
-/** A directory for the socket; Unix socket paths are limited to 104 bytes on macOS, so a long TMPDIR is not used. */
-function socketTempDir(): string {
-  return mkdtempSync(join(tmpdir().length > 60 ? "/tmp" : tmpdir(), "hunt-relay-"));
 }
 
 function connectClient(path: string): Promise<TestClient> {
@@ -57,24 +47,6 @@ function connectClient(path: string): Promise<TestClient> {
       }),
     );
   });
-}
-
-async function waitForStatus(path: string, isDone: (status: Message) => boolean, output: () => string): Promise<Message> {
-  const deadline = Date.now() + WAIT_MS;
-  while (Date.now() < deadline) {
-    const status = parseLine(readFileSyncOrEmpty(path));
-    if (status && isDone(status as Message)) return status as Message;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error(`timed out waiting for ${path}; relay output:\n${output()}`);
-}
-
-function readFileSyncOrEmpty(path: string): string {
-  try {
-    return readFileSync(path, "utf8");
-  } catch {
-    return "";
-  }
 }
 
 describe("main", () => {

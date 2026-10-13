@@ -389,6 +389,29 @@ anything, brings them back with the same `hunt-ctl` commands and then runs `hunt
 instead of deleting a VM. While such a session exists, Hunt refuses every handoff, since it would install the current
 release on the gateway and strand them.
 
+The gateway's poller `hunt-swf.service` (`remote/gateway/swf.ts`) starts a session for every open GitHub issue labelled
+`swf` in the repositories listed under *Settings → Remote VM → GitHub issues (swf)*; *Apply to gateway* installs this
+app's bundle on the gateway and writes them with the session limit to `/etc/hunt/swf.json` (`hunt-ctl swf-config`).
+Every 2 minutes it lists the open issues through GitHub's REST API and, while fewer of its VMs (label
+`hunt-origin=swf`, any status but `TERMINATED` and `STOPPED`) are up than the limit allows, claims the oldest issue:
+`swf` becomes `swf:running` (the labels `swf:running`, `swf:done` and `swf:failed` are created when missing) and a
+comment names the session's preview URL. Then it does what a handoff does, with the gateway's service account instead
+of a Mac: it creates `vm-hunt-s-<short id>` from the instance template through the Compute Engine API, records the
+session, repository, branch `hunt/<issue>-<slug of the title>`, title and issue in the VM's metadata, waits for the
+startup script and installs the gateway's own release on the VM over `gcloud compute ssh --internal-ip` (OS Login as
+admin). `hunt-ctl clone` clones the repository from GitHub as `agent` onto the branch (the origin's branch of that name
+when it exists, else a new one from the default branch) with the token's GitHub user as Git identity; `session-config`,
+`put-files --claude` with `hunt-session.json`, `deps`, `start` and `wait` follow as in a handoff. The system prompt is
+the remote part a handoff appends (`remote/session/prompts/`, which the app compiles in) and the repository's HUNT.md;
+the parts Hunt takes from its user's settings (response style, guardrail offer, diagram language) do not exist on the
+gateway. The poller then sends the issue with all its comments as the first prompt through the relay and disconnects;
+the relay runs the turn without a client. The prompt asks the agent to implement and check the issue, push the branch,
+open a pull request with `Closes #<issue>`, comment its link on the issue and replace `swf:running` with `swf:done`, or
+with `swf:failed` and a comment when it cannot finish. A setup that fails gets `swf:failed` and a comment with the
+error; its VM stays for inspection. The poller's GitHub token and the Claude Code OAuth token its sessions run with come
+from Secret Manager (`hunt-swf-github-token`, `hunt-swf-claude-token`) and never reach a log line, a comment or a
+command line; `journalctl -u hunt-swf` on the gateway shows one line per decision.
+
 The labels and metadata of the session VMs are the directory of remote sessions. At its start and from the sidebar's
 *Refresh remote sessions* button, Hunt lists those in the zone of the settings, the zone whose VMs the gateway routes
 previews to (`adopt_session_vms`, `src-tauri/src/remote/adoption.rs`), and adopts every VM whose `hunt-session-id` no
@@ -424,7 +447,7 @@ restarts the app's containers and dev servers.
 | `src-tauri/src/workspace.rs` | Project tree and file access |
 | `src-tauri/src/graph.rs` | Dependency graph prompt and status |
 | `src-tauri/src/remote/` | Session VMs, SSH to them, handoff and retrieval of remote sessions, previews, terminals |
-| `remote/` | VM side of remote sessions: `hunt-ctl`, the relay, the session VM's configuration, the gateway's wake service |
+| `remote/` | VM side of remote sessions: `hunt-ctl`, the relay, the session VM's configuration, the gateway's wake service and issue poller |
 | `src/ipc/` | Every Tauri command, event and shared type |
 | `src/state/` | Zustand stores and chat reducers |
 | `src/chat/`, `src/diff/`, `src/ide/`, `src/graph/`, `src/guardrails/`, `src/preview/`, `src/review/`, `src/sessions/`, `src/settings/`, `src/terminal/` | One folder per tab or window |

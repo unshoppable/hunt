@@ -24,6 +24,7 @@ import type {
   SessionNotification,
   SessionView,
   SessionVm,
+  SwfConfig,
   Shelf,
   VmSettings,
   Workspace,
@@ -103,6 +104,12 @@ export const commands = {
    * repository among `repoPaths` and the stored sessions' repositories; resolves with the IDs of the new sessions.
    */
   adoptSessionVms: (settings: VmSettings, repoPaths: string[]) => invoke<string[]>("adopt_session_vms", { settings, repoPaths }),
+  /**
+   * Writes the poller configuration to the gateway of `settings` (installing this app's VM software there first): open
+   * issues labelled swf in `repos` get a session VM each, at most `maxSessions` at once; resolves with what the gateway
+   * stored.
+   */
+  applySwfConfig: (settings: VmSettings, repos: string[], maxSessions: number) => invoke<SwfConfig>("apply_swf_config", { settings, repos, maxSessions }),
   /** The remote session's changes on its VM, read-only; a VM that is off reports none and stays off unless `startVm` is set. */
   remoteChanges: (id: string, startVm: boolean) => invoke<RemoteChanges>("remote_changes", { id, startVm }),
   /** The diff of `path` of the remote session on its VM against `base`, the commit `remoteChanges` compared against. */

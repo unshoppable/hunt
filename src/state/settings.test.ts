@@ -79,9 +79,23 @@ describe("migrateSettings", () => {
 
   it("makes the VM all sessions shared up to version 9 the gateway", () => {
     const stored = { remote: { project: "p", zone: "z", instance: "vm-hunt", filePatterns: ["**/.env.private"], previewDomain: "hunt.example.com" } };
-    expect(migrateSettings(stored, 9).remote).toEqual({ project: "p", zone: "z", gatewayInstance: "vm-hunt", filePatterns: ["**/.env.private"], previewDomain: "hunt.example.com" });
-    expect(migrateSettings({ remote: { project: "p", zone: "z", instance: "vm-hunt" } }, 6).remote).toEqual({ project: "p", zone: "z", gatewayInstance: "vm-hunt" });
+    expect(migrateSettings(stored, 9).remote).toEqual({
+      project: "p",
+      zone: "z",
+      gatewayInstance: "vm-hunt",
+      filePatterns: ["**/.env.private"],
+      previewDomain: "hunt.example.com",
+      swfRepos: [],
+      swfMaxSessions: 2,
+    });
+    expect(migrateSettings({ remote: { project: "p", zone: "z", instance: "vm-hunt" } }, 6).remote).toEqual({ project: "p", zone: "z", gatewayInstance: "vm-hunt", swfRepos: [], swfMaxSessions: 2 });
     expect(migrateSettings({ aiLanguage: "English" }, 9)).toEqual({ aiLanguage: "English" });
+  });
+
+  it("gives the remote settings of version 10 no poller repositories and the default session limit", () => {
+    const stored = { remote: { project: "p", gatewayInstance: "vm-hunt", previewDomain: "hunt.example.com" }, aiLanguage: "English" };
+    expect(migrateSettings(stored, 10)).toEqual({ ...stored, remote: { ...stored.remote, swfRepos: [], swfMaxSessions: 2 } });
+    expect(migrateSettings({ aiLanguage: "English" }, 10)).toEqual({ aiLanguage: "English" });
   });
 
   it("passes the current version through untouched", () => {
@@ -162,6 +176,15 @@ describe("remote settings", () => {
   it("trims every field", () => {
     const remote = normalizeRemote({ ...DEFAULT_REMOTE, gatewayInstance: " vm-hunt ", sessionTemplate: " tpl ", machineType: " e2-standard-8 " });
     expect([remote.gatewayInstance, remote.sessionTemplate, remote.machineType]).toEqual(["vm-hunt", "tpl", "e2-standard-8"]);
+  });
+
+  it("keeps the poller's owner/repo entries once each and holds its session limit to whole numbers from 0 to 10", () => {
+    const remote = normalizeRemote({ ...DEFAULT_REMOTE, swfRepos: [" acme/app ", "", "acme", "Acme/App", "acme/app/x", ".acme/app", "team/api.v2"], swfMaxSessions: 2.6 });
+    expect(remote.swfRepos).toEqual(["acme/app", "team/api.v2"]);
+    expect(remote.swfMaxSessions).toBe(3);
+    expect(normalizeRemote({ ...DEFAULT_REMOTE, swfMaxSessions: 50 }).swfMaxSessions).toBe(10);
+    expect(normalizeRemote({ ...DEFAULT_REMOTE, swfMaxSessions: -1 }).swfMaxSessions).toBe(0);
+    expect(normalizeRemote({ ...DEFAULT_REMOTE, swfMaxSessions: Number.NaN }).swfMaxSessions).toBe(2);
   });
 
   it("drops blank, absolute and worktree-leaving file patterns", () => {

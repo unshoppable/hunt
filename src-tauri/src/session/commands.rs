@@ -647,6 +647,18 @@ pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths:
     Ok(adopted)
 }
 
+/// Writes the configuration of the gateway's issue poller to the gateway of `settings`: open issues labelled `swf` in
+/// `repos` get a session VM each, created like a handoff's, at most `max_sessions` at once. Returns what the gateway
+/// stored.
+#[tauri::command]
+pub async fn apply_swf_config(app: AppHandle, settings: VmSettings, repos: Vec<String>, max_sessions: u32) -> Result<remote::swf::SwfConfig, String> {
+    // No session VM is involved; the nil ID only satisfies the check of the session VM's name.
+    let settings = VmSettings { preview_domain: settings.validate(Uuid::nil())?, ..settings };
+    let config = remote::swf::SwfConfig::new(&settings, repos, max_sessions);
+    let bundle_dir = bundled_script_path(&app, "remote")?;
+    remote::swf::apply(&settings, &bundle_dir, &ssh_dir()?, &config, &|_| {}).await
+}
+
 /// The worktree of the remote session `id` on its running VM behind `ssh`: the one `target` names, or for an adopted
 /// session that never reached its VM the one the VM records, which the session's record keeps from then on.
 async fn remote_worktree(app: &AppHandle, id: Uuid, target: &RemoteTarget, ssh: &Ssh) -> Result<String, String> {
@@ -770,44 +782,20 @@ pub fn close_terminal(terminals: State<'_, TerminalRegistry>, terminal_id: Uuid)
 }
 
 /// What Hunt tells the agent of a remote session on top of its usual system prompt addition, whatever the repository.
-const REMOTE_PROMPT: &str = "\n\n## Remote session\nThis session runs on a VM of its own. The user brings its commits back \
-to their machine.\n\n\
-### Running the app\nStart the app exactly as a developer would locally: the repository's README, CLAUDE.md and \
-package.json say how, and Docker with Docker Compose works as usual. Dev servers must listen on 0.0.0.0, not only on \
-127.0.0.1 or localhost; port 8080 belongs to Hunt's preview proxy. Run every long-running process in the tmux session \
-`app`, one window per process, and pipe each window to a log file, where you read its output:\n\n\
-```sh\n\
-mkdir -p ~/logs\n\
-tmux has-session -t app 2>/dev/null || tmux new-session -d -s app\n\
-tmux new-window -t app -n <name> '<command>'\n\
-tmux pipe-pane -o -t app:<name> 'cat >> ~/logs/<name>.log'\n\
-```\n\n\
-`tmux list-windows -t app` shows what runs; to restart a process, close its window with `tmux kill-window -t \
-app:<name>` and start it again. The user can watch these windows too.\n\n\
-### Preview\nThe user opens the app at `$HUNT_PREVIEW_URL`, which serves the main port the repository's hunt.json names; \
-every other port of this VM is at `$HUNT_PREVIEW_URL_TEMPLATE` with `{port}` replaced by the port number. On every \
-one of these hosts, the path prefixes of hunt.json's `routes` go to their own port, and the variables hunt.json sets \
-are in your environment already. Check changes to the user interface with the Playwright \
-tools against http://localhost:<port>; the screenshots you take show up in the user's chat.\n\n\
-### After a restart\nThe VM shuts down while the session is idle and starts again with the next prompt. Files, Docker \
-images and volumes stay, but containers and dev servers are gone: when the task needs the app, check what runs \
-(`docker ps`, `tmux list-windows -t app`) and start the rest again.\n\n\
-The repository's HUNT.md, its instructions for Hunt sessions, follows at the end when it has one.\n";
+const REMOTE_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../remote/session/prompts/remote.md"));
 
 /// The Git part of `REMOTE_PROMPT` when Hunt hands the user's GitHub token to the agent on the VM.
-const REMOTE_GIT_PUSH_PROMPT: &str = "\n### Git\n`origin` is the repository on GitHub. git, Git LFS and `gh` act with the user's \
-GitHub token, so you can push and open or update pull requests when the task calls for it. Follow the repository's \
-branch naming rules; when the current branch does not fit them, create a fitting branch from HEAD and keep working on it.\n";
+const REMOTE_GIT_PUSH_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../remote/session/prompts/git-push.md"));
 
 /// The Git part of `REMOTE_PROMPT` without a GitHub token.
-const REMOTE_GIT_LOCAL_PROMPT: &str = "\n### Git\nThere is no GitHub token for this session, so pushing fails: commit locally \
-and do not push.\n";
+const REMOTE_GIT_LOCAL_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../remote/session/prompts/git-local.md"));
 
 /// What Hunt appends to the system prompt of a remote session: `base`, the usual addition, then `REMOTE_PROMPT`, the Git
 /// part that fits whether the agent has the user's GitHub token, and the repository's HUNT.md under a heading of its own.
+/// The gateway's poller (`remote/gateway/swf.ts`) composes the prompt of its sessions the same way, with an empty `base`.
 fn remote_system_prompt(base: &str, has_github_token: bool, hunt_md: Option<&str>) -> String {
     let git_prompt = if has_github_token { REMOTE_GIT_PUSH_PROMPT } else { REMOTE_GIT_LOCAL_PROMPT };
-    let prompt = format!("{base}{REMOTE_PROMPT}{git_prompt}");
+    let prompt = format!("{base}\n\n{REMOTE_PROMPT}\n{git_prompt}");
     match hunt_md.map(str::trim).filter(|text| !text.is_empty()) {
         Some(text) => format!("{prompt}\n### The repository's HUNT.md\n{text}\n"),
         None => prompt,
@@ -1879,14 +1867,20 @@ mod tests {
         let with_token = remote_system_prompt("BASE", true, Some("\n# Preview\nStart the UIs.\n\n"));
         assert_eq!(
             with_token,
-            format!("BASE{REMOTE_PROMPT}{REMOTE_GIT_PUSH_PROMPT}\n### The repository's HUNT.md\n# Preview\nStart the UIs.\n")
+            format!("BASE\n\n{REMOTE_PROMPT}\n{REMOTE_GIT_PUSH_PROMPT}\n### The repository's HUNT.md\n# Preview\nStart the UIs.\n")
         );
 
         let without_token = remote_system_prompt("BASE", false, None);
-        assert_eq!(without_token, format!("BASE{REMOTE_PROMPT}{REMOTE_GIT_LOCAL_PROMPT}"));
+        assert_eq!(without_token, format!("BASE\n\n{REMOTE_PROMPT}\n{REMOTE_GIT_LOCAL_PROMPT}"));
         assert_eq!(remote_system_prompt("BASE", false, Some(" \n")), without_token);
         assert!(REMOTE_PROMPT.contains("$HUNT_PREVIEW_URL_TEMPLATE` with `{port}`"));
         assert!(REMOTE_PROMPT.contains("tmux pipe-pane -o -t app:<name> 'cat >> ~/logs/<name>.log'\n```"));
+
+        let poller = remote_system_prompt("", false, None);
+        assert!(poller.starts_with("\n\n## Remote session\nThis session runs on a VM of its own. The user brings its commits back to their machine.\n\n"));
+        assert!(poller.ends_with(
+            "follows at the end when it has one.\n\n### Git\nThere is no GitHub token for this session, so pushing fails: commit locally and do not push.\n"
+        ));
     }
 
     #[test]

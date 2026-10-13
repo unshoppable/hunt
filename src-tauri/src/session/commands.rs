@@ -2,6 +2,7 @@
 //! thin commands themselves: `lsp_request`, `lsp_notify` and `lsp_cancel` live in `lsp.rs`, `set_ai_language` in
 //! `preferences.rs`.
 
+use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -27,9 +28,12 @@ use crate::github_token;
 use crate::graph::{self, WatcherRegistry};
 use crate::ide;
 use crate::lsp::{self, LspRegistry};
-use crate::remote::preview::{PreviewLogChunk, PreviewStatus};
+use crate::remote::diff::RemoteChanges;
+use crate::remote::preview::PreviewStatus;
+use crate::remote::ssh::Ssh;
 use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize};
-use crate::remote::{self, RemoteStep, VmRef};
+use crate::remote::vm::SessionVm;
+use crate::remote::{self, RemoteStep, RemoteTarget, VmRef, VmSettings};
 use crate::screenshots::{self, Screenshot};
 use crate::session::attribution::{self, FileVersion};
 use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus};
@@ -473,8 +477,8 @@ async fn activate(
     Ok(SessionView::new(app, record, true))
 }
 
-/// Connects to the relay of the remote session `record`: starts its VM when it is off, makes sure its container runs
-/// and opens the ACP stream over SSH. The relay may have started a new conversation (`/clear`, or a transcript it could
+/// Connects to the relay of the remote session `record`: starts its VM when it is off (it stops itself when idle), makes
+/// sure its relay runs and opens the ACP stream over SSH. The relay may have started a new conversation (`/clear`, or a transcript it could
 /// not load); the record then gets that conversation's ID.
 async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: &WatcherRegistry, record: SessionRecord) -> Result<SessionView, String> {
     let id = record.id;
@@ -483,9 +487,20 @@ async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: 
     progress(RemoteStep::Connecting);
     let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
     remote::vm::ensure_running(&target.vm, &ssh, &progress).await?;
-    run_pending_cleanups(app, &ssh, &target.vm).await;
+    // An adopted session learns its worktree on the VM with its first connect; the chat works without it.
+    let (record, target) = if target.worktree_path.as_os_str().is_empty() {
+        match remote_worktree(app, id, &target, &ssh).await {
+            Ok(worktree) => (store::find_session(app, id)?, RemoteTarget { worktree_path: PathBuf::from(worktree), ..target }),
+            Err(error) => {
+                eprintln!("finding the worktree of session {id} on its VM failed: {error}");
+                (record, target)
+            }
+        }
+    } else {
+        (record, target)
+    };
     progress(RemoteStep::StartingAgent);
-    // Only a new container reads the token, so a running one stays reachable with the local login selected.
+    // A running relay keeps its tokens, so it stays reachable with the local login selected.
     let token_input = local_token_input(app).await?;
     remote::hunt_ctl_with_input(&ssh, &["start", &id.to_string()], token_input.as_bytes()).await?;
     let status = remote::hunt_ctl(&ssh, &["wait", &id.to_string(), "--timeout", "180"]).await?;
@@ -498,13 +513,15 @@ async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: 
         .or_else(|| record.acp_session_id.clone())
         .ok_or("failed to connect the remote session: its relay reports no conversation")?;
 
-    let socket = format!("UNIX-CONNECT:/srv/hunt/sockets/{id}/acp.sock");
-    let ssh_args = ssh.stream_args(&remote::shell_command("sudo", &["-n", "-u", "hunt", "socat", "-", &socket]));
+    let ssh_args = ssh.stream_args(&remote::shell_command("sudo", &["-n", "-u", "agent", "socat", "-", RELAY_SOCKET]));
     let start = SessionStart::Load { cwd: target.worktree_path.clone(), acp_session_id };
     activate(app, registry, watchers, record, start, AgentTransport::Remote { ssh_args }).await
 }
 
-/// The OAuth token of the active Claude account, which a new container on the VM runs Claude Code with. The local login
+/// The relay of a session VM, as `socat` addresses it.
+const RELAY_SOCKET: &str = "UNIX-CONNECT:/run/hunt/relay.sock";
+
+/// The OAuth token of the active Claude account, which the relay on the VM runs Claude Code with. The local login
 /// stays in this Mac's keychain, so it fails with `what` (the action) and a hint where to pick an account.
 async fn remote_claude_token(app: &AppHandle, what: &str) -> Result<String, String> {
     accounts::active_token(app).await?.ok_or_else(|| {
@@ -518,90 +535,156 @@ async fn local_token_input(app: &AppHandle) -> Result<String, String> {
     Ok(remote::token_input(&claude_token, github_token::read().await?.as_deref()))
 }
 
-/// Starts the preview of the remote session `id` on `domain`: the VM, the runtime, the session's container, then the
-/// services and dev processes its repository's hunt.json declares, with the optional processes in `with`. A container
-/// from a release without previews is created anew, which ends the chat's connection; the next prompt connects again.
+/// The preview of the remote session `id`: its URLs, the ports that listen on its VM and whether the main port answers.
+/// A VM that is off has none; it is not started. A connected session proves a running VM, so only an unconnected one
+/// asks Compute Engine.
 #[tauri::command]
-pub async fn start_preview(app: AppHandle, id: Uuid, domain: String, with: Vec<String>) -> Result<PreviewStatus, String> {
-    let record = store::find_session(&app, id)?;
-    let target = record.remote.ok_or("failed to start the preview: the session runs locally")?;
-    let domain = remote::preview::validate_domain(&domain)?;
-    let progress = progress_reporter(&app, id);
-    let started = async {
-        progress(RemoteStep::Connecting);
-        let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
-        remote::vm::ensure_running(&target.vm, &ssh, &progress).await?;
-        remote::bundle::ensure_installed(&ssh, &bundled_script_path(&app, "remote")?, &progress).await?;
-        // Only a container that is created reads the token, so a running one starts with the local login selected too.
-        let token_input = local_token_input(&app).await?;
-        progress(RemoteStep::StartingAgent);
-        remote::hunt_ctl_with_input(&ssh, &["start", &id.to_string()], token_input.as_bytes()).await?;
-        progress(RemoteStep::StartingPreview);
-        let mut args = vec!["preview".to_string(), "start".into(), id.to_string(), "--domain".into(), domain.clone()];
-        for process in &with {
-            args.extend(["--with".to_string(), process.clone()]);
-        }
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        remote::hunt_ctl_with_input(&ssh, &args, token_input.as_bytes()).await?;
-        let status = remote::hunt_ctl(&ssh, &["preview", "status", &id.to_string()]).await?;
-        remote::preview::parse_status(&status, id, &domain)
-    }
-    .await;
-    finish_progress(&app, id);
-    started
-}
-
-/// The preview of the remote session `id` with its URLs on `domain`. A VM that is off has none; it is not started.
-/// A connected session proves a running VM, so only an unconnected one asks Compute Engine.
-#[tauri::command]
-pub async fn preview_status(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, domain: String) -> Result<PreviewStatus, String> {
-    let record = store::find_session(&app, id)?;
-    let Some(target) = record.remote else { return Ok(remote::preview::stopped_status()) };
-    let domain = remote::preview::validate_domain(&domain)?;
+pub async fn preview_status(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid) -> Result<PreviewStatus, String> {
+    let target = store::find_session(&app, id)?.remote.ok_or("failed to read the preview: the session runs locally")?;
+    let domain = target
+        .preview_domain
+        .as_deref()
+        .ok_or("failed to read the preview: the session was handed off without a preview domain; bring it back and hand it off again")?;
     let is_connected = registry.live.lock().await.contains_key(&id);
     if !is_connected && remote::vm::status(&target.vm).await? != "RUNNING" {
-        return Ok(remote::preview::stopped_status());
+        return Ok(remote::preview::stopped_status(id, domain));
     }
     let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
-    let status = remote::hunt_ctl(&ssh, &["preview", "status", &id.to_string()]).await?;
-    remote::preview::parse_status(&status, id, &domain)
+    let status = remote::hunt_ctl(&ssh, &["preview-status", &id.to_string()]).await?;
+    remote::preview::parse_status(&status, id, domain)
 }
 
-/// Stops the preview of the remote session `id`: its processes, services and route. Its data stays for the next start.
+/// The session VMs of `project` with the labels and metadata that name their sessions, for adopting VMs no local
+/// session knows.
 #[tauri::command]
-pub async fn stop_preview(app: AppHandle, id: Uuid) -> Result<(), String> {
-    let target = store::find_session(&app, id)?.remote.ok_or("failed to stop the preview: the session runs locally")?;
-    if remote::vm::status(&target.vm).await? != "RUNNING" {
-        return Ok(());
+pub async fn list_session_vms(project: String) -> Result<Vec<SessionVm>, String> {
+    if project.trim().is_empty() {
+        return Err("failed to list the session VMs: no Google Cloud project is set".into());
     }
-    let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
-    remote::hunt_ctl(&ssh, &["preview", "stop", &id.to_string()]).await?;
-    Ok(())
+    remote::vm::list_session_vms(project.trim()).await
 }
 
-/// Restarts one process of the preview of the remote session `id`.
+/// Adopts the session VMs of the project in `settings` that no local session knows (see `remote::adoption`): each
+/// becomes a remote session of this Mac in the local checkout of its repository, found among `repo_paths` and the
+/// repositories of the stored sessions, or without one when none matches. Adopted sessions still without a checkout
+/// get another chance to find one. VMs this Mac deletes or deleted are left out. Returns the IDs of the new sessions.
 #[tauri::command]
-pub async fn restart_preview_process(app: AppHandle, id: Uuid, process: String) -> Result<(), String> {
-    let target = store::find_session(&app, id)?.remote.ok_or("failed to restart the process: the session runs locally")?;
-    let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
-    remote::hunt_ctl(&ssh, &["preview", "restart", &id.to_string(), &process]).await?;
-    Ok(())
-}
-
-/// The part of the log `name` (a process, or `setup` for the prepare and init steps) of the remote session `id`'s
-/// preview that starts at `offset`; without an offset its last 64 KiB.
-#[tauri::command]
-pub async fn read_preview_log(app: AppHandle, id: Uuid, name: String, offset: Option<u64>) -> Result<PreviewLogChunk, String> {
-    let target = store::find_session(&app, id)?.remote.ok_or("failed to read the log: the session runs locally")?;
-    let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
-    let id = id.to_string();
-    let offset = offset.map(|offset| offset.to_string());
-    let mut args = vec!["preview", "logs", id.as_str(), name.as_str()];
-    if let Some(offset) = &offset {
-        args.extend(["--offset", offset.as_str()]);
+pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths: Vec<String>) -> Result<Vec<Uuid>, String> {
+    let project = settings.project.trim().to_string();
+    if project.is_empty() {
+        return Err("failed to adopt the session VMs: no Google Cloud project is set".into());
     }
-    let chunk = remote::hunt_ctl(&ssh, &args).await?;
-    serde_json::from_value(chunk).map_err(|error| format!("failed to read the log: {error}"))
+    let preview_domain = remote::preview::validate_domain(&settings.preview_domain)?;
+    let vms = remote::vm::list_session_vms(&project).await?;
+    let sessions = store::load_sessions(&app)?;
+    let mut known: HashSet<Uuid> = sessions.iter().map(|session| session.id).collect();
+    known.extend(deleted_session_vms(&app));
+    let adoptable = remote::adoption::sessions_to_adopt(&vms, &project, &known);
+    let without_checkout: Vec<&SessionRecord> = sessions
+        .iter()
+        .filter(|session| session.remote.as_ref().is_some_and(RemoteTarget::is_adopted) && session.repo_path.as_os_str().is_empty())
+        .collect();
+    if adoptable.is_empty() && without_checkout.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let stored_repos = sessions.iter().map(|session| session.repo_path.clone());
+    let candidates: Vec<PathBuf> = repo_paths.iter().map(PathBuf::from).chain(stored_repos).collect();
+    let repositories = remote::adoption::repository_keys(&candidates).await;
+    let worktrees = store::worktrees_dir(&app)?;
+    let mut adopted = Vec::new();
+    for session in &adoptable {
+        let repo_path = remote::adoption::matching_repository(&repositories, &session.repo).map(Path::to_path_buf).unwrap_or_default();
+        let record = SessionRecord::adopted(session, repo_path, worktrees.join(session.id.to_string()), preview_domain.clone());
+        if store::insert_session(&app, record)? {
+            adopted.push(session.id);
+        }
+    }
+    let mut has_changed = !adopted.is_empty();
+    for session in without_checkout {
+        let Some(repo) = session.remote.as_ref().map(|target| target.repo.as_str()) else { continue };
+        let Some(repo_path) = remote::adoption::matching_repository(&repositories, repo) else { continue };
+        let repo_path = repo_path.to_path_buf();
+        store::update_session(&app, session.id, |stored| {
+            if stored.repo_path.as_os_str().is_empty() {
+                stored.repo_path = repo_path;
+            }
+        })?;
+        has_changed = true;
+    }
+    if has_changed {
+        announce_sessions_changed(&app);
+    }
+
+    // The worktree paths of running VMs are read in the background; the others follow with the first connect.
+    for session in adoptable.into_iter().filter(|session| session.is_running && adopted.contains(&session.id)) {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let id = session.id;
+            let found = async {
+                let target = store::find_session(&app, id)?.remote.ok_or("the session runs locally")?;
+                let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
+                remote_worktree(&app, id, &target, &ssh).await
+            }
+            .await;
+            if let Err(error) = found {
+                eprintln!("finding the worktree of the adopted session {id} on its VM failed: {error}");
+            }
+        });
+    }
+    Ok(adopted)
+}
+
+/// The worktree of the remote session `id` on its running VM behind `ssh`: the one `target` names, or for an adopted
+/// session that never reached its VM the one the VM records, which the session's record keeps from then on.
+async fn remote_worktree(app: &AppHandle, id: Uuid, target: &RemoteTarget, ssh: &Ssh) -> Result<String, String> {
+    if !target.worktree_path.as_os_str().is_empty() {
+        return Ok(target.worktree_path.display().to_string());
+    }
+    let meta = remote::adoption::read_session_meta(ssh, id).await?;
+    store::update_session(app, id, |stored| {
+        let Some(remote) = stored.remote.as_mut() else { return };
+        remote.worktree_path = PathBuf::from(&meta.worktree);
+        if let Some(branch) = meta.branch.as_ref().filter(|_| remote.branch.is_empty()) {
+            remote.branch = branch.clone();
+            stored.branch = branch.clone();
+        }
+    })?;
+    announce_sessions_changed(app);
+    Ok(meta.worktree)
+}
+
+/// The changes of the remote session `id` on its VM since its handoff (or, for a session the poller started, since its
+/// default branch), read-only. A VM that is off reports none and stays off unless `start_vm` is set.
+#[tauri::command]
+pub async fn remote_changes(
+    app: AppHandle,
+    registry: State<'_, SessionRegistry>,
+    id: Uuid,
+    start_vm: bool,
+) -> Result<RemoteChanges, String> {
+    let target = store::find_session(&app, id)?.remote.ok_or("failed to list the changes on the VM: the session runs locally")?;
+    let is_connected = registry.live.lock().await.contains_key(&id);
+    if !is_connected && !start_vm && remote::vm::status(&target.vm).await? != "RUNNING" {
+        return Ok(RemoteChanges::vm_off());
+    }
+    let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
+    if !is_connected && start_vm {
+        remote::vm::ensure_running(&target.vm, &ssh, &|_: RemoteStep| {}).await?;
+    }
+    let worktree = remote_worktree(&app, id, &target, &ssh).await?;
+    remote::diff::changed_files(&ssh, &worktree, id, &target.handoff_head).await
+}
+
+/// The diff of the worktree-relative `path` of the remote session `id` on its VM against `base`, the commit
+/// `remote_changes` compared against.
+#[tauri::command]
+pub async fn read_remote_file_diff(app: AppHandle, id: Uuid, base: String, path: String) -> Result<FileDiff, String> {
+    git::ensure_inside_worktree(&path)?;
+    let target = store::find_session(&app, id)?.remote.ok_or("failed to read the diff on the VM: the session runs locally")?;
+    let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
+    let worktree = remote_worktree(&app, id, &target, &ssh).await?;
+    remote::diff::file_diff(&ssh, &worktree, &base, &path).await
 }
 
 /// A chunk of a terminal's output as base64 of its bytes, which may end inside a UTF-8 or an escape sequence.
@@ -699,7 +782,7 @@ images and volumes stay, but containers and dev servers are gone: when the task 
 (`docker ps`, `tmux list-windows -t app`) and start the rest again.\n\n\
 The repository's HUNT.md, its instructions for Hunt sessions, follows at the end when it has one.\n";
 
-/// The Git part of `REMOTE_PROMPT` when Hunt hands the user's GitHub token to the container.
+/// The Git part of `REMOTE_PROMPT` when Hunt hands the user's GitHub token to the agent on the VM.
 const REMOTE_GIT_PUSH_PROMPT: &str = "\n### Git\n`origin` is the repository on GitHub. git, Git LFS and `gh` act with the user's \
 GitHub token, so you can push and open or update pull requests when the task calls for it. Follow the repository's \
 branch naming rules; when the current branch does not fit them, create a fitting branch from HEAD and keep working on it.\n";
@@ -719,9 +802,9 @@ fn remote_system_prompt(base: &str, has_github_token: bool, hunt_md: Option<&str
     }
 }
 
-/// Moves the session `id` to the VM `vm`: its agent stops here, its branch, uncommitted work, transcript and the
-/// ignored files matching `file_patterns` go to the VM, and the chat continues with the agent there. On failure the
-/// session stays local and its agent starts again.
+/// Moves the session `id` to a VM of its own, created as `settings` say: its agent stops here, its branch, uncommitted
+/// work, transcript and the ignored files matching `file_patterns` go to the VM, and the chat continues with the agent
+/// there. On failure the session stays local, its agent starts again and the VM stays for the next attempt.
 #[tauri::command]
 pub async fn hand_off_session(
     app: AppHandle,
@@ -730,12 +813,12 @@ pub async fn hand_off_session(
     permissions: State<'_, PermissionRegistry>,
     lsp: State<'_, LspRegistry>,
     id: Uuid,
-    vm: VmRef,
+    settings: VmSettings,
     file_patterns: Vec<String>,
 ) -> Result<SessionView, String> {
     let record = local_session(&app, id)?;
     ensure_hand_off_allowed(&app, &record)?;
-    vm.validate()?;
+    let settings = VmSettings { preview_domain: settings.validate(id)?, ..settings };
     let claude_token = remote_claude_token(&app, "hand off the session").await?;
     let github_token = github_token::read().await?;
     let (config_values, local_mode) = match live_session(&registry, id).await {
@@ -752,19 +835,26 @@ pub async fn hand_off_session(
     }
 
     let handed_off = async {
+        let session_vm = settings.session_vm(id);
+        if let Some(leftover) = record.leftover_vm.as_ref().filter(|leftover| **leftover != session_vm) {
+            delete_session_vm(&app, leftover, id).await;
+        }
+        store::update_session(&app, id, |stored| stored.leftover_vm = Some(session_vm.clone()))?;
         let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt);
-        let hunt_md = remote::read_hunt_md(&record.worktree_path)?;
+        let local_hunt_md = remote::read_hunt_md(&record.worktree_path)?;
         let base_prompt = system_prompt_append(&app, context_prompt);
-        let system_prompt = remote_system_prompt(&base_prompt, github_token.is_some(), hunt_md.as_deref());
+        let has_github_token = github_token.is_some();
+        let system_prompt = |hunt_md: Option<&str>| remote_system_prompt(&base_prompt, has_github_token, hunt_md.or(local_hunt_md.as_deref()));
         let token_input = remote::token_input(&claude_token, github_token.as_deref());
         let bundle_dir = bundled_script_path(&app, "remote")?;
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
         let memory_base = memory_base_path(&app, id)?;
         let request = remote::handoff::HandoffRequest {
             hunt_session_id: id,
+            title: &record.title,
             worktree: &record.worktree_path,
             acp_session_id: record.acp_session_id.as_deref(),
-            vm: &vm,
+            settings: &settings,
             bundle_dir: &bundle_dir,
             ssh_dir: &ssh_dir,
             claude_dir: &claude_dir,
@@ -785,6 +875,7 @@ pub async fn hand_off_session(
             lsp::stop_for_worktree(&lsp, &record.worktree_path).await;
             let stored = store::update_session(&app, id, |stored| {
                 stored.remote = Some(handed_off.target.clone());
+                stored.leftover_vm = None;
                 if let Some(acp_session_id) = &handed_off.acp_session_id {
                     stored.acp_session_id = Some(acp_session_id.clone());
                 }
@@ -829,8 +920,8 @@ fn ensure_hand_off_allowed(app: &AppHandle, record: &SessionRecord) -> Result<()
     Ok(())
 }
 
-/// Brings the remote session `id` back: its container stops, its commits, uncommitted work and transcript come back
-/// into the local worktree, the VM side is removed and the chat continues with a local agent.
+/// Brings the remote session `id` back: its relay stops, its commits, uncommitted work and transcript come back into the
+/// local worktree, its VM is deleted and the chat continues with a local agent.
 #[tauri::command]
 pub async fn retrieve_session(
     app: AppHandle,
@@ -841,6 +932,13 @@ pub async fn retrieve_session(
 ) -> Result<SessionView, String> {
     let record = store::find_session(&app, id)?;
     let target = record.remote.clone().ok_or("failed to retrieve the session: it runs locally")?;
+    let adopted_into = target.is_adopted().then_some(record.repo_path.as_path());
+    if adopted_into.is_some_and(|repo| repo.as_os_str().is_empty()) {
+        return Err(format!(
+            "failed to bring back the session: there is no local checkout of {}; start a session in one, then refresh the remote sessions",
+            target.repo
+        ));
+    }
     stop_agent_and_wait(&app, &registry, &watchers, &permissions, id).await;
     if !registry.claim_start(id).await {
         return Err("failed to retrieve the session: its agent was started again meanwhile".into());
@@ -856,6 +954,7 @@ pub async fn retrieve_session(
             ssh_dir: &ssh_dir,
             claude_dir: &claude_dir,
             memory_base: &memory_base,
+            adopted_into,
         };
         let retrieved = remote::retrieve::retrieve(request, &progress_reporter(&app, id)).await?;
         let record = store::update_session(&app, id, |stored| {
@@ -863,10 +962,13 @@ pub async fn retrieve_session(
             if let Some(acp_session_id) = &retrieved.acp_session_id {
                 stored.acp_session_id = Some(acp_session_id.clone());
             }
+            if let Some(branch) = &retrieved.branch {
+                stored.branch = branch.clone();
+            }
         })?
         .ok_or_else(|| "failed to retrieve the session: it was closed meanwhile".to_string())?;
         announce_sessions_changed(&app);
-        destroy_remote(&app, &target.vm, id).await;
+        forget_remote(&app, &target.vm, id).await;
         dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone());
         let start = local_start(&record);
         let view = activate(&app, &registry, &watchers, record, start, AgentTransport::Local).await?;
@@ -919,7 +1021,13 @@ fn claude_dir() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home).join(".claude"))
 }
 
-/// A remote session deleted while its VM was off; its container and worktree are removed on the next connect.
+/// Where Hunt keeps the base of the repository memory the handoff of session `id` sent.
+fn memory_base_path(app: &AppHandle, id: Uuid) -> Result<PathBuf, String> {
+    Ok(store::app_data_dir(app)?.join("remote-memory").join(format!("{id}.json")))
+}
+
+/// A session VM whose deletion failed, e.g. while the Mac was offline; Hunt deletes it at its next start. Entries of
+/// older releases name the VM all sessions shared and are dropped.
 #[derive(Clone, serde::Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct PendingCleanup {
@@ -927,73 +1035,101 @@ struct PendingCleanup {
     hunt_session_id: Uuid,
 }
 
-/// Where Hunt keeps the base of the repository memory the handoff of session `id` sent.
-fn memory_base_path(app: &AppHandle, id: Uuid) -> Result<PathBuf, String> {
-    Ok(store::app_data_dir(app)?.join("remote-memory").join(format!("{id}.json")))
-}
+/// Serializes the changes to `remote-cleanups.json`.
+static PENDING_CLEANUPS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn pending_cleanups_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(store::app_data_dir(app)?.join("remote-cleanups.json"))
 }
 
-fn load_pending_cleanups(app: &AppHandle) -> Vec<PendingCleanup> {
-    let Ok(path) = pending_cleanups_path(app) else { return Vec::new() };
+fn read_pending_cleanups(path: &Path) -> Vec<PendingCleanup> {
     std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
 }
 
-fn save_pending_cleanups(app: &AppHandle, cleanups: &[PendingCleanup]) {
-    let saved = pending_cleanups_path(app).and_then(|path| {
-        let bytes = serde_json::to_vec(cleanups).map_err(|error| error.to_string())?;
+/// Applies `change` to the pending cleanups on disk.
+fn change_pending_cleanups(app: &AppHandle, change: impl FnOnce(&mut Vec<PendingCleanup>)) {
+    let _guard = PENDING_CLEANUPS_LOCK.lock().unwrap();
+    let changed = pending_cleanups_path(app).and_then(|path| {
+        let mut cleanups = read_pending_cleanups(&path);
+        change(&mut cleanups);
+        let bytes = serde_json::to_vec(&cleanups).map_err(|error| error.to_string())?;
         std::fs::write(path, bytes).map_err(|error| error.to_string())
     });
-    if let Err(error) = saved {
+    if let Err(error) = changed {
         eprintln!("saving the pending remote cleanups failed: {error}");
     }
 }
 
-/// Removes the session's container, worktree and transcript from the VM when it runs; otherwise remembers the removal
-/// for the next connect. Failures are only logged: the local session must stay deletable.
-async fn destroy_remote(app: &AppHandle, vm: &VmRef, id: Uuid) {
+/// Ends the remote side of session `id` for good: the base of its memory merge goes, and its VM `vm` is deleted.
+async fn forget_remote(app: &AppHandle, vm: &VmRef, id: Uuid) {
     if let Ok(path) = memory_base_path(app, id) {
         let _ = std::fs::remove_file(path);
     }
-    let destroyed = async {
-        if remote::vm::status(vm).await? != "RUNNING" {
-            return Err("the VM is not running".to_string());
-        }
-        let ssh = remote::ssh::Ssh::open(vm, &ssh_dir()?).await?;
-        remote::hunt_ctl(&ssh, &["destroy", &id.to_string()]).await.map(|_| ())
+    delete_session_vm(app, vm, id).await;
+}
+
+/// Sessions whose VM this run of Hunt asked Compute Engine to delete. The VM stays listed while it shuts down, and an
+/// adoption in that time must not bring its session back.
+static DELETED_SESSION_VMS: std::sync::Mutex<Vec<Uuid>> = std::sync::Mutex::new(Vec::new());
+
+/// The sessions whose VM this Mac deleted in this run or still has to delete; adoptions leave their VMs alone.
+fn deleted_session_vms(app: &AppHandle) -> Vec<Uuid> {
+    let mut ids = DELETED_SESSION_VMS.lock().unwrap().clone();
+    if let Ok(path) = pending_cleanups_path(app) {
+        let _guard = PENDING_CLEANUPS_LOCK.lock().unwrap();
+        ids.extend(read_pending_cleanups(&path).into_iter().map(|cleanup| cleanup.hunt_session_id));
     }
-    .await;
-    if let Err(error) = destroyed {
-        eprintln!("removing session {id} from the VM {} failed, retrying on the next connect: {error}", vm.instance);
-        let mut cleanups = load_pending_cleanups(app);
+    ids
+}
+
+/// Deletes `vm`, the VM of session `id`, with its disks; a failed deletion is remembered for the next start of Hunt.
+/// Failures are only logged: the local session must stay deletable. The VM an older handoff shared with other sessions
+/// is never deleted.
+async fn delete_session_vm(app: &AppHandle, vm: &VmRef, id: Uuid) {
+    if !remote::vm::is_session_vm(vm, id) {
+        eprintln!("keeping the VM {} of session {id}: it is shared with other sessions", vm.instance);
+        return;
+    }
+    DELETED_SESSION_VMS.lock().unwrap().push(id);
+    if let Err(error) = remote::vm::delete(vm).await {
+        eprintln!("deleting the VM {} of session {id} failed, retrying at the next start: {error}", vm.instance);
         let cleanup = PendingCleanup { vm: vm.clone(), hunt_session_id: id };
-        if !cleanups.contains(&cleanup) {
-            cleanups.push(cleanup);
-            save_pending_cleanups(app, &cleanups);
-        }
+        change_pending_cleanups(app, |cleanups| {
+            if !cleanups.contains(&cleanup) {
+                cleanups.push(cleanup);
+            }
+        });
     }
 }
 
-/// Runs the removals remembered for `vm` now that `ssh` reaches it.
-async fn run_pending_cleanups(app: &AppHandle, ssh: &remote::ssh::Ssh, vm: &VmRef) {
-    let cleanups = load_pending_cleanups(app);
-    if !cleanups.iter().any(|cleanup| &cleanup.vm == vm) {
-        return;
-    }
-    let mut remaining = Vec::new();
-    for cleanup in cleanups {
-        if &cleanup.vm != vm {
-            remaining.push(cleanup);
-            continue;
+/// Deletes the session VMs whose deletion failed before, in the background; Hunt runs it at its start.
+pub fn run_pending_cleanups(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Ok(path) = pending_cleanups_path(&app) else { return };
+        let cleanups = {
+            let _guard = PENDING_CLEANUPS_LOCK.lock().unwrap();
+            read_pending_cleanups(&path)
+        };
+        for cleanup in cleanups {
+            let id = cleanup.hunt_session_id;
+            let is_done = if !remote::vm::is_session_vm(&cleanup.vm, id) {
+                eprintln!("dropping the cleanup of session {id} on the shared VM {}", cleanup.vm.instance);
+                true
+            } else {
+                match remote::vm::delete(&cleanup.vm).await {
+                    Ok(()) => true,
+                    Err(error) => {
+                        eprintln!("deleting the VM {} of session {id} failed again, retrying at the next start: {error}", cleanup.vm.instance);
+                        false
+                    }
+                }
+            };
+            if is_done {
+                change_pending_cleanups(&app, |pending| pending.retain(|other| *other != cleanup));
+            }
         }
-        if let Err(error) = remote::hunt_ctl(ssh, &["destroy", &cleanup.hunt_session_id.to_string()]).await {
-            eprintln!("removing session {} from the VM failed: {error}", cleanup.hunt_session_id);
-            remaining.push(cleanup);
-        }
-    }
-    save_pending_cleanups(app, &remaining);
+    });
 }
 
 /// Ends the agent of `id` like `stop_agent` and waits until its task finished, so a new start cannot race it.
@@ -1040,7 +1176,13 @@ async fn end_session(
 
     let record = store::find_session(app, id)?;
     if let Some(target) = &record.remote {
-        destroy_remote(app, &target.vm, id).await;
+        forget_remote(app, &target.vm, id).await;
+        // An adopted session has nothing here but its record.
+        if target.is_adopted() {
+            return store::remove_session(app, id);
+        }
+    } else if let Some(leftover) = &record.leftover_vm {
+        delete_session_vm(app, leftover, id).await;
     }
     // A sub chat only owns its record; the worktree belongs to its parent.
     if record.parent_id.is_some() {

@@ -25,7 +25,7 @@ import { repoName } from "../ui/path";
 import { titleFromPrompt } from "../sessions/sessionLabels";
 import { useAgentDefaultsStore } from "./agentDefaults";
 import { usePlanUsageStore } from "./planUsage";
-import { configuredVm, useSettingsStore } from "./settings";
+import { configuredVmSettings, useSettingsStore } from "./settings";
 
 export type SessionMode = { id: string; name: string; description?: string | null };
 
@@ -35,8 +35,11 @@ export type ContextUsage = { used: number; size: number };
 /** Views of the inspector pane: the changelist diff, the built-in editor or the component diagram. */
 export type RightTab = "diff" | "editor" | "graph" | "pullRequest";
 
-/** Views of the inspector pane while it shows a remote session: its preview or a terminal on its VM. */
-export type RemoteTab = "preview" | "terminal";
+/** Views of the inspector pane while it shows a remote session: its preview, its changes on the VM or a terminal there. */
+export type RemoteTab = "preview" | "diff" | "terminal";
+
+/** The last adoption of session VMs (see `syncRemoteSessions`): whether one runs and what the last one failed with. */
+export type RemoteSync = { isRunning: boolean; error: string | null };
 
 /** Text and screenshots of a prompt before it is sent. */
 export type PromptDraft = { text: string; images: Screenshot[] };
@@ -99,6 +102,7 @@ function placeholderSession(id: string, title: string, target: WorktreeTarget, p
     reviewComments: [],
     workspace: target.workspace,
     remote: null,
+    leftoverVm: null,
     dependencies: null,
   };
 }
@@ -171,9 +175,16 @@ type HuntState = {
   draft: { parentId: string | null; error?: string; prompt?: PromptDraft | null } | null;
   /** Ids of sessions created without a prompt, titled after their repository until their first prompt names them. */
   untitledIds: string[];
+  remoteSync: RemoteSync;
 
   /** Reloads the stored sessions; a session still being created stays listed until the backend lists it itself. */
   refreshSessions: () => Promise<void>;
+  /**
+   * Adopts the session VMs no local session knows (started by the swf poller or another person's Hunt) as remote
+   * sessions, in the local checkout of their repository among the recently used ones. Does nothing while the remote
+   * settings are incomplete or an adoption runs; a failure lands in `remoteSync.error`.
+   */
+  syncRemoteSessions: () => Promise<void>;
   selectSession: (id: string) => Promise<void>;
   /** Starts the agent of a stopped session again; its chat starts empty because the agent's conversation is gone. */
   resumeSession: (id: string) => Promise<void>;
@@ -452,7 +463,10 @@ function reduceChat(chat: SessionChat, notification: SessionNotification): Sessi
       return { ...chat, contextUsage: { used: update.used, size: update.size } };
     case "session_info_update": {
       const turn = huntTurnOf(update._meta);
-      return turn ? { ...chat, isBusy: turn === "running" } : chat;
+      if (!turn) return chat;
+      // A turn that ends, whoever on the relay sent it, may have changed the worktree on the VM.
+      const hasEnded = turn === "idle" && chat.isBusy;
+      return { ...chat, isBusy: turn === "running", editVersion: hasEnded ? chat.editVersion + 1 : chat.editVersion };
     }
     default:
       return chat;
@@ -471,7 +485,8 @@ export const useHuntStore = create<HuntState>((set, get) => {
   function rememberCommandsOf(id: string) {
     const session = get().sessions.find((candidate) => candidate.id === id);
     const chatCommands = get().chats[id]?.commands;
-    if (!session || !chatCommands) return;
+    // An adopted remote session may have no local checkout to remember the commands for.
+    if (!session?.repoPath || !chatCommands) return;
     useAgentDefaultsStore.getState().rememberCommands(session.repoPath, chatCommands);
   }
 
@@ -642,6 +657,7 @@ export const useHuntStore = create<HuntState>((set, get) => {
     remoteTab: "preview",
     draft: null,
     untitledIds: [],
+    remoteSync: { isRunning: false, error: null },
 
     refreshSessions: async () => {
       const listed = await commands.listSessions();
@@ -649,6 +665,19 @@ export const useHuntStore = create<HuntState>((set, get) => {
         const creating = state.sessions.filter((session) => state.creatingIds.includes(session.id) && !listed.some((candidate) => candidate.id === session.id));
         return { sessions: [...creating, ...listed.filter((session) => !state.removingIds.includes(session.id))] };
       });
+    },
+
+    syncRemoteSessions: async () => {
+      const settings = configuredVmSettings(useSettingsStore.getState().remote);
+      if (!settings || get().remoteSync.isRunning) return;
+      set({ remoteSync: { isRunning: true, error: null } });
+      try {
+        await commands.adoptSessionVms(settings, useAgentDefaultsStore.getState().recentRepoPaths);
+        set({ remoteSync: { isRunning: false, error: null } });
+        await get().refreshSessions();
+      } catch (error) {
+        set({ remoteSync: { isRunning: false, error: String(error) } });
+      }
     },
 
     startDraft: (parentId) => {
@@ -675,12 +704,12 @@ export const useHuntStore = create<HuntState>((set, get) => {
 
     handOffSession: async (id) => {
       const { remote } = useSettingsStore.getState();
-      const vm = configuredVm(remote);
-      if (!vm) {
-        updateChat(id, (chat) => ({ ...chat, error: "Set up the remote VM in Settings → Remote first." }));
+      const settings = configuredVmSettings(remote);
+      if (!settings) {
+        updateChat(id, (chat) => ({ ...chat, error: "Set up the remote VM, gateway and preview domain in Settings → Remote VM first." }));
         return;
       }
-      await restartChat(id, () => commands.handOffSession(id, vm, remote.filePatterns), true);
+      await restartChat(id, () => commands.handOffSession(id, settings, remote.filePatterns), true);
     },
 
     retrieveSession: (id) => restartChat(id, () => commands.retrieveSession(id), true),

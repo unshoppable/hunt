@@ -24,6 +24,7 @@ function session(id: string, parentId: string | null, reviewComments: ReviewComm
     reviewComments,
     workspace: "worktree",
     remote: null,
+    leftoverVm: null,
     dependencies: null,
   };
 }

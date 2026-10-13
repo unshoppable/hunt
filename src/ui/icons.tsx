@@ -211,6 +211,17 @@ export function CloudIcon({ className = "size-3.5" }: { className?: string }) {
   );
 }
 
+/** A cloud with a circular arrow, for looking up the remote sessions on the session VMs again. */
+export function CloudSyncIcon({ className = "size-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M8 19H7a5 5 0 1 1 1.6-9.74A6 6 0 0 1 20 11.5a4 4 0 0 1-1 7.37" />
+      <path d="M16.5 15.5a3.5 3.5 0 1 0-1 2.45" />
+      <path d="M16.5 12.5v3h-3" />
+    </svg>
+  );
+}
+
 /** A bound book, the common symbol for a repository. */
 export function RepoIcon({ className = "size-3.5" }: { className?: string }) {
   return (

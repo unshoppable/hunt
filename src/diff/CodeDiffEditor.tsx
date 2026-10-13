@@ -47,6 +47,11 @@ type CodeDiffEditorProps = {
    * right side has no sub chat glyphs, review comments, editor links or selection agent; the left side keeps them.
    */
   readOnly?: boolean;
+  /**
+   * The diff belongs to no local worktree (a remote session's changes on its VM): neither side gets editor links, the
+   * selection agent or sub chats. Use together with `readOnly`.
+   */
+  isDetached?: boolean;
   /** Called with the current editor content on Cmd/Ctrl+S. */
   onSave: (content: string) => void;
   /** Reports whether the editor content differs from `diff.newContent`. */
@@ -90,6 +95,7 @@ export function CodeDiffEditor({
   lineHeight,
   fontFamily,
   readOnly = false,
+  isDetached = false,
   onSave,
   onDirtyChange,
   onNavigate,
@@ -232,6 +238,7 @@ export function CodeDiffEditor({
 
   const setupEditors = (originalEditor: monaco.editor.IStandaloneCodeEditor, modifiedEditor: monaco.editor.IStandaloneCodeEditor) => {
     modifiedEditorRef.current = modifiedEditor;
+    if (isDetached) return;
     attachSideFeatures(originalEditor, "original");
     if (readOnly) return;
     attachSideFeatures(modifiedEditor, "modified");

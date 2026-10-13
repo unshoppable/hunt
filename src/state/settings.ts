@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import responseStylePrompt from "../../prompts/response-style.md?raw";
-import type { ReviewLevel, VmRef } from "../ipc/types";
+import type { ReviewLevel, VmSettings } from "../ipc/types";
 
 /** The four configurable panes of the window. */
 export type PaneKey = "sidebar" | "chat" | "changelist" | "diff";
@@ -134,12 +134,31 @@ export type GraphAgent = { model: string; effort: string };
 export const DEFAULT_GRAPH_AGENT: GraphAgent = { model: "claude-opus-5-5", effort: "high" };
 
 /**
- * The VM remote sessions run on, the ignored files a handoff copies along as glob patterns relative to the worktree
- * (`*` stays within a folder, `**` crosses folders), and the domain under which a session's preview opens as
- * `https://<id>.<domain>`. Handoffs are offered once project, zone and instance are set, previews once the domain is.
+ * Where remote sessions run. A handoff creates the session's own VM `vm-hunt-s-<short>` from the instance template
+ * `sessionTemplate` in `project` and `zone`, with `machineType` (empty: the template's). The gateway VM
+ * `gatewayInstance` runs all the time and routes `https://<short>.<domain>` and `https://<short>-<port>.<domain>` of
+ * `previewDomain` to the session VMs. `filePatterns` are the ignored files a handoff copies along, as glob patterns
+ * relative to the worktree (`*` stays within a folder, `**` crosses folders). Handoffs are offered once project, zone,
+ * gateway, template and preview domain are set.
  */
-export type RemoteSettings = { project: string; zone: string; instance: string; filePatterns: string[]; previewDomain: string };
-export const DEFAULT_REMOTE: RemoteSettings = { project: "", zone: "", instance: "", filePatterns: ["**/.env.private"], previewDomain: "" };
+export type RemoteSettings = {
+  project: string;
+  zone: string;
+  gatewayInstance: string;
+  sessionTemplate: string;
+  machineType: string;
+  filePatterns: string[];
+  previewDomain: string;
+};
+export const DEFAULT_REMOTE: RemoteSettings = {
+  project: "",
+  zone: "",
+  gatewayInstance: "",
+  sessionTemplate: "tpl-hunt-session",
+  machineType: "",
+  filePatterns: ["**/.env.private"],
+  previewDomain: "",
+};
 
 /** Host names of at least two labels, as the backend accepts them. */
 const PREVIEW_DOMAIN_PATTERN = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -149,13 +168,15 @@ export function configuredPreviewDomain(remote: RemoteSettings): string | null {
   return PREVIEW_DOMAIN_PATTERN.test(remote.previewDomain) ? remote.previewDomain : null;
 }
 
-/** The VM of `remote`, or `null` while its project, zone or instance is missing. */
-export function configuredVm(remote: RemoteSettings): VmRef | null {
+/** What a handoff needs from `remote`, or `null` while its project, zone, gateway, template or preview domain is missing. */
+export function configuredVmSettings(remote: RemoteSettings): VmSettings | null {
   const project = remote.project.trim();
   const zone = remote.zone.trim();
-  const instance = remote.instance.trim();
-  if (!project || !zone || !instance) return null;
-  return { project, zone, instance };
+  const gateway = remote.gatewayInstance.trim();
+  const template = remote.sessionTemplate.trim();
+  const previewDomain = configuredPreviewDomain(remote);
+  if (!project || !zone || !gateway || !template || !previewDomain) return null;
+  return { project, zone, gateway, template, machineType: remote.machineType.trim() || null, previewDomain };
 }
 
 /**
@@ -172,7 +193,15 @@ export function normalizeRemote(remote: RemoteSettings): RemoteSettings {
     .replace(/^[a-z]+:\/\//, "")
     .replace(/^\.+/, "")
     .replace(/[/.]+$/, "");
-  return { project: remote.project.trim(), zone: remote.zone.trim(), instance: remote.instance.trim(), filePatterns, previewDomain };
+  return {
+    project: remote.project.trim(),
+    zone: remote.zone.trim(),
+    gatewayInstance: remote.gatewayInstance.trim(),
+    sessionTemplate: remote.sessionTemplate.trim(),
+    machineType: remote.machineType.trim(),
+    filePatterns,
+    previewDomain,
+  };
 }
 
 /** The kinds of guardrail that live in a folder of their own, set below. */
@@ -426,7 +455,7 @@ function withDefaults(panes: Partial<Record<PaneKey, Partial<PaneSettings>>> | u
 }
 
 /** Current version of the persisted shape; `migrateSettings` brings older ones up to date. */
-export const SETTINGS_VERSION = 9;
+export const SETTINGS_VERSION = 10;
 
 /** Shape persisted up to version 6, which kept one field per resizable popup. */
 type Version6State = PersistedState & { usagesPopupSize?: PopupSize; fileSearchDialogSize?: PopupSize; subChatPopoverSize?: PopupSize };
@@ -474,17 +503,28 @@ function renameCatppuccinIcons(stored: PersistedState): PersistedState {
   return { ...stored, iconRules: stored.iconRules.map((rule) => ({ ...rule, icon: CATPPUCCIN_TO_ATOM_ICONS[rule.icon] ?? rule.icon })) };
 }
 
+/** Remote settings persisted up to version 9, when all sessions shared the VM `instance`. */
+type Version9Remote = Partial<Omit<RemoteSettings, "gatewayInstance">> & { instance?: string };
+
+/** Makes the VM all sessions shared up to version 9 the gateway, which routes previews to the sessions' own VMs. */
+function gatewayFromSharedVm(stored: PersistedState): PersistedState {
+  if (!stored.remote) return stored;
+  const { instance, ...rest } = stored.remote as Version9Remote;
+  return { ...stored, remote: instance === undefined ? rest : { ...rest, gatewayInstance: instance } };
+}
+
 /**
  * Brings a persisted state of an earlier `version` to the current shape: version 0 only knew one font size per pane,
  * versions 1 to 4 and 7 had defaults that are lifted to the current ones where the user never changed them, versions
  * 5 and 6 kept the size of each resizable popup in its own field, versions up to 8 named Catppuccin icons in their icon
- * rules. Fields a version did not have (`guardrailDirs`, `showSummary`, `iconRules`, `folderIconRules`,
- * `confirmSessionDelete`, `diffLineScope`, `changelistScopes`, `graphExcludedFiles`, …) are filled in from the defaults
- * by `mergeSettings`.
+ * rules, versions up to 9 named the VM all remote sessions shared, which is the gateway now. Fields a version did not
+ * have (`guardrailDirs`, `showSummary`, `iconRules`, `folderIconRules`, `confirmSessionDelete`, `diffLineScope`,
+ * `changelistScopes`, `graphExcludedFiles`, the session template, …) are filled in from the defaults by `mergeSettings`.
  */
 export function migrateSettings(persisted: unknown, version: number): PersistedState {
-  if (version >= 9) return persisted as PersistedState;
-  return renameCatppuccinIcons(migrateToVersion8(persisted, version));
+  if (version >= 10) return persisted as PersistedState;
+  if (version >= 9) return gatewayFromSharedVm(persisted as PersistedState);
+  return gatewayFromSharedVm(renameCatppuccinIcons(migrateToVersion8(persisted, version)));
 }
 
 function migrateToVersion8(persisted: unknown, version: number): PersistedState {

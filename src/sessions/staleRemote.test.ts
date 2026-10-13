@@ -16,6 +16,9 @@ function session(remote: Partial<RemoteTarget> | null): SessionView {
     localMode: null,
     lastActiveAt: null,
     cleanupAskedAt: null,
+    previewDomain: null,
+    origin: "handoff",
+    issue: null,
   };
   return { id: "s1", remote: remote ? { ...target, ...remote } : null } as SessionView;
 }

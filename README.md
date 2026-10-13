@@ -269,33 +269,41 @@ revert, shelve, unshelve), and the panel marks the diagram "Outdated" once such 
 
 #### Remote sessions
 
-A session can move to a Compute Engine VM and keep working there while Hunt is closed ("Remote" in the chat header,
-set up under *Settings → Remote VM*). `src-tauri/src/remote/` reaches the VM over SSH through an IAP tunnel with the
-gcloud login and a key Hunt registers with OS Login, starts the VM when it is off, and installs the VM side from this
-repository's `remote/` folder, which ships with the app, whenever the VM runs another version of it.
+A session can move to a Compute Engine VM of its own and keep working there while Hunt is closed ("Remote" in the chat
+header, set up under *Settings → Remote VM*: project, zone, gateway, session VM template, machine type and preview
+domain). The handoff creates the VM `vm-hunt-s-<short id>` (`<short id>` is the first 8 hex digits of the session ID)
+from the instance template `tpl-hunt-session`, labels it `hunt-role=session`, `hunt-session=<short id>` and
+`hunt-origin=desktop`, and records the session's ID, repository, branch and title in its metadata
+(`src-tauri/src/remote/vm.rs`). `src-tauri/src/remote/` reaches the VMs over SSH through an IAP tunnel with the gcloud
+login and a key Hunt registers with OS Login, starts a session's VM when it is off, waits on a new VM until its startup
+script wrote `/var/lib/hunt/session-ready`, and installs the VM side from this repository's `remote/` folder, which
+ships with the app, on the session's VM and on the gateway (`hunt-ctl install <dir> --domain <domain>`) whenever they
+run another version of it.
 
 A handoff (`hand_off_session`) stops the local agent and pushes the branch plus a snapshot commit of the uncommitted
-work (`refs/hunt/<id>/handoff`) into the session's own repository on the VM, `/srv/worktrees/<id>`, so the handoff needs
-no access to GitHub. The Git LFS objects of the checkout, the ignored files matching the settings' patterns (default
-`**/.env.private`) and the Claude Code transcript follow, the transcript with its paths moved to the VM. The session's
-own `~/.claude` there (`/srv/claude/<id>`, never shared with another session) also gets the user's `CLAUDE.md`,
-`rules/`, `skills/`, `agents/`, `commands/` and `output-styles/`, and the memory of the repository
-(`projects/<slug of the main checkout>/memory/`); `settings.json` and plugins stay on the Mac.
-`remote/vm/hunt-ctl` checks the branch out there, installs the dependencies and starts one container per session from
-`remote/image/` with the OAuth token of the selected Claude account, which Hunt passes on stdin; the local login stays
-on the Mac, so a remote session needs a token account.
+work (`refs/hunt/<id>/handoff`) into the session's repository on its VM, `/home/agent/<repository name>`, so the handoff
+needs no access to GitHub. The Git LFS objects of the checkout, the ignored files matching the settings' patterns
+(default `**/.env.private`) and the Claude Code transcript follow, the transcript with its paths moved to the VM. The
+agent's `~/.claude` there (`/home/agent/.claude`) also gets the user's `CLAUDE.md`, `rules/`, `skills/`, `agents/`,
+`commands/` and `output-styles/`, and the memory of the repository (`projects/<slug of the main checkout>/memory/`);
+`settings.json` and plugins stay on the Mac. `remote/vm/hunt-ctl` checks the branch out there; `hunt-ctl
+session-config` writes the session's environment and preview proxy from the repository's `hunt.json` and returns its
+`HUNT.md`, which Hunt appends to the agent's system prompt. Then `hunt-ctl` installs the dependencies and starts the
+relay with the OAuth token of the selected Claude account, which Hunt passes on stdin; the local login stays on the
+Mac, so a remote session needs a token account. A failed handoff removes the session's worktree from the VM but keeps
+the VM (`leftoverVm` in `sessions.json`): the next attempt skips the first boot, and deleting the session deletes it.
 
 With a GitHub token under *Settings → Remote VM* (`src-tauri/src/github_token.rs`, kept in the keychain), the agent pushes
-and runs `gh` as the user: the token goes on stdin next to the Claude token into the container's `GH_TOKEN`, the
+and runs `gh` as the user: the token goes on stdin next to the Claude token into the relay's `GH_TOKEN`, the
 repository there gets `origin` as `https://github.com/<owner>/<repo>.git` with the branch's upstream, and git and Git
 LFS authenticate through gh's credential helper. A repository's `core.hooksPath` inside the worktree (husky's
 `.husky`) comes along with its ignored files, so commits and pushes on the VM run the same hooks; without one, Git LFS's
 hooks upload LFS files on push. Everyone with root on the VM can read the token, so it should be a fine-grained token
 limited to the repositories handed off.
 
-The container's entrypoint is the relay (`remote/relay/`): it
-owns the ACP adapter, loads the conversation once and serves it over a Unix socket. Hunt's agent process for the
-session is then `ssh … socat` to that socket, so the chat works as before; a client that connects later gets the
+The relay (`remote/relay/`) runs on the VM as the systemd service `hunt-relay` of the user `agent`: it owns the ACP
+adapter, loads the conversation once and serves it over `/run/hunt/relay.sock`. Hunt's agent process for the session is
+then `ssh … sudo -n -u agent socat - UNIX-CONNECT:/run/hunt/relay.sock`, so the chat works as before; a client that connects later gets the
 conversation replayed, and the relay reports a running turn. Several clients, such as the Hunt apps of different
 people, can be attached at once: each gets every update live, their prompts run one after another, and a permission
 request goes to all of them; the first answer counts, and the relay withdraws the request from the others. Diff,
@@ -325,6 +333,17 @@ port 8080), which serves `<short id>.<domain>` from the main port and `<short id
 127.0.0.1, keeps the Host header and logs every request to `/var/log/hunt-proxy/access.log`. `hunt-ctl preview-status`
 reports the main port, the ports that listen on all or the loopback addresses and whether the main port answers.
 
+The gateway, a VM that runs all the time, routes `https://<short id>.<domain>` to the session VM's main port, which the
+repository's `hunt.json` names, and `https://<short id>-<port>.<domain>` to any of its ports; the load balancer in
+front of it lets only IAP's access group through, and a request for a VM that is off starts it. The agent starts the
+app itself, as a developer would locally. The *Preview* tab next to a remote session's chat
+(`src/preview/PreviewPanel.tsx`) polls `preview_status`, which runs `hunt-ctl preview-status <id>` on the VM, and shows
+the main URL, every port that listens with its URL and whether the main port answers; Hunt builds the URLs from the
+session ID and the preview domain of the handoff, the VM reports only port numbers. When the main port does not
+answer, *Start the app* (or *Open preview* in the cloud menu) sends the agent "Start the app for the preview as
+described in the repository (HUNT.md, README)." as a normal prompt, which starts a VM that is off, and opens the main
+URL once it answers.
+
 The gateway keeps no sessions. Its edge proxy `hunt-edge` (Caddy in Docker on port 8080 behind the load balancer)
 serves only the load balancer's address ranges, removes IAP's headers and cookies and forwards every preview host with
 its Host header to `vm-hunt-s-<short id>.<zone>.c.<project>.internal:8080`: the session VMs' internal DNS names are the
@@ -333,15 +352,6 @@ whole routing table. A request it cannot deliver (502, 503 or 504, because the V
 with the gateway's service account, starts or resumes it for a page load, at most once every 30 seconds and never for
 a script's request of a tab already open, and answers with a page that reloads every 5 seconds until the VM answers.
 `hunt-firewall.service` keeps containers on the gateway off the metadata server, whose token can start VMs.
-
-*Open preview* (cloud menu, or the preview panel to the right of a remote session's chat) runs `hunt-ctl preview
-start` with the preview domain from *Settings → Remote VM*. It reads `hunt.json` inside the session's container, starts
-the services as containers on the session's network, raises the container's memory limit and hands the plan to the
-relay. The edge proxy `hunt-edge` (Caddy on port 8080 of the VM) serves `https://<short id>.<domain>` and
-`https://<short id>-<port>.<domain>` to the load balancer, which lets only IAP's access group through, and removes
-IAP's headers and cookies before a request reaches a dev server; `<short id>` is the first 8 hex digits of the session
-ID. `src/preview/PreviewPanel.tsx` shows the state, the links and one log per process. Page views and requests other
-than GET keep the VM awake, for at most two hours without a turn.
 
 Next to the preview, the *Terminal* tab (`src/terminal/TerminalPanel.tsx`, xterm.js) attaches to the tmux session
 `app` on the VM, in which the agent runs the app's long-running processes, one window per process. The backend
@@ -352,14 +362,35 @@ window that opened it as base64 chunks (`terminal:output`, then `terminal:exit`)
 shown, stays connected while the preview tab shows, and ends with the session's panel, its window or a reload; tmux
 keeps the processes running. A VM that is off is not started for it.
 
-Bringing it back (`retrieve_session`) stops the container, snapshots the VM's worktree on top of the agent's commits
+The *Diff* tab of a remote session (`src/diff/RemoteDiffPanel.tsx`) shows its changes on the VM read-only: committed
+and uncommitted, against the merge base of the VM's `HEAD` with the handoff head (for a session the poller started,
+with the origin's default branch). `src-tauri/src/remote/diff.rs` runs one bash script per request as `agent` in the
+worktree on the VM and returns the shapes of the local changelist (`ChangedFile`, `FileDiff`). The list reloads after
+every turn that ends on the relay, whoever sent it, and on *Refresh*; a VM that is off starts only on request. Revert,
+shelve and review comments stay switched off until the session is brought back.
+
+Bringing it back (`retrieve_session`) stops the relay, snapshots the VM's worktree on top of the agent's commits
 (`refs/hunt/<id>/retrieve`), fetches it and applies it to the local worktree, which must still hold the handoff
-snapshot; the branch moves to the agent's last commit and the transcript returns. What the agent changed in the
+snapshot; the branch moves to the agent's last commit and the transcript returns. Then Hunt deletes the VM with its
+disks (`gcloud compute instances delete --delete-disks=all`), as it does when a remote session is deleted. A deletion
+that fails, for example offline, is kept in `remote-cleanups.json` in the app data folder and retried with gcloud alone
+at the next start of Hunt. Hunt deletes no VM whose name is not the session's `vm-hunt-s-<short id>`. What the agent changed in the
 memory is merged into the local one three-way against what the handoff sent (`src-tauri/src/remote/memory.rs`): a file
 only the VM changed takes its version, one both sides changed keeps the local version with the VM's next to it as
 `<name>.remote-<id>.md`, and `MEMORY.md` takes the VM's added and removed lines.
 
-A remote session takes space on the VM until it is retrieved or deleted. Hunt records when its agent last worked (a
+The labels and metadata of the session VMs are the directory of remote sessions. At its start and from the sidebar's
+*Refresh remote sessions* button, Hunt lists them (`adopt_session_vms`, `src-tauri/src/remote/adoption.rs`) and adopts
+every VM whose `hunt-session-id` no local session has: VMs the gateway's poller started for `swf` issues
+(`hunt-origin=swf`, `hunt-issue`) and other people's handoffs. An adopted session gets a record with origin `swf` or
+`desktop`, its title, branch and repository from the metadata and the local checkout among the recently used
+repositories whose `origin` is that repository; the sidebar labels it `swf #<issue>` or `remote`. Its worktree path on
+the VM comes from `/srv/hunt/sessions/<id>/meta.json` once Hunt reaches the VM, and the relay replays its conversation
+on `session/load`. Bringing it back creates a new worktree in the local checkout on the branch the VM has checked out
+and is offered only once a checkout is known. Deleting or bringing back an adopted session asks first, naming its VM,
+since other people may work on it; VMs this Mac deleted or still has to delete are never adopted again.
+
+A remote session keeps its VM, which costs only its disk while it is off, until it is retrieved or deleted. Hunt records when its agent last worked (a
 prompt it sent, a turn that ended, or the relay's last turn when it connects) and, once that is seven days ago, asks in
 the main window whether to retrieve or delete it (`src/sessions/StaleRemoteDialog.tsx`); "Later" asks again three days
 later. A session VM shuts itself down after 30 minutes without a running turn, client activity, terminal input or
@@ -381,7 +412,7 @@ restarts the app's containers and dev servers.
 | `src-tauri/src/lsp.rs` | One `tsgo --lsp` process per worktree |
 | `src-tauri/src/workspace.rs` | Project tree and file access |
 | `src-tauri/src/graph.rs` | Dependency graph prompt and status |
-| `src-tauri/src/remote/` | SSH to the VM, handoff and retrieval of remote sessions, previews, terminals |
+| `src-tauri/src/remote/` | Session VMs, SSH to them, handoff and retrieval of remote sessions, previews, terminals |
 | `remote/` | VM side of remote sessions: `hunt-ctl`, the relay, the session VM's configuration, the gateway's wake service |
 | `src/ipc/` | Every Tauri command, event and shared type |
 | `src/state/` | Zustand stores and chat reducers |

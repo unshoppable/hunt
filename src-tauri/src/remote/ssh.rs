@@ -79,7 +79,7 @@ impl Ssh {
             "IdentityAgent=none".to_string(),
             "BatchMode=yes".to_string(),
             format!("ProxyCommand={proxy}"),
-            format!("HostKeyAlias={}.{}.{}", self.vm.instance, self.vm.zone, self.vm.project),
+            format!("HostKeyAlias={}", host_key_alias(&self.vm)),
             format!("UserKnownHostsFile={}", self.known_hosts.display()),
             "StrictHostKeyChecking=accept-new".to_string(),
             "ServerAliveInterval=15".to_string(),
@@ -174,6 +174,32 @@ impl Ssh {
     }
 }
 
+/// The name `vm`'s host key is recorded under in Hunt's known hosts.
+fn host_key_alias(vm: &VmRef) -> String {
+    format!("{}.{}.{}", vm.instance, vm.zone, vm.project)
+}
+
+/// Forgets the host key recorded for `vm` in the known hosts in `dir`; a VM created anew under the name of a deleted
+/// one has a key of its own, which ssh would otherwise refuse.
+pub async fn forget_host_key(vm: &VmRef, dir: &Path) -> Result<(), String> {
+    let known_hosts = dir.join("known_hosts");
+    if !known_hosts.exists() {
+        return Ok(());
+    }
+    let output = Command::new("ssh-keygen")
+        .arg("-R")
+        .arg(host_key_alias(vm))
+        .arg("-f")
+        .arg(&known_hosts)
+        .output()
+        .await
+        .map_err(|error| format!("failed to run ssh-keygen: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("failed to forget the host key of the VM {}: {}", vm.instance, String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    Ok(())
+}
+
 /// The first word of a remote command, for error messages that must not repeat whole scripts.
 fn first_word(command: &str) -> String {
     command.split_whitespace().take(3).collect::<Vec<_>>().join(" ")
@@ -224,10 +250,10 @@ mod tests {
 
     #[test]
     fn stream_args_use_their_own_tunnel_and_end_with_host_and_command() {
-        let args = ssh().stream_args("sudo -n -u hunt socat - UNIX-CONNECT:/srv/hunt/sockets/x/acp.sock");
+        let args = ssh().stream_args("sudo -n -u agent socat - UNIX-CONNECT:/run/hunt/relay.sock");
         assert!(args.contains(&"ControlPath=none".to_string()));
         assert!(!args.iter().any(|arg| arg.starts_with("ControlMaster")));
-        assert_eq!(&args[args.len() - 2..], ["vm-hunt", "sudo -n -u hunt socat - UNIX-CONNECT:/srv/hunt/sockets/x/acp.sock"]);
+        assert_eq!(&args[args.len() - 2..], ["vm-hunt", "sudo -n -u agent socat - UNIX-CONNECT:/run/hunt/relay.sock"]);
         assert!(args.contains(&"ProxyCommand=gcloud compute start-iap-tunnel %h 22 --listen-on-stdin --project=acme-staging --zone=europe-west1-c --verbosity=warning".to_string()));
     }
 
@@ -243,12 +269,24 @@ mod tests {
         assert_eq!(&args[args.len() - 2..], ["vm-hunt", "sudo -n -iu agent tmux -u new-session -A -s app"]);
     }
 
+    #[tokio::test]
+    async fn forget_host_key_removes_only_the_vms_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+        let vm = VmRef { project: "acme".into(), zone: "europe-west1-c".into(), instance: "vm-hunt-s-ab12cd34".into() };
+        assert_eq!(forget_host_key(&vm, dir.path()).await, Ok(()));
+        let other = format!("vm-hunt-s-00000000.europe-west1-c.acme {key}\n");
+        std::fs::write(dir.path().join("known_hosts"), format!("vm-hunt-s-ab12cd34.europe-west1-c.acme {key}\n{other}")).unwrap();
+        forget_host_key(&vm, dir.path()).await.unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("known_hosts")).unwrap(), other);
+    }
+
     #[test]
     fn git_ssh_command_quotes_options_for_the_shell_and_shares_the_master() {
         let command = ssh().git_ssh_command();
         assert!(command.starts_with("ssh -T -l jane_example_com -i /Users/jane/.ssh/hunt/id_ed25519"));
         assert!(command.contains("'ProxyCommand=gcloud compute start-iap-tunnel %h 22 --listen-on-stdin --project=acme-staging --zone=europe-west1-c --verbosity=warning'"));
         assert!(command.contains("'ControlPath=~/.ssh/hunt-%C'"));
-        assert_eq!(ssh().git_url("/srv/worktrees/0123"), "ssh://vm-hunt/srv/worktrees/0123");
+        assert_eq!(ssh().git_url("/home/agent/app"), "ssh://vm-hunt/home/agent/app");
     }
 }

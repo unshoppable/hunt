@@ -5,6 +5,7 @@ import { SessionSidebar } from "../sessions/SessionSidebar";
 import { NewSessionView } from "../sessions/NewSessionView";
 import { ChatPanel } from "../chat/ChatPanel";
 import { DiffPanel } from "../diff/DiffPanel";
+import { RemoteDiffPanel } from "../diff/RemoteDiffPanel";
 import { GraphPanel } from "../graph/GraphPanel";
 import { IdePanel } from "../ide/IdePanel";
 import { PullRequestPanel } from "../review/PullRequestPanel";
@@ -25,6 +26,7 @@ import { useAccountsSync, useAgentPreferencesSync, useBackendEvents, usePaneStyl
 
 export function App() {
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
+  const syncRemoteSessions = useHuntStore((state) => state.syncRemoteSessions);
   const activeSessionId = useHuntStore((state) => state.activeSessionId);
   const draft = useHuntStore((state) => state.draft);
   /** The active session is still being created: it has no worktree yet, so the inspector and the file search wait. */
@@ -61,9 +63,11 @@ export function App() {
     void restoreWindowBounds("main", { fillScreenByDefault: true }).finally(() => getCurrentWindow().show());
   }, []);
 
+  // Session VMs that no local session knows yet (swf issues, other people's handoffs) become remote sessions here.
   useEffect(() => {
     void refreshSessions();
-  }, [refreshSessions]);
+    void syncRemoteSessions();
+  }, [refreshSessions, syncRemoteSessions]);
 
   // The active session's editor window boots hidden, so ⌘click in the diff only has to show it (see ide/editorWindows.ts).
   const hasLocalWorktree = !isCreatingActive && !activeRemoteInstance;
@@ -102,6 +106,7 @@ export function App() {
               {activeRemoteInstance ? (
                 <>
                   <TabButton isActive={remoteTab === "preview"} onClick={() => setRemoteTab("preview")} label="Preview" />
+                  <TabButton isActive={remoteTab === "diff"} onClick={() => setRemoteTab("diff")} label="Diff" />
                   <TabButton isActive={remoteTab === "terminal"} onClick={() => setRemoteTab("terminal")} label="Terminal" />
                 </>
               ) : (
@@ -118,6 +123,7 @@ export function App() {
                 // The terminal stays mounted while the preview shows, so switching tabs keeps its connection.
                 <Fragment key={activeSessionId}>
                   {remoteTab === "preview" ? <PreviewPanel sessionId={activeSessionId} /> : null}
+                  {remoteTab === "diff" ? <RemoteDiffPanel sessionId={activeSessionId} /> : null}
                   <TerminalPanel sessionId={activeSessionId} isVisible={remoteTab === "terminal"} />
                 </Fragment>
               ) : rightTab === "diff" ? (

@@ -2,40 +2,34 @@ import { create } from "zustand";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { commands } from "../ipc/commands";
 import type { PreviewStatus } from "../ipc/types";
-import { appendLogChunk, EMPTY_LOG, type LogView } from "../preview/previewLogs";
 import { errorText } from "../ui/useLoad";
-import { configuredPreviewDomain, useSettingsStore } from "./settings";
+import { useHuntStore } from "./store";
+
+/** What Hunt asks the agent of a remote session when nothing answers on the preview's main port. */
+export const START_APP_PROMPT = "Start the app for the preview as described in the repository (HUNT.md, README).";
 
 /** What Hunt knows about the preview of one remote session. */
 export type SessionPreview = {
   status: PreviewStatus | null;
-  /** A start or stop runs. */
-  isBusy: boolean;
   error: string | null;
-  /** `open` asked for the browser: the main URL opens once the preview is ready. */
+  isRefreshing: boolean;
+  /** The agent was asked to start the app: the main URL opens in the browser once the main port answers. */
   opensWhenReady: boolean;
-  /** Shown parts of the logs, by process name or `setup`. */
-  logs: Record<string, LogView>;
 };
 
-export const EMPTY_PREVIEW: SessionPreview = { status: null, isBusy: false, error: null, opensWhenReady: false, logs: {} };
+export const EMPTY_PREVIEW: SessionPreview = { status: null, error: null, isRefreshing: false, opensWhenReady: false };
 
 type PreviewState = {
   previews: Record<string, SessionPreview>;
-  /** Starts the preview when it does not run and opens its main URL in the browser once it is ready. */
-  open: (id: string) => Promise<void>;
-  stop: (id: string) => Promise<void>;
-  /** Restarts a process; one that is stopped, like an optional process the preview did not start, just starts. */
-  restart: (id: string, process: string) => Promise<void>;
+  /** Reads what listens on the session's VM; opens the main URL when `startApp` waits for it and the main port answers. */
   refresh: (id: string) => Promise<void>;
-  /** Appends what the log `name` gained since the last read. */
-  loadLog: (id: string, name: string) => Promise<void>;
+  /** Opens the main URL in the browser when the main port answers, else asks the agent to start the app first. */
+  openPreview: (id: string) => Promise<void>;
+  /** Sends the agent `START_APP_PROMPT`, shows the Preview tab, which polls, and opens the main URL once the main port answers. */
+  startApp: (id: string) => void;
+  /** Gives up opening the main URL once it answers. */
+  stopWaiting: (id: string) => void;
 };
-
-/** The preview domain from the settings, or an error text that says where to set it. */
-function previewDomain(): string | Error {
-  return configuredPreviewDomain(useSettingsStore.getState().remote) ?? new Error("Set the preview domain in Settings → Remote VM first.");
-}
 
 /** The previews of remote sessions; the panel polls them while it shows one (see preview/PreviewPanel.tsx). */
 export const usePreviewStore = create<PreviewState>((set, get) => {
@@ -43,83 +37,49 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     set((state) => ({ previews: { ...state.previews, [id]: change(state.previews[id] ?? EMPTY_PREVIEW) } }));
   }
 
-  /** Takes a status and opens the browser when `open` waits for a ready preview. */
-  function apply(id: string, status: PreviewStatus) {
-    const preview = get().previews[id] ?? EMPTY_PREVIEW;
-    const opensNow = preview.opensWhenReady && status.state === "ready" && Boolean(status.mainUrl);
-    update(id, (current) => ({ ...current, status, error: null, opensWhenReady: current.opensWhenReady && !opensNow && status.active }));
-    if (opensNow && status.mainUrl) {
-      void openUrl(status.mainUrl).catch((reason) => update(id, (current) => ({ ...current, error: errorText(reason) })));
-    }
-  }
-
-  async function startPreview(id: string) {
-    const domain = previewDomain();
-    if (domain instanceof Error) {
-      update(id, (current) => ({ ...current, error: domain.message }));
-      return;
-    }
-    update(id, (current) => ({ ...current, isBusy: true, error: null, opensWhenReady: true }));
-    try {
-      apply(id, await commands.startPreview(id, domain, []));
-    } catch (reason) {
-      update(id, (current) => ({ ...current, error: errorText(reason), opensWhenReady: false }));
-    } finally {
-      update(id, (current) => ({ ...current, isBusy: false }));
-    }
+  function open(id: string, url: string) {
+    void openUrl(url).catch((reason) => update(id, (current) => ({ ...current, error: errorText(reason) })));
   }
 
   return {
     previews: {},
 
-    open: async (id) => {
-      const status = get().previews[id]?.status;
-      if (status?.active && status.state === "ready" && status.mainUrl) {
-        await openUrl(status.mainUrl).catch((reason) => update(id, (current) => ({ ...current, error: errorText(reason) })));
-        return;
-      }
-      await startPreview(id);
-    },
-
-    stop: async (id) => {
-      update(id, (current) => ({ ...current, isBusy: true, error: null, opensWhenReady: false }));
+    refresh: async (id) => {
+      update(id, (current) => ({ ...current, isRefreshing: true }));
       try {
-        await commands.stopPreview(id);
-        await get().refresh(id);
+        const status = await commands.previewStatus(id);
+        const opensNow = Boolean(get().previews[id]?.opensWhenReady) && status.mainResponds;
+        update(id, (current) => ({ ...current, status, error: null, opensWhenReady: current.opensWhenReady && !opensNow }));
+        if (opensNow) {
+          open(id, status.mainUrl);
+        }
       } catch (reason) {
         update(id, (current) => ({ ...current, error: errorText(reason) }));
       } finally {
-        update(id, (current) => ({ ...current, isBusy: false }));
+        update(id, (current) => ({ ...current, isRefreshing: false }));
       }
     },
 
-    restart: async (id, process) => {
-      try {
-        await commands.restartPreviewProcess(id, process);
-        await get().refresh(id);
-      } catch (reason) {
-        update(id, (current) => ({ ...current, error: errorText(reason) }));
+    openPreview: async (id) => {
+      await get().refresh(id);
+      const { status, error } = get().previews[id] ?? EMPTY_PREVIEW;
+      if (!status || error) return;
+      if (status.mainResponds) {
+        open(id, status.mainUrl);
+        return;
       }
+      get().startApp(id);
     },
 
-    refresh: async (id) => {
-      const domain = previewDomain();
-      if (domain instanceof Error) return;
-      try {
-        apply(id, await commands.previewStatus(id, domain));
-      } catch (reason) {
-        update(id, (current) => ({ ...current, error: errorText(reason) }));
-      }
+    startApp: (id) => {
+      update(id, (current) => ({ ...current, error: null, opensWhenReady: true }));
+      useHuntStore.getState().setRemoteTab("preview");
+      // The normal prompt path: it starts a VM that is off and queues the prompt while the agent is busy.
+      void useHuntStore.getState().sendPrompt(id, START_APP_PROMPT);
     },
 
-    loadLog: async (id, name) => {
-      const view = get().previews[id]?.logs[name];
-      try {
-        const chunk = await commands.readPreviewLog(id, name, view ? view.end : null);
-        update(id, (current) => ({ ...current, logs: { ...current.logs, [name]: appendLogChunk(current.logs[name] ?? EMPTY_LOG, chunk) } }));
-      } catch (reason) {
-        update(id, (current) => ({ ...current, error: errorText(reason) }));
-      }
+    stopWaiting: (id) => {
+      update(id, (current) => ({ ...current, opensWhenReady: false }));
     },
   };
 });

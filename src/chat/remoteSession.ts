@@ -1,17 +1,19 @@
 import type { RemoteStep, SessionView } from "../ipc/types";
+import { missingCheckoutBlocker } from "../sessions/remoteOrigin";
 import type { SessionChat } from "../state/store";
 
 /** What the chat shows while a step of a handoff, a retrieval or a connect to the VM runs. */
 export const REMOTE_STEP_LABELS: Record<RemoteStep, string> = {
   startingVm: "Starting the VM…",
+  creatingVm: "Creating the session's VM…",
+  waitingForVm: "Waiting for the VM to finish its setup, the first boot takes a few minutes…",
   connecting: "Connecting to the VM…",
-  installingRuntime: "Installing the remote runtime on the VM, the first time takes a few minutes…",
+  installingRuntime: "Installing Hunt's runtime on the VMs…",
   transferringCode: "Transferring the code to the VM…",
   installingDependencies: "Installing dependencies on the VM…",
   startingAgent: "Starting the agent on the VM…",
   stoppingAgent: "Stopping the agent on the VM…",
   retrievingCode: "Bringing the code back…",
-  startingPreview: "Starting the preview on the VM…",
 };
 
 /** Why nothing may move while the chat waits for something; `null` when it does not. */
@@ -40,7 +42,10 @@ export function handOffBlocker(session: SessionView, sessions: SessionView[], ch
   return waitingChatBlocker(chat);
 }
 
-/** Why the remote session with `chat` cannot be brought back right now, or `null` when it can. */
-export function retrieveBlocker(chat: SessionChat | undefined): string | null {
-  return waitingChatBlocker(chat);
+/**
+ * Why the remote `session` with `chat` cannot be brought back right now, or `null` when it can: an adopted session needs
+ * a local checkout of its repository, and nothing may wait in its chat.
+ */
+export function retrieveBlocker(session: SessionView, chat: SessionChat | undefined): string | null {
+  return missingCheckoutBlocker(session) ?? waitingChatBlocker(chat);
 }

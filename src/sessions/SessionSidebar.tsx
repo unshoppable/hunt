@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { SessionView } from "../ipc/types";
 import { checkForUpdate } from "../ipc/updater";
 import { useHuntStore } from "../state/store";
-import { useSettingsStore } from "../state/settings";
+import { configuredVmSettings, useSettingsStore } from "../state/settings";
 import { accountOptions, LOCAL_LOGIN, useAccountsStore } from "../state/accounts";
 import { openSettingsWindow } from "../settings/openSettingsWindow";
 import { useFileIconUrl } from "../diff/fileIcons";
@@ -10,14 +10,15 @@ import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, session
 import { SessionMark } from "./SessionMark";
 import { DeleteSessionDialog } from "./DeleteSessionDialog";
 import { StaleRemoteDialog } from "./StaleRemoteDialog";
+import { confirmVmLoss } from "./confirmVmLoss";
+import { isAdopted, remoteOriginLabel, remoteOriginTitle, repositoryLabel } from "./remoteOrigin";
 import { PlanUsageBar } from "./PlanUsageBar";
 import { HEADER_BAR } from "../ui/bars";
 import { ICON_BUTTON, PRIMARY_BUTTON_XS } from "../ui/buttons";
 import { Dropdown } from "../ui/Dropdown";
 import { SearchField } from "../ui/SearchField";
-import { BranchIcon, CloudIcon, GitHubIcon, PlusIcon, RepoIcon, TrashIcon } from "../ui/icons";
+import { BranchIcon, CloudIcon, CloudSyncIcon, GitHubIcon, PlusIcon, RepoIcon, Spinner, TrashIcon } from "../ui/icons";
 import { useLoad } from "../ui/useLoad";
-import { repoName } from "../ui/path";
 
 export function SessionSidebar() {
   const fileIconUrl = useFileIconUrl();
@@ -29,6 +30,9 @@ export function SessionSidebar() {
   const cancelPrompt = useHuntStore((state) => state.cancelPrompt);
   const chats = useHuntStore((state) => state.chats);
   const creatingIds = useHuntStore((state) => state.creatingIds);
+  const remoteSync = useHuntStore((state) => state.remoteSync);
+  const syncRemoteSessions = useHuntStore((state) => state.syncRemoteSessions);
+  const canSyncRemote = useSettingsStore((state) => configuredVmSettings(state.remote) !== null);
   const rootRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   const rows = useMemo(() => filterSessionRows(groupSessions(sessions), query), [sessions, query]);
@@ -51,9 +55,13 @@ export function SessionSidebar() {
 
   /**
    * Deletes the session (a top-level session takes its sub sessions and worktree along), after confirmation unless
-   * the user turned the dialog off.
+   * the user turned the dialog off. An adopted remote session always asks, since its VM goes for everybody.
    */
   const deleteSession = (session: SessionView, isSubChat: boolean) => {
+    if (isAdopted(session)) {
+      void confirmVmLoss(session, "delete").then((isConfirmed) => (isConfirmed ? closeSession(session.id, true) : undefined));
+      return;
+    }
     if (!useSettingsStore.getState().confirmSessionDelete) {
       void closeSession(session.id, true);
       return;
@@ -116,6 +124,22 @@ export function SessionSidebar() {
       <div data-tauri-drag-region="" className={`${HEADER_BAR} justify-between pr-3 pl-23`}>
         <AccountSwitcher />
         <span data-tauri-drag-region="" className="flex shrink-0 items-center gap-1">
+          {canSyncRemote ? (
+            <button
+              type="button"
+              onClick={() => void syncRemoteSessions()}
+              disabled={remoteSync.isRunning}
+              className={`${ICON_BUTTON} ${remoteSync.error ? "text-red-300" : ""}`}
+              title={
+                remoteSync.error
+                  ? `Refresh remote sessions · the last refresh failed: ${remoteSync.error}`
+                  : "Refresh remote sessions: adopt the session VMs of swf issues and other people's handoffs"
+              }
+              aria-label="Refresh remote sessions"
+            >
+              {remoteSync.isRunning ? <Spinner className="size-4" /> : <CloudSyncIcon />}
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => void openSettingsWindow(availableVersion ? "updates" : undefined)}
@@ -137,6 +161,11 @@ export function SessionSidebar() {
         </span>
       </div>
       <SearchField value={query} onChange={setQuery} ariaLabel="Search sessions" className="mx-2 mt-[12px] mb-2" />
+      {remoteSync.error ? (
+        <p className="mx-2 mb-2 rounded-md bg-red-400/10 px-2.5 py-1.5 text-[13px] break-words text-red-300">
+          Refreshing the remote sessions failed: {remoteSync.error}
+        </p>
+      ) : null}
       <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-2 font-(family-name:--sidebar-font-family) text-(length:--sidebar-font-size) leading-(--sidebar-line-height)">
         {query && rows.length === 0 ? <li className="px-2.5 py-1.5 text-[0.875em] text-neutral-500">No sessions match “{query}”</li> : null}
         {rows.map(({ session, isSubChat }) => {
@@ -157,8 +186,13 @@ export function SessionSidebar() {
                   <span className={`min-w-0 flex-1 truncate text-[0.875em] ${isSubChat ? "text-neutral-300" : "font-medium text-neutral-100"}`}>{session.title}</span>
                   {isCreating ? <span className="shrink-0 text-[0.75em] text-neutral-500">Starting</span> : null}
                   {session.remote ? (
-                    <span className="flex shrink-0 text-sky-300" title={`Runs on the VM ${session.remote.vm.instance}`}>
+                    <span className="flex shrink-0 items-center gap-1 text-sky-300" title={remoteOriginTitle(session) ?? undefined}>
                       <CloudIcon className="size-4" />
+                      {remoteOriginLabel(session) ? (
+                        <span className="rounded-md bg-sky-400/10 px-1.5 text-[length:max(13px,0.875em)] leading-5 font-medium">
+                          {remoteOriginLabel(session)}
+                        </span>
+                      ) : null}
                     </span>
                   ) : null}
                   {!isSubChat && !isCreating && !session.remote ? (
@@ -204,9 +238,12 @@ export function SessionSidebar() {
                   <span className="truncate">{isCreating && !isSubChat ? (session.workspace === "checkout" ? "Starting…" : "Creating worktree…") : sessionSubtitle(session)}</span>
                 </span>
                 {!isSubChat ? (
-                  <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500" title={session.repoPath}>
+                  <span
+                    className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500"
+                    title={session.repoPath || (session.remote ? `No local checkout of ${session.remote.repo} is known yet` : undefined)}
+                  >
                     <RepoIcon className="size-4 shrink-0" />
-                    <span className="truncate">{repoName(session.repoPath)}</span>
+                    <span className="truncate">{repositoryLabel(session)}</span>
                   </span>
                 ) : null}
                 {!isCreating && isBusy ? (

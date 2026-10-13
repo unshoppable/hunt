@@ -9,7 +9,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::ssh::Ssh;
-use super::transcript;
+use super::{memory, transcript};
 use super::{bundle, hunt_ctl, hunt_ctl_with_input, tar_create, vm, Progress, RemoteStep, RemoteTarget, VmRef};
 use crate::git;
 
@@ -31,6 +31,8 @@ pub struct HandoffRequest<'a> {
     pub ssh_dir: &'a Path,
     /// The local `~/.claude`.
     pub claude_dir: &'a Path,
+    /// Where Hunt keeps the base of the repository memory the handoff sends, for the retrieval's merge.
+    pub memory_base: &'a Path,
     /// Ignored files to copy, as glob patterns relative to the worktree root.
     pub file_patterns: &'a [String],
     /// What Hunt appends to Claude Code's system prompt.
@@ -356,8 +358,28 @@ async fn upload_ignored_files(worktree: &Path, ssh: &Ssh, id: &str, patterns: &[
     Ok(())
 }
 
-/// Fills the container's `~/.claude`: the session's transcript with its paths moved to the VM, the user's global
-/// `CLAUDE.md` and skills, and `hunt-session.json` for the relay.
+/// The parts of the local `~/.claude` a remote session gets as they are: instructions, rules and the user's own skills,
+/// agents, commands and output styles. `settings.json` and plugins stay behind: their hooks, paths and plugins belong to
+/// this Mac, and the relay sets the permission mode itself.
+const PROFILE_ENTRIES: [&str; 6] = ["CLAUDE.md", "rules", "skills", "agents", "commands", "output-styles"];
+
+/// Copies the entries of `PROFILE_ENTRIES` that exist in `claude_dir` into `staging`; symlinks stay behind.
+fn copy_profile(claude_dir: &Path, staging: &Path) -> Result<(), String> {
+    for name in PROFILE_ENTRIES {
+        let source = claude_dir.join(name);
+        let Ok(metadata) = std::fs::symlink_metadata(&source) else { continue };
+        if metadata.is_dir() {
+            transcript::copy_rewritten(&source, &staging.join(name), &[])?;
+        } else if metadata.is_file() {
+            std::fs::copy(&source, staging.join(name)).map_err(|error| format!("failed to copy {}: {error}", source.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Fills the container's `~/.claude`: the session's transcript with its paths moved to the VM, the user's profile
+/// (`PROFILE_ENTRIES`), the memory of the repository and `hunt-session.json` for the relay. The memory sent becomes the
+/// base of the retrieval's merge.
 async fn upload_claude_dir(request: &HandoffRequest<'_>, ssh: &Ssh, remote_worktree: &str) -> Result<(), String> {
     let staging = std::env::temp_dir().join(format!("hunt-handoff-{}", Uuid::new_v4()));
     let result = async {
@@ -374,13 +396,11 @@ async fn upload_claude_dir(request: &HandoffRequest<'_>, ssh: &Ssh, remote_workt
             None => false,
         };
 
-        let instructions = request.claude_dir.join("CLAUDE.md");
-        if instructions.is_file() {
-            std::fs::copy(&instructions, staging.join("CLAUDE.md")).map_err(|error| format!("failed to copy {}: {error}", instructions.display()))?;
-        }
-        let skills = request.claude_dir.join("skills");
-        if skills.is_dir() {
-            transcript::copy_rewritten(&skills, &staging.join("skills"), &[])?;
+        copy_profile(request.claude_dir, &staging)?;
+        let local_memory = memory::local_dir(request.claude_dir, request.worktree).await?;
+        let memory_files = memory::read_files(&local_memory)?;
+        if !memory_files.is_empty() {
+            transcript::copy_rewritten(&local_memory, &staging.join("projects").join(&remote_slug).join("memory"), &replacements)?;
         }
 
         let config_options: serde_json::Map<String, serde_json::Value> =
@@ -398,7 +418,7 @@ async fn upload_claude_dir(request: &HandoffRequest<'_>, ssh: &Ssh, remote_workt
 
         let archive = tar_create(&staging, &[".".to_string()]).await?;
         hunt_ctl_with_input(ssh, &["put-files", &request.hunt_session_id.to_string(), "--claude"], &archive).await?;
-        Ok(())
+        memory::write_base(request.memory_base, &memory::base_of(&memory_files))
     }
     .await;
     let _ = std::fs::remove_dir_all(&staging);
@@ -415,6 +435,26 @@ mod tests {
         assert_eq!(repository_key_from_url("https://github.com/unshoppable/infrastructure").as_deref(), Some("unshoppable/infrastructure"));
         assert_eq!(repository_key_from_url("ssh://git@host:2222/team/repo.git/").as_deref(), Some("team/repo"));
         assert_eq!(repository_key_from_url("repo"), None);
+    }
+
+    #[test]
+    fn copy_profile_takes_instructions_and_extensions_but_not_settings_or_links() {
+        let root = std::env::temp_dir().join(format!("hunt-profile-{}", Uuid::new_v4()));
+        let (claude_dir, staging) = (root.join("claude"), root.join("staging"));
+        for dir in ["skills/review", "rules", "plugins", "projects/x"] {
+            std::fs::create_dir_all(claude_dir.join(dir)).unwrap();
+        }
+        std::fs::create_dir_all(&staging).unwrap();
+        for file in ["CLAUDE.md", "settings.json", "skills/review/SKILL.md", "rules/style.md", "plugins/installed_plugins.json", "projects/x/a.jsonl"] {
+            std::fs::write(claude_dir.join(file), file).unwrap();
+        }
+        std::os::unix::fs::symlink(root.join("elsewhere"), claude_dir.join("agents")).unwrap();
+
+        copy_profile(&claude_dir, &staging).unwrap();
+        let mut copied: Vec<String> = memory::read_files(&staging).unwrap().into_keys().collect();
+        copied.sort();
+        assert_eq!(copied, ["CLAUDE.md", "rules/style.md", "skills/review/SKILL.md"]);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

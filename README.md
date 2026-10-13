@@ -276,7 +276,10 @@ repository's `remote/` folder, which ships with the app, whenever the VM runs an
 A handoff (`hand_off_session`) stops the local agent and pushes the branch plus a snapshot commit of the uncommitted
 work (`refs/hunt/<id>/handoff`) into the session's own repository on the VM, `/srv/worktrees/<id>`, so the handoff needs
 no access to GitHub. The Git LFS objects of the checkout, the ignored files matching the settings' patterns (default
-`**/.env.private`) and the Claude Code transcript follow, the transcript with its paths moved to the VM.
+`**/.env.private`) and the Claude Code transcript follow, the transcript with its paths moved to the VM. The session's
+own `~/.claude` there (`/srv/claude/<id>`, never shared with another session) also gets the user's `CLAUDE.md`,
+`rules/`, `skills/`, `agents/`, `commands/` and `output-styles/`, and the memory of the repository
+(`projects/<slug of the main checkout>/memory/`); `settings.json` and plugins stay on the Mac.
 `remote/vm/hunt-ctl` checks the branch out there, installs the dependencies and starts one container per session from
 `remote/image/` with the OAuth token of the selected Claude account, which Hunt passes on stdin; the local login stays
 on the Mac, so a remote session needs a token account.
@@ -322,7 +325,10 @@ than GET keep the VM awake, for at most two hours without a turn.
 
 Bringing it back (`retrieve_session`) stops the container, snapshots the VM's worktree on top of the agent's commits
 (`refs/hunt/<id>/retrieve`), fetches it and applies it to the local worktree, which must still hold the handoff
-snapshot; the branch moves to the agent's last commit and the transcript returns. The VM shuts itself down after 30
+snapshot; the branch moves to the agent's last commit and the transcript returns. What the agent changed in the
+memory is merged into the local one three-way against what the handoff sent (`src-tauri/src/remote/memory.rs`): a file
+only the VM changed takes its version, one both sides changed keeps the local version with the VM's next to it as
+`<name>.remote-<id>.md`, and `MEMORY.md` takes the VM's added and removed lines. The VM shuts itself down after 30
 minutes without a running turn, client activity or terminal login (`remote/vm/hunt-idle-check`); the next prompt
 starts it again.
 

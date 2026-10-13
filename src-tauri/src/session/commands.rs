@@ -660,6 +660,7 @@ pub async fn hand_off_session(
         let token_input = remote::token_input(&claude_token, github_token.as_deref());
         let bundle_dir = bundled_script_path(&app, "remote")?;
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
+        let memory_base = memory_base_path(&app, id)?;
         let request = remote::handoff::HandoffRequest {
             hunt_session_id: id,
             worktree: &record.worktree_path,
@@ -668,6 +669,7 @@ pub async fn hand_off_session(
             bundle_dir: &bundle_dir,
             ssh_dir: &ssh_dir,
             claude_dir: &claude_dir,
+            memory_base: &memory_base,
             file_patterns: &file_patterns,
             system_prompt: &system_prompt,
             config_values: &config_values,
@@ -747,7 +749,15 @@ pub async fn retrieve_session(
 
     let activated = async {
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
-        let request = remote::retrieve::RetrieveRequest { hunt_session_id: id, worktree: &record.worktree_path, target: &target, ssh_dir: &ssh_dir, claude_dir: &claude_dir };
+        let memory_base = memory_base_path(&app, id)?;
+        let request = remote::retrieve::RetrieveRequest {
+            hunt_session_id: id,
+            worktree: &record.worktree_path,
+            target: &target,
+            ssh_dir: &ssh_dir,
+            claude_dir: &claude_dir,
+            memory_base: &memory_base,
+        };
         let retrieved = remote::retrieve::retrieve(request, &progress_reporter(&app, id)).await?;
         let record = store::update_session(&app, id, |stored| {
             stored.remote = None;
@@ -818,6 +828,11 @@ struct PendingCleanup {
     hunt_session_id: Uuid,
 }
 
+/// Where Hunt keeps the base of the repository memory the handoff of session `id` sent.
+fn memory_base_path(app: &AppHandle, id: Uuid) -> Result<PathBuf, String> {
+    Ok(store::app_data_dir(app)?.join("remote-memory").join(format!("{id}.json")))
+}
+
 fn pending_cleanups_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(store::app_data_dir(app)?.join("remote-cleanups.json"))
 }
@@ -840,6 +855,9 @@ fn save_pending_cleanups(app: &AppHandle, cleanups: &[PendingCleanup]) {
 /// Removes the session's container, worktree and transcript from the VM when it runs; otherwise remembers the removal
 /// for the next connect. Failures are only logged: the local session must stay deletable.
 async fn destroy_remote(app: &AppHandle, vm: &VmRef, id: Uuid) {
+    if let Ok(path) = memory_base_path(app, id) {
+        let _ = std::fs::remove_file(path);
+    }
     let destroyed = async {
         if remote::vm::status(vm).await? != "RUNNING" {
             return Err("the VM is not running".to_string());

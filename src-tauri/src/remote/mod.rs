@@ -5,6 +5,7 @@
 
 pub mod bundle;
 pub mod handoff;
+pub mod memory;
 pub mod preview;
 pub mod retrieve;
 pub mod ssh;

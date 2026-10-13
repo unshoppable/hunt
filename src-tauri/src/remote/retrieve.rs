@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::handoff::{lfs_object_ids, lfs_object_path, lfs_objects_dir, REMOTE_CLAUDE_DIR, REMOTE_MODE};
 use super::ssh::Ssh;
-use super::transcript;
+use super::{memory, transcript};
 use super::{hunt_ctl, shell_command, tar_extract, vm, Progress, RemoteStep, RemoteTarget};
 use crate::git;
 
@@ -20,6 +20,8 @@ pub struct RetrieveRequest<'a> {
     pub target: &'a RemoteTarget,
     pub ssh_dir: &'a Path,
     pub claude_dir: &'a Path,
+    /// The base of the repository memory the handoff sent; see `memory::merge`.
+    pub memory_base: &'a Path,
 }
 
 /// The ACP session id the transcript continues under, as the relay left it.
@@ -136,8 +138,9 @@ pub(crate) async fn finish_worktree(worktree: &Path, retrieve_ref: &str) -> Resu
     Ok(())
 }
 
-/// Copies the session's project folder back from the VM with its paths moved to the local worktree; returns the ACP
-/// session id the relay last served.
+/// Copies the session's project folder back from the VM with its paths moved to the local worktree and merges its
+/// memory into the repository's local one; returns the ACP session id the relay last served. A failed merge is only
+/// logged: the session comes back regardless.
 async fn retrieve_transcript(request: &RetrieveRequest<'_>, ssh: &Ssh) -> Result<Option<String>, String> {
     let id = request.hunt_session_id.to_string();
     let remote_worktree = request.target.worktree_path.display().to_string();
@@ -157,14 +160,38 @@ async fn retrieve_transcript(request: &RetrieveRequest<'_>, ssh: &Ssh) -> Result
         ];
         replacements.extend(mode_replacement(request.target.restored_mode()));
         let project = staging.join("projects").join(&remote_slug);
+        let remote_memory = staging.join("memory");
+        if std::fs::symlink_metadata(project.join("memory")).is_ok_and(|metadata| metadata.is_dir()) {
+            std::fs::rename(project.join("memory"), &remote_memory).map_err(|error| format!("failed to move the memory aside: {error}"))?;
+        }
         if std::fs::symlink_metadata(&project).is_ok_and(|metadata| metadata.is_dir()) {
             transcript::copy_rewritten(&project, &local_project, &replacements)?;
+        }
+        if let Err(error) = merge_memory(request, &remote_memory, &replacements).await {
+            eprintln!("merging the memory of session {id} into the local one failed: {error}");
         }
         Ok(acp_session_id)
     }
     .await;
     let _ = std::fs::remove_dir_all(&staging);
     result
+}
+
+/// Merges the memory the agent left on the VM (`remote_dir`, its paths moved back with `replacements`) into the local
+/// memory of the session's repository.
+async fn merge_memory(request: &RetrieveRequest<'_>, remote_dir: &Path, replacements: &[(String, String)]) -> Result<(), String> {
+    let remote = memory::read_files(remote_dir)?
+        .into_iter()
+        .map(|(path, bytes)| match String::from_utf8(bytes) {
+            Ok(text) => (path, transcript::rewrite(&text, replacements).into_bytes()),
+            Err(error) => (path, error.into_bytes()),
+        })
+        .collect();
+    let local_dir = memory::local_dir(request.claude_dir, request.worktree).await?;
+    let local = memory::read_files(&local_dir)?;
+    let base = memory::read_base(request.memory_base);
+    let tag = &request.hunt_session_id.simple().to_string()[..8];
+    memory::apply(&local_dir, &memory::merge(base.as_ref(), &local, &remote, tag))
 }
 
 /// The ACP session id in the relay's `hunt-session.json`, a regular file of the archive the VM sent.

@@ -8,7 +8,7 @@
 # belong to the user agent, and the relay runs as hunt-relay.service. The VM is the isolation boundary: whatever
 # hunt-ctl does in the session's files runs as agent, so the agent's Git hooks, config and symlinks act with no more
 # rights than the agent has anyway. The gateway (`gateway`) holds no sessions: its edge proxy forwards the preview hosts
-# to the session VMs, and hunt-wake.service starts a stopped one.
+# to the session VMs, hunt-wake.service starts a stopped one, and hunt-swf.service starts sessions for GitHub issues.
 # shellcheck disable=SC2016 # jq programs and `sh -c` scripts are single-quoted on purpose.
 set -Eeuo pipefail
 shopt -s inherit_errexit nullglob
@@ -66,6 +66,8 @@ readonly -a AGENT_PACKAGES=(g++ make python3 unzip)
 # ---- Gateway ----
 # The preview domain of the last `install --domain`.
 readonly DOMAIN_FILE=/etc/hunt/preview-domain
+# The configuration of hunt-swf.service (remote/gateway/swf.ts), which reads it at every poll.
+readonly SWF_CONFIG=/etc/hunt/swf.json
 readonly EDGE_NAME=hunt-edge
 readonly EDGE_CONFIG_DIR=/etc/hunt-edge
 # The port the load balancer's instance group serves (named port `http`) and its health path; Terraform uses the same.
@@ -135,6 +137,10 @@ Session VM:
   status <id>            relay state, relay status and session metadata
   preview-status [<id>]  the main port of hunt.json, the ports that listen and whether the main port answers
   destroy <id>           stop the session's relay and proxy and remove its worktree, ~/.claude and files
+
+Gateway:
+  swf-config             validate the configuration of hunt-swf.service (JSON on stdin: repos, maxSessions, label, …)
+                         and write it to /etc/hunt/swf.json; prints the stored configuration
 USAGE
   exit 2
 }
@@ -350,6 +356,9 @@ install_units() {
     gateway)
       systemctl enable --quiet hunt-firewall.service hunt-wake.service
       systemctl restart hunt-firewall.service hunt-wake.service
+      # A running poller gets SIGHUP and exits once its current work is done; systemd starts it on this release.
+      systemctl enable --quiet hunt-swf.service
+      systemctl reload-or-restart hunt-swf.service
       ensure_edge
       ;;
   esac
@@ -1227,6 +1236,25 @@ ensure_edge() {
     caddy run --config /etc/hunt-edge/caddy.json >/dev/null
 }
 
+# Stores the configuration of hunt-swf.service from stdin once gateway/swfConfig.ts accepts it, in the normalized form
+# it prints; the poller reads the file at its next poll.
+cmd_swf_config() {
+  (( $# == 0 )) || usage
+  local result
+  [[ -x $HUNT_NODE ]] || die "$HUNT_NODE is missing on the gateway"
+  current_hash >/dev/null
+  if ! result=$("$HUNT_NODE" "$CURRENT/gateway/swfConfig.ts" --validate); then
+    jq -r '.problems[]?' <<<"$result" >&2 2>/dev/null || true
+    die "the configuration of hunt-swf is not valid (see above)"
+  fi
+  jq -e 'type == "object"' <<<"$result" >/dev/null 2>&1 || die "gateway/swfConfig.ts printed no configuration"
+  install -d -m 0755 "${SWF_CONFIG%/*}"
+  jq . <<<"$result" >"$SWF_CONFIG.tmp"
+  chmod 0644 "$SWF_CONFIG.tmp"
+  mv -f "$SWF_CONFIG.tmp" "$SWF_CONFIG"
+  emit --argjson config "$result" '$config'
+}
+
 main() {
   (( $# )) || usage
   (( EUID == 0 )) || die "must run as root: sudo -n hunt-ctl $*"
@@ -1240,6 +1268,9 @@ main() {
     init | clone | receive-pack | upload-pack | lfs-put | lfs-get | put-files | get-claude | prepare | deps | session-config | \
       start | wait | stop | clear | snapshot | status | preview-status | destroy)
       [[ $role == session ]] || die "hunt-ctl $command runs on session VMs only; this VM is the gateway"
+      ;;
+    swf-config)
+      [[ $role == gateway ]] || die "hunt-ctl $command runs on the gateway only; this VM is a session VM"
       ;;
     *) usage ;;
   esac
@@ -1291,6 +1322,7 @@ main() {
     status) cmd_status "$@" ;;
     preview-status) cmd_preview_status "$@" ;;
     destroy) cmd_destroy "$@" ;;
+    swf-config) cmd_swf_config "$@" ;;
   esac
 }
 

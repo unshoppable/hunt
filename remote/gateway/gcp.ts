@@ -1,0 +1,221 @@
+/**
+ * The Google Cloud APIs hunt-swf uses on the gateway, with the access token of the gateway's service account from the
+ * metadata server: the metadata server itself (project, zone, token), Secret Manager (the poller's tokens) and Compute
+ * Engine (the session VMs in the gateway's project and zone). Plain REST through `fetch`; no dependencies.
+ */
+
+const METADATA = "http://metadata.google.internal/computeMetadata/v1";
+const COMPUTE = "https://compute.googleapis.com/compute/v1";
+const SECRET_MANAGER = "https://secretmanager.googleapis.com/v1";
+/** A cached access token is renewed this long before it expires. */
+const TOKEN_MARGIN_MS = 60_000;
+const ERROR_TEXT_LIMIT = 300;
+
+export interface Metadata {
+  project(): Promise<string>;
+  zone(): Promise<string>;
+  accessToken(): Promise<string>;
+}
+
+/** The zone's name from the metadata server's `instance/zone`, `projects/<number>/zones/<zone>`. */
+export function parseZone(text: string): string {
+  const zone = text.trim().split("/").pop() ?? "";
+  if (!/^[a-z0-9-]+$/.test(zone)) throw new Error(`unexpected zone from the metadata server: ${text.slice(0, 100)}`);
+  return zone;
+}
+
+export function parseProject(text: string): string {
+  const project = text.trim();
+  if (!/^[a-z][a-z0-9-]+$/.test(project)) throw new Error(`unexpected project from the metadata server: ${project.slice(0, 100)}`);
+  return project;
+}
+
+/** The metadata server's token response: the token and how many seconds it stays valid. */
+export function parseAccessToken(text: string): { value: string; expiresInSeconds: number } {
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error("the metadata server's token response is no JSON");
+  }
+  const { access_token: value, expires_in: expiresInSeconds } = (body ?? {}) as { access_token?: unknown; expires_in?: unknown };
+  if (typeof value !== "string" || !value || typeof expiresInSeconds !== "number") throw new Error("the metadata server's token response has no access_token");
+  return { value, expiresInSeconds };
+}
+
+/** The text of a Secret Manager `versions/<v>:access` response: its base64 payload, without surrounding whitespace. */
+export function parseSecretPayload(text: string, name: string): string {
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error(`failed to read the secret ${name}: the response is no JSON`);
+  }
+  const data = (body as { payload?: { data?: unknown } } | null)?.payload?.data;
+  if (typeof data !== "string") throw new Error(`failed to read the secret ${name}: the response has no payload`);
+  const secret = Buffer.from(data, "base64").toString("utf8").trim();
+  if (!secret || /\s/.test(secret)) throw new Error(`failed to read the secret ${name}: its latest version is empty or contains whitespace`);
+  return secret;
+}
+
+/** The error of a failed API call; the response body is cut short and holds no secret of the request. */
+async function failure(response: Response, what: string): Promise<Error> {
+  const text = (await response.text()).replace(/\s+/g, " ").slice(0, ERROR_TEXT_LIMIT);
+  return new Error(`failed to ${what}: HTTP ${response.status} ${text}`);
+}
+
+export function createMetadata(fetchImpl: typeof fetch = fetch, now: () => number = Date.now): Metadata {
+  let token: { value: string; expiresAt: number } | null = null;
+  let project: string | null = null;
+  let zone: string | null = null;
+
+  async function read(path: string): Promise<string> {
+    const response = await fetchImpl(`${METADATA}/${path}`, { headers: { "Metadata-Flavor": "Google" } });
+    if (!response.ok) throw await failure(response, `read ${path} from the metadata server`);
+    return response.text();
+  }
+
+  return {
+    async project() {
+      project ??= parseProject(await read("project/project-id"));
+      return project;
+    },
+    async zone() {
+      zone ??= parseZone(await read("instance/zone"));
+      return zone;
+    },
+    async accessToken() {
+      if (token && token.expiresAt - TOKEN_MARGIN_MS > now()) return token.value;
+      const parsed = parseAccessToken(await read("instance/service-accounts/default/token"));
+      token = { value: parsed.value, expiresAt: now() + parsed.expiresInSeconds * 1000 };
+      return token.value;
+    },
+  };
+}
+
+/** Reads the latest version of the secret `name` in the gateway's project. */
+export async function readSecret(metadata: Metadata, name: string, fetchImpl: typeof fetch = fetch): Promise<string> {
+  const url = `${SECRET_MANAGER}/projects/${encodeURIComponent(await metadata.project())}/secrets/${encodeURIComponent(name)}/versions/latest:access`;
+  const response = await fetchImpl(url, { headers: { Authorization: `Bearer ${await metadata.accessToken()}` } });
+  if (!response.ok) throw await failure(response, `read the secret ${name}`);
+  return parseSecretPayload(await response.text(), name);
+}
+
+/** A VM as Compute Engine lists it. */
+export interface Instance {
+  name: string;
+  /** E.g. `PROVISIONING`, `RUNNING`, `STOPPING`, `TERMINATED`. */
+  status: string;
+  labels: Record<string, string>;
+  metadata: { fingerprint: string; items: MetadataItem[] };
+}
+
+export interface MetadataItem {
+  key: string;
+  value: string;
+}
+
+/** What `instances.insert` gets besides the instance template. */
+export interface InstanceRequest {
+  name: string;
+  template: string;
+  /** Replace the template's labels, so they repeat its `hunt-role`. */
+  labels: Record<string, string>;
+  machineType: string | null;
+}
+
+/** The Compute Engine calls hunt-swf needs, on VMs in the gateway's project and zone. */
+export interface Compute {
+  /** The VMs whose label `key` is `value`. */
+  listByLabel(key: string, value: string): Promise<Instance[]>;
+  /** The VM `name`; null when it does not exist. */
+  get(name: string): Promise<Instance | null>;
+  /** Requests the VM from the instance template; returns once Compute Engine accepted the request. */
+  insert(request: InstanceRequest): Promise<void>;
+  /** Replaces the VM's metadata items; `fingerprint` is the one of the metadata read before. */
+  setMetadata(name: string, fingerprint: string, items: MetadataItem[]): Promise<void>;
+}
+
+/** `entries` set in `items`: existing keys get the new value, the other items stay as they are. */
+export function mergeMetadataItems(items: MetadataItem[], entries: Record<string, string>): MetadataItem[] {
+  const merged = items.filter((item) => !Object.hasOwn(entries, item.key));
+  for (const [key, value] of Object.entries(entries)) {
+    merged.push({ key, value });
+  }
+  return merged;
+}
+
+/** An instance resource of the Compute Engine API in the shape hunt-swf reads. */
+export function parseInstance(value: unknown): Instance {
+  const raw = (value ?? {}) as { name?: unknown; status?: unknown; labels?: unknown; metadata?: { fingerprint?: unknown; items?: unknown } };
+  const labels: Record<string, string> = {};
+  if (raw.labels && typeof raw.labels === "object") {
+    for (const [key, label] of Object.entries(raw.labels)) {
+      if (typeof label === "string") {
+        labels[key] = label;
+      }
+    }
+  }
+  const items = Array.isArray(raw.metadata?.items) ? (raw.metadata.items as { key?: unknown; value?: unknown }[]) : [];
+  return {
+    name: typeof raw.name === "string" ? raw.name : "",
+    status: typeof raw.status === "string" ? raw.status : "",
+    labels,
+    metadata: {
+      fingerprint: typeof raw.metadata?.fingerprint === "string" ? raw.metadata.fingerprint : "",
+      items: items.filter((item) => typeof item.key === "string").map((item) => ({ key: item.key as string, value: typeof item.value === "string" ? item.value : "" })),
+    },
+  };
+}
+
+export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetch): Compute {
+  async function zoneUrl(): Promise<string> {
+    return `${COMPUTE}/projects/${encodeURIComponent(await metadata.project())}/zones/${encodeURIComponent(await metadata.zone())}`;
+  }
+
+  async function call(method: "GET" | "POST", url: string, body?: unknown): Promise<Response> {
+    const headers: Record<string, string> = { Authorization: `Bearer ${await metadata.accessToken()}` };
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+    }
+    return fetchImpl(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  }
+
+  return {
+    async listByLabel(key, value) {
+      const instances: Instance[] = [];
+      const filter = `labels.${key} = "${value}"`;
+      let pageToken = "";
+      do {
+        const url = `${await zoneUrl()}/instances?filter=${encodeURIComponent(filter)}${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`;
+        const response = await call("GET", url);
+        if (!response.ok) throw await failure(response, `list the VMs labelled ${key}=${value}`);
+        const page = (await response.json()) as { items?: unknown[]; nextPageToken?: string };
+        instances.push(...(page.items ?? []).map(parseInstance));
+        pageToken = page.nextPageToken ?? "";
+      } while (pageToken);
+      return instances.filter((instance) => instance.labels[key] === value);
+    },
+    async get(name) {
+      const response = await call("GET", `${await zoneUrl()}/instances/${encodeURIComponent(name)}`);
+      if (response.status === 404) return null;
+      if (!response.ok) throw await failure(response, `look up ${name}`);
+      return parseInstance(await response.json());
+    },
+    async insert(request) {
+      const project = await metadata.project();
+      const zone = await metadata.zone();
+      const template = `projects/${project}/global/instanceTemplates/${request.template}`;
+      const body: Record<string, unknown> = { name: request.name, labels: request.labels };
+      if (request.machineType) {
+        body.machineType = `zones/${zone}/machineTypes/${request.machineType}`;
+      }
+      const response = await call("POST", `${await zoneUrl()}/instances?sourceInstanceTemplate=${encodeURIComponent(template)}`, body);
+      if (!response.ok) throw await failure(response, `create ${request.name} from ${request.template}`);
+    },
+    async setMetadata(name, fingerprint, items) {
+      const response = await call("POST", `${await zoneUrl()}/instances/${encodeURIComponent(name)}/setMetadata`, { fingerprint, items });
+      if (!response.ok) throw await failure(response, `set the metadata of ${name}`);
+    },
+  };
+}

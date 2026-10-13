@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useHuntStore } from "../state/store";
 import { SessionSidebar } from "../sessions/SessionSidebar";
@@ -17,6 +17,7 @@ import { EMPTY_IDE_SESSION, useIdeStore } from "../ide/ideStore";
 import { allPanes } from "../ide/paneGrid";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
 import { PreviewPanel } from "../preview/PreviewPanel";
+import { TerminalPanel } from "../terminal/TerminalPanel";
 import { HEADER_BAR } from "../ui/bars";
 import { TAB_ACTIVE, TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons";
 import { restoreWindowBounds, useRememberWindowBounds } from "../ui/windowBounds";
@@ -32,6 +33,8 @@ export function App() {
   const activeRemoteInstance = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.remote?.vm.instance ?? null);
   const rightTab = useHuntStore((state) => state.rightTab);
   const setRightTab = useHuntStore((state) => state.setRightTab);
+  const remoteTab = useHuntStore((state) => state.remoteTab);
+  const setRemoteTab = useHuntStore((state) => state.setRemoteTab);
   const openFile = useIdeStore((state) => state.openFile);
   const ideLayout = useIdeStore((state) => (activeSessionId ? state.sessions[activeSessionId]?.layout : null) ?? EMPTY_IDE_SESSION.layout);
   const openPaths = useMemo(() => [...new Set(allPanes(ideLayout).flatMap((pane) => pane.tabs))], [ideLayout]);
@@ -96,14 +99,27 @@ export function App() {
         <Panel id="inspector" defaultSize="62%" minSize={320} className="flex">
           <aside className="flex min-w-0 flex-1 flex-col bg-(--surface-inspector)">
             <nav data-tauri-drag-region="" className={`${HEADER_BAR} gap-1 border-b border-(--line) px-2`}>
-              <TabButton isActive={rightTab === "diff"} onClick={() => setRightTab("diff")} label="Diff" />
-              <TabButton isActive={rightTab === "editor"} onClick={() => setRightTab("editor")} label="Editor" />
-              <TabButton isActive={rightTab === "graph"} onClick={() => setRightTab("graph")} label="Dependency Graph" />
-              <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} label="PR Description" />
+              {activeRemoteInstance ? (
+                <>
+                  <TabButton isActive={remoteTab === "preview"} onClick={() => setRemoteTab("preview")} label="Preview" />
+                  <TabButton isActive={remoteTab === "terminal"} onClick={() => setRemoteTab("terminal")} label="Terminal" />
+                </>
+              ) : (
+                <>
+                  <TabButton isActive={rightTab === "diff"} onClick={() => setRightTab("diff")} label="Diff" />
+                  <TabButton isActive={rightTab === "editor"} onClick={() => setRightTab("editor")} label="Editor" />
+                  <TabButton isActive={rightTab === "graph"} onClick={() => setRightTab("graph")} label="Dependency Graph" />
+                  <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} label="PR Description" />
+                </>
+              )}
             </nav>
             <div className="min-h-0 flex-1">
               {!activeSessionId || draft || isCreatingActive ? null : activeRemoteInstance ? (
-                <PreviewPanel key={activeSessionId} sessionId={activeSessionId} />
+                // The terminal stays mounted while the preview shows, so switching tabs keeps its connection.
+                <Fragment key={activeSessionId}>
+                  {remoteTab === "preview" ? <PreviewPanel sessionId={activeSessionId} /> : null}
+                  <TerminalPanel sessionId={activeSessionId} isVisible={remoteTab === "terminal"} />
+                </Fragment>
               ) : rightTab === "diff" ? (
                 <DiffPanel key={activeSessionId} sessionId={activeSessionId} />
               ) : rightTab === "editor" ? (

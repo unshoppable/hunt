@@ -17,9 +17,11 @@ mod session;
 
 use acp::{PermissionRegistry, SessionRegistry};
 use graph::WatcherRegistry;
+use remote::terminal::TerminalRegistry;
 use session::attribution::AttributionRegistry;
 use session::dependencies::DependencyRegistry;
 use session::summary::SummaryRegistry;
+use tauri::webview::PageLoadEvent;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -38,6 +40,7 @@ pub fn run() {
         .menu(|app| menu::build(app))
         .manage(AttributionRegistry::default())
         .manage(lsp::LspRegistry::default())
+        .manage(TerminalRegistry::default())
         .invoke_handler(tauri::generate_handler![
             session::commands::list_sessions,
             session::commands::list_branches,
@@ -65,6 +68,10 @@ pub fn run() {
             session::commands::stop_preview,
             session::commands::restart_preview_process,
             session::commands::read_preview_log,
+            session::commands::open_terminal,
+            session::commands::write_terminal,
+            session::commands::resize_terminal,
+            session::commands::close_terminal,
             session::commands::prepare_dependencies,
             session::commands::close_session,
             session::commands::send_prompt,
@@ -112,7 +119,16 @@ pub fn run() {
             github_token::set_github_token,
             github_token::remove_github_token,
         ])
+        // A page that loads again (a reload) has lost its terminals, so they end with the old page.
+        .on_page_load(|webview, payload| {
+            if payload.event() == PageLoadEvent::Started {
+                webview.app_handle().state::<TerminalRegistry>().close_owned_by(webview.label());
+            }
+        })
         .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                window.app_handle().state::<TerminalRegistry>().close_owned_by(window.label());
+            }
             // The other windows (editor, diff, guardrails, settings) belong to the main window: closing it closes them too, which ends the app.
             if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
                 for (label, other) in window.app_handle().webview_windows() {
@@ -127,6 +143,7 @@ pub fn run() {
         .run(|app, event| {
             // `run` ends in process::exit, which skips Drop; stop the agent and language server processes explicitly first.
             if let tauri::RunEvent::ExitRequested { .. } = event {
+                app.state::<TerminalRegistry>().close_all();
                 let registry = app.state::<SessionRegistry>();
                 let lsp_registry = app.state::<lsp::LspRegistry>();
                 tauri::async_runtime::block_on(async {

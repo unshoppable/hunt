@@ -1,7 +1,8 @@
 //! Sessions handed off to a VM: SSH through an IAP tunnel (`ssh.rs`), the VM's power state (`vm.rs`), the software
 //! Hunt installs on it from this repository's `remote/` folder (`bundle.rs`), and moving a session's git state and
-//! Claude Code transcript there and back (`handoff.rs`, `retrieve.rs`, `transcript.rs`). Knows nothing about Tauri;
-//! `session/commands.rs` owns the commands.
+//! Claude Code transcript there and back (`handoff.rs`, `retrieve.rs`, `transcript.rs`), previews (`preview.rs`) and
+//! terminals attached to the VM's tmux session (`terminal.rs`). Knows nothing about Tauri; `session/commands.rs` owns
+//! the commands.
 
 pub mod bundle;
 pub mod handoff;
@@ -9,6 +10,7 @@ pub mod memory;
 pub mod preview;
 pub mod retrieve;
 pub mod ssh;
+pub mod terminal;
 pub mod transcript;
 pub mod vm;
 

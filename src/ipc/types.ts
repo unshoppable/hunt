@@ -176,6 +176,12 @@ export type PreviewLogChunk = { size: number; offset: number; text: string; rese
 /** The step a remote operation on a session is at; `null` once it ended. */
 export type RemoteProgressEvent = { huntSessionId: string; step: RemoteStep | null };
 
+/** A chunk of a terminal's output: base64 of its bytes, which may end inside a UTF-8 or an escape sequence. */
+export type TerminalOutputEvent = { id: string; data: string };
+
+/** The end of a terminal's program; `code` is `null` when a signal ended it. */
+export type TerminalExitEvent = { id: string; code: number | null };
+
 /** The pull request a session reviews: enough to show it and to open it on GitHub. */
 export type PullRequestRef = {
   number: number;

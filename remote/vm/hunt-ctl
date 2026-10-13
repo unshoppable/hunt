@@ -21,7 +21,11 @@ readonly ACTIVITY_FILE=/var/lib/hunt/activity
 # The hash of the last install that completed; Hunt installs again while it differs from its bundle or is missing.
 readonly INSTALLED_HASH_FILE=/var/lib/hunt/installed-hash
 readonly UNIT_DIR=/etc/systemd/system
+# A preview domain: at least two labels, the last of letters only, and room for `<short>-<port>.` in front of it within
+# the 253 characters of a host name. src-tauri/src/remote/preview.rs, remote/session/config.ts and Hunt's settings
+# check the same.
 readonly DOMAIN_PATTERN='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+readonly MAX_DOMAIN_LENGTH=238
 # Exit status of failures that were reported already; the ERR trap stays quiet for them.
 readonly REPORTED=3
 
@@ -185,6 +189,11 @@ read_role() {
   printf '%s\n' "$value"
 }
 
+# Whether $1 is a preview domain; see DOMAIN_PATTERN.
+is_domain() {
+  [[ $1 =~ $DOMAIN_PATTERN ]] && (( ${#1} <= MAX_DOMAIN_LENGTH ))
+}
+
 current_hash() {
   [[ -f $CURRENT/.hash ]] || die "no Hunt release is installed; run hunt-ctl install first"
   tr -d '[:space:]' <"$CURRENT/.hash"
@@ -281,7 +290,7 @@ cmd_install() {
     if [[ -z $domain && -f $DOMAIN_FILE ]]; then
       domain=$(tr -d '[:space:]' <"$DOMAIN_FILE")
     fi
-    [[ $domain =~ $DOMAIN_PATTERN ]] || die "invalid or missing preview domain: run hunt-ctl install <dir> --domain <domain>"
+    is_domain "$domain" || die "invalid or missing preview domain: run hunt-ctl install <dir> --domain <domain>"
   fi
 
   install -d -m 0755 "$RELEASES" "$STATE_DIR"
@@ -903,7 +912,7 @@ cmd_session_config() {
     esac
     shift 2
   done
-  [[ $domain =~ $DOMAIN_PATTERN ]] || die "invalid preview domain: $domain"
+  is_domain "$domain" || die "invalid preview domain: $domain"
   worktree=$(worktree_of "$id")
   [[ -x $HUNT_NODE ]] || die "$HUNT_NODE is missing; this VM is no session VM"
   install -d -m 0755 "${SESSION_ENV%/*}"

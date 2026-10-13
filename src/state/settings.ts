@@ -160,12 +160,15 @@ export const DEFAULT_REMOTE: RemoteSettings = {
   previewDomain: "",
 };
 
-/** Host names of at least two labels, as the backend accepts them. */
-const PREVIEW_DOMAIN_PATTERN = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+/** Host names of at least two labels, the last of letters only, as the backend and hunt-ctl accept them. */
+const PREVIEW_DOMAIN_PATTERN = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+/** Leaves room for the `<short>-<port>.` in front of the domain within the 253 characters of a host name. */
+const MAX_PREVIEW_DOMAIN_LENGTH = 253 - "01234567-65535.".length;
 
 /** The preview domain of `remote`, or `null` while it is empty or no host name. */
 export function configuredPreviewDomain(remote: RemoteSettings): string | null {
-  return PREVIEW_DOMAIN_PATTERN.test(remote.previewDomain) ? remote.previewDomain : null;
+  const domain = remote.previewDomain;
+  return domain.length <= MAX_PREVIEW_DOMAIN_LENGTH && PREVIEW_DOMAIN_PATTERN.test(domain) ? domain : null;
 }
 
 /** What a handoff needs from `remote`, or `null` while its project, zone, gateway, template or preview domain is missing. */

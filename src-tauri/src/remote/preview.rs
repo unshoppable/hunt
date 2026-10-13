@@ -8,18 +8,28 @@ use uuid::Uuid;
 
 use super::vm::short_id;
 
-/// The preview domain from the settings, lowercased, or an error when it is not a hostname of at least two labels.
+/// The longest preview domain: `<short>-<port>.` in front of it must fit into the 253 characters of a host name.
+const MAX_DOMAIN_LENGTH: usize = 253 - "01234567-65535.".len();
+
+/// The preview domain from the settings, lowercased, or an error unless it is a host name of at least two labels whose
+/// last label consists of 2 to 63 letters. `hunt-ctl` (`DOMAIN_PATTERN`), `remote/session/config.ts` and
+/// `src/state/settings.ts` check the same.
 pub fn validate_domain(domain: &str) -> Result<String, String> {
     let domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
     let labels: Vec<&str> = domain.split('.').collect();
     let is_label = |label: &&str| {
         !label.is_empty()
             && label.len() <= 63
-            && label.chars().all(|character| character.is_ascii_alphanumeric() || character == '-')
+            && label.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-')
             && !label.starts_with('-')
             && !label.ends_with('-')
     };
-    if labels.len() < 2 || !labels.iter().all(is_label) {
+    let is_top_level = |label: &&str| label.len() >= 2 && label.chars().all(|character| character.is_ascii_lowercase());
+    let is_valid = domain.len() <= MAX_DOMAIN_LENGTH
+        && labels.len() >= 2
+        && labels.iter().all(is_label)
+        && labels.last().is_some_and(is_top_level);
+    if !is_valid {
         return Err(format!("failed to use the preview domain {domain:?}: expected a host name such as previews.example.com"));
     }
     Ok(domain)
@@ -97,9 +107,19 @@ mod tests {
     #[test]
     fn validate_domain_accepts_host_names_only() {
         assert_eq!(validate_domain(" Previews.Example.com. ").unwrap(), "previews.example.com");
+        assert_eq!(validate_domain("a-1.b2.example.de").unwrap(), "a-1.b2.example.de");
         for invalid in ["", "localhost", "a..b", "-a.example.com", "a_b.example.com", "https://x.example.com", "x.example.com/path"] {
             assert!(validate_domain(invalid).is_err(), "{invalid}");
         }
+        for invalid_top_level in ["hunt.example.c0m", "hunt.example.c", "hunt.example.123", "hunt.example.co-m", "hunt.example.ä"] {
+            assert!(validate_domain(invalid_top_level).is_err(), "{invalid_top_level}");
+        }
+
+        let domain_of_length = |length: usize| {
+            format!("{}.{}.{}.{}.com", "a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(length - 196))
+        };
+        assert!(validate_domain(&domain_of_length(238)).is_ok());
+        assert!(validate_domain(&domain_of_length(239)).is_err());
     }
 
     #[test]

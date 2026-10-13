@@ -176,5 +176,9 @@ describe("remote settings", () => {
     expect(configuredPreviewDomain(DEFAULT_REMOTE)).toBeNull();
     expect(configuredPreviewDomain({ ...DEFAULT_REMOTE, previewDomain: "localhost" })).toBeNull();
     expect(configuredPreviewDomain({ ...DEFAULT_REMOTE, previewDomain: "a_b.example.com" })).toBeNull();
+    expect(configuredPreviewDomain({ ...DEFAULT_REMOTE, previewDomain: "hunt.example.c0m" })).toBeNull();
+    const tooLong = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(43)}.com`;
+    expect(configuredPreviewDomain({ ...DEFAULT_REMOTE, previewDomain: tooLong })).toBeNull();
+    expect(configuredPreviewDomain({ ...DEFAULT_REMOTE, previewDomain: tooLong.slice(1) })).toBe(tooLong.slice(1));
   });
 });

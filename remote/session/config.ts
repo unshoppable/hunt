@@ -125,7 +125,11 @@ const URL_PLACEHOLDER = /^HUNT_PREVIEW_URL(?:_([0-9]+))?$/;
 const ROUTE_PREFIX = /^\/(?:[A-Za-z0-9._~-]+\/)+$/;
 const ROUTE_PREFIX_RULE = 'must be a path prefix such as "/api/": starting and ending with /, segments of letters, digits, ".", "_", "~" and "-", none . or ..';
 const SHORT = /^[0-9a-f]{8}$/;
-const DOMAIN_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+/**
+ * At least two labels, the last of letters only; hunt-ctl's DOMAIN_PATTERN, src-tauri/src/remote/preview.rs and
+ * src/state/settings.ts check the same.
+ */
+const DOMAIN = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 /** Leaves room for the `<short>-<port>.` in front of the domain within the 253 characters of a host name. */
 const MAX_DOMAIN_LENGTH = 253 - "01234567-65535.".length;
 const MIN_PORT = 1024;
@@ -155,7 +159,7 @@ export function buildSessionConfig(huntJson: unknown, host: SessionHost): Sessio
     problems.add("short", "must be the first 8 hex digits of the session ID, in lowercase");
   }
   if (!isDomain(host.domain)) {
-    problems.add("domain", "must be a lowercase host name with at least two labels");
+    problems.add("domain", "must be a lowercase host name with at least two labels, the last of letters only");
   }
   const config = parseSection(huntJson, problems);
   if (problems.messages.length > 0) throw new ConfigError(problems.messages);
@@ -428,6 +432,5 @@ function parseTls(value: unknown, problems: Problems): number[] {
 }
 
 function isDomain(value: string): boolean {
-  const labels = value.split(".");
-  return value.length <= MAX_DOMAIN_LENGTH && labels.length >= 2 && labels.every((label) => DOMAIN_LABEL.test(label));
+  return value.length <= MAX_DOMAIN_LENGTH && DOMAIN.test(value);
 }

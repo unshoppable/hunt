@@ -159,10 +159,20 @@ describe("parsePreviewConfig", () => {
   it("rejects an invalid short ID or domain together with the problems of hunt.json", () => {
     expect(problemsOf(preview({ main: 1 }), { short: "7C0C6F2E", domain: "localhost" })).toEqual([
       "short: must be the first 8 hex digits of the session ID, in lowercase",
-      "domain: must be a lowercase host name with at least two labels",
+      "domain: must be a lowercase host name with at least two labels, the last of letters only",
       `preview.main: ${PORT_RULE}`,
     ]);
     expect(problemsOf(undefined, { short: "7c0c6f2", domain: "Hunt.Example.com" })).toHaveLength(2);
+  });
+
+  it("accepts the domains hunt-ctl accepts: a top-level label of letters and room for the port hosts", () => {
+    const domainOfLength = (length: number) => `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(length - 196)}.com`;
+    for (const domain of ["a-1.b2.example.de", domainOfLength(238)]) {
+      expect(problemsOf(undefined, { short: "7c0c6f2e", domain }), domain).toEqual([]);
+    }
+    for (const domain of ["hunt.example.c0m", "hunt.example.c", "hunt.example.123", "hunt.example.co-m", "-a.example.com", domainOfLength(239)]) {
+      expect(problemsOf(undefined, { short: "7c0c6f2e", domain }), domain).toHaveLength(1);
+    }
   });
 });
 

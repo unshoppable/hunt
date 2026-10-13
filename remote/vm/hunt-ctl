@@ -347,7 +347,7 @@ fail_wait() {
 
 # Waits up to $2 seconds until the relay of session $1 is ready with a fresh heartbeat and its socket takes connections,
 # then prints its status.json as the command's result. $3, the JSON of an acpSessionId, makes it also wait until the
-# relay serves another session. A connected client proves the socket: probing it would replace that client.
+# relay serves another session. A connected client proves the socket, so the socket is then not probed.
 wait_until_ready() {
   local id=$1 timeout=$2 previous=${3-} name=hunt-$1
   local status_file=$SOCKETS/$1/status.json socket=$SOCKETS/$1/acp.sock

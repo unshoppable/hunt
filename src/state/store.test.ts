@@ -181,6 +181,20 @@ describe("acp update reducer", () => {
     useHuntStore.getState().applyClosed({ huntSessionId: SESSION, error: "boom" });
     expect(useHuntStore.getState().chats[SESSION]).toBeUndefined();
   });
+
+  it("drops a withdrawn permission request and keeps a newer one", () => {
+    const { applyPermission, applyPermissionWithdrawn } = useHuntStore.getState();
+    const request = { sessionId: "acp-session", toolCall: { toolCallId: "toolu_1", title: "Write README.md" }, options: [] };
+    applyPermission({ huntSessionId: SESSION, requestId: "first", request });
+    applyPermissionWithdrawn({ huntSessionId: SESSION, requestId: "first" });
+    expect(useHuntStore.getState().chats[SESSION].permission).toBeNull();
+
+    applyPermission({ huntSessionId: SESSION, requestId: "second", request });
+    applyPermissionWithdrawn({ huntSessionId: SESSION, requestId: "first" });
+    expect(useHuntStore.getState().chats[SESSION].permission?.requestId).toBe("second");
+    applyPermissionWithdrawn({ huntSessionId: "other", requestId: "second" });
+    expect(useHuntStore.getState().chats.other).toBeUndefined();
+  });
 });
 
 describe("loadHistory", () => {

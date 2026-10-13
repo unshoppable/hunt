@@ -130,7 +130,8 @@ See [CLAUDE.md](CLAUDE.md) for the conventions contributors and coding agents fo
 #### Sessions and the agent
 
 `src-tauri/src/acp/` spawns `@agentclientprotocol/claude-agent-acp` per session and forwards every
-`session/update` to the UI as the `acp:update` event; permission requests become `acp:permission`.
+`session/update` to the UI as the `acp:update` event; permission requests become `acp:permission`, and one the agent
+withdraws with `$/cancel_request` becomes `acp:permission-withdrawn`, which removes it from the chat.
 
 A session starts in the start view of the chat pane ("New" in the sidebar), which preselects the repository used
 last. Choosing a repository there, from the folder dialog or the list of recently used ones, creates the session right
@@ -295,8 +296,10 @@ limited to the repositories handed off.
 The container's entrypoint is the relay (`remote/relay/`): it
 owns the ACP adapter, loads the conversation once and serves it over a Unix socket. Hunt's agent process for the
 session is then `ssh … socat` to that socket, so the chat works as before; a client that connects later gets the
-conversation replayed, and the relay reports a running turn. Diff, editor, graph and guardrails stay local and wait
-until the session comes back.
+conversation replayed, and the relay reports a running turn. Several clients, such as the Hunt apps of different
+people, can be attached at once: each gets every update live, their prompts run one after another, and a permission
+request goes to all of them; the first answer counts, and the relay withdraws the request from the others. Diff,
+editor, graph and guardrails stay local and wait until the session comes back.
 
 Sessions on the VM are kept apart: every git, tar or file operation `hunt-ctl` runs on a session's files happens in a
 throwaway container without network that sees only that session, so its hooks, Git config and symlinks never act on the

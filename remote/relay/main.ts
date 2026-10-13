@@ -1,7 +1,7 @@
 /**
- * Entry point of the relay in a session container: spawns the ACP adapter, serves ACP to one client at a time on
- * `$HUNT_SOCKET_DIR/acp.sock` and keeps `status.json` next to it (see `relay.ts` for the protocol). Next to it runs the
- * preview supervisor (`preview/runtime.ts`) with its control socket `preview.sock`.
+ * Entry point of the relay in a session container: spawns the ACP adapter, serves ACP to any number of clients at once
+ * on `$HUNT_SOCKET_DIR/acp.sock` and keeps `status.json` next to it (see `relay.ts` for the protocol). Next to it runs
+ * the preview supervisor (`preview/runtime.ts`) with its control socket `preview.sock`.
  *
  *   node remote/relay/main.ts
  *
@@ -75,7 +75,7 @@ function startPreview(socketDir: string, configPath: string): PreviewRuntime | n
   }
 }
 
-/** Connects one socket to the relay as its client, framed as NDJSON. */
+/** Connects one socket to the relay as one of its clients, framed as NDJSON. */
 function serveClient(socket: Socket, relay: Relay): void {
   socket.setEncoding("utf8");
   const connection: ClientConnection = {
@@ -84,7 +84,6 @@ function serveClient(socket: Socket, relay: Relay): void {
         socket.write(encodeLine(message));
       }
     },
-    close: () => socket.destroy(),
   };
   const lines = createLineDecoder((line) => {
     const message = parseLine(line);

@@ -87,6 +87,7 @@ export function useBackendEvents(): void {
   const applyUpdate = useHuntStore((state) => state.applyUpdate);
   const applyAttributionChanged = useHuntStore((state) => state.applyAttributionChanged);
   const applyPermission = useHuntStore((state) => state.applyPermission);
+  const applyPermissionWithdrawn = useHuntStore((state) => state.applyPermissionWithdrawn);
   const applyClosed = useHuntStore((state) => state.applyClosed);
   const applyGraphChanged = useHuntStore((state) => state.applyGraphChanged);
   const applySummary = useHuntStore((state) => state.applySummary);
@@ -96,6 +97,7 @@ export function useBackendEvents(): void {
     const subscriptions = [
       listenTo("acp:update", (event) => applyUpdate(event.huntSessionId, event.notification)),
       listenTo("acp:permission", applyPermission),
+      listenTo("acp:permission-withdrawn", applyPermissionWithdrawn),
       listenTo("acp:closed", applyClosed),
       listenTo("remote:progress", applyRemoteProgress),
       listenTo("graph:changed", (event) => applyGraphChanged(event.huntSessionId)),
@@ -108,5 +110,15 @@ export function useBackendEvents(): void {
         void subscription.then((unlisten) => unlisten());
       }
     };
-  }, [refreshSessions, applyUpdate, applyPermission, applyClosed, applyRemoteProgress, applyGraphChanged, applySummary, applyAttributionChanged]);
+  }, [
+    refreshSessions,
+    applyUpdate,
+    applyPermission,
+    applyPermissionWithdrawn,
+    applyClosed,
+    applyRemoteProgress,
+    applyGraphChanged,
+    applySummary,
+    applyAttributionChanged,
+  ]);
 }

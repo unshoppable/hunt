@@ -365,6 +365,8 @@ type HiddenChunk = { hidden?: boolean };
 
 export type UpdateEvent = { huntSessionId: string; notification: SessionNotification };
 export type PermissionEvent = { huntSessionId: string; requestId: string; request: RequestPermissionRequest };
+/** The agent withdrew the permission request `requestId`; a remote session's relay does so when another client answered it. */
+export type PermissionWithdrawnEvent = { huntSessionId: string; requestId: string };
 export type ClosedEvent = { huntSessionId: string; error: string | null };
 export type GraphChangedEvent = { huntSessionId: string };
 /** Sent after a tool call changed files in `worktreePath`; every session of that worktree reloads its changes. */

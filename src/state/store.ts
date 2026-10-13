@@ -8,6 +8,7 @@ import type {
   HuntChunkMeta,
   PendingPermission,
   PermissionEvent,
+  PermissionWithdrawnEvent,
   PlanEntry,
   PullRequestRef,
   RemoteProgressEvent,
@@ -225,6 +226,8 @@ type HuntState = {
 
   applyUpdate: (huntSessionId: string, notification: SessionNotification) => void;
   applyPermission: (event: PermissionEvent) => void;
+  /** Drops the chat's permission request when it is the withdrawn one. */
+  applyPermissionWithdrawn: (event: PermissionWithdrawnEvent) => void;
   applyClosed: (event: ClosedEvent) => void;
   applyRemoteProgress: (event: RemoteProgressEvent) => void;
   applyGraphChanged: (huntSessionId: string) => void;
@@ -849,6 +852,11 @@ export const useHuntStore = create<HuntState>((set, get) => {
         ...chat,
         permission: { requestId: event.requestId, toolCall: event.request.toolCall, options: event.request.options },
       }));
+    },
+
+    applyPermissionWithdrawn: (event) => {
+      if (get().chats[event.huntSessionId]?.permission?.requestId !== event.requestId) return;
+      updateChat(event.huntSessionId, (chat) => ({ ...chat, permission: null }));
     },
 
     applyClosed: (event) => {

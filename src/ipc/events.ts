@@ -8,6 +8,7 @@ import type {
   LspDiagnosticsEvent,
   LspExitedEvent,
   PermissionEvent,
+  PermissionWithdrawnEvent,
   RemoteProgressEvent,
   SummaryEvent,
   UpdateEvent,
@@ -16,6 +17,7 @@ import type {
 type EventPayloads = {
   "acp:update": UpdateEvent;
   "acp:permission": PermissionEvent;
+  "acp:permission-withdrawn": PermissionWithdrawnEvent;
   "acp:closed": ClosedEvent;
   /** A handoff, retrieval or connect of a remote session moved on to another step, or ended. */
   "remote:progress": RemoteProgressEvent;

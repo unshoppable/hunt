@@ -1,9 +1,12 @@
 /**
  * The relay's protocol core, free of processes and sockets. It brings the container's one ACP session up in the
- * adapter, buffers its history, serializes prompts, tracks the turn and the open permission requests, and serves one
- * client at a time: a new client replaces the previous one and gets the whole history on `session/load`. JSON-RPC IDs
- * are rewritten in both directions, so the adapter sees only relay IDs and every client only its own. `main.ts` wires
- * `sendToAgent` and `ClientConnection` to the adapter's stdio and the Unix socket.
+ * adapter, buffers its history, serializes prompts, tracks the turn and the open permission requests, and serves any
+ * number of clients at once (Hunt desktops of different people). Every client that loaded the session receives its
+ * updates live; one that connects later gets the whole history on `session/load`. Prompts of all clients run one after
+ * another, and a permission request goes to every loaded client: the first answer goes to the adapter, the other
+ * clients get a `$/cancel_request` for it. JSON-RPC IDs are rewritten in both directions, so the adapter sees only
+ * relay IDs and every client only its own. `main.ts` wires `sendToAgent` and `ClientConnection` to the adapter's stdio
+ * and the Unix socket.
  */
 import type { ConfigChanges, HuntSessionConfig, McpServerEntry } from "./config.ts";
 import {
@@ -29,10 +32,9 @@ const UNSUPPORTED_SESSION_CAPABILITIES = ["fork", "delete", "close", "list"];
 const MODE_CONFIG_ID = "mode";
 const CANCELLED: Outcome = { result: { stopReason: "cancelled" } };
 
-/** One client connection; `close` ends it when a newer client takes over. */
+/** One client connection. */
 export interface ClientConnection {
   send(message: JsonRpcMessage): void;
-  close(): void;
 }
 
 export interface RelayDependencies {
@@ -71,8 +73,8 @@ interface PendingPermission {
   agentId: JsonRpcId;
   params: unknown;
   receivedAt: number;
-  /** The client the request went to last and its ID there; null until a loaded client got it. */
-  forwardedTo: { client: ClientConnection; clientId: number } | null;
+  /** The connected clients that got the request, with its ID there; empty while no loaded client is connected. */
+  forwardedTo: Map<ClientConnection, number>;
 }
 
 export class Relay {
@@ -90,7 +92,7 @@ export class Relay {
   private latestUsage: JsonRpcNotification | null = null;
   /** Updates that arrive while `session/new` runs, before the session ID is known. */
   private heldUpdates: JsonRpcNotification[] | null = null;
-  private client: Client | null = null;
+  private readonly clients = new Map<ClientConnection, Client>();
   private waitingInitializes: ClientRequest[] = [];
   private waitingLoads: ClientRequest[] = [];
   private queue: ClientRequest[] = [];
@@ -151,29 +153,22 @@ export class Relay {
     }
   }
 
-  /** A new client connection; it replaces the current client, whose connection is closed. */
+  /** A new client connection, served next to the clients connected already. */
   connectClient(connection: ClientConnection): void {
-    const previous = this.client;
-    this.client = { connection, isLoaded: false };
-    if (previous) {
-      this.detach(previous.connection);
-      previous.connection.close();
-      this.deps.log("a new client replaced the previous one");
-    }
+    this.clients.set(connection, { connection, isLoaded: false });
     this.publishStatus();
   }
 
-  /** The connection of a client closed; a no-op for a client that was replaced already. */
+  /** The connection of a client closed; the other clients go on as before. A no-op for an unknown connection. */
   disconnectClient(connection: ClientConnection): void {
-    if (this.client?.connection !== connection) return;
-    this.client = null;
+    if (!this.clients.delete(connection)) return;
     this.detach(connection);
     this.publishStatus();
   }
 
-  /** A parsed message from a client; messages of a replaced client are ignored. */
+  /** A parsed message from a client; messages of a disconnected client are ignored. */
   handleClientMessage(connection: ClientConnection, value: unknown): void {
-    if (this.client?.connection !== connection) return;
+    if (!this.clients.has(connection)) return;
     this.lastClientActivityAt = this.deps.now();
     const message = classify(value);
     if (message.kind === "request") {
@@ -211,7 +206,7 @@ export class Relay {
       error: this.error,
       acpSessionId: this.sessionId,
       turn: this.turn,
-      clientConnected: Boolean(this.client),
+      clientConnected: this.clients.size > 0,
       lastClientActivityAt: this.lastClientActivityAt,
       lastTurnEndedAt: this.lastTurnEndedAt,
       pendingPermissionSince: oldestPermission?.receivedAt ?? null,
@@ -293,10 +288,19 @@ export class Relay {
     return errorOutcome(ERROR_CODES.invalidParams, message, { currentSessionId: this.sessionId });
   }
 
-  /** Answers a client request, unless its client was replaced or disconnected meanwhile. */
+  /** Answers a client request, unless its client disconnected meanwhile. */
   private answer(request: ClientRequest, outcome: Outcome): void {
-    if (this.client?.connection !== request.client) return;
+    if (!this.clients.has(request.client)) return;
     request.client.send(responseMessage(request.clientId, outcome));
+  }
+
+  /** Sends `message` to every client that loaded the session, except `exception`. */
+  private broadcast(message: JsonRpcMessage, exception?: ClientConnection): void {
+    for (const client of this.clients.values()) {
+      if (client.isLoaded && client.connection !== exception) {
+        client.connection.send(message);
+      }
+    }
   }
 
   private receiveClientRequest(method: string, request: ClientRequest): void {
@@ -321,7 +325,7 @@ export class Relay {
 
   private receiveClientNotification(connection: ClientConnection, message: JsonRpcNotification): void {
     if (message.method === "session/cancel") {
-      this.cancelPrompts(message);
+      this.cancelPrompts(connection, message);
     } else if (message.method === "$/cancel_request") {
       this.cancelClientRequest(connection, message.params);
     } else {
@@ -351,16 +355,16 @@ export class Relay {
   /**
    * Replays the session to the client in one synchronous run, so no live update interleaves: the buffered history, the
    * response with the current modes and config options, the latest commands and usage, and the turn state. Open
-   * permission requests follow; from then on the client receives live updates. The client's `cwd` and `_meta` are
-   * ignored: the session was set up from `hunt-session.json`.
+   * permission requests the client did not get yet follow; from then on the client receives live updates. The client's
+   * `cwd` and `_meta` are ignored: the session was set up from `hunt-session.json`.
    */
   private answerLoad(request: ClientRequest): void {
     if (this.state === "starting") {
       this.waitingLoads.push(request);
       return;
     }
-    const client = this.client;
-    if (client?.connection !== request.client) return;
+    const client = this.clients.get(request.client);
+    if (!client) return;
     const problem = this.sessionProblem(request.params);
     if (problem) {
       this.answer(request, problem);
@@ -379,7 +383,7 @@ export class Relay {
     client.connection.send(this.turnUpdate());
     client.isLoaded = true;
     for (const permission of this.permissions.values()) {
-      if (permission.forwardedTo?.client !== client.connection) {
+      if (!permission.forwardedTo.has(client.connection)) {
         this.forwardPermission(permission, client.connection);
       }
     }
@@ -416,16 +420,14 @@ export class Relay {
 
   /**
    * Adds the prompt's content blocks to the history as `user_message_chunk`s, since the adapter does not echo prompts.
-   * A loaded client other than the sender gets them live; the sender shows its prompt itself.
+   * The loaded clients other than the sender get them live; the sender shows its prompt itself.
    */
   private recordPrompt(prompt: ClientRequest): void {
     const blocks = isRecord(prompt.params) && Array.isArray(prompt.params.prompt) ? prompt.params.prompt : [];
     for (const content of blocks) {
       const chunk = notificationMessage("session/update", { sessionId: this.sessionId, update: { sessionUpdate: "user_message_chunk", content } });
       this.history.push(chunk);
-      if (this.client?.isLoaded && this.client.connection !== prompt.client) {
-        this.client.connection.send(chunk);
-      }
+      this.broadcast(chunk, prompt.client);
     }
   }
 
@@ -439,12 +441,15 @@ export class Relay {
     }
   }
 
-  /** `session/cancel`: queued prompts end as cancelled right away, the running one through the forwarded cancel. */
-  private cancelPrompts(message: JsonRpcNotification): void {
+  /**
+   * `session/cancel` from any client ends the running turn through the forwarded cancel, whoever sent its prompt. The
+   * sender's queued prompts end as cancelled right away; those of other clients stay queued.
+   */
+  private cancelPrompts(connection: ClientConnection, message: JsonRpcNotification): void {
     if (this.sessionProblem(message.params)) return;
-    const queued = this.queue;
-    this.queue = [];
-    for (const prompt of queued) {
+    const cancelled = this.queue.filter((prompt) => prompt.client === connection);
+    this.queue = this.queue.filter((prompt) => prompt.client !== connection);
+    for (const prompt of cancelled) {
       this.answer(prompt, CANCELLED);
     }
     this.deps.sendToAgent(message);
@@ -531,34 +536,53 @@ export class Relay {
     }
   }
 
-  /** Permission requests wait for a loaded client; the adapter's other requests are not offered by the relay. */
+  /**
+   * Permission requests go to every loaded client, or wait for the next client's load; the adapter's other requests
+   * are not offered by the relay.
+   */
   private receiveAgentRequest(id: JsonRpcId, method: string, params: unknown): void {
     if (method !== "session/request_permission") {
       this.deps.sendToAgent(responseMessage(id, errorOutcome(ERROR_CODES.methodNotFound, `Method not found: ${method}`)));
       return;
     }
-    const permission: PendingPermission = { agentId: id, params, receivedAt: this.deps.now(), forwardedTo: null };
+    const permission: PendingPermission = { agentId: id, params, receivedAt: this.deps.now(), forwardedTo: new Map() };
     this.permissions.set(id, permission);
-    if (this.client?.isLoaded) {
-      this.forwardPermission(permission, this.client.connection);
+    for (const client of this.clients.values()) {
+      if (client.isLoaded) {
+        this.forwardPermission(permission, client.connection);
+      }
     }
   }
 
   private forwardPermission(permission: PendingPermission, connection: ClientConnection): void {
     const clientId = this.nextClientRequestId++;
-    permission.forwardedTo = { client: connection, clientId };
+    permission.forwardedTo.set(connection, clientId);
     connection.send(requestMessage(clientId, "session/request_permission", permission.params));
   }
 
-  /** The client's answer to a forwarded permission request goes to the adapter under the adapter's request ID. */
+  /**
+   * The first client's answer to a forwarded permission request goes to the adapter under the adapter's request ID;
+   * the other clients that got the request get a `$/cancel_request` for it. A later answer to a request the relay
+   * forwarded, which another client answered or the adapter withdrew meanwhile, is ignored.
+   */
   private answerPermission(connection: ClientConnection, clientId: JsonRpcId, outcome: Outcome): void {
     for (const permission of this.permissions.values()) {
-      if (permission.forwardedTo?.client !== connection || permission.forwardedTo.clientId !== clientId) continue;
+      if (permission.forwardedTo.get(connection) !== clientId) continue;
       this.permissions.delete(permission.agentId);
       this.deps.sendToAgent(responseMessage(permission.agentId, outcome));
+      permission.forwardedTo.delete(connection);
+      this.withdrawFromClients(permission);
       return;
     }
+    if (typeof clientId === "number" && clientId < this.nextClientRequestId) return;
     this.deps.log(`ignored the client's response to the unknown request ${clientId}`);
+  }
+
+  /** Sends a `$/cancel_request` for the permission request to every client that got it, under the client's ID. */
+  private withdrawFromClients(permission: PendingPermission): void {
+    for (const [connection, clientId] of permission.forwardedTo) {
+      connection.send(notificationMessage("$/cancel_request", { requestId: clientId }));
+    }
   }
 
   /** Notifications without a session, such as `_auth/status_update`, are not relayed. */
@@ -571,7 +595,7 @@ export class Relay {
   }
 
   /**
-   * Buffers an update of the relay's session and passes it to a loaded client. Commands and usage keep only their
+   * Buffers an update of the relay's session and passes it to the loaded clients. Commands and usage keep only their
    * latest update, mode and config option updates only the state they carry; updates of other sessions are dropped.
    */
   private recordUpdate(message: JsonRpcNotification): void {
@@ -604,9 +628,7 @@ export class Relay {
       default:
         this.history.push(message);
     }
-    if (this.client?.isLoaded) {
-      this.client.connection.send(message);
-    }
+    this.broadcast(message);
   }
 
   private releaseHeldUpdates(): void {
@@ -617,31 +639,35 @@ export class Relay {
     }
   }
 
-  /** `$/cancel_request` from the adapter withdraws a permission request: the client gets the cancel under its ID, the adapter a -32800 answer. */
+  /**
+   * `$/cancel_request` from the adapter withdraws a permission request: every client that got it gets the cancel under
+   * its ID, the adapter a -32800 answer.
+   */
   private withdrawPermission(params: unknown): void {
     if (!isRecord(params) || !isJsonRpcId(params.requestId)) return;
     const permission = this.permissions.get(params.requestId);
     if (!permission) return;
     this.permissions.delete(permission.agentId);
-    const forwardedTo = permission.forwardedTo;
-    if (forwardedTo && this.client?.connection === forwardedTo.client) {
-      forwardedTo.client.send(notificationMessage("$/cancel_request", { requestId: forwardedTo.clientId }));
-    }
+    this.withdrawFromClients(permission);
     this.deps.sendToAgent(responseMessage(permission.agentId, errorOutcome(ERROR_CODES.requestCancelled, "Request cancelled")));
   }
 
-  /** Drops the requests a client that is gone still waits for; its open permission requests go to the next client's load. */
+  /**
+   * Drops the requests a client that is gone still waits for. Its queued prompts still run; an open permission request
+   * stays with the other clients that got it, or goes to the next client's load.
+   */
   private detach(connection: ClientConnection): void {
     this.waitingInitializes = this.waitingInitializes.filter((request) => request.client !== connection);
     this.waitingLoads = this.waitingLoads.filter((request) => request.client !== connection);
+    for (const permission of this.permissions.values()) {
+      permission.forwardedTo.delete(connection);
+    }
   }
 
   private setTurn(turn: TurnState): void {
     if (this.turn === turn) return;
     this.turn = turn;
-    if (this.client?.isLoaded) {
-      this.client.connection.send(this.turnUpdate());
-    }
+    this.broadcast(this.turnUpdate());
   }
 
   /** The `session_info_update` that tells a client whether a turn is running. */

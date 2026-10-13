@@ -58,18 +58,13 @@ type AgentScript = Record<string, ((params: Record<string, unknown>) => Outcome)
 
 interface FakeClient extends ClientConnection {
   sent: JsonRpcMessage[];
-  isClosed: boolean;
 }
 
 function fakeClient(): FakeClient {
   const client: FakeClient = {
     sent: [],
-    isClosed: false,
     send: (message) => {
       client.sent.push(message);
-    },
-    close: () => {
-      client.isClosed = true;
     },
   };
   return client;
@@ -408,23 +403,6 @@ describe("prompts", () => {
     expect(updateOf(next.sent[0])).toEqual({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "first" } });
     expect(textOf(next.sent[2])).toBe("second");
   });
-
-  it("drops the answer for a replaced client and shows its queued prompt to the client that took over", async () => {
-    const harness = await startedHarness();
-    const first = harness.loadedClient();
-    harness.relay.handleClientMessage(first, promptRequest(1, "running"));
-    harness.relay.handleClientMessage(first, promptRequest(2, "queued"));
-
-    const second = harness.loadedClient();
-    harness.respond(harness.requestsTo("session/prompt")[0], END_TURN);
-
-    expect(first.isClosed).toBe(true);
-    expect(first.sent.map(label)).toEqual(["turn:running"]);
-    expect(second.sent.map(label)).toEqual(["user_message_chunk"]);
-    expect(textOf(second.sent[0])).toBe("queued");
-    expect(harness.requestsTo("session/prompt")).toHaveLength(2);
-    expect(harness.relay.status().turn).toBe("running");
-  });
 });
 
 describe("cancellation", () => {
@@ -450,6 +428,28 @@ describe("cancellation", () => {
     harness.relay.connectClient(next);
     harness.relay.handleClientMessage(next, loadRequest(1));
     expect(next.sent.map(textOf).filter(Boolean)).toEqual(["running"]);
+  });
+
+  it("ends the running turn on session/cancel from any client and keeps the queued prompts of the others", async () => {
+    const harness = await startedHarness();
+    const first = harness.loadedClient();
+    const second = harness.loadedClient();
+    harness.relay.handleClientMessage(first, promptRequest(1, "running"));
+    harness.relay.handleClientMessage(first, promptRequest(2, "queued by first"));
+    harness.relay.handleClientMessage(second, promptRequest(3, "queued by second"));
+    first.sent.length = 0;
+    second.sent.length = 0;
+
+    harness.relay.handleClientMessage(second, notificationMessage("session/cancel", { sessionId: SESSION_ID }));
+
+    expect(harness.toAgent.at(-1)).toEqual({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: SESSION_ID } });
+    expect(second.sent).toEqual([{ jsonrpc: "2.0", id: 3, result: { stopReason: "cancelled" } }]);
+    expect(first.sent).toEqual([]);
+    harness.respond(harness.requestsTo("session/prompt")[0], { result: { stopReason: "cancelled" } });
+    expect(first.sent).toEqual([{ jsonrpc: "2.0", id: 1, result: { stopReason: "cancelled" } }]);
+    expect(textOf(second.sent.at(-1))).toBe("queued by first");
+    expect(harness.requestsTo("session/prompt")).toHaveLength(2);
+    expect(harness.relay.status().turn).toBe("running");
   });
 
   it("maps a client's $/cancel_request to the relay ID, or ends a queued prompt as cancelled", async () => {
@@ -501,9 +501,10 @@ describe("permissions", () => {
     expect(first.sent.map(label)).toEqual(["response:l1", "turn:idle", "request:session/request_permission"]);
     const firstId = (first.sent[2] as JsonRpcRequest).id;
 
+    harness.relay.disconnectClient(first);
+    harness.relay.handleClientMessage(first, responseMessage(firstId, { result: { outcome: { outcome: "cancelled" } } }));
     const second = fakeClient();
     harness.relay.connectClient(second);
-    harness.relay.handleClientMessage(first, responseMessage(firstId, { result: { outcome: { outcome: "cancelled" } } }));
     harness.relay.handleClientMessage(second, loadRequest("l2"));
     const resent = second.sent[2] as JsonRpcRequest;
     expect(label(resent)).toBe("request:session/request_permission");
@@ -646,22 +647,113 @@ describe("allowlist", () => {
 });
 
 describe("clients", () => {
-  it("closes the previous client on a new connection, ignores its messages and drops answers meant for it", async () => {
+  it("sends the updates, the turn and the prompts of the others to every loaded client", async () => {
     const harness = await startedHarness();
     const first = harness.loadedClient();
-    harness.relay.handleClientMessage(first, promptRequest(1, "hi"));
+    const second = harness.loadedClient();
+    const notLoaded = fakeClient();
+    harness.relay.connectClient(notLoaded);
 
-    const second = fakeClient();
-    harness.relay.connectClient(second);
-    harness.relay.handleClientMessage(first, promptRequest(2, "ignored"));
+    harness.relay.handleClientMessage(first, promptRequest(1, "question"));
+    harness.update(chunk("answer"));
     harness.respond(harness.requestsTo("session/prompt")[0], END_TURN);
 
-    expect(first.isClosed).toBe(true);
-    expect(first.sent.map(label)).toEqual(["turn:running"]);
-    expect(second.sent).toEqual([]);
+    expect(first.sent.map(label)).toEqual(["turn:running", "agent_message_chunk", "response:1", "turn:idle"]);
+    expect(second.sent.map(label)).toEqual(["user_message_chunk", "turn:running", "agent_message_chunk", "turn:idle"]);
+    expect(second.sent.map(textOf).filter(Boolean)).toEqual(["question", "answer"]);
+    expect(notLoaded.sent).toEqual([]);
+  });
+
+  it("replays the history to a client that loads while another one is attached, then sends it live updates", async () => {
+    const harness = await startedHarness();
+    const first = harness.loadedClient();
+    harness.relay.handleClientMessage(first, promptRequest(1, "question"));
+    harness.update(chunk("partial answer"));
+
+    const late = fakeClient();
+    harness.relay.connectClient(late);
+    harness.relay.handleClientMessage(late, loadRequest("late"));
+    harness.update(chunk("rest"));
+
+    expect(late.sent.map(label)).toEqual(["user_message_chunk", "agent_message_chunk", "response:late", "turn:running", "agent_message_chunk"]);
+    expect(late.sent.map(textOf).filter(Boolean)).toEqual(["question", "partial answer", "rest"]);
+    expect(first.sent.map(label)).toEqual(["turn:running", "agent_message_chunk", "agent_message_chunk"]);
+  });
+
+  it("runs the prompts of two clients one after another and answers each client under its own ID", async () => {
+    const harness = await startedHarness();
+    const first = harness.loadedClient();
+    const second = harness.loadedClient();
+
+    harness.relay.handleClientMessage(first, promptRequest(7, "from first"));
+    harness.relay.handleClientMessage(second, promptRequest(7, "from second"));
     expect(harness.requestsTo("session/prompt")).toHaveLength(1);
+    harness.respond(harness.requestsTo("session/prompt")[0], END_TURN);
+    const [fromFirst, fromSecond] = harness.requestsTo("session/prompt");
+    expect(fromSecond.params).toEqual({ sessionId: SESSION_ID, prompt: [{ type: "text", text: "from second" }] });
+    expect(fromSecond.id).not.toBe(fromFirst.id);
+    harness.respond(fromSecond, { result: { stopReason: "max_tokens" } });
+
+    expect(first.sent.map(label)).toEqual(["turn:running", "response:7", "user_message_chunk", "turn:idle"]);
+    expect(first.sent[1]).toEqual({ jsonrpc: "2.0", id: 7, result: { stopReason: "end_turn" } });
+    expect(textOf(first.sent[2])).toBe("from second");
+    expect(second.sent.map(label)).toEqual(["user_message_chunk", "turn:running", "response:7", "turn:idle"]);
+    expect(second.sent[2]).toEqual({ jsonrpc: "2.0", id: 7, result: { stopReason: "max_tokens" } });
+    expect(textOf(second.sent[0])).toBe("from first");
+  });
+
+  it("sends a permission request to every loaded client, passes the first answer on and cancels it at the others", async () => {
+    const harness = await startedHarness();
+    const first = harness.loadedClient();
+    const second = harness.loadedClient();
+
+    harness.relay.handleAgentMessage(requestMessage(41, "session/request_permission", PERMISSION_PARAMS));
+    const [toFirst, toSecond] = [first.sent[0], second.sent[0]] as JsonRpcRequest[];
+    expect(toFirst).toMatchObject({ method: "session/request_permission", params: PERMISSION_PARAMS });
+    expect(toSecond).toMatchObject({ method: "session/request_permission", params: PERMISSION_PARAMS });
+    expect(toSecond.id).not.toBe(toFirst.id);
+
+    harness.relay.handleClientMessage(second, responseMessage(toSecond.id, ALLOWED));
+    expect(harness.toAgent.at(-1)).toEqual({ jsonrpc: "2.0", id: 41, ...ALLOWED });
+    expect(first.sent.slice(1)).toEqual([{ jsonrpc: "2.0", method: "$/cancel_request", params: { requestId: toFirst.id } }]);
+    expect(second.sent).toHaveLength(1);
+    expect(harness.relay.status().pendingPermissionSince).toBeNull();
+
+    const sentToAgent = harness.toAgent.length;
+    harness.relay.handleClientMessage(first, responseMessage(toFirst.id, errorOutcome(-32800, "Request cancelled")));
+    expect(harness.toAgent).toHaveLength(sentToAgent);
+    expect(harness.logs.filter((message) => message.includes("unknown request"))).toEqual([]);
+  });
+
+  it("keeps serving the other clients when one disconnects and runs the prompts it queued", async () => {
+    const harness = await startedHarness();
+    const first = harness.loadedClient();
+    const second = harness.loadedClient();
+    harness.relay.handleClientMessage(first, promptRequest(1, "running"));
+    harness.relay.handleClientMessage(first, promptRequest(2, "queued"));
+    harness.relay.handleAgentMessage(requestMessage(9, "session/request_permission", PERMISSION_PARAMS));
+
     harness.relay.disconnectClient(first);
+    harness.relay.handleClientMessage(first, promptRequest(3, "ignored"));
     expect(harness.relay.status().clientConnected).toBe(true);
+    const permission = second.sent.at(-1) as JsonRpcRequest;
+    harness.relay.handleClientMessage(second, responseMessage(permission.id, ALLOWED));
+    harness.update(chunk("allowed"));
+    harness.respond(harness.requestsTo("session/prompt")[0], END_TURN);
+
+    const answers = harness.toAgent.filter((message) => "id" in message && message.id === 9 && !("method" in message));
+    expect(answers).toEqual([{ jsonrpc: "2.0", id: 9, ...ALLOWED }]);
+    expect(first.sent.map(label)).toEqual(["turn:running", "request:session/request_permission"]);
+    expect(second.sent.map(label)).toEqual([
+      "user_message_chunk",
+      "turn:running",
+      "request:session/request_permission",
+      "agent_message_chunk",
+      "user_message_chunk",
+    ]);
+    expect(textOf(second.sent.at(-1))).toBe("queued");
+    expect(harness.requestsTo("session/prompt")).toHaveLength(2);
+    expect(harness.relay.status().turn).toBe("running");
     harness.relay.disconnectClient(second);
     expect(harness.relay.status().clientConnected).toBe(false);
   });
@@ -696,6 +788,22 @@ describe("status", () => {
     harness.respond(harness.requestsTo("session/prompt")[0], END_TURN);
     expect(harness.relay.status()).toMatchObject({ turn: "idle", lastTurnEndedAt: 6_000, pendingPermissionSince: 4_000 });
     expect(turnOf(client.sent.at(-1))).toBe("idle");
+  });
+
+  it("counts the activity of every client and reports a client while any one is connected", async () => {
+    const harness = await startedHarness();
+    harness.clock.now = 2_000;
+    const first = harness.loadedClient();
+    harness.clock.now = 3_000;
+    const second = harness.loadedClient();
+    expect(harness.relay.status()).toMatchObject({ clientConnected: true, lastClientActivityAt: 3_000 });
+
+    harness.clock.now = 4_000;
+    harness.relay.handleClientMessage(first, requestMessage(1, "initialize", {}));
+    harness.relay.disconnectClient(first);
+    expect(harness.relay.status()).toMatchObject({ clientConnected: true, lastClientActivityAt: 4_000 });
+    harness.relay.disconnectClient(second);
+    expect(harness.relay.status()).toMatchObject({ clientConnected: false, lastClientActivityAt: 4_000 });
   });
 
   it("reports a change only when a field other than the heartbeat changed", async () => {

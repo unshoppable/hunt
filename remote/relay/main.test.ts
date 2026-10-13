@@ -21,7 +21,7 @@ interface TestClient {
   send(message: Message): void;
   /** Resolves with the messages received since the last call, up to and including the first one `isLast` accepts. */
   readUntil(isLast: (message: Message) => boolean): Promise<Message[]>;
-  closed: Promise<void>;
+  close(): void;
 }
 
 /** A directory for the socket; Unix socket paths are limited to 104 bytes on macOS, so a long TMPDIR is not used. */
@@ -41,7 +41,6 @@ function connectClient(path: string): Promise<TestClient> {
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string) => lines.push(chunk));
     socket.once("error", reject);
-    const closed = new Promise<void>((resolveClosed) => socket.once("close", () => resolveClosed()));
     socket.once("connect", () =>
       resolve({
         send: (message) => socket.write(encodeLine({ jsonrpc: "2.0", ...message })),
@@ -57,7 +56,7 @@ function connectClient(path: string): Promise<TestClient> {
             };
             onMessage();
           }),
-        closed,
+        close: () => socket.destroy(),
       }),
     );
   });
@@ -116,7 +115,7 @@ describe("main", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("runs the adapter, serves clients on the socket with takeover and stops cleanly on SIGTERM", async () => {
+  it("runs the adapter, serves several clients at once on the socket and stops cleanly on SIGTERM", async () => {
     dir = socketTempDir();
     const configPath = join(dir, "hunt-session.json");
     const adapterLog = join(dir, "adapter.log");
@@ -163,7 +162,6 @@ describe("main", () => {
     expect(asked.map(label)).toEqual(["turn:running", "request:session/request_permission"]);
 
     const second = await connectClient(join(dir, "acp.sock"));
-    await first.closed;
     second.send({ id: 1, method: "session/load", params: { sessionId: "acp-1", cwd: "/elsewhere", mcpServers: [] } });
     const replay = await second.readUntil((message) => message.method === "session/request_permission");
     expect(replay.map(label)).toEqual([
@@ -178,12 +176,17 @@ describe("main", () => {
     ]);
     const permission = replay[replay.length - 1];
     expect(permission.id).not.toBe("permission-1");
+    expect(permission.id).not.toBe(asked[1].id);
 
     second.send({ id: permission.id, result: { outcome: { outcome: "selected", optionId: "allow" } } });
     const finished = await second.readUntil((message) => turnOf(message) === "idle");
     expect(finished.map(label)).toEqual(["agent_message_chunk", "turn:idle"]);
     expect(textOf(finished[0])).toBe("allowed: allow");
+    const elsewhere = await first.readUntil((message) => turnOf(message) === "idle");
+    expect(elsewhere.map(label)).toEqual(["notification:$/cancel_request", "agent_message_chunk", "response:4", "turn:idle"]);
+    expect(elsewhere[0].params).toEqual({ requestId: asked[1].id });
 
+    first.close();
     second.send({ id: 2, method: "session/set_config_option", params: { sessionId: "acp-1", configId: "model", value: "default" } });
     await second.readUntil((message) => message.id === 2);
     expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({ ...config, configOptions: { model: "default" } });

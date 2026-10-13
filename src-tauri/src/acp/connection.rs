@@ -15,7 +15,7 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{
     on_receive_notification, on_receive_request, AcpAgent, AcpAgentConfig, Agent, Client,
-    ConnectionTo, Error, ErrorCode,
+    ConnectionTo, Error, ErrorCode, RequestCancellation,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -147,6 +147,14 @@ struct PermissionEvent {
     hunt_session_id: Uuid,
     request_id: Uuid,
     request: RequestPermissionRequest,
+}
+
+/// The agent withdrew a permission request with `$/cancel_request`; a relay does so once another client answered it.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PermissionWithdrawnEvent {
+    hunt_session_id: Uuid,
+    request_id: Uuid,
 }
 
 #[derive(Clone, Serialize)]
@@ -287,9 +295,12 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
             async move |request: RequestPermissionRequest, responder, connection: ConnectionTo<Agent>| {
                 // Handlers run on the dispatch loop; waiting for the UI here would stall every other message.
                 let app = permission_app.clone();
+                let cancellation = responder.cancellation();
                 connection.spawn(async move {
-                    let outcome = ask_permission(&app, hunt_session_id, request).await;
-                    responder.respond(RequestPermissionResponse::new(outcome))
+                    match ask_permission(&app, hunt_session_id, request, cancellation).await {
+                        Some(outcome) => responder.respond(RequestPermissionResponse::new(outcome)),
+                        None => responder.respond_with_error(Error::request_cancelled()),
+                    }
                 })
             },
             on_receive_request!(),
@@ -422,12 +433,14 @@ fn build_session_meta(system_prompt: &str) -> Meta {
 }
 
 /// Forwards the permission request to the UI and waits for `answer_permission`.
-/// A dropped sender (cancel, closed session) resolves to `Cancelled`.
+/// A dropped sender (cancel, closed session) resolves to `Cancelled`. When the agent withdraws the request first, the
+/// UI drops it (`acp:permission-withdrawn`) and `None` is returned.
 async fn ask_permission(
     app: &AppHandle,
     hunt_session_id: Uuid,
     request: RequestPermissionRequest,
-) -> RequestPermissionOutcome {
+    cancellation: RequestCancellation,
+) -> Option<RequestPermissionOutcome> {
     let (answer, answer_receiver) = oneshot::channel::<String>();
     let request_id = Uuid::new_v4();
     app.state::<PermissionRegistry>()
@@ -439,12 +452,19 @@ async fn ask_permission(
     let emitted = app.emit("acp:permission", PermissionEvent { hunt_session_id, request_id, request });
     if emitted.is_err() {
         app.state::<PermissionRegistry>().0.lock().unwrap().remove(&request_id);
-        return RequestPermissionOutcome::Cancelled;
+        return Some(RequestPermissionOutcome::Cancelled);
     }
 
-    match answer_receiver.await {
-        Ok(option_id) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id)),
-        Err(_) => RequestPermissionOutcome::Cancelled,
+    tokio::select! {
+        answer = answer_receiver => Some(match answer {
+            Ok(option_id) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id)),
+            Err(_) => RequestPermissionOutcome::Cancelled,
+        }),
+        () = cancellation.cancelled() => {
+            app.state::<PermissionRegistry>().0.lock().unwrap().remove(&request_id);
+            let _ = app.emit("acp:permission-withdrawn", PermissionWithdrawnEvent { hunt_session_id, request_id });
+            None
+        }
     }
 }
 

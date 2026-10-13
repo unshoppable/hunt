@@ -274,12 +274,22 @@ gcloud login and a key Hunt registers with OS Login, starts the VM when it is of
 repository's `remote/` folder, which ships with the app, whenever the VM runs another version of it.
 
 A handoff (`hand_off_session`) stops the local agent and pushes the branch plus a snapshot commit of the uncommitted
-work (`refs/hunt/<id>/handoff`) into the session's own repository on the VM, `/srv/worktrees/<id>`; the VM needs no
-access to GitHub. The Git LFS objects of the checkout, the ignored files matching the settings' patterns (default
+work (`refs/hunt/<id>/handoff`) into the session's own repository on the VM, `/srv/worktrees/<id>`, so the handoff needs
+no access to GitHub. The Git LFS objects of the checkout, the ignored files matching the settings' patterns (default
 `**/.env.private`) and the Claude Code transcript follow, the transcript with its paths moved to the VM.
 `remote/vm/hunt-ctl` checks the branch out there, installs the dependencies and starts one container per session from
 `remote/image/` with the OAuth token of the selected Claude account, which Hunt passes on stdin; the local login stays
-on the Mac, so a remote session needs a token account. The container's entrypoint is the relay (`remote/relay/`): it
+on the Mac, so a remote session needs a token account.
+
+With a GitHub token under *Settings → Remote VM* (`src-tauri/src/github_token.rs`, kept in the keychain), the agent pushes
+and runs `gh` as the user: the token goes on stdin next to the Claude token into the container's `GH_TOKEN`, the
+repository there gets `origin` as `https://github.com/<owner>/<repo>.git` with the branch's upstream, and git and Git
+LFS authenticate through gh's credential helper. A repository's `core.hooksPath` inside the worktree (husky's
+`.husky`) comes along with its ignored files, so commits and pushes on the VM run the same hooks; without one, Git LFS's
+hooks upload LFS files on push. Everyone with root on the VM can read the token, so it should be a fine-grained token
+limited to the repositories handed off.
+
+The container's entrypoint is the relay (`remote/relay/`): it
 owns the ACP adapter, loads the conversation once and serves it over a Unix socket. Hunt's agent process for the
 session is then `ssh … socat` to that socket, so the chat works as before; a client that connects later gets the
 conversation replayed, and the relay reports a running turn. Diff, editor, graph and guardrails stay local and wait

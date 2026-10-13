@@ -6,6 +6,7 @@ import type {
   DirEntry,
   FileDiff,
   FileVersion,
+  GithubTokenStatus,
   GithubViewer,
   GraphStatus,
   PlanUsage,
@@ -141,6 +142,11 @@ export const commands = {
   removeAccount: (id: string) => invoke<ClaudeAccounts>("remove_account", { id }),
   /** The account every Claude Code process started from now on uses; null selects the local login. */
   setActiveAccount: (id: string | null) => invoke<ClaudeAccounts>("set_active_account", { id }),
+  /** Whether a GitHub token for remote sessions is in the keychain, with its last four characters. */
+  githubTokenStatus: () => invoke<GithubTokenStatus>("github_token_status"),
+  /** Stores the GitHub token remote sessions push and run `gh` with, replacing an earlier one. */
+  setGithubToken: (token: string) => invoke<GithubTokenStatus>("set_github_token", { token }),
+  removeGithubToken: () => invoke<GithubTokenStatus>("remove_github_token"),
   /** Every image in the macOS screenshot folder, newest first. */
   listScreenshots: () => invoke<Screenshot[]>("list_screenshots"),
   openWorktreeInWebstorm: (id: string) => invoke<void>("open_worktree_in_webstorm", { id }),

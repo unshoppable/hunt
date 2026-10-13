@@ -15,8 +15,8 @@ import { signalGroup, spawnShell } from "./shell.ts";
 import { PreviewSupervisor } from "./supervisor.ts";
 
 const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id";
-/** Kept from steps and processes: the agent's Claude token has no place in an app's environment. */
-const WITHHELD_ENV = ["CLAUDE_CODE_OAUTH_TOKEN"];
+/** Kept from steps and processes: the agent's Claude and GitHub tokens have no place in an app's environment. */
+const WITHHELD_ENV = ["CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN"];
 
 export interface PreviewRuntimeOptions {
   /** Where `preview.sock` goes, next to the relay's `acp.sock`. */

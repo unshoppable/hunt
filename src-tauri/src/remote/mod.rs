@@ -104,6 +104,13 @@ pub fn shell_command(program: &str, args: &[&str]) -> String {
     command
 }
 
+/// What `hunt-ctl start`, `clear` and `preview start` read on stdin: the Claude Code OAuth token a new container runs
+/// Claude Code with (empty with the local login, which only a running container gets by with) and the GitHub token it
+/// pushes and runs `gh` with (empty without one).
+pub fn token_input(claude_token: &str, github_token: Option<&str>) -> String {
+    format!("{claude_token}\n{}\n", github_token.unwrap_or_default())
+}
+
 /// Runs `hunt-ctl` with `args` on the VM as root and returns its JSON output.
 pub async fn hunt_ctl(ssh: &ssh::Ssh, args: &[&str]) -> Result<serde_json::Value, String> {
     hunt_ctl_with_input(ssh, args, &[]).await
@@ -185,6 +192,13 @@ mod tests {
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
         assert_eq!(shell_quote(""), "''");
         assert_eq!(shell_command("sudo", &["-n", "hunt-ctl", "prepare", "a b"]), "sudo -n hunt-ctl prepare 'a b'");
+    }
+
+    #[test]
+    fn token_input_puts_each_token_on_its_own_line() {
+        assert_eq!(token_input("sk-ant-oat01", Some("github_pat_1")), "sk-ant-oat01\ngithub_pat_1\n");
+        assert_eq!(token_input("sk-ant-oat01", None), "sk-ant-oat01\n\n");
+        assert_eq!(token_input("", None), "\n\n");
     }
 
     #[test]

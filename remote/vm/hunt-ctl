@@ -71,20 +71,23 @@ usage: hunt-ctl <command> [arguments]
                          unpack the tar.gz on stdin into the session's worktree, or with --claude into its ~/.claude
   get-claude <id> --project <slug>
                          write a tar.gz of hunt-session.json and projects/<slug> of the session's ~/.claude (streams)
-  prepare <id> --branch <branch> --snapshot <ref> --git-name <name> --git-email <email>
-                         check the session's branch out in its worktree, with the snapshot's changes applied
+  prepare <id> --branch <branch> --snapshot <ref> --git-name <name> --git-email <email> [--origin <url>]
+          [--upstream <branch>] [--hooks-path <dir>]
+                         check the session's branch out in its worktree, with the snapshot's changes applied; set
+                         origin (a https://github.com URL), the branch's upstream on it and the hooks folder (relative
+                         to the worktree; without one, Git LFS's hooks)
   deps <id>              install the worktree's dependencies (npm, pnpm or yarn, by lockfile)
-  start <id>             start the session's container; a new one takes the Claude token from stdin
+  start <id>             start the session's container; a new one takes the tokens from stdin (see read_tokens)
   wait <id> [--timeout <seconds>]
                          wait until the session's relay serves its socket (default 120 seconds)
   stop <id>              stop the session's container
-  clear <id>             restart the session's relay with a new conversation; the Claude token comes from stdin
+  clear <id>             restart the session's relay with a new conversation; the tokens come from stdin
   snapshot <id>          record the worktree's state as refs/hunt/<id>/retrieve
   status <id>            container state, relay status and session metadata
   destroy <id>           remove the session's containers, network, worktree and files
   preview start <id> --domain <domain> [--with <process>]…
                          start the session's preview from the `preview` section of its hunt.json; a container from
-                         an older release is created anew, with the Claude token from stdin
+                         an older release is created anew, with the tokens from stdin
   preview status <id>    the preview's URLs, services and the relay's preview state
   preview logs <id> <process|setup> [--offset <bytes>] [--limit <bytes>]
                          part of a preview log, by default its last 64 KiB
@@ -260,18 +263,22 @@ session_mounts() {
   )
 }
 
-# Prints the Claude Code OAuth token Hunt sends on stdin: the Claude account picked in Hunt by whoever starts the
-# session. The VM keeps it only in the session's container.env and container.
-read_claude_token() {
-  local token=
-  IFS= read -r token || true
-  [[ -n $token && $token != *[[:space:]]* ]] || die "no Claude Code OAuth token on stdin: pick a Claude account in Hunt, the local login cannot run on the VM"
-  printf '%s' "$token"
+# Reads the tokens Hunt sends on stdin into the caller's claude_token and github_token: the Claude Code OAuth token of
+# the Claude account picked in Hunt by whoever starts the session on the first line, and that user's GitHub token on the
+# second, which is empty or missing without one. The VM keeps them only in the session's container.env and container.
+read_tokens() {
+  claude_token=
+  github_token=
+  IFS= read -r claude_token || true
+  IFS= read -r github_token || true
+  [[ -n $claude_token && $claude_token != *[[:space:]]* ]] || die "no Claude Code OAuth token on stdin: pick a Claude account in Hunt, the local login cannot run on the VM"
+  [[ $github_token != *[[:space:]]* ]] || die "invalid GitHub token on stdin: it contains whitespace"
 }
 
-# Rewrites container.env of session $1: the Claude Code token $2 and the git identity of meta.json.
+# Rewrites container.env of session $1: the Claude Code token $2, the GitHub token $3 (`gh`, and git through gh's
+# credential helper) when not empty, and the git identity of meta.json.
 write_container_env() {
-  local file=$SESSIONS/$1/container.env token=$2 git_name git_email
+  local file=$SESSIONS/$1/container.env token=$2 github_token=$3 git_name git_email
   git_name=$(meta "$1" gitName)
   git_email=$(meta "$1" gitEmail)
   rm -f -- "${file:?}.tmp"
@@ -279,6 +286,9 @@ write_container_env() {
     umask 077
     printf '%s=%s\n' CLAUDE_CODE_OAUTH_TOKEN "$token" GIT_AUTHOR_NAME "$git_name" GIT_AUTHOR_EMAIL "$git_email" \
       GIT_COMMITTER_NAME "$git_name" GIT_COMMITTER_EMAIL "$git_email" HUNT_SESSION_ID "$1" >"$file.tmp"
+    if [[ -n $github_token ]]; then
+      printf '%s=%s\n' GH_TOKEN "$github_token" >>"$file.tmp"
+    fi
   )
   mv -f "$file.tmp" "$file"
 }
@@ -287,15 +297,15 @@ write_container_env() {
 # image: Docker reads container.env only when it creates a container, so only a new one gets a rotated token, and the
 # relay is as new as the bundle Hunt installed last. Everything a session keeps lives in its mounts.
 start_container() {
-  local id=$1 name=hunt-$1 state image token memory
+  local id=$1 name=hunt-$1 state image claude_token github_token memory
   local -a mounts flags
   ensure_session_dirs "$id"
   state=$(container_state "$name")
   case $state in
     running | restarting) return ;;
   esac
-  token=$(read_claude_token)
-  write_container_env "$id" "$token"
+  read_tokens
+  write_container_env "$id" "$claude_token" "$github_token"
   # The previous relay's status would pass for the new one's until the new relay replaces it.
   rm -f -- "${SOCKETS:?}/${id:?}/status.json"
   if [[ $state != missing ]]; then
@@ -568,7 +578,7 @@ cmd_get_claude() {
 
 cmd_prepare() {
   (( $# )) || usage
-  local id=$1 branch='' snapshot='' git_name='' git_email=''
+  local id=$1 branch='' snapshot='' git_name='' git_email='' origin='' upstream='' hooks_path=''
   require_id "$id"
   shift
   while (( $# )); do
@@ -578,6 +588,9 @@ cmd_prepare() {
       --snapshot) snapshot=$2 ;;
       --git-name) git_name=$2 ;;
       --git-email) git_email=$2 ;;
+      --origin) origin=$2 ;;
+      --upstream) upstream=$2 ;;
+      --hooks-path) hooks_path=$2 ;;
       *) usage ;;
     esac
     shift 2
@@ -586,6 +599,11 @@ cmd_prepare() {
   [[ -n $snapshot && $snapshot != -* ]] || die "invalid snapshot: $snapshot"
   require_line "git name" "$git_name"
   require_line "git email" "$git_email"
+  [[ -z $origin || $origin =~ ^https://github\.com/[A-Za-z0-9_-][A-Za-z0-9._-]*/[A-Za-z0-9_-][A-Za-z0-9._-]*\.git$ ]] || die "invalid origin: $origin"
+  if [[ -n $upstream ]]; then
+    [[ -n $origin && $upstream != -* ]] && git check-ref-format --branch "$upstream" >/dev/null 2>&1 || die "invalid upstream: $upstream"
+  fi
+  [[ -z $hooks_path || ( $hooks_path =~ ^[A-Za-z0-9_.][A-Za-z0-9._/-]*$ && /$hooks_path/ != */../* ) ]] || die "invalid hooks path: $hooks_path"
 
   local worktree=$WORKTREES/$id hash meta_json
   [[ -f $SESSIONS/$id/meta.json && -d $worktree/.git ]] || die "session $id is not initialized on this VM; run hunt-ctl init and push first"
@@ -603,7 +621,20 @@ cmd_prepare() {
     git update-ref --no-deref HEAD "$commit"
     git lfs checkout
     git symbolic-ref HEAD "refs/heads/$2"
-    git reset -q' sh "$worktree" "$branch" "$snapshot"
+    git reset -q
+    if [ -n "$4" ]; then
+      git config remote.origin.url "$4"
+      git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+    fi
+    if [ -n "$5" ]; then
+      git config "branch.$2.remote" origin
+      git config "branch.$2.merge" "refs/heads/$5"
+    fi
+    if [ -n "$6" ]; then
+      git config core.hooksPath "$6"
+    else
+      git lfs install --local >/dev/null
+    fi' sh "$worktree" "$branch" "$snapshot" "$origin" "$upstream" "$hooks_path"
 
   meta_json=$(jq --arg branch "$branch" --arg image "hunt-agent:$hash" --arg gitName "$git_name" --arg gitEmail "$git_email" \
     '. + {branch: $branch, image: $image, gitName: $gitName, gitEmail: $gitEmail}' "$SESSIONS/$id/meta.json")

@@ -439,3 +439,6 @@ export type ClaudeAccount = { id: string; email: string };
 
 /** The token accounts in the order they were added and the one in use; `activeId` null uses the local login. */
 export type ClaudeAccounts = { accounts: ClaudeAccount[]; activeId: string | null };
+
+/** Whether the GitHub token of remote sessions is stored; `hint` holds its last four characters. */
+export type GithubTokenStatus = { saved: boolean; hint: string | null };

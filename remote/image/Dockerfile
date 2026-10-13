@@ -16,6 +16,8 @@ ARG VOLTA_VERSION=2.0.2
 ARG VOLTA_SHA256=6cec054c911fb925b629a09455775af6e95dc0f5694a4c28b63979ab9ef18037
 ARG TERRAFORM_VERSION=1.15.8
 ARG TERRAFORM_SHA256=d25ce7b6902013ad905db3d2eab0be4cd905887fe88b81a6171b8d5503c31f3d
+ARG GH_VERSION=2.102.0
+ARG GH_SHA256=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
 ARG PGDG_KEY_SHA256=0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
@@ -55,6 +57,16 @@ RUN curl -fsSLo /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${T
     echo "${TERRAFORM_SHA256}  /tmp/terraform.zip" | sha256sum --check --quiet; \
     unzip -q /tmp/terraform.zip terraform -d /usr/local/bin; \
     rm /tmp/terraform.zip
+
+# gh for pull requests and CI runs. git and Git LFS take the same GH_TOKEN (the user's GitHub token Hunt passes in, if
+# any) through gh's credential helper; the empty entry drops helpers configured before it.
+RUN curl -fsSLo /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz"; \
+    echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum --check --quiet; \
+    tar -xzf /tmp/gh.tar.gz -C /usr/local/bin --strip-components=2 --no-same-owner "gh_${GH_VERSION}_linux_amd64/bin/gh"; \
+    rm /tmp/gh.tar.gz; \
+    git config --system credential.https://github.com.helper ''; \
+    git config --system --add credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'; \
+    git config --system push.autoSetupRemote true
 
 # Volta's shims come first on PATH, so `node` and `npm` follow a repository's `volta` pins and default to the versions
 # installed here; profile.d puts them back after /etc/profile resets PATH in login shells, which Claude Code's shell
@@ -108,7 +120,10 @@ ENV HOME=/home/agent \
     DISABLE_TELEMETRY=1 \
     DISABLE_ERROR_REPORTING=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
-    DISABLE_AUTOUPDATER=1
+    DISABLE_AUTOUPDATER=1 \
+    GH_NO_UPDATE_NOTIFIER=1 \
+    GH_PROMPT_DISABLED=1 \
+    GIT_TERMINAL_PROMPT=0
 
 RUN test -f "${HUNT_ADAPTER}"
 

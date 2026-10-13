@@ -2,8 +2,10 @@ mod accounts;
 mod acp;
 mod git;
 mod github;
+mod github_token;
 mod graph;
 mod ide;
+mod keychain;
 mod lsp;
 mod menu;
 mod plan_usage;
@@ -105,6 +107,9 @@ pub fn run() {
             accounts::cancel_sign_in,
             accounts::remove_account,
             accounts::set_active_account,
+            github_token::github_token_status,
+            github_token::set_github_token,
+            github_token::remove_github_token,
         ])
         .on_window_event(|window, event| {
             // The other windows (editor, diff, guardrails, settings) belong to the main window: closing it closes them too, which ends the app.

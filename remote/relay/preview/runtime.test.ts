@@ -81,7 +81,7 @@ describe("startPreviewRuntime", () => {
     const worktree = join(dir, "worktree");
     mkdirSync(join(worktree, "apps", "web"), { recursive: true });
     const port = await freePort();
-    const env = { ...process.env, HUNT_SESSION_ID: SESSION_ID, CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-secret" };
+    const env = { ...process.env, HUNT_SESSION_ID: SESSION_ID, CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-secret", GH_TOKEN: "github_pat_secret" };
     runtime = startPreviewRuntime({ socketDir: dir, stateDir, worktree: () => worktree, env, log: () => {} });
     const socketPath = join(dir, "preview.sock");
     const plan = buildPlan(
@@ -116,6 +116,7 @@ describe("startPreviewRuntime", () => {
       HUNT_SESSION_ID: SESSION_ID,
     });
     expect(served.env).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(served.env).not.toHaveProperty("GH_TOKEN");
 
     const cliEnv = { ...process.env, HUNT_SOCKET_DIR: dir, HUNT_PREVIEW_STATE_DIR: stateDir };
     const status = await run(process.execPath, [CLI, "status"], { env: cliEnv });

@@ -37,8 +37,8 @@ pub struct HandoffRequest<'a> {
     pub system_prompt: &'a str,
     /// Agent config values (`model`, `effort`) the session had locally.
     pub config_values: &'a [(String, String)],
-    /// The OAuth token of the Claude account the container runs Claude Code with.
-    pub claude_token: &'a str,
+    /// What `hunt-ctl start` reads on stdin: the Claude and GitHub tokens of `super::token_input`.
+    pub token_input: &'a str,
     /// The permission mode of the local agent, which the retrieval restores.
     pub local_mode: Option<&'a str>,
 }
@@ -66,6 +66,9 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     git::run_git(worktree, &["update-ref", &handoff_ref, &snapshot]).await?;
     let repo = repository_key(worktree).await;
     let (git_name, git_email) = git_identity(worktree).await?;
+    let origin = git::run_git(worktree, &["remote", "get-url", "origin"]).await.ok().and_then(|url| github_https_url(url.trim()));
+    let upstream = origin_upstream(worktree, &branch).await;
+    let hooks_path = hooks_path(worktree).await;
 
     progress(RemoteStep::Connecting);
     let ssh = Ssh::open(request.vm, request.ssh_dir).await?;
@@ -81,15 +84,24 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     let started = async {
         push(worktree, &ssh, &remote_worktree, &branch, &handoff_ref).await?;
         upload_lfs_objects(worktree, &ssh, &id, &["HEAD", &handoff_ref]).await?;
-        let prepare_args = ["prepare", &id, "--branch", &branch, "--snapshot", &handoff_ref, "--git-name", &git_name, "--git-email", &git_email];
+        let mut prepare_args = vec!["prepare", &id, "--branch", &branch, "--snapshot", &handoff_ref, "--git-name", &git_name, "--git-email", &git_email];
+        if let Some(origin) = &origin {
+            prepare_args.extend(["--origin", origin.as_str()]);
+            if let Some(upstream) = &upstream {
+                prepare_args.extend(["--upstream", upstream.as_str()]);
+            }
+        }
+        if let Some(hooks_path) = &hooks_path {
+            prepare_args.extend(["--hooks-path", hooks_path.as_str()]);
+        }
         hunt_ctl(&ssh, &prepare_args).await?;
-        upload_ignored_files(worktree, &ssh, &id, &patterns).await?;
+        upload_ignored_files(worktree, &ssh, &id, &patterns, hooks_path.as_deref()).await?;
         upload_claude_dir(&request, &ssh, &remote_worktree).await?;
 
         progress(RemoteStep::InstallingDependencies);
         hunt_ctl(&ssh, &["deps", &id]).await?;
         progress(RemoteStep::StartingAgent);
-        hunt_ctl_with_input(&ssh, &["start", &id], format!("{}\n", request.claude_token).as_bytes()).await?;
+        hunt_ctl_with_input(&ssh, &["start", &id], request.token_input.as_bytes()).await?;
         hunt_ctl(&ssh, &["wait", &id, "--timeout", "180"]).await
     }
     .await;
@@ -171,6 +183,48 @@ fn sanitize_segment(segment: &str) -> String {
         .collect::<String>()
         .trim_start_matches('.')
         .to_string()
+}
+
+/// The `https://github.com/<owner>/<repo>.git` form of a GitHub remote URL (scp, ssh or https); `None` for other hosts.
+/// The session's container reaches GitHub over https only, with the user's GitHub token.
+fn github_https_url(url: &str) -> Option<String> {
+    let rest = ["https://", "http://", "ssh://", "git+ssh://"].iter().find_map(|scheme| url.strip_prefix(scheme)).unwrap_or(url);
+    let rest = rest.split_once('@').map(|(_, host_and_path)| host_and_path).unwrap_or(rest);
+    let (host, path) = rest.split_once(['/', ':'])?;
+    if !host.eq_ignore_ascii_case("github.com") {
+        return None;
+    }
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, repo) = path.split_once('/')?;
+    let is_valid = |segment: &str| {
+        !segment.is_empty() && !segment.starts_with('.') && segment.chars().all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character))
+    };
+    if !is_valid(owner) || !is_valid(repo) {
+        return None;
+    }
+    Some(format!("https://github.com/{owner}/{repo}.git"))
+}
+
+/// The branch on `origin` that `branch` tracks; `None` without an upstream there.
+async fn origin_upstream(worktree: &Path, branch: &str) -> Option<String> {
+    let remote = git::run_git(worktree, &["config", &format!("branch.{branch}.remote")]).await.ok()?;
+    if remote.trim() != "origin" {
+        return None;
+    }
+    let merge = git::run_git(worktree, &["config", &format!("branch.{branch}.merge")]).await.ok()?;
+    merge.trim().strip_prefix("refs/heads/").map(str::to_string)
+}
+
+/// The repository's `core.hooksPath` when it is a folder inside the worktree (husky's `.husky`); the session's
+/// container runs the same hooks, so commits there pass the same checks and `git push` uploads Git LFS files.
+async fn hooks_path(worktree: &Path) -> Option<String> {
+    let path = git::run_git(worktree, &["config", "core.hooksPath"]).await.ok()?;
+    let path = path.trim().trim_start_matches("./").trim_end_matches('/');
+    if path.is_empty() || path.starts_with(['/', '-', '~']) || path.split('/').any(|segment| segment == "..") {
+        return None;
+    }
+    Some(path.to_string())
 }
 
 /// The author name and email the worktree commits with; the session's container commits under the same identity.
@@ -280,18 +334,20 @@ fn matches_any(patterns: &[Pattern], path: &str) -> bool {
     patterns.iter().any(|pattern| pattern.matches_with(path, options))
 }
 
-/// Copies the ignored files of the worktree that match `patterns` (e.g. `.env.private`) to the same paths on the VM.
-async fn upload_ignored_files(worktree: &Path, ssh: &Ssh, id: &str, patterns: &[Pattern]) -> Result<(), String> {
-    if patterns.is_empty() {
-        return Ok(());
+/// Copies the ignored files of the worktree that match `patterns` (e.g. `.env.private`) and those in `hooks_path`
+/// (husky's generated `.husky/_`) to the same paths on the VM.
+async fn upload_ignored_files(worktree: &Path, ssh: &Ssh, id: &str, patterns: &[Pattern], hooks_path: Option<&str>) -> Result<(), String> {
+    let mut files: Vec<String> = Vec::new();
+    if !patterns.is_empty() {
+        let output = git::run_git(worktree, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]).await?;
+        files.extend(output.split('\0').filter(|path| !path.is_empty() && !path.ends_with('/')).filter(|path| matches_any(patterns, path)).map(str::to_string));
     }
-    let output = git::run_git(worktree, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]).await?;
-    let files: Vec<String> = output
-        .split('\0')
-        .filter(|path| !path.is_empty() && !path.ends_with('/'))
-        .filter(|path| matches_any(patterns, path))
-        .map(str::to_string)
-        .collect();
+    if let Some(hooks_path) = hooks_path {
+        let output = git::run_git(worktree, &["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", hooks_path]).await?;
+        files.extend(output.split('\0').filter(|path| !path.is_empty()).map(str::to_string));
+        files.sort();
+        files.dedup();
+    }
     if files.is_empty() {
         return Ok(());
     }
@@ -359,6 +415,19 @@ mod tests {
         assert_eq!(repository_key_from_url("https://github.com/unshoppable/infrastructure").as_deref(), Some("unshoppable/infrastructure"));
         assert_eq!(repository_key_from_url("ssh://git@host:2222/team/repo.git/").as_deref(), Some("team/repo"));
         assert_eq!(repository_key_from_url("repo"), None);
+    }
+
+    #[test]
+    fn github_https_url_accepts_github_remotes_only() {
+        let expected = Some("https://github.com/unshoppable/app-framework.git".to_string());
+        assert_eq!(github_https_url("git@github.com:unshoppable/app-framework.git"), expected);
+        assert_eq!(github_https_url("ssh://git@github.com/unshoppable/app-framework"), expected);
+        assert_eq!(github_https_url("https://github.com/unshoppable/app-framework.git/"), expected);
+        assert_eq!(github_https_url("https://user@GitHub.com/unshoppable/app-framework"), expected);
+        assert_eq!(github_https_url("git@gitlab.com:team/repo.git"), None);
+        assert_eq!(github_https_url("https://github.com/team/repo/tree/main"), None);
+        assert_eq!(github_https_url("https://github.com/team/.hidden"), None);
+        assert_eq!(github_https_url("/Users/me/repo"), None);
     }
 
     #[test]

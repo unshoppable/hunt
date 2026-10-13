@@ -1,7 +1,6 @@
 //! The Claude account Hunt starts Claude Code with: the local login (`claude /login`, kept by Claude Code itself) or a
 //! named long-lived OAuth token from `claude setup-token`. Names and the active choice live in `accounts.json` in the
-//! app data folder; tokens live in the macOS keychain. The keychain is written and read only through
-//! `/usr/bin/security`, which every item it creates trusts, so a rebuilt Hunt binary reads them without a prompt.
+//! app data folder; tokens live in the macOS keychain (`keychain.rs`).
 //! Hunt creates the token itself: it runs `claude setup-token` and opens its sign-in in a private browser window with
 //! the account's email filled in, so no session of another account interferes.
 
@@ -13,11 +12,12 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use crate::keychain;
 use crate::lsp::kill_group;
 use crate::session::store;
 
@@ -26,8 +26,6 @@ pub const TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 
 const KEYCHAIN_SERVICE: &str = "Hunt Claude account";
 const FILE_NAME: &str = "accounts.json";
-/// `security` exits with this code when no keychain item matches.
-const ITEM_NOT_FOUND: i32 = 44;
 
 /// Prefix of the tokens `claude setup-token` prints.
 const TOKEN_PREFIX: &str = "sk-ant-oat";
@@ -96,56 +94,18 @@ fn write_file(path: &Path, accounts: &Accounts) -> Result<(), String> {
     std::fs::rename(&temp, path).map_err(|error| format!("failed to write {FILE_NAME}: {error}"))
 }
 
-/// Stores `token` under `id`, replacing an earlier one. It goes in hex-encoded through stdin, never as an argument
-/// other processes could see, and is read back because `security -i` exits with 0 even when a command fails.
+/// Stores `token` under `id` in the keychain, replacing an earlier one.
 async fn store_token(id: Uuid, token: &str) -> Result<(), String> {
-    let hex: String = token.bytes().map(|byte| format!("{byte:02x}")).collect();
-    let line = format!("add-generic-password -U -s \"{KEYCHAIN_SERVICE}\" -l \"{KEYCHAIN_SERVICE}\" -a \"{id}\" -X {hex}\n");
-    let mut child = Command::new("/usr/bin/security")
-        .arg("-i")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| format!("failed to start security: {error}"))?;
-    let mut stdin = child.stdin.take().ok_or("security stdin is not available")?;
-    stdin.write_all(line.as_bytes()).await.map_err(|error| error.to_string())?;
-    drop(stdin);
-    let output = child.wait_with_output().await.map_err(|error| error.to_string())?;
-
-    match read_token(id).await {
-        Ok(stored) if stored == token => Ok(()),
-        _ => Err(format!("failed to store the token in the keychain: {}", String::from_utf8_lossy(&output.stderr).trim())),
-    }
+    keychain::store(KEYCHAIN_SERVICE, &id.to_string(), token).await
 }
 
 async fn read_token(id: Uuid) -> Result<String, String> {
-    let output = Command::new("/usr/bin/security")
-        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", &id.to_string(), "-w"])
-        .output()
-        .await
-        .map_err(|error| format!("failed to start security: {error}"))?;
-    if output.status.code() == Some(ITEM_NOT_FOUND) {
-        return Err("the keychain has no token for it".into());
-    }
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    keychain::read(KEYCHAIN_SERVICE, &id.to_string()).await?.ok_or_else(|| "the keychain has no token for it".to_string())
 }
 
 /// Deletes the token stored under `id`; a missing one counts as deleted.
 async fn delete_token(id: Uuid) -> Result<(), String> {
-    let output = Command::new("/usr/bin/security")
-        .args(["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", &id.to_string()])
-        .output()
-        .await
-        .map_err(|error| format!("failed to start security: {error}"))?;
-    if output.status.success() || output.status.code() == Some(ITEM_NOT_FOUND) {
-        return Ok(());
-    }
-    Err(format!("failed to delete the token from the keychain: {}", String::from_utf8_lossy(&output.stderr).trim()))
+    keychain::delete(KEYCHAIN_SERVICE, &id.to_string()).await
 }
 
 /// The first token in the terminal output of `claude setup-token`; `None` until it has arrived in full, i.e. a character

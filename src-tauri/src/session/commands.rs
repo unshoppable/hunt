@@ -23,6 +23,7 @@ use crate::acp::{
 };
 use crate::git::{self, ChangedFile, FileDiff, Shelf};
 use crate::github::{self, GithubViewer, PullRequest, PullRequestDetails, PullRequestRef, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread};
+use crate::github_token;
 use crate::graph::{self, WatcherRegistry};
 use crate::ide;
 use crate::lsp::{self, LspRegistry};
@@ -396,7 +397,8 @@ pub async fn clear_session(
             let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
             let progress = progress_reporter(&app, id);
             remote::vm::ensure_running(&target.vm, &ssh, &progress).await?;
-            let status = remote::hunt_ctl_with_input(&ssh, &["clear", &id.to_string()], format!("{claude_token}\n").as_bytes()).await?;
+            let token_input = remote::token_input(&claude_token, github_token::read().await?.as_deref());
+            let status = remote::hunt_ctl_with_input(&ssh, &["clear", &id.to_string()], token_input.as_bytes()).await?;
             let acp_session_id = status["acpSessionId"].as_str().map(str::to_string).ok_or("failed to clear session: the relay reports no new session")?;
             let record = store::update_session(&app, id, |stored| stored.acp_session_id = Some(acp_session_id))?
                 .ok_or_else(|| "failed to clear session: the session was closed meanwhile".to_string())?;
@@ -483,8 +485,8 @@ async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: 
     run_pending_cleanups(app, &ssh, &target.vm).await;
     progress(RemoteStep::StartingAgent);
     // Only a new container reads the token, so a running one stays reachable with the local login selected.
-    let claude_token = accounts::active_token(app).await?.unwrap_or_default();
-    remote::hunt_ctl_with_input(&ssh, &["start", &id.to_string()], format!("{claude_token}\n").as_bytes()).await?;
+    let token_input = local_token_input(app).await?;
+    remote::hunt_ctl_with_input(&ssh, &["start", &id.to_string()], token_input.as_bytes()).await?;
     let status = remote::hunt_ctl(&ssh, &["wait", &id.to_string(), "--timeout", "180"]).await?;
     let acp_session_id = status["acpSessionId"]
         .as_str()
@@ -506,6 +508,12 @@ async fn remote_claude_token(app: &AppHandle, what: &str) -> Result<String, Stri
     })
 }
 
+/// The tokens for `hunt-ctl start` with the Claude account selected now, empty with the local login.
+async fn local_token_input(app: &AppHandle) -> Result<String, String> {
+    let claude_token = accounts::active_token(app).await?.unwrap_or_default();
+    Ok(remote::token_input(&claude_token, github_token::read().await?.as_deref()))
+}
+
 /// Starts the preview of the remote session `id` on `domain`: the VM, the runtime, the session's container, then the
 /// services and dev processes its repository's hunt.json declares, with the optional processes in `with`. A container
 /// from a release without previews is created anew, which ends the chat's connection; the next prompt connects again.
@@ -521,7 +529,7 @@ pub async fn start_preview(app: AppHandle, id: Uuid, domain: String, with: Vec<S
         remote::vm::ensure_running(&target.vm, &ssh, &progress).await?;
         remote::bundle::ensure_installed(&ssh, &bundled_script_path(&app, "remote")?, &progress).await?;
         // Only a container that is created reads the token, so a running one starts with the local login selected too.
-        let token_input = format!("{}\n", accounts::active_token(&app).await?.unwrap_or_default());
+        let token_input = local_token_input(&app).await?;
         progress(RemoteStep::StartingAgent);
         remote::hunt_ctl_with_input(&ssh, &["start", &id.to_string()], token_input.as_bytes()).await?;
         progress(RemoteStep::StartingPreview);
@@ -593,8 +601,8 @@ pub async fn read_preview_log(app: AppHandle, id: Uuid, name: String, offset: Op
 }
 
 /// What Hunt tells the agent of a remote session on top of its usual system prompt addition.
-const REMOTE_PROMPT: &str = "\n\n## Remote session\nThis session runs in a container on a remote VM. Git remotes such as GitHub are not \
-reachable from here: commit locally and do not push. The user brings the commits back to their machine.\n\n\
+const REMOTE_PROMPT: &str = "\n\n## Remote session\nThis session runs in a container on a remote VM. The user brings its \
+commits back to their machine.\n\n\
 ### Preview\nWhen the user opens the preview, Hunt runs the `preview` section of the repository's hunt.json in this \
 container: its services (Postgres, Redis or Elasticsearch) answer on 127.0.0.1 at their usual ports, and its dev processes \
 serve the app the user opens in the browser. `hunt-preview status` lists the processes, `hunt-preview logs <process>` \
@@ -603,6 +611,15 @@ one and `hunt-preview start <process>` starts an optional one; do not start thes
 A process with a port must listen on 0.0.0.0, not only on 127.0.0.1, or the browser cannot reach it. Check changes to \
 the user interface with the Playwright tools against http://localhost:<port>; the screenshots you take show up in the \
 user's chat.\n";
+
+/// The Git part of `REMOTE_PROMPT` when Hunt hands the user's GitHub token to the container.
+const REMOTE_GIT_PUSH_PROMPT: &str = "\n### Git\n`origin` is the repository on GitHub. git, Git LFS and `gh` act with the user's \
+GitHub token, so you can push and open or update pull requests when the task calls for it. Follow the repository's \
+branch naming rules; when the current branch does not fit them, create a fitting branch from HEAD and keep working on it.\n";
+
+/// The Git part of `REMOTE_PROMPT` without a GitHub token.
+const REMOTE_GIT_LOCAL_PROMPT: &str = "\n### Git\nThere is no GitHub token for this session, so pushing fails: commit locally \
+and do not push.\n";
 
 /// Moves the session `id` to the VM `vm`: its agent stops here, its branch, uncommitted work, transcript and the
 /// ignored files matching `file_patterns` go to the VM, and the chat continues with the agent there. On failure the
@@ -622,6 +639,7 @@ pub async fn hand_off_session(
     ensure_hand_off_allowed(&app, &record)?;
     vm.validate()?;
     let claude_token = remote_claude_token(&app, "hand off the session").await?;
+    let github_token = github_token::read().await?;
     let (config_values, local_mode) = match live_session(&registry, id).await {
         Ok(handles) => {
             let history = handles.history.lock().unwrap();
@@ -637,7 +655,9 @@ pub async fn hand_off_session(
 
     let handed_off = async {
         let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt);
-        let system_prompt = format!("{}{REMOTE_PROMPT}", system_prompt_append(&app, context_prompt));
+        let git_prompt = if github_token.is_some() { REMOTE_GIT_PUSH_PROMPT } else { REMOTE_GIT_LOCAL_PROMPT };
+        let system_prompt = format!("{}{REMOTE_PROMPT}{git_prompt}", system_prompt_append(&app, context_prompt));
+        let token_input = remote::token_input(&claude_token, github_token.as_deref());
         let bundle_dir = bundled_script_path(&app, "remote")?;
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
         let request = remote::handoff::HandoffRequest {
@@ -651,7 +671,7 @@ pub async fn hand_off_session(
             file_patterns: &file_patterns,
             system_prompt: &system_prompt,
             config_values: &config_values,
-            claude_token: &claude_token,
+            token_input: &token_input,
             local_mode: local_mode.as_deref(),
         };
         remote::handoff::hand_off(request, &progress_reporter(&app, id)).await

@@ -381,6 +381,13 @@ memory is merged into the local one three-way against what the handoff sent (`sr
 only the VM changed takes its version, one both sides changed keeps the local version with the VM's next to it as
 `<name>.remote-<id>.md`, and `MEMORY.md` takes the VM's added and removed lines.
 
+Sessions an older Hunt handed off to the VM all sessions shared, today's gateway, keep running there in containers
+under the `hunt-ctl` of that time until they come back (`src-tauri/src/remote/legacy.rs`); their record names that VM
+instead of `vm-hunt-s-<short id>`. Hunt connects to them through `/srv/hunt/sockets/<id>/acp.sock` without installing
+anything, brings them back with the same `hunt-ctl` commands and then runs `hunt-ctl destroy <id>` on the gateway
+instead of deleting a VM. While such a session exists, Hunt refuses every handoff, since it would install the current
+release on the gateway and strand them.
+
 The labels and metadata of the session VMs are the directory of remote sessions. At its start and from the sidebar's
 *Refresh remote sessions* button, Hunt lists those in the zone of the settings, the zone whose VMs the gateway routes
 previews to (`adopt_session_vms`, `src-tauri/src/remote/adoption.rs`), and adopts every VM whose `hunt-session-id` no

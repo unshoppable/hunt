@@ -97,6 +97,17 @@ export const commands = {
   restartPreviewProcess: (id: string, process: string) => invoke<void>("restart_preview_process", { id, process }),
   /** The preview log `name` (a process or `setup`) from byte `offset` on; without an offset its last 64 KiB. */
   readPreviewLog: (id: string, name: string, offset: number | null) => invoke<PreviewLogChunk>("read_preview_log", { id, name, offset }),
+  /**
+   * Opens a terminal with `cols` × `rows` cells on the VM of the remote session `id`, attached to the tmux session of
+   * the app's processes. The caller picks `terminalId` and listens before it calls, since the output (`terminal:output`,
+   * then `terminal:exit`, both sent to this window only) may arrive before the promise resolves. A VM that is off stays off.
+   */
+  openTerminal: (id: string, terminalId: string, cols: number, rows: number) => invoke<void>("open_terminal", { id, terminalId, cols, rows }),
+  /** Types `data`, base64 of the input bytes, into the terminal. */
+  writeTerminal: (terminalId: string, data: string) => invoke<void>("write_terminal", { terminalId, data }),
+  resizeTerminal: (terminalId: string, cols: number, rows: number) => invoke<void>("resize_terminal", { terminalId, cols, rows }),
+  /** Ends the terminal; the tmux session and its processes keep running. Closing a terminal that is not open does nothing. */
+  closeTerminal: (terminalId: string) => invoke<void>("close_terminal", { terminalId }),
   closeSession: (id: string, removeWorktree: boolean) => invoke<void>("close_session", { id, removeWorktree }),
   /** Prepares the worktree's `node_modules` again after a failed attempt; progress arrives through `sessions:changed`. */
   prepareDependencies: (id: string) => invoke<void>("prepare_dependencies", { id }),

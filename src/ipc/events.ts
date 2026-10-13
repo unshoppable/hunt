@@ -11,6 +11,8 @@ import type {
   PermissionWithdrawnEvent,
   RemoteProgressEvent,
   SummaryEvent,
+  TerminalExitEvent,
+  TerminalOutputEvent,
   UpdateEvent,
 } from "./types";
 
@@ -42,6 +44,10 @@ type EventPayloads = {
   "settings:show-page": { page: "updates" };
   "lsp:diagnostics": LspDiagnosticsEvent;
   "lsp:exited": LspExitedEvent;
+  /** Output of a terminal, sent only to the window that opened it (see terminal/TerminalPanel.tsx). */
+  "terminal:output": TerminalOutputEvent;
+  /** The end of a terminal's program, sent only to the window that opened it. */
+  "terminal:exit": TerminalExitEvent;
 };
 
 /**

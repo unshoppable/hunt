@@ -35,6 +35,9 @@ export type ContextUsage = { used: number; size: number };
 /** Views of the inspector pane: the changelist diff, the built-in editor or the component diagram. */
 export type RightTab = "diff" | "editor" | "graph" | "pullRequest";
 
+/** Views of the inspector pane while it shows a remote session: its preview or a terminal on its VM. */
+export type RemoteTab = "preview" | "terminal";
+
 /** Text and screenshots of a prompt before it is sent. */
 export type PromptDraft = { text: string; images: Screenshot[] };
 
@@ -160,6 +163,7 @@ type HuntState = {
   activeSessionId: string | null;
   chats: Record<string, SessionChat>;
   rightTab: RightTab;
+  remoteTab: RemoteTab;
   /**
    * Set while the chat pane shows the start view for a new session; `parentId` names the session a sub session is
    * drafted for. A failed creation brings the view back with its `error` and the `prompt` that was not sent.
@@ -219,6 +223,7 @@ type HuntState = {
   setConfigOption: (id: string, configId: string, value: string) => Promise<void>;
   answerPermission: (id: string, requestId: string, optionId: string) => Promise<void>;
   setRightTab: (tab: RightTab) => void;
+  setRemoteTab: (tab: RemoteTab) => void;
   /** Bumps `editVersion` after a local write to the worktree (a save in the diff or editor pane) so every view reloads. */
   noteWorktreeChanged: (id: string) => void;
   /** Creates the empty chat record of `id` when there is none, so worktree-change events reach a window that shows the session without its chat (the editor window). */
@@ -634,6 +639,7 @@ export const useHuntStore = create<HuntState>((set, get) => {
     activeSessionId: null,
     chats: {},
     rightTab: "diff",
+    remoteTab: "preview",
     draft: null,
     untitledIds: [],
 
@@ -827,6 +833,7 @@ export const useHuntStore = create<HuntState>((set, get) => {
     },
 
     setRightTab: (rightTab) => set({ rightTab }),
+    setRemoteTab: (remoteTab) => set({ remoteTab }),
 
     noteWorktreeChanged: (id) => {
       updateChat(id, (chat) => ({ ...chat, editVersion: chat.editVersion + 1 }));

@@ -28,6 +28,7 @@ use crate::graph::{self, WatcherRegistry};
 use crate::ide;
 use crate::lsp::{self, LspRegistry};
 use crate::remote::preview::{PreviewLogChunk, PreviewStatus};
+use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize};
 use crate::remote::{self, RemoteStep, VmRef};
 use crate::screenshots::{self, Screenshot};
 use crate::session::attribution::{self, FileVersion};
@@ -601,6 +602,76 @@ pub async fn read_preview_log(app: AppHandle, id: Uuid, name: String, offset: Op
     }
     let chunk = remote::hunt_ctl(&ssh, &args).await?;
     serde_json::from_value(chunk).map_err(|error| format!("failed to read the log: {error}"))
+}
+
+/// A chunk of a terminal's output as base64 of its bytes, which may end inside a UTF-8 or an escape sequence.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalOutputEvent {
+    id: Uuid,
+    data: String,
+}
+
+/// The end of a terminal's program; `code` is `None` when a signal ended it.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalExitEvent {
+    id: Uuid,
+    code: Option<u32>,
+}
+
+/// Opens the terminal `terminal_id` with `cols` × `rows` cells on the VM of the remote session `id`, attached to the
+/// tmux session the agent runs the app's processes in. The caller picks the ID so it can listen before the first output
+/// arrives: `terminal:output` and finally `terminal:exit` go to the calling window only, which owns the terminal.
+/// A VM that is off is not started.
+#[tauri::command]
+pub async fn open_terminal(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    registry: State<'_, SessionRegistry>,
+    terminals: State<'_, TerminalRegistry>,
+    id: Uuid,
+    terminal_id: Uuid,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let target = store::find_session(&app, id)?.remote.ok_or("failed to open the terminal: the session runs locally")?;
+    let is_connected = registry.live.lock().await.contains_key(&id);
+    if !is_connected && remote::vm::status(&target.vm).await? != "RUNNING" {
+        return Err(format!("failed to open the terminal: the VM {} is off; the next prompt starts it", target.vm.instance));
+    }
+    let args = remote::terminal::attach_args(&target, &ssh_dir()?).await?;
+    let owner = window.label().to_string();
+    let (emitter, receiver) = (app.clone(), owner.clone());
+    let terminal = Terminal::spawn("ssh", &args, TerminalSize { cols, rows }, move |event| {
+        let _ = match event {
+            TerminalEvent::Output(bytes) => {
+                let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+                emitter.emit_to(receiver.as_str(), "terminal:output", TerminalOutputEvent { id: terminal_id, data })
+            }
+            TerminalEvent::Exit(code) => emitter.emit_to(receiver.as_str(), "terminal:exit", TerminalExitEvent { id: terminal_id, code }),
+        };
+    })?;
+    terminals.insert(terminal_id, &owner, terminal)
+}
+
+/// Types `data`, base64 of the input bytes, into the terminal `terminal_id`.
+#[tauri::command]
+pub fn write_terminal(terminals: State<'_, TerminalRegistry>, terminal_id: Uuid, data: String) -> Result<(), String> {
+    let bytes =
+        base64::engine::general_purpose::STANDARD.decode(data).map_err(|error| format!("failed to decode the terminal input: {error}"))?;
+    terminals.write(terminal_id, bytes)
+}
+
+#[tauri::command]
+pub fn resize_terminal(terminals: State<'_, TerminalRegistry>, terminal_id: Uuid, cols: u16, rows: u16) -> Result<(), String> {
+    terminals.resize(terminal_id, TerminalSize { cols, rows })
+}
+
+/// Ends the terminal `terminal_id`; the tmux session and the processes in it keep running.
+#[tauri::command]
+pub fn close_terminal(terminals: State<'_, TerminalRegistry>, terminal_id: Uuid) {
+    terminals.close(terminal_id);
 }
 
 /// What Hunt tells the agent of a remote session on top of its usual system prompt addition, whatever the repository.

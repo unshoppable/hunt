@@ -1,7 +1,8 @@
 //! OpenSSH to the VM of remote sessions through an IAP tunnel (`gcloud compute start-iap-tunnel` as the ProxyCommand)
 //! with a key of Hunt's own that is registered with OS Login. Short commands share one multiplexed connection; the
 //! ACP stream of a session gets a tunnel of its own, because `AcpAgent` kills its whole process group when the session
-//! ends and would take a shared master down with it.
+//! ends and would take a shared master down with it. Terminals join the shared connection while one is open, but never
+//! start it, for the same reason.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,18 @@ static USERS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 /// Socket of the shared connection; `%C` hashes host, port and user, and the path stays below the 104-byte limit
 /// of Unix sockets.
 const CONTROL_PATH: &str = "~/.ssh/hunt-%C";
+
+/// How a connection relates to the multiplexed master.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Connection {
+    /// Through the master; the first such connection starts it, and it stays for `ControlPersist`.
+    Shared,
+    /// Over a tunnel of its own.
+    Own,
+    /// An interactive terminal with a remote TTY: through the master while one is open, else over a tunnel of its own.
+    /// It never becomes the master, so ending the terminal's process group leaves the other connections alone.
+    Terminal,
+}
 
 /// SSH access to one VM as the OS Login user of the gcloud account.
 pub struct Ssh {
@@ -53,13 +66,14 @@ impl Ssh {
         Ok(Self { vm: vm.clone(), user, key, known_hosts: dir.join("known_hosts") })
     }
 
-    /// The options every connection uses; `shared` connections go through the multiplexed master.
-    fn options(&self, shared: bool) -> Vec<String> {
+    /// The options every connection uses, with the TTY and multiplexing settings of `connection`.
+    fn options(&self, connection: Connection) -> Vec<String> {
         let proxy = format!(
             "gcloud compute start-iap-tunnel %h 22 --listen-on-stdin --project={} --zone={} --verbosity=warning",
             self.vm.project, self.vm.zone
         );
-        let mut options: Vec<String> = vec!["-T".into(), "-l".into(), self.user.clone(), "-i".into(), self.key.display().to_string()];
+        let tty = if connection == Connection::Terminal { "-tt" } else { "-T" };
+        let mut options: Vec<String> = vec![tty.into(), "-l".into(), self.user.clone(), "-i".into(), self.key.display().to_string()];
         let settings = [
             "IdentitiesOnly=yes".to_string(),
             "IdentityAgent=none".to_string(),
@@ -76,10 +90,15 @@ impl Ssh {
             options.push("-o".into());
             options.push(setting);
         }
-        let control = if shared {
-            vec!["ControlMaster=auto".to_string(), "ControlPersist=600".to_string(), format!("ControlPath={CONTROL_PATH}")]
-        } else {
-            vec!["ControlPath=none".to_string()]
+        let control = match connection {
+            Connection::Shared => {
+                vec!["ControlMaster=auto".to_string(), "ControlPersist=600".to_string(), format!("ControlPath={CONTROL_PATH}")]
+            }
+            Connection::Own => vec!["ControlPath=none".to_string()],
+            // Without an escape character, `~.` typed at the start of a line reaches the remote program.
+            Connection::Terminal => {
+                vec!["ControlMaster=no".to_string(), format!("ControlPath={CONTROL_PATH}"), "EscapeChar=none".to_string()]
+            }
         };
         for setting in control {
             options.push("-o".into());
@@ -90,7 +109,16 @@ impl Ssh {
 
     /// Arguments of `ssh` that run `command` on the VM over a connection of its own, for a long-lived stream.
     pub fn stream_args(&self, command: &str) -> Vec<String> {
-        let mut args = self.options(false);
+        let mut args = self.options(Connection::Own);
+        args.push(self.vm.instance.clone());
+        args.push(command.to_string());
+        args
+    }
+
+    /// Arguments of `ssh` that run the interactive `command` on the VM in a remote TTY; `ssh` must run in a local
+    /// pseudo terminal, whose size changes it passes on.
+    pub fn terminal_args(&self, command: &str) -> Vec<String> {
+        let mut args = self.options(Connection::Terminal);
         args.push(self.vm.instance.clone());
         args.push(command.to_string());
         args
@@ -105,7 +133,7 @@ impl Ssh {
     /// Runs `command` on the VM with `input` on its standard input and returns its standard output.
     pub async fn run_with_input(&self, command: &str, input: &[u8]) -> Result<Vec<u8>, String> {
         let mut child = Command::new("ssh")
-            .args(self.options(true))
+            .args(self.options(Connection::Shared))
             .arg(&self.vm.instance)
             .arg(command)
             .stdin(Stdio::piped())
@@ -133,7 +161,7 @@ impl Ssh {
     /// The value of `GIT_SSH_COMMAND` that lets git reach the VM the way `run` does.
     pub fn git_ssh_command(&self) -> String {
         let mut command = String::from("ssh");
-        for option in self.options(true) {
+        for option in self.options(Connection::Shared) {
             command.push(' ');
             command.push_str(&shell_quote(&option));
         }
@@ -201,6 +229,18 @@ mod tests {
         assert!(!args.iter().any(|arg| arg.starts_with("ControlMaster")));
         assert_eq!(&args[args.len() - 2..], ["vm-hunt", "sudo -n -u hunt socat - UNIX-CONNECT:/srv/hunt/sockets/x/acp.sock"]);
         assert!(args.contains(&"ProxyCommand=gcloud compute start-iap-tunnel %h 22 --listen-on-stdin --project=acme-staging --zone=europe-west1-c --verbosity=warning".to_string()));
+    }
+
+    #[test]
+    fn terminal_args_request_a_tty_and_join_the_master_without_starting_it() {
+        let args = ssh().terminal_args("sudo -n -iu agent tmux -u new-session -A -s app");
+        assert_eq!(args[0], "-tt");
+        assert!(!args.contains(&"-T".to_string()));
+        assert!(args.contains(&"ControlMaster=no".to_string()));
+        assert!(args.contains(&"ControlPath=~/.ssh/hunt-%C".to_string()));
+        assert!(args.contains(&"EscapeChar=none".to_string()));
+        assert!(!args.iter().any(|arg| arg.starts_with("ControlPersist")));
+        assert_eq!(&args[args.len() - 2..], ["vm-hunt", "sudo -n -iu agent tmux -u new-session -A -s app"]);
     }
 
     #[test]

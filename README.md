@@ -326,6 +326,15 @@ IAP's headers and cookies before a request reaches a dev server; `<short id>` is
 ID. `src/preview/PreviewPanel.tsx` shows the state, the links and one log per process. Page views and requests other
 than GET keep the VM awake, for at most two hours without a turn.
 
+Next to the preview, the *Terminal* tab (`src/terminal/TerminalPanel.tsx`, xterm.js) attaches to the tmux session
+`app` on the VM, in which the agent runs the app's long-running processes, one window per process. The backend
+(`src-tauri/src/remote/terminal.rs`) runs `ssh -tt … sudo -n -iu agent tmux -u new-session -A -s app` in a local
+pseudo terminal (`portable-pty`), so the programs see a real TTY and keep their colors; several people can attach at
+once. The terminal joins the shared SSH connection when one is open but never starts it, and streams its output to the
+window that opened it as base64 chunks (`terminal:output`, then `terminal:exit`). It connects when the tab is first
+shown, stays connected while the preview tab shows, and ends with the session's panel, its window or a reload; tmux
+keeps the processes running. A VM that is off is not started for it.
+
 Bringing it back (`retrieve_session`) stops the container, snapshots the VM's worktree on top of the agent's commits
 (`refs/hunt/<id>/retrieve`), fetches it and applies it to the local worktree, which must still hold the handoff
 snapshot; the branch moves to the agent's last commit and the transcript returns. What the agent changed in the
@@ -353,11 +362,11 @@ starts it again.
 | `src-tauri/src/lsp.rs` | One `tsgo --lsp` process per worktree |
 | `src-tauri/src/workspace.rs` | Project tree and file access |
 | `src-tauri/src/graph.rs` | Dependency graph prompt and status |
-| `src-tauri/src/remote/` | SSH to the VM, handoff and retrieval of remote sessions, previews |
+| `src-tauri/src/remote/` | SSH to the VM, handoff and retrieval of remote sessions, previews, terminals |
 | `remote/` | VM side of remote sessions: relay with the preview supervisor, container image, `hunt-ctl` |
 | `src/ipc/` | Every Tauri command, event and shared type |
 | `src/state/` | Zustand stores and chat reducers |
-| `src/chat/`, `src/diff/`, `src/ide/`, `src/graph/`, `src/guardrails/`, `src/preview/`, `src/review/`, `src/sessions/`, `src/settings/` | One folder per tab or window |
+| `src/chat/`, `src/diff/`, `src/ide/`, `src/graph/`, `src/guardrails/`, `src/preview/`, `src/review/`, `src/sessions/`, `src/settings/`, `src/terminal/` | One folder per tab or window |
 | `src/ui/` | Primitives shared by every feature |
 | `docs/adr/` | Architectural decision records |
 

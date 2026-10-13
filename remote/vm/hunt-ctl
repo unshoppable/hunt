@@ -57,7 +57,8 @@ usage() {
   cat >&2 <<'USAGE'
 usage: hunt-ctl <command> [arguments]
 
-  install <dir>          install the bundle in <dir>: release, image hunt-agent:<hash>, systemd units
+  install <dir>          install the bundle in <dir>: release, image hunt-agent:<hash>, systemd units; removes all
+                         but this and the previous release and their images
   install-units          (re)install the systemd units, idle defaults and hunt-ctl link of the current release
   version                hash of the current release
   init <id> --repo <owner>/<repo>
@@ -392,9 +393,27 @@ install_units() {
   systemctl start hunt-idle.timer
 }
 
+# Removes the releases and the images built from them (hunt-agent, hunt-postgres18) except those of the hashes given.
+# Docker refuses to remove an image a container still uses; such an image goes with a later install.
+prune_releases() {
+  local release hash repository tag
+  for release in "$RELEASES"/*/; do
+    hash=${release%/}
+    hash=${hash##*/}
+    [[ " $* " == *" $hash "* ]] && continue
+    rm -rf -- "${release:?}"
+  done
+  for repository in hunt-agent hunt-postgres18; do
+    while read -r tag; do
+      [[ $tag == "<none>" || " $* " == *" $tag "* ]] && continue
+      docker image rm "$repository:$tag" >/dev/null 2>&1 || true
+    done < <(docker image ls --format '{{.Tag}}' "$repository")
+  done
+}
+
 cmd_install() {
   (( $# == 1 )) || usage
-  local source=$1 hash release staging
+  local source=$1 hash release staging previous
   [[ -f $source/.hash && -f $source/image/Dockerfile && -f $source/vm/hunt-ctl ]] || die "$source is not a Hunt remote bundle"
   hash=$(tr -d '[:space:]' <"$source/.hash")
   [[ $hash =~ ^[0-9a-f]{16}$ ]] || die "invalid bundle hash in $source/.hash: $hash"
@@ -422,10 +441,13 @@ cmd_install() {
   docker pull --quiet "$REDIS_IMAGE" >/dev/null
   docker pull --quiet "$ELASTICSEARCH_IMAGE" >/dev/null
   docker pull --quiet "$EDGE_IMAGE" >/dev/null
+  previous=$(tr -d '[:space:]' <"$CURRENT/.hash" 2>/dev/null || true)
   ln -sfn "$release" "$CURRENT.new"
   mv -T "$CURRENT.new" "$CURRENT"
   install_units
   ensure_edge
+  # The release before stays, so that switching back to it, as a second Hunt version does, needs no new build.
+  prune_releases "$hash" "$previous"
   emit --arg hash "$hash" '{hash: $hash}'
 }
 

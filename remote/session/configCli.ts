@@ -6,9 +6,10 @@
  *
  * Writes the session's environment as a systemd EnvironmentFile to --env-out and the Caddy configuration of the VM's
  * preview proxy to --caddy-out, each through a temporary file and a rename, mode 0644. Prints one line of JSON:
- * `{"ok": true, "hunt_md": "…"}`, with the text of the repository's HUNT.md (instructions for Hunt sessions, at most
- * 20 KiB) when it has one, or `{"ok": false, "problems": […]}`, each problem starting with the path of the offending
- * value; then it writes nothing and exits with 1. The agent controls the worktree, so hunt.json and HUNT.md are read
+ * `{"ok": true, "main": 4200, "tls": [3000], "hunt_md": "…"}` with the main port (null without one), the ports served
+ * over HTTPS and the text of the repository's HUNT.md (instructions for Hunt sessions, at most 20 KiB) when it has one,
+ * or `{"ok": false, "problems": […]}`, each problem starting with the path of the offending value; then it writes
+ * nothing and exits with 1. The agent controls the worktree, so hunt.json and HUNT.md are read
  * only as regular files, never through a symlink.
  */
 import { closeSync, constants, fstatSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
@@ -26,6 +27,8 @@ type Options = Record<(typeof FLAGS)[keyof typeof FLAGS], string>;
 interface Result {
   ok: boolean;
   problems?: string[];
+  main?: number | null;
+  tls?: number[];
   hunt_md?: string;
 }
 
@@ -94,16 +97,18 @@ function run(args: string[]): Result {
   } catch (error) {
     problems.push(`hunt.json: not valid JSON: ${messageOf(error)}`);
   }
+  let result: Result;
   try {
     const config = buildSessionConfig(huntJson, { short: options.short, domain: options.domain });
     if (problems.length > 0) return { ok: false, problems };
     writeAtomic(options.envOut, envFile(config.env));
     writeAtomic(options.caddyOut, `${JSON.stringify(config.proxy, null, 2)}\n`);
+    result = { ok: true, main: config.preview.main, tls: config.preview.tls };
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;
     return { ok: false, problems: [...problems, ...error.problems] };
   }
-  return huntMd ? { ok: true, hunt_md: huntMd } : { ok: true };
+  return huntMd ? { ...result, hunt_md: huntMd } : result;
 }
 
 function main(): void {

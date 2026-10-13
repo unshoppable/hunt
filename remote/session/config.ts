@@ -48,6 +48,8 @@ export interface SessionHost {
 }
 
 export interface SessionConfig {
+  /** The checked `preview` section. */
+  preview: PreviewConfig;
   /** The repository's variables with their placeholders resolved, after HUNT_PREVIEW_URL and HUNT_PREVIEW_URL_TEMPLATE. */
   env: Record<string, string>;
   proxy: CaddyConfig;
@@ -59,9 +61,17 @@ export interface CaddyRoute {
   terminal?: boolean;
 }
 
+export interface CaddyLog {
+  level?: string;
+  writer?: { output: "file"; filename: string; roll_size_mb: number; roll_keep: number };
+  encoder?: { format: string };
+  include?: string[];
+  exclude?: string[];
+}
+
 export interface CaddyConfig {
   admin: { listen: string; config: { persist: boolean } };
-  logging: { logs: { default: { level: string } } };
+  logging: { logs: { default: CaddyLog; access: CaddyLog } };
   apps: {
     http: {
       servers: {
@@ -70,6 +80,7 @@ export interface CaddyConfig {
           protocols: string[];
           automatic_https: { disable: boolean };
           trusted_proxies: { source: "static"; ranges: string[] };
+          logs: { default_logger_name: string };
           routes: CaddyRoute[];
         };
       };
@@ -102,6 +113,10 @@ const PROXY_LISTEN = ":8080";
 const HEALTH_PATH = "/hunt-healthz";
 /** Caddy's admin API, in the runtime folder of hunt-proxy.service. */
 const PROXY_ADMIN = "unix//run/hunt-proxy/admin.sock";
+/** The access log of every preview request, in the logs folder of hunt-proxy.service; `hunt-idle-check` reads it. */
+const ACCESS_LOG = "/var/log/hunt-proxy/access.log";
+/** Caddy names the access logger of a server `http.log.access.<default_logger_name>`. */
+const ACCESS_LOGGER = "preview";
 
 const ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
 const RESERVED_ENV_PREFIXES = ["CLAUDE_", "HUNT_"];
@@ -144,7 +159,7 @@ export function buildSessionConfig(huntJson: unknown, host: SessionHost): Sessio
   }
   const config = parseSection(huntJson, problems);
   if (problems.messages.length > 0) throw new ConfigError(problems.messages);
-  return { env: sessionEnv(config, host), proxy: proxyConfig(config, host) };
+  return { preview: config, env: sessionEnv(config, host), proxy: proxyConfig(config, host) };
 }
 
 /** Checks the `preview` section of `huntJson` (the parsed file, undefined without one); throws a ConfigError. */
@@ -188,7 +203,8 @@ export function envFile(env: Record<string, string>): string {
  * except for the path prefixes of `routes`, which go to their own port on every host. Ports in `tls` are reached over
  * HTTPS without checking the certificate. Every upstream gets the request's own Host header, which Caddy would replace
  * with the upstream's address for HTTPS, but never IAP's headers and cookies; responses are flushed at once (server-sent
- * events). HEALTH_PATH answers 200 on every host and the reserved ports answer 403.
+ * events). HEALTH_PATH answers 200 on every host and the reserved ports answer 403. Every request except the health
+ * check goes to ACCESS_LOG as one JSON line; Caddy writes Cookie and Authorization headers there redacted.
  */
 export function proxyConfig(config: PreviewConfig, host: SessionHost): CaddyConfig {
   const mainHost = `${host.short}.${host.domain}`;
@@ -211,7 +227,16 @@ export function proxyConfig(config: PreviewConfig, host: SessionHost): CaddyConf
   ];
   return {
     admin: { listen: PROXY_ADMIN, config: { persist: false } },
-    logging: { logs: { default: { level: "WARN" } } },
+    logging: {
+      logs: {
+        default: { level: "WARN", exclude: [`http.log.access.${ACCESS_LOGGER}`] },
+        access: {
+          writer: { output: "file", filename: ACCESS_LOG, roll_size_mb: 20, roll_keep: 2 },
+          encoder: { format: "json" },
+          include: [`http.log.access.${ACCESS_LOGGER}`],
+        },
+      },
+    },
     apps: {
       http: {
         servers: {
@@ -220,8 +245,13 @@ export function proxyConfig(config: PreviewConfig, host: SessionHost): CaddyConf
             protocols: ["h1"],
             automatic_https: { disable: true },
             trusted_proxies: { source: "static", ranges: PRIVATE_RANGES },
+            logs: { default_logger_name: ACCESS_LOGGER },
             routes: [
-              { match: [{ path: [HEALTH_PATH] }], handle: [{ handler: "static_response", status_code: 200, body: "ok" }], terminal: true },
+              {
+                match: [{ path: [HEALTH_PATH] }],
+                handle: [{ handler: "vars", log_skip: true }, { handler: "static_response", status_code: 200, body: "ok" }],
+                terminal: true,
+              },
               {
                 match: [{ host: [...RESERVED_PORTS.keys()].map(portHost) }],
                 handle: [{ handler: "static_response", status_code: 403, body: "This port is not served.\n" }],

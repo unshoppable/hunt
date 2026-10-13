@@ -242,6 +242,17 @@ describe("proxyConfig", () => {
     expect(server.trusted_proxies).toEqual({ source: "static", ranges: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] });
   });
 
+  it("logs every request but the health check as JSON to the access log the idle check reads, and nothing else there", () => {
+    expect(server.logs).toEqual({ default_logger_name: "preview" });
+    expect(config.logging.logs.access).toEqual({
+      writer: { output: "file", filename: "/var/log/hunt-proxy/access.log", roll_size_mb: 20, roll_keep: 2 },
+      encoder: { format: "json" },
+      include: ["http.log.access.preview"],
+    });
+    expect(config.logging.logs.default).toEqual({ level: "WARN", exclude: ["http.log.access.preview"] });
+    expect(server.routes[0].handle[0]).toEqual({ handler: "vars", log_skip: true });
+  });
+
   it("answers the health check, refuses the reserved ports and sends the session's hosts to its subroute", () => {
     expect(server.routes.map((route) => route.match)).toEqual([
       [{ path: ["/hunt-healthz"] }],
@@ -249,7 +260,7 @@ describe("proxyConfig", () => {
       [{ host: ["7c0c6f2e.hunt.example.com"] }, { vars_regexp: { "{http.request.host}": portPattern } }],
       undefined,
     ]);
-    expect(server.routes[0].handle).toEqual([{ handler: "static_response", status_code: 200, body: "ok" }]);
+    expect(server.routes[0].handle[1]).toEqual({ handler: "static_response", status_code: 200, body: "ok" });
     expect(server.routes[1].handle).toEqual([{ handler: "static_response", status_code: 403, body: "This port is not served.\n" }]);
     expect(server.routes[2].handle[0].handler).toBe("subroute");
     expect(server.routes[3].handle).toEqual([{ handler: "static_response", status_code: 404 }]);
@@ -361,7 +372,12 @@ describe("configCli", () => {
     const { worktree, envOut, caddyOut } = setup({ "hunt.json": JSON.stringify(COMPLETE), "HUNT.md": "\n# Preview\nStart the UIs with DEV_BACKEND_ORIGIN.\n\n" });
     const result = runCli(worktree, envOut, caddyOut);
 
-    expect(result).toEqual({ status: 0, stderr: "", output: { ok: true, hunt_md: "# Preview\nStart the UIs with DEV_BACKEND_ORIGIN." }, lines: 2 });
+    expect(result).toEqual({
+      status: 0,
+      stderr: "",
+      output: { ok: true, main: COMPLETE_CONFIG.main, tls: COMPLETE_CONFIG.tls, hunt_md: "# Preview\nStart the UIs with DEV_BACKEND_ORIGIN." },
+      lines: 2,
+    });
     const expected = buildSessionConfig(COMPLETE, HOST);
     expect(readFileSync(envOut, "utf8")).toBe(envFile(expected.env));
     expect(JSON.parse(readFileSync(caddyOut, "utf8"))).toEqual(expected.proxy);
@@ -372,7 +388,7 @@ describe("configCli", () => {
   it("configures a repository without hunt.json and HUNT.md with the preview URLs only", () => {
     const { worktree, envOut, caddyOut } = setup({});
 
-    expect(runCli(worktree, envOut, caddyOut).output).toEqual({ ok: true });
+    expect(runCli(worktree, envOut, caddyOut).output).toEqual({ ok: true, main: null, tls: [] });
     expect(readFileSync(envOut, "utf8")).toContain(`HUNT_PREVIEW_URL="${MAIN_URL}"\nHUNT_PREVIEW_URL_TEMPLATE="https://7c0c6f2e-{port}.hunt.example.com"\n`);
   });
 

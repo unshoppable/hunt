@@ -87,6 +87,8 @@ export const commands = {
   clearSession: (id: string) => invoke<SessionView>("clear_session", { id }),
   handOffSession: (id: string, vm: VmRef, filePatterns: string[]) => invoke<SessionView>("hand_off_session", { id, vm, filePatterns }),
   retrieveSession: (id: string) => invoke<SessionView>("retrieve_session", { id }),
+  /** Keeps the idle remote session for now; Hunt asks again whether to retrieve or delete it three days later. */
+  snoozeRemoteCleanup: (id: string) => invoke<void>("snooze_remote_cleanup", { id }),
   /** Starts the remote session's preview on `domain` (VM, runtime, container, services, dev processes) with the optional processes in `withProcesses`. */
   startPreview: (id: string, domain: string, withProcesses: string[]) => invoke<PreviewStatus>("start_preview", { id, domain, with: withProcesses }),
   /** The remote session's preview; a VM that is off reports none and stays off. */

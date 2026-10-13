@@ -9,6 +9,7 @@ import { useFileIconUrl } from "../diff/fileIcons";
 import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, sessionSubtitle } from "./sessionLabels";
 import { SessionMark } from "./SessionMark";
 import { DeleteSessionDialog } from "./DeleteSessionDialog";
+import { StaleRemoteDialog } from "./StaleRemoteDialog";
 import { PlanUsageBar } from "./PlanUsageBar";
 import { HEADER_BAR } from "../ui/bars";
 import { ICON_BUTTON, PRIMARY_BUTTON_XS } from "../ui/buttons";
@@ -235,6 +236,7 @@ export function SessionSidebar() {
           onClose={() => setPendingDelete(null)}
         />
       ) : null}
+      <StaleRemoteDialog />
     </div>
   );
 }

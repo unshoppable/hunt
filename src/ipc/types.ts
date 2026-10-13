@@ -126,6 +126,10 @@ export type RemoteTarget = {
   handedOffAt: string;
   /** The permission mode the session had locally, which the retrieval restores; null for older handoffs. */
   localMode: string | null;
+  /** When the agent last worked on the session (a prompt Hunt sent or a turn that ended); null until the first one. */
+  lastActiveAt: string | null;
+  /** When Hunt last asked whether to retrieve or delete the idle session and the user chose to wait. */
+  cleanupAskedAt: string | null;
 };
 
 /** A step of a handoff, a retrieval or a connect to a remote session that takes long enough to show. */

@@ -125,6 +125,8 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
         handoff_head: head,
         handed_off_at: chrono::Utc::now(),
         local_mode: request.local_mode.map(str::to_string),
+        last_active_at: None,
+        cleanup_asked_at: None,
     };
     let acp_session_id = status["acpSessionId"].as_str().map(str::to_string);
     Ok(HandedOff { target, acp_session_id })

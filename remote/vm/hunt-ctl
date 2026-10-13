@@ -22,6 +22,7 @@ readonly SOCKETS=/srv/hunt/sockets
 readonly WORKTREES=/srv/worktrees
 readonly CLAUDE_HOMES=/srv/claude
 readonly NPM_CACHE=/srv/cache/npm
+readonly NPM_CACHE_MAX_KB=$((10 * 1024 * 1024))
 readonly PREVIEW_DIR=/srv/hunt/preview
 readonly EDGE_NAME=hunt-edge
 readonly EDGE_CONFIG_DIR=/etc/hunt-edge
@@ -58,7 +59,8 @@ usage() {
 usage: hunt-ctl <command> [arguments]
 
   install <dir>          install the bundle in <dir>: release, image hunt-agent:<hash>, systemd units; removes all
-                         but this and the previous release and their images
+                         but this and the previous release and their images, the build cache and an npm cache
+                         above 10 GB
   install-units          (re)install the systemd units, idle defaults and hunt-ctl link of the current release
   version                hash of the current release
   init <id> --repo <owner>/<repo>
@@ -421,6 +423,17 @@ prune_releases() {
   done
 }
 
+# Removes Docker's build cache and empties the shared npm cache once it holds more than NPM_CACHE_MAX_KB, unless a
+# `hunt-ctl deps` container uses it right now; npm fills it again on demand. Failures leave the caches as they are.
+prune_caches() {
+  local size
+  docker builder prune --force >/dev/null 2>&1 || true
+  size=$(du -sk "$NPM_CACHE" 2>/dev/null | cut -f1) || return 0
+  (( ${size:-0} > NPM_CACHE_MAX_KB )) || return 0
+  [[ -z $(docker ps --quiet --filter name=hunt-deps- 2>/dev/null) ]] || return 0
+  find "$NPM_CACHE" -mindepth 1 -delete 2>/dev/null || true
+}
+
 cmd_install() {
   (( $# == 1 )) || usage
   local source=$1 hash release staging previous
@@ -458,6 +471,7 @@ cmd_install() {
   ensure_edge
   # The release before stays, so that switching back to it, as a second Hunt version does, needs no new build.
   prune_releases "$hash" "$previous"
+  prune_caches
   emit --arg hash "$hash" '{hash: $hash}'
 }
 

@@ -488,6 +488,9 @@ async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: 
     let token_input = local_token_input(app).await?;
     remote::hunt_ctl_with_input(&ssh, &["start", &id.to_string()], token_input.as_bytes()).await?;
     let status = remote::hunt_ctl(&ssh, &["wait", &id.to_string(), "--timeout", "180"]).await?;
+    if let Some(at) = remote::relay_activity(&status, chrono::Utc::now()) {
+        note_remote_activity(app, id, at);
+    }
     let acp_session_id = status["acpSessionId"]
         .as_str()
         .map(str::to_string)
@@ -995,6 +998,35 @@ fn forget_edit_log_if_unused(app: &AppHandle, worktree: &Path) {
 
 /// Tells every window that the stored sessions changed in a way the sidebar must reload: a session was added
 /// or removed, or its title or state changed.
+/// Records `at` as the last work of the agent of the remote session `id` unless a later one is known; a local session
+/// is left alone. Failures are only logged: the activity only times the reminder about idle sessions.
+fn note_remote_activity(app: &AppHandle, id: Uuid, at: chrono::DateTime<chrono::Utc>) {
+    let is_remote = store::find_session(app, id).is_ok_and(|record| record.remote.is_some());
+    if !is_remote {
+        return;
+    }
+    let updated = store::update_session(app, id, |record| {
+        if let Some(remote) = record.remote.as_mut() {
+            remote.last_active_at = remote.last_active_at.max(Some(at));
+        }
+    });
+    if let Err(error) = updated {
+        eprintln!("recording the activity of session {id} failed: {error}");
+    }
+}
+
+/// Remembers that the user chose to keep the idle remote session `id` for now; Hunt asks again three days later.
+#[tauri::command]
+pub async fn snooze_remote_cleanup(app: AppHandle, id: Uuid) -> Result<(), String> {
+    store::update_session(&app, id, |record| {
+        if let Some(remote) = record.remote.as_mut() {
+            remote.cleanup_asked_at = Some(chrono::Utc::now());
+        }
+    })?;
+    announce_sessions_changed(&app);
+    Ok(())
+}
+
 fn announce_sessions_changed(app: &AppHandle) {
     let _ = app.emit("sessions:changed", ());
 }
@@ -1117,6 +1149,7 @@ async fn run_turn(
     hidden_meta: Option<Meta>,
 ) -> Result<String, String> {
     let LiveHandles { connection, acp_session_id, history } = live_session(registry, id).await?;
+    note_remote_activity(app, id, chrono::Utc::now());
 
     // The agent never echoes the prompt back, so the history records it here.
     let turn_start = {
@@ -1135,6 +1168,7 @@ async fn run_turn(
         .await
         .map_err(|error| format!("failed to send the prompt: {error}"))?;
 
+    note_remote_activity(app, id, chrono::Utc::now());
     if hidden_meta.is_none() {
         let turn = history.lock().unwrap()[turn_start..].to_vec();
         summary::schedule(app.clone(), id, turn);

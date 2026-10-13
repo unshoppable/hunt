@@ -592,6 +592,8 @@ describe("remote sessions", () => {
     handoffHead: "abc",
     handedOffAt: "2026-10-12T20:00:00Z",
     localMode: "default",
+    lastActiveAt: null,
+    cleanupAskedAt: null,
   };
 
   beforeEach(() => {

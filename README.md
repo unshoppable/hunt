@@ -328,7 +328,12 @@ Bringing it back (`retrieve_session`) stops the container, snapshots the VM's wo
 snapshot; the branch moves to the agent's last commit and the transcript returns. What the agent changed in the
 memory is merged into the local one three-way against what the handoff sent (`src-tauri/src/remote/memory.rs`): a file
 only the VM changed takes its version, one both sides changed keeps the local version with the VM's next to it as
-`<name>.remote-<id>.md`, and `MEMORY.md` takes the VM's added and removed lines. The VM shuts itself down after 30
+`<name>.remote-<id>.md`, and `MEMORY.md` takes the VM's added and removed lines.
+
+A remote session takes space on the VM until it is retrieved or deleted. Hunt records when its agent last worked (a
+prompt it sent, a turn that ended, or the relay's last turn when it connects) and, once that is seven days ago, asks in
+the main window whether to retrieve or delete it (`src/sessions/StaleRemoteDialog.tsx`); "Later" asks again three days
+later. `hunt-ctl install` also removes Docker's build cache and empties the shared npm cache above 10 GB. The VM shuts itself down after 30
 minutes without a running turn, client activity or terminal login (`remote/vm/hunt-idle-check`); the next prompt
 starts it again.
 

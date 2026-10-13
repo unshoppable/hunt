@@ -60,6 +60,13 @@ pub struct RemoteTarget {
     /// agent would take over from the transcript, so the retrieval sets this mode again; `None` falls back to `default`.
     #[serde(default)]
     pub local_mode: Option<String>,
+    /// When the agent last worked on the session: a prompt Hunt sent or a turn that ended; `None` until the first one
+    /// after the handoff.
+    #[serde(default)]
+    pub last_active_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// When Hunt last asked whether to retrieve or delete the idle session and the user chose to wait.
+    #[serde(default)]
+    pub cleanup_asked_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl RemoteTarget {
@@ -67,6 +74,16 @@ impl RemoteTarget {
     pub fn restored_mode(&self) -> &str {
         self.local_mode.as_deref().unwrap_or("default")
     }
+}
+
+/// The time of the agent's last work the relay reports in its status (`hunt-ctl wait` or `status`): `now` while a turn
+/// runs, else when the last turn ended (Unix ms); `None` when no turn ended since the relay started. Client activity
+/// does not count, since every connect of Hunt is some.
+pub fn relay_activity(status: &serde_json::Value, now: chrono::DateTime<chrono::Utc>) -> Option<chrono::DateTime<chrono::Utc>> {
+    if status["turn"].as_str() == Some("running") {
+        return Some(now);
+    }
+    status["lastTurnEndedAt"].as_i64().and_then(chrono::DateTime::from_timestamp_millis)
 }
 
 /// A step of a handoff, a retrieval or a connect that takes long enough to show in the UI.
@@ -193,6 +210,16 @@ mod tests {
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
         assert_eq!(shell_quote(""), "''");
         assert_eq!(shell_command("sudo", &["-n", "hunt-ctl", "prepare", "a b"]), "sudo -n hunt-ctl prepare 'a b'");
+    }
+
+    #[test]
+    fn relay_activity_takes_a_running_turn_as_now_and_else_the_last_turn_end() {
+        let now = chrono::DateTime::from_timestamp_millis(1_760_000_000_000).unwrap();
+        let ended = serde_json::json!({ "turn": "idle", "lastTurnEndedAt": 1_759_000_000_000_i64, "lastClientActivityAt": 1_759_900_000_000_i64 });
+        assert_eq!(relay_activity(&ended, now), chrono::DateTime::from_timestamp_millis(1_759_000_000_000));
+        assert_eq!(relay_activity(&serde_json::json!({ "turn": "running", "lastTurnEndedAt": null }), now), Some(now));
+        assert_eq!(relay_activity(&serde_json::json!({ "turn": "idle", "lastTurnEndedAt": null }), now), None);
+        assert_eq!(relay_activity(&serde_json::Value::Null, now), None);
     }
 
     #[test]

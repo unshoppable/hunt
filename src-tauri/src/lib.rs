@@ -59,6 +59,7 @@ pub fn run() {
             session::commands::clear_session,
             session::commands::hand_off_session,
             session::commands::retrieve_session,
+            session::commands::snooze_remote_cleanup,
             session::commands::start_preview,
             session::commands::preview_status,
             session::commands::stop_preview,

@@ -24,9 +24,8 @@ type PreviewState = {
   previews: Record<string, SessionPreview>;
   /** Starts the preview when it does not run and opens its main URL in the browser once it is ready. */
   open: (id: string) => Promise<void>;
-  /** Starts the preview with the optional processes in `withProcesses`, without opening the browser. */
-  start: (id: string, withProcesses: string[]) => Promise<void>;
   stop: (id: string) => Promise<void>;
+  /** Restarts a process; one that is stopped, like an optional process the preview did not start, just starts. */
   restart: (id: string, process: string) => Promise<void>;
   refresh: (id: string) => Promise<void>;
   /** Appends what the log `name` gained since the last read. */
@@ -54,15 +53,15 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     }
   }
 
-  async function startPreview(id: string, withProcesses: string[], opensWhenReady: boolean) {
+  async function startPreview(id: string) {
     const domain = previewDomain();
     if (domain instanceof Error) {
       update(id, (current) => ({ ...current, error: domain.message }));
       return;
     }
-    update(id, (current) => ({ ...current, isBusy: true, error: null, opensWhenReady }));
+    update(id, (current) => ({ ...current, isBusy: true, error: null, opensWhenReady: true }));
     try {
-      apply(id, await commands.startPreview(id, domain, withProcesses));
+      apply(id, await commands.startPreview(id, domain, []));
     } catch (reason) {
       update(id, (current) => ({ ...current, error: errorText(reason), opensWhenReady: false }));
     } finally {
@@ -79,10 +78,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
         await openUrl(status.mainUrl).catch((reason) => update(id, (current) => ({ ...current, error: errorText(reason) })));
         return;
       }
-      await startPreview(id, [], true);
+      await startPreview(id);
     },
-
-    start: (id, withProcesses) => startPreview(id, withProcesses, false),
 
     stop: async (id) => {
       update(id, (current) => ({ ...current, isBusy: true, error: null, opensWhenReady: false }));

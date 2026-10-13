@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { buildPlan, ContractError, parsePlan, type PlanOptions } from "./contract.ts";
+import { buildPlan, ContractError, parsePlan, type PlanOptions, type PreviewPlan } from "./contract.ts";
 
 const PLAN_CLI = fileURLToPath(new URL("./planCli.ts", import.meta.url));
 const SESSION_ID = "7c0c6f2e-1b2c-4d3e-8f90-0123456789ab";
@@ -64,8 +64,20 @@ const COMPLETE_PLAN = {
       ready: "/health",
       main: true,
       optional: false,
+      autostart: true,
     },
-    { name: "admin", run: "npm run start:admin", cwd: ".", env: {}, port: 4300, protocol: "https", ready: "/", main: false, optional: false },
+    {
+      name: "admin",
+      run: "npm run start:admin",
+      cwd: ".",
+      env: {},
+      port: 4300,
+      protocol: "https",
+      ready: "/",
+      main: false,
+      optional: false,
+      autostart: true,
+    },
     {
       name: "worker",
       run: "npm run start:worker",
@@ -76,14 +88,17 @@ const COMPLETE_PLAN = {
       ready: null,
       main: false,
       optional: false,
+      autostart: true,
     },
+    { name: "ui", run: "npm run start:ui", cwd: ".", env: {}, port: 4400, protocol: "http", ready: null, main: false, optional: true, autostart: false },
   ],
   routes: [
     { host: `${SHORT}.${DOMAIN}`, port: 3000, protocol: "http" },
     { host: `${SHORT}-3000.${DOMAIN}`, port: 3000, protocol: "http" },
     { host: `${SHORT}-4300.${DOMAIN}`, port: 4300, protocol: "https" },
+    { host: `${SHORT}-4400.${DOMAIN}`, port: 4400, protocol: "http" },
   ],
-  urls: { main: MAIN_URL, processes: { api: MAIN_URL, admin: portUrl(4300) } },
+  urls: { main: MAIN_URL, processes: { api: MAIN_URL, admin: portUrl(4300), ui: portUrl(4400) } },
 };
 
 function portUrl(port: number): string {
@@ -141,7 +156,7 @@ describe("buildPlan", () => {
     expect(plan.env).toEqual({});
     expect(plan.prepare).toEqual([]);
     expect(plan.init).toEqual([]);
-    expect(plan.processes).toEqual([{ name: "web", run: "npm run dev", cwd: ".", env: {}, port: 3000, protocol: "http", ready: null, main: true, optional: false }]);
+    expect(plan.processes).toEqual([{ name: "web", run: "npm run dev", cwd: ".", env: {}, port: 3000, protocol: "http", ready: null, main: true, optional: false, autostart: true }]);
     expect(plan.routes).toEqual([
       { host: `${SHORT}.${DOMAIN}`, port: 3000, protocol: "http" },
       { host: `${SHORT}-3000.${DOMAIN}`, port: 3000, protocol: "http" },
@@ -202,14 +217,13 @@ describe("buildPlan", () => {
 });
 
 describe("optional processes", () => {
-  it("run only when requested, with their route and URL", () => {
-    expect(buildPlan(COMPLETE, OPTIONS).processes.map((spec) => spec.name)).toEqual(["api", "admin", "worker"]);
+  it("are in the plan with their route and URL and start with it only when requested", () => {
+    const autostarts = (plan: PreviewPlan) => plan.processes.map((spec) => [spec.name, spec.autostart]);
+    expect(autostarts(buildPlan(COMPLETE, OPTIONS))).toEqual([["api", true], ["admin", true], ["worker", true], ["ui", false]]);
 
     const plan = buildPlan(COMPLETE, { ...OPTIONS, withOptional: ["ui"] });
 
-    expect(plan.processes.map((spec) => spec.name)).toEqual(["api", "admin", "worker", "ui"]);
-    const ui = { name: "ui", run: "npm run start:ui", cwd: ".", env: {}, port: 4400, protocol: "http", ready: null, main: false, optional: true };
-    expect(plan.processes[3]).toEqual(ui);
+    expect(autostarts(plan)).toEqual([["api", true], ["admin", true], ["worker", true], ["ui", true]]);
     expect(plan.routes[plan.routes.length - 1]).toEqual({ host: `${SHORT}-4400.${DOMAIN}`, port: 4400, protocol: "http" });
     expect(plan.urls.processes).toEqual({ api: MAIN_URL, admin: portUrl(4300), ui: portUrl(4400) });
   });
@@ -255,7 +269,7 @@ describe("placeholders", () => {
 
     const plan = buildPlan(optional, OPTIONS);
 
-    expect(plan.processes.map((spec) => spec.name)).toEqual(["web"]);
+    expect(plan.processes.map((spec) => [spec.name, spec.autostart])).toEqual([["web", true], ["ui", false]]);
     expect(plan.env).toEqual({ UI_URL: portUrl(4400) });
   });
 

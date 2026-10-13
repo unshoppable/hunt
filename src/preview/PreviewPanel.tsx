@@ -30,7 +30,7 @@ export function PreviewPanel({ sessionId }: { sessionId: string }) {
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
   const domain = useSettingsStore((state) => configuredPreviewDomain(state.remote));
   const preview = usePreviewStore((state) => state.previews[sessionId] ?? EMPTY_PREVIEW);
-  const { open, start, stop, restart, refresh, loadLog } = usePreviewStore.getState();
+  const { open, stop, restart, refresh, loadLog } = usePreviewStore.getState();
   const [logName, setLogName] = useState("setup");
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLPreElement>(null);
@@ -121,7 +121,7 @@ export function PreviewPanel({ sessionId }: { sessionId: string }) {
                 <span className="flex-1" />
                 {process.restarts ? <span className="shrink-0 text-[12px] text-neutral-500">{process.restarts} restarts</span> : null}
                 {process.optional && process.state === "stopped" ? (
-                  <button type="button" onClick={() => void start(sessionId, [process.name])} disabled={preview.isBusy} className={GHOST_BUTTON_XS}>
+                  <button type="button" onClick={() => void restart(sessionId, process.name)} disabled={preview.isBusy} className={GHOST_BUTTON_XS}>
                     Start
                   </button>
                 ) : isActive ? (

@@ -348,8 +348,10 @@ export class PreviewSupervisor {
       run.runners.set(spec.name, runner);
     }
     this.setPhase("starting");
-    for (const runner of run.runners.values()) {
-      runner.start();
+    for (const spec of run.plan.processes) {
+      if (spec.autostart) {
+        run.runners.get(spec.name)?.start();
+      }
     }
   }
 
@@ -373,11 +375,15 @@ export class PreviewSupervisor {
   }
 
   /** The phase, or once processes run: degraded when one crashed or was stopped, else starting until all are ready. */
+  /** The phase until the processes start; then degraded when one crashed or a process that is not optional stopped. */
   private overallState(run: Run | null): PreviewState {
-    const states = [...(run?.runners.values() ?? [])].map((runner) => runner.status().state);
-    if (states.length === 0) return this.phase;
-    if (states.some((state) => state === "crashed" || state === "stopped")) return "degraded";
-    return states.includes("starting") ? "starting" : "ready";
+    const processes = (run?.plan.processes ?? []).flatMap((spec) => {
+      const runner = run?.runners.get(spec.name);
+      return runner ? [{ state: runner.status().state, isOptional: spec.optional }] : [];
+    });
+    if (processes.length === 0) return this.phase;
+    if (processes.some(({ state, isOptional }) => state === "crashed" || (state === "stopped" && !isOptional))) return "degraded";
+    return processes.some(({ state }) => state === "starting") ? "starting" : "ready";
   }
 
   private runnerOf(name: string): ProcessRunner {

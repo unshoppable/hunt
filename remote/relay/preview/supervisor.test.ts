@@ -316,6 +316,22 @@ describe("PreviewSupervisor", () => {
     expect(harness.statusWrites()).toBe(writes);
   });
 
+  it("starts an optional process only on request and stays ready while it is stopped", async () => {
+    const harness = createHarness();
+    harness.supervisor.apply(planOf({ processes: { ...WEB_ONLY.processes, docs: { run: "npm run docs", optional: true } } }), "data-1");
+    await settle();
+    harness.readiness.set("web", "ready");
+    await harness.clock.advance(READY_INTERVAL_MS);
+
+    expect(harness.children.map((child) => child.request.run)).toEqual(["npm run dev"]);
+    expect(harness.supervisor.status()).toMatchObject({ state: "ready", processes: { web: { state: "ready" }, docs: { state: "stopped", pid: null } } });
+
+    harness.supervisor.startProcess("docs");
+
+    expect(harness.children.map((child) => child.request.run)).toEqual(["npm run dev", "npm run docs"]);
+    expect(harness.supervisor.status()).toMatchObject({ state: "ready", processes: { docs: { state: "ready" } } });
+  });
+
   it("notes once per start that a process listens on 127.0.0.1 only and keeps checking it", async () => {
     const harness = createHarness();
     await startedPreview(harness);

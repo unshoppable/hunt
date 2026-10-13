@@ -22,8 +22,9 @@
  * - `prepare` runs at every start, `init` once per data generation; each holds at most 10 steps `{name, run, cwd?, env?}`.
  * - `processes`: name → `{run, cwd?, env?, port?, protocol?, ready?, main?, optional?}`, at most 8, exactly one `main`
  *   with a port. `protocol` (`http` or `https`) is what the process serves on its port; `ready` is a path that must
- *   answer below 500 before the process counts as ready; `optional` processes run only when requested. A process with a
- *   port listens on 0.0.0.0: the readiness check, like the edge proxy, connects to the container's address.
+ *   answer below 500 before the process counts as ready; `optional` processes start only when requested, with the plan
+ *   or later one by one. A process with a port listens on 0.0.0.0: the readiness check, like the edge proxy, connects to
+ *   the container's address.
  * - Names match `^[a-z][a-z0-9-]{0,23}$` (no process is called `setup`, the steps' log); ports are integers from 1024 to
  *   65535, unique and not reserved (isReservedPort); `cwd` is relative to the worktree, without `..`; `run` is one line
  *   of bash. Unknown fields are errors.
@@ -85,6 +86,8 @@ export interface PlanProcess {
   ready: string | null;
   main: boolean;
   optional: boolean;
+  /** Whether applying the plan starts the process: every process that is not optional, and the requested optional ones. */
+  autostart: boolean;
 }
 
 /** A host name of the preview and the port and protocol of the process that serves it. */
@@ -112,7 +115,7 @@ export interface PreviewPlan {
   init: PlanStep[];
   /** SHA-256 over the services and the init steps: a change of either runs the init steps again. */
   initHash: string;
-  /** The processes that run: the ones that are not optional and the requested optional ones. */
+  /** Every process of the preview; the supervisor starts the `autostart` ones with the plan and the others on request. */
   processes: PlanProcess[];
   routes: PlanRoute[];
   urls: PlanUrls;
@@ -162,7 +165,7 @@ const SERVICE_FIELDS = ["kind", "env", "memory"];
 const STEP_FIELDS = ["name", "run", "cwd", "env"];
 const PROCESS_FIELDS = ["run", "cwd", "env", "port", "protocol", "ready", "main", "optional"];
 const PLAN_FIELDS = ["version", "sessionId", "short", "domain", "services", "forwards", "env", "prepare", "init", "initHash", "processes", "routes", "urls"];
-const PLAN_PROCESS_FIELDS = ["name", ...PROCESS_FIELDS];
+const PLAN_PROCESS_FIELDS = ["name", ...PROCESS_FIELDS, "autostart"];
 
 export function isName(value: string): boolean {
   return NAME.test(value);
@@ -222,9 +225,9 @@ export function buildPlan(huntJson: unknown, options: PlanOptions): PreviewPlan 
   const expand = (values: Record<string, string>) =>
     Object.fromEntries(Object.entries(values).map(([key, value]) => [key, expandPlaceholders(value, short, domain)]));
   const requested = new Set(options.withOptional ?? []);
-  const planProcesses: PlanProcess[] = processes
-    .filter((spec) => !spec.optional || requested.has(spec.name))
-    .map(({ name, run, cwd, env: own, port, protocol, ready, main, optional }) => ({ name, run, cwd, env: expand(own), port, protocol, ready, main, optional }));
+  const planProcesses: PlanProcess[] = processes.map(({ name, run, cwd, env: own, port, protocol, ready, main, optional }) => {
+    return { name, run, cwd, env: expand(own), port, protocol, ready, main, optional, autostart: !optional || requested.has(name) };
+  });
   const main = planProcesses.find((spec) => spec.main);
   if (!main?.port) throw new ContractError(["preview.processes: the main process needs a port"]);
 
@@ -488,7 +491,7 @@ function uniqueName(value: unknown, path: string, taken: Set<string>, kind: stri
   return value;
 }
 
-interface ProcessDraft extends Omit<PlanProcess, "env"> {
+interface ProcessDraft extends Omit<PlanProcess, "env" | "autostart"> {
   rawEnv: unknown;
   envPath: string;
 }
@@ -606,8 +609,9 @@ function parsePlanProcesses(value: unknown, problems: Problems): PlanProcess[] {
     const ready = spec.ready === null ? null : readyPathOf(spec.ready, at(processPath, "ready"), hasPort, problems);
     const main = flag(spec.main, at(processPath, "main"), problems);
     const optional = flag(spec.optional, at(processPath, "optional"), problems);
+    const autostart = flag(spec.autostart, at(processPath, "autostart"), problems);
     if (!name || run === undefined || !cwd || port === undefined || !protocol || ready === undefined) continue;
-    processes.push({ name, run, cwd, env, port, protocol, ready, main, optional });
+    processes.push({ name, run, cwd, env, port, protocol, ready, main, optional, autostart });
   }
   return processes;
 }

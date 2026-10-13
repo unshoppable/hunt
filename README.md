@@ -290,6 +290,15 @@ throwaway container without network that sees only that session, so its hooks, G
 host; each session's containers get their own Docker network, and `hunt-firewall.service` keeps them off the VM's own
 services and the metadata server. Files that come back from the VM are copied without following symlinks.
 
+The relay also supervises the session's preview (`remote/relay/preview/`), which the `preview` section of the
+repository's `hunt.json` describes: services from Hunt's catalog, environment, `prepare` and `init` steps and processes
+with ports. `contract.ts` checks that section and builds a plan from it (`planCli.ts`, which `hunt-ctl` runs in a
+sandbox). `supervisor.ts` runs a plan it receives on `preview.sock` (`control.ts`): it forwards `127.0.0.1:5432` and
+`:6379` to the service containers, runs the `prepare` steps, the `init` steps once per data generation and then every
+process in a process group of its own, with readiness checks and restarts with backoff. `preview.json`, the applied plan
+and one log per process lie in the socket folder's `preview/`; a relay restart within the same boot resumes the plan.
+The agent checks and restarts the processes and reads their logs with `hunt-preview` (`cli.ts`).
+
 Bringing it back (`retrieve_session`) stops the container, snapshots the VM's worktree on top of the agent's commits
 (`refs/hunt/<id>/retrieve`), fetches it and applies it to the local worktree, which must still hold the handoff
 snapshot; the branch moves to the agent's last commit and the transcript returns. The VM shuts itself down after 30

@@ -1,7 +1,7 @@
-# Container of one Hunt remote session. The relay (relay/main.ts, run by a fixed Node 24) owns the session's socket and
-# drives claude-agent-acp, which runs the native Claude Code CLI. Repositories get the Node and npm versions they pin
-# through Volta. `hunt-ctl install` builds the image on the VM as hunt-agent:<bundle hash>, with the bundle (Hunt's
-# remote/ folder) as the build context:
+# Container of one Hunt remote session. The relay (relay/main.ts, run by a fixed Node 24) owns the session's sockets,
+# drives claude-agent-acp, which runs the native Claude Code CLI, and supervises the preview's processes (relay/preview/).
+# Repositories get the Node and npm versions they pin through Volta. `hunt-ctl install` builds the image on the VM as
+# hunt-agent:<bundle hash>, with the bundle (Hunt's remote/ folder) as the build context:
 #
 #   docker build -f image/Dockerfile -t hunt-agent:<hash> .
 #
@@ -69,6 +69,10 @@ RUN export PATH="/opt/hunt/node/bin:${PATH}"; \
     ln -s "${cli}" /usr/local/bin/claude
 
 COPY relay/ /opt/hunt/relay/
+
+# `hunt-preview` gives the agent the state of the session's preview, restarts of its processes and their logs.
+RUN printf '#!/bin/sh\nexec /opt/hunt/node/bin/node /opt/hunt/relay/preview/cli.ts "$@"\n' >/usr/local/bin/hunt-preview; \
+    chmod 0755 /usr/local/bin/hunt-preview
 
 ENV HOME=/home/agent \
     SHELL=/bin/bash \

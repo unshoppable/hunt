@@ -1,13 +1,16 @@
 /**
  * Entry point of the relay in a session container: spawns the ACP adapter, serves ACP to one client at a time on
- * `$HUNT_SOCKET_DIR/acp.sock` and keeps `status.json` next to it (see `relay.ts` for the protocol).
+ * `$HUNT_SOCKET_DIR/acp.sock` and keeps `status.json` next to it (see `relay.ts` for the protocol). Next to it runs the
+ * preview supervisor (`preview/runtime.ts`) with its control socket `preview.sock`.
  *
  *   node remote/relay/main.ts
  *
- * Environment: `HUNT_ADAPTER` (the adapter's entry script, run with this Node), `HUNT_CONFIG` (`hunt-session.json`) and
- * `HUNT_SOCKET_DIR`. The adapter runs in the home directory with the relay's environment. When the adapter exits on its
- * own, the relay exits with its code; SIGTERM and SIGINT close the adapter's stdin, wait up to 10 s for it to exit
- * (it writes the transcript meanwhile) and exit 0. Runs on Node 24 through type stripping; no dependencies.
+ * Environment: `HUNT_ADAPTER` (the adapter's entry script, run with this Node), `HUNT_CONFIG` (`hunt-session.json`),
+ * `HUNT_SOCKET_DIR` and optionally `HUNT_PREVIEW_STATE_DIR` (default `$HUNT_SOCKET_DIR/preview`). The adapter runs in
+ * the home directory with the relay's environment. When the adapter exits on its own, the relay kills the preview's
+ * processes and exits with the adapter's code; SIGTERM and SIGINT close the adapter's stdin and stop the preview's
+ * processes, wait up to 10 s for both (the adapter writes the transcript meanwhile) and exit 0. Runs on Node 24
+ * through type stripping; no dependencies.
  */
 import { spawn } from "node:child_process";
 import { chmodSync, rmSync } from "node:fs";
@@ -17,6 +20,7 @@ import { join, resolve } from "node:path";
 import { readConfig, updateConfigFile } from "./config.ts";
 import { ERROR_CODES, errorOutcome, responseMessage } from "./jsonRpc.ts";
 import { createLineDecoder, encodeLine, parseLine } from "./ndjson.ts";
+import { startPreviewRuntime, type PreviewRuntime } from "./preview/runtime.ts";
 import { messageOf, Relay, type ClientConnection } from "./relay.ts";
 import { HEARTBEAT_INTERVAL_MS, writeStatusFile } from "./status.ts";
 
@@ -42,6 +46,22 @@ function dispatch(handle: () => void): void {
     handle();
   } catch (error) {
     log(`failed to handle a message: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+  }
+}
+
+/** Starts the preview supervisor; when it cannot start, the relay runs without previews instead of failing. */
+function startPreview(socketDir: string, configPath: string): PreviewRuntime | null {
+  try {
+    return startPreviewRuntime({
+      socketDir,
+      stateDir: process.env.HUNT_PREVIEW_STATE_DIR || join(socketDir, "preview"),
+      worktree: () => readConfig(configPath).cwd,
+      env: process.env,
+      log: (message) => log(`preview: ${message}`),
+    });
+  } catch (error) {
+    log(`failed to start the preview supervisor: ${messageOf(error)}`);
+    return null;
   }
 }
 
@@ -97,17 +117,30 @@ function main(): void {
     }
   }
 
+  const preview = startPreview(socketDir, configPath);
+
+  /** Exits at once; the preview's process groups would outlive the relay outside a container, so they are killed. */
+  function exitNow(code: number): never {
+    preview?.kill();
+    process.exit(code);
+  }
+
   let isStopping = false;
+  let markAdapterExited = () => {};
+  const adapterExited = new Promise<void>((resolve) => {
+    markAdapterExited = resolve;
+  });
   adapter.on("error", (error) => {
     log(`failed to run the adapter: ${error.message}`);
-    process.exit(1);
+    exitNow(1);
   });
   adapter.on("exit", (code, signal) => {
     if (isStopping) {
-      process.exit(0);
+      markAdapterExited();
+      return;
     }
     log(`the adapter exited with ${signal ?? `code ${code}`}`);
-    process.exit(code ?? 1);
+    exitNow(code ?? 1);
   });
   adapter.stdin.on("error", (error) => log(`failed to write to the adapter: ${error.message}`));
   adapter.stdout.setEncoding("utf8");
@@ -125,7 +158,7 @@ function main(): void {
   const server = createServer((socket) => serveClient(socket, relay));
   server.on("error", (error) => {
     log(`failed to serve ${socketPath}: ${error.message}`);
-    process.exit(1);
+    exitNow(1);
   });
   server.listen(socketPath, () => {
     chmodSync(socketPath, SOCKET_MODE);
@@ -138,14 +171,19 @@ function main(): void {
   function stop(): void {
     if (isStopping) return;
     isStopping = true;
-    log("stopping: closing the adapter's stdin");
+    log("stopping: closing the adapter's stdin and stopping the preview");
     clearInterval(heartbeat);
     server.close();
     adapter.stdin.end();
+    let hasAdapterExited = false;
+    void adapterExited.then(() => {
+      hasAdapterExited = true;
+    });
+    void Promise.all([adapterExited, preview?.shutdown()]).then(() => process.exit(0));
     setTimeout(() => {
-      log(`the adapter did not exit within ${STOP_TIMEOUT_MS / 1000} s`);
+      log(`${hasAdapterExited ? "the preview's processes did not stop" : "the adapter did not exit"} within ${STOP_TIMEOUT_MS / 1000} s`);
       adapter.kill("SIGKILL");
-      process.exit(0);
+      exitNow(0);
     }, STOP_TIMEOUT_MS);
   }
   process.on("SIGTERM", stop);

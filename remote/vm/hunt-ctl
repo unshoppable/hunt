@@ -13,7 +13,7 @@ readonly HOST_USER=hunt
 readonly CONTAINER_USER=2000:2000
 readonly CONTAINER_MEMORY=8g
 # Memory limit of a session's container while its preview runs: the agent plus the dev servers.
-readonly PREVIEW_MEMORY=12g
+readonly PREVIEW_MEMORY=11g
 readonly CONTAINER_PIDS=4096
 readonly RELEASES=/srv/hunt/releases
 readonly CURRENT=/srv/hunt/current
@@ -32,10 +32,11 @@ readonly EDGE_HEALTH_PATH=/hunt-healthz
 readonly EDGE_USER=2001:2001
 readonly EDGE_IMAGE=caddy:2-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
 readonly REDIS_IMAGE=redis:7.2-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
+readonly ELASTICSEARCH_IMAGE=docker.elastic.co/elasticsearch/elasticsearch:9.0.4@sha256:59da431b8987b508af17a9424f1f03398ecaacc09c4218abe306749b524f1519
 # Google's load balancer proxies and health checkers, the only clients the edge serves.
 readonly -a LB_RANGES=(35.191.0.0/16 130.211.0.0/22)
 # Memory the containers' limits leave to the VM itself.
-readonly MEMORY_RESERVE_MB=4096
+readonly MEMORY_RESERVE_MB=3072
 readonly STATE_DIR=/var/lib/hunt
 readonly ACTIVITY_FILE=/var/lib/hunt/activity
 readonly IDLE_CONFIG=/etc/hunt/idle.conf
@@ -419,6 +420,7 @@ cmd_install() {
     docker build --tag "hunt-postgres18:$hash" --file "$release/image/services/postgres18.Dockerfile" "$release/image/services"
   fi
   docker pull --quiet "$REDIS_IMAGE" >/dev/null
+  docker pull --quiet "$ELASTICSEARCH_IMAGE" >/dev/null
   docker pull --quiet "$EDGE_IMAGE" >/dev/null
   ln -sfn "$release" "$CURRENT.new"
   mv -T "$CURRENT.new" "$CURRENT"
@@ -780,7 +782,7 @@ check_plan() {
       and . != 2019 and . != 5432 and . != 6379 and (. < 9200 or . > 9249);
     (.services | type == "array" and length <= 4 and all(
       (.name | type == "string" and test($name))
-      and (.kind == "postgres-18" or .kind == "redis-7.2")
+      and (.kind == "postgres-18" or .kind == "redis-7.2" or .kind == "elasticsearch-9")
       and (.memoryMb | type == "number" and . >= 64 and . <= 4096)
       and (.env | type == "object" and all(to_entries[]; (.key == "POSTGRES_USER" or .key == "POSTGRES_PASSWORD" or .key == "POSTGRES_DB")
         and (.value | type == "string" and test("^[^\n\r]*$"))))))
@@ -803,7 +805,7 @@ require_memory() {
 
 # Starts the catalog service $2 (kind $3, $4 MB, env JSON $5) of session $1 unless it runs.
 start_preview_service() {
-  local id=$1 name=$2 kind=$3 memory_mb=$4 env_json=$5 container image env_file data
+  local id=$1 name=$2 kind=$3 memory_mb=$4 env_json=$5 container image env_file data user=$CONTAINER_USER
   local -a args=() extra=()
   container=hunt-svc-$id-$name
   [[ $(container_state "$container") == running ]] && return
@@ -822,10 +824,23 @@ start_preview_service() {
       image=$REDIS_IMAGE
       args=(redis-server --save '' --appendonly no --maxmemory "$((memory_mb * 3 / 4))mb" --maxmemory-policy noeviction)
       ;;
+    elasticsearch-9)
+      image=$ELASTICSEARCH_IMAGE
+      data=$PREVIEW_DIR/$id/data/$name
+      install -d -o "$HOST_USER" -g "$HOST_USER" -m 0700 "$data"
+      # The image runs as any uid with gid 0. Single-node mode skips the bootstrap checks that need host settings; the
+      # heap takes half of the limit.
+      user=${CONTAINER_USER%:*}:0
+      extra=(--mount "type=bind,src=$data,dst=/usr/share/elasticsearch/data" --env discovery.type=single-node
+        --env network.host=0.0.0.0 --env xpack.security.enabled=false --env xpack.ml.enabled=false
+        --env xpack.watcher.enabled=false --env node.store.allow_mmap=false
+        --env cluster.routing.allocation.disk.threshold_enabled=false
+        --env "ES_JAVA_OPTS=-Xms$((memory_mb / 2))m -Xmx$((memory_mb / 2))m")
+      ;;
     *) die "unknown service kind: $kind" ;;
   esac
   docker run --detach --name "$container" --label "hunt.session=$id" --label hunt.role=service --restart no \
-    --network "$(session_network "$id")" --network-alias "$name" --user "$CONTAINER_USER" --cap-drop ALL \
+    --network "$(session_network "$id")" --network-alias "$name" --user "$user" --cap-drop ALL \
     --security-opt no-new-privileges --pids-limit 512 --memory "${memory_mb}m" --memory-swap "${memory_mb}m" \
     --env-file "$env_file" "${extra[@]}" "$image" "${args[@]}" >/dev/null
 }
@@ -836,6 +851,7 @@ wait_preview_service() {
   until case $kind in
     postgres-18) docker exec "$container" pg_isready -q -h 127.0.0.1 -p 5432 ;;
     redis-7.2) [[ $(docker exec "$container" redis-cli ping 2>/dev/null) == PONG ]] ;;
+    elasticsearch-9) docker exec "$container" curl -fsS 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=1s' >/dev/null 2>&1 ;;
   esac; do
     (( SECONDS < deadline )) || die "the preview service $container did not start within 90 seconds"
     sleep 1

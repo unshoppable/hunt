@@ -36,7 +36,7 @@ import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import { isRecord } from "../jsonRpc.ts";
 
-export type ServiceKind = "postgres-18" | "redis-7.2";
+export type ServiceKind = "postgres-18" | "redis-7.2" | "elasticsearch-9";
 export type Protocol = "http" | "https";
 
 interface CatalogEntry {
@@ -49,6 +49,7 @@ interface CatalogEntry {
 export const SERVICE_CATALOG: Record<ServiceKind, CatalogEntry> = {
   "postgres-18": { port: 5432, env: ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"], memoryMb: 1024 },
   "redis-7.2": { port: 6379, env: [], memoryMb: 256 },
+  "elasticsearch-9": { port: 9200, env: [], memoryMb: 1280 },
 };
 
 /** The log of the prepare and init steps, next to one log per process; no process may have this name. */
@@ -171,7 +172,10 @@ export function isName(value: string): boolean {
   return NAME.test(value);
 }
 
-/** Ports no process may use: Caddy's admin API (2019), the service ports and 9200–9249, which Hunt keeps for itself. */
+/**
+ * Ports no process may use: Caddy's admin API (2019), the service ports and 9200–9249, where Elasticsearch and the Node
+ * debugger ports of the repositories lie; a debugger port must never be routed.
+ */
 export function isReservedPort(port: number): boolean {
   return port === 2019 || (port >= 9200 && port <= 9249) || Object.values(SERVICE_CATALOG).some((service) => service.port === port);
 }

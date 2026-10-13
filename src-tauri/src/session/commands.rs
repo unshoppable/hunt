@@ -596,7 +596,7 @@ pub async fn read_preview_log(app: AppHandle, id: Uuid, name: String, offset: Op
 const REMOTE_PROMPT: &str = "\n\n## Remote session\nThis session runs in a container on a remote VM. Git remotes such as GitHub are not \
 reachable from here: commit locally and do not push. The user brings the commits back to their machine.\n\n\
 ### Preview\nWhen the user opens the preview, Hunt runs the `preview` section of the repository's hunt.json in this \
-container: its services (such as Postgres and Redis) answer on 127.0.0.1 at their usual ports, and its dev processes \
+container: its services (Postgres, Redis or Elasticsearch) answer on 127.0.0.1 at their usual ports, and its dev processes \
 serve the app the user opens in the browser. `hunt-preview status` lists the processes, `hunt-preview logs <process>` \
 shows their output (`hunt-preview logs setup` the prepare and init steps), `hunt-preview restart <process>` restarts \
 one and `hunt-preview start <process>` starts an optional one; do not start these dev servers a second time yourself. \

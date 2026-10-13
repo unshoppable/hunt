@@ -147,11 +147,18 @@ describe("buildPlan", () => {
   });
 
   it("fills in the defaults: cwd, protocol, ready path, the catalog's memory and empty env and steps", () => {
-    const plan = buildPlan(huntJson({ services: { db: { kind: "postgres-18" }, cache: { kind: "redis-7.2" } } }), OPTIONS);
+    const services = { db: { kind: "postgres-18" }, cache: { kind: "redis-7.2" }, search: { kind: "elasticsearch-9" } };
+    const plan = buildPlan(huntJson({ services }), OPTIONS);
 
     expect(plan.services).toEqual([
       { name: "db", kind: "postgres-18", port: 5432, env: {}, memoryMb: 1024 },
       { name: "cache", kind: "redis-7.2", port: 6379, env: {}, memoryMb: 256 },
+      { name: "search", kind: "elasticsearch-9", port: 9200, env: {}, memoryMb: 1280 },
+    ]);
+    expect(plan.forwards).toEqual([
+      { port: 5432, host: "db" },
+      { port: 6379, host: "cache" },
+      { port: 9200, host: "search" },
     ]);
     expect(plan.env).toEqual({});
     expect(plan.prepare).toEqual([]);
@@ -485,7 +492,10 @@ const INVALID: { case: string; huntJson: unknown; problems: string[] }[] = [
   {
     case: "an unknown service kind",
     huntJson: huntJson({ services: { db: { kind: "mysql-8" }, cache: {} } }),
-    problems: ["preview.services.db.kind: must be one of postgres-18, redis-7.2", "preview.services.cache.kind: must be one of postgres-18, redis-7.2"],
+    problems: [
+      "preview.services.db.kind: must be one of postgres-18, redis-7.2, elasticsearch-9",
+      "preview.services.cache.kind: must be one of postgres-18, redis-7.2, elasticsearch-9",
+    ],
   },
   {
     case: "an invalid service name",

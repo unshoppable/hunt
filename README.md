@@ -293,12 +293,13 @@ services and the metadata server. Files that come back from the VM are copied wi
 The relay also supervises the session's preview (`remote/relay/preview/`), which the `preview` section of the
 repository's `hunt.json` describes: services from Hunt's catalog, environment, `prepare` and `init` steps and processes
 with ports. `contract.ts` checks that section and builds a plan from it (`planCli.ts`, which `hunt-ctl` runs in a
-sandbox). `supervisor.ts` runs a plan it receives on `preview.sock` (`control.ts`): it forwards `127.0.0.1:5432` and
-`:6379` to the service containers, runs the `prepare` steps, the `init` steps once per data generation and then every
-process in a process group of its own, with readiness checks and restarts with backoff. A process with a port has to
-listen on 0.0.0.0: the readiness check, like the edge proxy, connects to the container's address. `preview.json`, the
-applied plan and one log per process lie in the socket folder's `preview/`; a relay restart within the same boot
-resumes the plan. The agent checks and restarts the processes and reads their logs with `hunt-preview` (`cli.ts`).
+sandbox). `supervisor.ts` runs a plan it receives on `preview.sock` (`control.ts`): it forwards `127.0.0.1:5432`,
+`:6379` and `:9200` to the service containers (Postgres 18, Redis 7.2, Elasticsearch 9), runs the `prepare` steps, the
+`init` steps once per data generation and then every process in a process group of its own, with readiness checks and
+restarts with backoff. A process with a port has to listen on 0.0.0.0: the readiness check, like the edge proxy,
+connects to the container's address. `preview.json`, the applied plan and one log per process lie in the socket folder's
+`preview/`; a relay restart within the same boot resumes the plan. The agent checks and restarts the processes and reads
+their logs with `hunt-preview` (`cli.ts`).
 
 *Open preview* (cloud menu, or the preview panel to the right of a remote session's chat) runs `hunt-ctl preview
 start` with the preview domain from *Settings → Remote VM*. It reads `hunt.json` inside the session's container, starts

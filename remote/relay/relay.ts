@@ -1,5 +1,5 @@
 /**
- * The relay's protocol core, free of processes and sockets. It brings the container's one ACP session up in the
+ * The relay's protocol core, free of processes and sockets. It brings the VM's one ACP session up in the
  * adapter, buffers its history, serializes prompts, tracks the turn and the open permission requests, and serves any
  * number of clients at once (Hunt desktops of different people). Every client that loaded the session receives its
  * updates live; one that connects later gets the whole history on `session/load`. Prompts of all clients run one after

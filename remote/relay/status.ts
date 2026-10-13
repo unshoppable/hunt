@@ -1,6 +1,7 @@
 /**
- * `status.json` in the socket directory, rewritten on every change and as a heartbeat; `hunt-ctl wait` and the VM's idle
- * check read it. Times are Unix milliseconds; a heartbeat older than two minutes means the relay is gone.
+ * `status.json` in the socket directory (`/run/hunt/status.json` on a session VM), rewritten on every change and as a
+ * heartbeat; `hunt-ctl wait` and the VM's idle check read it. Times are Unix milliseconds; a heartbeat older than two
+ * minutes means the relay is gone.
  */
 import { writeJsonAtomic } from "./files.ts";
 

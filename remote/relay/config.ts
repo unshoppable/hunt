@@ -1,8 +1,8 @@
 /**
- * `hunt-session.json`, written by Hunt before the container starts: the conversation the relay loads (`null` starts a
- * new one), its working directory, the system prompt addition and the mode and config options to restore. The relay
- * writes back the ID of a new conversation and every mode or config option a client changes. It also reads the image's
- * list of MCP servers (`HUNT_MCP_SERVERS`).
+ * `hunt-session.json`, written by Hunt before the relay starts: the conversation the relay loads (`null` starts a new
+ * one), its working directory, the system prompt addition and the mode and config options to restore. The relay writes
+ * back the ID of a new conversation and every mode or config option a client changes. It also reads the list of MCP
+ * servers every session gets (`HUNT_MCP_SERVERS`, `remote/session/mcp-servers.json`).
  */
 import { readFileSync } from "node:fs";
 import { writeJsonAtomic } from "./files.ts";
@@ -98,7 +98,7 @@ interface EnvVariable {
   value: string;
 }
 
-/** Parses the image's list of MCP servers every session gets (`HUNT_MCP_SERVERS`), a JSON array of stdio entries. */
+/** Parses the list of MCP servers every session gets (`HUNT_MCP_SERVERS`), a JSON array of stdio entries. */
 export function parseMcpServers(text: string): McpServerEntry[] {
   const raw: unknown = JSON.parse(text);
   if (!Array.isArray(raw)) throw new Error("expected a JSON array");

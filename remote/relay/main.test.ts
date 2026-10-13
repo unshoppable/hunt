@@ -1,18 +1,15 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createConnection, createServer } from "node:net";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { label, textOf, turnOf } from "./fixtures/messages.ts";
 import { createLineDecoder, encodeLine, parseLine } from "./ndjson.ts";
-import { buildPlan } from "./preview/contract.ts";
-import { sendControlRequest } from "./preview/control.ts";
 
 const MAIN = fileURLToPath(new URL("./main.ts", import.meta.url));
 const FAKE_ADAPTER = fileURLToPath(new URL("./fixtures/fakeAdapter.ts", import.meta.url));
-const PREVIEW_SERVER = fileURLToPath(new URL("./fixtures/previewServer.ts", import.meta.url));
 const WAIT_MS = 10_000;
 
 type Message = Record<string, unknown>;
@@ -72,27 +69,6 @@ async function waitForStatus(path: string, isDone: (status: Message) => boolean,
   throw new Error(`timed out waiting for ${path}; relay output:\n${output()}`);
 }
 
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      server.close(() => resolve(typeof address === "object" && address ? address.port : 0));
-    });
-  });
-}
-
-/** Whether a process with `pid` still exists. */
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function readFileSyncOrEmpty(path: string): string {
   try {
     return readFileSync(path, "utf8");
@@ -104,14 +80,9 @@ function readFileSyncOrEmpty(path: string): string {
 describe("main", () => {
   let relay: ChildProcess | null = null;
   let dir = "";
-  let previewPid: number | null = null;
 
   afterEach(() => {
     relay?.kill("SIGKILL");
-    if (previewPid && isAlive(previewPid)) {
-      process.kill(-previewPid, "SIGKILL");
-    }
-    previewPid = null;
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -144,7 +115,7 @@ describe("main", () => {
     const status = await waitForStatus(join(dir, "status.json"), (candidate) => candidate.state === "ready", () => output);
     expect(status).toMatchObject({ acpSessionId: "acp-1", turn: "idle", clientConnected: false, error: null });
 
-    const first = await connectClient(join(dir, "acp.sock"));
+    const first = await connectClient(join(dir, "relay.sock"));
     first.send({ id: 1, method: "initialize", params: { protocolVersion: 1, clientCapabilities: { _meta: { terminal_output: true } } } });
     first.send({ id: 2, method: "session/load", params: { sessionId: "acp-1", cwd: "/elsewhere", mcpServers: [] } });
     const loaded = await first.readUntil((message) => turnOf(message) === "idle");
@@ -161,7 +132,7 @@ describe("main", () => {
     const asked = await first.readUntil((message) => message.method === "session/request_permission");
     expect(asked.map(label)).toEqual(["turn:running", "request:session/request_permission"]);
 
-    const second = await connectClient(join(dir, "acp.sock"));
+    const second = await connectClient(join(dir, "relay.sock"));
     second.send({ id: 1, method: "session/load", params: { sessionId: "acp-1", cwd: "/elsewhere", mcpServers: [] } });
     const replay = await second.readUntil((message) => message.method === "session/request_permission");
     expect(replay.map(label)).toEqual([
@@ -203,37 +174,5 @@ describe("main", () => {
     });
     expect(received.find((message) => message.id === "permission-1")).toMatchObject({ result: { outcome: { optionId: "allow" } } });
     expect(received[received.length - 1]).toEqual({ event: "stdin closed" });
-  }, 30_000);
-
-  it("serves the preview's control socket and stops the preview's processes together with the adapter on SIGTERM", async () => {
-    dir = socketTempDir();
-    const configPath = join(dir, "hunt-session.json");
-    const sessionId = "7c0c6f2e-1234-4abc-8def-0123456789ab";
-    writeFileSync(configPath, JSON.stringify({ acpSessionId: "acp-1", cwd: dir }));
-    const env = { ...process.env, HOME: dir, HUNT_ADAPTER: FAKE_ADAPTER, HUNT_CONFIG: configPath, HUNT_SOCKET_DIR: dir, HUNT_SESSION_ID: sessionId };
-    const child = spawn(process.execPath, [MAIN], { env, stdio: ["ignore", "ignore", "pipe"] });
-    relay = child;
-    let output = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      output += chunk.toString();
-    });
-    const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
-    const port = await freePort();
-    const web = { run: `'${process.execPath}' '${PREVIEW_SERVER}'`, port, ready: "/", main: true, env: { PORT: String(port) } };
-    const plan = buildPlan({ preview: { processes: { web } } }, { sessionId, domain: "preview.example.com" });
-    const statusPath = join(dir, "preview", "preview.json");
-
-    await waitForStatus(statusPath, (status) => status.state === "idle", () => output);
-    expect(await sendControlRequest(join(dir, "preview.sock"), { op: "apply", plan, dataGeneration: "1" })).toMatchObject({ ok: true });
-    const ready = await waitForStatus(statusPath, (status) => status.state === "ready", () => output);
-    const processes = ready.processes as Record<string, { pid: number }>;
-    previewPid = processes.web.pid;
-    expect(isAlive(previewPid)).toBe(true);
-
-    child.kill("SIGTERM");
-    expect(await exited).toBe(0);
-    expect(isAlive(previewPid)).toBe(false);
-    expect(JSON.parse(readFileSync(statusPath, "utf8"))).toMatchObject({ state: "stopped" });
-    expect(JSON.parse(readFileSync(join(dir, "preview", "applied.json"), "utf8"))).toMatchObject({ generation: 1, running: true });
   }, 30_000);
 });

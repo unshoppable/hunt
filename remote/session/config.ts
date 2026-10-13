@@ -199,12 +199,13 @@ export function envFile(env: Record<string, string>): string {
 
 /**
  * The Caddy configuration of the session VM's preview proxy. It listens on PROXY_LISTEN in plain HTTP behind the
- * gateway and sends `<short>.<domain>` to the main port and `<short>-<port>.<domain>` to that port, both on 127.0.0.1,
- * except for the path prefixes of `routes`, which go to their own port on every host. Ports in `tls` are reached over
- * HTTPS without checking the certificate. Every upstream gets the request's own Host header, which Caddy would replace
- * with the upstream's address for HTTPS, but never IAP's headers and cookies; responses are flushed at once (server-sent
- * events). HEALTH_PATH answers 200 on every host and the reserved ports answer 403. Every request except the health
- * check goes to ACCESS_LOG as one JSON line; Caddy writes Cookie and Authorization headers there redacted.
+ * gateway and sends `<short>.<domain>` to the main port and `<short>-<port>.<domain>` to that port, both on localhost,
+ * which reaches servers bound to 127.0.0.1 as well as ::1, except for the path prefixes of `routes`, which go to their
+ * own port on every host. Ports in `tls` are reached over HTTPS without checking the certificate. Every upstream gets
+ * the request's own Host header, which Caddy would replace with the upstream's address for HTTPS, but never IAP's
+ * headers and cookies; responses are flushed at once (server-sent events). HEALTH_PATH answers 200 on every host and
+ * the reserved ports answer 403. Every request except the health check goes to ACCESS_LOG as one JSON line; Caddy
+ * writes Cookie and Authorization headers there redacted.
  */
 export function proxyConfig(config: PreviewConfig, host: SessionHost): CaddyConfig {
   const mainHost = `${host.short}.${host.domain}`;
@@ -213,7 +214,7 @@ export function proxyConfig(config: PreviewConfig, host: SessionHost): CaddyConf
     vars_regexp: { "{http.request.host}": { name: "port", pattern: `^${host.short}-${PORT_PATTERN}\\.${host.domain.replaceAll(".", "\\.")}$` } },
   };
   const tls = new Set(config.tls);
-  const upstream = (port: number) => proxy(`127.0.0.1:${port}`, tls.has(port));
+  const upstream = (port: number) => proxy(`localhost:${port}`, tls.has(port));
   const prefixes = [...config.routes].sort((first, second) => second.prefix.length - first.prefix.length);
   const sessionRoutes: CaddyRoute[] = [
     ...prefixes.map(({ prefix, port }) => ({ match: [{ path: [`${prefix}*`] }], handle: [upstream(port)], terminal: true })),
@@ -223,7 +224,7 @@ export function proxyConfig(config: PreviewConfig, host: SessionHost): CaddyConf
       terminal: true,
     },
     ...config.tls.map((port) => ({ match: [{ host: [portHost(port)] }], handle: [upstream(port)], terminal: true })),
-    { match: [portHostMatch], handle: [proxy("127.0.0.1:{http.regexp.port.1}", false)], terminal: true },
+    { match: [portHostMatch], handle: [proxy("localhost:{http.regexp.port.1}", false)], terminal: true },
   ];
   return {
     admin: { listen: PROXY_ADMIN, config: { persist: false } },

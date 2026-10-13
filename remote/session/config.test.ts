@@ -267,7 +267,7 @@ describe("proxyConfig", () => {
     expect(server.routes.slice(0, 3).every((route) => route.terminal)).toBe(true);
   });
 
-  it("routes the path prefixes first, longest first, then the main host, the HTTPS ports and every other port", () => {
+  it("routes the path prefixes first, longest first, then the main host, the HTTPS ports and every other port, all on localhost", () => {
     expect(sessionRoutes.map((route) => route.match)).toEqual([
       [{ path: ["/admin-api/*"] }],
       [{ path: ["/api/v2/*"] }],
@@ -278,13 +278,13 @@ describe("proxyConfig", () => {
       [{ vars_regexp: { "{http.request.host}": portPattern } }],
     ]);
     expect(sessionRoutes.map((route) => upstreamOf(route).upstreams[0].dial)).toEqual([
-      "127.0.0.1:3000",
-      "127.0.0.1:3100",
-      "127.0.0.1:3000",
-      "127.0.0.1:4200",
-      "127.0.0.1:3000",
-      "127.0.0.1:4400",
-      "127.0.0.1:{http.regexp.port.1}",
+      "localhost:3000",
+      "localhost:3100",
+      "localhost:3000",
+      "localhost:4200",
+      "localhost:3000",
+      "localhost:4400",
+      "localhost:{http.regexp.port.1}",
     ]);
     expect(sessionRoutes.every((route) => route.terminal)).toBe(true);
   });

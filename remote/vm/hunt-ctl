@@ -1007,8 +1007,8 @@ cmd_status() {
   emit --arg relay "$relay" --argjson status "$status" --argjson meta "$meta_json" '{relay: $relay, status: $status, meta: $meta}'
 }
 
-# Prints the ports TCP servers listen on for the preview proxy, which connects to 127.0.0.1, as a JSON array: those
-# bound to every address or to the loopback address, from 1024 on, except the reserved ports and the ephemeral range
+# Prints the ports TCP servers listen on for the preview proxy, which connects to localhost, as a JSON array: those
+# bound to every address or to a loopback address, from 1024 on, except the reserved ports and the ephemeral range
 # outgoing connections take their local ports from.
 listening_ports() {
   local low high
@@ -1045,8 +1045,9 @@ cmd_preview_status() {
     if jq -e --argjson port "$main" 'any(.preview.tls[]?; . == $port)' "$file" >/dev/null; then
       scheme=https
     fi
-    # Any HTTP answer counts, also an error page.
-    if curl --silent --insecure --output /dev/null --max-time 5 "$scheme://127.0.0.1:$main/"; then
+    # Any HTTP answer counts, also an error page. Like the proxy, it connects to localhost, which reaches servers bound to
+    # 127.0.0.1 as well as ::1.
+    if curl --silent --insecure --output /dev/null --max-time 5 "$scheme://localhost:$main/"; then
       responds=true
     fi
   fi

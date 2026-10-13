@@ -331,8 +331,9 @@ Login shells of `agent`, such as the terminal's tmux session, get the same envir
 `main`, `routes` (path prefix → port on every preview host) and `tls` (ports that speak HTTPS). It writes the session's
 environment, `/etc/hunt/session.env`, and the configuration of the VM's preview proxy, `hunt-proxy.service` (Caddy on
 port 8080), which serves `<short id>.<domain>` from the main port and `<short id>-<port>.<domain>` from that port on
-127.0.0.1, keeps the Host header and logs every request to `/var/log/hunt-proxy/access.log`. `hunt-ctl preview-status`
-reports the main port, the ports that listen on all or the loopback addresses and whether the main port answers.
+localhost (servers bound to 127.0.0.1 or ::1), keeps the Host header and logs every request to
+`/var/log/hunt-proxy/access.log`. `hunt-ctl preview-status` reports the main port, the ports that listen on all or the
+loopback addresses and whether the main port answers on localhost.
 
 The gateway, a VM that runs all the time, routes `https://<short id>.<domain>` to the session VM's main port, which the
 repository's `hunt.json` names, and `https://<short id>-<port>.<domain>` to any of its ports; the load balancer in

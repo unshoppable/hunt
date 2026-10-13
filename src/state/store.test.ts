@@ -250,6 +250,7 @@ function storedSession(id: string, title: string): SessionView {
     reviewComments: [],
     workspace: "worktree",
     remote: null,
+    leftoverVm: null,
     dependencies: null,
   };
 }
@@ -608,6 +609,7 @@ describe("remote sessions", () => {
     localMode: "default",
     lastActiveAt: null,
     cleanupAskedAt: null,
+    previewDomain: null,
   };
 
   beforeEach(() => {

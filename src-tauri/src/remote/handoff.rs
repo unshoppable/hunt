@@ -1,6 +1,7 @@
-//! Moving a session from the local worktree to the VM: its branch and uncommitted work (as a snapshot commit), the
-//! Git LFS objects of its checkout, the ignored files it needs to run, and its Claude Code transcript. Afterwards
-//! `hunt-ctl` installs the dependencies and starts the session's container with the relay.
+//! Moving a session from the local worktree to a VM of its own, which Hunt creates from the session VM template when it
+//! does not exist yet: the session's branch and uncommitted work (as a snapshot commit), the Git LFS objects of its
+//! checkout, the ignored files it needs to run, and its Claude Code transcript. Afterwards `hunt-ctl` configures the
+//! session's environment and preview proxy, installs the dependencies and starts the relay.
 
 use std::path::{Path, PathBuf};
 
@@ -8,12 +9,13 @@ use glob::{MatchOptions, Pattern};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::ssh::Ssh;
+use super::ssh::{self, Ssh};
+use super::vm::SessionMetadata;
+use super::{bundle, hunt_ctl, hunt_ctl_with_input, tar_create, vm, Progress, RemoteStep, RemoteTarget, VmSettings};
 use super::{memory, transcript};
-use super::{bundle, hunt_ctl, hunt_ctl_with_input, tar_create, vm, Progress, RemoteStep, RemoteTarget, VmRef};
 use crate::git;
 
-/// Where the container's `~/.claude` lives; transcripts there name this path.
+/// Where the agent's `~/.claude` lives on the VM; transcripts there name this path.
 pub const REMOTE_CLAUDE_DIR: &str = "/home/agent/.claude";
 
 /// The permission mode the relay runs the agent in: nobody is there to answer permission requests.
@@ -22,9 +24,12 @@ pub const REMOTE_MODE: &str = "bypassPermissions";
 /// Everything a handoff needs from the session and the settings.
 pub struct HandoffRequest<'a> {
     pub hunt_session_id: Uuid,
+    /// The session's title, which its VM records in its metadata.
+    pub title: &'a str,
     pub worktree: &'a Path,
     pub acp_session_id: Option<&'a str>,
-    pub vm: &'a VmRef,
+    /// Where the session's VM is created and which gateway routes its previews; validated.
+    pub settings: &'a VmSettings,
     /// The `remote/` folder shipped with the app.
     pub bundle_dir: &'a Path,
     /// Hunt's SSH key and known hosts.
@@ -35,8 +40,8 @@ pub struct HandoffRequest<'a> {
     pub memory_base: &'a Path,
     /// Ignored files to copy, as glob patterns relative to the worktree root.
     pub file_patterns: &'a [String],
-    /// What Hunt appends to Claude Code's system prompt.
-    pub system_prompt: &'a str,
+    /// Builds what Hunt appends to Claude Code's system prompt from the repository's HUNT.md as the VM reads it.
+    pub system_prompt: &'a (dyn Fn(Option<&str>) -> String + Send + Sync),
     /// Agent config values (`model`, `effort`) the session had locally.
     pub config_values: &'a [(String, String)],
     /// What `hunt-ctl start` reads on stdin: the Claude and GitHub tokens of `super::token_input`.
@@ -51,11 +56,13 @@ pub struct HandedOff {
     pub acp_session_id: Option<String>,
 }
 
-/// Moves the session to the VM and starts it there. On failure the VM side is removed again; the local worktree is
-/// left as it was.
+/// Moves the session to its VM and starts it there; the VM and the gateway get this app's bundle first. On failure the
+/// session's worktree on the VM is removed again but the VM stays, so a retry starts faster and deleting the session
+/// deletes it; the local worktree is left as it was.
 pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Result<HandedOff, String> {
     let id = request.hunt_session_id.to_string();
     let worktree = request.worktree;
+    let settings = request.settings;
     ensure_movable(worktree).await?;
     let patterns = compile_patterns(request.file_patterns)?;
     let branch = git::current_branch(worktree).await?;
@@ -73,9 +80,23 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     let hooks_path = hooks_path(worktree).await;
 
     progress(RemoteStep::Connecting);
-    let ssh = Ssh::open(request.vm, request.ssh_dir).await?;
-    vm::ensure_running(request.vm, &ssh, progress).await?;
-    bundle::ensure_installed(&ssh, request.bundle_dir, progress).await?;
+    let session_vm = settings.session_vm(request.hunt_session_id);
+    let ssh = Ssh::open(&session_vm, request.ssh_dir).await?;
+    if vm::status_if_exists(&session_vm).await?.is_none() {
+        progress(RemoteStep::CreatingVm);
+        ssh::forget_host_key(&session_vm, request.ssh_dir).await?;
+        vm::create(&session_vm, request.hunt_session_id, &settings.template, settings.machine_type.as_deref()).await?;
+    }
+    let metadata = SessionMetadata { hunt_session_id: request.hunt_session_id, repo: &repo, branch: &branch, title: request.title };
+    vm::set_session_metadata(&session_vm, &metadata).await?;
+    // The gateway gets this release while the session's VM boots.
+    let gateway = settings.gateway_vm();
+    let gateway_ssh = Ssh::open(&gateway, request.ssh_dir).await?;
+    vm::ensure_running(&gateway, &gateway_ssh, progress).await?;
+    bundle::ensure_installed(&gateway_ssh, request.bundle_dir, &["--domain", &settings.preview_domain], progress).await?;
+    vm::ensure_running(&session_vm, &ssh, progress).await?;
+    vm::wait_until_ready(&session_vm, &ssh, progress).await?;
+    bundle::ensure_installed(&ssh, request.bundle_dir, &[], progress).await?;
 
     progress(RemoteStep::TransferringCode);
     let remote_worktree = hunt_ctl(&ssh, &["init", &id, "--repo", &repo]).await?["path"]
@@ -98,7 +119,11 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
         }
         hunt_ctl(&ssh, &prepare_args).await?;
         upload_ignored_files(worktree, &ssh, &id, &patterns, hooks_path.as_deref()).await?;
-        upload_claude_dir(&request, &ssh, &remote_worktree).await?;
+        // Reads the worktree's hunt.json and HUNT.md, so it runs once the worktree is checked out, and before the
+        // relay's session file is written, which carries the HUNT.md in the system prompt.
+        let session_config = hunt_ctl(&ssh, &["session-config", &id, "--domain", &settings.preview_domain]).await?;
+        let system_prompt = (request.system_prompt)(session_config["hunt_md"].as_str());
+        upload_claude_dir(&request, &ssh, &remote_worktree, &system_prompt).await?;
 
         progress(RemoteStep::InstallingDependencies);
         hunt_ctl(&ssh, &["deps", &id]).await?;
@@ -111,14 +136,14 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
         Ok(status) => status,
         Err(error) => {
             if let Err(cleanup) = hunt_ctl(&ssh, &["destroy", &id]).await {
-                eprintln!("removing session {id} from the VM after a failed handoff failed: {cleanup}");
+                eprintln!("removing session {id} from its VM after a failed handoff failed: {cleanup}");
             }
             return Err(error);
         }
     };
 
     let target = RemoteTarget {
-        vm: request.vm.clone(),
+        vm: session_vm,
         worktree_path: PathBuf::from(&remote_worktree),
         repo,
         branch,
@@ -127,6 +152,7 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
         local_mode: request.local_mode.map(str::to_string),
         last_active_at: None,
         cleanup_asked_at: None,
+        preview_domain: Some(settings.preview_domain.clone()),
     };
     let acp_session_id = status["acpSessionId"].as_str().map(str::to_string);
     Ok(HandedOff { target, acp_session_id })
@@ -190,7 +216,7 @@ fn sanitize_segment(segment: &str) -> String {
 }
 
 /// The `https://github.com/<owner>/<repo>.git` form of a GitHub remote URL (scp, ssh or https); `None` for other hosts.
-/// The session's container reaches GitHub over https only, with the user's GitHub token.
+/// The session's VM reaches GitHub over https only, with the user's GitHub token.
 fn github_https_url(url: &str) -> Option<String> {
     let rest = ["https://", "http://", "ssh://", "git+ssh://"].iter().find_map(|scheme| url.strip_prefix(scheme)).unwrap_or(url);
     let rest = rest.split_once('@').map(|(_, host_and_path)| host_and_path).unwrap_or(rest);
@@ -221,7 +247,7 @@ async fn origin_upstream(worktree: &Path, branch: &str) -> Option<String> {
 }
 
 /// The repository's `core.hooksPath` when it is a folder inside the worktree (husky's `.husky`); the session's
-/// container runs the same hooks, so commits there pass the same checks and `git push` uploads Git LFS files.
+/// VM runs the same hooks, so commits there pass the same checks and `git push` uploads Git LFS files.
 async fn hooks_path(worktree: &Path) -> Option<String> {
     let path = git::run_git(worktree, &["config", "core.hooksPath"]).await.ok()?;
     let path = path.trim().trim_start_matches("./").trim_end_matches('/');
@@ -231,7 +257,7 @@ async fn hooks_path(worktree: &Path) -> Option<String> {
     Some(path.to_string())
 }
 
-/// The author name and email the worktree commits with; the session's container commits under the same identity.
+/// The author name and email the worktree commits with; the agent on the VM commits under the same identity.
 async fn git_identity(worktree: &Path) -> Result<(String, String), String> {
     let name = git::run_git(worktree, &["config", "user.name"]).await.unwrap_or_default();
     let email = git::run_git(worktree, &["config", "user.email"]).await.unwrap_or_default();
@@ -242,7 +268,7 @@ async fn git_identity(worktree: &Path) -> Result<(String, String), String> {
 }
 
 /// Pushes the branch, the snapshot and the origin's default branch into the session's own repository on the VM, through
-/// `hunt-ctl receive-pack`, which runs git there in a sandbox. The repository's own pre-push hooks are skipped: they
+/// `hunt-ctl receive-pack`, which runs git there as the agent's user. The repository's own pre-push hooks are skipped: they
 /// guard pushes to the team's remote, not this transfer.
 async fn push(worktree: &Path, ssh: &Ssh, remote_worktree: &str, branch: &str, handoff_ref: &str) -> Result<(), String> {
     let mut refspecs = vec![format!("+HEAD:refs/heads/{branch}"), format!("+{handoff_ref}:{handoff_ref}")];
@@ -379,10 +405,10 @@ fn copy_profile(claude_dir: &Path, staging: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Fills the container's `~/.claude`: the session's transcript with its paths moved to the VM, the user's profile
-/// (`PROFILE_ENTRIES`), the memory of the repository and `hunt-session.json` for the relay. The memory sent becomes the
-/// base of the retrieval's merge.
-async fn upload_claude_dir(request: &HandoffRequest<'_>, ssh: &Ssh, remote_worktree: &str) -> Result<(), String> {
+/// Fills the agent's `~/.claude` on the VM: the session's transcript with its paths moved to the VM, the user's profile
+/// (`PROFILE_ENTRIES`), the memory of the repository and `hunt-session.json` for the relay with `system_prompt`. The
+/// memory sent becomes the base of the retrieval's merge.
+async fn upload_claude_dir(request: &HandoffRequest<'_>, ssh: &Ssh, remote_worktree: &str, system_prompt: &str) -> Result<(), String> {
     let staging = std::env::temp_dir().join(format!("hunt-handoff-{}", Uuid::new_v4()));
     let result = async {
         std::fs::create_dir_all(&staging).map_err(|error| format!("failed to create {}: {error}", staging.display()))?;
@@ -411,7 +437,7 @@ async fn upload_claude_dir(request: &HandoffRequest<'_>, ssh: &Ssh, remote_workt
             "huntSessionId": request.hunt_session_id.to_string(),
             "acpSessionId": if has_transcript { request.acp_session_id } else { None },
             "cwd": remote_worktree,
-            "systemPromptAppend": request.system_prompt,
+            "systemPromptAppend": system_prompt,
             "modeId": REMOTE_MODE,
             "configOptions": config_options,
         });

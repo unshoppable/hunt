@@ -1,6 +1,6 @@
-//! The software Hunt runs on the VM, shipped with the app as the `remote/` folder of this repository: the relay, the
-//! container image and `hunt-ctl`. Hunt installs it whenever the VM runs a different version, so the VM never needs
-//! access to GitHub and always matches the app that talks to it.
+//! The software Hunt runs on the session VMs and the gateway, shipped with the app as the `remote/` folder of this
+//! repository: the relay, the session configuration and `hunt-ctl`. Hunt installs it whenever a VM runs a different
+//! version, so the VMs never need access to GitHub and always match the app that talks to them.
 
 use std::path::Path;
 
@@ -49,9 +49,9 @@ fn collect_files(dir: &Path, prefix: &str, files: &mut Vec<String>) -> Result<()
     Ok(())
 }
 
-/// Installs the bundle in `dir` on the VM unless the VM runs that version already; returns its hash. The first
-/// install of a version builds the container image, which takes a few minutes.
-pub async fn ensure_installed(ssh: &Ssh, dir: &Path, progress: Progress<'_>) -> Result<String, String> {
+/// Installs the bundle in `dir` on the VM unless the VM runs that version already, passing `install_args` to
+/// `hunt-ctl install` (the gateway's `--domain`); returns its hash.
+pub async fn ensure_installed(ssh: &Ssh, dir: &Path, install_args: &[&str], progress: Progress<'_>) -> Result<String, String> {
     let hash = hash(dir)?;
     let installed = ssh.run("cat /srv/hunt/current/.hash 2>/dev/null || true").await?;
     if installed.trim() == hash {
@@ -63,9 +63,10 @@ pub async fn ensure_installed(ssh: &Ssh, dir: &Path, progress: Progress<'_>) -> 
     // Unpacked into a folder of its own, so two installs at once cannot mix their files, and installed from there by
     // `hunt-ctl` of this very bundle, which copies it into the releases.
     let incoming = format!("/srv/hunt/incoming/{}", uuid::Uuid::new_v4());
+    let install = shell_command(&format!("{incoming}/vm/hunt-ctl"), &[&["install", incoming.as_str()], install_args].concat());
     let script = format!(
         "set -e; mkdir -p {incoming}; trap 'rm -rf {incoming}' EXIT; tar -xzf - -C {incoming}; printf %s {hash} > {incoming}/.hash; \
-         chmod +x {incoming}/vm/hunt-ctl {incoming}/vm/hunt-idle-check; {incoming}/vm/hunt-ctl install {incoming}"
+         find {incoming}/vm -maxdepth 1 -type f -name 'hunt-*' -exec chmod +x {{}} +; {install}"
     );
     ssh.run_with_input(&shell_command("sudo", &["-n", "sh", "-c", &script]), &archive)
         .await

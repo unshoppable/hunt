@@ -8,7 +8,7 @@ import {
   DEFAULT_REMOTE,
   SETTINGS_VERSION,
   configuredPreviewDomain,
-  configuredVm,
+  configuredVmSettings,
   mergeSettings,
   migrateSettings,
   normalizeGuardrailDir,
@@ -77,6 +77,13 @@ describe("migrateSettings", () => {
     ]);
   });
 
+  it("makes the VM all sessions shared up to version 9 the gateway", () => {
+    const stored = { remote: { project: "p", zone: "z", instance: "vm-hunt", filePatterns: ["**/.env.private"], previewDomain: "hunt.example.com" } };
+    expect(migrateSettings(stored, 9).remote).toEqual({ project: "p", zone: "z", gatewayInstance: "vm-hunt", filePatterns: ["**/.env.private"], previewDomain: "hunt.example.com" });
+    expect(migrateSettings({ remote: { project: "p", zone: "z", instance: "vm-hunt" } }, 6).remote).toEqual({ project: "p", zone: "z", gatewayInstance: "vm-hunt" });
+    expect(migrateSettings({ aiLanguage: "English" }, 9)).toEqual({ aiLanguage: "English" });
+  });
+
   it("passes the current version through untouched", () => {
     const stored = { panes: { chat: { fontSize: 18 } }, aiLanguage: "English", later: true };
     expect(migrateSettings(stored, SETTINGS_VERSION)).toBe(stored);
@@ -118,9 +125,10 @@ describe("mergeSettings", () => {
     expect(merged.popupSizes).toEqual({ ...DEFAULT_POPUP_SIZES, usages: { width: 900, height: 500 } });
   });
 
-  it("keeps the default file patterns when only the VM was stored", () => {
-    const merged = mergeSettings({ remote: { project: "p", zone: "z", instance: "vm" } }, current);
-    expect(merged.remote).toEqual({ project: "p", zone: "z", instance: "vm", filePatterns: DEFAULT_REMOTE.filePatterns, previewDomain: "" });
+  it("keeps the default template and file patterns when only the VM fields were stored", () => {
+    const merged = mergeSettings(migrateSettings({ remote: { project: "p", zone: "z", instance: "vm" } }, 9), current);
+    expect(merged.remote).toEqual({ ...DEFAULT_REMOTE, project: "p", zone: "z", gatewayInstance: "vm" });
+    expect(merged.remote.sessionTemplate).toBe("tpl-hunt-session");
   });
 
   it("returns the defaults when nothing is persisted", () => {
@@ -133,10 +141,27 @@ describe("mergeSettings", () => {
 });
 
 describe("remote settings", () => {
-  it("offers a VM only once project, zone and instance are set", () => {
-    expect(configuredVm(DEFAULT_REMOTE)).toBeNull();
-    expect(configuredVm({ ...DEFAULT_REMOTE, project: "p", zone: "z" })).toBeNull();
-    expect(configuredVm({ ...DEFAULT_REMOTE, project: " p ", zone: "z", instance: "vm" })).toEqual({ project: "p", zone: "z", instance: "vm" });
+  it("offers a handoff only once project, zone, gateway, template and preview domain are set", () => {
+    const complete = { ...DEFAULT_REMOTE, project: " p ", zone: "z", gatewayInstance: "vm-hunt", previewDomain: "hunt.example.com" };
+    expect(configuredVmSettings(DEFAULT_REMOTE)).toBeNull();
+    expect(configuredVmSettings(complete)).toEqual({
+      project: "p",
+      zone: "z",
+      gateway: "vm-hunt",
+      template: "tpl-hunt-session",
+      machineType: null,
+      previewDomain: "hunt.example.com",
+    });
+    expect(configuredVmSettings({ ...complete, machineType: " e2-standard-8 " })?.machineType).toBe("e2-standard-8");
+    expect(configuredVmSettings({ ...complete, gatewayInstance: "" })).toBeNull();
+    expect(configuredVmSettings({ ...complete, sessionTemplate: " " })).toBeNull();
+    expect(configuredVmSettings({ ...complete, previewDomain: "" })).toBeNull();
+    expect(configuredVmSettings({ ...complete, previewDomain: "localhost" })).toBeNull();
+  });
+
+  it("trims every field", () => {
+    const remote = normalizeRemote({ ...DEFAULT_REMOTE, gatewayInstance: " vm-hunt ", sessionTemplate: " tpl ", machineType: " e2-standard-8 " });
+    expect([remote.gatewayInstance, remote.sessionTemplate, remote.machineType]).toEqual(["vm-hunt", "tpl", "e2-standard-8"]);
   });
 
   it("drops blank, absolute and worktree-leaving file patterns", () => {

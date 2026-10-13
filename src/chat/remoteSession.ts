@@ -4,14 +4,15 @@ import type { SessionChat } from "../state/store";
 /** What the chat shows while a step of a handoff, a retrieval or a connect to the VM runs. */
 export const REMOTE_STEP_LABELS: Record<RemoteStep, string> = {
   startingVm: "Starting the VM…",
+  creatingVm: "Creating the session's VM…",
+  waitingForVm: "Waiting for the VM to finish its setup, the first boot takes a few minutes…",
   connecting: "Connecting to the VM…",
-  installingRuntime: "Installing the remote runtime on the VM, the first time takes a few minutes…",
+  installingRuntime: "Installing Hunt's runtime on the VMs…",
   transferringCode: "Transferring the code to the VM…",
   installingDependencies: "Installing dependencies on the VM…",
   startingAgent: "Starting the agent on the VM…",
   stoppingAgent: "Stopping the agent on the VM…",
   retrievingCode: "Bringing the code back…",
-  startingPreview: "Starting the preview on the VM…",
 };
 
 /** Why nothing may move while the chat waits for something; `null` when it does not. */

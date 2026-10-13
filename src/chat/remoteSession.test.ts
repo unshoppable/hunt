@@ -25,6 +25,7 @@ function session(id: string, patch: Partial<SessionView> = {}): SessionView {
     reviewComments: [],
     workspace: "worktree",
     remote: null,
+    leftoverVm: null,
     dependencies: null,
     ...patch,
   };

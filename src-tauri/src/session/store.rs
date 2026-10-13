@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::git::DIFF_BASE;
 use crate::github::{PullRequestRef, ReviewComment};
-use crate::remote::RemoteTarget;
+use crate::remote::{RemoteTarget, VmRef};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +60,10 @@ pub struct SessionRecord {
     /// for the session to be retrieved.
     #[serde(default)]
     pub remote: Option<RemoteTarget>,
+    /// The session VM a failed handoff left behind; also set while a handoff runs. The next handoff reuses it and
+    /// deleting the session deletes it.
+    #[serde(default)]
+    pub leftover_vm: Option<VmRef>,
 }
 
 /// Where a session works. `Worktree` is a `hunt/<slug>-<id>` worktree Hunt creates off the base branch and deletes
@@ -109,6 +113,7 @@ impl SessionRecord {
             review_comments: Vec::new(),
             workspace: Workspace::Worktree,
             remote: None,
+            leftover_vm: None,
         }
     }
 
@@ -397,6 +402,28 @@ mod tests {
         let loaded = store_in(&dir).load().unwrap();
         assert_eq!(loaded.len(), 1);
         assert!(loaded[0].remote.is_none());
+    }
+
+    #[test]
+    fn a_record_handed_off_to_the_shared_vm_loads_without_preview_domain_and_leftover_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stored = serde_json::to_value(record("old")).unwrap();
+        let object = stored.as_object_mut().unwrap();
+        object.remove("leftoverVm");
+        object.insert(
+            "remote".into(),
+            serde_json::json!({
+                "vm": {"project": "acme", "zone": "europe-west1-c", "instance": "vm-hunt-medc"},
+                "worktreePath": "/srv/worktrees/x", "repo": "acme/app", "branch": "hunt/x", "handoffHead": "abc",
+                "handedOffAt": "2026-10-01T10:00:00Z"
+            }),
+        );
+        std::fs::write(dir.path().join("sessions.json"), serde_json::to_vec(&vec![stored]).unwrap()).unwrap();
+
+        let loaded = store_in(&dir).load().unwrap();
+        let remote = loaded[0].remote.as_ref().unwrap();
+        assert_eq!((remote.vm.instance.as_str(), remote.preview_domain.as_deref(), remote.local_mode.as_deref()), ("vm-hunt-medc", None, None));
+        assert!(loaded[0].leftover_vm.is_none());
     }
 
     #[test]

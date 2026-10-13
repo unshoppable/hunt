@@ -25,7 +25,7 @@ import { repoName } from "../ui/path";
 import { titleFromPrompt } from "../sessions/sessionLabels";
 import { useAgentDefaultsStore } from "./agentDefaults";
 import { usePlanUsageStore } from "./planUsage";
-import { configuredVm, useSettingsStore } from "./settings";
+import { configuredVmSettings, useSettingsStore } from "./settings";
 
 export type SessionMode = { id: string; name: string; description?: string | null };
 
@@ -99,6 +99,7 @@ function placeholderSession(id: string, title: string, target: WorktreeTarget, p
     reviewComments: [],
     workspace: target.workspace,
     remote: null,
+    leftoverVm: null,
     dependencies: null,
   };
 }
@@ -675,12 +676,12 @@ export const useHuntStore = create<HuntState>((set, get) => {
 
     handOffSession: async (id) => {
       const { remote } = useSettingsStore.getState();
-      const vm = configuredVm(remote);
-      if (!vm) {
-        updateChat(id, (chat) => ({ ...chat, error: "Set up the remote VM in Settings → Remote first." }));
+      const settings = configuredVmSettings(remote);
+      if (!settings) {
+        updateChat(id, (chat) => ({ ...chat, error: "Set up the remote VM, gateway and preview domain in Settings → Remote VM first." }));
         return;
       }
-      await restartChat(id, () => commands.handOffSession(id, vm, remote.filePatterns), true);
+      await restartChat(id, () => commands.handOffSession(id, settings, remote.filePatterns), true);
     },
 
     retrieveSession: (id) => restartChat(id, () => commands.retrieveSession(id), true),

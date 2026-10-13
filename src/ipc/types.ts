@@ -44,6 +44,11 @@ export type SessionView = {
   workspace: Workspace;
   /** Set while the session is handed off to a VM: its agent runs there and the local worktree waits for its retrieval. */
   remote: RemoteTarget | null;
+  /**
+   * The session VM a failed handoff left behind (also set while a handoff runs); the next handoff reuses it and
+   * deleting the session deletes it.
+   */
+  leftoverVm: VmRef | null;
   /** Progress of preparing the worktree's `node_modules`; `null` when nothing was or is being prepared. */
   dependencies: DependencyStatus | null;
 };
@@ -111,11 +116,23 @@ export type ReviewThreadComment = {
  */
 export type Workspace = "worktree" | "checkout";
 
-/** A Compute Engine VM that runs remote sessions. */
+/** A Compute Engine VM: a session's own VM or the gateway. */
 export type VmRef = { project: string; zone: string; instance: string };
+
+/**
+ * Where a handoff creates the session's VM and how previews reach it, from Settings → Remote VM (mirror of `VmSettings`
+ * in src-tauri/src/remote/mod.rs): the VM `vm-hunt-s-<short>` is created from the instance template `template` in
+ * `project` and `zone`, with `machineType` or the template's; the gateway VM routes `https://<short>[-<port>].<previewDomain>`
+ * to it.
+ */
+export type VmSettings = { project: string; zone: string; gateway: string; template: string; machineType: string | null; previewDomain: string };
+
+/** A session VM as Compute Engine lists it, with its labels and metadata (mirror of `SessionVm` in src-tauri/src/remote/vm.rs). */
+export type SessionVm = { name: string; zone: string; status: string; labels: Record<string, string>; metadata: Record<string, string> };
 
 /** Where a session handed off to a VM runs (mirror of `RemoteTarget` in src-tauri/src/remote/mod.rs). */
 export type RemoteTarget = {
+  /** The session's own VM, `vm-hunt-s-<short>`. */
   vm: VmRef;
   /** The session's worktree on the VM; tool calls of its agent name files below this path. */
   worktreePath: string;
@@ -130,48 +147,41 @@ export type RemoteTarget = {
   lastActiveAt: string | null;
   /** When Hunt last asked whether to retrieve or delete the idle session and the user chose to wait. */
   cleanupAskedAt: string | null;
+  /** The preview domain the session was handed off with, which its URLs use; null for older handoffs. */
+  previewDomain: string | null;
 };
 
 /** A step of a handoff, a retrieval or a connect to a remote session that takes long enough to show. */
 export type RemoteStep =
   | "startingVm"
+  | "creatingVm"
+  | "waitingForVm"
   | "connecting"
   | "installingRuntime"
   | "transferringCode"
   | "installingDependencies"
   | "startingAgent"
   | "stoppingAgent"
-  | "retrievingCode"
-  | "startingPreview";
+  | "retrievingCode";
 
-/** The preview of a remote session (mirror of `PreviewStatus` in src-tauri/src/remote/preview.rs). */
+/**
+ * The preview of a remote session (mirror of `PreviewStatus` in src-tauri/src/remote/preview.rs). Hunt builds the URLs
+ * from the session ID and its preview domain; the VM reports only ports. While the VM is off, `main` is null, `listening`
+ * is empty and `mainResponds` is false.
+ */
 export type PreviewStatus = {
-  /** Whether a preview runs or starts. */
-  active: boolean;
-  /** `preparing`, `init`, `starting`, `ready`, `degraded`, `failed` or `stopped`. */
-  state: string;
-  step: string | null;
-  error: string | null;
-  /** Built by Hunt from the session id and the preview domain; the VM reports only ports. */
-  mainUrl: string | null;
-  processes: PreviewProcess[];
-  services: PreviewService[];
+  vmRunning: boolean;
+  /** `https://<short>.<domain>`, which serves the main port. */
+  mainUrl: string;
+  /** The main port the repository's hunt.json names; null without one. */
+  main: number | null;
+  /** The ports something listens on, each at `https://<short>-<port>.<domain>`. */
+  listening: PreviewPort[];
+  /** Whether the main port answers HTTP on the VM. */
+  mainResponds: boolean;
 };
 
-export type PreviewProcess = {
-  name: string;
-  /** `starting`, `ready`, `crashed` or `stopped`. */
-  state: string;
-  url: string | null;
-  restarts: number;
-  exitCode: number | null;
-  optional: boolean;
-};
-
-export type PreviewService = { name: string; state: string };
-
-/** A part of a preview log: `text` starts at byte `offset` of a log of `size` bytes; `reset` after a rotation. */
-export type PreviewLogChunk = { size: number; offset: number; text: string; reset: boolean };
+export type PreviewPort = { port: number; url: string };
 
 /** The step a remote operation on a session is at; `null` once it ended. */
 export type RemoteProgressEvent = { huntSessionId: string; step: RemoteStep | null };

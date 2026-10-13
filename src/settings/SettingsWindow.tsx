@@ -477,7 +477,6 @@ function SessionsSection() {
   );
 }
 
-/** The VM remote sessions run on and the ignored files a handoff copies along (see src-tauri/src/remote). */
 /** The GitHub token remote sessions push and run `gh` with; Hunt keeps it in the keychain, never in the settings. */
 function GithubTokenRow() {
   const [status, setStatus] = useState<GithubTokenStatus | null>(null);
@@ -560,6 +559,7 @@ function GithubTokenRow() {
   );
 }
 
+/** Where remote sessions run, how their previews are reached, and the ignored files a handoff copies along (see src-tauri/src/remote). */
 function RemoteSection() {
   const remote = useSettingsStore((state) => state.remote);
   const setRemote = useSettingsStore((state) => state.setRemote);
@@ -572,17 +572,27 @@ function RemoteSection() {
         <div className="flex flex-col gap-1">
           <TextRow label="Google Cloud project" value={remote.project} onChange={(project) => setRemote({ project })} isMonospace />
           <TextRow label="Zone" value={remote.zone} onChange={(zone) => setRemote({ zone })} isMonospace />
-          <TextRow label="VM instance" value={remote.instance} onChange={(instance) => setRemote({ instance })} isMonospace />
+          <TextRow label="Session VM template" value={remote.sessionTemplate} onChange={(sessionTemplate) => setRemote({ sessionTemplate })} isMonospace />
+          <TextRow
+            label="Machine type"
+            value={remote.machineType}
+            onChange={(machineType) => setRemote({ machineType })}
+            placeholder="Template default"
+            isMonospace
+          />
           <p className="text-[13px] leading-snug text-neutral-500">
-            Hunt reaches the VM over SSH through an IAP tunnel with your gcloud login and starts it when it is off. The chat header offers the handoff
-            once all three fields are set.
+            Each session you hand off gets a VM of its own, vm-hunt-s-&lt;id&gt;, created from the instance template in this project and zone, with the machine
+            type above or the template's when it is empty. The VM stops itself when idle and is deleted once you bring the session back or delete it. Hunt reaches
+            it over SSH through an IAP tunnel with your gcloud login.
           </p>
         </div>
         <div className="flex flex-col gap-1">
+          <TextRow label="Gateway instance" value={remote.gatewayInstance} onChange={(gatewayInstance) => setRemote({ gatewayInstance })} isMonospace />
           <TextRow label="Preview domain" value={remote.previewDomain} onChange={(previewDomain) => setRemote({ previewDomain })} isMonospace />
           <p className="text-[13px] leading-snug text-neutral-500">
-            A remote session's preview opens at https://&lt;id&gt;.&lt;domain&gt;, served by the VM behind your load balancer. It runs what the repository's hunt.json
-            declares; without a domain Hunt offers no preview.
+            The gateway VM runs all the time behind your load balancer and routes https://&lt;id&gt;.&lt;domain&gt; and https://&lt;id&gt;-&lt;port&gt;.&lt;domain&gt; to
+            the session's VM, starting it when it is off. The agent learns these URLs at the handoff. The chat header offers the handoff once project, zone,
+            template, gateway and preview domain are set.
           </p>
         </div>
         <GithubTokenRow />
@@ -1007,6 +1017,7 @@ function TextRow({
   presets,
   isMonospace = false,
   inputStyle,
+  placeholder,
 }: {
   label: string;
   ariaLabel?: string;
@@ -1015,6 +1026,7 @@ function TextRow({
   presets?: { label?: string; value: string }[];
   isMonospace?: boolean;
   inputStyle?: CSSProperties;
+  placeholder?: string;
 }) {
   const [draft, setDraft] = useState(value);
   const [isSuggesting, setIsSuggesting] = useState(false);
@@ -1082,6 +1094,7 @@ function TextRow({
         aria-controls={showsSuggestions ? listId : undefined}
         aria-activedescendant={showsSuggestions && activeIndex >= 0 ? optionId(listId, activeIndex) : undefined}
         value={draft}
+        placeholder={placeholder}
         spellCheck={false}
         onChange={(event) => {
           setDraft(event.target.value);

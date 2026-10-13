@@ -55,8 +55,8 @@ export function StaleRemoteDialog() {
     <Modal label="Idle remote session" onClose={() => void later()} className="w-[460px] bg-(--surface-chat) p-4">
       <h2 className="mb-1 text-base font-semibold">Idle remote session</h2>
       <p className="mb-2 text-[13px] text-neutral-300">
-        "{session.title}" has been idle on the VM for {days} days and takes space there. Retrieve it to continue here, or delete it here and on the VM, including work you have not
-        retrieved.
+        "{session.title}" has been idle on its VM for {days} days, whose disk costs money while it waits. Retrieve it to continue here, or delete it together with its VM,
+        including work you have not retrieved.
       </p>
       {blocker ? <p className="mb-2 text-[13px] text-neutral-400">{blocker}</p> : null}
       {error ? <p className="mb-2 text-[13px] break-words text-red-300">{error}</p> : null}

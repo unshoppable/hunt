@@ -1,12 +1,12 @@
-//! Session previews: `hunt-ctl preview …` runs the services and dev processes a repository declares in the `preview`
-//! section of its hunt.json and routes `https://<short id>.<domain>` to them. This module reads its answers into what
-//! the UI shows. Preview URLs are built here from the session id, the configured domain and port numbers; the VM only
-//! reports ports.
-
-use std::collections::BTreeMap;
+//! Session previews: the gateway routes `https://<short>.<domain>` to the main port the repository's hunt.json names and
+//! `https://<short>-<port>.<domain>` to any port of the session's VM, where the agent runs the app as a developer would
+//! locally. `hunt-ctl preview-status` reports which ports listen; this module builds the URLs from the session id and
+//! the domain, so the VM only reports port numbers.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use super::vm::short_id;
 
 /// The preview domain from the settings, lowercased, or an error when it is not a hostname of at least two labels.
 pub fn validate_domain(domain: &str) -> Result<String, String> {
@@ -27,7 +27,7 @@ pub fn validate_domain(domain: &str) -> Result<String, String> {
 
 /// The URL of session `id`'s preview on `domain`: the main host, or the host of `port`.
 pub fn url(id: Uuid, domain: &str, port: Option<u16>) -> String {
-    let short = &id.simple().to_string()[..8];
+    let short = short_id(id);
     match port {
         Some(port) => format!("https://{short}-{port}.{domain}"),
         None => format!("https://{short}.{domain}"),
@@ -35,130 +35,56 @@ pub fn url(id: Uuid, domain: &str, port: Option<u16>) -> String {
 }
 
 /// What the UI shows of a session's preview.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewStatus {
-    /// Whether a preview runs (or starts) for the session.
-    pub active: bool,
-    /// The relay's state of the preview (`preparing`, `init`, `starting`, `ready`, `degraded`, `failed`, `stopped`), or
-    /// `stopped` without one.
-    pub state: String,
-    pub step: Option<String>,
-    pub error: Option<String>,
-    pub main_url: Option<String>,
-    pub processes: Vec<PreviewProcess>,
-    pub services: Vec<PreviewService>,
+    /// Whether the session's VM runs; when it is off, nothing listens and the rest is empty.
+    pub vm_running: bool,
+    /// `https://<short>.<domain>`, which serves the main port.
+    pub main_url: String,
+    /// The main port the repository's hunt.json names, if any.
+    pub main: Option<u16>,
+    /// The ports something listens on, in ascending order.
+    pub listening: Vec<PreviewPort>,
+    /// Whether the main port answers HTTP requests.
+    pub main_responds: bool,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct PreviewProcess {
-    pub name: String,
-    /// `starting`, `ready`, `crashed` or `stopped`; `stopped` while the relay reports nothing about it.
-    pub state: String,
-    pub url: Option<String>,
-    pub restarts: u32,
-    pub exit_code: Option<i32>,
-    pub optional: bool,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct PreviewService {
-    pub name: String,
-    /// Docker's state of the service's container, e.g. `running` or `exited`.
-    pub state: String,
-}
-
-/// A part of a preview log.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct PreviewLogChunk {
-    /// Size of the whole log in bytes.
-    pub size: u64,
-    /// Byte offset of `text` in the log.
-    pub offset: u64,
-    pub text: String,
-    /// Whether the log was rotated since the offset the caller asked for.
-    pub reset: bool,
+pub struct PreviewPort {
+    pub port: u16,
+    pub url: String,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct StatusOutput {
+    main: Option<u16>,
     #[serde(default)]
-    active: bool,
+    listening: Vec<u16>,
     #[serde(default)]
-    processes: Vec<PlannedProcess>,
-    #[serde(default)]
-    services: BTreeMap<String, String>,
-    relay: Option<RelayPreview>,
+    main_responds: bool,
 }
 
-#[derive(Deserialize)]
-struct PlannedProcess {
-    name: String,
-    port: Option<u16>,
-    #[serde(default)]
-    main: bool,
-    #[serde(default)]
-    optional: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RelayPreview {
-    state: Option<String>,
-    step: Option<String>,
-    error: Option<String>,
-    #[serde(default)]
-    processes: BTreeMap<String, RelayProcess>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RelayProcess {
-    state: Option<String>,
-    #[serde(default)]
-    restarts: u32,
-    exit_code: Option<i32>,
-}
-
-/// Reads the output of `hunt-ctl preview status` for session `id` with its URLs on `domain`.
+/// Reads the output of `hunt-ctl preview-status` for session `id` with its URLs on `domain`.
 pub fn parse_status(output: &serde_json::Value, id: Uuid, domain: &str) -> Result<PreviewStatus, String> {
-    let output: StatusOutput =
-        serde_json::from_value(output.clone()).map_err(|error| format!("failed to read the preview status: {error}"))?;
-    let relay = output.relay;
-    let main = output.processes.iter().find(|process| process.main);
-    let processes = output
-        .processes
-        .iter()
-        .map(|process| {
-            let reported = relay.as_ref().and_then(|relay| relay.processes.get(&process.name));
-            PreviewProcess {
-                name: process.name.clone(),
-                state: reported.and_then(|reported| reported.state.clone()).unwrap_or_else(|| "stopped".into()),
-                url: process.port.map(|port| url(id, domain, Some(port))),
-                restarts: reported.map(|reported| reported.restarts).unwrap_or(0),
-                exit_code: reported.and_then(|reported| reported.exit_code),
-                optional: process.optional,
-            }
-        })
-        .collect();
-    let services = output.services.into_iter().map(|(name, state)| PreviewService { name, state }).collect();
+    let output: StatusOutput = serde_json::from_value(output.clone()).map_err(|error| format!("failed to read the preview status: {error}"))?;
+    let mut ports = output.listening;
+    ports.sort_unstable();
+    ports.dedup();
     Ok(PreviewStatus {
-        active: output.active,
-        state: relay.as_ref().and_then(|relay| relay.state.clone()).filter(|_| output.active).unwrap_or_else(|| "stopped".into()),
-        step: relay.as_ref().and_then(|relay| relay.step.clone()),
-        error: relay.as_ref().and_then(|relay| relay.error.clone()),
-        main_url: main.filter(|_| output.active).map(|_| url(id, domain, None)),
-        processes,
-        services,
+        vm_running: true,
+        main_url: url(id, domain, None),
+        main: output.main,
+        listening: ports.into_iter().map(|port| PreviewPort { port, url: url(id, domain, Some(port)) }).collect(),
+        main_responds: output.main_responds,
     })
 }
 
-/// The status of a session whose VM is not running: no preview.
-pub fn stopped_status() -> PreviewStatus {
-    PreviewStatus { active: false, state: "stopped".into(), step: None, error: None, main_url: None, processes: Vec::new(), services: Vec::new() }
+/// The status of session `id` whose VM is off: its URLs exist, but nothing listens.
+pub fn stopped_status(id: Uuid, domain: &str) -> PreviewStatus {
+    PreviewStatus { vm_running: false, main_url: url(id, domain, None), main: None, listening: Vec::new(), main_responds: false }
 }
 
 #[cfg(test)]
@@ -184,29 +110,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_status_combines_the_plan_with_the_relay_state_and_ignores_reported_urls() {
+    fn parse_status_builds_the_urls_of_the_listening_ports_here() {
         let id = Uuid::parse_str(ID).unwrap();
-        let output = json!({
-            "active": true,
-            "processes": [
-                {"name": "admin-ui", "port": 4200, "main": true, "optional": false},
-                {"name": "worker", "port": null, "main": false, "optional": false},
-                {"name": "ui", "port": 4400, "main": false, "optional": true}
-            ],
-            "services": {"postgres": "running"},
-            "relay": {"state": "starting", "step": null, "error": null, "urls": {"main": "https://evil.example"},
-                      "processes": {"admin-ui": {"state": "ready", "restarts": 1, "exitCode": null}}}
-        });
+        let output = json!({"main": 4200, "listening": [4400, 4200, 3000, 4200], "mainResponds": true, "url": "https://evil.example"});
         let status = parse_status(&output, id, "p.example.com").unwrap();
-        assert_eq!(status.state, "starting");
-        assert_eq!(status.main_url.as_deref(), Some("https://ab12cd34.p.example.com"));
-        assert_eq!(status.processes[0].url.as_deref(), Some("https://ab12cd34-4200.p.example.com"));
-        assert_eq!((status.processes[0].state.as_str(), status.processes[0].restarts), ("ready", 1));
-        assert_eq!((status.processes[1].state.as_str(), status.processes[1].url.clone()), ("stopped", None));
-        assert!(status.processes[2].optional);
-        assert_eq!(status.services, vec![PreviewService { name: "postgres".into(), state: "running".into() }]);
+        assert!(status.vm_running && status.main_responds);
+        assert_eq!(status.main_url, "https://ab12cd34.p.example.com");
+        assert_eq!(status.main, Some(4200));
+        let ports: Vec<(u16, &str)> = status.listening.iter().map(|port| (port.port, port.url.as_str())).collect();
+        assert_eq!(
+            ports,
+            [(3000, "https://ab12cd34-3000.p.example.com"), (4200, "https://ab12cd34-4200.p.example.com"), (4400, "https://ab12cd34-4400.p.example.com")]
+        );
 
-        let inactive = parse_status(&json!({"active": false, "processes": [], "services": {}, "relay": null}), id, "p.example.com").unwrap();
-        assert_eq!(inactive, PreviewStatus { active: false, ..stopped_status() });
+        let idle = parse_status(&json!({"main": null, "listening": [], "mainResponds": false}), id, "p.example.com").unwrap();
+        assert_eq!((idle.main, idle.listening.len(), idle.main_responds), (None, 0, false));
+        assert!(parse_status(&json!({"main": "4200"}), id, "p.example.com").is_err());
+        assert_eq!(stopped_status(id, "p.example.com"), PreviewStatus { vm_running: false, ..idle });
     }
 }

@@ -1,4 +1,4 @@
-//! Bringing a session back from the VM: its container stops, the agent's commits and uncommitted work come back as a
+//! Bringing a session back from its VM: its relay stops, the agent's commits and uncommitted work come back as a
 //! snapshot on top of the VM's `HEAD`, the Git LFS objects they need follow, and the transcript returns with its paths
 //! moved back. The local worktree must still hold what the handoff left there; a retrieval interrupted after the
 //! snapshot was applied can be repeated.
@@ -29,8 +29,8 @@ pub struct Retrieved {
     pub acp_session_id: Option<String>,
 }
 
-/// Stops the session on the VM and applies its state to the local worktree. The VM side stays in place; the caller
-/// removes it once the session runs locally again.
+/// Stops the session on its VM and applies its state to the local worktree. The VM stays; the caller deletes it once
+/// the session runs locally again.
 pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> Result<Retrieved, String> {
     let id = request.hunt_session_id.to_string();
     let worktree = request.worktree;
@@ -69,7 +69,7 @@ pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> R
 }
 
 /// Fetches the retrieval snapshot (and with it the commits the agent made) into `retrieve_ref`, through
-/// `hunt-ctl upload-pack`, which runs git on the VM in a sandbox.
+/// `hunt-ctl upload-pack`, which runs git on the VM as the agent's user.
 async fn fetch(worktree: &Path, ssh: &Ssh, remote_worktree: &str, retrieve_ref: &str) -> Result<(), String> {
     let url = ssh.git_url(remote_worktree);
     let refspec = format!("+{retrieve_ref}:{retrieve_ref}");

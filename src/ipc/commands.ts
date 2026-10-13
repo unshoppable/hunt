@@ -10,7 +10,6 @@ import type {
   GithubViewer,
   GraphStatus,
   PlanUsage,
-  PreviewLogChunk,
   PreviewStatus,
   PullRequest,
   PullRequestDetails,
@@ -23,8 +22,9 @@ import type {
   SelectionContext,
   SessionNotification,
   SessionView,
+  SessionVm,
   Shelf,
-  VmRef,
+  VmSettings,
   Workspace,
 } from "./types";
 
@@ -85,18 +85,18 @@ export const commands = {
   renameSession: (id: string, title: string) => invoke<SessionView>("rename_session", { id, title }),
   openSession: (id: string) => invoke<SessionView>("open_session", { id }),
   clearSession: (id: string) => invoke<SessionView>("clear_session", { id }),
-  handOffSession: (id: string, vm: VmRef, filePatterns: string[]) => invoke<SessionView>("hand_off_session", { id, vm, filePatterns }),
+  /**
+   * Moves the session to a VM of its own, created from `settings` when the session has none yet; the ignored files
+   * matching `filePatterns` go along.
+   */
+  handOffSession: (id: string, settings: VmSettings, filePatterns: string[]) => invoke<SessionView>("hand_off_session", { id, settings, filePatterns }),
   retrieveSession: (id: string) => invoke<SessionView>("retrieve_session", { id }),
   /** Keeps the idle remote session for now; Hunt asks again whether to retrieve or delete it three days later. */
   snoozeRemoteCleanup: (id: string) => invoke<void>("snooze_remote_cleanup", { id }),
-  /** Starts the remote session's preview on `domain` (VM, runtime, container, services, dev processes) with the optional processes in `withProcesses`. */
-  startPreview: (id: string, domain: string, withProcesses: string[]) => invoke<PreviewStatus>("start_preview", { id, domain, with: withProcesses }),
-  /** The remote session's preview; a VM that is off reports none and stays off. */
-  previewStatus: (id: string, domain: string) => invoke<PreviewStatus>("preview_status", { id, domain }),
-  stopPreview: (id: string) => invoke<void>("stop_preview", { id }),
-  restartPreviewProcess: (id: string, process: string) => invoke<void>("restart_preview_process", { id, process }),
-  /** The preview log `name` (a process or `setup`) from byte `offset` on; without an offset its last 64 KiB. */
-  readPreviewLog: (id: string, name: string, offset: number | null) => invoke<PreviewLogChunk>("read_preview_log", { id, name, offset }),
+  /** What listens on the remote session's VM and whether its main port answers; a VM that is off reports nothing and stays off. */
+  previewStatus: (id: string) => invoke<PreviewStatus>("preview_status", { id }),
+  /** The session VMs of `project` with their labels and metadata, for adopting VMs without a local session. */
+  listSessionVms: (project: string) => invoke<SessionVm[]>("list_session_vms", { project }),
   /**
    * Opens a terminal with `cols` × `rows` cells on the VM of the remote session `id`, attached to the tmux session of
    * the app's processes. The caller picks `terminalId` and listens before it calls, since the output (`terminal:output`,

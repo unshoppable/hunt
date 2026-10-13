@@ -41,6 +41,10 @@ pub fn run() {
         .manage(AttributionRegistry::default())
         .manage(lsp::LspRegistry::default())
         .manage(TerminalRegistry::default())
+        .setup(|app| {
+            session::commands::run_pending_cleanups(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             session::commands::list_sessions,
             session::commands::list_branches,
@@ -63,11 +67,8 @@ pub fn run() {
             session::commands::hand_off_session,
             session::commands::retrieve_session,
             session::commands::snooze_remote_cleanup,
-            session::commands::start_preview,
             session::commands::preview_status,
-            session::commands::stop_preview,
-            session::commands::restart_preview_process,
-            session::commands::read_preview_log,
+            session::commands::list_session_vms,
             session::commands::open_terminal,
             session::commands::write_terminal,
             session::commands::resize_terminal,

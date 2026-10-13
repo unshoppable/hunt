@@ -1,0 +1,11 @@
+{
+  "name": "client",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nx run gateway:build && vite",
+    "build": "nx run-many -t build -p client gateway"
+  },
+  "volta": { "extends": "../../package.json" }
+}

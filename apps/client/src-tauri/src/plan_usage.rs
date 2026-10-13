@@ -12,7 +12,7 @@ use crate::accounts;
 use crate::acp::bundled_script_path;
 use crate::session::store;
 
-const SCRIPT: &str = "scripts/planUsage.mjs";
+const SCRIPT: &str = "apps/client/scripts/planUsage.mjs";
 const TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The plan limits in display order; empty when no plan limits apply (API key, Bedrock, Vertex).

@@ -488,7 +488,7 @@ async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: 
     let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
     remote::vm::ensure_running(&target.vm, &ssh, &progress).await?;
     // A VM handed off by an older release gets this app's relay and hunt-ctl; a relay that runs keeps running.
-    remote::bundle::ensure_installed(&ssh, &bundled_script_path(app, "remote")?, None, &progress).await?;
+    remote::bundle::ensure_installed(&ssh, &bundled_script_path(app, remote::bundle::BUNDLE)?, None, &progress).await?;
     // An adopted session learns its worktree on the VM with its first connect; the chat works without it.
     let (record, target) = if target.worktree_path.as_os_str().is_empty() {
         match remote_worktree(app, id, &target, &ssh).await {
@@ -647,7 +647,7 @@ pub async fn apply_swf_config(app: AppHandle, settings: VmSettings, repos: Vec<S
     // No session VM is involved; the nil ID only satisfies the check of the session VM's name.
     let settings = VmSettings { preview_domain: settings.validate(Uuid::nil())?, ..settings };
     let config = remote::swf::SwfConfig::new(&settings, repos, max_sessions);
-    let bundle_dir = bundled_script_path(&app, "remote")?;
+    let bundle_dir = bundled_script_path(&app, remote::bundle::BUNDLE)?;
     remote::swf::apply(&settings, &bundle_dir, &ssh_dir()?, &config, &|_| {}).await
 }
 
@@ -774,17 +774,17 @@ pub fn close_terminal(terminals: State<'_, TerminalRegistry>, terminal_id: Uuid)
 }
 
 /// What Hunt tells the agent of a remote session on top of its usual system prompt addition, whatever the repository.
-const REMOTE_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../remote/session/prompts/remote.md"));
+const REMOTE_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/prompts/remote.md"));
 
 /// The Git part of `REMOTE_PROMPT` when Hunt hands the user's GitHub token to the agent on the VM.
-const REMOTE_GIT_PUSH_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../remote/session/prompts/git-push.md"));
+const REMOTE_GIT_PUSH_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/prompts/git-push.md"));
 
 /// The Git part of `REMOTE_PROMPT` without a GitHub token.
-const REMOTE_GIT_LOCAL_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../remote/session/prompts/git-local.md"));
+const REMOTE_GIT_LOCAL_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/prompts/git-local.md"));
 
 /// What Hunt appends to the system prompt of a remote session: `base`, the usual addition, then `REMOTE_PROMPT`, the Git
 /// part that fits whether the agent has the user's GitHub token, and the repository's HUNT.md under a heading of its own.
-/// The gateway's poller (`remote/gateway/swf.ts`) composes the prompt of its sessions the same way, with an empty `base`.
+/// The gateway's poller (`apps/gateway/src/swf.ts`) composes the prompt of its sessions the same way, with an empty `base`.
 fn remote_system_prompt(base: &str, has_github_token: bool, hunt_md: Option<&str>) -> String {
     let git_prompt = if has_github_token { REMOTE_GIT_PUSH_PROMPT } else { REMOTE_GIT_LOCAL_PROMPT };
     let prompt = format!("{base}\n\n{REMOTE_PROMPT}\n{git_prompt}");
@@ -838,7 +838,7 @@ pub async fn hand_off_session(
         let has_github_token = github_token.is_some();
         let system_prompt = |hunt_md: Option<&str>| remote_system_prompt(&base_prompt, has_github_token, hunt_md.or(local_hunt_md.as_deref()));
         let token_input = remote::token_input(&claude_token, github_token.as_deref());
-        let bundle_dir = bundled_script_path(&app, "remote")?;
+        let bundle_dir = bundled_script_path(&app, remote::bundle::BUNDLE)?;
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
         let memory_base = memory_base_path(&app, id)?;
         let request = remote::handoff::HandoffRequest {
@@ -941,7 +941,7 @@ pub async fn retrieve_session(
     let activated = async {
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
         let memory_base = memory_base_path(&app, id)?;
-        let bundle_dir = bundled_script_path(&app, "remote")?;
+        let bundle_dir = bundled_script_path(&app, remote::bundle::BUNDLE)?;
         let request = remote::retrieve::RetrieveRequest {
             hunt_session_id: id,
             worktree: &record.worktree_path,

@@ -10,13 +10,15 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
 
-  // Tauri copies `remote/` into src-tauri/target as a bundle resource; the copies' tests must not run a second time.
+  // Tauri copies its bundle resources (node_modules packages, the VM artifact) into src-tauri/target; never test those.
   test: { exclude: [...configDefaults.exclude, "src-tauri/**"] },
 
   // ELK is loaded lazily by the architecture panel; pre-bundling it avoids a dev reload on first use.
   optimizeDeps: { include: ["elkjs/lib/elk-api.js"] },
 
   build: {
+    outDir: "../../dist/apps/client",
+    emptyOutDir: true,
     // The main window and the editor, diff, guardrails and settings windows (see ui/nativeWindow.ts) are separate pages.
     rollupOptions: { input: ["index.html", "editor.html", "diff.html", "guardrails.html", "settings.html"] },
     // Keep the ~2,500 Atom Material icon SVGs (src/diff/atomIcons) as separate asset files instead of inlining them

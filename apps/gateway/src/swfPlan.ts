@@ -120,7 +120,7 @@ export function redact(text: string, secrets: string[]): string {
   return result;
 }
 
-/** The remote prompts of `remote/session/prompts/` a poller session gets. */
+/** The remote prompts of `libs/domain/prompts/` a poller session gets. */
 export interface RemotePrompts {
   remote: string;
   gitPush: string;
@@ -128,7 +128,7 @@ export interface RemotePrompts {
 
 /**
  * What the relay appends to Claude Code's system prompt, composed like `remote_system_prompt` in
- * `src-tauri/src/session/commands.rs` with an empty base: the gateway has none of the desktop user's settings
+ * `apps/client/src-tauri/src/session/commands.rs` with an empty base: the gateway has none of the desktop user's settings
  * (response style, guardrail offer, diagram language), so only the remote part, the Git part for a session with a
  * GitHub token and the repository's HUNT.md remain.
  */

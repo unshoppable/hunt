@@ -1,7 +1,7 @@
 /**
  * hunt-wake on the gateway (`hunt-wake.service`): starts a stopped session VM when someone opens its preview.
  *
- *   node remote/gateway/wake.ts      (listens on 127.0.0.1:9180)
+ *   node /srv/hunt/current/gateway/wake.mjs      (listens on 127.0.0.1:9180)
  *
  * The edge proxy hands it every preview request it could not deliver to the session VM (502, 503 or 504) with the
  * request's own Host header, `<short>.<domain>` or `<short>-<port>.<domain>`; the edge has checked the domain, so only
@@ -15,6 +15,7 @@
 import { realpathSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
+import { messageOf } from "../../../libs/domain/src/errors.ts";
 
 export const LISTEN_HOST = "127.0.0.1";
 export const LISTEN_PORT = 9180;
@@ -154,12 +155,6 @@ export class Waker {
     this.options.log(`${verb === "start" ? "started" : "resumed"} ${name}`);
     return waiting(`The session VM ${name} is starting. This takes about a minute.`);
   }
-}
-
-/** The error's message, with the cause fetch hides behind "fetch failed". */
-export function messageOf(error: unknown): string {
-  if (!(error instanceof Error)) return String(error);
-  return error.cause instanceof Error ? `${error.message}: ${error.cause.message}` : error.message;
 }
 
 /** Compute Engine's REST API in the gateway's project and zone, with the access token of its service account. */

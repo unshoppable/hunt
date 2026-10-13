@@ -16,7 +16,7 @@ const MINUTE_MS = 60_000;
  */
 const SHIMS: Record<string, string> = {
   date: `#!/bin/sh\necho ${NOW_MS}\n`,
-  stat: `#!/bin/sh\nexec "${process.execPath}" -e 'console.log(Math.floor(require("fs").statSync(process.argv[1]).mtimeMs / 1000))' "$3"\n`,
+  stat: `#!/bin/sh\nexec "${process.execPath}" -e 'process.stdout.write(Math.floor(require("fs").statSync(process.argv[1]).mtimeMs / 1000) + "\\n")' "$3"\n`,
   w: '#!/bin/sh\nif [ -f "$HUNT_TEST_DIR/w.txt" ]; then cat "$HUNT_TEST_DIR/w.txt"; fi\n',
   pgrep: '#!/bin/sh\n[ -f "$HUNT_TEST_DIR/hunt-ctl-running" ]\n',
   systemctl: '#!/bin/sh\necho "$*" >>"$HUNT_TEST_DIR/systemctl.log"\n',

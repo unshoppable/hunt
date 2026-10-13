@@ -46,7 +46,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Compute next version and rewrite version files
         id: cut
@@ -80,7 +80,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
@@ -89,7 +89,7 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: apps/client/src-tauri
 
       - run: npm ci
 
@@ -108,6 +108,7 @@ jobs:
 
             Download the DMG for your Mac below, or install from Settings → Updates in a running Hunt. The app is not yet signed; on first launch right-click the app and choose Open, or run `xattr -cr /Applications/Hunt.app`.
           releaseDraft: true
+          projectPath: apps/client
           prerelease: false
           args: --target ${{ matrix.target }} --bundles app,dmg --config src-tauri/tauri.release.conf.json
 

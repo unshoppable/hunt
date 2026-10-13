@@ -1,7 +1,7 @@
 /**
  * hunt-swf's access to a session VM: `gcloud compute ssh <vm> --internal-ip` with the gateway's service account, which
  * logs in through OS Login as an admin and runs `hunt-ctl` with sudo, as Hunt does over its IAP tunnel. Installing
- * the bundle follows `bundle::ensure_installed` in `src-tauri/src/remote/bundle.rs`: the gateway's own release is the
+ * the bundle follows `bundle::ensure_installed` in `apps/client/src-tauri/src/remote/bundle.rs`: the gateway's own release is the
  * bundle.
  */
 import { spawn } from "node:child_process";
@@ -22,7 +22,7 @@ export interface VmLocation {
   zone: string;
 }
 
-/** `value` quoted for a POSIX shell, like `shell_quote` in `src-tauri/src/remote/mod.rs`. */
+/** `value` quoted for a POSIX shell, like `shell_quote` in `apps/client/src-tauri/src/remote/mod.rs`. */
 export function shellQuote(value: string): string {
   if (value && /^[A-Za-z0-9\-_./=:@%+,]+$/.test(value)) return value;
   return `'${value.replace(/'/g, `'\\''`)}'`;

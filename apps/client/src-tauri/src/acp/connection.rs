@@ -468,10 +468,10 @@ async fn ask_permission(
     }
 }
 
-/// Resolves a script shipped with the app by its repo-relative path (`tauri.conf.json` bundles it under the same
-/// path): the copy next to the app in development, the bundled resource copy in a release build.
+/// Resolves a file shipped with the app by its path relative to the workspace root (`tauri.conf.json` bundles it under
+/// the same path): the workspace's copy in development, the bundled resource copy in a release build.
 pub fn bundled_script_path(app: &AppHandle, script: &str) -> Result<PathBuf, String> {
-    let development_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join(script);
+    let development_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..").join(script);
     if cfg!(debug_assertions) && development_path.exists() {
         return Ok(development_path);
     }

@@ -1,4 +1,4 @@
-# Starts remote sessions for GitHub issues labelled swf (remote/gateway/swf.ts): polls the repositories of
+# Starts remote sessions for GitHub issues labelled swf (apps/gateway/src/swf.ts): polls the repositories of
 # /etc/hunt/swf.json every 2 minutes and sets each session up on a VM of its own with `gcloud compute ssh --internal-ip`
 # and the gateway's service account. gcloud and ssh keep their configuration and key in the state directory. A reload
 # (after `hunt-ctl install`) makes the poller exit once the sessions it sets up run, and systemd starts the new release.
@@ -11,7 +11,7 @@ Wants=network-online.target
 DynamicUser=yes
 StateDirectory=hunt-swf
 Environment=HOME=/var/lib/hunt-swf
-ExecStart=/opt/hunt/node/bin/node /srv/hunt/current/gateway/swf.ts
+ExecStart=/opt/hunt/node/bin/node /srv/hunt/current/gateway/swf.mjs
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=10s

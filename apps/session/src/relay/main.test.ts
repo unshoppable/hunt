@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { label, textOf, turnOf } from "./fixtures/messages.ts";
 import { FAKE_ADAPTER, MAIN, socketTempDir, WAIT_MS, waitForStatus } from "./fixtures/relayProcess.ts";
-import { createLineDecoder, encodeLine, parseLine } from "./ndjson.ts";
+import { createLineDecoder, encodeLine, parseLine } from "../../../../libs/domain/src/ndjson.ts";
 
 type Message = Record<string, unknown>;
 

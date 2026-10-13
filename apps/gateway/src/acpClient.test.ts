@@ -1,9 +1,9 @@
 import { createConnection } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { requestMessage, responseMessage, type JsonRpcRequest } from "../relay/jsonRpc.ts";
-import { encodeLine } from "../relay/ndjson.ts";
-import { label, turnOf } from "../relay/fixtures/messages.ts";
-import { startRelay, waitForStatus, type RelayProcess } from "../relay/fixtures/relayProcess.ts";
+import { requestMessage, responseMessage, type JsonRpcRequest } from "../../../libs/domain/src/jsonRpc.ts";
+import { encodeLine } from "../../../libs/domain/src/ndjson.ts";
+import { label, turnOf } from "../../session/src/relay/fixtures/messages.ts";
+import { startRelay, waitForStatus, type RelayProcess } from "../../session/src/relay/fixtures/relayProcess.ts";
 import { sendPrompt, type Transport } from "./acpClient.ts";
 
 /** A transport over the relay's Unix socket, as `socat - UNIX-CONNECT:…` gives the poller over SSH. */

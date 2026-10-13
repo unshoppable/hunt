@@ -1,4 +1,4 @@
-# Wakes stopped session VMs for their previews (remote/gateway/wake.ts): the edge proxy hands every request it cannot
+# Wakes stopped session VMs for their previews (apps/gateway/src/wake.ts): the edge proxy hands every request it cannot
 # deliver to a session VM to 127.0.0.1:9180, and the service starts the VM with the gateway's service account.
 [Unit]
 Description=Wake Hunt session VMs for preview requests
@@ -7,7 +7,7 @@ Wants=network-online.target
 
 [Service]
 DynamicUser=yes
-ExecStart=/opt/hunt/node/bin/node /srv/hunt/current/gateway/wake.ts
+ExecStart=/opt/hunt/node/bin/node /srv/hunt/current/gateway/wake.mjs
 Restart=on-failure
 RestartSec=2s
 PrivateDevices=yes

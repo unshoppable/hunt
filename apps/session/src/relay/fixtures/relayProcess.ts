@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseLine } from "../ndjson.ts";
+import { parseLine } from "../../../../../libs/domain/src/ndjson.ts";
 
 export const MAIN = fileURLToPath(new URL("../main.ts", import.meta.url));
 export const FAKE_ADAPTER = fileURLToPath(new URL("./fakeAdapter.ts", import.meta.url));

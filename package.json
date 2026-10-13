@@ -5,15 +5,15 @@
   "version": "0.2.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json && tsc --noEmit -p tsconfig.remote.json",
-    "lint": "eslint .",
-    "test": "vitest run",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run test:rust",
-    "preview": "vite preview",
-    "tauri": "tauri"
+    "start:client": "nx run client:dev",
+    "tauri": "cd apps/client && tauri",
+    "build:all": "nx run-many -t build --all",
+    "typecheck:all": "nx run-many -t typecheck --all",
+    "lint:all": "nx run-many -t lint --all",
+    "test:all": "nx run-many -t test test-rust --all",
+    "check": "nx run-many -t typecheck lint test test-rust --all",
+    "nx": "nx",
+    "prepare": "git config --get-all remote.origin.fetch | grep -qF 'refs/tags/deployed' || git config --add remote.origin.fetch '+refs/tags/deployed/*:refs/tags/deployed/*'"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.89.1",
@@ -48,11 +48,17 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.2",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.5",
     "eslint-plugin-react-hooks": "^6.1.1",
+    "nx": "^23.1.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.71.1",
     "vite": "^8.0.16",
     "vitest": "^4.1.11"
+  },
+  "volta": {
+    "node": "24.21.0",
+    "npm": "11.19.0"
   }
 }

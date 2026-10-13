@@ -2,11 +2,11 @@
  * `hunt-session.json`, written by Hunt before the relay starts: the conversation the relay loads (`null` starts a new
  * one), its working directory, the system prompt addition and the mode and config options to restore. The relay writes
  * back the ID of a new conversation and every mode or config option a client changes. It also reads the list of MCP
- * servers every session gets (`HUNT_MCP_SERVERS`, `remote/session/mcp-servers.json`).
+ * servers every session gets (`HUNT_MCP_SERVERS`, `apps/session/mcp-servers.json`).
  */
 import { readFileSync } from "node:fs";
 import { writeJsonAtomic } from "./files.ts";
-import { isRecord } from "./jsonRpc.ts";
+import { isRecord } from "../../../../libs/domain/src/jsonRpc.ts";
 
 export const DEFAULT_MODE_ID = "bypassPermissions";
 

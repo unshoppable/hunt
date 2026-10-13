@@ -14,7 +14,7 @@
  */
 import { closeSync, constants, fstatSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { messageOf } from "../relay/relay.ts";
+import { messageOf } from "../../../libs/domain/src/errors.ts";
 import { buildSessionConfig, ConfigError, envFile } from "./config.ts";
 
 const HUNT_JSON_MAX_BYTES = 256 * 1024;

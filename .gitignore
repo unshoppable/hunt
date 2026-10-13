@@ -23,8 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 
-# Rust
-src-tauri/target/
+# Nx
+.nx/
 
 # Task notes
 .tasks/

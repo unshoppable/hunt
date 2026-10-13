@@ -12,7 +12,7 @@ import {
   type JsonRpcMessage,
   type JsonRpcRequest,
   type Outcome,
-} from "./jsonRpc.ts";
+} from "../../../../libs/domain/src/jsonRpc.ts";
 import { Relay, type ClientConnection } from "./relay.ts";
 
 const SESSION_ID = "acp-1";

@@ -11,9 +11,9 @@ function read(relativePath: string): string {
 
 describe("acp-version", () => {
   it("pins the claude-agent-acp version of Hunt's package-lock.json, which the relay's protocol handling is built for", () => {
-    const lock = JSON.parse(read("../../package-lock.json")) as PackageLock;
+    const lock = JSON.parse(read("../../../package-lock.json")) as PackageLock;
     const locked = lock.packages["node_modules/@agentclientprotocol/claude-agent-acp"]?.version;
     expect(locked).toBeDefined();
-    expect(read("./acp-version").trim()).toBe(locked);
+    expect(read("../acp-version").trim()).toBe(locked);
   });
 });

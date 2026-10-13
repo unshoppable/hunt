@@ -1,4 +1,4 @@
-//! The configuration of the gateway's poller `hunt-swf` (`remote/gateway/swf.ts`), which starts a session VM for every
+//! The configuration of the gateway's poller `hunt-swf` (`apps/gateway/src/swf.ts`), which starts a session VM for every
 //! open GitHub issue labelled `swf` in the configured repositories. Hunt writes it to the gateway's
 //! `/etc/hunt/swf.json` through `hunt-ctl swf-config`; the poller reads it before every round.
 

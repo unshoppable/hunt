@@ -9,6 +9,7 @@
  * and the Unix socket.
  */
 import type { ConfigChanges, HuntSessionConfig, McpServerEntry } from "./config.ts";
+import { messageOf } from "../../../../libs/domain/src/errors.ts";
 import {
   classify,
   ERROR_CODES,
@@ -22,7 +23,7 @@ import {
   type JsonRpcMessage,
   type JsonRpcNotification,
   type Outcome,
-} from "./jsonRpc.ts";
+} from "../../../../libs/domain/src/jsonRpc.ts";
 import type { RelayState, RelayStatus, TurnState } from "./status.ts";
 
 const CLIENT_INFO = { name: "hunt-relay", version: "1" };
@@ -690,6 +691,3 @@ export function withoutUnsupportedCapabilities(result: Record<string, unknown>):
   return { ...result, agentCapabilities: { ...agentCapabilities, sessionCapabilities } };
 }
 
-export function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}

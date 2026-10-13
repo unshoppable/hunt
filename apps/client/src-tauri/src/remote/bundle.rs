@@ -1,6 +1,7 @@
-//! The software Hunt runs on the session VMs and the gateway, shipped with the app as the `remote/` folder of this
-//! repository: the relay, the session configuration and `hunt-ctl`. Hunt installs it whenever a VM runs a different
-//! version, so the VMs never need access to GitHub and always match the app that talks to them.
+//! The software Hunt runs on the session VMs and the gateway, shipped with the app as the gateway's release artifact
+//! (`BUNDLE`, built by `scripts/buildVmArtifact.ts`): the relay, the session configuration and `hunt-ctl`. Hunt installs
+//! it whenever a VM runs a different version, so the VMs never need access to GitHub and always match the app that
+//! talks to them.
 
 use std::path::Path;
 
@@ -8,6 +9,9 @@ use sha2::{Digest, Sha256};
 
 use super::ssh::Ssh;
 use super::{shell_command, tar_create, Progress, RemoteStep};
+
+/// Where the gateway's release artifact (`nx build gateway`), which holds the session's, is bundled with the app.
+pub const BUNDLE: &str = "dist/apps/gateway";
 
 /// Names left out of the bundle and its hash.
 const SKIPPED: [&str; 2] = ["node_modules", ".DS_Store"];

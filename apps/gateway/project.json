@@ -1,0 +1,49 @@
+{
+  "name": "gateway",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "apps/gateway/src",
+  "tags": [
+    "type:backend"
+  ],
+  "implicitDependencies": [
+    "vm",
+    "session"
+  ],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/dist/apps/gateway"
+      ],
+      "inputs": [
+        "production",
+        "^production",
+        "{projectRoot}/project.json",
+        "{workspaceRoot}/scripts/buildVmArtifact.ts"
+      ],
+      "options": {
+        "command": "node scripts/buildVmArtifact.ts gateway"
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc --noEmit -p apps/gateway/tsconfig.json"
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "eslint apps/gateway"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run",
+        "cwd": "apps/gateway"
+      }
+    }
+  }
+}

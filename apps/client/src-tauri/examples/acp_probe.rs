@@ -8,7 +8,7 @@ use agent_client_protocol::{on_receive_notification, on_receive_request, AcpAgen
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::args().nth(1).expect("cwd");
     let prompt = std::env::args().nth(2).unwrap_or_else(|| "Say hello in three words.".into());
-    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js");
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js");
     let agent = AcpAgent::new(AcpAgentConfig::new("node").arg(script)).with_debug(|line, direction| {
         if line.contains("session/update") && !line.contains("agent_message_chunk") {
             eprintln!("[wire {direction:?}] {}", &line[..line.len().min(300)]);

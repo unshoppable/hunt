@@ -24,7 +24,7 @@
  * `<short>` is the first 8 hex digits of the session ID. `configCli.ts` writes the session's environment and the
  * configuration of the VM's preview proxy, which serves every port of the VM at `https://<short>-<port>.<domain>`.
  */
-import { isRecord } from "../relay/jsonRpc.ts";
+import { isRecord } from "../../../libs/domain/src/jsonRpc.ts";
 
 export interface PreviewRoute {
   /** Starts and ends with `/`. */
@@ -126,8 +126,8 @@ const ROUTE_PREFIX = /^\/(?:[A-Za-z0-9._~-]+\/)+$/;
 const ROUTE_PREFIX_RULE = 'must be a path prefix such as "/api/": starting and ending with /, segments of letters, digits, ".", "_", "~" and "-", none . or ..';
 const SHORT = /^[0-9a-f]{8}$/;
 /**
- * At least two labels, the last of letters only; hunt-ctl's DOMAIN_PATTERN, src-tauri/src/remote/preview.rs and
- * src/state/settings.ts check the same.
+ * At least two labels, the last of letters only; hunt-ctl's DOMAIN_PATTERN, apps/client/src-tauri/src/remote/preview.rs
+ * and apps/client/src/state/settings.ts check the same.
  */
 const DOMAIN = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 /** Leaves room for the `<short>-<port>.` in front of the domain within the 253 characters of a host name. */

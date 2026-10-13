@@ -2,10 +2,10 @@
  * hunt-swf's ACP client for the first prompt of a session: it connects to the session's relay like Hunt does (NDJSON
  * over `socat - UNIX-CONNECT:/run/hunt/relay.sock`), loads the relay's session, sends one `session/prompt` and
  * disconnects once the relay has taken the prompt, without waiting for the turn. The relay keeps running the prompts of
- * a client that disconnected (see `detach` in `remote/relay/relay.ts`).
+ * a client that disconnected (see `detach` in `apps/session/src/relay/relay.ts`).
  */
-import { classify, isRecord, requestMessage, type JsonRpcError, type JsonRpcId, type JsonRpcMessage } from "../relay/jsonRpc.ts";
-import { createLineDecoder, encodeLine, parseLine } from "../relay/ndjson.ts";
+import { classify, isRecord, requestMessage, type JsonRpcError, type JsonRpcId, type JsonRpcMessage } from "../../../libs/domain/src/jsonRpc.ts";
+import { createLineDecoder, encodeLine, parseLine } from "../../../libs/domain/src/ndjson.ts";
 
 const CLIENT_INFO = { name: "hunt-swf", version: "1" };
 export const STEP_TIMEOUT_MS = 60_000;

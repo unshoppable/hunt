@@ -3,11 +3,11 @@
  * `swf` in the repositories of `/etc/hunt/swf.json` (`swfConfig.ts`), polling every POLL_INTERVAL_MS, since the gateway
  * sits behind IAP and receives no webhooks.
  *
- *   node remote/gateway/swf.ts
+ *   node /srv/hunt/current/gateway/swf.mjs      (the bundle `nx build gateway` writes)
  *
  * Per issue, as long as fewer than `maxSessions` of its VMs (label `hunt-origin=swf`) are up: claim the issue first
  * (label `swf` → `swf:running` and a comment with the preview URL), then do what a handoff of the desktop does
- * (`src-tauri/src/remote/handoff.rs`), with a clone from GitHub in place of the push: create the session VM from the
+ * (`apps/client/src-tauri/src/remote/handoff.rs`), with a clone from GitHub in place of the push: create the session VM from the
  * instance template, record the session in its metadata, wait for its startup script, install the gateway's own
  * release on it, `hunt-ctl clone`, `session-config`, `hunt-session.json` through `put-files --claude`, `deps`, `start`
  * with the tokens on stdin and `wait`. Then the issue goes to the agent as its first prompt through the relay; the
@@ -27,6 +27,9 @@ import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import gitPushPrompt from "../../../libs/domain/prompts/git-push.md?raw";
+import remotePrompt from "../../../libs/domain/prompts/remote.md?raw";
+import { messageOf } from "../../../libs/domain/src/errors.ts";
 import { sendPrompt, type Transport } from "./acpClient.ts";
 import { createCompute, createMetadata, mergeMetadataItems, readSecret, type Compute, type Instance, type Metadata } from "./gcp.ts";
 import { createGitHub, type GitHub, type Issue, type IssueComment } from "./github.ts";
@@ -97,11 +100,6 @@ interface Setup {
   names: SessionNames;
   isVmCreated: boolean;
   done: Promise<void>;
-}
-
-export function messageOf(error: unknown): string {
-  if (!(error instanceof Error)) return String(error);
-  return error.cause instanceof Error ? `${error.message}: ${error.cause.message}` : error.message;
 }
 
 /** One poll after another; see the module comment. */
@@ -344,10 +342,9 @@ function secretsReader(metadata: Metadata): () => Promise<Tokens> {
   };
 }
 
-/** The remote prompts of the release this poller runs from. */
+/** The remote prompts, bundled into the poller at build time. */
 function readPrompts(): RemotePrompts {
-  const read = (name: string) => readFileSync(new URL(`../session/prompts/${name}`, import.meta.url), "utf8");
-  return { remote: read("remote.md"), gitPush: read("git-push.md") };
+  return { remote: remotePrompt, gitPush: gitPushPrompt };
 }
 
 /**

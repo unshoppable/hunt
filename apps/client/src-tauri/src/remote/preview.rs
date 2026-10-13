@@ -12,7 +12,7 @@ use super::vm::short_id;
 const MAX_DOMAIN_LENGTH: usize = 253 - "01234567-65535.".len();
 
 /// The preview domain from the settings, lowercased, or an error unless it is a host name of at least two labels whose
-/// last label consists of 2 to 63 letters. `hunt-ctl` (`DOMAIN_PATTERN`), `remote/session/config.ts` and
+/// last label consists of 2 to 63 letters. `hunt-ctl` (`DOMAIN_PATTERN`), `apps/session/src/config.ts` and
 /// `src/state/settings.ts` check the same.
 pub fn validate_domain(domain: &str) -> Result<String, String> {
     let domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();

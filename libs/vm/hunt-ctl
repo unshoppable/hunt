@@ -22,8 +22,8 @@ readonly ACTIVITY_FILE=/var/lib/hunt/activity
 readonly INSTALLED_HASH_FILE=/var/lib/hunt/installed-hash
 readonly UNIT_DIR=/etc/systemd/system
 # A preview domain: at least two labels, the last of letters only, and room for `<short>-<port>.` in front of it within
-# the 253 characters of a host name. src-tauri/src/remote/preview.rs, remote/session/config.ts and Hunt's settings
-# check the same.
+# the 253 characters of a host name. apps/client/src-tauri/src/remote/preview.rs, apps/session/src/config.ts and
+# Hunt's settings check the same.
 readonly DOMAIN_PATTERN='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
 readonly MAX_DOMAIN_LENGTH=238
 # Exit status of failures that were reported already; the ERR trap stays quiet for them.
@@ -72,7 +72,7 @@ readonly -a AGENT_PACKAGES=(g++ make python3 unzip)
 # ---- Gateway ----
 # The preview domain of the last `install --domain`.
 readonly DOMAIN_FILE=/etc/hunt/preview-domain
-# The configuration of hunt-swf.service (remote/gateway/swf.ts), which reads it at every poll.
+# The configuration of hunt-swf.service (apps/gateway/src/swf.ts), which reads it at every poll.
 readonly SWF_CONFIG=/etc/hunt/swf.json
 readonly EDGE_NAME=hunt-edge
 readonly EDGE_CONFIG_DIR=/etc/hunt-edge
@@ -85,7 +85,7 @@ readonly EDGE_IMAGE=caddy:2-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e
 readonly -a LB_RANGES=(35.191.0.0/16 130.211.0.0/22)
 # Where a session VM's preview proxy (hunt-proxy.service) listens.
 readonly SESSION_PROXY_PORT=8080
-# hunt-wake.service (remote/gateway/wake.ts).
+# hunt-wake.service (apps/gateway/src/wake.ts).
 readonly WAKE_ADDRESS=127.0.0.1:9180
 
 # Removed when hunt-ctl exits.
@@ -295,7 +295,7 @@ cmd_install() {
     [[ $2 == --domain ]] || usage
     domain=$3
   fi
-  [[ -f $source/.hash && -f $source/vm/hunt-ctl && -f $source/relay/main.ts ]] || die "$source is not a Hunt remote bundle"
+  [[ -f $source/.hash && -f $source/vm/hunt-ctl && -f $source/relay/main.mjs ]] || die "$source is not a Hunt remote bundle"
   hash=$(tr -d '[:space:]' <"$source/.hash")
   [[ $hash =~ ^[0-9a-f]{16}$ ]] || die "invalid bundle hash in $source/.hash: $hash"
   if [[ $role == gateway ]]; then
@@ -1031,7 +1031,7 @@ cmd_session_config() {
   [[ -x $HUNT_NODE ]] || die "$HUNT_NODE is missing; this VM is no session VM"
   install -d -m 0755 "${SESSION_ENV%/*}"
   # The CLI reads hunt.json and HUNT.md without following symlinks and writes both files only when both are valid.
-  if ! result=$("$HUNT_NODE" "$CURRENT/session/configCli.ts" --worktree "$worktree" --short "${id:0:8}" \
+  if ! result=$("$HUNT_NODE" "$CURRENT/session/configCli.mjs" --worktree "$worktree" --short "${id:0:8}" \
     --domain "$domain" --env-out "$SESSION_ENV" --caddy-out "$PROXY_CONFIG"); then
     jq -r '.problems[]?' <<<"$result" >&2 2>/dev/null || true
     die "the preview section of hunt.json or HUNT.md is not valid (see above)"
@@ -1278,11 +1278,11 @@ cmd_swf_config() {
   local result
   [[ -x $HUNT_NODE ]] || die "$HUNT_NODE is missing on the gateway"
   current_hash >/dev/null
-  if ! result=$("$HUNT_NODE" "$CURRENT/gateway/swfConfig.ts" --validate); then
+  if ! result=$("$HUNT_NODE" "$CURRENT/gateway/swfConfig.mjs" --validate); then
     jq -r '.problems[]?' <<<"$result" >&2 2>/dev/null || true
     die "the configuration of hunt-swf is not valid (see above)"
   fi
-  jq -e 'type == "object"' <<<"$result" >/dev/null 2>&1 || die "gateway/swfConfig.ts printed no configuration"
+  jq -e 'type == "object"' <<<"$result" >/dev/null 2>&1 || die "gateway/swfConfig.mjs printed no configuration"
   install -d -m 0755 "${SWF_CONFIG%/*}"
   jq . <<<"$result" >"$SWF_CONFIG.tmp"
   chmod 0644 "$SWF_CONFIG.tmp"

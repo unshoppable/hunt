@@ -28,10 +28,9 @@ interface VersionFile {
 const VERSION_FILES: VersionFile[] = [
   { path: "package.json", pattern: (current) => new RegExp(`("version": ")${escape(current)}(")`, "g"), occurrences: 1 },
   { path: "package-lock.json", pattern: (current) => new RegExp(`("name": "hunt",\\s*"version": ")${escape(current)}(")`, "g"), occurrences: 2 },
-  { path: "src-tauri/tauri.conf.json", pattern: (current) => new RegExp(`("version": ")${escape(current)}(")`, "g"), occurrences: 1 },
-  { path: "src-tauri/Cargo.toml", pattern: (current) => new RegExp(`(^version = ")${escape(current)}(")`, "gm"), occurrences: 1 },
-  { path: "src-tauri/Cargo.lock", pattern: (current) => new RegExp(`(name = "hunt"\\nversion = ")${escape(current)}(")`, "g"), occurrences: 1 },
-  { path: "README.md", pattern: () => /(badge\/version-)\d+\.\d+\.\d+(-)/g, occurrences: 1 },
+  { path: "apps/client/package.json", pattern: (current) => new RegExp(`("version": ")${escape(current)}(")`, "g"), occurrences: 1 },
+  { path: "apps/client/src-tauri/Cargo.toml", pattern: (current) => new RegExp(`(^version = ")${escape(current)}(")`, "gm"), occurrences: 1 },
+  { path: "apps/client/src-tauri/Cargo.lock", pattern: (current) => new RegExp(`(name = "hunt"\\nversion = ")${escape(current)}(")`, "g"), occurrences: 1 },
 ];
 
 interface Options {

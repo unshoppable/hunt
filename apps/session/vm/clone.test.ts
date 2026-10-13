@@ -3,15 +3,15 @@
  * faked inside the container: git reaches https://github.com/ through `url.<…>.insteadOf` at a busybox httpd that serves
  * bare repositories over Git's dumb HTTP protocol behind Basic authentication with the token, and a `curl` earlier on
  * PATH answers https://api.github.com/user when its configuration on stdin carries the token. A system-wide credential
- * helper with a wrong password proves that the clone uses only the token from stdin. /srv/hunt/current is left out of
- * the search for leftover tokens: it holds this file.
+ * helper with a wrong password proves that the clone uses only the token from stdin. The container runs the built
+ * session artifact (`nx build session`).
  */
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-const BUNDLE = fileURLToPath(new URL("..", import.meta.url));
+const BUNDLE = fileURLToPath(new URL("../../../dist/apps/session", import.meta.url));
 const TOKEN = "github_pat_11TEST0123456789_abcdefghijklmnop";
 const DOCKER_TIMEOUT_MS = 600_000;
 

@@ -1,17 +1,32 @@
 # Hunt — conventions for contributors and coding agents
 
-Desktop client for Claude Code: Tauri 2 (Rust, `src-tauri/`) shell, React 19 UI (`src/`). README.md explains what
-each subsystem does and which file owns it; this file says how code here is written and verified.
+Desktop client for Claude Code: Tauri 2 (Rust, `apps/client/src-tauri/`) shell, React 19 UI (`apps/client/src/`),
+plus the Node services that run remote sessions on GCP VMs. README.md explains what each subsystem does and which file
+owns it; this file says how code here is written and verified.
 
 ## Commands
 
-- `npm run tauri dev` runs the app; `npm run check` runs everything below.
-- `npm run typecheck` (strict tsc), `npm test` (vitest, node environment, pure logic only), `npm run test:rust`
-  (`cargo test` in `src-tauri`). `cargo build` must stay free of warnings.
-- There is no formatter. Format by hand: TypeScript up to ~160 columns, Rust per `src-tauri/rustfmt.toml`.
+- Nx 23 workspace: an explicit `project.json` per project, no inference plugins, no npm workspaces. Node and npm are
+  pinned through Volta in the root `package.json`.
+- `npm run start:client` runs the app (`nx run client:dev`: `tauri dev`, whose `beforeDevCommand` builds the gateway
+  artifact and starts Vite); `npm run tauri -- <args>` runs the Tauri CLI in `apps/client`.
+- `npm run check` runs `typecheck`, `lint`, `test` and `test-rust` of every project; `build:all`, `typecheck:all`,
+  `lint:all` and `test:all` run one kind. `npx nx affected -t <targets>` runs them for the projects a change touches,
+  `npx nx run <project>:<target>` for one.
+- Targets: `typecheck` (strict tsc), `lint` and `test` (vitest per project, no root config; the client's tests are pure
+  logic in the node environment); `build` for `client`, `gateway` and `session`; the client adds `dev`, `bundle`
+  (`tauri build`) and `test-rust` (`cargo test` in `apps/client/src-tauri`). The session's `test` runs its `build`
+  first: the Docker test of `hunt-ctl` uses the built artifact. `cargo build` must stay free of warnings.
+- There is no formatter. Format by hand: TypeScript up to ~160 columns, Rust per `apps/client/src-tauri/rustfmt.toml`.
 
 ## Layout
 
+- Projects: `client` (`apps/client`, the desktop app), `gateway` (`apps/gateway`, issue poller and wake service of the
+  gateway VM), `session` (`apps/session`, relay, `hunt.json` config and VM files of a session VM), `domain`
+  (`libs/domain`, code and agent prompts the apps share), `vm` (`libs/vm`, `hunt-ctl`) and `scripts` (`scripts/`,
+  release and VM artifact builds). Builds write to `dist/apps/<project>`.
+- Paths starting with `src/` or `src-tauri/` and the window pages are relative to `apps/client/`; bare module paths
+  such as `ide/paneGrid.ts` or `session/commands.rs` to its `src/` or `src-tauri/src/`.
 - `src/ipc` wraps every Tauri command (`commands.ts`), event (`events.ts`) and shared type (`types.ts`); `invoke`
   and `listen` are never called elsewhere. `src/state` holds the zustand stores. `src/ui` holds primitives shared by
   every feature. Feature folders (`chat`, `diff`, `ide`, `graph`, `guardrails`, `sessions`, `settings`) map 1:1 to
@@ -23,6 +38,13 @@ each subsystem does and which file owns it; this file says how code here is writ
   `src/ui/nativeWindow.ts`.
 - Pure logic lives in a `.ts` module with a sibling `.test.ts` next to the component or store that uses it
   (`ide/paneGrid.ts`, `diff/lineDiff.ts`, `ide/lsp/protocol.ts`, `graph/schema.ts`, `state/store.ts` reducers).
+- Server code (`apps/gateway`, `apps/session`, `libs/domain`) must stay runnable on plain Node, since tests start it
+  through type stripping: `erasableSyntaxOnly`, `.ts` extensions in relative imports, and no runtime package but
+  Node's built-ins (the artifact build rejects any other). It imports `libs/domain` by relative path
+  (`../../../libs/domain/src/…`), which Nx sees through `pluginsConfig.@nx/js.analyzeSourceFiles`.
+  `scripts/buildVmArtifact.ts` bundles each entry point into one `.mjs` with esbuild and lays the artifact out as
+  `/srv/hunt/current` expects (`gateway/`, `relay/`, `session/`, `vm/`); the gateway's artifact holds the session's and
+  ships with the app (`BUNDLE` in `src-tauri/src/remote/bundle.rs`).
 
 ## Frontend rules
 

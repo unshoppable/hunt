@@ -3,7 +3,7 @@
  * serves ACP to any number of clients at once on `$HUNT_SOCKET_DIR/relay.sock` and keeps `status.json` next to it (see
  * `relay.ts` for the protocol).
  *
- *   node remote/relay/main.ts
+ *   node /srv/hunt/current/relay/main.mjs      (the bundle `nx build session` writes)
  *
  * Environment: `HUNT_ADAPTER` (the adapter's entry script, run with this Node), `HUNT_CONFIG` (`hunt-session.json`),
  * `HUNT_SOCKET_DIR` and optionally `HUNT_MCP_SERVERS` (see `config.ts`). The adapter runs in the home directory with the
@@ -17,9 +17,10 @@ import { createServer, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { readConfig, readMcpServers, updateConfigFile, type McpServerEntry } from "./config.ts";
-import { ERROR_CODES, errorOutcome, responseMessage } from "./jsonRpc.ts";
-import { createLineDecoder, encodeLine, parseLine } from "./ndjson.ts";
-import { messageOf, Relay, type ClientConnection } from "./relay.ts";
+import { ERROR_CODES, errorOutcome, responseMessage } from "../../../../libs/domain/src/jsonRpc.ts";
+import { createLineDecoder, encodeLine, parseLine } from "../../../../libs/domain/src/ndjson.ts";
+import { messageOf } from "../../../../libs/domain/src/errors.ts";
+import { Relay, type ClientConnection } from "./relay.ts";
 import { HEARTBEAT_INTERVAL_MS, writeStatusFile } from "./status.ts";
 
 const STOP_TIMEOUT_MS = 10_000;

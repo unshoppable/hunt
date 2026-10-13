@@ -5,7 +5,7 @@
  * stdin closes.
  */
 import { appendFileSync } from "node:fs";
-import { createLineDecoder } from "../ndjson.ts";
+import { createLineDecoder } from "../../../../../libs/domain/src/ndjson.ts";
 
 interface Message {
   id?: number | string;

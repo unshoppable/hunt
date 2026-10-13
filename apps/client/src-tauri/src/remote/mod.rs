@@ -208,7 +208,7 @@ pub fn token_input(claude_token: &str, github_token: Option<&str>) -> String {
     format!("{claude_token}\n{}\n", github_token.unwrap_or_default())
 }
 
-/// The most of a repository's HUNT.md that goes into a remote session's system prompt; `remote/session/configCli.ts`
+/// The most of a repository's HUNT.md that goes into a remote session's system prompt; `apps/session/src/configCli.ts`
 /// takes as much on the VM.
 const HUNT_MD_MAX_BYTES: u64 = 20 * 1024;
 

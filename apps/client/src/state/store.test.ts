@@ -624,16 +624,14 @@ describe("remote sessions", () => {
     await useHuntStore.getState().syncRemoteSessions();
     expect(vi.mocked(invoke)).not.toHaveBeenCalled();
 
-    const vm = { project: "acme-hunt", zone: "europe-west1-c", previewDomain: "hunt.example.com" };
+    const vm = { project: "acme-hunt", zone: "europe-west1-c" };
     useSettingsStore.setState({ remote: { ...DEFAULT_REMOTE, ...vm, gatewayInstance: "vm-hunt-medc" } });
     useAgentDefaultsStore.setState({ recentRepoPaths: ["/src/app"] });
-    vi.mocked(invoke).mockImplementation((command) => (command === "adopt_session_vms" ? Promise.reject("failed to run gcloud") : Promise.resolve([])));
+    const failure = "failed to run sessions.list on the gateway: forbidden";
+    vi.mocked(invoke).mockImplementation((command) => (command === "adopt_session_vms" ? Promise.reject(failure) : Promise.resolve([])));
     await useHuntStore.getState().syncRemoteSessions();
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith("adopt_session_vms", {
-      settings: { ...vm, gateway: "vm-hunt-medc", template: "tpl-hunt-session", machineType: null },
-      repoPaths: ["/src/app"],
-    });
-    expect(useHuntStore.getState().remoteSync).toEqual({ isRunning: false, error: "failed to run gcloud" });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("adopt_session_vms", { settings: { ...vm, gateway: "vm-hunt-medc", machineType: null }, repoPaths: ["/src/app"] });
+    expect(useHuntStore.getState().remoteSync).toEqual({ isRunning: false, error: failure });
 
     vi.mocked(invoke).mockImplementation((command) => Promise.resolve(command === "adopt_session_vms" ? ["new-id"] : []));
     await useHuntStore.getState().syncRemoteSessions();

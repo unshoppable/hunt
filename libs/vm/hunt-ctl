@@ -8,7 +8,9 @@
 # belong to the user agent, and the relay runs as hunt-relay.service. The VM is the isolation boundary: whatever
 # hunt-ctl does in the session's files runs as agent, so the agent's Git hooks, config and symlinks act with no more
 # rights than the agent has anyway. The gateway (`gateway`) holds no sessions: its edge proxy forwards the preview hosts
-# to the session VMs, hunt-wake.service starts a stopped one, and hunt-swf.service starts sessions for GitHub issues.
+# to the session VMs, hunt-wake.service starts a stopped one, hunt-api.service creates, starts and deletes them for the
+# desktop apps, and hunt-swf.service starts sessions for GitHub issues. CI deploys both releases by SSH into the
+# gateway: `install` for the gateway's own, `stage-session` for the one the gateway installs on the session VMs.
 # shellcheck disable=SC2016 # jq programs and `sh -c` scripts are single-quoted on purpose.
 set -Eeuo pipefail
 shopt -s inherit_errexit nullglob
@@ -18,7 +20,8 @@ readonly RELEASES=/srv/hunt/releases
 readonly CURRENT=/srv/hunt/current
 readonly STATE_DIR=/var/lib/hunt
 readonly ACTIVITY_FILE=/var/lib/hunt/activity
-# The hash of the last install that completed; Hunt installs again while it differs from its bundle or is missing.
+# The hash of the last install that completed; written last, so an install that failed anywhere is repeated. The gateway
+# compares it with the session release it staged before it installs that on a session VM.
 readonly INSTALLED_HASH_FILE=/var/lib/hunt/installed-hash
 readonly UNIT_DIR=/etc/systemd/system
 # A preview domain: at least two labels, the last of letters only, and room for `<short>-<port>.` in front of it within
@@ -70,10 +73,22 @@ readonly VOLTA_NPM=11.16.0
 readonly -a AGENT_PACKAGES=(g++ make python3 unzip)
 
 # ---- Gateway ----
-# The preview domain of the last `install --domain`.
+# The preview domain of the edge proxy: `install --domain` sets it, later installs keep it.
 readonly DOMAIN_FILE=/etc/hunt/preview-domain
-# The configuration of hunt-swf.service (apps/gateway/src/swf.ts), which reads it at every poll.
+# The configuration of hunt-swf.service (apps/gateway/src/swf.ts), which reads it at every poll; hunt-api.service writes
+# it, so it belongs to GATEWAY_USER.
 readonly SWF_CONFIG=/etc/hunt/swf.json
+# The session release the gateway installs on session VMs (apps/gateway/src/sessionVm.ts): `stage-session` keeps it and
+# the one before below SESSION_RELEASES and points SESSION_CURRENT at it.
+readonly SESSION_RELEASES=/srv/hunt/session-releases
+readonly SESSION_CURRENT=/srv/hunt/session-current
+# The system user of hunt-api, hunt-swf and hunt-wake, the one user next to root that reaches the metadata server
+# (hunt-firewall.service).
+readonly GATEWAY_USER=hunt-gw
+# Every user outside google-sudoers may only run `hunt-api <method>` over SSH (apps/gateway/vm/hunt-api), which runs
+# the API's forwarder as GATEWAY_USER through sudo.
+readonly SSHD_DROPIN=/etc/ssh/sshd_config.d/20-hunt-api.conf
+readonly SUDOERS_DROPIN=/etc/sudoers.d/hunt-api
 readonly EDGE_NAME=hunt-edge
 readonly EDGE_CONFIG_DIR=/etc/hunt-edge
 # The port the load balancer's instance group serves (named port `http`) and its health path; Terraform uses the same.
@@ -101,15 +116,16 @@ usage: hunt-ctl <command> [arguments]
 
 Session VM and gateway:
   install <dir> [--domain <domain>]
-                         install the bundle in <dir>: release, systemd units and, on a session VM, the agent's tools;
-                         removes all but this and the previous release. The gateway needs --domain, the preview domain
-                         of its edge proxy, at its first install; later installs keep the last one
+                         install the release unpacked in <dir>, a CI build with .version and .hash, and its systemd
+                         units; removes all but this and the previous release. The gateway serves previews of
+                         <domain>, or of the domain the install before stored
   install-units          (re)install the systemd units and the hunt-ctl link of the current release
-  version                hash of the current release
+  version                version, hash and protocol of the current release
 
 Session VM:
-  install-tools <dir>    install only the agent's tools of the bundle in <dir>, as install does, without a release or
-                         units; the image build of the session VMs bakes them into the image
+  install-tools [<dir>]  install the agent's tools of the release in <dir> (default: the current one) unless they are at
+                         their versions; the image build of the session VMs bakes them into the image, and the desktop
+                         app runs it for an image that lacks them
   init <id> --repo <owner>/<repo>
                          create the session's empty repository /home/agent/<repo> (removing what an earlier handoff
                          left)
@@ -147,6 +163,8 @@ Session VM:
   destroy <id>           stop the session's relay and proxy and remove its worktree, ~/.claude and files
 
 Gateway:
+  stage-session <dir>    keep the session release unpacked in <dir>, a CI build with .version and .hash, as the one the
+                         gateway installs on session VMs; removes all but this and the previous one
   swf-config             validate the configuration of hunt-swf.service (JSON on stdin: repos, maxSessions, label, …)
                          and write it to /etc/hunt/swf.json; prints the stored configuration
 USAGE
@@ -277,10 +295,11 @@ remove_units() {
   done
 }
 
-# Removes the releases except those of the hashes given.
+# Removes the releases in folder $1 except those of the hashes given.
 prune_releases() {
-  local release hash
-  for release in "$RELEASES"/*/; do
+  local dir=$1 release hash
+  shift
+  for release in "$dir"/*/; do
     hash=${release%/}
     hash=${hash##*/}
     [[ " $* " == *" $hash "* ]] && continue
@@ -290,14 +309,19 @@ prune_releases() {
 
 cmd_install() {
   (( $# == 1 || $# == 3 )) || usage
-  local source=$1 domain='' hash release staging previous
+  local source=$1 domain='' hash release staging previous entry script
   if (( $# == 3 )); then
-    [[ $2 == --domain ]] || usage
+    [[ $2 == --domain && $role == gateway ]] || usage
     domain=$3
   fi
-  [[ -f $source/.hash && -f $source/vm/hunt-ctl && -f $source/relay/main.mjs ]] || die "$source is not a Hunt remote bundle"
+  case $role in
+    session) entry=relay/main.mjs ;;
+    gateway) entry=gateway/swf.mjs ;;
+  esac
+  [[ -f $source/.version ]] || die "$source is no CI release (it has no .version); update Hunt, which no longer installs its own"
+  [[ -f $source/.hash && -f $source/vm/hunt-ctl && -f $source/$entry ]] || die "$source is not a Hunt $role release"
   hash=$(tr -d '[:space:]' <"$source/.hash")
-  [[ $hash =~ ^[0-9a-f]{16}$ ]] || die "invalid bundle hash in $source/.hash: $hash"
+  [[ $hash =~ ^[0-9a-f]{16}$ ]] || die "invalid release hash in $source/.hash: $hash"
   if [[ $role == gateway ]]; then
     if [[ -z $domain && -f $DOMAIN_FILE ]]; then
       domain=$(tr -d '[:space:]' <"$DOMAIN_FILE")
@@ -315,15 +339,16 @@ cmd_install() {
   if [[ ! -d $release ]]; then
     staging=$(mktemp -d "$RELEASES/.$hash.XXXXXX")
     temporary_paths+=("$staging")
-    # Copied without ownership: the release belongs to root, whoever uploaded the bundle.
+    # Copied without ownership: the release belongs to root, whoever uploaded it.
     cp -R "$source/." "$staging/"
-    chmod -R go-w "$staging"
-    chmod 0755 "$staging" "$staging/vm/hunt-ctl" "$staging/vm/hunt-idle-check"
+    chmod -R a+rX,go-w "$staging"
+    chmod 0755 "$staging" "$staging/vm/hunt-ctl"
+    for script in hunt-idle-check hunt-api; do
+      if [[ -f $staging/vm/$script ]]; then
+        chmod 0755 "$staging/vm/$script"
+      fi
+    done
     mv -T "$staging" "$release"
-  fi
-  # The tools come first: a failed install leaves the current release in place.
-  if [[ $role == session ]]; then
-    install_agent_tools "$release"
   fi
   previous=$(tr -d '[:space:]' 2>/dev/null <"$CURRENT/.hash" || true)
   ln -sfn "$release" "$CURRENT.new"
@@ -333,8 +358,8 @@ cmd_install() {
     printf '%s\n' "$domain" >"$DOMAIN_FILE"
   fi
   install_units
-  # The release before stays, so that switching back to it, as a second Hunt version does, is quick.
-  prune_releases "$hash" "$previous"
+  # The release before stays, so that switching back to it is quick.
+  prune_releases "$RELEASES" "$hash" "$previous"
   if [[ $role == gateway ]]; then
     # Only the edge proxy runs in Docker on the gateway; images and build cache of other containers are leftovers.
     docker image prune --all --force >/dev/null 2>&1 || true
@@ -345,13 +370,13 @@ cmd_install() {
   emit --arg hash "$hash" '{hash: $hash}'
 }
 
-# Installs the agent's tools of the bundle in $1 as cmd_install does, but leaves releases, units and the installed hash
-# alone, so that an image built from the VM holds the tools and a later install of a bundle with the same versions skips
-# them.
+# Installs the agent's tools of the release in $1, the current one by default, and leaves releases, units and the
+# installed hash alone. The image build of the session VMs runs it, so that the image holds the tools, and the desktop
+# app does on a VM whose image lacks them; a tool at its version already is skipped.
 cmd_install_tools() {
-  (( $# == 1 )) || usage
-  local source=$1
-  [[ -f $source/vm/hunt-ctl && -f $source/session/acp-version ]] || die "$source is not a Hunt remote bundle"
+  (( $# <= 1 )) || usage
+  local source=${1:-$CURRENT}
+  [[ -f $source/vm/hunt-ctl && -f $source/session/acp-version ]] || die "$source is not a Hunt session release"
   install -d -m 0755 "$STATE_DIR"
   exec 9>"$STATE_DIR/install.lock"
   flock --wait 1800 9 || die "another hunt-ctl install did not finish within 30 minutes"
@@ -365,8 +390,9 @@ install_units() {
   local unit
   [[ -d $CURRENT/vm/systemd/$role ]] || die "no Hunt release is installed; run hunt-ctl install first"
   if [[ $role == gateway ]]; then
-    # Units from the time the gateway hosted every session itself.
-    remove_units hunt-boot.service hunt-idle.timer hunt-idle.service
+    # Units from the time the gateway hosted every session itself, and from the time it pulled its releases.
+    remove_units hunt-boot.service hunt-idle.timer hunt-idle.service hunt-update.timer hunt-update.service
+    ensure_gateway_user
   fi
   for unit in "$CURRENT/vm/systemd/$role"/*; do
     install -m 0644 "$unit" "$UNIT_DIR/"
@@ -385,11 +411,12 @@ install_units() {
       systemctl try-restart "$PROXY_UNIT"
       ;;
     gateway)
+      install_gateway_access
       systemctl enable --quiet hunt-firewall.service hunt-wake.service
       systemctl restart hunt-firewall.service hunt-wake.service
-      # A running poller gets SIGHUP and exits once its current work is done; systemd starts it on this release.
-      systemctl enable --quiet hunt-swf.service
-      systemctl reload-or-restart hunt-swf.service
+      # A running poller or API gets SIGHUP and exits once its current work is done; systemd starts it on this release.
+      systemctl enable --quiet hunt-swf.service hunt-api.service
+      systemctl reload-or-restart hunt-swf.service hunt-api.service
       ensure_edge
       ;;
   esac
@@ -403,13 +430,16 @@ cmd_install_units() {
 
 cmd_version() {
   (( $# == 0 )) || usage
-  local hash
+  local hash version protocol
   if [[ ! -f $CURRENT/.hash ]]; then
-    emit '{hash: null}'
+    emit '{version: null, hash: null, protocol: null}'
     return
   fi
   hash=$(current_hash)
-  emit --arg hash "$hash" '{hash: $hash}'
+  version=$(tr -d '[:space:]' 2>/dev/null <"$CURRENT/.version" || true)
+  protocol=$(jq -c '.protocol // null' "$CURRENT/protocol.json" 2>/dev/null || echo null)
+  emit --arg version "$version" --arg hash "$hash" --argjson protocol "$protocol" \
+    '{version: (if $version == "" then null else $version end), hash: $hash, protocol: $protocol}'
 }
 
 # ---- Session VM: the agent's tools ----------------------------------------------------------------------------------
@@ -1209,6 +1239,81 @@ cmd_destroy() {
 # Requests it cannot deliver (502, 503, 504: the VM is stopped or still booting) go to hunt-wake.service, which starts
 # the VM and answers with a page that reloads until the VM answers.
 
+# Creates the system user GATEWAY_USER unless it exists.
+ensure_gateway_user() {
+  if id -u "$GATEWAY_USER" >/dev/null 2>&1; then
+    return
+  fi
+  useradd --system --user-group --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin "$GATEWAY_USER"
+}
+
+# Opens the gateway API to every user who logs in: /usr/local/bin/hunt-api, the sudo rule that runs its forwarder as
+# GATEWAY_USER, the sshd rule that forces it on everyone outside google-sudoers, and SWF_CONFIG owned by GATEWAY_USER,
+# who writes it. Each drop-in is validated before it takes effect; sshd reloads only for a changed rule.
+install_gateway_access() {
+  local scratch
+  command -v sshd >/dev/null && command -v visudo >/dev/null || die "the gateway needs openssh-server and sudo"
+  ln -sfn "$CURRENT/vm/hunt-api" /usr/local/bin/hunt-api
+  install -d -m 0755 "${SWF_CONFIG%/*}"
+  if [[ ! -f $SWF_CONFIG ]]; then
+    printf '{"repos": []}\n' >"$SWF_CONFIG"
+  fi
+  chown "$GATEWAY_USER:$GATEWAY_USER" "$SWF_CONFIG"
+  chmod 0644 "$SWF_CONFIG"
+
+  # sudo skips files whose name contains a dot, so the candidate takes no effect before it is checked.
+  temporary_paths+=("$SUDOERS_DROPIN.new")
+  install -m 0440 "$CURRENT/vm/sudoers-hunt-api" "$SUDOERS_DROPIN.new"
+  visudo -c -q -f "$SUDOERS_DROPIN.new" >/dev/null || die "the sudo rule of hunt-api does not validate"
+  mv -f "$SUDOERS_DROPIN.new" "$SUDOERS_DROPIN"
+
+  cmp -s "$CURRENT/vm/sshd-hunt-api.conf" "$SSHD_DROPIN" && return
+  make_scratch_dir scratch
+  if [[ -f $SSHD_DROPIN ]]; then
+    cp -p "$SSHD_DROPIN" "$scratch/previous.conf"
+  fi
+  install -d -m 0755 "${SSHD_DROPIN%/*}"
+  install -m 0644 "$CURRENT/vm/sshd-hunt-api.conf" "$SSHD_DROPIN"
+  if ! sshd -t; then
+    if [[ -f $scratch/previous.conf ]]; then
+      mv -f "$scratch/previous.conf" "$SSHD_DROPIN"
+    else
+      rm -f -- "$SSHD_DROPIN"
+    fi
+    die "sshd refuses $SSHD_DROPIN (see above); the rule before stays"
+  fi
+  systemctl try-reload-or-restart ssh.service
+}
+
+# Keeps the session release in $1 as the one the gateway installs on session VMs (SESSION_CURRENT), readable by
+# GATEWAY_USER, whose hunt-api and hunt-swf pack it for them.
+cmd_stage_session() {
+  (( $# == 1 )) || usage
+  local source=$1 hash version release staging previous
+  [[ -f $source/.version ]] || die "$source is no CI release (it has no .version)"
+  [[ -f $source/.hash && -f $source/vm/hunt-ctl && -f $source/relay/main.mjs ]] || die "$source is not a Hunt session release"
+  hash=$(tr -d '[:space:]' <"$source/.hash")
+  [[ $hash =~ ^[0-9a-f]{16}$ ]] || die "invalid release hash in $source/.hash: $hash"
+  version=$(tr -d '[:space:]' <"$source/.version")
+  install -d -m 0755 "$SESSION_RELEASES" "$STATE_DIR"
+  exec 9>"$STATE_DIR/install.lock"
+  flock --wait 1800 9 || die "another hunt-ctl install did not finish within 30 minutes"
+  release=$SESSION_RELEASES/$hash
+  if [[ ! -d $release ]]; then
+    staging=$(mktemp -d "$SESSION_RELEASES/.$hash.XXXXXX")
+    temporary_paths+=("$staging")
+    cp -R "$source/." "$staging/"
+    chmod -R a+rX,go-w "$staging"
+    chmod 0755 "$staging"
+    mv -T "$staging" "$release"
+  fi
+  previous=$(tr -d '[:space:]' 2>/dev/null <"$SESSION_CURRENT/.hash" || true)
+  ln -sfn "$release" "$SESSION_CURRENT.new"
+  mv -T "$SESSION_CURRENT.new" "$SESSION_CURRENT"
+  prune_releases "$SESSION_RELEASES" "$hash" "$previous"
+  emit --arg version "$version" --arg hash "$hash" '{version: $version, hash: $hash}'
+}
+
 # Writes the edge's Caddy configuration for domain $1 and session VMs in zone $2 of project $3. Caddy serves only the
 # load balancer's ranges and answers its health check on every host; it removes IAP's credentials before a request
 # leaves the gateway.
@@ -1250,7 +1355,7 @@ write_edge_config() {
 # when the edge runs with the pinned image, otherwise a new container.
 ensure_edge() {
   local domain zone project state
-  [[ -f $DOMAIN_FILE ]] || die "the gateway has no preview domain yet; run hunt-ctl install <dir> --domain <domain>"
+  [[ -f $DOMAIN_FILE ]] || die "the gateway has no preview domain yet; set the instance metadata hunt-preview-domain"
   domain=$(tr -d '[:space:]' <"$DOMAIN_FILE")
   zone=$(metadata instance/zone)
   zone=${zone##*/}
@@ -1286,6 +1391,9 @@ cmd_swf_config() {
   install -d -m 0755 "${SWF_CONFIG%/*}"
   jq . <<<"$result" >"$SWF_CONFIG.tmp"
   chmod 0644 "$SWF_CONFIG.tmp"
+  if id -u "$GATEWAY_USER" >/dev/null 2>&1; then
+    chown "$GATEWAY_USER:$GATEWAY_USER" "$SWF_CONFIG.tmp"
+  fi
   mv -f "$SWF_CONFIG.tmp" "$SWF_CONFIG"
   emit --argjson config "$result" '$config'
 }
@@ -1304,13 +1412,13 @@ main() {
       session-config | start | wait | stop | clear | snapshot | status | preview-status | destroy)
       [[ $role == session ]] || die "hunt-ctl $command runs on session VMs only; this VM is the gateway"
       ;;
-    swf-config)
+    stage-session | swf-config)
       [[ $role == gateway ]] || die "hunt-ctl $command runs on the gateway only; this VM is a session VM"
       ;;
     *) usage ;;
   esac
   case $command in
-    version | status | preview-status | install-tools) counts_as_activity=false ;;
+    version | status | preview-status | install-tools | stage-session) counts_as_activity=false ;;
   esac
   install -d -m 0755 "$STATE_DIR"
   if $counts_as_activity; then
@@ -1340,6 +1448,7 @@ main() {
   exec 3>&1 1>&2
   case $command in
     install) cmd_install "$@" ;;
+    stage-session) cmd_stage_session "$@" ;;
     install-units) cmd_install_units "$@" ;;
     install-tools) cmd_install_tools "$@" ;;
     version) cmd_version "$@" ;;

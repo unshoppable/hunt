@@ -120,30 +120,19 @@ export type Workspace = "worktree" | "checkout";
 export type VmRef = { project: string; zone: string; instance: string };
 
 /**
- * Where a handoff creates the session's VM and how previews reach it, from Settings → Remote VM (mirror of `VmSettings`
- * in src-tauri/src/remote/mod.rs): the VM `vm-hunt-s-<short>` is created from the instance template `template` in
- * `project` and `zone`, with `machineType` or the template's; the gateway VM routes `https://<short>[-<port>].<previewDomain>`
- * to it.
+ * How Hunt reaches the gateway, from Settings → Remote VM (mirror of `VmSettings` in src-tauri/src/remote/mod.rs): the
+ * gateway VM `gateway` in `project` and `zone`, whose API provisions, starts and deletes the session VMs, with
+ * `machineType` or the instance template's.
  */
-export type VmSettings = { project: string; zone: string; gateway: string; template: string; machineType: string | null; previewDomain: string };
+export type VmSettings = { project: string; zone: string; gateway: string; machineType: string | null };
 
 /**
- * What the gateway's poller `hunt-swf` reads from `/etc/hunt/swf.json` (mirror of `SwfConfig` in
+ * The configuration of the gateway's poller `hunt-swf` as the gateway stored it (mirror of `SwfConfig` in
  * src-tauri/src/remote/swf.rs): the `<owner>/<repo>` repositories whose open issues labelled `label` it starts sessions
- * for, at most `maxSessions` at once, on VMs created from `template` with `machineType` or the template's.
+ * for, at most `maxSessions` at once, on VMs created from the instance template `template` with `machineType` or the
+ * template's.
  */
 export type SwfConfig = { repos: string[]; maxSessions: number; label: string; template: string; machineType: string | null };
-
-/** A session VM as Compute Engine lists it, with its labels and metadata (mirror of `SessionVm` in src-tauri/src/remote/vm.rs). */
-export type SessionVm = {
-  name: string;
-  zone: string;
-  status: string;
-  labels: Record<string, string>;
-  metadata: Record<string, string>;
-  /** When Compute Engine created the VM; null when the listing lacks a readable time. */
-  createdAt: string | null;
-};
 
 /**
  * Who started a remote session on its VM: `handoff` is this Mac, whose local worktree waits for the session; `desktop`

@@ -1,5 +1,35 @@
 {
   "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "release": {
+    "projects": [
+      "client",
+      "gateway",
+      "session"
+    ],
+    "projectsRelationship": "independent",
+    "version": {
+      "conventionalCommits": true,
+      "adjustSemverBumpsForZeroMajorVersion": false,
+      "fallbackCurrentVersionResolver": "disk"
+    },
+    "git": {
+      "push": false,
+      "commit": true,
+      "tag": true,
+      "stageChanges": true
+    },
+    "changelog": {
+      "workspaceChangelog": false,
+      "projectChangelogs": {
+        "renderOptions": {
+          "authors": false,
+          "commitReferences": true,
+          "versionTitleDate": true
+        }
+      },
+      "automaticFromRef": true
+    }
+  },
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",

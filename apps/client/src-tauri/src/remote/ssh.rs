@@ -1,15 +1,15 @@
-//! OpenSSH to the VM of remote sessions through an IAP tunnel (`gcloud compute start-iap-tunnel` as the ProxyCommand)
-//! with a key of Hunt's own that is registered with OS Login. Short commands share one multiplexed connection; the
-//! ACP stream of a session gets a tunnel of its own, because `AcpAgent` kills its whole process group when the session
-//! ends and would take a shared master down with it. Terminals join the shared connection while one is open, but never
-//! start it, for the same reason.
+//! OpenSSH to the VMs of remote sessions and to the gateway through an IAP tunnel (`gcloud compute start-iap-tunnel` as
+//! the ProxyCommand) with a key of Hunt's own that is registered with OS Login. Short commands and the calls of the
+//! gateway API share one multiplexed connection per VM; the ACP stream of a session gets a tunnel of its own, because
+//! `AcpAgent` kills its whole process group when the session ends and would take a shared master down with it.
+//! Terminals join the shared connection while one is open, but never start it, for the same reason.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex;
 
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 use super::{gcloud, shell_quote, VmRef};
@@ -158,6 +158,59 @@ impl Ssh {
         Ok(output.stdout)
     }
 
+    /// Runs `command` on the VM with `input` on its standard input and hands each line of its standard output to
+    /// `on_line` as it arrives, without the line break; a last line without one counts too. Fails like `run_with_input`
+    /// when the command fails, after every line was handed over.
+    pub async fn run_streaming(&self, command: &str, input: &[u8], on_line: &mut (dyn FnMut(&str) + Send)) -> Result<(), String> {
+        let mut child = Command::new("ssh")
+            .args(self.options(Connection::Shared))
+            .arg(&self.vm.instance)
+            .arg(command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| format!("failed to run ssh: {error}"))?;
+        let mut stdin = child.stdin.take().ok_or("failed to open the stdin of ssh")?;
+        let mut stdout = child.stdout.take().ok_or("failed to open the stdout of ssh")?;
+        let mut stderr = child.stderr.take().ok_or("failed to open the stderr of ssh")?;
+        let input = input.to_vec();
+        let writer = tokio::spawn(async move {
+            stdin.write_all(&input).await?;
+            stdin.shutdown().await
+        });
+        let errors = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            let _ = stderr.read_to_end(&mut bytes).await;
+            bytes
+        });
+
+        let mut pending = Vec::new();
+        let mut chunk = vec![0u8; 16 * 1024];
+        loop {
+            let read = stdout.read(&mut chunk).await.map_err(|error| format!("failed to read the output of `{}`: {error}", first_word(command)))?;
+            if read == 0 {
+                break;
+            }
+            for line in split_lines(&mut pending, &chunk[..read]) {
+                on_line(&line);
+            }
+        }
+        if !pending.is_empty() {
+            on_line(&String::from_utf8_lossy(&pending));
+        }
+        let status = child.wait().await.map_err(|error| format!("failed to run ssh: {error}"))?;
+        // A command that exits without reading its input closes the pipe early; its exit status tells what happened.
+        let _ = writer.await;
+        let stderr = errors.await.unwrap_or_default();
+        if !status.success() {
+            let stderr = String::from_utf8_lossy(&stderr).trim().to_string();
+            return Err(format!("failed to run `{}` on the VM {}: {stderr}", first_word(command), self.vm.instance));
+        }
+        Ok(())
+    }
+
     /// The value of `GIT_SSH_COMMAND` that lets git reach the VM the way `run` does.
     pub fn git_ssh_command(&self) -> String {
         let mut command = String::from("ssh");
@@ -198,6 +251,18 @@ pub async fn forget_host_key(vm: &VmRef, dir: &Path) -> Result<(), String> {
         return Err(format!("failed to forget the host key of the VM {}: {}", vm.instance, String::from_utf8_lossy(&output.stderr).trim()));
     }
     Ok(())
+}
+
+/// Appends `chunk` to `pending` and takes the complete lines out of it, without their `\n` or `\r\n`; what follows the
+/// last line break stays in `pending` for the next chunk. Bytes that are no UTF-8 become U+FFFD.
+fn split_lines(pending: &mut Vec<u8>, chunk: &[u8]) -> Vec<String> {
+    pending.extend_from_slice(chunk);
+    let Some(end) = pending.iter().rposition(|byte| *byte == b'\n') else { return Vec::new() };
+    let complete: Vec<u8> = pending.drain(..=end).collect();
+    complete[..end]
+        .split(|byte| *byte == b'\n')
+        .map(|line| String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(line)).into_owned())
+        .collect()
 }
 
 /// The first word of a remote command, for error messages that must not repeat whole scripts.
@@ -279,6 +344,22 @@ mod tests {
         std::fs::write(dir.path().join("known_hosts"), format!("vm-hunt-s-ab12cd34.europe-west1-c.acme {key}\n{other}")).unwrap();
         forget_host_key(&vm, dir.path()).await.unwrap();
         assert_eq!(std::fs::read_to_string(dir.path().join("known_hosts")).unwrap(), other);
+    }
+
+    #[test]
+    fn split_lines_returns_complete_lines_and_keeps_the_rest_for_the_next_chunk() {
+        let mut pending = Vec::new();
+        assert_eq!(split_lines(&mut pending, b"{\"type\":\"pro"), Vec::<String>::new());
+        assert_eq!(split_lines(&mut pending, b"gress\"}\n{\"type\":\"log\"}\r\n\n{\"ty"), ["{\"type\":\"progress\"}", "{\"type\":\"log\"}", ""]);
+        assert_eq!(pending, b"{\"ty");
+        assert_eq!(split_lines(&mut pending, b"pe\":\"result\"}\n"), ["{\"type\":\"result\"}"]);
+        assert!(pending.is_empty());
+
+        // A multibyte character split across two chunks arrives whole.
+        let text = "Grüße\n".as_bytes();
+        assert_eq!(split_lines(&mut pending, &text[..3]), Vec::<String>::new());
+        assert_eq!(split_lines(&mut pending, &text[3..]), ["Grüße"]);
+        assert_eq!(split_lines(&mut pending, b"\xff\n"), ["\u{fffd}"]);
     }
 
     #[test]

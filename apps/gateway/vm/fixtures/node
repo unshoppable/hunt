@@ -1,0 +1,3 @@
+#!/bin/bash
+# Fake Node of install.test.ts: prints the user it runs as, the user sudo ran it for and its arguments.
+echo "$(id -un) ${SUDO_USER:-} $*"

@@ -1,0 +1,23 @@
+name: 'Load Environment Variables'
+description: 'Appends the variables of .github/config/<project>/variables.json and its <stage>/variables.json to the job environment'
+inputs:
+  project:
+    description: 'Project name'
+    required: true
+  stage:
+    description: 'Deployment stage'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Load the project's and the stage's variables
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+        STAGE: ${{ inputs.stage }}
+      run: |
+        for file in ".github/config/$PROJECT/variables.json" ".github/config/$PROJECT/$STAGE/variables.json"; do
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' "$file" >> "$GITHUB_ENV"
+        done
+        cut -d= -f1 "$GITHUB_ENV"

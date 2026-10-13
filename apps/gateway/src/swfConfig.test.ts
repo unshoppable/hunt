@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { parseSwfConfig, readSwfConfig } from "./swfConfig.ts";
+import { parseSwfConfig, readSwfConfig, readSwfConfigOrDefaults, writeSwfConfig } from "./swfConfig.ts";
 
-const CLI = fileURLToPath(new URL("./swfConfig.ts", import.meta.url));
+const CLI = fileURLToPath(new URL("./swfConfigCli.ts", import.meta.url));
 
 describe("parseSwfConfig", () => {
   it("fills in the defaults and deduplicates the repositories without case", () => {
@@ -60,7 +60,23 @@ describe("readSwfConfig", () => {
   });
 });
 
-describe("swfConfig.ts --validate", () => {
+describe("readSwfConfigOrDefaults and writeSwfConfig", () => {
+  it("reads the defaults without a file and reads back what was written", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hunt-swf-config-"));
+    try {
+      const path = join(dir, "swf.json");
+      expect(readSwfConfigOrDefaults(path)).toEqual({ repos: [], maxSessions: 2, label: "swf", template: "tpl-hunt-session", machineType: null });
+      const config = { repos: ["acme/app"], maxSessions: 4, label: "swf", template: "tpl-hunt-session", machineType: "e2-standard-8" };
+      writeFileSync(path, JSON.stringify({ repos: ["acme/old", "acme/older", "acme/oldest"] }));
+      writeSwfConfig(config, path);
+      expect(readSwfConfigOrDefaults(path)).toEqual(config);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("swfConfigCli.ts --validate", () => {
   function validate(input: string) {
     const result = spawnSync(process.execPath, [CLI, "--validate"], { input, encoding: "utf8" });
     return { status: result.status, output: JSON.parse(result.stdout) as unknown };

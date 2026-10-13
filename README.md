@@ -97,8 +97,8 @@ npm install
 npm run start:client
 ```
 
-`npm run start:client` runs `nx run client:dev`: `tauri dev` in `apps/client`, which first builds the VM release
-artifact (`nx run gateway:build`) and starts Vite. `npm run tauri -- <args>` runs any other Tauri CLI command there.
+`npm run start:client` runs `nx run client:dev`: `tauri dev` in `apps/client`, which starts Vite first.
+`npm run tauri -- <args>` runs any other Tauri CLI command there.
 
 #### Verify
 
@@ -114,14 +114,24 @@ npx nx run session:test                            # one target of one project
 npm run tauri -- build --bundles dmg   # local DMG in apps/client/src-tauri/target/release/bundle/dmg/
 ```
 
-Releases are cut from *Actions → Release → Run workflow* on `master` ([`release.yml`](.github/workflows/release.yml)).
-The run derives the next version from the Conventional Commits since the last tag (`feat` → minor, `fix`/`perf` →
-patch, `!` or `BREAKING CHANGE` → major; the `bump` input overrides it), rewrites every version file (`VERSION_FILES`
-in `scripts/release/release.ts`; `apps/client/src-tauri/tauri.conf.json` reads its version from
-`apps/client/package.json`), commits and tags, builds the Apple Silicon DMG plus the updater artifacts
-(`Hunt.app.tar.gz`, its `.sig` and `latest.json`) and publishes the GitHub Release once the build is green. Publishing
-is what makes running installs offer the update: the in-app updater reads `latest.json` of the latest *published*
-release. `node scripts/release/release.ts --dry-run` shows what the next run would do.
+Every push to `master` runs [`ci-release.yml`](.github/workflows/ci-release.yml), as in app-framework. `nx release`
+derives the next version of each app from the Conventional Commits that touch it (`feat` → minor, `fix`/`perf` →
+patch, `!` or `BREAKING CHANGE` → major), independently per app: it writes the version into the app's `package.json`
+(`apps/client/src-tauri/tauri.conf.json` reads `apps/client/package.json`) and a `CHANGELOG.md`, commits
+`chore(release): …` and tags `<app>@<version>`. A release commit then
+
+- deploys the VM apps (`gateway`, `session`) affected since the commit the VMs run, the tag `deployed/prod`
+  ([`ci-nx-affected-deploy.yml`](.github/workflows/ci-nx-affected-deploy.yml),
+  [`ci-build-and-deploy.yml`](.github/workflows/ci-build-and-deploy.yml)), and moves the tag;
+- publishes the desktop app when it got a `client@<version>` tag
+  ([`ci-publish-client.yml`](.github/workflows/ci-publish-client.yml)): the Apple Silicon DMG plus the updater
+  artifacts (`Hunt.app.tar.gz`, its `.sig` and `latest.json`) on the GitHub Release `client@<version>`, published as
+  the latest once the build is green. Publishing is what makes running installs offer the update: the in-app updater
+  reads `latest.json` of the latest *published* release. VM releases get no GitHub Release.
+
+`npx nx release --skip-publish --dry-run` shows what the next run would do. Pull requests run
+[`ci-pull-request.yml`](.github/workflows/ci-pull-request.yml): `nx affected` typecheck, lint, test and build, and the
+Rust tests on macOS.
 
 The updater artifacts are signed with the key whose public half is in `apps/client/src-tauri/tauri.conf.json`
 (`plugins.updater.pubkey`); the workflow reads the private key from the repository secrets `TAURI_SIGNING_PRIVATE_KEY`
@@ -281,24 +291,36 @@ revert, shelve, unshelve), and the panel marks the diagram "Outdated" once such 
 #### Remote sessions
 
 A session can move to a Compute Engine VM of its own and keep working there while Hunt is closed ("Remote" in the chat
-header, set up under *Settings → Remote VM*: project, zone, gateway, session VM template, machine type and preview
-domain). The handoff creates the VM `vm-hunt-s-<short id>` (`<short id>` is the first 8 hex digits of the session ID)
-from the instance template `tpl-hunt-session`, labels it `hunt-role=session`, `hunt-session=<short id>` and
-`hunt-origin=desktop`, and records the session's ID, repository, branch and title in its metadata
-(`apps/client/src-tauri/src/remote/vm.rs`). `apps/client/src-tauri/src/remote/` reaches the VMs over SSH through an
-IAP tunnel with the gcloud login and a key Hunt registers with OS Login, starts a session's VM when it is off, waits on
-a new VM until its startup script wrote `/var/lib/hunt/session-ready`, and installs the VM side on the session's VM and
-on the gateway (`hunt-ctl install <dir> --domain <domain>`) unless their last complete install, which `hunt-ctl`
-records as its last step in `/var/lib/hunt/installed-hash`, was of this version (and, on the gateway, of this preview
-domain). The session's VM gets it at the handoff and again whenever Hunt connects to the session or brings it back; a
-relay that runs keeps running and starts on the new release with its next start.
+header, set up under *Settings → Remote VM*: project, zone and instance of the gateway, and a machine type). The app
+creates, starts and deletes no VM itself: it calls the gateway API (`libs/domain/src/gatewayApi.ts`,
+`apps/client/src-tauri/src/remote/api.rs`) as `hunt-api <method>` over its SSH connection to the gateway, with the
+request as one JSON object on stdin; stdout streams NDJSON events, progress steps and log lines, then one result or
+error. The app passes only session IDs; the gateway names the VM `vm-hunt-s-<short id>` (`<short id>` is the first 8
+hex digits of the session ID) and owns its project, zone, instance template and preview domain, which `hello` reports.
+The first call to a gateway in an app run checks that its `hello.api` is the `api` of `libs/domain/protocol.json` and
+otherwise asks to update Hunt or to wait for the next server deploy. The handoff calls `sessions.provision`, connects
+and diffs call `vms.start` or `vms.get`, deleting a session calls `vms.delete`, adoption calls `sessions.list`. So the
+gcloud login needs no Compute Engine rights on the VMs: Hunt uses it only for the IAP tunnel to the gateway and the
+session VMs and for registering its SSH key with OS Login. The main window passes the remote settings to the backend at
+its start and on every change (`set_remote_settings`); commands on stored remote sessions reach that gateway. After the
+gateway started or provisioned a session VM, Hunt checks that the VM's release speaks the app's protocol (`hunt-ctl
+version`, `apps/client/src-tauri/src/remote/release.rs`, numbered in `libs/domain/protocol.json`) and runs `hunt-ctl
+install-tools`, which installs the agent's tools the VM image lacks in the versions the VM's release pins and skips
+those at their version already. The app installs no release itself.
 
-The VM side is a release artifact that ships with the app (`BUNDLE` in `apps/client/src-tauri/src/remote/bundle.rs`).
-`scripts/buildVmArtifact.ts` builds it (`nx run gateway:build`, which the app's dev and build commands run first):
-esbuild bundles every Node entry point into one `.mjs` file that needs nothing but Node, and the script lays these out
-with `hunt-ctl`, the systemd units and the VM's configuration files as `/srv/hunt/current` expects (`gateway/`,
-`relay/`, `session/`, `vm/`). The session's artifact goes to `dist/apps/session`; the gateway's, `dist/apps/gateway`,
-holds it as well, since the gateway installs its own release on the session VMs it creates.
+The VM side is released and deployed by CI, separately from the app. `scripts/buildVmArtifact.ts` builds the release
+of each VM role (`nx run gateway:build`, `nx run session:build`): esbuild bundles every Node entry point into one
+`.mjs` file that needs nothing but Node, and the script lays these out with `hunt-ctl`, the systemd units, the VM's
+configuration files, `.version`, `protocol.json` and `.hash` (the first 16 hex digits of a SHA-256 over every other
+file) as `/srv/hunt/current` expects (`gateway/`, `relay/`, `session/`, `vm/`) in `dist/apps/<role>`. The deploy
+reaches the gateway over SSH: `hunt-ctl install <dir> --domain <domain>` installs the gateway's release (later installs
+keep the stored preview domain without `--domain`), and `hunt-ctl stage-session <dir>` keeps the session release in
+`/srv/hunt/session-releases/<hash>`, points `/srv/hunt/session-current` at it and keeps the one before. Each time the
+gateway provisions or starts a session VM, it compares the VM's `/var/lib/hunt/installed-hash` with the staged
+release's `.hash` and, when they differ, packs the staged release, unpacks it on the VM into
+`/srv/hunt/incoming/<uuid>` and installs it there with its own `hunt-ctl install` (`apps/gateway/src/sessionVm.ts`).
+`hunt-ctl install` and `stage-session` refuse a folder without `.version`, which is what older Hunt apps push. A relay
+that runs keeps running and starts on the new release with its next start.
 
 A handoff (`hand_off_session`) stops the local agent and pushes the branch plus a snapshot commit of the uncommitted
 work (`refs/hunt/<id>/handoff`) into the session's repository on its VM, `/home/agent/<repository name>`, so the handoff
@@ -334,12 +356,14 @@ Docker and Docker Compose, and starts the app as a developer would locally. `lib
 or file operation in the session's files as `agent`, so the agent's hooks, Git config and symlinks act with no more
 rights than the agent has anyway. Files that come back from the VM are copied without following symlinks.
 
-`/etc/hunt/role` tells `hunt-ctl` whether it runs on a session VM or on the gateway. On a session VM, `hunt-ctl
-install` puts the release under `/srv/hunt/releases/<hash>` and adds what the agent works with besides the VM's base
-image: build tools, gh, Terraform, Volta for the Node and npm versions a repository pins, the ACP adapter in the version
-`apps/session/acp-version` pins, with the native Claude Code CLI, and Playwright's MCP server with Chromium
-(`apps/session/playwright/`, offered to Claude Code through `apps/session/mcp-servers.json`); a tool that is at its
-version already is skipped. The relay runs as `hunt-relay.service` (`apps/session/vm/systemd/`) with the agent's
+`/etc/hunt/role` tells `hunt-ctl` whether it runs on a session VM or on the gateway, and so which release it installs.
+On a session VM, `hunt-ctl install` puts the release under `/srv/hunt/releases/<hash>`, and `hunt-ctl install-tools`
+adds what the agent works with besides the VM's base image: build tools, gh, Terraform, Volta for the Node and npm
+versions a repository pins, the ACP adapter in the version `apps/session/acp-version` pins, with the native Claude Code
+CLI, and Playwright's MCP server with Chromium (`apps/session/playwright/`, offered to Claude Code through
+`apps/session/mcp-servers.json`); a tool that is at its version already is skipped. The image build of the session VMs
+runs it, so an image holds the tools; the app and the poller run it on every VM they set up, for an image that lacks
+some. The relay runs as `hunt-relay.service` (`apps/session/vm/systemd/`) with the agent's
 environment (`apps/session/vm/agent.env`), the session's variables and the tokens of `/etc/hunt/secrets.env`, which only
 root reads. A restart of the relay, such as `/clear`, leaves the dev servers and the tmux session the agent started
 running. Login shells of `agent`, such as the terminal's tmux session, get the same environment without the tokens
@@ -360,10 +384,10 @@ front of it lets only IAP's access group through, and a request for a VM that is
 app itself, as a developer would locally. The *Preview* tab next to a remote session's chat
 (`apps/client/src/preview/PreviewPanel.tsx`) polls `preview_status`, which runs `hunt-ctl preview-status <id>` on the
 VM, and shows the main URL, every port that listens with its URL and whether the main port answers; Hunt builds the URLs
-from the session ID and the preview domain of the handoff, the VM reports only port numbers. When the main port does not
-answer, *Start the app* (or *Open preview* in the cloud menu) sends the agent "Start the app for the preview as
-described in the repository (HUNT.md, README)." as a normal prompt, which starts a VM that is off, and opens the main
-URL once it answers.
+from the session ID and the preview domain the gateway reported at the handoff, the VM reports only port numbers. When
+the main port does not answer, *Start the app* (or *Open preview* in the cloud menu) sends the agent "Start the app for
+the preview as described in the repository (HUNT.md, README)." as a normal prompt, which starts a VM that is off, and
+opens the main URL once it answers.
 
 The gateway keeps no sessions. Its edge proxy `hunt-edge` (Caddy in Docker on port 8080 behind the load balancer)
 serves only the load balancer's address ranges, removes IAP's headers and cookies and forwards every preview host with
@@ -372,7 +396,33 @@ whole routing table. A request it cannot deliver (502, 503 or 504, because the V
 `hunt-wake.service` on 127.0.0.1:9180 (`apps/gateway/src/wake.ts`). It looks the VM up through the Compute Engine API
 with the gateway's service account, starts or resumes it for a page load, at most once every 30 seconds and never for
 a script's request of a tab already open, and answers with a page that reloads every 5 seconds until the VM answers.
-`hunt-firewall.service` keeps containers on the gateway off the metadata server, whose token can start VMs.
+
+The gateway API (`hunt-api.service`, `apps/gateway/src/api.ts`) is the control plane of the session VMs, with the
+contract of `libs/domain/src/gatewayApi.ts`. It listens on the Unix socket `/run/hunt-api/api.sock`, which only the
+system user `hunt-gw` opens. On the gateway, sshd forces `/usr/local/bin/hunt-api` (`apps/gateway/vm/hunt-api`) on
+every user outside the group `google-sudoers` (`/etc/ssh/sshd_config.d/20-hunt-api.conf`, without a terminal, port or
+socket forwarding, agent or X11 forwarding and `~/.ssh/rc`): it accepts only `hunt-api <method>` and runs the forwarder
+`apps/gateway/src/apiClient.ts` as `hunt-gw` through sudo, the one command `/etc/sudoers.d/hunt-api` allows. The
+forwarder sends one line `{caller, method, params}` over the socket, with sudo's `SUDO_USER` as the caller, and copies
+the events to stdout; admins call `hunt-api <method>` the same way. `apps/gateway/src/apiProtocol.ts` checks the
+method and params (session IDs are lowercase UUIDs, repositories `<owner>/<repo>`, branches valid Git branch names).
+The VM methods go through `apps/gateway/src/orchestrator.ts`, which the poller uses as well: `sessions.provision`
+creates `vm-hunt-s-<short id>` from `tpl-hunt-session` unless it exists, labelled `hunt-role=session`,
+`hunt-session=<short id>`, `hunt-origin=desktop` and `hunt-owner=<caller>`, records the session's ID, repository,
+branch and title in its metadata and refuses a VM that holds another session (`conflict`); it and `vms.start` start a
+stopped VM, resume a suspended one, wait out a shutdown in progress, wait until the VM answers over SSH and its startup
+script wrote `/var/lib/hunt/session-ready`, and install the staged session release, streaming `creatingVm`,
+`startingVm`, `waitingForVm` and `installingRuntime`. Concurrent calls of one method for one session share one
+operation; the second hears its progress from the start. `vms.delete` deletes the VM with all its disks and answers
+`alreadyGone` for a VM that does not exist; `sessions.list` lists the session VMs of every zone of the project.
+`swf.getConfig` and `swf.applyConfig` read and write the poller's `/etc/hunt/swf.json`, which `hunt-gw` owns; admins
+can still write it with `hunt-ctl swf-config`. Running requests go on when their caller disconnects, and a reload after
+an install lets them finish before the new release starts. `journalctl -u hunt-api` shows one line per request with its
+caller.
+
+`hunt-api`, `hunt-swf` and `hunt-wake` run as `hunt-gw`, which `hunt-ctl install` creates. `hunt-firewall.service`
+keeps every other user on the gateway, containers and the edge proxy included, off the metadata server, whose token
+can create, start and delete VMs; only root and `hunt-gw` reach it, and everyone keeps DNS through it.
 
 Next to the preview, the *Terminal* tab (`apps/client/src/terminal/TerminalPanel.tsx`, xterm.js) attaches to the tmux
 session `app` on the VM, in which the agent runs the app's long-running processes, one window per process. The backend
@@ -392,26 +442,28 @@ request. Revert, shelve and review comments stay switched off until the session 
 
 Bringing it back (`retrieve_session`) stops the relay, snapshots the VM's worktree on top of the agent's commits
 (`refs/hunt/<id>/retrieve`), fetches it and applies it to the local worktree, which must still hold the handoff
-snapshot; the branch moves to the agent's last commit and the transcript returns. Then Hunt deletes the VM with its
-disks (`gcloud compute instances delete --delete-disks=all`), as it does when a remote session is deleted. A deletion
-that fails, for example offline, is kept in `remote-cleanups.json` in the app data folder and retried with gcloud alone
-at the next start of Hunt. Hunt deletes no VM whose name is not the session's `vm-hunt-s-<short id>`. What the agent
-changed in the memory is merged into the local one three-way against what the handoff sent
+snapshot; the branch moves to the agent's last commit and the transcript returns. Then Hunt has the gateway delete the
+VM with its disks (`vms.delete`), as it does when a remote session is deleted. A deletion that fails, for example
+offline, is kept in `remote-cleanups.json` in the app data folder and retried at the next start of Hunt, once the main
+window passed the remote settings. Hunt deletes no VM whose recorded name is not the session's `vm-hunt-s-<short id>`.
+What the agent changed in the memory is merged into the local one three-way against what the handoff sent
 (`apps/client/src-tauri/src/remote/memory.rs`): a file only the VM changed takes its version, one both sides changed
 keeps the local version with the VM's next to it as `<name>.remote-<id>.md`, and `MEMORY.md` takes the VM's added and
 removed lines.
 
 The gateway's poller `hunt-swf.service` (`apps/gateway/src/swf.ts`) starts a session for every open GitHub issue
 labelled `swf` in the repositories listed under *Settings → Remote VM → GitHub issues (swf)*; *Apply to gateway*
-installs this app's bundle on the gateway and writes them with the session limit to `/etc/hunt/swf.json`
-(`hunt-ctl swf-config`). Every 2 minutes it lists the open issues through GitHub's REST API and, while fewer of its VMs
+sends them with the session limit and the machine type to the gateway API (`swf.applyConfig`), which writes
+`/etc/hunt/swf.json`; the poller reads it at every poll. Every 2 minutes it lists the open issues through GitHub's REST
+API and, while fewer of its VMs
 (label `hunt-origin=swf`, any status but `TERMINATED` and `STOPPED`) are up than the limit allows, claims the oldest
 issue: `swf` becomes `swf:running` (the labels `swf:running`, `swf:done` and `swf:failed` are created when missing) and
 a comment names the session's preview URL. Then it does what a handoff does, with the gateway's service account instead
-of a Mac: it creates `vm-hunt-s-<short id>` from the instance template through the Compute Engine API, records the
-session, repository, branch `hunt/<issue>-<slug of the title>`, title and issue in the VM's metadata, waits for the
-startup script and installs the gateway's own release on the VM over `gcloud compute ssh --internal-ip` (OS Login as
-admin). `hunt-ctl clone` clones the repository from GitHub as `agent` onto the branch (the origin's branch of that name
+of a Mac: the orchestrator creates `vm-hunt-s-<short id>` from the configured instance template (labelled
+`hunt-origin=swf`, without an owner), records the session, repository, branch `hunt/<issue>-<slug of the title>`, title
+and issue in the VM's metadata, waits for the startup script and installs the staged session release, over `gcloud
+compute ssh --internal-ip` (OS Login as admin, one shared SSH connection per VM); `hunt-ctl install-tools` follows.
+`hunt-ctl clone` clones the repository from GitHub as `agent` onto the branch (the origin's branch of that name
 when it exists, else a new one from the default branch) with the token's GitHub user as Git identity; `session-config`,
 `put-files --claude` with `hunt-session.json`, `deps`, `start` and `wait` follow as in a handoff. The system prompt is
 the remote part a handoff appends (`libs/domain/prompts/`, which the app and the poller compile in) and the repository's
@@ -425,16 +477,16 @@ with come from Secret Manager (`HUNT_SWF_GITHUB_TOKEN`, `HUNT_SWF_CLAUDE_TOKEN`)
 or a command line; `journalctl -u hunt-swf` on the gateway shows one line per decision.
 
 The labels and metadata of the session VMs are the directory of remote sessions. At its start and from the sidebar's
-*Refresh remote sessions* button, Hunt lists those in the zone of the settings, the zone whose VMs the gateway routes
-previews to (`adopt_session_vms`, `apps/client/src-tauri/src/remote/adoption.rs`), and adopts every VM whose
-`hunt-session-id` no local session has: VMs the gateway's poller started for `swf` issues (`hunt-origin=swf`,
-`hunt-issue`) and other people's handoffs. An adopted session gets a record with origin `swf` or `desktop`, its title,
-branch and repository from the metadata and the local checkout among the recently used repositories whose `origin` is
-that repository; the sidebar labels it `swf #<issue>` or `remote`. Its worktree path on the VM comes from
-`/srv/hunt/sessions/<id>/meta.json` once Hunt reaches the VM, and the relay replays its conversation on `session/load`.
-Bringing it back creates a new worktree in the local checkout on the branch the VM has checked out and is offered only
-once a checkout is known. Deleting or bringing back an adopted session asks first, naming its VM, since other people may
-work on it; VMs this Mac deleted or still has to delete are never adopted again.
+*Refresh remote sessions* button, Hunt asks the gateway for them (`sessions.list`), keeps those in the gateway's zone,
+whose VMs it routes previews to (`adopt_session_vms`, `apps/client/src-tauri/src/remote/adoption.rs`), and adopts every
+session whose VM is named after it and that no local session has: VMs the gateway's poller started for `swf` issues
+(`hunt-origin=swf`, `hunt-issue`) and other people's handoffs. An adopted session gets a record with origin `swf` or
+`desktop`, its title, branch and repository from the metadata and the local checkout among the recently used
+repositories whose `origin` is that repository; the sidebar labels it `swf #<issue>` or `remote`. Its worktree path on
+the VM comes from `/srv/hunt/sessions/<id>/meta.json` once Hunt reaches the VM, and the relay replays its conversation
+on `session/load`. Bringing it back creates a new worktree in the local checkout on the branch the VM has checked out
+and is offered only once a checkout is known. Deleting or bringing back an adopted session asks first, naming its VM,
+since other people may work on it; VMs this Mac deleted or still has to delete are never adopted again.
 
 A remote session keeps its VM, which costs only its disk while it is off, until it is retrieved or deleted. Hunt records
 when its agent last worked (a prompt it sent, a turn that ended, or the relay's last turn when it connects) and, once
@@ -468,11 +520,11 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 | `apps/client/src/state/` | Zustand stores and chat reducers |
 | `apps/client/src/` `chat/`, `diff/`, `ide/`, `graph/`, `guardrails/`, `preview/`, `review/`, `sessions/`, `settings/`, `terminal/` | One folder per tab or window |
 | `apps/client/src/ui/` | Primitives shared by every feature |
-| `apps/gateway/` | Nx project `gateway`: the gateway VM's issue poller (`src/swf.ts`), wake service (`src/wake.ts`) and systemd units (`vm/systemd/`) |
+| `apps/gateway/` | Nx project `gateway`: the gateway VM's API (`src/api.ts`, `src/orchestrator.ts`, `vm/hunt-api`), issue poller (`src/swf.ts`), wake service (`src/wake.ts`) and systemd units (`vm/systemd/`) |
 | `apps/session/` | Nx project `session`: the relay (`src/relay/`), the `hunt.json` preview contract (`src/config.ts`), the versions of the agent's tools and the session VM's files and systemd units (`vm/`) |
 | `libs/domain/` | Nx project `domain`: JSON-RPC and NDJSON framing, error messages and the remote session prompts the apps share |
 | `libs/vm/` | Nx project `vm`: `hunt-ctl`, which Hunt and the gateway run on the VMs |
-| `scripts/` | Nx project `scripts`: the release script (`release/`) and the build of the VM release artifact (`buildVmArtifact.ts`) |
+| `scripts/` | Nx project `scripts`: the build of the VM release artifacts (`buildVmArtifact.ts`) |
 | `docs/adr/` | Architectural decision records |
 
 &nbsp;

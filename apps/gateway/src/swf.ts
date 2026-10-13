@@ -7,33 +7,33 @@
  *
  * Per issue, as long as fewer than `maxSessions` of its VMs (label `hunt-origin=swf`) are up: claim the issue first
  * (label `swf` → `swf:running` and a comment with the preview URL), then do what a handoff of the desktop does
- * (`apps/client/src-tauri/src/remote/handoff.rs`), with a clone from GitHub in place of the push: create the session VM from the
- * instance template, record the session in its metadata, wait for its startup script, install the gateway's own
- * release on it, `hunt-ctl clone`, `session-config`, `hunt-session.json` through `put-files --claude`, `deps`, `start`
- * with the tokens on stdin and `wait`. Then the issue goes to the agent as its first prompt through the relay; the
- * agent opens the pull request and sets `swf:done` or `swf:failed` itself. When the setup fails, the poller sets
- * `swf:failed` with the error and leaves the VM for inspection; Hunt desktops adopt the VM either way.
+ * (`apps/client/src-tauri/src/remote/handoff.rs`), with a clone from GitHub in place of the push: the orchestrator
+ * (`orchestrator.ts`) creates the session VM from the instance template, records the session in its metadata, waits for
+ * its startup script and installs the session release staged on the gateway; then `install-tools`, `clone`,
+ * `session-config`, `hunt-session.json` through `put-files --claude`, `deps`, `start` with the tokens on stdin and
+ * `wait`. Then the issue goes to the agent as its first prompt through the relay; the agent opens the pull request and
+ * sets `swf:done` or `swf:failed` itself. When the setup fails, the poller sets `swf:failed` with the error and leaves
+ * the VM for inspection; Hunt desktops adopt the VM either way.
  *
  * The GitHub token (`HUNT_SWF_GITHUB_TOKEN`) and the Claude Code OAuth token (`HUNT_SWF_CLAUDE_TOKEN`) come from Secret
  * Manager; project, zone and access token from the metadata server; the preview domain from what `hunt-ctl install`
- * wrote. One log line per decision goes to stdout (journald); tokens never appear in logs or comments. SIGHUP (the
- * unit's reload, after an install) makes the poller exit once the sessions it sets up are running, so that systemd
- * starts the new release; SIGTERM marks those still being set up as failed and exits. Runs on Node 24 through type
- * stripping; no dependencies.
+ * wrote (`previewDomain.ts`). One log line per decision goes to stdout (journald); tokens never appear in logs or
+ * comments. SIGHUP (the unit's reload, after an install) makes the poller exit once the sessions it sets up are running,
+ * so that systemd starts the new release; SIGTERM marks those still being set up as failed and exits. Runs on Node 24
+ * through type stripping; no dependencies.
  */
-import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import gitPushPrompt from "../../../libs/domain/prompts/git-push.md?raw";
 import remotePrompt from "../../../libs/domain/prompts/remote.md?raw";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import { sendPrompt, type Transport } from "./acpClient.ts";
-import { createCompute, createMetadata, mergeMetadataItems, readSecret, type Compute, type Instance, type Metadata } from "./gcp.ts";
+import { createCompute, createMetadata, readSecret, type Compute, type Instance, type Metadata } from "./gcp.ts";
 import { createGitHub, type GitHub, type Issue, type IssueComment } from "./github.ts";
-import { sessionVm, type SessionVm } from "./sessionVm.ts";
+import { ORIGIN_LABEL, Orchestrator, type Origin, type Reporter } from "./orchestrator.ts";
+import { readDomain } from "./previewDomain.ts";
+import { ensureSshKey, sessionVm, type SessionVm } from "./sessionVm.ts";
 import { readSwfConfig, SWF_CONFIG_PATH, type SwfConfig } from "./swfConfig.ts";
 import {
   activeSessionVms,
@@ -54,18 +54,11 @@ import {
 } from "./swfPlan.ts";
 
 export const POLL_INTERVAL_MS = 120_000;
-export const ORIGIN_LABEL = "hunt-origin";
-export const ORIGIN = "swf";
-const DOMAIN_FILE = "/etc/hunt/preview-domain";
-const DOMAIN_PATTERN = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+export const ORIGIN: Origin = "swf";
 const GITHUB_SECRET = "HUNT_SWF_GITHUB_TOKEN";
 const CLAUDE_SECRET = "HUNT_SWF_CLAUDE_TOKEN";
 /** Secrets are read again after this long, so a new version takes effect without a restart. */
 const SECRETS_TTL_MS = 10 * 60_000;
-const CREATE_TIMEOUT_MS = 2 * 60_000;
-const START_TIMEOUT_MS = 6 * 60_000;
-const READY_TIMEOUT_MS = 15 * 60_000;
-const INSTANCE_POLL_MS = 3_000;
 /** How long SIGTERM waits for the issues of unfinished setups to be marked as failed. */
 const ABORT_TIMEOUT_MS = 20_000;
 
@@ -82,11 +75,11 @@ export interface PollerDeps {
   tokens(): Promise<Tokens>;
   github(token: string): GitHub;
   compute: Compute;
+  orchestrator: Orchestrator;
   vm(name: string): SessionVm;
   prompts(): RemotePrompts;
   sendPrompt(transport: Transport, request: { sessionId: string; cwd: string; text: string }): Promise<string>;
   newId(): string;
-  sleep(ms: number): Promise<void>;
   log(message: string): void;
 }
 
@@ -229,27 +222,18 @@ export class Poller {
   private async setUp(setup: Setup, config: SwfConfig, domain: string, tokens: Tokens, branch: string, issue: Issue, comments: IssueComment[]): Promise<void> {
     const { key, repo, names } = setup;
     const log = (message: string) => this.deps.log(`${key}: ${message}`);
-    await this.deps.compute.insert({
-      name: names.vm,
-      template: config.template,
-      machineType: config.machineType,
-      labels: { "hunt-role": "session", "hunt-session": names.short, [ORIGIN_LABEL]: ORIGIN },
-    });
-    setup.isVmCreated = true;
-    log(`creating ${names.vm} from ${config.template}`);
-    await this.waitForInstance(names.vm, (instance) => instance !== null, CREATE_TIMEOUT_MS, "appear");
-    await this.setSessionMetadata(names.vm, {
-      "hunt-session-id": names.id,
-      "hunt-repo": repo,
-      "hunt-branch": branch,
-      "hunt-title": issue.title,
-      "hunt-issue": String(issue.number),
-    });
-    await this.waitForInstance(names.vm, (instance) => instance?.status === "RUNNING", START_TIMEOUT_MS, "start");
+    const reporter: Reporter = {
+      progress: (step) => {
+        if (step === "creatingVm") {
+          setup.isVmCreated = true;
+        }
+      },
+      log,
+    };
+    const request = { id: names.id, repo, branch, title: issue.title, issue: issue.number, origin: ORIGIN, owner: "" };
+    await this.deps.orchestrator.provision({ ...request, template: config.template, machineType: config.machineType }, reporter);
     const vm = this.deps.vm(names.vm);
-    await vm.waitUntilReady(READY_TIMEOUT_MS);
-    log(`${names.vm} is ready; installing the bundle`);
-    await vm.installBundle();
+    await vm.huntCtl(["install-tools"]);
 
     const cloned = await vm.huntCtl(["clone", names.id, "--repo", repo, "--branch", branch], `${tokens.github}\n`);
     if (typeof cloned.path !== "string" || !cloned.path) throw new Error("hunt-ctl clone returned no path");
@@ -266,29 +250,6 @@ export class Poller {
     const text = firstPrompt(repo, issue, comments, branch, setup.labels);
     const outcome = await this.deps.sendPrompt(vm.openRelay(), { sessionId: status.acpSessionId, cwd: cloned.path, text });
     log(`the agent of session ${names.id} works on the issue (prompt ${outcome})`);
-  }
-
-  private async waitForInstance(name: string, isDone: (instance: Instance | null) => boolean, timeoutMs: number, what: string): Promise<void> {
-    for (let waited = 0; ; waited += INSTANCE_POLL_MS) {
-      const instance = await this.deps.compute.get(name);
-      if (isDone(instance)) return;
-      if (waited >= timeoutMs) throw new Error(`failed to ${what} ${name}: it is still ${instance?.status ?? "missing"} after ${timeoutMs / 60_000} minutes`);
-      await this.deps.sleep(INSTANCE_POLL_MS);
-    }
-  }
-
-  /** Adds `entries` to the VM's metadata, keeping the template's keys; retries when the metadata changed meanwhile. */
-  private async setSessionMetadata(name: string, entries: Record<string, string>): Promise<void> {
-    for (let attempt = 1; ; attempt++) {
-      const instance = await this.deps.compute.get(name);
-      if (!instance) throw new Error(`failed to set the metadata of ${name}: it does not exist`);
-      try {
-        await this.deps.compute.setMetadata(name, instance.metadata.fingerprint, mergeMetadataItems(instance.metadata.items, entries));
-        return;
-      } catch (error) {
-        if (attempt >= 3 || !messageOf(error).includes("HTTP 412")) throw error;
-      }
-    }
   }
 
   /** Replaces `<label>:running` with `<label>:failed` and comments the error; failures here are only logged. */
@@ -320,17 +281,6 @@ export class Poller {
   }
 }
 
-function readDomain(): string {
-  let domain: string;
-  try {
-    domain = readFileSync(DOMAIN_FILE, "utf8").trim();
-  } catch (error) {
-    throw new Error(`no preview domain in ${DOMAIN_FILE}: ${messageOf(error)}`);
-  }
-  if (!DOMAIN_PATTERN.test(domain)) throw new Error(`${DOMAIN_FILE} holds no host name`);
-  return domain;
-}
-
 /** The tokens from Secret Manager, read again after SECRETS_TTL_MS. */
 function secretsReader(metadata: Metadata): () => Promise<Tokens> {
   let cached: { tokens: Tokens; readAt: number } | null = null;
@@ -347,36 +297,26 @@ function readPrompts(): RemotePrompts {
   return { remote: remotePrompt, gitPush: gitPushPrompt };
 }
 
-/**
- * Creates the SSH key gcloud logs in with, so that two setups that start at once do not both create it. gcloud
- * registers it with OS Login on every connect.
- */
-function ensureSshKey(): void {
-  const dir = join(homedir(), ".ssh");
-  if (existsSync(join(dir, "google_compute_engine"))) return;
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const result = spawnSync("ssh-keygen", ["-t", "rsa", "-b", "3072", "-N", "", "-C", "hunt-swf", "-q", "-f", join(dir, "google_compute_engine")], { stdio: "inherit" });
-  if (result.status !== 0) throw new Error(`failed to create the SSH key in ${dir}`);
-}
-
 async function main(): Promise<void> {
   const log = (message: string) => console.log(`hunt-swf: ${message}`);
-  ensureSshKey();
+  ensureSshKey("hunt-swf");
   const metadata = createMetadata();
   const location = { project: await metadata.project(), zone: await metadata.zone() };
+  const compute = createCompute(metadata);
+  const vm = (name: string) => sessionVm(name, location);
   let wake = () => {};
   let isStopping = false;
   const poller = new Poller({
     readConfig: () => readSwfConfig(),
-    readDomain,
+    readDomain: () => readDomain(),
     tokens: secretsReader(metadata),
     github: (token) => createGitHub(token),
-    compute: createCompute(metadata),
-    vm: (name) => sessionVm(name, location),
+    compute,
+    orchestrator: new Orchestrator({ compute, location, vm, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now: Date.now }),
+    vm,
     prompts: readPrompts,
     sendPrompt,
     newId: randomUUID,
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     log,
   });
 

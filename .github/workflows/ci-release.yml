@@ -1,0 +1,98 @@
+# Releases every push to master: nx release derives the next version of each app from the Conventional Commits that
+# touch it (independent versions, <app>@<version> tags, a CHANGELOG.md per app), commits and tags. A release commit
+# then deploys the server apps (gateway, session) affected since the commit deployed last, deployed/prod, onto the
+# gateway VM over SSH (ci-nx-affected-deploy), publishes the desktop app when it got a client tag, and moves
+# deployed/prod onto the release once every deploy succeeded.
+name: 📦 CI | Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+
+env:
+  DEPLOY_TAG: deployed/prod
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      is_release: ${{ steps.release.outputs.is_release }}
+      release_sha: ${{ steps.release.outputs.release_sha }}
+      client_version: ${{ steps.release.outputs.client_version }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+
+      - run: npm ci
+
+      - name: Version, changelog, commit & tag
+        id: release
+        run: .github/scripts/release-commit-and-tag.sh
+
+      - name: Post-flight version/tag invariant
+        if: steps.release.outputs.has_changes == 'true'
+        run: .github/scripts/check-version-tag-sync.sh
+
+      # A push with GITHUB_TOKEN starts no workflow, so the release commit does not release again.
+      - name: Push release commit & tags
+        if: steps.release.outputs.has_changes == 'true'
+        run: git push --atomic origin HEAD --tags
+
+  deploy:
+    needs: release
+    if: needs.release.outputs.is_release == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/ci-nx-affected-deploy.yml
+    with:
+      ref: ${{ needs.release.outputs.release_sha }}
+      base: deployed/prod
+    secrets: inherit
+
+  publish-client:
+    needs: release
+    if: needs.release.outputs.client_version != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/ci-publish-client.yml
+    with:
+      version: ${{ needs.release.outputs.client_version }}
+    secrets: inherit
+
+  tag-deploy:
+    needs: [release, deploy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release.outputs.release_sha }}
+
+      - name: Move the deploy tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$DEPLOY_TAG" HEAD
+          git push -f origin "refs/tags/$DEPLOY_TAG"

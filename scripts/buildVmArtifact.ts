@@ -5,11 +5,14 @@
  *
  *   node scripts/buildVmArtifact.ts <session|gateway>
  *
- * Writes `dist/apps/<app>/`. The gateway's artifact also holds the session's, which the gateway copies onto the
- * session VMs it creates; build the session first (`nx build gateway` does so through `dependsOn`).
+ * Writes `dist/apps/<app>/` with `.version` (the environment's APP_VERSION, which the CI deploy sets, else `dev`),
+ * `protocol.json`, the protocols that `libs/domain/protocol.json` numbers and the desktop app checks, and `.hash`, the
+ * first 16 hex digits of a SHA-256 over every other file's path and content: `hunt-ctl install` and `stage-session`
+ * file a release under it, and the gateway compares it with a session VM's installed release.
  */
 import { build, type Plugin } from "esbuild";
-import { cpSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { cpSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { isBuiltin } from "node:module";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,8 +24,6 @@ interface Artifact {
   entries: Record<string, string>;
   /** Source → destination in the artifact, both relative; directories are copied whole. */
   files: [string, string][];
-  /** Artifacts copied in first, by name. */
-  includes: string[];
 }
 
 const ARTIFACTS: Record<string, Artifact> = {
@@ -39,19 +40,22 @@ const ARTIFACTS: Record<string, Artifact> = {
       ["apps/session/playwright/package.json", "session/playwright/package.json"],
       ["apps/session/playwright/package-lock.json", "session/playwright/package-lock.json"],
     ],
-    includes: [],
   },
   gateway: {
     entries: {
       "gateway/swf": "apps/gateway/src/swf.ts",
       "gateway/wake": "apps/gateway/src/wake.ts",
-      "gateway/swfConfig": "apps/gateway/src/swfConfig.ts",
+      "gateway/api": "apps/gateway/src/api.ts",
+      "gateway/apiClient": "apps/gateway/src/apiClient.ts",
+      "gateway/swfConfig": "apps/gateway/src/swfConfigCli.ts",
     },
     files: [
       ["libs/vm/hunt-ctl", "vm/hunt-ctl"],
+      ["apps/gateway/vm/hunt-api", "vm/hunt-api"],
+      ["apps/gateway/vm/sshd-hunt-api.conf", "vm/sshd-hunt-api.conf"],
+      ["apps/gateway/vm/sudoers-hunt-api", "vm/sudoers-hunt-api"],
       ["apps/gateway/vm/systemd", "vm/systemd/gateway"],
     ],
-    includes: ["session"],
   },
 };
 
@@ -74,6 +78,23 @@ const rawText: Plugin = {
   },
 };
 
+/** The files below `dir` as paths relative to it, sorted. */
+function listFiles(dir: string): string[] {
+  return readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name).slice(dir.length + 1))
+    .sort();
+}
+
+/** The release's hash: see the module comment. */
+function contentHash(dir: string): string {
+  const hash = createHash("sha256");
+  for (const path of listFiles(dir).filter((path) => path !== ".hash")) {
+    hash.update(`${path}\0`).update(readFileSync(join(dir, path))).update("\0");
+  }
+  return hash.digest("hex").slice(0, 16);
+}
+
 function outputDir(name: string): string {
   return join(ROOT, "dist", "apps", name);
 }
@@ -83,12 +104,6 @@ async function buildArtifact(name: string): Promise<void> {
   if (!artifact) throw new Error(`unknown artifact ${name}; expected one of ${Object.keys(ARTIFACTS).join(", ")}`);
   const out = outputDir(name);
   rmSync(out, { recursive: true, force: true });
-
-  for (const included of artifact.includes) {
-    const source = outputDir(included);
-    if (!existsSync(source)) throw new Error(`the ${included} artifact is missing at ${source}; build it first`);
-    cpSync(source, out, { recursive: true });
-  }
   await build({
     entryPoints: Object.fromEntries(Object.entries(artifact.entries).map(([output, entry]) => [output, join(ROOT, entry)])),
     outdir: out,
@@ -100,9 +115,11 @@ async function buildArtifact(name: string): Promise<void> {
     plugins: [builtinsOnly, rawText],
     logLevel: "warning",
   });
-  for (const [source, destination] of artifact.files) {
+  for (const [source, destination] of [...artifact.files, ["libs/domain/protocol.json", "protocol.json"]]) {
     cpSync(join(ROOT, source), join(out, destination), { recursive: true });
   }
+  writeFileSync(join(out, ".version"), `${process.env.APP_VERSION || "dev"}\n`);
+  writeFileSync(join(out, ".hash"), `${contentHash(out)}\n`);
 }
 
 await buildArtifact(process.argv[2] ?? "");

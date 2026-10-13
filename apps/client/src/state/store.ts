@@ -706,7 +706,7 @@ export const useHuntStore = create<HuntState>((set, get) => {
       const { remote } = useSettingsStore.getState();
       const settings = configuredVmSettings(remote);
       if (!settings) {
-        updateChat(id, (chat) => ({ ...chat, error: "Set up the remote VM, gateway and preview domain in Settings → Remote VM first." }));
+        updateChat(id, (chat) => ({ ...chat, error: "Set the project, zone and gateway in Settings → Remote VM first." }));
         return;
       }
       await restartChat(id, () => commands.handOffSession(id, settings, remote.filePatterns), true);

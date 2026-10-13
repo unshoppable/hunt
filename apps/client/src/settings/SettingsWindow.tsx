@@ -574,7 +574,15 @@ function RemoteSection() {
         <div className="flex flex-col gap-1">
           <TextRow label="Google Cloud project" value={remote.project} onChange={(project) => setRemote({ project })} isMonospace />
           <TextRow label="Zone" value={remote.zone} onChange={(zone) => setRemote({ zone })} isMonospace />
-          <TextRow label="Session VM template" value={remote.sessionTemplate} onChange={(sessionTemplate) => setRemote({ sessionTemplate })} isMonospace />
+          <TextRow label="Gateway instance" value={remote.gatewayInstance} onChange={(gatewayInstance) => setRemote({ gatewayInstance })} isMonospace />
+          <p className="text-[13px] leading-snug text-neutral-500">
+            The gateway VM in this project and zone runs all the time. Hunt asks it to create, start and delete the session VMs, and it routes
+            https://&lt;id&gt;.&lt;domain&gt; and https://&lt;id&gt;-&lt;port&gt;.&lt;domain&gt; of its preview domain to them, starting a VM that is off. Hunt reaches the
+            gateway and the session VMs over SSH through an IAP tunnel with your gcloud login. The chat header offers the handoff once project, zone and gateway are
+            set.
+          </p>
+        </div>
+        <div className="flex flex-col gap-1">
           <TextRow
             label="Machine type"
             value={remote.machineType}
@@ -583,18 +591,8 @@ function RemoteSection() {
             isMonospace
           />
           <p className="text-[13px] leading-snug text-neutral-500">
-            Each session you hand off gets a VM of its own, vm-hunt-s-&lt;id&gt;, created from the instance template in this project and zone, with the machine
-            type above or the template's when it is empty. The VM stops itself when idle and is deleted once you bring the session back or delete it. Hunt reaches
-            it over SSH through an IAP tunnel with your gcloud login.
-          </p>
-        </div>
-        <div className="flex flex-col gap-1">
-          <TextRow label="Gateway instance" value={remote.gatewayInstance} onChange={(gatewayInstance) => setRemote({ gatewayInstance })} isMonospace />
-          <TextRow label="Preview domain" value={remote.previewDomain} onChange={(previewDomain) => setRemote({ previewDomain })} isMonospace />
-          <p className="text-[13px] leading-snug text-neutral-500">
-            The gateway VM runs all the time behind your load balancer and routes https://&lt;id&gt;.&lt;domain&gt; and https://&lt;id&gt;-&lt;port&gt;.&lt;domain&gt; to
-            the session's VM, starting it when it is off. The agent learns these URLs at the handoff. The chat header offers the handoff once project, zone,
-            template, gateway and preview domain are set.
+            Each session you hand off gets a VM of its own, vm-hunt-s-&lt;id&gt;, which the gateway creates from its instance template, with the machine type
+            above or the template's when it is empty. The VM stops itself when idle and is deleted once you bring the session back or delete it.
           </p>
         </div>
         <SwfRows />
@@ -656,7 +654,7 @@ function SwfRows() {
         {isApplying ? (
           <span className="flex min-w-0 items-center gap-2 text-[13px] text-neutral-400">
             <Spinner />
-            Installing on the gateway…
+            Applying to the gateway…
           </span>
         ) : applied ? (
           <span className="min-w-0 text-[13px] text-neutral-400">{appliedText(applied)}</span>
@@ -665,7 +663,7 @@ function SwfRows() {
           type="button"
           onClick={() => void apply()}
           disabled={!vmSettings || isApplying}
-          title={vmSettings ? undefined : "Set project, zone, template, gateway and preview domain first"}
+          title={vmSettings ? undefined : "Set project, zone and gateway first"}
           className={PRIMARY_BUTTON_XS}
         >
           Apply to gateway

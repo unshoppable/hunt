@@ -1,64 +1,61 @@
 //! Adopting session VMs no local session knows: VMs the gateway's poller started for `swf` issues, or that another
-//! person's Hunt handed off. The labels and metadata of the session VMs are the directory of remote sessions: Hunt lists
-//! them, picks the ones to adopt, finds the local checkout of their repository and reads where the session's worktree
-//! lies on the VM.
+//! person's Hunt handed off. The gateway's listing of the sessions (`sessions.list`, from the labels and metadata of the
+//! session VMs) is the directory of remote sessions: Hunt picks the ones to adopt, finds the local checkout of their
+//! repository and reads where the session's worktree lies on the VM.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
+use super::api::SessionSummary;
 use super::ssh::Ssh;
-use super::vm::{self, SessionVm};
-use super::{handoff, shell_command, RemoteOrigin, VmRef};
+use super::{handoff, shell_command, vm, RemoteOrigin, VmRef};
 
-/// A session VM Hunt adopts, as its labels and metadata describe it.
+/// A session VM Hunt adopts, as the gateway lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdoptableSession {
     pub id: Uuid,
     pub vm: VmRef,
-    /// `hunt-title`, or a title made from the issue or the repository when the VM names none.
+    /// The session's title, or one made from the issue or the repository when the VM names none.
     pub title: String,
-    /// `<owner>/<repo>` of the session's repository (`hunt-repo`).
+    /// `<owner>/<repo>` of the session's repository.
     pub repo: String,
-    /// The branch the session started on (`hunt-branch`); empty when the VM names none.
+    /// The branch the session started on; empty when the VM names none.
     pub branch: String,
     pub origin: RemoteOrigin,
-    /// The GitHub issue of a `swf` session (`hunt-issue`).
+    /// The GitHub issue of a `swf` session.
     pub issue: Option<u64>,
     pub is_running: bool,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// The session VMs of `project` to adopt, in the order listed: every VM in `zone`, the zone of the settings and of the
-/// gateway that routes their previews, that names a session (`hunt-session-id`) none of `known` is, whose name and
-/// `hunt-session` label belong to that session and whose `hunt-repo` is an `<owner>/<repo>`. VMs that fail these checks
-/// are no sessions Hunt can continue and stay alone.
-pub fn sessions_to_adopt(vms: &[SessionVm], project: &str, zone: &str, known: &HashSet<Uuid>) -> Vec<AdoptableSession> {
-    vms.iter()
-        .filter(|listed| listed.zone == zone)
-        .filter_map(|listed| adoptable(listed, project))
+/// The sessions of `listed` to adopt, in the order listed: every session whose VM is in `project` and `zone`, the
+/// gateway's, that none of `known` is, whose VM is named after it and whose repository is an `<owner>/<repo>`. Sessions
+/// that fail these checks are no sessions Hunt can continue and stay alone.
+pub fn sessions_to_adopt(listed: &[SessionSummary], project: &str, zone: &str, known: &HashSet<Uuid>) -> Vec<AdoptableSession> {
+    listed
+        .iter()
+        .filter(|session| session.zone == zone)
+        .filter_map(|session| adoptable(session, project))
         .filter(|session| !known.contains(&session.id))
         .collect()
 }
 
-fn adoptable(listed: &SessionVm, project: &str) -> Option<AdoptableSession> {
-    let id = Uuid::parse_str(listed.metadata.get("hunt-session-id")?.trim()).ok()?;
-    if listed.name != vm::session_vm_name(id) || listed.labels.get(vm::SESSION_LABEL) != Some(&vm::short_id(id)) {
+fn adoptable(listed: &SessionSummary, project: &str) -> Option<AdoptableSession> {
+    let id = Uuid::parse_str(listed.id.trim()).ok()?;
+    if listed.vm != vm::session_vm_name(id) {
         return None;
     }
-    let repo = metadata(listed, "hunt-repo");
+    let repo = listed.repo.trim().to_string();
     if !is_repository_key(&repo) {
         return None;
     }
-    let vm = VmRef { project: project.to_string(), zone: listed.zone.clone(), instance: listed.name.clone() };
+    let vm = VmRef { project: project.to_string(), zone: listed.zone.clone(), instance: listed.vm.clone() };
     vm.validate().ok()?;
-    let origin = match listed.labels.get(vm::ORIGIN_LABEL).map(String::as_str) {
-        Some("swf") => RemoteOrigin::Swf,
-        _ => RemoteOrigin::Desktop,
-    };
-    let issue = issue_number(&metadata(listed, "hunt-issue"));
-    let title = Some(metadata(listed, "hunt-title")).filter(|title| !title.is_empty()).unwrap_or_else(|| match issue {
+    let origin = if listed.origin == "swf" { RemoteOrigin::Swf } else { RemoteOrigin::Desktop };
+    let issue = listed.issue.filter(|issue| *issue > 0);
+    let title = Some(listed.title.trim().to_string()).filter(|title| !title.is_empty()).unwrap_or_else(|| match issue {
         Some(issue) => format!("Issue #{issue} of {repo}"),
         None => format!("Remote session of {repo}"),
     });
@@ -66,18 +63,13 @@ fn adoptable(listed: &SessionVm, project: &str) -> Option<AdoptableSession> {
         id,
         vm,
         title,
-        branch: metadata(listed, "hunt-branch"),
+        branch: listed.branch.trim().to_string(),
         repo,
         origin,
         issue,
         is_running: listed.status == "RUNNING",
-        created_at: listed.created_at,
+        created_at: chrono::DateTime::parse_from_rfc3339(&listed.created_at).ok().map(|time| time.with_timezone(&chrono::Utc)),
     })
-}
-
-/// The trimmed metadata value `key` of `listed`; empty when it has none.
-fn metadata(listed: &SessionVm, key: &str) -> String {
-    listed.metadata.get(key).map(|value| value.trim().to_string()).unwrap_or_default()
 }
 
 /// Whether `value` is an `<owner>/<repo>` as `hunt-ctl` accepts it: two parts of letters, digits, `-`, `_` and `.`,
@@ -88,12 +80,6 @@ pub fn is_repository_key(value: &str) -> bool {
         !part.is_empty() && !part.starts_with('.') && part.chars().all(is_allowed)
     };
     value.split_once('/').is_some_and(|(owner, repo)| is_part(owner) && is_part(repo))
-}
-
-/// The issue number at the end of `value`: `123`, `#123`, `acme/app#123` or an issue URL; `None` without one.
-pub fn issue_number(value: &str) -> Option<u64> {
-    let digits: String = value.trim().chars().rev().take_while(char::is_ascii_digit).collect::<Vec<_>>().into_iter().rev().collect();
-    digits.parse().ok().filter(|number| *number > 0)
 }
 
 /// The local repositories among `paths` with the `<owner>/<repo>` of their `origin`, in the order of `paths`; paths
@@ -153,50 +139,40 @@ pub async fn read_session_meta(ssh: &Ssh, id: Uuid) -> Result<SessionMeta, Strin
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
 
     const ID: &str = "ab12cd34-0000-4000-8000-000000000001";
     const ZONE: &str = "europe-west1-c";
 
-    fn listed(name: &str, labels: &[(&str, &str)], metadata: &[(&str, &str)]) -> SessionVm {
-        let pairs = |entries: &[(&str, &str)]| {
-            entries.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect::<BTreeMap<_, _>>()
-        };
-        SessionVm {
-            name: name.into(),
+    fn swf_session() -> SessionSummary {
+        SessionSummary {
+            id: ID.into(),
+            vm: "vm-hunt-s-ab12cd34".into(),
             zone: ZONE.into(),
             status: "TERMINATED".into(),
-            labels: pairs(labels),
-            metadata: pairs(metadata),
-            created_at: None,
+            origin: "swf".into(),
+            repo: "acme/app".into(),
+            branch: "hunt/123-fix-login".into(),
+            title: " Fix login ".into(),
+            issue: Some(123),
+            created_at: "2026-10-12T03:04:05.678-07:00".into(),
         }
     }
 
-    fn swf_vm() -> SessionVm {
-        listed(
-            "vm-hunt-s-ab12cd34",
-            &[("hunt-session", "ab12cd34"), ("hunt-origin", "swf"), ("hunt-role", "session")],
-            &[
-                ("hunt-session-id", ID),
-                ("hunt-repo", "acme/app"),
-                ("hunt-branch", "hunt/123-fix-login"),
-                ("hunt-issue", "123"),
-                ("hunt-title", " Fix login "),
-            ],
-        )
-    }
-
     #[test]
-    fn sessions_to_adopt_reads_the_labels_and_metadata_of_unknown_sessions() {
-        let mut desktop = listed(
-            "vm-hunt-s-00000000",
-            &[("hunt-session", "00000000"), ("hunt-origin", "desktop")],
-            &[("hunt-session-id", "00000000-1111-4000-8000-000000000002"), ("hunt-repo", "acme/app")],
-        );
-        desktop.status = "RUNNING".into();
-        let adopted = sessions_to_adopt(&[swf_vm(), desktop], "acme-hunt", ZONE, &HashSet::new());
+    fn sessions_to_adopt_reads_the_listing_of_unknown_sessions() {
+        let desktop = SessionSummary {
+            id: "00000000-1111-4000-8000-000000000002".into(),
+            vm: "vm-hunt-s-00000000".into(),
+            status: "RUNNING".into(),
+            origin: "desktop".into(),
+            branch: "".into(),
+            title: "".into(),
+            issue: None,
+            created_at: "".into(),
+            ..swf_session()
+        };
+        let adopted = sessions_to_adopt(&[swf_session(), desktop], "acme-hunt", ZONE, &HashSet::new());
 
         assert_eq!(adopted.len(), 2);
         assert_eq!(adopted[0].id, Uuid::parse_str(ID).unwrap());
@@ -205,51 +181,37 @@ mod tests {
         let (title, repo, branch) = (adopted[0].title.as_str(), adopted[0].repo.as_str(), adopted[0].branch.as_str());
         assert_eq!((title, repo, branch), ("Fix login", "acme/app", "hunt/123-fix-login"));
         assert_eq!((adopted[0].origin, adopted[0].issue, adopted[0].is_running), (RemoteOrigin::Swf, Some(123), false));
+        assert_eq!(adopted[0].created_at.map(|time| time.to_rfc3339()).as_deref(), Some("2026-10-12T10:04:05.678+00:00"));
         assert_eq!((adopted[1].title.as_str(), adopted[1].branch.as_str()), ("Remote session of acme/app", ""));
         assert_eq!((adopted[1].origin, adopted[1].issue, adopted[1].is_running), (RemoteOrigin::Desktop, None, true));
+        assert_eq!(adopted[1].created_at, None);
     }
 
     #[test]
     fn sessions_to_adopt_skips_known_sessions_vms_of_other_zones_and_vms_that_do_not_belong_to_their_session() {
         let known = HashSet::from([Uuid::parse_str(ID).unwrap()]);
-        assert!(sessions_to_adopt(&[swf_vm()], "acme-hunt", ZONE, &known).is_empty());
+        assert!(sessions_to_adopt(&[swf_session()], "acme-hunt", ZONE, &known).is_empty());
 
-        let mut wrong_name = swf_vm();
-        wrong_name.name = "vm-hunt-medc".into();
-        let mut wrong_label = swf_vm();
-        wrong_label.labels.insert("hunt-session".into(), "ffffffff".into());
-        let mut no_id = swf_vm();
-        no_id.metadata.remove("hunt-session-id");
-        let mut bad_id = swf_vm();
-        bad_id.metadata.insert("hunt-session-id".into(), "not-a-uuid".into());
-        let mut no_repo = swf_vm();
-        no_repo.metadata.remove("hunt-repo");
-        let mut bad_repo = swf_vm();
-        bad_repo.metadata.insert("hunt-repo".into(), "../etc".into());
-        let mut bad_zone = swf_vm();
-        bad_zone.zone = "Europe West".into();
-        let mut other_zone = swf_vm();
-        other_zone.zone = "us-central1-a".into();
-        let vms = [wrong_name, wrong_label, no_id, bad_id, no_repo, bad_repo, bad_zone, other_zone];
-        assert!(sessions_to_adopt(&vms, "acme-hunt", ZONE, &HashSet::new()).is_empty());
+        let listed = [
+            SessionSummary { vm: "vm-hunt-medc".into(), ..swf_session() },
+            SessionSummary { vm: "vm-hunt-s-ffffffff".into(), ..swf_session() },
+            SessionSummary { id: "".into(), ..swf_session() },
+            SessionSummary { id: "not-a-uuid".into(), ..swf_session() },
+            SessionSummary { repo: "".into(), ..swf_session() },
+            SessionSummary { repo: "../etc".into(), ..swf_session() },
+            SessionSummary { zone: "us-central1-a".into(), ..swf_session() },
+        ];
+        assert!(sessions_to_adopt(&listed, "acme-hunt", ZONE, &HashSet::new()).is_empty());
+        assert!(sessions_to_adopt(&[swf_session()], "Acme Hunt", ZONE, &HashSet::new()).is_empty());
     }
 
     #[test]
-    fn a_swf_vm_without_title_is_named_after_its_issue() {
-        let mut vm = swf_vm();
-        vm.metadata.remove("hunt-title");
-        assert_eq!(sessions_to_adopt(&[vm], "acme-hunt", ZONE, &HashSet::new())[0].title, "Issue #123 of acme/app");
-    }
-
-    #[test]
-    fn issue_number_takes_the_trailing_digits() {
-        assert_eq!(issue_number("123"), Some(123));
-        assert_eq!(issue_number(" #45 "), Some(45));
-        assert_eq!(issue_number("acme/app#7"), Some(7));
-        assert_eq!(issue_number("https://github.com/acme/app/issues/1454"), Some(1454));
-        assert_eq!(issue_number(""), None);
-        assert_eq!(issue_number("none"), None);
-        assert_eq!(issue_number("0"), None);
+    fn a_swf_session_without_title_is_named_after_its_issue() {
+        let untitled = SessionSummary { title: " ".into(), ..swf_session() };
+        assert_eq!(sessions_to_adopt(&[untitled], "acme-hunt", ZONE, &HashSet::new())[0].title, "Issue #123 of acme/app");
+        let without_issue = SessionSummary { title: "".into(), issue: Some(0), ..swf_session() };
+        let adopted = sessions_to_adopt(&[without_issue], "acme-hunt", ZONE, &HashSet::new());
+        assert_eq!((adopted[0].title.as_str(), adopted[0].issue), ("Remote session of acme/app", None));
     }
 
     #[test]

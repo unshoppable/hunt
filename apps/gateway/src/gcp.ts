@@ -1,5 +1,5 @@
 /**
- * The Google Cloud APIs hunt-swf uses on the gateway, with the access token of the gateway's service account from the
+ * The Google Cloud APIs the gateway's services use, with the access token of the gateway's service account from the
  * metadata server: the metadata server itself (project, zone, token), Secret Manager (the poller's tokens) and Compute
  * Engine (the session VMs in the gateway's project and zone). Plain REST through `fetch`; no dependencies.
  */
@@ -104,10 +104,21 @@ export async function readSecret(metadata: Metadata, name: string, fetchImpl: ty
 /** A VM as Compute Engine lists it. */
 export interface Instance {
   name: string;
+  /** The zone's name, e.g. `europe-west3-a`; empty when the resource names none. */
+  zone: string;
   /** E.g. `PROVISIONING`, `RUNNING`, `STOPPING`, `TERMINATED`. */
   status: string;
+  /** RFC 3339, as Compute Engine writes it; empty when the resource names none. */
+  creationTimestamp: string;
   labels: Record<string, string>;
   metadata: { fingerprint: string; items: MetadataItem[] };
+  disks: AttachedDisk[];
+}
+
+export interface AttachedDisk {
+  deviceName: string;
+  /** Whether Compute Engine deletes the disk with the VM. */
+  autoDelete: boolean;
 }
 
 export interface MetadataItem {
@@ -124,16 +135,30 @@ export interface InstanceRequest {
   machineType: string | null;
 }
 
-/** The Compute Engine calls hunt-swf needs, on VMs in the gateway's project and zone. */
+/**
+ * The Compute Engine calls of the gateway's services, on VMs in the gateway's project and zone. Calls that change a VM
+ * return once Compute Engine accepted the request; the VM's status shows when it is done.
+ */
 export interface Compute {
-  /** The VMs whose label `key` is `value`. */
+  /** The VMs of every zone of the gateway's project that match the list filter `filter`. */
+  list(filter: string): Promise<Instance[]>;
+  /** The VMs in the gateway's zone whose label `key` is `value`. */
   listByLabel(key: string, value: string): Promise<Instance[]>;
   /** The VM `name`; null when it does not exist. */
   get(name: string): Promise<Instance | null>;
-  /** Requests the VM from the instance template; returns once Compute Engine accepted the request. */
+  /** Requests the VM from the instance template. */
   insert(request: InstanceRequest): Promise<void>;
   /** Replaces the VM's metadata items; `fingerprint` is the one of the metadata read before. */
   setMetadata(name: string, fingerprint: string, items: MetadataItem[]): Promise<void>;
+  /** Starts a `TERMINATED` (or `STOPPED`) VM. */
+  start(name: string): Promise<void>;
+  /** Resumes a `SUSPENDED` VM. */
+  resume(name: string): Promise<void>;
+  stop(name: string): Promise<void>;
+  /** Makes Compute Engine delete the disk `deviceName` with the VM. */
+  setDiskAutoDelete(name: string, deviceName: string): Promise<void>;
+  /** Deletes the VM and the disks whose `autoDelete` is set. */
+  delete(name: string): Promise<void>;
 }
 
 /** `entries` set in `items`: existing keys get the new value, the other items stay as they are. */
@@ -145,9 +170,22 @@ export function mergeMetadataItems(items: MetadataItem[], entries: Record<string
   return merged;
 }
 
-/** An instance resource of the Compute Engine API in the shape hunt-swf reads. */
+/** The last segment of a resource URL such as `https://…/projects/p/zones/europe-west3-a`. */
+function lastSegment(value: unknown): string {
+  return typeof value === "string" ? (value.split("/").pop() ?? "") : "";
+}
+
+/** An instance resource of the Compute Engine API in the shape the gateway reads. */
 export function parseInstance(value: unknown): Instance {
-  const raw = (value ?? {}) as { name?: unknown; status?: unknown; labels?: unknown; metadata?: { fingerprint?: unknown; items?: unknown } };
+  const raw = (value ?? {}) as {
+    name?: unknown;
+    zone?: unknown;
+    status?: unknown;
+    creationTimestamp?: unknown;
+    labels?: unknown;
+    metadata?: { fingerprint?: unknown; items?: unknown };
+    disks?: unknown;
+  };
   const labels: Record<string, string> = {};
   if (raw.labels && typeof raw.labels === "object") {
     for (const [key, label] of Object.entries(raw.labels)) {
@@ -157,15 +195,28 @@ export function parseInstance(value: unknown): Instance {
     }
   }
   const items = Array.isArray(raw.metadata?.items) ? (raw.metadata.items as { key?: unknown; value?: unknown }[]) : [];
+  const disks = Array.isArray(raw.disks) ? (raw.disks as { deviceName?: unknown; autoDelete?: unknown }[]) : [];
   return {
     name: typeof raw.name === "string" ? raw.name : "",
+    zone: lastSegment(raw.zone),
     status: typeof raw.status === "string" ? raw.status : "",
+    creationTimestamp: typeof raw.creationTimestamp === "string" ? raw.creationTimestamp : "",
     labels,
     metadata: {
       fingerprint: typeof raw.metadata?.fingerprint === "string" ? raw.metadata.fingerprint : "",
-      items: items.filter((item) => typeof item.key === "string").map((item) => ({ key: item.key as string, value: typeof item.value === "string" ? item.value : "" })),
+      items: items
+        .filter((item) => typeof item.key === "string")
+        .map((item) => ({ key: item.key as string, value: typeof item.value === "string" ? item.value : "" })),
     },
+    disks: disks
+      .filter((disk) => typeof disk.deviceName === "string")
+      .map((disk) => ({ deviceName: disk.deviceName as string, autoDelete: disk.autoDelete === true })),
   };
+}
+
+/** The value of the metadata item `key`; null without one. */
+export function metadataValue(instance: Instance, key: string): string | null {
+  return instance.metadata.items.find((item) => item.key === key)?.value ?? null;
 }
 
 export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetch): Compute {
@@ -173,7 +224,7 @@ export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetc
     return `${COMPUTE}/projects/${encodeURIComponent(await metadata.project())}/zones/${encodeURIComponent(await metadata.zone())}`;
   }
 
-  async function call(method: "GET" | "POST", url: string, body?: unknown): Promise<Response> {
+  async function call(method: "GET" | "POST" | "DELETE", url: string, body?: unknown): Promise<Response> {
     const headers: Record<string, string> = { Authorization: `Bearer ${await metadata.accessToken()}` };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
@@ -181,23 +232,45 @@ export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetc
     return fetchImpl(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   }
 
+  async function instanceUrl(name: string): Promise<string> {
+    return `${await zoneUrl()}/instances/${encodeURIComponent(name)}`;
+  }
+
+  async function post(name: string, verb: string, what: string, query = ""): Promise<void> {
+    const response = await call("POST", `${await instanceUrl(name)}/${verb}${query}`);
+    if (!response.ok) throw await failure(response, what);
+  }
+
+  /** Every page of the list at `base` with `filter`; `itemsOf` takes the instances out of one page. */
+  async function pages(base: string, filter: string, what: string, itemsOf: (page: Record<string, unknown>) => unknown[]): Promise<Instance[]> {
+    const instances: Instance[] = [];
+    let pageToken = "";
+    do {
+      const url = `${base}${base.includes("?") ? "&" : "?"}filter=${encodeURIComponent(filter)}${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`;
+      const response = await call("GET", url);
+      if (!response.ok) throw await failure(response, what);
+      const page = (await response.json()) as Record<string, unknown>;
+      instances.push(...itemsOf(page).map(parseInstance));
+      pageToken = typeof page.nextPageToken === "string" ? page.nextPageToken : "";
+    } while (pageToken);
+    return instances;
+  }
+
   return {
+    async list(filter) {
+      const base = `${COMPUTE}/projects/${encodeURIComponent(await metadata.project())}/aggregated/instances?returnPartialSuccess=true`;
+      // `items` maps each zone (`zones/<zone>`) to its instances, or to a warning for a zone without any.
+      return pages(base, filter, `list the VMs matching ${filter}`, (page) =>
+        Object.values((page.items ?? {}) as Record<string, { instances?: unknown[] }>).flatMap((scope) => scope.instances ?? []),
+      );
+    },
     async listByLabel(key, value) {
-      const instances: Instance[] = [];
-      const filter = `labels.${key} = "${value}"`;
-      let pageToken = "";
-      do {
-        const url = `${await zoneUrl()}/instances?filter=${encodeURIComponent(filter)}${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`;
-        const response = await call("GET", url);
-        if (!response.ok) throw await failure(response, `list the VMs labelled ${key}=${value}`);
-        const page = (await response.json()) as { items?: unknown[]; nextPageToken?: string };
-        instances.push(...(page.items ?? []).map(parseInstance));
-        pageToken = page.nextPageToken ?? "";
-      } while (pageToken);
+      const what = `list the VMs labelled ${key}=${value}`;
+      const instances = await pages(`${await zoneUrl()}/instances`, `labels.${key} = "${value}"`, what, (page) => (Array.isArray(page.items) ? page.items : []));
       return instances.filter((instance) => instance.labels[key] === value);
     },
     async get(name) {
-      const response = await call("GET", `${await zoneUrl()}/instances/${encodeURIComponent(name)}`);
+      const response = await call("GET", await instanceUrl(name));
       if (response.status === 404) return null;
       if (!response.ok) throw await failure(response, `look up ${name}`);
       return parseInstance(await response.json());
@@ -214,8 +287,17 @@ export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetc
       if (!response.ok) throw await failure(response, `create ${request.name} from ${request.template}`);
     },
     async setMetadata(name, fingerprint, items) {
-      const response = await call("POST", `${await zoneUrl()}/instances/${encodeURIComponent(name)}/setMetadata`, { fingerprint, items });
+      const response = await call("POST", `${await instanceUrl(name)}/setMetadata`, { fingerprint, items });
       if (!response.ok) throw await failure(response, `set the metadata of ${name}`);
+    },
+    start: (name) => post(name, "start", `start ${name}`),
+    resume: (name) => post(name, "resume", `resume ${name}`),
+    stop: (name) => post(name, "stop", `stop ${name}`),
+    setDiskAutoDelete: (name, deviceName) =>
+      post(name, "setDiskAutoDelete", `make ${name} delete its disk ${deviceName}`, `?autoDelete=true&deviceName=${encodeURIComponent(deviceName)}`),
+    async delete(name) {
+      const response = await call("DELETE", await instanceUrl(name));
+      if (!response.ok) throw await failure(response, `delete ${name}`);
     },
   };
 }

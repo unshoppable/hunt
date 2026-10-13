@@ -1,0 +1,5 @@
+{
+  "BUILD_COMMAND": "npx nx run session:build --skip-nx-cache",
+  "ARTIFACT_DIR": "dist/apps/session",
+  "INSTALL_COMMAND": "stage-session"
+}

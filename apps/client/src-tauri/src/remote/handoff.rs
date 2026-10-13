@@ -1,7 +1,7 @@
-//! Moving a session from the local worktree to a VM of its own, which Hunt creates from the session VM template when it
-//! does not exist yet: the session's branch and uncommitted work (as a snapshot commit), the Git LFS objects of its
-//! checkout, the ignored files it needs to run, and its Claude Code transcript. Afterwards `hunt-ctl` configures the
-//! session's environment and preview proxy, installs the dependencies and starts the relay.
+//! Moving a session from the local worktree to a VM of its own, which the gateway provisions (`sessions.provision`): the
+//! session's branch and uncommitted work (as a snapshot commit), the Git LFS objects of its checkout, the ignored files
+//! it needs to run, and its Claude Code transcript. Afterwards `hunt-ctl` configures the session's environment and
+//! preview proxy, installs the dependencies and starts the relay.
 
 use std::path::{Path, PathBuf};
 
@@ -9,9 +9,9 @@ use glob::{MatchOptions, Pattern};
 use serde_json::json;
 use uuid::Uuid;
 
+use super::api::{GatewayApi, ProvisionRequest};
 use super::ssh::{self, Ssh};
-use super::vm::SessionMetadata;
-use super::{bundle, hunt_ctl, hunt_ctl_with_input, tar_create, vm, Progress, RemoteOrigin, RemoteStep, RemoteTarget, VmSettings};
+use super::{hunt_ctl, hunt_ctl_with_input, release, tar_create, Progress, RemoteOrigin, RemoteStep, RemoteTarget, VmRef};
 use super::{memory, transcript};
 use crate::git;
 
@@ -28,10 +28,10 @@ pub struct HandoffRequest<'a> {
     pub title: &'a str,
     pub worktree: &'a Path,
     pub acp_session_id: Option<&'a str>,
-    /// Where the session's VM is created and which gateway routes its previews; validated.
-    pub settings: &'a VmSettings,
-    /// The `remote/` folder shipped with the app.
-    pub bundle_dir: &'a Path,
+    /// The gateway that provisions the session's VM and routes its previews; validated.
+    pub gateway: &'a VmRef,
+    /// A machine type other than the instance template's; validated.
+    pub machine_type: Option<&'a str>,
     /// Hunt's SSH key and known hosts.
     pub ssh_dir: &'a Path,
     /// The local `~/.claude`.
@@ -56,13 +56,12 @@ pub struct HandedOff {
     pub acp_session_id: Option<String>,
 }
 
-/// Moves the session to its VM and starts it there; the VM and the gateway get this app's bundle first. On failure the
-/// session's worktree on the VM is removed again but the VM stays, so a retry starts faster and deleting the session
-/// deletes it; the local worktree is left as it was.
+/// Moves the session to its VM, which the gateway provisions, and starts it there. On failure the session's worktree on
+/// the VM is removed again but the VM stays, so a retry starts faster and deleting the session deletes it; the local
+/// worktree is left as it was.
 pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Result<HandedOff, String> {
     let id = request.hunt_session_id.to_string();
     let worktree = request.worktree;
-    let settings = request.settings;
     ensure_movable(worktree).await?;
     let patterns = compile_patterns(request.file_patterns)?;
     let branch = git::current_branch(worktree).await?;
@@ -80,23 +79,16 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     let hooks_path = hooks_path(worktree).await;
 
     progress(RemoteStep::Connecting);
-    let session_vm = settings.session_vm(request.hunt_session_id);
-    let ssh = Ssh::open(&session_vm, request.ssh_dir).await?;
-    if vm::status_if_exists(&session_vm).await?.is_none() {
-        progress(RemoteStep::CreatingVm);
+    let gateway = GatewayApi::open(request.gateway, request.ssh_dir).await?;
+    let preview_domain = gateway.preview_domain()?;
+    let provision = ProvisionRequest { id: request.hunt_session_id, title: request.title, repo: &repo, branch: &branch, machine_type: request.machine_type };
+    let provisioned = gateway.provision(&provision, progress).await?;
+    let session_vm = provisioned.vm;
+    if provisioned.created {
         ssh::forget_host_key(&session_vm, request.ssh_dir).await?;
-        vm::create(&session_vm, request.hunt_session_id, &settings.template, settings.machine_type.as_deref()).await?;
     }
-    let metadata = SessionMetadata { hunt_session_id: request.hunt_session_id, repo: &repo, branch: &branch, title: request.title };
-    vm::set_session_metadata(&session_vm, &metadata).await?;
-    // The gateway gets this release while the session's VM boots.
-    let gateway = settings.gateway_vm();
-    let gateway_ssh = Ssh::open(&gateway, request.ssh_dir).await?;
-    vm::ensure_running(&gateway, &gateway_ssh, progress).await?;
-    bundle::ensure_installed(&gateway_ssh, request.bundle_dir, Some(&settings.preview_domain), progress).await?;
-    vm::ensure_running(&session_vm, &ssh, progress).await?;
-    vm::wait_until_ready(&session_vm, &ssh, progress).await?;
-    bundle::ensure_installed(&ssh, request.bundle_dir, None, progress).await?;
+    let ssh = Ssh::open(&session_vm, request.ssh_dir).await?;
+    release::ensure_ready(&ssh, progress).await?;
 
     progress(RemoteStep::TransferringCode);
     let remote_worktree = hunt_ctl(&ssh, &["init", &id, "--repo", &repo]).await?["path"]
@@ -121,7 +113,7 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
         upload_ignored_files(worktree, &ssh, &id, &patterns, hooks_path.as_deref()).await?;
         // Reads the worktree's hunt.json and HUNT.md, so it runs once the worktree is checked out, and before the
         // relay's session file is written, which carries the HUNT.md in the system prompt.
-        let session_config = hunt_ctl(&ssh, &["session-config", &id, "--domain", &settings.preview_domain]).await?;
+        let session_config = hunt_ctl(&ssh, &["session-config", &id, "--domain", &preview_domain]).await?;
         let system_prompt = (request.system_prompt)(session_config["hunt_md"].as_str());
         upload_claude_dir(&request, &ssh, &remote_worktree, &system_prompt).await?;
 
@@ -152,7 +144,7 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
         local_mode: request.local_mode.map(str::to_string),
         last_active_at: None,
         cleanup_asked_at: None,
-        preview_domain: Some(settings.preview_domain.clone()),
+        preview_domain: Some(preview_domain),
         origin: RemoteOrigin::Handoff,
         issue: None,
     };

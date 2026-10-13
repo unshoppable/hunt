@@ -3,6 +3,7 @@ import {
   createCompute,
   createMetadata,
   mergeMetadataItems,
+  metadataValue,
   parseAccessToken,
   parseInstance,
   parseProject,
@@ -145,6 +146,51 @@ describe("createCompute", () => {
     ]);
   });
 
+  it("lists the VMs of a filter in every zone of the project, page by page", async () => {
+    const base = "https://compute.googleapis.com/compute/v1/projects/medconomy-hunt/aggregated/instances?returnPartialSuccess=true";
+    const filter = encodeURIComponent('labels.hunt-role = "session"');
+    const { fetchImpl } = fakeFetch({
+      [`GET ${base}&filter=${filter}`]: () =>
+        Response.json({
+          items: {
+            "zones/europe-west3-a": { instances: [{ name: "vm-hunt-s-00000001", zone: "projects/p/zones/europe-west3-a" }] },
+            "zones/us-central1-a": { warning: { code: "NO_RESULTS_ON_PAGE" } },
+          },
+          nextPageToken: "p2",
+        }),
+      [`GET ${base}&filter=${filter}&pageToken=p2`]: () =>
+        Response.json({ items: { "zones/europe-west1-c": { instances: [{ name: "vm-hunt-s-00000002", zone: "projects/p/zones/europe-west1-c" }] } } }),
+    });
+
+    const vms = await createCompute(fixedMetadata, fetchImpl).list('labels.hunt-role = "session"');
+    expect(vms.map((vm) => `${vm.name} ${vm.zone}`)).toEqual(["vm-hunt-s-00000001 europe-west3-a", "vm-hunt-s-00000002 europe-west1-c"]);
+  });
+
+  it("starts, resumes, stops and deletes a VM and marks its disks for deletion", async () => {
+    const instance = `${ZONE_URL}/instances/vm-hunt-s-ab12cd34`;
+    const { fetchImpl, requests } = fakeFetch({
+      [`POST ${instance}/start`]: () => Response.json({ kind: "compute#operation" }),
+      [`POST ${instance}/resume`]: () => new Response("denied", { status: 403 }),
+      [`POST ${instance}/stop`]: () => Response.json({ kind: "compute#operation" }),
+      [`POST ${instance}/setDiskAutoDelete?autoDelete=true&deviceName=data%201`]: () => Response.json({ kind: "compute#operation" }),
+      [`DELETE ${instance}`]: () => Response.json({ kind: "compute#operation" }),
+    });
+    const compute = createCompute(fixedMetadata, fetchImpl);
+
+    await compute.start("vm-hunt-s-ab12cd34");
+    await expect(compute.resume("vm-hunt-s-ab12cd34")).rejects.toThrow("failed to resume vm-hunt-s-ab12cd34: HTTP 403 denied");
+    await compute.stop("vm-hunt-s-ab12cd34");
+    await compute.setDiskAutoDelete("vm-hunt-s-ab12cd34", "data 1");
+    await compute.delete("vm-hunt-s-ab12cd34");
+    expect(requests.map((request) => `${request.method} ${request.url.slice(instance.length)} ${request.authorization}`)).toEqual([
+      "POST /start Bearer token-1",
+      "POST /resume Bearer token-1",
+      "POST /stop Bearer token-1",
+      "POST /setDiskAutoDelete?autoDelete=true&deviceName=data%201 Bearer token-1",
+      "DELETE  Bearer token-1",
+    ]);
+  });
+
   it("reads an instance, answers null for a missing one and sets metadata with the fingerprint", async () => {
     const { fetchImpl, requests } = fakeFetch({
       [`GET ${ZONE_URL}/instances/vm-hunt-s-ab12cd34`]: () =>
@@ -178,6 +224,34 @@ describe("metadata items", () => {
   });
 
   it("parses an instance with missing parts", () => {
-    expect(parseInstance({ name: "vm", labels: { a: "b", c: 1 } })).toEqual({ name: "vm", status: "", labels: { a: "b" }, metadata: { fingerprint: "", items: [] } });
+    expect(parseInstance({ name: "vm", labels: { a: "b", c: 1 } })).toEqual({
+      name: "vm",
+      zone: "",
+      status: "",
+      creationTimestamp: "",
+      labels: { a: "b" },
+      metadata: { fingerprint: "", items: [] },
+      disks: [],
+    });
+  });
+
+  it("parses the zone, creation time and disks of an instance and reads a metadata item", () => {
+    const instance = parseInstance({
+      name: "vm-hunt-s-ab12cd34",
+      zone: "https://www.googleapis.com/compute/v1/projects/medconomy-hunt/zones/europe-west3-a",
+      creationTimestamp: "2026-10-13T01:02:03.456-07:00",
+      metadata: { items: [{ key: "hunt-session-id", value: "ab12cd34-0000-4000-8000-000000000001" }] },
+      disks: [{ deviceName: "persistent-disk-0", autoDelete: true, boot: true }, { deviceName: "data", autoDelete: false }, { autoDelete: true }],
+    });
+    expect(instance).toMatchObject({
+      zone: "europe-west3-a",
+      creationTimestamp: "2026-10-13T01:02:03.456-07:00",
+      disks: [
+        { deviceName: "persistent-disk-0", autoDelete: true },
+        { deviceName: "data", autoDelete: false },
+      ],
+    });
+    expect(metadataValue(instance, "hunt-session-id")).toBe("ab12cd34-0000-4000-8000-000000000001");
+    expect(metadataValue(instance, "hunt-repo")).toBeNull();
   });
 });

@@ -8,23 +8,24 @@ owns it; this file says how code here is written and verified.
 
 - Nx 23 workspace: an explicit `project.json` per project, no inference plugins, no npm workspaces. Node and npm are
   pinned through Volta in the root `package.json`.
-- `npm run start:client` runs the app (`nx run client:dev`: `tauri dev`, whose `beforeDevCommand` builds the gateway
-  artifact and starts Vite); `npm run tauri -- <args>` runs the Tauri CLI in `apps/client`.
+- `npm run start:client` runs the app (`nx run client:dev`: `tauri dev`, whose `beforeDevCommand` starts Vite);
+  `npm run tauri -- <args>` runs the Tauri CLI in `apps/client`.
 - `npm run check` runs `typecheck`, `lint`, `test` and `test-rust` of every project; `build:all`, `typecheck:all`,
   `lint:all` and `test:all` run one kind. `npx nx affected -t <targets>` runs them for the projects a change touches,
   `npx nx run <project>:<target>` for one.
 - Targets: `typecheck` (strict tsc), `lint` and `test` (vitest per project, no root config; the client's tests are pure
   logic in the node environment); `build` for `client`, `gateway` and `session`; the client adds `dev`, `bundle`
   (`tauri build`) and `test-rust` (`cargo test` in `apps/client/src-tauri`). The session's `test` runs its `build`
-  first: the Docker test of `hunt-ctl` uses the built artifact. `cargo build` must stay free of warnings.
+  first, and so does the gateway's: their Docker tests of `hunt-ctl` use the built artifact. `cargo build` must stay
+  free of warnings.
 - There is no formatter. Format by hand: TypeScript up to ~160 columns, Rust per `apps/client/src-tauri/rustfmt.toml`.
 
 ## Layout
 
 - Projects: `client` (`apps/client`, the desktop app), `gateway` (`apps/gateway`, issue poller and wake service of the
   gateway VM), `session` (`apps/session`, relay, `hunt.json` config and VM files of a session VM), `domain`
-  (`libs/domain`, code and agent prompts the apps share), `vm` (`libs/vm`, `hunt-ctl`) and `scripts` (`scripts/`,
-  release and VM artifact builds). Builds write to `dist/apps/<project>`.
+  (`libs/domain`, code, agent prompts and the protocol number the apps share), `vm` (`libs/vm`, `hunt-ctl`) and
+  `scripts` (`scripts/`, the VM artifact build). Builds write to `dist/apps/<project>`.
 - Paths starting with `src/` or `src-tauri/` and the window pages are relative to `apps/client/`; bare module paths
   such as `ide/paneGrid.ts` or `session/commands.rs` to its `src/` or `src-tauri/src/`.
 - `src/ipc` wraps every Tauri command (`commands.ts`), event (`events.ts`) and shared type (`types.ts`); `invoke`
@@ -43,8 +44,12 @@ owns it; this file says how code here is written and verified.
   Node's built-ins (the artifact build rejects any other). It imports `libs/domain` by relative path
   (`../../../libs/domain/src/…`), which Nx sees through `pluginsConfig.@nx/js.analyzeSourceFiles`.
   `scripts/buildVmArtifact.ts` bundles each entry point into one `.mjs` with esbuild and lays the artifact out as
-  `/srv/hunt/current` expects (`gateway/`, `relay/`, `session/`, `vm/`); the gateway's artifact holds the session's and
-  ships with the app (`BUNDLE` in `src-tauri/src/remote/bundle.rs`).
+  `/srv/hunt/current` expects (`gateway/`, `relay/`, `session/`, `vm/`). The client never installs a release: after
+  a release CI deploys both apps onto the gateway over SSH (`hunt-ctl install`, `hunt-ctl stage-session`), and the
+  gateway installs the staged session release on session VMs; the client only checks `libs/domain/protocol.json`,
+  which must change whenever `hunt-ctl`'s or the relay's contract changes incompatibly, and has session VMs install
+  the agent tools their image lacks (`hunt-ctl install-tools`). The client controls VMs only through the gateway API
+  (`libs/domain/src/gatewayApi.ts`, `api` in `protocol.json`).
 
 ## Frontend rules
 
@@ -107,4 +112,5 @@ owns it; this file says how code here is written and verified.
 - Named exports only; components are PascalCase `.tsx`, modules camelCase `.ts`.
 - Prefer a plain truthiness check over `isUndefined`/`isNull` unless a falsy value is legitimate.
 - Commit messages follow Conventional Commits (`type(scope): description`). `feat`, `fix`, `perf`, `revert` and a
-  `!`/`BREAKING CHANGE` footer decide the next release version; other types do not release.
+  `!`/`BREAKING CHANGE` footer decide the next release version of every app the commit touches (`nx release`,
+  independent versions); other types do not release.

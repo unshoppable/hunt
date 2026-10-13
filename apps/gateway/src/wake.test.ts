@@ -3,17 +3,19 @@ import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { createCompute, createWakeServer, isPageLoad, renderPage, sessionShort, START_INTERVAL_MS, Waker, type Compute } from "./wake.ts";
+import { createWakeServer, isPageLoad, renderPage, sessionShort, START_INTERVAL_MS, Waker, type WakeOptions } from "./wake.ts";
 
 const NAVIGATE = { "sec-fetch-mode": "navigate", accept: "text/html" };
 
 /** A Compute whose VMs have the statuses in `statuses` and that records every start and resume. */
 function fakeCompute(statuses: Record<string, string>, failure?: Error) {
   const calls: string[] = [];
-  const compute: Compute = {
-    status: async (name) => {
+  const compute: WakeOptions["compute"] = {
+    get: async (name) => {
       if (failure) throw failure;
-      return statuses[name] ?? null;
+      const status = statuses[name];
+      if (!status) return null;
+      return { name, zone: "europe-west3-a", status, creationTimestamp: "", labels: {}, metadata: { fingerprint: "", items: [] }, disks: [] };
     },
     start: async (name) => {
       calls.push(`start ${name}`);
@@ -105,58 +107,6 @@ describe("Waker", () => {
 
     expect(await waker.page("7c0c6f2e.hunt.example.com", true)).toMatchObject({ status: 502, reloads: true, text: expect.stringContaining("HTTP 403 forbidden") });
     expect(messages).toEqual(["failed to look up vm-hunt-s-7c0c6f2e: HTTP 403 forbidden"]);
-  });
-});
-
-describe("createCompute", () => {
-  it("calls the instance API in the metadata server's project and zone with a cached access token", async () => {
-    const metadata = "http://metadata.google.internal/computeMetadata/v1/";
-    const instances = "https://compute.googleapis.com/compute/v1/projects/medconomy-hunt/zones/europe-west3-a/instances/";
-    const requests: string[] = [];
-    let tokens = 0;
-    const answers: Record<string, () => Response> = {
-      "instance/service-accounts/default/token": () => {
-        tokens += 1;
-        return Response.json({ access_token: `token-${tokens}`, expires_in: 3600 });
-      },
-      "instance/zone": () => new Response("projects/123/zones/europe-west3-a"),
-      "project/project-id": () => new Response("medconomy-hunt"),
-      "GET vm-hunt-s-7c0c6f2e": () => Response.json({ status: "TERMINATED" }),
-      "GET vm-hunt-s-00000000": () => new Response("not found", { status: 404 }),
-      "POST vm-hunt-s-7c0c6f2e/start": () => Response.json({ kind: "compute#operation" }),
-      "POST vm-hunt-s-7c0c6f2e/resume": () => new Response("denied", { status: 403 }),
-    };
-    const fakeFetch = async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input);
-      const headers = new Headers(init?.headers);
-      if (url.startsWith(metadata)) {
-        expect(headers.get("Metadata-Flavor")).toBe("Google");
-        requests.push(url.slice(metadata.length));
-        return answers[url.slice(metadata.length)]();
-      }
-      expect(url.startsWith(instances)).toBe(true);
-      const key = `${init?.method} ${url.slice(instances.length)}`;
-      requests.push(`${key} ${headers.get("Authorization")}`);
-      return answers[key]();
-    };
-    let now = 0;
-    const compute = createCompute(fakeFetch as typeof fetch, () => now);
-
-    expect(await compute.status("vm-hunt-s-7c0c6f2e")).toBe("TERMINATED");
-    expect(await compute.status("vm-hunt-s-00000000")).toBeNull();
-    await compute.start("vm-hunt-s-7c0c6f2e");
-    now = 3600_000 - 60_000;
-    await expect(compute.resume("vm-hunt-s-7c0c6f2e")).rejects.toThrow("failed to resume vm-hunt-s-7c0c6f2e: HTTP 403 denied");
-    expect(requests).toEqual([
-      "instance/zone",
-      "project/project-id",
-      "instance/service-accounts/default/token",
-      "GET vm-hunt-s-7c0c6f2e Bearer token-1",
-      "GET vm-hunt-s-00000000 Bearer token-1",
-      "POST vm-hunt-s-7c0c6f2e/start Bearer token-1",
-      "instance/service-accounts/default/token",
-      "POST vm-hunt-s-7c0c6f2e/resume Bearer token-2",
-    ]);
   });
 });
 

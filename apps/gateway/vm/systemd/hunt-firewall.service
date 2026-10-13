@@ -1,18 +1,32 @@
-# Blocks the GCE metadata server (169.254.169.254) for containers on the gateway, except DNS, which GCE serves from the
-# same address and containers inherit as their resolver: the gateway's service account may start session VMs, and no
-# container needs it. The edge proxy runs in the host network and keeps its access. It runs before Docker, so the block
-# exists before Docker restarts containers at boot; Docker keeps an existing DOCKER-USER chain. Each rule stands alone,
-# so their order does not matter; ICMP, TCP and UDP cover all a container's non-root user can send.
+# Keeps everything on the gateway but root and hunt-gw off the GCE metadata server (169.254.169.254), whose token can
+# create, start and delete session VMs. DNS stays open, since GCE serves it from the same address and containers
+# inherit it as their resolver.
+# HUNT-METADATA (OUTPUT) covers the host's processes, among them the edge proxy, which runs in the host network as
+# another user, and the users who log in: only root (the guest agent, hunt-ctl) and hunt-gw (hunt-api, hunt-swf,
+# hunt-wake) pass. A rejection, unlike a drop, lets lookups that try the metadata server, such as OS Login's, fail fast.
+# DOCKER-USER covers containers in a Docker network, whose traffic is forwarded; Docker keeps an existing DOCKER-USER
+# chain, and the unit runs before Docker, so the block exists before Docker restarts containers at boot.
 # The INPUT rules keep containers off the gateway's own services (sshd, hunt-wake, Docker's published ports): a
 # connection a container opens towards the host through a Docker bridge (docker0, or hs-<id> of networks Hunt created
-# in earlier versions) is dropped, while replies to connections the host opens keep flowing.
+# in earlier versions) is dropped, while replies to connections the host opens keep flowing. Each rule outside
+# HUNT-METADATA stands alone, so their order does not matter; ICMP, TCP and UDP cover all a container's non-root user
+# can send.
 [Unit]
-Description=Block the metadata server for containers on Hunt's gateway, except DNS
+Description=Block the metadata server for everyone on Hunt's gateway but root and hunt-gw, except DNS
 Before=docker.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStart=-/usr/sbin/iptables -w -N HUNT-METADATA
+ExecStart=/usr/sbin/iptables -w -F HUNT-METADATA
+ExecStart=/usr/sbin/iptables -w -A HUNT-METADATA -m owner --uid-owner 0 -j RETURN
+ExecStart=/usr/sbin/iptables -w -A HUNT-METADATA -m owner --uid-owner hunt-gw -j RETURN
+ExecStart=/usr/sbin/iptables -w -A HUNT-METADATA -p udp --dport 53 -j RETURN
+ExecStart=/usr/sbin/iptables -w -A HUNT-METADATA -p tcp --dport 53 -j RETURN
+ExecStart=/usr/sbin/iptables -w -A HUNT-METADATA -p tcp -j REJECT --reject-with tcp-reset
+ExecStart=/usr/sbin/iptables -w -A HUNT-METADATA -j REJECT
+ExecStart=/bin/sh -c 'iptables -w -C OUTPUT -d 169.254.169.254 -j HUNT-METADATA 2>/dev/null || iptables -w -I OUTPUT -d 169.254.169.254 -j HUNT-METADATA'
 ExecStart=-/usr/sbin/iptables -w -N DOCKER-USER
 ExecStart=/bin/sh -c 'iptables -w -C DOCKER-USER -d 169.254.169.254 -p tcp ! --dport 53 -j DROP 2>/dev/null || iptables -w -I DOCKER-USER -d 169.254.169.254 -p tcp ! --dport 53 -j DROP'
 ExecStart=/bin/sh -c 'iptables -w -C DOCKER-USER -d 169.254.169.254 -p udp ! --dport 53 -j DROP 2>/dev/null || iptables -w -I DOCKER-USER -d 169.254.169.254 -p udp ! --dport 53 -j DROP'

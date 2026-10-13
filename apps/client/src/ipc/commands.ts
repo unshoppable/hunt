@@ -23,7 +23,6 @@ import type {
   SelectionContext,
   SessionNotification,
   SessionView,
-  SessionVm,
   SwfConfig,
   Shelf,
   VmSettings,
@@ -88,8 +87,8 @@ export const commands = {
   openSession: (id: string) => invoke<SessionView>("open_session", { id }),
   clearSession: (id: string) => invoke<SessionView>("clear_session", { id }),
   /**
-   * Moves the session to a VM of its own, created from `settings` when the session has none yet; the ignored files
-   * matching `filePatterns` go along.
+   * Moves the session to a VM of its own, which the gateway of `settings` provisions when the session has none yet; the
+   * ignored files matching `filePatterns` go along.
    */
   handOffSession: (id: string, settings: VmSettings, filePatterns: string[]) => invoke<SessionView>("hand_off_session", { id, settings, filePatterns }),
   retrieveSession: (id: string) => invoke<SessionView>("retrieve_session", { id }),
@@ -97,19 +96,21 @@ export const commands = {
   snoozeRemoteCleanup: (id: string) => invoke<void>("snooze_remote_cleanup", { id }),
   /** What listens on the remote session's VM and whether its main port answers; a VM that is off reports nothing and stays off. */
   previewStatus: (id: string) => invoke<PreviewStatus>("preview_status", { id }),
-  /** The session VMs of `project` with their labels and metadata, for adopting VMs without a local session. */
-  listSessionVms: (project: string) => invoke<SessionVm[]>("list_session_vms", { project }),
   /**
-   * Adopts the session VMs of the project in `settings` that no local session knows, each in the local checkout of its
+   * Adopts the sessions the gateway of `settings` lists that no local session knows, each in the local checkout of its
    * repository among `repoPaths` and the stored sessions' repositories; resolves with the IDs of the new sessions.
    */
   adoptSessionVms: (settings: VmSettings, repoPaths: string[]) => invoke<string[]>("adopt_session_vms", { settings, repoPaths }),
   /**
-   * Writes the poller configuration to the gateway of `settings` (installing this app's VM software there first): open
-   * issues labelled swf in `repos` get a session VM each, at most `maxSessions` at once; resolves with what the gateway
-   * stored.
+   * Writes the poller configuration to the gateway of `settings`: open issues labelled swf in `repos` get a session VM
+   * each with the machine type of `settings`, at most `maxSessions` at once; resolves with what the gateway stored.
    */
   applySwfConfig: (settings: VmSettings, repos: string[], maxSessions: number) => invoke<SwfConfig>("apply_swf_config", { settings, repos, maxSessions }),
+  /**
+   * The remote settings, or null while they are incomplete; the main window pushes them at its start and on every
+   * change, and commands on stored remote sessions reach the gateway they name.
+   */
+  setRemoteSettings: (settings: VmSettings | null) => invoke<void>("set_remote_settings", { settings }),
   /** The remote session's changes on its VM, read-only; a VM that is off reports none and stays off unless `startVm` is set. */
   remoteChanges: (id: string, startVm: boolean) => invoke<RemoteChanges>("remote_changes", { id, startVm }),
   /** The diff of `path` of the remote session on its VM against `base`, the commit `remoteChanges` compared against. */

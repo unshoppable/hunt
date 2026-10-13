@@ -8,7 +8,7 @@ export const REMOTE_STEP_LABELS: Record<RemoteStep, string> = {
   creatingVm: "Creating the session's VM…",
   waitingForVm: "Waiting for the VM to finish its setup, the first boot takes a few minutes…",
   connecting: "Connecting to the VM…",
-  installingRuntime: "Installing Hunt's runtime on the VMs…",
+  installingRuntime: "Installing Hunt and the agent's tools on the VM…",
   transferringCode: "Transferring the code to the VM…",
   installingDependencies: "Installing dependencies on the VM…",
   startingAgent: "Starting the agent on the VM…",

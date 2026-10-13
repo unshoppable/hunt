@@ -7,8 +7,7 @@
     "type:backend"
   ],
   "implicitDependencies": [
-    "vm",
-    "session"
+    "vm"
   ],
   "targets": {
     "build": {
@@ -20,7 +19,10 @@
         "production",
         "^production",
         "{projectRoot}/project.json",
-        "{workspaceRoot}/scripts/buildVmArtifact.ts"
+        "{workspaceRoot}/scripts/buildVmArtifact.ts",
+        {
+          "env": "APP_VERSION"
+        }
       ],
       "options": {
         "command": "node scripts/buildVmArtifact.ts gateway"
@@ -43,7 +45,10 @@
       "options": {
         "command": "vitest run",
         "cwd": "apps/gateway"
-      }
+      },
+      "dependsOn": [
+        "build"
+      ]
     }
   }
 }

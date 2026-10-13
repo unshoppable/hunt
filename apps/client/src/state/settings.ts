@@ -134,23 +134,21 @@ export type GraphAgent = { model: string; effort: string };
 export const DEFAULT_GRAPH_AGENT: GraphAgent = { model: "claude-opus-5-5", effort: "high" };
 
 /**
- * Where remote sessions run. A handoff creates the session's own VM `vm-hunt-s-<short>` from the instance template
- * `sessionTemplate` in `project` and `zone`, with `machineType` (empty: the template's). The gateway VM
- * `gatewayInstance` runs all the time and routes `https://<short>.<domain>` and `https://<short>-<port>.<domain>` of
- * `previewDomain` to the session VMs. `filePatterns` are the ignored files a handoff copies along, as glob patterns
- * relative to the worktree (`*` stays within a folder, `**` crosses folders). Handoffs are offered once project, zone,
- * gateway, template and preview domain are set. The gateway's poller `hunt-swf` starts a session VM for every open
- * issue labelled `swf` in the `<owner>/<repo>` repositories of `swfRepos`, at most `swfMaxSessions` at once; Settings
- * writes both to the gateway on request (`applySwfConfig`).
+ * Where remote sessions run. The gateway VM `gatewayInstance` in `project` and `zone` runs all the time; its API
+ * provisions each handed-off session's own VM `vm-hunt-s-<short>` with `machineType` (empty: the instance template's),
+ * starts and deletes it, and the gateway routes the session's preview URLs to it. The gateway owns the template and the
+ * preview domain. `filePatterns` are the ignored files a handoff copies along, as glob patterns relative to the worktree
+ * (`*` stays within a folder, `**` crosses folders). Handoffs are offered once project, zone and gateway are set. The
+ * gateway's poller `hunt-swf` starts a session VM for every open issue labelled `swf` in the `<owner>/<repo>`
+ * repositories of `swfRepos`, at most `swfMaxSessions` at once; Settings writes both to the gateway on request
+ * (`applySwfConfig`).
  */
 export type RemoteSettings = {
   project: string;
   zone: string;
   gatewayInstance: string;
-  sessionTemplate: string;
   machineType: string;
   filePatterns: string[];
-  previewDomain: string;
   swfRepos: string[];
   swfMaxSessions: number;
 };
@@ -161,10 +159,8 @@ export const DEFAULT_REMOTE: RemoteSettings = {
   project: "",
   zone: "",
   gatewayInstance: "",
-  sessionTemplate: "tpl-hunt-session",
   machineType: "",
   filePatterns: ["**/.env.private"],
-  previewDomain: "",
   swfRepos: [],
   swfMaxSessions: DEFAULT_SWF_MAX_SESSIONS,
 };
@@ -190,50 +186,26 @@ function clampSwfMaxSessions(value: number): number {
   return Math.min(SWF_MAX_SESSIONS_LIMIT, Math.max(0, Math.round(value)));
 }
 
-/** Host names of at least two labels, the last of letters only, as the backend and hunt-ctl accept them. */
-const PREVIEW_DOMAIN_PATTERN = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-/** Leaves room for the `<short>-<port>.` in front of the domain within the 253 characters of a host name. */
-const MAX_PREVIEW_DOMAIN_LENGTH = 253 - "01234567-65535.".length;
-
-/** The preview domain of `remote`, or `null` while it is empty or no host name. */
-export function configuredPreviewDomain(remote: RemoteSettings): string | null {
-  const domain = remote.previewDomain;
-  return domain.length <= MAX_PREVIEW_DOMAIN_LENGTH && PREVIEW_DOMAIN_PATTERN.test(domain) ? domain : null;
-}
-
-/** What a handoff needs from `remote`, or `null` while its project, zone, gateway, template or preview domain is missing. */
+/** How Hunt reaches the gateway of `remote`, or `null` while its project, zone or gateway is missing. */
 export function configuredVmSettings(remote: RemoteSettings): VmSettings | null {
   const project = remote.project.trim();
   const zone = remote.zone.trim();
   const gateway = remote.gatewayInstance.trim();
-  const template = remote.sessionTemplate.trim();
-  const previewDomain = configuredPreviewDomain(remote);
-  if (!project || !zone || !gateway || !template || !previewDomain) return null;
-  return { project, zone, gateway, template, machineType: remote.machineType.trim() || null, previewDomain };
+  if (!project || !zone || !gateway) return null;
+  return { project, zone, gateway, machineType: remote.machineType.trim() || null };
 }
 
-/**
- * `remote` with trimmed fields, without blank, absolute or worktree-leaving file patterns, and with the preview domain
- * lowercased and stripped of a scheme, leading dots and trailing slashes or dots.
- */
+/** `remote` with trimmed fields and without blank, absolute or worktree-leaving file patterns. */
 export function normalizeRemote(remote: RemoteSettings): RemoteSettings {
   const filePatterns = remote.filePatterns
     .map((pattern) => pattern.trim())
     .filter((pattern) => pattern && !pattern.startsWith("/") && !pattern.split("/").includes(".."));
-  const previewDomain = (remote.previewDomain ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/^[a-z]+:\/\//, "")
-    .replace(/^\.+/, "")
-    .replace(/[/.]+$/, "");
   return {
     project: remote.project.trim(),
     zone: remote.zone.trim(),
     gatewayInstance: remote.gatewayInstance.trim(),
-    sessionTemplate: remote.sessionTemplate.trim(),
     machineType: remote.machineType.trim(),
     filePatterns,
-    previewDomain,
     swfRepos: normalizeSwfRepos(remote.swfRepos ?? []),
     swfMaxSessions: clampSwfMaxSessions(remote.swfMaxSessions ?? DEFAULT_SWF_MAX_SESSIONS),
   };
@@ -490,7 +462,7 @@ function withDefaults(panes: Partial<Record<PaneKey, Partial<PaneSettings>>> | u
 }
 
 /** Current version of the persisted shape; `migrateSettings` brings older ones up to date. */
-export const SETTINGS_VERSION = 11;
+export const SETTINGS_VERSION = 12;
 
 /** Shape persisted up to version 6, which kept one field per resizable popup. */
 type Version6State = PersistedState & { usagesPopupSize?: PopupSize; fileSearchDialogSize?: PopupSize; subChatPopoverSize?: PopupSize };
@@ -554,20 +526,32 @@ function withSwfDefaults(stored: PersistedState): PersistedState {
   return { ...stored, remote: { swfRepos: [], swfMaxSessions: DEFAULT_SWF_MAX_SESSIONS, ...stored.remote } };
 }
 
+/** Remote settings persisted up to version 11, when Hunt created the session VMs from `sessionTemplate` itself. */
+type Version11Remote = Partial<RemoteSettings> & { sessionTemplate?: string; previewDomain?: string };
+
+/** Drops the instance template and preview domain of remote settings stored up to version 11; the gateway owns both. */
+function withoutGatewayOwnedFields(stored: PersistedState): PersistedState {
+  if (!stored.remote) return stored;
+  const { sessionTemplate: _sessionTemplate, previewDomain: _previewDomain, ...rest } = stored.remote as Version11Remote;
+  return { ...stored, remote: rest };
+}
+
 /**
  * Brings a persisted state of an earlier `version` to the current shape: version 0 only knew one font size per pane,
  * versions 1 to 4 and 7 had defaults that are lifted to the current ones where the user never changed them, versions
  * 5 and 6 kept the size of each resizable popup in its own field, versions up to 8 named Catppuccin icons in their icon
- * rules, versions up to 9 named the VM all remote sessions shared, which is the gateway now, and versions up to 10 had
- * no repositories and session limit for the gateway's poller. Fields a version did not have (`guardrailDirs`,
- * `showSummary`, `iconRules`, `folderIconRules`, `confirmSessionDelete`, `diffLineScope`, `changelistScopes`,
- * `graphExcludedFiles`, the session template, …) are filled in from the defaults by `mergeSettings`.
+ * rules, versions up to 9 named the VM all remote sessions shared, which is the gateway now, versions up to 10 had
+ * no repositories and session limit for the gateway's poller, and versions up to 11 kept the instance template and
+ * preview domain, which the gateway owns now. Fields a version did not have (`guardrailDirs`, `showSummary`,
+ * `iconRules`, `folderIconRules`, `confirmSessionDelete`, `diffLineScope`, `changelistScopes`, `graphExcludedFiles`, the
+ * file patterns, …) are filled in from the defaults by `mergeSettings`.
  */
 export function migrateSettings(persisted: unknown, version: number): PersistedState {
-  if (version >= 11) return persisted as PersistedState;
-  if (version >= 10) return withSwfDefaults(persisted as PersistedState);
-  if (version >= 9) return withSwfDefaults(gatewayFromSharedVm(persisted as PersistedState));
-  return withSwfDefaults(gatewayFromSharedVm(renameCatppuccinIcons(migrateToVersion8(persisted, version))));
+  if (version >= 12) return persisted as PersistedState;
+  if (version >= 11) return withoutGatewayOwnedFields(persisted as PersistedState);
+  if (version >= 10) return withoutGatewayOwnedFields(withSwfDefaults(persisted as PersistedState));
+  if (version >= 9) return withoutGatewayOwnedFields(withSwfDefaults(gatewayFromSharedVm(persisted as PersistedState)));
+  return withoutGatewayOwnedFields(withSwfDefaults(gatewayFromSharedVm(renameCatppuccinIcons(migrateToVersion8(persisted, version)))));
 }
 
 function migrateToVersion8(persisted: unknown, version: number): PersistedState {

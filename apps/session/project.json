@@ -19,7 +19,10 @@
         "production",
         "^production",
         "{projectRoot}/project.json",
-        "{workspaceRoot}/scripts/buildVmArtifact.ts"
+        "{workspaceRoot}/scripts/buildVmArtifact.ts",
+        {
+          "env": "APP_VERSION"
+        }
       ],
       "options": {
         "command": "node scripts/buildVmArtifact.ts session"

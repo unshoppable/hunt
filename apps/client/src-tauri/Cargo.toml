@@ -1,6 +1,7 @@
 [package]
 name = "hunt"
-version = "0.2.0"
+# The app reports the version of apps/client/package.json, which nx release maintains (tauri.conf.json).
+version = "0.0.0"
 description = "Hunt — desktop client for Claude Code"
 authors = ["Yannick Boetzkes"]
 license = "MIT"

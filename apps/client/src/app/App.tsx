@@ -22,7 +22,7 @@ import { TerminalPanel } from "../terminal/TerminalPanel";
 import { HEADER_BAR } from "../ui/bars";
 import { TAB_ACTIVE, TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons";
 import { restoreWindowBounds, useRememberWindowBounds } from "../ui/windowBounds";
-import { useAccountsSync, useAgentPreferencesSync, useBackendEvents, usePaneStyles, useSettingsSync } from "./bootstrap";
+import { useAccountsSync, useAgentPreferencesSync, useBackendEvents, usePaneStyles, useRemoteSettingsSync, useSettingsSync } from "./bootstrap";
 
 export function App() {
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
@@ -53,6 +53,7 @@ export function App() {
   usePaneStyles();
   useSettingsSync();
   useAgentPreferencesSync();
+  useRemoteSettingsSync();
   useAccountsSync();
   useBackendEvents();
   useRememberWindowBounds("main");

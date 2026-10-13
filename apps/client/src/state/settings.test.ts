@@ -7,7 +7,6 @@ import {
   DEFAULT_POPUP_SIZES,
   DEFAULT_REMOTE,
   SETTINGS_VERSION,
-  configuredPreviewDomain,
   configuredVmSettings,
   mergeSettings,
   migrateSettings,
@@ -84,7 +83,6 @@ describe("migrateSettings", () => {
       zone: "z",
       gatewayInstance: "vm-hunt",
       filePatterns: ["**/.env.private"],
-      previewDomain: "hunt.example.com",
       swfRepos: [],
       swfMaxSessions: 2,
     });
@@ -93,9 +91,17 @@ describe("migrateSettings", () => {
   });
 
   it("gives the remote settings of version 10 no poller repositories and the default session limit", () => {
-    const stored = { remote: { project: "p", gatewayInstance: "vm-hunt", previewDomain: "hunt.example.com" }, aiLanguage: "English" };
+    const stored = { remote: { project: "p", gatewayInstance: "vm-hunt" }, aiLanguage: "English" };
     expect(migrateSettings(stored, 10)).toEqual({ ...stored, remote: { ...stored.remote, swfRepos: [], swfMaxSessions: 2 } });
     expect(migrateSettings({ aiLanguage: "English" }, 10)).toEqual({ aiLanguage: "English" });
+  });
+
+  it("drops the instance template and preview domain of version 11, which the gateway owns", () => {
+    const remote = { project: "p", zone: "z", gatewayInstance: "vm-hunt", machineType: "e2-standard-8", filePatterns: ["**/.env.private"], swfRepos: ["acme/app"], swfMaxSessions: 3 };
+    const stored = { remote: { ...remote, sessionTemplate: "tpl-hunt-session", previewDomain: "hunt.example.com" }, aiLanguage: "English" };
+    expect(migrateSettings(stored, 11)).toEqual({ remote, aiLanguage: "English" });
+    expect(migrateSettings({ remote: { project: "p", previewDomain: "hunt.example.com" } }, 10).remote).toEqual({ project: "p", swfRepos: [], swfMaxSessions: 2 });
+    expect(migrateSettings({ aiLanguage: "English" }, 11)).toEqual({ aiLanguage: "English" });
   });
 
   it("passes the current version through untouched", () => {
@@ -139,10 +145,10 @@ describe("mergeSettings", () => {
     expect(merged.popupSizes).toEqual({ ...DEFAULT_POPUP_SIZES, usages: { width: 900, height: 500 } });
   });
 
-  it("keeps the default template and file patterns when only the VM fields were stored", () => {
-    const merged = mergeSettings(migrateSettings({ remote: { project: "p", zone: "z", instance: "vm" } }, 9), current);
+  it("keeps the default file patterns when only the VM fields were stored", () => {
+    const merged = mergeSettings(migrateSettings({ remote: { project: "p", zone: "z", instance: "vm", sessionTemplate: "tpl" } }, 9), current);
     expect(merged.remote).toEqual({ ...DEFAULT_REMOTE, project: "p", zone: "z", gatewayInstance: "vm" });
-    expect(merged.remote.sessionTemplate).toBe("tpl-hunt-session");
+    expect(merged.remote.filePatterns).toEqual(["**/.env.private"]);
   });
 
   it("returns the defaults when nothing is persisted", () => {
@@ -155,27 +161,18 @@ describe("mergeSettings", () => {
 });
 
 describe("remote settings", () => {
-  it("offers a handoff only once project, zone, gateway, template and preview domain are set", () => {
-    const complete = { ...DEFAULT_REMOTE, project: " p ", zone: "z", gatewayInstance: "vm-hunt", previewDomain: "hunt.example.com" };
+  it("offers a handoff only once project, zone and gateway are set", () => {
+    const complete = { ...DEFAULT_REMOTE, project: " p ", zone: "z", gatewayInstance: "vm-hunt" };
     expect(configuredVmSettings(DEFAULT_REMOTE)).toBeNull();
-    expect(configuredVmSettings(complete)).toEqual({
-      project: "p",
-      zone: "z",
-      gateway: "vm-hunt",
-      template: "tpl-hunt-session",
-      machineType: null,
-      previewDomain: "hunt.example.com",
-    });
+    expect(configuredVmSettings(complete)).toEqual({ project: "p", zone: "z", gateway: "vm-hunt", machineType: null });
     expect(configuredVmSettings({ ...complete, machineType: " e2-standard-8 " })?.machineType).toBe("e2-standard-8");
     expect(configuredVmSettings({ ...complete, gatewayInstance: "" })).toBeNull();
-    expect(configuredVmSettings({ ...complete, sessionTemplate: " " })).toBeNull();
-    expect(configuredVmSettings({ ...complete, previewDomain: "" })).toBeNull();
-    expect(configuredVmSettings({ ...complete, previewDomain: "localhost" })).toBeNull();
+    expect(configuredVmSettings({ ...complete, zone: " " })).toBeNull();
   });
 
   it("trims every field", () => {
-    const remote = normalizeRemote({ ...DEFAULT_REMOTE, gatewayInstance: " vm-hunt ", sessionTemplate: " tpl ", machineType: " e2-standard-8 " });
-    expect([remote.gatewayInstance, remote.sessionTemplate, remote.machineType]).toEqual(["vm-hunt", "tpl", "e2-standard-8"]);
+    const remote = normalizeRemote({ ...DEFAULT_REMOTE, project: " p ", gatewayInstance: " vm-hunt ", machineType: " e2-standard-8 " });
+    expect([remote.project, remote.gatewayInstance, remote.machineType]).toEqual(["p", "vm-hunt", "e2-standard-8"]);
   });
 
   it("keeps the poller's owner/repo entries once each and holds its session limit to whole numbers from 0 to 10", () => {
@@ -190,18 +187,5 @@ describe("remote settings", () => {
   it("drops blank, absolute and worktree-leaving file patterns", () => {
     const remote = normalizeRemote({ ...DEFAULT_REMOTE, filePatterns: [" **/.env.private ", "", "/etc/hosts", "../secret", "config/*.local"] });
     expect(remote.filePatterns).toEqual(["**/.env.private", "config/*.local"]);
-  });
-
-  it("reduces the preview domain to a lowercase host name and offers previews only for one", () => {
-    const remote = normalizeRemote({ ...DEFAULT_REMOTE, previewDomain: " HTTPS://Hunt.Example.com/ " });
-    expect(remote.previewDomain).toBe("hunt.example.com");
-    expect(configuredPreviewDomain(remote)).toBe("hunt.example.com");
-    expect(configuredPreviewDomain(DEFAULT_REMOTE)).toBeNull();
-    expect(configuredPreviewDomain({ ...DEFAULT_REMOTE, previewDomain: "localhost" })).toBeNull();
-    expect(configuredPreviewDomain({ ...DEFAULT_REMOTE, previewDomain: "a_b.example.com" })).toBeNull();
-    expect(configuredPreviewDomain({ ...DEFAULT_REMOTE, previewDomain: "hunt.example.c0m" })).toBeNull();
-    const tooLong = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(43)}.com`;
-    expect(configuredPreviewDomain({ ...DEFAULT_REMOTE, previewDomain: tooLong })).toBeNull();
-    expect(configuredPreviewDomain({ ...DEFAULT_REMOTE, previewDomain: tooLong.slice(1) })).toBe(tooLong.slice(1));
   });
 });

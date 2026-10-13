@@ -11,9 +11,9 @@ use super::vm::short_id;
 /// The longest preview domain: `<short>-<port>.` in front of it must fit into the 253 characters of a host name.
 const MAX_DOMAIN_LENGTH: usize = 253 - "01234567-65535.".len();
 
-/// The preview domain from the settings, lowercased, or an error unless it is a host name of at least two labels whose
-/// last label consists of 2 to 63 letters. `hunt-ctl` (`DOMAIN_PATTERN`), `apps/session/src/config.ts` and
-/// `src/state/settings.ts` check the same.
+/// The preview domain the gateway reports, lowercased, or an error unless it is a host name of at least two labels whose
+/// last label consists of 2 to 63 letters. `hunt-ctl` (`DOMAIN_PATTERN`) and `apps/session/src/config.ts` check the
+/// same.
 pub fn validate_domain(domain: &str) -> Result<String, String> {
     let domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
     let labels: Vec<&str> = domain.split('.').collect();

@@ -5,10 +5,10 @@
  *
  * The edge proxy hands it every preview request it could not deliver to the session VM (502, 503 or 504) with the
  * request's own Host header, `<short>.<domain>` or `<short>-<port>.<domain>`; the edge has checked the domain, so only
- * the first label counts here. hunt-wake looks the VM `vm-hunt-s-<short>` up through the Compute Engine API with the
- * gateway's service account (token, project and zone from the metadata server) and starts or resumes it when it is
- * off, at most once per VM every START_INTERVAL_MS. Only a page load starts a VM: the polling of a forgotten tab must
- * not wake it again and again after the idle check powered it off. Every answer but the one for a VM that does not
+ * the first label counts here. hunt-wake looks the VM `vm-hunt-s-<short>` up through the Compute Engine API (`gcp.ts`)
+ * with the gateway's service account (token, project and zone from the metadata server) and starts or resumes it when
+ * it is off, at most once per VM every START_INTERVAL_MS. Only a page load starts a VM: the polling of a forgotten tab
+ * must not wake it again and again after the idle check powered it off. Every answer but the one for a VM that does not
  * exist is a page that reloads every RELOAD_SECONDS, until the session VM's preview proxy answers in its place. Runs on
  * Node 24 through type stripping; no dependencies.
  */
@@ -16,28 +16,18 @@ import { realpathSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
+import { createCompute, createMetadata, type Compute } from "./gcp.ts";
 
 export const LISTEN_HOST = "127.0.0.1";
 export const LISTEN_PORT = 9180;
 export const START_INTERVAL_MS = 30_000;
 export const RELOAD_SECONDS = 5;
 
-const METADATA = "http://metadata.google.internal/computeMetadata/v1";
-const COMPUTE = "https://compute.googleapis.com/compute/v1";
-/** A cached access token is renewed this long before it expires. */
-const TOKEN_MARGIN_MS = 60_000;
 const SESSION_HOST = /^([0-9a-f]{8})(?:-[0-9]{1,5})?\./;
 
-/** The Compute Engine calls hunt-wake needs, on VMs in the gateway's project and zone. */
-export interface Compute {
-  /** The VM's status (`RUNNING`, `TERMINATED`, `SUSPENDED`, …); null when it does not exist. */
-  status(name: string): Promise<string | null>;
-  start(name: string): Promise<void>;
-  resume(name: string): Promise<void>;
-}
-
 export interface WakeOptions {
-  compute: Compute;
+  /** The Compute Engine calls hunt-wake needs, on VMs in the gateway's project and zone. */
+  compute: Pick<Compute, "get" | "start" | "resume">;
   now: () => number;
   log: (message: string) => void;
 }
@@ -117,7 +107,7 @@ export class Waker {
     const name = vmName(short);
     let status: string | null;
     try {
-      status = await this.options.compute.status(name);
+      status = (await this.options.compute.get(name))?.status ?? null;
     } catch (error) {
       this.options.log(`failed to look up ${name}: ${messageOf(error)}`);
       return { status: 502, title: "Preview unavailable", text: `The session VM ${name} could not be looked up: ${messageOf(error)}`, reloads: true };
@@ -157,57 +147,6 @@ export class Waker {
   }
 }
 
-/** Compute Engine's REST API in the gateway's project and zone, with the access token of its service account. */
-export function createCompute(fetchImpl: typeof fetch = fetch, now: () => number = Date.now): Compute {
-  let token: { value: string; expiresAt: number } | null = null;
-  let location: { project: string; zone: string } | null = null;
-
-  async function metadata(path: string): Promise<string> {
-    const response = await fetchImpl(`${METADATA}/${path}`, { headers: { "Metadata-Flavor": "Google" } });
-    if (!response.ok) throw new Error(`failed to read ${path} from the metadata server: HTTP ${response.status}`);
-    return response.text();
-  }
-
-  async function accessToken(): Promise<string> {
-    if (token && token.expiresAt - TOKEN_MARGIN_MS > now()) return token.value;
-    const body = JSON.parse(await metadata("instance/service-accounts/default/token")) as { access_token: string; expires_in: number };
-    token = { value: body.access_token, expiresAt: now() + body.expires_in * 1000 };
-    return token.value;
-  }
-
-  async function instanceUrl(name: string): Promise<string> {
-    if (!location) {
-      const zone = (await metadata("instance/zone")).split("/").pop() ?? "";
-      location = { project: await metadata("project/project-id"), zone };
-    }
-    return `${COMPUTE}/projects/${encodeURIComponent(location.project)}/zones/${encodeURIComponent(location.zone)}/instances/${encodeURIComponent(name)}`;
-  }
-
-  async function call(method: "GET" | "POST", url: string): Promise<Response> {
-    return fetchImpl(url, { method, headers: { Authorization: `Bearer ${await accessToken()}` } });
-  }
-
-  async function failure(response: Response, what: string): Promise<Error> {
-    return new Error(`failed to ${what}: HTTP ${response.status} ${(await response.text()).slice(0, 300)}`);
-  }
-
-  async function post(name: string, verb: "start" | "resume"): Promise<void> {
-    const response = await call("POST", `${await instanceUrl(name)}/${verb}`);
-    if (!response.ok) throw await failure(response, `${verb} ${name}`);
-  }
-
-  return {
-    async status(name) {
-      const response = await call("GET", await instanceUrl(name));
-      if (response.status === 404) return null;
-      if (!response.ok) throw await failure(response, `look up ${name}`);
-      return ((await response.json()) as { status: string }).status;
-    },
-    start: (name) => post(name, "start"),
-    resume: (name) => post(name, "resume"),
-  };
-}
-
 /** An HTTP server that answers every request with the Waker's page. */
 export function createWakeServer(waker: Waker, log: (message: string) => void): Server {
   async function respond(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -230,7 +169,7 @@ export function createWakeServer(waker: Waker, log: (message: string) => void): 
 
 function main(): void {
   const log = (message: string) => console.error(`hunt-wake: ${message}`);
-  const server = createWakeServer(new Waker({ compute: createCompute(), now: Date.now, log }), log);
+  const server = createWakeServer(new Waker({ compute: createCompute(createMetadata()), now: Date.now, log }), log);
   server.on("error", (error) => {
     log(`failed to serve ${LISTEN_HOST}:${LISTEN_PORT}: ${error.message}`);
     process.exit(1);

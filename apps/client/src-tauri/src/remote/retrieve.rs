@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 use super::handoff::{lfs_object_ids, lfs_object_path, lfs_objects_dir, REMOTE_CLAUDE_DIR, REMOTE_MODE};
 use super::ssh::Ssh;
-use super::{adoption, bundle, memory, transcript};
-use super::{hunt_ctl, shell_command, tar_extract, vm, Progress, RemoteStep, RemoteTarget};
+use super::{adoption, memory, transcript};
+use super::{hunt_ctl, shell_command, start_session_vm, tar_extract, vm, Progress, RemoteStep, RemoteTarget, VmRef};
 use crate::git;
 
 /// Everything a retrieval needs from the session.
@@ -19,8 +19,8 @@ pub struct RetrieveRequest<'a> {
     pub hunt_session_id: Uuid,
     pub worktree: &'a Path,
     pub target: &'a RemoteTarget,
-    /// The `remote/` folder shipped with the app.
-    pub bundle_dir: &'a Path,
+    /// The gateway that starts the session's VM.
+    pub gateway: &'a VmRef,
     pub ssh_dir: &'a Path,
     pub claude_dir: &'a Path,
     /// The base of the repository memory the handoff sent; see `memory::merge`.
@@ -110,15 +110,11 @@ async fn retrieve_adopted(request: &RetrieveRequest<'_>, repo: &Path, progress: 
     }
 }
 
-/// Starts the session's VM when it is off and connects; the VM gets this app's runtime first, so that its `hunt-ctl`
-/// knows the commands the retrieval runs.
+/// Starts the session's VM through the gateway when it is off and connects; the VM must speak this app's protocol, so
+/// that its `hunt-ctl` knows the commands the retrieval runs.
 async fn connect(request: &RetrieveRequest<'_>, progress: Progress<'_>) -> Result<Ssh, String> {
-    let target = request.target;
     progress(RemoteStep::Connecting);
-    let ssh = Ssh::open(&target.vm, request.ssh_dir).await?;
-    vm::ensure_running(&target.vm, &ssh, progress).await?;
-    bundle::ensure_installed(&ssh, request.bundle_dir, None, progress).await?;
-    Ok(ssh)
+    start_session_vm(request.gateway, request.hunt_session_id, request.ssh_dir, progress).await
 }
 
 /// The worktree of the session on its running VM: the one the record names, or for an adopted session that never

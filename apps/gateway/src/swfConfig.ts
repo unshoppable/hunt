@@ -1,15 +1,10 @@
 /**
  * The configuration of hunt-swf, the gateway's GitHub poller (`swf.ts`), in `/etc/hunt/swf.json`: the repositories it
  * checks for open issues with the label `label`, how many of its session VMs may be up at once, and the instance
- * template (and machine type) it creates them from. Hunt writes the file through `hunt-ctl swf-config`, which runs
- *
- *   node swfConfig.ts --validate
- *
- * with the JSON object on stdin: it prints the normalized configuration as one line of JSON and exits 0, or prints
- * `{"ok": false, "problems": […]}` and exits 1. No file or no repositories leaves the poller idle.
+ * template (and machine type) it creates them from. The gateway API writes it (`swf.applyConfig` in `api.ts`), admins
+ * through `hunt-ctl swf-config` (`swfConfigCli.ts`). No file or no repositories leaves the poller idle.
  */
-import { readFileSync, realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { readFileSync, writeFileSync } from "node:fs";
 
 export const SWF_CONFIG_PATH = "/etc/hunt/swf.json";
 export const DEFAULT_LABEL = "swf";
@@ -30,9 +25,10 @@ export interface SwfConfig {
 }
 
 /** `<owner>/<repo>` with the characters `hunt-ctl` accepts; no part starts with a dot. */
-const REPOSITORY = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\/[A-Za-z0-9_-][A-Za-z0-9_.-]*$/;
+export const REPOSITORY = /^[A-Za-z0-9_-][A-Za-z0-9_.-]*\/[A-Za-z0-9_-][A-Za-z0-9_.-]*$/;
 const LABEL = /^[a-z0-9][a-z0-9:_-]{0,39}$/;
-const COMPUTE_NAME = /^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$/;
+/** A Compute Engine resource name, such as an instance template or a machine type. */
+export const COMPUTE_NAME = /^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$/;
 
 export type ParsedSwfConfig = { config: SwfConfig; problems?: undefined } | { config?: undefined; problems: string[] };
 
@@ -98,28 +94,17 @@ export function readSwfConfig(path = SWF_CONFIG_PATH): SwfConfig | null {
   return parsed.config;
 }
 
-/** `--validate`: see the module comment. */
-function validateStdin(): void {
-  let value: unknown;
-  try {
-    value = JSON.parse(readFileSync(0, "utf8"));
-  } catch (error) {
-    process.stdout.write(`${JSON.stringify({ ok: false, problems: [`stdin holds no JSON: ${(error as Error).message}`] })}\n`);
-    process.exit(1);
-  }
-  const parsed = parseSwfConfig(value);
-  if (parsed.problems) {
-    process.stdout.write(`${JSON.stringify({ ok: false, problems: parsed.problems })}\n`);
-    process.exit(1);
-  }
-  process.stdout.write(`${JSON.stringify(parsed.config)}\n`);
+/** The configuration in `path`, or the defaults without a file; throws for a file that is no valid configuration. */
+export function readSwfConfigOrDefaults(path = SWF_CONFIG_PATH): SwfConfig {
+  const config = readSwfConfig(path) ?? parseSwfConfig({}).config;
+  if (!config) throw new Error("failed to build the default configuration of hunt-swf");
+  return config;
 }
 
-// Node resolves the symlink /srv/hunt/current in the module's URL, not in argv.
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (process.argv[2] !== "--validate" || process.argv.length !== 3) {
-    process.stderr.write("usage: swfConfig.ts --validate < config.json\n");
-    process.exit(2);
-  }
-  validateStdin();
+/**
+ * Writes `config` to `path` in place: the gateway API's user owns the file but not its folder, so it cannot replace it
+ * with a rename. The poller reads the file at every poll and skips one that it reads half written.
+ */
+export function writeSwfConfig(config: SwfConfig, path = SWF_CONFIG_PATH): void {
+  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
 }

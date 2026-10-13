@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::accounts;
 use crate::acp::{
-    bundled_script_path, connect, publish_update, system_prompt_append, AgentTransport, LiveHandles, PermissionRegistry, SessionRegistry,
+    connect, publish_update, system_prompt_append, AgentTransport, LiveHandles, PermissionRegistry, SessionRegistry,
     SessionStart,
 };
 use crate::git::{self, ChangedFile, FileDiff, Shelf};
@@ -28,11 +28,11 @@ use crate::github_token;
 use crate::graph::{self, WatcherRegistry};
 use crate::ide;
 use crate::lsp::{self, LspRegistry};
+use crate::remote::api::GatewayApi;
 use crate::remote::diff::RemoteChanges;
 use crate::remote::preview::PreviewStatus;
 use crate::remote::ssh::Ssh;
 use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize};
-use crate::remote::vm::SessionVm;
 use crate::remote::{self, RemoteStep, RemoteTarget, VmRef, VmSettings};
 use crate::screenshots::{self, Screenshot};
 use crate::session::attribution::{self, FileVersion};
@@ -397,11 +397,11 @@ pub async fn clear_session(
     if !registry.claim_start(id).await {
         return Err("failed to clear session: its agent was started again meanwhile".into());
     }
-    if let Some(target) = record.remote.clone() {
+    if record.remote.is_some() {
         let activated = async {
-            let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
             let progress = progress_reporter(&app, id);
-            remote::vm::ensure_running(&target.vm, &ssh, &progress).await?;
+            progress(RemoteStep::Connecting);
+            let ssh = remote::start_session_vm(&gateway_vm("clear session")?, id, &ssh_dir()?, &progress).await?;
             let token_input = remote::token_input(&claude_token, github_token::read().await?.as_deref());
             let status = remote::hunt_ctl_with_input(&ssh, &["clear", &id.to_string()], token_input.as_bytes()).await?;
             let acp_session_id = status["acpSessionId"].as_str().map(str::to_string).ok_or("failed to clear session: the relay reports no new session")?;
@@ -477,18 +477,17 @@ async fn activate(
     Ok(SessionView::new(app, record, true))
 }
 
-/// Connects to the relay of the remote session `record`: starts its VM when it is off (it stops itself when idle), brings
-/// its runtime to this app's version, makes sure its relay runs and opens the ACP stream over SSH. The relay may have
-/// started a new conversation (`/clear`, or a transcript it could not load); the record then gets that conversation's ID.
+/// Connects to the relay of the remote session `record`: has the gateway start its VM when it is off (it stops itself when
+/// idle), checks its release and installs the agent's tools, makes sure its relay runs and opens the ACP stream over SSH.
+/// The relay may have started a new conversation (`/clear`, or a transcript it could not load); the record then gets
+/// that conversation's ID.
 async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: &WatcherRegistry, record: SessionRecord) -> Result<SessionView, String> {
     let id = record.id;
     let target = record.remote.clone().ok_or("failed to connect the remote session: it runs locally")?;
     let progress = progress_reporter(app, id);
     progress(RemoteStep::Connecting);
-    let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
-    remote::vm::ensure_running(&target.vm, &ssh, &progress).await?;
-    // A VM handed off by an older release gets this app's relay and hunt-ctl; a relay that runs keeps running.
-    remote::bundle::ensure_installed(&ssh, &bundled_script_path(app, remote::bundle::BUNDLE)?, None, &progress).await?;
+    // A relay that runs keeps running on the release it started with.
+    let ssh = remote::start_session_vm(&gateway_vm("connect the remote session")?, id, &ssh_dir()?, &progress).await?;
     // An adopted session learns its worktree on the VM with its first connect; the chat works without it.
     let (record, target) = if target.worktree_path.as_os_str().is_empty() {
         match remote_worktree(app, id, &target, &ssh).await {
@@ -540,7 +539,7 @@ async fn local_token_input(app: &AppHandle) -> Result<String, String> {
 
 /// The preview of the remote session `id`: its URLs, the ports that listen on its VM and whether the main port answers.
 /// A VM that is off has none; it is not started. A connected session proves a running VM, so only an unconnected one
-/// asks Compute Engine.
+/// asks the gateway.
 #[tauri::command]
 pub async fn preview_status(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid) -> Result<PreviewStatus, String> {
     let target = store::find_session(&app, id)?.remote.ok_or("failed to read the preview: the session runs locally")?;
@@ -549,7 +548,7 @@ pub async fn preview_status(app: AppHandle, registry: State<'_, SessionRegistry>
         .as_deref()
         .ok_or("failed to read the preview: the session was handed off without a preview domain; bring it back and hand it off again")?;
     let is_connected = registry.live.lock().await.contains_key(&id);
-    if !is_connected && remote::vm::status(&target.vm).await? != "RUNNING" {
+    if !is_connected && !gateway_api("read the preview").await?.is_vm_running(id).await? {
         return Ok(remote::preview::stopped_status(id, domain));
     }
     let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
@@ -557,33 +556,21 @@ pub async fn preview_status(app: AppHandle, registry: State<'_, SessionRegistry>
     remote::preview::parse_status(&status, id, domain)
 }
 
-/// The session VMs of `project` with the labels and metadata that name their sessions, for adopting VMs no local
-/// session knows.
-#[tauri::command]
-pub async fn list_session_vms(project: String) -> Result<Vec<SessionVm>, String> {
-    if project.trim().is_empty() {
-        return Err("failed to list the session VMs: no Google Cloud project is set".into());
-    }
-    remote::vm::list_session_vms(project.trim(), None).await
-}
-
-/// Adopts the session VMs of the project and zone in `settings` that no local session knows (see `remote::adoption`):
-/// each becomes a remote session of this Mac in the local checkout of its repository, found among `repo_paths` and the
-/// repositories of the stored sessions, or without one when none matches. Adopted sessions still without a checkout
-/// get another chance to find one. VMs this Mac deletes or deleted are left out. Returns the IDs of the new sessions.
+/// Adopts the sessions the gateway of `settings` lists that no local session knows (see `remote::adoption`): each becomes
+/// a remote session of this Mac in the local checkout of its repository, found among `repo_paths` and the repositories
+/// of the stored sessions, or without one when none matches. Adopted sessions still without a checkout get another
+/// chance to find one. VMs this Mac deletes or deleted are left out. Returns the IDs of the new sessions.
 #[tauri::command]
 pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths: Vec<String>) -> Result<Vec<Uuid>, String> {
-    let project = settings.project.trim().to_string();
-    if project.is_empty() {
-        return Err("failed to adopt the session VMs: no Google Cloud project is set".into());
-    }
-    let zone = settings.zone.trim();
-    let preview_domain = remote::preview::validate_domain(&settings.preview_domain)?;
-    let vms = remote::vm::list_session_vms(&project, Some(zone)).await?;
+    settings.validate()?;
+    let gateway = GatewayApi::open(&settings.gateway_vm(), &ssh_dir()?).await?;
+    let preview_domain = gateway.preview_domain()?;
+    let listed = gateway.list_sessions().await?;
     let sessions = store::load_sessions(&app)?;
     let mut known: HashSet<Uuid> = sessions.iter().map(|session| session.id).collect();
     known.extend(deleted_session_vms(&app));
-    let adoptable = remote::adoption::sessions_to_adopt(&vms, &project, zone, &known);
+    let hello = gateway.hello();
+    let adoptable = remote::adoption::sessions_to_adopt(&listed, &hello.project, &hello.zone, &known);
     let without_checkout: Vec<&SessionRecord> = sessions
         .iter()
         .filter(|session| session.remote.as_ref().is_some_and(RemoteTarget::is_adopted) && session.repo_path.as_os_str().is_empty())
@@ -640,15 +627,14 @@ pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths:
 }
 
 /// Writes the configuration of the gateway's issue poller to the gateway of `settings`: open issues labelled `swf` in
-/// `repos` get a session VM each, created like a handoff's, at most `max_sessions` at once. Returns what the gateway
-/// stored.
+/// `repos` get a session VM each, created like a handoff's with the machine type of `settings`, at most `max_sessions`
+/// at once. Returns what the gateway stored.
 #[tauri::command]
-pub async fn apply_swf_config(app: AppHandle, settings: VmSettings, repos: Vec<String>, max_sessions: u32) -> Result<remote::swf::SwfConfig, String> {
-    // No session VM is involved; the nil ID only satisfies the check of the session VM's name.
-    let settings = VmSettings { preview_domain: settings.validate(Uuid::nil())?, ..settings };
-    let config = remote::swf::SwfConfig::new(&settings, repos, max_sessions);
-    let bundle_dir = bundled_script_path(&app, remote::bundle::BUNDLE)?;
-    remote::swf::apply(&settings, &bundle_dir, &ssh_dir()?, &config, &|_| {}).await
+pub async fn apply_swf_config(settings: VmSettings, repos: Vec<String>, max_sessions: u32) -> Result<remote::swf::SwfConfig, String> {
+    settings.validate()?;
+    let request = remote::swf::SwfRequest::new(repos, max_sessions, settings.machine_type.clone());
+    request.validate()?;
+    GatewayApi::open(&settings.gateway_vm(), &ssh_dir()?).await?.apply_swf_config(&request).await
 }
 
 /// The worktree of the remote session `id` on its running VM behind `ssh`: the one `target` names, or for an adopted
@@ -681,13 +667,19 @@ pub async fn remote_changes(
 ) -> Result<RemoteChanges, String> {
     let target = store::find_session(&app, id)?.remote.ok_or("failed to list the changes on the VM: the session runs locally")?;
     let is_connected = registry.live.lock().await.contains_key(&id);
-    if !is_connected && !start_vm && remote::vm::status(&target.vm).await? != "RUNNING" {
-        return Ok(RemoteChanges::vm_off());
-    }
-    let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
-    if !is_connected && start_vm {
-        remote::vm::ensure_running(&target.vm, &ssh, &|_: RemoteStep| {}).await?;
-    }
+    let vm = if is_connected {
+        target.vm.clone()
+    } else {
+        let gateway = gateway_api("list the changes on the VM").await?;
+        if start_vm {
+            gateway.start_vm(id, &|_| {}).await?
+        } else if gateway.is_vm_running(id).await? {
+            target.vm.clone()
+        } else {
+            return Ok(RemoteChanges::vm_off());
+        }
+    };
+    let ssh = Ssh::open(&vm, &ssh_dir()?).await?;
     let worktree = remote_worktree(&app, id, &target, &ssh).await?;
     remote::diff::changed_files(&ssh, &worktree, id, &target.handoff_head).await
 }
@@ -736,7 +728,7 @@ pub async fn open_terminal(
 ) -> Result<(), String> {
     let target = store::find_session(&app, id)?.remote.ok_or("failed to open the terminal: the session runs locally")?;
     let is_connected = registry.live.lock().await.contains_key(&id);
-    if !is_connected && remote::vm::status(&target.vm).await? != "RUNNING" {
+    if !is_connected && !gateway_api("open the terminal").await?.is_vm_running(id).await? {
         return Err(format!("failed to open the terminal: the VM {} is off; the next prompt starts it", target.vm.instance));
     }
     let args = remote::terminal::attach_args(&target, &ssh_dir()?).await?;
@@ -794,9 +786,10 @@ fn remote_system_prompt(base: &str, has_github_token: bool, hunt_md: Option<&str
     }
 }
 
-/// Moves the session `id` to a VM of its own, created as `settings` say: its agent stops here, its branch, uncommitted
-/// work, transcript and the ignored files matching `file_patterns` go to the VM, and the chat continues with the agent
-/// there. On failure the session stays local, its agent starts again and the VM stays for the next attempt.
+/// Moves the session `id` to a VM of its own, which the gateway of `settings` provisions: its agent stops here, its
+/// branch, uncommitted work, transcript and the ignored files matching `file_patterns` go to the VM, and the chat
+/// continues with the agent there. On failure the session stays local, its agent starts again and the VM stays for the
+/// next attempt.
 #[tauri::command]
 pub async fn hand_off_session(
     app: AppHandle,
@@ -810,7 +803,7 @@ pub async fn hand_off_session(
 ) -> Result<SessionView, String> {
     let record = local_session(&app, id)?;
     ensure_hand_off_allowed(&app, &record)?;
-    let settings = VmSettings { preview_domain: settings.validate(id)?, ..settings };
+    settings.validate()?;
     let claude_token = remote_claude_token(&app, "hand off the session").await?;
     let github_token = github_token::read().await?;
     let (config_values, local_mode) = match live_session(&registry, id).await {
@@ -827,27 +820,23 @@ pub async fn hand_off_session(
     }
 
     let handed_off = async {
-        let session_vm = settings.session_vm(id);
-        if let Some(leftover) = record.leftover_vm.as_ref().filter(|leftover| **leftover != session_vm) {
-            delete_session_vm(&app, leftover, id).await;
-        }
-        store::update_session(&app, id, |stored| stored.leftover_vm = Some(session_vm.clone()))?;
+        store::update_session(&app, id, |stored| stored.leftover_vm = Some(settings.session_vm(id)))?;
         let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt);
         let local_hunt_md = remote::read_hunt_md(&record.worktree_path)?;
         let base_prompt = system_prompt_append(&app, context_prompt);
         let has_github_token = github_token.is_some();
         let system_prompt = |hunt_md: Option<&str>| remote_system_prompt(&base_prompt, has_github_token, hunt_md.or(local_hunt_md.as_deref()));
         let token_input = remote::token_input(&claude_token, github_token.as_deref());
-        let bundle_dir = bundled_script_path(&app, remote::bundle::BUNDLE)?;
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
         let memory_base = memory_base_path(&app, id)?;
+        let gateway = settings.gateway_vm();
         let request = remote::handoff::HandoffRequest {
             hunt_session_id: id,
             title: &record.title,
             worktree: &record.worktree_path,
             acp_session_id: record.acp_session_id.as_deref(),
-            settings: &settings,
-            bundle_dir: &bundle_dir,
+            gateway: &gateway,
+            machine_type: settings.machine_type.as_deref(),
             ssh_dir: &ssh_dir,
             claude_dir: &claude_dir,
             memory_base: &memory_base,
@@ -941,12 +930,12 @@ pub async fn retrieve_session(
     let activated = async {
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
         let memory_base = memory_base_path(&app, id)?;
-        let bundle_dir = bundled_script_path(&app, remote::bundle::BUNDLE)?;
+        let gateway = gateway_vm("retrieve the session")?;
         let request = remote::retrieve::RetrieveRequest {
             hunt_session_id: id,
             worktree: &record.worktree_path,
             target: &target,
-            bundle_dir: &bundle_dir,
+            gateway: &gateway,
             ssh_dir: &ssh_dir,
             claude_dir: &claude_dir,
             memory_base: &memory_base,
@@ -1022,8 +1011,43 @@ fn memory_base_path(app: &AppHandle, id: Uuid) -> Result<PathBuf, String> {
     Ok(store::app_data_dir(app)?.join("remote-memory").join(format!("{id}.json")))
 }
 
-/// A session VM whose deletion failed, e.g. while the Mac was offline; Hunt deletes it at its next start. Entries of
-/// older releases name the VM all sessions shared and are dropped.
+/// The remote settings the main window pushed last; `None` before it did and while project, zone or gateway is missing.
+static REMOTE_SETTINGS: std::sync::Mutex<Option<VmSettings>> = std::sync::Mutex::new(None);
+
+/// Whether this app run started the deletions that failed before; they wait for the first remote settings.
+static HAS_STARTED_PENDING_CLEANUPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Takes the remote settings from the main window, at its start and on every change; `None` while they are incomplete.
+/// Commands on stored remote sessions reach the gateway of these settings. Invalid settings count as none.
+#[tauri::command]
+pub fn set_remote_settings(app: AppHandle, settings: Option<VmSettings>) -> Result<(), String> {
+    let validated = settings.as_ref().map_or(Ok(()), VmSettings::validate);
+    let settings = settings.filter(|_| validated.is_ok());
+    let is_set = settings.is_some();
+    *REMOTE_SETTINGS.lock().unwrap() = settings;
+    if is_set && !HAS_STARTED_PENDING_CLEANUPS.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        run_pending_cleanups(&app);
+    }
+    validated
+}
+
+/// The gateway of the remote settings; fails with `what` (the action) while there are none.
+fn gateway_vm(what: &str) -> Result<VmRef, String> {
+    REMOTE_SETTINGS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(VmSettings::gateway_vm)
+        .ok_or_else(|| format!("failed to {what}: set the project, zone and gateway under Settings → Remote VM"))
+}
+
+/// The gateway API of the remote settings, for `what` (the action).
+async fn gateway_api(what: &str) -> Result<GatewayApi, String> {
+    GatewayApi::open(&gateway_vm(what)?, &ssh_dir()?).await
+}
+
+/// A session VM whose deletion failed, e.g. while the Mac was offline; Hunt deletes it through the gateway at its next
+/// start. Entries of older releases name the VM all sessions shared and are dropped.
 #[derive(Clone, serde::Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct PendingCleanup {
@@ -1065,7 +1089,7 @@ async fn forget_remote(app: &AppHandle, target: &RemoteTarget, id: Uuid) {
     delete_session_vm(app, &target.vm, id).await;
 }
 
-/// Sessions whose VM this run of Hunt asked Compute Engine to delete. The VM stays listed while it shuts down, and an
+/// Sessions whose VM this run of Hunt asked the gateway to delete. The VM stays listed while it shuts down, and an
 /// adoption in that time must not bring its session back.
 static DELETED_SESSION_VMS: std::sync::Mutex<Vec<Uuid>> = std::sync::Mutex::new(Vec::new());
 
@@ -1088,7 +1112,8 @@ async fn delete_session_vm(app: &AppHandle, vm: &VmRef, id: Uuid) {
         return;
     }
     DELETED_SESSION_VMS.lock().unwrap().push(id);
-    if let Err(error) = remote::vm::delete(vm).await {
+    let deleted = async { gateway_api("delete the session's VM").await?.delete_vm(id).await }.await;
+    if let Err(error) = deleted {
         eprintln!("deleting the VM {} of session {id} failed, retrying at the next start: {error}", vm.instance);
         let cleanup = PendingCleanup { vm: vm.clone(), hunt_session_id: id };
         change_pending_cleanups(app, |cleanups| {
@@ -1099,8 +1124,9 @@ async fn delete_session_vm(app: &AppHandle, vm: &VmRef, id: Uuid) {
     }
 }
 
-/// Deletes the session VMs whose deletion failed before, in the background; Hunt runs it at its start.
-pub fn run_pending_cleanups(app: &AppHandle) {
+/// Deletes the session VMs whose deletion failed before through the gateway, in the background; `set_remote_settings`
+/// runs it once per app run.
+fn run_pending_cleanups(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let Ok(path) = pending_cleanups_path(&app) else { return };
@@ -1108,13 +1134,23 @@ pub fn run_pending_cleanups(app: &AppHandle) {
             let _guard = PENDING_CLEANUPS_LOCK.lock().unwrap();
             read_pending_cleanups(&path)
         };
+        if cleanups.is_empty() {
+            return;
+        }
+        let gateway = match gateway_api("delete the session VMs left over").await {
+            Ok(gateway) => gateway,
+            Err(error) => {
+                eprintln!("deleting the session VMs left over failed, retrying at the next start: {error}");
+                return;
+            }
+        };
         for cleanup in cleanups {
             let id = cleanup.hunt_session_id;
             let is_done = if !remote::vm::is_session_vm(&cleanup.vm, id) {
                 eprintln!("dropping the cleanup of session {id} on the shared VM {}", cleanup.vm.instance);
                 true
             } else {
-                match remote::vm::delete(&cleanup.vm).await {
+                match gateway.delete_vm(id).await {
                     Ok(()) => true,
                     Err(error) => {
                         eprintln!("deleting the VM {} of session {id} failed again, retrying at the next start: {error}", cleanup.vm.instance);

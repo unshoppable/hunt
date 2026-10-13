@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Transport } from "./acpClient.ts";
 import type { Compute, Instance, InstanceRequest, MetadataItem } from "./gcp.ts";
 import type { GitHub, Issue } from "./github.ts";
+import { Orchestrator } from "./orchestrator.ts";
 import type { SessionVm } from "./sessionVm.ts";
 import { Poller, type PollerDeps } from "./swf.ts";
 import type { SwfConfig } from "./swfConfig.ts";
@@ -45,35 +46,60 @@ function fakeGitHub(issues: Record<string, Issue[]>, options: { labelGone?: numb
   };
 }
 
-/** A Compute whose VMs come from `listed`; inserted VMs appear as PROVISIONING, then RUNNING. */
+/** A VM as Compute Engine lists it, with the template's metadata. */
+function listedVm(name: string, status: string, labels: Record<string, string> = {}): Instance {
+  return {
+    name,
+    zone: "europe-west3-a",
+    status,
+    creationTimestamp: "2026-10-13T08:00:00.000-07:00",
+    labels,
+    metadata: { fingerprint: "fp0", items: [{ key: "startup-script", value: "#!/bin/sh" }] },
+    disks: [],
+  };
+}
+
+/** A Compute whose label listing returns `listed`; inserted VMs appear as PROVISIONING and run from their third look on. */
 function fakeCompute(listed: Instance[] = [], insertError?: Error): Compute & { calls: string[]; inserted: InstanceRequest[]; metadata: MetadataItem[][] } {
   const calls: string[] = [];
   const inserted: InstanceRequest[] = [];
   const metadata: MetadataItem[][] = [];
-  const gets = new Map<string, number>();
+  const vms = new Map<string, { instance: Instance; looks: number }>();
+  const unexpected = async (name: string) => {
+    throw new Error(`unexpected call for ${name}`);
+  };
   return {
     calls,
     inserted,
     metadata,
+    list: async () => listed,
     listByLabel: async (key, value) => {
       calls.push(`list ${key}=${value}`);
       return listed;
     },
     get: async (name) => {
-      const count = (gets.get(name) ?? 0) + 1;
-      gets.set(name, count);
-      const status = count < 3 ? "PROVISIONING" : "RUNNING";
-      return { name, status, labels: {}, metadata: { fingerprint: `fp${count}`, items: [{ key: "startup-script", value: "#!/bin/sh" }] } };
+      const vm = vms.get(name);
+      if (!vm) return null;
+      vm.looks++;
+      vm.instance.status = vm.looks < 3 ? "PROVISIONING" : "RUNNING";
+      return structuredClone(vm.instance);
     },
     insert: async (request) => {
       calls.push(`insert ${request.name}`);
       if (insertError) throw insertError;
       inserted.push(request);
+      vms.set(request.name, { instance: listedVm(request.name, "PROVISIONING", request.labels), looks: 0 });
     },
     setMetadata: async (name, fingerprint, items) => {
       calls.push(`metadata ${name} ${fingerprint}`);
       metadata.push(items);
+      vms.get(name)!.instance.metadata = { fingerprint: `${fingerprint}+`, items };
     },
+    start: unexpected,
+    resume: unexpected,
+    stop: unexpected,
+    setDiskAutoDelete: unexpected,
+    delete: unexpected,
   };
 }
 
@@ -100,8 +126,9 @@ function fakeVm(failing?: { command: string; error: Error }) {
     waitUntilReady: async () => {
       calls.push("wait until ready");
     },
-    installBundle: async () => {
-      calls.push("install bundle");
+    ensureRelease: async () => {
+      calls.push("ensure release");
+      return { version: "session@1.4.0", protocol: 1 };
     },
     putClaudeFiles: async (id, files) => {
       calls.push(`put-files ${id} --claude ${Object.keys(files).join(",")}`);
@@ -112,12 +139,19 @@ function fakeVm(failing?: { command: string; error: Error }) {
   return { vm, calls, claudeFiles };
 }
 
-type Overrides = Omit<Partial<PollerDeps>, "github" | "vm"> & { github?: GitHub; vm?: SessionVm };
+type Overrides = Omit<Partial<PollerDeps>, "github" | "vm" | "orchestrator"> & { github?: GitHub; vm?: SessionVm };
 
-function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, ...overrides }: Overrides = {}) {
+function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fakeCompute(), ...overrides }: Overrides = {}) {
   const logs: string[] = [];
   const prompts: { sessionId: string; cwd: string; text: string }[] = [];
   let tokenReads = 0;
+  const orchestrator = new Orchestrator({
+    compute,
+    location: { project: "medconomy-hunt", zone: "europe-west3-a" },
+    vm: () => vm,
+    sleep: async () => {},
+    now: () => 0,
+  });
   const deps: PollerDeps = {
     readConfig: () => CONFIG,
     readDomain: () => "hunt.example.com",
@@ -125,14 +159,14 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, ...overrides 
       tokenReads++;
       return { github: GITHUB_TOKEN, claude: CLAUDE_TOKEN };
     },
-    compute: fakeCompute(),
+    compute,
+    orchestrator,
     prompts: () => ({ remote: "## Remote session\n", gitPush: "### Git\n" }),
     sendPrompt: async (_transport, request) => {
       prompts.push(request);
       return "started";
     },
     newId: () => SESSION_ID,
-    sleep: async () => {},
     log: (message) => logs.push(message),
     ...overrides,
     github: () => github,
@@ -161,10 +195,7 @@ describe("Poller.cycle", () => {
   });
 
   it("starts sessions only while fewer than maxSessions VMs are up, oldest issue first", async () => {
-    const listed = [
-      { name: "vm-hunt-s-00000001", status: "RUNNING", labels: { "hunt-origin": "swf" }, metadata: { fingerprint: "", items: [] } },
-      { name: "vm-hunt-s-00000002", status: "TERMINATED", labels: { "hunt-origin": "swf" }, metadata: { fingerprint: "", items: [] } },
-    ];
+    const listed = [listedVm("vm-hunt-s-00000001", "RUNNING", { "hunt-origin": "swf" }), listedVm("vm-hunt-s-00000002", "TERMINATED", { "hunt-origin": "swf" })];
     const github = fakeGitHub({ "acme/app": [issue(9), issue(4)] });
     const compute = fakeCompute(listed);
     const { poller, logs } = createPoller({ github, compute });
@@ -211,7 +242,8 @@ describe("Poller.cycle", () => {
     ]);
     expect(calls).toEqual([
       "wait until ready",
-      "install bundle",
+      "ensure release",
+      "hunt-ctl install-tools",
       `hunt-ctl clone ${SESSION_ID} --repo acme/app --branch hunt/12-fix-login <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`,
       `hunt-ctl session-config ${SESSION_ID} --domain hunt.example.com`,
       `put-files ${SESSION_ID} --claude hunt-session.json`,

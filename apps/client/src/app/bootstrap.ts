@@ -5,7 +5,7 @@ import { applyMonacoBackground } from "../diff/monaco";
 import { commands } from "../ipc/commands";
 import { listenTo } from "../ipc/events";
 import { useAccountsStore } from "../state/accounts";
-import { useSettingsStore, type PaneKey } from "../state/settings";
+import { configuredVmSettings, useSettingsStore, type PaneKey } from "../state/settings";
 import { useHuntStore } from "../state/store";
 
 /** Writes the pane settings into the CSS variables every pane reads (`--<pane>-font-size` …, see index.css) and into Monaco's theme. */
@@ -69,6 +69,18 @@ export function useAgentPreferencesSync(): void {
   useEffect(() => {
     commands.setSystemPrompt(systemPrompt).catch((reason) => console.error("failed to set the system prompt", reason));
   }, [systemPrompt]);
+}
+
+/**
+ * Pushes the remote settings to the backend at start and on every change (null while project, zone or gateway is
+ * missing): commands on stored remote sessions and the retry of failed VM deletions reach the gateway they name.
+ */
+export function useRemoteSettingsSync(): void {
+  const remote = useSettingsStore((state) => state.remote);
+
+  useEffect(() => {
+    commands.setRemoteSettings(configuredVmSettings(remote)).catch((reason) => console.error("failed to set the remote settings", reason));
+  }, [remote]);
 }
 
 /** Loads the Claude accounts and reloads them whenever the backend announces a change (`accounts:changed`). */

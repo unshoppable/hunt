@@ -1,0 +1,32 @@
+#!/bin/bash
+# hunt-api: the gateway API's command (apps/gateway/src/api.ts). sshd forces it on every user outside google-sudoers
+# (/etc/ssh/sshd_config.d/20-hunt-api.conf), which then can run nothing but `hunt-api <method>`, with the method's
+# params as JSON on stdin and NDJSON events on stdout. Admins call /usr/local/bin/hunt-api <method> the same way. It
+# hands the request to the forwarder apiClient.mjs as hunt-gw through sudo (/etc/sudoers.d/hunt-api), which names the
+# caller to the API through SUDO_USER.
+set -euo pipefail
+
+# The whole command; the method part is METHOD_PATTERN of apps/gateway/src/apiProtocol.ts.
+readonly COMMAND_PATTERN='^hunt-api ([a-z]+(\.[a-zA-Z]+)?)$'
+
+# An admin whom the Match block catches anyway (OS Login grants sudo per user, which need not show up as membership of
+# google-sudoers) keeps the command it asked for, such as the CI deploy's `sudo -n sh -c …`: a caller that may run
+# anything as root gains nothing from the restriction.
+if (( $# == 0 )) && [[ ${SSH_ORIGINAL_COMMAND:-} != "hunt-api "* ]] && sudo -n true 2>/dev/null; then
+  if [[ -v SSH_ORIGINAL_COMMAND ]]; then
+    exec /bin/bash -c "$SSH_ORIGINAL_COMMAND"
+  fi
+  exec /bin/bash -l
+fi
+
+if [[ -v SSH_ORIGINAL_COMMAND ]]; then
+  command=$SSH_ORIGINAL_COMMAND
+else
+  command="hunt-api $*"
+fi
+if [[ ! $command =~ $COMMAND_PATTERN ]]; then
+  printf '{"type":"error","code":"forbidden","message":"this gateway serves only hunt-api <method>, with the params as JSON on stdin"}\n'
+  exit 1
+fi
+cd /
+exec sudo -n -u hunt-gw /opt/hunt/node/bin/node /srv/hunt/current/gateway/apiClient.mjs "${BASH_REMATCH[1]}"

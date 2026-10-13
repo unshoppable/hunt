@@ -4,8 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "nx run gateway:build && vite",
-    "build": "nx run-many -t build -p client gateway"
+    "dev": "vite",
+    "build": "nx run client:build"
   },
-  "volta": { "extends": "../../package.json" }
+  "volta": {
+    "extends": "../../package.json"
+  }
 }

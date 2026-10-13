@@ -1,16 +1,17 @@
-//! Sessions handed off to a VM of their own: SSH through an IAP tunnel (`ssh.rs`), creating, starting and deleting the
-//! session VMs (`vm.rs`), the software Hunt installs on them and on the gateway from this repository's `remote/` folder
-//! (`bundle.rs`), and moving a session's git state and Claude Code transcript there and back (`handoff.rs`,
-//! `retrieve.rs`, `transcript.rs`), adopting session VMs no local session knows (`adoption.rs`), the changes on a VM
-//! (`diff.rs`), previews (`preview.rs`), terminals attached to the VM's tmux session (`terminal.rs`), the configuration
-//! of the gateway's GitHub issue poller (`swf.rs`). Knows nothing about Tauri; `session/commands.rs` owns the commands.
+//! Sessions handed off to a VM of their own: SSH through an IAP tunnel (`ssh.rs`), the gateway API that lists,
+//! provisions, starts and deletes the session VMs and configures the gateway's GitHub issue poller (`api.rs`, `swf.rs`),
+//! the names of the session VMs (`vm.rs`), the release check and tool install on them (`release.rs`), moving a session's
+//! git state and Claude Code transcript there and back (`handoff.rs`, `retrieve.rs`, `transcript.rs`), adopting session
+//! VMs no local session knows (`adoption.rs`), the changes on a VM (`diff.rs`), previews (`preview.rs`) and terminals
+//! attached to the VM's tmux session (`terminal.rs`). Knows nothing about Tauri; `session/commands.rs` owns the commands.
 
 pub mod adoption;
-pub mod bundle;
+pub mod api;
 pub mod diff;
 pub mod handoff;
 pub mod memory;
 pub mod preview;
+pub mod release;
 pub mod retrieve;
 pub mod ssh;
 pub mod swf;
@@ -35,12 +36,11 @@ pub struct VmRef {
 }
 
 impl VmRef {
-    /// Rejects empty fields and characters that Compute Engine names never contain, so the values can go into gcloud
-    /// arguments and the ssh ProxyCommand unquoted.
+    /// Rejects empty fields and characters that Compute Engine names never contain, so the values can go into the ssh
+    /// ProxyCommand unquoted.
     pub fn validate(&self) -> Result<(), String> {
         for (name, value) in [("project", &self.project), ("zone", &self.zone), ("instance", &self.instance)] {
-            let is_valid = !value.is_empty() && value.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-');
-            if !is_valid {
+            if !is_compute_name(value) {
                 return Err(format!("failed to use the remote VM: the {name} {value:?} is not a valid Compute Engine name"));
             }
         }
@@ -48,19 +48,23 @@ impl VmRef {
     }
 }
 
-/// Where Hunt creates the VM of a session it hands off, from the settings.
+/// Whether `value` is a Compute Engine name: lowercase letters, digits and `-`, not empty.
+pub fn is_compute_name(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-')
+}
+
+/// How Hunt reaches the gateway, and the machine type of the session VMs it hands off, from the settings.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VmSettings {
+    /// The project and zone of the gateway.
     pub project: String,
     pub zone: String,
-    /// The always-running VM that routes `https://<short>[-<port>].<domain>` to the session VMs.
+    /// The always-running VM that serves the gateway API and routes `https://<short>[-<port>].<domain>` to the session
+    /// VMs.
     pub gateway: String,
-    /// The instance template session VMs are created from.
-    pub template: String,
-    /// A machine type other than the template's, e.g. `e2-standard-8`.
+    /// A machine type other than the instance template's, e.g. `e2-standard-8`.
     pub machine_type: Option<String>,
-    pub preview_domain: String,
 }
 
 impl VmSettings {
@@ -69,25 +73,18 @@ impl VmSettings {
         VmRef { project: self.project.clone(), zone: self.zone.clone(), instance: self.gateway.clone() }
     }
 
-    /// The VM of session `id`.
+    /// The VM of session `id` as the gateway names it, in the gateway's project and zone.
     pub fn session_vm(&self, id: uuid::Uuid) -> VmRef {
         VmRef { project: self.project.clone(), zone: self.zone.clone(), instance: vm::session_vm_name(id) }
     }
 
-    /// Rejects values that cannot go into gcloud arguments unquoted; returns the preview domain lowercased.
-    pub fn validate(&self, id: uuid::Uuid) -> Result<String, String> {
+    /// Rejects values that cannot go into the ssh ProxyCommand unquoted or that Compute Engine would refuse.
+    pub fn validate(&self) -> Result<(), String> {
         self.gateway_vm().validate()?;
-        self.session_vm(id).validate()?;
-        let is_name = |value: &str| !value.is_empty() && value.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-');
-        if !is_name(&self.template) {
-            return Err(format!("failed to use the session VM template {:?}: it is not a valid Compute Engine name", self.template));
+        if let Some(machine_type) = self.machine_type.as_deref().filter(|machine_type| !is_compute_name(machine_type)) {
+            return Err(format!("failed to use the machine type {machine_type:?}: it is not a valid Compute Engine name"));
         }
-        if let Some(machine_type) = &self.machine_type {
-            if !is_name(machine_type) {
-                return Err(format!("failed to use the machine type {machine_type:?}: it is not a valid Compute Engine name"));
-            }
-        }
-        preview::validate_domain(&self.preview_domain)
+        Ok(())
     }
 }
 
@@ -164,8 +161,9 @@ pub fn relay_activity(status: &serde_json::Value, now: chrono::DateTime<chrono::
     status["lastTurnEndedAt"].as_i64().and_then(chrono::DateTime::from_timestamp_millis)
 }
 
-/// A step of a handoff, a retrieval or a connect that takes long enough to show in the UI.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+/// A step of a handoff, a retrieval or a connect that takes long enough to show in the UI; the gateway API streams the
+/// steps of the VM's start and setup under the same names.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum RemoteStep {
     StartingVm,
@@ -178,6 +176,9 @@ pub enum RemoteStep {
     StartingAgent,
     StoppingAgent,
     RetrievingCode,
+    /// A step of a newer gateway, which the UI is never told.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Receives the steps of a running remote operation.
@@ -224,6 +225,16 @@ pub fn read_hunt_md(worktree: &Path) -> Result<Option<String>, String> {
         return Err(format!("failed to read HUNT.md: it must be a file of at most {HUNT_MD_MAX_BYTES} bytes"));
     }
     std::fs::read_to_string(&path).map(Some).map_err(|error| format!("failed to read HUNT.md: {error}"))
+}
+
+/// Starts the VM of session `id` through `gateway` unless it runs and connects to it once it can run the agent (see
+/// `release::ensure_ready`); Hunt's SSH key lives in `ssh_dir`.
+pub async fn start_session_vm(gateway: &VmRef, id: uuid::Uuid, ssh_dir: &Path, progress: Progress<'_>) -> Result<ssh::Ssh, String> {
+    let api = api::GatewayApi::open(gateway, ssh_dir).await?;
+    let vm = api.start_vm(id, progress).await?;
+    let ssh = ssh::Ssh::open(&vm, ssh_dir).await?;
+    release::ensure_ready(&ssh, progress).await?;
+    Ok(ssh)
 }
 
 /// Runs `hunt-ctl` with `args` on the VM as root and returns its JSON output.
@@ -341,24 +352,22 @@ mod tests {
     }
 
     #[test]
-    fn vm_settings_name_the_session_vm_and_validate_template_machine_type_and_domain() {
+    fn vm_settings_name_the_gateway_and_session_vm_and_validate_the_machine_type() {
         let id = uuid::Uuid::parse_str("ab12cd34-0000-4000-8000-000000000001").unwrap();
-        let settings = VmSettings {
-            project: "acme".into(),
-            zone: "europe-west1-c".into(),
-            gateway: "vm-hunt-medc".into(),
-            template: "tpl-hunt-session".into(),
-            machine_type: None,
-            preview_domain: " Hunt.Example.com ".into(),
-        };
+        let settings = VmSettings { project: "acme".into(), zone: "europe-west1-c".into(), gateway: "vm-hunt-medc".into(), machine_type: None };
         assert_eq!(settings.session_vm(id), VmRef { project: "acme".into(), zone: "europe-west1-c".into(), instance: "vm-hunt-s-ab12cd34".into() });
         assert_eq!(settings.gateway_vm().instance, "vm-hunt-medc");
-        assert_eq!(settings.validate(id), Ok("hunt.example.com".to_string()));
-        assert!(VmSettings { machine_type: Some("e2-standard-8".into()), ..settings.clone() }.validate(id).is_ok());
-        assert!(VmSettings { machine_type: Some("e2 standard".into()), ..settings.clone() }.validate(id).is_err());
-        assert!(VmSettings { template: "".into(), ..settings.clone() }.validate(id).is_err());
-        assert!(VmSettings { gateway: "".into(), ..settings.clone() }.validate(id).is_err());
-        assert!(VmSettings { preview_domain: "".into(), ..settings }.validate(id).is_err());
+        assert_eq!(settings.validate(), Ok(()));
+        assert!(VmSettings { machine_type: Some("e2-standard-8".into()), ..settings.clone() }.validate().is_ok());
+        assert!(VmSettings { machine_type: Some("e2 standard".into()), ..settings.clone() }.validate().is_err());
+        assert!(VmSettings { gateway: "".into(), ..settings.clone() }.validate().is_err());
+        assert!(VmSettings { project: "Acme".into(), ..settings }.validate().is_err());
+    }
+
+    #[test]
+    fn remote_step_reads_the_gateways_steps_and_takes_unknown_ones_as_unknown() {
+        let steps: Vec<RemoteStep> = serde_json::from_str(r#"["creatingVm","startingVm","waitingForVm","installingRuntime","resizingDisk"]"#).unwrap();
+        assert_eq!(steps, [RemoteStep::CreatingVm, RemoteStep::StartingVm, RemoteStep::WaitingForVm, RemoteStep::InstallingRuntime, RemoteStep::Unknown]);
     }
 
     #[test]

@@ -43,6 +43,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@nx/js": "^23.1.0",
     "@tauri-apps/cli": "^2",
     "@types/node": "^22.20.5",
     "@types/react": "^19.1.8",

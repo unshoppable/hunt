@@ -18,7 +18,6 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
  */
 export function StaleRemoteDialog() {
   const sessions = useHuntStore((state) => state.sessions);
-  const chats = useHuntStore((state) => state.chats);
   const retrieveSession = useHuntStore((state) => state.retrieveSession);
   const closeSession = useHuntStore((state) => state.closeSession);
   const [now, setNow] = useState(() => Date.now());
@@ -33,7 +32,7 @@ export function StaleRemoteDialog() {
 
   const session = sessions.find((candidate) => !answeredIds.has(candidate.id) && isStaleRemote(candidate, now));
   if (!session) return null;
-  const blocker = retrieveBlocker(session, chats[session.id]);
+  const blocker = retrieveBlocker(session);
   const days = idleDays(session, now);
 
   const answer = async (action: "delete" | "bringBack") => {

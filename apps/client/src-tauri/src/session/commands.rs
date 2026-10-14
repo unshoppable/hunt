@@ -791,6 +791,33 @@ fn remote_system_prompt(base: &str, has_github_token: bool, services_prompt: &st
     prompt
 }
 
+/// Brings up the VM the session `id` moves to while its agent still works here (see `remote::handoff::prepare`), so the
+/// handoff after the agent's turn finds it ready. The session and its agent stay as they are; the VM stays on failure,
+/// for the handoff to retry.
+#[tauri::command]
+pub async fn prepare_hand_off(app: AppHandle, id: Uuid, settings: VmSettings) -> Result<(), String> {
+    let record = local_session(&app, id)?;
+    ensure_hand_off_allowed(&app, &record)?;
+    settings.validate()?;
+    let prepared = async {
+        let gateway = remote::gateway_vm(&settings).await?;
+        store::update_session(&app, id, |stored| stored.leftover_vm = Some(gateway.session_vm(id)))?;
+        let ssh_dir = ssh_dir()?;
+        let request = remote::handoff::VmRequest {
+            hunt_session_id: id,
+            title: &record.title,
+            worktree: &record.worktree_path,
+            gateway: &gateway,
+            machine_type: settings.machine_type.as_deref(),
+            ssh_dir: &ssh_dir,
+        };
+        remote::handoff::prepare(&request, &progress_reporter(&app, id)).await
+    }
+    .await;
+    finish_progress(&app, id);
+    prepared
+}
+
 /// Moves the session `id` to a VM of its own, which the gateway of `settings` provisions: its agent stops here, its
 /// branch, uncommitted work, transcript and the ignored files matching `file_patterns` go to the VM, and the chat
 /// continues with the agent there. On failure the session stays local, its agent starts again and the VM stays for the

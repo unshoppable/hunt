@@ -51,10 +51,52 @@ pub struct HandoffRequest<'a> {
     pub local_mode: Option<&'a str>,
 }
 
+impl HandoffRequest<'_> {
+    /// What provisioning the session's VM needs.
+    fn vm(&self) -> VmRequest<'_> {
+        VmRequest {
+            hunt_session_id: self.hunt_session_id,
+            title: self.title,
+            worktree: self.worktree,
+            gateway: self.gateway,
+            machine_type: self.machine_type,
+            ssh_dir: self.ssh_dir,
+        }
+    }
+}
+
+/// What provisioning the VM of a session needs; see `HandoffRequest` for the fields.
+pub struct VmRequest<'a> {
+    pub hunt_session_id: Uuid,
+    pub title: &'a str,
+    pub worktree: &'a Path,
+    pub gateway: &'a VmRef,
+    pub machine_type: Option<&'a str>,
+    pub ssh_dir: &'a Path,
+}
+
 /// The result of a handoff: where the session runs now and the ACP session id its relay serves.
 pub struct HandedOff {
     pub target: RemoteTarget,
     pub acp_session_id: Option<String>,
+}
+
+/// The session's VM, up and running Hunt's runtime.
+struct ReadyVm {
+    vm: VmRef,
+    ssh: Ssh,
+    /// The gateway's domain of the session's previews.
+    preview_domain: String,
+}
+
+/// Brings up the VM a handoff of the session moves to while its agent may still work in the worktree: refuses a worktree
+/// the handoff could not move, then has the gateway provision the VM and installs Hunt's runtime on it. The handoff that
+/// follows finds the VM ready, since provisioning an existing VM only records the session again.
+pub async fn prepare(request: &VmRequest<'_>, progress: Progress<'_>) -> Result<(), String> {
+    ensure_movable(request.worktree).await?;
+    let branch = movable_branch(request.worktree).await?;
+    let repo = repository_key(request.worktree).await;
+    bring_up(request, &repo, &branch, progress).await.map(|_| ())
 }
 
 /// Moves the session to its VM, which the gateway provisions, and starts it there. On failure the session's worktree on
@@ -65,10 +107,7 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     let worktree = request.worktree;
     ensure_movable(worktree).await?;
     let patterns = compile_patterns(request.file_patterns)?;
-    let branch = git::current_branch(worktree).await?;
-    if branch == "HEAD" {
-        return Err("failed to hand off the session: its worktree has no branch checked out".into());
-    }
+    let branch = movable_branch(worktree).await?;
     let head = git::rev_parse(worktree, "HEAD").await?;
     let snapshot = git::snapshot_commit(worktree, "Hunt handoff snapshot").await?;
     let handoff_ref = format!("refs/hunt/{id}/handoff");
@@ -79,23 +118,7 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     let upstream = origin_upstream(worktree, &branch).await;
     let hooks_path = hooks_path(worktree).await;
 
-    progress.step(RemoteStep::Connecting);
-    let gateway = GatewayApi::open(request.gateway, request.ssh_dir).await?;
-    let preview_domain = gateway.preview_domain()?;
-    let provision = ProvisionRequest {
-        id: request.hunt_session_id,
-        title: request.title,
-        repo: &repo,
-        branch: &branch,
-        machine_type: request.machine_type,
-    };
-    let provisioned = gateway.provision(&provision, progress).await?;
-    let session_vm = provisioned.vm;
-    if provisioned.created {
-        ssh::forget_host_key(&session_vm, request.ssh_dir).await?;
-    }
-    let ssh = Ssh::open(&session_vm, request.ssh_dir).await?;
-    release::ensure_ready(&ssh, progress).await?;
+    let ReadyVm { vm: session_vm, ssh, preview_domain } = bring_up(&request.vm(), &repo, &branch, progress).await?;
 
     progress.step(RemoteStep::TransferringCode);
     let remote_worktree = hunt_ctl(&ssh, &["init", &id, "--repo", &repo]).await?["path"]
@@ -158,6 +181,36 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     };
     let acp_session_id = status["acpSessionId"].as_str().map(str::to_string);
     Ok(HandedOff { target, acp_session_id })
+}
+
+/// Has the gateway provision the session's VM for `repo` and `branch` and start it, then installs Hunt's runtime on it.
+async fn bring_up(request: &VmRequest<'_>, repo: &str, branch: &str, progress: Progress<'_>) -> Result<ReadyVm, String> {
+    progress.step(RemoteStep::Connecting);
+    let gateway = GatewayApi::open(request.gateway, request.ssh_dir).await?;
+    let preview_domain = gateway.preview_domain()?;
+    let provision = ProvisionRequest {
+        id: request.hunt_session_id,
+        title: request.title,
+        repo,
+        branch,
+        machine_type: request.machine_type,
+    };
+    let provisioned = gateway.provision(&provision, progress).await?;
+    if provisioned.created {
+        ssh::forget_host_key(&provisioned.vm, request.ssh_dir).await?;
+    }
+    let ssh = Ssh::open(&provisioned.vm, request.ssh_dir).await?;
+    release::ensure_ready(&ssh, progress).await?;
+    Ok(ReadyVm { vm: provisioned.vm, ssh, preview_domain })
+}
+
+/// The branch checked out in `worktree`, which the handoff moves; refuses a detached HEAD.
+async fn movable_branch(worktree: &Path) -> Result<String, String> {
+    let branch = git::current_branch(worktree).await?;
+    if branch == "HEAD" {
+        return Err("failed to hand off the session: its worktree has no branch checked out".into());
+    }
+    Ok(branch)
 }
 
 /// Refuses worktrees whose state a snapshot cannot carry: an unfinished merge, rebase, cherry-pick or revert,

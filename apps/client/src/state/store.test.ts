@@ -792,6 +792,125 @@ describe("remote sessions", () => {
   });
 });
 
+describe("moving a session to and from the VM", () => {
+  const settings = { project: "acme-hunt", machineType: null };
+  const remote = {
+    vm: { project: "acme-hunt", zone: "z", instance: "vm-hunt" },
+    worktreePath: `/srv/worktrees/${SESSION}`,
+    repo: "o/r",
+    branch: "feat/general/x",
+    handoffHead: "abc",
+    handedOffAt: "2026-10-14T20:00:00Z",
+    localMode: "default",
+    lastActiveAt: null,
+    cleanupAskedAt: null,
+    previewDomain: null,
+    origin: "handoff" as const,
+    issue: null,
+  };
+  const local = storedSession(SESSION, "Build it");
+  const handedOff = { ...local, remote };
+
+  /** A promise the test settles by hand. */
+  function deferred<T>() {
+    let settle: (value: T) => void = () => {};
+    let fail: (reason: unknown) => void = () => {};
+    const promise = new Promise<T>((resolve, reject) => {
+      settle = resolve;
+      fail = reject;
+    });
+    return { promise, settle: (value: T) => settle(value), fail: (reason: unknown) => fail(reason) };
+  }
+
+  /** The commands the store invoked so far, with the prompt text of each `send_prompt`. */
+  function calls(): string[] {
+    return vi.mocked(invoke).mock.calls.map(([command, args]) => (command === "send_prompt" ? `send_prompt ${(args as { text: string }).text}` : command));
+  }
+
+  beforeEach(() => {
+    useHuntStore.setState({ chats: {}, sessions: [local], creatingIds: [], activeSessionId: SESSION, draft: null, untitledIds: [] });
+    useSettingsStore.setState({ remote: { ...DEFAULT_REMOTE, project: "acme-hunt" } });
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("brings the VM up during a turn, hands off once the turn ended and sends the prompts queued meanwhile there", async () => {
+    const turn = deferred<string>();
+    const prepared = deferred<void>();
+    let isHandedOff = false;
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "send_prompt") return calls().filter((call) => call.startsWith("send_prompt")).length === 1 ? turn.promise : Promise.resolve("EndTurn");
+      if (command === "prepare_hand_off") return prepared.promise;
+      if (command === "hand_off_session") {
+        isHandedOff = true;
+        return Promise.resolve({ ...handedOff });
+      }
+      if (command === "list_sessions") return Promise.resolve([isHandedOff ? handedOff : local]);
+      return Promise.resolve(undefined);
+    });
+
+    const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
+    const handOff = useHuntStore.getState().handOffSession(SESSION);
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("prepare_hand_off", { id: SESSION, settings });
+    expect(useHuntStore.getState().chats[SESSION].move).toBe("handOff");
+    await useHuntStore.getState().sendPrompt(SESSION, "two");
+    expect(useHuntStore.getState().chats[SESSION].queue.map((prompt) => prompt.text)).toEqual(["two"]);
+
+    prepared.settle();
+    await vi.waitFor(() => expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(true));
+    expect(calls()).not.toContain("hand_off_session");
+
+    turn.settle("EndTurn");
+    await Promise.all([firstSend, handOff]);
+    expect(calls()).toEqual(["send_prompt one", "prepare_hand_off", "hand_off_session", "list_sessions", "send_prompt two"]);
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ move: null, queue: [], isBusy: false });
+  });
+
+  it("hands an idle session off without bringing the VM up first", async () => {
+    vi.mocked(invoke).mockImplementation((command) => Promise.resolve(command === "list_sessions" ? [handedOff] : command === "hand_off_session" ? handedOff : undefined));
+
+    await useHuntStore.getState().handOffSession(SESSION);
+
+    expect(calls()).toEqual(["hand_off_session", "list_sessions"]);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("hand_off_session", { id: SESSION, settings, filePatterns: DEFAULT_REMOTE.filePatterns });
+    expect(useHuntStore.getState().chats[SESSION].move).toBeNull();
+  });
+
+  it("keeps the session local when its VM cannot be brought up, and the turn and its queue go on", async () => {
+    const turn = deferred<string>();
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "send_prompt") return calls().filter((call) => call.startsWith("send_prompt")).length === 1 ? turn.promise : Promise.resolve("EndTurn");
+      if (command === "prepare_hand_off") return Promise.reject("failed to provision the session's VM: quota exceeded");
+      return Promise.resolve(undefined);
+    });
+
+    const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
+    await useHuntStore.getState().sendPrompt(SESSION, "two");
+    await useHuntStore.getState().handOffSession(SESSION);
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ move: null, isBusy: true, error: "failed to provision the session's VM: quota exceeded" });
+
+    turn.settle("EndTurn");
+    await firstSend;
+    expect(calls()).toEqual(["send_prompt one", "prepare_hand_off", "send_prompt two"]);
+  });
+
+  it("brings a remote session back once the turn on the relay ended", async () => {
+    useHuntStore.setState({ sessions: [handedOff] });
+    vi.mocked(invoke).mockImplementation((command) => Promise.resolve(command === "list_sessions" ? [local] : command === "retrieve_session" ? local : undefined));
+    const { applyUpdate } = useHuntStore.getState();
+    applyUpdate(SESSION, notification({ sessionUpdate: "session_info_update", _meta: { hunt: { turn: "running" } } }));
+
+    const retrieval = useHuntStore.getState().retrieveSession(SESSION);
+    await Promise.resolve();
+    expect(calls()).toEqual([]);
+    expect(useHuntStore.getState().chats[SESSION].move).toBe("retrieve");
+
+    applyUpdate(SESSION, notification({ sessionUpdate: "session_info_update", _meta: { hunt: { turn: "idle" } } }));
+    await retrieval;
+    expect(calls()).toEqual(["retrieve_session", "list_sessions"]);
+    expect(useHuntStore.getState().chats[SESSION].move).toBeNull();
+  });
+});
+
 describe("clearing", () => {
   beforeEach(() => {
     useHuntStore.setState({ chats: {}, sessions: [storedSession(SESSION, "Build it")], creatingIds: [], activeSessionId: SESSION, draft: null });

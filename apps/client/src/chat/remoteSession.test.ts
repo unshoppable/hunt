@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SessionView } from "../ipc/types";
 import { createEmptyChat } from "../state/store";
-import { handOffBlocker, retrieveBlocker } from "./remoteSession";
+import { handOffBlocker, moveStatus, retrieveBlocker } from "./remoteSession";
 
 function session(id: string, patch: Partial<SessionView> = {}): SessionView {
   return {
@@ -38,28 +38,26 @@ const READY = { hasUnsavedEdits: false, hasClaudeAccount: true };
 describe("handOffBlocker", () => {
   it("lets an idle top-level session in its own worktree go", () => {
     const top = session("top");
-    expect(handOffBlocker(top, [top], createEmptyChat(), READY)).toBeNull();
+    expect(handOffBlocker(top, [top], READY)).toBeNull();
   });
 
   it("keeps sub sessions, checkout sessions, reviews and parents of sub sessions local", () => {
     const top = session("top");
     const sub = session("sub", { parentId: "top" });
-    expect(handOffBlocker(sub, [top, sub], undefined, READY)).toMatch(/parent/);
-    expect(handOffBlocker(top, [top, sub], undefined, READY)).toMatch(/sub sessions/);
-    expect(handOffBlocker(session("c", { workspace: "checkout" }), [], undefined, READY)).toMatch(/checkout/);
-    expect(handOffBlocker(session("r", { pullRequest: { number: 1, url: "https://github.com/o/r/pull/1" } }), [], undefined, READY)).toMatch(/review/);
+    expect(handOffBlocker(sub, [top, sub], READY)).toMatch(/parent/);
+    expect(handOffBlocker(top, [top, sub], READY)).toMatch(/sub sessions/);
+    expect(handOffBlocker(session("c", { workspace: "checkout" }), [], READY)).toMatch(/checkout/);
+    expect(handOffBlocker(session("r", { pullRequest: { number: 1, url: "https://github.com/o/r/pull/1" } }), [], READY)).toMatch(/review/);
   });
 
   it("needs a Claude account, since the local login stays on this Mac", () => {
     const top = session("top");
-    expect(handOffBlocker(top, [top], createEmptyChat(), { ...READY, hasClaudeAccount: false })).toMatch(/Claude account/);
+    expect(handOffBlocker(top, [top], { ...READY, hasClaudeAccount: false })).toMatch(/Claude account/);
   });
 
-  it("waits for a running turn, queued prompts, a question of the agent and unsaved edits", () => {
+  it("waits for unsaved edits in the editor", () => {
     const top = session("top");
-    expect(handOffBlocker(top, [top], { ...createEmptyChat(), isBusy: true }, READY)).toMatch(/turn/);
-    expect(handOffBlocker(top, [top], { ...createEmptyChat(), queue: [{ id: "q", text: "next", images: [] }] }, READY)).toMatch(/queued/);
-    expect(handOffBlocker(top, [top], createEmptyChat(), { ...READY, hasUnsavedEdits: true })).toMatch(/unsaved/);
+    expect(handOffBlocker(top, [top], { ...READY, hasUnsavedEdits: true })).toMatch(/unsaved/);
   });
 });
 
@@ -80,15 +78,25 @@ describe("retrieveBlocker", () => {
     issue: null,
   };
 
-  it("waits for the agent", () => {
-    const handedOff = session("top", { remote });
-    expect(retrieveBlocker(handedOff, createEmptyChat())).toBeNull();
-    expect(retrieveBlocker(handedOff, { ...createEmptyChat(), isBusy: true })).toMatch(/turn/);
+  it("lets a session with a local checkout come back", () => {
+    expect(retrieveBlocker(session("top", { remote }))).toBeNull();
   });
 
   it("needs a local checkout for an adopted session", () => {
     const adopted = session("top", { repoPath: "", remote: { ...remote, origin: "swf", issue: 12 } });
-    expect(retrieveBlocker(adopted, createEmptyChat())).toMatch(/local checkout of acme\/app/);
-    expect(retrieveBlocker({ ...adopted, repoPath: "/src/app" }, createEmptyChat())).toBeNull();
+    expect(retrieveBlocker(adopted)).toMatch(/local checkout of acme\/app/);
+    expect(retrieveBlocker({ ...adopted, repoPath: "/src/app" })).toBeNull();
+  });
+});
+
+describe("moveStatus", () => {
+  it("says what the session waits for until its move runs", () => {
+    expect(moveStatus(createEmptyChat())).toBeNull();
+    expect(moveStatus({ ...createEmptyChat(), move: "handOff", isBusy: true, remoteStep: "startingVm" })).toBe(
+      "Starting the VM… The session moves to the VM once the agent finished its turn.",
+    );
+    expect(moveStatus({ ...createEmptyChat(), move: "handOff", remoteStep: "installingRuntime" })).toMatch(/^Installing Hunt.* as soon as it is ready\.$/);
+    expect(moveStatus({ ...createEmptyChat(), move: "retrieve", isBusy: true })).toBe("The session comes back from the VM once the agent finished its turn.");
+    expect(moveStatus({ ...createEmptyChat(), move: "handOff", isLoading: true, remoteStep: "transferringCode" })).toBeNull();
   });
 });

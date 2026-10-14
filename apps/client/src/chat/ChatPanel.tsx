@@ -24,7 +24,7 @@ import { PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../
 import { ShieldIcon } from "../ui/icons";
 import { OpenInWebstormButton } from "./OpenInWebstormButton";
 import { RemoteMenu } from "./RemoteMenu";
-import { REMOTE_STEP_LABELS } from "./remoteSession";
+import { moveStatus, REMOTE_STEP_LABELS } from "./remoteSession";
 
 /** Order in which shift+tab cycles the session mode, as in the terminal; modes the agent does not offer are skipped. */
 const MODE_CYCLE = ["default", "acceptEdits", "plan", "auto"];
@@ -72,6 +72,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const isBusy = chat?.isBusy ?? false;
   const guardrailSuggestion = isBusy ? null : findGuardrailSuggestion(chat?.items ?? []);
   const hasPermission = Boolean(chat?.permission);
+  const moveText = chat ? moveStatus(chat) : null;
   const modeId = chat?.modeId ?? "default";
   const modes = listModes(chat?.configOptions ?? []);
 
@@ -183,6 +184,11 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         </div>
       </div>
 
+      {moveText ? (
+        <div className="px-9 pt-2">
+          <p className="chat-column text-[13px] text-neutral-500">{moveText}</p>
+        </div>
+      ) : null}
       {session.isLive ? (
         <div className="px-9 pt-2">
           <div className="chat-column flex items-center gap-3">
@@ -210,7 +216,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
       ) : null}
       {session.isLive || canPromptRemote ? (
         <PromptInput
-          isBusy={isBusy}
+          isBusy={isBusy || Boolean(chat?.move)}
           isBlocked={hasPermission}
           queue={chat?.queue ?? []}
           onTakeQueue={() => takeQueue(sessionId)}

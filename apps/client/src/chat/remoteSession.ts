@@ -16,12 +16,12 @@ export const REMOTE_STEP_LABELS: Record<RemoteStep, string> = {
   retrievingCode: "Bringing the code back…",
 };
 
-/** Why nothing may move while the chat waits for something; `null` when it does not. */
-function waitingChatBlocker(chat: SessionChat | undefined): string | null {
-  if (chat?.isBusy) return "Wait until the agent finished its turn.";
-  if (chat?.queue.length) return "Send or take back the queued prompts first.";
-  if (chat?.permission) return "Answer the agent's question first.";
-  return null;
+/** What the chat shows while its session waits to move to or from the VM; `null` while it does not wait. */
+export function moveStatus(chat: SessionChat): string | null {
+  if (!chat.move || chat.isLoading) return null;
+  const step = chat.remoteStep ? `${REMOTE_STEP_LABELS[chat.remoteStep]} ` : "";
+  if (chat.move === "retrieve") return `${step}The session comes back from the VM once the agent finished its turn.`;
+  return `${step}The session moves to the VM ${chat.isBusy ? "once the agent finished its turn" : "as soon as it is ready"}.`;
 }
 
 /** What else decides whether a session can move: the editor's unsaved edits and the selected Claude account. */
@@ -29,23 +29,23 @@ export type HandOffContext = { hasUnsavedEdits: boolean; hasClaudeAccount: boole
 
 /**
  * Why `session` cannot be handed off to the VM right now, or `null` when it can. Only a top-level session in a worktree
- * of its own without sub sessions moves, with a Claude account selected (the local login stays on this Mac); nothing
- * may wait in its chat or editor.
+ * of its own without sub sessions moves, with a Claude account selected (the local login stays on this Mac) and no
+ * unsaved edits in its editor. A running turn does not block it: the handoff waits for its end (see `handOffSession`).
  */
-export function handOffBlocker(session: SessionView, sessions: SessionView[], chat: SessionChat | undefined, context: HandOffContext): string | null {
+export function handOffBlocker(session: SessionView, sessions: SessionView[], context: HandOffContext): string | null {
   if (session.parentId) return "A sub session runs where its parent runs.";
   if (session.workspace !== "worktree") return "Sessions in the repository's own checkout stay local.";
   if (session.pullRequest) return "Pull request reviews stay local.";
   if (sessions.some((candidate) => candidate.parentId === session.id)) return "Close its sub sessions first.";
   if (!context.hasClaudeAccount) return "Pick a Claude account in the sidebar first; the local login cannot run on the VM.";
   if (context.hasUnsavedEdits) return "Save or discard the unsaved edits in the editor first.";
-  return waitingChatBlocker(chat);
+  return null;
 }
 
 /**
- * Why the remote `session` with `chat` cannot be brought back right now, or `null` when it can: an adopted session needs
- * a local checkout of its repository, and nothing may wait in its chat.
+ * Why the remote `session` cannot be brought back right now, or `null` when it can: an adopted session needs a local
+ * checkout of its repository. A running turn does not block it: the retrieval waits for its end.
  */
-export function retrieveBlocker(session: SessionView, chat: SessionChat | undefined): string | null {
-  return missingCheckoutBlocker(session) ?? waitingChatBlocker(chat);
+export function retrieveBlocker(session: SessionView): string | null {
+  return missingCheckoutBlocker(session);
 }

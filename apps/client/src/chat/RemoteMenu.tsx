@@ -36,8 +36,8 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
   const vmSettings = configuredVmSettings(remoteSettings);
   if (!session || (!vmSettings && !session.remote)) return null;
   const isRemote = Boolean(session.remote);
-  const isRunning = Boolean(chat?.remoteStep) || Boolean(chat?.isLoading);
-  const blocker = isRemote ? retrieveBlocker(session, chat) : handOffBlocker(session, sessions, chat, { hasUnsavedEdits, hasClaudeAccount });
+  const isRunning = Boolean(chat?.remoteStep) || Boolean(chat?.isLoading) || Boolean(chat?.move);
+  const blocker = isRemote ? retrieveBlocker(session) : handOffBlocker(session, sessions, { hasUnsavedEdits, hasClaudeAccount });
   const previewDomain = session.remote?.previewDomain ?? null;
   const instance = session.remote?.vm.instance ?? "";
 
@@ -57,9 +57,14 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
     await retrieveSession(sessionId);
   }
 
+  // A move asked for during a turn starts once the turn ended; a handoff starts the VM at once.
+  const afterTurn = chat?.isBusy ? " It moves once the agent finished its turn." : "";
+  const handOffHint = chat?.isBusy
+    ? "The VM starts now; the agent moves there once it finished its turn and continues, also while Hunt is closed."
+    : "The agent continues on its own VM, also while Hunt is closed.";
   const bringBackHint = isAdopted(session)
-    ? `The session continues here in a new worktree and its VM ${instance} is deleted, also for others working on it.`
-    : `The session continues here and its VM is deleted. Runs on ${instance}.`;
+    ? `The session continues here in a new worktree and its VM ${instance} is deleted, also for others working on it.${afterTurn}`
+    : `The session continues here and its VM is deleted. Runs on ${instance}.${afterTurn}`;
 
   return (
     <div className="relative shrink-0">
@@ -91,7 +96,7 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
           >
             {isRemote ? "Bring back from the VM" : "Hand off to the VM"}
             <span className="block text-[12px] text-neutral-500">
-              {blocker ?? (isRemote ? bringBackHint : "The agent continues on its own VM, also while Hunt is closed.")}
+              {blocker ?? (isRemote ? bringBackHint : handOffHint)}
             </span>
           </button>
           {isRemote && previewDomain ? (

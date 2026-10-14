@@ -92,6 +92,8 @@ export const commands = {
    * Moves the session to a VM of its own, which the gateway of `settings` provisions when the session has none yet; the
    * ignored files matching `filePatterns` go along.
    */
+  /** Brings up the VM a handoff of the session moves to while its agent still works locally; the session stays as it is. */
+  prepareHandOff: (id: string, settings: VmSettings) => invoke<void>("prepare_hand_off", { id, settings }),
   handOffSession: (id: string, settings: VmSettings, filePatterns: string[]) => invoke<SessionView>("hand_off_session", { id, settings, filePatterns }),
   retrieveSession: (id: string) => invoke<SessionView>("retrieve_session", { id }),
   /** Keeps the idle remote session for now; Hunt asks again whether to retrieve or delete it three days later. */

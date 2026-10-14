@@ -60,6 +60,7 @@ pub fn run() {
             session::commands::rename_session,
             session::commands::open_session,
             session::commands::clear_session,
+            session::commands::prepare_hand_off,
             session::commands::hand_off_session,
             session::commands::retrieve_session,
             session::commands::snooze_remote_cleanup,

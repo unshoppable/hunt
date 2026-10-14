@@ -151,6 +151,10 @@ export const commands = {
   /** Restores a shelf into the worktree; `keep` leaves the shelf in place instead of removing it. */
   unshelve: (id: string, reference: string, keep: boolean) => invoke<void>("unshelve", { id, reference, keep }),
   dropShelf: (id: string, reference: string) => invoke<void>("drop_shelf", { id, reference }),
+  /** Commits exactly `paths` with `message` on the session's current branch; other staged changes stay out. */
+  commitFiles: (id: string, paths: string[], message: string) => invoke<void>("commit_files", { id, paths, message }),
+  /** Pushes the session's current branch to the branch of the same name on `origin` and tracks it. */
+  pushBranch: (id: string) => invoke<void>("push_branch", { id }),
   /** Language (English name, e.g. `German`) of the agent output Hunt asks for itself: diagram labels, summaries, titles. */
   setAiLanguage: (language: string) => invoke<void>("set_ai_language", { language }),
   /** System prompt addition for every agent session started afterwards; empty switches it off. */

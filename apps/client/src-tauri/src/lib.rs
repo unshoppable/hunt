@@ -92,6 +92,8 @@ pub fn run() {
             session::commands::list_shelves,
             session::commands::unshelve,
             session::commands::drop_shelf,
+            session::commands::commit_files,
+            session::commands::push_branch,
             session::commands::open_worktree_in_webstorm,
             session::commands::open_file_in_webstorm,
             session::commands::open_changed_files_diff_in_webstorm,

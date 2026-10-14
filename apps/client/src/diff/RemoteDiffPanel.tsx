@@ -11,8 +11,8 @@ import { CodeDiffEditor } from "./CodeDiffEditor";
 import { useFileIconUrl } from "./fileIcons";
 import { STATUS_NAME_CLASS } from "./styles";
 
-/** Why the remote changes offer no revert, shelve or review comment. */
-const READ_ONLY_REASON = "The session runs on its VM, so its changes are read-only here. Bring it back to revert, shelve or comment on them.";
+/** Why the remote changes offer no commit, revert, shelve or review comment. */
+const READ_ONLY_REASON = "The session runs on its VM, so its changes are read-only here. Bring it back to commit, revert, shelve or comment on them.";
 
 type DiffMode = "split" | "unified";
 
@@ -118,6 +118,9 @@ export function RemoteDiffPanel({ sessionId }: { sessionId: string }) {
           </ul>
           {/* The local changelist's actions, switched off with their reason: the worktree they would change is on the VM. */}
           <div className="flex items-center gap-2 border-t border-(--line) px-3 py-2.5 text-[13px]" title={READ_ONLY_REASON}>
+            <button type="button" disabled className={SECONDARY_BUTTON_XS}>
+              Commit…
+            </button>
             <button type="button" disabled className={SECONDARY_BUTTON_XS}>
               Shelve…
             </button>

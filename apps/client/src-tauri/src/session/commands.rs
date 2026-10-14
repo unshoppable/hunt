@@ -1794,6 +1794,21 @@ pub async fn drop_shelf(app: AppHandle, id: Uuid, reference: String) -> Result<(
     git::drop_shelf(&record.worktree_path, &reference).await
 }
 
+/// Commits exactly `paths` with `message` on the session's current branch.
+#[tauri::command]
+pub async fn commit_files(app: AppHandle, id: Uuid, paths: Vec<String>, message: String) -> Result<(), String> {
+    let record = local_session(&app, id)?;
+    git::commit_files(&record.worktree_path, &paths, &message).await?;
+    store::forget_touched_files(&app, &record.worktree_path, &paths)
+}
+
+/// Pushes the session's current branch to `origin` and makes the pushed branch its upstream.
+#[tauri::command]
+pub async fn push_branch(app: AppHandle, id: Uuid) -> Result<(), String> {
+    let record = local_session(&app, id)?;
+    git::push_branch(&record.worktree_path).await
+}
+
 #[tauri::command]
 pub async fn open_worktree_in_webstorm(app: AppHandle, id: Uuid) -> Result<(), String> {
     let record = local_session(&app, id)?;

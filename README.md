@@ -459,7 +459,7 @@ committed and uncommitted, against the merge base of the VM's `HEAD` with the ha
 started, with the origin's default branch). `apps/client/src-tauri/src/remote/diff.rs` runs one bash script per request
 as `agent` in the worktree on the VM and returns the shapes of the local changelist (`ChangedFile`, `FileDiff`). The
 list reloads after every turn that ends on the relay, whoever sent it, and on *Refresh*; a VM that is off starts only on
-request. Revert, shelve and review comments stay switched off until the session is brought back.
+request. Commit, revert, shelve and review comments stay switched off until the session is brought back.
 
 Bringing it back (`retrieve_session`) stops the relay, snapshots the VM's worktree on top of the agent's commits
 (`refs/hunt/<id>/retrieve`), fetches it and applies it to the local worktree, which must still hold the handoff
@@ -544,7 +544,7 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 | --- | --- |
 | `apps/client/` | Nx project `client`: the desktop app, with the Rust shell in `src-tauri/`, the React UI in `src/`, one HTML page per window and the default agent prompts in `prompts/` |
 | `apps/client/src-tauri/src/acp/` | Agent process per session, ACP event forwarding |
-| `apps/client/src-tauri/src/git.rs` | Worktrees, changelists, shelve and revert |
+| `apps/client/src-tauri/src/git.rs` | Worktrees, changelists, shelve, revert, commit and push |
 | `apps/client/src-tauri/src/github.rs` | Pull requests through `gh` |
 | `apps/client/src-tauri/src/session/` | Session commands, store, attribution, summaries, reviews |
 | `apps/client/src-tauri/src/lsp.rs` | One `tsgo --lsp` process per worktree |

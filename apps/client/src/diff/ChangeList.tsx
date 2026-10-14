@@ -7,6 +7,7 @@ import { selectionChatsFor, useBusyChatIds } from "../ide/selectionChats";
 import { otherTouchers, type ChangeScope } from "./attribution";
 import { buildChangeTree, type FolderNode, type TreeNode } from "./changeTree";
 import { Checkbox, type CheckState } from "./Checkbox";
+import { CommitDialog } from "./CommitDialog";
 import { useFileIconUrl, useFolderIconUrl } from "./fileIcons";
 import { useReviewDraftCount } from "../review/reviewComments";
 import { ReviewDialog } from "./ReviewDialog";
@@ -23,7 +24,7 @@ import { SwapIcon } from "../ui/icons";
 
 type Tab = "changes" | "shelf";
 
-type Dialog = { kind: "shelve"; paths: string[] } | { kind: "review" } | null;
+type Dialog = { kind: "shelve" | "commit"; paths: string[] } | { kind: "review" } | null;
 
 /** One visible row of the tree view; `depth` is the indentation level. */
 type Row = { node: TreeNode; depth: number };
@@ -35,8 +36,8 @@ type Row = { node: TreeNode; depth: number };
 export type ScopeControl = { value: ChangeScope; hiddenCount: number; includesParent: boolean; onChange: (scope: ChangeScope) => void };
 
 /**
- * The changelist: changed files as a flat list or folder tree with checkboxes, plus the shelf tab and either the shelve
- * action for the checked files or, in a pull request review, the submission of the review. Every file row has an
+ * The changelist: changed files as a flat list or folder tree with checkboxes, plus the shelf tab and either the commit
+ * and shelve actions for the checked files or, in a pull request review, the submission of the review. Every file row has an
  * agent button that opens a sub chat about the whole file; it shows on hover, or always once such a chat exists.
  */
 export function ChangeList({
@@ -184,11 +185,12 @@ export function ChangeList({
     });
   };
 
-  const openShelveDialog = async () => {
+  /** Opens the commit or shelve dialog for the checked files, after a warning when the diff editor holds unsaved edits. */
+  const openFilesDialog = async (kind: "commit" | "shelve") => {
     if (!checkedPaths.length) return;
     if (hasUnsavedChanges && !(await confirmDestructive("The diff editor has unsaved changes. Only the content saved on disk is used. Continue?", "Continue"))) return;
     setNotice(null);
-    setDialog({ kind: "shelve", paths: checkedPaths });
+    setDialog({ kind, paths: checkedPaths });
   };
 
   const openReviewDialog = () => {
@@ -315,9 +317,14 @@ export function ChangeList({
               {draftCount ? `Submit review (${draftCount})…` : "Submit review…"}
             </button>
             {pullRequest ? null : (
-              <button type="button" disabled={!checkedPaths.length} onClick={() => void openShelveDialog()} className={SECONDARY_BUTTON_XS} title="Move the checked files to the shelf">
-                Shelve…
-              </button>
+              <>
+                <button type="button" disabled={!checkedPaths.length} onClick={() => void openFilesDialog("commit")} className={SECONDARY_BUTTON_XS} title="Commit the checked files on the session's branch">
+                  Commit…
+                </button>
+                <button type="button" disabled={!checkedPaths.length} onClick={() => void openFilesDialog("shelve")} className={SECONDARY_BUTTON_XS} title="Move the checked files to the shelf">
+                  Shelve…
+                </button>
+              </>
             )}
             <span className="ml-auto text-neutral-500">{notice ?? (checkedPaths.length ? `${checkedPaths.length} selected` : "")}</span>
           </div>
@@ -326,6 +333,18 @@ export function ChangeList({
 
       {dialog?.kind === "review" && pullRequest ? (
         <ReviewDialog sessionId={sessionId} pullRequestNumber={pullRequest.number} draftCount={draftCount} onClose={() => setDialog(null)} onSubmitted={() => setNotice("Review submitted")} />
+      ) : null}
+      {dialog?.kind === "commit" ? (
+        <CommitDialog
+          sessionId={sessionId}
+          paths={dialog.paths}
+          onClose={() => setDialog(null)}
+          onCommitted={() => {
+            setNotice("Committed");
+            worktreeChanged();
+          }}
+          onPushed={() => setNotice("Pushed")}
+        />
       ) : null}
       {dialog?.kind === "shelve" ? <ShelveDialog sessionId={sessionId} paths={dialog.paths} onClose={() => setDialog(null)} onShelved={worktreeChanged} /> : null}
     </div>

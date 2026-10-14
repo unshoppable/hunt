@@ -585,6 +585,29 @@ pub async fn drop_shelf(worktree: &Path, reference: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// Commits exactly `paths` (untracked files and deletions included) with `message` on the worktree's current branch.
+/// Changes staged for other paths stay staged and out of the commit; the repository's commit hooks run.
+pub async fn commit_files(worktree: &Path, paths: &[String], message: &str) -> Result<(), String> {
+    ensure_paths(paths)?;
+    if message.trim().is_empty() {
+        return Err("commit message must not be empty".into());
+    }
+
+    run_git(worktree, &with_paths(&["add", "-A", "--"], paths)).await?;
+    run_git(worktree, &with_paths(&["commit", "-q", "-m", message, "--"], paths)).await?;
+    Ok(())
+}
+
+/// Pushes the worktree's current branch to the branch of the same name on `origin` and makes that its upstream, which
+/// for a session branch created from `origin/<default branch>` is that default branch until the first push.
+pub async fn push_branch(worktree: &Path) -> Result<(), String> {
+    if current_branch(worktree).await? == "HEAD" {
+        return Err("the worktree has no branch checked out".into());
+    }
+    run_git(worktree, &["push", "-q", "-u", "--", "origin", "HEAD"]).await?;
+    Ok(())
+}
+
 /// Worktree-relative paths of the text files containing `word` as a whole word (tracked and untracked, never
 /// ignored files), sorted as git lists them. `word` must be an identifier.
 pub async fn files_containing_word(worktree: &Path, word: &str) -> Result<Vec<String>, String> {
@@ -650,6 +673,47 @@ mod tests {
         git(repo, &["add", "."]).await;
         git(repo, &["commit", "-q", "-m", "init"]).await;
         dir
+    }
+
+    #[tokio::test]
+    async fn commit_files_commits_only_the_given_paths() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        std::fs::remove_file(repo.join("tracked.txt")).unwrap();
+        std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+        std::fs::write(repo.join("other.txt"), "staged\n").unwrap();
+        git(repo, &["add", "other.txt"]).await;
+
+        commit_files(repo, &["tracked.txt".into(), "new.txt".into()], "feat: replace tracked.txt").await.unwrap();
+
+        let committed = run_git(repo, &["show", "--name-status", "--format=%s", "HEAD"]).await.unwrap();
+        assert_eq!(committed.trim(), "feat: replace tracked.txt\n\nA\tnew.txt\nD\ttracked.txt");
+        let left = run_git(repo, &["status", "--porcelain"]).await.unwrap();
+        assert_eq!(left.trim_end(), "M  other.txt");
+    }
+
+    #[tokio::test]
+    async fn commit_files_refuses_an_empty_message() {
+        let dir = fixture().await;
+        std::fs::write(dir.path().join("tracked.txt"), "two\n").unwrap();
+
+        assert_eq!(commit_files(dir.path(), &["tracked.txt".into()], " \n").await.unwrap_err(), "commit message must not be empty");
+    }
+
+    #[tokio::test]
+    async fn push_branch_pushes_to_the_branch_of_the_same_name_and_tracks_it() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = clone_dir.path().join("repo");
+        git(clone_dir.path(), &["clone", "-q", origin.path().to_str().unwrap(), repo.to_str().unwrap()]).await;
+        git(&repo, &["checkout", "-q", "--track", "-b", "feat/general/x", "origin/main"]).await;
+
+        push_branch(&repo).await.unwrap();
+
+        let pushed = run_git(origin.path(), &["rev-parse", "feat/general/x"]).await.unwrap();
+        assert_eq!(pushed, run_git(&repo, &["rev-parse", "HEAD"]).await.unwrap());
+        let upstream = run_git(&repo, &["rev-parse", "--abbrev-ref", "@{upstream}"]).await.unwrap();
+        assert_eq!(upstream.trim(), "origin/feat/general/x");
     }
 
     async fn head_branch(worktree: &Path) -> String {

@@ -1,3 +1,9 @@
+## 0.17.0 (2026-10-14)
+
+### 🚀 Features
+
+- run the sub chats of a remote session on its VM ([85061d5](https://github.com/unshoppable/hunt/commit/85061d5))
+
 ## 0.16.2 (2026-10-14)
 
 ### 🩹 Fixes

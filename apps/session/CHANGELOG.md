@@ -1,3 +1,9 @@
+## 0.8.1 (2026-10-14)
+
+### 🩹 Fixes
+
+- explain with a 503 that a preview's service is not running instead of an empty 502 ([06521e5](https://github.com/unshoppable/hunt/commit/06521e5))
+
 ## 0.8.0 (2026-10-14)
 
 This was a version bump only for session to align it with other projects, there were no code changes.

@@ -1,3 +1,9 @@
+## 0.7.1 (2026-10-14)
+
+### 🩹 Fixes
+
+- **client:** bring retrieved sessions back in auto mode ([5b7cc4e](https://github.com/unshoppable/hunt/commit/5b7cc4e))
+
 ## 0.7.0 (2026-10-14)
 
 ### 🚀 Features

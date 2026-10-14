@@ -10,6 +10,7 @@
  */
 import type { ConfigChanges, HuntSessionConfig, McpServerEntry } from "./config.ts";
 import { messageOf } from "../../../../libs/domain/src/errors.ts";
+import type { LogLevel } from "../../../../libs/domain/src/journal.ts";
 import {
   classify,
   ERROR_CODES,
@@ -48,7 +49,7 @@ export interface RelayDependencies {
   /** Called whenever a field of `status()` other than `heartbeatAt` changed. */
   onStatusChange(): void;
   now(): number;
-  log(message: string): void;
+  log(message: string, level?: LogLevel): void;
 }
 
 interface Client {
@@ -194,7 +195,7 @@ export class Relay {
     } else if (message.kind === "notification") {
       this.receiveAgentNotification(message.message);
     } else {
-      this.deps.log("ignored an invalid message from the agent");
+      this.deps.log("ignored an invalid message from the agent", "warn");
     }
     this.publishStatus();
   }
@@ -253,14 +254,14 @@ export class Relay {
       await this.call("session/set_mode", { sessionId, modeId: config.modeId }, `failed to set the mode ${config.modeId}`);
       this.noteMode(config.modeId, modeUpdatesAtSend);
     } catch (error) {
-      this.deps.log(messageOf(error));
+      this.deps.log(messageOf(error), "error");
     }
     for (const [configId, value] of Object.entries(config.configOptions)) {
       try {
         const result = await this.call("session/set_config_option", { sessionId, configId, value }, `failed to set the config option ${configId} to ${value}`);
         this.noteConfigOptions(result);
       } catch (error) {
-        this.deps.log(messageOf(error));
+        this.deps.log(messageOf(error), "error");
       }
     }
   }
@@ -269,7 +270,7 @@ export class Relay {
     this.state = "failed";
     this.error = message;
     this.heldUpdates = null;
-    this.deps.log(message);
+    this.deps.log(message, "error");
     this.publishStatus();
     this.answerWaitingInitializes();
     this.answerWaitingLoads();
@@ -330,7 +331,7 @@ export class Relay {
     } else if (message.method === "$/cancel_request") {
       this.cancelClientRequest(connection, message.params);
     } else {
-      this.deps.log(`ignored the client notification ${message.method}`);
+      this.deps.log(`ignored the client notification ${message.method}`, "debug");
     }
   }
 
@@ -517,14 +518,14 @@ export class Relay {
     try {
       this.deps.persistConfig(changes);
     } catch (error) {
-      this.deps.log(`failed to update the session config: ${messageOf(error)}`);
+      this.deps.log(`failed to update the session config: ${messageOf(error)}`, "error");
     }
   }
 
   private receiveAgentResponse(id: JsonRpcId, outcome: Outcome): void {
     const pending = this.agentRequests.get(id);
     if (!pending) {
-      this.deps.log(`ignored the agent's response to the unknown request ${id}`);
+      this.deps.log(`ignored the agent's response to the unknown request ${id}`, "warn");
       return;
     }
     this.agentRequests.delete(id);
@@ -576,7 +577,7 @@ export class Relay {
       return;
     }
     if (typeof clientId === "number" && clientId < this.nextClientRequestId) return;
-    this.deps.log(`ignored the client's response to the unknown request ${clientId}`);
+    this.deps.log(`ignored the client's response to the unknown request ${clientId}`, "warn");
   }
 
   /** Sends a `$/cancel_request` for the permission request to every client that got it, under the client's ID. */

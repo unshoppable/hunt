@@ -16,6 +16,7 @@ import { realpathSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
+import type { Log } from "../../../libs/domain/src/journal.ts";
 import { createCompute, createMetadata, type Compute } from "./gcp.ts";
 import { writeLog } from "./journal.ts";
 
@@ -30,7 +31,7 @@ export interface WakeOptions {
   /** The Compute Engine calls hunt-wake needs, on VMs in the gateway's project and zone. */
   compute: Pick<Compute, "get" | "start" | "resume">;
   now: () => number;
-  log: (message: string) => void;
+  log: Log;
 }
 
 interface Page {
@@ -110,7 +111,7 @@ export class Waker {
     try {
       status = (await this.options.compute.get(name))?.status ?? null;
     } catch (error) {
-      this.options.log(`failed to look up ${name}: ${messageOf(error)}`);
+      this.options.log(`failed to look up ${name}: ${messageOf(error)}`, "error");
       return { status: 502, title: "Preview unavailable", text: `The session VM ${name} could not be looked up: ${messageOf(error)}`, reloads: true };
     }
     switch (status) {
@@ -140,7 +141,7 @@ export class Waker {
     try {
       await this.options.compute[verb](name);
     } catch (error) {
-      this.options.log(`failed to ${verb} ${name}: ${messageOf(error)}`);
+      this.options.log(`failed to ${verb} ${name}: ${messageOf(error)}`, "error");
       return { status: 502, title: "Preview unavailable", text: `The session VM ${name} could not be started: ${messageOf(error)}`, reloads: true };
     }
     this.options.log(`${verb === "start" ? "started" : "resumed"} ${name}`);
@@ -149,7 +150,7 @@ export class Waker {
 }
 
 /** An HTTP server that answers every request with the Waker's page. */
-export function createWakeServer(waker: Waker, log: (message: string) => void): Server {
+export function createWakeServer(waker: Waker, log: Log): Server {
   async function respond(request: IncomingMessage, response: ServerResponse): Promise<void> {
     request.resume();
     const page = await waker.page(request.headers.host, isPageLoad(request.method, request.headers));
@@ -162,7 +163,7 @@ export function createWakeServer(waker: Waker, log: (message: string) => void): 
   }
   return createServer((request, response) => {
     respond(request, response).catch((error: unknown) => {
-      log(`failed to answer a request for ${request.headers.host}: ${messageOf(error)}`);
+      log(`failed to answer a request for ${request.headers.host}: ${messageOf(error)}`, "error");
       response.destroy();
     });
   });
@@ -172,7 +173,7 @@ function main(): void {
   const log = writeLog;
   const server = createWakeServer(new Waker({ compute: createCompute(createMetadata(), fetch, log), now: Date.now, log }), log);
   server.on("error", (error) => {
-    log(`failed to serve ${LISTEN_HOST}:${LISTEN_PORT}: ${error.message}`);
+    log(`failed to serve ${LISTEN_HOST}:${LISTEN_PORT}: ${error.message}`, "fatal");
     process.exit(1);
   });
   server.listen(LISTEN_PORT, LISTEN_HOST, () => log(`listening on ${LISTEN_HOST}:${LISTEN_PORT}`));

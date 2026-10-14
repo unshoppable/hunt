@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import gitPushPrompt from "../../../libs/domain/prompts/git-push.md?raw";
 import remotePrompt from "../../../libs/domain/prompts/remote.md?raw";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
+import type { Log, LogLevel } from "../../../libs/domain/src/journal.ts";
 import { sendPrompt, type Transport } from "./acpClient.ts";
 import { createCompute, createMetadata, readSecret, type Compute, type Instance, type Metadata } from "./gcp.ts";
 import { writeLog } from "./journal.ts";
@@ -81,7 +82,7 @@ export interface PollerDeps {
   prompts(): RemotePrompts;
   sendPrompt(transport: Transport, request: { sessionId: string; cwd: string; text: string }): Promise<string>;
   newId(): string;
-  log(message: string): void;
+  log(message: string, level?: LogLevel): void;
 }
 
 /** A session the poller is setting up: enough to mark its issue as failed when the poller has to stop. */
@@ -113,10 +114,10 @@ export class Poller {
   }
 
   /** Logs `message` unless it is the same as the last note, so a state that lasts is reported once. */
-  private note(message: string): void {
+  private note(message: string, level: LogLevel = "info"): void {
     if (message === this.lastNote) return;
     this.lastNote = message;
-    this.deps.log(message);
+    this.deps.log(message, level);
   }
 
   private redacted(error: unknown): string {
@@ -135,7 +136,7 @@ export class Poller {
       }
       domain = this.deps.readDomain();
     } catch (error) {
-      this.note(`idle: ${this.redacted(error)}`);
+      this.note(`idle: ${this.redacted(error)}`, "error");
       return;
     }
     let tokens: Tokens;
@@ -145,7 +146,7 @@ export class Poller {
       this.secrets = [tokens.github, tokens.claude];
       vms = await this.deps.compute.listByLabel(ORIGIN_LABEL, ORIGIN);
     } catch (error) {
-      this.note(`poll failed: ${this.redacted(error)}`);
+      this.note(`poll failed: ${this.redacted(error)}`, "error");
       return;
     }
     const github = this.deps.github(tokens.github);
@@ -159,7 +160,7 @@ export class Poller {
       } catch (error) {
         const message = this.redacted(error);
         if (this.repoErrors.get(repo) !== message) {
-          this.deps.log(`${repo}: ${message}`);
+          this.deps.log(`${repo}: ${message}`, "error");
         }
         this.repoErrors.set(repo, message);
       }
@@ -188,7 +189,7 @@ export class Poller {
         return;
       }
     } catch (error) {
-      this.deps.log(`${key}: failed to claim the issue: ${this.redacted(error)}`);
+      this.deps.log(`${key}: failed to claim the issue: ${this.redacted(error)}`, "error");
       return;
     }
 
@@ -256,7 +257,7 @@ export class Poller {
   /** Replaces `<label>:running` with `<label>:failed` and comments the error; failures here are only logged. */
   private async markFailed(setup: Setup, error: string): Promise<void> {
     const { key, repo, issue, github, labels, names } = setup;
-    this.deps.log(`${key}: failed: ${error}`);
+    this.deps.log(`${key}: failed: ${error}`, "error");
     const steps: [string, () => Promise<unknown>][] = [
       [`remove ${labels.running}`, () => github.removeLabel(repo, issue, labels.running)],
       [`add ${labels.failed}`, () => github.addLabels(repo, issue, [labels.failed])],
@@ -266,7 +267,7 @@ export class Poller {
       try {
         await step();
       } catch (stepError) {
-        this.deps.log(`${key}: failed to ${what}: ${this.redacted(stepError)}`);
+        this.deps.log(`${key}: failed to ${what}: ${this.redacted(stepError)}`, "error");
       }
     }
   }
@@ -299,7 +300,7 @@ function readPrompts(): RemotePrompts {
 }
 
 async function main(): Promise<void> {
-  const log = (message: string) => writeLog(redact(message, []));
+  const log: Log = (message, level) => writeLog(redact(message, []), level);
   ensureSshKey("hunt-swf");
   const metadata = createMetadata();
   const location = { project: await metadata.project(), zone: await metadata.zone() };
@@ -340,7 +341,7 @@ async function main(): Promise<void> {
     try {
       await poller.cycle();
     } catch (error) {
-      log(`poll failed: ${redact(messageOf(error), [])}`);
+      log(`poll failed: ${redact(messageOf(error), [])}`, "error");
     }
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, POLL_INTERVAL_MS);
@@ -357,7 +358,7 @@ async function main(): Promise<void> {
 // Node resolves the symlink /srv/hunt/current in the module's URL, not in argv.
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error: unknown) => {
-    writeLog(redact(messageOf(error), []));
+    writeLog(redact(messageOf(error), []), "fatal");
     process.exit(1);
   });
 }

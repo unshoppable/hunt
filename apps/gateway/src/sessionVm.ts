@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReleaseInfo } from "../../../libs/domain/src/gatewayApi.ts";
+import type { Log } from "../../../libs/domain/src/journal.ts";
 import type { Transport } from "./acpClient.ts";
 import { ApiError } from "./apiProtocol.ts";
 
@@ -128,7 +129,7 @@ function tail(text: string): string {
  * Runs `program` with `args`, `input` on stdin; resolves with stdout, rejects with the end of stderr. `log` hears the
  * outcome and the duration.
  */
-function run(program: string, args: string[], input: Buffer | string, timeoutMs: number, what: string, log: (message: string) => void): Promise<Buffer> {
+function run(program: string, args: string[], input: Buffer | string, timeoutMs: number, what: string, log: Log): Promise<Buffer> {
   const startedAt = Date.now();
   return new Promise((resolve, reject) => {
     const child = spawn(program, args, { stdio: ["pipe", "pipe", "pipe"] });
@@ -139,7 +140,7 @@ function run(program: string, args: string[], input: Buffer | string, timeoutMs:
       clearTimeout(timer);
       if (isSettled) return;
       isSettled = true;
-      log(`${what}: failed after ${Date.now() - startedAt} ms: ${reason}`);
+      log(`${what}: failed after ${Date.now() - startedAt} ms: ${reason}`, "error");
       reject(new Error(`failed to ${what}: ${reason}`));
     };
     const timer = setTimeout(() => {
@@ -187,7 +188,7 @@ const READY_POLL_MS = 10_000;
 const READY_FAILURE_REPORT_MS = 60_000;
 
 /** The session VM `vm`; `log` hears every command run there, with its outcome and duration. */
-export function sessionVm(vm: string, location: VmLocation, log: (message: string) => void = () => {}): SessionVm {
+export function sessionVm(vm: string, location: VmLocation, log: Log = () => {}): SessionVm {
   const gcloud = (command: string, input: Buffer | string, timeoutMs: number, what: string) =>
     run("gcloud", sshArgs(vm, location, command), input, timeoutMs, what, log);
 
@@ -261,10 +262,10 @@ export function sessionVm(vm: string, location: VmLocation, log: (message: strin
     openRelay() {
       const startedAt = Date.now();
       const child = spawn("gcloud", sshArgs(vm, location, RELAY_COMMAND), { stdio: ["pipe", "pipe", "pipe"] });
-      child.on("error", (error) => log(`connect to the relay of ${vm}: failed: ${error.message}`));
+      child.on("error", (error) => log(`connect to the relay of ${vm}: failed: ${error.message}`, "error"));
       child.on("close", (code) => {
         const outcome = code ? `ended with exit status ${code}${stderr.trim() ? `\n${tail(stderr)}` : ""}` : "ended";
-        log(`connection to the relay of ${vm}: ${outcome} after ${Date.now() - startedAt} ms`);
+        log(`connection to the relay of ${vm}: ${outcome} after ${Date.now() - startedAt} ms`, code ? "warn" : "info");
       });
       let stderr = "";
       child.stdout.setEncoding("utf8");

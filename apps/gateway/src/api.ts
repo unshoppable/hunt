@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import protocolFile from "../../../libs/domain/protocol.json" with { type: "json" };
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import type { ApiEvent, HelloResult } from "../../../libs/domain/src/gatewayApi.ts";
+import type { LogLevel } from "../../../libs/domain/src/journal.ts";
 import { ApiError, encodeEvent, errorEvent, MAX_REQUEST_BYTES, parseRequest, SOCKET_PATH, type ApiRequest } from "./apiProtocol.ts";
 import { createCompute, createMetadata } from "./gcp.ts";
 import { writeLog } from "./journal.ts";
@@ -41,7 +42,7 @@ export interface GatewayInfo {
 export interface ApiDeps {
   orchestrator: Pick<Orchestrator, "provision" | "start" | "stop" | "delete" | "get" | "listSessions">;
   gatewayInfo(): Promise<GatewayInfo>;
-  log(message: string): void;
+  log(message: string, level?: LogLevel): void;
 }
 
 /** Runs one request; its result is the `data` of the `result` event. */
@@ -119,7 +120,7 @@ async function serve(deps: ApiDeps, socket: Socket): Promise<void> {
     write(event);
     socket.end();
     if (event.type === "error") {
-      deps.log(`refused a request: ${event.code}: ${event.message}`);
+      deps.log(`refused a request: ${event.code}: ${event.message}`, "warn");
     }
     return;
   }
@@ -139,7 +140,7 @@ async function serve(deps: ApiDeps, socket: Socket): Promise<void> {
     const event = errorEvent(error);
     write(event);
     if (event.type === "error") {
-      deps.log(`${request.caller}: ${describeRequest(request)}: ${event.code}: ${event.message}`);
+      deps.log(`${request.caller}: ${describeRequest(request)}: ${event.code}: ${event.message}`, "error");
     }
   }
   socket.end();
@@ -156,7 +157,7 @@ export function createApiServer(deps: ApiDeps): ApiServer {
   // Half-open: a client may end its side after the request and still read the events.
   const server = createServer({ allowHalfOpen: true }, (socket) => {
     const served = serve(deps, socket).catch((error: unknown) => {
-      deps.log(`failed to serve a connection: ${messageOf(error)}`);
+      deps.log(`failed to serve a connection: ${messageOf(error)}`, "error");
       socket.destroy();
     });
     running.add(served);
@@ -204,7 +205,7 @@ async function main(): Promise<void> {
   process.umask(0o077);
   rmSync(SOCKET_PATH, { force: true });
   api.server.on("error", (error) => {
-    log(`failed to serve ${SOCKET_PATH}: ${error.message}`);
+    log(`failed to serve ${SOCKET_PATH}: ${error.message}`, "fatal");
     process.exit(1);
   });
   api.server.listen(SOCKET_PATH, () => {
@@ -220,7 +221,7 @@ async function main(): Promise<void> {
 // Node resolves the symlink /srv/hunt/current in the module's URL, not in argv.
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error: unknown) => {
-    writeLog(messageOf(error));
+    writeLog(messageOf(error), "fatal");
     process.exit(1);
   });
 }

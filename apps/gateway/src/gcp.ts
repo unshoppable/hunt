@@ -5,6 +5,7 @@
  * dependencies.
  */
 import { messageOf } from "../../../libs/domain/src/errors.ts";
+import type { Log } from "../../../libs/domain/src/journal.ts";
 
 const METADATA = "http://metadata.google.internal/computeMetadata/v1";
 const COMPUTE = "https://compute.googleapis.com/compute/v1";
@@ -246,7 +247,7 @@ export function describeComputeCall(url: string): string {
 }
 
 /** `log` hears one line per API call: method, resource, HTTP status (or why the call failed) and duration. */
-export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetch, log: (message: string) => void = () => {}): Compute {
+export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetch, log: Log = () => {}): Compute {
   async function zoneUrl(): Promise<string> {
     return `${COMPUTE}/projects/${encodeURIComponent(await metadata.project())}/zones/${encodeURIComponent(await metadata.zone())}`;
   }
@@ -263,7 +264,7 @@ export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetc
       log(`${what}: HTTP ${response.status} in ${Date.now() - startedAt} ms`);
       return response;
     } catch (error) {
-      log(`${what}: failed after ${Date.now() - startedAt} ms: ${messageOf(error)}`);
+      log(`${what}: failed after ${Date.now() - startedAt} ms: ${messageOf(error)}`, "error");
       throw error;
     }
   }

@@ -20,21 +20,22 @@ import { readConfig, readMcpServers, updateConfigFile, type McpServerEntry } fro
 import { ERROR_CODES, errorOutcome, responseMessage } from "../../../../libs/domain/src/jsonRpc.ts";
 import { createLineDecoder, encodeLine, parseLine } from "../../../../libs/domain/src/ndjson.ts";
 import { messageOf } from "../../../../libs/domain/src/errors.ts";
+import { journalLine, type LogLevel } from "../../../../libs/domain/src/journal.ts";
 import { Relay, type ClientConnection } from "./relay.ts";
 import { HEARTBEAT_INTERVAL_MS, writeStatusFile } from "./status.ts";
 
 const STOP_TIMEOUT_MS = 10_000;
 const SOCKET_MODE = 0o660;
 
-/** Writes to stderr, which systemd hands to the journal under the unit's SyslogIdentifier. */
-function log(message: string): void {
-  console.error(message);
+/** Writes to stderr, which systemd hands to the journal under the unit's SyslogIdentifier; `level` becomes its priority. */
+function log(message: string, level: LogLevel = "info"): void {
+  console.error(journalLine(message, level));
 }
 
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
-    log(`${name} is not set`);
+    log(`${name} is not set`, "fatal");
     process.exit(1);
   }
   return value;
@@ -45,7 +46,7 @@ function dispatch(handle: () => void): void {
   try {
     handle();
   } catch (error) {
-    log(`failed to handle a message: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+    log(`failed to handle a message: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`, "error");
   }
 }
 
@@ -54,7 +55,7 @@ function loadMcpServers(): McpServerEntry[] {
   try {
     return readMcpServers(process.env.HUNT_MCP_SERVERS);
   } catch (error) {
-    log(messageOf(error));
+    log(messageOf(error), "warn");
     return [];
   }
 }
@@ -78,7 +79,7 @@ function serveClient(socket: Socket, relay: Relay): void {
     dispatch(() => relay.handleClientMessage(connection, message));
   });
   socket.on("data", (chunk: string) => lines.push(chunk));
-  socket.on("error", (error) => log(`client connection failed: ${error.message}`));
+  socket.on("error", (error) => log(`client connection failed: ${error.message}`, "warn"));
   socket.on("close", () => dispatch(() => relay.disconnectClient(connection)));
   dispatch(() => relay.connectClient(connection));
 }
@@ -107,7 +108,7 @@ function main(): void {
     try {
       writeStatusFile(statusPath, relay.status());
     } catch (error) {
-      log(`failed to write ${statusPath}: ${messageOf(error)}`);
+      log(`failed to write ${statusPath}: ${messageOf(error)}`, "error");
     }
   }
 
@@ -117,7 +118,7 @@ function main(): void {
     markAdapterExited = resolve;
   });
   adapter.on("error", (error) => {
-    log(`failed to run the adapter: ${error.message}`);
+    log(`failed to run the adapter: ${error.message}`, "fatal");
     process.exit(1);
   });
   adapter.on("exit", (code, signal) => {
@@ -125,15 +126,15 @@ function main(): void {
       markAdapterExited();
       return;
     }
-    log(`the adapter exited with ${signal ?? `code ${code}`}`);
+    log(`the adapter exited with ${signal ?? `code ${code}`}`, "fatal");
     process.exit(code ?? 1);
   });
-  adapter.stdin.on("error", (error) => log(`failed to write to the adapter: ${error.message}`));
+  adapter.stdin.on("error", (error) => log(`failed to write to the adapter: ${error.message}`, "error"));
   adapter.stdout.setEncoding("utf8");
   const agentLines = createLineDecoder((line) => {
     const message = parseLine(line);
     if (message === undefined) {
-      log(`ignored a line from the adapter that is not JSON: ${line.slice(0, 200)}`);
+      log(`ignored a line from the adapter that is not JSON: ${line.slice(0, 200)}`, "warn");
       return;
     }
     dispatch(() => relay.handleAgentMessage(message));
@@ -143,7 +144,7 @@ function main(): void {
   rmSync(socketPath, { force: true });
   const server = createServer((socket) => serveClient(socket, relay));
   server.on("error", (error) => {
-    log(`failed to serve ${socketPath}: ${error.message}`);
+    log(`failed to serve ${socketPath}: ${error.message}`, "fatal");
     process.exit(1);
   });
   server.listen(socketPath, () => {
@@ -163,7 +164,7 @@ function main(): void {
     adapter.stdin.end();
     void adapterExited.then(() => process.exit(0));
     setTimeout(() => {
-      log(`the adapter did not exit within ${STOP_TIMEOUT_MS / 1000} s`);
+      log(`the adapter did not exit within ${STOP_TIMEOUT_MS / 1000} s`, "warn");
       adapter.kill("SIGKILL");
       process.exit(0);
     }, STOP_TIMEOUT_MS);

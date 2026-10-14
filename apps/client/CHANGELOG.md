@@ -1,3 +1,9 @@
+## 0.4.0 (2026-10-14)
+
+### 🚀 Features
+
+- name session branches like app-framework and review pull requests on their own branch ([#10](https://github.com/unshoppable/hunt/pull/10))
+
 ## 0.3.0 (2026-10-14)
 
 ### 🚀 Features

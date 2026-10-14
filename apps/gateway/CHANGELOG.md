@@ -1,3 +1,9 @@
+## 0.1.1 (2026-10-14)
+
+### 🩹 Fixes
+
+- **gateway:** let admins call hunt-api inside a command over SSH ([fe0f58b](https://github.com/unshoppable/hunt/commit/fe0f58b))
+
 ## 0.1.0 (2026-10-14)
 
 ### 🚀 Features

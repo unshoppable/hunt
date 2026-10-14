@@ -1,3 +1,9 @@
+## 0.10.1 (2026-10-14)
+
+### 🩹 Fixes
+
+- show the last four characters of the saved GitHub token in its field ([8e788c6](https://github.com/unshoppable/hunt/commit/8e788c6))
+
 ## 0.10.0 (2026-10-14)
 
 ### 🚀 Features

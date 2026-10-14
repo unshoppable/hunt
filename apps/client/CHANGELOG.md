@@ -1,3 +1,9 @@
+## 0.12.0 (2026-10-14)
+
+### 🚀 Features
+
+- create a session VM in another zone of the region when its zone has no capacity ([2ccac58](https://github.com/unshoppable/hunt/commit/2ccac58))
+
 ## 0.11.0 (2026-10-14)
 
 ### 🚀 Features

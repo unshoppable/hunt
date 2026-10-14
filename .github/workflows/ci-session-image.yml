@@ -225,13 +225,18 @@ jobs:
           echo "$result"
           echo "- \`hunt-ctl install-tools\` on \`$VM\` ($ZONE): \`$result\`" >> "$GITHUB_STEP_SUMMARY"
 
-      # hunt-image-seal powers the VM off once it removed what must not go into the image, so the SSH connection may end
-      # with 255; the VM's status decides.
+      # hunt-image-seal refuses a VM without the Ops Agent, otherwise removes what must not go into the image and powers
+      # the VM off a few seconds later. A connection the power-off cuts ends with 255; the VM's status decides then.
       - name: Seal the build VM
         if: steps.decide.outputs.build == 'true'
         run: |
+          status=0
           gcloud compute ssh "$VM" --project="$GCP_PROJECT" --zone="$ZONE" --tunnel-through-iap --quiet \
-            --ssh-key-expire-after=2h --command 'sudo -n /usr/local/sbin/hunt-image-seal' || true
+            --ssh-key-expire-after=2h --command 'sudo -n /usr/local/sbin/hunt-image-seal' || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 255 ]; then
+            echo "::error::hunt-image-seal on $VM failed with exit status $status"
+            exit "$status"
+          fi
           deadline=$((SECONDS + 5 * 60))
           until [ "$(gcloud compute instances describe "$VM" --project="$GCP_PROJECT" --zone="$ZONE" --format='value(status)')" = TERMINATED ]; do
             if [ "$SECONDS" -gt "$deadline" ]; then

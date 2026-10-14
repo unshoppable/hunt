@@ -45,5 +45,8 @@ export default defineConfig(() => ({
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
+    // The workspace root, relative to this app: the dependencies live in its node_modules, and assets they reference
+    // from CSS (Monaco's codicon font) are served through /@fs/ only from an allowed directory.
+    fs: { allow: ["../.."] },
   },
 }));

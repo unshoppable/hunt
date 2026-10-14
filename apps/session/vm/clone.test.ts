@@ -26,7 +26,7 @@ const IMAGE = `hunt-ctl-test:${createHash("sha256").update(DOCKERFILE).digest("h
 
 /**
  * Prepares the container: the bundle as the current release, the bare repository acme/app with `main` and the branch
- * `hunt/7-existing` one commit ahead, the fake GitHub and the misleading system credential helper. Prints the commits of
+ * `feat/general/7-existing` one commit ahead, the fake GitHub and the misleading system credential helper. Prints the commits of
  * main and of the existing branch.
  */
 const SETUP = String.raw`
@@ -45,15 +45,15 @@ git -c user.name=Seed -c user.email=seed@example.com commit --quiet --allow-empt
 echo "# app" >README.md
 git add README.md
 git -c user.name=Seed -c user.email=seed@example.com commit --quiet -m "Add a README"
-git branch hunt/7-existing
-git checkout --quiet hunt/7-existing
+git branch feat/general/7-existing
+git checkout --quiet feat/general/7-existing
 echo "work" >work.txt
 git add work.txt
 git -c user.name=Seed -c user.email=seed@example.com commit --quiet -m "Earlier work"
-git push --quiet /srv/github/acme/app.git main hunt/7-existing
+git push --quiet /srv/github/acme/app.git main feat/general/7-existing
 git -C /srv/github/acme/app.git update-server-info
 main=$(git rev-parse main)
-existing=$(git rev-parse hunt/7-existing)
+existing=$(git rev-parse feat/general/7-existing)
 cd /
 rm -rf /var/tmp/seed
 
@@ -128,16 +128,16 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
 
   it("clones the repository as the agent onto a new branch from the default branch and records the token's user", () => {
     const id = "0c0c6f2e-0000-4000-8000-000000000001";
-    const result = clone(id, "acme/app", "hunt/12-fix-login");
+    const result = clone(id, "acme/app", "fix/general/12-fix-login");
     expect(result.stderr).toBe("");
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({ path: "/home/agent/app" });
 
-    expect(agentGit("/home/agent/app", "symbolic-ref", "--short", "HEAD")).toBe("hunt/12-fix-login");
+    expect(agentGit("/home/agent/app", "symbolic-ref", "--short", "HEAD")).toBe("fix/general/12-fix-login");
     expect(agentGit("/home/agent/app", "rev-parse", "HEAD")).toBe(mainCommit);
     expect(agentGit("/home/agent/app", "config", "remote.origin.url")).toBe("https://github.com/acme/app.git");
     expect(agentGit("/home/agent/app", "symbolic-ref", "refs/remotes/origin/HEAD")).toBe("refs/remotes/origin/main");
-    expect(docker(["exec", "-u", "agent", container, "git", "-C", "/home/agent/app", "config", "branch.hunt/12-fix-login.remote"]).status).toBe(1);
+    expect(docker(["exec", "-u", "agent", container, "git", "-C", "/home/agent/app", "config", "branch.fix/general/12-fix-login.remote"]).status).toBe(1);
 
     const files = sh("stat -c %U /home/agent/app /home/agent/app/.git /home/agent/app/README.md; tail -n 1 /home/agent/app/.git/info/exclude; ls /home/agent/app/.git/hooks");
     expect(files.stdout).toMatch(/^agent\nagent\nagent\n\.hunt\/\n[\s\S]*\bpre-push\n/);
@@ -147,7 +147,7 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
       repo: "acme/app",
       worktree: "/home/agent/app",
       createdAt: expect.any(Number),
-      branch: "hunt/12-fix-login",
+      branch: "fix/general/12-fix-login",
       gitName: "hunt-bot",
       gitEmail: "4242+hunt-bot@users.noreply.github.com",
       origin: "swf",
@@ -161,12 +161,12 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
   }, DOCKER_TIMEOUT_MS);
 
   it("checks out a branch the origin has already, tracking it", () => {
-    const result = clone("0c0c6f2e-0000-4000-8000-000000000002", "acme/app", "hunt/7-existing");
+    const result = clone("0c0c6f2e-0000-4000-8000-000000000002", "acme/app", "feat/general/7-existing");
     expect(result.stderr).toBe("");
     expect(result.status).toBe(0);
-    expect(agentGit("/home/agent/app", "symbolic-ref", "--short", "HEAD")).toBe("hunt/7-existing");
+    expect(agentGit("/home/agent/app", "symbolic-ref", "--short", "HEAD")).toBe("feat/general/7-existing");
     expect(agentGit("/home/agent/app", "rev-parse", "HEAD")).toBe(existingCommit);
-    expect(agentGit("/home/agent/app", "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/hunt/7-existing");
+    expect(agentGit("/home/agent/app", "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/feat/general/7-existing");
   }, DOCKER_TIMEOUT_MS);
 
   it("rejects invalid arguments and tokens and reports GitHub's refusals without the token", () => {
@@ -174,11 +174,11 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
     const cases: [ReturnType<typeof clone>, string][] = [
       [clone(id, "acme/app", "bad..branch"), "invalid branch: bad..branch"],
       [clone(id, "acme/app", "-x"), "invalid branch: -x"],
-      [clone(id, "../etc", "hunt/1-x"), "invalid repository: ../etc"],
-      [clone(id, "acme/app", "hunt/1-x", "two words"), "invalid GitHub token on stdin"],
-      [clone(id, "acme/app", "hunt/1-x", ""), "invalid GitHub token on stdin"],
-      [clone(id, "acme/app", "hunt/1-x", "github_pat_wrong"), "failed to read the GitHub user of the token"],
-      [clone(id, "acme/missing", "hunt/1-x"), "failed to clone https://github.com/acme/missing.git"],
+      [clone(id, "../etc", "feat/general/1-x"), "invalid repository: ../etc"],
+      [clone(id, "acme/app", "feat/general/1-x", "two words"), "invalid GitHub token on stdin"],
+      [clone(id, "acme/app", "feat/general/1-x", ""), "invalid GitHub token on stdin"],
+      [clone(id, "acme/app", "feat/general/1-x", "github_pat_wrong"), "failed to read the GitHub user of the token"],
+      [clone(id, "acme/missing", "feat/general/1-x"), "failed to clone https://github.com/acme/missing.git"],
     ];
     for (const [result, message] of cases) {
       expect(result.status).toBe(3);

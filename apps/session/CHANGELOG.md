@@ -1,3 +1,9 @@
+## 0.7.0 (2026-10-14)
+
+### 🚀 Features
+
+- run the services of hunt.json as systemd units, with IAP-free hosts for unguarded ones ([#27](https://github.com/unshoppable/hunt/issues/27))
+
 ## 0.6.0 (2026-10-14)
 
 This was a version bump only for session to align it with other projects, there were no code changes.

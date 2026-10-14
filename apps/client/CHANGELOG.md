@@ -1,3 +1,9 @@
+## 0.13.0 (2026-10-14)
+
+### 🚀 Features
+
+- hand off or bring back a session while its agent works; the move waits for the turn's end and the VM comes up meanwhile ([b29fe10](https://github.com/unshoppable/hunt/commit/b29fe10))
+
 ## 0.12.0 (2026-10-14)
 
 ### 🚀 Features

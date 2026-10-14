@@ -1,3 +1,9 @@
+## 0.18.0 (2026-10-14)
+
+### 🚀 Features
+
+- hand a session off to its VM together with its sub chats ([e536cbf](https://github.com/unshoppable/hunt/commit/e536cbf))
+
 ## 0.17.0 (2026-10-14)
 
 ### 🚀 Features

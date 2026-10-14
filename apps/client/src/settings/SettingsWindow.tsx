@@ -122,6 +122,7 @@ export function SettingsWindow() {
   const resetFolderIconRules = useSettingsStore((state) => state.resetFolderIconRules);
   const setConfirmSessionDelete = useSettingsStore((state) => state.setConfirmSessionDelete);
   const [activePage, setActivePage] = useState<Page>(initialPage);
+  const [version, setVersion] = useState<string | null>(null);
   const activeSection = SECTIONS.find((section) => section.pane === activePage);
   const resetAll = () => {
     resetPanes();
@@ -135,6 +136,7 @@ export function SettingsWindow() {
   useSettingsSync();
   useAccountsSync();
   useSecondaryWindow("settings", closeWindow, { isReady: !isWarm });
+  useLoad(appVersion, { onValue: setVersion, onError: () => setVersion(null) }, []);
 
   useEffect(() => {
     const subscription = listenTo("settings:show-page", ({ page }) => setActivePage(page), { target: getCurrentWindow().label });
@@ -144,8 +146,13 @@ export function SettingsWindow() {
   return (
     <div className="flex h-full flex-col bg-(--surface-chat)">
       {/* The macOS traffic lights sit in this row (see openSettingsWindow.ts), so it starts further right and drags the window. */}
-      <div data-tauri-drag-region="" className={`${HEADER_BAR} border-b border-(--line) pr-3 pl-23 text-sm`}>
+      <div data-tauri-drag-region="" className={`${HEADER_BAR} gap-2 border-b border-(--line) pr-3 pl-23 text-sm`}>
         <span data-tauri-drag-region="" className="font-semibold tracking-wide text-neutral-300">Settings</span>
+        {version ? (
+          <span data-tauri-drag-region="" className="text-[12px] text-neutral-500 tabular-nums">
+            {`v${version}`}
+          </span>
+        ) : null}
       </div>
       <div className="flex min-h-0 flex-1">
         <nav aria-label="Settings pages" className="flex w-48 shrink-0 flex-col gap-4 overflow-y-auto border-r border-(--line) bg-(--surface-inset) p-3">

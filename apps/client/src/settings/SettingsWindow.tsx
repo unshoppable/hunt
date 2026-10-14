@@ -539,11 +539,11 @@ function GithubTokenRow() {
           value={draft}
           spellCheck={false}
           autoComplete="off"
-          placeholder={status?.saved ? `Saved, ends in ${status.hint ?? "…"}` : "Not set"}
+          placeholder={status?.saved ? `••••••••${status.hint ?? ""}` : "Not set"}
           disabled={isSaving}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
-          className={`${FORM_INPUT} font-mono`}
+          className={`${FORM_INPUT} font-mono ${status?.saved ? "placeholder:text-neutral-200!" : ""}`}
         />
         <span className="w-6" />
       </div>

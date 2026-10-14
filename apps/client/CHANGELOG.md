@@ -1,3 +1,9 @@
+## 0.11.0 (2026-10-14)
+
+### 🚀 Features
+
+- commit the checked files of the changelist and push the session's branch ([9452b60](https://github.com/unshoppable/hunt/commit/9452b60))
+
 ## 0.10.1 (2026-10-14)
 
 ### 🩹 Fixes

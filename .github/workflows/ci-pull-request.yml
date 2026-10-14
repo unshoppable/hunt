@@ -1,5 +1,6 @@
-# Checks a pull request: typecheck, lint, test and build of every project the change affects (nx affected), the Rust
-# tests of the desktop app on macOS.
+# Checks a pull request: its title, which becomes the subject of the squash commit on master and so must follow
+# Conventional Commits for nx release; typecheck, lint, test and build of every project the change affects (nx
+# affected); the Rust tests of the desktop app on macOS.
 name: 🦾 CI | Pull Request
 run-name: '[ PR #${{ github.event.pull_request.number }} ] ${{ github.event.pull_request.title }}'
 
@@ -15,6 +16,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  title:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # action-semantic-pull-request reads the PR title through the API.
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Validate PR title (conventional commits)
+        uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          requireScope: false
+
   affected:
     runs-on: ubuntu-latest
     timeout-minutes: 30

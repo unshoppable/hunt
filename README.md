@@ -114,9 +114,11 @@ npx nx run session:test                            # one target of one project
 npm run tauri -- build --bundles dmg   # local DMG in apps/client/src-tauri/target/release/bundle/dmg/
 ```
 
-Every push to `master` runs [`ci-release.yml`](.github/workflows/ci-release.yml), as in app-framework. `nx release`
-derives the next version of each app from the Conventional Commits that touch it (`feat` → minor, `fix`/`perf` →
-patch, `!` or `BREAKING CHANGE` → major), independently per app: it writes the version into the app's `package.json`
+Pull requests are squash-merged with their title as the commit message, which
+[`ci-pull-request.yml`](.github/workflows/ci-pull-request.yml) checks for Conventional Commits. Every push to `master`
+runs [`ci-release.yml`](.github/workflows/ci-release.yml), as in app-framework. `nx release` derives the next version of
+each app from the Conventional Commits that touch it (`feat` → minor, `fix`/`perf` → patch, `!` or `BREAKING CHANGE` →
+major), independently per app: it writes the version into the app's `package.json`
 (`apps/client/src-tauri/tauri.conf.json` reads `apps/client/package.json`) and a `CHANGELOG.md`, commits
 `chore(release): …` and tags `<app>@<version>`. A release commit then
 

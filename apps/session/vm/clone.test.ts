@@ -188,4 +188,39 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
     }
     expect(sh('grep -rlF -- "$1" /home/agent /srv/hunt/sessions /var/tmp /tmp 2>/dev/null || true', [TOKEN]).stdout).toBe("");
   }, DOCKER_TIMEOUT_MS);
+
+  it("logs its steps to syslog under the identifier hunt-ctl without the token, and prints the same without a syslog socket", () => {
+    const id = "0c0c6f2e-0000-4000-8000-000000000004";
+    expect(sh("test -e /dev/log").status).toBe(1);
+    const withoutSyslog = clone(id, "acme/app", "feat/general/7-existing");
+    expect(withoutSyslog.stderr).toBe("");
+    expect(withoutSyslog.status).toBe(0);
+
+    // busybox syslogd stands in for journald: it serves /dev/log and writes `<facility>.<priority> <tag>: <message>`.
+    const syslogd = sh("busybox syslogd -O /var/log/messages && for _ in $(seq 50); do test -S /dev/log && exit 0; sleep 0.1; done; exit 1");
+    expect(syslogd.status).toBe(0);
+    try {
+      expect(clone(id, "acme/app", "feat/general/7-existing")).toEqual(withoutSyslog);
+      expect(clone(id, "acme/app", "bad..branch").status).toBe(3);
+      expect(sh('/srv/hunt/current/vm/hunt-ctl status "$1"', [id]).status).toBe(0);
+      const lines = sh("sleep 0.5; grep -F ' hunt-ctl: ' /var/log/messages | sed 's/^.* \\([a-z]*\\.[a-z]*\\) hunt-ctl: /\\1 /'").stdout;
+      expect(lines).toMatch(
+        new RegExp(
+          "^" +
+            [
+              `user\\.info clone ${id}: started`,
+              `user\\.info clone ${id}: cloning acme/app onto branch feat/general/7-existing`,
+              `user\\.info clone ${id}: finished in \\d+ ms`,
+              `user\\.info clone ${id}: started`,
+              `user\\.err clone ${id}: failed with exit status 3 after \\d+ ms at cmd_clone:\\d+ < main:\\d+`,
+              "",
+            ].join("\n") +
+            "$",
+        ),
+      );
+      expect(sh("cat /var/log/messages").stdout).not.toContain(TOKEN);
+    } finally {
+      sh("kill $(cat /var/run/syslogd.pid); rm -f /dev/log");
+    }
+  }, DOCKER_TIMEOUT_MS);
 });

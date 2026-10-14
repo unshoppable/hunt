@@ -506,6 +506,14 @@ GET counts too, for at most two hours after the agent last worked. Dev servers a
 not count. The disk keeps everything: the next prompt or preview page starts the VM again, and the agent restarts the
 app's containers and dev servers.
 
+Logs: `hunt-ctl` runs over SSH outside systemd and logs its steps to the journal under the identifier `hunt-ctl`
+(`journalctl -t hunt-ctl` on the VM): every command's start, its end with the duration, a failure with the exit status
+and the functions and lines it failed in, and the main steps of `install`, `install-tools`, `stage-session`, `init`,
+`clone`, `prepare`, `deps` and `start`. The lines name the session ID, repository, branch and release, never a token or
+what arrives on stdin; `status` and `preview-status`, which Hunt polls, log only their failures. The infrastructure
+repository ships the journal of the Hunt services to Cloud Logging, where the steps of a handoff show up with
+`jsonPayload.SYSLOG_IDENTIFIER="hunt-ctl" AND labels."compute.googleapis.com/resource_name"="vm-hunt-s-<short id>"`.
+
 &nbsp;
 
 ### 📁 Project layout

@@ -1,7 +1,8 @@
 /**
  * `hunt-ctl install --domain` and `stage-session` on a gateway in a Debian 12 container, the base of the VMs; skipped
  * without a Docker daemon. The container runs the built gateway artifact (`nx build gateway`) with openssh-server, sudo
- * and iptables, so that the sshd and sudo rules of the gateway API are checked by the real tools. A `curl` earlier on
+ * and iptables, so that the sshd and sudo rules of the gateway API are checked by the real tools, and busybox, whose
+ * syslogd stands in for the journal. A `curl` earlier on
  * PATH answers the metadata server from /srv/fakemeta; `systemctl` and `docker` only log, and `node` reports who runs
  * it (`fixtures/`).
  */
@@ -18,7 +19,7 @@ const DOCKER_TIMEOUT_MS = 600_000;
 
 const DOCKERFILE = `FROM debian:12
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
-      bash ca-certificates iptables jq openssh-server sudo util-linux \\
+      bash busybox ca-certificates iptables jq openssh-server sudo util-linux \\
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /etc/hunt && echo gateway >/etc/hunt/role
 `;
@@ -235,5 +236,37 @@ describe.skipIf(!hasDocker())("hunt-ctl install and stage-session on a gateway i
     expect(result.status).toBe(3);
     expect(result.stderr).toContain("/tmp/old is no CI release (it has no .version); update Hunt");
     expect(sh("cat /srv/hunt/current/.version").stdout).toBe("gateway@1.1.0\n");
+  });
+
+  it("logs the steps of install and stage-session to syslog under the identifier hunt-ctl", () => {
+    // busybox syslogd stands in for journald: it serves /dev/log and writes `<facility>.<priority> <tag>: <message>`.
+    const syslogd = sh("busybox syslogd -O /var/log/messages && for _ in $(seq 50); do test -S /dev/log && exit 0; sleep 0.1; done; exit 1");
+    expect(syslogd.status).toBe(0);
+    try {
+      const previous = sh("cat /srv/hunt/current/.hash").stdout.trim();
+      const gateway = release("gateway", "gateway@2.0.0");
+      expect(sh('hunt-ctl install "$1"', [gateway]).stderr).toBe("");
+      const session = release("session", "session@2.0.0");
+      expect(sh('hunt-ctl stage-session "$1"', [session]).stderr).toBe("");
+      const lines = sh("sleep 0.5; grep -F ' hunt-ctl: ' /var/log/messages | sed 's/^.* \\([a-z]*\\.[a-z]*\\) hunt-ctl: /\\1 /'").stdout;
+      expect(lines).toMatch(
+        new RegExp(
+          "^" +
+            [
+              "user\\.info install: started",
+              `user\\.info install: installing gateway release ${hashOf(gateway)} \\(gateway@2\\.0\\.0\\)`,
+              `user\\.info install: switched to release ${hashOf(gateway)} \\(previous: ${previous}\\); installing the units`,
+              "user\\.info install: finished in \\d+ ms",
+              "user\\.info stage-session: started",
+              `user\\.info stage-session: staging session release ${hashOf(session)} \\(session@2\\.0\\.0\\)`,
+              "user\\.info stage-session: finished in \\d+ ms",
+              "",
+            ].join("\n") +
+            "$",
+        ),
+      );
+    } finally {
+      sh("kill $(cat /var/run/syslogd.pid); rm -f /dev/log");
+    }
   });
 });

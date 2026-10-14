@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 use crate::git;
 use crate::graph::{self, WatcherRegistry};
+use crate::remote::commit::follow_vm_head;
 use crate::remote::retrieve;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::sync::{self as file_sync, Direction, Outcome, SyncTarget};
@@ -403,15 +404,34 @@ async fn sync_once(app: &AppHandle, id: Uuid, wants_remote: bool) -> Result<Opti
     let _ = app.emit("remote:sync", SyncEvent::running(id));
     let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
     let record = ensure_local_worktree(app, record, &target, &ssh).await?;
+    let target = record.remote.clone().ok_or("failed to sync the session's files: it runs locally now")?;
     let remote = target.worktree_path.display().to_string();
     let base_ref = target.start_ref(id);
     let sync_target = SyncTarget { local: &record.worktree_path, remote: &remote, manifest: &manifest, base_ref: &base_ref };
-    file_sync::sync(&sync_target, &ssh).await.map(Some)
+    let mut outcome = file_sync::sync(&sync_target, &ssh).await?;
+    match follow_head(app, id, &ssh, &target, &record.worktree_path).await {
+        Ok(moved) => outcome.moved_head = moved,
+        Err(error) => outcome.conflicts.push(format!("branch {}: {error}", target.branch)),
+    }
+    Ok(Some(outcome))
+}
+
+/// Points the local branch of the remote session `id` at the commit its VM's worktree has checked out when that moved
+/// (`remote::commit::follow_vm_head`), and records that commit as the one the branch follows; returns whether it moved.
+pub async fn follow_head(app: &AppHandle, id: Uuid, ssh: &Ssh, target: &RemoteTarget, worktree: &Path) -> Result<bool, String> {
+    let Some(head) = follow_vm_head(ssh, id, target, worktree).await? else {
+        return Ok(false);
+    };
+    store::update_session(app, id, |stored| {
+        if let Some(remote) = stored.remote.as_mut() {
+            remote.handoff_head = head;
+        }
+    })?;
+    Ok(true)
 }
 
 /// The record of the remote session `record` with a local worktree: an adopted session that has none yet gets one from
-/// a snapshot of its VM in the local checkout of its repository, prepared like a new session's; its changes compare
-/// against the merge base with the default branch, so that they include the agent's commits.
+/// a snapshot of its VM in the local checkout of its repository, prepared like a new session's.
 async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &RemoteTarget, ssh: &Ssh) -> Result<SessionRecord, String> {
     if record.worktree_path.is_dir() {
         return Ok(record);
@@ -424,7 +444,6 @@ async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &
     let checked_out = retrieve::check_out_adopted(ssh, id, &remote, &target.branch, &record.repo_path, &record.worktree_path).await?;
     let record = store::update_session(app, id, |stored| {
         stored.branch = checked_out.branch.clone();
-        stored.diff_base = checked_out.diff_base.clone();
         if let Some(remote) = stored.remote.as_mut() {
             remote.handoff_head = checked_out.head.clone();
         }

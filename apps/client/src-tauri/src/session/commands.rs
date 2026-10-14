@@ -2031,15 +2031,15 @@ pub async fn commit_files(app: AppHandle, id: Uuid, paths: Vec<String>, message:
     let record = worktree_session(&app, id)?;
     match remote_host(&app, &record) {
         None => git::commit_files(&record.worktree_path, &paths, &message).await?,
-        Some((owner, target)) => commit_on_vm(&app, owner, &target, &record.worktree_path, &paths, &message).await?,
+        Some((owner, _)) => commit_on_vm(&app, owner, &record.worktree_path, &paths, &message).await?,
     }
     store::forget_touched_files(&app, &record.worktree_path, &paths)
 }
 
 /// Commits `paths` of the remote session `id` on its VM (`remote::commit`) while no sync of it runs, after one sent the
-/// local edits there; refuses when one of the files could not reach the VM. Records the VM's commit the local branch
-/// follows now.
-async fn commit_on_vm(app: &AppHandle, id: Uuid, target: &RemoteTarget, worktree: &Path, paths: &[String], message: &str) -> Result<(), String> {
+/// local edits there; refuses when one of the files could not reach the VM. The local branch then follows the VM's new
+/// commit (`sync::follow_head`).
+async fn commit_on_vm(app: &AppHandle, id: Uuid, worktree: &Path, paths: &[String], message: &str) -> Result<(), String> {
     sync::exclusive(app, id, |outcome| async move {
         let unsynced: Vec<&String> = outcome
             .iter()
@@ -2050,13 +2050,10 @@ async fn commit_on_vm(app: &AppHandle, id: Uuid, target: &RemoteTarget, worktree
             let lines = unsynced.iter().map(|line| line.as_str()).collect::<Vec<_>>().join("\n");
             return Err(format!("failed to commit on the VM: these files did not reach it:\n{lines}"));
         }
+        let target = store::find_session(app, id)?.remote.ok_or("failed to commit on the VM: the session runs locally now")?;
         let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
-        let commit = remote::commit::commit(&ssh, id, target, worktree, paths, message).await?;
-        store::update_session(app, id, |stored| {
-            if let Some(remote) = stored.remote.as_mut() {
-                remote.handoff_head = commit;
-            }
-        })?;
+        remote::commit::commit(&ssh, id, worktree, paths, message).await?;
+        sync::follow_head(app, id, &ssh, &target, worktree).await?;
         Ok(())
     })
     .await

@@ -519,11 +519,14 @@ refuses until it is gone. Replace it in the terminal of the VM with a relative l
 other side) is reported in the chat without stopping the rest. The listing and the deletions on the VM run as `agent`
 through `sudo`, so they do not keep the VM awake. A sync runs when the session connects, after every tool call and
 turn the relay reports, every 10 seconds while a turn runs, after the watcher saw a local change and after a save,
-move, delete, revert or shelve in Hunt; a prompt and a diagram refresh wait until local changes reached the VM. The
-local branch stays at the commit the session went to the VM at, so the agent's commits show in the diff like its
-uncommitted work (an adopted session's diff starts at the merge base with the origin's default branch); committing and
-pushing stay with the agent, and the changelist's *Commit* and *WebStorm* are switched off for a remote session and
-its sub chats. Its `node_modules` install leaves the lockfile alone (`npm ci`, `--frozen-lockfile`). The chat header
+move, delete, revert or shelve in Hunt; a prompt and a diagram refresh wait until local changes reached the VM. After
+every sync the local branch points at the commit the VM's worktree has checked out (fetched as `refs/hunt/<id>/head`,
+`apps/client/src-tauri/src/remote/commit.rs`), so the diff shows what is uncommitted on the VM, as for a local session,
+also after the agent committed; a local branch that holds a commit the VM lacks stays put, and the chat says so. The
+changelist's *Commit* runs `hunt-ctl commit` on the VM after a sync that sent the local edits, while no other sync
+runs: the checked files are committed under the local Git identity, and the repository's hooks run with the agent's
+environment; *Commit and push* then pushes from the VM (`hunt-ctl push`) with the GitHub token of Settings → Remote VM.
+*WebStorm* is switched off for a remote session and its sub chats. Its `node_modules` install leaves the lockfile alone (`npm ci`, `--frozen-lockfile`). The chat header
 shows when the last sync succeeded, and the chat shows a failure. A diagram refresh runs on the agent on the VM,
 against the session's diff base, and Hunt copies `.hunt/graph.json` back afterwards. Known limits: an edit that keeps
 a file's size within the same second it was last synced in goes unnoticed until the next change, and line-ending
@@ -534,7 +537,7 @@ agent's commits (`refs/hunt/<id>/retrieve`) and fetches it. Files only the VM ha
 excludes, files the agent added with `-f`) are brought here once nothing else differs, and only where this Mac has
 no file of that name or the same one; another local version stays and is named. Files only this Mac has that the VM
 ignores stay.
-Only when the snapshot then holds the files of the local worktree, the local branch did not move since the handoff and
+Only when the snapshot then holds the files of the local worktree, the local branch holds no commit the VM lacks and
 nothing changed here meanwhile does the branch move to the agent's last commit; otherwise the retrieval names each
 differing file with its side and the ignore rules that apply (or the local commits) and moves nothing.
 The transcript returns. Then Hunt has the gateway delete the

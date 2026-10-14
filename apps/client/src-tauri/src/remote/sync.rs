@@ -206,12 +206,14 @@ pub struct Outcome {
     pub deleted_local: usize,
     /// One line per file that could not sync, with the reason.
     pub conflicts: Vec<String>,
+    /// Whether the local branch moved to the VM's commit afterwards (`commit::follow_vm_head`).
+    pub moved_head: bool,
 }
 
 impl Outcome {
-    /// Whether the sync changed files in the local worktree.
+    /// Whether the sync changed files in the local worktree, or the commit they compare against.
     pub fn changed_local(&self) -> bool {
-        self.pulled > 0 || self.deleted_local > 0
+        self.pulled > 0 || self.deleted_local > 0 || self.moved_head
     }
 }
 

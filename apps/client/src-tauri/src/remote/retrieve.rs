@@ -225,12 +225,10 @@ fn branch_moved_error(branch: &str, handoff_head: &str, local_head: &str) -> Str
     )
 }
 
-/// The local worktree `check_out_adopted` created: the branch it has checked out, the commit it started from and the
-/// commit its changes compare against (the merge base with the origin's default branch), when one is found.
+/// The local worktree `check_out_adopted` created: the branch it has checked out and the commit it started from.
 pub struct CheckedOut {
     pub branch: String,
     pub head: String,
-    pub diff_base: Option<String>,
 }
 
 /// The ref of the snapshot an adopted session's local worktree was created from, which its first sync starts from.
@@ -266,18 +264,7 @@ pub async fn check_out_adopted(
     let snapshot = git::rev_parse(repo, &retrieve_ref).await?;
     git::run_git(repo, &["update-ref", &adopted_ref(id), &snapshot]).await?;
     let head = git::rev_parse(worktree, "HEAD").await?;
-    Ok(CheckedOut { branch, head, diff_base: default_branch_base(worktree).await })
-}
-
-/// The merge base of `worktree`'s `HEAD` with the origin's default branch, which the changes of an adopted session
-/// compare against so that they include the agent's commits; `None` without such a branch.
-async fn default_branch_base(worktree: &Path) -> Option<String> {
-    for candidate in ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"] {
-        if let Ok(base) = git::merge_base(worktree, candidate, "HEAD").await {
-            return Some(base);
-        }
-    }
-    None
+    Ok(CheckedOut { branch, head })
 }
 
 /// The first of `candidates` that is a valid branch name `repo` does not have yet; else the first valid one with the
@@ -408,8 +395,13 @@ async fn remove_worktree(repo: &Path, worktree: &Path, branch: &str) {
 /// Fetches the retrieval snapshot (and with it the commits the agent made) into `retrieve_ref`, through
 /// `hunt-ctl upload-pack`, which runs git on the VM as the agent's user.
 pub(crate) async fn fetch(worktree: &Path, ssh: &Ssh, remote_worktree: &str, retrieve_ref: &str) -> Result<(), String> {
+    fetch_into(worktree, ssh, remote_worktree, retrieve_ref, retrieve_ref).await
+}
+
+/// Fetches the ref `source` of the VM's repository at `remote_worktree` into the local ref `destination`.
+pub(crate) async fn fetch_into(worktree: &Path, ssh: &Ssh, remote_worktree: &str, source: &str, destination: &str) -> Result<(), String> {
     let url = ssh.git_url(remote_worktree);
-    let refspec = format!("+{retrieve_ref}:{retrieve_ref}");
+    let refspec = format!("+{source}:{destination}");
     let ssh_command = ssh.git_ssh_command();
     let args = ["fetch", "--no-tags", "--quiet", "--upload-pack=sudo -n hunt-ctl upload-pack", url.as_str(), refspec.as_str()];
     git::run_git_with_env(worktree, &args, &[("GIT_SSH_COMMAND", ssh_command.as_str())])

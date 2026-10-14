@@ -1,7 +1,8 @@
-//! Commits and pushes of a remote session for the changelist. The session's branch lives on its VM, so `hunt-ctl commit`
-//! commits the picked files there under the local Git identity, after the sync sent the local edits; the local branch
-//! then points at that commit, so the committed files leave the changelist as in a local session. `hunt-ctl push` pushes
-//! the branch from the VM with the local GitHub token. Knows nothing about Tauri.
+//! Commits and pushes of a remote session for the changelist, and the local branch following the VM's. The session's
+//! branch lives on its VM: `hunt-ctl commit` commits the picked files there under the local Git identity, after the sync
+//! sent the local edits, and `hunt-ctl push` pushes the branch from the VM with the local GitHub token. Whenever the
+//! VM's `HEAD` moved (a commit of Hunt's or of the agent's), the local branch points at it too (`follow_vm_head`), so
+//! the changelist shows what is uncommitted on the VM, as in a local session. Knows nothing about Tauri.
 
 use std::path::Path;
 
@@ -9,24 +10,33 @@ use uuid::Uuid;
 
 use super::retrieve;
 use super::ssh::Ssh;
-use super::{hunt_ctl_with_input, RemoteTarget};
+use super::{hunt_ctl_with_input, shell_command, RemoteTarget};
 use crate::git;
 
 /// Commits `paths` of the remote session `id` with `message` on its VM behind `ssh`, under the identity of the local
-/// worktree `worktree`, and points the local branch at the new commit, which it returns. Paths the VM's branch has
-/// committed already are skipped there; the local branch follows regardless.
-pub async fn commit(ssh: &Ssh, id: Uuid, target: &RemoteTarget, worktree: &Path, paths: &[String], message: &str) -> Result<String, String> {
-    if target.worktree_path.as_os_str().is_empty() {
-        return Err("failed to commit on the VM: the session's worktree there is not known yet".into());
-    }
+/// worktree `worktree`. Paths the VM's branch has committed already are skipped there.
+pub async fn commit(ssh: &Ssh, id: Uuid, worktree: &Path, paths: &[String], message: &str) -> Result<(), String> {
     let (name, email) = git::identity(worktree).await.map_err(|error| format!("failed to commit on the VM: {error}"))?;
     let input = commit_input(&name, &email, message, paths)?;
     hunt_ctl_with_input(ssh, &["commit", &id.to_string()], &input).await?;
-    let commit_ref = format!("refs/hunt/{id}/commit");
-    retrieve::fetch(worktree, ssh, &target.worktree_path.display().to_string(), &commit_ref).await?;
-    let commit = git::rev_parse(worktree, &commit_ref).await?;
+    Ok(())
+}
+
+/// Points the local branch of the remote session `id`, which its local worktree `worktree` has checked out, at the
+/// commit its worktree on the VM behind `ssh` has checked out, when that moved: fetches it as `refs/hunt/<id>/head` and
+/// moves branch and index (`follow`). Returns the new commit; `None` when the branch points there already.
+pub async fn follow_vm_head(ssh: &Ssh, id: Uuid, target: &RemoteTarget, worktree: &Path) -> Result<Option<String>, String> {
+    let remote_worktree = target.worktree_path.display().to_string();
+    let command = shell_command("sudo", &["-n", "-u", "agent", "git", "-C", &remote_worktree, "rev-parse", "--verify", "-q", "HEAD"]);
+    let remote_head = ssh.run(&command).await?.trim().to_string();
+    if remote_head == git::rev_parse(worktree, "HEAD").await? {
+        return Ok(None);
+    }
+    let head_ref = format!("refs/hunt/{id}/head");
+    retrieve::fetch_into(worktree, ssh, &remote_worktree, "HEAD", &head_ref).await?;
+    let commit = git::rev_parse(worktree, &head_ref).await?;
     follow(worktree, &target.branch, &target.handoff_head, &commit).await?;
-    Ok(commit)
+    Ok(Some(commit))
 }
 
 /// Pushes the branch the VM's worktree of the remote session `id` has checked out to its origin with the GitHub token
@@ -56,7 +66,7 @@ fn commit_input(name: &str, email: &str, message: &str, paths: &[String]) -> Res
 
 /// Points the local branch `branch`, which the worktree has checked out, at `commit`, fetched from the VM, and the index
 /// at its tree; the files stay, since the sync gave the worktree the VM's files already. Refuses when the branch points
-/// at a commit the VM does not have (`retrieve::vm_has`).
+/// at a commit the VM does not have (`retrieve::vm_has`): a commit made here.
 async fn follow(worktree: &Path, branch: &str, handoff_head: &str, commit: &str) -> Result<(), String> {
     let local_head = git::rev_parse(worktree, "HEAD").await?;
     if local_head == commit {
@@ -65,9 +75,9 @@ async fn follow(worktree: &Path, branch: &str, handoff_head: &str, commit: &str)
     if !retrieve::vm_has(worktree, &local_head, handoff_head, commit).await {
         let short = |commit: &str| commit.chars().take(10).collect::<String>();
         return Err(format!(
-            "the commit {} was made on the VM, but the branch {branch} here moved to {}, which the VM does not have, so it stays there. Keep that commit on another branch (`git branch <name>`) and reset {branch} with `git reset --keep {handoff_head}`; the next commit moves it.",
-            short(commit),
-            short(&local_head)
+            "the branch {branch} here moved to {}, which the VM does not have, so it does not follow the VM's commit {}. Keep that commit on another branch (`git branch <name>`) and reset {branch} with `git reset --keep {handoff_head}`; then it follows the VM again.",
+            short(&local_head),
+            short(commit)
         ));
     }
     retrieve::point_branch(worktree, commit, &local_head).await?;

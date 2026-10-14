@@ -373,7 +373,10 @@ the text Hunt sends on stdin (the selected lines), and starts the unit with the 
 unit is not enabled: Hunt starts it whenever it connects the sub chat, and it runs until the sub chat is deleted, the
 session comes back or the VM shuts down. `hunt-ctl stop` and `destroy` stop the sub chats' relays with the session's.
 Their transcripts live in the session's project folder, so bringing the session back brings them along, and the sub
-chats continue on this Mac. The sub chat's tool calls and turns trigger the session's file sync like the session's own.
+chats continue on this Mac. A handoff takes the sub chats along the same way: their local agents stop, their
+transcripts go to the VM with the session's and each gets its configuration in `hunt-subs/`, so its relay continues
+its conversation once the sub chat is opened again. While a sub chat runs a turn, the chat header offers neither the
+handoff nor bringing the session back, since either would cut the turn short. The sub chat's tool calls and turns trigger the session's file sync like the session's own.
 
 Every session has a VM of its own, which is the isolation boundary: the agent works there as the user `agent`, with
 Docker and Docker Compose, and starts the services of the repository's `hunt.json` its task needs. `libs/vm/hunt-ctl`

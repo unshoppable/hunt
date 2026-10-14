@@ -841,7 +841,7 @@ fn remote_system_prompt(base: &str, has_github_token: bool, services_prompt: &st
 #[tauri::command]
 pub async fn prepare_hand_off(app: AppHandle, id: Uuid, settings: VmSettings) -> Result<(), String> {
     let record = local_session(&app, id)?;
-    ensure_hand_off_allowed(&app, &record)?;
+    ensure_hand_off_allowed(&record)?;
     settings.validate()?;
     let prepared = async {
         let gateway = remote::gateway_vm(&settings).await?;
@@ -864,8 +864,9 @@ pub async fn prepare_hand_off(app: AppHandle, id: Uuid, settings: VmSettings) ->
 
 /// Moves the session `id` to a VM of its own, which the gateway of `settings` provisions: its agent stops here, its
 /// branch, uncommitted work, transcript and the ignored files matching `file_patterns` go to the VM, and the chat
-/// continues with the agent there. On failure the session stays local, its agent starts again and the VM stays for the
-/// next attempt.
+/// continues with the agent there. Its sub chats move along: their agents stop here, their transcripts go to the VM,
+/// and they continue there once they are opened. On failure the session stays local, its agent starts again and the VM
+/// stays for the next attempt.
 #[tauri::command]
 pub async fn hand_off_session(
     app: AppHandle,
@@ -877,7 +878,7 @@ pub async fn hand_off_session(
     file_patterns: Vec<String>,
 ) -> Result<SessionView, String> {
     let record = local_session(&app, id)?;
-    ensure_hand_off_allowed(&app, &record)?;
+    ensure_hand_off_allowed(&record)?;
     settings.validate()?;
     let claude_token = remote_claude_token(&app, "hand off the session").await?;
     let github_token = github_token::read().await?;
@@ -889,8 +890,33 @@ pub async fn hand_off_session(
         }
         Err(_) => (Vec::new(), None),
     };
+    // The sub chats move along. Their agents stop here, and their starts stay claimed until the handoff ended, so that
+    // opening one meanwhile waits and then connects to wherever the session runs by then.
+    let children: Vec<SessionRecord> = store::load_sessions(&app)?.into_iter().filter(|session| session.parent_id == Some(id)).collect();
+    let mut sub_sessions: Vec<remote::handoff::SubSessionMove> = Vec::new();
+    for child in &children {
+        let config_values = match live_session(&registry, child.id).await {
+            Ok(handles) => {
+                let history = handles.history.lock().unwrap();
+                shown_config_values(&history, &[MODEL_CONFIG_ID, EFFORT_CONFIG_ID])
+            }
+            Err(_) => Vec::new(),
+        };
+        stop_agent_and_wait(&app, &registry, &watchers, &permissions, child.id).await;
+        if !registry.claim_start(child.id).await {
+            end_starts(&registry, sub_sessions.iter().map(|sub| sub.hunt_session_id)).await;
+            return Err("failed to hand off the session: one of its sub chats was started again meanwhile".into());
+        }
+        sub_sessions.push(remote::handoff::SubSessionMove {
+            hunt_session_id: child.id,
+            acp_session_id: child.acp_session_id.clone(),
+            context_prompt: child.selection.as_ref().map(SelectionContext::to_system_prompt),
+            config_values,
+        });
+    }
     stop_agent_and_wait(&app, &registry, &watchers, &permissions, id).await;
     if !registry.claim_start(id).await {
+        end_starts(&registry, sub_sessions.iter().map(|sub| sub.hunt_session_id)).await;
         return Err("failed to hand off the session: its agent was started again meanwhile".into());
     }
 
@@ -922,6 +948,7 @@ pub async fn hand_off_session(
             config_values: &config_values,
             token_input: &token_input,
             local_mode: local_mode.as_deref(),
+            sub_sessions: &sub_sessions,
         };
         remote::handoff::hand_off(request, &progress_reporter(&app, id)).await
     }
@@ -955,15 +982,23 @@ pub async fn hand_off_session(
         }
     };
     registry.end_start(id).await;
+    // The sub chats connect when they are opened next: on the VM, or here after a failed handoff.
+    end_starts(&registry, sub_sessions.iter().map(|sub| sub.hunt_session_id)).await;
     finish_progress(&app, id);
     announce_sessions_changed(&app);
     activated
 }
 
-/// Rejects sessions that cannot run on a VM yet: sub sessions and sessions with sub sessions (they share one worktree),
-/// sessions in the repository's own checkout, and pull request reviews; and every handoff while sessions of an older
-/// Hunt still run on the gateway.
-fn ensure_hand_off_allowed(app: &AppHandle, record: &SessionRecord) -> Result<(), String> {
+/// Gives back the starts of the agents of `ids` claimed with `SessionRegistry::claim_start`.
+async fn end_starts(registry: &SessionRegistry, ids: impl Iterator<Item = Uuid>) {
+    for id in ids {
+        registry.end_start(id).await;
+    }
+}
+
+/// Rejects sessions that cannot run on a VM: sub sessions, which run where their parent runs and move with it, sessions
+/// in the repository's own checkout, and pull request reviews.
+fn ensure_hand_off_allowed(record: &SessionRecord) -> Result<(), String> {
     if record.parent_id.is_some() {
         return Err("failed to hand off the session: a sub session runs where its parent runs".into());
     }
@@ -972,10 +1007,6 @@ fn ensure_hand_off_allowed(app: &AppHandle, record: &SessionRecord) -> Result<()
     }
     if record.pull_request.is_some() {
         return Err("failed to hand off the session: pull request reviews stay local".into());
-    }
-    let sessions = store::load_sessions(app)?;
-    if sessions.iter().any(|session| session.parent_id == Some(record.id)) {
-        return Err("failed to hand off the session: close its sub sessions first".into());
     }
     Ok(())
 }

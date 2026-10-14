@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useIdeStore } from "../ide/ideStore";
+import { useBusyChatIds } from "../ide/selectionChats";
 import { useAccountsStore } from "../state/accounts";
 import { configuredVmSettings, useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
-import { SECONDARY_BUTTON_MD } from "../ui/buttons";
+import { BUTTON_MD, SECONDARY_BUTTON_MD } from "../ui/buttons";
 import { CloudIcon } from "../ui/icons";
 import { useDismiss } from "../ui/useDismiss";
 import { confirmVmLoss } from "../sessions/confirmVmLoss";
 import { isAdopted } from "../sessions/remoteOrigin";
-import { fileSyncLabel, handOffBlocker, retrieveBlocker } from "./remoteSession";
+import { fileSyncLabel, handOffBlocker, hasBusySubChat, remoteOf, retrieveBlocker } from "./remoteSession";
 
 const MENU_ITEM = "block w-full rounded px-2 py-1 text-left enabled:hover:bg-(--row-hover) disabled:opacity-40";
 
@@ -17,9 +18,10 @@ const SYNC_LABEL_DELAY_MS = 800;
 
 /**
  * Chat header button of the session's place: hands a local session off to a VM of its own, created from the settings,
- * or brings a remote one back, which deletes its VM; an adopted session asks first, since others may work on it. Next to
- * it, a remote session shows the state of its file sync. Hidden while the remote settings are incomplete and the session
- * runs locally.
+ * together with its sub chats, or brings a remote one back, which deletes its VM; an adopted session asks first, since
+ * others may work on it. Next to it, a remote session shows the state of its file sync. Hidden while the remote settings
+ * are incomplete and the session runs locally. A sub chat moves only with its session: it shows where it runs while
+ * that is the session's VM, and nothing otherwise.
  */
 export function RemoteMenu({ sessionId }: { sessionId: string }) {
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
@@ -32,6 +34,7 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
   const remoteSettings = useSettingsStore((state) => state.remote);
   const hasUnsavedEdits = useIdeStore((state) => (state.sessions[sessionId]?.dirtyPaths.length ?? 0) > 0);
   const hasClaudeAccount = useAccountsStore((state) => Boolean(state.accounts?.activeId));
+  const busyChatIds = useBusyChatIds();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isSyncSlow, setIsSyncSlow] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -49,10 +52,21 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
   }, [isSyncRunning]);
 
   const vmSettings = configuredVmSettings(remoteSettings);
-  if (!session || (!vmSettings && !session.remote)) return null;
+  if (!session) return null;
+  if (session.parentId) {
+    const vm = remoteOf(session, sessions)?.vm;
+    return vm ? (
+      <span title={`Runs on the VM ${vm.instance} with its session`} className={`${BUTTON_MD} border border-white/10 bg-white/4 text-sky-300`}>
+        <CloudIcon className="size-4" />
+        On VM
+      </span>
+    ) : null;
+  }
+  if (!vmSettings && !session.remote) return null;
   const isRemote = Boolean(session.remote);
   const isRunning = Boolean(chat?.remoteStep) || Boolean(chat?.isLoading) || Boolean(chat?.move);
-  const blocker = isRemote ? retrieveBlocker(session, { hasUnsavedEdits }) : handOffBlocker(session, sessions, { hasUnsavedEdits, hasClaudeAccount });
+  const context = { hasUnsavedEdits, hasClaudeAccount, hasBusySubChat: hasBusySubChat(session, sessions, busyChatIds) };
+  const blocker = isRemote ? retrieveBlocker(session, context) : handOffBlocker(session, context);
   const previewDomain = session.remote?.previewDomain ?? null;
   const instance = session.remote?.vm.instance ?? "";
   const syncLabel = isRemote && chat ? fileSyncLabel(chat.fileSync, isSyncSlow, formatSyncTime) : null;

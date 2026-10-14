@@ -68,35 +68,51 @@ export function remoteOf(session: SessionView, sessions: SessionView[]): RemoteT
   return sessions.find((candidate) => candidate.id === session.parentId)?.remote ?? null;
 }
 
-/** What else decides whether a session can move: the editor's unsaved edits and the selected Claude account. */
-export type HandOffContext = { hasUnsavedEdits: boolean; hasClaudeAccount: boolean };
+/**
+ * What else decides whether a session can move: the editor's unsaved edits, the selected Claude account and whether one
+ * of its sub chats runs a turn.
+ */
+export type HandOffContext = { hasUnsavedEdits: boolean; hasClaudeAccount: boolean; hasBusySubChat: boolean };
 
 /**
  * Why `session` cannot be handed off to the VM right now, or `null` when it can. Only a top-level session in a worktree
- * of its own without sub sessions moves, with a Claude account selected (the local login stays on this Mac) and no
- * unsaved edits in its editor. A running turn does not block it: the handoff waits for its end (see `handOffSession`).
+ * of its own moves, with a Claude account selected (the local login stays on this Mac), no unsaved edits in its editor
+ * and no sub chat running a turn: its sub chats move along, and moving stops their agents, which would cut a turn
+ * short. The session's own running turn does not block it: the handoff waits for its end (see `handOffSession`).
  */
-export function handOffBlocker(session: SessionView, sessions: SessionView[], context: HandOffContext): string | null {
+export function handOffBlocker(session: SessionView, context: HandOffContext): string | null {
   if (session.parentId) return "A sub session runs where its parent runs.";
   if (session.workspace !== "worktree") return "Sessions in the repository's own checkout stay local.";
   if (session.pullRequest) return "Pull request reviews stay local.";
-  if (sessions.some((candidate) => candidate.parentId === session.id)) return "Close its sub sessions first.";
   if (!context.hasClaudeAccount) return "Pick a Claude account in the sidebar first; the local login cannot run on the VM.";
   if (context.hasUnsavedEdits) return "Save or discard the unsaved edits in the editor first.";
+  if (context.hasBusySubChat) return "Wait until its sub chats finished their turns.";
   return null;
 }
 
-/** What else decides whether a remote session can come back: the editor's unsaved edits, which the last sync would miss. */
-export type RetrieveContext = { hasUnsavedEdits: boolean };
+/**
+ * What else decides whether a remote session can come back: the editor's unsaved edits, which the last sync would miss,
+ * and whether one of its sub chats runs a turn.
+ */
+export type RetrieveContext = { hasUnsavedEdits: boolean; hasBusySubChat: boolean };
 
 /**
  * Why the remote `session` cannot be brought back right now, or `null` when it can: an adopted session needs a local
- * checkout of its repository, and the editor no unsaved edits. A running turn does not block it: the retrieval waits
- * for its end.
+ * checkout of its repository, the editor no unsaved edits, and no sub chat may run a turn, since its relay on the VM
+ * stops with the session's and its conversation comes back along. The session's own running turn does not block it:
+ * the retrieval waits for its end.
  */
 export function retrieveBlocker(session: SessionView, context: RetrieveContext): string | null {
-  if (context.hasUnsavedEdits) return missingCheckoutBlocker(session) ?? "Save or discard the unsaved edits in the editor first.";
-  return missingCheckoutBlocker(session);
+  const missingCheckout = missingCheckoutBlocker(session);
+  if (missingCheckout) return missingCheckout;
+  if (context.hasUnsavedEdits) return "Save or discard the unsaved edits in the editor first.";
+  if (context.hasBusySubChat) return "Wait until its sub chats finished their turns.";
+  return null;
+}
+
+/** Whether a sub chat of `session` runs a turn, given the ids of the busy chats (`useBusyChatIds`). */
+export function hasBusySubChat(session: SessionView, sessions: SessionView[], busyChatIds: ReadonlySet<string>): boolean {
+  return sessions.some((candidate) => candidate.parentId === session.id && busyChatIds.has(candidate.id));
 }
 
 /**

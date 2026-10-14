@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RemoteStep, SessionView } from "../ipc/types";
 import { createEmptyChat } from "../state/store";
-import { fileSyncLabel, formatElapsed, handOffBlocker, moveStatus, remoteOf, remotePosition, retrieveBlocker } from "./remoteSession";
+import { fileSyncLabel, formatElapsed, handOffBlocker, hasBusySubChat, moveStatus, remoteOf, remotePosition, retrieveBlocker } from "./remoteSession";
 
 function session(id: string, patch: Partial<SessionView> = {}): SessionView {
   return {
@@ -33,32 +33,30 @@ function session(id: string, patch: Partial<SessionView> = {}): SessionView {
   };
 }
 
-/** Nothing unsaved and a Claude account selected. */
-const READY = { hasUnsavedEdits: false, hasClaudeAccount: true };
+/** Nothing unsaved, a Claude account selected and no sub chat running a turn. */
+const READY = { hasUnsavedEdits: false, hasClaudeAccount: true, hasBusySubChat: false };
 
 describe("handOffBlocker", () => {
-  it("lets an idle top-level session in its own worktree go", () => {
-    const top = session("top");
-    expect(handOffBlocker(top, [top], READY)).toBeNull();
+  it("lets an idle top-level session in its own worktree go, with its sub chats", () => {
+    expect(handOffBlocker(session("top"), READY)).toBeNull();
   });
 
-  it("keeps sub sessions, checkout sessions, reviews and parents of sub sessions local", () => {
-    const top = session("top");
-    const sub = session("sub", { parentId: "top" });
-    expect(handOffBlocker(sub, [top, sub], READY)).toMatch(/parent/);
-    expect(handOffBlocker(top, [top, sub], READY)).toMatch(/sub sessions/);
-    expect(handOffBlocker(session("c", { workspace: "checkout" }), [], READY)).toMatch(/checkout/);
-    expect(handOffBlocker(session("r", { pullRequest: { number: 1, url: "https://github.com/o/r/pull/1" } }), [], READY)).toMatch(/review/);
+  it("keeps sub sessions, checkout sessions and reviews local", () => {
+    expect(handOffBlocker(session("sub", { parentId: "top" }), READY)).toMatch(/parent/);
+    expect(handOffBlocker(session("c", { workspace: "checkout" }), READY)).toMatch(/checkout/);
+    expect(handOffBlocker(session("r", { pullRequest: { number: 1, url: "https://github.com/o/r/pull/1" } }), READY)).toMatch(/review/);
   });
 
   it("needs a Claude account, since the local login stays on this Mac", () => {
-    const top = session("top");
-    expect(handOffBlocker(top, [top], { ...READY, hasClaudeAccount: false })).toMatch(/Claude account/);
+    expect(handOffBlocker(session("top"), { ...READY, hasClaudeAccount: false })).toMatch(/Claude account/);
   });
 
   it("waits for unsaved edits in the editor", () => {
-    const top = session("top");
-    expect(handOffBlocker(top, [top], { ...READY, hasUnsavedEdits: true })).toMatch(/unsaved/);
+    expect(handOffBlocker(session("top"), { ...READY, hasUnsavedEdits: true })).toMatch(/unsaved/);
+  });
+
+  it("waits until no sub chat runs a turn, since moving stops their agents", () => {
+    expect(handOffBlocker(session("top"), { ...READY, hasBusySubChat: true })).toMatch(/sub chats finished/);
   });
 });
 
@@ -95,12 +93,25 @@ describe("remoteOf", () => {
   });
 });
 
+describe("hasBusySubChat", () => {
+  it("looks at the session's own sub chats only", () => {
+    const top = session("top");
+    const sessions = [top, session("sub", { parentId: "top" }), session("other"), session("otherSub", { parentId: "other" })];
+    expect(hasBusySubChat(top, sessions, new Set(["sub"]))).toBe(true);
+    expect(hasBusySubChat(top, sessions, new Set(["top", "otherSub"]))).toBe(false);
+  });
+});
+
 describe("retrieveBlocker", () => {
-  const saved = { hasUnsavedEdits: false };
+  const saved = { hasUnsavedEdits: false, hasBusySubChat: false };
 
   it("lets a session with a local checkout come back once the editor saved its edits", () => {
     expect(retrieveBlocker(session("top", { remote }), saved)).toBeNull();
-    expect(retrieveBlocker(session("top", { remote }), { hasUnsavedEdits: true })).toMatch(/unsaved edits/);
+    expect(retrieveBlocker(session("top", { remote }), { ...saved, hasUnsavedEdits: true })).toMatch(/unsaved edits/);
+  });
+
+  it("waits until no sub chat runs a turn, since their relays stop with the session's", () => {
+    expect(retrieveBlocker(session("top", { remote }), { ...saved, hasBusySubChat: true })).toMatch(/sub chats finished/);
   });
 
   it("needs a local checkout for an adopted session", () => {

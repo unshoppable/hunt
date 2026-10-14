@@ -83,9 +83,10 @@ pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> R
 
 /// Refuses a retrieval after which the local worktree would not hold the files of the VM's snapshot `retrieve_ref`:
 /// `local_tree` (the local worktree after the last sync, with this Mac's ignore rules) is compared with it. The files
-/// only the VM has that this Mac ignores (its global excludes, files the agent added with `-f`) are brought here, and the
-/// files only this Mac has that the VM ignores stay; anything else that differs is named with the ignore rules that
-/// apply. Nothing moved then.
+/// only the VM has that this Mac ignores (its global excludes, files the agent added with `-f`) are brought here once
+/// nothing else blocks, and only where this Mac has no file of that name or the same one; the files only this Mac has
+/// that the VM ignores stay. Anything else that differs is named with the ignore rules that apply, and nothing moved
+/// then.
 async fn ensure_same_files(worktree: &Path, ssh: &Ssh, remote_worktree: &str, local_tree: &str, retrieve_ref: &str) -> Result<(), String> {
     let ignore_case = git::ignores_case(worktree).await;
     let retrieve_tree = git::rev_parse(worktree, &format!("{retrieve_ref}^{{tree}}")).await?;
@@ -100,12 +101,22 @@ async fn ensure_same_files(worktree: &Path, ssh: &Ssh, remote_worktree: &str, lo
     let ignored_here: Vec<&String> = changes.iter().filter(is_ignored_here).map(|(path, _)| path).collect();
     let links = link_paths(worktree, &retrieve_tree).await?;
     let (links, files): (Vec<String>, Vec<String>) = ignored_here.into_iter().cloned().partition(|path| links.contains(path));
-    let (placed, problems) = sync::fetch(ssh, worktree, remote_worktree, &files, &links, ignore_case).await;
-    let blocking = blocking_changes(&changes, &placed, &rules_there);
+    let fetched = sync::stage_fetch(ssh, worktree, remote_worktree, &files, &links).await;
+    let mut problems = fetched.problems.clone();
+    problems.extend(fetched.differing.iter().map(|path| format!("{path}: this Mac has its own version, which stays")));
+    let brought: Vec<String> = fetched.new.iter().chain(&fetched.same).cloned().collect();
+    let blocking = blocking_changes(&changes, &brought, &rules_there);
+    if !blocking.is_empty() {
+        sync::clear_staging(worktree);
+        return Err(blocking_message(&blocking, &rules_here, &rules_there, &problems, &[]));
+    }
+    let (placed, problems) = sync::place_fetched(worktree, &fetched, ignore_case);
+    let brought: Vec<String> = placed.iter().chain(&fetched.same).cloned().collect();
+    let blocking = blocking_changes(&changes, &brought, &rules_there);
     if blocking.is_empty() {
         return Ok(());
     }
-    Err(blocking_message(&blocking, &rules_here, &rules_there, &problems))
+    Err(blocking_message(&blocking, &rules_here, &rules_there, &problems, &placed))
 }
 
 /// The changes between the local worktree and the VM's snapshot that block a retrieval: all but the files only the VM
@@ -126,12 +137,13 @@ pub(crate) fn blocking_changes<'a>(
 }
 
 /// What a refused retrieval tells: each differing file, on which side it is, the ignore rules that keep it from syncing,
-/// and the files that could not be brought here.
+/// the files that could not be brought here, and the ignored files it did bring (`moved`), the only change it made.
 pub(crate) fn blocking_message(
     blocking: &[&(String, TreeChange)],
     rules_here: &BTreeMap<String, String>,
     rules_there: &BTreeMap<String, String>,
     problems: &[String],
+    moved: &[String],
 ) -> String {
     let describe = |(path, change): &(String, TreeChange)| {
         let side = match change {
@@ -153,8 +165,12 @@ pub(crate) fn blocking_message(
     let more = blocking.len().saturating_sub(shown.len());
     let more = if more > 0 { format!(" and {more} more") } else { String::new() };
     let problems = if problems.is_empty() { String::new() } else { format!(" Could not be brought here: {}.", problems.join("; ")) };
+    let moved = match moved {
+        [] => "Nothing was moved.".to_string(),
+        moved => format!("Only these files this Mac ignores were brought here: {}; nothing else was moved.", moved.join(", ")),
+    };
     format!(
-        "failed to retrieve the session: after the last sync these files still differ between here and the VM: {}{more}.{problems} A file that only one side ignores does not sync: change that ignore rule, or remove or commit the file on the side that has it, then bring the session back again. Nothing was moved.",
+        "failed to retrieve the session: after the last sync these files still differ between here and the VM: {}{more}.{problems} A file that only one side ignores does not sync: change that ignore rule, or remove or commit the file on the side that has it, then bring the session back again. {moved}",
         shown.join(", ")
     )
 }
@@ -667,7 +683,7 @@ mod tests {
         let local_tree = git::worktree_tree(local).await.unwrap();
         let changes = git::tree_changes(local, &local_tree, &retrieve_tree, false).await.unwrap();
         let blocking = blocking_changes(&changes, &[], &BTreeMap::new());
-        let refused = blocking_message(&blocking, &BTreeMap::new(), &BTreeMap::new(), &[]);
+        let refused = blocking_message(&blocking, &BTreeMap::new(), &BTreeMap::new(), &[], &[]);
         assert!(refused.contains("still differ between here and the VM: late.txt (different on the VM)."), "{refused}");
         assert!(refused.contains("Nothing was moved"));
         assert_eq!(git(local, &["rev-parse", "HEAD"]).await, handoff_head);
@@ -703,10 +719,12 @@ mod tests {
 
         let blocking = blocking_changes(&changes, &[], &rules_there);
         let problems = [".vscode/settings.json: not placed here, since .vscode is a link".to_string()];
-        let message = blocking_message(&blocking, &rules_here, &rules_there, &problems);
+        let message = blocking_message(&blocking, &rules_here, &rules_there, &problems, &[]);
         assert!(message.contains(".vscode/settings.json (only on the VM; ignored here by /Users/jane/.config/git/ignore:1:.vscode/)"), "{message}");
         assert!(message.contains("app.env (only here)") && message.contains("Could not be brought here: .vscode/settings.json"));
-        assert!(!message.contains("build.log"));
+        assert!(!message.contains("build.log") && message.ends_with("Nothing was moved."));
+        let moved = blocking_message(&blocking, &rules_here, &rules_there, &[], &["debug/trace.txt".to_string()]);
+        assert!(moved.ends_with("Only these files this Mac ignores were brought here: debug/trace.txt; nothing else was moved."), "{moved}");
     }
 
     #[tokio::test]

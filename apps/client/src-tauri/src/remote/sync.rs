@@ -5,18 +5,20 @@
 //! so a difference tells which side changed a file: a file changed here goes to the VM, also when the agent changed it
 //! too (the local version wins); a file changed only on the VM comes here; deletions follow the same rule. A file whose
 //! content did not change (same blob as at the last sync) counts as unchanged, and two files of equal size,
-//! modification second and mode count as in sync. A file without a manifest entry (before the first sync, or after it
-//! was left alone for a while) is a local edit only when it differs from the snapshot both sides started from (the
-//! handoff's, or the adoption's); otherwise the VM's version wins.
+//! modification second and mode count as in sync. Before the first sync, a file is a local edit only when it differs from
+//! the snapshot both sides started from (the handoff's, or the adoption's); otherwise the VM's version wins. Later, a
+//! file without a manifest entry is a local edit only when it exists here in another state than when the sync left it
+//! alone.
 //!
 //! A file present on a side without being listed there (other ignore rules on the Mac and the VM) is never touched. On
 //! a case-insensitive Mac (`core.ignorecase`) paths are compared ignoring case, the VM's spelling wins, and two VM files
 //! whose names differ only in case are reported instead of synced. rsync moves the content over the session's SSH
 //! connection as the VM's `agent` user; links go to the VM as their text, since openrsync stops at a link it cannot
 //! follow. Files from the VM land in a staging folder first (links last, so that nothing lands below one) and replace a
-//! local file only while it is unchanged since the listing, never below a local link and never as a link that points
-//! outside the worktree. Whatever completed is recorded even when a later step fails, and a file that cannot move (a
-//! folder on the other side) is reported without failing the rest. Knows nothing about Tauri.
+//! local file only while it is unchanged since the listing, never below a local link and never as a link that is
+//! absolute or climbs out of a folder it entered (`a/..`), which could lead outside the worktree through other links.
+//! Whatever completed is recorded even when a later step fails, and a file that cannot move (a folder on the other
+//! side) is reported without failing the rest. Knows nothing about Tauri.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -171,8 +173,8 @@ pub struct Entry {
 pub struct Inputs<'a> {
     /// The state after the last sync; `None` before the first one.
     pub manifest: Option<&'a Manifest>,
-    /// Keys of the paths in which the local worktree differs from the snapshot both sides started from; they decide
-    /// for files without a manifest entry. Without them every local file without an entry counts as a local edit.
+    /// Before the first sync: keys of the paths in which the local worktree differs from the snapshot both sides started
+    /// from. Without them every local file counts as a local edit.
     pub edits: Option<&'a BTreeSet<String>>,
     pub local: &'a Listing,
     pub remote: &'a Listing,
@@ -240,6 +242,9 @@ pub struct Applied {
     pub remote: BTreeMap<String, Option<Entry>>,
     /// Keys whose change did not complete; they keep their manifest entry, so the next sync tries again.
     pub kept: BTreeSet<String>,
+    /// Local files a pull or a deletion here did not reach, still as listed: without a manifest entry they are noted
+    /// as left alone, so that the next sync does not take them for local edits. A kept send is never here.
+    pub untouched: BTreeMap<String, Entry>,
     /// The content of the files that moved, by key.
     pub blobs: BTreeMap<String, String>,
 }
@@ -274,6 +279,8 @@ pub fn plan(inputs: &Inputs<'_>) -> Plan {
     let local = by_key(inputs.local, keys, &mut plan.collisions, "here");
     let remote = by_key(inputs.remote, keys, &mut plan.collisions, "on the VM");
     let synced = inputs.manifest.map(|manifest| manifest_by_key(manifest, keys)).unwrap_or_default();
+    let skipped: BTreeMap<String, FileState> =
+        inputs.manifest.iter().flat_map(|manifest| &manifest.skipped).map(|(path, state)| (keys.of(path), *state)).collect();
     let all: BTreeSet<&String> = local.keys().chain(remote.keys()).chain(synced.keys()).collect();
     for key in all {
         if inputs.unlisted.contains(key) || plan.collisions.contains_key(key) {
@@ -286,14 +293,17 @@ pub fn plan(inputs: &Inputs<'_>) -> Plan {
                 continue;
             }
         }
-        let (changed_here, changed_there) = match last {
-            Some((_, file)) => {
+        let (changed_here, changed_there) = match (last, inputs.manifest) {
+            (Some((_, file)), _) => {
                 let changed_here = here.is_none_or(|here| here.state != file.local && !inputs.same_content.contains(&here.path));
                 let changed_there = there.is_none_or(|there| there.state != file.remote || renamed_there);
                 (changed_here, changed_there)
             }
-            // Without an entry, a file is a local edit only when it differs from the snapshot; else the VM's version wins.
-            None => (inputs.edits.map_or(here.is_some(), |edits| edits.contains(key)), true),
+            // Before the first sync, a file is a local edit only when it differs from the snapshot.
+            (None, None) => (inputs.edits.map_or(here.is_some(), |edits| edits.contains(key)), true),
+            // A file without an entry that is missing here was never made here; one that is here is a local edit unless
+            // it is as the sync left it alone. Only a file the VM has can come here: one that never synced stays.
+            (None, Some(_)) => (here.is_some_and(|here| skipped.get(key) != Some(&here.state)), there.is_some()),
         };
         if changed_here {
             match (here, there) {
@@ -317,7 +327,10 @@ pub fn plan(inputs: &Inputs<'_>) -> Plan {
 
 /// The manifest after a sync that compared `local` and `remote` and completed what `applied` holds: an entry per key
 /// both sides have, with the VM's path. Unlisted keys lose their entry, kept and colliding keys keep the old one, and
-/// the local files of all of them are noted as left alone with their listed state.
+/// the local files of unlisted and colliding keys are noted as left alone with their listed state. A kept key without
+/// an entry is noted too when a pull or a deletion here did not reach its unchanged local file (`applied.untouched`), or
+/// when it was noted before and is still in that state; a kept send is not, so that it counts as a local change until
+/// it moved.
 pub fn next_manifest(
     base: Option<&Manifest>,
     local: &Listing,
@@ -344,6 +357,8 @@ pub fn next_manifest(
         };
     }
     let previous = base.map(|manifest| manifest_by_key(manifest, keys)).unwrap_or_default();
+    let previously_skipped: BTreeMap<String, FileState> =
+        base.iter().flat_map(|manifest| &manifest.skipped).map(|(path, state)| (keys.of(path), *state)).collect();
     let all: BTreeSet<String> = here.keys().chain(there.keys()).chain(previous.keys()).chain(ignored.keys()).cloned().collect();
     let mut next = Manifest::default();
     let skip = |key: &str, next: &mut Manifest| {
@@ -359,8 +374,14 @@ pub fn next_manifest(
         if applied.kept.contains(&key) || ignored.contains_key(&key) {
             if let Some((path, file)) = previous.get(&key) {
                 next.files.insert((*path).clone(), (*file).clone());
+            } else if let Some(entry) = applied.untouched.get(&key) {
+                next.skipped.insert(entry.path.clone(), entry.state);
+            } else if let Some(entry) = listed_here.get(&key).filter(|entry| previously_skipped.get(&key) == Some(&entry.state)) {
+                next.skipped.insert(entry.path.clone(), entry.state);
             }
-            skip(&key, &mut next);
+            if ignored.contains_key(&key) {
+                skip(&key, &mut next);
+            }
             continue;
         }
         let (Some(local_file), Some(remote_file)) = (here.get(&key), there.get(&key)) else { continue };
@@ -387,10 +408,10 @@ pub async fn sync(target: &SyncTarget<'_>, ssh: &Ssh) -> Result<Outcome, String>
     let asked: BTreeSet<&str> = local.keys().chain(synced_paths).map(String::as_str).collect();
     let (remote, remote_unlisted) = list_remote(ssh, target.remote, &asked).await?;
     let unlisted = unlisted_keys(target.local, &local, &remote, &remote_unlisted, manifest.as_ref(), keys);
-    // Only local files without an entry need the snapshot; a file the VM adds comes here whatever it says.
-    let synced = manifest.as_ref().map(|manifest| manifest_by_key(manifest, keys)).unwrap_or_default();
-    let needs_edits = local.keys().map(|path| keys.of(path)).any(|key| !synced.contains_key(&key) && !unlisted.contains(&key));
-    let edits = if needs_edits { Some(local_edits(target.local, target.base_ref, keys).await?) } else { None };
+    let edits = match manifest {
+        Some(_) => None,
+        None => Some(local_edits(target.local, target.base_ref, keys).await?),
+    };
     let same_content = match &manifest {
         Some(manifest) => unchanged_content(target.local, manifest, &local, keys).await,
         None => BTreeSet::new(),
@@ -531,7 +552,7 @@ impl Run<'_> {
             let key = self.keys.of(path);
             let listed = self.listed_here(&key).map(|(_, state)| state);
             if let Some(link) = linked_parent(self.target.local, path) {
-                self.applied.kept.insert(key);
+                self.keep_untouched(&key);
                 self.outcome.conflicts.push(format!("{path}: not deleted here, since {link} is a link"));
                 continue;
             }
@@ -542,7 +563,7 @@ impl Run<'_> {
             }
             match std::fs::remove_file(self.target.local.join(path)) {
                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                    self.applied.kept.insert(key);
+                    self.keep_untouched(&key);
                     self.outcome.conflicts.push(format!("{path}: could not be deleted here: {error}"));
                 }
                 _ => {
@@ -567,20 +588,34 @@ impl Run<'_> {
         if let Err(error) = &brought {
             self.fail(error.clone());
         }
+        self.move_in_all(&staging, paths, &brought);
+        clear_staging(self.target.local);
+    }
+
+    /// Moves the staged `paths` in (see `move_in`); a path that does not move is kept, its local file noted as untouched
+    /// while it is as listed.
+    fn move_in_all(&mut self, staging: &Path, paths: &[String], brought: &Result<Vec<String>, String>) {
         for path in paths {
             let key = self.keys.of(path);
-            match self.move_in(&staging, path, &key) {
+            match self.move_in(staging, path, &key) {
                 Ok(true) => self.outcome.pulled += 1,
-                Ok(false) => {
-                    self.applied.kept.insert(key);
-                }
+                Ok(false) => self.keep_untouched(&key),
                 Err(problem) => {
-                    self.applied.kept.insert(key);
-                    self.outcome.conflicts.push(format!("{path}: {problem}{}", reason(&brought, path)));
+                    self.keep_untouched(&key);
+                    self.outcome.conflicts.push(format!("{path}: {problem}{}", reason(brought, path)));
                 }
             }
         }
-        clear_staging(self.target.local);
+    }
+
+    /// Keeps `key` for the next sync after a change here did not reach its local file; the file is noted as untouched
+    /// while it still has its listed state.
+    fn keep_untouched(&mut self, key: &str) {
+        self.applied.kept.insert(key.to_string());
+        let Some((path, listed)) = self.listed_here(key).map(|(path, state)| (path.clone(), state)) else { return };
+        if local_state(self.target.local, &path) == Some(listed) {
+            self.applied.untouched.insert(key.to_string(), Entry { path, state: listed });
+        }
     }
 
     /// Moves the staged `path` in; false when the VM or the local file changed meanwhile, which the next sync handles.
@@ -624,12 +659,14 @@ impl Run<'_> {
         }
         let files: Vec<(String, FileState)> = expected.iter().map(|(_, path, state, _)| (path.clone(), *state)).collect();
         let ids = content_ids(self.target.local, &files).await;
-        for (key, path, _, is_sent) in expected {
+        for (key, path, state, is_sent) in expected {
             match ids.get(&path) {
                 Some(id) => {
                     self.applied.blobs.insert(key, id.clone());
                 }
-                None if is_sent => {
+                // Changed since the listing: the next sync sends the newest version. A file that only could not be
+                // hashed is recorded without its content.
+                None if is_sent && local_state(self.target.local, &path) != Some(state) => {
                     self.applied.kept.insert(key);
                 }
                 None => {}
@@ -664,26 +701,48 @@ async fn stage(ssh: &Ssh, local: &Path, remote: &str, staging: &Path, files: &[S
     Ok(lines)
 }
 
-/// Brings `files` and `links` from the worktree `remote` on the VM into the local worktree `local` as a sync does
-/// (staged, never below a local link, no link that points outside), whatever is there; for the files only the VM lists
-/// that the Mac ignores. Returns the paths it placed and a line per path it could not.
-pub async fn fetch(
-    ssh: &Ssh,
-    local: &Path,
-    remote: &str,
-    files: &[String],
-    links: &[String],
-    ignore_case: bool,
-) -> (Vec<String>, Vec<String>) {
+/// What `stage_fetch` brought into the staging folder, by what this Mac has at each path.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Fetched {
+    /// Nothing here yet.
+    pub new: Vec<String>,
+    /// The same file here already.
+    pub same: Vec<String>,
+    /// Another version here (or a folder), which stays.
+    pub differing: Vec<String>,
+    /// A line per path that could not be brought from the VM.
+    pub problems: Vec<String>,
+}
+
+/// Brings `files` and `links` from the worktree `remote` on the VM into the staging folder of the local worktree
+/// `local` and compares each with what is there here; for the files only the VM lists that the Mac ignores. Nothing
+/// outside the staging folder changes until `place_fetched`.
+pub async fn stage_fetch(ssh: &Ssh, local: &Path, remote: &str, files: &[String], links: &[String]) -> Fetched {
     let staging = local.join(STAGING_DIR);
     let brought = stage(ssh, local, remote, &staging, files, links).await;
-    let mut placed = Vec::new();
-    let mut problems = Vec::new();
+    let mut fetched = Fetched::default();
     for path in files.iter().chain(links) {
         if std::fs::symlink_metadata(staging.join(path)).is_err() {
-            problems.push(format!("{path}: could not be brought from the VM{}", reason(&brought, path)));
-            continue;
+            fetched.problems.push(format!("{path}: could not be brought from the VM{}", reason(&brought, path)));
+        } else if std::fs::symlink_metadata(local.join(path)).is_err() {
+            fetched.new.push(path.clone());
+        } else if is_same_file(&staging.join(path), &local.join(path)) {
+            fetched.same.push(path.clone());
+        } else {
+            fetched.differing.push(path.clone());
         }
+    }
+    fetched
+}
+
+/// Moves the new files of `fetched` from the staging folder into the local worktree `local` as a sync does (never below
+/// a local link, no link that could lead outside) and clears the staging folder. Returns the paths it placed and a line
+/// per path it could not.
+pub fn place_fetched(local: &Path, fetched: &Fetched, ignore_case: bool) -> (Vec<String>, Vec<String>) {
+    let staging = local.join(STAGING_DIR);
+    let mut placed = Vec::new();
+    let mut problems = Vec::new();
+    for path in &fetched.new {
         match place(local, &staging, path, ignore_case) {
             Ok(()) => placed.push(path.clone()),
             Err(problem) => problems.push(format!("{path}: {problem}")),
@@ -691,6 +750,19 @@ pub async fn fetch(
     }
     clear_staging(local);
     (placed, problems)
+}
+
+/// Whether `left` and `right` are the same link or regular files with the same content.
+fn is_same_file(left: &Path, right: &Path) -> bool {
+    let (Ok(left_metadata), Ok(right_metadata)) = (std::fs::symlink_metadata(left), std::fs::symlink_metadata(right)) else { return false };
+    let (left_type, right_type) = (left_metadata.file_type(), right_metadata.file_type());
+    if left_type.is_symlink() && right_type.is_symlink() {
+        return std::fs::read_link(left).ok() == std::fs::read_link(right).ok();
+    }
+    if !left_type.is_file() || !right_type.is_file() || left_metadata.len() != right_metadata.len() {
+        return false;
+    }
+    matches!((std::fs::read(left), std::fs::read(right)), (Ok(left), Ok(right)) if left == right)
 }
 
 /// Removes the staging folder of the local worktree `local`, also what a sync cut short left there.
@@ -707,8 +779,8 @@ fn place(worktree: &Path, staging: &Path, path: &str, ignore_case: bool) -> Resu
     let staged = staging.join(path);
     if std::fs::symlink_metadata(&staged).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         let target = std::fs::read_link(&staged).map_err(|error| format!("could not read the link: {error}"))?;
-        if !stays_inside(path, &target) {
-            return Err(format!("is a link to {}, outside the worktree, so it is not placed here", target.display()));
+        if !stays_inside(path, &target) || !resolves_inside(worktree, path, &target) {
+            return Err(format!("is a link to {}, which could lead outside the worktree, so it is not placed here", target.display()));
         }
     }
     let destination = worktree.join(path);
@@ -741,21 +813,37 @@ fn linked_parent(worktree: &Path, path: &str) -> Option<String> {
     None
 }
 
-/// Whether a link at the worktree-relative `path` with `target` points inside the worktree, judged by its text.
+/// Whether a link at the worktree-relative `path` with `target` stays inside the worktree by its text: relative, with
+/// `..` only in front (from the link's own folder, which `place` makes sure is no link) and not above the worktree.
+/// A `..` after a name could climb out of a link's target (`L/..` with `L -> .`), so it is refused.
 fn stays_inside(path: &str, target: &Path) -> bool {
     if target.is_absolute() {
         return false;
     }
     let mut depth = Path::new(path).components().count().saturating_sub(1);
+    let mut has_name = false;
     for component in target.components() {
         match component {
-            Component::ParentDir if depth == 0 => return false,
+            Component::ParentDir if has_name || depth == 0 => return false,
             Component::ParentDir => depth -= 1,
-            Component::Normal(_) => depth += 1,
+            Component::Normal(_) => has_name = true,
             _ => {}
         }
     }
     true
+}
+
+/// Whether the part of the link target that exists already resolves inside `worktree`, following the links on its way
+/// as the file system does; a local link of the user that points outside must not serve as a way out.
+fn resolves_inside(worktree: &Path, path: &str, target: &Path) -> bool {
+    let Ok(root) = worktree.canonicalize() else { return false };
+    let joined = worktree.join(path).parent().map(|parent| parent.join(target)).unwrap_or_default();
+    let mut existing = joined.as_path();
+    while existing.symlink_metadata().is_err() {
+        let Some(parent) = existing.parent() else { return false };
+        existing = parent;
+    }
+    existing.canonicalize().is_ok_and(|resolved| resolved.starts_with(&root))
 }
 
 /// Keys of files that exist on a side without being listed there, which the sync leaves alone: what the VM reported
@@ -820,7 +908,17 @@ pub async fn content_ids(worktree: &Path, files: &[(String, FileState)]) -> BTre
         let input: String = regular.iter().map(|(path, _)| format!("{path}\n")).collect();
         match hash_with_git(worktree, &["hash-object", "--stdin-paths"], input.as_bytes()).await {
             Ok(output) => ids.extend(regular.iter().map(|(path, _)| path.clone()).zip(output.lines().map(str::to_string))),
-            Err(error) => eprintln!("hashing files of {} failed: {error}", worktree.display()),
+            // One file the batch fails on (a clean filter, no permission) must not cost the others their id.
+            Err(_) => {
+                for (path, _) in &regular {
+                    match hash_with_git(worktree, &["hash-object", "--", path], &[]).await {
+                        Ok(output) => {
+                            ids.insert(path.clone(), output.trim().to_string());
+                        }
+                        Err(error) => eprintln!("hashing {path} of {} failed: {error}", worktree.display()),
+                    }
+                }
+            }
         }
     }
     for (path, _) in links {
@@ -864,8 +962,8 @@ async fn hash_with_git(worktree: &Path, args: &[&str], input: &[u8]) -> Result<S
 }
 
 /// Whether the local worktree changed since the last sync recorded in `manifest`, file by file: a file with a manifest
-/// entry in another state, a file left alone in another state than then, a new file, or a synced file that is gone.
-/// True before the first sync.
+/// entry in another state (also one whose move did not complete), a file left alone in another state than then, a new
+/// file, or a synced file that is gone. True before the first sync.
 pub async fn has_local_changes(local: &Path, manifest: &Path) -> Result<bool, String> {
     let Some(base) = read_manifest(manifest)? else { return Ok(true) };
     let keys = Keys { ignore_case: git::ignores_case(local).await };
@@ -1343,7 +1441,8 @@ mod tests {
         assert_eq!(next.files["sent.txt"], SyncedFile { local: state(3, 12), remote: state(3, 12), blob: Some("abc".into()) });
         assert_eq!(next.files["brought.txt"].local, state(4, 21));
         assert_eq!(next.files["kept.txt"], base.files["kept.txt"]);
-        assert_eq!(next.skipped, BTreeMap::from([("failed.txt".to_string(), state(2, 11))]));
+        assert!(next.skipped.is_empty(), "a file whose send failed counts as a local change until it moved");
+        assert!(differs_from_manifest(&next, &local, EXACT));
         // The next plan retries only the failed send.
         let local = listing(&[("kept.txt", state(1, 10)), ("failed.txt", state(2, 11)), ("sent.txt", state(3, 12)), ("brought.txt", state(4, 21))]);
         let remote = listing(&[("kept.txt", state(1, 20)), ("failed.txt", state(1, 20)), ("brought.txt", state(4, 21)), ("sent.txt", state(3, 12))]);
@@ -1567,12 +1666,26 @@ mod tests {
     }
 
     #[test]
-    fn a_file_without_an_entry_is_a_local_edit_only_when_it_differs_from_the_snapshot() {
+    fn a_file_the_agent_recreated_comes_here_while_a_new_local_file_goes_to_the_vm() {
+        // src/a.ts was in the snapshot; the agent deleted it, the sync deleted it here, and now the agent made it again.
+        // In the same sync the user created a file, so the snapshot rule must not call src/a.ts a local deletion.
         let base = manifest(&[("other.txt", state(1, 10), state(1, 20))]);
-        // Both files were left alone for a while and lost their entries; both sides have them again.
-        let local = listing(&[("edited.txt", state(2, 30)), ("stale.txt", state(2, 30)), ("other.txt", state(1, 10))]);
-        let remote = listing(&[("edited.txt", state(3, 40)), ("stale.txt", state(3, 40)), ("other.txt", state(1, 20))]);
-        let plan = plan_of(Some(&base), &["edited.txt"], &local, &remote, EXACT, &[], &[]);
+        let local = listing(&[("new.txt", state(1, 30)), ("other.txt", state(1, 10))]);
+        let remote = listing(&[("src/a.ts", state(3, 40)), ("other.txt", state(1, 20))]);
+        let plan = plan_of(Some(&base), &["src/a.ts", "new.txt"], &local, &remote, EXACT, &[], &[]);
+        assert_eq!(plan, Plan { push: paths(&["new.txt"]), pull: paths(&["src/a.ts"]), ..Plan::default() });
+    }
+
+    #[test]
+    fn a_file_without_an_entry_is_a_local_edit_unless_it_is_as_the_sync_left_it_alone() {
+        let mut base = manifest(&[]);
+        base.skipped.insert("stale.txt".into(), state(2, 30));
+        base.skipped.insert("never-synced.txt".into(), state(1, 30));
+        base.skipped.insert("edited.txt".into(), state(2, 30));
+        // The VM lists the first two again after it ignored them for a while; it never had the third.
+        let local = listing(&[("stale.txt", state(2, 30)), ("never-synced.txt", state(1, 30)), ("edited.txt", state(5, 31))]);
+        let remote = listing(&[("stale.txt", state(3, 40)), ("edited.txt", state(3, 40))]);
+        let plan = plan_of(Some(&base), &[], &local, &remote, EXACT, &[], &[]);
         assert_eq!(plan, Plan { push: paths(&["edited.txt"]), pull: paths(&["stale.txt"]), ..Plan::default() });
     }
 
@@ -1602,6 +1715,110 @@ mod tests {
         let records: [&[u8]; 2] = [b"4 1792007100.0 81ed run.sh", b"4 1792007100.0 81a4 plain.sh"];
         let parsed = parse_records(&records);
         assert!(parsed["run.sh"].executable && !parsed["plain.sh"].executable);
+    }
+
+    #[tokio::test]
+    async fn a_file_git_cannot_hash_costs_only_its_own_id_and_stays_recorded_when_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path();
+        git::run_git(worktree, &["init", "-q"]).await.unwrap();
+        std::fs::write(worktree.join("readable.txt"), "content").unwrap();
+        std::fs::write(worktree.join("locked.txt"), "secret").unwrap();
+        std::fs::set_permissions(worktree.join("locked.txt"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let listed = |path: &str| local_state(worktree, path).unwrap();
+        let files = [("readable.txt".to_string(), listed("readable.txt")), ("locked.txt".to_string(), listed("locked.txt"))];
+        let ids = content_ids(worktree, &files).await;
+        assert_eq!(ids.keys().cloned().collect::<Vec<_>>(), paths(&["readable.txt"]));
+
+        let local = listing(&[("readable.txt", listed("readable.txt")), ("locked.txt", listed("locked.txt"))]);
+        let target = SyncTarget { local: worktree, remote: "/home/agent/app", manifest: Path::new("/nonexistent"), base_ref: "refs/x" };
+        let mut run = run(&target, EXACT, &local, &Listing::new());
+        for path in ["readable.txt", "locked.txt"] {
+            run.applied.remote.insert(path.into(), Some(Entry { path: path.to_string(), state: state(1, 50) }));
+        }
+        run.hash_moved_files().await;
+        assert!(run.applied.kept.is_empty(), "an unchanged file that could not be hashed is recorded without its content");
+        assert!(run.applied.blobs.contains_key("readable.txt") && !run.applied.blobs.contains_key("locked.txt"));
+        std::fs::set_permissions(worktree.join("locked.txt"), std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    #[test]
+    fn a_fetched_ignored_file_never_replaces_another_local_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path();
+        let staging = worktree.join(STAGING_DIR);
+        std::fs::create_dir_all(&staging).unwrap();
+        // .env.local is ignored here only; the user edited it during the session.
+        std::fs::write(worktree.join(".env.local"), "TOKEN=mine").unwrap();
+        std::fs::write(staging.join(".env.local"), "TOKEN=vm").unwrap();
+        std::fs::write(worktree.join("same.log"), "line").unwrap();
+        std::fs::write(staging.join("same.log"), "line").unwrap();
+        std::fs::write(staging.join("new.log"), "fresh").unwrap();
+        assert!(!is_same_file(&staging.join(".env.local"), &worktree.join(".env.local")));
+        assert!(is_same_file(&staging.join("same.log"), &worktree.join("same.log")));
+        std::os::unix::fs::symlink("a", staging.join("link")).unwrap();
+        std::os::unix::fs::symlink("a", worktree.join("link")).unwrap();
+        assert!(is_same_file(&staging.join("link"), &worktree.join("link")));
+
+        let (new, same, differing) = (paths(&["new.log"]), paths(&["same.log", "link"]), paths(&[".env.local"]));
+        let fetched = Fetched { new, same, differing, problems: Vec::new() };
+        let (placed, problems) = place_fetched(worktree, &fetched, false);
+        assert_eq!((placed, problems), (paths(&["new.log"]), Vec::new()));
+        assert_eq!(std::fs::read_to_string(worktree.join(".env.local")).unwrap(), "TOKEN=mine");
+        assert_eq!(std::fs::read_to_string(worktree.join("new.log")).unwrap(), "fresh");
+        assert!(!staging.exists(), "the staging folder is cleared");
+    }
+
+    #[test]
+    fn a_pull_the_agent_overtook_in_the_first_sync_does_not_turn_into_a_local_edit() {
+        // Scenario A: the first sync of an adopted session plans to pull x.ts while the agent writes it.
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path();
+        std::fs::write(worktree.join("x.ts"), "snapshot").unwrap();
+        let staging = worktree.join(STAGING_DIR);
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("x.ts"), "agent, half written").unwrap();
+        let local = listing(&[("x.ts", local_state(worktree, "x.ts").unwrap())]);
+        let remote = listing(&[("x.ts", state(40, 60))]);
+        assert_eq!(plan_of(None, &[], &local, &remote, EXACT, &[], &[]).pull, paths(&["x.ts"]));
+        let target = SyncTarget { local: worktree, remote: "/home/agent/app", manifest: Path::new("/nonexistent"), base_ref: "refs/x" };
+        let mut run = run(&target, EXACT, &local, &remote);
+        run.move_in_all(&staging, &paths(&["x.ts"]), &Ok(Vec::new()));
+        assert!(run.applied.kept.contains("x.ts") && run.outcome.pulled == 0);
+        assert_eq!(std::fs::read_to_string(worktree.join("x.ts")).unwrap(), "snapshot");
+
+        let next = next_manifest(None, &local, &remote, EXACT, &BTreeSet::new(), &BTreeSet::new(), &run.applied);
+        assert_eq!(next.skipped.get("x.ts"), Some(&local["x.ts"]));
+        // The next sync brings the agent's version instead of sending the snapshot's.
+        let remote = listing(&[("x.ts", state(48, 70))]);
+        let plan = plan_of(Some(&next), &[], &local, &remote, EXACT, &[], &[]);
+        assert_eq!(plan, Plan { pull: paths(&["x.ts"]), ..Plan::default() });
+    }
+
+    #[test]
+    fn a_file_left_alone_stays_left_alone_when_its_pull_is_kept() {
+        // Scenario C: x.ts was unlisted on the VM, is listed again, and its pull does not complete.
+        let mut base = manifest(&[]);
+        base.skipped.insert("x.ts".into(), state(2, 30));
+        let local = listing(&[("x.ts", state(2, 30))]);
+        let remote = listing(&[("x.ts", state(3, 40))]);
+        assert_eq!(plan_of(Some(&base), &[], &local, &remote, EXACT, &[], &[]).pull, paths(&["x.ts"]));
+        let applied = Applied { kept: set(&["x.ts"]), ..Applied::default() };
+        let next = next_manifest(Some(&base), &local, &remote, EXACT, &BTreeSet::new(), &BTreeSet::new(), &applied);
+        assert_eq!(next.skipped.get("x.ts"), Some(&state(2, 30)));
+        assert!(!differs_from_manifest(&next, &local, EXACT));
+        assert_eq!(plan_of(Some(&next), &[], &local, &remote, EXACT, &[], &[]).pull, paths(&["x.ts"]));
+    }
+
+    #[test]
+    fn a_kept_send_without_an_entry_still_counts_as_a_local_change() {
+        let base = manifest(&[]);
+        let local = listing(&[("new.txt", state(1, 30))]);
+        assert_eq!(plan_of(Some(&base), &[], &local, &Listing::new(), EXACT, &[], &[]).push, paths(&["new.txt"]));
+        let applied = Applied { kept: set(&["new.txt"]), ..Applied::default() };
+        let next = next_manifest(Some(&base), &local, &Listing::new(), EXACT, &BTreeSet::new(), &BTreeSet::new(), &applied);
+        assert!(next.files.is_empty() && next.skipped.is_empty());
+        assert!(differs_from_manifest(&next, &local, EXACT), "a prompt waits until the file reached the VM");
     }
 
     #[test]
@@ -1636,15 +1853,23 @@ mod tests {
 
         std::os::unix::fs::symlink("../../outside", staging.join("escape")).unwrap();
         assert!(place(&worktree, &staging, "escape", false).unwrap_err().contains("outside the worktree"));
-        std::os::unix::fs::symlink("D/../inside.txt", staging.join("fine")).unwrap();
-        assert_eq!(place(&worktree, &staging, "fine", false), Ok(()));
-        assert!(std::fs::symlink_metadata(worktree.join("fine")).unwrap().file_type().is_symlink());
+        // A link may climb only from its own folder: `D/..` could leave the worktree through a link chain.
+        std::os::unix::fs::symlink("D/../inside.txt", staging.join("chain")).unwrap();
+        assert!(place(&worktree, &staging, "chain", false).unwrap_err().contains("could lead outside the worktree"));
+        std::fs::create_dir_all(staging.join("sub")).unwrap();
+        std::os::unix::fs::symlink("../inside.txt", staging.join("sub/fine")).unwrap();
+        assert_eq!(place(&worktree, &staging, "sub/fine", false), Ok(()));
+        assert!(std::fs::symlink_metadata(worktree.join("sub/fine")).unwrap().file_type().is_symlink());
+        // Through the user's own link D, which points outside, a link would lead out as well.
+        std::os::unix::fs::symlink("D/evil.plist", staging.join("via")).unwrap();
+        assert!(place(&worktree, &staging, "via", false).unwrap_err().contains("could lead outside the worktree"));
 
         assert!(stays_inside("a/b/link", Path::new("../c")));
         assert!(stays_inside("link", Path::new("x/y")));
         assert!(!stays_inside("link", Path::new("../x")));
         assert!(!stays_inside("a/link", Path::new("../../x")));
         assert!(!stays_inside("a/link", Path::new("/etc/passwd")));
+        assert!(!stays_inside("a/b/link", Path::new("L/../x")), "a `..` after a name is refused");
     }
 
     #[tokio::test]

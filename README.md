@@ -471,15 +471,20 @@ ignored, so no `node_modules` or `.env*`) with size, modification time, execute 
 state after the last sync, kept in `remote-sync/<id>.json` in the app data folder, tells which side changed a file. A
 file changed here goes to the VM, also when the agent changed it too (the local version wins), unless its content is
 still the one of the last sync; a file changed only on the VM comes here; deletions follow the same rule; equal size,
-modification second and mode count as in sync. A file without a recorded state (before the first sync, or after it was
-left alone for a while) counts as changed here only when it differs from the snapshot both sides started from
-(`refs/hunt/<id>/handoff`, or for an adopted session `refs/hunt/<id>/adopted`); otherwise it takes the VM's version.
+modification second and mode count as in sync. Before the first sync, a file counts as changed here only when it
+differs from the snapshot both sides started from (`refs/hunt/<id>/handoff`, or for an adopted session
+`refs/hunt/<id>/adopted`); otherwise it takes the VM's version. Later, a file without a recorded state counts as
+changed here only when it exists here in another state than when the sync left it alone; one that is missing here comes
+from the VM.
 A file that exists on a side without being listed there (other ignore rules on the Mac and the VM) is never touched.
 On a case-insensitive Mac the VM's spelling wins, and two VM files whose names differ only in case are reported instead
 of synced. rsync (`hunt-ctl install-tools` installs it on the VM) copies the files over the session's SSH connection as
 `agent`, links go to the VM as their text: files from the VM land in `.hunt/sync-staging` first (links last) and
 replace a local file only while it is unchanged since the listing, never below a local link and never as a link that
-points outside the worktree. What completed is recorded even when a later step fails, and a file that cannot move (a folder on the
+could lead outside the worktree. A link the agent makes with an absolute target (`ln -s /…`), or one whose target
+climbs after a name (`a/../b`), is not brought here: the chat names it on every sync, and bringing the session back
+refuses until it is gone. Replace it in the terminal of the VM with a relative link that climbs only at its start
+(`../shared/config.json`), with a copy of the file, or delete it. What completed is recorded even when a later step fails, and a file that cannot move (a folder on the
 other side) is reported in the chat without stopping the rest. The listing and the deletions on the VM run as `agent`
 through `sudo`, so they do not keep the VM awake. A sync runs when the session connects, after every tool call and
 turn the relay reports, every 10 seconds while a turn runs, after the watcher saw a local change and after a save,
@@ -495,7 +500,9 @@ conversion (`core.autocrlf`) makes the two sides' contents differ, so it should 
 
 Bringing it back (`retrieve_session`) stops the relay, syncs once more, snapshots the VM's worktree on top of the
 agent's commits (`refs/hunt/<id>/retrieve`) and fetches it. Files only the VM has that this Mac ignores (global
-excludes, files the agent added with `-f`) are brought here, and files only this Mac has that the VM ignores stay.
+excludes, files the agent added with `-f`) are brought here once nothing else differs, and only where this Mac has
+no file of that name or the same one; another local version stays and is named. Files only this Mac has that the VM
+ignores stay.
 Only when the snapshot then holds the files of the local worktree, the local branch did not move since the handoff and
 nothing changed here meanwhile does the branch move to the agent's last commit; otherwise the retrieval names each
 differing file with its side and the ignore rules that apply (or the local commits) and moves nothing.

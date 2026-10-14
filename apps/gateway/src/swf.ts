@@ -192,7 +192,7 @@ export class Poller {
     }
 
     const names = sessionNames(this.deps.newId());
-    const branch = branchName(issue.number, issue.title);
+    const branch = branchName(issue);
     this.deps.log(`${key}: claimed; session ${names.id} on ${names.vm}, branch ${branch}`);
     const setup: Setup = { key, repo, issue: issue.number, github, labels, names, isVmCreated: false, done: Promise.resolve() };
     this.setups.set(names.vm, setup);

@@ -8,6 +8,10 @@ import type { Issue, IssueComment } from "./github.ts";
 /** The VM statuses that do not count towards the session limit. */
 const STOPPED_STATUSES = new Set(["TERMINATED", "STOPPED"]);
 const SLUG_MAX_LENGTH = 40;
+/** The scope of every session branch: `<type>/general/<name>`. */
+const BRANCH_SCOPE = "general";
+/** The issue label (in any case) that makes a session branch a `fix/` branch. */
+const BUG_LABEL = "bug";
 /** The permission mode of every remote session: nobody is there to answer permission requests. */
 export const REMOTE_MODE = "bypassPermissions";
 
@@ -55,10 +59,14 @@ export function slugify(title: string): string {
   return words.slice(0, SLUG_MAX_LENGTH).replace(/-+$/, "");
 }
 
-/** The branch of the session for issue `number`: `hunt/<number>-<slug of the title>`. */
-export function branchName(number: number, title: string): string {
-  const slug = slugify(title);
-  return slug ? `hunt/${number}-${slug}` : `hunt/${number}`;
+/**
+ * The branch of the session for `issue`: `fix/general/<number>-<slug of the title>` for an issue labelled `bug`,
+ * `feat/general/…` for any other, the `<type>/<scope>/<name>` form repositories check branch names against.
+ */
+export function branchName(issue: Issue): string {
+  const type = issue.labels.some((label) => label.toLowerCase() === BUG_LABEL) ? "fix" : "feat";
+  const slug = slugify(issue.title);
+  return `${type}/${BRANCH_SCOPE}/${slug ? `${issue.number}-${slug}` : issue.number}`;
 }
 
 /** The poller's VMs that count towards the limit (any status but stopped) plus the VMs it is creating right now. */

@@ -15,6 +15,8 @@ export interface Issue {
   /** ISO 8601. */
   createdAt: string;
   url: string;
+  /** The names of the issue's labels. */
+  labels: string[];
 }
 
 export interface IssueComment {
@@ -60,6 +62,15 @@ interface RawIssue {
   created_at?: unknown;
   html_url?: unknown;
   pull_request?: unknown;
+  labels?: unknown;
+}
+
+/** The names of an issue's labels, which GitHub lists as objects with a `name` or, per its schema, as plain strings. */
+function labelNames(labels: unknown): string[] {
+  if (!Array.isArray(labels)) return [];
+  return labels
+    .map((label: unknown) => (typeof label === "string" ? label : (label as { name?: unknown } | null)?.name))
+    .filter((name): name is string => typeof name === "string" && name !== "");
 }
 
 /** The issues of a list response; pull requests, which the issues API lists too, are left out. */
@@ -73,6 +84,7 @@ export function parseIssues(items: unknown[]): Issue[] {
       author: typeof item.user?.login === "string" ? item.user.login : "ghost",
       createdAt: typeof item.created_at === "string" ? item.created_at : "",
       url: typeof item.html_url === "string" ? item.html_url : "",
+      labels: labelNames(item.labels),
     }));
 }
 

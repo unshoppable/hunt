@@ -65,7 +65,7 @@ describe("parseRequest", () => {
 
 describe("isBranchName", () => {
   it("accepts what git check-ref-format --branch accepts", () => {
-    expect(["main", "hunt/12-fix-login", "feat/ä-umlaut", "release-1.2", "a+b@c"].every(isBranchName)).toBe(true);
+    expect(["main", "fix/general/12-fix-login", "feat/ä-umlaut", "release-1.2", "a+b@c"].every(isBranchName)).toBe(true);
     const invalid = ["", "-x", "/x", "x/", "x.", "x..y", "x//y", "x.lock", "a/.hidden", "x@{1}", "@", "a b", "a~1", "a^", "a:b", "a?", "a*", "a[b", "a\\b", "a\tb"];
     expect(invalid.filter(isBranchName)).toEqual([]);
     expect(isBranchName("x".repeat(251))).toBe(false);

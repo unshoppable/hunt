@@ -234,7 +234,7 @@ function storedSession(id: string, title: string): SessionView {
     title,
     repoPath: "/repo",
     worktreePath: `/worktrees/${id}`,
-    branch: `hunt/${title}`,
+    branch: `feat/general/${title}`,
     baseRef: "main",
     baseCommit: "abc123",
     acpSessionId: "acp-session",
@@ -249,13 +249,14 @@ function storedSession(id: string, title: string): SessionView {
     diffBase: null,
     reviewComments: [],
     workspace: "worktree",
+    keepsBranch: false,
     remote: null,
     leftoverVm: null,
     dependencies: null,
   };
 }
 
-const TARGET = { repoPath: "/repo", baseRef: "main", workspace: "worktree" as const, pullRequest: null, diffBaseRef: null };
+const TARGET = { repoPath: "/repo", baseRef: "main", workspace: "worktree" as const, pullRequest: null, diffBaseRef: null, pullRequestBranch: null };
 const START = { setup: { configValues: { model: "fable", effort: "high" }, modeId: "plan" }, prompt: { text: "build it", images: [] } };
 
 describe("unseen activity", () => {
@@ -416,7 +417,7 @@ describe("createSession", () => {
     expect(pending.draft).toBeNull();
     expect(useAgentDefaultsStore.getState().recentRepoPaths).toEqual(["/repo"]);
     expect(pending.chats[pending.sessions[0].id].items).toEqual([{ kind: "user", id: expect.any(String), text: "build it", images: [] }]);
-    expect(vi.mocked(invoke).mock.calls).toEqual([["create_session", { id: pending.sessions[0].id, repoPath: "/repo", baseRef: "main", title: "Build it", pullRequest: null, diffBaseRef: null, workspace: "worktree" }]]);
+    expect(vi.mocked(invoke).mock.calls).toEqual([["create_session", { id: pending.sessions[0].id, repoPath: "/repo", baseRef: "main", title: "Build it", pullRequest: null, diffBaseRef: null, pullRequestBranch: null, workspace: "worktree" }]]);
 
     finish();
     const id = await creation;
@@ -446,7 +447,7 @@ describe("createSession", () => {
     const id = await useHuntStore.getState().createSession(TARGET, null, { ...START, prompt: null });
     expect(useHuntStore.getState().sessions[0].title).toBe("repo");
     expect(useHuntStore.getState().untitledIds).toEqual([id]);
-    expect(vi.mocked(invoke).mock.calls[0]).toEqual(["create_session", { id, repoPath: "/repo", baseRef: "main", title: "repo", pullRequest: null, diffBaseRef: null, workspace: "worktree" }]);
+    expect(vi.mocked(invoke).mock.calls[0]).toEqual(["create_session", { id, repoPath: "/repo", baseRef: "main", title: "repo", pullRequest: null, diffBaseRef: null, pullRequestBranch: null, workspace: "worktree" }]);
 
     await useHuntStore.getState().sendPrompt(id, "Fix the login bug\nwith details");
     await vi.waitFor(() => expect(useHuntStore.getState().sessions[0].title).toBe("Fix the login bug"));
@@ -456,6 +457,42 @@ describe("createSession", () => {
     vi.mocked(invoke).mockClear();
     await useHuntStore.getState().sendPrompt(id, "And the logout");
     expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).not.toContain("rename_session");
+  });
+
+  it("lists a pull request review under the pull request's own branch while the backend creates it", async () => {
+    let finish: () => void = () => {};
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      if (command !== "create_session") return Promise.resolve(undefined);
+      return new Promise((resolve) => {
+        finish = () => resolve(storedSession((args as { id: string }).id, "#12 Review"));
+      });
+    });
+    const review = {
+      ...TARGET,
+      baseRef: "origin/fix/sentry/admin-ui-errors",
+      pullRequest: { number: 12, url: "https://github.com/acme/app/pull/12" },
+      diffBaseRef: "origin/main",
+      pullRequestBranch: "fix/sentry/admin-ui-errors",
+    };
+
+    const creation = useHuntStore.getState().createSession(review, "#12 Review", { ...START, prompt: null });
+    const id = useHuntStore.getState().sessions[0].id;
+    expect(useHuntStore.getState().sessions[0].branch).toBe("fix/sentry/admin-ui-errors");
+    expect(vi.mocked(invoke).mock.calls[0]).toEqual([
+      "create_session",
+      {
+        id,
+        repoPath: "/repo",
+        baseRef: "origin/fix/sentry/admin-ui-errors",
+        title: "#12 Review",
+        pullRequest: { number: 12, url: "https://github.com/acme/app/pull/12" },
+        diffBaseRef: "origin/main",
+        pullRequestBranch: "fix/sentry/admin-ui-errors",
+        workspace: "worktree",
+      },
+    ]);
+    finish();
+    await creation;
   });
 
   it("keeps the title of a session created with one", async () => {
@@ -603,7 +640,7 @@ describe("remote sessions", () => {
     vm: { project: "p", zone: "z", instance: "vm-hunt" },
     worktreePath: `/srv/worktrees/${SESSION}`,
     repo: "o/r",
-    branch: "hunt/x",
+    branch: "feat/general/x",
     handoffHead: "abc",
     handedOffAt: "2026-10-12T20:00:00Z",
     localMode: "default",

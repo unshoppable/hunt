@@ -68,7 +68,8 @@ export const commands = {
   /**
    * Creates the session `id` (a fresh UUID the caller picked) in a new worktree off `baseRef`. `pullRequest` marks it as
    * that pull request's review and `diffBaseRef` is then the pull request's target branch, whose merge base with
-   * `baseRef` becomes the diff base.
+   * `baseRef` becomes the diff base; the worktree then works on the pull request's own branch `pullRequestBranch`,
+   * which `baseRef` names locally or on a remote.
    */
   createSession: (
     id: string,
@@ -77,8 +78,10 @@ export const commands = {
     title: string,
     pullRequest: PullRequestRef | null,
     diffBaseRef: string | null,
+    pullRequestBranch: string | null,
     workspace: Workspace,
-  ) => invoke<SessionView>("create_session", { id, repoPath, baseRef, title, pullRequest, diffBaseRef, workspace }),
+  ) =>
+    invoke<SessionView>("create_session", { id, repoPath, baseRef, title, pullRequest, diffBaseRef, pullRequestBranch, workspace }),
   /** Starts the sub session `id` (a fresh UUID the caller picked) in the parent's worktree; a `selection` (sub chat from the diff) goes into the agent's context. */
   createSubSession: (id: string, parentId: string, title: string, selection: SelectionContext | null) =>
     invoke<SessionView>("create_sub_session", { id, parentId, title, selection }),

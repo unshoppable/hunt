@@ -23,6 +23,7 @@ function session(id: string, parentId: string | null, reviewComments: ReviewComm
     diffBase: "merge-base",
     reviewComments,
     workspace: "worktree",
+    keepsBranch: false,
     remote: null,
     leftoverVm: null,
     dependencies: null,

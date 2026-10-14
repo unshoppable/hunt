@@ -102,6 +102,15 @@ async fn run_git_with_input(cwd: &Path, args: &[&str], envs: &[(&str, &Path)], i
 /// The ref every changelist and diff of a worktree compares against: its uncommitted changes.
 pub const DIFF_BASE: &str = "HEAD";
 
+/// The prefix of the branches Hunt creates for its sessions, in the `<type>/<scope>/<name>` form repositories check
+/// branch names against.
+const SESSION_BRANCH_PREFIX: &str = "feat/general/";
+
+/// The branch Hunt creates for a session: `feat/general/<name>`.
+pub fn session_branch(name: &str) -> String {
+    format!("{SESSION_BRANCH_PREFIX}{name}")
+}
+
 /// Full commit hash of `reference`. The ref follows `--end-of-options` and may not start with `-`, so a
 /// frontend-supplied value can never act as a git option.
 pub async fn rev_parse(repo: &Path, reference: &str) -> Result<String, String> {
@@ -151,6 +160,46 @@ pub async fn worktree_add(repo: &Path, branch: &str, path: &Path, base: &str) ->
     let path = path.to_string_lossy();
     run_git(repo, &["worktree", "add", "-b", branch, &path, base]).await?;
     Ok(())
+}
+
+/// Adds the worktree `path` of `repo` on the existing branch `branch` rather than a new one: on the local branch of
+/// that name, else on a new local branch of that name that tracks `remote_ref`, the branch on a remote (e.g.
+/// `origin/<branch>`). Returns whether it created the local branch. Fails when a worktree of `repo`, its own checkout
+/// included, has the branch checked out already, since git checks a branch out in one worktree only.
+pub async fn worktree_add_on_branch(repo: &Path, branch: &str, path: &Path, remote_ref: &str) -> Result<bool, String> {
+    if branch.starts_with('-') || run_git(repo, &["check-ref-format", "--branch", branch]).await.is_err() {
+        return Err(format!("failed to create the session's worktree: invalid branch name {branch:?}"));
+    }
+    let path = path.to_string_lossy();
+    if !local_branch_exists(repo, branch).await {
+        run_git(repo, &["worktree", "add", "--track", "-b", branch, &path, remote_ref]).await?;
+        return Ok(true);
+    }
+    if let Some(checkout) = worktree_of_branch(repo, branch).await? {
+        return Err(format!("failed to create the session's worktree: branch {branch} is already checked out in {checkout}"));
+    }
+    run_git(repo, &["worktree", "add", &path, branch]).await?;
+    Ok(false)
+}
+
+/// Whether `repo` has the local branch `branch`.
+pub async fn local_branch_exists(repo: &Path, branch: &str) -> bool {
+    run_git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).await.is_ok()
+}
+
+/// The path of the worktree of `repo`, its own checkout included, that has the local branch `branch` checked out.
+async fn worktree_of_branch(repo: &Path, branch: &str) -> Result<Option<String>, String> {
+    let listing = run_git(repo, &["worktree", "list", "--porcelain"]).await?;
+    let checked_out = format!("branch refs/heads/{branch}");
+    let mut worktree = None;
+    for line in listing.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            worktree = Some(path);
+        } else if line == checked_out {
+            return Ok(worktree.map(str::to_string));
+        }
+    }
+    Ok(None)
 }
 
 pub async fn worktree_remove(repo: &Path, path: &Path) -> Result<(), String> {
@@ -601,6 +650,61 @@ mod tests {
         git(repo, &["add", "."]).await;
         git(repo, &["commit", "-q", "-m", "init"]).await;
         dir
+    }
+
+    async fn head_branch(worktree: &Path) -> String {
+        run_git(worktree, &["symbolic-ref", "--short", "HEAD"]).await.unwrap().trim().to_string()
+    }
+
+    #[tokio::test]
+    async fn worktree_add_on_branch_checks_the_existing_local_branch_out() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        git(repo, &["branch", "feature/med/623-scope-filter"]).await;
+        let worktrees = tempfile::tempdir().unwrap();
+        let worktree = worktrees.path().join("review");
+
+        let created = worktree_add_on_branch(repo, "feature/med/623-scope-filter", &worktree, "origin/feature/med/623-scope-filter").await;
+        assert!(!created.unwrap());
+        assert_eq!(head_branch(&worktree).await, "feature/med/623-scope-filter");
+    }
+
+    #[tokio::test]
+    async fn worktree_add_on_branch_creates_a_local_branch_tracking_the_remote_one() {
+        let origin = fixture().await;
+        git(origin.path(), &["branch", "fix/sentry/admin-ui-errors"]).await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = clone_dir.path().join("repo");
+        git(clone_dir.path(), &["clone", "-q", origin.path().to_str().unwrap(), repo.to_str().unwrap()]).await;
+        assert!(!local_branch_exists(&repo, "fix/sentry/admin-ui-errors").await);
+        let worktree = clone_dir.path().join("review");
+
+        let created = worktree_add_on_branch(&repo, "fix/sentry/admin-ui-errors", &worktree, "origin/fix/sentry/admin-ui-errors").await;
+        assert!(created.unwrap());
+        assert_eq!(head_branch(&worktree).await, "fix/sentry/admin-ui-errors");
+        let upstream = run_git(&worktree, &["rev-parse", "--abbrev-ref", "@{upstream}"]).await.unwrap();
+        assert_eq!(upstream.trim(), "origin/fix/sentry/admin-ui-errors");
+    }
+
+    #[tokio::test]
+    async fn worktree_add_on_branch_refuses_a_branch_checked_out_elsewhere() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        git(repo, &["branch", "feat/review"]).await;
+        let worktrees = tempfile::tempdir().unwrap();
+        worktree_add_on_branch(repo, "feat/review", &worktrees.path().join("first"), "origin/feat/review").await.unwrap();
+
+        // git names a worktree by its resolved path, which differs from the temporary one on macOS (/private/var/…).
+        let second = worktree_add_on_branch(repo, "feat/review", &worktrees.path().join("second"), "origin/feat/review").await.unwrap_err();
+        assert!(second.starts_with("failed to create the session's worktree: branch feat/review is already checked out in /"), "{second}");
+        assert!(second.ends_with("/first"), "{second}");
+        let main = worktree_add_on_branch(repo, "main", &worktrees.path().join("third"), "origin/main").await.unwrap_err();
+        let repo_name = repo.file_name().unwrap().to_str().unwrap();
+        assert!(main.contains("branch main is already checked out in /") && main.ends_with(&format!("/{repo_name}")), "{main}");
+        assert!(!worktrees.path().join("second").exists() && !worktrees.path().join("third").exists());
+
+        let invalid = worktree_add_on_branch(repo, "-x", &worktrees.path().join("fourth"), "main").await;
+        assert_eq!(invalid.unwrap_err(), "failed to create the session's worktree: invalid branch name \"-x\"");
     }
 
     #[tokio::test]

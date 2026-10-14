@@ -64,6 +64,11 @@ export type WorktreeTarget = {
   /** Marks the session as the review of that pull request; `diffBaseRef` is then its target branch. */
   pullRequest: PullRequestRef | null;
   diffBaseRef: string | null;
+  /**
+   * The pull request's own branch, which a review worktree works on instead of a new branch; `baseRef` names it
+   * locally or on a remote (`origin/<branch>`).
+   */
+  pullRequestBranch: string | null;
 };
 
 /** The agent setup a chat currently runs with, so a sub session can start like its parent. */
@@ -86,7 +91,7 @@ function placeholderSession(id: string, title: string, target: WorktreeTarget, p
     title,
     repoPath: target.repoPath,
     worktreePath: parent?.worktreePath ?? (target.workspace === "checkout" ? target.repoPath : ""),
-    branch: parent?.branch ?? "",
+    branch: parent?.branch ?? target.pullRequestBranch ?? "",
     baseRef: target.baseRef,
     baseCommit: parent?.baseCommit ?? "",
     acpSessionId: null,
@@ -101,6 +106,7 @@ function placeholderSession(id: string, title: string, target: WorktreeTarget, p
     diffBase: null,
     reviewComments: [],
     workspace: target.workspace,
+    keepsBranch: false,
     remote: null,
     leftoverVm: null,
     dependencies: null,
@@ -729,11 +735,12 @@ export const useHuntStore = create<HuntState>((set, get) => {
 
     createSession: async (target, title, start) => {
       const id = crypto.randomUUID();
-      const { repoPath, baseRef, pullRequest, diffBaseRef, workspace } = target;
+      const { repoPath, baseRef, pullRequest, diffBaseRef, pullRequestBranch, workspace } = target;
       const listedTitle = placeholderTitle(id, title, repoPath);
       useAgentDefaultsStore.getState().rememberRepoPath(repoPath);
       listPlaceholder(placeholderSession(id, listedTitle, target, null, null), start.prompt, true);
-      return completeCreation(id, () => commands.createSession(id, repoPath, baseRef, listedTitle, pullRequest, diffBaseRef, workspace), start, null);
+      const create = () => commands.createSession(id, repoPath, baseRef, listedTitle, pullRequest, diffBaseRef, pullRequestBranch, workspace);
+      return completeCreation(id, create, start, null);
     },
 
     createSubSession: async (parentId, title, selection, start, isActivated) => {
@@ -747,6 +754,7 @@ export const useHuntStore = create<HuntState>((set, get) => {
         workspace: parent.workspace,
         pullRequest: parent.pullRequest,
         diffBaseRef: parent.diffBase,
+        pullRequestBranch: null,
       };
       const listedTitle = placeholderTitle(id, title, parent.repoPath);
       listPlaceholder(placeholderSession(id, listedTitle, target, parent, selection), start.prompt, isActivated);

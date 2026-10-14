@@ -67,7 +67,7 @@ pub struct SessionRecord {
     pub leftover_vm: Option<VmRef>,
 }
 
-/// Where a session works. `Worktree` is a `hunt/<slug>-<id>` worktree Hunt creates off the base branch and deletes
+/// Where a session works. `Worktree` is a `<slug>-<id>` worktree Hunt creates off the base branch and deletes
 /// with the session; `Checkout` is the repository's own checkout on whatever branch it has, which Hunt leaves alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -384,7 +384,7 @@ mod tests {
     fn record(title: &str) -> SessionRecord {
         let id = Uuid::new_v4();
         let worktree = format!("/worktrees/{id}").into();
-        SessionRecord::new(id, title.into(), "/repo".into(), worktree, "hunt/x".into(), "main".into(), "abc".into())
+        SessionRecord::new(id, title.into(), "/repo".into(), worktree, "x".into(), "main".into(), "abc".into())
     }
 
     fn store_in(dir: &tempfile::TempDir) -> Store {
@@ -458,7 +458,7 @@ mod tests {
             "remote".into(),
             serde_json::json!({
                 "vm": {"project": "acme", "zone": "europe-west1-c", "instance": "vm-hunt-medc"},
-                "worktreePath": "/srv/worktrees/x", "repo": "acme/app", "branch": "hunt/x", "handoffHead": "abc",
+                "worktreePath": "/srv/worktrees/x", "repo": "acme/app", "branch": "x", "handoffHead": "abc",
                 "handedOffAt": "2026-10-01T10:00:00Z"
             }),
         );
@@ -489,7 +489,7 @@ mod tests {
             vm: VmRef { project: "acme".into(), zone: "europe-west1-c".into(), instance: "vm-hunt-s-ab12cd34".into() },
             title: "Fix login".into(),
             repo: "acme/app".into(),
-            branch: "hunt/123-fix-login".into(),
+            branch: "123-fix-login".into(),
             origin: crate::remote::RemoteOrigin::Swf,
             issue: Some(123),
             is_running: false,
@@ -499,7 +499,7 @@ mod tests {
         let remote = adopted.remote.as_ref().unwrap();
         assert!(remote.is_adopted() && remote.worktree_path.as_os_str().is_empty() && remote.handoff_head.is_empty());
         assert_eq!((remote.issue, remote.preview_domain.as_deref()), (Some(123), Some("hunt.example.com")));
-        assert_eq!((remote.branch.as_str(), adopted.branch.as_str()), ("hunt/123-fix-login", "hunt/123-fix-login"));
+        assert_eq!((remote.branch.as_str(), adopted.branch.as_str()), ("123-fix-login", "123-fix-login"));
         assert_eq!((adopted.title.as_str(), adopted.created_at), ("Fix login", session.created_at.unwrap()));
         assert!(adopted.repo_path.as_os_str().is_empty() && adopted.acp_session_id.is_none());
 

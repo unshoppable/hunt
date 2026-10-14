@@ -15,7 +15,7 @@ function session(remote: Partial<RemoteTarget> | null, patch: Partial<SessionVie
     vm: { project: "medconomy-hunt", zone: "europe-west1-c", instance: "vm-hunt-s-ab12cd34" },
     worktreePath: "",
     repo: "unshoppable/app-framework",
-    branch: "hunt/123-fix-login",
+    branch: "123-fix-login",
     handoffHead: "",
     handedOffAt: "2026-10-13T10:00:00Z",
     localMode: null,

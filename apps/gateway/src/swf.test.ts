@@ -225,7 +225,7 @@ describe("Poller.cycle", () => {
       "comments acme/app#12",
       "unlabel acme/app#12 swf",
       "label acme/app#12 swf:running",
-      `comment acme/app#12 Hunt started a session for this issue: preview \`https://ab12cd34.hunt.example.com\` (available once the agent starts the app).\n\nSession \`${SESSION_ID}\` on the VM \`${VM}\`, branch \`hunt/12-fix-login\`.`,
+      `comment acme/app#12 Hunt started a session for this issue: preview \`https://ab12cd34.hunt.example.com\` (available once the agent starts the app).\n\nSession \`${SESSION_ID}\` on the VM \`${VM}\`, branch \`12-fix-login\`.`,
     ]);
     expect(compute.inserted).toEqual([
       { name: VM, template: "tpl-hunt-session", machineType: null, labels: { "hunt-role": "session", "hunt-session": "ab12cd34", "hunt-origin": "swf" } },
@@ -235,7 +235,7 @@ describe("Poller.cycle", () => {
         { key: "startup-script", value: "#!/bin/sh" },
         { key: "hunt-session-id", value: SESSION_ID },
         { key: "hunt-repo", value: "acme/app" },
-        { key: "hunt-branch", value: "hunt/12-fix-login" },
+        { key: "hunt-branch", value: "12-fix-login" },
         { key: "hunt-title", value: "Fix login" },
         { key: "hunt-issue", value: "12" },
       ],
@@ -244,7 +244,7 @@ describe("Poller.cycle", () => {
       "wait until ready",
       "ensure release",
       "hunt-ctl install-tools",
-      `hunt-ctl clone ${SESSION_ID} --repo acme/app --branch hunt/12-fix-login <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`,
+      `hunt-ctl clone ${SESSION_ID} --repo acme/app --branch 12-fix-login <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`,
       `hunt-ctl session-config ${SESSION_ID} --domain hunt.example.com`,
       `put-files ${SESSION_ID} --claude hunt-session.json`,
       `hunt-ctl deps ${SESSION_ID}`,

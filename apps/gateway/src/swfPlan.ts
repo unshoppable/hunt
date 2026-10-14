@@ -55,10 +55,10 @@ export function slugify(title: string): string {
   return words.slice(0, SLUG_MAX_LENGTH).replace(/-+$/, "");
 }
 
-/** The branch of the session for issue `number`: `hunt/<number>-<slug of the title>`. */
+/** The branch of the session for issue `number`: `<number>-<slug of the title>`, or `issue-<number>` without a usable title. */
 export function branchName(number: number, title: string): string {
   const slug = slugify(title);
-  return slug ? `hunt/${number}-${slug}` : `hunt/${number}`;
+  return slug ? `${number}-${slug}` : `issue-${number}`;
 }
 
 /** The poller's VMs that count towards the limit (any status but stopped) plus the VMs it is creating right now. */

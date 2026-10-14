@@ -52,7 +52,7 @@ decision records that steer the agent.
 
 ### ✨ Features
 
-- **Isolated sessions.** Each session gets a `hunt/<slug>-<id>` worktree; shelve, revert and commit per file.
+- **Isolated sessions.** Each session gets a `<slug>-<id>` worktree; shelve, revert and commit per file.
 - **Sub sessions.** Start a background agent in an existing worktree, or ask Claude about a selected diff range.
 - **Change attribution.** Sessions sharing a worktree see only their own files; shared files carry a badge.
 - **Built-in IDE.** Project tree, Monaco panes with tabs, breadcrumbs, go-to-declaration, usages, inlay hints and
@@ -175,7 +175,7 @@ via the ACP `systemPrompt` meta.
 
 #### Worktrees and changes
 
-`apps/client/src-tauri/src/git.rs` creates `hunt/<slug>-<id>` worktrees under the app data directory, lists their
+`apps/client/src-tauri/src/git.rs` creates `<slug>-<id>` worktrees under the app data directory, lists their
 changes against the session's diff base (`HEAD`, or the merge base of a reviewed pull request) and supports shelving and
 reverting them.
 
@@ -460,7 +460,7 @@ API and, while fewer of its VMs
 issue: `swf` becomes `swf:running` (the labels `swf:running`, `swf:done` and `swf:failed` are created when missing) and
 a comment names the session's preview URL. Then it does what a handoff does, with the gateway's service account instead
 of a Mac: the orchestrator creates `vm-hunt-s-<short id>` from the configured instance template (labelled
-`hunt-origin=swf`, without an owner), records the session, repository, branch `hunt/<issue>-<slug of the title>`, title
+`hunt-origin=swf`, without an owner), records the session, repository, branch `<issue>-<slug of the title>`, title
 and issue in the VM's metadata, waits for the startup script and installs the staged session release, over `gcloud
 compute ssh --internal-ip` (OS Login as admin, one shared SSH connection per VM); `hunt-ctl install-tools` follows.
 `hunt-ctl clone` clones the repository from GitHub as `agent` onto the branch (the origin's branch of that name

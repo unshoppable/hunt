@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn session_summaries_read_the_listing() {
         let output = r#"{"type":"result","data":{"sessions":[{"id":"ab12cd34-0000-4000-8000-000000000001","vm":"vm-hunt-s-ab12cd34","zone":"europe-west1-c",
-"status":"TERMINATED","origin":"swf","owner":"","repo":"acme/app","branch":"hunt/123-fix-login","title":"Fix login","issue":123,
+"status":"TERMINATED","origin":"swf","owner":"","repo":"acme/app","branch":"123-fix-login","title":"Fix login","issue":123,
 "createdAt":"2026-10-12T03:04:05.678-07:00"}]}}"#;
         let (result, _) = run::<SessionList>("sessions.list", &output.replace('\n', ""), Ok(()));
         let sessions = result.unwrap().sessions;
@@ -403,10 +403,10 @@ mod tests {
     #[test]
     fn requests_serialize_in_the_shape_of_the_contract() {
         let id = Uuid::parse_str("ab12cd34-0000-4000-8000-000000000001").unwrap();
-        let request = ProvisionRequest { id, title: "Fix login", repo: "acme/app", branch: "hunt/x", machine_type: None };
+        let request = ProvisionRequest { id, title: "Fix login", repo: "acme/app", branch: "x", machine_type: None };
         assert_eq!(
             serde_json::to_value(&request).unwrap(),
-            json!({ "id": "ab12cd34-0000-4000-8000-000000000001", "title": "Fix login", "repo": "acme/app", "branch": "hunt/x", "machineType": null })
+            json!({ "id": "ab12cd34-0000-4000-8000-000000000001", "title": "Fix login", "repo": "acme/app", "branch": "x", "machineType": null })
         );
         assert_eq!(json!({ "id": id }), json!({ "id": "ab12cd34-0000-4000-8000-000000000001" }));
     }

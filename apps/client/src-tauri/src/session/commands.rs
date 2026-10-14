@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 
 use agent_client_protocol::schema::v1::{
     CancelNotification, ConfigOptionUpdate, ContentBlock, ContentChunk, EmbeddedResource, EmbeddedResourceResource, ImageContent, Meta,
-    PromptRequest, SessionConfigId, SessionConfigKind, SessionConfigOption, SessionId, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, SetSessionModeRequest, TextContent, TextResourceContents,
+    PromptRequest, SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigSelectOption, SessionConfigSelectOptions,
+    SessionId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest, TextContent,
+    TextResourceContents,
 };
 use agent_client_protocol::{Agent, ConnectionTo};
 use base64::Engine;
@@ -954,7 +955,11 @@ pub async fn retrieve_session(
         dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone());
         let start = local_start(&record);
         let view = activate(&app, &registry, &watchers, record, start, AgentTransport::Local).await?;
-        let mode = target.restored_mode();
+        let LiveHandles { history, .. } = live_session(&registry, id).await?;
+        let mode = match target.restored_mode() {
+            mode if offers_mode(&history.lock().unwrap(), mode) => mode,
+            _ => "default",
+        };
         set_mode(&registry, id, mode.to_string())
             .await
             .map_err(|error| format!("failed to restore the permission mode {mode} of the retrieved session: {error}"))?;
@@ -1427,11 +1432,7 @@ const MODE_CONFIG_ID: &str = "mode";
 /// The values of the select options `config_ids` as the chat shows them, taken from the last option list in `history`,
 /// in the order of `config_ids`; options the list lacks are left out.
 fn shown_config_values(history: &[SessionNotification], config_ids: &[&str]) -> Vec<(String, String)> {
-    let latest = history.iter().rev().find_map(|notification| match &notification.update {
-        SessionUpdate::ConfigOptionUpdate(update) => Some(&update.config_options),
-        _ => None,
-    });
-    let Some(options) = latest else { return Vec::new() };
+    let Some(options) = latest_config_options(history) else { return Vec::new() };
     config_ids
         .iter()
         .filter_map(|config_id| {
@@ -1440,6 +1441,27 @@ fn shown_config_values(history: &[SessionNotification], config_ids: &[&str]) -> 
             Some((config_id.to_string(), select.current_value.0.to_string()))
         })
         .collect()
+}
+
+/// Whether the last option list in `history` offers the permission mode `mode_id`.
+fn offers_mode(history: &[SessionNotification], mode_id: &str) -> bool {
+    let Some(options) = latest_config_options(history) else { return false };
+    let Some(option) = options.iter().find(|option| &*option.id.0 == MODE_CONFIG_ID) else { return false };
+    let SessionConfigKind::Select(select) = &option.kind else { return false };
+    let is_mode = |choice: &SessionConfigSelectOption| &*choice.value.0 == mode_id;
+    match &select.options {
+        SessionConfigSelectOptions::Ungrouped(choices) => choices.iter().any(is_mode),
+        SessionConfigSelectOptions::Grouped(groups) => groups.iter().flat_map(|group| &group.options).any(is_mode),
+        _ => false,
+    }
+}
+
+/// The option list the agent sent last, as `history` recorded it.
+fn latest_config_options(history: &[SessionNotification]) -> Option<&[SessionConfigOption]> {
+    history.iter().rev().find_map(|notification| match &notification.update {
+        SessionUpdate::ConfigOptionUpdate(update) => Some(update.config_options.as_slice()),
+        _ => None,
+    })
 }
 
 /// Records `blocks` as a user turn, sends them and resolves with the stop reason once the agent finished.
@@ -1897,7 +1919,6 @@ pub async fn resolve_imports(app: AppHandle, id: Uuid, from: String, specifiers:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::SessionConfigSelectOption;
 
     #[test]
     fn shown_config_values_reads_the_last_recorded_option_list() {
@@ -1915,6 +1936,20 @@ mod tests {
         let shown = shown_config_values(&history, &["model", "effort", "fast"]);
         assert_eq!(shown, vec![("model".to_string(), "fable".to_string()), ("effort".to_string(), "xhigh".to_string())]);
         assert!(shown_config_values(&[], &["model"]).is_empty());
+    }
+
+    #[test]
+    fn offers_mode_reads_the_modes_of_the_last_recorded_option_list() {
+        let modes = |ids: &[&'static str]| {
+            let choices = ids.iter().map(|id| SessionConfigSelectOption::new(*id, *id)).collect::<Vec<_>>();
+            let option = SessionConfigOption::select(MODE_CONFIG_ID, "Mode", ids[0], choices);
+            SessionNotification::new("acp-session", SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(vec![option])))
+        };
+        let history = vec![modes(&["default", "auto"]), modes(&["default", "plan"])];
+
+        assert!(offers_mode(&history, "plan"));
+        assert!(!offers_mode(&history, "auto"));
+        assert!(!offers_mode(&[], "default"));
     }
 
     #[test]

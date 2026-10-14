@@ -128,7 +128,7 @@ pub struct RemoteTarget {
     pub handoff_head: String,
     pub handed_off_at: chrono::DateTime<chrono::Utc>,
     /// The permission mode the session had locally. The agent on the VM runs in `bypassPermissions`, which a local
-    /// agent would take over from the transcript, so the retrieval sets this mode again; `None` falls back to `default`.
+    /// agent would take over from the transcript, so the retrieval sets this mode again; `None` falls back to `auto`.
     #[serde(default)]
     pub local_mode: Option<String>,
     /// When the agent last worked on the session: a prompt Hunt sent or a turn that ended; `None` until the first one
@@ -150,9 +150,10 @@ pub struct RemoteTarget {
 }
 
 impl RemoteTarget {
-    /// The permission mode the session gets back locally.
+    /// The permission mode the session gets back locally: its mode before the handoff, else `auto`, the mode new
+    /// sessions start in.
     pub fn restored_mode(&self) -> &str {
-        self.local_mode.as_deref().unwrap_or("default")
+        self.local_mode.as_deref().unwrap_or("auto")
     }
 
     /// Whether this Mac adopted the session from a VM listing instead of handing it off: there is no local worktree

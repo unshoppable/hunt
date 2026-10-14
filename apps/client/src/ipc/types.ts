@@ -154,7 +154,7 @@ export type RemoteTarget = {
   handoffHead: string;
   /** When the session went to its VM; for an adopted session when this Mac adopted it. */
   handedOffAt: string;
-  /** The permission mode the session had locally, which the retrieval restores; null for older handoffs. */
+  /** The permission mode the session had locally, which the retrieval restores; null for older handoffs and adopted sessions, which come back in `auto`. */
   localMode: string | null;
   /** When the agent last worked on the session (a prompt Hunt sent or a turn that ended); null until the first one. */
   lastActiveAt: string | null;

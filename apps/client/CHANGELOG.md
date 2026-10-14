@@ -1,3 +1,9 @@
+## 0.6.0 (2026-10-14)
+
+### 🚀 Features
+
+- take the gateway and the swf poller's settings from the infrastructure ([cfc3cbf](https://github.com/unshoppable/hunt/commit/cfc3cbf))
+
 ## 0.5.0 (2026-10-14)
 
 ### 🚀 Features

@@ -16,8 +16,8 @@ import {
   swfLabels,
 } from "./swfPlan.ts";
 
-function issue(number: number, title = `Issue ${number}`): Issue {
-  return { number, title, body: "", author: "alice", createdAt: "2026-10-13T08:04:05Z", url: `https://github.com/acme/app/issues/${number}` };
+function issue(number: number, title = `Issue ${number}`, labels = ["swf"]): Issue {
+  return { number, title, body: "", author: "alice", createdAt: "2026-10-13T08:04:05Z", url: `https://github.com/acme/app/issues/${number}`, labels };
 }
 
 describe("names", () => {
@@ -30,9 +30,17 @@ describe("names", () => {
     expect(slugify("日本語")).toBe("");
   });
 
-  it("names the branch hunt/<issue>-<slug>, or hunt/<issue> without a usable title", () => {
-    expect(branchName(12, "Fix login")).toBe("hunt/12-fix-login");
-    expect(branchName(7, "!!!")).toBe("hunt/7");
+  it("names the branch feat/general/<issue>-<slug>, or feat/general/<issue> without a usable title", () => {
+    expect(branchName(issue(12, "Fix login"))).toBe("feat/general/12-fix-login");
+    expect(branchName(issue(7, "!!!"))).toBe("feat/general/7");
+    expect(branchName(issue(8, "Add export", []))).toBe("feat/general/8-add-export");
+  });
+
+  it("names the branch of an issue labelled bug, in any case, fix/general/<issue>-<slug>", () => {
+    expect(branchName(issue(12, "Fix login", ["swf", "bug"]))).toBe("fix/general/12-fix-login");
+    expect(branchName(issue(13, "Crash", ["Bug"]))).toBe("fix/general/13-crash");
+    expect(branchName(issue(14, "!!!", ["bug"]))).toBe("fix/general/14");
+    expect(branchName(issue(15, "Debug view", ["swf", "debug", "bugfix"]))).toBe("feat/general/15-debug-view");
   });
 
   it("takes the short ID and the VM name from the first 8 hex digits of the session ID", () => {
@@ -78,9 +86,9 @@ describe("issue selection", () => {
 describe("issue comments", () => {
   it("claims with the preview URL, the session, its VM and its branch", () => {
     const names = sessionNames("ab12cd34-0000-4000-8000-000000000001");
-    expect(claimComment(names, "hunt/12-fix-login", "hunt.example.com")).toBe(
+    expect(claimComment(names, "feat/general/12-fix-login", "hunt.example.com")).toBe(
       "Hunt started a session for this issue: preview `https://ab12cd34.hunt.example.com` (available once the agent starts the app).\n\n" +
-        "Session `ab12cd34-0000-4000-8000-000000000001` on the VM `vm-hunt-s-ab12cd34`, branch `hunt/12-fix-login`.",
+        "Session `ab12cd34-0000-4000-8000-000000000001` on the VM `vm-hunt-s-ab12cd34`, branch `feat/general/12-fix-login`.",
     );
   });
 
@@ -130,19 +138,19 @@ describe("firstPrompt", () => {
       { author: "bob", createdAt: "2026-10-13T09:00:00Z", body: "Also the logout.\n" },
       { author: "carol", createdAt: "2026-10-13T10:30:00Z", body: "Agreed." },
     ];
-    const text = firstPrompt("acme/app", { ...issue(12, "Fix login"), body: "The login fails." }, comments, "hunt/12-fix-login", swfLabels("swf"));
+    const text = firstPrompt("acme/app", { ...issue(12, "Fix login"), body: "The login fails." }, comments, "feat/general/12-fix-login", swfLabels("swf"));
 
     expect(text.startsWith("Work on GitHub issue #12 of acme/app: Fix login\nhttps://github.com/acme/app/issues/12\n")).toBe(true);
     expect(text).toContain("## Issue, opened by @alice on 2026-10-13 08:04 UTC\n\nThe login fails.\n");
     expect(text).toContain("**@bob** on 2026-10-13 09:00 UTC:\n\nAlso the logout.\n\n---\n\n**@carol** on 2026-10-13 10:30 UTC:\n\nAgreed.");
-    expect(text).toContain("Commit to the current branch `hunt/12-fix-login`, push it and open a pull request whose description contains `Closes #12`.");
+    expect(text).toContain("Commit to the current branch `feat/general/12-fix-login`, push it and open a pull request whose description contains `Closes #12`.");
     expect(text).toContain("`gh issue comment 12 --repo acme/app --body");
     expect(text).toContain("`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:done`");
     expect(text).toContain("replace `swf:running` with `swf:failed` instead (`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:failed`)");
   });
 
   it("says when the issue has no description or comments", () => {
-    const text = firstPrompt("acme/app", issue(3), [], "hunt/3-issue-3", swfLabels("swf"));
+    const text = firstPrompt("acme/app", issue(3), [], "feat/general/3-issue-3", swfLabels("swf"));
     expect(text).toContain("(no description)");
     expect(text).toContain("## Comments\n\n(none)\n");
   });

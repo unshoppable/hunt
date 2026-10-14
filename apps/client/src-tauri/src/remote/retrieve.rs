@@ -91,7 +91,7 @@ async fn retrieve_adopted(request: &RetrieveRequest<'_>, repo: &Path, progress: 
     let ssh = connect(request, progress).await?;
     let remote_worktree = remote_worktree(request, &ssh).await?;
     let checked_out = remote_branch(&ssh, &remote_worktree).await;
-    let fallback = format!("hunt/{}", vm::short_id(request.hunt_session_id));
+    let fallback = git::session_branch(&vm::short_id(request.hunt_session_id));
     let branch = local_branch_name(repo, &[checked_out.as_deref(), Some(target.branch.as_str()), Some(fallback.as_str())]).await?;
     progress(RemoteStep::StoppingAgent);
     hunt_ctl(&ssh, &["stop", &id]).await?;
@@ -436,7 +436,7 @@ mod tests {
         git(vm_dir.path(), &["clone", "-q", local.to_str().unwrap(), remote.to_str().unwrap()]).await;
         git(&remote, &["config", "user.email", "agent@example.com"]).await;
         git(&remote, &["config", "user.name", "Agent"]).await;
-        git(&remote, &["checkout", "-q", "-b", "hunt/123-fix"]).await;
+        git(&remote, &["checkout", "-q", "-b", "fix/general/123-fix"]).await;
         std::fs::write(remote.join("tracked.txt"), "two\n").unwrap();
         git(&remote, &["commit", "-q", "-am", "agent work"]).await;
         std::fs::write(remote.join("tracked.txt"), "three\n").unwrap();
@@ -447,13 +447,13 @@ mod tests {
         git(&remote, &["update-ref", "refs/hunt/x/retrieve", &snapshot]).await;
         git(&local, &["fetch", "-q", remote.to_str().unwrap(), "+refs/hunt/x/retrieve:refs/hunt/x/retrieve"]).await;
 
-        let branch = local_branch_name(&local, &[Some(" hunt/123-fix "), Some("hunt/ab12cd34")]).await.unwrap();
-        assert_eq!(branch, "hunt/123-fix");
+        let branch = local_branch_name(&local, &[Some(" fix/general/123-fix "), Some("feat/general/ab12cd34")]).await.unwrap();
+        assert_eq!(branch, "fix/general/123-fix");
         let worktree = local_dir.path().join("worktrees").join("x");
         create_worktree_from_snapshot(&local, &worktree, &branch, "refs/hunt/x/retrieve").await.unwrap();
 
         assert_eq!(git(&worktree, &["rev-parse", "HEAD"]).await, remote_head);
-        assert_eq!(git(&worktree, &["symbolic-ref", "--short", "HEAD"]).await, "hunt/123-fix");
+        assert_eq!(git(&worktree, &["symbolic-ref", "--short", "HEAD"]).await, "fix/general/123-fix");
         assert_eq!(read(&worktree, "tracked.txt").as_deref(), Some("three\n"));
         assert_eq!(read(&worktree, "new.txt").as_deref(), Some("fresh\n"));
         assert_eq!(read(&worktree, "gone.txt"), None);
@@ -461,10 +461,13 @@ mod tests {
         assert_eq!(git(&local, &["symbolic-ref", "--short", "HEAD"]).await, "main");
 
         // The branch exists now, so a second adoption of it must not take it over; invalid names are skipped.
-        let taken = local_branch_name(&local, &[Some("hunt/123-fix")]).await;
-        assert!(taken.unwrap_err().contains("the branch hunt/123-fix exists"));
-        let valid = local_branch_name(&local, &[None, Some("bad..name"), Some("-x"), Some("hunt/ab12cd34")]).await;
-        assert_eq!(valid.unwrap(), "hunt/ab12cd34");
+        let taken = local_branch_name(&local, &[Some("fix/general/123-fix")]).await;
+        assert!(taken.unwrap_err().contains("the branch fix/general/123-fix exists"));
+        let valid = local_branch_name(&local, &[None, Some("bad..name"), Some("-x"), Some("feat/general/ab12cd34")]).await;
+        assert_eq!(valid.unwrap(), "feat/general/ab12cd34");
+        // A branch outside the `feat/general/` scheme, as older sessions have, is kept.
+        let old = local_branch_name(&local, &[Some("hunt/7-old"), Some("feat/general/ab12cd34")]).await;
+        assert_eq!(old.unwrap(), "hunt/7-old");
         assert!(local_branch_name(&local, &[Some(""), None]).await.is_err());
     }
 }

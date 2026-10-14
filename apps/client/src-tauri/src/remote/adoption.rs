@@ -152,7 +152,7 @@ mod tests {
             status: "TERMINATED".into(),
             origin: "swf".into(),
             repo: "acme/app".into(),
-            branch: "hunt/123-fix-login".into(),
+            branch: "fix/general/123-fix-login".into(),
             title: " Fix login ".into(),
             issue: Some(123),
             created_at: "2026-10-12T03:04:05.678-07:00".into(),
@@ -179,7 +179,7 @@ mod tests {
         let vm = VmRef { project: "acme-hunt".into(), zone: "europe-west1-c".into(), instance: "vm-hunt-s-ab12cd34".into() };
         assert_eq!(adopted[0].vm, vm);
         let (title, repo, branch) = (adopted[0].title.as_str(), adopted[0].repo.as_str(), adopted[0].branch.as_str());
-        assert_eq!((title, repo, branch), ("Fix login", "acme/app", "hunt/123-fix-login"));
+        assert_eq!((title, repo, branch), ("Fix login", "acme/app", "fix/general/123-fix-login"));
         assert_eq!((adopted[0].origin, adopted[0].issue, adopted[0].is_running), (RemoteOrigin::Swf, Some(123), false));
         assert_eq!(adopted[0].created_at.map(|time| time.to_rfc3339()).as_deref(), Some("2026-10-12T10:04:05.678+00:00"));
         assert_eq!((adopted[1].title.as_str(), adopted[1].branch.as_str()), ("Remote session of acme/app", ""));
@@ -251,8 +251,9 @@ mod tests {
 
     #[test]
     fn parse_session_meta_reads_the_worktree_and_branch() {
-        let meta = parse_session_meta(r#"{"repo":"acme/app","worktree":"/home/agent/app","createdAt":1,"branch":"hunt/x"}"#).unwrap();
-        assert_eq!(meta, SessionMeta { worktree: "/home/agent/app".into(), branch: Some("hunt/x".into()) });
+        let meta =
+            parse_session_meta(r#"{"repo":"acme/app","worktree":"/home/agent/app","createdAt":1,"branch":"feat/general/x"}"#).unwrap();
+        assert_eq!(meta, SessionMeta { worktree: "/home/agent/app".into(), branch: Some("feat/general/x".into()) });
         assert_eq!(parse_session_meta(r#"{"worktree":"/srv/worktrees/x","branch":" "}"#).unwrap().branch, None);
         assert!(parse_session_meta(r#"{"worktree":"relative"}"#).is_err());
         assert!(parse_session_meta(r#"{"repo":"acme/app"}"#).is_err());

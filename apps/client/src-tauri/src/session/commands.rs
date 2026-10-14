@@ -261,7 +261,7 @@ pub async fn create_session(
     let repo_path = PathBuf::from(repo_path);
     let (worktree_path, branch, base_ref) = match workspace {
         Workspace::Worktree => {
-            let branch = format!("hunt/{}", build_branch_slug(&title, id));
+            let branch = worktree_branch_name(&title, id);
             (store::worktrees_dir(&app)?.join(id.to_string()), branch, base_ref)
         }
         Workspace::Checkout => {
@@ -1807,8 +1807,9 @@ fn drop_pending_permissions(permissions: &PermissionRegistry, hunt_session_id: U
     permissions.0.lock().unwrap().retain(|_, pending| pending.hunt_session_id != hunt_session_id);
 }
 
-/// `hunt/<slug>-<short id>`: lowercase title, non-alphanumerics collapsed to dashes.
-fn build_branch_slug(title: &str, id: Uuid) -> String {
+/// The branch of a worktree session, `feat/general/<slug>-<short id>`: the title lowercased, non-alphanumerics
+/// collapsed to dashes and cut to 40 characters.
+fn worktree_branch_name(title: &str, id: Uuid) -> String {
     let mut slug = String::new();
     for character in title.to_lowercase().chars() {
         if character.is_ascii_alphanumeric() {
@@ -1821,9 +1822,9 @@ fn build_branch_slug(title: &str, id: Uuid) -> String {
     let short_id = &id.to_string()[..8];
 
     if slug.is_empty() {
-        return short_id.to_string();
+        return git::session_branch(short_id);
     }
-    format!("{}-{short_id}", slug.chars().take(40).collect::<String>().trim_end_matches('-'))
+    git::session_branch(&format!("{}-{short_id}", slug.chars().take(40).collect::<String>().trim_end_matches('-')))
 }
 
 /// Entries of a worktree directory for the project tree (`path` is relative; empty for the root).
@@ -1906,15 +1907,15 @@ mod tests {
     }
 
     #[test]
-    fn build_branch_slug_lowercases_and_collapses_separators() {
+    fn worktree_branch_name_is_a_feat_general_branch_with_a_lowercase_collapsed_slug() {
         let id = Uuid::parse_str("0123abcd-1111-2222-3333-444455556666").unwrap();
-        assert_eq!(build_branch_slug("Fix the Login  Bug!", id), "fix-the-login-bug-0123abcd");
-        assert_eq!(build_branch_slug("  ---  ", id), "0123abcd");
-        assert_eq!(build_branch_slug("", id), "0123abcd");
-        assert_eq!(build_branch_slug("Ärger mit Umlauten", id), "rger-mit-umlauten-0123abcd");
+        assert_eq!(worktree_branch_name("Fix the Login  Bug!", id), "feat/general/fix-the-login-bug-0123abcd");
+        assert_eq!(worktree_branch_name("  ---  ", id), "feat/general/0123abcd");
+        assert_eq!(worktree_branch_name("", id), "feat/general/0123abcd");
+        assert_eq!(worktree_branch_name("Ärger mit Umlauten", id), "feat/general/rger-mit-umlauten-0123abcd");
 
-        let long = build_branch_slug(&"word ".repeat(20), id);
-        assert_eq!(long, format!("{}-0123abcd", "word-".repeat(8).trim_end_matches('-')));
+        let long = worktree_branch_name(&"word ".repeat(20), id);
+        assert_eq!(long, format!("feat/general/{}-0123abcd", "word-".repeat(8).trim_end_matches('-')));
         assert!(!long.contains("--"));
     }
 

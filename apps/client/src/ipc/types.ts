@@ -111,8 +111,8 @@ export type ReviewThreadComment = {
 };
 
 /**
- * Where a session works: `worktree` is a `hunt/<slug>-<id>` worktree created off the base branch and deleted with the
- * session, `checkout` is the repository's own checkout on whatever branch it has, which Hunt leaves alone.
+ * Where a session works: `worktree` is a `feat/general/<slug>-<id>` worktree created off the base branch and deleted
+ * with the session, `checkout` is the repository's own checkout on whatever branch it has, which Hunt leaves alone.
  */
 export type Workspace = "worktree" | "checkout";
 

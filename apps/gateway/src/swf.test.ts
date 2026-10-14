@@ -13,8 +13,9 @@ const CONFIG: SwfConfig = { repos: ["acme/app"], maxSessions: 2, label: "swf", t
 const SESSION_ID = "ab12cd34-0000-4000-8000-000000000001";
 const VM = "vm-hunt-s-ab12cd34";
 
-function issue(number: number, title = `Issue ${number}`): Issue {
-  return { number, title, body: `Body of ${number}`, author: "alice", createdAt: "2026-10-13T08:00:00Z", url: `https://github.com/acme/app/issues/${number}` };
+function issue(number: number, title = `Issue ${number}`, labels = ["swf"]): Issue {
+  const url = `https://github.com/acme/app/issues/${number}`;
+  return { number, title, body: `Body of ${number}`, author: "alice", createdAt: "2026-10-13T08:00:00Z", url, labels };
 }
 
 /** A GitHub whose issues are `issues` by repository; every call is recorded as one line. */
@@ -209,7 +210,7 @@ describe("Poller.cycle", () => {
   });
 
   it("claims the issue before anything else and then sets the session up like a handoff", async () => {
-    const github = fakeGitHub({ "acme/app": [issue(12, "Fix login")] });
+    const github = fakeGitHub({ "acme/app": [issue(12, "Fix login", ["swf", "bug"])] });
     const compute = fakeCompute();
     const { vm, calls, claudeFiles } = fakeVm();
     const { poller, logs, prompts } = createPoller({ github, compute, vm });
@@ -225,7 +226,7 @@ describe("Poller.cycle", () => {
       "comments acme/app#12",
       "unlabel acme/app#12 swf",
       "label acme/app#12 swf:running",
-      `comment acme/app#12 Hunt started a session for this issue: preview \`https://ab12cd34.hunt.example.com\` (available once the agent starts the app).\n\nSession \`${SESSION_ID}\` on the VM \`${VM}\`, branch \`hunt/12-fix-login\`.`,
+      `comment acme/app#12 Hunt started a session for this issue: preview \`https://ab12cd34.hunt.example.com\` (available once the agent starts the app).\n\nSession \`${SESSION_ID}\` on the VM \`${VM}\`, branch \`fix/general/12-fix-login\`.`,
     ]);
     expect(compute.inserted).toEqual([
       { name: VM, template: "tpl-hunt-session", machineType: null, labels: { "hunt-role": "session", "hunt-session": "ab12cd34", "hunt-origin": "swf" } },
@@ -235,7 +236,7 @@ describe("Poller.cycle", () => {
         { key: "startup-script", value: "#!/bin/sh" },
         { key: "hunt-session-id", value: SESSION_ID },
         { key: "hunt-repo", value: "acme/app" },
-        { key: "hunt-branch", value: "hunt/12-fix-login" },
+        { key: "hunt-branch", value: "fix/general/12-fix-login" },
         { key: "hunt-title", value: "Fix login" },
         { key: "hunt-issue", value: "12" },
       ],
@@ -244,7 +245,7 @@ describe("Poller.cycle", () => {
       "wait until ready",
       "ensure release",
       "hunt-ctl install-tools",
-      `hunt-ctl clone ${SESSION_ID} --repo acme/app --branch hunt/12-fix-login <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`,
+      `hunt-ctl clone ${SESSION_ID} --repo acme/app --branch fix/general/12-fix-login <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`,
       `hunt-ctl session-config ${SESSION_ID} --domain hunt.example.com`,
       `put-files ${SESSION_ID} --claude hunt-session.json`,
       `hunt-ctl deps ${SESSION_ID}`,

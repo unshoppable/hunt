@@ -27,15 +27,31 @@ describe("nextPageUrl", () => {
 });
 
 describe("parseIssues", () => {
-  it("leaves pull requests out and fills in missing fields", () => {
+  it("leaves pull requests out, takes the label names and fills in missing fields", () => {
     const issues = parseIssues([
-      { number: 3, title: "Fix login", body: null, user: { login: "alice" }, created_at: "2026-10-13T08:00:00Z", html_url: "https://github.com/acme/app/issues/3" },
+      {
+        number: 3,
+        title: "Fix login",
+        body: null,
+        user: { login: "alice" },
+        created_at: "2026-10-13T08:00:00Z",
+        html_url: "https://github.com/acme/app/issues/3",
+        labels: [{ id: 1, name: "swf" }, "bug", { id: 2 }, null],
+      },
       { number: 4, title: "A pull request", pull_request: { url: "x" } },
       { number: 5, title: "Deleted author", user: null },
     ]);
     expect(issues).toEqual([
-      { number: 3, title: "Fix login", body: "", author: "alice", createdAt: "2026-10-13T08:00:00Z", url: "https://github.com/acme/app/issues/3" },
-      { number: 5, title: "Deleted author", body: "", author: "ghost", createdAt: "", url: "" },
+      {
+        number: 3,
+        title: "Fix login",
+        body: "",
+        author: "alice",
+        createdAt: "2026-10-13T08:00:00Z",
+        url: "https://github.com/acme/app/issues/3",
+        labels: ["swf", "bug"],
+      },
+      { number: 5, title: "Deleted author", body: "", author: "ghost", createdAt: "", url: "", labels: [] },
     ]);
   });
 });

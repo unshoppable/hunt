@@ -102,6 +102,15 @@ async fn run_git_with_input(cwd: &Path, args: &[&str], envs: &[(&str, &Path)], i
 /// The ref every changelist and diff of a worktree compares against: its uncommitted changes.
 pub const DIFF_BASE: &str = "HEAD";
 
+/// The prefix of the branches Hunt creates for its sessions, in the `<type>/<scope>/<name>` form repositories check
+/// branch names against.
+const SESSION_BRANCH_PREFIX: &str = "feat/general/";
+
+/// The branch Hunt creates for a session: `feat/general/<name>`.
+pub fn session_branch(name: &str) -> String {
+    format!("{SESSION_BRANCH_PREFIX}{name}")
+}
+
 /// Full commit hash of `reference`. The ref follows `--end-of-options` and may not start with `-`, so a
 /// frontend-supplied value can never act as a git option.
 pub async fn rev_parse(repo: &Path, reference: &str) -> Result<String, String> {

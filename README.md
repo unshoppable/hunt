@@ -52,7 +52,7 @@ decision records that steer the agent.
 
 ### ✨ Features
 
-- **Isolated sessions.** Each session gets a `hunt/<slug>-<id>` worktree; shelve, revert and commit per file.
+- **Isolated sessions.** Each session gets a `feat/general/<slug>-<id>` worktree; shelve, revert and commit per file.
 - **Sub sessions.** Start a background agent in an existing worktree, or ask Claude about a selected diff range.
 - **Change attribution.** Sessions sharing a worktree see only their own files; shared files carry a badge.
 - **Built-in IDE.** Project tree, Monaco panes with tabs, breadcrumbs, go-to-declaration, usages, inlay hints and
@@ -175,9 +175,9 @@ via the ACP `systemPrompt` meta.
 
 #### Worktrees and changes
 
-`apps/client/src-tauri/src/git.rs` creates `hunt/<slug>-<id>` worktrees under the app data directory, lists their
-changes against the session's diff base (`HEAD`, or the merge base of a reviewed pull request) and supports shelving and
-reverting them.
+`apps/client/src-tauri/src/git.rs` creates `feat/general/<slug>-<id>` worktrees under the app data directory (the
+`<type>/<scope>/<name>` form repositories check branch names against), lists their changes against the session's diff
+base (`HEAD`, or the merge base of a reviewed pull request) and supports shelving and reverting them.
 
 A new worktree has no `node_modules`, so `apps/client/src-tauri/src/session/dependencies.rs` prepares it in the
 background: when the repository has an installed `node_modules`, it is cloned with one APFS `clonefile` call
@@ -460,9 +460,10 @@ API and, while fewer of its VMs
 issue: `swf` becomes `swf:running` (the labels `swf:running`, `swf:done` and `swf:failed` are created when missing) and
 a comment names the session's preview URL. Then it does what a handoff does, with the gateway's service account instead
 of a Mac: the orchestrator creates `vm-hunt-s-<short id>` from the configured instance template (labelled
-`hunt-origin=swf`, without an owner), records the session, repository, branch `hunt/<issue>-<slug of the title>`, title
-and issue in the VM's metadata, waits for the startup script and installs the staged session release, over `gcloud
-compute ssh --internal-ip` (OS Login as admin, one shared SSH connection per VM); `hunt-ctl install-tools` follows.
+`hunt-origin=swf`, without an owner), records the session, repository,
+branch `feat/general/<issue>-<slug of the title>` (`fix/general/…` for an issue labelled `bug`), title and issue in the
+VM's metadata, waits for the startup script and installs the staged session release, over `gcloud compute ssh
+--internal-ip` (OS Login as admin, one shared SSH connection per VM); `hunt-ctl install-tools` follows.
 `hunt-ctl clone` clones the repository from GitHub as `agent` onto the branch (the origin's branch of that name
 when it exists, else a new one from the default branch) with the token's GitHub user as Git identity; `session-config`,
 `put-files --claude` with `hunt-session.json`, `deps`, `start` and `wait` follow as in a handoff. The system prompt is

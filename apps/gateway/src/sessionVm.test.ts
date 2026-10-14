@@ -10,7 +10,7 @@ describe("shell quoting", () => {
     expect(shellQuote("two words")).toBe("'two words'");
     expect(shellQuote("it's")).toBe(`'it'\\''s'`);
     expect(shellQuote("")).toBe("''");
-    expect(shellCommand("sudo", ["-n", "hunt-ctl", "clone", "id", "--branch", "hunt/12-fix login"])).toBe("sudo -n hunt-ctl clone id --branch 'hunt/12-fix login'");
+    expect(shellCommand("sudo", ["-n", "hunt-ctl", "clone", "id", "--branch", "fix/general/12-fix login"])).toBe("sudo -n hunt-ctl clone id --branch 'fix/general/12-fix login'");
   });
 });
 

@@ -252,14 +252,18 @@ describe("proxyConfig", () => {
     expect(server.trusted_proxies).toEqual({ source: "static", ranges: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] });
   });
 
-  it("logs every request but the health check as JSON to the access log the idle check reads, and nothing else there", () => {
+  it("logs every request but the health check as JSON to the access log the idle check reads, the rest as plain lines", () => {
     expect(server.logs).toEqual({ default_logger_name: "preview" });
     expect(config.logging.logs.access).toEqual({
       writer: { output: "file", filename: "/var/log/hunt-proxy/access.log", roll_size_mb: 20, roll_keep: 2 },
       encoder: { format: "json" },
       include: ["http.log.access.preview"],
     });
-    expect(config.logging.logs.default).toEqual({ level: "WARN", exclude: ["http.log.access.preview"] });
+    expect(config.logging.logs.default).toEqual({
+      level: "WARN",
+      encoder: { format: "console", level_format: "upper" },
+      exclude: ["http.log.access.preview"],
+    });
     expect(server.routes[0].handle[0]).toEqual({ handler: "vars", log_skip: true });
   });
 

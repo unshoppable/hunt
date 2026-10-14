@@ -64,7 +64,8 @@ export interface CaddyRoute {
 export interface CaddyLog {
   level?: string;
   writer?: { output: "file"; filename: string; roll_size_mb: number; roll_keep: number };
-  encoder?: { format: string };
+  /** `level_format: "upper"` keeps the console format free of color codes. */
+  encoder?: { format: string; level_format?: string };
   include?: string[];
   exclude?: string[];
 }
@@ -209,7 +210,8 @@ export function envFile(env: Record<string, string>): string {
  * the request's own Host header, which Caddy would replace with the upstream's address for HTTPS, but never IAP's
  * headers and cookies; responses are flushed at once (server-sent events). HEALTH_PATH answers 200 on every host and
  * the reserved ports answer 403. Every request except the health check goes to ACCESS_LOG as one JSON line; Caddy
- * writes Cookie and Authorization headers there redacted.
+ * writes Cookie and Authorization headers there redacted. Caddy's own warnings and errors, such as an upstream that
+ * refuses the connection, go to stderr, hunt-proxy's journal, as one readable line each.
  */
 export function proxyConfig(config: PreviewConfig, host: SessionHost): CaddyConfig {
   const mainHost = `${host.short}.${host.domain}`;
@@ -234,7 +236,7 @@ export function proxyConfig(config: PreviewConfig, host: SessionHost): CaddyConf
     admin: { listen: PROXY_ADMIN, config: { persist: false } },
     logging: {
       logs: {
-        default: { level: "WARN", exclude: [`http.log.access.${ACCESS_LOGGER}`] },
+        default: { level: "WARN", encoder: { format: "console", level_format: "upper" }, exclude: [`http.log.access.${ACCESS_LOGGER}`] },
         access: {
           writer: { output: "file", filename: ACCESS_LOG, roll_size_mb: 20, roll_keep: 2 },
           encoder: { format: "json" },

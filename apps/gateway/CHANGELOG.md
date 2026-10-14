@@ -1,3 +1,13 @@
+## 0.7.0 (2026-10-14)
+
+### 🚀 Features
+
+- choose the machine type of new session VMs in Settings → Remote VM ([0a91dd5](https://github.com/unshoppable/hunt/commit/0a91dd5))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.6.0
+
 ## 0.6.0 (2026-10-14)
 
 ### 🚀 Features

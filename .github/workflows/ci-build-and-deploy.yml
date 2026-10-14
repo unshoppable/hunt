@@ -4,8 +4,8 @@
 # the gateway (`hunt-ctl stage-session`), which hands it to the session VMs. Called by ci-nx-affected-deploy per
 # affected app; dispatchable for one-offs. .github/config/<app>/variables.json holds the build and the hunt-ctl command,
 # <app>/prod/variables.json the gateway VM, the deploy identity (Workload Identity Federation, no key) and, for the
-# gateway, the preview domain. The deploy service account trusts the workflow runs of this repository
-# (attribute.repository, like sa-deploy-medc for app-framework).
+# gateway, the preview domain. The deploy service account trusts only this repository's runs on master (Workload
+# Identity attribute repository_ref, envs/hunt of unshoppable/infrastructure), and the job deploys only commits on master.
 name: 🚀 CI | Build and Deploy
 run-name: '${{ inputs.project }} ${{ inputs.version }} (${{ inputs.ref || github.sha }})'
 
@@ -62,6 +62,15 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ inputs.ref }}
+
+      # The deploy identity is root on the gateway, and the steps after this one run code of the checked-out commit with
+      # the job's ID token: only commits on master may be deployed, an older one to roll back to included.
+      - name: Refuse commits outside master
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/master; then
+            echo "::error::$(git rev-parse HEAD) is not on master; only commits on master may be deployed"
+            exit 1
+          fi
 
       - uses: actions/setup-node@v4
         with:

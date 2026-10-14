@@ -111,12 +111,15 @@ export class ConfigError extends Error {
   }
 }
 
-/** Ports no service may use, with what holds them on the session VM. */
+/** Ports no service may use, with what holds them on the session VM; hunt-ctl's RESERVED_PORTS lists the same. */
 const RESERVED_PORTS: ReadonlyMap<number, string> = new Map([
   [2019, "Caddy's admin API"],
   [2375, "the Docker API"],
   [2376, "the Docker API over TLS"],
+  [5355, "LLMNR of systemd-resolved"],
   [8080, "the session VM's preview proxy"],
+  [20201, "the Google Ops Agent's OpenTelemetry collector"],
+  [20202, "the Google Ops Agent's Fluent Bit"],
 ]);
 
 /** Where the preview proxy listens; the gateway forwards every preview request there with its original Host header. */

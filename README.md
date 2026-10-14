@@ -403,8 +403,8 @@ load balancer in front of it lets only IAP's access group through, and a request
 can call its backend on a host of its own, as it does locally; only the app's own login protects them. The *Preview* tab
 next to a remote session's chat (`apps/client/src/preview/PreviewPanel.tsx`) polls `preview_status`, which runs
 `hunt-ctl preview-status <id>` on the VM, and shows every service with its state, URL and whether it answers, marks the
-public ones and lists the other ports that listen, except those of the VM's system services (Ops Agent, LLMNR); Hunt
-builds the URLs from the session ID and the preview domain the gateway reported at the handoff, the VM reports only
+public ones and lists the other ports that listen, except the reserved ones (`RESERVED_PORTS`: Caddy, Docker, the
+preview proxy, LLMNR and the Ops Agent), which no service may take and the preview proxy refuses; Hunt builds the URLs from the session ID and the preview domain the gateway reported at the handoff, the VM reports only
 port numbers. While no service runs, *Start the app* sends the agent a normal prompt to start the services the task
 needs, which starts a VM that is off; *Open preview* in the cloud menu opens the tab.
 

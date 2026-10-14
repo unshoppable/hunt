@@ -73,8 +73,9 @@ readonly SERVICE_NAME_PATTERN='^[a-z][a-z0-9-]{0,31}$'
 readonly SERVICE_SUDOERS_DROPIN=/etc/sudoers.d/hunt-service
 # A relay whose status.json heartbeat is older than this is gone.
 readonly HEARTBEAT_MAX_AGE_MS=120000
-# Ports preview-status never lists: Caddy's admin API, the Docker API and the preview proxy.
-readonly RESERVED_PORTS='2019 2375 2376 8080'
+# Ports preview-status never lists: Caddy's admin API, the Docker API, LLMNR of systemd-resolved, the preview proxy and
+# the Google Ops Agent's OpenTelemetry collector and Fluent Bit; apps/session/src/config.ts reserves the same.
+readonly RESERVED_PORTS='2019 2375 2376 5355 8080 20201 20202'
 # Pinned x86_64 downloads, like the VMs.
 readonly GH_VERSION=2.102.0
 readonly GH_SHA256=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386

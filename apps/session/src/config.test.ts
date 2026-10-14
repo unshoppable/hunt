@@ -155,7 +155,10 @@ describe("parseServices", () => {
       [web({ port: 2019 }), ["services.web.port: 2019 is reserved for Caddy's admin API"]],
       [web({ port: 2375 }), ["services.web.port: 2375 is reserved for the Docker API"]],
       [web({ port: 2376 }), ["services.web.port: 2376 is reserved for the Docker API over TLS"]],
+      [web({ port: 5355 }), ["services.web.port: 5355 is reserved for LLMNR of systemd-resolved"]],
       [web({ port: 8080 }), ["services.web.port: 8080 is reserved for the session VM's preview proxy"]],
+      [web({ port: 20201 }), ["services.web.port: 20201 is reserved for the Google Ops Agent's OpenTelemetry collector"]],
+      [web({ port: 20202 }), ["services.web.port: 20202 is reserved for the Google Ops Agent's Fluent Bit"]],
       [
         withServices({ web: { command: "a", port: 3000 }, api: { command: "b", port: 3000 }, docs: { command: "c", port: 3000 } }),
         ["services.api.port: 3000 is the port of the service web already", "services.docs.port: 3000 is the port of the service web already"],
@@ -447,7 +450,10 @@ describe("proxyConfig", () => {
       ["7c0c6f2e-2019.hunt.example.com", "403"],
       ["7c0c6f2e-2375.hunt.example.com", "403"],
       ["7c0c6f2e-2376.hunt.example.com", "403"],
+      ["7c0c6f2e-5355.hunt.example.com", "403"],
       ["7c0c6f2e-8080.hunt.example.com", "403"],
+      ["7c0c6f2e-20201.hunt.example.com", "403"],
+      ["7c0c6f2e-20202.hunt.example.com", "403"],
     ];
 
     for (const [hostName, expected] of cases) {

@@ -153,6 +153,9 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     // A dev server on the port of admin, which the probes find answering.
     const server = "require('http').createServer((_, res) => res.end('ok')).listen(4200)";
     expect(docker(["exec", "--detach", "--user", "agent", container, "node", "-e", server]).status).toBe(0);
+    // The ports of the VM's system services, which preview-status leaves out.
+    const systemServers = "for (const port of [5355, 20201, 20202]) require('net').createServer().listen(port)";
+    expect(docker(["exec", "--detach", container, "node", "-e", systemServers]).status).toBe(0);
   }, DOCKER_TIMEOUT_MS);
 
   afterAll(() => {

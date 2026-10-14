@@ -3,7 +3,7 @@
 //! VM behind Google login, and `https://<short>-<port>-open.<domain>` to the port of a service marked
 //! `"guarded": false`, which only the app's own login protects. `hunt-ctl preview-status` reports the services with
 //! their state and every port that listens; this module builds every URL from the session id, the domain and the port,
-//! so a URL the VM sends is ignored, and leaves out the ports of the VM's system services (`SYSTEM_PORTS`).
+//! so a URL the VM sends is ignored.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -12,10 +12,6 @@ use super::vm::short_id;
 
 /// The longest preview domain: `<short>-<port>-open.` in front of it must fit into the 253 characters of a host name.
 const MAX_DOMAIN_LENGTH: usize = 253 - "01234567-65535-open.".len();
-
-/// Ports the session VM's system services listen on, which serve no preview: LLMNR of systemd-resolved (5355) and the
-/// Google Ops Agent's OpenTelemetry collector (20201) and Fluent Bit (20202).
-const SYSTEM_PORTS: [u16; 3] = [5355, 20201, 20202];
 
 /// The longest service name; `apps/session/src/config.ts` and `hunt-ctl` allow the same.
 const MAX_SERVICE_NAME_LENGTH: usize = 32;
@@ -148,7 +144,7 @@ pub fn parse_status(output: &serde_json::Value, id: Uuid, domain: &str) -> Resul
         });
     }
     let mut ports = output.listening;
-    ports.retain(|port| !SYSTEM_PORTS.contains(port) && !services.iter().any(|service| service.port == *port));
+    ports.retain(|port| !services.iter().any(|service| service.port == *port));
     ports.sort_unstable();
     ports.dedup();
     let listening = ports.into_iter().map(|port| PreviewPort { port, url: port_url(id, domain, port) }).collect();
@@ -211,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_status_builds_the_urls_here_and_lists_only_the_other_ports_but_the_system_ports_as_listening() {
+    fn parse_status_builds_the_urls_here_and_lists_only_the_other_ports_as_listening() {
         let id = Uuid::parse_str(ID).unwrap();
         let output = json!({
             "services": [
@@ -219,7 +215,7 @@ mod tests {
                  "responds": true, "url": "https://evil.example"},
                 {"name": "med-ui", "port": 4400, "tls": false, "guarded": true, "enabled": false, "state": "stopped", "responds": false}
             ],
-            "listening": [20202, 5432, 3000, 5355, 9229, 5432, 20201],
+            "listening": [5432, 3000, 9229, 5432],
         });
         let status = parse_status(&output, id, "p.example.com").unwrap();
         assert!(status.vm_running);

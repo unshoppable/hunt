@@ -11,10 +11,11 @@ readonly COMMAND_PATTERN='^hunt-api ([a-z]+(\.[a-zA-Z]+)?)$'
 
 # An admin whom the Match block catches anyway (OS Login grants sudo per user, which need not show up as membership of
 # google-sudoers) keeps the command it asked for, such as the CI deploy's `sudo -n sh -c …`: a caller that may run
-# anything as root gains nothing from the restriction.
+# anything as root gains nothing from the restriction. The command runs without SSH_ORIGINAL_COMMAND, so that a
+# `hunt-api <method>` inside it, such as `echo '{}' | hunt-api hello`, takes its own arguments.
 if (( $# == 0 )) && [[ ${SSH_ORIGINAL_COMMAND:-} != "hunt-api "* ]] && sudo -n true 2>/dev/null; then
   if [[ -v SSH_ORIGINAL_COMMAND ]]; then
-    exec /bin/bash -c "$SSH_ORIGINAL_COMMAND"
+    exec env -u SSH_ORIGINAL_COMMAND /bin/bash -c "$SSH_ORIGINAL_COMMAND"
   fi
   exec /bin/bash -l
 fi

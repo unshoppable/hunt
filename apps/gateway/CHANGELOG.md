@@ -1,3 +1,13 @@
+## 0.6.0 (2026-10-14)
+
+### 🚀 Features
+
+- write the services' log lines with their severity ([5c05eb6](https://github.com/unshoppable/hunt/commit/5c05eb6))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.5.0
+
 ## 0.5.1 (2026-10-14)
 
 ### 🧱 Updated Dependencies

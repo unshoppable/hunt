@@ -1,3 +1,7 @@
+## 0.8.0 (2026-10-14)
+
+This was a version bump only for client to align it with other projects, there were no code changes.
+
 ## 0.7.1 (2026-10-14)
 
 ### 🩹 Fixes

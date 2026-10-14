@@ -291,7 +291,11 @@ export class Orchestrator {
     }
 
     const vm = this.deps.vm(name);
-    await vm.waitUntilReady(READY_TIMEOUT_MS, () => reporter.progress("waitingForVm"));
+    await vm.waitUntilReady(
+      READY_TIMEOUT_MS,
+      () => reporter.progress("waitingForVm"),
+      (reason) => reporter.log(`${name} does not answer yet: ${reason}`),
+    );
     reporter.log(`${name} is ready; checking its release`);
     const release = await vm.ensureRelease(() => {
       reporter.progress("installingRuntime");

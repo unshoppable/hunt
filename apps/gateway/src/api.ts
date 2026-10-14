@@ -8,7 +8,7 @@
  * (`vm/hunt-api`), which runs the forwarder `apiClient.ts` as hunt-gw through sudo. The forwarder sends one line
  * `{caller, method, params}` over the socket, which only hunt-gw can open, with sudo's SUDO_USER as the caller, and
  * copies the NDJSON events of the answer to stdout. The methods that touch session VMs go through the orchestrator
- * (`orchestrator.ts`) and run on when their caller disconnects. One log line per request goes to stdout (journald).
+ * (`orchestrator.ts`) and run on when their caller disconnects. A request's log lines and its outcome go to stdout (journald).
  * SIGHUP (the unit's reload, after an install) closes the socket and exits once the running requests ended, so that
  * systemd starts the new release. Runs on Node 24 through type stripping; no dependencies.
  */
@@ -123,7 +123,10 @@ async function serve(deps: ApiDeps, socket: Socket): Promise<void> {
   }
   const reporter: Reporter = {
     progress: (step) => write({ type: "progress", step }),
-    log: (message) => write({ type: "log", message }),
+    log: (message) => {
+      write({ type: "log", message });
+      deps.log(`${request.caller}: ${describeRequest(request)}: ${message}`);
+    },
   };
   const startedAt = Date.now();
   try {

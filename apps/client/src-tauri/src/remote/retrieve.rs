@@ -60,10 +60,10 @@ pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> R
 
     let ssh = connect(&request, progress).await?;
     let remote_worktree = remote_worktree(&request, &ssh).await?;
-    progress(RemoteStep::StoppingAgent);
+    progress.step(RemoteStep::StoppingAgent);
     hunt_ctl(&ssh, &["stop", &id]).await?;
 
-    progress(RemoteStep::RetrievingCode);
+    progress.step(RemoteStep::RetrievingCode);
     if !is_applied {
         hunt_ctl(&ssh, &["snapshot", &id]).await?;
         fetch(worktree, &ssh, &remote_worktree, &retrieve_ref).await?;
@@ -93,10 +93,10 @@ async fn retrieve_adopted(request: &RetrieveRequest<'_>, repo: &Path, progress: 
     let checked_out = remote_branch(&ssh, &remote_worktree).await;
     let fallback = git::session_branch(&vm::short_id(request.hunt_session_id));
     let branch = local_branch_name(repo, &[checked_out.as_deref(), Some(target.branch.as_str()), Some(fallback.as_str())]).await?;
-    progress(RemoteStep::StoppingAgent);
+    progress.step(RemoteStep::StoppingAgent);
     hunt_ctl(&ssh, &["stop", &id]).await?;
 
-    progress(RemoteStep::RetrievingCode);
+    progress.step(RemoteStep::RetrievingCode);
     hunt_ctl(&ssh, &["snapshot", &id]).await?;
     fetch(repo, &ssh, &remote_worktree, &retrieve_ref).await?;
     download_lfs_objects(repo, &ssh, &id, &retrieve_ref).await?;
@@ -113,7 +113,7 @@ async fn retrieve_adopted(request: &RetrieveRequest<'_>, repo: &Path, progress: 
 /// Starts the session's VM through the gateway when it is off and connects; the VM must speak this app's protocol, so
 /// that its `hunt-ctl` knows the commands the retrieval runs.
 async fn connect(request: &RetrieveRequest<'_>, progress: Progress<'_>) -> Result<Ssh, String> {
-    progress(RemoteStep::Connecting);
+    progress.step(RemoteStep::Connecting);
     start_session_vm(request.gateway, request.hunt_session_id, request.ssh_dir, progress).await
 }
 

@@ -205,8 +205,22 @@ pub enum RemoteStep {
     Unknown,
 }
 
+/// Hears what a running remote operation does: its steps, and the gateway's log lines about the current one. A closure
+/// over `RemoteStep` hears only the steps.
+pub trait Reporter: Send + Sync {
+    fn step(&self, step: RemoteStep);
+    /// A line about what the current step does or why it still waits; the next step replaces it.
+    fn log(&self, _message: &str) {}
+}
+
+impl<F: Fn(RemoteStep) + Send + Sync> Reporter for F {
+    fn step(&self, step: RemoteStep) {
+        self(step);
+    }
+}
+
 /// Receives the steps of a running remote operation.
-pub type Progress<'a> = &'a (dyn Fn(RemoteStep) + Send + Sync);
+pub type Progress<'a> = &'a dyn Reporter;
 
 /// `value` quoted for a POSIX shell, so it reaches the remote command (or `GIT_SSH_COMMAND`) as one word.
 pub fn shell_quote(value: &str) -> String {

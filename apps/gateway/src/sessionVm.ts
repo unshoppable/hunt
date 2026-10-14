@@ -160,8 +160,11 @@ export interface SessionVm {
   run(command: string, input?: Buffer | string, timeoutMs?: number): Promise<string>;
   /** Runs `hunt-ctl` with `args` as root and returns its JSON result. */
   huntCtl(args: string[], input?: Buffer | string, timeoutMs?: number): Promise<Record<string, unknown>>;
-  /** Waits until the VM answers over SSH and its startup script wrote the ready stamp; `onWaiting` hears the first miss. */
-  waitUntilReady(timeoutMs: number, onWaiting?: () => void): Promise<void>;
+  /**
+   * Waits until the VM answers over SSH and its startup script wrote the ready stamp. `onWaiting` hears the first miss,
+   * `onFailure` why the VM does not answer: the first failed check and then one at most every minute.
+   */
+  waitUntilReady(timeoutMs: number, onWaiting?: () => void, onFailure?: (reason: string) => void): Promise<void>;
   /** Installs the staged session release unless the VM runs it already; `onInstall` hears when it does. */
   ensureRelease(onInstall?: () => void): Promise<ReleaseInfo>;
   /** Unpacks `files` (name → text, mode 0600) into the agent's ~/.claude through `hunt-ctl put-files <id> --claude`. */
@@ -172,6 +175,7 @@ export interface SessionVm {
 
 const HOUR_MS = 60 * 60_000;
 const READY_POLL_MS = 10_000;
+const READY_FAILURE_REPORT_MS = 60_000;
 
 export function sessionVm(vm: string, location: VmLocation): SessionVm {
   const gcloud = (command: string, input: Buffer | string, timeoutMs: number, what: string) => run("gcloud", sshArgs(vm, location, command), input, timeoutMs, what);
@@ -189,15 +193,20 @@ export function sessionVm(vm: string, location: VmLocation): SessionVm {
         throw new Error(`failed to read the output of hunt-ctl ${args[0]} on ${vm}: ${output.slice(0, 300)}`);
       }
     },
-    async waitUntilReady(timeoutMs, onWaiting) {
+    async waitUntilReady(timeoutMs, onWaiting, onFailure) {
       const deadline = Date.now() + timeoutMs;
       let reason = `${READY_STAMP} is still missing`;
       let isWaiting = false;
+      let reportedAt = -Infinity;
       while (Date.now() < deadline) {
         try {
           if ((await self.run(`test -e ${READY_STAMP} && echo ready || true`, "", 2 * 60_000)).trim() === "ready") return;
         } catch (error) {
           reason = (error as Error).message;
+          if (Date.now() - reportedAt >= READY_FAILURE_REPORT_MS) {
+            reportedAt = Date.now();
+            onFailure?.(reason);
+          }
         }
         if (!isWaiting) {
           isWaiting = true;

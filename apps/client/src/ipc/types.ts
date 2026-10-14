@@ -206,8 +206,11 @@ export type PreviewStatus = {
 
 export type PreviewPort = { port: number; url: string };
 
-/** The step a remote operation on a session is at; `null` once it ended. */
-export type RemoteProgressEvent = { huntSessionId: string; step: RemoteStep | null };
+/**
+ * The step a remote operation on a session is at; `null` once it ended. `detail` is the gateway's last log line about
+ * the step, e.g. why the VM does not answer yet; `null` until it sends one.
+ */
+export type RemoteProgressEvent = { huntSessionId: string; step: RemoteStep | null; detail: string | null };
 
 /** A chunk of a terminal's output: base64 of its bytes, which may end inside a UTF-8 or an escape sequence. */
 export type TerminalOutputEvent = { id: string; data: string };

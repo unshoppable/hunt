@@ -170,6 +170,9 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           ) : null}
           <MessageList items={chat?.items ?? []} plan={chat?.plan ?? []} isBusy={(isBusy && !chat?.isHiddenTurn) || isCreating} isVerbose={isVerbose} basePath={session.remote?.worktreePath ?? session.worktreePath} />
           {chat?.isLoading ? <p className="text-neutral-500">{chat.remoteStep ? REMOTE_STEP_LABELS[chat.remoteStep] : "Loading session…"}</p> : null}
+          {chat?.isLoading && chat.remoteDetail ? (
+            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[12px] leading-snug text-neutral-500">{chat.remoteDetail}</pre>
+          ) : null}
           {chat?.permission ? (
             <PermissionPrompt
               permission={chat.permission}

@@ -228,8 +228,8 @@ impl<'a> Outcome<'a> {
         Outcome { method, result: None, error: None, stray: Vec::new() }
     }
 
-    /// Takes one line of output: a known progress step goes to `progress`, a log line to stderr, a result or an error is
-    /// kept; unknown events and steps are dropped.
+    /// Takes one line of output: a known progress step and a log line go to `progress`, a result or an error is kept;
+    /// unknown events and steps are dropped.
     fn take(&mut self, line: &str, progress: Progress<'_>) {
         let line = line.trim();
         if line.is_empty() {
@@ -237,8 +237,11 @@ impl<'a> Outcome<'a> {
         }
         match serde_json::from_str::<Event>(line) {
             Ok(Event::Progress { step: RemoteStep::Unknown }) | Ok(Event::Unknown) => {}
-            Ok(Event::Progress { step }) => progress(step),
-            Ok(Event::Log { message }) => eprintln!("gateway {}: {message}", self.method),
+            Ok(Event::Progress { step }) => progress.step(step),
+            Ok(Event::Log { message }) => {
+                eprintln!("gateway {}: {message}", self.method);
+                progress.log(&message);
+            }
             Ok(Event::Result { data }) => self.result = Some(data),
             Ok(Event::Error { code, message }) => self.error = Some((code, message)),
             Err(_) if self.stray.len() < MAX_STRAY_LINES => self.stray.push(line.to_string()),
@@ -294,6 +297,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+    use crate::remote::Reporter;
 
     /// Feeds `output` line by line into an outcome of `method` and finishes it with `exit`; returns the result and the
     /// steps reported.
@@ -306,6 +310,29 @@ mod tests {
         }
         let result = outcome.finish(exit);
         (result, steps.into_inner().unwrap())
+    }
+
+    /// Records the steps and log lines a call reports, in order.
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<String>>);
+
+    impl Reporter for Recorder {
+        fn step(&self, step: RemoteStep) {
+            self.0.lock().unwrap().push(format!("{step:?}"));
+        }
+
+        fn log(&self, message: &str) {
+            self.0.lock().unwrap().push(format!("log: {message}"));
+        }
+    }
+
+    #[test]
+    fn a_call_passes_the_gateways_log_lines_on_after_their_step() {
+        let recorder = Recorder::default();
+        let mut outcome = Outcome::new("sessions.provision");
+        outcome.take(r#"{"type":"progress","step":"waitingForVm"}"#, &recorder);
+        outcome.take(r#"{"type":"log","message":"vm-hunt-s-ab12cd34 does not answer yet: exit status 255"}"#, &recorder);
+        assert_eq!(recorder.0.into_inner().unwrap(), ["WaitingForVm", "log: vm-hunt-s-ab12cd34 does not answer yet: exit status 255"]);
     }
 
     #[test]

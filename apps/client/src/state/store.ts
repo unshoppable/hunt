@@ -160,6 +160,8 @@ export type SessionChat = {
   hasHistory: boolean;
   /** The step a handoff, retrieval or connect of a remote session is at; `null` while none runs. */
   remoteStep: RemoteStep | null;
+  /** The gateway's last log line about `remoteStep`; `null` while it sent none. */
+  remoteDetail: string | null;
   /** The items show the conversation from before a restart of the agent; its first update replaces them (see `restartChat`). */
   isStale: boolean;
 };
@@ -278,6 +280,7 @@ export function createEmptyChat(): SessionChat {
     isHiddenTurn: false,
     hasHistory: false,
     remoteStep: null,
+    remoteDetail: null,
     isStale: false,
   };
 }
@@ -548,7 +551,7 @@ export const useHuntStore = create<HuntState>((set, get) => {
     updateChat(id, (chat) =>
       keepsItems && chat.items.length
         ? { ...chat, isLoading: true, isStale: true, isBusy: false, isHiddenTurn: false, permission: null, error: null }
-        : { ...replacedChat(chat), isLoading: true, remoteStep: null },
+        : { ...replacedChat(chat), isLoading: true, remoteStep: null, remoteDetail: null },
     );
     try {
       await start();
@@ -561,7 +564,8 @@ export const useHuntStore = create<HuntState>((set, get) => {
 
   /** The empty chat a restarted agent fills; the mode and a running remote operation carry over. */
   function replacedChat(chat: SessionChat): SessionChat {
-    return { ...createEmptyChat(), modeId: chat.modeId, hasHistory: true, isLoading: chat.isLoading, remoteStep: chat.remoteStep };
+    const { modeId, isLoading, remoteStep, remoteDetail } = chat;
+    return { ...createEmptyChat(), modeId, hasHistory: true, isLoading, remoteStep, remoteDetail };
   }
 
   /** Runs the turn of `prompt`, shown as the user's message in the chat. */
@@ -921,7 +925,7 @@ export const useHuntStore = create<HuntState>((set, get) => {
     },
 
     applyRemoteProgress: (event) => {
-      updateChat(event.huntSessionId, (chat) => ({ ...chat, remoteStep: event.step }));
+      updateChat(event.huntSessionId, (chat) => ({ ...chat, remoteStep: event.step, remoteDetail: event.detail }));
     },
 
     applyGraphChanged: (huntSessionId) => {

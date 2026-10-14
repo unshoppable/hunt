@@ -76,7 +76,7 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     let upstream = origin_upstream(worktree, &branch).await;
     let hooks_path = hooks_path(worktree).await;
 
-    progress(RemoteStep::Connecting);
+    progress.step(RemoteStep::Connecting);
     let gateway = GatewayApi::open(request.gateway, request.ssh_dir).await?;
     let preview_domain = gateway.preview_domain()?;
     let provision = ProvisionRequest { id: request.hunt_session_id, title: request.title, repo: &repo, branch: &branch };
@@ -88,7 +88,7 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     let ssh = Ssh::open(&session_vm, request.ssh_dir).await?;
     release::ensure_ready(&ssh, progress).await?;
 
-    progress(RemoteStep::TransferringCode);
+    progress.step(RemoteStep::TransferringCode);
     let remote_worktree = hunt_ctl(&ssh, &["init", &id, "--repo", &repo]).await?["path"]
         .as_str()
         .map(str::to_string)
@@ -115,9 +115,9 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
         let system_prompt = (request.system_prompt)(session_config["hunt_md"].as_str());
         upload_claude_dir(&request, &ssh, &remote_worktree, &system_prompt).await?;
 
-        progress(RemoteStep::InstallingDependencies);
+        progress.step(RemoteStep::InstallingDependencies);
         hunt_ctl(&ssh, &["deps", &id]).await?;
-        progress(RemoteStep::StartingAgent);
+        progress.step(RemoteStep::StartingAgent);
         hunt_ctl_with_input(&ssh, &["start", &id], request.token_input.as_bytes()).await?;
         hunt_ctl(&ssh, &["wait", &id, "--timeout", "180"]).await
     }

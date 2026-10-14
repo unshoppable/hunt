@@ -35,7 +35,7 @@ pub async fn ensure_ready(ssh: &Ssh, progress: Progress<'_>) -> Result<(), Strin
     let output = hunt_ctl(ssh, &["version"]).await?;
     let release: ReleaseVersion = serde_json::from_value(output).map_err(|error| format!("failed to read the VM's release version: {error}"))?;
     check(&release, protocol())?;
-    progress(RemoteStep::InstallingRuntime);
+    progress.step(RemoteStep::InstallingRuntime);
     hunt_ctl(ssh, &["install-tools"]).await?;
     Ok(())
 }

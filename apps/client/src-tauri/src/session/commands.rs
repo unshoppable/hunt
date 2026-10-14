@@ -33,7 +33,7 @@ use crate::remote::diff::RemoteChanges;
 use crate::remote::preview::PreviewStatus;
 use crate::remote::ssh::Ssh;
 use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize};
-use crate::remote::{self, RemoteStep, RemoteTarget, VmRef, VmSettings};
+use crate::remote::{self, RemoteStep, RemoteTarget, Reporter, VmRef, VmSettings};
 use crate::screenshots::{self, Screenshot};
 use crate::session::attribution::{self, FileVersion};
 use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus};
@@ -409,7 +409,7 @@ pub async fn clear_session(
     if record.remote.is_some() {
         let activated = async {
             let progress = progress_reporter(&app, id);
-            progress(RemoteStep::Connecting);
+            progress.step(RemoteStep::Connecting);
             let ssh = remote::start_session_vm(&gateway_vm("clear session").await?, id, &ssh_dir()?, &progress).await?;
             let token_input = remote::token_input(&claude_token, github_token::read().await?.as_deref());
             let status = remote::hunt_ctl_with_input(&ssh, &["clear", &id.to_string()], token_input.as_bytes()).await?;
@@ -494,7 +494,7 @@ async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: 
     let id = record.id;
     let target = record.remote.clone().ok_or("failed to connect the remote session: it runs locally")?;
     let progress = progress_reporter(app, id);
-    progress(RemoteStep::Connecting);
+    progress.step(RemoteStep::Connecting);
     // A relay that runs keeps running on the release it started with.
     let ssh = remote::start_session_vm(&gateway_vm("connect the remote session").await?, id, &ssh_dir()?, &progress).await?;
     // An adopted session learns its worktree on the VM with its first connect; the chat works without it.
@@ -509,7 +509,7 @@ async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: 
     } else {
         (record, target)
     };
-    progress(RemoteStep::StartingAgent);
+    progress.step(RemoteStep::StartingAgent);
     // A running relay keeps its tokens, so it stays reachable with the local login selected.
     let token_input = local_token_input(app).await?;
     remote::hunt_ctl_with_input(&ssh, &["start", &id.to_string()], token_input.as_bytes()).await?;
@@ -973,19 +973,45 @@ struct RemoteProgressEvent {
     hunt_session_id: Uuid,
     /// The step that runs now; `None` once the operation ended.
     step: Option<RemoteStep>,
+    /// The gateway's last log line about the step, e.g. why the VM does not answer yet.
+    detail: Option<String>,
 }
 
-/// Reports the steps of a remote operation on session `id` to the UI as `remote:progress`.
-fn progress_reporter(app: &AppHandle, id: Uuid) -> impl Fn(RemoteStep) + Send + Sync {
-    let app = app.clone();
-    move |step| {
-        let _ = app.emit("remote:progress", RemoteProgressEvent { hunt_session_id: id, step: Some(step) });
+/// Reports the steps of a remote operation on a session and the gateway's log lines about them to the UI as
+/// `remote:progress`.
+struct ProgressEmitter {
+    app: AppHandle,
+    id: Uuid,
+    /// The step that runs now, which a log line belongs to.
+    current: std::sync::Mutex<Option<RemoteStep>>,
+}
+
+impl ProgressEmitter {
+    fn emit(&self, step: Option<RemoteStep>, detail: Option<String>) {
+        let _ = self.app.emit("remote:progress", RemoteProgressEvent { hunt_session_id: self.id, step, detail });
     }
+}
+
+impl Reporter for ProgressEmitter {
+    fn step(&self, step: RemoteStep) {
+        *self.current.lock().unwrap() = Some(step);
+        self.emit(Some(step), None);
+    }
+
+    fn log(&self, message: &str) {
+        let Some(step) = *self.current.lock().unwrap() else { return };
+        self.emit(Some(step), Some(message.to_string()));
+    }
+}
+
+/// Reports the steps of a remote operation on session `id` to the UI; see `ProgressEmitter`.
+fn progress_reporter(app: &AppHandle, id: Uuid) -> ProgressEmitter {
+    ProgressEmitter { app: app.clone(), id, current: std::sync::Mutex::new(None) }
 }
 
 /// Tells the UI that the remote operation on session `id` ended, successful or not.
 fn finish_progress(app: &AppHandle, id: Uuid) {
-    let _ = app.emit("remote:progress", RemoteProgressEvent { hunt_session_id: id, step: None });
+    let _ = app.emit("remote:progress", RemoteProgressEvent { hunt_session_id: id, step: None, detail: None });
 }
 
 /// Where Hunt keeps its SSH key and known hosts for the VM; a path without spaces, which ssh options cannot hold.

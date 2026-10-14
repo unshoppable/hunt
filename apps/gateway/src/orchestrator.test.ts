@@ -114,16 +114,22 @@ function fakeCompute(vms: Instance[] = []) {
   };
 }
 
-/** A session VM whose startup script finished unless `isBooting`, and that needs the staged release when `isOutdated`. */
-function fakeVm(options: { isBooting?: boolean; isOutdated?: boolean } = {}) {
+/**
+ * A session VM whose startup script finished unless `isBooting`, that fails a readiness check with `failure` while it
+ * boots and needs the staged release when `isOutdated`.
+ */
+function fakeVm(options: { isBooting?: boolean; failure?: string; isOutdated?: boolean } = {}) {
   const calls: string[] = [];
   const vm: SessionVm = {
     run: async () => "",
     huntCtl: async () => ({}),
-    waitUntilReady: async (_timeoutMs, onWaiting) => {
+    waitUntilReady: async (_timeoutMs, onWaiting, onFailure) => {
       calls.push("wait until ready");
       if (options.isBooting) {
         onWaiting?.();
+        if (options.failure) {
+          onFailure?.(options.failure);
+        }
       }
     },
     ensureRelease: async (onInstall) => {
@@ -199,6 +205,17 @@ describe("Orchestrator.provision", () => {
     expect(steps).toEqual(["creatingVm", "waitingForVm", "installingRuntime"]);
     expect(calls).toEqual(["wait until ready", "ensure release"]);
     expect(logs[0]).toBe(`creating ${VM} from tpl-hunt-session`);
+  });
+
+  it("logs why a booting VM does not answer while it waits for it", async () => {
+    const { vm } = fakeVm({ isBooting: true, failure: `failed to run a command on ${VM}: exit status 255` });
+    const { orchestrator } = createOrchestrator(fakeCompute().compute, vm);
+    const { reporter, steps, logs } = recorder();
+
+    await orchestrator.provision(REQUEST, reporter);
+
+    expect(steps).toContain("waitingForVm");
+    expect(logs).toContain(`${VM} does not answer yet: failed to run a command on ${VM}: exit status 255`);
   });
 
   it("records the issue of a poller session and labels it without an owner", async () => {

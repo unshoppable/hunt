@@ -113,4 +113,6 @@ owns it; this file says how code here is written and verified.
 - Prefer a plain truthiness check over `isUndefined`/`isNull` unless a falsy value is legitimate.
 - Commit messages follow Conventional Commits (`type(scope): description`). `feat`, `fix`, `perf`, `revert` and a
   `!`/`BREAKING CHANGE` footer decide the next release version of every app the commit touches (`nx release`,
-  independent versions); other types do not release.
+  independent versions); other types do not release. Pull requests are squash-merged with their title as commit
+  message, so the PR title is what `nx release` reads; `ci-pull-request.yml` checks it. Branch names follow
+  `feat|feature|fix|chore/<scope>/<name>` (e.g. `feat/general/abc`), checked by the pre-push hook (`.husky/`) and CI.

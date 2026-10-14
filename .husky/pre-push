@@ -1,0 +1,5 @@
+#!/bin/sh
+
+# Branch-name policy: feat|feature|fix|chore/<scope>/<branch-name>.
+# Validates the current branch (no arg).
+sh "$(dirname -- "$0")/../.github/scripts/validate-branch-name.sh"

@@ -1,5 +1,6 @@
-# Checks a pull request: typecheck, lint, test and build of every project the change affects (nx affected), the Rust
-# tests of the desktop app on macOS.
+# Checks a pull request: its branch name (feat|feature|fix|chore/<scope>/<branch-name>) and its title, which becomes the
+# commit message of the squash merge and so must follow Conventional Commits for nx release; typecheck, lint, test and
+# build of every project the change affects (nx affected); the Rust tests of the desktop app on macOS.
 name: 🦾 CI | Pull Request
 run-name: '[ PR #${{ github.event.pull_request.number }} ] ${{ github.event.pull_request.title }}'
 
@@ -18,10 +19,26 @@ jobs:
   affected:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # action-semantic-pull-request reads the PR title through the API.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Validate branch name (feat|feature|fix|chore/<scope>/<branch-name>)
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: sh .github/scripts/validate-branch-name.sh "$HEAD_REF"
+
+      - name: Validate PR title (conventional commits)
+        uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          requireScope: false
 
       - uses: actions/setup-node@v4
         with:

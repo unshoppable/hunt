@@ -2,13 +2,14 @@
 //! sync runs when an agent of the VM connects (the session's own or a sub chat's), after an agent finished a tool call
 //! or a turn, every `TURN_POLL` while a turn runs (the agent's shell commands change files too), after the watcher saw
 //! a local change and after Hunt itself changed a file (`note_local_change`); a prompt waits until the local changes
-//! reached the VM (`flush`). Syncs of one session run one after the other, and requests that arrive meanwhile run one
-//! more afterwards; the sync stops when the last agent of the VM disconnected. An adopted session gets a local worktree
-//! first, once the local checkout of its repository is known; until then it is skipped quietly. Every sync that talks
-//! to the VM reports to the UI as `remote:sync` with the remote session's id, its failure and the files it could not
-//! sync; it never fails a command.
+//! reached the VM (`flush`), and a commit on the VM runs while no sync does (`exclusive`). Syncs of one session run one
+//! after the other, and requests that arrive meanwhile run one more afterwards; the sync stops when the last agent of
+//! the VM disconnected. An adopted session gets a local worktree first, once the local checkout of its repository is
+//! known; until then it is skipped quietly. Every sync that talks to the VM reports to the UI as `remote:sync` with the
+//! remote session's id, its failure and the files it could not sync; only the sync before a commit fails its command.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -222,7 +223,31 @@ pub async fn flush(app: &AppHandle, id: Uuid) {
         return;
     }
     state.wants_local.store(false, Ordering::SeqCst);
-    run_locked(app, id, &state, false).await;
+    let _ = run_locked(app, id, &state, false).await;
+}
+
+/// Runs `work` on the VM of the connected remote session `id` while no sync of it runs, after a sync that sent the local
+/// changes there, and returns the outcome of that sync (`None` when nothing changed here) with `work`'s result; a sync
+/// afterwards brings what `work` changed on the VM. Fails without running `work` when the session does not sync or that
+/// sync failed.
+pub async fn exclusive<T, W, F>(app: &AppHandle, id: Uuid, work: W) -> Result<T, String>
+where
+    W: FnOnce(Option<Outcome>) -> F,
+    F: Future<Output = Result<T, String>>,
+{
+    let not_connected = || "the session is not connected to its VM; open it and try again".to_string();
+    let state = active(app, id).ok_or_else(not_connected)?;
+    let result = {
+        let _guard = state.lock.lock().await;
+        if state.is_stopped.load(Ordering::SeqCst) {
+            return Err(not_connected());
+        }
+        state.wants_local.store(false, Ordering::SeqCst);
+        let outcome = run_locked(app, id, &state, false).await.map_err(|error| format!("failed to bring the local changes to the VM: {error}"))?;
+        work(outcome).await
+    };
+    request(app, id, Side::Remote);
+    result
 }
 
 /// Asks for a sync of the remote session `id`, or of the remote session whose sub chat `id` is, after Hunt changed a
@@ -329,21 +354,21 @@ fn drive(app: &AppHandle, id: Uuid, state: Arc<SessionSync>) {
             if state.is_stopped.load(Ordering::SeqCst) {
                 continue;
             }
-            run_locked(&app, id, &state, wants_remote).await;
+            let _ = run_locked(&app, id, &state, wants_remote).await;
         }
     });
 }
 
-/// Runs one sync of `id` while its lock is held and reports it; without `wants_remote` it talks to the VM only when the
-/// local worktree changed. A sync that fails because the session disconnected meanwhile (its VM shut down) ends without
-/// an error.
-async fn run_locked(app: &AppHandle, id: Uuid, state: &SessionSync, wants_remote: bool) {
+/// Runs one sync of `id` while its lock is held, reports it and returns its outcome, `None` when there was nothing to do;
+/// without `wants_remote` it talks to the VM only when the local worktree changed. A sync that fails because the session
+/// disconnected meanwhile (its VM shut down) reports no error.
+async fn run_locked(app: &AppHandle, id: Uuid, state: &SessionSync, wants_remote: bool) -> Result<Option<Outcome>, String> {
     let result = match sync_once(app, id, wants_remote).await {
-        Ok(None) => return,
+        Ok(None) => return Ok(None),
         Ok(Some(outcome)) => Ok(outcome),
-        Err(_) if state.is_stopped.load(Ordering::SeqCst) => {
+        Err(error) if state.is_stopped.load(Ordering::SeqCst) => {
             let _ = app.emit("remote:sync", SyncEvent::interrupted(id));
-            return;
+            return Err(error);
         }
         Err(error) => {
             eprintln!("syncing the files of session {id} failed: {error}");
@@ -355,7 +380,8 @@ async fn run_locked(app: &AppHandle, id: Uuid, state: &SessionSync, wants_remote
             eprintln!("recording the synced changes of session {id} failed: {error}");
         }
     }
-    let _ = app.emit("remote:sync", SyncEvent::ended(id, result));
+    let _ = app.emit("remote:sync", SyncEvent::ended(id, result.clone()));
+    result.map(Some)
 }
 
 /// One sync of `id`; `None` when there was nothing to do: a local change was asked for and the local worktree turned out

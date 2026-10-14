@@ -74,7 +74,7 @@ export function ChangeList({
   const session = sessions.find((candidate) => candidate.id === sessionId);
   const parentId = session?.parentId ?? null;
   const pullRequest = session?.pullRequest ?? null;
-  /** The local branch of a remote session and its sub chats stays at its handoff commit; the agent commits on the VM. */
+  /** The worktree and Git history of a remote session and its sub chats live on its VM, which commits and pushes for them. */
   const isRemote = Boolean(session && remoteOf(session, sessions));
   const draftCount = useReviewDraftCount(sessionId);
   const [tab, setTab] = useState<Tab>("changes");
@@ -319,23 +319,18 @@ export function ChangeList({
               : rows.map(({ node, depth }) => (node.kind === "folder" ? renderFolder(node, depth) : renderFile(node.file, node.name, depth, false)))}
           </ul>
           <div className="flex items-center gap-2 border-t border-(--line) px-3 py-2.5 text-[13px]">
-            <button
-              type="button"
-              disabled={!pullRequest}
-              onClick={openReviewDialog}
-              className={PRIMARY_BUTTON_XS}
-              title={pullRequest ? `Submit a review of pull request #${pullRequest.number}` : "Only a session started from a pull request can submit a review"}
-            >
-              {draftCount ? `Submit review (${draftCount})…` : "Submit review…"}
-            </button>
-            {pullRequest ? null : (
+            {pullRequest ? (
+              <button type="button" onClick={openReviewDialog} className={PRIMARY_BUTTON_XS} title={`Submit a review of pull request #${pullRequest.number}`}>
+                {draftCount ? `Submit review (${draftCount})…` : "Submit review…"}
+              </button>
+            ) : (
               <>
                 <button
                   type="button"
-                  disabled={!checkedPaths.length || isRemote}
+                  disabled={!checkedPaths.length}
                   onClick={() => void openFilesDialog("commit")}
-                  className={SECONDARY_BUTTON_XS}
-                  title={isRemote ? "The agent commits on the VM; ask it in the chat." : "Commit the checked files on the session's branch"}
+                  className={PRIMARY_BUTTON_XS}
+                  title={isRemote ? "Commit the checked files on the session's branch on its VM" : "Commit the checked files on the session's branch"}
                 >
                   Commit…
                 </button>

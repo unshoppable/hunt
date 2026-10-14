@@ -1883,8 +1883,7 @@ fn session_file(app: &AppHandle, id: Uuid, path: &str) -> Result<(SessionRecord,
     Ok((record, target))
 }
 
-/// The stored record of `id` for a command only a local session allows: work next to its agent, or a commit or push,
-/// which the agent of a session handed off to a VM makes there, since the local branch stays at the handoff commit.
+/// The stored record of `id` for a command only a local session allows, such as work next to its agent.
 fn local_session(app: &AppHandle, id: Uuid) -> Result<SessionRecord, String> {
     let record = store::find_session(app, id)?;
     if record.remote.is_some() {
@@ -2025,19 +2024,55 @@ pub async fn drop_shelf(app: AppHandle, id: Uuid, reference: String) -> Result<(
     git::drop_shelf(&record.worktree_path, &reference).await
 }
 
-/// Commits exactly `paths` with `message` on the session's current branch.
+/// Commits exactly `paths` with `message` on the session's current branch: here, or on the VM of a remote session, whose
+/// local branch then follows to the new commit.
 #[tauri::command]
 pub async fn commit_files(app: AppHandle, id: Uuid, paths: Vec<String>, message: String) -> Result<(), String> {
-    let record = local_session(&app, id)?;
-    git::commit_files(&record.worktree_path, &paths, &message).await?;
+    let record = worktree_session(&app, id)?;
+    match remote_host(&app, &record) {
+        None => git::commit_files(&record.worktree_path, &paths, &message).await?,
+        Some((owner, target)) => commit_on_vm(&app, owner, &target, &record.worktree_path, &paths, &message).await?,
+    }
     store::forget_touched_files(&app, &record.worktree_path, &paths)
 }
 
-/// Pushes the session's current branch to `origin` and makes the pushed branch its upstream.
+/// Commits `paths` of the remote session `id` on its VM (`remote::commit`) while no sync of it runs, after one sent the
+/// local edits there; refuses when one of the files could not reach the VM. Records the VM's commit the local branch
+/// follows now.
+async fn commit_on_vm(app: &AppHandle, id: Uuid, target: &RemoteTarget, worktree: &Path, paths: &[String], message: &str) -> Result<(), String> {
+    sync::exclusive(app, id, |outcome| async move {
+        let unsynced: Vec<&String> = outcome
+            .iter()
+            .flat_map(|outcome| &outcome.conflicts)
+            .filter(|line| paths.iter().any(|path| line.starts_with(&format!("{path}: "))))
+            .collect();
+        if !unsynced.is_empty() {
+            let lines = unsynced.iter().map(|line| line.as_str()).collect::<Vec<_>>().join("\n");
+            return Err(format!("failed to commit on the VM: these files did not reach it:\n{lines}"));
+        }
+        let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
+        let commit = remote::commit::commit(&ssh, id, target, worktree, paths, message).await?;
+        store::update_session(app, id, |stored| {
+            if let Some(remote) = stored.remote.as_mut() {
+                remote.handoff_head = commit;
+            }
+        })?;
+        Ok(())
+    })
+    .await
+}
+
+/// Pushes the session's current branch to `origin` and makes the pushed branch its upstream; a remote session's from its
+/// VM, with the GitHub token of Settings → Remote VM.
 #[tauri::command]
 pub async fn push_branch(app: AppHandle, id: Uuid) -> Result<(), String> {
-    let record = local_session(&app, id)?;
-    git::push_branch(&record.worktree_path).await
+    let record = worktree_session(&app, id)?;
+    let Some((owner, target)) = remote_host(&app, &record) else {
+        return git::push_branch(&record.worktree_path).await;
+    };
+    let token = github_token::read().await?.ok_or("failed to push from the VM: no GitHub token is stored; add one in Settings → Remote VM")?;
+    let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
+    remote::commit::push(&ssh, owner, &token).await
 }
 
 #[tauri::command]

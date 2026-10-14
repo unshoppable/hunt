@@ -131,6 +131,23 @@ pub async fn merge_base(repo: &Path, base: &str, head: &str) -> Result<String, S
     Ok(run_git(repo, &["merge-base", base, head]).await?.trim().to_string())
 }
 
+/// Whether the commit `ancestor` is `descendant` or one of its ancestors; also false when git knows either of them not.
+/// Both refs are validated like in `rev_parse`.
+pub async fn is_ancestor(repo: &Path, ancestor: &str, descendant: &str) -> bool {
+    let is_valid = [ancestor, descendant].iter().all(|reference| !reference.is_empty() && !reference.starts_with('-'));
+    is_valid && run_git(repo, &["merge-base", "--is-ancestor", ancestor, descendant]).await.is_ok()
+}
+
+/// The author name and email `repo` commits with (`user.name`, `user.email`).
+pub async fn identity(repo: &Path) -> Result<(String, String), String> {
+    let name = run_git(repo, &["config", "user.name"]).await.unwrap_or_default();
+    let email = run_git(repo, &["config", "user.email"]).await.unwrap_or_default();
+    if name.trim().is_empty() || email.trim().is_empty() {
+        return Err("git has no user.name or user.email for its repository".into());
+    }
+    Ok((name.trim().to_string(), email.trim().to_string()))
+}
+
 /// Whether the repository of `worktree` treats paths as case-insensitive (`core.ignorecase`), as git sets it on a
 /// case-insensitive file system.
 pub async fn ignores_case(worktree: &Path) -> bool {
@@ -582,7 +599,7 @@ pub fn ensure_inside_worktree(path: &str) -> Result<(), String> {
 }
 
 /// Requires at least one path, each of which stays inside the worktree.
-fn ensure_paths(paths: &[String]) -> Result<(), String> {
+pub fn ensure_paths(paths: &[String]) -> Result<(), String> {
     if paths.is_empty() {
         return Err("no files selected".into());
     }

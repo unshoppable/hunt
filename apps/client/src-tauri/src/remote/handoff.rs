@@ -126,7 +126,7 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     let handoff_ref = format!("refs/hunt/{id}/handoff");
     git::run_git(worktree, &["update-ref", &handoff_ref, &snapshot]).await?;
     let repo = repository_key(worktree).await;
-    let (git_name, git_email) = git_identity(worktree).await?;
+    let (git_name, git_email) = git::identity(worktree).await.map_err(|error| format!("failed to hand off the session: {error}"))?;
     let origin = git::run_git(worktree, &["remote", "get-url", "origin"]).await.ok().and_then(|url| github_https_url(url.trim()));
     let upstream = origin_upstream(worktree, &branch).await;
     let hooks_path = hooks_path(worktree).await;
@@ -329,16 +329,6 @@ async fn hooks_path(worktree: &Path) -> Option<String> {
         return None;
     }
     Some(path.to_string())
-}
-
-/// The author name and email the worktree commits with; the agent on the VM commits under the same identity.
-async fn git_identity(worktree: &Path) -> Result<(String, String), String> {
-    let name = git::run_git(worktree, &["config", "user.name"]).await.unwrap_or_default();
-    let email = git::run_git(worktree, &["config", "user.email"]).await.unwrap_or_default();
-    if name.trim().is_empty() || email.trim().is_empty() {
-        return Err("failed to hand off the session: git has no user.name or user.email for its repository".into());
-    }
-    Ok((name.trim().to_string(), email.trim().to_string()))
 }
 
 /// Pushes the branch, the snapshot and the origin's default branch into the session's own repository on the VM, through

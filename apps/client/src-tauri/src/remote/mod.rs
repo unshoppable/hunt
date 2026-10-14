@@ -3,11 +3,13 @@
 //! the names of the session VMs (`vm.rs`), the release check and tool install on them (`release.rs`), moving a session's
 //! git state and Claude Code transcript there and back (`handoff.rs`, `retrieve.rs`, `transcript.rs`), adopting session
 //! VMs no local session knows (`adoption.rs`), keeping the files of the VM and the local worktree in sync (`sync.rs`),
+//! committing and pushing on the VM for the changelist (`commit.rs`),
 //! previews (`preview.rs`) and terminals attached to the VM's tmux session (`terminal.rs`). Knows nothing about Tauri;
 //! `session/commands.rs` owns the commands.
 
 pub mod adoption;
 pub mod api;
+pub mod commit;
 pub mod handoff;
 pub mod memory;
 pub mod preview;
@@ -131,8 +133,9 @@ pub struct RemoteTarget {
     pub worktree_path: PathBuf,
     /// `<owner>/<repo>` of the bare repository on the VM that holds the session's branch.
     pub repo: String,
-    /// The branch the local worktree had checked out at the handoff and the commit it pointed to; the retrieval moves
-    /// that branch from this commit to the one the agent left on the VM.
+    /// The branch the local worktree has checked out and the VM's commit it points to: the one of the handoff, or the
+    /// last one Hunt made on the VM (`commit.rs`); the retrieval moves that branch from this commit to the one the agent
+    /// left on the VM.
     pub branch: String,
     pub handoff_head: String,
     pub handed_off_at: chrono::DateTime<chrono::Utc>,

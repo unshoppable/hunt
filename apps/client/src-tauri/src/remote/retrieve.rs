@@ -199,14 +199,20 @@ async fn link_paths(worktree: &Path, tree: &str) -> Result<BTreeSet<String>, Str
         .collect())
 }
 
-/// Refuses to move the session's branch when it moved here since the session went to the VM (`handoff_head`) to
-/// another commit than the VM's `remote_head`: the VM does not have those local commits.
+/// Refuses to move the session's branch when it moved here since the session went to the VM (`handoff_head`) to a
+/// commit the VM's `remote_head` does not build on: the VM does not have those local commits.
 pub(crate) async fn ensure_branch_unmoved(worktree: &Path, branch: &str, handoff_head: &str, remote_head: &str) -> Result<(), String> {
     let local_head = git::rev_parse(worktree, "HEAD").await?;
-    if local_head == handoff_head || local_head == remote_head {
+    if vm_has(worktree, &local_head, handoff_head, remote_head).await {
         return Ok(());
     }
     Err(branch_moved_error(branch, handoff_head, &local_head))
+}
+
+/// Whether the VM has `local_head`, the commit the local branch points to: the one it had when the session went to the
+/// VM (`handoff_head`), or the VM's `remote_head` or one of its ancestors, such as a commit Hunt made there.
+pub(crate) async fn vm_has(worktree: &Path, local_head: &str, handoff_head: &str, remote_head: &str) -> bool {
+    local_head == handoff_head || git::is_ancestor(worktree, local_head, remote_head).await
 }
 
 /// What a retrieval tells when the branch moved here: what happened and how to get the local commits out of the way.
@@ -401,7 +407,7 @@ async fn remove_worktree(repo: &Path, worktree: &Path, branch: &str) {
 
 /// Fetches the retrieval snapshot (and with it the commits the agent made) into `retrieve_ref`, through
 /// `hunt-ctl upload-pack`, which runs git on the VM as the agent's user.
-async fn fetch(worktree: &Path, ssh: &Ssh, remote_worktree: &str, retrieve_ref: &str) -> Result<(), String> {
+pub(crate) async fn fetch(worktree: &Path, ssh: &Ssh, remote_worktree: &str, retrieve_ref: &str) -> Result<(), String> {
     let url = ssh.git_url(remote_worktree);
     let refspec = format!("+{retrieve_ref}:{retrieve_ref}");
     let ssh_command = ssh.git_ssh_command();
@@ -443,19 +449,25 @@ pub(crate) async fn apply_tree_change(worktree: &Path, from_ref: &str, retrieve_
 }
 
 /// Points the session's branch at the commit the agent left on the VM (the parent of the retrieval snapshot). The
-/// commit the branch had at the handoff stays reachable as `refs/hunt/<id>/pre-retrieve`.
+/// commit the branch had before stays reachable as `refs/hunt/<id>/pre-retrieve`.
 pub(crate) async fn move_branch(worktree: &Path, id: &str, branch: &str, handoff_head: &str, retrieve_ref: &str) -> Result<(), String> {
     let remote_head = git::rev_parse(worktree, &format!("{retrieve_ref}^")).await?;
     let local_head = git::rev_parse(worktree, "HEAD").await?;
     if local_head == remote_head {
         return Ok(());
     }
-    if local_head != handoff_head {
+    if !vm_has(worktree, &local_head, handoff_head, &remote_head).await {
         return Err(branch_moved_error(branch, handoff_head, &local_head));
     }
-    git::run_git(worktree, &["update-ref", &format!("refs/hunt/{id}/pre-retrieve"), handoff_head]).await?;
+    git::run_git(worktree, &["update-ref", &format!("refs/hunt/{id}/pre-retrieve"), &local_head]).await?;
+    point_branch(worktree, &remote_head, &local_head).await
+}
+
+/// Points the branch the worktree has checked out (else its detached `HEAD`) from the commit `from` at `to`; index and
+/// files stay as they are.
+pub(crate) async fn point_branch(worktree: &Path, to: &str, from: &str) -> Result<(), String> {
     let head_ref = git::run_git(worktree, &["symbolic-ref", "-q", "HEAD"]).await.map(|name| name.trim().to_string()).unwrap_or_else(|_| "HEAD".into());
-    git::run_git(worktree, &["update-ref", &head_ref, &remote_head, handoff_head]).await?;
+    git::run_git(worktree, &["update-ref", &head_ref, to, from]).await?;
     Ok(())
 }
 
@@ -701,6 +713,36 @@ mod tests {
         assert_eq!(status(local).await, status(&remote).await);
         // A repeated retrieval finds the branch moved already.
         ensure_branch_unmoved(local, "main", &handoff_head, &remote_head).await.unwrap();
+    }
+
+    /// After Hunt committed on the VM, the local branch points at that commit; the agent's later commits build on it, so
+    /// the retrieval moves the branch from there, and keeps it as `pre-retrieve`.
+    #[tokio::test]
+    async fn retrieval_moves_a_branch_that_followed_a_commit_of_the_vm() {
+        let vm_dir = tempfile::tempdir().unwrap();
+        let vm = vm_dir.path();
+        git(vm, &["init", "-q", "-b", "main"]).await;
+        git(vm, &["config", "user.email", "agent@example.com"]).await;
+        git(vm, &["config", "user.name", "Agent"]).await;
+        git(vm, &["commit", "-q", "--allow-empty", "-m", "init"]).await;
+        let handoff_head = git(vm, &["rev-parse", "HEAD"]).await;
+        let local_dir = tempfile::tempdir().unwrap();
+        let local = local_dir.path().join("local");
+        git(local_dir.path(), &["clone", "-q", vm.to_str().unwrap(), local.to_str().unwrap()]).await;
+
+        git(vm, &["commit", "-q", "--allow-empty", "-m", "feat: committed by Hunt"]).await;
+        let followed = git(vm, &["rev-parse", "HEAD"]).await;
+        git(vm, &["commit", "-q", "--allow-empty", "-m", "agent work"]).await;
+        let remote_head = git(vm, &["rev-parse", "HEAD"]).await;
+        let retrieve_snapshot = git::snapshot_commit(vm, "Hunt retrieve snapshot").await.unwrap();
+        git(vm, &["update-ref", "refs/hunt/x/retrieve", &retrieve_snapshot]).await;
+        git(&local, &["fetch", "-q", vm.to_str().unwrap(), "main", "+refs/hunt/x/retrieve:refs/hunt/x/retrieve"]).await;
+        git(&local, &["reset", "-q", &followed]).await;
+
+        ensure_branch_unmoved(&local, "main", &handoff_head, &remote_head).await.unwrap();
+        move_branch(&local, "x", "main", &handoff_head, "refs/hunt/x/retrieve").await.unwrap();
+        assert_eq!(git(&local, &["rev-parse", "HEAD"]).await, remote_head);
+        assert_eq!(git(&local, &["rev-parse", "refs/hunt/x/pre-retrieve"]).await, followed);
     }
 
     #[test]

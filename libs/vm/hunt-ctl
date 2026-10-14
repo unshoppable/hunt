@@ -218,6 +218,12 @@ Session VM:
                          restart the session's relay, or its sub chat's, with a new conversation; the session's relay
                          takes the tokens from stdin
   snapshot <id>          record the worktree's state as refs/hunt/<id>/retrieve
+  commit <id>            commit the paths on stdin on the branch the worktree has checked out, as the agent with its
+                         environment and the identity on stdin (name, email, message, then the paths, each ending
+                         with NUL); paths the branch has committed already are skipped; records the branch's commit as
+                         refs/hunt/<id>/commit
+  push <id>              push the branch the worktree has checked out to its origin and make that its upstream, with the
+                         GitHub token on stdin
   status <id>            relay state, relay status and session metadata
   preview-status [<id>]  the services of hunt.json with their state and whether their port answers, and the ports that
                          listen
@@ -231,6 +237,9 @@ USAGE
   exit 2
 }
 
+# Prints $* as the error and exits. A function that may die is never called with a redirect (`f >/dev/null`): bash keeps
+# a copy of the redirected file descriptor open through the exit, and when that is capture_stderr's pipe, on_exit waits
+# for the tee forever. Its output is captured instead (`_=$(f)`).
 die() {
   printf 'hunt-ctl: %s\n' "$*" >&2
   record_failure
@@ -779,8 +788,9 @@ worktree_of() {
 }
 
 require_prepared() {
-  worktree_of "$1" >/dev/null
-  meta "$1" branch >/dev/null
+  local _
+  _=$(worktree_of "$1")
+  _=$(meta "$1" branch)
 }
 
 # The session whose worktree is $1, as git passes it to receive-pack and upload-pack (quoted or not); prints the id.
@@ -995,10 +1005,10 @@ wait_until_ready() {
 
 cmd_init() {
   (( $# == 3 )) && [[ $2 == --repo ]] || usage
-  local id=$1 repo=$3 worktree created_at
+  local id=$1 repo=$3 worktree created_at _
   require_id "$id"
   require_repository_key "$repo"
-  current_hash >/dev/null
+  _=$(current_hash)
   log info "creating the empty repository of $repo"
   # A session runs on the VM only after a handoff, which starts here: whatever an earlier one left is stale.
   destroy_session "$id"
@@ -1015,9 +1025,32 @@ cmd_init() {
   emit --arg path "$worktree" '{path: $path}'
 }
 
-# The credential helper of `clone`: it answers git's and Git LFS's `get` with the token in the file $HUNT_TOKEN_FILE,
-# so the token is in no argv, environment or Git config.
-readonly CLONE_CREDENTIAL_HELPER='!f() { test "$1" = get || exit 0; echo username=x-access-token; printf "password=%s\n" "$(cat "$HUNT_TOKEN_FILE")"; }; f'
+# The credential helper of `clone` and `push`: it answers git's and Git LFS's `get` with the token in the file
+# $HUNT_TOKEN_FILE, so the token is in no argv, environment or Git config.
+readonly TOKEN_CREDENTIAL_HELPER='!f() { test "$1" = get || exit 0; echo username=x-access-token; printf "password=%s\n" "$(cat "$HUNT_TOKEN_FILE")"; }; f'
+
+# Reads a GitHub token from the first line of stdin into the variable named $1 and adds it to the secrets `redact` hides.
+read_github_token() {
+  local read_token=''
+  IFS= read -r read_token || true
+  secrets+=("$read_token")
+  [[ $read_token =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid GitHub token on stdin: expected one line of letters, digits, _, . and -"
+  printf -v "$1" '%s' "$read_token"
+}
+
+# Writes token $2 to the file `token` of a new scratch folder that only the agent reads, for TOKEN_CREDENTIAL_HELPER, and
+# stores the folder's path in the variable named $1.
+write_agent_token() {
+  local token_folder
+  make_scratch_dir token_folder
+  chown "$AGENT:$AGENT" "$token_folder"
+  (
+    umask 077
+    printf '%s\n' "$2" >"$token_folder/token"
+  )
+  chown "$AGENT:$AGENT" "$token_folder/token"
+  printf -v "$1" '%s' "$token_folder"
+}
 
 # Prints the name (else the login) and the noreply email of the GitHub user of token $1, one per line. curl reads the
 # Authorization header from its configuration on stdin, so the token is in no argv.
@@ -1038,7 +1071,7 @@ github_identity() {
 # gh act with the GH_TOKEN of `start` through the system's gh credential helper.
 cmd_clone() {
   (( $# )) || usage
-  local id=$1 repo='' branch='' token='' identity git_name git_email worktree token_dir created_at
+  local id=$1 repo='' branch='' token='' identity git_name git_email worktree token_dir created_at _
   require_id "$id"
   shift
   while (( $# )); do
@@ -1052,10 +1085,8 @@ cmd_clone() {
   done
   require_repository_key "$repo"
   { [[ $branch != -* ]] && git check-ref-format --branch "$branch" >/dev/null 2>&1; } || die "invalid branch: $branch"
-  IFS= read -r token || true
-  secrets+=("$token")
-  [[ $token =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid GitHub token on stdin: expected one line of letters, digits, _, . and -"
-  current_hash >/dev/null
+  read_github_token token
+  _=$(current_hash)
   log info "cloning $repo onto branch $branch"
   identity=$(github_identity "$token")
   git_name=${identity%%$'\n'*}
@@ -1067,16 +1098,10 @@ cmd_clone() {
   rm -rf -- "$worktree"
   install -d -m 0700 "$SESSIONS" "$SESSIONS/$id"
   install -d -o "$AGENT" -g "$AGENT" -m 0755 "$worktree"
-  make_scratch_dir token_dir
-  chown "$AGENT:$AGENT" "$token_dir"
-  (
-    umask 077
-    printf '%s\n' "$token" >"$token_dir/token"
-  )
-  chown "$AGENT:$AGENT" "$token_dir/token"
+  write_agent_token token_dir "$token"
   # LFS files are fetched once the branch is checked out, by `git lfs pull` with the same credentials.
   as_agent env GIT_TERMINAL_PROMPT=0 GIT_LFS_SKIP_SMUDGE=1 "HUNT_TOKEN_FILE=$token_dir/token" \
-    "HUNT_CREDENTIAL_HELPER=$CLONE_CREDENTIAL_HELPER" sh -c '
+    "HUNT_CREDENTIAL_HELPER=$TOKEN_CREDENTIAL_HELPER" sh -c '
     set -e
     with_token() { git -c credential.helper= -c "credential.helper=$HUNT_CREDENTIAL_HELPER" "$@"; }
     with_token clone --quiet -- "$1" "$2"
@@ -1145,11 +1170,11 @@ cmd_lfs_get() {
 
 cmd_put_files() {
   (( $# == 1 || $# == 2 )) || usage
-  local id=$1 target
+  local id=$1 target _
   require_id "$id"
   if (( $# == 2 )); then
     [[ $2 == --claude ]] || usage
-    worktree_of "$id" >/dev/null
+    _=$(worktree_of "$id")
     install -d -o "$AGENT" -g "$AGENT" -m 0700 "$CLAUDE_HOME"
     target=$CLAUDE_HOME
   else
@@ -1162,10 +1187,10 @@ cmd_put_files() {
 
 cmd_get_claude() {
   (( $# == 3 )) && [[ $2 == --project ]] || usage
-  local id=$1 slug=$3
+  local id=$1 slug=$3 _
   require_id "$id"
   [[ $slug =~ ^[A-Za-z0-9-]+$ ]] || die "invalid project folder: $slug"
-  worktree_of "$id" >/dev/null
+  _=$(worktree_of "$id")
   [[ -d $CLAUDE_HOME ]] || die "session $id has no ~/.claude on this VM"
   as_agent sh -c 'cd "$1" && if [ -d "projects/$2" ]; then exec tar -czf - hunt-session.json "projects/$2"; else exec tar -czf - hunt-session.json; fi' sh "$CLAUDE_HOME" "$slug"
 }
@@ -1407,6 +1432,80 @@ cmd_snapshot() {
       git update-ref "refs/hunt/$2/retrieve" "$commit"
       printf "%s %s\n" "$commit" "$head"' sh "$worktree" "$id")
   emit --arg snapshot "${result%% *}" --arg head "${result##* }" '{snapshot: $snapshot, head: $head}'
+}
+
+# Commits paths of the worktree of session $1 for Hunt's changelist. Stdin holds the author's name and email, the message
+# and the worktree-relative paths, each ending with NUL. Git and the repository's hooks run as the agent with the agent's
+# environment (vm/agent.env), so the hooks find the tools they find in the agent's own commits. A path that neither
+# exists nor is tracked any more is skipped (the agent committed its deletion), and nothing is committed when the rest
+# does not differ from HEAD (the agent committed it). Records the branch's commit as refs/hunt/<id>/commit, which Hunt
+# fetches, and prints it with whether this command made it.
+cmd_commit() {
+  (( $# == 1 )) || usage
+  local id=$1 worktree git_name='' git_email='' message='' path result
+  local -a paths=()
+  require_id "$id"
+  require_prepared "$id"
+  worktree=$(worktree_of "$id")
+  IFS= read -r -d '' git_name || true
+  IFS= read -r -d '' git_email || true
+  IFS= read -r -d '' message || true
+  require_line "git name" "$git_name"
+  require_line "git email" "$git_email"
+  [[ -n ${message//[[:space:]]/} ]] || die "invalid commit message: expected text"
+  while IFS= read -r -d '' path; do
+    [[ -n $path && $path != /* && /$path/ != */../* ]] || die "invalid path: $path"
+    paths+=("$path")
+  done
+  (( ${#paths[@]} )) || die "no paths on stdin"
+  log info "committing ${#paths[@]} paths"
+  result=$(agent_run "$CURRENT/vm/agent.env" "$worktree" GIT_LITERAL_PATHSPECS=1 "GIT_AUTHOR_NAME=$git_name" \
+    "GIT_AUTHOR_EMAIL=$git_email" "GIT_COMMITTER_NAME=$git_name" "GIT_COMMITTER_EMAIL=$git_email" bash -c '
+      set -euo pipefail
+      # The hooks print on stderr; the result goes to the captured stdout.
+      exec 3>&1 1>&2
+      id=$1 message=$2
+      shift 2
+      git symbolic-ref -q HEAD >/dev/null || { echo "the worktree on the VM has no branch checked out" >&2; exit 1; }
+      kept=()
+      for path in "$@"; do
+        if [[ -e $path || -L $path ]] || git ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+          kept+=("$path")
+        fi
+      done
+      committed=false
+      if (( ${#kept[@]} )); then
+        git add -A -- "${kept[@]}"
+        if ! git diff --cached --quiet HEAD -- "${kept[@]}"; then
+          git commit -q -m "$message" -- "${kept[@]}"
+          committed=true
+        fi
+      fi
+      head=$(git rev-parse --verify HEAD)
+      git update-ref "refs/hunt/$id/commit" "$head"
+      printf "%s %s\n" "$head" "$committed" >&3' bash "$id" "$message" "${paths[@]}" </dev/null) || die "failed to commit the files on the VM"
+  emit --arg commit "${result%% *}" --argjson committed "${result##* }" '{commit: $commit, committed: $committed}'
+}
+
+# Pushes the branch the worktree of session $1 has checked out to its origin and makes that its upstream, as the agent
+# with the agent's environment; the GitHub token on stdin reaches git and Git LFS through TOKEN_CREDENTIAL_HELPER.
+cmd_push() {
+  (( $# == 1 )) || usage
+  local id=$1 worktree token token_dir
+  require_id "$id"
+  require_prepared "$id"
+  worktree=$(worktree_of "$id")
+  read_github_token token
+  write_agent_token token_dir "$token"
+  log info "pushing the branch"
+  agent_run "$CURRENT/vm/agent.env" "$worktree" "HUNT_TOKEN_FILE=$token_dir/token" "HUNT_CREDENTIAL_HELPER=$TOKEN_CREDENTIAL_HELPER" \
+    bash -c '
+      set -euo pipefail
+      git symbolic-ref -q HEAD >/dev/null || { echo "the worktree on the VM has no branch checked out" >&2; exit 1; }
+      git -c credential.helper= -c "credential.helper=$HUNT_CREDENTIAL_HELPER" push -q -u -- origin HEAD' </dev/null ||
+    die "failed to push the branch from the VM"
+  rm -rf -- "$token_dir"
+  emit '{}'
 }
 
 cmd_status() {
@@ -1829,7 +1928,7 @@ main() {
   case $command in
     install | install-units | version) ;;
     install-tools | init | clone | receive-pack | upload-pack | lfs-put | lfs-get | put-files | get-claude | prepare | deps | \
-      session-config | service | start | wait | stop | clear | snapshot | status | preview-status | destroy)
+      session-config | service | start | wait | stop | clear | snapshot | commit | push | status | preview-status | destroy)
       [[ $role == session ]] || die "hunt-ctl $command runs on session VMs only; this VM is the gateway"
       ;;
     stage-session)
@@ -1901,6 +2000,8 @@ main() {
     stop) cmd_stop "$@" ;;
     clear) cmd_clear "$@" ;;
     snapshot) cmd_snapshot "$@" ;;
+    commit) cmd_commit "$@" ;;
+    push) cmd_push "$@" ;;
     status) cmd_status "$@" ;;
     preview-status) cmd_preview_status "$@" ;;
     destroy) cmd_destroy "$@" ;;

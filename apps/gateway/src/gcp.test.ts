@@ -20,6 +20,7 @@ const fixedMetadata: Metadata = {
   project: async () => "medconomy-hunt",
   zone: async () => "europe-west3-a",
   accessToken: async () => "token-1",
+  attribute: async () => null,
 };
 
 interface Recorded {
@@ -89,6 +90,28 @@ describe("createMetadata", () => {
       "instance/zone",
       "instance/service-accounts/default/token",
       "instance/service-accounts/default/token",
+    ]);
+  });
+
+  it("reads instance attributes anew at every call, null for a missing one", async () => {
+    let repos = "acme/app";
+    const { fetchImpl, requests } = fakeFetch({
+      [`GET ${METADATA}instance/attributes/hunt-swf-repos`]: () => new Response(repos),
+      [`GET ${METADATA}instance/attributes/hunt-swf-max-sessions`]: () => new Response("Not Found", { status: 404 }),
+      [`GET ${METADATA}instance/attributes/broken`]: () => new Response("nope", { status: 503 }),
+    });
+    const metadata = createMetadata(fetchImpl);
+
+    expect(await metadata.attribute("hunt-swf-repos")).toBe("acme/app");
+    repos = "acme/app,acme/api";
+    expect(await metadata.attribute("hunt-swf-repos")).toBe("acme/app,acme/api");
+    expect(await metadata.attribute("hunt-swf-max-sessions")).toBeNull();
+    await expect(metadata.attribute("broken")).rejects.toThrow("failed to read instance/attributes/broken from the metadata server: HTTP 503 nope");
+    expect(requests.map((request) => request.url.slice(METADATA.length))).toEqual([
+      "instance/attributes/hunt-swf-repos",
+      "instance/attributes/hunt-swf-repos",
+      "instance/attributes/hunt-swf-max-sessions",
+      "instance/attributes/broken",
     ]);
   });
 

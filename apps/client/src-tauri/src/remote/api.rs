@@ -15,7 +15,6 @@ use uuid::Uuid;
 
 use super::release::PROTOCOL_JSON;
 use super::ssh::Ssh;
-use super::swf::{SwfConfig, SwfRequest};
 use super::{preview, shell_command, Progress, RemoteStep, VmRef};
 
 #[derive(Deserialize)]
@@ -92,8 +91,6 @@ pub struct ProvisionRequest<'a> {
     /// `<owner>/<repo>`.
     pub repo: &'a str,
     pub branch: &'a str,
-    /// A machine type other than the instance template's.
-    pub machine_type: Option<&'a str>,
 }
 
 /// The session VM `sessions.provision` set up; `created` when it did not exist before, so its host key is new too.
@@ -177,13 +174,6 @@ impl GatewayApi {
     pub async fn delete_vm(&self, id: Uuid) -> Result<(), String> {
         let _: IgnoredAny = self.call("vms.delete", &json!({ "id": id })).await?;
         Ok(())
-    }
-
-    /// Stores the configuration of the gateway's poller and returns it as stored, with the label and template the
-    /// gateway adds.
-    pub async fn apply_swf_config(&self, request: &SwfRequest) -> Result<SwfConfig, String> {
-        request.validate()?;
-        self.call("swf.applyConfig", request).await
     }
 }
 
@@ -403,10 +393,10 @@ mod tests {
     #[test]
     fn requests_serialize_in_the_shape_of_the_contract() {
         let id = Uuid::parse_str("ab12cd34-0000-4000-8000-000000000001").unwrap();
-        let request = ProvisionRequest { id, title: "Fix login", repo: "acme/app", branch: "feat/general/x", machine_type: None };
+        let request = ProvisionRequest { id, title: "Fix login", repo: "acme/app", branch: "feat/general/x" };
         assert_eq!(
             serde_json::to_value(&request).unwrap(),
-            json!({ "id": "ab12cd34-0000-4000-8000-000000000001", "title": "Fix login", "repo": "acme/app", "branch": "feat/general/x", "machineType": null })
+            json!({ "id": "ab12cd34-0000-4000-8000-000000000001", "title": "Fix login", "repo": "acme/app", "branch": "feat/general/x" })
         );
         assert_eq!(json!({ "id": id }), json!({ "id": "ab12cd34-0000-4000-8000-000000000001" }));
     }

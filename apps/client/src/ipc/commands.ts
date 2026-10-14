@@ -23,7 +23,6 @@ import type {
   SelectionContext,
   SessionNotification,
   SessionView,
-  SwfConfig,
   Shelf,
   VmSettings,
   Workspace,
@@ -104,11 +103,6 @@ export const commands = {
    * repository among `repoPaths` and the stored sessions' repositories; resolves with the IDs of the new sessions.
    */
   adoptSessionVms: (settings: VmSettings, repoPaths: string[]) => invoke<string[]>("adopt_session_vms", { settings, repoPaths }),
-  /**
-   * Writes the poller configuration to the gateway of `settings`: open issues labelled swf in `repos` get a session VM
-   * each with the machine type of `settings`, at most `maxSessions` at once; resolves with what the gateway stored.
-   */
-  applySwfConfig: (settings: VmSettings, repos: string[], maxSessions: number) => invoke<SwfConfig>("apply_swf_config", { settings, repos, maxSessions }),
   /**
    * The remote settings, or null while they are incomplete; the main window pushes them at its start and on every
    * change, and commands on stored remote sessions reach the gateway they name.

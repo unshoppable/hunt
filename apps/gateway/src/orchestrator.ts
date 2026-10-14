@@ -23,6 +23,8 @@ export const ORIGIN_LABEL = "hunt-origin";
 export const OWNER_LABEL = "hunt-owner";
 export const SESSION_ROLE = "session";
 export const SESSION_VM_PREFIX = "vm-hunt-s-";
+/** The instance template session VMs are created from. */
+export const DEFAULT_TEMPLATE = "tpl-hunt-session";
 
 export const CREATE_TIMEOUT_MS = 2 * 60_000;
 export const START_TIMEOUT_MS = 6 * 60_000;

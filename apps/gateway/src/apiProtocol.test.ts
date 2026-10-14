@@ -3,7 +3,7 @@ import { METHODS } from "../../../libs/domain/src/gatewayApi.ts";
 import { ApiError, encodeEvent, errorEvent, isBranchName, isFinalEvent, METHOD_PATTERN, parseEvent, parseRequest } from "./apiProtocol.ts";
 
 const ID = "ab12cd34-0000-4000-8000-000000000001";
-const PROVISION = { id: ID, title: "Fix login", repo: "acme/app", branch: "feat/login", machineType: null };
+const PROVISION = { id: ID, title: "Fix login", repo: "acme/app", branch: "feat/login" };
 
 function line(value: unknown): string {
   return JSON.stringify(value);
@@ -25,13 +25,7 @@ describe("parseRequest", () => {
     expect(METHODS.every((method) => METHOD_PATTERN.test(method))).toBe(true);
     expect(parseRequest(line({ caller: "jane_doe_example_com", method: "hello" }))).toEqual({ caller: "jane_doe_example_com", method: "hello", params: {} });
     expect(parseRequest(line({ caller: "sa_1234", method: "vms.start", params: { id: ID, extra: true } })).params).toEqual({ id: ID });
-    expect(parseRequest(line({ caller: "jane", method: "sessions.provision", params: { ...PROVISION, machineType: "" } })).params).toEqual(PROVISION);
-    const applyConfig = { repos: ["acme/app"], maxSessions: 3, machineType: "e2-standard-8" };
-    expect(parseRequest(line({ caller: "jane", method: "swf.applyConfig", params: applyConfig })).params).toEqual({
-      repos: ["acme/app"],
-      maxSessions: 3,
-      machineType: "e2-standard-8",
-    });
+    expect(parseRequest(line({ caller: "jane", method: "sessions.provision", params: { ...PROVISION, machineType: "e2-standard-8" } })).params).toEqual(PROVISION);
   });
 
   it("refuses requests without a valid caller or method", () => {
@@ -45,7 +39,7 @@ describe("parseRequest", () => {
     expect(() => parseRequest("not json")).toThrow("the request is no JSON object");
   });
 
-  it("validates session IDs, repositories, branches, titles and machine types", () => {
+  it("validates session IDs, repositories, branches and titles", () => {
     const provision = (params: Record<string, unknown>) => refusal({ caller: "jane", method: "sessions.provision", params: { ...PROVISION, ...params } }).message;
     expect(refusal({ caller: "jane", method: "vms.get", params: { id: ID.toUpperCase() } }).message).toBe("id must be a session ID (a lowercase UUID)");
     expect(refusal({ caller: "jane", method: "vms.delete", params: [] }).message).toBe("params must be a JSON object");
@@ -53,13 +47,6 @@ describe("parseRequest", () => {
     expect(provision({ branch: "feat/../x" })).toBe("branch must be a valid Git branch name");
     expect(provision({ title: "x".repeat(301) })).toBe("title must be a line of at most 300 characters");
     expect(provision({ title: "two\nlines" })).toBe("title must be a line of at most 300 characters");
-    expect(provision({ machineType: "E2 standard" })).toBe("machineType must be a Compute Engine machine type or null");
-    expect(refusal({ caller: "jane", method: "swf.applyConfig", params: { repos: ["acme/app"], maxSessions: 11 } }).message).toBe(
-      "maxSessions must be a whole number from 0 to 10",
-    );
-    expect(refusal({ caller: "jane", method: "swf.applyConfig", params: { repos: "acme/app", maxSessions: 1 } }).message).toBe(
-      "repos must be a list of at most 100 <owner>/<repo>",
-    );
   });
 });
 

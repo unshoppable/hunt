@@ -47,7 +47,6 @@ const ARTIFACTS: Record<string, Artifact> = {
       "gateway/wake": "apps/gateway/src/wake.ts",
       "gateway/api": "apps/gateway/src/api.ts",
       "gateway/apiClient": "apps/gateway/src/apiClient.ts",
-      "gateway/swfConfig": "apps/gateway/src/swfConfigCli.ts",
     },
     files: [
       ["libs/vm/hunt-ctl", "vm/hunt-ctl"],

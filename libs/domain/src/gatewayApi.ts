@@ -59,14 +59,6 @@ export interface SessionSummary {
   createdAt: string;
 }
 
-export interface SwfConfig {
-  repos: string[];
-  maxSessions: number;
-  label: string;
-  template: string;
-  machineType: string | null;
-}
-
 /** Request and result of every method. */
 export interface Methods {
   hello: { request: Record<string, never>; result: HelloResult };
@@ -75,15 +67,13 @@ export interface Methods {
   /** Creates the session's VM unless it exists, records the session in its metadata, starts it, waits for its startup
    *  script and updates its release; streams progress. `conflict` when the VM holds another session. */
   "sessions.provision": {
-    request: { id: string; title: string; repo: string; branch: string; machineType: string | null };
+    request: { id: string; title: string; repo: string; branch: string };
     result: { vm: VmRef; created: boolean; release: ReleaseInfo };
   };
   /** Starts or resumes the session's VM unless it runs, waits until it answers and updates its release; streams. */
   "vms.start": { request: { id: string }; result: { vm: VmRef; wasRunning: boolean; release: ReleaseInfo } };
   "vms.stop": { request: { id: string }; result: Record<string, never> };
   "vms.delete": { request: { id: string }; result: { alreadyGone: boolean } };
-  "swf.getConfig": { request: Record<string, never>; result: SwfConfig };
-  "swf.applyConfig": { request: { repos: string[]; maxSessions: number; machineType: string | null }; result: SwfConfig };
 }
 
 export type Method = keyof Methods;
@@ -96,6 +86,4 @@ export const METHODS: readonly Method[] = [
   "vms.start",
   "vms.stop",
   "vms.delete",
-  "swf.getConfig",
-  "swf.applyConfig",
 ];

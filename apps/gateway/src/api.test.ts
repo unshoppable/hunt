@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,12 +12,11 @@ import { parseEvent } from "./apiProtocol.ts";
 import type { Compute, Instance } from "./gcp.ts";
 import { Orchestrator } from "./orchestrator.ts";
 import type { SessionVm } from "./sessionVm.ts";
-import { readSwfConfigOrDefaults, writeSwfConfig } from "./swfConfig.ts";
 
 const ID = "ab12cd34-0000-4000-8000-000000000001";
 const VM = "vm-hunt-s-ab12cd34";
 const RELEASE = { version: "session@1.4.0", protocol: 1 };
-const PROVISION = { id: ID, title: "Fix login", repo: "acme/app", branch: "feat/login", machineType: null };
+const PROVISION = { id: ID, title: "Fix login", repo: "acme/app", branch: "feat/login" };
 
 /** A Compute Engine whose new VMs run at once; it records every change. */
 function fakeCompute() {
@@ -32,7 +31,7 @@ function fakeCompute() {
     listByLabel: async () => [],
     get: async (name) => copy(name),
     insert: async (request) => {
-      calls.push(`insert ${request.name} ${JSON.stringify(request.labels)}`);
+      calls.push(`insert ${request.name} ${request.template} ${request.machineType} ${JSON.stringify(request.labels)}`);
       instances.set(request.name, {
         name: request.name,
         zone: "europe-west3-a",
@@ -95,7 +94,6 @@ function fakeVm() {
 describe("the gateway API over its Unix socket", () => {
   let dir = "";
   let socketPath = "";
-  let swfPath = "";
   let api: ApiServer;
   let compute: ReturnType<typeof fakeCompute>;
   let vm: ReturnType<typeof fakeVm>;
@@ -105,7 +103,6 @@ describe("the gateway API over its Unix socket", () => {
     // Unix socket paths are limited to 104 bytes on macOS, so a long TMPDIR is not used.
     dir = mkdtempSync(join(tmpdir().length > 60 ? "/tmp" : tmpdir(), "hunt-api-"));
     socketPath = join(dir, "api.sock");
-    swfPath = join(dir, "swf.json");
     compute = fakeCompute();
     vm = fakeVm();
     logs = [];
@@ -113,8 +110,6 @@ describe("the gateway API over its Unix socket", () => {
     api = createApiServer({
       orchestrator: new Orchestrator({ compute: compute.compute, location, vm: () => vm.vm, sleep: async () => {}, now: () => 0 }),
       gatewayInfo: async () => ({ release: "gateway@2.0.0", ...location, previewDomain: "hunt.example.com" }),
-      readSwfConfig: () => readSwfConfigOrDefaults(swfPath),
-      writeSwfConfig: (config) => writeSwfConfig(config, swfPath),
       log: (message) => logs.push(message),
     });
     await new Promise<void>((resolve) => api.server.listen(socketPath, resolve));
@@ -161,8 +156,8 @@ describe("the gateway API over its Unix socket", () => {
     });
   });
 
-  it("provisions a session VM for its caller and streams the progress before the result", async () => {
-    const { status, events } = await call("sessions.provision", PROVISION);
+  it("provisions a session VM for its caller from the template and streams the progress before the result", async () => {
+    const { status, events } = await call("sessions.provision", { ...PROVISION, machineType: "e2-standard-8" });
     expect(status).toBe(0);
     expect(events.filter((event) => event.type === "progress")).toEqual([
       { type: "progress", step: "creatingVm" },
@@ -173,7 +168,8 @@ describe("the gateway API over its Unix socket", () => {
       type: "result",
       data: { vm: { project: "medconomy-hunt", zone: "europe-west3-a", instance: VM }, created: true, release: RELEASE },
     });
-    expect(compute.calls[0]).toBe(`insert ${VM} {"hunt-role":"session","hunt-session":"ab12cd34","hunt-origin":"desktop","hunt-owner":"jane_doe_example_com"}`);
+    const labels = '{"hunt-role":"session","hunt-session":"ab12cd34","hunt-origin":"desktop","hunt-owner":"jane_doe_example_com"}';
+    expect(compute.calls[0]).toBe(`insert ${VM} tpl-hunt-session null ${labels}`);
     expect(logs.at(-1)).toMatch(new RegExp(`^jane_doe_example_com: sessions.provision ${ID}: ok in \\d+ ms$`));
 
     const listed = await call("sessions.list");
@@ -201,18 +197,6 @@ describe("the gateway API over its Unix socket", () => {
     expect((await call("vms.reboot")).final).toMatchObject({ type: "error", code: "invalidParams", message: expect.stringContaining("unknown method") });
     expect((await call("vms.start", { id: "nope" })).final).toEqual({ type: "error", code: "invalidParams", message: "id must be a session ID (a lowercase UUID)" });
     expect((await call("hello", undefined, "Not A User")).final).toMatchObject({ type: "error", code: "forbidden" });
-  });
-
-  it("reads and applies the poller's configuration, keeping its label and template", async () => {
-    expect((await call("swf.getConfig")).final).toEqual({
-      type: "result",
-      data: { repos: [], maxSessions: 2, label: "swf", template: "tpl-hunt-session", machineType: null },
-    });
-    writeFileSync(swfPath, JSON.stringify({ repos: [], label: "ai", template: "tpl-custom" }));
-    const applied = await call("swf.applyConfig", { repos: [" acme/app ", "Acme/App", "acme/api"], maxSessions: 4, machineType: null });
-    const config = { repos: ["acme/app", "acme/api"], maxSessions: 4, label: "ai", template: "tpl-custom", machineType: null };
-    expect(applied.final).toEqual({ type: "result", data: config });
-    expect(JSON.parse(readFileSync(swfPath, "utf8"))).toEqual(config);
   });
 
   it("lets concurrent starts of one session share one operation", async () => {

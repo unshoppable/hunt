@@ -5,11 +5,11 @@ import type { GitHub, Issue } from "./github.ts";
 import { Orchestrator } from "./orchestrator.ts";
 import type { SessionVm } from "./sessionVm.ts";
 import { Poller, type PollerDeps } from "./swf.ts";
-import type { SwfConfig } from "./swfConfig.ts";
+import { readSwfConfig, type SwfConfig } from "./swfConfig.ts";
 
 const GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
 const CLAUDE_TOKEN = "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz";
-const CONFIG: SwfConfig = { repos: ["acme/app"], maxSessions: 2, label: "swf", template: "tpl-hunt-session", machineType: null };
+const CONFIG: SwfConfig = { repos: ["acme/app"], maxSessions: 2 };
 const SESSION_ID = "ab12cd34-0000-4000-8000-000000000001";
 const VM = "vm-hunt-s-ab12cd34";
 
@@ -154,7 +154,7 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
     now: () => 0,
   });
   const deps: PollerDeps = {
-    readConfig: () => CONFIG,
+    readConfig: async () => CONFIG,
     readDomain: () => "hunt.example.com",
     tokens: async () => {
       tokenReads++;
@@ -179,20 +179,16 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
 describe("Poller.cycle", () => {
   it("stays idle without repositories or with an invalid configuration, and says so once", async () => {
     const compute = fakeCompute();
-    const { poller, logs, tokenReads } = createPoller({ readConfig: () => null, compute });
+    const { poller, logs, tokenReads } = createPoller({ readConfig: () => readSwfConfig({ attribute: async () => null }), compute });
     await poller.cycle();
     await poller.cycle();
-    expect(logs).toEqual(["idle: /etc/hunt/swf.json lists no repositories"]);
+    expect(logs).toEqual(["idle: the instance metadata hunt-swf-repos lists no repositories"]);
     expect(tokenReads()).toBe(0);
     expect(compute.calls).toEqual([]);
 
-    const invalid = createPoller({
-      readConfig: () => {
-        throw new Error("failed to read /etc/hunt/swf.json: maxSessions: must be a whole number from 0 to 10");
-      },
-    });
+    const invalid = createPoller({ readConfig: () => readSwfConfig({ attribute: async (key) => (key === "hunt-swf-repos" ? "acme/app" : "11") }) });
     await invalid.poller.cycle();
-    expect(invalid.logs).toEqual(["idle: failed to read /etc/hunt/swf.json: maxSessions: must be a whole number from 0 to 10"]);
+    expect(invalid.logs).toEqual(['idle: invalid instance metadata: hunt-swf-max-sessions: "11" is no whole number from 0 to 10']);
   });
 
   it("starts sessions only while fewer than maxSessions VMs are up, oldest issue first", async () => {
@@ -290,7 +286,8 @@ describe("Poller.cycle", () => {
     const github = fakeGitHub({ "acme/app": [issue(1), issue(2)] });
     const compute = fakeCompute();
     let ids = 0;
-    const { poller } = createPoller({ github, compute, vm, readConfig: () => ({ ...CONFIG, maxSessions: 1 }), newId: () => `0000000${++ids}-0000-4000-8000-000000000000` });
+    const newId = () => `0000000${++ids}-0000-4000-8000-000000000000`;
+    const { poller } = createPoller({ github, compute, vm, readConfig: async () => ({ ...CONFIG, maxSessions: 1 }), newId });
 
     await poller.cycle();
     await poller.cycle();

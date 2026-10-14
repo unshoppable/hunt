@@ -65,7 +65,6 @@ pub fn run() {
             session::commands::snooze_remote_cleanup,
             session::commands::preview_status,
             session::commands::adopt_session_vms,
-            session::commands::apply_swf_config,
             session::commands::set_remote_settings,
             session::commands::remote_changes,
             session::commands::read_remote_file_diff,

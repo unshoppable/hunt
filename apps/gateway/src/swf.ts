@@ -1,7 +1,7 @@
 /**
  * hunt-swf on the gateway (`hunt-swf.service`): starts a remote session for every open GitHub issue with the label
- * `swf` in the repositories of `/etc/hunt/swf.json` (`swfConfig.ts`), polling every POLL_INTERVAL_MS, since the gateway
- * sits behind IAP and receives no webhooks.
+ * `swf` in the repositories the gateway's instance metadata lists (`swfConfig.ts`), polling every POLL_INTERVAL_MS,
+ * since the gateway sits behind IAP and receives no webhooks.
  *
  *   node /srv/hunt/current/gateway/swf.mjs      (the bundle `nx build gateway` writes)
  *
@@ -16,11 +16,11 @@
  * the VM for inspection; Hunt desktops adopt the VM either way.
  *
  * The GitHub token (`HUNT_SWF_GITHUB_TOKEN`) and the Claude Code OAuth token (`HUNT_SWF_CLAUDE_TOKEN`) come from Secret
- * Manager; project, zone and access token from the metadata server; the preview domain from what `hunt-ctl install`
- * wrote (`previewDomain.ts`). One log line per decision goes to stdout (journald); tokens never appear in logs or
- * comments. SIGHUP (the unit's reload, after an install) makes the poller exit once the sessions it sets up are running,
- * so that systemd starts the new release; SIGTERM marks those still being set up as failed and exits. Runs on Node 24
- * through type stripping; no dependencies.
+ * Manager; project, zone, access token and configuration from the metadata server; the preview domain from what
+ * `hunt-ctl install` wrote (`previewDomain.ts`). One log line per decision goes to stdout (journald); tokens never
+ * appear in logs or comments. SIGHUP (the unit's reload, after an install) makes the poller exit once the sessions it
+ * sets up are running, so that systemd starts the new release; SIGTERM marks those still being set up as failed and
+ * exits. Runs on Node 24 through type stripping; no dependencies.
  */
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -31,10 +31,10 @@ import { messageOf } from "../../../libs/domain/src/errors.ts";
 import { sendPrompt, type Transport } from "./acpClient.ts";
 import { createCompute, createMetadata, readSecret, type Compute, type Instance, type Metadata } from "./gcp.ts";
 import { createGitHub, type GitHub, type Issue, type IssueComment } from "./github.ts";
-import { ORIGIN_LABEL, Orchestrator, type Origin, type Reporter } from "./orchestrator.ts";
+import { DEFAULT_TEMPLATE, ORIGIN_LABEL, Orchestrator, type Origin, type Reporter } from "./orchestrator.ts";
 import { readDomain } from "./previewDomain.ts";
 import { ensureSshKey, sessionVm, type SessionVm } from "./sessionVm.ts";
-import { readSwfConfig, SWF_CONFIG_PATH, type SwfConfig } from "./swfConfig.ts";
+import { readSwfConfig, REPOS_ATTRIBUTE, SWF_LABEL, type SwfConfig } from "./swfConfig.ts";
 import {
   activeSessionVms,
   branchName,
@@ -68,8 +68,8 @@ export interface Tokens {
 }
 
 export interface PollerDeps {
-  /** The configuration; null without one. Throws for an invalid file. */
-  readConfig(): SwfConfig | null;
+  /** The configuration from the gateway's instance metadata. Throws for invalid attributes. */
+  readConfig(): Promise<SwfConfig>;
   /** The preview domain of the gateway's edge proxy. Throws without one. */
   readDomain(): string;
   tokens(): Promise<Tokens>;
@@ -124,12 +124,12 @@ export class Poller {
 
   /** One poll: claims the issues that get a session now and starts their setups in the background. */
   async cycle(): Promise<void> {
-    let config: SwfConfig | null;
+    let config: SwfConfig;
     let domain: string;
     try {
-      config = this.deps.readConfig();
-      if (!config || config.repos.length === 0) {
-        this.note(`idle: ${SWF_CONFIG_PATH} lists no repositories`);
+      config = await this.deps.readConfig();
+      if (config.repos.length === 0) {
+        this.note(`idle: the instance metadata ${REPOS_ATTRIBUTE} lists no repositories`);
         return;
       }
       domain = this.deps.readDomain();
@@ -148,7 +148,7 @@ export class Poller {
       return;
     }
     const github = this.deps.github(tokens.github);
-    const labels = swfLabels(config.label);
+    const labels = swfLabels(SWF_LABEL);
     const active = activeSessionVms(vms, this.setups.keys());
     const issuesByRepo: { repo: string; issues: Issue[] }[] = [];
     for (const repo of config.repos) {
@@ -171,12 +171,12 @@ export class Poller {
       this.note(`polling ${config.repos.join(", ")}: no open issues labelled ${labels.requested}`);
     }
     for (const { repo, issue } of start) {
-      await this.claimAndStart(config, domain, tokens, github, labels, repo, issue);
+      await this.claimAndStart(domain, tokens, github, labels, repo, issue);
     }
   }
 
   /** Claims the issue and starts its setup in the background; an issue that cannot be claimed stays for the next poll. */
-  private async claimAndStart(config: SwfConfig, domain: string, tokens: Tokens, github: GitHub, labels: SwfLabels, repo: string, issue: Issue): Promise<void> {
+  private async claimAndStart(domain: string, tokens: Tokens, github: GitHub, labels: SwfLabels, repo: string, issue: Issue): Promise<void> {
     const key = `${repo}#${issue.number}`;
     let comments: IssueComment[];
     try {
@@ -200,7 +200,7 @@ export class Poller {
       try {
         await github.addLabels(repo, issue.number, [labels.running]);
         await github.comment(repo, issue.number, claimComment(names, branch, domain));
-        await this.setUp(setup, config, domain, tokens, branch, issue, comments);
+        await this.setUp(setup, domain, tokens, branch, issue, comments);
       } catch (error) {
         await this.markFailed(setup, this.redacted(error));
       } finally {
@@ -219,7 +219,7 @@ export class Poller {
   }
 
   /** The handoff of the desktop, from the VM to the first prompt; see the module comment. */
-  private async setUp(setup: Setup, config: SwfConfig, domain: string, tokens: Tokens, branch: string, issue: Issue, comments: IssueComment[]): Promise<void> {
+  private async setUp(setup: Setup, domain: string, tokens: Tokens, branch: string, issue: Issue, comments: IssueComment[]): Promise<void> {
     const { key, repo, names } = setup;
     const log = (message: string) => this.deps.log(`${key}: ${message}`);
     const reporter: Reporter = {
@@ -231,7 +231,7 @@ export class Poller {
       log,
     };
     const request = { id: names.id, repo, branch, title: issue.title, issue: issue.number, origin: ORIGIN, owner: "" };
-    await this.deps.orchestrator.provision({ ...request, template: config.template, machineType: config.machineType }, reporter);
+    await this.deps.orchestrator.provision({ ...request, template: DEFAULT_TEMPLATE, machineType: null }, reporter);
     const vm = this.deps.vm(names.vm);
     await vm.huntCtl(["install-tools"]);
 
@@ -307,7 +307,7 @@ async function main(): Promise<void> {
   let wake = () => {};
   let isStopping = false;
   const poller = new Poller({
-    readConfig: () => readSwfConfig(),
+    readConfig: () => readSwfConfig(metadata),
     readDomain: () => readDomain(),
     tokens: secretsReader(metadata),
     github: (token) => createGitHub(token),

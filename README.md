@@ -295,7 +295,7 @@ revert, shelve, unshelve), and the panel marks the diagram "Outdated" once such 
 #### Remote sessions
 
 A session can move to a Compute Engine VM of its own and keep working there while Hunt is closed ("Remote" in the chat
-header, set up under *Settings → Remote VM*: project, zone and instance of the gateway, and a machine type). The app
+header, set up under *Settings → Remote VM*: the Google Cloud project of the gateway). The app
 creates, starts and deletes no VM itself: it calls the gateway API (`libs/domain/src/gatewayApi.ts`,
 `apps/client/src-tauri/src/remote/api.rs`) as `hunt-api <method>` over its SSH connection to the gateway, with the
 request as one JSON object on stdin; stdout streams NDJSON events, progress steps and log lines, then one result or
@@ -304,9 +304,12 @@ hex digits of the session ID) and owns its project, zone, instance template and 
 The first call to a gateway in an app run checks that its `hello.api` is the `api` of `libs/domain/protocol.json` and
 otherwise asks to update Hunt or to wait for the next server deploy. The handoff calls `sessions.provision`, connects
 and diffs call `vms.start` or `vms.get`, deleting a session calls `vms.delete`, adoption calls `sessions.list`. So the
-gcloud login needs no Compute Engine rights on the VMs: Hunt uses it only for the IAP tunnel to the gateway and the
-session VMs and for registering its SSH key with OS Login. The main window passes the remote settings to the backend at
-its start and on every change (`set_remote_settings`); commands on stored remote sessions reach that gateway. After the
+gcloud login needs no Compute Engine rights to change VMs: Hunt uses it for the IAP tunnel to the gateway and the
+session VMs, for registering its SSH key with OS Login, and once per app run to find the gateway, the VM of the project
+labelled `hunt-role=gateway`, with its zone (`gcloud compute instances list`, which needs `compute.instances.list`, e.g.
+from `roles/compute.viewer`). The infrastructure repository sets that label and configures the gateway, the session
+VMs' instance template with their machine type, and the poller below. The main window passes the remote settings to
+the backend at its start and on every change (`set_remote_settings`); commands on stored remote sessions reach that gateway. After the
 gateway started or provisioned a session VM, Hunt checks that the VM's release speaks the app's protocol (`hunt-ctl
 version`, `apps/client/src-tauri/src/remote/release.rs`, numbered in `libs/domain/protocol.json`) and runs `hunt-ctl
 install-tools`, which installs the agent's tools the VM image lacks in the versions the VM's release pins and skips
@@ -419,8 +422,7 @@ script wrote `/var/lib/hunt/session-ready`, and install the staged session relea
 `startingVm`, `waitingForVm` and `installingRuntime`. Concurrent calls of one method for one session share one
 operation; the second hears its progress from the start. `vms.delete` deletes the VM with all its disks and answers
 `alreadyGone` for a VM that does not exist; `sessions.list` lists the session VMs of every zone of the project.
-`swf.getConfig` and `swf.applyConfig` read and write the poller's `/etc/hunt/swf.json`, which `hunt-gw` owns; admins
-can still write it with `hunt-ctl swf-config`. Running requests go on when their caller disconnects, and a reload after
+Running requests go on when their caller disconnects, and a reload after
 an install lets them finish before the new release starts. `journalctl -u hunt-api` shows one line per request with its
 caller.
 
@@ -456,9 +458,10 @@ keeps the local version with the VM's next to it as `<name>.remote-<id>.md`, and
 removed lines.
 
 The gateway's poller `hunt-swf.service` (`apps/gateway/src/swf.ts`) starts a session for every open GitHub issue
-labelled `swf` in the repositories listed under *Settings → Remote VM → GitHub issues (swf)*; *Apply to gateway*
-sends them with the session limit and the machine type to the gateway API (`swf.applyConfig`), which writes
-`/etc/hunt/swf.json`; the poller reads it at every poll. Every 2 minutes it lists the open issues through GitHub's REST
+labelled `swf` in the repositories that the gateway's instance metadata `hunt-swf-repos` lists (comma-separated
+`<owner>/<repo>`), with at most `hunt-swf-max-sessions` (default 2, at most 10) at once. The infrastructure repository
+sets both; the poller reads them from the metadata server at every poll, so a change needs no restart, and an invalid
+value keeps it idle. Every 2 minutes it lists the open issues through GitHub's REST
 API and, while fewer of its VMs
 (label `hunt-origin=swf`, any status but `TERMINATED` and `STOPPED`) are up than the limit allows, claims the oldest
 issue: `swf` becomes `swf:running` (the labels `swf:running`, `swf:done` and `swf:failed` are created when missing) and

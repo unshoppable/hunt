@@ -76,32 +76,21 @@ describe("migrateSettings", () => {
     ]);
   });
 
-  it("makes the VM all sessions shared up to version 9 the gateway", () => {
-    const stored = { remote: { project: "p", zone: "z", instance: "vm-hunt", filePatterns: ["**/.env.private"], previewDomain: "hunt.example.com" } };
-    expect(migrateSettings(stored, 9).remote).toEqual({
+  it("keeps only the project and file patterns of the remote settings up to version 12", () => {
+    const version12 = {
       project: "p",
-      zone: "z",
+      zone: "europe-west1-c",
       gatewayInstance: "vm-hunt",
+      machineType: "e2-standard-8",
       filePatterns: ["**/.env.private"],
-      swfRepos: [],
-      swfMaxSessions: 2,
-    });
-    expect(migrateSettings({ remote: { project: "p", zone: "z", instance: "vm-hunt" } }, 6).remote).toEqual({ project: "p", zone: "z", gatewayInstance: "vm-hunt", swfRepos: [], swfMaxSessions: 2 });
-    expect(migrateSettings({ aiLanguage: "English" }, 9)).toEqual({ aiLanguage: "English" });
-  });
-
-  it("gives the remote settings of version 10 no poller repositories and the default session limit", () => {
-    const stored = { remote: { project: "p", gatewayInstance: "vm-hunt" }, aiLanguage: "English" };
-    expect(migrateSettings(stored, 10)).toEqual({ ...stored, remote: { ...stored.remote, swfRepos: [], swfMaxSessions: 2 } });
-    expect(migrateSettings({ aiLanguage: "English" }, 10)).toEqual({ aiLanguage: "English" });
-  });
-
-  it("drops the instance template and preview domain of version 11, which the gateway owns", () => {
-    const remote = { project: "p", zone: "z", gatewayInstance: "vm-hunt", machineType: "e2-standard-8", filePatterns: ["**/.env.private"], swfRepos: ["acme/app"], swfMaxSessions: 3 };
-    const stored = { remote: { ...remote, sessionTemplate: "tpl-hunt-session", previewDomain: "hunt.example.com" }, aiLanguage: "English" };
-    expect(migrateSettings(stored, 11)).toEqual({ remote, aiLanguage: "English" });
-    expect(migrateSettings({ remote: { project: "p", previewDomain: "hunt.example.com" } }, 10).remote).toEqual({ project: "p", swfRepos: [], swfMaxSessions: 2 });
-    expect(migrateSettings({ aiLanguage: "English" }, 11)).toEqual({ aiLanguage: "English" });
+      swfRepos: ["acme/app"],
+      swfMaxSessions: 3,
+    };
+    expect(migrateSettings({ remote: version12, aiLanguage: "English" }, 12)).toEqual({ remote: { project: "p", filePatterns: ["**/.env.private"] }, aiLanguage: "English" });
+    const version11 = { project: "p", zone: "z", gatewayInstance: "vm-hunt", sessionTemplate: "tpl-hunt-session", previewDomain: "hunt.example.com" };
+    expect(migrateSettings({ remote: version11 }, 11).remote).toEqual({ project: "p" });
+    expect(migrateSettings({ remote: { project: "p", zone: "z", instance: "vm-hunt" } }, 6).remote).toEqual({ project: "p" });
+    expect(migrateSettings({ aiLanguage: "English" }, 12)).toEqual({ aiLanguage: "English" });
   });
 
   it("passes the current version through untouched", () => {
@@ -147,7 +136,7 @@ describe("mergeSettings", () => {
 
   it("keeps the default file patterns when only the VM fields were stored", () => {
     const merged = mergeSettings(migrateSettings({ remote: { project: "p", zone: "z", instance: "vm", sessionTemplate: "tpl" } }, 9), current);
-    expect(merged.remote).toEqual({ ...DEFAULT_REMOTE, project: "p", zone: "z", gatewayInstance: "vm" });
+    expect(merged.remote).toEqual({ ...DEFAULT_REMOTE, project: "p" });
     expect(merged.remote.filePatterns).toEqual(["**/.env.private"]);
   });
 
@@ -161,27 +150,14 @@ describe("mergeSettings", () => {
 });
 
 describe("remote settings", () => {
-  it("offers a handoff only once project, zone and gateway are set", () => {
-    const complete = { ...DEFAULT_REMOTE, project: " p ", zone: "z", gatewayInstance: "vm-hunt" };
+  it("offers a handoff only once the project is set", () => {
     expect(configuredVmSettings(DEFAULT_REMOTE)).toBeNull();
-    expect(configuredVmSettings(complete)).toEqual({ project: "p", zone: "z", gateway: "vm-hunt", machineType: null });
-    expect(configuredVmSettings({ ...complete, machineType: " e2-standard-8 " })?.machineType).toBe("e2-standard-8");
-    expect(configuredVmSettings({ ...complete, gatewayInstance: "" })).toBeNull();
-    expect(configuredVmSettings({ ...complete, zone: " " })).toBeNull();
+    expect(configuredVmSettings({ ...DEFAULT_REMOTE, project: " p " })).toEqual({ project: "p" });
+    expect(configuredVmSettings({ ...DEFAULT_REMOTE, project: " " })).toBeNull();
   });
 
-  it("trims every field", () => {
-    const remote = normalizeRemote({ ...DEFAULT_REMOTE, project: " p ", gatewayInstance: " vm-hunt ", machineType: " e2-standard-8 " });
-    expect([remote.project, remote.gatewayInstance, remote.machineType]).toEqual(["p", "vm-hunt", "e2-standard-8"]);
-  });
-
-  it("keeps the poller's owner/repo entries once each and holds its session limit to whole numbers from 0 to 10", () => {
-    const remote = normalizeRemote({ ...DEFAULT_REMOTE, swfRepos: [" acme/app ", "", "acme", "Acme/App", "acme/app/x", ".acme/app", "team/api.v2"], swfMaxSessions: 2.6 });
-    expect(remote.swfRepos).toEqual(["acme/app", "team/api.v2"]);
-    expect(remote.swfMaxSessions).toBe(3);
-    expect(normalizeRemote({ ...DEFAULT_REMOTE, swfMaxSessions: 50 }).swfMaxSessions).toBe(10);
-    expect(normalizeRemote({ ...DEFAULT_REMOTE, swfMaxSessions: -1 }).swfMaxSessions).toBe(0);
-    expect(normalizeRemote({ ...DEFAULT_REMOTE, swfMaxSessions: Number.NaN }).swfMaxSessions).toBe(2);
+  it("trims the project", () => {
+    expect(normalizeRemote({ ...DEFAULT_REMOTE, project: " p " }).project).toBe("p");
   });
 
   it("drops blank, absolute and worktree-leaving file patterns", () => {

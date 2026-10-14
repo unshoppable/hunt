@@ -127,18 +127,10 @@ export type VmRef = { project: string; zone: string; instance: string };
 
 /**
  * How Hunt reaches the gateway, from Settings → Remote VM (mirror of `VmSettings` in src-tauri/src/remote/mod.rs): the
- * gateway VM `gateway` in `project` and `zone`, whose API provisions, starts and deletes the session VMs, with
- * `machineType` or the instance template's.
+ * backend finds the VM of `project` labelled `hunt-role=gateway`, whose API provisions, starts and deletes the session
+ * VMs.
  */
-export type VmSettings = { project: string; zone: string; gateway: string; machineType: string | null };
-
-/**
- * The configuration of the gateway's poller `hunt-swf` as the gateway stored it (mirror of `SwfConfig` in
- * src-tauri/src/remote/swf.rs): the `<owner>/<repo>` repositories whose open issues labelled `label` it starts sessions
- * for, at most `maxSessions` at once, on VMs created from the instance template `template` with `machineType` or the
- * template's.
- */
-export type SwfConfig = { repos: string[]; maxSessions: number; label: string; template: string; machineType: string | null };
+export type VmSettings = { project: string };
 
 /**
  * Who started a remote session on its VM: `handoff` is this Mac, whose local worktree waits for the session; `desktop`

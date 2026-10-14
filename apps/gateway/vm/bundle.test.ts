@@ -19,7 +19,7 @@ function node(script: string, args: string[], input = "") {
 describe("the gateway artifact", () => {
   it("holds the entry points with one main each, the VM files and a release hash", () => {
     const bundles = readdirSync(join(ARTIFACT, "gateway")).sort();
-    expect(bundles).toEqual(["api.mjs", "apiClient.mjs", "swf.mjs", "swfConfig.mjs", "wake.mjs"]);
+    expect(bundles).toEqual(["api.mjs", "apiClient.mjs", "swf.mjs", "wake.mjs"]);
     for (const bundle of bundles) {
       expect(readFileSync(join(ARTIFACT, "gateway", bundle), "utf8").match(ENTRY_GUARD)?.length ?? 0, bundle).toBeLessThanOrEqual(1);
     }
@@ -28,11 +28,7 @@ describe("the gateway artifact", () => {
     expect(JSON.parse(readFileSync(join(ARTIFACT, "protocol.json"), "utf8"))).toMatchObject({ protocol: expect.any(Number), api: expect.any(Number) });
   });
 
-  it("validates a poller configuration and refuses a malformed API call without the sources", () => {
-    expect(node("swfConfig.mjs", ["--validate"], '{"repos": ["acme/app"]}')).toMatchObject({
-      status: 0,
-      stdout: '{"repos":["acme/app"],"maxSessions":2,"label":"swf","template":"tpl-hunt-session","machineType":null}\n',
-    });
+  it("refuses a malformed API call without the sources", () => {
     expect(node("apiClient.mjs", ["hello; id"])).toMatchObject({
       status: 1,
       stdout: '{"type":"error","code":"invalidParams","message":"usage: hunt-api <method>; \\"hello; id\\" is no method"}\n',

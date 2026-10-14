@@ -8,10 +8,9 @@
  * (`vm/hunt-api`), which runs the forwarder `apiClient.ts` as hunt-gw through sudo. The forwarder sends one line
  * `{caller, method, params}` over the socket, which only hunt-gw can open, with sudo's SUDO_USER as the caller, and
  * copies the NDJSON events of the answer to stdout. The methods that touch session VMs go through the orchestrator
- * (`orchestrator.ts`) and run on when their caller disconnects; `swf.getConfig` and `swf.applyConfig` read and write
- * the poller's `/etc/hunt/swf.json`, which hunt-gw owns and the poller reads at every poll. One log line per request
- * goes to stdout (journald). SIGHUP (the unit's reload, after an install) closes the socket and exits once the running
- * requests ended, so that systemd starts the new release. Runs on Node 24 through type stripping; no dependencies.
+ * (`orchestrator.ts`) and run on when their caller disconnects. One log line per request goes to stdout (journald).
+ * SIGHUP (the unit's reload, after an install) closes the socket and exits once the running requests ended, so that
+ * systemd starts the new release. Runs on Node 24 through type stripping; no dependencies.
  */
 import { chmodSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
@@ -21,10 +20,9 @@ import { messageOf } from "../../../libs/domain/src/errors.ts";
 import type { ApiEvent, HelloResult } from "../../../libs/domain/src/gatewayApi.ts";
 import { ApiError, encodeEvent, errorEvent, MAX_REQUEST_BYTES, parseRequest, SOCKET_PATH, type ApiRequest } from "./apiProtocol.ts";
 import { createCompute, createMetadata } from "./gcp.ts";
-import { Orchestrator, type Reporter } from "./orchestrator.ts";
+import { DEFAULT_TEMPLATE, Orchestrator, type Reporter } from "./orchestrator.ts";
 import { readDomain } from "./previewDomain.ts";
 import { ensureSshKey, sessionVm } from "./sessionVm.ts";
-import { DEFAULT_TEMPLATE, parseSwfConfig, readSwfConfigOrDefaults, writeSwfConfig, type SwfConfig } from "./swfConfig.ts";
 
 const RELEASE_VERSION_FILE = "/srv/hunt/current/.version";
 /** How long a connection may take to send its request line. */
@@ -41,9 +39,6 @@ export interface GatewayInfo {
 export interface ApiDeps {
   orchestrator: Pick<Orchestrator, "provision" | "start" | "stop" | "delete" | "get" | "listSessions">;
   gatewayInfo(): Promise<GatewayInfo>;
-  /** The poller's configuration, or its defaults without a file. */
-  readSwfConfig(): SwfConfig;
-  writeSwfConfig(config: SwfConfig): void;
   log(message: string): void;
 }
 
@@ -59,7 +54,10 @@ export async function dispatch(deps: ApiDeps, request: ApiRequest, reporter: Rep
     case "vms.get":
       return deps.orchestrator.get(request.params.id);
     case "sessions.provision":
-      return deps.orchestrator.provision({ ...request.params, issue: null, origin: "desktop", owner: request.caller, template: DEFAULT_TEMPLATE }, reporter);
+      return deps.orchestrator.provision(
+        { ...request.params, issue: null, origin: "desktop", owner: request.caller, template: DEFAULT_TEMPLATE, machineType: null },
+        reporter,
+      );
     case "vms.start":
       return deps.orchestrator.start(request.params.id, reporter);
     case "vms.stop":
@@ -67,14 +65,6 @@ export async function dispatch(deps: ApiDeps, request: ApiRequest, reporter: Rep
       return {};
     case "vms.delete":
       return deps.orchestrator.delete(request.params.id);
-    case "swf.getConfig":
-      return deps.readSwfConfig();
-    case "swf.applyConfig": {
-      const parsed = parseSwfConfig({ ...deps.readSwfConfig(), ...request.params });
-      if (parsed.problems) throw new ApiError("invalidParams", parsed.problems.join("; "));
-      deps.writeSwfConfig(parsed.config);
-      return parsed.config;
-    }
   }
 }
 
@@ -202,8 +192,6 @@ async function main(): Promise<void> {
   const api = createApiServer({
     orchestrator,
     gatewayInfo: async () => ({ release: readRelease(), ...location, previewDomain: readDomain() }),
-    readSwfConfig: () => readSwfConfigOrDefaults(),
-    writeSwfConfig: (config) => writeSwfConfig(config),
     log,
   });
 

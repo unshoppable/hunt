@@ -92,14 +92,15 @@ describe.skipIf(!hasDocker())("hunt-ctl install and stage-session on a gateway i
     docker(["rm", "--force", container]);
   });
 
-  it("installs a CI release with its preview domain, removes the update units and starts the gateway's services", () => {
-    sh("touch /etc/systemd/system/hunt-update.timer /etc/systemd/system/hunt-update.service");
+  it("installs a CI release with its preview domain, removes the update units and swf.json and starts the gateway's services", () => {
+    sh("touch /etc/systemd/system/hunt-update.timer /etc/systemd/system/hunt-update.service /etc/hunt/swf.json");
     const dir = release("gateway", "gateway@1.0.0");
     const result = sh('/artifact/vm/hunt-ctl install "$1" --domain hunt.example.com', [dir]);
     expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toEqual({ hash: hashOf(dir) });
 
     expect(sh("cat /srv/hunt/current/.version /etc/hunt/preview-domain").stdout).toBe("gateway@1.0.0\nhunt.example.com\n");
+    expect(sh("test -e /etc/hunt/swf.json").status).toBe(1);
     expect(sh("readlink /usr/local/bin/hunt-ctl /usr/local/bin/hunt-api").stdout).toBe("/srv/hunt/current/vm/hunt-ctl\n/srv/hunt/current/vm/hunt-api\n");
     expect(sh("ls /etc/systemd/system").stdout.split("\n").filter((unit) => unit.startsWith("hunt-"))).toEqual([
       "hunt-api.service",
@@ -116,7 +117,7 @@ describe.skipIf(!hasDocker())("hunt-ctl install and stage-session on a gateway i
     expect(sh("hunt-ctl update").status).toBe(2);
   });
 
-  it("runs the gateway's services as the system user hunt-gw, which owns the poller's configuration", () => {
+  it("runs the gateway's services as the system user hunt-gw", () => {
     expect(sh("getent passwd hunt-gw | cut -d: -f6,7").stdout).toBe("/nonexistent:/usr/sbin/nologin\n");
     expect(Number(sh("id -u hunt-gw").stdout)).toBeLessThan(1000);
     for (const unit of ["hunt-api", "hunt-swf", "hunt-wake"]) {
@@ -124,7 +125,6 @@ describe.skipIf(!hasDocker())("hunt-ctl install and stage-session on a gateway i
       expect(text, unit).toContain("\nUser=hunt-gw\n");
       expect(text, unit).not.toContain("DynamicUser");
     }
-    expect(sh("stat -c '%U %a' /etc/hunt/swf.json; cat /etc/hunt/swf.json").stdout).toBe('hunt-gw 644\n{"repos": []}\n');
   });
 
   it("forces hunt-api on users outside google-sudoers and lets it run only the forwarder as hunt-gw", () => {

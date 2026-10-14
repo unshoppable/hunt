@@ -72,8 +72,8 @@ export function useAgentPreferencesSync(): void {
 }
 
 /**
- * Pushes the remote settings to the backend at start and on every change (null while project, zone or gateway is
- * missing): commands on stored remote sessions and the retry of failed VM deletions reach the gateway they name.
+ * Pushes the remote settings to the backend at start and on every change (null while the project is missing):
+ * commands on stored remote sessions and the retry of failed VM deletions reach the gateway they name.
  */
 export function useRemoteSettingsSync(): void {
   const remote = useSettingsStore((state) => state.remote);

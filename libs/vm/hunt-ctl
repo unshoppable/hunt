@@ -75,9 +75,6 @@ readonly -a AGENT_PACKAGES=(g++ make python3 unzip)
 # ---- Gateway ----
 # The preview domain of the edge proxy: `install --domain` sets it, later installs keep it.
 readonly DOMAIN_FILE=/etc/hunt/preview-domain
-# The configuration of hunt-swf.service (apps/gateway/src/swf.ts), which reads it at every poll; hunt-api.service writes
-# it, so it belongs to GATEWAY_USER.
-readonly SWF_CONFIG=/etc/hunt/swf.json
 # The session release the gateway installs on session VMs (apps/gateway/src/sessionVm.ts): `stage-session` keeps it and
 # the one before below SESSION_RELEASES and points SESSION_CURRENT at it.
 readonly SESSION_RELEASES=/srv/hunt/session-releases
@@ -165,8 +162,6 @@ Session VM:
 Gateway:
   stage-session <dir>    keep the session release unpacked in <dir>, a CI build with .version and .hash, as the one the
                          gateway installs on session VMs; removes all but this and the previous one
-  swf-config             validate the configuration of hunt-swf.service (JSON on stdin: repos, maxSessions, label, …)
-                         and write it to /etc/hunt/swf.json; prints the stored configuration
 USAGE
   exit 2
 }
@@ -1248,18 +1243,14 @@ ensure_gateway_user() {
 }
 
 # Opens the gateway API to every user who logs in: /usr/local/bin/hunt-api, the sudo rule that runs its forwarder as
-# GATEWAY_USER, the sshd rule that forces it on everyone outside google-sudoers, and SWF_CONFIG owned by GATEWAY_USER,
-# who writes it. Each drop-in is validated before it takes effect; sshd reloads only for a changed rule.
+# GATEWAY_USER and the sshd rule that forces it on everyone outside google-sudoers. Each drop-in is validated before it
+# takes effect; sshd reloads only for a changed rule. Removes /etc/hunt/swf.json, which no service reads:
+# hunt-swf.service takes its configuration from the gateway's instance metadata.
 install_gateway_access() {
   local scratch
   command -v sshd >/dev/null && command -v visudo >/dev/null || die "the gateway needs openssh-server and sudo"
   ln -sfn "$CURRENT/vm/hunt-api" /usr/local/bin/hunt-api
-  install -d -m 0755 "${SWF_CONFIG%/*}"
-  if [[ ! -f $SWF_CONFIG ]]; then
-    printf '{"repos": []}\n' >"$SWF_CONFIG"
-  fi
-  chown "$GATEWAY_USER:$GATEWAY_USER" "$SWF_CONFIG"
-  chmod 0644 "$SWF_CONFIG"
+  rm -f -- /etc/hunt/swf.json
 
   # sudo skips files whose name contains a dot, so the candidate takes no effect before it is checked.
   temporary_paths+=("$SUDOERS_DROPIN.new")
@@ -1376,28 +1367,6 @@ ensure_edge() {
     caddy run --config /etc/hunt-edge/caddy.json >/dev/null
 }
 
-# Stores the configuration of hunt-swf.service from stdin once gateway/swfConfig.ts accepts it, in the normalized form
-# it prints; the poller reads the file at its next poll.
-cmd_swf_config() {
-  (( $# == 0 )) || usage
-  local result
-  [[ -x $HUNT_NODE ]] || die "$HUNT_NODE is missing on the gateway"
-  current_hash >/dev/null
-  if ! result=$("$HUNT_NODE" "$CURRENT/gateway/swfConfig.mjs" --validate); then
-    jq -r '.problems[]?' <<<"$result" >&2 2>/dev/null || true
-    die "the configuration of hunt-swf is not valid (see above)"
-  fi
-  jq -e 'type == "object"' <<<"$result" >/dev/null 2>&1 || die "gateway/swfConfig.mjs printed no configuration"
-  install -d -m 0755 "${SWF_CONFIG%/*}"
-  jq . <<<"$result" >"$SWF_CONFIG.tmp"
-  chmod 0644 "$SWF_CONFIG.tmp"
-  if id -u "$GATEWAY_USER" >/dev/null 2>&1; then
-    chown "$GATEWAY_USER:$GATEWAY_USER" "$SWF_CONFIG.tmp"
-  fi
-  mv -f "$SWF_CONFIG.tmp" "$SWF_CONFIG"
-  emit --argjson config "$result" '$config'
-}
-
 main() {
   (( $# )) || usage
   (( EUID == 0 )) || die "must run as root: sudo -n hunt-ctl $*"
@@ -1412,7 +1381,7 @@ main() {
       session-config | start | wait | stop | clear | snapshot | status | preview-status | destroy)
       [[ $role == session ]] || die "hunt-ctl $command runs on session VMs only; this VM is the gateway"
       ;;
-    stage-session | swf-config)
+    stage-session)
       [[ $role == gateway ]] || die "hunt-ctl $command runs on the gateway only; this VM is a session VM"
       ;;
     *) usage ;;
@@ -1467,7 +1436,6 @@ main() {
     status) cmd_status "$@" ;;
     preview-status) cmd_preview_status "$@" ;;
     destroy) cmd_destroy "$@" ;;
-    swf-config) cmd_swf_config "$@" ;;
   esac
 }
 

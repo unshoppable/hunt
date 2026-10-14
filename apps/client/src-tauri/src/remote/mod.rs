@@ -1,5 +1,5 @@
 //! Sessions handed off to a VM of their own: SSH through an IAP tunnel (`ssh.rs`), the gateway API that lists,
-//! provisions, starts and deletes the session VMs and configures the gateway's GitHub issue poller (`api.rs`, `swf.rs`),
+//! provisions, starts and deletes the session VMs (`api.rs`),
 //! the names of the session VMs (`vm.rs`), the release check and tool install on them (`release.rs`), moving a session's
 //! git state and Claude Code transcript there and back (`handoff.rs`, `retrieve.rs`, `transcript.rs`), adopting session
 //! VMs no local session knows (`adoption.rs`), the changes on a VM (`diff.rs`), previews (`preview.rs`) and terminals
@@ -14,7 +14,6 @@ pub mod preview;
 pub mod release;
 pub mod retrieve;
 pub mod ssh;
-pub mod swf;
 pub mod terminal;
 pub mod transcript;
 pub mod vm;
@@ -46,6 +45,11 @@ impl VmRef {
         }
         Ok(())
     }
+
+    /// The VM of session `id` as the gateway `self` names it, in the gateway's project and zone.
+    pub fn session_vm(&self, id: uuid::Uuid) -> VmRef {
+        VmRef { project: self.project.clone(), zone: self.zone.clone(), instance: vm::session_vm_name(id) }
+    }
 }
 
 /// Whether `value` is a Compute Engine name: lowercase letters, digits and `-`, not empty.
@@ -53,39 +57,59 @@ pub fn is_compute_name(value: &str) -> bool {
     !value.is_empty() && value.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-')
 }
 
-/// How Hunt reaches the gateway, and the machine type of the session VMs it hands off, from the settings.
+/// How Hunt reaches the gateway, from the settings.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VmSettings {
-    /// The project and zone of the gateway.
+    /// The project whose VM labelled `hunt-role=gateway` serves the gateway API and routes
+    /// `https://<short>[-<port>].<domain>` to the session VMs (`gateway_vm`).
     pub project: String,
-    pub zone: String,
-    /// The always-running VM that serves the gateway API and routes `https://<short>[-<port>].<domain>` to the session
-    /// VMs.
-    pub gateway: String,
-    /// A machine type other than the instance template's, e.g. `e2-standard-8`.
-    pub machine_type: Option<String>,
 }
 
 impl VmSettings {
-    /// The gateway VM.
-    pub fn gateway_vm(&self) -> VmRef {
-        VmRef { project: self.project.clone(), zone: self.zone.clone(), instance: self.gateway.clone() }
-    }
-
-    /// The VM of session `id` as the gateway names it, in the gateway's project and zone.
-    pub fn session_vm(&self, id: uuid::Uuid) -> VmRef {
-        VmRef { project: self.project.clone(), zone: self.zone.clone(), instance: vm::session_vm_name(id) }
-    }
-
-    /// Rejects values that cannot go into the ssh ProxyCommand unquoted or that Compute Engine would refuse.
+    /// Rejects a project that cannot go into the ssh ProxyCommand unquoted or that Compute Engine would refuse.
     pub fn validate(&self) -> Result<(), String> {
-        self.gateway_vm().validate()?;
-        if let Some(machine_type) = self.machine_type.as_deref().filter(|machine_type| !is_compute_name(machine_type)) {
-            return Err(format!("failed to use the machine type {machine_type:?}: it is not a valid Compute Engine name"));
+        if !is_compute_name(&self.project) {
+            return Err(format!("failed to use the remote VM: the project {:?} is not a valid Compute Engine name", self.project));
         }
         Ok(())
     }
+}
+
+/// The gateways looked up in this app run, keyed by project.
+static GATEWAYS: std::sync::Mutex<Option<std::collections::HashMap<String, VmRef>>> = std::sync::Mutex::new(None);
+
+/// The gateway VM of `settings`: the VM of its project labelled `hunt-role=gateway`, which the infrastructure repository
+/// configures; looked up with gcloud once per app run.
+pub async fn gateway_vm(settings: &VmSettings) -> Result<VmRef, String> {
+    let cached = GATEWAYS.lock().unwrap().as_ref().and_then(|gateways| gateways.get(&settings.project).cloned());
+    if let Some(gateway) = cached {
+        return Ok(gateway);
+    }
+    let project = format!("--project={}", settings.project);
+    let output = gcloud(&["compute", "instances", "list", &project, "--filter=labels.hunt-role=gateway", "--format=value(name,zone.basename())"]).await?;
+    let gateway = parse_gateway(&output, &settings.project)?;
+    GATEWAYS.lock().unwrap().get_or_insert_with(Default::default).insert(settings.project.clone(), gateway.clone());
+    Ok(gateway)
+}
+
+/// The gateway in `output` of `gcloud compute instances list --format=value(name,zone.basename())` for `project`:
+/// exactly one VM, as name and zone separated by whitespace.
+fn parse_gateway(output: &str, project: &str) -> Result<VmRef, String> {
+    let rows: Vec<&str> = output.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    let [row] = rows.as_slice() else {
+        if rows.is_empty() {
+            return Err(format!("failed to find the gateway in the project {project}: no VM there is labelled hunt-role=gateway"));
+        }
+        return Err(format!("failed to find the gateway in the project {project}: several VMs are labelled hunt-role=gateway: {rows:?}"));
+    };
+    let fields: Vec<&str> = row.split_whitespace().collect();
+    let [instance, zone] = fields.as_slice() else {
+        return Err(format!("failed to read the gateway of the project {project} from gcloud: {row:?}"));
+    };
+    let gateway = VmRef { project: project.to_string(), zone: (*zone).to_string(), instance: (*instance).to_string() };
+    gateway.validate()?;
+    Ok(gateway)
 }
 
 /// Where a session handed off to a VM runs, and what Hunt needs to reach it and to bring it back.
@@ -352,16 +376,30 @@ mod tests {
     }
 
     #[test]
-    fn vm_settings_name_the_gateway_and_session_vm_and_validate_the_machine_type() {
+    fn vm_settings_validate_the_project() {
+        assert_eq!(VmSettings { project: "acme-hunt".into() }.validate(), Ok(()));
+        assert!(VmSettings { project: "".into() }.validate().is_err());
+        assert!(VmSettings { project: "Acme".into() }.validate().is_err());
+    }
+
+    #[test]
+    fn session_vm_is_in_the_gateways_project_and_zone() {
         let id = uuid::Uuid::parse_str("ab12cd34-0000-4000-8000-000000000001").unwrap();
-        let settings = VmSettings { project: "acme".into(), zone: "europe-west1-c".into(), gateway: "vm-hunt-medc".into(), machine_type: None };
-        assert_eq!(settings.session_vm(id), VmRef { project: "acme".into(), zone: "europe-west1-c".into(), instance: "vm-hunt-s-ab12cd34".into() });
-        assert_eq!(settings.gateway_vm().instance, "vm-hunt-medc");
-        assert_eq!(settings.validate(), Ok(()));
-        assert!(VmSettings { machine_type: Some("e2-standard-8".into()), ..settings.clone() }.validate().is_ok());
-        assert!(VmSettings { machine_type: Some("e2 standard".into()), ..settings.clone() }.validate().is_err());
-        assert!(VmSettings { gateway: "".into(), ..settings.clone() }.validate().is_err());
-        assert!(VmSettings { project: "Acme".into(), ..settings }.validate().is_err());
+        let gateway = VmRef { project: "acme".into(), zone: "europe-west1-c".into(), instance: "vm-hunt-medc".into() };
+        assert_eq!(gateway.session_vm(id), VmRef { project: "acme".into(), zone: "europe-west1-c".into(), instance: "vm-hunt-s-ab12cd34".into() });
+    }
+
+    #[test]
+    fn parse_gateway_takes_exactly_one_labelled_vm() {
+        let gateway = VmRef { project: "acme".into(), zone: "europe-west1-c".into(), instance: "vm-hunt-medc".into() };
+        assert_eq!(parse_gateway("vm-hunt-medc\teurope-west1-c\n", "acme"), Ok(gateway));
+        assert_eq!(
+            parse_gateway("\n", "acme"),
+            Err("failed to find the gateway in the project acme: no VM there is labelled hunt-role=gateway".to_string())
+        );
+        assert!(parse_gateway("vm-a\teurope-west1-c\nvm-b\tus-central1-a\n", "acme").is_err());
+        assert!(parse_gateway("vm-hunt-medc\n", "acme").is_err());
+        assert!(parse_gateway("vm-hunt-medc\tEurope West\n", "acme").is_err());
     }
 
     #[test]

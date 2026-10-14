@@ -6,7 +6,7 @@
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import { METHODS, type ApiEvent, type ErrorCode, type Method, type Methods } from "../../../libs/domain/src/gatewayApi.ts";
 import { encodeLine, parseLine } from "../../../libs/domain/src/ndjson.ts";
-import { COMPUTE_NAME, MAX_SESSIONS_LIMIT, REPOSITORY } from "./swfConfig.ts";
+import { REPOSITORY } from "./swfConfig.ts";
 
 /** The daemon's Unix socket, in the runtime directory of `hunt-api.service`, which only hunt-gw can open. */
 export const SOCKET_PATH = "/run/hunt-api/api.sock";
@@ -18,7 +18,6 @@ export const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 const CALLER = /^[a-z_][a-z0-9_.-]{0,99}$/;
 export const TITLE_MAX_LENGTH = 300;
 const BRANCH_MAX_LENGTH = 250;
-const MAX_REPOS = 100;
 /** The longest request line the daemon reads. */
 export const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -75,20 +74,12 @@ function sessionId(params: Record<string, unknown>): string {
   return id;
 }
 
-function machineType(params: Record<string, unknown>): string | null {
-  const value = params.machineType ?? null;
-  if (value === null || value === "") return null;
-  if (typeof value !== "string" || !COMPUTE_NAME.test(value)) throw invalid("machineType must be a Compute Engine machine type or null");
-  return value;
-}
-
 /** The params of `method`, validated; unknown keys are ignored. */
 export function parseParams(method: Method, value: unknown): Methods[Method]["request"] {
   const params = paramsObject(value);
   switch (method) {
     case "hello":
     case "sessions.list":
-    case "swf.getConfig":
       return {};
     case "vms.get":
     case "vms.start":
@@ -102,17 +93,7 @@ export function parseParams(method: Method, value: unknown): Methods[Method]["re
       }
       if (typeof repo !== "string" || !REPOSITORY.test(repo)) throw invalid("repo must be <owner>/<repo>");
       if (typeof branch !== "string" || !isBranchName(branch)) throw invalid("branch must be a valid Git branch name");
-      return { id: sessionId(params), title, repo, branch, machineType: machineType(params) };
-    }
-    case "swf.applyConfig": {
-      const { repos, maxSessions } = params;
-      if (!Array.isArray(repos) || repos.length > MAX_REPOS || !repos.every((repo) => typeof repo === "string" && REPOSITORY.test(repo.trim()))) {
-        throw invalid(`repos must be a list of at most ${MAX_REPOS} <owner>/<repo>`);
-      }
-      if (typeof maxSessions !== "number" || !Number.isInteger(maxSessions) || maxSessions < 0 || maxSessions > MAX_SESSIONS_LIMIT) {
-        throw invalid(`maxSessions must be a whole number from 0 to ${MAX_SESSIONS_LIMIT}`);
-      }
-      return { repos: repos as string[], maxSessions, machineType: machineType(params) };
+      return { id: sessionId(params), title, repo, branch };
     }
   }
 }

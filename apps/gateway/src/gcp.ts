@@ -1,7 +1,8 @@
 /**
  * The Google Cloud APIs the gateway's services use, with the access token of the gateway's service account from the
- * metadata server: the metadata server itself (project, zone, token), Secret Manager (the poller's tokens) and Compute
- * Engine (the session VMs in the gateway's project and zone). Plain REST through `fetch`; no dependencies.
+ * metadata server: the metadata server itself (project, zone, token, instance attributes), Secret Manager (the poller's
+ * tokens) and Compute Engine (the session VMs in the gateway's project and zone). Plain REST through `fetch`; no
+ * dependencies.
  */
 
 const METADATA = "http://metadata.google.internal/computeMetadata/v1";
@@ -15,6 +16,8 @@ export interface Metadata {
   project(): Promise<string>;
   zone(): Promise<string>;
   accessToken(): Promise<string>;
+  /** The value of the gateway's own instance metadata attribute `key`, read anew at every call; null without one. */
+  attribute(key: string): Promise<string | null>;
 }
 
 /** The zone's name from the metadata server's `instance/zone`, `projects/<number>/zones/<zone>`. */
@@ -69,8 +72,12 @@ export function createMetadata(fetchImpl: typeof fetch = fetch, now: () => numbe
   let project: string | null = null;
   let zone: string | null = null;
 
+  function get(path: string): Promise<Response> {
+    return fetchImpl(`${METADATA}/${path}`, { headers: { "Metadata-Flavor": "Google" } });
+  }
+
   async function read(path: string): Promise<string> {
-    const response = await fetchImpl(`${METADATA}/${path}`, { headers: { "Metadata-Flavor": "Google" } });
+    const response = await get(path);
     if (!response.ok) throw await failure(response, `read ${path} from the metadata server`);
     return response.text();
   }
@@ -89,6 +96,13 @@ export function createMetadata(fetchImpl: typeof fetch = fetch, now: () => numbe
       const parsed = parseAccessToken(await read("instance/service-accounts/default/token"));
       token = { value: parsed.value, expiresAt: now() + parsed.expiresInSeconds * 1000 };
       return token.value;
+    },
+    async attribute(key) {
+      const path = `instance/attributes/${encodeURIComponent(key)}`;
+      const response = await get(path);
+      if (response.status === 404) return null;
+      if (!response.ok) throw await failure(response, `read ${path} from the metadata server`);
+      return response.text();
     },
   };
 }

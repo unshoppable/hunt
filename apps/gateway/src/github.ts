@@ -96,7 +96,7 @@ export function parseComments(items: unknown[]): IssueComment[] {
   }));
 }
 
-/** `owner/repo` for a URL path; both parts were validated by `swfConfig.ts`. */
+/** `owner/repo` for a URL path; both parts were validated by `REPOSITORY` in `swfConfig.ts`. */
 function repoPath(repo: string): string {
   return repo.split("/").map(encodeURIComponent).join("/");
 }

@@ -661,13 +661,13 @@ describe("remote sessions", () => {
     await useHuntStore.getState().syncRemoteSessions();
     expect(vi.mocked(invoke)).not.toHaveBeenCalled();
 
-    const vm = { project: "acme-hunt", zone: "europe-west1-c" };
-    useSettingsStore.setState({ remote: { ...DEFAULT_REMOTE, ...vm, gatewayInstance: "vm-hunt-medc" } });
+    const vm = { project: "acme-hunt" };
+    useSettingsStore.setState({ remote: { ...DEFAULT_REMOTE, ...vm } });
     useAgentDefaultsStore.setState({ recentRepoPaths: ["/src/app"] });
     const failure = "failed to run sessions.list on the gateway: forbidden";
     vi.mocked(invoke).mockImplementation((command) => (command === "adopt_session_vms" ? Promise.reject(failure) : Promise.resolve([])));
     await useHuntStore.getState().syncRemoteSessions();
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith("adopt_session_vms", { settings: { ...vm, gateway: "vm-hunt-medc", machineType: null }, repoPaths: ["/src/app"] });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("adopt_session_vms", { settings: vm, repoPaths: ["/src/app"] });
     expect(useHuntStore.getState().remoteSync).toEqual({ isRunning: false, error: failure });
 
     vi.mocked(invoke).mockImplementation((command) => Promise.resolve(command === "adopt_session_vms" ? ["new-id"] : []));

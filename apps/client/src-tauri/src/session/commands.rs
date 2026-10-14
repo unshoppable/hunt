@@ -410,7 +410,7 @@ pub async fn clear_session(
         let activated = async {
             let progress = progress_reporter(&app, id);
             progress(RemoteStep::Connecting);
-            let ssh = remote::start_session_vm(&gateway_vm("clear session")?, id, &ssh_dir()?, &progress).await?;
+            let ssh = remote::start_session_vm(&gateway_vm("clear session").await?, id, &ssh_dir()?, &progress).await?;
             let token_input = remote::token_input(&claude_token, github_token::read().await?.as_deref());
             let status = remote::hunt_ctl_with_input(&ssh, &["clear", &id.to_string()], token_input.as_bytes()).await?;
             let acp_session_id = status["acpSessionId"].as_str().map(str::to_string).ok_or("failed to clear session: the relay reports no new session")?;
@@ -496,7 +496,7 @@ async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: 
     let progress = progress_reporter(app, id);
     progress(RemoteStep::Connecting);
     // A relay that runs keeps running on the release it started with.
-    let ssh = remote::start_session_vm(&gateway_vm("connect the remote session")?, id, &ssh_dir()?, &progress).await?;
+    let ssh = remote::start_session_vm(&gateway_vm("connect the remote session").await?, id, &ssh_dir()?, &progress).await?;
     // An adopted session learns its worktree on the VM with its first connect; the chat works without it.
     let (record, target) = if target.worktree_path.as_os_str().is_empty() {
         match remote_worktree(app, id, &target, &ssh).await {
@@ -572,7 +572,7 @@ pub async fn preview_status(app: AppHandle, registry: State<'_, SessionRegistry>
 #[tauri::command]
 pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths: Vec<String>) -> Result<Vec<Uuid>, String> {
     settings.validate()?;
-    let gateway = GatewayApi::open(&settings.gateway_vm(), &ssh_dir()?).await?;
+    let gateway = GatewayApi::open(&remote::gateway_vm(&settings).await?, &ssh_dir()?).await?;
     let preview_domain = gateway.preview_domain()?;
     let listed = gateway.list_sessions().await?;
     let sessions = store::load_sessions(&app)?;
@@ -633,17 +633,6 @@ pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths:
         });
     }
     Ok(adopted)
-}
-
-/// Writes the configuration of the gateway's issue poller to the gateway of `settings`: open issues labelled `swf` in
-/// `repos` get a session VM each, created like a handoff's with the machine type of `settings`, at most `max_sessions`
-/// at once. Returns what the gateway stored.
-#[tauri::command]
-pub async fn apply_swf_config(settings: VmSettings, repos: Vec<String>, max_sessions: u32) -> Result<remote::swf::SwfConfig, String> {
-    settings.validate()?;
-    let request = remote::swf::SwfRequest::new(repos, max_sessions, settings.machine_type.clone());
-    request.validate()?;
-    GatewayApi::open(&settings.gateway_vm(), &ssh_dir()?).await?.apply_swf_config(&request).await
 }
 
 /// The worktree of the remote session `id` on its running VM behind `ssh`: the one `target` names, or for an adopted
@@ -829,7 +818,8 @@ pub async fn hand_off_session(
     }
 
     let handed_off = async {
-        store::update_session(&app, id, |stored| stored.leftover_vm = Some(settings.session_vm(id)))?;
+        let gateway = remote::gateway_vm(&settings).await?;
+        store::update_session(&app, id, |stored| stored.leftover_vm = Some(gateway.session_vm(id)))?;
         let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt);
         let local_hunt_md = remote::read_hunt_md(&record.worktree_path)?;
         let base_prompt = system_prompt_append(&app, context_prompt);
@@ -838,14 +828,12 @@ pub async fn hand_off_session(
         let token_input = remote::token_input(&claude_token, github_token.as_deref());
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
         let memory_base = memory_base_path(&app, id)?;
-        let gateway = settings.gateway_vm();
         let request = remote::handoff::HandoffRequest {
             hunt_session_id: id,
             title: &record.title,
             worktree: &record.worktree_path,
             acp_session_id: record.acp_session_id.as_deref(),
             gateway: &gateway,
-            machine_type: settings.machine_type.as_deref(),
             ssh_dir: &ssh_dir,
             claude_dir: &claude_dir,
             memory_base: &memory_base,
@@ -939,7 +927,7 @@ pub async fn retrieve_session(
     let activated = async {
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
         let memory_base = memory_base_path(&app, id)?;
-        let gateway = gateway_vm("retrieve the session")?;
+        let gateway = gateway_vm("retrieve the session").await?;
         let request = remote::retrieve::RetrieveRequest {
             hunt_session_id: id,
             worktree: &record.worktree_path,
@@ -1020,7 +1008,7 @@ fn memory_base_path(app: &AppHandle, id: Uuid) -> Result<PathBuf, String> {
     Ok(store::app_data_dir(app)?.join("remote-memory").join(format!("{id}.json")))
 }
 
-/// The remote settings the main window pushed last; `None` before it did and while project, zone or gateway is missing.
+/// The remote settings the main window pushed last; `None` before it did and while the project is missing.
 static REMOTE_SETTINGS: std::sync::Mutex<Option<VmSettings>> = std::sync::Mutex::new(None);
 
 /// Whether this app run started the deletions that failed before; they wait for the first remote settings.
@@ -1041,18 +1029,18 @@ pub fn set_remote_settings(app: AppHandle, settings: Option<VmSettings>) -> Resu
 }
 
 /// The gateway of the remote settings; fails with `what` (the action) while there are none.
-fn gateway_vm(what: &str) -> Result<VmRef, String> {
-    REMOTE_SETTINGS
+async fn gateway_vm(what: &str) -> Result<VmRef, String> {
+    let settings = REMOTE_SETTINGS
         .lock()
         .unwrap()
-        .as_ref()
-        .map(VmSettings::gateway_vm)
-        .ok_or_else(|| format!("failed to {what}: set the project, zone and gateway under Settings → Remote VM"))
+        .clone()
+        .ok_or_else(|| format!("failed to {what}: set the project under Settings → Remote VM"))?;
+    remote::gateway_vm(&settings).await
 }
 
 /// The gateway API of the remote settings, for `what` (the action).
 async fn gateway_api(what: &str) -> Result<GatewayApi, String> {
-    GatewayApi::open(&gateway_vm(what)?, &ssh_dir()?).await
+    GatewayApi::open(&gateway_vm(what).await?, &ssh_dir()?).await
 }
 
 /// A session VM whose deletion failed, e.g. while the Mac was offline; Hunt deletes it through the gateway at its next

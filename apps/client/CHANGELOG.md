@@ -1,3 +1,9 @@
+## 0.5.0 (2026-10-14)
+
+### 🚀 Features
+
+- **client:** show the app version in the settings title bar ([#11](https://github.com/unshoppable/hunt/pull/11))
+
 ## 0.4.0 (2026-10-14)
 
 ### 🚀 Features

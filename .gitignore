@@ -26,6 +26,18 @@ dist-ssr
 # Nx
 .nx/
 
+# Secrets and keys
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# Personal Claude Code state; .claude/settings.json, agents, skills and rules stay shareable
+.claude/settings.local.json
+.claude/worktrees/
+
 # Task notes
 .tasks/
 

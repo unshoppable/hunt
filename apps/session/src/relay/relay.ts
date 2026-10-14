@@ -26,6 +26,7 @@ import {
   type Outcome,
 } from "../../../../libs/domain/src/jsonRpc.ts";
 import type { RelayState, RelayStatus, TurnState } from "./status.ts";
+import { ToolCallLog } from "./toolCalls.ts";
 
 const CLIENT_INFO = { name: "hunt-relay", version: "1" };
 /** Session capabilities the relay does not serve; they are removed from the adapter's `initialize` result. */
@@ -107,6 +108,8 @@ export class Relay {
   private readonly agentRequests = new Map<JsonRpcId, AgentRequest>();
   /** Open permission requests of the adapter by its request ID, oldest first. */
   private readonly permissions = new Map<JsonRpcId, PendingPermission>();
+  /** Logs the agent's tool calls; the history the adapter replays while the relay starts is not logged again. */
+  private readonly toolCalls = new ToolCallLog();
   private publishedStatus = "";
 
   constructor(deps: RelayDependencies) {
@@ -609,6 +612,9 @@ export class Relay {
     }
     if (params.sessionId !== this.sessionId) return;
     const update = params.update;
+    if (this.state === "ready") {
+      this.logToolCall(update);
+    }
     switch (update.sessionUpdate) {
       case "available_commands_update":
         this.latestCommands = message;
@@ -631,6 +637,13 @@ export class Relay {
         this.history.push(message);
     }
     this.broadcast(message);
+  }
+
+  private logToolCall(update: Record<string, unknown>): void {
+    const line = this.toolCalls.record(update, this.deps.now());
+    if (line) {
+      this.deps.log(line);
+    }
   }
 
   private releaseHeldUpdates(): void {

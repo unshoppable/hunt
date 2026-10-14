@@ -343,6 +343,21 @@ describe("session/load", () => {
     expect(client.sent.map(textOf).filter(Boolean)).toEqual(["replayed", "during setup", "live"]);
   });
 
+  it("logs the tool calls that finish after the start, not those the adapter replays while loading", async () => {
+    const harness = createHarness();
+    harness.script["session/load"] = () => {
+      harness.update({ sessionUpdate: "tool_call", toolCallId: "old", name: "Bash", title: "ls", status: "completed" });
+      return { result: { modes: MODES, configOptions: CONFIG_OPTIONS } };
+    };
+    await harness.relay.start();
+
+    harness.update({ sessionUpdate: "tool_call", toolCallId: "new", name: "Bash", title: "pwd", status: "pending" });
+    harness.clock.now += 40;
+    harness.update({ sessionUpdate: "tool_call_update", toolCallId: "new", status: "completed" });
+
+    expect(harness.logs.filter((line) => line.startsWith("tool "))).toEqual(["tool Bash completed in 40 ms: pwd"]);
+  });
+
   it("sends live updates only to a client that loaded the session", async () => {
     const harness = await startedHarness();
     const client = fakeClient();

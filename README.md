@@ -357,7 +357,10 @@ client that connects later gets the conversation replayed, and the relay reports
 as the Hunt apps of different people, can be attached at once: each gets every update live, their prompts run one after
 another, and a permission request goes to all of them; the first answer counts, and the relay withdraws the request from
 the others. The guardrails stay local and wait until the session comes back; diff, editor, graph and pull request work
-on the local worktree, which Hunt keeps in sync with the VM (below).
+on the local worktree, which Hunt keeps in sync with the VM (below). For every tool call the agent finishes, the relay
+writes one line to the journal, which the Ops Agent ships to Cloud Logging (`toolCalls.ts`): tool, status, duration,
+for a command its exit code and number of output lines, and the title, for Bash the whole command. The output stays
+out.
 
 Every session has a VM of its own, which is the isolation boundary: the agent works there as the user `agent`, with
 Docker and Docker Compose, and starts the services of the repository's `hunt.json` its task needs. `libs/vm/hunt-ctl`

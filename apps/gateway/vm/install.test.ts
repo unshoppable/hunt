@@ -158,6 +158,7 @@ describe.skipIf(!hasDocker())("hunt-ctl install and stage-session on a gateway i
   it("lets an admin outside google-sudoers keep the command it asked for, but no one else", () => {
     const deploy = 'sudo -n sh -c "echo deployed"';
     expect(forcedHuntApi("carol", deploy)).toMatchObject({ status: 0, stdout: "deployed\n" });
+    expect(forcedHuntApi("carol", "echo '{}' | hunt-api hello").stdout).toBe("hunt-gw carol /srv/hunt/current/gateway/apiClient.mjs hello\n");
     const refused = forcedHuntApi("alice", deploy);
     expect(refused.status).toBe(1);
     expect(JSON.parse(refused.stdout)).toMatchObject({ type: "error", code: "forbidden" });

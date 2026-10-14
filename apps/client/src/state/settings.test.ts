@@ -134,6 +134,11 @@ describe("mergeSettings", () => {
     expect(merged.popupSizes).toEqual({ ...DEFAULT_POPUP_SIZES, usages: { width: 900, height: 500 } });
   });
 
+  it("falls back to the template's machine type for a stored one Hunt no longer offers", () => {
+    expect(mergeSettings({ remote: { project: "p", machineType: "c4d-retired-8" } }, current).remote).toEqual({ ...DEFAULT_REMOTE, project: "p" });
+    expect(mergeSettings({ remote: { project: "p", machineType: "c4d-standard-16" } }, current).remote.machineType).toBe("c4d-standard-16");
+  });
+
   it("keeps the default file patterns when only the VM fields were stored", () => {
     const merged = mergeSettings(migrateSettings({ remote: { project: "p", zone: "z", instance: "vm", sessionTemplate: "tpl" } }, 9), current);
     expect(merged.remote).toEqual({ ...DEFAULT_REMOTE, project: "p" });
@@ -152,12 +157,18 @@ describe("mergeSettings", () => {
 describe("remote settings", () => {
   it("offers a handoff only once the project is set", () => {
     expect(configuredVmSettings(DEFAULT_REMOTE)).toBeNull();
-    expect(configuredVmSettings({ ...DEFAULT_REMOTE, project: " p " })).toEqual({ project: "p" });
+    expect(configuredVmSettings({ ...DEFAULT_REMOTE, project: " p " })).toEqual({ project: "p", machineType: null });
+    expect(configuredVmSettings({ ...DEFAULT_REMOTE, project: "p", machineType: "c4d-highcpu-16" })).toEqual({ project: "p", machineType: "c4d-highcpu-16" });
     expect(configuredVmSettings({ ...DEFAULT_REMOTE, project: " " })).toBeNull();
   });
 
   it("trims the project", () => {
     expect(normalizeRemote({ ...DEFAULT_REMOTE, project: " p " }).project).toBe("p");
+  });
+
+  it("keeps only machine types Hunt offers", () => {
+    expect(normalizeRemote({ ...DEFAULT_REMOTE, machineType: "c4d-standard-8" }).machineType).toBe("c4d-standard-8");
+    expect(normalizeRemote({ ...DEFAULT_REMOTE, machineType: "e2-standard-8" }).machineType).toBe("");
   });
 
   it("drops blank, absolute and worktree-leaving file patterns", () => {

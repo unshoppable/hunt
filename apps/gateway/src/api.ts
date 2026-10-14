@@ -58,7 +58,14 @@ export async function dispatch(deps: ApiDeps, request: ApiRequest, reporter: Rep
       return deps.orchestrator.get(request.params.id);
     case "sessions.provision":
       return deps.orchestrator.provision(
-        { ...request.params, issue: null, origin: "desktop", owner: request.caller, template: DEFAULT_TEMPLATE, machineType: null },
+        {
+          ...request.params,
+          issue: null,
+          origin: "desktop",
+          owner: request.caller,
+          template: DEFAULT_TEMPLATE,
+          machineType: request.params.machineType ?? null,
+        },
         reporter,
       );
     case "vms.start":

@@ -157,7 +157,7 @@ describe("the gateway API over its Unix socket", () => {
   });
 
   it("provisions a session VM for its caller from the template and streams the progress before the result", async () => {
-    const { status, events } = await call("sessions.provision", { ...PROVISION, machineType: "e2-standard-8" });
+    const { status, events } = await call("sessions.provision", { ...PROVISION, machineType: "c4d-highcpu-16" });
     expect(status).toBe(0);
     expect(events.filter((event) => event.type === "progress")).toEqual([
       { type: "progress", step: "creatingVm" },
@@ -169,7 +169,7 @@ describe("the gateway API over its Unix socket", () => {
       data: { vm: { project: "medconomy-hunt", zone: "europe-west3-a", instance: VM }, created: true, release: RELEASE },
     });
     const labels = '{"hunt-role":"session","hunt-session":"ab12cd34","hunt-origin":"desktop","hunt-owner":"jane_doe_example_com"}';
-    expect(compute.calls[0]).toBe(`insert ${VM} tpl-hunt-session null ${labels}`);
+    expect(compute.calls[0]).toBe(`insert ${VM} tpl-hunt-session c4d-highcpu-16 ${labels}`);
     expect(logs.at(-1)).toMatch(new RegExp(`^jane_doe_example_com: sessions.provision ${ID}: ok in \\d+ ms$`));
 
     const listed = await call("sessions.list");

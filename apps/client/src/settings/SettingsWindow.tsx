@@ -34,13 +34,14 @@ import { HEADER_BAR } from "../ui/bars";
 import { BUTTON_XS, GHOST_BUTTON_MD, ICON_BUTTON_SM, PRIMARY_BUTTON_MD, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { Dropdown, OptionMenu, optionId } from "../ui/Dropdown";
-import { filterOptions, stepEnabled } from "../ui/floatingMenu";
+import { filterOptions, stepEnabled, type DropdownOption } from "../ui/floatingMenu";
 import { PlusIcon, Spinner, TrashIcon } from "../ui/icons";
 import { useSecondaryWindow } from "../ui/nativeWindow";
 import { errorText, useLoad } from "../ui/useLoad";
 import { IconPicker } from "./IconPicker";
 import { type SettingsPage } from "./openSettingsWindow";
 import { NO_PROGRESS, applyDownloadEvent, describeProgress, downloadFraction, type DownloadProgress } from "./updateProgress";
+import { SESSION_MACHINE_TYPES } from "../../../../libs/domain/src/sessionMachineTypes.ts";
 
 type Section = { pane: PaneKey; title: string; hint: string; fields: (keyof PaneSettings)[] };
 
@@ -566,6 +567,16 @@ function GithubTokenRow() {
   );
 }
 
+/** The instance template's machine type first, then every machine type the gateway accepts for new session VMs. */
+const MACHINE_TYPE_OPTIONS: DropdownOption[] = [
+  { id: "", name: "Template default" },
+  ...SESSION_MACHINE_TYPES.map((type) => ({
+    id: type.name,
+    name: type.name,
+    description: `${type.cores} cores · ${type.memoryGb} GB · €${type.eurPerHour.toFixed(2)} per hour`,
+  })),
+];
+
 /** Where remote sessions run, how their previews are reached, and the ignored files a handoff copies along (see src-tauri/src/remote). */
 function RemoteSection() {
   const remote = useSettingsStore((state) => state.remote);
@@ -582,8 +593,26 @@ function RemoteSection() {
             Hunt finds the gateway, the VM of this project labelled hunt-role=gateway, with your gcloud login. It runs all the time and creates, starts
             and deletes a VM of its own for each session you hand off, vm-hunt-s-&lt;id&gt;, and routes https://&lt;id&gt;.&lt;domain&gt; and
             https://&lt;id&gt;-&lt;port&gt;.&lt;domain&gt; of its preview domain to them, starting a VM that is off. Hunt reaches the gateway and the session VMs
-            over SSH through an IAP tunnel. The infrastructure repository configures the gateway, the session VMs' machine type and the gateway's poller
-            for GitHub issues labelled swf. The chat header offers the handoff once the project is set.
+            over SSH through an IAP tunnel. The infrastructure repository configures the gateway, the session VMs' instance template and the gateway's
+            poller for GitHub issues labelled swf. The chat header offers the handoff once the project is set.
+          </p>
+        </div>
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-3">
+            <div className="min-w-0 flex-1 text-sm text-neutral-100">Machine type</div>
+            <Dropdown
+              title="Machine type of the session VMs the gateway creates"
+              value={remote.machineType}
+              options={MACHINE_TYPE_OPTIONS}
+              onChange={(machineType) => setRemote({ machineType })}
+              className={`${FORM_INPUT} flex items-center justify-between gap-1.5 text-left font-mono`}
+            />
+            {/* Keeps the field aligned with the unit column of NumberRow. */}
+            <span className="w-6" />
+          </div>
+          <p className="text-[13px] leading-snug text-neutral-500">
+            Applies to the session VMs the gateway creates from now on; a session keeps the VM it has. The template default is the machine type of the
+            infrastructure's instance template. Prices are on-demand list prices per running hour; a session VM stops itself when idle.
           </p>
         </div>
         <GithubTokenRow />

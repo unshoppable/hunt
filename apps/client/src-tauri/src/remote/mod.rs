@@ -64,13 +64,21 @@ pub struct VmSettings {
     /// The project whose VM labelled `hunt-role=gateway` serves the gateway API and routes
     /// `https://<short>[-<port>].<domain>` to the session VMs (`gateway_vm`).
     pub project: String,
+    /// The machine type of the session VMs the gateway creates instead of its template's; the gateway accepts only the
+    /// ones of `libs/domain/src/sessionMachineTypes.ts`.
+    #[serde(default)]
+    pub machine_type: Option<String>,
 }
 
 impl VmSettings {
-    /// Rejects a project that cannot go into the ssh ProxyCommand unquoted or that Compute Engine would refuse.
+    /// Rejects a project that cannot go into the ssh ProxyCommand unquoted or that Compute Engine would refuse, and a
+    /// machine type that is no Compute Engine name.
     pub fn validate(&self) -> Result<(), String> {
         if !is_compute_name(&self.project) {
             return Err(format!("failed to use the remote VM: the project {:?} is not a valid Compute Engine name", self.project));
+        }
+        if let Some(machine_type) = self.machine_type.as_deref().filter(|machine_type| !is_compute_name(machine_type)) {
+            return Err(format!("failed to use the remote VM: the machine type {machine_type:?} is not a valid Compute Engine name"));
         }
         Ok(())
     }
@@ -391,10 +399,18 @@ mod tests {
     }
 
     #[test]
-    fn vm_settings_validate_the_project() {
-        assert_eq!(VmSettings { project: "acme-hunt".into() }.validate(), Ok(()));
-        assert!(VmSettings { project: "".into() }.validate().is_err());
-        assert!(VmSettings { project: "Acme".into() }.validate().is_err());
+    fn vm_settings_validate_the_project_and_machine_type() {
+        let settings = |project: &str, machine_type: Option<&str>| VmSettings {
+            project: project.into(),
+            machine_type: machine_type.map(str::to_string),
+        };
+        assert_eq!(settings("acme-hunt", None).validate(), Ok(()));
+        assert_eq!(settings("acme-hunt", Some("c4d-standard-8")).validate(), Ok(()));
+        assert!(settings("", None).validate().is_err());
+        assert!(settings("Acme", None).validate().is_err());
+        assert!(settings("acme-hunt", Some("c4d standard")).validate().is_err());
+        let parsed: VmSettings = serde_json::from_value(serde_json::json!({ "project": "acme-hunt" })).unwrap();
+        assert_eq!(parsed, settings("acme-hunt", None));
     }
 
     #[test]

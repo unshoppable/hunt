@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import responseStylePrompt from "../../prompts/response-style.md?raw";
+import { isSessionMachineType } from "../../../../libs/domain/src/sessionMachineTypes.ts";
 import type { ReviewLevel, VmSettings } from "../ipc/types";
 
 /** The four configurable panes of the window. */
@@ -138,31 +139,34 @@ export const DEFAULT_GRAPH_AGENT: GraphAgent = { model: "claude-opus-5-5", effor
  * infrastructure repository configures it, the instance template of the session VMs and the gateway's poller
  * `hunt-swf`. Its API provisions each handed-off session's own VM `vm-hunt-s-<short>`, starts and deletes it, and the
  * gateway routes the session's preview URLs to it. `filePatterns` are the ignored files a handoff copies along, as glob
- * patterns relative to the worktree (`*` stays within a folder, `**` crosses folders). Handoffs are offered once the
- * project is set.
+ * patterns relative to the worktree (`*` stays within a folder, `**` crosses folders). `machineType`, one of
+ * `SESSION_MACHINE_TYPES` or empty for the template's, applies to the session VMs the gateway creates from now on.
+ * Handoffs are offered once the project is set.
  */
 export type RemoteSettings = {
   project: string;
   filePatterns: string[];
+  machineType: string;
 };
 export const DEFAULT_REMOTE: RemoteSettings = {
   project: "",
   filePatterns: ["**/.env.private"],
+  machineType: "",
 };
 
-/** How Hunt reaches the gateway of `remote`, or `null` while its project is missing. */
+/** How Hunt reaches the gateway of `remote` and the machine type of new session VMs, or `null` while its project is missing. */
 export function configuredVmSettings(remote: RemoteSettings): VmSettings | null {
   const project = remote.project.trim();
   if (!project) return null;
-  return { project };
+  return { project, machineType: remote.machineType || null };
 }
 
-/** `remote` with trimmed fields and without blank, absolute or worktree-leaving file patterns. */
+/** `remote` with trimmed fields, without blank, absolute or worktree-leaving file patterns and without a machine type Hunt does not offer. */
 export function normalizeRemote(remote: RemoteSettings): RemoteSettings {
   const filePatterns = remote.filePatterns
     .map((pattern) => pattern.trim())
     .filter((pattern) => pattern && !pattern.startsWith("/") && !pattern.split("/").includes(".."));
-  return { project: remote.project.trim(), filePatterns };
+  return { project: remote.project.trim(), filePatterns, machineType: isSessionMachineType(remote.machineType) ? remote.machineType : "" };
 }
 
 /** The kinds of guardrail that live in a folder of their own, set below. */
@@ -464,7 +468,7 @@ function renameCatppuccinIcons(stored: PersistedState): PersistedState {
   return { ...stored, iconRules: stored.iconRules.map((rule) => ({ ...rule, icon: CATPPUCCIN_TO_ATOM_ICONS[rule.icon] ?? rule.icon })) };
 }
 
-/** The fields of the remote settings Hunt keeps; older versions also kept what the infrastructure repository configures. */
+/** The remote fields a store of version 12 or older keeps; those versions also held what the infrastructure repository configures. */
 const REMOTE_KEYS: string[] = ["project", "filePatterns"] satisfies (keyof RemoteSettings)[];
 
 /**
@@ -533,7 +537,7 @@ export function mergeSettings<T extends Pick<SettingsState, "panes" | "graphAgen
     graphAgent: { ...DEFAULT_GRAPH_AGENT, ...stored?.graphAgent },
     guardrailDirs: { ...DEFAULT_GUARDRAIL_DIRS, ...stored?.guardrailDirs },
     popupSizes: withDefaultPopupSizes(stored?.popupSizes),
-    remote: { ...DEFAULT_REMOTE, ...stored?.remote },
+    remote: normalizeRemote({ ...DEFAULT_REMOTE, ...stored?.remote }),
   };
 }
 

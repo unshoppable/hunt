@@ -6,6 +6,7 @@
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import { METHODS, type ApiEvent, type ErrorCode, type Method, type Methods } from "../../../libs/domain/src/gatewayApi.ts";
 import { encodeLine, parseLine } from "../../../libs/domain/src/ndjson.ts";
+import { isSessionMachineType, SESSION_MACHINE_TYPES } from "../../../libs/domain/src/sessionMachineTypes.ts";
 import { REPOSITORY } from "./swfConfig.ts";
 
 /** The daemon's Unix socket, in the runtime directory of `hunt-api.service`, which only hunt-gw can open. */
@@ -74,6 +75,16 @@ function sessionId(params: Record<string, unknown>): string {
   return id;
 }
 
+/** The machine type a provision asks for; null keeps the template's. */
+function machineType(params: Record<string, unknown>): string | null {
+  const value = params.machineType ?? null;
+  if (value === null || value === "") return null;
+  if (typeof value !== "string" || !isSessionMachineType(value)) {
+    throw invalid(`machineType must be one of ${SESSION_MACHINE_TYPES.map((type) => type.name).join(", ")} or null`);
+  }
+  return value;
+}
+
 /** The params of `method`, validated; unknown keys are ignored. */
 export function parseParams(method: Method, value: unknown): Methods[Method]["request"] {
   const params = paramsObject(value);
@@ -93,7 +104,7 @@ export function parseParams(method: Method, value: unknown): Methods[Method]["re
       }
       if (typeof repo !== "string" || !REPOSITORY.test(repo)) throw invalid("repo must be <owner>/<repo>");
       if (typeof branch !== "string" || !isBranchName(branch)) throw invalid("branch must be a valid Git branch name");
-      return { id: sessionId(params), title, repo, branch };
+      return { id: sessionId(params), title, repo, branch, machineType: machineType(params) };
     }
   }
 }

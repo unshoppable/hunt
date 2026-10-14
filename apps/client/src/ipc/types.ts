@@ -128,9 +128,9 @@ export type VmRef = { project: string; zone: string; instance: string };
 /**
  * How Hunt reaches the gateway, from Settings → Remote VM (mirror of `VmSettings` in src-tauri/src/remote/mod.rs): the
  * backend finds the VM of `project` labelled `hunt-role=gateway`, whose API provisions, starts and deletes the session
- * VMs.
+ * VMs. `machineType` replaces the instance template's for the session VMs it creates; null keeps the template's.
  */
-export type VmSettings = { project: string };
+export type VmSettings = { project: string; machineType: string | null };
 
 /**
  * Who started a remote session on its VM: `handoff` is this Mac, whose local worktree waits for the session; `desktop`

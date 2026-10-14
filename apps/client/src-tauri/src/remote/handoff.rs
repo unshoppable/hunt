@@ -30,6 +30,8 @@ pub struct HandoffRequest<'a> {
     pub acp_session_id: Option<&'a str>,
     /// The gateway that provisions the session's VM and routes its previews; validated.
     pub gateway: &'a VmRef,
+    /// The machine type of the session's VM if the gateway creates it; `None` keeps the template's.
+    pub machine_type: Option<&'a str>,
     /// Hunt's SSH key and known hosts.
     pub ssh_dir: &'a Path,
     /// The local `~/.claude`.
@@ -79,7 +81,13 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     progress.step(RemoteStep::Connecting);
     let gateway = GatewayApi::open(request.gateway, request.ssh_dir).await?;
     let preview_domain = gateway.preview_domain()?;
-    let provision = ProvisionRequest { id: request.hunt_session_id, title: request.title, repo: &repo, branch: &branch };
+    let provision = ProvisionRequest {
+        id: request.hunt_session_id,
+        title: request.title,
+        repo: &repo,
+        branch: &branch,
+        machine_type: request.machine_type,
+    };
     let provisioned = gateway.provision(&provision, progress).await?;
     let session_vm = provisioned.vm;
     if provisioned.created {

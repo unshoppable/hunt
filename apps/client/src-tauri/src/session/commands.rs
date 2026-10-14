@@ -835,6 +835,7 @@ pub async fn hand_off_session(
             worktree: &record.worktree_path,
             acp_session_id: record.acp_session_id.as_deref(),
             gateway: &gateway,
+            machine_type: settings.machine_type.as_deref(),
             ssh_dir: &ssh_dir,
             claude_dir: &claude_dir,
             memory_base: &memory_base,

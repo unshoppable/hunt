@@ -295,12 +295,15 @@ revert, shelve, unshelve), and the panel marks the diagram "Outdated" once such 
 #### Remote sessions
 
 A session can move to a Compute Engine VM of its own and keep working there while Hunt is closed ("Remote" in the chat
-header, set up under *Settings → Remote VM*: the Google Cloud project of the gateway). The app
+header, set up under *Settings → Remote VM*: the Google Cloud project of the gateway and the machine type of new session
+VMs). The app
 creates, starts and deletes no VM itself: it calls the gateway API (`libs/domain/src/gatewayApi.ts`,
 `apps/client/src-tauri/src/remote/api.rs`) as `hunt-api <method>` over its SSH connection to the gateway, with the
 request as one JSON object on stdin; stdout streams NDJSON events, progress steps and log lines, then one result or
-error. The app passes only session IDs; the gateway names the VM `vm-hunt-s-<short id>` (`<short id>` is the first 8
-hex digits of the session ID) and owns its project, zone, instance template and preview domain, which `hello` reports.
+error. The app passes session IDs and, to `sessions.provision`, the chosen machine type: one of
+`libs/domain/src/sessionMachineTypes.ts`, which the gateway checks and uses only for a VM it creates, or none for the
+template's. The gateway names the VM `vm-hunt-s-<short id>` (`<short id>` is the first 8 hex digits of the session ID)
+and owns its project, zone, instance template and preview domain, which `hello` reports.
 The first call to a gateway in an app run checks that its `hello.api` is the `api` of `libs/domain/protocol.json` and
 otherwise asks to update Hunt or to wait for the next server deploy. The handoff calls `sessions.provision`, connects
 and diffs call `vms.start` or `vms.get`, deleting a session calls `vms.delete`, adoption calls `sessions.list`. So the
@@ -308,7 +311,7 @@ gcloud login needs no Compute Engine rights to change VMs: Hunt uses it for the 
 session VMs, for registering its SSH key with OS Login, and once per app run to find the gateway, the VM of the project
 labelled `hunt-role=gateway`, with its zone (`gcloud compute instances list`, which needs `compute.instances.list`, e.g.
 from `roles/compute.viewer`). The infrastructure repository sets that label and configures the gateway, the session
-VMs' instance template with their machine type, and the poller below. The main window passes the remote settings to
+VMs' instance template with their default machine type and boot disk, and the poller below. The main window passes the remote settings to
 the backend at its start and on every change (`set_remote_settings`); commands on stored remote sessions reach that gateway. After the
 gateway started or provisioned a session VM, Hunt checks that the VM's release speaks the app's protocol (`hunt-ctl
 version`, `apps/client/src-tauri/src/remote/release.rs`, numbered in `libs/domain/protocol.json`) and runs `hunt-ctl

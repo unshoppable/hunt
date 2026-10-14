@@ -91,6 +91,8 @@ pub struct ProvisionRequest<'a> {
     /// `<owner>/<repo>`.
     pub repo: &'a str,
     pub branch: &'a str,
+    /// One of `libs/domain/src/sessionMachineTypes.ts` for a VM the gateway creates; `None` keeps the template's.
+    pub machine_type: Option<&'a str>,
 }
 
 /// The session VM `sessions.provision` set up; `created` when it did not exist before, so its host key is new too.
@@ -420,11 +422,20 @@ mod tests {
     #[test]
     fn requests_serialize_in_the_shape_of_the_contract() {
         let id = Uuid::parse_str("ab12cd34-0000-4000-8000-000000000001").unwrap();
-        let request = ProvisionRequest { id, title: "Fix login", repo: "acme/app", branch: "feat/general/x" };
+        let request =
+            ProvisionRequest { id, title: "Fix login", repo: "acme/app", branch: "feat/general/x", machine_type: Some("c4d-standard-8") };
         assert_eq!(
             serde_json::to_value(&request).unwrap(),
-            json!({ "id": "ab12cd34-0000-4000-8000-000000000001", "title": "Fix login", "repo": "acme/app", "branch": "feat/general/x" })
+            json!({
+                "id": "ab12cd34-0000-4000-8000-000000000001",
+                "title": "Fix login",
+                "repo": "acme/app",
+                "branch": "feat/general/x",
+                "machineType": "c4d-standard-8"
+            })
         );
+        let template = ProvisionRequest { machine_type: None, ..request };
+        assert_eq!(serde_json::to_value(&template).unwrap()["machineType"], json!(null));
         assert_eq!(json!({ "id": id }), json!({ "id": "ab12cd34-0000-4000-8000-000000000001" }));
     }
 }

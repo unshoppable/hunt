@@ -25,7 +25,13 @@ describe("parseRequest", () => {
     expect(METHODS.every((method) => METHOD_PATTERN.test(method))).toBe(true);
     expect(parseRequest(line({ caller: "jane_doe_example_com", method: "hello" }))).toEqual({ caller: "jane_doe_example_com", method: "hello", params: {} });
     expect(parseRequest(line({ caller: "sa_1234", method: "vms.start", params: { id: ID, extra: true } })).params).toEqual({ id: ID });
-    expect(parseRequest(line({ caller: "jane", method: "sessions.provision", params: { ...PROVISION, machineType: "e2-standard-8" } })).params).toEqual(PROVISION);
+    expect(parseRequest(line({ caller: "jane", method: "sessions.provision", params: { ...PROVISION, machineType: "c4d-standard-8" } })).params).toEqual({
+      ...PROVISION,
+      machineType: "c4d-standard-8",
+    });
+    for (const params of [PROVISION, { ...PROVISION, machineType: "" }, { ...PROVISION, machineType: null }]) {
+      expect(parseRequest(line({ caller: "jane", method: "sessions.provision", params })).params).toEqual({ ...PROVISION, machineType: null });
+    }
   });
 
   it("refuses requests without a valid caller or method", () => {
@@ -47,6 +53,8 @@ describe("parseRequest", () => {
     expect(provision({ branch: "feat/../x" })).toBe("branch must be a valid Git branch name");
     expect(provision({ title: "x".repeat(301) })).toBe("title must be a line of at most 300 characters");
     expect(provision({ title: "two\nlines" })).toBe("title must be a line of at most 300 characters");
+    expect(provision({ machineType: "e2-standard-8" })).toMatch(/^machineType must be one of c4d-standard-4, .* or null$/);
+    expect(provision({ machineType: 8 })).toMatch(/^machineType must be one of /);
   });
 });
 

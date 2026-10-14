@@ -67,7 +67,9 @@ export interface Methods {
   /** Creates the session's VM unless it exists, records the session in its metadata, starts it, waits for its startup
    *  script and updates its release; streams progress. `conflict` when the VM holds another session. */
   "sessions.provision": {
-    request: { id: string; title: string; repo: string; branch: string };
+    /** `machineType`, one of `SESSION_MACHINE_TYPES`, replaces the template's for a VM it creates; null or absent keeps
+     *  the template's. An existing VM keeps its machine type. */
+    request: { id: string; title: string; repo: string; branch: string; machineType?: string | null };
     result: { vm: VmRef; created: boolean; release: ReleaseInfo };
   };
   /** Starts or resumes the session's VM unless it runs, waits until it answers and updates its release; streams. */

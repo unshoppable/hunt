@@ -1,3 +1,9 @@
+## 0.16.1 (2026-10-14)
+
+### 🩹 Fixes
+
+- keep recreated VM files, local versions of ignored files and pending sends safe in the remote file sync ([681b6b7](https://github.com/unshoppable/hunt/commit/681b6b7))
+
 ## 0.16.0 (2026-10-14)
 
 ### 🚀 Features

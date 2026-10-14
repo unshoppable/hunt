@@ -5,6 +5,7 @@
 //! adopted gets a local worktree in the local checkout of its repository, on the branch the VM has checked out: while
 //! it runs there (`check_out_adopted`), or when it comes back without one.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use uuid::Uuid;
@@ -14,7 +15,7 @@ use super::ssh::Ssh;
 use super::sync::{self, SyncTarget};
 use super::{adoption, memory, transcript};
 use super::{hunt_ctl, shell_command, start_session_vm, tar_extract, vm, Progress, RemoteStep, RemoteTarget, VmRef};
-use crate::git;
+use crate::git::{self, TreeChange};
 
 /// Everything a retrieval needs from the session.
 pub struct RetrieveRequest<'a> {
@@ -59,13 +60,14 @@ pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> R
     hunt_ctl(&ssh, &["stop", &id]).await?;
 
     progress.step(RemoteStep::RetrievingCode);
-    let sync_target = SyncTarget { local: worktree, remote: &remote_worktree, manifest: request.sync_manifest, base_ref: request.sync_base_ref };
+    let manifest = request.sync_manifest;
+    let sync_target = SyncTarget { local: worktree, remote: &remote_worktree, manifest, base_ref: request.sync_base_ref };
     sync::sync(&sync_target, &ssh).await?;
     let local_tree = git::worktree_tree(worktree).await?;
     hunt_ctl(&ssh, &["snapshot", &id]).await?;
     fetch(worktree, &ssh, &remote_worktree, &retrieve_ref).await?;
     download_lfs_objects(worktree, &ssh, &id, &retrieve_ref).await?;
-    ensure_same_files(worktree, &local_tree, &retrieve_ref).await?;
+    ensure_same_files(worktree, &ssh, &remote_worktree, &local_tree, &retrieve_ref).await?;
     let remote_head = git::rev_parse(worktree, &format!("{retrieve_ref}^")).await?;
     ensure_branch_unmoved(worktree, &target.branch, &target.handoff_head, &remote_head).await?;
     if git::worktree_tree(worktree).await? != local_tree {
@@ -73,26 +75,112 @@ pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> R
     }
     move_branch(worktree, &id, &target.branch, &target.handoff_head, &retrieve_ref).await?;
     finish_worktree(worktree, &retrieve_ref).await?;
+    sync::clear_staging(worktree);
 
     let acp_session_id = retrieve_transcript(&request, &ssh, &remote_worktree).await?;
     Ok(Retrieved { acp_session_id, branch: None })
 }
 
-/// Refuses a retrieval after which the local worktree would not hold exactly the files of the VM's snapshot
-/// `retrieve_ref`: `local_tree`, the local worktree after the last sync, must have the same files. Nothing moved then.
-pub(crate) async fn ensure_same_files(worktree: &Path, local_tree: &str, retrieve_ref: &str) -> Result<(), String> {
+/// Refuses a retrieval after which the local worktree would not hold the files of the VM's snapshot `retrieve_ref`:
+/// `local_tree` (the local worktree after the last sync, with this Mac's ignore rules) is compared with it. The files
+/// only the VM has that this Mac ignores (its global excludes, files the agent added with `-f`) are brought here, and the
+/// files only this Mac has that the VM ignores stay; anything else that differs is named with the ignore rules that
+/// apply. Nothing moved then.
+async fn ensure_same_files(worktree: &Path, ssh: &Ssh, remote_worktree: &str, local_tree: &str, retrieve_ref: &str) -> Result<(), String> {
+    let ignore_case = git::ignores_case(worktree).await;
     let retrieve_tree = git::rev_parse(worktree, &format!("{retrieve_ref}^{{tree}}")).await?;
-    let differences = git::tree_differences(worktree, local_tree, &retrieve_tree, git::ignores_case(worktree).await).await?;
-    if differences.is_empty() {
+    let changes = git::tree_changes(worktree, local_tree, &retrieve_tree, ignore_case).await?;
+    if changes.is_empty() {
         return Ok(());
     }
-    let shown: Vec<&str> = differences.iter().take(10).map(String::as_str).collect();
-    let more = differences.len().saturating_sub(shown.len());
+    let paths: Vec<String> = changes.iter().map(|(path, _)| path.clone()).collect();
+    let rules_here = git::ignore_rules(worktree, &paths).await?;
+    let rules_there = remote_ignore_rules(ssh, remote_worktree, &paths).await?;
+    let is_ignored_here = |(path, change): &&(String, TreeChange)| *change == TreeChange::Added && rules_here.contains_key(path);
+    let ignored_here: Vec<&String> = changes.iter().filter(is_ignored_here).map(|(path, _)| path).collect();
+    let links = link_paths(worktree, &retrieve_tree).await?;
+    let (links, files): (Vec<String>, Vec<String>) = ignored_here.into_iter().cloned().partition(|path| links.contains(path));
+    let (placed, problems) = sync::fetch(ssh, worktree, remote_worktree, &files, &links, ignore_case).await;
+    let blocking = blocking_changes(&changes, &placed, &rules_there);
+    if blocking.is_empty() {
+        return Ok(());
+    }
+    Err(blocking_message(&blocking, &rules_here, &rules_there, &problems))
+}
+
+/// The changes between the local worktree and the VM's snapshot that block a retrieval: all but the files only the VM
+/// has that were `placed` here and the files only this Mac has that the VM ignores (`rules_there`), which stay here.
+pub(crate) fn blocking_changes<'a>(
+    changes: &'a [(String, TreeChange)],
+    placed: &[String],
+    rules_there: &BTreeMap<String, String>,
+) -> Vec<&'a (String, TreeChange)> {
+    changes
+        .iter()
+        .filter(|(path, change)| match change {
+            TreeChange::Added => !placed.contains(path),
+            TreeChange::Deleted => !rules_there.contains_key(path),
+            TreeChange::Modified => true,
+        })
+        .collect()
+}
+
+/// What a refused retrieval tells: each differing file, on which side it is, the ignore rules that keep it from syncing,
+/// and the files that could not be brought here.
+pub(crate) fn blocking_message(
+    blocking: &[&(String, TreeChange)],
+    rules_here: &BTreeMap<String, String>,
+    rules_there: &BTreeMap<String, String>,
+    problems: &[String],
+) -> String {
+    let describe = |(path, change): &(String, TreeChange)| {
+        let side = match change {
+            TreeChange::Added => "only on the VM",
+            TreeChange::Deleted => "only here",
+            TreeChange::Modified => "different on the VM",
+        };
+        let mut text = format!("{path} ({side}");
+        if let Some(rule) = rules_here.get(path) {
+            text.push_str(&format!("; ignored here by {rule}"));
+        }
+        if let Some(rule) = rules_there.get(path) {
+            text.push_str(&format!("; ignored on the VM by {rule}"));
+        }
+        text.push(')');
+        text
+    };
+    let shown: Vec<String> = blocking.iter().take(10).map(|change| describe(change)).collect();
+    let more = blocking.len().saturating_sub(shown.len());
     let more = if more > 0 { format!(" and {more} more") } else { String::new() };
-    Err(format!(
-        "failed to retrieve the session: after the last sync the files here and on the VM still differ in {}{more}; make both sides agree (in the editor here or in the terminal on the VM), then bring it back again. Nothing was moved.",
+    let problems = if problems.is_empty() { String::new() } else { format!(" Could not be brought here: {}.", problems.join("; ")) };
+    format!(
+        "failed to retrieve the session: after the last sync these files still differ between here and the VM: {}{more}.{problems} A file that only one side ignores does not sync: change that ignore rule, or remove or commit the file on the side that has it, then bring the session back again. Nothing was moved.",
         shown.join(", ")
-    ))
+    )
+}
+
+/// The rule that makes git on the VM ignore each of `paths` in the session's worktree there; see `git::ignore_rules`.
+async fn remote_ignore_rules(ssh: &Ssh, remote_worktree: &str, paths: &[String]) -> Result<BTreeMap<String, String>, String> {
+    if paths.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let input: Vec<u8> = paths.iter().flat_map(|path| path.bytes().chain([0])).collect();
+    let output = ssh
+        .run_with_input(&sync::remote_ignore_rules_command(remote_worktree), &input)
+        .await
+        .map_err(|error| format!("failed to read the ignore rules on the VM: {error}"))?;
+    Ok(git::parse_ignore_rules(&String::from_utf8_lossy(&output)))
+}
+
+/// The paths of the links in `tree`.
+async fn link_paths(worktree: &Path, tree: &str) -> Result<BTreeSet<String>, String> {
+    let output = git::run_git(worktree, &["ls-tree", "-r", "-z", tree]).await?;
+    Ok(output
+        .split('\0')
+        .filter_map(|entry| entry.split_once('\t'))
+        .filter(|(meta, _)| meta.starts_with("120000 "))
+        .map(|(_, path)| path.to_string())
+        .collect())
 }
 
 /// Refuses to move the session's branch when it moved here since the session went to the VM (`handoff_head`) to
@@ -175,7 +263,8 @@ async fn default_branch_base(worktree: &Path) -> Option<String> {
 async fn unused_branch_name(repo: &Path, candidates: &[Option<&str>]) -> Result<String, String> {
     let mut valid = Vec::new();
     for candidate in candidates.iter().flatten().map(|candidate| candidate.trim()) {
-        if candidate.is_empty() || candidate.starts_with('-') || git::run_git(repo, &["check-ref-format", "--branch", candidate]).await.is_err() {
+        let is_invalid = candidate.is_empty() || candidate.starts_with('-');
+        if is_invalid || git::run_git(repo, &["check-ref-format", "--branch", candidate]).await.is_err() {
             continue;
         }
         if !git::local_branch_exists(repo, candidate).await {
@@ -574,14 +663,18 @@ mod tests {
         git(&remote, &["update-ref", "refs/hunt/x/retrieve", &retrieve_snapshot]).await;
         git(local, &["fetch", "-q", bare.to_str().unwrap(), "+refs/hunt/x/retrieve:refs/hunt/x/retrieve"]).await;
 
+        let retrieve_tree = git(local, &["rev-parse", "refs/hunt/x/retrieve^{tree}"]).await;
         let local_tree = git::worktree_tree(local).await.unwrap();
-        let refused = ensure_same_files(local, &local_tree, "refs/hunt/x/retrieve").await.unwrap_err();
-        assert!(refused.contains("still differ in late.txt;") && refused.contains("Nothing was moved"), "{refused}");
+        let changes = git::tree_changes(local, &local_tree, &retrieve_tree, false).await.unwrap();
+        let blocking = blocking_changes(&changes, &[], &BTreeMap::new());
+        let refused = blocking_message(&blocking, &BTreeMap::new(), &BTreeMap::new(), &[]);
+        assert!(refused.contains("still differ between here and the VM: late.txt (different on the VM)."), "{refused}");
+        assert!(refused.contains("Nothing was moved"));
         assert_eq!(git(local, &["rev-parse", "HEAD"]).await, handoff_head);
 
         std::fs::write(local.join("late.txt"), "from the vm\n").unwrap();
         let local_tree = git::worktree_tree(local).await.unwrap();
-        ensure_same_files(local, &local_tree, "refs/hunt/x/retrieve").await.unwrap();
+        assert!(git::tree_changes(local, &local_tree, &retrieve_tree, false).await.unwrap().is_empty());
         ensure_branch_unmoved(local, "main", &handoff_head, &remote_head).await.unwrap();
         move_branch(local, "x", "main", &handoff_head, "refs/hunt/x/retrieve").await.unwrap();
         finish_worktree(local, "refs/hunt/x/retrieve").await.unwrap();
@@ -592,6 +685,28 @@ mod tests {
         assert_eq!(status(local).await, status(&remote).await);
         // A repeated retrieval finds the branch moved already.
         ensure_branch_unmoved(local, "main", &handoff_head, &remote_head).await.unwrap();
+    }
+
+    #[test]
+    fn files_only_one_side_ignores_do_not_block_when_handled_and_are_named_with_their_rule_when_they_do() {
+        let changes = vec![
+            (".vscode/settings.json".to_string(), TreeChange::Added),
+            ("build.log".to_string(), TreeChange::Deleted),
+            ("notes.md".to_string(), TreeChange::Added),
+            ("app.env".to_string(), TreeChange::Deleted),
+        ];
+        let rules_here = BTreeMap::from([(".vscode/settings.json".to_string(), "/Users/jane/.config/git/ignore:1:.vscode/".to_string())]);
+        let rules_there = BTreeMap::from([("build.log".to_string(), ".gitignore:2:*.log".to_string())]);
+        let placed = vec![".vscode/settings.json".to_string()];
+        let blocking = blocking_changes(&changes, &placed, &rules_there);
+        assert_eq!(blocking.iter().map(|(path, _)| path.as_str()).collect::<Vec<_>>(), ["notes.md", "app.env"]);
+
+        let blocking = blocking_changes(&changes, &[], &rules_there);
+        let problems = [".vscode/settings.json: not placed here, since .vscode is a link".to_string()];
+        let message = blocking_message(&blocking, &rules_here, &rules_there, &problems);
+        assert!(message.contains(".vscode/settings.json (only on the VM; ignored here by /Users/jane/.config/git/ignore:1:.vscode/)"), "{message}");
+        assert!(message.contains("app.env (only here)") && message.contains("Could not be brought here: .vscode/settings.json"));
+        assert!(!message.contains("build.log"));
     }
 
     #[tokio::test]

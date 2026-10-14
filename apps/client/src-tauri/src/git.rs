@@ -131,63 +131,96 @@ pub async fn merge_base(repo: &Path, base: &str, head: &str) -> Result<String, S
     Ok(run_git(repo, &["merge-base", base, head]).await?.trim().to_string())
 }
 
-/// The blob ids of the files at the worktree-relative `paths` of `worktree` as `git add` would store them (with the
-/// repository's clean filters), in the order of `paths`; each path must name an existing file.
-pub async fn hash_files(worktree: &Path, paths: &[String]) -> Result<Vec<String>, String> {
-    if paths.is_empty() {
-        return Ok(Vec::new());
-    }
-    let input: String = paths.iter().map(|path| format!("{path}\n")).collect();
-    let output = run_git_with_input(worktree, &["hash-object", "--stdin-paths"], &[], &input).await?;
-    let ids: Vec<String> = output.lines().map(str::to_string).collect();
-    if ids.len() != paths.len() {
-        return Err(format!("failed to hash {} files: git returned {} ids", paths.len(), ids.len()));
-    }
-    Ok(ids)
-}
-
 /// Whether the repository of `worktree` treats paths as case-insensitive (`core.ignorecase`), as git sets it on a
 /// case-insensitive file system.
 pub async fn ignores_case(worktree: &Path) -> bool {
     run_git(worktree, &["config", "--bool", "core.ignorecase"]).await.is_ok_and(|value| value.trim() == "true")
 }
 
-/// The paths that differ between the trees `left` and `right` of `repo`. With `ignore_case`, a file whose name only
-/// changed case with the same content counts as unchanged.
-pub async fn tree_differences(repo: &Path, left: &str, right: &str, ignore_case: bool) -> Result<Vec<String>, String> {
-    let output = run_git(repo, &["diff-tree", "-r", "-z", "--raw", "--no-renames", left, right]).await?;
-    Ok(differing_paths(&output, ignore_case))
+/// Where a path differs between two trees, seen from the first: only in the second, only in the first, or in both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeChange {
+    Added,
+    Deleted,
+    Modified,
 }
 
-/// Reads `git diff-tree -r -z --raw` output; see `tree_differences`.
-fn differing_paths(output: &str, ignore_case: bool) -> Vec<String> {
+/// The paths that differ between the trees `left` and `right` of `repo`, each with how. With `ignore_case`, a file
+/// whose name only changed case with the same content counts as unchanged.
+pub async fn tree_changes(repo: &Path, left: &str, right: &str, ignore_case: bool) -> Result<Vec<(String, TreeChange)>, String> {
+    let output = run_git(repo, &["diff-tree", "-r", "-z", "--raw", "--no-renames", left, right]).await?;
+    Ok(changed_entries(&output, ignore_case))
+}
+
+/// Reads `git diff-tree -r -z --raw` output; see `tree_changes`.
+fn changed_entries(output: &str, ignore_case: bool) -> Vec<(String, TreeChange)> {
     // Each change is `:<old mode> <new mode> <old id> <new id> <status>` followed by its path, NUL-separated.
-    let mut changes: Vec<(String, String, String, String)> = Vec::new();
+    let mut changes: Vec<(String, TreeChange, String)> = Vec::new();
     let mut fields = output.split('\0').filter(|field| !field.is_empty());
     while let (Some(meta), Some(path)) = (fields.next(), fields.next()) {
         let parts: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
         let [_, _, old, new, status] = parts.as_slice() else { continue };
-        changes.push((path.to_string(), status.to_string(), old.to_string(), new.to_string()));
+        let (change, id) = match *status {
+            "A" => (TreeChange::Added, new),
+            "D" => (TreeChange::Deleted, old),
+            _ => (TreeChange::Modified, new),
+        };
+        changes.push((path.to_string(), change, id.to_string()));
     }
-    if !ignore_case {
-        return changes.into_iter().map(|(path, ..)| path).collect();
-    }
-    let with_status = |status: &str, id: fn(&(String, String, String, String)) -> &String| -> Vec<(String, String)> {
-        changes.iter().filter(|change| change.1 == status).map(|change| (change.0.to_lowercase(), id(change).clone())).collect()
+    let keyed = |wanted: TreeChange| -> Vec<(String, String)> {
+        changes.iter().filter(|change| change.1 == wanted).map(|change| (change.0.to_lowercase(), change.2.clone())).collect()
     };
-    let added = with_status("A", |change| &change.3);
-    let deleted = with_status("D", |change| &change.2);
+    let (added, deleted) = if ignore_case { (keyed(TreeChange::Added), keyed(TreeChange::Deleted)) } else { (Vec::new(), Vec::new()) };
     changes
         .into_iter()
-        .filter(|(path, status, old, new)| {
-            let key = (path.to_lowercase(), if status == "A" { new.clone() } else { old.clone() });
-            match status.as_str() {
-                "A" => !deleted.contains(&key),
-                "D" => !added.contains(&key),
-                _ => true,
+        .filter(|(path, change, id)| {
+            let key = (path.to_lowercase(), id.clone());
+            match change {
+                TreeChange::Added => !deleted.contains(&key),
+                TreeChange::Deleted => !added.contains(&key),
+                TreeChange::Modified => true,
             }
         })
-        .map(|(path, ..)| path)
+        .map(|(path, change, _)| (path, change))
+        .collect()
+}
+
+/// The rule (`<source>:<line>:<pattern>`) that makes git ignore each of `paths` in `worktree`, tracked or not; paths no
+/// rule ignores are left out.
+pub async fn ignore_rules(worktree: &Path, paths: &[String]) -> Result<std::collections::BTreeMap<String, String>, String> {
+    if paths.is_empty() {
+        return Ok(Default::default());
+    }
+    use tokio::io::AsyncWriteExt;
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(worktree)
+        .args(["check-ignore", "-v", "-z", "--no-index", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to run git: {error}"))?;
+    let mut stdin = child.stdin.take().ok_or("failed to open the stdin of git")?;
+    let input: Vec<u8> = paths.iter().flat_map(|path| path.bytes().chain([0])).collect();
+    let writer = tokio::spawn(async move { stdin.write_all(&input).await });
+    let output = child.wait_with_output().await.map_err(|error| format!("failed to run git: {error}"))?;
+    let _ = writer.await;
+    // Exit status 1 means that no path is ignored.
+    if !matches!(output.status.code(), Some(0 | 1)) {
+        return Err(format!("git check-ignore failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+    }
+    Ok(parse_ignore_rules(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Reads `git check-ignore -v -z` output, four NUL-separated fields per path: source, line, pattern and path. A
+/// negated pattern (`!…`) matches a path it does not ignore, which is left out.
+pub fn parse_ignore_rules(output: &str) -> std::collections::BTreeMap<String, String> {
+    let fields: Vec<&str> = output.split('\0').collect();
+    fields
+        .chunks_exact(4)
+        .filter(|chunk| !chunk[2].starts_with('!') && !chunk[3].is_empty())
+        .map(|chunk| (chunk[3].to_string(), format!("{}:{}:{}", chunk[0], chunk[1], chunk[2])))
         .collect()
 }
 
@@ -684,15 +717,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn differing_paths_pairs_case_only_renames_with_the_same_content() {
+    fn changed_entries_pairs_case_only_renames_with_the_same_content() {
         let (old, new, other) = ("a".repeat(40), "b".repeat(40), "c".repeat(40));
         let zero = "0".repeat(40);
         let output = format!(
             ":100644 000000 {old} {zero} D\0src/Foo.ts\0:000000 100644 {zero} {old} A\0src/foo.ts\0:100644 100644 {old} {new} M\0edited.txt\0:000000 100644 {zero} {other} A\0Bar.ts\0:100644 000000 {new} {zero} D\0bar.ts\0"
         );
-        assert_eq!(differing_paths(&output, true), ["edited.txt", "Bar.ts", "bar.ts"]);
-        assert_eq!(differing_paths(&output, false), ["src/Foo.ts", "src/foo.ts", "edited.txt", "Bar.ts", "bar.ts"]);
-        assert!(differing_paths("", true).is_empty());
+        let paths = |changes: Vec<(String, TreeChange)>| changes.into_iter().map(|(path, _)| path).collect::<Vec<_>>();
+        assert_eq!(paths(changed_entries(&output, true)), ["edited.txt", "Bar.ts", "bar.ts"]);
+        assert_eq!(paths(changed_entries(&output, false)), ["src/Foo.ts", "src/foo.ts", "edited.txt", "Bar.ts", "bar.ts"]);
+        let changes = changed_entries(&output, true);
+        assert_eq!(changes[1], ("Bar.ts".to_string(), TreeChange::Added));
+        assert_eq!(changes[2], ("bar.ts".to_string(), TreeChange::Deleted));
+        assert!(changed_entries("", true).is_empty());
+    }
+
+    #[test]
+    fn parse_ignore_rules_names_the_rule_and_skips_negations() {
+        let output = ".gitignore\x003\x00*.log\x00debug.log\x00/Users/jane/.config/git/ignore\x001\x00.vscode/\x00.vscode/settings.json\x00.gitignore\x004\x00!keep.log\x00keep.log\x00";
+        let rules = parse_ignore_rules(output);
+        assert_eq!(rules["debug.log"], ".gitignore:3:*.log");
+        assert_eq!(rules[".vscode/settings.json"], "/Users/jane/.config/git/ignore:1:.vscode/");
+        assert!(!rules.contains_key("keep.log"));
     }
 
     #[test]

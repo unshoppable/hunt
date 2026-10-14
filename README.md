@@ -467,17 +467,19 @@ While a remote session is connected, Hunt syncs its files between the worktree o
 both directions (`apps/client/src-tauri/src/remote/sync.rs`, triggered by `apps/client/src-tauri/src/session/sync.rs`),
 so the *Diff*, *Editor*, *Dependency Graph* and *PR Description* tabs work as for a local session, next to *Preview* and
 *Terminal*, and edits made here reach the agent. Each side lists the files Git sees there (tracked and untracked, not
-ignored, so no `node_modules` or `.env*`) with size and modification time; the state after the last sync, kept in
-`remote-sync/<id>.json` in the app data folder, tells which side changed a file. A file changed here goes to the VM,
-also when the agent changed it too (the local version wins), unless its content is still the one of the last sync; a
-file changed only on the VM comes here; deletions follow the same rule; equal size and modification second count as
-in sync. Before the first sync, the snapshot both sides started from (`refs/hunt/<id>/handoff`, or for an adopted
-session `refs/hunt/<id>/adopted`) tells which local files changed meanwhile; every other file takes the VM's version.
+ignored, so no `node_modules` or `.env*`) with size, modification time, execute bit and whether they are links; the
+state after the last sync, kept in `remote-sync/<id>.json` in the app data folder, tells which side changed a file. A
+file changed here goes to the VM, also when the agent changed it too (the local version wins), unless its content is
+still the one of the last sync; a file changed only on the VM comes here; deletions follow the same rule; equal size,
+modification second and mode count as in sync. A file without a recorded state (before the first sync, or after it was
+left alone for a while) counts as changed here only when it differs from the snapshot both sides started from
+(`refs/hunt/<id>/handoff`, or for an adopted session `refs/hunt/<id>/adopted`); otherwise it takes the VM's version.
 A file that exists on a side without being listed there (other ignore rules on the Mac and the VM) is never touched.
 On a case-insensitive Mac the VM's spelling wins, and two VM files whose names differ only in case are reported instead
 of synced. rsync (`hunt-ctl install-tools` installs it on the VM) copies the files over the session's SSH connection as
-`agent`: files from the VM land in `.hunt/sync-staging` first and replace a local file only while it is unchanged since
-the listing. What completed is recorded even when a later step fails, and a file that cannot move (a folder on the
+`agent`, links go to the VM as their text: files from the VM land in `.hunt/sync-staging` first (links last) and
+replace a local file only while it is unchanged since the listing, never below a local link and never as a link that
+points outside the worktree. What completed is recorded even when a later step fails, and a file that cannot move (a folder on the
 other side) is reported in the chat without stopping the rest. The listing and the deletions on the VM run as `agent`
 through `sudo`, so they do not keep the VM awake. A sync runs when the session connects, after every tool call and
 turn the relay reports, every 10 seconds while a turn runs, after the watcher saw a local change and after a save,
@@ -487,12 +489,16 @@ uncommitted work (an adopted session's diff starts at the merge base with the or
 pushing stay with the agent, and the changelist's *Commit*, the sub chats and *WebStorm* are switched off for a
 remote session. Its `node_modules` install leaves the lockfile alone (`npm ci`, `--frozen-lockfile`). The chat header
 shows when the last sync succeeded, and the chat shows a failure. A diagram refresh runs on the agent on the VM,
-against the session's diff base, and Hunt copies `.hunt/graph.json` back afterwards.
+against the session's diff base, and Hunt copies `.hunt/graph.json` back afterwards. Known limits: an edit that keeps
+a file's size within the same second it was last synced in goes unnoticed until the next change, and line-ending
+conversion (`core.autocrlf`) makes the two sides' contents differ, so it should stay off for remote sessions.
 
 Bringing it back (`retrieve_session`) stops the relay, syncs once more, snapshots the VM's worktree on top of the
-agent's commits (`refs/hunt/<id>/retrieve`) and fetches it. Only when that snapshot holds exactly the files of the local
-worktree, the local branch did not move since the handoff and nothing changed here meanwhile does the branch move to
-the agent's last commit; otherwise the retrieval names the differing files (or the local commits) and moves nothing.
+agent's commits (`refs/hunt/<id>/retrieve`) and fetches it. Files only the VM has that this Mac ignores (global
+excludes, files the agent added with `-f`) are brought here, and files only this Mac has that the VM ignores stay.
+Only when the snapshot then holds the files of the local worktree, the local branch did not move since the handoff and
+nothing changed here meanwhile does the branch move to the agent's last commit; otherwise the retrieval names each
+differing file with its side and the ignore rules that apply (or the local commits) and moves nothing.
 The transcript returns. Then Hunt has the gateway delete the
 VM with its disks (`vms.delete`), as it does when a remote session is deleted. A deletion that fails, for example
 offline, is kept in `remote-cleanups.json` in the app data folder and retried at the next start of Hunt, once the main

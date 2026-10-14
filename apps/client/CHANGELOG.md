@@ -1,3 +1,9 @@
+## 0.19.0 (2026-10-14)
+
+### 🚀 Features
+
+- show each process of a session VM in its own terminal tab ([473dcde](https://github.com/unshoppable/hunt/commit/473dcde))
+
 ## 0.18.0 (2026-10-14)
 
 ### 🚀 Features

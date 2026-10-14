@@ -1,3 +1,9 @@
+## 0.10.0 (2026-10-14)
+
+### 🚀 Features
+
+- log every tool call the agent finishes on a session VM to the journal ([fb349b3](https://github.com/unshoppable/hunt/commit/fb349b3))
+
 ## 0.9.1 (2026-10-14)
 
 ### 🩹 Fixes

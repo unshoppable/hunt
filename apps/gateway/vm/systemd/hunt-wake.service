@@ -1,0 +1,25 @@
+# Wakes stopped session VMs for their previews (apps/gateway/src/wake.ts): the edge proxy hands every request it cannot
+# deliver to a session VM to 127.0.0.1:9180, and the service starts the VM with the gateway's service account, as
+# hunt-gw, the one user next to root that reaches the metadata server (hunt-firewall.service).
+[Unit]
+Description=Wake Hunt session VMs for preview requests
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=hunt-gw
+Group=hunt-gw
+ExecStart=/opt/hunt/node/bin/node /srv/hunt/current/gateway/wake.mjs
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

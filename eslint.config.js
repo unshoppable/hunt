@@ -3,11 +3,11 @@ import reactHooks from "eslint-plugin-react-hooks";
 
 /** Lint rules the hand-formatted code must satisfy; formatting is not linted (there is no formatter). */
 export default tseslint.config(
-  { ignores: ["dist/**", "node_modules/**", "src-tauri/**", "src/diff/atomIcons/**", "tools/**"] },
+  { ignores: ["dist/**", "node_modules/**", "apps/client/src-tauri/**", "apps/client/src/diff/atomIcons/**", "tools/**"] },
   ...tseslint.configs.recommended,
   ...reactHooks.configs.recommended,
   {
-    files: ["src/**/*.{ts,tsx}", "scripts/**/*.ts"],
+    files: ["apps/**/*.{ts,tsx}", "libs/**/*.ts", "scripts/**/*.ts"],
     rules: {
       // Guard clauses stay on one line; every other body is braced (see CLAUDE.md).
       curly: ["error", "multi-line"],
@@ -19,7 +19,7 @@ export default tseslint.config(
   },
   {
     // Fixtures assert on values they just built; a non-null assertion is the shortest honest way to say so.
-    files: ["src/**/*.test.ts", "scripts/**/*.test.ts"],
+    files: ["apps/**/*.test.ts", "libs/**/*.test.ts", "scripts/**/*.test.ts"],
     rules: { "@typescript-eslint/no-non-null-assertion": "off" },
   },
 );

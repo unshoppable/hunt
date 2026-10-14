@@ -1,0 +1,56 @@
+# Checks a pull request: typecheck, lint, test and build of every project the change affects (nx affected), the Rust
+# tests of the desktop app on macOS.
+name: 🦾 CI | Pull Request
+run-name: '[ PR #${{ github.event.pull_request.number }} ] ${{ github.event.pull_request.title }}'
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  affected:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx nx affected -t typecheck lint test build --base origin/${{ github.base_ref }} --outputStyle=static
+
+  rust:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/client/src-tauri
+
+      - run: npm ci
+
+      - run: npx nx affected -t test-rust --base origin/${{ github.base_ref }} --outputStyle=static

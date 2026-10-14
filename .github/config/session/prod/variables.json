@@ -1,0 +1,7 @@
+{
+  "GCP_PROJECT": "medconomy-hunt",
+  "ZONE": "europe-west1-c",
+  "GATEWAY_INSTANCE": "vm-hunt-medc",
+  "WORKLOAD_IDENTITY_PROVIDER": "projects/918789299522/locations/global/workloadIdentityPools/pool-github/providers/provider-github",
+  "SERVICE_ACCOUNT": "sa-deploy-hunt@medconomy-hunt.iam.gserviceaccount.com"
+}

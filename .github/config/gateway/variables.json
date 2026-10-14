@@ -1,0 +1,5 @@
+{
+  "BUILD_COMMAND": "npx nx run gateway:build --skip-nx-cache",
+  "ARTIFACT_DIR": "dist/apps/gateway",
+  "INSTALL_COMMAND": "install"
+}

@@ -1,0 +1,13 @@
+{
+  "name": "client",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "nx run client:build"
+  },
+  "volta": {
+    "extends": "../../package.json"
+  }
+}

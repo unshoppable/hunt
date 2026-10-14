@@ -1,0 +1,30 @@
+# The relay of the session on this VM (apps/session/src/relay/main.ts): it runs the ACP adapter with Claude Code as the user agent
+# and serves it on /run/hunt/relay.sock, which Hunt reaches with `sudo -n -u agent socat - UNIX-CONNECT:…`; the idle
+# check reads /run/hunt/status.json. Its environment: agent.env of the installed release, the session's variables from
+# hunt.json (`hunt-ctl session-config`) and the tokens and Git identity of `hunt-ctl start`, which enables the unit, so
+# that it comes back when the VM boots.
+[Unit]
+Description=Relay of Hunt's remote session
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=agent
+Group=agent
+WorkingDirectory=/home/agent
+EnvironmentFile=/srv/hunt/current/vm/agent.env
+EnvironmentFile=-/etc/hunt/session.env
+EnvironmentFile=-/etc/hunt/secrets.env
+RuntimeDirectory=hunt
+RuntimeDirectoryMode=0750
+ExecStart=/opt/hunt/node/bin/node /srv/hunt/current/relay/main.mjs
+# Only the relay gets SIGTERM: it closes the adapter's stdin and waits for the transcript. What the agent started and
+# left running, such as dev servers and its tmux session, survives a restart of the relay.
+KillMode=process
+TimeoutStopSec=30s
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

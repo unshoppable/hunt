@@ -1,0 +1,8 @@
+{
+  "name": "hunt-playwright-mcp",
+  "private": true,
+  "description": "Playwright's MCP server of the agent on a session VM; hunt-ctl install runs npm ci with package-lock.json in /opt/hunt/agent/playwright.",
+  "dependencies": {
+    "@playwright/mcp": "0.0.83"
+  }
+}

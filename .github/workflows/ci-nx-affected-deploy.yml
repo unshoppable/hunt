@@ -1,0 +1,82 @@
+# Deploys every server app affected since a base ref onto the gateway VM: detects the affected apps that have a folder
+# in .github/config/ and runs ci-build-and-deploy for each, one after the other in the order detect-affected-apps.sh
+# lists them, so the gateway is installed before the session release is staged on it. Called by ci-release with the
+# commit deployed last (deployed/prod) as base; dispatchable to deploy a range by hand.
+name: 🚀 CI | Nx Affected Deploy
+run-name: 'Base: ${{ inputs.base }} (${{ inputs.ref || github.sha }})'
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        type: string
+        description: 'Base branch/tag/SHA to compare against'
+        default: 'deployed/prod'
+        required: true
+      ref:
+        type: string
+        description: 'SHA/branch to check out and deploy (defaults to the triggering commit)'
+        required: false
+  workflow_call:
+    inputs:
+      base:
+        type: string
+        required: true
+      ref:
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  detect-affected:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      affected_apps: ${{ steps.affected.outputs.apps }}
+      has_affected: ${{ steps.affected.outputs.has_affected }}
+      deploy_sha: ${{ steps.deploy-commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Resolve the deploy commit
+        id: deploy-commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+
+      - run: npm ci
+
+      - name: Detect affected apps
+        id: affected
+        env:
+          BASE_REF: ${{ inputs.base }}
+        run: .github/scripts/detect-affected-apps.sh "$BASE_REF"
+
+  deploy:
+    name: '${{ matrix.app.name }} ${{ matrix.app.version }}'
+    needs: detect-affected
+    if: needs.detect-affected.outputs.has_affected == 'true'
+    strategy:
+      fail-fast: false
+      # One at a time in the matrix order: both apps land on the same VM, and a session release is staged on a
+      # gateway that has to be able to hand it out.
+      max-parallel: 1
+      matrix:
+        app: ${{ fromJson(needs.detect-affected.outputs.affected_apps) }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/ci-build-and-deploy.yml
+    with:
+      project: ${{ matrix.app.name }}
+      version: ${{ matrix.app.version }}
+      ref: ${{ needs.detect-affected.outputs.deploy_sha }}
+    secrets: inherit

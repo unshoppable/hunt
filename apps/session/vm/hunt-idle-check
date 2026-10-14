@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Powers the session VM off once its session has been idle for IDLE_MINUTES; hunt-idle.timer runs it every minute. The
+# disk keeps everything; Hunt or the gateway starts the VM again when the session is needed. With --dry-run it prints
+# its decision ("keep: <reason>" or "poweroff: <reason>") instead of acting on it.
+#
+# The VM stays up while
+#   - it booted less than BOOT_GRACE_MINUTES ago,
+#   - hunt-ctl runs, or ran within IDLE_MINUTES (the mtime of /var/lib/hunt/activity),
+#   - the relay, with a fresh heartbeat in its status file, has a running turn, or a turn ended, a client sent
+#     something or a permission request arrived within IDLE_MINUTES (an unanswered permission request counts as idle
+#     after that),
+#   - someone opened a preview page or sent a request other than GET within IDLE_MINUTES (the access log of the VM's
+#     preview proxy; health checks are not logged), but only while the agent was active within PREVIEW_MAX_MINUTES, so
+#     that a forgotten browser tab cannot keep the VM running,
+#   - an interactive login, such as Hunt's terminal, had input within IDLE_MINUTES (the IDLE column of `w`).
+# Dev servers and containers the agent left running do not count. A heartbeat older than two minutes means the relay
+# is gone; its status does not count. IDLE_MINUTES, BOOT_GRACE_MINUTES and PREVIEW_MAX_MINUTES come from
+# /etc/hunt/idle.conf (defaults 30, 15 and 120). The HUNT_IDLE_* variables point it at other files, for tests.
+set -euo pipefail
+
+config=${HUNT_IDLE_CONFIG:-/etc/hunt/idle.conf}
+status_file=${HUNT_IDLE_STATUS_FILE:-/run/hunt/status.json}
+activity_file=${HUNT_IDLE_ACTIVITY_FILE:-/var/lib/hunt/activity}
+uptime_file=${HUNT_IDLE_UPTIME_FILE:-/proc/uptime}
+proxy_log=${HUNT_IDLE_PROXY_LOG:-/var/log/hunt-proxy/access.log}
+readonly HEARTBEAT_MAX_AGE_MS=120000
+
+IDLE_MINUTES=30
+BOOT_GRACE_MINUTES=15
+PREVIEW_MAX_MINUTES=120
+
+# Reads IDLE_MINUTES, BOOT_GRACE_MINUTES and PREVIEW_MAX_MINUTES from the config file; other lines and malformed values
+# are ignored.
+read_config() {
+  local key value
+  [[ -r $config ]] || return 0
+  while IFS='=' read -r key value || [[ -n $key ]]; do
+    key=${key//[[:space:]]/}
+    value=${value//[[:space:]\"\']/}
+    if [[ $key =~ ^(IDLE_MINUTES|BOOT_GRACE_MINUTES|PREVIEW_MAX_MINUTES)$ && $value =~ ^[0-9]+$ ]]; then
+      printf -v "$key" '%d' "$((10#$value))"
+    fi
+  done <"$config"
+}
+
+# Prints the minutes since the most recent input of any interactive login, read from the IDLE column of `w`
+# ("12.00s", "4:05" for minutes:seconds, "1:05m" for hours:minutes, "3days"); prints nothing without logins.
+login_idle_minutes() {
+  LC_ALL=C w | awk '
+    function minutes(idle, parts) {
+      if (idle ~ /days$/) return idle * 1440
+      if (idle ~ /^[0-9]+:[0-9]+m$/) { split(idle, parts, ":"); return parts[1] * 60 + parts[2] }
+      if (idle ~ /^[0-9]+:[0-9]+$/) { split(idle, parts, ":"); return parts[1] + 0 }
+      return 0
+    }
+    !column { for (i = 1; i <= NF; i++) if ($i == "IDLE") column = i; next }
+    { idle = minutes($column); if (least == "" || idle < least) least = idle }
+    END { if (least != "") print least }'
+}
+
+# Prints the time in ms of the newest page load or non-GET request in the preview proxy's access log; nothing without
+# one.
+last_preview_request_ms() {
+  [[ -f $proxy_log ]] || return 0
+  tail -c 262144 "$proxy_log" | jq -Rr '
+    fromjson? | select(.request.method as $method | ($method != "GET" and $method != "HEAD" and $method != "OPTIONS")
+      or ((.request.headers["Sec-Fetch-Mode"] // [])[0] == "navigate")) | .ts * 1000 | floor' 2>/dev/null | tail -n 1
+}
+
+# Prints what keeps the relay's session busy ("a turn is running", …); nothing when it is idle or gone.
+relay_busy_reason() {
+  [[ -f $status_file ]] || return 0
+  jq -r --argjson now "$1" --argjson idle "$((IDLE_MINUTES * 60000))" --argjson maxAge "$HEARTBEAT_MAX_AGE_MS" '
+    def within($time): ($time // 0) > $now - $idle;
+    if (.heartbeatAt // 0) < $now - $maxAge then empty
+    elif .turn == "running" then "a turn is running"
+    elif within(.lastTurnEndedAt) then "a turn ended within \($idle / 60000) min"
+    elif within(.lastClientActivityAt) then "a client sent something within \($idle / 60000) min"
+    elif within(.pendingPermissionSince) then "a permission request arrived within \($idle / 60000) min"
+    else empty end' "$status_file" 2>/dev/null || true
+}
+
+# Prints the time in ms of the agent's newest activity (a running turn counts as now); 0 when the relay is gone.
+last_agent_activity_ms() {
+  local time=''
+  if [[ -f $status_file ]]; then
+    time=$(jq -r --argjson now "$1" --argjson maxAge "$HEARTBEAT_MAX_AGE_MS" '
+      if (.heartbeatAt // 0) < $now - $maxAge then 0
+      elif .turn == "running" then $now
+      else [.lastTurnEndedAt // 0, .lastClientActivityAt // 0] | max end' "$status_file" 2>/dev/null) || time=
+  fi
+  if [[ $time =~ ^[0-9]+$ ]]; then
+    echo "$time"
+  else
+    echo 0
+  fi
+}
+
+decide() {
+  local now_ms uptime modified activity_age reason login_idle preview_ms
+  now_ms=$(date +%s%3N)
+  read -r uptime _ <"$uptime_file"
+  uptime=${uptime%.*}
+  if (( uptime < BOOT_GRACE_MINUTES * 60 )); then
+    echo "keep: booted $((uptime / 60)) min ago, within the grace period of $BOOT_GRACE_MINUTES min"
+    return
+  fi
+
+  if [[ -e $activity_file ]]; then
+    modified=$(stat -c %Y "$activity_file")
+    activity_age=$((now_ms / 1000 - modified))
+    if (( activity_age < IDLE_MINUTES * 60 )); then
+      echo "keep: hunt-ctl ran $((activity_age / 60)) min ago"
+      return
+    fi
+  fi
+  # hunt-ctl runs as `bash …/hunt-ctl <command>`, so only its command line names it.
+  if pgrep -f '/hunt-ctl( |$)' >/dev/null; then
+    echo "keep: hunt-ctl is running"
+    return
+  fi
+
+  reason=$(relay_busy_reason "$now_ms")
+  if [[ -n $reason ]]; then
+    echo "keep: $reason"
+    return
+  fi
+
+  preview_ms=$(last_preview_request_ms)
+  if [[ $preview_ms =~ ^[0-9]+$ ]] && (( preview_ms > now_ms - IDLE_MINUTES * 60000 )) &&
+    (( $(last_agent_activity_ms "$now_ms") > now_ms - PREVIEW_MAX_MINUTES * 60000 )); then
+    echo "keep: a preview page was used $(((now_ms - preview_ms) / 60000)) min ago"
+    return
+  fi
+
+  login_idle=$(login_idle_minutes)
+  if [[ -n $login_idle ]] && (( login_idle < IDLE_MINUTES )); then
+    echo "keep: an interactive login had input $login_idle min ago"
+    return
+  fi
+  echo "poweroff: no turn, client, permission request, preview page view, login or hunt-ctl activity for $IDLE_MINUTES min"
+}
+
+dry_run=false
+case ${1-} in
+  --dry-run) dry_run=true ;;
+  "") ;;
+  *)
+    echo "usage: hunt-idle-check [--dry-run]" >&2
+    exit 2
+    ;;
+esac
+read_config
+decision=$(decide)
+if $dry_run; then
+  echo "$decision"
+elif [[ $decision == poweroff:* ]]; then
+  echo "hunt-idle-check: ${decision#poweroff: }; powering off"
+  systemctl poweroff
+fi

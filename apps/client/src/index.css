@@ -1,0 +1,780 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+@import "@git-diff-view/react/styles/diff-view-pure.css";
+@import "@xterm/xterm/css/xterm.css";
+
+:root {
+  color-scheme: dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+}
+
+/*
+ * Per-pane appearance. These are the fallbacks for the first paint and match DEFAULT_PANES (with UI_FONT_FAMILY and
+ * CODE_FONT_FAMILY) in state/settings.ts; usePaneStyles (app/bootstrap.ts) overwrites every one of them at runtime
+ * from the settings store, so a changed default has to be changed in both places.
+ */
+:root {
+  --sidebar-font-size: 14px;
+  --sidebar-line-height: 1.5;
+  --sidebar-indent: 16px;
+  --sidebar-bg: #191a1c;
+  --sidebar-font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --chat-font-size: 14px;
+  --chat-line-height: 1.8;
+  --chat-indent: 0px;
+  --chat-bg: #21252d;
+  --chat-font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --changelist-font-size: 12px;
+  --changelist-line-height: 2;
+  --changelist-indent: 14px;
+  --changelist-bg: #191a1c;
+  --changelist-font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --diff-font-size: 16px;
+  --diff-line-height: 2;
+  --diff-indent: 0px;
+  --diff-bg: #33373f;
+  --diff-font-family: "Code Monospace V2", "Code Monospace", ui-monospace, SFMono-Regular, Menlo, Monaco, "JetBrains Mono", monospace;
+}
+
+/* Shared surfaces: chat tone for dialogs and the window, inspector for the right pane, input for every text field, inset for lists and cards. */
+:root {
+  --surface-chat: #21252d;
+  --surface-inspector: #272c35;
+  --surface-input: #2d323c;
+  --surface-inset: #1b1e25;
+  --line: #363c47;
+  --row-hover: rgba(255, 255, 255, 0.05);
+  --row-active: rgba(255, 255, 255, 0.09);
+  /* The selected row of the project tree (WebStorm's selection blue), over any folder color. */
+  --tree-selection: #2e436e;
+  /* A four-pointed sparkle with a small companion star (the agent button of ui/AgentButton.tsx); the symbol for the agent. */
+  --sparkle-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.5c.4 2.9 2.6 5.1 5.5 5.5-2.9.4-5.1 2.6-5.5 5.5-.4-2.9-2.6-5.1-5.5-5.5 2.9-.4 5.1-2.6 5.5-5.5Z'/%3E%3Cpath d='M12.5 10.5c.2 1.1 1 1.9 2 2-1 .2-1.8 1-2 2-.2-1-1-1.8-2-2 1-.2 1.8-1 2-2Z'/%3E%3C/svg%3E");
+  /* Blue to violet, for the agent symbol. */
+  --agent-gradient: linear-gradient(135deg, #38bdf8 0%, #6366f1 50%, #a855f7 100%);
+}
+
+/* Fade-in with a small slide, for popovers and cards that appear on hover (`animate-fade-in`). */
+@theme {
+  --animate-fade-in: fade-in 150ms ease-out;
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* Tailwind's preflight resets interactive elements to the default arrow; everything clickable shows the hand instead. */
+button:not(:disabled),
+select:not(:disabled),
+[role="button"],
+a[href],
+summary,
+input[type="checkbox"],
+input[type="radio"] {
+  cursor: pointer;
+}
+
+/* Multi-line input spacing; the placeholder shares the line box so it sits on the text baseline. Unlayered, so it
+   wins over leading-* utilities in every window. */
+textarea,
+textarea::placeholder {
+  line-height: 1.5;
+}
+/* WebKit paints the placeholder over the caret, so its first glyph must start right of the caret column. */
+textarea::placeholder {
+  text-indent: 2px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--surface-chat);
+  color: #e6e6e6;
+  overflow: hidden;
+}
+
+/* Diff viewer colors follow the inspector surface instead of the library's GitHub palette. */
+.diff-tailwindcss-wrapper[data-theme="dark"] .diff-style-root {
+  --diff-border--: var(--line);
+  --diff-plain-content--: var(--diff-bg);
+  --diff-expand-content--: #2d323c;
+  --diff-plain-lineNumber--: #2d323c;
+  --diff-expand-lineNumber--: #2d323c;
+  --diff-empty-content--: #2d323c;
+  --diff-add-content--: #203a2b;
+  --diff-del-content--: #3d272b;
+  --diff-add-lineNumber--: #2b4a32;
+  --diff-del-lineNumber--: #55302f;
+  --diff-hunk-content--: #27344a;
+}
+/* Inline diff lines follow the diff pane's line height instead of the library's tighter default. */
+.diff-tailwindcss-wrapper .diff-table-body {
+  line-height: var(--diff-line-height);
+}
+.diff-tailwindcss-wrapper[data-theme="dark"] .diff-line-syntax-raw .hljs {
+  background: transparent;
+  color: #f7e9ba;
+}
+
+/* Syntax colors of the chat's inline diffs follow the WebStorm scheme in diff/webstormScheme.ts. */
+.diff-tailwindcss-wrapper[data-theme="dark"] .diff-line-syntax-raw {
+  .hljs-keyword { color: #c08cff; font-style: italic; }
+  .hljs-literal, .hljs-type { color: #abb8ff; font-style: italic; }
+  .hljs-meta { color: #bef057; font-style: italic; }
+  .hljs-built_in, .hljs-title.class_, .hljs-title.class_.inherited__ { color: #ff7ab3; }
+  .hljs-title, .hljs-title.function_ { color: #ffa9a9; }
+  .hljs-attr, .hljs-property { color: #efee47; }
+  .hljs-variable, .hljs-template-variable { color: #f7e9ba; }
+  .hljs-params { color: #b5eb44; }
+  .hljs-string, .hljs-char { color: #fbc966; }
+  .hljs-number { color: #99e4f9; }
+  .hljs-regexp { color: #6a8759; }
+  .hljs-comment { color: #808080; font-style: italic; }
+  .hljs-doctag { color: #8b929f; font-style: italic; text-decoration: underline; }
+  .hljs-operator { color: #56b6c2; font-style: italic; }
+  .hljs-punctuation, .hljs-subst { color: #e9e9e9; }
+  .hljs-tag, .hljs-name, .hljs-selector-tag { color: #629cfc; }
+  .hljs-attribute { color: #c183f9; }
+  .hljs-selector-class, .hljs-selector-attr { color: #85c984; }
+  .hljs-selector-id { color: #d1fc22; }
+  .hljs-selector-pseudo { color: #e8bf6a; }
+  .hljs-symbol, .hljs-bullet, .hljs-link { color: #9edafe; }
+  .hljs-addition { color: #c3e887; }
+  .hljs-deletion { color: #f77669; }
+}
+
+/* Inlay hints (padded, in the UI font) sit on the code baseline like WebStorm's. Monaco aligns such hints with
+   `vertical-align: middle`, which drops them below the baseline with the code font's tall ascender. */
+.monaco-editor .view-line span[class*="dyn-rule-"] {
+  vertical-align: baseline;
+}
+
+/* Word under the cursor while Cmd is held in an editor (see diff/ideLink.ts): ⌘click navigates, ⇧⌘click opens WebStorm. */
+.monaco-editor .hunt-ide-link {
+  color: #7cb7ff;
+  background: #7cb7ff1f;
+  border-radius: 2px;
+  text-decoration: underline;
+  cursor: pointer !important;
+}
+
+/* Change markers next to the line numbers (see ide/changeMarkers.ts): a stripe for inserted (green) and modified
+   (blue) lines, a triangle at the seam of a deletion; a click opens the change popup with the HEAD lines. */
+.monaco-editor .margin-view-overlays .hunt-change {
+  cursor: pointer;
+}
+.monaco-editor .margin-view-overlays .hunt-change::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+}
+.monaco-editor .margin-view-overlays .hunt-change--insert::before,
+.monaco-editor .margin-view-overlays .hunt-change--modify::before {
+  top: 0;
+  bottom: 0;
+  width: 5px;
+}
+.monaco-editor .margin-view-overlays .hunt-change--start::before {
+  border-top-left-radius: 2px;
+  border-top-right-radius: 2px;
+}
+.monaco-editor .margin-view-overlays .hunt-change--end::before {
+  border-bottom-left-radius: 2px;
+  border-bottom-right-radius: 2px;
+}
+.monaco-editor .margin-view-overlays .hunt-change--insert::before {
+  background: #62a65ea6;
+}
+.monaco-editor .margin-view-overlays .hunt-change--modify::before {
+  background: #4d8be6a6;
+}
+.monaco-editor .margin-view-overlays .hunt-change--delete::before {
+  top: -5px;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 8px solid #b4bcc8;
+}
+.monaco-editor .margin-view-overlays .hunt-change--delete.hunt-change--bottom::before {
+  top: auto;
+  bottom: -5px;
+}
+.hunt-change-popover .monaco-editor .hunt-change-popover__margin {
+  background: #55302f;
+}
+
+/* Agent button (ui/AgentButton.tsx, ide/selectionAskButton.ts): a small square surface with the agent sparkle in the
+   blue-violet agent gradient; it glows on hover and breathes while the agent it stands for is working. The gutter
+   sub chat button below paints the same look on Monaco's decoration node. `--agent-button-size` and
+   `--agent-sparkle-size` scale a host's instance. */
+.hunt-agent-button {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  width: var(--agent-button-size, 22px);
+  height: var(--agent-button-size, 22px);
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface-inspector);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.hunt-agent-button::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: var(--agent-sparkle-size, 15px);
+  height: var(--agent-sparkle-size, 15px);
+  margin: auto;
+  background: var(--agent-gradient);
+  mask: var(--sparkle-mask) center / contain no-repeat;
+  transition: transform 120ms ease;
+}
+.hunt-agent-button:hover {
+  border-color: #7c6cff;
+  box-shadow: 0 0 0 3px rgba(124, 108, 255, 0.22), 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+.hunt-agent-button:hover::before {
+  transform: scale(1.12);
+}
+/* With a label the sparkle keeps its square on the left and the text follows; a hidden label leaves the square. */
+.hunt-agent-button-labelled {
+  width: auto;
+  min-width: var(--agent-button-size, 22px);
+  align-items: center;
+  padding-left: calc(var(--agent-button-size, 22px) - 2px);
+}
+.hunt-agent-button-labelled::before {
+  right: auto;
+  left: calc((var(--agent-button-size, 22px) - var(--agent-sparkle-size, 15px)) / 2 - 1px);
+  margin: auto 0;
+}
+.hunt-agent-button-label {
+  padding-right: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--color-neutral-200, #e5e5e5);
+}
+.hunt-agent-button.hunt-agent-button-busy {
+  border-color: #7c6cff;
+  animation: agent-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+/* The agent button's violet glow on an ordinary button (ui/buttons.ts AGENT_GLOW), e.g. the Guardrails "New" button. */
+.hunt-agent-glow {
+  box-shadow: 0 0 0 3px rgba(124, 108, 255, 0.22), 0 1px 4px rgba(0, 0, 0, 0.3);
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+.hunt-agent-glow:hover,
+.hunt-agent-glow:focus-visible {
+  box-shadow: 0 0 0 4px rgba(124, 108, 255, 0.4), 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+/* The breathing glow of a busy agent button. */
+@keyframes agent-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px rgba(124, 108, 255, 0.1), 0 1px 4px rgba(0, 0, 0, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(124, 108, 255, 0.4), 0 1px 4px rgba(0, 0, 0, 0.3);
+  }
+}
+
+/* Sub chat button right of the line numbers (see ide/selectionChatMarkers.ts): a small icon button with the agent
+   sparkle in the blue-violet agent gradient on the first line of a selection a sub chat was opened from; a click
+   reopens the chat in its popover. Monaco stretches the node over the whole line decorations column; the button
+   takes 22px of it after the change stripe zone (the column's plain 10px) so the two never overlap. */
+.monaco-editor .margin-view-overlays .hunt-chat-glyph {
+  width: 22px !important;
+  margin-left: 10px;
+  cursor: pointer;
+}
+.monaco-editor .margin-view-overlays .hunt-chat-glyph::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  height: min(22px, 100%);
+  margin: auto 0;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface-inspector);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.monaco-editor .margin-view-overlays .hunt-chat-glyph::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 15px;
+  height: 15px;
+  margin: auto;
+  background: var(--agent-gradient);
+  mask: var(--sparkle-mask) center / contain no-repeat;
+  transition: transform 120ms ease;
+}
+.monaco-editor .margin-view-overlays .hunt-chat-glyph.hunt-chat-glyph-busy::before {
+  border-color: #7c6cff;
+  animation: agent-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+.monaco-editor .margin-view-overlays .hunt-chat-glyph:hover::before {
+  border-color: #7c6cff;
+  box-shadow: 0 0 0 3px rgba(124, 108, 255, 0.22), 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+.monaco-editor .margin-view-overlays .hunt-chat-glyph:hover::after {
+  transform: scale(1.12);
+}
+
+/* "+" of a pull request review (see review/addCommentGlyph.ts): GitHub's blue square on the hovered line, in the
+   glyph margin left of the line numbers, centred on the cell; grey when the comment lands in the review summary as
+   a note instead of inline. */
+.monaco-editor .harness-review-add {
+  cursor: pointer;
+  z-index: 3;
+}
+.monaco-editor .harness-review-add::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: min(18px, 100%);
+  height: min(18px, 100%);
+  margin: auto;
+  border-radius: 4px;
+  background: #2f81f7;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  transition: transform 120ms ease;
+}
+.monaco-editor .harness-review-add::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 10px;
+  height: 10px;
+  margin: auto;
+  background: #fff;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M6 1.5v9M1.5 6h9' stroke='%23000' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.monaco-editor .harness-review-add:hover::before {
+  transform: scale(1.1);
+}
+.monaco-editor .harness-review-add--note::before {
+  background: #6e7681;
+}
+/* Lines a review comment is being dragged over or written for: GitHub's yellow tint over gutter and text and a
+   bar at the text's left edge in the color of the "+" (blue inline, grey note), which the open comment box
+   continues (see review/ReviewCommentZones.tsx). */
+.monaco-editor .harness-review-range {
+  z-index: 1;
+  background: rgba(187, 128, 9, 0.3);
+}
+.monaco-editor .view-overlays .harness-review-range {
+  box-shadow: inset 2px 0 0 #2f81f7;
+}
+.monaco-editor .view-overlays .harness-review-range--note {
+  box-shadow: inset 2px 0 0 #6e7681;
+}
+.monaco-editor .margin-view-overlays .harness-review-range {
+  background: rgba(187, 128, 9, 0.3);
+}
+[data-review-composer] {
+  position: relative;
+}
+[data-review-composer]::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--zone-content-left);
+  width: 2px;
+  background: #2f81f7;
+}
+[data-review-composer="note"]::before {
+  background: #6e7681;
+}
+
+/* Comment cards and the comment box under a line (see review/lineZone.ts): an overlay widget that the zone places
+   itself; it starts hidden until the first top arrives. */
+.monaco-editor .harness-review-zone {
+  position: absolute;
+  left: 0;
+  z-index: 5;
+  visibility: hidden;
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+/* "Ask Claude" button at the active end of a selection (see ide/selectionAskButton.ts): the agent sparkle in the
+   blue-violet agent gradient on a small floating surface, right of the end of a forward selection, left of the start
+   of a backward one or above the start when there is no room on its left. Monaco sets the node's display itself; the
+   node spans the line height and the button centres on it. */
+.hunt-ask-button {
+  width: 22px;
+  z-index: 10;
+}
+.hunt-ask-button--after {
+  margin-left: 6px;
+}
+.hunt-ask-button--before {
+  margin-left: -28px;
+}
+.hunt-ask-button--above {
+  margin-top: -2px;
+}
+.hunt-ask-button .hunt-agent-button {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+}
+
+/* The selected usage's name in the preview of the usages popup (see ide/UsagesPopover.tsx): WebStorm's search result tint. */
+.monaco-editor .hunt-usage-match {
+  background: #32593d;
+  border-radius: 2px;
+}
+
+/* Editor tab bars (see ide/EditorPane.tsx) scroll sideways without showing a scrollbar. */
+.ide-tabs {
+  scrollbar-width: none;
+}
+.ide-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+/* Side-by-side diff (see diff/splitDiff.ts): editor | original line numbers | connector gutter | editor. Clipped, so
+   that revert arrows positioned past the gutter never make the enclosing pane (an overflow: auto panel) scrollable.
+   The own compositing layer keeps the empty columns (original gutter, line numbers, connectors) color-matched like the
+   editor text: on macOS WebKit with a non-sRGB display they otherwise paint the raw sRGB value, visibly lighter. */
+.split-diff {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  overflow: hidden;
+  background: var(--diff-bg);
+  will-change: transform;
+}
+.split-diff__editor {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.split-diff__numbers {
+  position: relative;
+  flex: none;
+  overflow: hidden;
+  color: #8790a5;
+}
+.split-diff__number {
+  position: absolute;
+  left: 0;
+  right: 0;
+  padding: 0 7px;
+  text-align: right;
+  white-space: nowrap;
+}
+.split-diff__number--deleted {
+  background: #55302f;
+  color: #e6e6e6;
+}
+.split-diff__gutter {
+  position: relative;
+  flex: none;
+  width: 36px;
+}
+.split-diff__connectors {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.split-diff__reverts {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.split-diff__revert {
+  pointer-events: auto;
+  position: absolute;
+  left: 50%;
+  margin-left: -8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid #ffffff26;
+  border-radius: 3px;
+  background: #272c35e6;
+  color: #9ca3af;
+  cursor: pointer;
+}
+.split-diff__revert:hover {
+  background: #3b4250;
+  color: #f3f4f6;
+}
+.split-diff__fold {
+  color: #9ca3af;
+  cursor: pointer;
+}
+.split-diff__fold:hover {
+  color: #f3f4f6;
+}
+.split-diff__hidden {
+  display: flex;
+  align-items: center;
+  padding-left: 8px;
+  background: #2d323c;
+  color: #9ca3af;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+  cursor: pointer;
+}
+.split-diff__hidden:hover {
+  background: #353b47;
+}
+/* Monaco paints line decorations over the selection, so the diff tints are translucent to let it show through
+   (the values match #203a2b / #3d272b on the editor background). */
+.split-diff-line-insert {
+  background: rgba(16, 91, 20, 0.3);
+}
+.split-diff-line-delete {
+  background: rgba(112, 27, 20, 0.3);
+}
+.split-diff-margin-insert {
+  background: #2b4a32;
+}
+.split-diff-margin-delete {
+  background: rgba(112, 27, 20, 0.3);
+}
+.split-diff-char-insert {
+  background: #2ea04333;
+}
+.split-diff-char-delete {
+  background: #f8514933;
+}
+
+.react-flow.dark {
+  --xy-background-color: var(--surface-inspector);
+  /* Minimap: the visible part keeps the canvas color, the rest is darkened and the viewport outlined. */
+  --xy-minimap-background-color: var(--surface-inspector);
+  --xy-minimap-mask-background-color: rgba(0, 0, 0, 0.4);
+  --xy-minimap-mask-stroke-color: rgba(255, 255, 255, 0.3);
+}
+/* Edge labels and their description popovers stay above the edges (z-index -2), folders (-1) and files (0); the graph
+   keeps these levels fixed (zIndexMode "manual"). */
+.react-flow__edgelabel-renderer {
+  z-index: 1;
+}
+
+/* Chat pane: proportional type in a centered reading column; tool activity stays monospace. */
+.chat {
+  --chat-orange: #d97757;
+  font-family: var(--chat-font-family);
+  font-size: var(--chat-font-size);
+  line-height: var(--chat-line-height);
+}
+.chat textarea,
+.chat textarea::placeholder {
+  font: inherit;
+  line-height: 1.5;
+}
+.chat-column {
+  width: 100%;
+  max-width: 52rem;
+  margin: 0 auto;
+}
+.chat-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "JetBrains Mono", monospace;
+  font-size: 0.85em;
+}
+
+/* Markdown rendered as a document: real headings, lists and tables, code in chips and bordered blocks. */
+.markdown {
+  color: #d6d9de;
+  overflow-wrap: anywhere;
+}
+.markdown :is(p, ul, ol, pre, blockquote, table) {
+  margin: 0.65rem 0;
+}
+.markdown :is(h1, h2, h3, h4) {
+  margin: 1.1rem 0 0.4rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #f5f6f8;
+}
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+.markdown h1 {
+  font-size: 1.35em;
+}
+.markdown h2 {
+  font-size: 1.2em;
+}
+.markdown h3 {
+  font-size: 1.05em;
+}
+.markdown h4 {
+  font-size: 1em;
+}
+.markdown strong {
+  font-weight: 600;
+  color: #f5f6f8;
+}
+.markdown ul {
+  padding-left: 1.4rem;
+  list-style: disc;
+}
+.markdown ol {
+  padding-left: 1.4rem;
+  list-style: decimal;
+}
+.markdown li {
+  margin: 0.3rem 0;
+  padding-left: 0.1rem;
+}
+.markdown li::marker {
+  color: #8b919c;
+}
+.markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+}
+.markdown :not(pre) > code {
+  padding: 0.1em 0.35em;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.07);
+  color: #e8eaed;
+}
+.markdown pre {
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-inset);
+  overflow-x: auto;
+  color: #d4d4d4;
+}
+.markdown blockquote {
+  padding-left: 0.8rem;
+  border-left: 2px solid var(--line);
+  color: #a3a3a3;
+}
+.markdown hr {
+  margin: 0.8rem 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.markdown a {
+  color: #8ab4f8;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+.markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-size: 0.92em;
+}
+.markdown th {
+  background: rgba(255, 255, 255, 0.04);
+  font-weight: 600;
+  text-align: left;
+}
+.markdown td,
+.markdown th {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--line);
+}
+
+/* Markdown laid out like a GitHub comment (pull request descriptions): ruled h1/h2, a 16px paragraph rhythm,
+   task lists with the checkbox in place of the bullet. */
+.markdown-document :is(p, ul, ol, pre, blockquote, table) {
+  margin: 0 0 16px;
+}
+.markdown-document :is(h1, h2, h3, h4) {
+  margin: 24px 0 16px;
+  line-height: 1.25;
+}
+.markdown-document :is(h1, h2) {
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--line);
+}
+.markdown-document h1 {
+  font-size: 2em;
+}
+.markdown-document h2 {
+  font-size: 1.5em;
+}
+.markdown-document h3 {
+  font-size: 1.25em;
+}
+.markdown-document :is(ul, ol) {
+  padding-left: 2em;
+}
+.markdown-document li {
+  margin: 0.25em 0;
+  padding-left: 0;
+}
+.markdown-document li.task-list-item {
+  list-style: none;
+}
+.markdown-document li.task-list-item input[type="checkbox"] {
+  margin: 0 0.5em 0.2em -1.6em;
+  vertical-align: middle;
+}
+.markdown-document :not(pre) > code {
+  padding: 0.15em 0.4em;
+  border: 0;
+  border-radius: 6px;
+  font-size: 85%;
+  line-height: 1;
+}
+.markdown-document table {
+  font-size: 1em;
+}
+.markdown-document :is(td, th) {
+  padding: 6px 13px;
+}
+
+/* Changelist checkbox (see diff/Checkbox.tsx): custom-drawn so the checked state keeps its accent color even while the window is inactive. */
+.hunt-checkbox {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: none;
+  border-radius: 4px;
+  border: 1px solid #6b7280;
+  background: #2b303a center / 10px no-repeat;
+}
+.hunt-checkbox:hover {
+  border-color: #9ca3af;
+}
+.hunt-checkbox:checked,
+.hunt-checkbox:indeterminate {
+  border-color: #3574f0;
+  background-color: #3574f0;
+}
+.hunt-checkbox:checked {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 5.2 4 7.6 8.6 2.6' fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+.hunt-checkbox:indeterminate {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 5h6' fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+.hunt-checkbox:focus-visible {
+  outline: 2px solid #3574f080;
+  outline-offset: 1px;
+}

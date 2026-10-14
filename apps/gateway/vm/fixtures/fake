@@ -1,0 +1,6 @@
+#!/bin/bash
+# Fake systemctl and docker of install.test.ts: log the call; no image is present locally.
+echo "${0##*/} $*" >>/var/log/fake.log
+if [[ $1 == image && $2 == inspect ]]; then
+  exit 1
+fi

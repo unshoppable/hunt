@@ -1,0 +1,302 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, connect } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import protocolFile from "../../../libs/domain/protocol.json" with { type: "json" };
+import type { ApiEvent } from "../../../libs/domain/src/gatewayApi.ts";
+import type { Transport } from "./acpClient.ts";
+import { createApiServer, type ApiServer } from "./api.ts";
+import { forward } from "./apiClient.ts";
+import { parseEvent } from "./apiProtocol.ts";
+import type { Compute, Instance } from "./gcp.ts";
+import { Orchestrator } from "./orchestrator.ts";
+import type { SessionVm } from "./sessionVm.ts";
+import { readSwfConfigOrDefaults, writeSwfConfig } from "./swfConfig.ts";
+
+const ID = "ab12cd34-0000-4000-8000-000000000001";
+const VM = "vm-hunt-s-ab12cd34";
+const RELEASE = { version: "session@1.4.0", protocol: 1 };
+const PROVISION = { id: ID, title: "Fix login", repo: "acme/app", branch: "feat/login", machineType: null };
+
+/** A Compute Engine whose new VMs run at once; it records every change. */
+function fakeCompute() {
+  const instances = new Map<string, Instance>();
+  const calls: string[] = [];
+  const copy = (name: string) => {
+    const instance = instances.get(name);
+    return instance ? structuredClone(instance) : null;
+  };
+  const compute: Compute = {
+    list: async () => [...instances.values()].map((instance) => structuredClone(instance)),
+    listByLabel: async () => [],
+    get: async (name) => copy(name),
+    insert: async (request) => {
+      calls.push(`insert ${request.name} ${JSON.stringify(request.labels)}`);
+      instances.set(request.name, {
+        name: request.name,
+        zone: "europe-west3-a",
+        status: "RUNNING",
+        creationTimestamp: "2026-10-14T08:00:00.000-07:00",
+        labels: request.labels,
+        metadata: { fingerprint: "fp0", items: [] },
+        disks: [],
+      });
+    },
+    setMetadata: async (name, _fingerprint, items) => {
+      instances.get(name)!.metadata.items = items;
+    },
+    start: async (name) => {
+      calls.push(`start ${name}`);
+      instances.get(name)!.status = "RUNNING";
+    },
+    resume: async () => {},
+    stop: async (name) => {
+      calls.push(`stop ${name}`);
+    },
+    setDiskAutoDelete: async () => {},
+    delete: async (name) => {
+      calls.push(`delete ${name}`);
+      instances.delete(name);
+    },
+  };
+  return { compute, calls, instances };
+}
+
+/** A session VM that boots and needs the staged release; `release` holds `ensureRelease` until it is opened. */
+function fakeVm() {
+  let open = () => {};
+  let isOpen = Promise.resolve();
+  const vm: SessionVm = {
+    run: async () => "",
+    huntCtl: async () => ({}),
+    waitUntilReady: async (_timeoutMs, onWaiting) => {
+      onWaiting?.();
+    },
+    ensureRelease: async (onInstall) => {
+      onInstall?.();
+      await isOpen;
+      return RELEASE;
+    },
+    putClaudeFiles: async () => {},
+    openRelay: () => ({}) as Transport,
+  };
+  return {
+    vm,
+    hold: () => {
+      isOpen = new Promise((resolve) => {
+        open = resolve;
+      });
+    },
+    release: () => open(),
+  };
+}
+
+describe("the gateway API over its Unix socket", () => {
+  let dir = "";
+  let socketPath = "";
+  let swfPath = "";
+  let api: ApiServer;
+  let compute: ReturnType<typeof fakeCompute>;
+  let vm: ReturnType<typeof fakeVm>;
+  let logs: string[];
+
+  beforeEach(async () => {
+    // Unix socket paths are limited to 104 bytes on macOS, so a long TMPDIR is not used.
+    dir = mkdtempSync(join(tmpdir().length > 60 ? "/tmp" : tmpdir(), "hunt-api-"));
+    socketPath = join(dir, "api.sock");
+    swfPath = join(dir, "swf.json");
+    compute = fakeCompute();
+    vm = fakeVm();
+    logs = [];
+    const location = { project: "medconomy-hunt", zone: "europe-west3-a" };
+    api = createApiServer({
+      orchestrator: new Orchestrator({ compute: compute.compute, location, vm: () => vm.vm, sleep: async () => {}, now: () => 0 }),
+      gatewayInfo: async () => ({ release: "gateway@2.0.0", ...location, previewDomain: "hunt.example.com" }),
+      readSwfConfig: () => readSwfConfigOrDefaults(swfPath),
+      writeSwfConfig: (config) => writeSwfConfig(config, swfPath),
+      log: (message) => logs.push(message),
+    });
+    await new Promise<void>((resolve) => api.server.listen(socketPath, resolve));
+  });
+
+  afterEach(async () => {
+    await api.drain();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Calls `method` like `hunt-api <method>` with `params` on stdin; returns the exit status and the events. */
+  async function call(method: string, params?: unknown, caller = "jane_doe_example_com", connectWaitMs = 0) {
+    let output = "";
+    const status = await forward({
+      socketPath,
+      caller,
+      method,
+      input: params === undefined ? "" : JSON.stringify(params),
+      write: (text) => {
+        output += text;
+      },
+      connectWaitMs,
+    });
+    const events = output.trimEnd().split("\n").map((line) => parseEvent(line));
+    return { status, events: events as ApiEvent[], final: events.at(-1) as ApiEvent };
+  }
+
+  it("says hello with the protocol numbers, the gateway's location and the caller", async () => {
+    expect(await call("hello")).toEqual({
+      status: 0,
+      events: [expect.anything()],
+      final: {
+        type: "result",
+        data: {
+          api: protocolFile.api,
+          protocol: protocolFile.protocol,
+          release: "gateway@2.0.0",
+          project: "medconomy-hunt",
+          zone: "europe-west3-a",
+          previewDomain: "hunt.example.com",
+          caller: "jane_doe_example_com",
+        },
+      },
+    });
+  });
+
+  it("provisions a session VM for its caller and streams the progress before the result", async () => {
+    const { status, events } = await call("sessions.provision", PROVISION);
+    expect(status).toBe(0);
+    expect(events.filter((event) => event.type === "progress")).toEqual([
+      { type: "progress", step: "creatingVm" },
+      { type: "progress", step: "waitingForVm" },
+      { type: "progress", step: "installingRuntime" },
+    ]);
+    expect(events.at(-1)).toEqual({
+      type: "result",
+      data: { vm: { project: "medconomy-hunt", zone: "europe-west3-a", instance: VM }, created: true, release: RELEASE },
+    });
+    expect(compute.calls[0]).toBe(`insert ${VM} {"hunt-role":"session","hunt-session":"ab12cd34","hunt-origin":"desktop","hunt-owner":"jane_doe_example_com"}`);
+    expect(logs.at(-1)).toMatch(new RegExp(`^jane_doe_example_com: sessions.provision ${ID}: ok in \\d+ ms$`));
+
+    const listed = await call("sessions.list");
+    expect(listed.final).toMatchObject({ type: "result", data: { sessions: [{ id: ID, vm: VM, owner: "jane_doe_example_com", repo: "acme/app" }] } });
+  });
+
+  it("reports missing VMs as the contract says: notFound for start, exists false for get, alreadyGone for delete", async () => {
+    expect(await call("vms.start", { id: ID })).toMatchObject({
+      status: 1,
+      final: { type: "error", code: "notFound", message: `the session ${ID} has no VM ${VM}` },
+    });
+    expect((await call("vms.get", { id: ID })).final).toEqual({ type: "result", data: { exists: false, name: VM, status: null } });
+    expect(await call("vms.delete", { id: ID })).toMatchObject({ status: 0, final: { type: "result", data: { alreadyGone: true } } });
+
+    await call("sessions.provision", PROVISION);
+    expect((await call("vms.stop", { id: ID })).final).toEqual({ type: "result", data: {} });
+    expect((await call("vms.delete", { id: ID })).final).toEqual({ type: "result", data: { alreadyGone: false } });
+    expect(compute.calls.slice(1)).toEqual([`stop ${VM}`, `delete ${VM}`]);
+  });
+
+  it("refuses invalid input before and after the socket", async () => {
+    expect(await call("hello; id")).toMatchObject({ status: 1, final: { type: "error", code: "invalidParams" } });
+    const notJson = await forward({ socketPath, caller: "jane", method: "hello", input: "{", write: () => {} });
+    expect(notJson).toBe(1);
+    expect((await call("vms.reboot")).final).toMatchObject({ type: "error", code: "invalidParams", message: expect.stringContaining("unknown method") });
+    expect((await call("vms.start", { id: "nope" })).final).toEqual({ type: "error", code: "invalidParams", message: "id must be a session ID (a lowercase UUID)" });
+    expect((await call("hello", undefined, "Not A User")).final).toMatchObject({ type: "error", code: "forbidden" });
+  });
+
+  it("reads and applies the poller's configuration, keeping its label and template", async () => {
+    expect((await call("swf.getConfig")).final).toEqual({
+      type: "result",
+      data: { repos: [], maxSessions: 2, label: "swf", template: "tpl-hunt-session", machineType: null },
+    });
+    writeFileSync(swfPath, JSON.stringify({ repos: [], label: "ai", template: "tpl-custom" }));
+    const applied = await call("swf.applyConfig", { repos: [" acme/app ", "Acme/App", "acme/api"], maxSessions: 4, machineType: null });
+    const config = { repos: ["acme/app", "acme/api"], maxSessions: 4, label: "ai", template: "tpl-custom", machineType: null };
+    expect(applied.final).toEqual({ type: "result", data: config });
+    expect(JSON.parse(readFileSync(swfPath, "utf8"))).toEqual(config);
+  });
+
+  it("lets concurrent starts of one session share one operation", async () => {
+    await call("sessions.provision", PROVISION);
+    compute.instances.get(VM)!.status = "TERMINATED";
+    vm.hold();
+    const first = call("vms.start", { id: ID });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const second = call("vms.start", { id: ID });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    vm.release();
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.final).toEqual(b.final);
+    expect(a.final).toMatchObject({ type: "result", data: { wasRunning: false } });
+    expect(b.events.filter((event) => event.type === "progress").map((event) => (event as { step: string }).step)).toEqual([
+      "startingVm",
+      "waitingForVm",
+      "installingRuntime",
+    ]);
+    expect(compute.calls.filter((entry) => entry.startsWith("start"))).toEqual([`start ${VM}`]);
+  });
+
+  it("serves a client that ends its side after the request, and refuses a request without a caller", async () => {
+    const ask = (request: string, end: boolean) =>
+      new Promise<string>((resolve) => {
+        const socket = connect(socketPath);
+        let answer = "";
+        socket.setEncoding("utf8");
+        socket.on("data", (chunk: string) => {
+          answer += chunk;
+        });
+        socket.on("close", () => resolve(answer));
+        socket.write(request);
+        if (end) {
+          socket.end();
+        }
+      });
+    expect(parseEvent(await ask('{"caller":"jane","method":"vms.get","params":{"id":"' + ID + '"}}\n', true))).toMatchObject({ type: "result" });
+    expect(parseEvent(await ask('{"method":"hello"}', true))).toEqual({ type: "error", code: "forbidden", message: "the request names no valid caller" });
+  });
+
+  it("finishes the running requests on drain and accepts no new ones", async () => {
+    vm.hold();
+    const running = call("sessions.provision", PROVISION);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    let isDrained = false;
+    const drained = api.drain().then(() => {
+      isDrained = true;
+    });
+    expect((await call("hello")).final).toMatchObject({ type: "error", code: "unavailable" });
+    expect(isDrained).toBe(false);
+    vm.release();
+    expect((await running).status).toBe(0);
+    await drained;
+    expect(isDrained).toBe(true);
+  });
+});
+
+describe("forward", () => {
+  it("reports an API that cannot be reached or that ends the connection before its result", async () => {
+    const dir = mkdtempSync(join(tmpdir().length > 60 ? "/tmp" : tmpdir(), "hunt-api-"));
+    try {
+      const socketPath = join(dir, "api.sock");
+      let output = "";
+      const write = (text: string) => {
+        output += text;
+      };
+      expect(await forward({ socketPath, caller: "jane", method: "hello", input: "", write, connectWaitMs: 600 })).toBe(1);
+      expect(parseEvent(output.trim())).toMatchObject({ type: "error", code: "unavailable", message: expect.stringContaining("failed to reach the gateway API") });
+
+      const server = createServer((socket) => {
+        socket.resume();
+        socket.end('{"type":"progress","step":"startingVm"}\n');
+      });
+      await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+      output = "";
+      expect(await forward({ socketPath, caller: "jane", method: "vms.start", input: `{"id":"${ID}"}`, write })).toBe(1);
+      expect(output.trim().split("\n").map((line) => parseEvent(line))).toEqual([
+        { type: "progress", step: "startingVm" },
+        { type: "error", code: "unavailable", message: "the gateway API ended the connection before its result" },
+      ]);
+      await new Promise((resolve) => server.close(resolve));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

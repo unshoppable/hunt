@@ -1,0 +1,196 @@
+# Builds the release of one server app (gateway or session) and deploys it onto the gateway VM: the job packs the
+# artifact with .version and .hash, streams it over SSH through IAP into /srv/hunt/incoming on the gateway and runs the
+# bundle's own hunt-ctl there. The gateway installs its release (`hunt-ctl install`); the session release is staged on
+# the gateway (`hunt-ctl stage-session`), which hands it to the session VMs. Called by ci-nx-affected-deploy per
+# affected app; dispatchable for one-offs. .github/config/<app>/variables.json holds the build and the hunt-ctl command,
+# <app>/prod/variables.json the gateway VM, the deploy identity (Workload Identity Federation, no key) and, for the
+# gateway, the preview domain. The deploy service account trusts only this repository's runs on master (Workload
+# Identity attribute repository_ref, envs/hunt of unshoppable/infrastructure), and the job deploys only commits on master.
+name: 🚀 CI | Build and Deploy
+run-name: '${{ inputs.project }} ${{ inputs.version }} (${{ inputs.ref || github.sha }})'
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        type: choice
+        description: 'App to deploy'
+        options:
+          - gateway
+          - session
+        required: true
+      version:
+        type: string
+        description: 'Expected version (optional consistency check)'
+        required: false
+      ref:
+        type: string
+        description: 'SHA/branch to deploy (defaults to the triggering commit)'
+        required: false
+  workflow_call:
+    inputs:
+      project:
+        type: string
+        required: true
+      version:
+        type: string
+        required: false
+      ref:
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.project }}-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        # An explicit bash runs with -o pipefail, the implicit default without.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      # The deploy identity is root on the gateway, and the steps after this one run code of the checked-out commit with
+      # the job's ID token: only commits on master may be deployed, an older one to roll back to included.
+      - name: Refuse commits outside master
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/master; then
+            echo "::error::$(git rev-parse HEAD) is not on master; only commits on master may be deployed"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+
+      - run: npm ci
+
+      - name: Resolve the version
+        env:
+          PROJECT: ${{ inputs.project }}
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: .github/scripts/resolve-app-version.sh "$PROJECT" "$EXPECTED_VERSION" >> "$GITHUB_ENV"
+
+      - uses: ./.github/actions/load-env
+        with:
+          project: ${{ inputs.project }}
+          stage: prod
+
+      # The checkout replaces .github with the deployed commit's, so the steps after this one run inline scripts only.
+      - name: Build the release of the deployed commit
+        run: |
+          git checkout --detach "$DEPLOY_SHA"
+          npm ci
+          $BUILD_COMMAND
+          built_version=$(tr -d '[:space:]' < "$ARTIFACT_DIR/.version")
+          if [ "$built_version" != "$APP_VERSION" ]; then
+            echo "::error::$ARTIFACT_DIR/.version holds '$built_version', expected '$APP_VERSION'"
+            exit 1
+          fi
+
+      # .hash names the release on the VM (/srv/hunt/releases/<hash>): the first 16 hex digits of the sha256 of the
+      # artifact as a reproducible tar (sorted, root-owned, the commit's time as mtime), so one build gets one hash.
+      - name: Pack the artifact
+        env:
+          PROJECT: ${{ inputs.project }}
+        run: |
+          rm -f "$ARTIFACT_DIR/.hash"
+          tar_options=(--sort=name --owner=0 --group=0 --numeric-owner --mtime="@$(git log -1 --format=%ct "$DEPLOY_SHA")" -C "$ARTIFACT_DIR" .)
+          content_sha256=$(tar -cf - "${tar_options[@]}" | sha256sum | cut -d' ' -f1)
+          release_hash=${content_sha256:0:16}
+          printf '%s\n' "$release_hash" > "$ARTIFACT_DIR/.hash"
+          tarball="$RUNNER_TEMP/$PROJECT-$APP_VERSION.tar.gz"
+          tar -czf "$tarball" "${tar_options[@]}"
+          tarball_sha256=$(sha256sum "$tarball" | cut -d' ' -f1)
+          {
+            echo "RELEASE_HASH=$release_hash"
+            echo "RELEASE_TARBALL=$tarball"
+          } >> "$GITHUB_ENV"
+          {
+            echo "### $PROJECT $APP_VERSION"
+            echo "- Commit: \`$DEPLOY_SHA\`"
+            echo "- Release hash: \`$release_hash\`"
+            echo "- Tarball: $(du -h "$tarball" | cut -f1), sha256 \`$tarball_sha256\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # gcloud compute ssh logs in with this key through OS Login as the deploy service account: it has OS Login sign
+      # an SSH certificate for the key, or, where the VM does not require certificates, imports the key into the
+      # account's login profile, where --ssh-key-expire-after below lets it expire.
+      - name: Generate the SSH key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keygen -q -t ed25519 -N '' -C "github-actions-$GITHUB_RUN_ID" -f ~/.ssh/google_compute_engine
+
+      # The tarball goes to the remote command's stdin. The script runs as root through `sudo -n sh -c` and gets the
+      # hunt-ctl command and its arguments as positional parameters: INSTALL_COMMAND, then `--domain <PREVIEW_DOMAIN>`
+      # when the stage config sets a preview domain (the gateway's). The remote shell's command line single-quotes
+      # it, so it must not contain a single quote. Exit status 255 is a failed SSH connection and is retried: hunt-ctl
+      # install and stage-session may run again. gcloud pins the VM's host key when it can read it from the guest
+      # attributes, otherwise it accepts the key on this fresh runner's first connection (StrictHostKeyChecking=no for
+      # an unknown host), so the command needs no --strict-host-key-checking.
+      - name: Deploy onto the gateway VM
+        env:
+          PROJECT: ${{ inputs.project }}
+        run: |
+          read -r -d '' remote_script <<'SCRIPT' || true
+          set -eu
+          install -d -m 0755 /srv/hunt/incoming
+          dir=$(mktemp -d /srv/hunt/incoming/ci.XXXXXX)
+          trap "rm -rf -- $dir" EXIT
+          trap "exit 1" HUP INT TERM
+          tar -xzf - --no-same-owner -C "$dir"
+          chmod 0755 "$dir/vm/hunt-ctl"
+          command=$1
+          shift
+          "$dir/vm/hunt-ctl" "$command" "$dir" "$@"
+          SCRIPT
+          remote_args=("$INSTALL_COMMAND")
+          if [ -n "${PREVIEW_DOMAIN:-}" ]; then
+            remote_args+=(--domain "$PREVIEW_DOMAIN")
+          fi
+          for arg in "${remote_args[@]}"; do
+            if [[ ! $arg =~ ^[A-Za-z0-9._=-]+$ ]]; then
+              echo "::error::'$arg' is not a plain word and cannot be passed to the remote command"
+              exit 1
+            fi
+          done
+          remote_command="sudo -n sh -c '$remote_script' hunt-deploy ${remote_args[*]}"
+
+          for attempt in 1 2 3; do
+            status=0
+            gcloud compute ssh "$GATEWAY_INSTANCE" --project "$GCP_PROJECT" --zone "$ZONE" --tunnel-through-iap --quiet \
+              --ssh-key-expire-after=1h --ssh-flag=-oServerAliveInterval=30 --command "$remote_command" \
+              < "$RELEASE_TARBALL" > "$RUNNER_TEMP/result.json" || status=$?
+            if [ "$status" -ne 255 ] || [ "$attempt" -eq 3 ]; then break; fi
+            echo "::warning::SSH connection to $GATEWAY_INSTANCE failed (attempt $attempt of 3)"
+            sleep $((attempt * 15))
+          done
+          if [ "$status" -ne 0 ]; then
+            echo "::error::hunt-ctl $INSTALL_COMMAND of $PROJECT $APP_VERSION on $GATEWAY_INSTANCE failed with exit status $status"
+            echo "- \`hunt-ctl $INSTALL_COMMAND\` on \`$GATEWAY_INSTANCE\` failed with exit status $status" >> "$GITHUB_STEP_SUMMARY"
+            exit "$status"
+          fi
+          result=$(tr -d '\n' < "$RUNNER_TEMP/result.json")
+          echo "$result"
+          echo "- \`hunt-ctl $INSTALL_COMMAND\` on \`$GATEWAY_INSTANCE\` ($GCP_PROJECT, $ZONE): \`$result\`" >> "$GITHUB_STEP_SUMMARY"

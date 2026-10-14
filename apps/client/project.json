@@ -1,0 +1,74 @@
+{
+  "name": "client",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "apps/client/src",
+  "tags": [
+    "type:desktop"
+  ],
+  "implicitDependencies": [
+    "domain"
+  ],
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/dist/apps/client"
+      ],
+      "options": {
+        "cwd": "apps/client",
+        "commands": [
+          "tsc -p tsconfig.json",
+          "vite build"
+        ],
+        "parallel": false
+      }
+    },
+    "dev": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tauri dev",
+        "cwd": "apps/client"
+      },
+      "continuous": true
+    },
+    "bundle": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tauri build",
+        "cwd": "apps/client"
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc --noEmit -p apps/client/tsconfig.json"
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "eslint apps/client"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run",
+        "cwd": "apps/client"
+      }
+    },
+    "test-rust": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "cargo test --manifest-path apps/client/src-tauri/Cargo.toml"
+      },
+      "inputs": [
+        "{projectRoot}/src-tauri/**/*",
+        "!{projectRoot}/src-tauri/target/**/*",
+        "{projectRoot}/prompts/**/*",
+        "{workspaceRoot}/libs/domain/prompts/**/*"
+      ]
+    }
+  }
+}

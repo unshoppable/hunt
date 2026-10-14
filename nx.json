@@ -1,0 +1,99 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "release": {
+    "projects": [
+      "client",
+      "gateway",
+      "session"
+    ],
+    "projectsRelationship": "independent",
+    "version": {
+      "conventionalCommits": true,
+      "adjustSemverBumpsForZeroMajorVersion": false,
+      "fallbackCurrentVersionResolver": "disk"
+    },
+    "git": {
+      "push": false,
+      "commit": true,
+      "tag": true,
+      "stageChanges": true
+    },
+    "changelog": {
+      "workspaceChangelog": false,
+      "projectChangelogs": {
+        "renderOptions": {
+          "authors": false,
+          "commitReferences": true,
+          "versionTitleDate": true
+        }
+      },
+      "automaticFromRef": true
+    }
+  },
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "!{projectRoot}/CHANGELOG.md",
+      "sharedGlobals"
+    ],
+    "production": [
+      "default",
+      "!{projectRoot}/**/?(*.)+(spec|test).[jt]s?(x)?(.snap)"
+    ],
+    "sharedGlobals": [
+      "{workspaceRoot}/tsconfig.base.json"
+    ]
+  },
+  "targetDefaults": {
+    "build": {
+      "dependsOn": [
+        "^build"
+      ],
+      "cache": true,
+      "inputs": [
+        "production",
+        "^production",
+        "{projectRoot}/project.json",
+        {
+          "env": "APP_VERSION"
+        }
+      ]
+    },
+    "typecheck": {
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "lint": {
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production",
+        "{workspaceRoot}/eslint.config.js"
+      ]
+    },
+    "test": {
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "test-rust": {
+      "cache": true
+    }
+  },
+  "parallel": 3,
+  "tui": {
+    "enabled": false
+  },
+  "useInferencePlugins": false,
+  "pluginsConfig": {
+    "@nx/js": {
+      "analyzeSourceFiles": true,
+      "analyzePackageJson": true
+    }
+  }
+}

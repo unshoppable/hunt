@@ -1,0 +1,35 @@
+# Serves the gateway API (apps/gateway/src/api.ts) on /run/hunt-api/api.sock, which only hunt-gw opens: users reach it
+# through `hunt-api <method>` over SSH (apps/gateway/vm/hunt-api), which runs the forwarder as hunt-gw through sudo.
+# It creates, starts, stops and deletes session VMs with the gateway's service account and reaches them with
+# `gcloud compute ssh --internal-ip`, whose configuration and key live in the state directory; it writes the poller's
+# /etc/hunt/swf.json, which hunt-gw owns. A reload (after `hunt-ctl install`) makes it exit once its running requests
+# ended, and systemd starts the new release.
+[Unit]
+Description=Serve the Hunt gateway API for remote sessions
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=hunt-gw
+Group=hunt-gw
+RuntimeDirectory=hunt-api
+RuntimeDirectoryMode=0700
+StateDirectory=hunt-api
+Environment=HOME=/var/lib/hunt-api
+ExecStart=/opt/hunt/node/bin/node /srv/hunt/current/gateway/api.mjs
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2s
+TimeoutStopSec=30s
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/hunt
+ProtectHome=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

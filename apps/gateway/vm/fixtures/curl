@@ -1,0 +1,22 @@
+#!/bin/bash
+# Fake curl of install.test.ts: GET of the metadata server, answered from /srv/fakemeta.
+url=''
+for argument in "$@"; do
+  if [[ $argument == http* ]]; then
+    url=$argument
+  fi
+done
+case $url in
+  http://metadata.google.internal/computeMetadata/v1/*)
+    file=/srv/fakemeta/${url#http://metadata.google.internal/computeMetadata/v1/}
+    ;;
+  *)
+    echo "fake curl: unexpected URL $url" >&2
+    exit 2
+    ;;
+esac
+if [[ ! -f $file ]]; then
+  echo "curl: (22) The requested URL returned error: 404" >&2
+  exit 22
+fi
+cat "$file"

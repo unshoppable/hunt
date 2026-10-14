@@ -1,0 +1,1475 @@
+#!/usr/bin/env bash
+# hunt-ctl: the VM side of Hunt's remote sessions. Hunt runs it over SSH as `sudo -n hunt-ctl <command> …`. Every
+# command prints one JSON document on stdout, except the streaming ones (receive-pack, upload-pack, lfs-get,
+# get-claude), which pass raw data; progress and errors go to stderr, errors with a non-zero exit. Without arguments it
+# lists the commands.
+#
+# /etc/hunt/role names the kind of VM. A session VM (`session`) runs one session: its worktree, ~/.claude and agent
+# belong to the user agent, and the relay runs as hunt-relay.service. The VM is the isolation boundary: whatever
+# hunt-ctl does in the session's files runs as agent, so the agent's Git hooks, config and symlinks act with no more
+# rights than the agent has anyway. The gateway (`gateway`) holds no sessions: its edge proxy forwards the preview hosts
+# to the session VMs, hunt-wake.service starts a stopped one, hunt-api.service creates, starts and deletes them for the
+# desktop apps, and hunt-swf.service starts sessions for GitHub issues. CI deploys both releases by SSH into the
+# gateway: `install` for the gateway's own, `stage-session` for the one the gateway installs on the session VMs.
+# shellcheck disable=SC2016 # jq programs and `sh -c` scripts are single-quoted on purpose.
+set -Eeuo pipefail
+shopt -s inherit_errexit nullglob
+
+readonly ROLE_FILE=/etc/hunt/role
+readonly RELEASES=/srv/hunt/releases
+readonly CURRENT=/srv/hunt/current
+readonly STATE_DIR=/var/lib/hunt
+readonly ACTIVITY_FILE=/var/lib/hunt/activity
+# The hash of the last install that completed; written last, so an install that failed anywhere is repeated. The gateway
+# compares it with the session release it staged before it installs that on a session VM.
+readonly INSTALLED_HASH_FILE=/var/lib/hunt/installed-hash
+readonly UNIT_DIR=/etc/systemd/system
+# A preview domain: at least two labels, the last of letters only, and room for `<short>-<port>.` in front of it within
+# the 253 characters of a host name. apps/client/src-tauri/src/remote/preview.rs, apps/session/src/config.ts and
+# Hunt's settings check the same.
+readonly DOMAIN_PATTERN='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+readonly MAX_DOMAIN_LENGTH=238
+# Exit status of failures that were reported already; the ERR trap stays quiet for them.
+readonly REPORTED=3
+
+# ---- Session VM ----
+readonly SESSIONS=/srv/hunt/sessions
+readonly AGENT=agent
+readonly AGENT_HOME=/home/agent
+readonly CLAUDE_HOME=/home/agent/.claude
+# A session's worktree: a folder of the agent's home named like the repository.
+readonly WORKTREE_PATTERN='^/home/agent/[A-Za-z0-9_-][A-Za-z0-9_.-]*$'
+# The Node the relay and hunt-ctl's tools run on, independent of the Node a repository pins.
+readonly HUNT_NODE=/opt/hunt/node/bin/node
+readonly HUNT_NPM=/opt/hunt/node/bin/npm
+# The ACP adapter and Playwright's MCP server; see install_agent_tools.
+readonly AGENT_TOOLS=/opt/hunt/agent
+readonly VOLTA_HOME=/opt/volta
+# Versions of the tools hunt-ctl installed, one file per tool.
+readonly TOOL_STAMPS=/var/lib/hunt/tools
+readonly RELAY_UNIT=hunt-relay.service
+readonly PROXY_UNIT=hunt-proxy.service
+readonly RELAY_SOCKET=/run/hunt/relay.sock
+readonly RELAY_STATUS=/run/hunt/status.json
+readonly SESSION_ENV=/etc/hunt/session.env
+readonly SECRETS_ENV=/etc/hunt/secrets.env
+readonly PROXY_CONFIG=/etc/hunt/caddy.json
+readonly IDLE_CONFIG=/etc/hunt/idle.conf
+# A relay whose status.json heartbeat is older than this is gone.
+readonly HEARTBEAT_MAX_AGE_MS=120000
+# Ports preview-status never lists: Caddy's admin API, the Docker API and the preview proxy.
+readonly RESERVED_PORTS='2019 2375 2376 8080'
+# Pinned x86_64 downloads, like the VMs.
+readonly GH_VERSION=2.102.0
+readonly GH_SHA256=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
+readonly TERRAFORM_VERSION=1.15.8
+readonly TERRAFORM_SHA256=d25ce7b6902013ad905db3d2eab0be4cd905887fe88b81a6171b8d5503c31f3d
+readonly VOLTA_VERSION=2.0.2
+readonly VOLTA_SHA256=6cec054c911fb925b629a09455775af6e95dc0f5694a4c28b63979ab9ef18037
+# The Node and npm Volta runs where a repository pins none.
+readonly VOLTA_NODE=24.18.1
+readonly VOLTA_NPM=11.16.0
+# Debian packages the agent's builds need on top of the VM's base: compilers for native npm modules and unzip.
+readonly -a AGENT_PACKAGES=(g++ make python3 unzip)
+
+# ---- Gateway ----
+# The preview domain of the edge proxy: `install --domain` sets it, later installs keep it.
+readonly DOMAIN_FILE=/etc/hunt/preview-domain
+# The configuration of hunt-swf.service (apps/gateway/src/swf.ts), which reads it at every poll; hunt-api.service writes
+# it, so it belongs to GATEWAY_USER.
+readonly SWF_CONFIG=/etc/hunt/swf.json
+# The session release the gateway installs on session VMs (apps/gateway/src/sessionVm.ts): `stage-session` keeps it and
+# the one before below SESSION_RELEASES and points SESSION_CURRENT at it.
+readonly SESSION_RELEASES=/srv/hunt/session-releases
+readonly SESSION_CURRENT=/srv/hunt/session-current
+# The system user of hunt-api, hunt-swf and hunt-wake, the one user next to root that reaches the metadata server
+# (hunt-firewall.service).
+readonly GATEWAY_USER=hunt-gw
+# Every user outside google-sudoers may only run `hunt-api <method>` over SSH (apps/gateway/vm/hunt-api), which runs
+# the API's forwarder as GATEWAY_USER through sudo.
+readonly SSHD_DROPIN=/etc/ssh/sshd_config.d/20-hunt-api.conf
+readonly SUDOERS_DROPIN=/etc/sudoers.d/hunt-api
+readonly EDGE_NAME=hunt-edge
+readonly EDGE_CONFIG_DIR=/etc/hunt-edge
+# The port the load balancer's instance group serves (named port `http`) and its health path; Terraform uses the same.
+readonly EDGE_PORT=8080
+readonly EDGE_HEALTH_PATH=/hunt-healthz
+readonly EDGE_USER=2001:2001
+readonly EDGE_IMAGE=caddy:2-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+# Google's load balancer proxies and health checkers, the only clients the edge serves.
+readonly -a LB_RANGES=(35.191.0.0/16 130.211.0.0/22)
+# Where a session VM's preview proxy (hunt-proxy.service) listens.
+readonly SESSION_PROXY_PORT=8080
+# hunt-wake.service (apps/gateway/src/wake.ts).
+readonly WAKE_ADDRESS=127.0.0.1:9180
+
+# Removed when hunt-ctl exits.
+temporary_paths=()
+# Whether the command counts as activity for hunt-idle-check; read-only queries Hunt polls do not.
+counts_as_activity=true
+# `session` or `gateway`, from ROLE_FILE.
+role=
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: hunt-ctl <command> [arguments]
+
+Session VM and gateway:
+  install <dir> [--domain <domain>]
+                         install the release unpacked in <dir>, a CI build with .version and .hash, and its systemd
+                         units; removes all but this and the previous release. The gateway serves previews of
+                         <domain>, or of the domain the install before stored
+  install-units          (re)install the systemd units and the hunt-ctl link of the current release
+  version                version, hash and protocol of the current release
+
+Session VM:
+  install-tools [<dir>]  install the agent's tools of the release in <dir> (default: the current one) unless they are at
+                         their versions; the image build of the session VMs bakes them into the image, and the desktop
+                         app runs it for an image that lacks them
+  init <id> --repo <owner>/<repo>
+                         create the session's empty repository /home/agent/<repo> (removing what an earlier handoff
+                         left)
+  clone <id> --repo <owner>/<repo> --branch <branch>
+                         clone https://github.com/<owner>/<repo>.git into /home/agent/<repo> with the GitHub token on
+                         stdin and check <branch> out: the origin's branch of that name, else a new one from the default
+                         branch; the token's GitHub user becomes the Git identity (removes what an earlier session left)
+  receive-pack <path>    git-receive-pack into the repository of the session at <path> (streams; for git push)
+  upload-pack <path>     git-upload-pack from the repository of the session at <path> (streams; for git fetch)
+  lfs-put <id>           unpack the tar.gz of Git LFS objects on stdin into the session's repository
+  lfs-get <id>           write a tar.gz of the Git LFS objects listed on stdin, one <aa>/<bb>/<oid> per line (streams)
+  put-files <id> [--claude]
+                         unpack the tar.gz on stdin into the session's worktree, or with --claude into ~/.claude
+  get-claude <id> --project <slug>
+                         write a tar.gz of hunt-session.json and projects/<slug> of ~/.claude (streams)
+  prepare <id> --branch <branch> --snapshot <ref> --git-name <name> --git-email <email> [--origin <url>]
+          [--upstream <branch>] [--hooks-path <dir>]
+                         check the session's branch out in its worktree, with the snapshot's changes applied; set
+                         origin (a https://github.com URL), the branch's upstream on it and the hooks folder (relative
+                         to the worktree; without one, Git LFS's hooks)
+  deps <id>              install the worktree's dependencies (npm, pnpm or yarn, by lockfile)
+  session-config <id> --domain <domain>
+                         write the session's environment, /etc/hunt/session.env, and the configuration of the VM's
+                         preview proxy, /etc/hunt/caddy.json, from the preview section of its hunt.json (version 2),
+                         and (re)start the proxy; prints the text of the repository's HUNT.md
+  start <id>             start the session's relay unless it runs, with the tokens from stdin (see read_tokens); an
+                         empty line keeps the token stored before
+  wait <id> [--timeout <seconds>]
+                         wait until the session's relay serves its socket (default 120 seconds)
+  stop <id>              stop the session's relay
+  clear <id>             restart the session's relay with a new conversation; the tokens come from stdin
+  snapshot <id>          record the worktree's state as refs/hunt/<id>/retrieve
+  status <id>            relay state, relay status and session metadata
+  preview-status [<id>]  the main port of hunt.json, the ports that listen and whether the main port answers
+  destroy <id>           stop the session's relay and proxy and remove its worktree, ~/.claude and files
+
+Gateway:
+  stage-session <dir>    keep the session release unpacked in <dir>, a CI build with .version and .hash, as the one the
+                         gateway installs on session VMs; removes all but this and the previous one
+  swf-config             validate the configuration of hunt-swf.service (JSON on stdin: repos, maxSessions, label, …)
+                         and write it to /etc/hunt/swf.json; prints the stored configuration
+USAGE
+  exit 2
+}
+
+die() {
+  printf 'hunt-ctl: %s\n' "$*" >&2
+  exit "$REPORTED"
+}
+
+# ERR trap: names the command that failed. A failing subshell stays quiet; the command that ran it is reported.
+report_failure() {
+  local status=$1 line=$2 command=$3
+  (( status != REPORTED && BASH_SUBSHELL == 0 )) || return 0
+  printf 'hunt-ctl: line %s: `%s` failed with exit status %s\n' "$line" "$command" "$status" >&2
+}
+
+on_exit() {
+  local path
+  if $counts_as_activity; then
+    touch "$ACTIVITY_FILE" 2>/dev/null || true
+  fi
+  for path in "${temporary_paths[@]}"; do
+    rm -rf -- "${path:?}"
+  done
+}
+
+# Prints the JSON document `jq -n` builds from the arguments as the command's result.
+emit() {
+  jq -cn "$@" >&3
+}
+
+now_ms() {
+  date +%s%3N
+}
+
+# Sets the variable named $1 to a new folder below /var/tmp that is removed when hunt-ctl exits.
+make_scratch_dir() {
+  local scratch
+  scratch=$(mktemp -d /var/tmp/hunt-ctl.XXXXXX)
+  temporary_paths+=("$scratch")
+  printf -v "$1" '%s' "$scratch"
+}
+
+read_role() {
+  local value=''
+  if [[ -f $ROLE_FILE ]]; then
+    value=$(tr -d '[:space:]' <"$ROLE_FILE")
+  fi
+  [[ $value == session || $value == gateway ]] || die "$ROLE_FILE must hold session or gateway (holds: ${value:-nothing})"
+  printf '%s\n' "$value"
+}
+
+# Whether $1 is a preview domain; see DOMAIN_PATTERN.
+is_domain() {
+  [[ $1 =~ $DOMAIN_PATTERN ]] && (( ${#1} <= MAX_DOMAIN_LENGTH ))
+}
+
+current_hash() {
+  [[ -f $CURRENT/.hash ]] || die "no Hunt release is installed; run hunt-ctl install first"
+  tr -d '[:space:]' <"$CURRENT/.hash"
+}
+
+# Prints the JSON object in file $1 on one line, or null when the file is missing, a symlink or holds anything else.
+read_object() {
+  local text=''
+  if [[ -f $1 && ! -L $1 ]]; then
+    text=$(jq -c 'select(type == "object")' "$1" 2>/dev/null) || text=
+  fi
+  if [[ -z $text || $text == *$'\n'* ]]; then
+    text=null
+  fi
+  printf '%s\n' "$text"
+}
+
+# Prints Docker's state of container $1 (created, running, restarting, exited, …) or `missing`.
+container_state() {
+  local listing name state
+  listing=$(docker ps --all --filter "name=$1" --format '{{.Names}} {{.State}}')
+  while read -r name state; do
+    if [[ $name == "$1" ]]; then
+      printf '%s\n' "$state"
+      return
+    fi
+  done <<<"$listing"
+  echo missing
+}
+
+# Prints the value of path $1 of the GCE metadata server, e.g. instance/zone.
+metadata() {
+  curl -fsS --retry 3 -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/$1"
+}
+
+# Downloads $1 to $3 and fails unless its SHA-256 is $2.
+download() {
+  curl -fsSL --retry 5 --retry-all-errors -o "$3" "$1"
+  printf '%s  %s\n' "$2" "$3" | sha256sum --check --quiet || die "the download of $1 does not match its pinned checksum"
+}
+
+# Whether the stamp of tool $1 records version $2.
+tool_current() {
+  [[ -f $TOOL_STAMPS/$1 && $(<"$TOOL_STAMPS/$1") == "$2" ]]
+}
+
+mark_tool() {
+  printf '%s\n' "$2" >"$TOOL_STAMPS/$1"
+}
+
+# Replaces folder $2 with the folder $1 next to it, so the agent never sees a half-installed tool.
+replace_dir() {
+  chmod 0755 "$1"
+  rm -rf -- "${2:?}.old"
+  if [[ -e $2 ]]; then
+    mv -T "$2" "$2.old"
+  fi
+  mv -T "$1" "$2"
+  rm -rf -- "${2:?}.old"
+}
+
+# Removes the systemd units named, after stopping and disabling them; units that are not installed are skipped.
+remove_units() {
+  local unit
+  for unit in "$@"; do
+    [[ -e $UNIT_DIR/$unit ]] || continue
+    systemctl disable --quiet --now "$unit" 2>/dev/null || true
+    rm -f -- "${UNIT_DIR:?}/$unit"
+  done
+}
+
+# Removes the releases in folder $1 except those of the hashes given.
+prune_releases() {
+  local dir=$1 release hash
+  shift
+  for release in "$dir"/*/; do
+    hash=${release%/}
+    hash=${hash##*/}
+    [[ " $* " == *" $hash "* ]] && continue
+    rm -rf -- "${release:?}"
+  done
+}
+
+cmd_install() {
+  (( $# == 1 || $# == 3 )) || usage
+  local source=$1 domain='' hash release staging previous entry script
+  if (( $# == 3 )); then
+    [[ $2 == --domain && $role == gateway ]] || usage
+    domain=$3
+  fi
+  case $role in
+    session) entry=relay/main.mjs ;;
+    gateway) entry=gateway/swf.mjs ;;
+  esac
+  [[ -f $source/.version ]] || die "$source is no CI release (it has no .version); update Hunt, which no longer installs its own"
+  [[ -f $source/.hash && -f $source/vm/hunt-ctl && -f $source/$entry ]] || die "$source is not a Hunt $role release"
+  hash=$(tr -d '[:space:]' <"$source/.hash")
+  [[ $hash =~ ^[0-9a-f]{16}$ ]] || die "invalid release hash in $source/.hash: $hash"
+  if [[ $role == gateway ]]; then
+    if [[ -z $domain && -f $DOMAIN_FILE ]]; then
+      domain=$(tr -d '[:space:]' <"$DOMAIN_FILE")
+    fi
+    is_domain "$domain" || die "invalid or missing preview domain: run hunt-ctl install <dir> --domain <domain>"
+  fi
+
+  install -d -m 0755 "$RELEASES" "$STATE_DIR"
+  exec 9>"$STATE_DIR/install.lock"
+  flock --wait 1800 9 || die "another hunt-ctl install did not finish within 30 minutes"
+  # Written again as the last step, so an install that fails anywhere in between is repeated.
+  rm -f -- "$INSTALLED_HASH_FILE"
+
+  release=$RELEASES/$hash
+  if [[ ! -d $release ]]; then
+    staging=$(mktemp -d "$RELEASES/.$hash.XXXXXX")
+    temporary_paths+=("$staging")
+    # Copied without ownership: the release belongs to root, whoever uploaded it.
+    cp -R "$source/." "$staging/"
+    chmod -R a+rX,go-w "$staging"
+    chmod 0755 "$staging" "$staging/vm/hunt-ctl"
+    for script in hunt-idle-check hunt-api; do
+      if [[ -f $staging/vm/$script ]]; then
+        chmod 0755 "$staging/vm/$script"
+      fi
+    done
+    mv -T "$staging" "$release"
+  fi
+  previous=$(tr -d '[:space:]' 2>/dev/null <"$CURRENT/.hash" || true)
+  ln -sfn "$release" "$CURRENT.new"
+  mv -T "$CURRENT.new" "$CURRENT"
+  if [[ $role == gateway ]]; then
+    install -d -m 0755 "${DOMAIN_FILE%/*}"
+    printf '%s\n' "$domain" >"$DOMAIN_FILE"
+  fi
+  install_units
+  # The release before stays, so that switching back to it is quick.
+  prune_releases "$RELEASES" "$hash" "$previous"
+  if [[ $role == gateway ]]; then
+    # Only the edge proxy runs in Docker on the gateway; images and build cache of other containers are leftovers.
+    docker image prune --all --force >/dev/null 2>&1 || true
+    docker builder prune --all --force >/dev/null 2>&1 || true
+  fi
+  printf '%s\n' "$hash" >"$INSTALLED_HASH_FILE.tmp"
+  mv -f "$INSTALLED_HASH_FILE.tmp" "$INSTALLED_HASH_FILE"
+  emit --arg hash "$hash" '{hash: $hash}'
+}
+
+# Installs the agent's tools of the release in $1, the current one by default, and leaves releases, units and the
+# installed hash alone. The image build of the session VMs runs it, so that the image holds the tools, and the desktop
+# app does on a VM whose image lacks them; a tool at its version already is skipped.
+cmd_install_tools() {
+  (( $# <= 1 )) || usage
+  local source=${1:-$CURRENT}
+  [[ -f $source/vm/hunt-ctl && -f $source/session/acp-version ]] || die "$source is not a Hunt session release"
+  install -d -m 0755 "$STATE_DIR"
+  exec 9>"$STATE_DIR/install.lock"
+  flock --wait 1800 9 || die "another hunt-ctl install did not finish within 30 minutes"
+  install_agent_tools "$source"
+  emit '{installed: true}'
+}
+
+# Installs the systemd units of the current release for the VM's role, the hunt-ctl link and, on a session VM, the
+# agent's login profile and the idle defaults, and (re)starts the units that run all the time.
+install_units() {
+  local unit
+  [[ -d $CURRENT/vm/systemd/$role ]] || die "no Hunt release is installed; run hunt-ctl install first"
+  if [[ $role == gateway ]]; then
+    # Units from the time the gateway hosted every session itself, and from the time it pulled its releases.
+    remove_units hunt-boot.service hunt-idle.timer hunt-idle.service hunt-update.timer hunt-update.service
+    ensure_gateway_user
+  fi
+  for unit in "$CURRENT/vm/systemd/$role"/*; do
+    install -m 0644 "$unit" "$UNIT_DIR/"
+  done
+  ln -sfn "$CURRENT/vm/hunt-ctl" /usr/local/bin/hunt-ctl
+  systemctl daemon-reload
+  case $role in
+    session)
+      install -m 0644 "$CURRENT/vm/profile.sh" /etc/profile.d/hunt.sh
+      if [[ ! -f $IDLE_CONFIG ]]; then
+        install -d -m 0755 "${IDLE_CONFIG%/*}"
+        printf 'IDLE_MINUTES=30\nBOOT_GRACE_MINUTES=15\nPREVIEW_MAX_MINUTES=120\n' >"$IDLE_CONFIG"
+      fi
+      systemctl enable --quiet --now hunt-idle.timer
+      # A running proxy takes changes of its unit only with a restart; the relay keeps running until its next start.
+      systemctl try-restart "$PROXY_UNIT"
+      ;;
+    gateway)
+      install_gateway_access
+      systemctl enable --quiet hunt-firewall.service hunt-wake.service
+      systemctl restart hunt-firewall.service hunt-wake.service
+      # A running poller or API gets SIGHUP and exits once its current work is done; systemd starts it on this release.
+      systemctl enable --quiet hunt-swf.service hunt-api.service
+      systemctl reload-or-restart hunt-swf.service hunt-api.service
+      ensure_edge
+      ;;
+  esac
+}
+
+cmd_install_units() {
+  (( $# == 0 )) || usage
+  install_units
+  emit '{}'
+}
+
+cmd_version() {
+  (( $# == 0 )) || usage
+  local hash version protocol
+  if [[ ! -f $CURRENT/.hash ]]; then
+    emit '{version: null, hash: null, protocol: null}'
+    return
+  fi
+  hash=$(current_hash)
+  version=$(tr -d '[:space:]' 2>/dev/null <"$CURRENT/.version" || true)
+  protocol=$(jq -c '.protocol // null' "$CURRENT/protocol.json" 2>/dev/null || echo null)
+  emit --arg version "$version" --arg hash "$hash" --argjson protocol "$protocol" \
+    '{version: (if $version == "" then null else $version end), hash: $hash, protocol: $protocol}'
+}
+
+# ---- Session VM: the agent's tools ----------------------------------------------------------------------------------
+# What the agent works with besides the VM's base (Docker, Node 24, git, Git LFS, jq, socat, tmux, Caddy): build tools,
+# gh, Terraform, Volta for the Node and npm versions a repository pins, the ACP adapter with the native Claude Code
+# CLI and Playwright's MCP server with Chromium. Every step is skipped when the tool is at its version already.
+
+install_agent_tools() {
+  local release=$1
+  install -d -m 0755 "$AGENT_TOOLS" "$TOOL_STAMPS"
+  install_packages
+  install_gh
+  install_terraform
+  install_volta "$release"
+  install_acp "$release"
+  install_playwright "$release"
+  # Node 24's corepack serves `hunt-ctl deps` and the agent for pnpm and yarn; it runs on whatever `node` Volta resolves.
+  if [[ -f /opt/hunt/node/lib/node_modules/corepack/dist/corepack.js ]]; then
+    ln -sfn /opt/hunt/node/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
+  fi
+  # git and Git LFS authenticate to GitHub with the GH_TOKEN of the relay's environment through gh; the empty entry
+  # drops helpers configured before it.
+  git config --system --unset-all credential.https://github.com.helper || true
+  git config --system --add credential.https://github.com.helper ''
+  git config --system --add credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'
+  git config --system push.autoSetupRemote true
+}
+
+install_packages() {
+  local package
+  local -a missing=()
+  for package in "${AGENT_PACKAGES[@]}"; do
+    if [[ $(dpkg-query -W -f '${Status}' "$package" 2>/dev/null) != "install ok installed" ]]; then
+      missing+=("$package")
+    fi
+  done
+  (( ${#missing[@]} )) || return 0
+  DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 -q update
+  DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 -q install -y --no-install-recommends "${missing[@]}"
+}
+
+install_gh() {
+  local dir
+  [[ -x /usr/local/bin/gh ]] && tool_current gh "$GH_VERSION" && return
+  make_scratch_dir dir
+  download "https://github.com/cli/cli/releases/download/v$GH_VERSION/gh_${GH_VERSION}_linux_amd64.tar.gz" "$GH_SHA256" "$dir/gh.tar.gz"
+  tar -xzf "$dir/gh.tar.gz" -C "$dir" --no-same-owner
+  install -m 0755 "$dir/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh
+  mark_tool gh "$GH_VERSION"
+}
+
+install_terraform() {
+  local dir
+  [[ -x /usr/local/bin/terraform ]] && tool_current terraform "$TERRAFORM_VERSION" && return
+  make_scratch_dir dir
+  download "https://releases.hashicorp.com/terraform/$TERRAFORM_VERSION/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" "$TERRAFORM_SHA256" "$dir/terraform.zip"
+  unzip -q "$dir/terraform.zip" terraform -d "$dir"
+  install -m 0755 "$dir/terraform" /usr/local/bin/terraform
+  mark_tool terraform "$TERRAFORM_VERSION"
+}
+
+# Volta's shims come first on the agent's PATH (vm/agent.env), so `node` and `npm` follow a repository's `volta` pins
+# and default to VOLTA_NODE and VOLTA_NPM. The agent owns VOLTA_HOME, so that Volta fetches other pinned versions when
+# they are needed; therefore root never runs anything from it and leaves the unpacking to the agent too.
+install_volta() {
+  local release=$1 dir defaults="node@$VOLTA_NODE npm@$VOLTA_NPM"
+  if [[ ! -x $VOLTA_HOME/bin/volta ]] || ! tool_current volta "$VOLTA_VERSION"; then
+    make_scratch_dir dir
+    download "https://github.com/volta-cli/volta/releases/download/v$VOLTA_VERSION/volta-$VOLTA_VERSION-linux.tar.gz" "$VOLTA_SHA256" "$dir/volta.tar.gz"
+    chmod 0755 "$dir"
+    chmod 0644 "$dir/volta.tar.gz"
+    install -d -o "$AGENT" -g "$AGENT" -m 0755 "$VOLTA_HOME"
+    as_agent mkdir -p "$VOLTA_HOME/bin"
+    as_agent tar -xzf "$dir/volta.tar.gz" -C "$VOLTA_HOME/bin"
+    mark_tool volta "$VOLTA_VERSION"
+  fi
+  tool_current volta-defaults "$defaults" && return
+  agent_run "$release/vm/agent.env" "$AGENT_HOME" volta install "node@$VOLTA_NODE" "npm@$VOLTA_NPM"
+  mark_tool volta-defaults "$defaults"
+}
+
+# Runs npm of the VM's Node as root with a cache of its own, which goes when hunt-ctl exits.
+root_npm() {
+  local cache
+  make_scratch_dir cache
+  PATH=/opt/hunt/node/bin:$PATH "$HUNT_NPM" "$@" --cache "$cache" --no-audit --no-fund --no-update-notifier
+}
+
+# claude-agent-acp in the version of session/acp-version, the one Hunt's package-lock.json pins. The Claude Agent SDK
+# brings the native Claude Code CLI as the optional dependency for this platform; without it the adapter cannot run.
+install_acp() {
+  local release=$1 version dir=$AGENT_TOOLS/acp staging cli=node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude
+  version=$(tr -d '[:space:]' <"$release/session/acp-version")
+  [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid version in session/acp-version: $version"
+  if [[ ! -f $dir/.version || $(<"$dir/.version") != "$version" ]]; then
+    staging=$(mktemp -d "$AGENT_TOOLS/.acp.XXXXXX")
+    temporary_paths+=("$staging")
+    root_npm install --prefix "$staging" --save-exact --omit=dev "@agentclientprotocol/claude-agent-acp@$version"
+    [[ -x $staging/$cli ]] || die "npm did not install the native Claude Code CLI ($cli)"
+    printf '%s\n' "$version" >"$staging/.version"
+    replace_dir "$staging" "$dir"
+  fi
+  ln -sfn "$dir/$cli" /usr/local/bin/claude
+}
+
+# Playwright's MCP server for the agent's browser checks, in the versions session/playwright/package-lock.json pins,
+# with Chromium and the system libraries it needs. The browser lies in the server's own folder, so a repository's own
+# Playwright never mixes its browsers in; the relay offers the server to Claude Code as session/mcp-servers.json lists.
+install_playwright() {
+  local source=$1/session/playwright dir=$AGENT_TOOLS/playwright stamp staging
+  stamp=$(cat "$source/package.json" "$source/package-lock.json" | sha256sum)
+  stamp=${stamp%% *}
+  [[ -f $dir/.stamp && $(<"$dir/.stamp") == "$stamp" ]] && return
+  staging=$(mktemp -d "$AGENT_TOOLS/.playwright.XXXXXX")
+  temporary_paths+=("$staging")
+  cp "$source/package.json" "$source/package-lock.json" "$staging/"
+  root_npm ci --prefix "$staging" --omit=dev
+  PATH=/opt/hunt/node/bin:$PATH PLAYWRIGHT_BROWSERS_PATH=$staging/browsers \
+    "$HUNT_NODE" "$staging/node_modules/@playwright/mcp/cli.js" install-browser --with-deps --no-shell chromium
+  printf '%s\n' "$stamp" >"$staging/.stamp"
+  replace_dir "$staging" "$dir"
+}
+
+# ---- Session VM: the session ----------------------------------------------------------------------------------------
+
+as_agent() {
+  runuser -u "$AGENT" -- "$@"
+}
+
+# Runs [NAME=value…] <command> [arguments…] as the agent in folder $2 with nothing but the agent's environment from
+# file $1 (see vm/agent.env) and the variables given.
+agent_run() {
+  local file=$1 dir=$2 line
+  local -a variables=("HOME=$AGENT_HOME" "USER=$AGENT" "LOGNAME=$AGENT")
+  shift 2
+  while IFS= read -r line; do
+    if [[ $line =~ ^[A-Z_][A-Z0-9_]*= ]]; then
+      variables+=("$line")
+    fi
+  done <"$file"
+  runuser -u "$AGENT" -- env -i -C "$dir" "${variables[@]}" "$@"
+}
+
+require_id() {
+  [[ $1 =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || die "invalid session id: $1"
+}
+
+# <owner>/<repo> from the characters Hunt keeps in repository keys; no part starts with a dot.
+require_repository_key() {
+  local part='[A-Za-z0-9_-][A-Za-z0-9_.-]*'
+  [[ $1 =~ ^$part/$part$ ]] || die "invalid repository: $1 (expected <owner>/<repo>)"
+}
+
+# Rejects empty values and line breaks, which an environment file cannot carry.
+require_line() {
+  [[ -n $2 && $2 != *[$'\n\r']* ]] || die "invalid $1: expected one non-empty line"
+}
+
+# Prints field $2 of meta.json of session $1.
+meta() {
+  jq -er --arg field "$2" '.[$field] | strings' "$SESSIONS/$1/meta.json" 2>/dev/null || die "meta.json of session $1 has no $2"
+}
+
+# Replaces meta.json of session $1 with the result of the jq program $2 on it; further arguments go to jq.
+update_meta() {
+  local file=$SESSIONS/$1/meta.json program=$2 json
+  shift 2
+  json=$(jq "$@" "$program" "$file")
+  printf '%s\n' "$json" >"$file.tmp"
+  mv -f "$file.tmp" "$file"
+}
+
+# Prints the worktree of session $1: a folder of the agent's home, not a symlink.
+worktree_of() {
+  local worktree
+  [[ -f $SESSIONS/$1/meta.json ]] || die "session $1 is not initialized on this VM; run hunt-ctl init first"
+  worktree=$(meta "$1" worktree)
+  [[ $worktree =~ $WORKTREE_PATTERN && -d $worktree && ! -L $worktree ]] || die "session $1 has no worktree on this VM"
+  printf '%s\n' "$worktree"
+}
+
+require_prepared() {
+  worktree_of "$1" >/dev/null
+  meta "$1" branch >/dev/null
+}
+
+# The session whose worktree is $1, as git passes it to receive-pack and upload-pack (quoted or not); prints the id.
+session_of_path() {
+  local path=${1%/} file id
+  path=${path#\'}
+  path=${path%\'}
+  for file in "$SESSIONS"/*/meta.json; do
+    [[ $(jq -r '.worktree // empty' "$file" 2>/dev/null) == "$path" ]] || continue
+    id=${file%/meta.json}
+    id=${id##*/}
+    require_id "$id"
+    [[ -d $path/.git && $(worktree_of "$id") == "$path" ]] || die "session $id has no repository on this VM"
+    printf '%s\n' "$id"
+    return
+  done
+  die "not a session repository: $1"
+}
+
+# Reads the tokens Hunt sends on stdin into the caller's claude_token and github_token: the Claude Code OAuth token of
+# the Claude account picked in Hunt by whoever starts the session on the first line and that user's GitHub token on the
+# second. Either line may be empty or missing; write_secrets then keeps the value stored before.
+read_tokens() {
+  claude_token=
+  github_token=
+  IFS= read -r claude_token || true
+  IFS= read -r github_token || true
+  [[ $claude_token != *[[:space:]]* ]] || die "invalid Claude Code OAuth token on stdin: it contains whitespace"
+  [[ $github_token != *[[:space:]]* ]] || die "invalid GitHub token on stdin: it contains whitespace"
+}
+
+# Prints the assignment of $2 to $1 for an environment file, double-quoted with \, ", ` and $ escaped, which systemd and
+# a POSIX shell read back verbatim.
+env_line() {
+  local value=$2
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//\`/\\\`}
+  value=${value//\$/\\\$}
+  printf '%s="%s"\n' "$1" "$value"
+}
+
+# Rewrites SECRETS_ENV, the relay's tokens and identity, for session $1: the Claude Code token $2 and the GitHub token
+# $3 (`gh`, and git through gh's credential helper), each the one stored before when empty, the Git identity of
+# meta.json and the session's id. Only root reads the file; systemd hands it to the relay.
+write_secrets() {
+  local id=$1 claude=$2 github=$3 stored='' git_name git_email text
+  git_name=$(meta "$id" gitName)
+  git_email=$(meta "$id" gitEmail)
+  if [[ -f $SECRETS_ENV ]]; then
+    stored=$(<"$SECRETS_ENV")
+  fi
+  text=$(
+    if [[ -n $claude ]]; then
+      env_line CLAUDE_CODE_OAUTH_TOKEN "$claude"
+    else
+      grep -m 1 '^CLAUDE_CODE_OAUTH_TOKEN=' <<<"$stored" || true
+    fi
+    if [[ -n $github ]]; then
+      env_line GH_TOKEN "$github"
+    else
+      grep -m 1 '^GH_TOKEN=' <<<"$stored" || true
+    fi
+    env_line GIT_AUTHOR_NAME "$git_name"
+    env_line GIT_AUTHOR_EMAIL "$git_email"
+    env_line GIT_COMMITTER_NAME "$git_name"
+    env_line GIT_COMMITTER_EMAIL "$git_email"
+    env_line HUNT_SESSION_ID "$id"
+  )
+  [[ $text == *CLAUDE_CODE_OAUTH_TOKEN=* ]] ||
+    die "no Claude Code OAuth token on stdin: pick a Claude account in Hunt, the local login cannot run on the VM"
+  (
+    umask 077
+    printf '%s\n' "$text" >"$SECRETS_ENV.tmp"
+  )
+  mv -f "$SECRETS_ENV.tmp" "$SECRETS_ENV"
+}
+
+relay_running() {
+  systemctl is-active --quiet "$RELAY_UNIT"
+}
+
+# Starts the relay of session $1 unless it runs, with the tokens from stdin. It stays enabled, so it comes back when the
+# VM boots.
+start_relay() {
+  local id=$1 claude_token github_token
+  relay_running && return
+  [[ -f $CLAUDE_HOME/hunt-session.json ]] || die "session $id has no hunt-session.json; run hunt-ctl put-files $id --claude first"
+  read_tokens
+  write_secrets "$id" "$claude_token" "$github_token"
+  systemctl enable --quiet "$RELAY_UNIT"
+  systemctl restart "$RELAY_UNIT"
+}
+
+# Whether a connection to the Unix socket $1 succeeds.
+socket_accepts() {
+  [[ -S $1 ]] && timeout 5 socat -u OPEN:/dev/null "UNIX-CONNECT:$1" 2>/dev/null
+}
+
+# Fails with message $1, followed by the relay's last log lines.
+fail_wait() {
+  printf 'hunt-ctl: %s\nlast log lines of %s:\n' "$1" "$RELAY_UNIT" >&2
+  journalctl --unit "$RELAY_UNIT" --lines 20 --no-pager --output cat >&2 2>&1 || true
+  exit "$REPORTED"
+}
+
+# Waits up to $1 seconds until the relay is ready with a fresh heartbeat and its socket takes connections, then prints
+# its status.json as the command's result. $2, the JSON of an acpSessionId, makes it also wait until the relay serves
+# another session. A connected client proves the socket, so the socket is then not probed.
+wait_until_ready() {
+  local timeout=$1 previous=${2-}
+  local deadline=$((SECONDS + timeout)) stopped_polls=0 status verdict state
+  while :; do
+    status=$(read_object "$RELAY_STATUS")
+    verdict=$(jq -r --argjson now "$(now_ms)" --argjson maxAge "$HEARTBEAT_MAX_AGE_MS" --argjson previous "${previous:-null}" \
+      --arg needsNewSession "${previous:+yes}" '
+        if . == null or (.heartbeatAt // 0) < $now - $maxAge then "stale"
+        elif .state == "failed" then "failed"
+        elif .state != "ready" then "starting"
+        elif $needsNewSession == "yes" and (.acpSessionId == null or .acpSessionId == $previous) then "starting"
+        elif .clientConnected == true then "connected"
+        else "ready" end' <<<"$status")
+    case $verdict in
+      failed) fail_wait "the agent failed to start: $(jq -r '.error // "no reason given"' <<<"$status")" ;;
+      connected)
+        printf '%s\n' "$status" >&3
+        return
+        ;;
+      ready)
+        if socket_accepts "$RELAY_SOCKET"; then
+          printf '%s\n' "$status" >&3
+          return
+        fi
+        ;;
+    esac
+    state=$(systemctl show --property ActiveState --value "$RELAY_UNIT")
+    case $state in
+      active | activating | reloading) stopped_polls=0 ;;
+      *) (( ++stopped_polls < 4 )) || fail_wait "the relay is $state; run hunt-ctl start first" ;;
+    esac
+    (( SECONDS < deadline )) || fail_wait "the agent was not ready within ${timeout}s (relay status: $verdict)"
+    sleep 0.5
+  done
+}
+
+cmd_init() {
+  (( $# == 3 )) && [[ $2 == --repo ]] || usage
+  local id=$1 repo=$3 worktree created_at
+  require_id "$id"
+  require_repository_key "$repo"
+  current_hash >/dev/null
+  # A session runs on the VM only after a handoff, which starts here: whatever an earlier one left is stale.
+  destroy_session "$id"
+  worktree=$AGENT_HOME/${repo#*/}
+  rm -rf -- "$worktree"
+  install -d -m 0700 "$SESSIONS" "$SESSIONS/$id"
+  install -d -o "$AGENT" -g "$AGENT" -m 0755 "$worktree"
+  # The unborn branch only marks the empty repository; prepare checks the session's own branch out.
+  as_agent sh -c 'git init --quiet --initial-branch=hunt-handoff "$1" && printf ".hunt/\n" >>"$1/.git/info/exclude"' sh "$worktree"
+  created_at=$(now_ms)
+  jq -n --arg repo "$repo" --arg worktree "$worktree" --argjson createdAt "$created_at" \
+    '{repo: $repo, worktree: $worktree, createdAt: $createdAt}' >"$SESSIONS/$id/meta.json.tmp"
+  mv -f "$SESSIONS/$id/meta.json.tmp" "$SESSIONS/$id/meta.json"
+  emit --arg path "$worktree" '{path: $path}'
+}
+
+# The credential helper of `clone`: it answers git's and Git LFS's `get` with the token in the file $HUNT_TOKEN_FILE,
+# so the token is in no argv, environment or Git config.
+readonly CLONE_CREDENTIAL_HELPER='!f() { test "$1" = get || exit 0; echo username=x-access-token; printf "password=%s\n" "$(cat "$HUNT_TOKEN_FILE")"; }; f'
+
+# Prints the name (else the login) and the noreply email of the GitHub user of token $1, one per line. curl reads the
+# Authorization header from its configuration on stdin, so the token is in no argv.
+github_identity() {
+  local user login user_id name
+  user=$(curl -fsS --retry 3 --max-time 30 --config - -H 'Accept: application/vnd.github+json' https://api.github.com/user \
+    <<<"header = \"Authorization: Bearer $1\"") || die "failed to read the GitHub user of the token"
+  login=$(jq -r '.login | strings' <<<"$user" 2>/dev/null) || login=
+  user_id=$(jq -r '.id | numbers' <<<"$user" 2>/dev/null) || user_id=
+  [[ $login =~ ^[A-Za-z0-9-]+(\[bot\])?$ && $user_id =~ ^[0-9]+$ ]] || die "GitHub's answer for the token's user has no valid login and id"
+  name=$(jq -r 'if (.name | type) == "string" and (.name | length) > 0 then .name else .login end' <<<"$user")
+  require_line "git name" "$name"
+  printf '%s\n%s+%s@users.noreply.github.com\n' "$name" "$user_id" "$login"
+}
+
+# Creates the session's repository from GitHub instead of a handoff's push, for a session no Mac hands off, such as one
+# hunt-swf.service starts for an issue. The token on stdin authenticates the clone and Git LFS only; afterwards git and
+# gh act with the GH_TOKEN of `start` through the system's gh credential helper.
+cmd_clone() {
+  (( $# )) || usage
+  local id=$1 repo='' branch='' token='' identity git_name git_email worktree token_dir created_at
+  require_id "$id"
+  shift
+  while (( $# )); do
+    (( $# >= 2 )) || usage
+    case $1 in
+      --repo) repo=$2 ;;
+      --branch) branch=$2 ;;
+      *) usage ;;
+    esac
+    shift 2
+  done
+  require_repository_key "$repo"
+  { [[ $branch != -* ]] && git check-ref-format --branch "$branch" >/dev/null 2>&1; } || die "invalid branch: $branch"
+  IFS= read -r token || true
+  [[ $token =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid GitHub token on stdin: expected one line of letters, digits, _, . and -"
+  current_hash >/dev/null
+  identity=$(github_identity "$token")
+  git_name=${identity%%$'\n'*}
+  git_email=${identity#*$'\n'}
+  require_line "git email" "$git_email"
+
+  destroy_session "$id"
+  worktree=$AGENT_HOME/${repo#*/}
+  rm -rf -- "$worktree"
+  install -d -m 0700 "$SESSIONS" "$SESSIONS/$id"
+  install -d -o "$AGENT" -g "$AGENT" -m 0755 "$worktree"
+  make_scratch_dir token_dir
+  chown "$AGENT:$AGENT" "$token_dir"
+  (
+    umask 077
+    printf '%s\n' "$token" >"$token_dir/token"
+  )
+  chown "$AGENT:$AGENT" "$token_dir/token"
+  # LFS files are fetched once the branch is checked out, by `git lfs pull` with the same credentials.
+  as_agent env GIT_TERMINAL_PROMPT=0 GIT_LFS_SKIP_SMUDGE=1 "HUNT_TOKEN_FILE=$token_dir/token" \
+    "HUNT_CREDENTIAL_HELPER=$CLONE_CREDENTIAL_HELPER" sh -c '
+    set -e
+    with_token() { git -c credential.helper= -c "credential.helper=$HUNT_CREDENTIAL_HELPER" "$@"; }
+    with_token clone --quiet -- "$1" "$2"
+    cd "$2"
+    printf ".hunt/\n" >>.git/info/exclude
+    if git rev-parse --quiet --verify "refs/remotes/origin/$3^{commit}" >/dev/null; then
+      git checkout --quiet -B "$3" --track "origin/$3"
+    else
+      git checkout --quiet -b "$3"
+    fi
+    git lfs install --local >/dev/null
+    with_token lfs pull' sh "https://github.com/$repo.git" "$worktree" "$branch" || die "failed to clone https://github.com/$repo.git"
+  rm -rf -- "$token_dir"
+
+  created_at=$(now_ms)
+  jq -n --arg repo "$repo" --arg worktree "$worktree" --argjson createdAt "$created_at" --arg branch "$branch" \
+    --arg gitName "$git_name" --arg gitEmail "$git_email" \
+    '{repo: $repo, worktree: $worktree, createdAt: $createdAt, branch: $branch, gitName: $gitName, gitEmail: $gitEmail, origin: "swf"}' \
+    >"$SESSIONS/$id/meta.json.tmp"
+  mv -f "$SESSIONS/$id/meta.json.tmp" "$SESSIONS/$id/meta.json"
+  emit --arg path "$worktree" '{path: $path}'
+}
+
+# git push and git fetch from Hunt reach a session's repository only through these.
+cmd_receive_pack() {
+  (( $# == 1 )) || usage
+  local id
+  id=$(session_of_path "$1")
+  as_agent git-receive-pack "$(worktree_of "$id")"
+}
+
+cmd_upload_pack() {
+  (( $# == 1 )) || usage
+  local id
+  id=$(session_of_path "$1")
+  as_agent git-upload-pack "$(worktree_of "$id")"
+}
+
+# The tar commands below run as the agent: an archive's absolute paths and `..` are refused by tar, and a symlink in
+# the target can lead it only where the agent may write anyway.
+cmd_lfs_put() {
+  (( $# == 1 )) || usage
+  local id=$1 worktree
+  require_id "$id"
+  worktree=$(worktree_of "$id")
+  [[ -d $worktree/.git ]] || die "session $id has no repository on this VM"
+  as_agent sh -c 'mkdir -p "$1" && tar -xzf - -C "$1"' sh "$worktree/.git/lfs/objects"
+  emit '{}'
+}
+
+cmd_lfs_get() {
+  (( $# == 1 )) || usage
+  local id=$1 line worktree
+  local -a objects=()
+  require_id "$id"
+  require_prepared "$id"
+  worktree=$(worktree_of "$id")
+  while IFS= read -r line; do
+    [[ -z $line ]] && continue
+    [[ $line =~ ^[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{64}$ ]] || die "invalid LFS object path: $line"
+    objects+=("$line")
+  done
+  (( ${#objects[@]} )) || die "no LFS objects requested"
+  as_agent tar -czf - -C "$worktree/.git/lfs/objects" -- "${objects[@]}"
+}
+
+cmd_put_files() {
+  (( $# == 1 || $# == 2 )) || usage
+  local id=$1 target
+  require_id "$id"
+  if (( $# == 2 )); then
+    [[ $2 == --claude ]] || usage
+    worktree_of "$id" >/dev/null
+    install -d -o "$AGENT" -g "$AGENT" -m 0700 "$CLAUDE_HOME"
+    target=$CLAUDE_HOME
+  else
+    target=$(worktree_of "$id")
+  fi
+  # Existing folders, such as ~/.claude with mode 0700, keep their mode.
+  as_agent tar --no-overwrite-dir -xzf - -C "$target"
+  emit '{}'
+}
+
+cmd_get_claude() {
+  (( $# == 3 )) && [[ $2 == --project ]] || usage
+  local id=$1 slug=$3
+  require_id "$id"
+  [[ $slug =~ ^[A-Za-z0-9-]+$ ]] || die "invalid project folder: $slug"
+  worktree_of "$id" >/dev/null
+  [[ -d $CLAUDE_HOME ]] || die "session $id has no ~/.claude on this VM"
+  as_agent sh -c 'cd "$1" && if [ -d "projects/$2" ]; then exec tar -czf - hunt-session.json "projects/$2"; else exec tar -czf - hunt-session.json; fi' sh "$CLAUDE_HOME" "$slug"
+}
+
+cmd_prepare() {
+  (( $# )) || usage
+  local id=$1 branch='' snapshot='' git_name='' git_email='' origin='' upstream='' hooks_path=''
+  require_id "$id"
+  shift
+  while (( $# )); do
+    (( $# >= 2 )) || usage
+    case $1 in
+      --branch) branch=$2 ;;
+      --snapshot) snapshot=$2 ;;
+      --git-name) git_name=$2 ;;
+      --git-email) git_email=$2 ;;
+      --origin) origin=$2 ;;
+      --upstream) upstream=$2 ;;
+      --hooks-path) hooks_path=$2 ;;
+      *) usage ;;
+    esac
+    shift 2
+  done
+  git check-ref-format --branch "$branch" >/dev/null 2>&1 || die "invalid branch: $branch"
+  [[ -n $snapshot && $snapshot != -* ]] || die "invalid snapshot: $snapshot"
+  require_line "git name" "$git_name"
+  require_line "git email" "$git_email"
+  [[ -z $origin || $origin =~ ^https://github\.com/[A-Za-z0-9_-][A-Za-z0-9._-]*/[A-Za-z0-9_-][A-Za-z0-9._-]*\.git$ ]] || die "invalid origin: $origin"
+  if [[ -n $upstream ]]; then
+    [[ -n $origin && $upstream != -* ]] || die "invalid upstream: $upstream"
+    git check-ref-format --branch "$upstream" >/dev/null 2>&1 || die "invalid upstream: $upstream"
+  fi
+  [[ -z $hooks_path || ( $hooks_path =~ ^[A-Za-z0-9_.][A-Za-z0-9._/-]*$ && /$hooks_path/ != */../* ) ]] || die "invalid hooks path: $hooks_path"
+
+  local worktree
+  worktree=$(worktree_of "$id")
+  [[ -d $worktree/.git ]] || die "session $id has no repository on this VM; run hunt-ctl init and push first"
+  # LFS files stay pointers until `git lfs checkout`, which fills in what the repository's LFS store holds. It reads the
+  # LFS files of HEAD's tree, so HEAD points at the snapshot meanwhile; afterwards the branch is checked out again and
+  # the snapshot's changes stay uncommitted, as they were locally.
+  as_agent sh -c '
+    set -e
+    cd "$1"
+    git rev-parse --quiet --verify "refs/heads/$2^{commit}" >/dev/null || { echo "branch $2 is missing in the pushed repository" >&2; exit 1; }
+    commit=$(git rev-parse --quiet --verify "$3^{commit}") || { echo "snapshot $3 is missing in the pushed repository" >&2; exit 1; }
+    GIT_LFS_SKIP_SMUDGE=1 git checkout --quiet --force "$2"
+    GIT_LFS_SKIP_SMUDGE=1 git read-tree -u -m HEAD "$commit"
+    git update-ref --no-deref HEAD "$commit"
+    git lfs checkout
+    git symbolic-ref HEAD "refs/heads/$2"
+    git reset -q
+    if [ -n "$4" ]; then
+      git config remote.origin.url "$4"
+      git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+    fi
+    if [ -n "$5" ]; then
+      git config "branch.$2.remote" origin
+      git config "branch.$2.merge" "refs/heads/$5"
+    fi
+    if [ -n "$6" ]; then
+      git config core.hooksPath "$6"
+    else
+      git lfs install --local >/dev/null
+    fi' sh "$worktree" "$branch" "$snapshot" "$origin" "$upstream" "$hooks_path"
+
+  update_meta "$id" '. + {branch: $branch, gitName: $gitName, gitEmail: $gitEmail}' \
+    --arg branch "$branch" --arg gitName "$git_name" --arg gitEmail "$git_email"
+  emit --arg worktree "$worktree" '{worktree: $worktree}'
+}
+
+cmd_deps() {
+  (( $# == 1 )) || usage
+  local id=$1 worktree lockfile digest marker
+  local -a install_command
+  require_id "$id"
+  require_prepared "$id"
+  worktree=$(worktree_of "$id")
+  if [[ -f $worktree/package-lock.json ]]; then
+    # npm install instead of npm ci: it keeps an existing node_modules and only changes what the lockfile changed.
+    # --no-save leaves package.json and the lockfile untouched; the audit would ask the registry cache, which has none.
+    lockfile=package-lock.json install_command=(npm install --no-save --prefer-offline --no-audit --no-fund)
+  elif [[ -f $worktree/pnpm-lock.yaml ]]; then
+    lockfile=pnpm-lock.yaml install_command=(corepack pnpm install --frozen-lockfile)
+  elif [[ -f $worktree/yarn.lock ]]; then
+    lockfile=yarn.lock install_command=(corepack yarn install --immutable)
+  else
+    emit '{installed: false}'
+    return
+  fi
+  # A previous run that lost its hunt-ctl (e.g. a dropped SSH connection) may still write node_modules.
+  exec 8>"$SESSIONS/$id/deps-running.lock"
+  flock --wait 1800 8 || die "another dependency installation of session $id did not finish within 30 minutes"
+  digest=$(sha256sum <"$worktree/$lockfile")
+  marker=$SESSIONS/$id/deps.${digest%% *}
+  if [[ -e $marker ]]; then
+    emit '{installed: false}'
+    return
+  fi
+  agent_run "$CURRENT/vm/agent.env" "$worktree" CI=1 CYPRESS_INSTALL_BINARY=0 "${install_command[@]}"
+  rm -f -- "${SESSIONS:?}/${id:?}"/deps.*
+  touch "$marker"
+  emit '{installed: true}'
+}
+
+cmd_session_config() {
+  (( $# >= 1 )) || usage
+  local id=$1 domain='' worktree result
+  require_id "$id"
+  shift
+  while (( $# )); do
+    (( $# >= 2 )) || usage
+    case $1 in
+      --domain) domain=$2 ;;
+      *) usage ;;
+    esac
+    shift 2
+  done
+  is_domain "$domain" || die "invalid preview domain: $domain"
+  worktree=$(worktree_of "$id")
+  [[ -x $HUNT_NODE ]] || die "$HUNT_NODE is missing; this VM is no session VM"
+  install -d -m 0755 "${SESSION_ENV%/*}"
+  # The CLI reads hunt.json and HUNT.md without following symlinks and writes both files only when both are valid.
+  if ! result=$("$HUNT_NODE" "$CURRENT/session/configCli.mjs" --worktree "$worktree" --short "${id:0:8}" \
+    --domain "$domain" --env-out "$SESSION_ENV" --caddy-out "$PROXY_CONFIG"); then
+    jq -r '.problems[]?' <<<"$result" >&2 2>/dev/null || true
+    die "the preview section of hunt.json or HUNT.md is not valid (see above)"
+  fi
+  update_meta "$id" '. + {preview: {domain: $domain, main: $result.main, tls: $result.tls}}' --arg domain "$domain" --argjson result "$result"
+  systemctl enable --quiet "$PROXY_UNIT"
+  systemctl reload-or-restart "$PROXY_UNIT"
+  emit --argjson result "$result" '{hunt_md: ($result.hunt_md // null)}'
+}
+
+cmd_start() {
+  (( $# == 1 )) || usage
+  require_id "$1"
+  require_prepared "$1"
+  start_relay "$1"
+  emit '{relay: "running"}'
+}
+
+cmd_wait() {
+  (( $# )) || usage
+  local id=$1 timeout=120
+  require_id "$id"
+  shift
+  while (( $# )); do
+    case $1 in
+      --timeout)
+        [[ ${2-} =~ ^[1-9][0-9]*$ ]] || die "invalid --timeout: ${2-}"
+        timeout=$2
+        shift 2
+        ;;
+      *) usage ;;
+    esac
+  done
+  wait_until_ready "$timeout"
+}
+
+# The relay closes the adapter, which writes the transcript, within the unit's stop timeout. Disabled, it stays down
+# when the VM boots, until `start`.
+cmd_stop() {
+  (( $# == 1 )) || usage
+  require_id "$1"
+  systemctl disable --quiet --now "$RELAY_UNIT"
+  emit '{}'
+}
+
+cmd_clear() {
+  (( $# == 1 )) || usage
+  local id=$1 config=$CLAUDE_HOME/hunt-session.json previous
+  require_id "$id"
+  require_prepared "$id"
+  previous=$(as_agent jq -c '.acpSessionId // null' "$config") || die "session $id has no readable $config"
+  # The relay rewrites the file, so it must not run while the id is cleared; it creates a new session for a null id.
+  systemctl stop "$RELAY_UNIT"
+  as_agent sh -c 'jq ".acpSessionId = null" "$1" >"$1.clear" && mv -f "$1.clear" "$1"' sh "$config"
+  start_relay "$id"
+  wait_until_ready 120 "$previous"
+}
+
+cmd_snapshot() {
+  (( $# == 1 )) || usage
+  local id=$1 worktree git_name git_email result
+  require_id "$id"
+  require_prepared "$id"
+  worktree=$(worktree_of "$id")
+  git_name=$(meta "$id" gitName)
+  git_email=$(meta "$id" gitEmail)
+  # A scratch index leaves the worktree's own index, and with it what the agent staged, untouched.
+  result=$(as_agent env "GIT_AUTHOR_NAME=$git_name" "GIT_AUTHOR_EMAIL=$git_email" "GIT_COMMITTER_NAME=$git_name" \
+    "GIT_COMMITTER_EMAIL=$git_email" sh -c '
+      set -e
+      cd "$1"
+      scratch=$(mktemp -d)
+      trap "rm -rf \"\$scratch\"" EXIT
+      export GIT_INDEX_FILE="$scratch/index"
+      head=$(git rev-parse --verify HEAD)
+      git read-tree HEAD
+      git add -A
+      tree=$(git write-tree)
+      commit=$(git commit-tree -p "$head" -m "Hunt retrieve snapshot" "$tree")
+      git update-ref "refs/hunt/$2/retrieve" "$commit"
+      printf "%s %s\n" "$commit" "$head"' sh "$worktree" "$id")
+  emit --arg snapshot "${result%% *}" --arg head "${result##* }" '{snapshot: $snapshot, head: $head}'
+}
+
+cmd_status() {
+  (( $# == 1 )) || usage
+  local id=$1 relay status meta_json
+  require_id "$id"
+  case $(systemctl show --property ActiveState --value "$RELAY_UNIT" 2>/dev/null) in
+    active | activating | reloading | deactivating) relay=running ;;
+    failed) relay=failed ;;
+    *) relay=stopped ;;
+  esac
+  status=$(read_object "$RELAY_STATUS")
+  meta_json=$(read_object "$SESSIONS/$id/meta.json")
+  emit --arg relay "$relay" --argjson status "$status" --argjson meta "$meta_json" '{relay: $relay, status: $status, meta: $meta}'
+}
+
+# Prints the ports TCP servers listen on for the preview proxy, which connects to localhost, as a JSON array: those
+# bound to every address or to a loopback address, from 1024 on, except the reserved ports and the ephemeral range
+# outgoing connections take their local ports from.
+listening_ports() {
+  local low high
+  read -r low high </proc/sys/net/ipv4/ip_local_port_range
+  ss -Htln | awk -v low="$low" -v high="$high" -v reserved=" $RESERVED_PORTS " '
+    {
+      port = $4
+      sub(/.*:/, "", port)
+      address = substr($4, 1, length($4) - length(port) - 1)
+      sub(/%.*/, "", address)
+      port += 0
+      if (address !~ /^(\*|0\.0\.0\.0|\[::\]|127\.[0-9.]+|\[::1\]|\[::ffff:127\.[0-9.]+\])$/) next
+      if (port < 1024 || (port >= low && port <= high) || index(reserved, " " port " ")) next
+      print port
+    }' | sort -nu | jq -cs .
+}
+
+cmd_preview_status() {
+  (( $# <= 1 )) || usage
+  local file='' main=null listening responds=false scheme=http
+  local -a files
+  if (( $# == 1 )); then
+    require_id "$1"
+    files=("$SESSIONS/$1/meta.json")
+  else
+    files=("$SESSIONS"/*/meta.json)
+  fi
+  if (( ${#files[@]} == 1 )) && [[ -f ${files[0]} ]]; then
+    file=${files[0]}
+    main=$(jq -c '.preview.main // null | numbers // null' "$file")
+  fi
+  listening=$(listening_ports)
+  if [[ $main =~ ^[0-9]+$ ]]; then
+    if jq -e --argjson port "$main" 'any(.preview.tls[]?; . == $port)' "$file" >/dev/null; then
+      scheme=https
+    fi
+    # Any HTTP answer counts, also an error page. Like the proxy, it connects to localhost, which reaches servers bound to
+    # 127.0.0.1 as well as ::1.
+    if curl --silent --insecure --output /dev/null --max-time 5 "$scheme://localhost:$main/"; then
+      responds=true
+    fi
+  fi
+  emit --argjson main "$main" --argjson listening "$listening" --argjson responds "$responds" \
+    '{main: $main, listening: $listening, mainResponds: $responds}'
+}
+
+# Removes what session $1 has on the VM: its relay, proxy, environment and secrets, worktree, ~/.claude and metadata.
+# Folders the agent wrote to are removed without following symlinks.
+destroy_session() {
+  local id=$1 worktree=''
+  systemctl disable --quiet --now "$RELAY_UNIT" 2>/dev/null || true
+  systemctl reset-failed "$RELAY_UNIT" 2>/dev/null || true
+  systemctl disable --quiet --now "$PROXY_UNIT" 2>/dev/null || true
+  rm -f -- "$SECRETS_ENV" "$SESSION_ENV" "$PROXY_CONFIG"
+  if [[ -f $SESSIONS/$id/meta.json ]]; then
+    worktree=$(jq -r '.worktree // empty' "$SESSIONS/$id/meta.json" 2>/dev/null) || worktree=
+  fi
+  if [[ $worktree =~ $WORKTREE_PATTERN ]]; then
+    rm -rf -- "$worktree"
+  fi
+  rm -rf -- "$CLAUDE_HOME" "${SESSIONS:?}/${id:?}"
+}
+
+cmd_destroy() {
+  (( $# == 1 )) || usage
+  require_id "$1"
+  destroy_session "$1"
+  emit '{}'
+}
+
+# ---- Gateway --------------------------------------------------------------------------------------------------------
+# The edge proxy (Caddy, container hunt-edge on the host network, port 8080 behind the load balancer and IAP) forwards
+# `<short>.<domain>` and `<short>-<port>.<domain>` with their Host header to the preview proxy of the session VM
+# vm-hunt-s-<short>, which picks the port. It keeps no state: the session VMs' internal DNS names carry the routing.
+# Requests it cannot deliver (502, 503, 504: the VM is stopped or still booting) go to hunt-wake.service, which starts
+# the VM and answers with a page that reloads until the VM answers.
+
+# Creates the system user GATEWAY_USER unless it exists.
+ensure_gateway_user() {
+  if id -u "$GATEWAY_USER" >/dev/null 2>&1; then
+    return
+  fi
+  useradd --system --user-group --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin "$GATEWAY_USER"
+}
+
+# Opens the gateway API to every user who logs in: /usr/local/bin/hunt-api, the sudo rule that runs its forwarder as
+# GATEWAY_USER, the sshd rule that forces it on everyone outside google-sudoers, and SWF_CONFIG owned by GATEWAY_USER,
+# who writes it. Each drop-in is validated before it takes effect; sshd reloads only for a changed rule.
+install_gateway_access() {
+  local scratch
+  command -v sshd >/dev/null && command -v visudo >/dev/null || die "the gateway needs openssh-server and sudo"
+  ln -sfn "$CURRENT/vm/hunt-api" /usr/local/bin/hunt-api
+  install -d -m 0755 "${SWF_CONFIG%/*}"
+  if [[ ! -f $SWF_CONFIG ]]; then
+    printf '{"repos": []}\n' >"$SWF_CONFIG"
+  fi
+  chown "$GATEWAY_USER:$GATEWAY_USER" "$SWF_CONFIG"
+  chmod 0644 "$SWF_CONFIG"
+
+  # sudo skips files whose name contains a dot, so the candidate takes no effect before it is checked.
+  temporary_paths+=("$SUDOERS_DROPIN.new")
+  install -m 0440 "$CURRENT/vm/sudoers-hunt-api" "$SUDOERS_DROPIN.new"
+  visudo -c -q -f "$SUDOERS_DROPIN.new" >/dev/null || die "the sudo rule of hunt-api does not validate"
+  mv -f "$SUDOERS_DROPIN.new" "$SUDOERS_DROPIN"
+
+  cmp -s "$CURRENT/vm/sshd-hunt-api.conf" "$SSHD_DROPIN" && return
+  make_scratch_dir scratch
+  if [[ -f $SSHD_DROPIN ]]; then
+    cp -p "$SSHD_DROPIN" "$scratch/previous.conf"
+  fi
+  install -d -m 0755 "${SSHD_DROPIN%/*}"
+  install -m 0644 "$CURRENT/vm/sshd-hunt-api.conf" "$SSHD_DROPIN"
+  if ! sshd -t; then
+    if [[ -f $scratch/previous.conf ]]; then
+      mv -f "$scratch/previous.conf" "$SSHD_DROPIN"
+    else
+      rm -f -- "$SSHD_DROPIN"
+    fi
+    die "sshd refuses $SSHD_DROPIN (see above); the rule before stays"
+  fi
+  systemctl try-reload-or-restart ssh.service
+}
+
+# Keeps the session release in $1 as the one the gateway installs on session VMs (SESSION_CURRENT), readable by
+# GATEWAY_USER, whose hunt-api and hunt-swf pack it for them.
+cmd_stage_session() {
+  (( $# == 1 )) || usage
+  local source=$1 hash version release staging previous
+  [[ -f $source/.version ]] || die "$source is no CI release (it has no .version)"
+  [[ -f $source/.hash && -f $source/vm/hunt-ctl && -f $source/relay/main.mjs ]] || die "$source is not a Hunt session release"
+  hash=$(tr -d '[:space:]' <"$source/.hash")
+  [[ $hash =~ ^[0-9a-f]{16}$ ]] || die "invalid release hash in $source/.hash: $hash"
+  version=$(tr -d '[:space:]' <"$source/.version")
+  install -d -m 0755 "$SESSION_RELEASES" "$STATE_DIR"
+  exec 9>"$STATE_DIR/install.lock"
+  flock --wait 1800 9 || die "another hunt-ctl install did not finish within 30 minutes"
+  release=$SESSION_RELEASES/$hash
+  if [[ ! -d $release ]]; then
+    staging=$(mktemp -d "$SESSION_RELEASES/.$hash.XXXXXX")
+    temporary_paths+=("$staging")
+    cp -R "$source/." "$staging/"
+    chmod -R a+rX,go-w "$staging"
+    chmod 0755 "$staging"
+    mv -T "$staging" "$release"
+  fi
+  previous=$(tr -d '[:space:]' 2>/dev/null <"$SESSION_CURRENT/.hash" || true)
+  ln -sfn "$release" "$SESSION_CURRENT.new"
+  mv -T "$SESSION_CURRENT.new" "$SESSION_CURRENT"
+  prune_releases "$SESSION_RELEASES" "$hash" "$previous"
+  emit --arg version "$version" --arg hash "$hash" '{version: $version, hash: $hash}'
+}
+
+# Writes the edge's Caddy configuration for domain $1 and session VMs in zone $2 of project $3. Caddy serves only the
+# load balancer's ranges and answers its health check on every host; it removes IAP's credentials before a request
+# leaves the gateway.
+write_edge_config() {
+  local ranges
+  ranges=$(printf '%s\n' "${LB_RANGES[@]}" | jq -R . | jq -cs .)
+  jq -n --arg domain "${1//./\\.}" --arg zone "$2" --arg project "$3" --argjson ranges "$ranges" --arg listen ":$EDGE_PORT" \
+    --arg health "$EDGE_HEALTH_PATH" --arg sessionPort "$SESSION_PROXY_PORT" --arg wake "$WAKE_ADDRESS" '
+    {
+      admin: {listen: "unix//tmp/caddy-admin.sock"},
+      logging: {logs: {default: {level: "WARN"}}},
+      apps: {http: {servers: {edge: {
+        listen: [$listen],
+        automatic_https: {disable: true},
+        trusted_proxies: {source: "static", ranges: $ranges},
+        routes: [
+          {match: [{path: [$health]}], terminal: true, handle: [{handler: "static_response", status_code: 200, body: "ok"}]},
+          {match: [{not: [{remote_ip: {ranges: $ranges}}]}], terminal: true, handle: [{handler: "static_response", status_code: 403}]},
+          {match: [{vars_regexp: {"{http.request.host}": {name: "session", pattern: "^([0-9a-f]{8})(-[0-9]{1,5})?\\.\($domain)$"}}}],
+            terminal: true,
+            handle: [{
+              handler: "reverse_proxy",
+              upstreams: [{dial: "vm-hunt-s-{http.regexp.session.1}.\($zone).c.\($project).internal:\($sessionPort)"}],
+              flush_interval: -1,
+              headers: {request: {
+                set: {Host: ["{http.request.hostport}"]},
+                delete: ["X-Goog-Iap-Jwt-Assertion", "X-Goog-Authenticated-User-Email", "X-Goog-Authenticated-User-Id"],
+                replace: {Cookie: [{search_regexp: "(^|;\\s*)(__Host-)?GCP_IAP[^=]*=[^;]*", replace: ""}]}}}}]},
+          {handle: [{handler: "static_response", status_code: 404}]}],
+        errors: {routes: [
+          {match: [{expression: "{http.error.status_code} in [502, 503, 504]"}],
+            handle: [{handler: "reverse_proxy", upstreams: [{dial: $wake}]}]}]}
+      }}}}
+    }' >"$EDGE_CONFIG_DIR/caddy.json.tmp"
+  mv -f "$EDGE_CONFIG_DIR/caddy.json.tmp" "$EDGE_CONFIG_DIR/caddy.json"
+}
+
+# Writes the edge's configuration for the stored domain and the gateway's zone and project and applies it: a reload
+# when the edge runs with the pinned image, otherwise a new container.
+ensure_edge() {
+  local domain zone project state
+  [[ -f $DOMAIN_FILE ]] || die "the gateway has no preview domain yet; set the instance metadata hunt-preview-domain"
+  domain=$(tr -d '[:space:]' <"$DOMAIN_FILE")
+  zone=$(metadata instance/zone)
+  zone=${zone##*/}
+  project=$(metadata project/project-id)
+  [[ $zone =~ ^[a-z0-9-]+$ && $project =~ ^[a-z][a-z0-9-]+$ ]] || die "unexpected zone or project from the metadata server: $zone, $project"
+  install -d -m 0755 "$EDGE_CONFIG_DIR"
+  write_edge_config "$domain" "$zone" "$project"
+  state=$(container_state "$EDGE_NAME")
+  if [[ $state == running && $(docker inspect --format '{{.Config.Image}} {{.HostConfig.RestartPolicy.Name}}' "$EDGE_NAME") == "$EDGE_IMAGE unless-stopped" ]]; then
+    docker exec "$EDGE_NAME" caddy reload --config /etc/hunt-edge/caddy.json --address unix//tmp/caddy-admin.sock >/dev/null
+    return
+  fi
+  [[ $state == missing ]] || docker rm --force "$EDGE_NAME" >/dev/null
+  docker image inspect "$EDGE_IMAGE" >/dev/null 2>&1 || docker pull --quiet "$EDGE_IMAGE" >/dev/null
+  docker run --detach --name "$EDGE_NAME" --restart unless-stopped --network host --user "$EDGE_USER" --read-only \
+    --tmpfs /tmp --tmpfs /data --tmpfs /config --cap-drop ALL --security-opt no-new-privileges --memory 256m \
+    --pids-limit 256 --mount "type=bind,src=$EDGE_CONFIG_DIR,dst=/etc/hunt-edge,readonly" "$EDGE_IMAGE" \
+    caddy run --config /etc/hunt-edge/caddy.json >/dev/null
+}
+
+# Stores the configuration of hunt-swf.service from stdin once gateway/swfConfig.ts accepts it, in the normalized form
+# it prints; the poller reads the file at its next poll.
+cmd_swf_config() {
+  (( $# == 0 )) || usage
+  local result
+  [[ -x $HUNT_NODE ]] || die "$HUNT_NODE is missing on the gateway"
+  current_hash >/dev/null
+  if ! result=$("$HUNT_NODE" "$CURRENT/gateway/swfConfig.mjs" --validate); then
+    jq -r '.problems[]?' <<<"$result" >&2 2>/dev/null || true
+    die "the configuration of hunt-swf is not valid (see above)"
+  fi
+  jq -e 'type == "object"' <<<"$result" >/dev/null 2>&1 || die "gateway/swfConfig.mjs printed no configuration"
+  install -d -m 0755 "${SWF_CONFIG%/*}"
+  jq . <<<"$result" >"$SWF_CONFIG.tmp"
+  chmod 0644 "$SWF_CONFIG.tmp"
+  if id -u "$GATEWAY_USER" >/dev/null 2>&1; then
+    chown "$GATEWAY_USER:$GATEWAY_USER" "$SWF_CONFIG.tmp"
+  fi
+  mv -f "$SWF_CONFIG.tmp" "$SWF_CONFIG"
+  emit --argjson config "$result" '$config'
+}
+
+main() {
+  (( $# )) || usage
+  (( EUID == 0 )) || die "must run as root: sudo -n hunt-ctl $*"
+  cd /
+  umask 022
+  local command=$1
+  shift
+  role=$(read_role)
+  case $command in
+    install | install-units | version) ;;
+    install-tools | init | clone | receive-pack | upload-pack | lfs-put | lfs-get | put-files | get-claude | prepare | deps | \
+      session-config | start | wait | stop | clear | snapshot | status | preview-status | destroy)
+      [[ $role == session ]] || die "hunt-ctl $command runs on session VMs only; this VM is the gateway"
+      ;;
+    stage-session | swf-config)
+      [[ $role == gateway ]] || die "hunt-ctl $command runs on the gateway only; this VM is a session VM"
+      ;;
+    *) usage ;;
+  esac
+  case $command in
+    version | status | preview-status | install-tools | stage-session) counts_as_activity=false ;;
+  esac
+  install -d -m 0755 "$STATE_DIR"
+  if $counts_as_activity; then
+    touch "$ACTIVITY_FILE"
+  fi
+  trap on_exit EXIT
+  # Streaming commands pass raw data on stdout; the others print one JSON document there.
+  case $command in
+    receive-pack)
+      cmd_receive_pack "$@"
+      return
+      ;;
+    upload-pack)
+      cmd_upload_pack "$@"
+      return
+      ;;
+    lfs-get)
+      cmd_lfs_get "$@"
+      return
+      ;;
+    get-claude)
+      cmd_get_claude "$@"
+      return
+      ;;
+  esac
+  # From here on stdout carries only the result (fd 3); everything else the commands print goes to stderr.
+  exec 3>&1 1>&2
+  case $command in
+    install) cmd_install "$@" ;;
+    stage-session) cmd_stage_session "$@" ;;
+    install-units) cmd_install_units "$@" ;;
+    install-tools) cmd_install_tools "$@" ;;
+    version) cmd_version "$@" ;;
+    init) cmd_init "$@" ;;
+    clone) cmd_clone "$@" ;;
+    lfs-put) cmd_lfs_put "$@" ;;
+    put-files) cmd_put_files "$@" ;;
+    prepare) cmd_prepare "$@" ;;
+    deps) cmd_deps "$@" ;;
+    session-config) cmd_session_config "$@" ;;
+    start) cmd_start "$@" ;;
+    wait) cmd_wait "$@" ;;
+    stop) cmd_stop "$@" ;;
+    clear) cmd_clear "$@" ;;
+    snapshot) cmd_snapshot "$@" ;;
+    status) cmd_status "$@" ;;
+    preview-status) cmd_preview_status "$@" ;;
+    destroy) cmd_destroy "$@" ;;
+    swf-config) cmd_swf_config "$@" ;;
+  esac
+}
+
+trap 'report_failure $? $LINENO "$BASH_COMMAND"' ERR
+main "$@"

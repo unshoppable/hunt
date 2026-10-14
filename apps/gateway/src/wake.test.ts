@@ -7,21 +7,23 @@ import { createWakeServer, isPageLoad, renderPage, sessionShort, START_INTERVAL_
 
 const NAVIGATE = { "sec-fetch-mode": "navigate", accept: "text/html" };
 
-/** A Compute whose VMs have the statuses in `statuses` and that records every start and resume. */
+/** A Compute whose VMs, all in europe-west3-b, have the statuses in `statuses`; it records every start and resume. */
 function fakeCompute(statuses: Record<string, string>, failure?: Error) {
   const calls: string[] = [];
   const compute: WakeOptions["compute"] = {
-    get: async (name) => {
+    locate: async (name) => {
       if (failure) throw failure;
       const status = statuses[name];
       if (!status) return null;
-      return { name, zone: "europe-west3-a", status, creationTimestamp: "", labels: {}, metadata: { fingerprint: "", items: [] }, disks: [] };
+      return { name, zone: "europe-west3-b", status, creationTimestamp: "", labels: {}, metadata: { fingerprint: "", items: [] }, disks: [] };
     },
-    start: async (name) => {
-      calls.push(`start ${name}`);
+    start: async (zone, name) => {
+      calls.push(`start ${name} in ${zone}`);
+      return { name: "operation-1", zone };
     },
-    resume: async (name) => {
-      calls.push(`resume ${name}`);
+    resume: async (zone, name) => {
+      calls.push(`resume ${name} in ${zone}`);
+      return { name: "operation-1", zone };
     },
   };
   return { compute, calls };
@@ -71,10 +73,10 @@ describe("Waker", () => {
     expect(await waker.page("7c0c6f2e.hunt.example.com", true)).toMatchObject({ status: 503, text: "The session VM vm-hunt-s-7c0c6f2e is starting." });
     now += START_INTERVAL_MS - 1;
     await waker.page("7c0c6f2e.hunt.example.com", true);
-    expect(calls).toEqual(["start vm-hunt-s-7c0c6f2e"]);
+    expect(calls).toEqual(["start vm-hunt-s-7c0c6f2e in europe-west3-b"]);
     now += 1;
     await waker.page("7c0c6f2e.hunt.example.com", true);
-    expect(calls).toEqual(["start vm-hunt-s-7c0c6f2e", "start vm-hunt-s-7c0c6f2e"]);
+    expect(calls).toEqual(["start vm-hunt-s-7c0c6f2e in europe-west3-b", "start vm-hunt-s-7c0c6f2e in europe-west3-b"]);
   });
 
   it("resumes a suspended VM and starts nothing for a script's request or a VM that runs or shuts down", async () => {
@@ -92,7 +94,7 @@ describe("Waker", () => {
     expect(await waker.page("00000003.hunt.example.com", true)).toMatchObject({ status: 503, text: expect.stringContaining("does not answer yet") });
     expect(await waker.page("00000004.hunt.example.com", true)).toMatchObject({ status: 503, text: expect.stringContaining("shutting down") });
     expect(await waker.page("00000005.hunt.example.com", true)).toMatchObject({ status: 503, text: expect.stringContaining("is starting") });
-    expect(calls).toEqual(["resume vm-hunt-s-00000001"]);
+    expect(calls).toEqual(["resume vm-hunt-s-00000001 in europe-west3-b"]);
   });
 
   it("answers 404 without reloading for a VM that does not exist and 400 for other hosts", async () => {
@@ -148,7 +150,7 @@ describe("createWakeServer", () => {
     expect(page.status).toBe(503);
     expect(page.headers).toMatchObject({ "retry-after": "5", "cache-control": "no-store", "content-type": "text/html; charset=utf-8" });
     expect(page.body).toContain("The session VM vm-hunt-s-7c0c6f2e is starting.");
-    expect(calls).toEqual(["start vm-hunt-s-7c0c6f2e"]);
+    expect(calls).toEqual(["start vm-hunt-s-7c0c6f2e in europe-west3-b"]);
   });
 
   it("listens on 127.0.0.1:9180 when run as a script", async () => {

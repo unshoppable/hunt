@@ -3,8 +3,9 @@
 # and three OS Login users: alice, the admin bob (google-sudoers) and the admin carol, whom sudo lets run anything
 # through a rule of her own, as OS Login grants it, without google-sudoers.
 set -euo pipefail
-mkdir -p /srv/fakemeta/instance /srv/fakemeta/project
+mkdir -p /srv/fakemeta/instance/attributes /srv/fakemeta/project
 echo projects/123/zones/europe-west1-c >/srv/fakemeta/instance/zone
+echo 'europe-west1-c, europe-west1-b,us-central1-a,europe-west1-c,europe-west1-*,europe-west1-d' >/srv/fakemeta/instance/attributes/hunt-session-zones
 echo medconomy-hunt >/srv/fakemeta/project/project-id
 install -m 0755 /fixtures/curl /usr/local/bin/curl
 install -m 0755 /fixtures/fake /usr/local/bin/systemctl

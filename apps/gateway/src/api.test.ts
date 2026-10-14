@@ -26,35 +26,40 @@ function fakeCompute() {
     const instance = instances.get(name);
     return instance ? structuredClone(instance) : null;
   };
+  const operation = (zone: string) => ({ name: "operation-1", zone });
   const compute: Compute = {
     list: async () => [...instances.values()].map((instance) => structuredClone(instance)),
     listByLabel: async () => [],
-    get: async (name) => copy(name),
-    insert: async (request) => {
+    locate: async (name) => copy(name),
+    get: async (_zone, name) => copy(name),
+    insert: async (zone, request) => {
       calls.push(`insert ${request.name} ${request.template} ${request.machineType} ${JSON.stringify(request.labels)}`);
       instances.set(request.name, {
         name: request.name,
-        zone: "europe-west3-a",
+        zone,
         status: "RUNNING",
         creationTimestamp: "2026-10-14T08:00:00.000-07:00",
         labels: request.labels,
         metadata: { fingerprint: "fp0", items: [] },
         disks: [],
       });
+      return operation(zone);
     },
-    setMetadata: async (name, _fingerprint, items) => {
+    operation: async () => ({ isDone: true, error: null }),
+    setMetadata: async (_zone, name, _fingerprint, items) => {
       instances.get(name)!.metadata.items = items;
     },
-    start: async (name) => {
+    start: async (zone, name) => {
       calls.push(`start ${name}`);
       instances.get(name)!.status = "RUNNING";
+      return operation(zone);
     },
-    resume: async () => {},
-    stop: async (name) => {
+    resume: async (zone) => operation(zone),
+    stop: async (_zone, name) => {
       calls.push(`stop ${name}`);
     },
     setDiskAutoDelete: async () => {},
-    delete: async (name) => {
+    delete: async (_zone, name) => {
       calls.push(`delete ${name}`);
       instances.delete(name);
     },
@@ -108,7 +113,7 @@ describe("the gateway API over its Unix socket", () => {
     logs = [];
     const location = { project: "medconomy-hunt", zone: "europe-west3-a" };
     api = createApiServer({
-      orchestrator: new Orchestrator({ compute: compute.compute, location, vm: () => vm.vm, sleep: async () => {}, now: () => 0 }),
+      orchestrator: new Orchestrator({ compute: compute.compute, location, zones: () => [location.zone], vm: () => vm.vm, sleep: async () => {}, now: () => 0 }),
       gatewayInfo: async () => ({ release: "gateway@2.0.0", ...location, previewDomain: "hunt.example.com" }),
       log: (message) => logs.push(message),
     });

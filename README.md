@@ -409,11 +409,13 @@ menu opens the tab.
 
 The gateway keeps no sessions. Its edge proxy `hunt-edge` (Caddy in Docker on port 8080 behind the load balancer)
 serves only the load balancer's address ranges, removes IAP's headers and cookies and forwards every preview host with
-its Host header to `vm-hunt-s-<short id>.<zone>.c.<project>.internal:8080`: the session VMs' internal DNS names are the
-whole routing table. A request it cannot deliver (502, 503 or 504, because the VM is off or still booting) goes to
-`hunt-wake.service` on 127.0.0.1:9180 (`apps/gateway/src/wake.ts`). It looks the VM up through the Compute Engine API
-with the gateway's service account, starts or resumes it for a page load, at most once every 30 seconds and never for
-a script's request of a tab already open, and answers with a page that reloads every 5 seconds until the VM answers.
+its Host header to `vm-hunt-s-<short id>.<zone>.c.<project>.internal:8080`, trying the session zones in their order
+(below): the session VMs' internal DNS names are the whole routing table, and only the zone that holds the VM resolves.
+A request it cannot deliver (502, 503 or 504, because the VM is off, still booting or in no session zone) goes to
+`hunt-wake.service` on 127.0.0.1:9180 (`apps/gateway/src/wake.ts`). It looks the VM up in every zone through the
+Compute Engine API with the gateway's service account, starts or resumes it for a page load, at most once every 30
+seconds and never for a script's request of a tab already open, and answers with a page that reloads every 5 seconds
+until the VM answers.
 A second listener on port 8081 serves the load balancer's backend without IAP: it forwards only
 `<short id>-<port>-open.<domain>` the same way and answers 503 for a VM that is off, without starting it.
 
@@ -427,7 +429,13 @@ forwarder sends one line `{caller, method, params}` over the socket, with sudo's
 the events to stdout; admins call `hunt-api <method>` the same way. `apps/gateway/src/apiProtocol.ts` checks the
 method and params (session IDs are lowercase UUIDs, repositories `<owner>/<repo>`, branches valid Git branch names).
 The VM methods go through `apps/gateway/src/orchestrator.ts`, which the poller uses as well: `sessions.provision`
-creates `vm-hunt-s-<short id>` from `tpl-hunt-session` unless it exists, labelled `hunt-role=session`,
+creates `vm-hunt-s-<short id>` from `tpl-hunt-session` unless it exists in any zone. It tries the session zones in
+order, `/etc/hunt/session-zones`, which `hunt-ctl install` writes from the gateway's instance metadata
+`hunt-session-zones` (comma-separated, only zones of the gateway's region count; without it the gateway's own zone), and
+moves on to the next only when Compute Engine reports a stockout (`ZONE_RESOURCE_POOL_EXHAUSTED`) for the machine type;
+any other error of the creation ends the call. Changing the list takes effect with the next install, for the gateway and
+the edge alike. An existing VM stays in its zone: a stockout on its start fails the call at once, since its disk cannot
+move. The new VM is labelled `hunt-role=session`,
 `hunt-session=<short id>`, `hunt-origin=desktop` and `hunt-owner=<caller>`, records the session's ID, repository,
 branch and title in its metadata and refuses a VM that holds another session (`conflict`); it and `vms.start` start a
 stopped VM, resume a suspended one, wait out a shutdown in progress, wait until the VM answers over SSH and its startup
@@ -501,10 +509,11 @@ or a command line; `journalctl -u hunt-swf` on the gateway shows one line per de
 on a session VM.
 
 The labels and metadata of the session VMs are the directory of remote sessions. At its start and from the sidebar's
-*Refresh remote sessions* button, Hunt asks the gateway for them (`sessions.list`), keeps those in the gateway's zone,
-whose VMs it routes previews to (`adopt_session_vms`, `apps/client/src-tauri/src/remote/adoption.rs`), and adopts every
-session whose VM is named after it and that no local session has: VMs the gateway's poller started for `swf` issues
-(`hunt-origin=swf`, `hunt-issue`) and other people's handoffs. An adopted session gets a record with origin `swf` or
+*Refresh remote sessions* button, Hunt asks the gateway for them (`sessions.list`), keeps those in the gateway's
+region, whose zones the gateway creates session VMs in (`adopt_session_vms`,
+`apps/client/src-tauri/src/remote/adoption.rs`), and adopts every session whose VM is named after it and that no local
+session has: VMs the gateway's poller started for `swf` issues (`hunt-origin=swf`, `hunt-issue`) and other people's
+handoffs. An adopted session gets a record with origin `swf` or
 `desktop`, its title, branch and repository from the metadata and the local checkout among the recently used
 repositories whose `origin` is that repository; the sidebar labels it `swf #<issue>` or `remote`. Its worktree path on
 the VM comes from `/srv/hunt/sessions/<id>/meta.json` once Hunt reaches the VM, and the relay replays its conversation

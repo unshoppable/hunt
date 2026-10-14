@@ -78,20 +78,26 @@ function fakeCompute(listed: Instance[] = [], insertError?: Error): Compute & { 
       calls.push(`list ${key}=${value}`);
       return listed;
     },
-    get: async (name) => {
+    locate: async (name) => {
+      const vm = vms.get(name);
+      return vm ? structuredClone(vm.instance) : null;
+    },
+    get: async (_zone, name) => {
       const vm = vms.get(name);
       if (!vm) return null;
       vm.looks++;
       vm.instance.status = vm.looks < 3 ? "PROVISIONING" : "RUNNING";
       return structuredClone(vm.instance);
     },
-    insert: async (request) => {
+    insert: async (zone, request) => {
       calls.push(`insert ${request.name}`);
       if (insertError) throw insertError;
       inserted.push(request);
       vms.set(request.name, { instance: listedVm(request.name, "PROVISIONING", request.labels), looks: 0 });
+      return { name: "operation-1", zone };
     },
-    setMetadata: async (name, fingerprint, items) => {
+    operation: async () => ({ isDone: true, error: null }),
+    setMetadata: async (_zone, name, fingerprint, items) => {
       calls.push(`metadata ${name} ${fingerprint}`);
       metadata.push(items);
       vms.get(name)!.instance.metadata = { fingerprint: `${fingerprint}+`, items };
@@ -149,6 +155,7 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
   const orchestrator = new Orchestrator({
     compute,
     location: { project: "medconomy-hunt", zone: "europe-west3-a" },
+    zones: () => ["europe-west3-a"],
     vm: () => vm,
     sleep: async () => {},
     now: () => 0,

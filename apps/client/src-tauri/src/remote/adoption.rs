@@ -30,16 +30,23 @@ pub struct AdoptableSession {
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// The sessions of `listed` to adopt, in the order listed: every session whose VM is in `project` and `zone`, the
-/// gateway's, that none of `known` is, whose VM is named after it and whose repository is an `<owner>/<repo>`. Sessions
-/// that fail these checks are no sessions Hunt can continue and stay alone.
-pub fn sessions_to_adopt(listed: &[SessionSummary], project: &str, zone: &str, known: &HashSet<Uuid>) -> Vec<AdoptableSession> {
+/// The sessions of `listed` to adopt, in the order listed: every session whose VM is in `project` and in the region of
+/// `gateway_zone` (the gateway creates session VMs in any zone of its region), that none of `known` is, whose VM is named
+/// after it and whose repository is an `<owner>/<repo>`. Sessions that fail these checks are no sessions Hunt can
+/// continue and stay alone.
+pub fn sessions_to_adopt(listed: &[SessionSummary], project: &str, gateway_zone: &str, known: &HashSet<Uuid>) -> Vec<AdoptableSession> {
+    let region = region_of(gateway_zone);
     listed
         .iter()
-        .filter(|session| session.zone == zone)
+        .filter(|session| region_of(&session.zone) == region)
         .filter_map(|session| adoptable(session, project))
         .filter(|session| !known.contains(&session.id))
         .collect()
+}
+
+/// The region of `zone`, e.g. `europe-west1` for `europe-west1-c`.
+fn region_of(zone: &str) -> &str {
+    zone.rsplit_once('-').map_or(zone, |(region, _)| region)
 }
 
 fn adoptable(listed: &SessionSummary, project: &str) -> Option<AdoptableSession> {
@@ -164,6 +171,7 @@ mod tests {
         let desktop = SessionSummary {
             id: "00000000-1111-4000-8000-000000000002".into(),
             vm: "vm-hunt-s-00000000".into(),
+            zone: "europe-west1-b".into(),
             status: "RUNNING".into(),
             origin: "desktop".into(),
             branch: "".into(),
@@ -183,12 +191,13 @@ mod tests {
         assert_eq!((adopted[0].origin, adopted[0].issue, adopted[0].is_running), (RemoteOrigin::Swf, Some(123), false));
         assert_eq!(adopted[0].created_at.map(|time| time.to_rfc3339()).as_deref(), Some("2026-10-12T10:04:05.678+00:00"));
         assert_eq!((adopted[1].title.as_str(), adopted[1].branch.as_str()), ("Remote session of acme/app", ""));
+        assert_eq!(adopted[1].vm.zone, "europe-west1-b");
         assert_eq!((adopted[1].origin, adopted[1].issue, adopted[1].is_running), (RemoteOrigin::Desktop, None, true));
         assert_eq!(adopted[1].created_at, None);
     }
 
     #[test]
-    fn sessions_to_adopt_skips_known_sessions_vms_of_other_zones_and_vms_that_do_not_belong_to_their_session() {
+    fn sessions_to_adopt_skips_known_sessions_vms_of_other_regions_and_vms_that_do_not_belong_to_their_session() {
         let known = HashSet::from([Uuid::parse_str(ID).unwrap()]);
         assert!(sessions_to_adopt(&[swf_session()], "acme-hunt", ZONE, &known).is_empty());
 

@@ -36,6 +36,7 @@ import { createGitHub, type GitHub, type Issue, type IssueComment } from "./gith
 import { DEFAULT_TEMPLATE, ORIGIN_LABEL, Orchestrator, type Origin, type Reporter } from "./orchestrator.ts";
 import { readDomain } from "./previewDomain.ts";
 import { ensureSshKey, sessionVm, type SessionVm } from "./sessionVm.ts";
+import { readSessionZones } from "./sessionZones.ts";
 import { readSwfConfig, REPOS_ATTRIBUTE, SWF_LABEL, type SwfConfig } from "./swfConfig.ts";
 import {
   activeSessionVms,
@@ -78,7 +79,7 @@ export interface PollerDeps {
   github(token: string): GitHub;
   compute: Compute;
   orchestrator: Orchestrator;
-  vm(name: string): SessionVm;
+  vm(name: string, zone: string): SessionVm;
   prompts(): RemotePrompts;
   sendPrompt(transport: Transport, request: { sessionId: string; cwd: string; text: string }): Promise<string>;
   newId(): string;
@@ -233,8 +234,8 @@ export class Poller {
       log,
     };
     const request = { id: names.id, repo, branch, title: issue.title, issue: issue.number, origin: ORIGIN, owner: "" };
-    await this.deps.orchestrator.provision({ ...request, template: DEFAULT_TEMPLATE, machineType: null }, reporter);
-    const vm = this.deps.vm(names.vm);
+    const provisioned = await this.deps.orchestrator.provision({ ...request, template: DEFAULT_TEMPLATE, machineType: null }, reporter);
+    const vm = this.deps.vm(names.vm, provisioned.vm.zone);
     await vm.huntCtl(["install-tools"]);
 
     const cloned = await vm.huntCtl(["clone", names.id, "--repo", repo, "--branch", branch], `${tokens.github}\n`);
@@ -306,7 +307,7 @@ async function main(): Promise<void> {
   const metadata = createMetadata();
   const location = { project: await metadata.project(), zone: await metadata.zone() };
   const compute = createCompute(metadata, fetch, log);
-  const vm = (name: string) => sessionVm(name, location, log);
+  const vm = (name: string, zone: string) => sessionVm(name, { project: location.project, zone }, log);
   let wake = () => {};
   let isStopping = false;
   const poller = new Poller({
@@ -315,7 +316,14 @@ async function main(): Promise<void> {
     tokens: secretsReader(metadata),
     github: (token) => createGitHub(token),
     compute,
-    orchestrator: new Orchestrator({ compute, location, vm, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now: Date.now }),
+    orchestrator: new Orchestrator({
+      compute,
+      location,
+      zones: () => readSessionZones(location.zone),
+      vm,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      now: Date.now,
+    }),
     vm,
     prompts: readPrompts,
     sendPrompt,

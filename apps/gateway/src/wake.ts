@@ -7,8 +7,8 @@
  * 504) with the request's own Host header, `<short>.<domain>` or `<short>-<port>.<domain>`; the edge has checked the
  * domain, so only the first label counts here. The server for `<short>-<port>-open.<domain>`, which IAP does not guard,
  * answers such requests itself, so an open preview never starts a VM. hunt-wake looks the VM `vm-hunt-s-<short>` up
- * through the Compute Engine API (`gcp.ts`) with the gateway's service account (token, project and zone from the
- * metadata server) and starts or resumes it when it is off, at most once per VM every START_INTERVAL_MS. Only a page
+ * through the Compute Engine API (`gcp.ts`) in every zone of the gateway's project, with the gateway's service account
+ * (token and project from the metadata server), and starts or resumes it when it is off, at most once per VM every START_INTERVAL_MS. Only a page
  * load starts a VM: the polling of a forgotten tab must not wake it again and again after the idle check powered it
  * off. Every answer but the one for a VM that does not exist is a page that reloads every RELOAD_SECONDS, until the
  * session VM's preview proxy answers in its place. Runs on Node 24 through type stripping; no dependencies.
@@ -18,7 +18,7 @@ import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Serv
 import { fileURLToPath } from "node:url";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import type { Log } from "../../../libs/domain/src/journal.ts";
-import { createCompute, createMetadata, type Compute } from "./gcp.ts";
+import { createCompute, createMetadata, type Compute, type Instance } from "./gcp.ts";
 import { writeLog } from "./journal.ts";
 
 export const LISTEN_HOST = "127.0.0.1";
@@ -29,8 +29,8 @@ export const RELOAD_SECONDS = 5;
 const SESSION_HOST = /^([0-9a-f]{8})(?:-[0-9]{1,5})?\./;
 
 export interface WakeOptions {
-  /** The Compute Engine calls hunt-wake needs, on VMs in the gateway's project and zone. */
-  compute: Pick<Compute, "get" | "start" | "resume">;
+  /** The Compute Engine calls hunt-wake needs, on VMs in the gateway's project. */
+  compute: Pick<Compute, "locate" | "start" | "resume">;
   now: () => number;
   log: Log;
 }
@@ -108,21 +108,20 @@ export class Waker {
     const short = sessionShort(host);
     if (!short) return { status: 400, title: "Not a preview", text: `${host ?? "This host"} is no session preview.`, reloads: false };
     const name = vmName(short);
-    let status: string | null;
+    let instance: Instance | null;
     try {
-      status = (await this.options.compute.get(name))?.status ?? null;
+      instance = await this.options.compute.locate(name);
     } catch (error) {
       this.options.log(`failed to look up ${name}: ${messageOf(error)}`, "error");
       return { status: 502, title: "Preview unavailable", text: `The session VM ${name} could not be looked up: ${messageOf(error)}`, reloads: true };
     }
-    switch (status) {
-      case null:
-        return { status: 404, title: "No such session", text: `There is no session VM ${name}. The session may have been removed.`, reloads: false };
+    if (!instance) return { status: 404, title: "No such session", text: `There is no session VM ${name}. The session may have been removed.`, reloads: false };
+    switch (instance.status) {
       case "TERMINATED":
       case "STOPPED":
-        return this.wake(name, isLoad, "start");
+        return this.wake(instance, isLoad, "start");
       case "SUSPENDED":
-        return this.wake(name, isLoad, "resume");
+        return this.wake(instance, isLoad, "resume");
       case "STOPPING":
       case "SUSPENDING":
         return waiting(`The session VM ${name} is shutting down; it starts again once it is off.`);
@@ -133,14 +132,14 @@ export class Waker {
     }
   }
 
-  private async wake(name: string, isLoad: boolean, verb: "start" | "resume"): Promise<Page> {
+  private async wake({ name, zone }: Instance, isLoad: boolean, verb: "start" | "resume"): Promise<Page> {
     if (!isLoad) return waiting(`The session VM ${name} is off; reload the page to start it.`);
     const now = this.options.now();
     const lastStart = this.lastStarts.get(name);
     if (lastStart !== undefined && now - lastStart < START_INTERVAL_MS) return waiting(`The session VM ${name} is starting.`);
     this.lastStarts.set(name, now);
     try {
-      await this.options.compute[verb](name);
+      await this.options.compute[verb](zone, name);
     } catch (error) {
       this.options.log(`failed to ${verb} ${name}: ${messageOf(error)}`, "error");
       return { status: 502, title: "Preview unavailable", text: `The session VM ${name} could not be started: ${messageOf(error)}`, reloads: true };

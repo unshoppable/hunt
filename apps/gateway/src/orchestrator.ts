@@ -5,6 +5,9 @@
  * `hunt-owner=<OS Login user>`; its metadata records the session (`hunt-session-id`, `hunt-repo`, `hunt-branch`,
  * `hunt-title`, `hunt-issue`). These labels and metadata are the directory of remote sessions.
  *
+ * A new VM goes into the first of the session zones (`sessionZones.ts`) that has capacity for its machine type: when
+ * Compute Engine answers a zone with a stockout, the next zone is tried. An existing VM stays in its zone.
+ *
  * Bringing a VM up starts a stopped one, resumes a suspended one and waits out a shutdown in progress, then waits until
  * it answers over SSH and its startup script finished, and hands it the staged session release. Calls that bring up the
  * VM of one session share one operation: a second identical call joins the first and hears its progress from the
@@ -13,9 +16,9 @@
 import type { ProgressStep, ReleaseInfo, SessionSummary, VmRef } from "../../../libs/domain/src/gatewayApi.ts";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import { ApiError, SESSION_ID } from "./apiProtocol.ts";
-import { mergeMetadataItems, metadataValue, type Compute, type Instance } from "./gcp.ts";
+import { isStockout, mergeMetadataItems, metadataValue, type Compute, type Instance, type Operation as ComputeOperation, type OperationError } from "./gcp.ts";
 import type { SessionVm, VmLocation } from "./sessionVm.ts";
-import { sessionNames } from "./swfPlan.ts";
+import { sessionNames, type SessionNames } from "./swfPlan.ts";
 
 export const ROLE_LABEL = "hunt-role";
 export const SESSION_LABEL = "hunt-session";
@@ -74,9 +77,11 @@ export interface StartResult {
 
 export interface OrchestratorDeps {
   compute: Compute;
-  /** The gateway's project and zone, where the session VMs live. */
+  /** The gateway's project, where the session VMs live, and its zone. */
   location: VmLocation;
-  vm(name: string): SessionVm;
+  /** The zones a new session VM may go into, in order of preference. */
+  zones(): string[];
+  vm(name: string, zone: string): SessionVm;
   sleep(ms: number): Promise<void>;
   now(): number;
 }
@@ -129,6 +134,11 @@ function minutes(ms: number): string {
   return `${Math.round(ms / 60_000)} minutes`;
 }
 
+/** `items` as an English list: `a`, `a and b`, `a, b and c`. */
+function listed(items: string[]): string {
+  return items.length < 2 ? (items[0] ?? "") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+
 export class Orchestrator {
   private readonly deps: OrchestratorDeps;
   /** The operation that brings a session's VM up, by session ID. */
@@ -151,40 +161,41 @@ export class Orchestrator {
   start(id: string, reporter: Reporter): Promise<StartResult> {
     return this.exclusive(id, "start", reporter, async (shared) => {
       const name = sessionNames(id).vm;
-      const instance = await this.deps.compute.get(name);
+      const instance = await this.deps.compute.locate(name);
       if (!instance) throw new ApiError("notFound", `the session ${id} has no VM ${name}`);
       checkSession(instance, id);
-      const { wasRunning, release, zone } = await this.bringUp(name, shared);
-      return { vm: this.ref(name, zone), wasRunning, release };
+      const { wasRunning, release } = await this.bringUp(instance.zone, name, shared);
+      return { vm: this.ref(name, instance.zone), wasRunning, release };
     });
   }
 
   /** Stops the session's VM unless it is off or shuts down already. */
   async stop(id: string): Promise<void> {
     const name = sessionNames(id).vm;
-    const instance = await this.deps.compute.get(name);
+    const instance = await this.deps.compute.locate(name);
     if (!instance) throw new ApiError("notFound", `the session ${id} has no VM ${name}`);
     checkSession(instance, id);
     if (instance.status === "TERMINATED" || instance.status === "STOPPED" || instance.status === "STOPPING") return;
-    await this.deps.compute.stop(name);
+    await this.deps.compute.stop(instance.zone, name);
   }
 
   /** Deletes the session's VM with all its disks; returns once Compute Engine accepted the deletion. */
   async delete(id: string): Promise<{ alreadyGone: boolean }> {
     const name = sessionNames(id).vm;
     if (!name.startsWith(SESSION_VM_PREFIX)) throw new ApiError("forbidden", `${name} is no session VM`);
-    const instance = await this.deps.compute.get(name);
+    const instance = await this.deps.compute.locate(name);
     if (!instance) return { alreadyGone: true };
     checkSession(instance, id);
+    const { zone } = instance;
     const kept = instance.disks.filter((disk) => !disk.autoDelete);
     for (const disk of kept) {
-      await this.deps.compute.setDiskAutoDelete(name, disk.deviceName);
+      await this.deps.compute.setDiskAutoDelete(zone, name, disk.deviceName);
     }
     if (kept.length > 0) {
-      await this.waitFor(name, (found) => !found || found.disks.every((disk) => disk.autoDelete), DISK_TIMEOUT_MS, () => "mark its disks for deletion");
+      await this.waitFor(zone, name, (found) => !found || found.disks.every((disk) => disk.autoDelete), DISK_TIMEOUT_MS, () => "mark its disks for deletion");
     }
     try {
-      await this.deps.compute.delete(name);
+      await this.deps.compute.delete(zone, name);
     } catch (error) {
       if (messageOf(error).includes("HTTP 404")) return { alreadyGone: true };
       throw error;
@@ -194,7 +205,7 @@ export class Orchestrator {
 
   async get(id: string): Promise<{ exists: boolean; name: string; status: string | null }> {
     const name = sessionNames(id).vm;
-    const instance = await this.deps.compute.get(name);
+    const instance = await this.deps.compute.locate(name);
     return { exists: instance !== null, name, status: instance?.status ?? null };
   }
 
@@ -210,19 +221,14 @@ export class Orchestrator {
 
   private async runProvision(request: ProvisionRequest, reporter: Reporter): Promise<ProvisionResult> {
     const names = sessionNames(request.id);
-    const existing = await this.deps.compute.get(names.vm);
+    const existing = await this.deps.compute.locate(names.vm);
+    let zone: string;
     if (existing) {
       checkSession(existing, request.id);
-      reporter.log(`${names.vm} exists already`);
+      reporter.log(`${names.vm} exists already in ${existing.zone}`);
+      zone = existing.zone;
     } else {
-      const labels: Record<string, string> = { [ROLE_LABEL]: SESSION_ROLE, [SESSION_LABEL]: names.short, [ORIGIN_LABEL]: request.origin };
-      if (request.owner) {
-        labels[OWNER_LABEL] = labelValue(request.owner);
-      }
-      await this.deps.compute.insert({ name: names.vm, template: request.template, machineType: request.machineType, labels });
-      reporter.progress("creatingVm");
-      reporter.log(`creating ${names.vm} from ${request.template}`);
-      await this.waitFor(names.vm, (found) => found !== null, CREATE_TIMEOUT_MS, (found) => `create ${names.vm}: it is still ${found?.status ?? "missing"}`);
+      zone = await this.create(names, request, reporter);
     }
     const entries: Record<string, string> = {
       "hunt-session-id": request.id,
@@ -233,20 +239,56 @@ export class Orchestrator {
     if (request.issue !== null) {
       entries["hunt-issue"] = String(request.issue);
     }
-    await this.recordSession(names.vm, request.id, entries);
-    const { release, zone } = await this.bringUp(names.vm, reporter);
+    await this.recordSession(zone, names.vm, request.id, entries);
+    const { release } = await this.bringUp(zone, names.vm, reporter);
     return { vm: this.ref(names.vm, zone), created: !existing, release };
   }
 
+  /**
+   * Creates the session's VM in the first session zone with capacity for it and returns that zone. Only a stockout moves
+   * on to the next zone; any other failure ends the provision.
+   */
+  private async create(names: SessionNames, request: ProvisionRequest, reporter: Reporter): Promise<string> {
+    const labels: Record<string, string> = { [ROLE_LABEL]: SESSION_ROLE, [SESSION_LABEL]: names.short, [ORIGIN_LABEL]: request.origin };
+    if (request.owner) {
+      labels[OWNER_LABEL] = labelValue(request.owner);
+    }
+    const zones = this.deps.zones();
+    let machineType = request.machineType;
+    let isReported = false;
+    for (const [index, zone] of zones.entries()) {
+      let error: OperationError | null;
+      try {
+        const operation = await this.deps.compute.insert(zone, { name: names.vm, template: request.template, machineType: request.machineType, labels });
+        if (!isReported) {
+          reporter.progress("creatingVm");
+          isReported = true;
+        }
+        reporter.log(`creating ${names.vm} from ${request.template} in ${zone}`);
+        error = await this.waitForOperation(operation, CREATE_TIMEOUT_MS, `create ${names.vm} in ${zone}`);
+      } catch (thrown) {
+        if (!isStockout(messageOf(thrown))) throw thrown;
+        error = { code: "ZONE_RESOURCE_POOL_EXHAUSTED", message: messageOf(thrown), machineType: null };
+      }
+      if (!error) return zone;
+      if (!isStockout(error.code)) throw new ApiError("unavailable", `failed to create ${names.vm} in ${zone}: ${error.message || error.code}`);
+      machineType = error.machineType ?? machineType;
+      const next = zones[index + 1];
+      reporter.log(`${machineType ?? "its machine type"} is unavailable in ${zone}${next ? `; trying ${next}` : ""}`);
+    }
+    const type = machineType ?? "its machine type";
+    throw new ApiError("unavailable", `failed to create ${names.vm}: ${type} is unavailable in ${listed(zones)}; try again later or pick another machine type`);
+  }
+
   /** Adds `entries` to the VM's metadata, keeping the template's keys; retries when the metadata changed meanwhile. */
-  private async recordSession(name: string, id: string, entries: Record<string, string>): Promise<void> {
+  private async recordSession(zone: string, name: string, id: string, entries: Record<string, string>): Promise<void> {
     for (let attempt = 1; ; attempt++) {
-      const instance = await this.deps.compute.get(name);
+      const instance = await this.deps.compute.get(zone, name);
       if (!instance) throw new ApiError("notFound", `failed to record the session in ${name}: it does not exist`);
       checkSession(instance, id);
       if (Object.entries(entries).every(([key, value]) => metadataValue(instance, key) === value)) return;
       try {
-        await this.deps.compute.setMetadata(name, instance.metadata.fingerprint, mergeMetadataItems(instance.metadata.items, entries));
+        await this.deps.compute.setMetadata(zone, name, instance.metadata.fingerprint, mergeMetadataItems(instance.metadata.items, entries));
         return;
       } catch (error) {
         if (attempt >= METADATA_ATTEMPTS || !messageOf(error).includes("HTTP 412")) throw error;
@@ -254,17 +296,18 @@ export class Orchestrator {
     }
   }
 
-  /** Starts or resumes the VM unless it runs, waits until it is ready and hands it the staged session release. */
-  private async bringUp(name: string, reporter: Reporter): Promise<{ wasRunning: boolean; release: ReleaseInfo; zone: string }> {
+  /**
+   * Starts or resumes the VM in `zone` unless it runs, waits until it is ready and hands it the staged session release.
+   * A start Compute Engine refuses, such as one without capacity in the zone, fails at once: the VM's disk cannot move.
+   */
+  private async bringUp(zone: string, name: string, reporter: Reporter): Promise<{ wasRunning: boolean; release: ReleaseInfo }> {
     const deadline = this.deps.now() + START_TIMEOUT_MS;
     let wasRunning: boolean | null = null;
     let isStarting = false;
     let isReported = false;
-    let zone = "";
     for (;;) {
-      const instance = await this.deps.compute.get(name);
+      const instance = await this.deps.compute.get(zone, name);
       if (!instance) throw new ApiError("notFound", `${name} does not exist`);
-      zone = instance.zone;
       wasRunning ??= instance.status === "RUNNING";
       if (instance.status === "RUNNING") break;
       if (OFF_STATUSES.has(instance.status) && !isStarting) {
@@ -273,9 +316,15 @@ export class Orchestrator {
           reporter.progress("startingVm");
           isReported = true;
         }
-        await this.deps.compute[verb](name);
+        const operation = await this.deps.compute[verb](zone, name);
         reporter.log(`${verb === "start" ? "starting" : "resuming"} ${name}`);
         isStarting = true;
+        const error = await this.waitForOperation(operation, Math.max(deadline - this.deps.now(), 0), `${verb} ${name}`);
+        if (error) {
+          const reason = (error.message || error.code).replace(/\.$/, "");
+          const stays = isStockout(error.code) ? `; its disk stays in ${zone}, try again later` : "";
+          throw new ApiError("unavailable", `failed to ${verb} ${name}: ${reason}${stays}`);
+        }
       } else if (SHUTDOWN_STATUSES.has(instance.status)) {
         if (!isReported) {
           reporter.progress("startingVm");
@@ -290,7 +339,7 @@ export class Orchestrator {
       await this.deps.sleep(INSTANCE_POLL_MS);
     }
 
-    const vm = this.deps.vm(name);
+    const vm = this.deps.vm(name, zone);
     await vm.waitUntilReady(
       READY_TIMEOUT_MS,
       () => reporter.progress("waitingForVm"),
@@ -301,10 +350,11 @@ export class Orchestrator {
       reporter.progress("installingRuntime");
       reporter.log(`installing the staged session release on ${name}`);
     });
-    return { wasRunning, release, zone };
+    return { wasRunning, release };
   }
 
   private async waitFor(
+    zone: string,
     name: string,
     isDone: (instance: Instance | null) => boolean,
     timeoutMs: number,
@@ -312,15 +362,26 @@ export class Orchestrator {
   ): Promise<void> {
     const deadline = this.deps.now() + timeoutMs;
     for (;;) {
-      const instance = await this.deps.compute.get(name);
+      const instance = await this.deps.compute.get(zone, name);
       if (isDone(instance)) return;
       if (this.deps.now() >= deadline) throw new ApiError("unavailable", `failed to ${failure(instance)} after ${minutes(timeoutMs)}`);
       await this.deps.sleep(INSTANCE_POLL_MS);
     }
   }
 
+  /** Waits until `operation` is done and returns its error; null when it succeeded. `what` names it in a timeout. */
+  private async waitForOperation(operation: ComputeOperation, timeoutMs: number, what: string): Promise<OperationError | null> {
+    const deadline = this.deps.now() + timeoutMs;
+    for (;;) {
+      const state = await this.deps.compute.operation(operation);
+      if (state.isDone) return state.error;
+      if (this.deps.now() >= deadline) throw new ApiError("unavailable", `failed to ${what}: Compute Engine has not finished after ${minutes(timeoutMs)}`);
+      await this.deps.sleep(INSTANCE_POLL_MS);
+    }
+  }
+
   private ref(name: string, zone: string): VmRef {
-    return { project: this.deps.location.project, zone: zone || this.deps.location.zone, instance: name };
+    return { project: this.deps.location.project, zone, instance: name };
   }
 
   /** Runs `run` as the operation `key` of session `id`, or joins it; see the module comment. */

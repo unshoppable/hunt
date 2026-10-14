@@ -145,7 +145,7 @@ impl GatewayApi {
         call(&self.ssh, method, params, progress).await
     }
 
-    /// The sessions of the gateway's project and zone.
+    /// The sessions of the gateway's project, in every zone.
     pub async fn list_sessions(&self) -> Result<Vec<SessionSummary>, String> {
         let listed: SessionList = self.call("sessions.list", &json!({})).await?;
         Ok(listed.sessions)

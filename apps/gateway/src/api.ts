@@ -26,6 +26,7 @@ import { writeLog } from "./journal.ts";
 import { DEFAULT_TEMPLATE, Orchestrator, type Reporter } from "./orchestrator.ts";
 import { readDomain } from "./previewDomain.ts";
 import { ensureSshKey, sessionVm } from "./sessionVm.ts";
+import { readSessionZones } from "./sessionZones.ts";
 
 const RELEASE_VERSION_FILE = "/srv/hunt/current/.version";
 /** How long a connection may take to send its request line. */
@@ -198,7 +199,8 @@ async function main(): Promise<void> {
   const orchestrator = new Orchestrator({
     compute,
     location,
-    vm: (name) => sessionVm(name, location, log),
+    zones: () => readSessionZones(location.zone),
+    vm: (name, zone) => sessionVm(name, { project: location.project, zone }, log),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: Date.now,
   });

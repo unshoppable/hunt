@@ -21,6 +21,7 @@ const READY_STAMP = "/var/lib/hunt/session-ready";
 const RELAY_COMMAND = "sudo -n -u agent socat - UNIX-CONNECT:/run/hunt/relay.sock";
 const STDERR_TAIL_LINES = 15;
 
+/** Where a VM lives: its project and its own zone. */
 export interface VmLocation {
   project: string;
   zone: string;
@@ -187,7 +188,7 @@ const HOUR_MS = 60 * 60_000;
 const READY_POLL_MS = 10_000;
 const READY_FAILURE_REPORT_MS = 60_000;
 
-/** The session VM `vm`; `log` hears every command run there, with its outcome and duration. */
+/** The session VM `vm` at `location`; `log` hears every command run there, with its outcome and duration. */
 export function sessionVm(vm: string, location: VmLocation, log: Log = () => {}): SessionVm {
   const gcloud = (command: string, input: Buffer | string, timeoutMs: number, what: string) =>
     run("gcloud", sshArgs(vm, location, command), input, timeoutMs, what, log);

@@ -147,7 +147,19 @@ describe.skipIf(!hasDocker())("hunt-ctl install and stage-session on a gateway i
       expect(hostPattern(edge).test(host), host).toBe(isGuarded);
       expect(hostPattern(open).test(host), host).toBe(isOpen);
     }
-    expect(JSON.stringify(sessionRoute(open).handle)).toContain('"dial":"vm-hunt-s-{http.regexp.session.1}.europe-west1-c.c.medconomy-hunt.internal:8080"');
+    // The session VM in the first of the gateway region's zones of hunt-session-zones that resolves.
+    expect(sh("cat /etc/hunt/session-zones").stdout).toBe("europe-west1-c\neurope-west1-b\neurope-west1-d\n");
+    expect(sh("stat -c %a /etc/hunt/session-zones").stdout).toBe("644\n");
+    const proxy = (sessionRoute(open).handle as Record<string, unknown>[])[0];
+    expect(proxy.load_balancing).toEqual({ selection_policy: { policy: "first" } });
+    expect(proxy.dynamic_upstreams).toEqual({
+      source: "multi",
+      sources: ["europe-west1-c", "europe-west1-b", "europe-west1-d"].map((zone) => ({
+        source: "a",
+        name: `vm-hunt-s-{http.regexp.session.1}.${zone}.c.medconomy-hunt.internal.`,
+        port: "8080",
+      })),
+    });
     // Health check, the load balancer's ranges, the forward with IAP's headers and cookies removed, and 404 for the rest.
     expect(open.routes.map((route) => route.handle)).toEqual(edge.routes.map((route) => route.handle));
 

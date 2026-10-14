@@ -357,14 +357,19 @@ describe("proxyConfig", () => {
 
   type HostPattern = { name: string; pattern: string };
 
-  /** The first route of `proxy` that matches a request to `hostName` at `path`, as Caddy picks it, with the captures of its regexps. */
-  function routeFor(proxy: CaddyConfig, hostName: string, path = "/") {
-    for (const route of proxy.apps.http.servers.preview.routes) {
+  /**
+   * The first route of `proxy` that matches a request to `hostName` at `path`, as Caddy picks it, with the captures of its
+   * regexps; with `refused`, the first of its error routes for that request when its upstream refused the connection.
+   */
+  function routeFor(proxy: CaddyConfig, hostName: string, path = "/", refused = false) {
+    const server = proxy.apps.http.servers.preview;
+    for (const route of refused ? server.errors.routes : server.routes) {
       const captures: Record<string, RegExpExecArray> = {};
       const matchesSet = (set: Record<string, unknown>) =>
         Object.entries(set).every(([kind, value]) => {
           if (kind === "host") return (value as string[]).includes(hostName);
           if (kind === "path") return (value as string[]).includes(path);
+          if (kind === "expression") return refused && value === "{http.error.status_code} == 502";
           if (kind !== "vars_regexp") throw new Error(`unknown matcher ${kind}`);
           return Object.entries(value as Record<string, HostPattern>).every(([placeholder, { name, pattern }]) => {
             expect(placeholder).toBe("{http.request.host}");
@@ -463,6 +468,30 @@ describe("proxyConfig", () => {
       'This port has no public host: only a service with "guarded": false in the repository\'s hunt.json has one.\n',
     );
     expect(bodyFor(config, "7c0c6f2e-2019.hunt.example.com")).toBe("This port is not served.\n");
+  });
+
+  it("explains with a 503 that nothing answers on a port, naming its service on the port host only", () => {
+    /** The status and body of the answer to a request to `hostName` whose upstream refused the connection. */
+    const refusedAnswer = (proxy: CaddyConfig, hostName: string) => {
+      const { route, captures } = routeFor(proxy, hostName, "/", true);
+      const handler = route.handle[0] as { handler: string; status_code: number; body: string };
+      expect(handler.handler).toBe("static_response");
+      const body = handler.body.replace(/\{http\.regexp\.(\w+)\.(\d)\}/g, (_placeholder, name: string, group: string) => captures[name][Number(group)]);
+      return `${handler.status_code} ${body}`;
+    };
+    const uiDown = "503 The service ui is not running, so nothing answers on port 4200. Ask the agent to start it, then reload this page.\n";
+
+    expect(refusedAnswer(config, "7c0c6f2e-4200.hunt.example.com")).toBe(uiDown);
+    expect(refusedAnswer(config, "7c0c6f2e-3000.hunt.example.com")).toMatch(/^503 The service backend is not running, so nothing answers on port 3000\./);
+    expect(refusedAnswer(config, "7c0c6f2e-4400.hunt.example.com")).toMatch(/^503 The service docs is not running/);
+    expect(refusedAnswer(config, "7c0c6f2e-5173.hunt.example.com")).toBe("503 Nothing answers on port 5173 of the session VM.\n");
+    expect(refusedAnswer(proxyConfig([], HOST), "7c0c6f2e-4200.hunt.example.com")).toBe("503 Nothing answers on port 4200 of the session VM.\n");
+    for (const hostName of ["7c0c6f2e-3000-open.hunt.example.com", "7c0c6f2e-4800-open.hunt.example.com"]) {
+      expect(refusedAnswer(config, hostName), hostName).toBe("503 The preview is not running.\n");
+    }
+    for (const hostName of ["8d1d7a3f-4200.hunt.example.com", "7c0c6f2e.hunt.example.com", "7c0c6f2e-4200.hunt.example.com.evil.com"]) {
+      expect(() => routeFor(config, hostName, "/", true), hostName).toThrow("no route");
+    }
   });
 
   it("serves no open host without services that are not guarded", () => {

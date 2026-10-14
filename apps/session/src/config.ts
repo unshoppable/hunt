@@ -92,6 +92,8 @@ export interface CaddyConfig {
           trusted_proxies: { source: "static"; ranges: string[] };
           logs: { default_logger_name: string };
           routes: CaddyRoute[];
+          /** What answers a request that `routes` failed to deliver. */
+          errors: { routes: CaddyRoute[] };
         };
       };
     };
@@ -169,6 +171,10 @@ const NO_SERVICES_PROMPT = [
     "session `app` as described above.",
 ].join("\n");
 const NOT_OPEN_BODY = 'This port has no public host: only a service with "guarded": false in the repository\'s hunt.json has one.\n';
+/** Caddy's error status when the upstream of a reverse_proxy refuses the connection, because nothing listens on its port. */
+const UNREACHABLE = "{http.error.status_code} == 502";
+/** What an open host answers when its service does not run; the gateway's edge answers the same while the VM is off. */
+const NOT_RUNNING_BODY = "The preview is not running.\n";
 
 function portHost(host: SessionHost, port: number): string {
   return `${host.short}-${port}.${host.domain}`;
@@ -283,10 +289,11 @@ export function servicesPrompt(services: readonly ServiceConfig[], host: Session
  * services with `tls` are reached over HTTPS without checking the certificate. Every upstream gets the request's own
  * Host header, which Caddy would replace with the upstream's address for HTTPS, but never IAP's headers and cookies;
  * responses are flushed at once (server-sent events). HEALTH_PATH answers 200 on every host, the reserved ports answer
- * 403, and `<short>.<domain>` and every other `-open` host answer 404 with an explanation. Every request except the
- * health check goes to ACCESS_LOG as one JSON line; Caddy writes Cookie and Authorization headers there redacted. Caddy's
- * own warnings and errors, such as an upstream that refuses the connection, go to stderr, hunt-proxy's journal, as one
- * readable line each.
+ * 403, and `<short>.<domain>` and every other `-open` host answer 404 with an explanation. When nothing listens on the
+ * port, a port host answers 503 with an explanation that names the service of that port, an open host 503 with
+ * NOT_RUNNING_BODY, which tells a stranger nothing about the services. Every request except the health check goes to
+ * ACCESS_LOG as one JSON line; Caddy writes Cookie and Authorization headers there redacted. Caddy's own warnings and
+ * errors, such as an upstream that refuses the connection, go to stderr, hunt-proxy's journal, as one readable line each.
  */
 export function proxyConfig(services: readonly ServiceConfig[], host: SessionHost): CaddyConfig {
   const hostMatch = (name: string, pattern: string) => ({
@@ -294,6 +301,8 @@ export function proxyConfig(services: readonly ServiceConfig[], host: SessionHos
   });
   const route = (match: Record<string, unknown>, handler: Record<string, unknown>): CaddyRoute => ({ match: [match], handle: [handler], terminal: true });
   const notFound = (body: string) => ({ handler: "static_response", status_code: 404, body });
+  const notRunning = (match: Record<string, unknown>, body: string) =>
+    route({ ...match, expression: UNREACHABLE }, { handler: "static_response", status_code: 503, body });
   const mainHostBody = `This session has no main page: each service of the repository's hunt.json answers at https://${host.short}-<port>.${host.domain}.\n`;
   return {
     admin: { listen: PROXY_ADMIN, config: { persist: false } },
@@ -337,6 +346,18 @@ export function proxyConfig(services: readonly ServiceConfig[], host: SessionHos
               route(hostMatch("port", PORT_PATTERN), proxy("localhost:{http.regexp.port.1}", false)),
               { handle: [{ handler: "static_response", status_code: 404 }] },
             ],
+            errors: {
+              routes: [
+                notRunning(hostMatch("open", "[0-9]+-open"), NOT_RUNNING_BODY),
+                ...services.map((service) =>
+                  notRunning(
+                    { host: [portHost(host, service.port)] },
+                    `The service ${service.name} is not running, so nothing answers on port ${service.port}. Ask the agent to start it, then reload this page.\n`,
+                  ),
+                ),
+                notRunning(hostMatch("port", PORT_PATTERN), "Nothing answers on port {http.regexp.port.1} of the session VM.\n"),
+              ],
+            },
           },
         },
       },

@@ -15,12 +15,15 @@ import { matchCommands, slashQueryOf } from "./slashCommands";
 /** One agent config dropdown (model, effort, …) shown in the prompt toolbar. */
 export type ConfigSelect = { id: string; name: string; value: string; choices: DropdownOption[] };
 
-/** Accent color of the mode pill, matching the Claude Code dark theme (autoAccept, planMode, warning, error); manual mode stays neutral. */
+/**
+ * Accent color of the mode pill, matching the Claude Code dark theme (autoAccept, planMode, warning); bypass uses a
+ * pastel red instead of the theme's error red. Manual mode stays neutral.
+ */
 const MODE_CLASS: Record<string, string | undefined> = {
   acceptEdits: "text-[#af87ff]",
   plan: "text-[#48968c]",
   auto: "text-[#ffc107]",
-  bypassPermissions: "text-[#ff6b80]",
+  bypassPermissions: "text-[#f098a4]",
 };
 
 /**

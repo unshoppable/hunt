@@ -1,3 +1,9 @@
+## 0.4.0 (2026-10-14)
+
+### 🚀 Features
+
+- log Compute Engine calls, VM commands and hunt-ctl's stderr ([e94176c](https://github.com/unshoppable/hunt/commit/e94176c))
+
 ## 0.3.2 (2026-10-14)
 
 This was a version bump only for session to align it with other projects, there were no code changes.

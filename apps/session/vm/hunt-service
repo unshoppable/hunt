@@ -33,4 +33,7 @@ printf '==== %s: starting %s in %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$HUNT_S
 cd -- "$HUNT_SERVICE_DIR"
 command=$HUNT_SERVICE_COMMAND
 unset HUNT_SERVICE_DIR HUNT_SERVICE_COMMAND
+# Output goes to a file, not a terminal; Hunt shows the log in a terminal, so tools that honor FORCE_COLOR keep their
+# colors. A FORCE_COLOR in the service's env wins.
+export FORCE_COLOR=${FORCE_COLOR-1}
 exec /bin/bash -c "$command"

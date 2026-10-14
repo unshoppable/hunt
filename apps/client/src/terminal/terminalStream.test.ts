@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createResizeSync, decodeBase64, describeExit, encodeBase64, encodeBinaryInput, encodeTextInput, type TerminalSize } from "./terminalStream";
+import {
+  createResizeSync,
+  decodeBase64,
+  describeExit,
+  encodeBase64,
+  encodeBinaryInput,
+  encodeTextInput,
+  parseClipboardWrite,
+  type TerminalSize,
+} from "./terminalStream";
 
 describe("base64 chunks", () => {
   const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
@@ -82,5 +91,20 @@ describe("describeExit", () => {
     expect(describeExit(255)).toMatch(/SSH/);
     expect(describeExit(null)).toMatch(/ended/);
     expect(describeExit(1)).toBe("The terminal ended with exit code 1.");
+  });
+});
+
+describe("parseClipboardWrite", () => {
+  it("decodes the UTF-8 text of a clipboard write, whatever selections it names", () => {
+    expect(parseClipboardWrite(`c;${encodeTextInput("npm run dev → ok")}`)).toBe("npm run dev → ok");
+    expect(parseClipboardWrite(`;${encodeTextInput("plain")}`)).toBe("plain");
+  });
+
+  it("ignores queries, empty payloads and malformed data", () => {
+    expect(parseClipboardWrite("c;?")).toBeNull();
+    expect(parseClipboardWrite("c;")).toBeNull();
+    expect(parseClipboardWrite("no separator")).toBeNull();
+    expect(parseClipboardWrite("c;%%%")).toBeNull();
+    expect(parseClipboardWrite(`c;${encodeBase64(Uint8Array.of(0xff, 0xfe))}`)).toBeNull();
   });
 });

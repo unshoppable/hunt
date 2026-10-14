@@ -1,247 +1,244 @@
-import { useEffect, useRef, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { FitAddon } from "@xterm/addon-fit";
-import { WebLinksAddon } from "@xterm/addon-web-links";
-import { Terminal, type ITheme } from "@xterm/xterm";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { commands } from "../ipc/commands";
-import { listenTo } from "../ipc/events";
-import { useSettingsStore } from "../state/settings";
-import { HEADER_BAR } from "../ui/bars";
-import { SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { Spinner } from "../ui/icons";
+import type { PreviewService, TmuxWindow } from "../ipc/types";
+import { describeService, type Tone } from "../preview/services";
+import { usePreviewStore } from "../state/preview";
+import { useHuntStore } from "../state/store";
+import { ICON_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
+import { confirmDestructive } from "../ui/confirm";
+import { CloseIcon, PlusIcon, Spinner } from "../ui/icons";
 import { errorText } from "../ui/useLoad";
-import { createResizeSync, decodeBase64, describeExit, encodeBinaryInput, encodeTextInput } from "./terminalStream";
+import { nextActiveKey, terminalTabs, windowTabKey, type TerminalTab } from "./terminalTabs";
+import { TerminalView } from "./TerminalView";
 
-/** Waits this long after the last size change before the remote programs learn the new size and redraw. */
-const RESIZE_DELAY_MS = 80;
+/** How often the panel asks the VM which processes run, while it shows and the session is connected. */
+const POLL_MS = 5000;
 
-/** Line height for terminals: full-screen programs (tmux's borders and status line) need rows close to the font size. */
-const LINE_HEIGHT = 1.2;
+const NO_SERVICES: PreviewService[] = [];
 
-/** ANSI colors of VS Code's dark terminal theme, legible on the code pane's dark background. */
-const ANSI_COLORS: ITheme = {
-  black: "#000000",
-  red: "#cd3131",
-  green: "#0dbc79",
-  yellow: "#e5e510",
-  blue: "#2472c8",
-  magenta: "#bc3fbc",
-  cyan: "#11a8cd",
-  white: "#e5e5e5",
-  brightBlack: "#666666",
-  brightRed: "#f14c4c",
-  brightGreen: "#23d18b",
-  brightYellow: "#f5f543",
-  brightBlue: "#3b8eea",
-  brightMagenta: "#d670d6",
-  brightCyan: "#29b8db",
-  brightWhite: "#e5e5e5",
+const TONE_DOT: Record<Tone, string> = {
+  ok: "bg-green-400",
+  pending: "bg-neutral-400",
+  warning: "bg-amber-300",
+  error: "bg-red-400",
+  idle: "bg-neutral-600",
 };
 
-function terminalTheme(background: string): ITheme {
-  return { ...ANSI_COLORS, background, foreground: "#d4d4d4", cursor: "#d4d4d4", cursorAccent: background, selectionBackground: "#4c8bf580" };
-}
-
-type TerminalStatus = { state: "connecting" } | { state: "open" } | { state: "ended"; message: string };
-
-const CONNECTING: TerminalStatus = { state: "connecting" };
-
-/** The xterm.js view of the panel and its fit addon. */
-type TerminalView = { terminal: Terminal; fit: FitAddon };
-
-/** Fits the view to its host; a hidden host has no size to fit to. */
-function fitToHost(view: TerminalView, host: HTMLElement): void {
-  if (!host.clientWidth || !host.clientHeight) return;
-  view.fit.fit();
-}
+/** The tab the next focus goes to (null: the active tab, once there is one) and a count that makes each request new. */
+type FocusRequest = { key: string | null; count: number };
 
 /**
- * A terminal on the VM of the remote session `sessionId`, attached to the tmux session in which the agent runs the
- * app's long-running processes (one window per process). It connects the first time the panel is shown and stays
- * connected while hidden, so switching tabs keeps it; it ends with the panel. Font family and size follow the code
- * pane's settings. While it has the focus, it takes every key it understands (Escape included) and stops the event, so
- * the window's shortcuts do not see them; ⌘C copies its selection, ⌘V pastes through the Edit menu, ⌘click opens a link.
+ * The Terminal tab of a remote session: one tab per process of the app on its VM, like the tabs of a local terminal.
+ * The services of the repository's hunt.json show their logs, read-only; the windows of the tmux session `app`, in which
+ * the agent runs its other processes, take input. "+" opens a shell in a new window, × ends a window and its process.
+ * The panel stays mounted while another tab shows, so its terminals keep their connections. It asks the VM for the
+ * processes whenever it shows, then every few seconds while the session is connected, which proves a running VM.
  */
 export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isVisible: boolean }) {
-  const fontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
-  const fontSize = useSettingsStore((state) => state.panes.diff.fontSize);
-  const background = useSettingsStore((state) => state.panes.diff.background);
-  const hostRef = useRef<HTMLDivElement>(null);
-  const [view, setView] = useState<TerminalView | null>(null);
-  const [status, setStatus] = useState<TerminalStatus>(CONNECTING);
-  /** Bumped by "Reconnect"; every value opens a new connection. */
-  const [attempt, setAttempt] = useState(0);
+  const isLive = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === sessionId)?.isLive));
+  const hasPreviewDomain = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === sessionId)?.remote?.previewDomain));
+  const services = usePreviewStore((state) => state.previews[sessionId]?.status?.services ?? NO_SERVICES);
+  const isVmRunning = usePreviewStore((state) => state.previews[sessionId]?.status?.vmRunning ?? true);
+  const refreshServices = usePreviewStore((state) => state.refresh);
+  const [windows, setWindows] = useState<TmuxWindow[]>([]);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  /** The tabs shown at least once; each keeps its terminal while its process exists. */
+  const [openedKeys, setOpenedKeys] = useState<string[]>([]);
+  const [focusRequest, setFocusRequest] = useState<FocusRequest>({ key: null, count: 0 });
+  const [isOpeningShell, setIsOpeningShell] = useState(false);
+  const tabs = useMemo(() => terminalTabs(services, windows), [services, windows]);
+  const previousTabsRef = useRef<TerminalTab[]>([]);
   const wasVisibleRef = useRef(isVisible);
-  const wantsFocusRef = useRef(false);
+  /** Bumped by every load of the windows, so that only the latest one lands. */
+  const loadGenerationRef = useRef(0);
 
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!isVisible || view || !host) return;
-    const terminal = new Terminal({
-      fontFamily,
-      fontSize,
-      lineHeight: LINE_HEIGHT,
-      theme: terminalTheme(background),
-      cursorBlink: true,
-      macOptionClickForcesSelection: true,
-      scrollback: 5000,
-    });
-    const fit = new FitAddon();
-    terminal.loadAddon(fit);
-    terminal.loadAddon(
-      new WebLinksAddon((event, uri) => {
-        if (!event.metaKey) return;
-        void openUrl(uri).catch((reason) => console.error("failed to open the link", reason));
-      }),
-    );
-    // WebKit's Copy menu item only sees DOM selections, so ⌘C copies the terminal's selection itself.
-    terminal.attachCustomKeyEventHandler((event) => {
-      const isCopy = event.type === "keydown" && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "c";
-      if (!isCopy || !terminal.hasSelection()) return true;
-      event.preventDefault();
-      void navigator.clipboard.writeText(terminal.getSelection()).catch((reason) => console.error("failed to copy the terminal selection", reason));
-      return false;
-    });
-    terminal.open(host);
-    const created = { terminal, fit };
-    fitToHost(created, host);
-    setView(created);
-  }, [isVisible, view, fontFamily, fontSize, background]);
-
-  useEffect(() => {
-    if (!view) return;
-    return () => view.terminal.dispose();
-  }, [view]);
-
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!view || !host) return;
-    view.terminal.options.fontFamily = fontFamily;
-    view.terminal.options.fontSize = fontSize;
-    view.terminal.options.theme = terminalTheme(background);
-    fitToHost(view, host);
-  }, [view, fontFamily, fontSize, background]);
-
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!view || !host) return;
-    const observer = new ResizeObserver(() => fitToHost(view, host));
-    observer.observe(host);
-    return () => observer.disconnect();
-  }, [view]);
-
-  // Showing the tab focuses the terminal; a panel that mounts visible (another session opened) leaves the focus alone.
-  useEffect(() => {
-    if (isVisible && !wasVisibleRef.current) {
-      wantsFocusRef.current = true;
+  const loadWindows = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
+    try {
+      const next = await commands.terminalWindows(sessionId);
+      if (generation !== loadGenerationRef.current) return;
+      setWindows(next);
+      setError(null);
+    } catch (reason) {
+      if (generation === loadGenerationRef.current) {
+        setError(errorText(reason));
+      }
+    } finally {
+      setHasLoaded(true);
     }
-    wasVisibleRef.current = isVisible;
-    if (!view || !wantsFocusRef.current) return;
-    wantsFocusRef.current = false;
-    view.terminal.focus();
-  }, [isVisible, view]);
+  }, [sessionId]);
 
   useEffect(() => {
-    if (!view) return;
-    const { terminal } = view;
-    const terminalId = crypto.randomUUID();
-    const target = getCurrentWindow().label;
-    let isDisposed = false;
-    let isOpen = false;
-    const reportFailure = (reason: unknown) => {
-      if (isDisposed) return;
-      isOpen = false;
-      setStatus((current) => (current.state === "ended" ? current : { state: "ended", message: errorText(reason) }));
-    };
-    const resizes = createResizeSync((size) => void commands.resizeTerminal(terminalId, size.cols, size.rows).catch(reportFailure), RESIZE_DELAY_MS);
-    const send = (data: string) => {
-      if (!isOpen) return;
-      void commands.writeTerminal(terminalId, data).catch(reportFailure);
-    };
-    terminal.reset();
-    const listeners = [
-      listenTo(
-        "terminal:output",
-        (event) => {
-          if (event.id === terminalId) {
-            terminal.write(decodeBase64(event.data));
-          }
-        },
-        { target },
-      ),
-      listenTo(
-        "terminal:exit",
-        (event) => {
-          if (event.id !== terminalId) return;
-          isOpen = false;
-          setStatus({ state: "ended", message: describeExit(event.code) });
-        },
-        { target },
-      ),
-    ];
-    const subscriptions = [
-      terminal.onData((text) => send(encodeTextInput(text))),
-      terminal.onBinary((binary) => send(encodeBinaryInput(binary))),
-      terminal.onResize((size) => {
-        if (isOpen) {
-          resizes.push(size);
-        }
-      }),
-    ];
-    // Both listeners must be in place before the backend starts the terminal, whose first output may come at once.
-    void Promise.all(listeners)
-      .then(async () => {
-        if (isDisposed) return;
-        const size = { cols: terminal.cols, rows: terminal.rows };
-        resizes.markSent(size);
-        await commands.openTerminal(sessionId, terminalId, size.cols, size.rows);
-        if (isDisposed) {
-          void commands.closeTerminal(terminalId).catch((reason) => console.error("failed to close the terminal", reason));
-          return;
-        }
-        isOpen = true;
-        resizes.push({ cols: terminal.cols, rows: terminal.rows });
-        setStatus((current) => (current.state === "connecting" ? { state: "open" } : current));
-      })
-      .catch(reportFailure);
-    return () => {
-      isDisposed = true;
-      resizes.cancel();
-      for (const subscription of subscriptions) {
-        subscription.dispose();
+    if (!isVisible) return;
+    const refresh = () => {
+      void loadWindows();
+      if (hasPreviewDomain) {
+        void refreshServices(sessionId);
       }
-      for (const listener of listeners) {
-        void listener.then((unlisten) => unlisten());
-      }
-      void commands.closeTerminal(terminalId).catch((reason) => console.error("failed to close the terminal", reason));
     };
-  }, [view, sessionId, attempt]);
+    refresh();
+    if (!isLive) return;
+    const timer = window.setInterval(() => {
+      if (!document.hidden) {
+        refresh();
+      }
+    }, POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [sessionId, isVisible, isLive, hasPreviewDomain, loadWindows, refreshServices]);
 
-  const reconnect = () => {
-    setStatus(CONNECTING);
-    setAttempt((current) => current + 1);
-    view?.terminal.focus();
+  useEffect(() => {
+    // The updater runs at the next render, after the ref moved on, so it gets the previous tabs as a value.
+    const previous = previousTabsRef.current;
+    previousTabsRef.current = tabs;
+    setActiveKey((current) => nextActiveKey(previous, tabs, current));
+    setOpenedKeys((keys) => {
+      const kept = keys.filter((key) => tabs.some((tab) => tab.key === key));
+      return kept.length === keys.length ? keys : kept;
+    });
+  }, [tabs]);
+
+  useEffect(() => {
+    if (!isVisible || !activeKey) return;
+    setOpenedKeys((keys) => (keys.includes(activeKey) ? keys : [...keys, activeKey]));
+  }, [isVisible, activeKey]);
+
+  // Showing the panel focuses its active terminal; a panel that mounts visible (another session opened) leaves it alone.
+  useEffect(() => {
+    const becameVisible = isVisible && !wasVisibleRef.current;
+    wasVisibleRef.current = isVisible;
+    if (becameVisible) {
+      setFocusRequest((current) => ({ key: activeKey, count: current.count + 1 }));
+    }
+  }, [isVisible, activeKey]);
+
+  // A request made before the tabs arrived goes to the first tab that becomes active, and only to that one.
+  useEffect(() => {
+    if (!activeKey || focusRequest.key || !focusRequest.count) return;
+    setFocusRequest({ key: activeKey, count: focusRequest.count });
+  }, [activeKey, focusRequest]);
+
+  const activate = (key: string) => {
+    setActiveKey(key);
+    setFocusRequest((current) => ({ key, count: current.count + 1 }));
+  };
+
+  const openShell = async () => {
+    setIsOpeningShell(true);
+    try {
+      const id = await commands.openShellWindow(sessionId);
+      await loadWindows();
+      activate(windowTabKey(id));
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setIsOpeningShell(false);
+    }
+  };
+
+  const closeWindow = async (tab: TerminalTab) => {
+    if (tab.target.kind !== "window") return;
+    const isConfirmed = await confirmDestructive(`End "${tab.label}"? Its tmux window on the VM closes and the processes in it stop.`, "End");
+    if (!isConfirmed) return;
+    try {
+      await commands.closeTerminalWindow(sessionId, tab.target.id);
+    } catch (reason) {
+      setError(errorText(reason));
+      return;
+    }
+    await loadWindows();
   };
 
   return (
     <div className={`h-full min-h-0 flex-col ${isVisible ? "flex" : "hidden"}`}>
-      <div className={`${HEADER_BAR} gap-2 border-b border-(--line) px-4`}>
-        <span className="text-sm font-medium text-neutral-100">Terminal</span>
-        <span className="font-mono text-[13px] text-neutral-500">tmux app</span>
-        {status.state === "connecting" ? <span className="text-[13px] text-neutral-400">Connecting…</span> : null}
-        {status.state === "ended" ? <span className="min-w-0 truncate text-[13px] text-red-300" title={status.message}>{status.message}</span> : null}
-        <span className="flex-1" />
-        {status.state === "connecting" ? <Spinner /> : null}
-        {status.state === "ended" ? (
-          <button type="button" onClick={reconnect} className={SECONDARY_BUTTON_XS}>
-            Reconnect
-          </button>
+      <div className="flex min-w-0 items-center gap-1 border-b border-(--line) px-2 py-2.5 text-[13px]">
+        <div role="tablist" className="terminal-tabs flex min-w-0 items-center gap-1 overflow-x-auto">
+          {tabs.map((tab) => (
+            <TerminalTabButton
+              key={tab.key}
+              tab={tab}
+              isActive={tab.key === activeKey}
+              isVmRunning={isVmRunning}
+              onActivate={() => activate(tab.key)}
+              onClose={tab.target.kind === "window" ? () => void closeWindow(tab) : null}
+            />
+          ))}
+        </div>
+        <button type="button" onClick={() => void openShell()} disabled={isOpeningShell} title="New shell" className={ICON_BUTTON_XS}>
+          {isOpeningShell ? <Spinner /> : <PlusIcon />}
+        </button>
+      </div>
+      {error ? <p className="border-b border-(--line) px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
+      <div className="min-h-0 flex-1">
+        {tabs
+          .filter((tab) => openedKeys.includes(tab.key))
+          .map((tab) => (
+            <TerminalView
+              key={tab.key}
+              sessionId={sessionId}
+              target={tab.target}
+              isVisible={isVisible && tab.key === activeKey}
+              focusRequest={focusRequest.key === tab.key ? focusRequest.count : 0}
+            />
+          ))}
+        {hasLoaded && !tabs.length ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-[13px] text-neutral-500">
+            <p>No process runs on the VM yet.</p>
+            <button type="button" onClick={() => void openShell()} disabled={isOpeningShell} className={SECONDARY_BUTTON_XS}>
+              New shell
+            </button>
+          </div>
         ) : null}
       </div>
-      <div className="min-h-0 flex-1 overflow-hidden p-2" style={{ background }}>
-        <div ref={hostRef} className="h-full w-full" />
-      </div>
+    </div>
+  );
+}
+
+/** A tab of the strip: a service with its state dot, or a tmux window with × to end it (also by middle click). */
+function TerminalTabButton({
+  tab,
+  isActive,
+  isVmRunning,
+  onActivate,
+  onClose,
+}: {
+  tab: TerminalTab;
+  isActive: boolean;
+  isVmRunning: boolean;
+  onActivate: () => void;
+  onClose: (() => void) | null;
+}) {
+  const state = tab.service ? describeService(tab.service, isVmRunning) : null;
+  const title = tab.service ? `The log of the service ${tab.service.name}, ~/logs/${tab.service.name}.log on the VM; read-only` : `tmux window ${tab.label}`;
+  return (
+    <div
+      role="tab"
+      aria-selected={isActive}
+      title={title}
+      onClick={onActivate}
+      onAuxClick={(event) => {
+        if (event.button === 1) {
+          onClose?.();
+        }
+      }}
+      className={`${TAB_BUTTON_SM} group cursor-pointer gap-1.5 ${isActive ? TAB_ACTIVE : TAB_INACTIVE}`}
+    >
+      {state ? <span className={`size-2 shrink-0 rounded-full ${TONE_DOT[state.tone]}`} title={state.text} /> : null}
+      <span className="whitespace-nowrap">{tab.label}</span>
+      {onClose ? (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onClose();
+          }}
+          title="End the process"
+          className={`-my-1 -mr-1 flex size-5 items-center justify-center rounded text-neutral-500 hover:bg-white/10 hover:text-white ${isActive ? "" : "opacity-0 group-hover:opacity-100"}`}
+        >
+          <CloseIcon className="size-3" />
+        </button>
+      ) : null}
     </div>
   );
 }

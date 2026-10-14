@@ -14,6 +14,22 @@ export function decodeBase64(data: string): Uint8Array {
   return bytes;
 }
 
+/**
+ * The text an OSC 52 sequence (`<selections>;<base64>`) puts on the clipboard, as tmux sends a mouse selection; null for
+ * a query (`?`), which must never read the clipboard, for an empty payload and for anything that is not UTF-8 base64.
+ */
+export function parseClipboardWrite(data: string): string | null {
+  const separator = data.indexOf(";");
+  if (separator < 0) return null;
+  const payload = data.slice(separator + 1);
+  if (!payload || payload === "?") return null;
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(decodeBase64(payload));
+  } catch {
+    return null;
+  }
+}
+
 /** base64 of `bytes`, as the backend takes terminal input. */
 export function encodeBase64(bytes: Uint8Array): string {
   let binary = "";

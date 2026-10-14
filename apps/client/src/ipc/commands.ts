@@ -23,6 +23,8 @@ import type {
   SessionNotification,
   SessionView,
   Shelf,
+  TerminalTarget,
+  TmuxWindow,
   VmSettings,
   Workspace,
 } from "./types";
@@ -110,16 +112,23 @@ export const commands = {
    */
   setRemoteSettings: (settings: VmSettings | null) => invoke<void>("set_remote_settings", { settings }),
   /**
-   * Opens a terminal with `cols` × `rows` cells on the VM of the remote session `id`, attached to the tmux session of
-   * the app's processes. The caller picks `terminalId` and listens before it calls, since the output (`terminal:output`,
-   * then `terminal:exit`, both sent to this window only) may arrive before the promise resolves. A VM that is off stays off.
+   * Opens a terminal with `cols` × `rows` cells showing `process` on the VM of the remote session `id`. The caller picks
+   * `terminalId` and listens before it calls, since the output (`terminal:output`, then `terminal:exit`, both sent to
+   * this window only) may arrive before the promise resolves. A VM that is off stays off.
    */
-  openTerminal: (id: string, terminalId: string, cols: number, rows: number) => invoke<void>("open_terminal", { id, terminalId, cols, rows }),
+  openTerminal: (id: string, terminalId: string, process: TerminalTarget, cols: number, rows: number) =>
+    invoke<void>("open_terminal", { id, terminalId, process, cols, rows }),
   /** Types `data`, base64 of the input bytes, into the terminal. */
   writeTerminal: (terminalId: string, data: string) => invoke<void>("write_terminal", { terminalId, data }),
   resizeTerminal: (terminalId: string, cols: number, rows: number) => invoke<void>("resize_terminal", { terminalId, cols, rows }),
-  /** Ends the terminal; the tmux session and its processes keep running. Closing a terminal that is not open does nothing. */
+  /** Ends the terminal; the process it shows keeps running. Closing a terminal that is not open does nothing. */
   closeTerminal: (terminalId: string) => invoke<void>("close_terminal", { terminalId }),
+  /** The windows of the tmux session `app` on the VM of the remote session `id`; none while the VM is off. */
+  terminalWindows: (id: string) => invoke<TmuxWindow[]>("terminal_windows", { id }),
+  /** Starts a shell in a new tmux window on the VM of the remote session `id` and resolves to the window's ID. */
+  openShellWindow: (id: string) => invoke<string>("open_shell_window", { id }),
+  /** Ends the tmux window `windowId` on the VM of the remote session `id` and the processes in it. */
+  closeTerminalWindow: (id: string, windowId: string) => invoke<void>("close_terminal_window", { id, windowId }),
   closeSession: (id: string, removeWorktree: boolean) => invoke<void>("close_session", { id, removeWorktree }),
   /** Prepares the worktree's `node_modules` again after a failed attempt; progress arrives through `sessions:changed`. */
   prepareDependencies: (id: string) => invoke<void>("prepare_dependencies", { id }),

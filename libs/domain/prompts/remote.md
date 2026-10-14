@@ -19,7 +19,7 @@ tmux new-window -t app -n <name> '<command>'
 tmux pipe-pane -o -t app:<name> 'cat >> ~/logs/<name>.log'
 ```
 
-`tmux list-windows -t app` shows what runs; to restart a process, close its window with `tmux kill-window -t app:<name>` and start it again. The user can watch these windows too. Dev servers must listen on 0.0.0.0 or localhost; port 8080 belongs to Hunt's preview proxy.
+`tmux list-windows -t app` shows what runs; to restart a process, close its window with `tmux kill-window -t app:<name>` and start it again. The user watches each window and each service's log in a tab of their own and opens shells as windows named `shell`; leave those alone. Dev servers must listen on 0.0.0.0 or localhost; port 8080 belongs to Hunt's preview proxy.
 
 ### Preview
 Every port of this VM is at `$HUNT_PREVIEW_URL_TEMPLATE` with `{port}` replaced by the port number, behind Google login. A service that hunt.json marks public (`"guarded": false`) is also at its `-open` URL, which only the app's own login protects. Check changes to the user interface with the Playwright tools against http://localhost:<port>; the screenshots you take show up in the user's chat.

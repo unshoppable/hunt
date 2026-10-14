@@ -52,7 +52,7 @@ pub fn open_url(id: Uuid, domain: &str, port: u16) -> String {
 }
 
 /// Whether `name` matches `^[a-z][a-z0-9-]{0,31}$`, the names hunt.json allows for services.
-fn is_service_name(name: &str) -> bool {
+pub(crate) fn is_service_name(name: &str) -> bool {
     name.len() <= MAX_SERVICE_NAME_LENGTH
         && name.starts_with(|character: char| character.is_ascii_lowercase())
         && name.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-')

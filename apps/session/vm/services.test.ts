@@ -390,12 +390,13 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(sh(`test -e /etc/hunt/services || test -e /srv/hunt/sessions/${ID} || echo removed`).stdout).toBe("removed\n");
   });
 
-  it("runs a service's command as the agent in its folder, without the HUNT_SERVICE_ variables, and logs to ~/logs", () => {
-    const run = (command: string) =>
+  it("runs a service's command as the agent in its folder, without the HUNT_SERVICE_ variables, and logs to ~/logs in color", () => {
+    const run = (command: string, env: string[] = []) =>
       docker([
         "exec",
         "--user",
         "agent",
+        ...env.flatMap((variable) => ["--env", variable]),
         "--env",
         "HOME=/home/agent",
         "--env",
@@ -407,7 +408,7 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
         "admin",
       ]);
     sh("install -d -o agent -g agent /home/agent/logs && truncate -s 21M /home/agent/logs/admin.log && chown agent:agent /home/agent/logs/admin.log");
-    expect(run('echo "$(id -un) in $PWD: [${HUNT_SERVICE_DIR-}${HUNT_SERVICE_COMMAND-}]"; shopt -q login_shell || echo plain')).toEqual({
+    expect(run('echo "$(id -un) in $PWD: [${HUNT_SERVICE_DIR-}${HUNT_SERVICE_COMMAND-}] color=${FORCE_COLOR-}"; shopt -q login_shell || echo plain')).toEqual({
       status: 0,
       stdout: "",
       stderr: "",
@@ -415,10 +416,12 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(sh("stat -c %s /home/agent/logs/admin.log.1").stdout).toBe(`${21 * 1024 * 1024}\n`);
     const log = sh("cat /home/agent/logs/admin.log").stdout;
     expect(log).toMatch(/^==== \d{4}-\d\d-\d\d \d\d:\d\d:\d\d \S+: starting echo .* in \/home\/agent\/app\/admin\n/);
-    expect(log.slice(log.indexOf("\n") + 1)).toBe("agent in /home/agent/app/admin: []\nplain\n");
+    expect(log.slice(log.indexOf("\n") + 1)).toBe("agent in /home/agent/app/admin: [] color=1\nplain\n");
 
     expect(run("exit 7").status).toBe(7);
     expect(sh("grep -c '^==== ' /home/agent/logs/admin.log").stdout).toBe("2\n");
+    expect(run('echo "color=$FORCE_COLOR"', ["FORCE_COLOR=0"]).status).toBe(0);
+    expect(sh("tail -n 1 /home/agent/logs/admin.log").stdout).toBe("color=0\n");
     const invalid = docker(["exec", "--user", "agent", container, "/srv/hunt/current/vm/hunt-service", "../x"]);
     expect(invalid).toMatchObject({ status: 2, stderr: "usage: hunt-service <name>\n" });
   });

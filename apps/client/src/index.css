@@ -439,11 +439,14 @@ body,
   border-radius: 2px;
 }
 
-/* Editor tab bars (see ide/EditorPane.tsx) scroll sideways without showing a scrollbar. */
-.ide-tabs {
+/* Editor and terminal tab bars (see ide/EditorPane.tsx, terminal/TerminalPanel.tsx) scroll sideways without showing a
+   scrollbar. */
+.ide-tabs,
+.terminal-tabs {
   scrollbar-width: none;
 }
-.ide-tabs::-webkit-scrollbar {
+.ide-tabs::-webkit-scrollbar,
+.terminal-tabs::-webkit-scrollbar {
   display: none;
 }
 

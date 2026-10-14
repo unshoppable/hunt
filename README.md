@@ -479,15 +479,20 @@ session VM (what it does, outcome, duration, and the end of stderr when it faile
 keeps every other user on the gateway, containers and the edge proxy included, off the metadata server, whose token
 can create, start and delete VMs; only root and `hunt-gw` reach it, and everyone keeps DNS through it.
 
-Next to the preview, the *Terminal* tab (`apps/client/src/terminal/TerminalPanel.tsx`, xterm.js) attaches to the tmux
-session `app` on the VM, in which the agent runs long-running processes outside the services of `hunt.json`, one window
-per process; `tail -F ~/logs/<name>.log` there follows a service. The backend
-(`apps/client/src-tauri/src/remote/terminal.rs`) runs `ssh -tt … sudo -n -iu agent tmux -u new-session -A -s app` in a
-local pseudo terminal (`portable-pty`), so the programs see a real TTY and keep their colors; several people can attach
-at once. The terminal joins the shared SSH connection when one is open but never starts it, and streams its output to
-the window that opened it as base64 chunks (`terminal:output`, then `terminal:exit`). It connects when the tab is first
-shown, stays connected while the preview tab shows, and ends with the session's panel, its window or a reload; tmux
-keeps the processes running. A VM that is off is not started for it.
+Next to the preview, the *Terminal* tab (`apps/client/src/terminal/TerminalPanel.tsx`, xterm.js) shows one tab per
+process of the app, like the tabs of a local terminal. Each service of `hunt.json` gets a read-only tab that follows its
+log (`tail -n 5000 -F ~/logs/<name>.log`); `hunt-service` sets `FORCE_COLOR=1` unless the service's `env` sets it, so
+tools keep their colors in the log. Each window of the tmux session `app`, in which the agent runs its other
+long-running processes, gets a tab that takes input: it attaches to a tmux session of its own grouped with `app`
+(`hunt-view-<terminal id>`, no status bar, mouse on, destroyed with the terminal), so several tabs show different windows
+at once. "+" opens a shell in a new window `shell`, × ends a window after a confirmation. The panel lists the windows
+(`tmux list-windows`) and the services (`preview_status`) when it shows, then every 5 s while the session is connected.
+The backend (`apps/client/src-tauri/src/remote/terminal.rs`) runs `ssh -tt … sudo -n -iu agent …` in a local pseudo
+terminal (`portable-pty`), so the programs see a real TTY and keep their colors. A terminal joins the shared SSH
+connection when one is open but never starts it, and streams its output to the window that opened it as base64 chunks
+(`terminal:output`, then `terminal:exit`). It connects when its tab is first shown, stays connected while another tab
+shows, and ends when its process is gone, with the session's panel, its window or a reload; the processes keep running.
+A VM that is off is not started for it.
 
 While a remote session is connected, Hunt syncs its files between the worktree on the VM and the local worktree in
 both directions (`apps/client/src-tauri/src/remote/sync.rs`, triggered by `apps/client/src-tauri/src/session/sync.rs`),

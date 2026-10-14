@@ -32,7 +32,7 @@ use crate::lsp::{self, LspRegistry};
 use crate::remote::api::GatewayApi;
 use crate::remote::preview::PreviewStatus;
 use crate::remote::ssh::{ssh_dir, Ssh};
-use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize};
+use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize, TerminalTarget, TmuxWindow};
 use crate::remote::sync::Direction;
 use crate::remote::{self, RemoteStep, RemoteTarget, Reporter, VmRef, VmSettings};
 use crate::screenshots::{self, Screenshot};
@@ -754,10 +754,27 @@ struct TerminalExitEvent {
     code: Option<u32>,
 }
 
-/// Opens the terminal `terminal_id` with `cols` × `rows` cells on the VM of the remote session `id`, attached to the
-/// tmux session the agent runs the app's processes in. The caller picks the ID so it can listen before the first output
-/// arrives: `terminal:output` and finally `terminal:exit` go to the calling window only, which owns the terminal.
-/// A VM that is off is not started.
+/// The remote target of the session `id` and whether its VM runs; the VM is not started. A connected session proves a
+/// running VM, so only an unconnected one asks the gateway. `action` names what the caller does, for errors.
+async fn remote_vm_state(app: &AppHandle, registry: &SessionRegistry, id: Uuid, action: &str) -> Result<(RemoteTarget, bool), String> {
+    let target = store::find_session(app, id)?.remote.ok_or_else(|| format!("failed to {action}: the session runs locally"))?;
+    let is_connected = registry.live.lock().await.contains_key(&id);
+    let is_running = is_connected || gateway_api(action).await?.is_vm_running(id).await?;
+    Ok((target, is_running))
+}
+
+/// The remote target of the session `id` once its VM is known to run; a VM that is off is an error and stays off.
+async fn running_remote(app: &AppHandle, registry: &SessionRegistry, id: Uuid, action: &str) -> Result<RemoteTarget, String> {
+    let (target, is_running) = remote_vm_state(app, registry, id, action).await?;
+    if !is_running {
+        return Err(format!("failed to {action}: the VM {} is off; the next prompt starts it", target.vm.instance));
+    }
+    Ok(target)
+}
+
+/// Opens the terminal `terminal_id` with `cols` × `rows` cells showing `process` on the VM of the remote session `id`.
+/// The caller picks the ID so it can listen before the first output arrives: `terminal:output` and finally
+/// `terminal:exit` go to the calling window only, which owns the terminal. A VM that is off is not started.
 #[tauri::command]
 pub async fn open_terminal(
     app: AppHandle,
@@ -766,15 +783,12 @@ pub async fn open_terminal(
     terminals: State<'_, TerminalRegistry>,
     id: Uuid,
     terminal_id: Uuid,
+    process: TerminalTarget,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let target = store::find_session(&app, id)?.remote.ok_or("failed to open the terminal: the session runs locally")?;
-    let is_connected = registry.live.lock().await.contains_key(&id);
-    if !is_connected && !gateway_api("open the terminal").await?.is_vm_running(id).await? {
-        return Err(format!("failed to open the terminal: the VM {} is off; the next prompt starts it", target.vm.instance));
-    }
-    let args = remote::terminal::attach_args(&target, &ssh_dir()?).await?;
+    let target = running_remote(&app, &registry, id, "open the terminal").await?;
+    let args = remote::terminal::attach_args(&target, &process, terminal_id, &ssh_dir()?).await?;
     let owner = window.label().to_string();
     let (emitter, receiver) = (app.clone(), owner.clone());
     let terminal = Terminal::spawn("ssh", &args, TerminalSize { cols, rows }, move |event| {
@@ -787,6 +801,31 @@ pub async fn open_terminal(
         };
     })?;
     terminals.insert(terminal_id, &owner, terminal)
+}
+
+/// The windows of the tmux session `app` on the VM of the remote session `id`, in their order. A VM that is off has
+/// none; it is not started.
+#[tauri::command]
+pub async fn terminal_windows(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid) -> Result<Vec<TmuxWindow>, String> {
+    let (target, is_running) = remote_vm_state(&app, &registry, id, "list the terminal windows").await?;
+    if !is_running {
+        return Ok(Vec::new());
+    }
+    remote::terminal::list_windows(&Ssh::open(&target.vm, &ssh_dir()?).await?).await
+}
+
+/// Starts a shell in a new tmux window on the VM of the remote session `id` and returns the window's ID.
+#[tauri::command]
+pub async fn open_shell_window(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid) -> Result<String, String> {
+    let target = running_remote(&app, &registry, id, "open a shell").await?;
+    remote::terminal::open_shell_window(&Ssh::open(&target.vm, &ssh_dir()?).await?).await
+}
+
+/// Ends the tmux window `window_id` on the VM of the remote session `id` and the processes in it.
+#[tauri::command]
+pub async fn close_terminal_window(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, window_id: String) -> Result<(), String> {
+    let target = running_remote(&app, &registry, id, "close the terminal window").await?;
+    remote::terminal::kill_window(&Ssh::open(&target.vm, &ssh_dir()?).await?, &window_id).await
 }
 
 /// Types `data`, base64 of the input bytes, into the terminal `terminal_id`.
@@ -802,7 +841,7 @@ pub fn resize_terminal(terminals: State<'_, TerminalRegistry>, terminal_id: Uuid
     terminals.resize(terminal_id, TerminalSize { cols, rows })
 }
 
-/// Ends the terminal `terminal_id`; the tmux session and the processes in it keep running.
+/// Ends the terminal `terminal_id`; the process it shows keeps running.
 #[tauri::command]
 pub fn close_terminal(terminals: State<'_, TerminalRegistry>, terminal_id: Uuid) {
     terminals.close(terminal_id);

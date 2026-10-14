@@ -232,6 +232,12 @@ export type RemoteSyncEvent = {
   changedLocal: boolean;
 };
 
+/** What a terminal shows on a session VM: the log of a hunt.json service, read-only, or a window of the tmux session `app`. */
+export type TerminalTarget = { kind: "service"; name: string } | { kind: "window"; id: string };
+
+/** A window of the tmux session `app` on a session VM; `id` is tmux's window ID such as `@3`, which never repeats. */
+export type TmuxWindow = { id: string; name: string };
+
 /** A chunk of a terminal's output: base64 of its bytes, which may end inside a UTF-8 or an escape sequence. */
 export type TerminalOutputEvent = { id: string; data: string };
 

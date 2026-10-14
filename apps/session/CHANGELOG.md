@@ -1,3 +1,9 @@
+## 0.4.1 (2026-10-14)
+
+### 🩹 Fixes
+
+- **session:** write the preview proxy's warnings and errors as readable lines ([ac7b79b](https://github.com/unshoppable/hunt/commit/ac7b79b))
+
 ## 0.4.0 (2026-10-14)
 
 ### 🚀 Features

@@ -1,3 +1,9 @@
+## 0.16.2 (2026-10-14)
+
+### 🩹 Fixes
+
+- show the bypass permissions mode in a pastel red ([1be9e36](https://github.com/unshoppable/hunt/commit/1be9e36))
+
 ## 0.16.1 (2026-10-14)
 
 ### 🩹 Fixes

@@ -1,3 +1,15 @@
+## 0.15.0 (2026-10-14)
+
+### 🚀 Features
+
+- sync the files of remote sessions with the local worktree in both directions ([52f79ef](https://github.com/unshoppable/hunt/commit/52f79ef))
+- have the agent start the services its task needs right after a handoff ([5a63eb4](https://github.com/unshoppable/hunt/commit/5a63eb4))
+
+### 🩹 Fixes
+
+- record content, links and modes safely in the remote file sync and let ignored files through the retrieval ([5b0cbeb](https://github.com/unshoppable/hunt/commit/5b0cbeb))
+- keep local edits and files the other side ignores safe in the remote file sync ([b9e74f3](https://github.com/unshoppable/hunt/commit/b9e74f3))
+
 ## 0.14.0 (2026-10-14)
 
 ### 🚀 Features

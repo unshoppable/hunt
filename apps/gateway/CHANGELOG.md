@@ -1,3 +1,13 @@
+## 0.10.0 (2026-10-14)
+
+### 🚀 Features
+
+- sync the files of remote sessions with the local worktree in both directions ([52f79ef](https://github.com/unshoppable/hunt/commit/52f79ef))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.9.0
+
 ## 0.9.1 (2026-10-14)
 
 ### 🧱 Updated Dependencies

@@ -243,7 +243,9 @@ fn review_session_id(record: &SessionRecord) -> Uuid {
 /// Creates the session `id`: with `workspace` `Worktree` in a fresh worktree off `base_ref`, with `Checkout` in the
 /// repository's own checkout on its current branch, where `base_ref` is ignored. The UI picks the id so it can list
 /// the session before this returns. `pull_request` marks it as the review of that pull request; `diff_base_ref` is
-/// then the pull request's target branch, whose merge base with the base becomes the diff base.
+/// then the pull request's target branch, whose merge base with the base becomes the diff base, and the worktree works
+/// on the pull request's own branch `pull_request_branch` rather than a new one, with `base_ref` naming that branch
+/// locally or on a remote (`origin/<branch>`).
 #[tauri::command]
 pub async fn create_session(
     app: AppHandle,
@@ -255,13 +257,14 @@ pub async fn create_session(
     title: String,
     pull_request: Option<PullRequestRef>,
     diff_base_ref: Option<String>,
+    pull_request_branch: Option<String>,
     workspace: Workspace,
 ) -> Result<SessionView, String> {
     ensure_new_id(&app, id)?;
     let repo_path = PathBuf::from(repo_path);
     let (worktree_path, branch, base_ref) = match workspace {
         Workspace::Worktree => {
-            let branch = worktree_branch_name(&title, id);
+            let branch = pull_request_branch.clone().unwrap_or_else(|| worktree_branch_name(&title, id));
             (store::worktrees_dir(&app)?.join(id.to_string()), branch, base_ref)
         }
         Workspace::Checkout => {
@@ -275,8 +278,13 @@ pub async fn create_session(
         None => None,
     };
 
+    let mut keeps_branch = false;
     if workspace == Workspace::Worktree {
-        git::worktree_add(&repo_path, &branch, &worktree_path, &base_commit).await?;
+        if pull_request_branch.is_some() {
+            keeps_branch = !git::worktree_add_on_branch(&repo_path, &branch, &worktree_path, &base_ref).await?;
+        } else {
+            git::worktree_add(&repo_path, &branch, &worktree_path, &base_commit).await?;
+        }
         dependencies::ensure(&app, repo_path.clone(), worktree_path.clone());
     }
 
@@ -284,6 +292,7 @@ pub async fn create_session(
     record.pull_request = pull_request;
     record.diff_base = diff_base;
     record.workspace = workspace;
+    record.keeps_branch = keeps_branch;
     store::upsert_session(&app, record.clone())?;
     announce_sessions_changed(&app);
     let view = activate(&app, &registry, &watchers, record, SessionStart::New { cwd: worktree_path }, AgentTransport::Local).await?;
@@ -1238,9 +1247,7 @@ async fn end_session(
     // A moved or deleted repository must not make the session undeletable.
     let removal = git::worktree_remove(&record.repo_path, &record.worktree_path).await;
     if removal.is_ok() {
-        if let Err(error) = git::delete_branch(&record.repo_path, &record.branch).await {
-            eprintln!("deleting branch {} of session {id} failed: {error}", record.branch);
-        }
+        delete_created_branch(&record).await;
     } else if record.worktree_path.exists() {
         std::fs::remove_dir_all(&record.worktree_path)
             .map_err(|error| format!("failed to remove the worktree {}: {error}", record.worktree_path.display()))?;
@@ -1252,6 +1259,17 @@ async fn end_session(
     store::remove_session(app, id)?;
     forget_edit_log_if_unused(app, &record.worktree_path);
     removal
+}
+
+/// Deletes the branch of the worktree session `record` when Hunt created it; a branch that existed before the session (a
+/// reviewed pull request's) stays. A failure is only logged.
+async fn delete_created_branch(record: &SessionRecord) {
+    if record.keeps_branch {
+        return;
+    }
+    if let Err(error) = git::delete_branch(&record.repo_path, &record.branch).await {
+        eprintln!("deleting branch {} of session {} failed: {error}", record.branch, record.id);
+    }
 }
 
 /// Deletes the edit log of `worktree` when no stored session works in it any more; a failure is only logged.
@@ -1917,6 +1935,33 @@ mod tests {
         let long = worktree_branch_name(&"word ".repeat(20), id);
         assert_eq!(long, format!("feat/general/{}-0123abcd", "word-".repeat(8).trim_end_matches('-')));
         assert!(!long.contains("--"));
+    }
+
+    #[tokio::test]
+    async fn deleting_a_session_deletes_only_the_branch_hunt_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git::run_git(&repo, &["init", "-q", "-b", "main"]).await.unwrap();
+        git::run_git(&repo, &["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "--allow-empty", "-m", "init"]).await.unwrap();
+        git::run_git(&repo, &["branch", "fix/sentry/admin-ui-errors"]).await.unwrap();
+
+        let created = dir.path().join("created");
+        git::worktree_add(&repo, "feat/general/x-0123abcd", &created, "main").await.unwrap();
+        let review = dir.path().join("review");
+        let is_created = git::worktree_add_on_branch(&repo, "fix/sentry/admin-ui-errors", &review, "origin/fix/sentry/admin-ui-errors").await.unwrap();
+        let session = |worktree: &Path, branch: &str| {
+            SessionRecord::new(Uuid::new_v4(), "x".into(), repo.clone(), worktree.to_path_buf(), branch.into(), "main".into(), String::new())
+        };
+        let mut review_session = session(&review, "fix/sentry/admin-ui-errors");
+        review_session.keeps_branch = !is_created;
+
+        for record in [session(&created, "feat/general/x-0123abcd"), review_session] {
+            git::worktree_remove(&repo, &record.worktree_path).await.unwrap();
+            delete_created_branch(&record).await;
+        }
+        assert!(!git::local_branch_exists(&repo, "feat/general/x-0123abcd").await);
+        assert!(git::local_branch_exists(&repo, "fix/sentry/admin-ui-errors").await);
     }
 
     #[test]

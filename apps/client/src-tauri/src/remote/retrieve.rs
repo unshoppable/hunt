@@ -141,7 +141,7 @@ async fn local_branch_name(repo: &Path, candidates: &[Option<&str>]) -> Result<S
         if git::run_git(repo, &["check-ref-format", "--branch", candidate]).await.is_err() {
             continue;
         }
-        if git::run_git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{candidate}")]).await.is_ok() {
+        if git::local_branch_exists(repo, candidate).await {
             let repo = repo.display();
             return Err(format!("failed to bring back the session: the branch {candidate} exists in {repo} already; rename or delete it first"));
         }

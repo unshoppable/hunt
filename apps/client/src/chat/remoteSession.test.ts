@@ -24,6 +24,7 @@ function session(id: string, patch: Partial<SessionView> = {}): SessionView {
     diffBase: null,
     reviewComments: [],
     workspace: "worktree",
+    keepsBranch: false,
     remote: null,
     leftoverVm: null,
     dependencies: null,

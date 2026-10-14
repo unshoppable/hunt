@@ -42,6 +42,11 @@ export type SessionView = {
   reviewComments: ReviewComment[];
   /** Where the session works: a worktree Hunt created and owns, or the repository's own checkout. */
   workspace: Workspace;
+  /**
+   * Set when the session's worktree works on a branch that existed before the session (a reviewed pull request's),
+   * which deleting the session keeps; otherwise Hunt created the branch and deletes it with the worktree.
+   */
+  keepsBranch: boolean;
   /** Set while the session is handed off to a VM: its agent runs there and the local worktree waits for its retrieval. */
   remote: RemoteTarget | null;
   /**
@@ -111,8 +116,9 @@ export type ReviewThreadComment = {
 };
 
 /**
- * Where a session works: `worktree` is a `feat/general/<slug>-<id>` worktree created off the base branch and deleted
- * with the session, `checkout` is the repository's own checkout on whatever branch it has, which Hunt leaves alone.
+ * Where a session works: `worktree` is a worktree created and deleted with the session, on a new
+ * `feat/general/<slug>-<id>` branch off the base branch or, for a pull request review, on the pull request's branch;
+ * `checkout` is the repository's own checkout on whatever branch it has, which Hunt leaves alone.
  */
 export type Workspace = "worktree" | "checkout";
 

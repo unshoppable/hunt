@@ -176,8 +176,9 @@ via the ACP `systemPrompt` meta.
 #### Worktrees and changes
 
 `apps/client/src-tauri/src/git.rs` creates `feat/general/<slug>-<id>` worktrees under the app data directory (the
-`<type>/<scope>/<name>` form repositories check branch names against), lists their changes against the session's diff
-base (`HEAD`, or the merge base of a reviewed pull request) and supports shelving and reverting them.
+`<type>/<scope>/<name>` form repositories check branch names against; a pull request review works on the pull
+request's own branch), lists their changes against the session's diff base (`HEAD`, or the merge base of a reviewed
+pull request) and supports shelving and reverting them.
 
 A new worktree has no `node_modules`, so `apps/client/src-tauri/src/session/dependencies.rs` prepares it in the
 background: when the repository has an installed `node_modules`, it is cloned with one APFS `clonefile` call
@@ -205,8 +206,11 @@ read-only, only the lines the session and its parent changed.
 `apps/client/src-tauri/src/github.rs` lists the open pull requests of a repository and reads one with its conversation
 through the `gh` CLI. The "PR review" button of the new-session view (`apps/client/src/sessions/PullRequestPopover.tsx`)
 shows them with a search box; picking one starts the session right away, without a prompt: a worktree on the pull
-request's branch, titled after the pull request, with the pull request and the merge base with its target branch stored
-in the session (`pullRequest` and `diffBase` in `sessions.json`).
+request's own branch, titled after the pull request, with the pull request and the merge base with its target branch
+stored in the session (`pullRequest` and `diffBase` in `sessions.json`). The worktree checks the local branch of that
+name out, or creates it to track the branch on its remote; it fails when another worktree, the repository's checkout
+included, has the branch checked out already. Deleting the session deletes the branch only when Hunt created it
+(`keepsBranch` in `sessions.json` is set otherwise).
 
 The changelist of such a session compares against that merge base, so it lists the pull request's changes, and its
 "Submit review…" button posts a comment, approval or change request through `gh pr review`. The "PR Description" tab

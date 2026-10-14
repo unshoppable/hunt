@@ -57,6 +57,11 @@ pub struct SessionRecord {
     /// Where the session works: in a worktree Hunt created and owns, or in the repository's own checkout.
     #[serde(default)]
     pub workspace: Workspace,
+    /// Set when the session's worktree works on a branch that existed before the session (the local branch of a
+    /// reviewed pull request), which deleting the session keeps; otherwise Hunt created the branch and deletes it with
+    /// the worktree.
+    #[serde(default)]
+    pub keeps_branch: bool,
     /// Set while the session is handed off to a VM: its agent runs there, and the local worktree waits unchanged
     /// for the session to be retrieved.
     #[serde(default)]
@@ -67,9 +72,9 @@ pub struct SessionRecord {
     pub leftover_vm: Option<VmRef>,
 }
 
-/// Where a session works. `Worktree` is a `feat/general/<slug>-<id>` worktree Hunt creates off the base branch and
-/// deletes with the session; `Checkout` is the repository's own checkout on whatever branch it has, which Hunt leaves
-/// alone.
+/// Where a session works. `Worktree` is a worktree Hunt creates and deletes with the session, on a new
+/// `feat/general/<slug>-<id>` branch off the base branch or, for a pull request review, on the pull request's branch;
+/// `Checkout` is the repository's own checkout on whatever branch it has, which Hunt leaves alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Workspace {
@@ -114,6 +119,7 @@ impl SessionRecord {
             diff_base: None,
             review_comments: Vec::new(),
             workspace: Workspace::Worktree,
+            keeps_branch: false,
             remote: None,
             leftover_vm: None,
         }
@@ -164,6 +170,7 @@ impl SessionRecord {
         record.pull_request = parent.pull_request.clone();
         record.diff_base = parent.diff_base.clone();
         record.workspace = parent.workspace;
+        record.keeps_branch = parent.keeps_branch;
         record
     }
 }
@@ -455,6 +462,7 @@ mod tests {
         let mut stored = serde_json::to_value(record("old")).unwrap();
         let object = stored.as_object_mut().unwrap();
         object.remove("leftoverVm");
+        object.remove("keepsBranch");
         object.insert(
             "remote".into(),
             serde_json::json!({
@@ -469,6 +477,8 @@ mod tests {
         let remote = loaded[0].remote.as_ref().unwrap();
         assert_eq!((remote.vm.instance.as_str(), remote.preview_domain.as_deref(), remote.local_mode.as_deref()), ("vm-hunt-medc", None, None));
         assert!(loaded[0].leftover_vm.is_none());
+        // Every older worktree session works on a branch Hunt created, which deleting it deletes as before.
+        assert!(!loaded[0].keeps_branch);
     }
 
     #[test]

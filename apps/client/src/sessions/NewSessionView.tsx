@@ -111,7 +111,7 @@ export function NewSessionView({
         setStartsWhenLoaded(false);
         const ref = isCheckout ? current : next;
         if (ref) {
-          startSession(null, { repoPath, baseRef: ref, workspace, pullRequest: null, diffBaseRef: null }, null);
+          startSession(null, plainTarget(ref), null);
         } else {
           setError(`${repoName(repoPath)} has no branches to start from.`);
         }
@@ -131,11 +131,16 @@ export function NewSessionView({
   /** The branch the new session starts from: the chosen base branch, or the checkout's own for a session in the checkout. */
   const startRef = isCheckout ? currentBranch : baseRef;
 
+  /** Where a session that reviews no pull request works: in the chosen workspace of the repository, off `ref`. */
+  function plainTarget(ref: string): WorktreeTarget {
+    return { repoPath, baseRef: ref, workspace, pullRequest: null, diffBaseRef: null, pullRequestBranch: null };
+  }
+
   /** Makes `path` the repository and starts a session in it as soon as its branch is known. */
   function selectRepository(path: string) {
     setRepoMenu(null);
     if (path === repoPath && startRef) {
-      startSession(null, { repoPath, baseRef: startRef, workspace, pullRequest: null, diffBaseRef: null }, null);
+      startSession(null, plainTarget(startRef), null);
       return;
     }
     setRepoPath(path);
@@ -151,9 +156,10 @@ export function NewSessionView({
   }
 
   /**
-   * Starts the review session of a pull request right away, without a prompt: a worktree on the pull request's branch,
-   * titled after the pull request and marked as its review, with the diff pane showing the pull request's changes
-   * against its target branch. Both branches must have been fetched into the repository.
+   * Starts the review session of a pull request right away, without a prompt: a worktree on the pull request's own
+   * branch (a local branch of that name, created from its copy on a remote when missing), titled after the pull
+   * request and marked as its review, with the diff pane showing the pull request's changes against its target branch.
+   * Both branches must have been fetched into the repository.
    */
   function selectPullRequest(selected: PullRequest) {
     setShowsPullRequests(false);
@@ -171,6 +177,7 @@ export function NewSessionView({
       workspace: "worktree",
       pullRequest: { number: selected.number, url: selected.url },
       diffBaseRef: targetBranch,
+      pullRequestBranch: selected.headRefName,
     };
     startSession(`#${selected.number} ${selected.title}`, target, null);
     setRightTab("diff");
@@ -205,7 +212,7 @@ export function NewSessionView({
 
   function start(text: string, images: Screenshot[]) {
     if (!hasTarget) return;
-    startSession(titleFromPrompt(text) || "Screenshot", { repoPath, baseRef: startRef, workspace, pullRequest: null, diffBaseRef: null }, { text, images });
+    startSession(titleFromPrompt(text) || "Screenshot", plainTarget(startRef), { text, images });
   }
 
   if (parentId && !parent) return null;

@@ -1,3 +1,13 @@
+## 0.16.0 (2026-10-14)
+
+### 🚀 Features
+
+- hide the ports of the session VM's system services from the preview's other ports ([81904f7](https://github.com/unshoppable/hunt/commit/81904f7))
+
+### 🩹 Fixes
+
+- reserve the ports of the session VM's system services instead of hiding them in the client ([4c38a12](https://github.com/unshoppable/hunt/commit/4c38a12))
+
 ## 0.15.0 (2026-10-14)
 
 ### 🚀 Features

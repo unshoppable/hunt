@@ -1,3 +1,9 @@
+## 0.9.1 (2026-10-14)
+
+### 🩹 Fixes
+
+- reserve the ports of the session VM's system services instead of hiding them in the client ([4c38a12](https://github.com/unshoppable/hunt/commit/4c38a12))
+
 ## 0.9.0 (2026-10-14)
 
 This was a version bump only for session to align it with other projects, there were no code changes.

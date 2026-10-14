@@ -25,6 +25,7 @@ import { repoName } from "../ui/path";
 import { titleFromPrompt } from "../sessions/sessionLabels";
 import { useAgentDefaultsStore } from "./agentDefaults";
 import { usePlanUsageStore } from "./planUsage";
+import { advanceRemoteRun, type RemoteRun } from "./remoteRun";
 import { configuredVmSettings, useSettingsStore } from "./settings";
 
 export type SessionMode = { id: string; name: string; description?: string | null };
@@ -162,6 +163,8 @@ export type SessionChat = {
   remoteStep: RemoteStep | null;
   /** The gateway's last log line about `remoteStep`; `null` while it sent none. */
   remoteDetail: string | null;
+  /** The steps and run time of the remote operation, or of the move, that runs; `null` while none runs. */
+  remoteRun: RemoteRun | null;
   /** The items show the conversation from before a restart of the agent; its first update replaces them (see `restartChat`). */
   isStale: boolean;
   /** The move to or from the VM the user asked for, from the click until it ended; `null` while none is asked for. */
@@ -293,6 +296,7 @@ export function createEmptyChat(): SessionChat {
     hasHistory: false,
     remoteStep: null,
     remoteDetail: null,
+    remoteRun: null,
     isStale: false,
     move: null,
   };
@@ -581,8 +585,8 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
 
   /** The empty chat a restarted agent fills; the mode, the queued prompts and a running remote operation or move carry over. */
   function replacedChat(chat: SessionChat): SessionChat {
-    const { modeId, queue, isLoading, remoteStep, remoteDetail, move } = chat;
-    return { ...createEmptyChat(), modeId, queue, hasHistory: true, isLoading, remoteStep, remoteDetail, move };
+    const { modeId, queue, isLoading, remoteStep, remoteDetail, remoteRun, move } = chat;
+    return { ...createEmptyChat(), modeId, queue, hasHistory: true, isLoading, remoteStep, remoteDetail, remoteRun, move };
   }
 
   /** Resolves once the chat of `id` runs no turn, also when there is no such chat (any more). */
@@ -620,7 +624,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     let next: QueuedPrompt | null = null;
     updateChat(id, (chat) => {
       next = isMoved && isLive && !chat.isBusy ? (chat.queue[0] ?? null) : null;
-      return { ...chat, move: null, isBusy: chat.isBusy || Boolean(next), queue: next ? chat.queue.slice(1) : chat.queue };
+      return { ...chat, move: null, remoteRun: null, isBusy: chat.isBusy || Boolean(next), queue: next ? chat.queue.slice(1) : chat.queue };
     });
     if (next) {
       await runPrompt(id, next);
@@ -993,7 +997,12 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     },
 
     applyRemoteProgress: (event) => {
-      updateChat(event.huntSessionId, (chat) => ({ ...chat, remoteStep: event.step, remoteDetail: event.detail }));
+      updateChat(event.huntSessionId, (chat) => ({
+        ...chat,
+        remoteStep: event.step,
+        remoteDetail: event.detail,
+        remoteRun: advanceRemoteRun(chat.remoteRun, event.step, Date.now(), Boolean(chat.move)),
+      }));
     },
 
     applyGraphChanged: (huntSessionId) => {

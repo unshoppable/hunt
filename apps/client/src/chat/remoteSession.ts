@@ -16,12 +16,45 @@ export const REMOTE_STEP_LABELS: Record<RemoteStep, string> = {
   retrievingCode: "Bringing the code back…",
 };
 
-/** What the chat shows while its session waits to move to or from the VM; `null` while it does not wait. */
+/** A remote operation whose steps the chat counts: a move to or from the VM, or a connect to it. */
+export type RemoteOperation = "handOff" | "retrieve" | "connect";
+
+/** The steps of each remote operation in their order; a slot lists the steps that take its place. */
+const REMOTE_PLANS: Record<RemoteOperation, RemoteStep[][]> = {
+  handOff: [["connecting"], ["creatingVm", "startingVm"], ["waitingForVm"], ["installingRuntime"], ["transferringCode"], ["installingDependencies"], ["startingAgent"]],
+  retrieve: [["connecting"], ["startingVm"], ["waitingForVm"], ["installingRuntime"], ["stoppingAgent"], ["retrievingCode"]],
+  connect: [["connecting"], ["startingVm"], ["waitingForVm"], ["installingRuntime"], ["startingAgent"]],
+};
+
+/** The operation the remote steps of `chat` belong to. */
+export function remoteOperation(chat: SessionChat): RemoteOperation {
+  return chat.move ?? "connect";
+}
+
+/**
+ * How far an `operation` that reached `steps` got: the 1-based position of its furthest step and the number of steps it
+ * runs. A step it skipped (one before the furthest that never ran, such as starting a VM that runs) leaves the count;
+ * a step that runs again does not move the position back. `null` before it reached a step of its plan.
+ */
+export function remotePosition(operation: RemoteOperation, steps: RemoteStep[]): { position: number; total: number } | null {
+  const plan = REMOTE_PLANS[operation];
+  const slots = new Set(steps.map((step) => plan.findIndex((slot) => slot.includes(step))).filter((index) => index >= 0));
+  if (!slots.size) return null;
+  const skipped = Math.max(...slots) + 1 - slots.size;
+  return { position: slots.size, total: plan.length - skipped };
+}
+
+/** `ms` as minutes and seconds, `1:05`. */
+export function formatElapsed(ms: number): string {
+  const seconds = Math.max(Math.floor(ms / 1000), 0);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** What the chat says while its session waits to move to or from the VM; `null` while it does not wait. */
 export function moveStatus(chat: SessionChat): string | null {
   if (!chat.move || chat.isLoading) return null;
-  const step = chat.remoteStep ? `${REMOTE_STEP_LABELS[chat.remoteStep]} ` : "";
-  if (chat.move === "retrieve") return `${step}The session comes back from the VM once the agent finished its turn.`;
-  return `${step}The session moves to the VM ${chat.isBusy ? "once the agent finished its turn" : "as soon as it is ready"}.`;
+  if (chat.move === "retrieve") return "The session comes back from the VM once the agent finished its turn.";
+  return `The session moves to the VM ${chat.isBusy ? "once the agent finished its turn" : "as soon as it is ready"}.`;
 }
 
 /** What else decides whether a session can move: the editor's unsaved edits and the selected Claude account. */

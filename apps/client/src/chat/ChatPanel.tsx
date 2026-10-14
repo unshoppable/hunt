@@ -24,7 +24,8 @@ import { PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../
 import { ShieldIcon } from "../ui/icons";
 import { OpenInWebstormButton } from "./OpenInWebstormButton";
 import { RemoteMenu } from "./RemoteMenu";
-import { moveStatus, REMOTE_STEP_LABELS } from "./remoteSession";
+import { moveStatus } from "./remoteSession";
+import { RemoteRunStatus, RemoteStepProgress } from "./RemoteProgress";
 
 /** Order in which shift+tab cycles the session mode, as in the terminal; modes the agent does not offer are skipped. */
 const MODE_CYCLE = ["default", "acceptEdits", "plan", "auto"];
@@ -170,9 +171,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
             </div>
           ) : null}
           <MessageList items={chat?.items ?? []} plan={chat?.plan ?? []} isBusy={(isBusy && !chat?.isHiddenTurn) || isCreating} isVerbose={isVerbose} basePath={session.remote?.worktreePath ?? session.worktreePath} />
-          {chat?.isLoading ? <p className="text-neutral-500">{chat.remoteStep ? REMOTE_STEP_LABELS[chat.remoteStep] : "Loading session…"}</p> : null}
-          {chat?.isLoading && chat.remoteDetail ? (
-            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[12px] leading-snug text-neutral-500">{chat.remoteDetail}</pre>
+          {chat?.isLoading ? (
+            <div className="text-neutral-500">{chat.remoteStep ? <RemoteStepProgress chat={chat} showsDetail /> : <p>Loading session…</p>}</div>
           ) : null}
           {chat?.permission ? (
             <PermissionPrompt
@@ -186,7 +186,10 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
 
       {moveText ? (
         <div className="px-9 pt-2">
-          <p className="chat-column text-[13px] text-neutral-500">{moveText}</p>
+          <div className="chat-column text-[13px] text-neutral-500">
+            {chat?.remoteStep ? <RemoteStepProgress chat={chat} /> : null}
+            <p className={chat?.remoteStep ? "mt-1.5" : ""}>{moveText}</p>
+          </div>
         </div>
       ) : null}
       {session.isLive ? (
@@ -242,7 +245,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         <div className="px-5 pb-4 pt-2">
           <div className="chat-column rounded-xl border border-(--line) bg-(--surface-inset) px-4 py-3 text-sm text-neutral-400">
             {chat?.remoteStep
-              ? REMOTE_STEP_LABELS[chat.remoteStep]
+              ? <RemoteRunStatus chat={chat} />
               : isCreating && !session.parentId
                 ? "Creating the worktree and starting the agent…"
                 : "Starting the agent…"}

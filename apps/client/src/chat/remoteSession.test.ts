@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { SessionView } from "../ipc/types";
+import type { RemoteStep, SessionView } from "../ipc/types";
 import { createEmptyChat } from "../state/store";
-import { handOffBlocker, moveStatus, retrieveBlocker } from "./remoteSession";
+import { formatElapsed, handOffBlocker, moveStatus, remotePosition, retrieveBlocker } from "./remoteSession";
 
 function session(id: string, patch: Partial<SessionView> = {}): SessionView {
   return {
@@ -89,13 +89,44 @@ describe("retrieveBlocker", () => {
   });
 });
 
+describe("remotePosition", () => {
+  it("counts the steps of a handoff that creates its VM", () => {
+    expect(remotePosition("handOff", [])).toBeNull();
+    expect(remotePosition("handOff", ["connecting"])).toEqual({ position: 1, total: 7 });
+    expect(remotePosition("handOff", ["connecting", "creatingVm", "waitingForVm"])).toEqual({ position: 3, total: 7 });
+  });
+
+  it("leaves out the steps an operation skipped", () => {
+    expect(remotePosition("connect", ["connecting", "installingRuntime"])).toEqual({ position: 2, total: 3 });
+    expect(remotePosition("retrieve", ["connecting", "installingRuntime", "stoppingAgent", "retrievingCode"])).toEqual({ position: 4, total: 4 });
+  });
+
+  it("does not move back when the handoff repeats the steps its preparation ran", () => {
+    const prepared: RemoteStep[] = ["connecting", "startingVm", "waitingForVm", "installingRuntime"];
+    expect(remotePosition("handOff", [...prepared, "connecting"])).toEqual({ position: 4, total: 7 });
+    expect(remotePosition("handOff", [...prepared, "connecting", "installingRuntime", "transferringCode"])).toEqual({ position: 5, total: 7 });
+  });
+
+  it("ignores steps outside the operation's plan", () => {
+    expect(remotePosition("connect", ["retrievingCode"])).toBeNull();
+  });
+});
+
+describe("formatElapsed", () => {
+  it("shows minutes and seconds", () => {
+    expect(formatElapsed(0)).toBe("0:00");
+    expect(formatElapsed(65_999)).toBe("1:05");
+    expect(formatElapsed(754_000)).toBe("12:34");
+  });
+});
+
 describe("moveStatus", () => {
   it("says what the session waits for until its move runs", () => {
     expect(moveStatus(createEmptyChat())).toBeNull();
     expect(moveStatus({ ...createEmptyChat(), move: "handOff", isBusy: true, remoteStep: "startingVm" })).toBe(
-      "Starting the VM… The session moves to the VM once the agent finished its turn.",
+      "The session moves to the VM once the agent finished its turn.",
     );
-    expect(moveStatus({ ...createEmptyChat(), move: "handOff", remoteStep: "installingRuntime" })).toMatch(/^Installing Hunt.* as soon as it is ready\.$/);
+    expect(moveStatus({ ...createEmptyChat(), move: "handOff", remoteStep: "installingRuntime" })).toBe("The session moves to the VM as soon as it is ready.");
     expect(moveStatus({ ...createEmptyChat(), move: "retrieve", isBusy: true })).toBe("The session comes back from the VM once the agent finished its turn.");
     expect(moveStatus({ ...createEmptyChat(), move: "handOff", isLoading: true, remoteStep: "transferringCode" })).toBeNull();
   });

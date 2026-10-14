@@ -1,7 +1,9 @@
 {
   "name": "gateway",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "volta": { "extends": "../../package.json" }
+  "volta": {
+    "extends": "../../package.json"
+  }
 }

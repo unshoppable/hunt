@@ -1,3 +1,9 @@
+## 0.14.0 (2026-10-14)
+
+### 🚀 Features
+
+- show the step count, a step bar and the elapsed time while a session moves to or from its VM ([a59188f](https://github.com/unshoppable/hunt/commit/a59188f))
+
 ## 0.13.0 (2026-10-14)
 
 ### 🚀 Features

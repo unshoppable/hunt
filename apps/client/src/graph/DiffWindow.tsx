@@ -240,8 +240,8 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
             onDirtyChange={markDirty}
             onNavigate={(line, column, name) => void openInEditorWindow(sessionId, { path, line, column, definitionOf: name })}
             onOpenInIde={(line, column) => commands.openFileInWebstorm(sessionId, path, line, column).catch((reason) => setError(String(reason)))}
-            onOpenSubChat={session?.remote ? undefined : subChat.open}
-            onToggleSubChat={session?.remote ? undefined : subChat.toggle}
+            onOpenSubChat={subChat.open}
+            onToggleSubChat={subChat.toggle}
             onLineNumbersLeftChange={alignWithLineNumbers}
           />
         ) : (

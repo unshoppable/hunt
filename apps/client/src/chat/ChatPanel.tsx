@@ -24,7 +24,7 @@ import { PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../
 import { ShieldIcon } from "../ui/icons";
 import { OpenInWebstormButton } from "./OpenInWebstormButton";
 import { RemoteMenu } from "./RemoteMenu";
-import { moveStatus } from "./remoteSession";
+import { moveStatus, remoteOf } from "./remoteSession";
 import { RemoteRunStatus, RemoteStepProgress } from "./RemoteProgress";
 
 /** Order in which shift+tab cycles the session mode, as in the terminal; modes the agent does not offer are skipped. */
@@ -48,6 +48,11 @@ function guardrailChatAnchor(bounds: DOMRect): SelectionRequest["anchor"] {
 export function ChatPanel({ sessionId }: { sessionId: string }) {
   const fileIconUrl = useFileIconUrl();
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
+  /** The VM the agent runs on: the session's own, or its parent's for a sub chat; `null` for an agent on this Mac. */
+  const remote = useHuntStore((state) => {
+    const current = state.sessions.find((candidate) => candidate.id === sessionId);
+    return current ? remoteOf(current, state.sessions) : null;
+  });
   const chat = useHuntStore((state) => state.chats[sessionId]);
   const isCreating = useHuntStore((state) => state.creatingIds.includes(sessionId));
   const sendPrompt = useHuntStore((state) => state.sendPrompt);
@@ -109,9 +114,9 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   });
 
   // Opening a session checks once that its CLAUDE.md points the agent at the ADR folder and offers to add the section.
-  // A session still being created has no record in the backend yet; a remote session's agent reads CLAUDE.md on its VM
-  // only when it starts, so the offer waits until the session runs here again.
-  const worktreePath = session?.remote ? undefined : session?.worktreePath;
+  // A session still being created has no record in the backend yet; an agent on a VM reads CLAUDE.md there only when it
+  // starts, so the offer waits until the session runs here again.
+  const worktreePath = remote ? undefined : session?.worktreePath;
   useEffect(() => {
     if (!worktreePath || isCreating) return;
     void ensureAdrInstruction(sessionId, worktreePath);
@@ -120,8 +125,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const followEnd = useFollowScroll(scrollRef, columnRef, `${sessionId}:${hasSession}`);
 
   if (!session) return null;
-  /** A remote session not connected right now takes prompts anyway: the first one starts its VM and connects. */
-  const canPromptRemote = Boolean(session.remote) && !session.isLive && !isCreating && !chat?.isLoading;
+  /** A session whose agent runs on a VM takes prompts while not connected: the first one starts its VM and connects. */
+  const canPromptRemote = Boolean(remote) && !session.isLive && !isCreating && !chat?.isLoading;
 
   /** Shows the lines the sub chat is about, selected, in the "Editor" tab. */
   /**
@@ -151,9 +156,9 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         <div data-tauri-drag-region="" className="min-w-0 flex-1">
           <div data-tauri-drag-region="" className="truncate text-sm font-semibold">{session.title}</div>
         </div>
-        {session.remote ? null : <OpenInWebstormButton sessionId={sessionId} disabled={isCreating} />}
+        {remote ? null : <OpenInWebstormButton sessionId={sessionId} disabled={isCreating} />}
         <RemoteMenu sessionId={sessionId} />
-        {session.remote ? null : (
+        {remote ? null : (
           <button type="button" onClick={() => void openGuardrailsWindow(sessionId)} disabled={isCreating} className={SECONDARY_BUTTON_MD}>
             <ShieldIcon />
             Guardrails
@@ -171,7 +176,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
               <SelectionCard selection={session.selection} />
             </div>
           ) : null}
-          <MessageList items={chat?.items ?? []} plan={chat?.plan ?? []} isBusy={(isBusy && !chat?.isHiddenTurn) || isCreating} isVerbose={isVerbose} basePath={session.remote?.worktreePath ?? session.worktreePath} />
+          <MessageList items={chat?.items ?? []} plan={chat?.plan ?? []} isBusy={(isBusy && !chat?.isHiddenTurn) || isCreating} isVerbose={isVerbose} basePath={remote?.worktreePath ?? session.worktreePath} />
           {chat?.isLoading ? (
             <div className="text-neutral-500">{chat.remoteStep ? <RemoteStepProgress chat={chat} showsDetail /> : <p>Loading session…</p>}</div>
           ) : null}
@@ -212,13 +217,13 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         <div className="px-9 pt-2">
           <div className="chat-column flex items-center gap-3">
             {chat?.contextUsage ? <ContextMeter usage={chat.contextUsage} /> : null}
-            {session.remote ? null : <SaveGuardrailButton isSuggested={!!guardrailSuggestion} isDisabled={hasPermission} onOpen={(bounds) => void openGuardrailChat(bounds)} />}
+            {remote ? null : <SaveGuardrailButton isSuggested={!!guardrailSuggestion} isDisabled={hasPermission} onOpen={(bounds) => void openGuardrailChat(bounds)} />}
           </div>
         </div>
       ) : canPromptRemote ? (
         <div className="px-9 pt-2">
           <p className="chat-column text-[13px] text-neutral-500">
-            Runs on the VM {session.remote?.vm.instance}. Your next prompt starts the VM and connects again; files you change here meanwhile
+            Runs on the VM {remote?.vm.instance}. Your next prompt starts the VM and connects again; files you change here meanwhile
             go to the VM then and win over the agent's changes to the same files.
           </p>
         </div>

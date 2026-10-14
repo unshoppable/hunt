@@ -1,6 +1,6 @@
 #!/bin/bash
-# Fake systemctl of services.test.ts: logs the call; the state of unit <unit> (active, activating, failed, inactive) is in
-# /run/fake-systemd/<unit>, and enable links template instances into multi-user.target.wants.
+# Fake systemctl of services.test.ts and subRelays.test.ts: logs the call; the state of unit <unit> (active, activating,
+# failed, inactive) is in /run/fake-systemd/<unit>, and enable links template instances into multi-user.target.wants.
 echo "systemctl $*" >>/var/log/systemctl.log
 states=/run/fake-systemd
 wants=/etc/systemd/system/multi-user.target.wants
@@ -63,6 +63,11 @@ case $verb in
     ;;
   start | restart) set_states active ;;
   stop) set_states inactive ;;
+  is-active)
+    for unit in $(expanded); do
+      [[ $(state_of "$unit") == active ]] || exit 3
+    done
+    ;;
   reset-failed)
     for unit in $(expanded); do
       if [[ $(state_of "$unit") == failed ]]; then

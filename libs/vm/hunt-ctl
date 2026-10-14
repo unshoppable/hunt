@@ -5,14 +5,14 @@
 # lists the commands.
 #
 # /etc/hunt/role names the kind of VM. A session VM (`session`) runs one session: its worktree, ~/.claude and agent
-# belong to the user agent, the relay runs as hunt-relay.service and the services of its hunt.json as
-# hunt-service@<name>.service, which the agent starts and stops through `sudo -n hunt-ctl service`. The VM is the
-# isolation boundary: whatever hunt-ctl does in the session's files runs as agent, so the agent's Git hooks, config and
-# symlinks act with no more rights than the agent has anyway. The gateway (`gateway`) holds no sessions: its edge proxy
-# forwards the preview hosts to the session VMs, hunt-wake.service starts a stopped one, hunt-api.service creates,
-# starts and deletes them for the desktop apps, and hunt-swf.service starts sessions for GitHub issues. CI deploys both
-# releases by SSH into the gateway: `install` for the gateway's own, `stage-session` for the one the gateway installs on
-# the session VMs.
+# belong to the user agent, the relay runs as hunt-relay.service, the relay of each of its sub chats as
+# hunt-relay@<sub chat id>.service and the services of its hunt.json as hunt-service@<name>.service, which the agent
+# starts and stops through `sudo -n hunt-ctl service`. The VM is the isolation boundary: whatever hunt-ctl does in the
+# session's files runs as agent, so the agent's Git hooks, config and symlinks act with no more rights than the agent
+# has anyway. The gateway (`gateway`) holds no sessions: its edge proxy forwards the preview hosts to the session VMs,
+# hunt-wake.service starts a stopped one, hunt-api.service creates, starts and deletes them for the desktop apps, and
+# hunt-swf.service starts sessions for GitHub issues. CI deploys both releases by SSH into the gateway: `install` for the
+# gateway's own, `stage-session` for the one the gateway installs on the session VMs.
 # shellcheck disable=SC2016 # jq programs and `sh -c` scripts are single-quoted on purpose.
 set -Eeuo pipefail
 shopt -s inherit_errexit nullglob
@@ -60,6 +60,12 @@ readonly RELAY_UNIT=hunt-relay.service
 readonly PROXY_UNIT=hunt-proxy.service
 readonly RELAY_SOCKET=/run/hunt/relay.sock
 readonly RELAY_STATUS=/run/hunt/status.json
+# The relay of a sub chat of the session, a second conversation in its worktree: hunt-relay@<sub chat id>.service serves
+# SUB_RELAYS/<sub chat id>/relay.sock and writes the status.json there, with the configuration
+# SUB_CONFIGS/<sub chat id>.json.
+readonly SUB_RELAY_UNIT_PREFIX=hunt-relay@
+readonly SUB_RELAYS=/run/hunt-sub
+readonly SUB_CONFIGS=/home/agent/.claude/hunt-subs
 readonly SESSION_ENV=/etc/hunt/session.env
 readonly SECRETS_ENV=/etc/hunt/secrets.env
 readonly PROXY_CONFIG=/etc/hunt/caddy.json
@@ -141,6 +147,10 @@ started_us=0
 failure=
 # The tokens read from stdin in this run; redact removes them from what reaches the journal.
 secrets=()
+# The relay start, wait, stop and clear act on: the session's, or with --sub a sub chat's (see use_sub_relay).
+relay_unit=$RELAY_UNIT
+relay_socket=$RELAY_SOCKET
+relay_status=$RELAY_STATUS
 # The tee that copies stderr into stderr_file, and that file; see capture_stderr.
 stderr_tee=
 stderr_file=
@@ -194,10 +204,19 @@ Session VM:
                          status of those named (default: all). The agent may run it as `sudo -n hunt-ctl service …`
   start <id>             start the session's relay unless it runs, with the tokens from stdin (see read_tokens), and
                          its preview proxy once session-config wrote it; an empty line keeps the token stored before
-  wait <id> [--timeout <seconds>]
-                         wait until the session's relay serves its socket (default 120 seconds)
-  stop <id>              stop and disable the session's relay, services and preview proxy
-  clear <id>             restart the session's relay with a new conversation; the tokens come from stdin
+  start <id> --sub <sub id>
+                         start the relay of the session's sub chat <sub id> unless it runs, with the tokens the
+                         session's relay got; the sub chat's first start appends the text on stdin to the session's
+                         system prompt for it
+  wait <id> [--sub <sub id>] [--timeout <seconds>]
+                         wait until the session's relay, or its sub chat's, serves its socket (default 120 seconds)
+  stop <id>              stop and disable the session's relay, the relays of its sub chats, its services and preview
+                         proxy
+  stop <id> --sub <sub id>
+                         stop the relay of the session's sub chat <sub id> and remove its configuration
+  clear <id> [--sub <sub id>]
+                         restart the session's relay, or its sub chat's, with a new conversation; the session's relay
+                         takes the tokens from stdin
   snapshot <id>          record the worktree's state as refs/hunt/<id>/retrieve
   status <id>            relay state, relay status and session metadata
   preview-status [<id>]  the services of hunt.json with their state and whether their port answers, and the ports that
@@ -861,6 +880,67 @@ start_relay() {
   systemctl restart "$RELAY_UNIT"
 }
 
+# Points relay_unit, relay_socket and relay_status at the relay of the sub chat $1.
+use_sub_relay() {
+  [[ $1 =~ $ID_PATTERN ]] || die "invalid sub chat id: $1"
+  relay_unit=$SUB_RELAY_UNIT_PREFIX$1.service
+  relay_socket=$SUB_RELAYS/$1/relay.sock
+  relay_status=$SUB_RELAYS/$1/status.json
+}
+
+# Parses `<id> [--sub <sub id>]` into the caller's id and sub and points the relay variables at the sub chat's relay
+# when one is named.
+parse_relay_args() {
+  case $# in
+    1) ;;
+    3) [[ $2 == --sub ]] || usage ;;
+    *) usage ;;
+  esac
+  id=$1
+  sub=${3-}
+  require_id "$id"
+  if [[ -n $sub ]]; then
+    use_sub_relay "$sub"
+  fi
+}
+
+# The configuration of a sub chat's relay, from the session's hunt-session.json on --slurpfile session and the text on
+# stdin: the sub chat's id, no conversation yet (the relay starts one) and the text appended to the system prompt.
+readonly SUB_CONFIG_PROGRAM='
+  . as $addition
+  | $session[0]
+  | if type == "object" then . else error("hunt-session.json holds no object") end
+  | .huntSessionId = $sub
+  | .acpSessionId = null
+  | .systemPromptAppend = ([.systemPromptAppend // "", $addition] | map(select(. != "")) | join("\n\n"))'
+
+# Starts the relay of the sub chat $2 of session $1 unless it runs, with the tokens `start` stored for the session's
+# relay. Its first start writes its configuration from the session's hunt-session.json with the text on stdin appended
+# to the system prompt, as the agent; later starts keep the configuration and its conversation and leave stdin unread.
+start_sub_relay() {
+  local id=$1 sub=$2
+  [[ -f $CLAUDE_HOME/hunt-session.json ]] || die "session $id has no hunt-session.json; run hunt-ctl put-files $id --claude first"
+  [[ -f $SECRETS_ENV ]] || die "session $id has no tokens on this VM; run hunt-ctl start $id first"
+  if ! as_agent test -f "$SUB_CONFIGS/$sub.json"; then
+    log info "writing the relay configuration of sub chat $sub"
+    as_agent sh -c 'umask 077 && mkdir -p "$1" && jq -Rs --slurpfile session "$2" --arg sub "$3" "$4" >"$1/$3.json.tmp" &&
+      mv -f "$1/$3.json.tmp" "$1/$3.json"' sh "$SUB_CONFIGS" "$CLAUDE_HOME/hunt-session.json" "$sub" "$SUB_CONFIG_PROGRAM" ||
+      die "failed to write the relay configuration of sub chat $sub"
+  fi
+  if systemctl is-active --quiet "$relay_unit"; then
+    log info "the relay of sub chat $sub runs already"
+    return
+  fi
+  log info "starting the relay of sub chat $sub"
+  systemctl start "$relay_unit"
+}
+
+# Stops the relays of every sub chat; their configurations stay.
+stop_sub_relays() {
+  systemctl stop "$SUB_RELAY_UNIT_PREFIX*.service"
+  systemctl reset-failed "$SUB_RELAY_UNIT_PREFIX*.service" 2>/dev/null || true
+}
+
 # Whether a connection to the Unix socket $1 succeeds.
 socket_accepts() {
   [[ -S $1 ]] && timeout 5 socat -u OPEN:/dev/null "UNIX-CONNECT:$1" 2>/dev/null
@@ -868,8 +948,8 @@ socket_accepts() {
 
 # Fails with message $1, followed by the relay's last log lines.
 fail_wait() {
-  printf 'hunt-ctl: %s\nlast log lines of %s:\n' "$1" "$RELAY_UNIT" >&2
-  journalctl --unit "$RELAY_UNIT" --lines 20 --no-pager --output cat >&2 2>&1 || true
+  printf 'hunt-ctl: %s\nlast log lines of %s:\n' "$1" "$relay_unit" >&2
+  journalctl --unit "$relay_unit" --lines 20 --no-pager --output cat >&2 2>&1 || true
   record_failure
   exit "$REPORTED"
 }
@@ -881,7 +961,7 @@ wait_until_ready() {
   local timeout=$1 previous=${2-}
   local deadline=$((SECONDS + timeout)) stopped_polls=0 status verdict state
   while :; do
-    status=$(read_object "$RELAY_STATUS")
+    status=$(read_object "$relay_status")
     verdict=$(jq -r --argjson now "$(now_ms)" --argjson maxAge "$HEARTBEAT_MAX_AGE_MS" --argjson previous "${previous:-null}" \
       --arg needsNewSession "${previous:+yes}" '
         if . == null or (.heartbeatAt // 0) < $now - $maxAge then "stale"
@@ -897,13 +977,13 @@ wait_until_ready() {
         return
         ;;
       ready)
-        if socket_accepts "$RELAY_SOCKET"; then
+        if socket_accepts "$relay_socket"; then
           printf '%s\n' "$status" >&3
           return
         fi
         ;;
     esac
-    state=$(systemctl show --property ActiveState --value "$RELAY_UNIT")
+    state=$(systemctl show --property ActiveState --value "$relay_unit")
     case $state in
       active | activating | reloading) stopped_polls=0 ;;
       *) (( ++stopped_polls < 4 )) || fail_wait "the relay is $state; run hunt-ctl start first" ;;
@@ -1225,10 +1305,15 @@ cmd_session_config() {
 }
 
 cmd_start() {
-  (( $# == 1 )) || usage
-  require_id "$1"
-  require_prepared "$1"
-  start_relay "$1"
+  local id sub
+  parse_relay_args "$@"
+  require_prepared "$id"
+  if [[ -n $sub ]]; then
+    start_sub_relay "$id" "$sub"
+    emit '{relay: "running"}'
+    return
+  fi
+  start_relay "$id"
   if [[ -f $PROXY_CONFIG ]]; then
     systemctl enable --quiet --now "$PROXY_UNIT"
   fi
@@ -1242,6 +1327,10 @@ cmd_wait() {
   shift
   while (( $# )); do
     case $1 in
+      --sub)
+        use_sub_relay "${2-}"
+        shift 2
+        ;;
       --timeout)
         [[ ${2-} =~ ^[1-9][0-9]*$ ]] || die "invalid --timeout: ${2-}"
         timeout=$2
@@ -1254,27 +1343,43 @@ cmd_wait() {
 }
 
 # The relay closes the adapter, which writes the transcript, within the unit's stop timeout. Disabled, it stays down
-# when the VM boots, until `start`. The services and the preview proxy stop and stay disabled as well, so that no open
-# host stays reachable once the session is back on the Mac, not even for a process outside the services on its port.
+# when the VM boots, until `start`. The relays of the sub chats stop too and keep their configurations, so that their
+# conversations come back with the session's. The services and the preview proxy stop and stay disabled as well, so
+# that no open host stays reachable once the session is back on the Mac, not even for a process outside the services on
+# its port. With --sub only that sub chat's relay stops, and its configuration goes: the sub chat was deleted.
 cmd_stop() {
-  (( $# == 1 )) || usage
-  require_id "$1"
+  local id sub
+  parse_relay_args "$@"
+  if [[ -n $sub ]]; then
+    systemctl stop "$relay_unit"
+    systemctl reset-failed "$relay_unit" 2>/dev/null || true
+    as_agent rm -f -- "$SUB_CONFIGS/$sub.json"
+    emit '{}'
+    return
+  fi
   systemctl disable --quiet --now "$RELAY_UNIT"
+  stop_sub_relays
   stop_services
   systemctl disable --quiet --now "$PROXY_UNIT"
   emit '{}'
 }
 
 cmd_clear() {
-  (( $# == 1 )) || usage
-  local id=$1 config=$CLAUDE_HOME/hunt-session.json previous
-  require_id "$id"
+  local id sub config=$CLAUDE_HOME/hunt-session.json previous
+  parse_relay_args "$@"
   require_prepared "$id"
+  if [[ -n $sub ]]; then
+    config=$SUB_CONFIGS/$sub.json
+  fi
   previous=$(as_agent jq -c '.acpSessionId // null' "$config") || die "session $id has no readable $config"
   # The relay rewrites the file, so it must not run while the id is cleared; it creates a new session for a null id.
-  systemctl stop "$RELAY_UNIT"
+  systemctl stop "$relay_unit"
   as_agent sh -c 'jq ".acpSessionId = null" "$1" >"$1.clear" && mv -f "$1.clear" "$1"' sh "$config"
-  start_relay "$id"
+  if [[ -n $sub ]]; then
+    start_sub_relay "$id" "$sub"
+  else
+    start_relay "$id"
+  fi
   wait_until_ready 120 "$previous"
 }
 
@@ -1500,12 +1605,13 @@ cmd_service() {
   emit --argjson services "$report" '{services: $services}'
 }
 
-# Removes what session $1 has on the VM: its relay, services, proxy, environments and secrets, worktree, ~/.claude and
-# metadata. Folders the agent wrote to are removed without following symlinks.
+# Removes what session $1 has on the VM: its relay and those of its sub chats, services, proxy, environments and
+# secrets, worktree, ~/.claude and metadata. Folders the agent wrote to are removed without following symlinks.
 destroy_session() {
   local id=$1 worktree=''
   systemctl disable --quiet --now "$RELAY_UNIT" 2>/dev/null || true
   systemctl reset-failed "$RELAY_UNIT" 2>/dev/null || true
+  stop_sub_relays 2>/dev/null || true
   stop_services 2>/dev/null || true
   systemctl disable --quiet --now "$PROXY_UNIT" 2>/dev/null || true
   rm -f -- "$SECRETS_ENV" "$SESSION_ENV" "$PROXY_CONFIG"

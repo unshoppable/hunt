@@ -18,6 +18,7 @@ import { ShelveDialog } from "./ShelveDialog";
 import { baseName, dirName } from "../ui/path";
 import { STATUS_NAME_CLASS } from "./styles";
 import { AgentButton } from "../ui/AgentButton";
+import { remoteOf } from "../chat/remoteSession";
 import { ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { SwapIcon } from "../ui/icons";
@@ -60,7 +61,7 @@ export function ChangeList({
   hasUnsavedChanges: boolean;
   onSelect: (path: string) => void;
   onContextMenu: (event: MouseEvent, file: ChangedFile) => void;
-  /** Opens the sub chat about the whole file next to its agent button; without it (a remote session) there is none. */
+  /** Opens the sub chat about the whole file next to its agent button; without it there is none. */
   onAskAgent?: (file: ChangedFile, button: HTMLElement) => void;
   /** Called after a shelve or unshelve so the owner reloads the worktree state. */
   onWorktreeChanged: () => void;
@@ -73,8 +74,8 @@ export function ChangeList({
   const session = sessions.find((candidate) => candidate.id === sessionId);
   const parentId = session?.parentId ?? null;
   const pullRequest = session?.pullRequest ?? null;
-  /** A remote session's local branch stays at its handoff commit; the agent commits on the VM. */
-  const isRemote = Boolean(session?.remote);
+  /** The local branch of a remote session and its sub chats stays at its handoff commit; the agent commits on the VM. */
+  const isRemote = Boolean(session && remoteOf(session, sessions));
   const draftCount = useReviewDraftCount(sessionId);
   const [tab, setTab] = useState<Tab>("changes");
   /** Files are checked by default; only unchecked paths are stored so new files start checked. */

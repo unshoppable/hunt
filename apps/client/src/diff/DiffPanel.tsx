@@ -258,7 +258,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
         hasUnsavedChanges={isDirty}
         onSelect={selectFile}
         onContextMenu={openContextMenu}
-        onAskAgent={session?.remote ? undefined : askAgentAboutFile}
+        onAskAgent={askAgentAboutFile}
         onWorktreeChanged={() => {
           setLocalVersion((version) => version + 1);
           noteWorktreeChanged(sessionId);
@@ -380,8 +380,8 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
               onOpenInIde={(line, column) =>
                 commands.openFileInWebstorm(sessionId, shownDiff.path, line, column).catch((reason) => setError(String(reason)))
               }
-              onOpenSubChat={session?.remote ? undefined : subChat.open}
-              onToggleSubChat={session?.remote ? undefined : subChat.toggle}
+              onOpenSubChat={subChat.open}
+              onToggleSubChat={subChat.toggle}
               onLineNumbersLeftChange={alignWithLineNumbers}
             />
           ) : (

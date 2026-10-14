@@ -62,6 +62,26 @@ describe("remote file sync", () => {
     expect(useHuntStore.getState().chats.other).toBeUndefined();
   });
 
+  it("reloads the views of the sub chats in the synced worktree and keeps the sync state on its session's chat", () => {
+    const sub = "22222222-2222-2222-2222-222222222222";
+    const other = "33333333-3333-3333-3333-333333333333";
+    useHuntStore.setState({
+      chats: { [SESSION]: createEmptyChat(), [sub]: createEmptyChat(), [other]: createEmptyChat() },
+      sessions: [
+        { id: SESSION, parentId: null, worktreePath: "/worktrees/top" },
+        { id: sub, parentId: SESSION, worktreePath: "/worktrees/top" },
+        { id: other, parentId: null, worktreePath: "/worktrees/other" },
+      ] as unknown as SessionView[],
+    });
+
+    useHuntStore.getState().applyRemoteSync({ ...ended, syncedAt: "2026-10-14T10:05:00Z", changedLocal: true });
+
+    const { chats } = useHuntStore.getState();
+    expect([chats[SESSION].editVersion, chats[sub].editVersion, chats[other].editVersion]).toEqual([1, 1, 0]);
+    expect(chats[SESSION].fileSync.syncedAt).toBe("2026-10-14T10:05:00Z");
+    expect(chats[sub].fileSync.syncedAt).toBeNull();
+  });
+
   it("stops showing a running sync when the connection ends", () => {
     useHuntStore.getState().applyRemoteSync({ ...ended, isRunning: true });
     useHuntStore.getState().applyClosed({ huntSessionId: SESSION, error: null });
@@ -592,6 +612,18 @@ describe("createSubSession", () => {
     expect(vi.mocked(invoke).mock.calls).toEqual([["create_sub_session", { id, parentId: "parent", title: "Sub", selection: null }]]);
   });
 
+  it("creates a sub chat of a remote session, whose agent the backend starts on its VM", async () => {
+    const remote = { vm: { project: "p", zone: "z", instance: "vm-hunt" }, worktreePath: "/home/agent/app" } as SessionView["remote"];
+    useHuntStore.setState({ sessions: [{ ...storedSession("parent", "Parent"), remote }] });
+    vi.mocked(invoke).mockImplementation((command, args) =>
+      command === "create_sub_session" ? Promise.resolve({ ...storedSession((args as { id: string }).id, "Sub"), parentId: "parent" }) : Promise.resolve(undefined),
+    );
+
+    const id = await useHuntStore.getState().createSubSession("parent", "Sub", null, { setup: { configValues: {}, modeId: "default" }, prompt: null }, false);
+
+    expect(vi.mocked(invoke).mock.calls).toEqual([["create_sub_session", { id, parentId: "parent", title: "Sub", selection: null }]]);
+  });
+
   it("rejects an unlisted parent", async () => {
     await expect(useHuntStore.getState().createSubSession("missing", "Sub", null, { setup: { configValues: {}, modeId: "default" }, prompt: null }, true)).rejects.toThrow("missing");
     expect(invoke).not.toHaveBeenCalled();
@@ -821,6 +853,31 @@ describe("remote sessions", () => {
     vi.mocked(invoke).mockImplementation((command) => Promise.resolve(command === "open_session" ? { ...stopped, isLive: true } : [stopped]));
     await useHuntStore.getState().resumeSession(SESSION);
     expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ items: [], isStale: false, isLoading: false, error: null });
+  });
+
+  it("connects a disconnected sub chat of a remote session before sending the prompt", async () => {
+    const parent = { ...storedSession(SESSION, "Remote"), isLive: false, remote };
+    const sub = { ...storedSession("sub", "Sub"), parentId: SESSION, isLive: false };
+    useHuntStore.setState({ chats: {}, sessions: [sub, parent], creatingIds: [], activeSessionId: SESSION, draft: null, untitledIds: [] });
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "open_session") return Promise.resolve({ ...sub, isLive: true });
+      if (command === "list_sessions") return Promise.resolve([{ ...sub, isLive: true }, parent]);
+      if (command === "send_prompt") return Promise.resolve("EndTurn");
+      return Promise.resolve(undefined);
+    });
+
+    await useHuntStore.getState().sendPrompt("sub", "and this?");
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("open_session", { id: "sub" });
+    const calls = vi.mocked(invoke).mock.calls.map(([command]) => command);
+    expect(calls.indexOf("send_prompt")).toBeGreaterThan(calls.indexOf("open_session"));
+  });
+
+  it("does not report a dropped VM connection of a sub chat as an error", () => {
+    useHuntStore.setState({ chats: {}, sessions: [{ ...storedSession("sub", "Sub"), parentId: SESSION }, { ...storedSession(SESSION, "Remote"), remote }] });
+    useHuntStore.getState().ensureChat("sub");
+    useHuntStore.getState().applyClosed({ huntSessionId: "sub", error: "Process exited with exit status: 255" });
+    expect(useHuntStore.getState().chats.sub.error).toBeNull();
   });
 
   it("does not report a dropped VM connection as an error", () => {

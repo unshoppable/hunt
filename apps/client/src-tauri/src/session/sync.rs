@@ -1,13 +1,14 @@
 //! Keeps the local worktree of every connected remote session in sync with its worktree on the VM (`remote::sync`). A
-//! sync runs when the session connects, after the agent finished a tool call or a turn, every `TURN_POLL` while a turn
-//! runs (the agent's shell commands change files too), after the watcher saw a local change and after Hunt itself
-//! changed a file (`note_local_change`); a prompt waits until the local changes reached the VM (`flush`). Syncs of one
-//! session run one after the other, and requests that arrive meanwhile run one more afterwards. An adopted session
-//! gets a local worktree first, once the local checkout of its repository is known; until then it is skipped quietly.
-//! Every sync that talks to the VM reports to the UI as `remote:sync`, with its failure and the files it could not
+//! sync runs when an agent of the VM connects (the session's own or a sub chat's), after an agent finished a tool call
+//! or a turn, every `TURN_POLL` while a turn runs (the agent's shell commands change files too), after the watcher saw
+//! a local change and after Hunt itself changed a file (`note_local_change`); a prompt waits until the local changes
+//! reached the VM (`flush`). Syncs of one session run one after the other, and requests that arrive meanwhile run one
+//! more afterwards; the sync stops when the last agent of the VM disconnected. An adopted session gets a local worktree
+//! first, once the local checkout of its repository is known; until then it is skipped quietly. Every sync that talks
+//! to the VM reports to the UI as `remote:sync` with the remote session's id, its failure and the files it could not
 //! sync; it never fails a command.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -46,6 +47,10 @@ pub struct SyncRegistry {
 struct SessionSync {
     /// Held while a sync of the session runs.
     lock: Arc<tokio::sync::Mutex<()>>,
+    /// The Hunt sessions whose agents on the VM are connected: the remote session's own and those of its sub chats.
+    agents: Mutex<HashSet<Uuid>>,
+    /// The agents among them whose turn runs.
+    turns: Mutex<HashSet<Uuid>>,
     /// The VM may have changed files since the last sync.
     wants_remote: AtomicBool,
     /// The local worktree may have changed files since the last sync.
@@ -60,6 +65,34 @@ struct SessionSync {
 }
 
 impl SessionSync {
+    fn new(lock: Arc<tokio::sync::Mutex<()>>, agent: Uuid) -> Self {
+        SessionSync {
+            lock,
+            agents: Mutex::new(HashSet::from([agent])),
+            turns: Mutex::default(),
+            wants_remote: AtomicBool::new(true),
+            wants_local: AtomicBool::new(true),
+            is_driven: AtomicBool::new(false),
+            is_stopped: AtomicBool::new(false),
+            watcher: Mutex::new(None),
+            poller: Mutex::new(None),
+        }
+    }
+
+    /// Records that the turn of `agent` ended, and stops the poller once no agent of the VM runs one; returns whether
+    /// it did.
+    fn end_turn(&self, agent: Uuid) -> bool {
+        let mut turns = self.turns.lock().unwrap();
+        turns.remove(&agent);
+        if !turns.is_empty() {
+            return false;
+        }
+        if let Some(poller) = self.poller.lock().unwrap().take() {
+            poller.abort();
+        }
+        true
+    }
+
     fn stop(&self) {
         self.is_stopped.store(true, Ordering::SeqCst);
         self.watcher.lock().unwrap().take();
@@ -116,23 +149,22 @@ impl SyncEvent {
     }
 }
 
-/// Starts syncing the remote session `id`, which just connected: watches its local worktree and syncs right away,
-/// which also sends what changed here while it was disconnected.
-pub fn start(app: &AppHandle, id: Uuid) {
+/// Syncs the remote session `id` while the agent of the Hunt session `agent` is connected to its VM: the session's own
+/// or a sub chat's. The first agent starts the sync: it watches the local worktree and syncs right away, which also
+/// sends what changed here while nobody was connected; a later one syncs once more.
+pub fn attach(app: &AppHandle, id: Uuid, agent: Uuid) {
     let registry = app.state::<SyncRegistry>();
     let lock = registry.locks.lock().unwrap().entry(id).or_default().clone();
-    let state = Arc::new(SessionSync {
-        lock,
-        wants_remote: AtomicBool::new(true),
-        wants_local: AtomicBool::new(true),
-        is_driven: AtomicBool::new(false),
-        is_stopped: AtomicBool::new(false),
-        watcher: Mutex::new(None),
-        poller: Mutex::new(None),
-    });
-    if let Some(previous) = registry.active.lock().unwrap().insert(id, state.clone()) {
-        previous.stop();
+    let mut active = registry.active.lock().unwrap();
+    if let Some(state) = active.get(&id).cloned() {
+        drop(active);
+        state.agents.lock().unwrap().insert(agent);
+        request(app, id, Side::Remote);
+        return;
     }
+    let state = Arc::new(SessionSync::new(lock, agent));
+    active.insert(id, state.clone());
+    drop(active);
     if let Ok(record) = store::find_session(app, id) {
         if record.worktree_path.is_dir() {
             watch(app, id, &state, &record.worktree_path);
@@ -141,26 +173,49 @@ pub fn start(app: &AppHandle, id: Uuid) {
     drive(app, id, state);
 }
 
-/// Stops syncing `id`, whose connection ended; a sync that runs finishes.
-pub fn stop(app: &AppHandle, id: Uuid) {
-    if let Some(state) = app.state::<SyncRegistry>().active.lock().unwrap().remove(&id) {
-        state.stop();
+/// Ends the part of the agent of `agent` in the sync of its VM, whose connection ended; the sync stops with the last
+/// agent of the VM, and a sync that runs finishes. Does nothing for an agent that does not sync.
+pub fn detach(app: &AppHandle, agent: Uuid) {
+    let registry = app.state::<SyncRegistry>();
+    let mut active = registry.active.lock().unwrap();
+    let mut ended = Vec::new();
+    for (id, state) in active.iter() {
+        let mut agents = state.agents.lock().unwrap();
+        if !agents.remove(&agent) {
+            continue;
+        }
+        let is_last = agents.is_empty();
+        drop(agents);
+        state.end_turn(agent);
+        if is_last {
+            ended.push(*id);
+        }
+    }
+    for id in ended {
+        if let Some(state) = active.remove(&id) {
+            state.stop();
+        }
     }
 }
 
-/// Stops syncing `id` and waits until a running sync ended, so that a retrieval has the files to itself.
+/// Stops syncing `id` whatever agents are connected, and waits until a running sync ended, so that a retrieval has the
+/// files to itself.
 pub async fn stop_and_wait(app: &AppHandle, id: Uuid) {
-    stop(app, id);
-    let lock = app.state::<SyncRegistry>().locks.lock().unwrap().get(&id).cloned();
+    let registry = app.state::<SyncRegistry>();
+    if let Some(state) = registry.active.lock().unwrap().remove(&id) {
+        state.stop();
+    }
+    let lock = registry.locks.lock().unwrap().get(&id).cloned();
     if let Some(lock) = lock {
         let _ = lock.lock().await;
     }
 }
 
-/// Waits until the local changes of the connected remote session `id` reached its VM: until a running sync ended, then
-/// through one more that sends what changed here (it talks to the VM only when something did). Does nothing for a
-/// session that does not sync.
+/// Waits until the local changes of the connected remote session `id`, or of the remote session whose sub chat `id` is,
+/// reached its VM: until a running sync ended, then through one more that sends what changed here (it talks to the VM
+/// only when something did). Does nothing for a session that does not sync.
 pub async fn flush(app: &AppHandle, id: Uuid) {
+    let id = owner_of(app, id);
     let Some(state) = active(app, id) else { return };
     let _guard = state.lock.lock().await;
     if state.is_stopped.load(Ordering::SeqCst) {
@@ -170,15 +225,16 @@ pub async fn flush(app: &AppHandle, id: Uuid) {
     run_locked(app, id, &state, false).await;
 }
 
-/// Asks for a sync of the remote session `id` after Hunt changed a file of its local worktree; the watcher would see it
-/// too, later.
+/// Asks for a sync of the remote session `id`, or of the remote session whose sub chat `id` is, after Hunt changed a
+/// file of its local worktree; the watcher would see it too, later.
 pub fn note_local_change(app: &AppHandle, id: Uuid) {
-    request(app, id, Side::Local);
+    request(app, owner_of(app, id), Side::Local);
 }
 
-/// Asks for a sync after what `notification` of the remote session `id` tells: a finished tool call, or the relay's
-/// turn state, whose end syncs and while which the poller runs. Notifications of sessions that do not sync are ignored.
-pub fn observe(app: &AppHandle, id: Uuid, notification: &SessionNotification) {
+/// Asks for a sync of the remote session `id` after what `notification` of the agent of `agent` on its VM tells: a
+/// finished tool call, or the relay's turn state, whose end syncs and while which the poller runs. Notifications of
+/// sessions that do not sync are ignored.
+pub fn observe(app: &AppHandle, id: Uuid, agent: Uuid, notification: &SessionNotification) {
     let Some(state) = active(app, id) else { return };
     match &notification.update {
         SessionUpdate::ToolCallUpdate(update) => {
@@ -187,11 +243,12 @@ pub fn observe(app: &AppHandle, id: Uuid, notification: &SessionNotification) {
             }
         }
         SessionUpdate::SessionInfoUpdate(update) => match relay_turn(update.meta.as_ref()) {
-            Some("running") => poll(app, id, &state),
+            Some("running") => {
+                state.turns.lock().unwrap().insert(agent);
+                poll(app, id, &state);
+            }
             Some("idle") => {
-                if let Some(poller) = state.poller.lock().unwrap().take() {
-                    poller.abort();
-                }
+                state.end_turn(agent);
                 request(app, id, Side::Remote);
             }
             _ => {}
@@ -225,6 +282,12 @@ pub fn manifest_path(app: &AppHandle, id: Uuid) -> Result<PathBuf, String> {
 
 fn active(app: &AppHandle, id: Uuid) -> Option<Arc<SessionSync>> {
     app.state::<SyncRegistry>().active.lock().unwrap().get(&id).cloned()
+}
+
+/// The session whose sync covers the worktree of `id`: its parent for a sub chat, which works in the parent's worktree,
+/// else `id` itself.
+fn owner_of(app: &AppHandle, id: Uuid) -> Uuid {
+    store::find_session(app, id).ok().and_then(|record| record.parent_id).unwrap_or(id)
 }
 
 /// The turn state the relay reports in `_meta.hunt.turn` of a `session_info_update`.
@@ -421,6 +484,17 @@ mod tests {
         assert_eq!(relay_turn(Some(&meta(serde_json::json!({ "hunt": { "turn": "running" } })))), Some("running"));
         assert_eq!(relay_turn(Some(&meta(serde_json::json!({ "hunt": {} })))), None);
         assert_eq!(relay_turn(None), None);
+    }
+
+    #[test]
+    fn the_turns_end_once_no_agent_of_the_vm_runs_one() {
+        let (session, sub_chat) = (Uuid::new_v4(), Uuid::new_v4());
+        let state = SessionSync::new(Arc::default(), session);
+        state.turns.lock().unwrap().extend([session, sub_chat]);
+        assert!(!state.end_turn(sub_chat));
+        assert!(!state.end_turn(sub_chat));
+        assert!(state.end_turn(session));
+        assert!(state.end_turn(sub_chat));
     }
 
     #[test]

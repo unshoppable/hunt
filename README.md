@@ -157,7 +157,8 @@ first prompt creates the session and titles it; "PR review" starts a review sess
 A sub session is a fresh agent session in the worktree of an existing session. "sub session" on a session in the
 sidebar starts one with a title; selecting text on the right side of a diff and choosing "Ask Claude about
 selection" in the context menu starts one as a sub chat with the selected lines in its system prompt. Sub sessions
-run in the background, are listed under their parent in the sidebar and are removed together with it. Every code
+run in the background, are listed under their parent in the sidebar and are removed together with it; those of a remote
+session run on its VM next to its own agent (see *Remote sessions*). Every code
 view of the worktree marks the first line of such a selection with a button right of the line number that reopens the
 sub chat in its popover; the sub session's chat pane offers "Open in editor" for the selected lines.
 
@@ -362,6 +363,18 @@ writes one line to the journal, which the Ops Agent ships to Cloud Logging (`too
 for a command its exit code and number of output lines, and the title, for Bash the whole command. The output stays
 out.
 
+A sub chat of a remote session (sub session) runs on the session's VM as a second agent with a relay of its own,
+`hunt-relay@<sub chat id>.service` (`apps/session/vm/systemd/hunt-relay@.service`): the same relay program with the
+configuration `/home/agent/.claude/hunt-subs/<sub chat id>.json` and the socket and status in
+`/run/hunt-sub/<sub chat id>/`. `hunt-ctl start <id> --sub <sub chat id>` writes that configuration on the sub chat's
+first start from the session's `hunt-session.json`, a new conversation in the same worktree whose system prompt adds
+the text Hunt sends on stdin (the selected lines), and starts the unit with the session's tokens; `wait`, `clear` and
+`stop` take `--sub` the same way, and `stop --sub` also removes the configuration when the sub chat is deleted. The
+unit is not enabled: Hunt starts it whenever it connects the sub chat, and it runs until the sub chat is deleted, the
+session comes back or the VM shuts down. `hunt-ctl stop` and `destroy` stop the sub chats' relays with the session's.
+Their transcripts live in the session's project folder, so bringing the session back brings them along, and the sub
+chats continue on this Mac. The sub chat's tool calls and turns trigger the session's file sync like the session's own.
+
 Every session has a VM of its own, which is the isolation boundary: the agent works there as the user `agent`, with
 Docker and Docker Compose, and starts the services of the repository's `hunt.json` its task needs. `libs/vm/hunt-ctl`
 runs every git, tar
@@ -494,8 +507,8 @@ turn the relay reports, every 10 seconds while a turn runs, after the watcher sa
 move, delete, revert or shelve in Hunt; a prompt and a diagram refresh wait until local changes reached the VM. The
 local branch stays at the commit the session went to the VM at, so the agent's commits show in the diff like its
 uncommitted work (an adopted session's diff starts at the merge base with the origin's default branch); committing and
-pushing stay with the agent, and the changelist's *Commit*, the sub chats and *WebStorm* are switched off for a
-remote session. Its `node_modules` install leaves the lockfile alone (`npm ci`, `--frozen-lockfile`). The chat header
+pushing stay with the agent, and the changelist's *Commit* and *WebStorm* are switched off for a remote session and
+its sub chats. Its `node_modules` install leaves the lockfile alone (`npm ci`, `--frozen-lockfile`). The chat header
 shows when the last sync succeeded, and the chat shows a failure. A diagram refresh runs on the agent on the VM,
 against the session's diff base, and Hunt copies `.hunt/graph.json` back afterwards. Known limits: an edit that keeps
 a file's size within the same second it was last synced in goes unnoticed until the next change, and line-ending
@@ -564,7 +577,8 @@ A remote session keeps its VM, which costs only its disk while it is off, until 
 when its agent last worked (a prompt it sent, a turn that ended, or the relay's last turn when it connects) and, once
 that is seven days ago, asks in the main window whether to retrieve or delete it
 (`apps/client/src/sessions/StaleRemoteDialog.tsx`); "Later" asks again three days later. A session VM shuts itself down
-after 30 minutes without a running turn, client activity, terminal input or `hunt-ctl` run
+after 30 minutes without a running turn (of the session or one of its sub chats), client activity, terminal input or
+`hunt-ctl` run
 (`apps/session/vm/hunt-idle-check`, every minute through `hunt-idle.timer`); a preview page view or a request other than
 GET counts too, for at most two hours after the agent last worked. Services, dev servers and containers left running do
 not count. The disk keeps everything: the next prompt or preview page starts the VM again, the services that were

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RemoteStep, SessionView } from "../ipc/types";
 import { createEmptyChat } from "../state/store";
-import { fileSyncLabel, formatElapsed, handOffBlocker, moveStatus, remotePosition, retrieveBlocker } from "./remoteSession";
+import { fileSyncLabel, formatElapsed, handOffBlocker, moveStatus, remoteOf, remotePosition, retrieveBlocker } from "./remoteSession";
 
 function session(id: string, patch: Partial<SessionView> = {}): SessionView {
   return {
@@ -62,23 +62,40 @@ describe("handOffBlocker", () => {
   });
 });
 
-describe("retrieveBlocker", () => {
-  const vm = { project: "p", zone: "z", instance: "vm-hunt-s-top00000" };
-  const remote = {
-    vm,
-    worktreePath: "/home/agent/app",
-    repo: "acme/app",
-    branch: "feat/general/top",
-    handoffHead: "",
-    handedOffAt: "2026-10-13T10:00:00Z",
-    localMode: null,
-    lastActiveAt: null,
-    cleanupAskedAt: null,
-    previewDomain: null,
-    origin: "handoff" as const,
-    issue: null,
-  };
+/** A session handed off to its VM. */
+const remote = {
+  vm: { project: "p", zone: "z", instance: "vm-hunt-s-top00000" },
+  worktreePath: "/home/agent/app",
+  repo: "acme/app",
+  branch: "feat/general/top",
+  handoffHead: "",
+  handedOffAt: "2026-10-13T10:00:00Z",
+  localMode: null,
+  lastActiveAt: null,
+  cleanupAskedAt: null,
+  previewDomain: null,
+  origin: "handoff" as const,
+  issue: null,
+};
 
+describe("remoteOf", () => {
+  it("is the session's own VM, or its parent's for a sub chat", () => {
+    const top = session("top", { remote });
+    const sub = session("sub", { parentId: "top" });
+    expect(remoteOf(top, [top, sub])).toBe(remote);
+    expect(remoteOf(sub, [top, sub])).toBe(remote);
+  });
+
+  it("is null for a local session, a sub chat of a local session and one whose parent is not listed", () => {
+    const top = session("top");
+    const sub = session("sub", { parentId: "top" });
+    expect(remoteOf(top, [top, sub])).toBeNull();
+    expect(remoteOf(sub, [top, sub])).toBeNull();
+    expect(remoteOf(sub, [sub])).toBeNull();
+  });
+});
+
+describe("retrieveBlocker", () => {
   const saved = { hasUnsavedEdits: false };
 
   it("lets a session with a local checkout come back once the editor saved its edits", () => {

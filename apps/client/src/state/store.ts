@@ -23,6 +23,7 @@ import type {
   ToolCallView,
 } from "../ipc/types";
 import { imageDataUrl, imagePlaceholder } from "../chat/imageData";
+import { remoteOf } from "../chat/remoteSession";
 import { repoName } from "../ui/path";
 import { titleFromPrompt } from "../sessions/sessionLabels";
 import { HANDOFF_START_PROMPT, hasRunningService } from "../preview/services";
@@ -860,7 +861,6 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     createSubSession: async (parentId, title, selection, start, isActivated) => {
       const parent = get().sessions.find((candidate) => candidate.id === parentId);
       if (!parent) throw new Error(`failed to create sub session: the session ${parentId} is not listed`);
-      if (parent.remote) throw new Error("failed to create sub session: its parent runs on the remote VM");
       const id = crypto.randomUUID();
       const target: WorktreeTarget = {
         repoPath: parent.repoPath,
@@ -923,7 +923,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
         return;
       }
       const session = get().sessions.find((candidate) => candidate.id === id);
-      if (session?.remote && !session.isLive) {
+      if (session && remoteOf(session, get().sessions) && !session.isLive) {
         // The VM shuts down when idle; a prompt starts it and the connection again. A failed start keeps the prompt
         // in the queue, so the composer can take it back.
         await get().resumeSession(id);
@@ -1018,8 +1018,9 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
 
     applyClosed: (event) => {
       if (!get().chats[event.huntSessionId]) return;
-      // A remote session loses its connection whenever its idle VM shuts down; the chat says so without an error.
-      const isRemote = Boolean(get().sessions.find((session) => session.id === event.huntSessionId)?.remote);
+      // An agent on a VM loses its connection whenever its idle VM shuts down; the chat says so without an error.
+      const session = get().sessions.find((candidate) => candidate.id === event.huntSessionId);
+      const isRemote = Boolean(session && remoteOf(session, get().sessions));
       updateChat(event.huntSessionId, (chat) => ({
         ...chat,
         isBusy: false,
@@ -1052,8 +1053,20 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
         fileSync: event.isRunning
           ? { ...chat.fileSync, isRunning: true }
           : { isRunning: false, syncedAt: event.syncedAt ?? chat.fileSync.syncedAt, error: event.error, conflicts: event.conflicts },
-        editVersion: event.changedLocal ? chat.editVersion + 1 : chat.editVersion,
       }));
+      if (!event.changedLocal) return;
+      // The views of every session in the synced worktree reload: the remote session's and those of its sub chats.
+      const worktreePath = get().sessions.find((session) => session.id === event.huntSessionId)?.worktreePath;
+      set((state) => {
+        const chats = { ...state.chats };
+        const inWorktree = state.sessions.filter((session) => worktreePath && session.worktreePath === worktreePath).map((session) => session.id);
+        for (const id of new Set([event.huntSessionId, ...inWorktree])) {
+          const chat = chats[id];
+          if (!chat) continue;
+          chats[id] = { ...chat, editVersion: chat.editVersion + 1 };
+        }
+        return { chats };
+      });
     },
 
     applyGraphChanged: (huntSessionId) => {

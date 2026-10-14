@@ -121,11 +121,22 @@ pub struct PendingPermission {
     pub answer: oneshot::Sender<String>,
 }
 
-/// How Hunt reaches the agent: a `claude-agent-acp` process on this machine, or the relay of a session handed off to
-/// a VM, reached by running `ssh` with `ssh_args` (see `remote::ssh::Ssh::stream_args`).
+/// How Hunt reaches the agent: a `claude-agent-acp` process on this machine, or a relay on the VM of the remote session
+/// `sync_owner` (its own, or one of its sub chat's), reached by running `ssh` with `ssh_args` (see
+/// `remote::ssh::Ssh::stream_args`). The files of that session's worktree sync while the agent is connected.
 pub enum AgentTransport {
     Local,
-    Remote { ssh_args: Vec<String> },
+    Remote { ssh_args: Vec<String>, sync_owner: Uuid },
+}
+
+impl AgentTransport {
+    /// The remote session whose files sync while the agent is connected; `None` for a local agent.
+    pub fn sync_owner(&self) -> Option<Uuid> {
+        match self {
+            AgentTransport::Local => None,
+            AgentTransport::Remote { sync_owner, .. } => Some(*sync_owner),
+        }
+    }
 }
 
 /// How the agent session is brought up: fresh, or loaded from Claude Code's transcript.
@@ -192,6 +203,8 @@ struct AgentTask {
     hunt_session_id: Uuid,
     /// The local worktree whose changes are attributed to this session; `None` for a remote session.
     worktree: Option<PathBuf>,
+    /// The remote session whose sync the agent's tool calls and turns drive (`AgentTransport::sync_owner`).
+    sync_owner: Option<Uuid>,
     history: Arc<Mutex<Vec<SessionNotification>>>,
     start: SessionStart,
     system_prompt: String,
@@ -224,6 +237,7 @@ pub async fn connect(
     transport: AgentTransport,
 ) -> Result<LiveSession, String> {
     let is_local = matches!(transport, AgentTransport::Local);
+    let sync_owner = transport.sync_owner();
     let agent = match transport {
         AgentTransport::Local => {
             let script = bundled_script_path(&app, ACP_SCRIPT)?;
@@ -233,7 +247,7 @@ pub async fn connect(
             }
             AcpAgent::new(config)
         }
-        AgentTransport::Remote { ssh_args } => AcpAgent::new(AcpAgentConfig::new("ssh").args(ssh_args)),
+        AgentTransport::Remote { ssh_args, .. } => AcpAgent::new(AcpAgentConfig::new("ssh").args(ssh_args)),
     };
 
     let (ready, ready_receiver) = ReadyHandoff::new();
@@ -248,6 +262,7 @@ pub async fn connect(
         app: app.clone(),
         hunt_session_id,
         worktree,
+        sync_owner,
         history: history.clone(),
         start,
         system_prompt: system_prompt_append(&app, context_prompt),
@@ -272,7 +287,7 @@ pub async fn connect(
 /// Runs the agent process until it exits or the session is shut down: forwards its notifications and permission
 /// requests, hands the established session to `connect`, and announces the end to the registries and the UI.
 async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
-    let AgentTask { app, hunt_session_id, worktree, history, start, system_prompt, may_start_over, ready, shutdown, finished } = task;
+    let AgentTask { app, hunt_session_id, worktree, sync_owner, history, start, system_prompt, may_start_over, ready, shutdown, finished } = task;
     let notify_app = app.clone();
     let permission_app = app.clone();
     let session_ready = ready.clone();
@@ -286,7 +301,9 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
                 if let Some(worktree) = &worktree {
                     attribution::observe(&notify_app, hunt_session_id, worktree, &notification);
                 }
-                crate::session::sync::observe(&notify_app, hunt_session_id, &notification);
+                if let Some(owner) = sync_owner {
+                    crate::session::sync::observe(&notify_app, owner, hunt_session_id, &notification);
+                }
                 publish_update(&notify_app, hunt_session_id, &history, notification);
                 Ok(())
             },
@@ -348,7 +365,7 @@ async fn forget_live_session(app: &AppHandle, hunt_session_id: Uuid) {
     app.state::<SessionRegistry>().end_start(hunt_session_id).await;
     crate::graph::unwatch(&app.state::<crate::graph::WatcherRegistry>(), hunt_session_id);
     attribution::forget_session(app, hunt_session_id);
-    crate::session::sync::stop(app, hunt_session_id);
+    crate::session::sync::detach(app, hunt_session_id);
     app.state::<PermissionRegistry>()
         .0
         .lock()

@@ -1,0 +1,34 @@
+# The relay of one sub chat of the session on this VM, named by the sub chat's id: the relay of hunt-relay.service
+# (apps/session/src/relay/main.ts) with its own conversation, which it serves on /run/hunt-sub/<id>/relay.sock; Hunt
+# reaches it with `sudo -n -u agent socat - UNIX-CONNECT:…`, and the idle check reads /run/hunt-sub/<id>/status.json. Its
+# configuration, ~/.claude/hunt-subs/<id>.json, is the session's hunt-session.json with the sub chat's part of the system
+# prompt appended (`hunt-ctl start <session> --sub <id>`). The environment is the session relay's, tokens included. Hunt
+# starts it when it connects to the sub chat; it is never enabled, so it stays down after the VM boots until then.
+[Unit]
+Description=Relay of a sub chat of Hunt's remote session (%i)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+# Names the service's journal entries; Cloud Logging shows it as the label service.
+SyslogIdentifier=hunt-relay
+User=agent
+Group=agent
+WorkingDirectory=/home/agent
+EnvironmentFile=/srv/hunt/current/vm/agent.env
+EnvironmentFile=-/etc/hunt/session.env
+EnvironmentFile=-/etc/hunt/secrets.env
+# Outside /run/hunt, which systemd removes whenever the session's relay stops.
+RuntimeDirectory=hunt-sub/%i
+RuntimeDirectoryMode=0750
+# agent.env sets HUNT_CONFIG and HUNT_SOCKET_DIR for the session's relay, and an EnvironmentFile overrides Environment=,
+# so the sub chat's values go on the command line.
+ExecStart=/usr/bin/env HUNT_CONFIG=/home/agent/.claude/hunt-subs/%i.json HUNT_SOCKET_DIR=/run/hunt-sub/%i \
+  /opt/hunt/node/bin/node /srv/hunt/current/relay/main.mjs
+# Only the relay gets SIGTERM: it closes the adapter's stdin and waits for the transcript. What the agent started and
+# left running, such as dev servers, survives a restart of the relay.
+KillMode=process
+TimeoutStopSec=30s
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1048576

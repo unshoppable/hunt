@@ -65,8 +65,8 @@ type CodeDiffEditorProps = {
   onOpenInIde: (line: number, column: number) => void;
   /**
    * Opens the sub chat popover: from either side's context menu ("Ask Claude about selection") with the selected
-   * lines, or from a click on a sub chat's gutter glyph with that sub session (`subSessionId`). Without it (a remote
-   * session, whose sub chats would need a second agent on its VM) the editor offers no sub chat.
+   * lines, or from a click on a sub chat's gutter glyph with that sub session (`subSessionId`). Without it the editor
+   * offers no sub chat.
    */
   onOpenSubChat?: (request: SelectionRequest, subSessionId?: string) => void;
   /** Opens or closes the sub chat popover from the floating button at the end of a selection on either side. */

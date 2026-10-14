@@ -151,7 +151,6 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
       },
     });
 
-    // A remote session offers no sub chat: it would need a second agent on its VM.
     const agent = latest.current.onOpenSubChat
       ? attachSelectionAgent(editor, {
           pathOf: (model) => latest.current.workspace.pathOf(model.uri),

@@ -1,4 +1,4 @@
-import type { RemoteStep, SessionView } from "../ipc/types";
+import type { RemoteStep, RemoteTarget, SessionView } from "../ipc/types";
 import { missingCheckoutBlocker } from "../sessions/remoteOrigin";
 import type { FileSync, SessionChat } from "../state/store";
 
@@ -55,6 +55,17 @@ export function moveStatus(chat: SessionChat): string | null {
   if (!chat.move || chat.isLoading) return null;
   if (chat.move === "retrieve") return "The session comes back from the VM once the agent finished its turn.";
   return `The session moves to the VM ${chat.isBusy ? "once the agent finished its turn" : "as soon as it is ready"}.`;
+}
+
+/**
+ * The VM the agent of `session` runs on: its own while it is handed off, else its parent's, since a sub chat of a remote
+ * session runs as a second agent on that session's VM; `null` for an agent on this Mac. Use `session.remote` instead
+ * where the session must own the VM (moving it back, deleting it, its preview and terminal).
+ */
+export function remoteOf(session: SessionView, sessions: SessionView[]): RemoteTarget | null {
+  if (session.remote) return session.remote;
+  if (!session.parentId) return null;
+  return sessions.find((candidate) => candidate.id === session.parentId)?.remote ?? null;
 }
 
 /** What else decides whether a session can move: the editor's unsaved edits and the selected Claude account. */

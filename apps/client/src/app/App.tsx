@@ -44,9 +44,6 @@ export function App() {
   const canSearchFiles = Boolean(activeSessionId) && !draft && hasLocalWorktree;
   /** A local session has no preview or terminal; it shows the diff instead. */
   const rightTab = !activeRemoteInstance && (storedTab === "preview" || storedTab === "terminal") ? "diff" : storedTab;
-  // The panels start over when the session moves to or from its VM, since a remote session offers no sub chats.
-  const placeKey = activeRemoteInstance ? "remote" : "local";
-  const panelKey = `${activeSessionId}:${placeKey}`;
 
   // ⌘P / double shift: "Go to File" for the active session's worktree.
   useFileSearchShortcut(() => {
@@ -126,13 +123,13 @@ export function App() {
                   {rightTab === "preview" || rightTab === "terminal" ? null : activeRemoteInstance && !hasActiveWorktree ? (
                     <NoLocalWorktree sessionId={activeSessionId} />
                   ) : rightTab === "diff" ? (
-                    <DiffPanel key={panelKey} sessionId={activeSessionId} />
+                    <DiffPanel key={activeSessionId} sessionId={activeSessionId} />
                   ) : rightTab === "editor" ? (
-                    <IdePanel key={placeKey} sessionId={activeSessionId} />
+                    <IdePanel sessionId={activeSessionId} />
                   ) : rightTab === "pullRequest" ? (
-                    <PullRequestPanel key={panelKey} sessionId={activeSessionId} />
+                    <PullRequestPanel key={activeSessionId} sessionId={activeSessionId} />
                   ) : (
-                    <GraphPanel key={panelKey} sessionId={activeSessionId} />
+                    <GraphPanel key={activeSessionId} sessionId={activeSessionId} />
                   )}
                   {activeRemoteInstance && rightTab === "preview" ? <PreviewPanel key={activeSessionId} sessionId={activeSessionId} /> : null}
                   {/* The terminal stays mounted while another tab shows, so switching tabs keeps its connection. */}

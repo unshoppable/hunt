@@ -195,7 +195,7 @@ export function SessionSidebar() {
                       ) : null}
                     </span>
                   ) : null}
-                  {!isSubChat && !isCreating && !session.remote ? (
+                  {!isSubChat && !isCreating ? (
                     <span
                       role="button"
                       onClick={(event) => {
@@ -212,7 +212,7 @@ export function SessionSidebar() {
                   {!isCreating ? (
                     // Opaque backdrop so the button covers a long title; the row tint is layered over the sidebar colour.
                     <span
-                      className={`absolute top-1/2 hidden -translate-y-1/2 rounded-md group-hover:flex ${isSubChat || session.remote ? "-right-1" : "right-6"}`}
+                      className={`absolute top-1/2 hidden -translate-y-1/2 rounded-md group-hover:flex ${isSubChat ? "-right-1" : "right-6"}`}
                       style={{ background: `linear-gradient(var(${isActive ? "--row-active" : "--row-hover"}), var(${isActive ? "--row-active" : "--row-hover"})), var(--sidebar-bg)` }}
                     >
                       <span

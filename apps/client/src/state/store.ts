@@ -42,8 +42,11 @@ export type ContextUsage = { used: number; size: number };
  */
 export type RightTab = "diff" | "editor" | "graph" | "pullRequest" | "preview" | "terminal";
 
-/** The sync of a remote session's files with its VM: whether one runs, when the last one succeeded and what the last one failed with. */
-export type FileSync = { isRunning: boolean; syncedAt: string | null; error: string | null };
+/**
+ * The sync of a remote session's files with its VM: whether one runs, when the last one succeeded, what the last one
+ * failed with and the files it could not sync.
+ */
+export type FileSync = { isRunning: boolean; syncedAt: string | null; error: string | null; conflicts: string[] };
 
 /** The last adoption of session VMs (see `syncRemoteSessions`): whether one runs and what the last one failed with. */
 export type RemoteSync = { isRunning: boolean; error: string | null };
@@ -308,7 +311,7 @@ export function createEmptyChat(): SessionChat {
     remoteRun: null,
     isStale: false,
     move: null,
-    fileSync: { isRunning: false, syncedAt: null, error: null },
+    fileSync: { isRunning: false, syncedAt: null, error: null, conflicts: [] },
   };
 }
 
@@ -1022,6 +1025,8 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
         isBusy: false,
         permission: null,
         error: event.error && !isRemote ? `Agent stopped: ${event.error}` : chat.error,
+        // A sync that ran stops with the connection.
+        fileSync: { ...chat.fileSync, isRunning: false },
       }));
       set((state) => ({
         sessions: state.sessions.map((session) =>
@@ -1046,7 +1051,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
         ...chat,
         fileSync: event.isRunning
           ? { ...chat.fileSync, isRunning: true }
-          : { isRunning: false, syncedAt: event.syncedAt ?? chat.fileSync.syncedAt, error: event.error },
+          : { isRunning: false, syncedAt: event.syncedAt ?? chat.fileSync.syncedAt, error: event.error, conflicts: event.conflicts },
         editVersion: event.changedLocal ? chat.editVersion + 1 : chat.editVersion,
       }));
     },

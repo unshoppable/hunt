@@ -161,7 +161,13 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
         <PaneSeparator />
         <Panel id="editors" minSize={300} className="flex flex-col">
           <DependencyBanner sessionId={sessionId} status={session.dependencies} />
-          <EditorGrid sessionId={sessionId} workspace={workspace} ide={ide} onOpenSubChat={subChat.open} onToggleSubChat={subChat.toggle} />
+          <EditorGrid
+            sessionId={sessionId}
+            workspace={workspace}
+            ide={ide}
+            onOpenSubChat={session?.remote ? undefined : subChat.open}
+            onToggleSubChat={session?.remote ? undefined : subChat.toggle}
+          />
         </Panel>
       </PersistentGroup>
       {subChat.shown ? (

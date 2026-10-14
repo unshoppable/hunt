@@ -131,6 +131,66 @@ pub async fn merge_base(repo: &Path, base: &str, head: &str) -> Result<String, S
     Ok(run_git(repo, &["merge-base", base, head]).await?.trim().to_string())
 }
 
+/// The blob ids of the files at the worktree-relative `paths` of `worktree` as `git add` would store them (with the
+/// repository's clean filters), in the order of `paths`; each path must name an existing file.
+pub async fn hash_files(worktree: &Path, paths: &[String]) -> Result<Vec<String>, String> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let input: String = paths.iter().map(|path| format!("{path}\n")).collect();
+    let output = run_git_with_input(worktree, &["hash-object", "--stdin-paths"], &[], &input).await?;
+    let ids: Vec<String> = output.lines().map(str::to_string).collect();
+    if ids.len() != paths.len() {
+        return Err(format!("failed to hash {} files: git returned {} ids", paths.len(), ids.len()));
+    }
+    Ok(ids)
+}
+
+/// Whether the repository of `worktree` treats paths as case-insensitive (`core.ignorecase`), as git sets it on a
+/// case-insensitive file system.
+pub async fn ignores_case(worktree: &Path) -> bool {
+    run_git(worktree, &["config", "--bool", "core.ignorecase"]).await.is_ok_and(|value| value.trim() == "true")
+}
+
+/// The paths that differ between the trees `left` and `right` of `repo`. With `ignore_case`, a file whose name only
+/// changed case with the same content counts as unchanged.
+pub async fn tree_differences(repo: &Path, left: &str, right: &str, ignore_case: bool) -> Result<Vec<String>, String> {
+    let output = run_git(repo, &["diff-tree", "-r", "-z", "--raw", "--no-renames", left, right]).await?;
+    Ok(differing_paths(&output, ignore_case))
+}
+
+/// Reads `git diff-tree -r -z --raw` output; see `tree_differences`.
+fn differing_paths(output: &str, ignore_case: bool) -> Vec<String> {
+    // Each change is `:<old mode> <new mode> <old id> <new id> <status>` followed by its path, NUL-separated.
+    let mut changes: Vec<(String, String, String, String)> = Vec::new();
+    let mut fields = output.split('\0').filter(|field| !field.is_empty());
+    while let (Some(meta), Some(path)) = (fields.next(), fields.next()) {
+        let parts: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
+        let [_, _, old, new, status] = parts.as_slice() else { continue };
+        changes.push((path.to_string(), status.to_string(), old.to_string(), new.to_string()));
+    }
+    if !ignore_case {
+        return changes.into_iter().map(|(path, ..)| path).collect();
+    }
+    let with_status = |status: &str, id: fn(&(String, String, String, String)) -> &String| -> Vec<(String, String)> {
+        changes.iter().filter(|change| change.1 == status).map(|change| (change.0.to_lowercase(), id(change).clone())).collect()
+    };
+    let added = with_status("A", |change| &change.3);
+    let deleted = with_status("D", |change| &change.2);
+    changes
+        .into_iter()
+        .filter(|(path, status, old, new)| {
+            let key = (path.to_lowercase(), if status == "A" { new.clone() } else { old.clone() });
+            match status.as_str() {
+                "A" => !deleted.contains(&key),
+                "D" => !added.contains(&key),
+                _ => true,
+            }
+        })
+        .map(|(path, ..)| path)
+        .collect()
+}
+
 /// Name of the branch `repo`'s checkout is on; `HEAD` when it is detached.
 pub async fn current_branch(repo: &Path) -> Result<String, String> {
     Ok(run_git(repo, &["rev-parse", "--abbrev-ref", "HEAD"]).await?.trim().to_string())
@@ -622,6 +682,18 @@ pub async fn files_containing_word(worktree: &Path, word: &str) -> Result<Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn differing_paths_pairs_case_only_renames_with_the_same_content() {
+        let (old, new, other) = ("a".repeat(40), "b".repeat(40), "c".repeat(40));
+        let zero = "0".repeat(40);
+        let output = format!(
+            ":100644 000000 {old} {zero} D\0src/Foo.ts\0:000000 100644 {zero} {old} A\0src/foo.ts\0:100644 100644 {old} {new} M\0edited.txt\0:000000 100644 {zero} {other} A\0Bar.ts\0:100644 000000 {new} {zero} D\0bar.ts\0"
+        );
+        assert_eq!(differing_paths(&output, true), ["edited.txt", "Bar.ts", "bar.ts"]);
+        assert_eq!(differing_paths(&output, false), ["src/Foo.ts", "src/foo.ts", "edited.txt", "Bar.ts", "bar.ts"]);
+        assert!(differing_paths("", true).is_empty());
+    }
 
     #[test]
     fn unified_new_line_ranges_reads_the_new_side_of_every_hunk() {

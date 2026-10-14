@@ -109,7 +109,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   });
 
   // Opening a session checks once that its CLAUDE.md points the agent at the ADR folder and offers to add the section.
-  // A session still being created has no record in the backend yet, and a remote session no local files to read.
+  // A session still being created has no record in the backend yet; a remote session's agent reads CLAUDE.md on its VM
+  // only when it starts, so the offer waits until the session runs here again.
   const worktreePath = session?.remote ? undefined : session?.worktreePath;
   useEffect(() => {
     if (!worktreePath || isCreating) return;
@@ -186,6 +187,16 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
               Syncing the files with the VM failed: {chat.fileSync.error}
             </div>
           ) : null}
+          {session.remote && chat?.fileSync.conflicts.length ? (
+            <div className="mt-4 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-amber-200 break-words">
+              These files do not sync with the VM until both sides agree:
+              <ul className="mt-1 list-disc pl-5">
+                {chat.fileSync.conflicts.map((conflict) => (
+                  <li key={conflict}>{conflict}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -206,7 +217,10 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         </div>
       ) : canPromptRemote ? (
         <div className="px-9 pt-2">
-          <p className="chat-column text-[13px] text-neutral-500">Runs on the VM {session.remote?.vm.instance}. Your next prompt starts the VM and connects again.</p>
+          <p className="chat-column text-[13px] text-neutral-500">
+            Runs on the VM {session.remote?.vm.instance}. Your next prompt starts the VM and connects again; files you change here meanwhile
+            go to the VM then and win over the agent's changes to the same files.
+          </p>
         </div>
       ) : null}
       {session.selection ? (

@@ -65,11 +65,12 @@ type CodeDiffEditorProps = {
   onOpenInIde: (line: number, column: number) => void;
   /**
    * Opens the sub chat popover: from either side's context menu ("Ask Claude about selection") with the selected
-   * lines, or from a click on a sub chat's gutter glyph with that sub session (`subSessionId`).
+   * lines, or from a click on a sub chat's gutter glyph with that sub session (`subSessionId`). Without it (a remote
+   * session, whose sub chats would need a second agent on its VM) the editor offers no sub chat.
    */
-  onOpenSubChat: (request: SelectionRequest, subSessionId?: string) => void;
+  onOpenSubChat?: (request: SelectionRequest, subSessionId?: string) => void;
   /** Opens or closes the sub chat popover from the floating button at the end of a selection on either side. */
-  onToggleSubChat: (request: SelectionRequest) => void;
+  onToggleSubChat?: (request: SelectionRequest) => void;
   /**
    * Reports the client x of the left edge of the editable right side's line numbers in split mode, again whenever
    * its layout changes, and null in unified mode or without an editable side; hosts line header content up with it.
@@ -225,14 +226,16 @@ export function CodeDiffEditor({
       },
       onOpenInIde: (line, column) => onOpenInIdeRef.current(line, column),
     });
-    const agent = attachSelectionAgent(sideEditor, {
-      pathOf: () => diff.path,
-      onOpen: (request) => onOpenSubChatRef.current(request),
-      onToggle: (request) => onToggleSubChatRef.current(request),
-    });
+    const agent = onOpenSubChatRef.current
+      ? attachSelectionAgent(sideEditor, {
+          pathOf: () => diff.path,
+          onOpen: (request) => onOpenSubChatRef.current?.(request),
+          onToggle: (request) => onToggleSubChatRef.current?.(request),
+        })
+      : null;
     sideEditor.onDidDispose(() => {
       link.dispose();
-      agent.dispose();
+      agent?.dispose();
     });
   };
 
@@ -246,7 +249,9 @@ export function CodeDiffEditor({
     const chatMarkers = new SelectionChatMarkers(modifiedEditor, () => diff.path);
     chatMarkers.set(diff.path, selectionChatsRef.current, busyChatIdsRef.current);
     chatMarkersRef.current = chatMarkers;
-    chatMarkers.onDidClickChat((chat) => onOpenSubChatRef.current({ selection: chat.selection, anchor: anchorBelowLine(modifiedEditor, chat.selection.startLine) }, chat.sessionId));
+    chatMarkers.onDidClickChat((chat) =>
+      onOpenSubChatRef.current?.({ selection: chat.selection, anchor: anchorBelowLine(modifiedEditor, chat.selection.startLine) }, chat.sessionId),
+    );
     const addCommentGlyph = isReviewRef.current ? new AddCommentGlyph(modifiedEditor, () => diff.path, (span) => isInsideHunk(blocksRef.current, span.startLine, span.line)) : null;
     addCommentGlyph?.onDidClick((target) => setComposer(target));
     setModifiedEditor(modifiedEditor);

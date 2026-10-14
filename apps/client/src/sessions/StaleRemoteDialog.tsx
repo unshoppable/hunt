@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { commands } from "../ipc/commands";
 import { retrieveBlocker } from "../chat/remoteSession";
+import { useIdeStore } from "../ide/ideStore";
 import { useHuntStore } from "../state/store";
 import { BUTTON_MD, DANGER, GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
 import { Modal } from "../ui/Modal";
@@ -20,6 +21,7 @@ export function StaleRemoteDialog() {
   const sessions = useHuntStore((state) => state.sessions);
   const retrieveSession = useHuntStore((state) => state.retrieveSession);
   const closeSession = useHuntStore((state) => state.closeSession);
+  const ideSessions = useIdeStore((state) => state.sessions);
   const [now, setNow] = useState(() => Date.now());
   /** Sessions answered in this window, so none comes back before the refreshed session list reflects the answer. */
   const [answeredIds, setAnsweredIds] = useState<ReadonlySet<string>>(new Set());
@@ -32,7 +34,7 @@ export function StaleRemoteDialog() {
 
   const session = sessions.find((candidate) => !answeredIds.has(candidate.id) && isStaleRemote(candidate, now));
   if (!session) return null;
-  const blocker = retrieveBlocker(session);
+  const blocker = retrieveBlocker(session, { hasUnsavedEdits: (ideSessions[session.id]?.dirtyPaths.length ?? 0) > 0 });
   const days = idleDays(session, now);
 
   const answer = async (action: "delete" | "bringBack") => {

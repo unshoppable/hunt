@@ -43,9 +43,9 @@ type EditorPaneProps = {
    * Opens the sub chat popover: from the context menu ("Ask Claude about selection") with the selected lines, or
    * from a click on a sub chat's gutter glyph with that sub session (`subSessionId`).
    */
-  onOpenSubChat: (request: SelectionRequest, subSessionId?: string) => void;
+  onOpenSubChat?: (request: SelectionRequest, subSessionId?: string) => void;
   /** Toggles the sub chat popover from the floating button at the end of a selection (see selectionAskButton.ts). */
-  onToggleSubChat: (request: SelectionRequest) => void;
+  onToggleSubChat?: (request: SelectionRequest) => void;
 };
 
 /**
@@ -151,11 +151,14 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
       },
     });
 
-    const agent = attachSelectionAgent(editor, {
-      pathOf: (model) => latest.current.workspace.pathOf(model.uri),
-      onOpen: (request) => latest.current.onOpenSubChat(request),
-      onToggle: (request) => latest.current.onToggleSubChat(request),
-    });
+    // A remote session offers no sub chat: it would need a second agent on its VM.
+    const agent = latest.current.onOpenSubChat
+      ? attachSelectionAgent(editor, {
+          pathOf: (model) => latest.current.workspace.pathOf(model.uri),
+          onOpen: (request) => latest.current.onOpenSubChat?.(request),
+          onToggle: (request) => latest.current.onToggleSubChat?.(request),
+        })
+      : null;
 
     const link = attachIdeLink(editor, {
       onNavigate: (line, column) => {
@@ -216,7 +219,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
         addCommentGlyph.refresh();
       }),
       chatMarkers.onDidClickChat((chat) =>
-        latest.current.onOpenSubChat({ selection: chat.selection, anchor: anchorBelowLine(editor, chat.selection.startLine) }, chat.sessionId),
+        latest.current.onOpenSubChat?.({ selection: chat.selection, anchor: anchorBelowLine(editor, chat.selection.startLine) }, chat.sessionId),
       ),
       addCommentGlyph.onDidClick((target) => setComposer(target)),
       editor.onDidChangeModelContent(() => {
@@ -261,7 +264,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
       chatMarkers.dispose();
       chatMarkersRef.current = null;
       addCommentGlyph.dispose();
-      agent.dispose();
+      agent?.dispose();
       setEditor(null);
       editor.setModel(null);
       editor.dispose();

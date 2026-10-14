@@ -52,7 +52,7 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
   if (!session || (!vmSettings && !session.remote)) return null;
   const isRemote = Boolean(session.remote);
   const isRunning = Boolean(chat?.remoteStep) || Boolean(chat?.isLoading) || Boolean(chat?.move);
-  const blocker = isRemote ? retrieveBlocker(session) : handOffBlocker(session, sessions, { hasUnsavedEdits, hasClaudeAccount });
+  const blocker = isRemote ? retrieveBlocker(session, { hasUnsavedEdits }) : handOffBlocker(session, sessions, { hasUnsavedEdits, hasClaudeAccount });
   const previewDomain = session.remote?.previewDomain ?? null;
   const instance = session.remote?.vm.instance ?? "";
   const syncLabel = isRemote && chat ? fileSyncLabel(chat.fileSync, isSyncSlow, formatSyncTime) : null;
@@ -78,8 +78,9 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
   const handOffHint = chat?.isBusy
     ? "The VM starts now; the agent moves there once it finished its turn and continues, also while Hunt is closed."
     : "The agent continues on its own VM, also while Hunt is closed.";
+  const worktree = session.hasLocalWorktree ? "its local" : "a new";
   const bringBackHint = isAdopted(session)
-    ? `The session continues here in ${session.hasLocalWorktree ? "its local" : "a new"} worktree and its VM ${instance} is deleted, also for others working on it.${afterTurn}`
+    ? `The session continues here in ${worktree} worktree and its VM ${instance} is deleted, also for others working on it.${afterTurn}`
     : `The session continues here and its VM is deleted. Runs on ${instance}.${afterTurn}`;
 
   return (

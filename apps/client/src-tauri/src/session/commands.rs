@@ -31,15 +31,15 @@ use crate::ide;
 use crate::lsp::{self, LspRegistry};
 use crate::remote::api::GatewayApi;
 use crate::remote::preview::PreviewStatus;
-use crate::remote::ssh::Ssh;
+use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize};
 use crate::remote::sync::Direction;
 use crate::remote::{self, RemoteStep, RemoteTarget, Reporter, VmRef, VmSettings};
 use crate::screenshots::{self, Screenshot};
 use crate::session::attribution::{self, FileVersion};
-use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus};
+use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus, Install};
 use crate::session::review;
-use crate::session::store::{self, SelectionContext, SessionRecord, Workspace};
+use crate::session::store::{self, announce_sessions_changed, SelectionContext, SessionRecord, Workspace};
 use crate::session::summary;
 use crate::session::sync;
 use crate::workspace;
@@ -290,7 +290,7 @@ pub async fn create_session(
         } else {
             git::worktree_add(&repo_path, &branch, &worktree_path, &base_commit).await?;
         }
-        dependencies::ensure(&app, repo_path.clone(), worktree_path.clone());
+        dependencies::ensure(&app, repo_path.clone(), worktree_path.clone(), Install::Updating);
     }
 
     let mut record = SessionRecord::new(id, title, repo_path, worktree_path.clone(), branch, base_ref, base_commit);
@@ -364,7 +364,7 @@ pub async fn open_session(
         return Ok(SessionView::new(&app, store::find_session(&app, id)?, true));
     }
     if record.worktree_path.is_dir() {
-        dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone());
+        dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone(), install_for(&record));
     }
     if record.remote.is_some() {
         let activated = activate_remote(&app, &registry, &watchers, record).await;
@@ -441,7 +441,8 @@ pub async fn clear_session(
 #[tauri::command]
 pub async fn prepare_dependencies(app: AppHandle, id: Uuid) -> Result<(), String> {
     let record = worktree_session(&app, id)?;
-    dependencies::ensure(&app, record.repo_path, record.worktree_path);
+    let install = install_for(&record);
+    dependencies::ensure(&app, record.repo_path, record.worktree_path, install);
     announce_sessions_changed(&app);
     Ok(())
 }
@@ -917,16 +918,13 @@ pub async fn retrieve_session(
     permissions: State<'_, PermissionRegistry>,
     id: Uuid,
 ) -> Result<SessionView, String> {
+    ensure_retrievable(&store::find_session(&app, id)?)?;
+    stop_agent_and_wait(&app, &registry, &watchers, &permissions, id).await;
+    // The first sync of an adopted session may have created its local worktree meanwhile.
     let record = store::find_session(&app, id)?;
+    ensure_retrievable(&record)?;
     let target = record.remote.clone().ok_or("failed to retrieve the session: it runs locally")?;
     let adopted_into = (target.is_adopted() && !record.worktree_path.is_dir()).then_some(record.repo_path.as_path());
-    if adopted_into.is_some_and(|repo| repo.as_os_str().is_empty()) {
-        return Err(format!(
-            "failed to bring back the session: there is no local checkout of {}; start a session in one, then refresh the remote sessions",
-            target.repo
-        ));
-    }
-    stop_agent_and_wait(&app, &registry, &watchers, &permissions, id).await;
     if !registry.claim_start(id).await {
         return Err("failed to retrieve the session: its agent was started again meanwhile".into());
     }
@@ -935,6 +933,7 @@ pub async fn retrieve_session(
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
         let memory_base = memory_base_path(&app, id)?;
         let sync_manifest = sync::manifest_path(&app, id)?;
+        let sync_base_ref = target.start_ref(id);
         let gateway = gateway_vm("retrieve the session").await?;
         let request = remote::retrieve::RetrieveRequest {
             hunt_session_id: id,
@@ -945,6 +944,7 @@ pub async fn retrieve_session(
             claude_dir: &claude_dir,
             memory_base: &memory_base,
             sync_manifest: &sync_manifest,
+            sync_base_ref: &sync_base_ref,
             adopted_into,
         };
         let retrieved = remote::retrieve::retrieve(request, &progress_reporter(&app, id)).await?;
@@ -961,7 +961,7 @@ pub async fn retrieve_session(
         announce_sessions_changed(&app);
         sync::forget(&app, id);
         forget_remote(&app, &target, id).await;
-        dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone());
+        dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone(), Install::Updating);
         let start = local_start(&record);
         let view = activate(&app, &registry, &watchers, record, start, AgentTransport::Local).await?;
         let LiveHandles { history, .. } = live_session(&registry, id).await?;
@@ -979,6 +979,28 @@ pub async fn retrieve_session(
     finish_progress(&app, id);
     announce_sessions_changed(&app);
     activated
+}
+
+/// Refuses to bring back `record` when it runs locally, or when it is an adopted session without a local worktree and
+/// there is no local checkout of its repository to create one in.
+fn ensure_retrievable(record: &SessionRecord) -> Result<(), String> {
+    let target = record.remote.as_ref().ok_or("failed to retrieve the session: it runs locally")?;
+    if target.is_adopted() && !record.worktree_path.is_dir() && record.repo_path.as_os_str().is_empty() {
+        return Err(format!(
+            "failed to bring back the session: there is no local checkout of {}; start a session in one, then refresh the remote sessions",
+            target.repo
+        ));
+    }
+    Ok(())
+}
+
+/// How the dependencies of `record`'s worktree install: without touching the lockfile while its files sync with a VM.
+fn install_for(record: &SessionRecord) -> Install {
+    if record.remote.is_some() {
+        Install::Frozen
+    } else {
+        Install::Updating
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -1026,12 +1048,6 @@ fn progress_reporter(app: &AppHandle, id: Uuid) -> ProgressEmitter {
 /// Tells the UI that the remote operation on session `id` ended, successful or not.
 fn finish_progress(app: &AppHandle, id: Uuid) {
     let _ = app.emit("remote:progress", RemoteProgressEvent { hunt_session_id: id, step: None, detail: None });
-}
-
-/// Where Hunt keeps its SSH key and known hosts for the VM; a path without spaces, which ssh options cannot hold.
-pub(crate) fn ssh_dir() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "failed to find the home folder: HOME is not set".to_string())?;
-    Ok(PathBuf::from(home).join(".ssh").join("hunt"))
 }
 
 /// Claude Code's configuration folder, where transcripts, the global `CLAUDE.md` and skills live.
@@ -1316,8 +1332,6 @@ fn forget_edit_log_if_unused(app: &AppHandle, worktree: &Path) {
     }
 }
 
-/// Tells every window that the stored sessions changed in a way the sidebar must reload: a session was added
-/// or removed, or its title or state changed.
 /// Records `at` as the last work of the agent of the remote session `id` unless a later one is known; a local session
 /// is left alone. Failures are only logged: the activity only times the reminder about idle sessions.
 fn note_remote_activity(app: &AppHandle, id: Uuid, at: chrono::DateTime<chrono::Utc>) {
@@ -1345,10 +1359,6 @@ pub async fn snooze_remote_cleanup(app: AppHandle, id: Uuid) -> Result<(), Strin
     })?;
     announce_sessions_changed(&app);
     Ok(())
-}
-
-pub(crate) fn announce_sessions_changed(app: &AppHandle) {
-    let _ = app.emit("sessions:changed", ());
 }
 
 /// Ends the agent process of `id` (if any) and drops everything bound to it.
@@ -1400,8 +1410,9 @@ fn file_context_block(target: &Path) -> Option<ContentBlock> {
 /// Asks the agent to rewrite the component diagram with the standard prompt. The turn runs with the agent config
 /// values `model` and `effort` from the diagram settings; afterwards the agent gets back the model and effort the chat
 /// showed before. The turn is recorded as hidden, so the chat shows neither the prompt text nor the agent's output,
-/// and it leaves the session summary alone. The agent of a remote session diffs against the commit the local worktree
-/// has checked out, which its VM has too; the schema goes there before the turn and the diagram comes back after it.
+/// and it leaves the session summary alone. The agent of a remote session diffs against the session's diff base as a
+/// commit, which its VM has too; the local edits and the schema go there before the turn and the diagram comes back
+/// after it.
 #[tauri::command]
 pub async fn refresh_graph(
     app: AppHandle,
@@ -1412,8 +1423,9 @@ pub async fn refresh_graph(
 ) -> Result<String, String> {
     let record = worktree_session(&app, id)?;
     let is_remote = record.remote.is_some();
-    let diff_base = if is_remote { git::rev_parse(&record.worktree_path, "HEAD").await? } else { record.diff_base().to_string() };
+    let diff_base = if is_remote { git::rev_parse(&record.worktree_path, record.diff_base()).await? } else { record.diff_base().to_string() };
     if is_remote {
+        sync::flush(&app, id).await;
         sync::copy_files(&app, id, Direction::Push, &[graph::SCHEMA_PATH.to_string()]).await?;
     }
     let prompt = graph::refresh_prompt(&crate::preferences::ai_language(&app), &diff_base);
@@ -1723,6 +1735,7 @@ pub async fn write_file(app: AppHandle, id: Uuid, path: String, content: String)
     })
     .await?;
     store::add_touched_files(&app, id, std::slice::from_ref(&path))?;
+    sync::note_local_change(&app, id);
     store::note_worktree_changed(&app, id)
 }
 
@@ -1744,6 +1757,7 @@ pub async fn move_path(app: AppHandle, id: Uuid, from: String, to: String) -> Re
     }
     std::fs::rename(&source, &target).map_err(|error| format!("failed to move {from} to {to}: {error}"))?;
     store::add_touched_files(&app, id, &[from, to])?;
+    sync::note_local_change(&app, id);
     store::note_worktree_changed(&app, id)
 }
 
@@ -1765,6 +1779,7 @@ pub async fn delete_path(app: AppHandle, id: Uuid, path: String) -> Result<(), S
         std::fs::remove_file(&target).map_err(|error| format!("failed to delete {path}: {error}"))?;
     }
     store::add_touched_files(&app, id, &deleted)?;
+    sync::note_local_change(&app, id);
     store::note_worktree_changed(&app, id)
 }
 
@@ -1788,6 +1803,7 @@ pub async fn revert_file(app: AppHandle, id: Uuid, path: String) -> Result<(), S
     let (record, _) = session_file(&app, id, &path)?;
     git::revert_file(&record.worktree_path, record.diff_base(), &path).await?;
     store::forget_touched_files(&app, &record.worktree_path, std::slice::from_ref(&path))?;
+    sync::note_local_change(&app, id);
     store::note_worktree_changed(&app, id)
 }
 
@@ -1796,6 +1812,7 @@ pub async fn shelve_files(app: AppHandle, id: Uuid, paths: Vec<String>, name: St
     let record = worktree_session(&app, id)?;
     git::shelve_files(&record.worktree_path, &paths, &name).await?;
     store::forget_touched_files(&app, &record.worktree_path, &paths)?;
+    sync::note_local_change(&app, id);
     store::note_worktree_changed(&app, id)
 }
 
@@ -1810,6 +1827,7 @@ pub async fn list_shelves(app: AppHandle, id: Uuid) -> Result<Vec<Shelf>, String
 pub async fn unshelve(app: AppHandle, id: Uuid, reference: String, keep: bool) -> Result<(), String> {
     let record = worktree_session(&app, id)?;
     git::unshelve(&record.worktree_path, &reference, keep).await?;
+    sync::note_local_change(&app, id);
     store::note_worktree_changed(&app, id)
 }
 

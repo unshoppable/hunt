@@ -36,27 +36,36 @@ describe("remote file sync", () => {
     useHuntStore.setState({ chats: { [SESSION]: createEmptyChat() }, sessions: [], activeSessionId: null });
   });
 
+  const ended = { huntSessionId: SESSION, isRunning: false, syncedAt: null, error: null, conflicts: [], changedLocal: false };
+
   it("keeps the last success while a sync runs and reloads the views after one that changed local files", () => {
     const { applyRemoteSync } = useHuntStore.getState();
-    applyRemoteSync({ huntSessionId: SESSION, isRunning: false, syncedAt: "2026-10-14T10:05:00Z", error: null, changedLocal: true });
-    applyRemoteSync({ huntSessionId: SESSION, isRunning: true, syncedAt: null, error: null, changedLocal: false });
+    applyRemoteSync({ ...ended, syncedAt: "2026-10-14T10:05:00Z", changedLocal: true });
+    applyRemoteSync({ ...ended, isRunning: true });
     const chat = useHuntStore.getState().chats[SESSION];
-    expect(chat.fileSync).toEqual({ isRunning: true, syncedAt: "2026-10-14T10:05:00Z", error: null });
+    expect(chat.fileSync).toEqual({ isRunning: true, syncedAt: "2026-10-14T10:05:00Z", error: null, conflicts: [] });
     expect(chat.editVersion).toBe(1);
   });
 
-  it("records a failure until the next sync succeeds and leaves sessions without a chat alone", () => {
+  it("records a failure and the files it could not sync until the next sync succeeds", () => {
     const { applyRemoteSync } = useHuntStore.getState();
-    applyRemoteSync({ huntSessionId: SESSION, isRunning: false, syncedAt: "2026-10-14T10:05:00Z", error: null, changedLocal: false });
+    applyRemoteSync({ ...ended, syncedAt: "2026-10-14T10:05:00Z", conflicts: ["src: a folder here is where the VM has a file"] });
+    expect(useHuntStore.getState().chats[SESSION].fileSync.conflicts).toEqual(["src: a folder here is where the VM has a file"]);
     const error = "failed to list the files on the VM";
-    applyRemoteSync({ huntSessionId: SESSION, isRunning: false, syncedAt: null, error, changedLocal: false });
-    expect(useHuntStore.getState().chats[SESSION].fileSync).toEqual({ isRunning: false, syncedAt: "2026-10-14T10:05:00Z", error });
-    applyRemoteSync({ huntSessionId: SESSION, isRunning: false, syncedAt: "2026-10-14T10:06:00Z", error: null, changedLocal: false });
+    applyRemoteSync({ ...ended, error });
+    expect(useHuntStore.getState().chats[SESSION].fileSync).toEqual({ isRunning: false, syncedAt: "2026-10-14T10:05:00Z", error, conflicts: [] });
+    applyRemoteSync({ ...ended, syncedAt: "2026-10-14T10:06:00Z" });
     expect(useHuntStore.getState().chats[SESSION].fileSync.error).toBeNull();
     expect(useHuntStore.getState().chats[SESSION].editVersion).toBe(0);
 
-    applyRemoteSync({ huntSessionId: "other", isRunning: true, syncedAt: null, error: null, changedLocal: false });
+    applyRemoteSync({ ...ended, huntSessionId: "other", isRunning: true });
     expect(useHuntStore.getState().chats.other).toBeUndefined();
+  });
+
+  it("stops showing a running sync when the connection ends", () => {
+    useHuntStore.getState().applyRemoteSync({ ...ended, isRunning: true });
+    useHuntStore.getState().applyClosed({ huntSessionId: SESSION, error: null });
+    expect(useHuntStore.getState().chats[SESSION].fileSync.isRunning).toBe(false);
   });
 });
 

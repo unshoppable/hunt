@@ -469,20 +469,31 @@ so the *Diff*, *Editor*, *Dependency Graph* and *PR Description* tabs work as fo
 *Terminal*, and edits made here reach the agent. Each side lists the files Git sees there (tracked and untracked, not
 ignored, so no `node_modules` or `.env*`) with size and modification time; the state after the last sync, kept in
 `remote-sync/<id>.json` in the app data folder, tells which side changed a file. A file changed here goes to the VM,
-also when the agent changed it too (the local version wins); a file changed only on the VM comes here; deletions
-follow the same rule. rsync (`hunt-ctl install-tools` installs it on the VM) copies the files over the session's SSH
-connection as `agent`; the listing and the deletions on the VM run as `agent` through `sudo`, so they do not keep the VM
-awake. Without a recorded state (the first sync after a handoff or an adoption) the VM's files replace the local ones.
-A sync runs when the session connects, after every tool call and turn the relay reports, every 10 seconds while a turn
-runs and after the watcher saw a local change; a prompt waits until local changes reached the VM. The local branch
-stays at the commit the session was handed off at, so the agent's commits show in the diff like its uncommitted work;
-committing and pushing stay with the agent, and the changelist's *Commit* is switched off for a remote session.
-The chat header shows when the last sync succeeded, and the chat shows a failure. A diagram refresh runs on the
-agent on the VM, against the local `HEAD`, and Hunt copies `.hunt/graph.json` back afterwards.
+also when the agent changed it too (the local version wins), unless its content is still the one of the last sync; a
+file changed only on the VM comes here; deletions follow the same rule; equal size and modification second count as
+in sync. Before the first sync, the snapshot both sides started from (`refs/hunt/<id>/handoff`, or for an adopted
+session `refs/hunt/<id>/adopted`) tells which local files changed meanwhile; every other file takes the VM's version.
+A file that exists on a side without being listed there (other ignore rules on the Mac and the VM) is never touched.
+On a case-insensitive Mac the VM's spelling wins, and two VM files whose names differ only in case are reported instead
+of synced. rsync (`hunt-ctl install-tools` installs it on the VM) copies the files over the session's SSH connection as
+`agent`: files from the VM land in `.hunt/sync-staging` first and replace a local file only while it is unchanged since
+the listing. What completed is recorded even when a later step fails, and a file that cannot move (a folder on the
+other side) is reported in the chat without stopping the rest. The listing and the deletions on the VM run as `agent`
+through `sudo`, so they do not keep the VM awake. A sync runs when the session connects, after every tool call and
+turn the relay reports, every 10 seconds while a turn runs, after the watcher saw a local change and after a save,
+move, delete, revert or shelve in Hunt; a prompt and a diagram refresh wait until local changes reached the VM. The
+local branch stays at the commit the session went to the VM at, so the agent's commits show in the diff like its
+uncommitted work (an adopted session's diff starts at the merge base with the origin's default branch); committing and
+pushing stay with the agent, and the changelist's *Commit*, the sub chats and *WebStorm* are switched off for a
+remote session. Its `node_modules` install leaves the lockfile alone (`npm ci`, `--frozen-lockfile`). The chat header
+shows when the last sync succeeded, and the chat shows a failure. A diagram refresh runs on the agent on the VM,
+against the session's diff base, and Hunt copies `.hunt/graph.json` back afterwards.
 
 Bringing it back (`retrieve_session`) stops the relay, syncs once more, snapshots the VM's worktree on top of the
-agent's commits (`refs/hunt/<id>/retrieve`), fetches it and applies what the sync could not move to the local worktree;
-the branch moves to the agent's last commit and the transcript returns. Then Hunt has the gateway delete the
+agent's commits (`refs/hunt/<id>/retrieve`) and fetches it. Only when that snapshot holds exactly the files of the local
+worktree, the local branch did not move since the handoff and nothing changed here meanwhile does the branch move to
+the agent's last commit; otherwise the retrieval names the differing files (or the local commits) and moves nothing.
+The transcript returns. Then Hunt has the gateway delete the
 VM with its disks (`vms.delete`), as it does when a remote session is deleted. A deletion that fails, for example
 offline, is kept in `remote-cleanups.json` in the app data folder and retried at the next start of Hunt, once the main
 window passed the remote settings. Hunt deletes no VM whose recorded name is not the session's `vm-hunt-s-<short id>`.
@@ -528,9 +539,10 @@ handoffs. An adopted session gets a record with origin `swf` or
 `desktop`, its title, branch and repository from the metadata and the local checkout among the recently used
 repositories whose `origin` is that repository; the sidebar labels it `swf #<issue>` or `remote`. Its worktree path on
 the VM comes from `/srv/hunt/sessions/<id>/meta.json` once Hunt reaches the VM, and the relay replays its conversation
-on `session/load`. Its first sync creates a new worktree in the local checkout on the branch the VM has checked out,
-from a snapshot of the VM's worktree, and bringing it back is offered only once a checkout is known. Deleting or bringing back an adopted session asks first, naming its VM,
-since other people may work on it; VMs this Mac deleted or still has to delete are never adopted again.
+on `session/load`. Its first sync creates a new worktree in the local checkout on the branch the VM has checked out (a
+numbered name when the checkout has that branch already), from a snapshot of the VM's worktree; until a checkout is
+known it is not synced, and bringing it back is not offered. Deleting or bringing back an adopted session asks first,
+naming its VM, since other people may work on it; VMs this Mac deleted or still has to delete are never adopted again.
 
 A remote session keeps its VM, which costs only its disk while it is off, until it is retrieved or deleted. Hunt records
 when its agent last worked (a prompt it sent, a turn that ended, or the relay's last turn when it connects) and, once

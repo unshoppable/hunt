@@ -233,6 +233,12 @@ impl Ssh {
     }
 }
 
+/// Where Hunt keeps its SSH key and known hosts for the VMs; a path without spaces, which ssh options cannot hold.
+pub fn ssh_dir() -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "failed to find the home folder: HOME is not set".to_string())?;
+    Ok(PathBuf::from(home).join(".ssh").join("hunt"))
+}
+
 /// The name `vm`'s host key is recorded under in Hunt's known hosts.
 fn host_key_alias(vm: &VmRef) -> String {
     format!("{}.{}.{}", vm.instance, vm.zone, vm.project)

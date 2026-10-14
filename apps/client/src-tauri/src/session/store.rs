@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::git::DIFF_BASE;
@@ -205,6 +205,12 @@ Questions refer to this selection unless stated otherwise.\n```\n{}\n```\n",
             ),
         }
     }
+}
+
+/// Tells every window that the stored sessions changed in a way the sidebar must reload: a session was added or
+/// removed, or its title or state changed.
+pub fn announce_sessions_changed(app: &AppHandle) {
+    let _ = app.emit("sessions:changed", ());
 }
 
 pub fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {

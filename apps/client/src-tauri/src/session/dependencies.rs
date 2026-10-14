@@ -2,8 +2,9 @@
 //! worktree has no `node_modules` and the language server resolves no imports. When the repository has an
 //! installed `node_modules`, it is cloned with one APFS `clonefile` call: copy-on-write, seconds instead of
 //! minutes and no extra disk space. When the worktree's lockfile differs from the repository's, or there is
-//! nothing to clone, the package manager named by the lockfile installs on top. Progress is part of the
-//! session list (`SessionView::dependencies`); the worktree's language server restarts once the modules exist.
+//! nothing to clone, the package manager named by the lockfile installs on top; for a remote session's worktree, whose
+//! files sync with its VM, only an install that leaves the lockfile as it is. Progress is part of the session list
+//! (`SessionView::dependencies`); the worktree's language server restarts once the modules exist.
 
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -18,13 +19,19 @@ use tokio::process::Command;
 
 use crate::lsp::{self, LspRegistry};
 
-/// Lockfiles and the package manager that wrote them, with its install command.
+/// Lockfiles and the package manager that wrote them, with its install command and the one that never writes the
+/// lockfile.
 const LOCKFILES: &[Lockfile] = &[
-    Lockfile { name: "pnpm-lock.yaml", manager: "pnpm", args: &["install"] },
-    Lockfile { name: "yarn.lock", manager: "yarn", args: &["install"] },
-    Lockfile { name: "bun.lock", manager: "bun", args: &["install"] },
-    Lockfile { name: "bun.lockb", manager: "bun", args: &["install"] },
-    Lockfile { name: "package-lock.json", manager: "npm", args: &["install", "--no-audit", "--no-fund"] },
+    Lockfile { name: "pnpm-lock.yaml", manager: "pnpm", args: &["install"], frozen_args: &["install", "--frozen-lockfile"] },
+    Lockfile { name: "yarn.lock", manager: "yarn", args: &["install"], frozen_args: &["install", "--frozen-lockfile"] },
+    Lockfile { name: "bun.lock", manager: "bun", args: &["install"], frozen_args: &["install", "--frozen-lockfile"] },
+    Lockfile { name: "bun.lockb", manager: "bun", args: &["install"], frozen_args: &["install", "--frozen-lockfile"] },
+    Lockfile {
+        name: "package-lock.json",
+        manager: "npm",
+        args: &["install", "--no-audit", "--no-fund"],
+        frozen_args: &["ci", "--no-audit", "--no-fund"],
+    },
 ];
 
 /// Longest tail of the install output kept in a failure message.
@@ -34,6 +41,16 @@ struct Lockfile {
     name: &'static str,
     manager: &'static str,
     args: &'static [&'static str],
+    frozen_args: &'static [&'static str],
+}
+
+/// Whether an install may update the worktree's lockfile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Install {
+    /// A local session's worktree: the package manager may rewrite the lockfile, as on the command line.
+    Updating,
+    /// A remote session's worktree, whose files sync with its VM: the lockfile stays as it is.
+    Frozen,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -73,9 +90,9 @@ impl DependencyRegistry {
 }
 
 /// Prepares `node_modules` of `worktree` in the background when the worktree has a known lockfile and no
-/// `node_modules` yet; a preparation already running for the worktree is left alone. Failures end up in the
-/// status (and the log), never in the caller's result.
-pub fn ensure(app: &AppHandle, repo: PathBuf, worktree: PathBuf) {
+/// `node_modules` yet, installing as `install` allows; a preparation already running for the worktree is left alone.
+/// Failures end up in the status (and the log), never in the caller's result.
+pub fn ensure(app: &AppHandle, repo: PathBuf, worktree: PathBuf, install: Install) {
     // A session in the repository's own checkout uses whatever the user installed there.
     if worktree == repo {
         return;
@@ -99,7 +116,7 @@ pub fn ensure(app: &AppHandle, repo: PathBuf, worktree: PathBuf) {
             registry.set(&worktree, DependencyPhase::Running, message);
             let _ = app.emit("sessions:changed", ());
         };
-        let outcome = prepare(&repo, &worktree, lockfile, &report).await;
+        let outcome = prepare(&repo, &worktree, lockfile, install, &report).await;
         match outcome {
             Ok(()) => {
                 registry.set(&worktree, DependencyPhase::Ready, "node_modules ready");
@@ -115,9 +132,9 @@ pub fn ensure(app: &AppHandle, repo: PathBuf, worktree: PathBuf) {
     });
 }
 
-/// Clones the repository's `node_modules` when it has one, then installs unless the clone matches the lockfile;
-/// `report` receives the step in progress.
-async fn prepare(repo: &Path, worktree: &Path, lockfile: &Lockfile, report: &(dyn Fn(String) + Sync)) -> Result<(), String> {
+/// Clones the repository's `node_modules` when it has one, then installs as `install` allows unless the clone matches
+/// the lockfile; `report` receives the step in progress.
+async fn prepare(repo: &Path, worktree: &Path, lockfile: &Lockfile, install: Install, report: &(dyn Fn(String) + Sync)) -> Result<(), String> {
     let source = repo.join("node_modules");
     let target = worktree.join("node_modules");
 
@@ -137,13 +154,17 @@ async fn prepare(repo: &Path, worktree: &Path, lockfile: &Lockfile, report: &(dy
         return Ok(());
     }
 
-    report(format!("Running {} {}…", lockfile.manager, lockfile.args[0]));
-    install(worktree, lockfile).await
+    let args = match install {
+        Install::Updating => lockfile.args,
+        Install::Frozen => lockfile.frozen_args,
+    };
+    report(format!("Running {} {}…", lockfile.manager, args[0]));
+    run_install(worktree, lockfile, args).await
 }
 
-async fn install(worktree: &Path, lockfile: &Lockfile) -> Result<(), String> {
+async fn run_install(worktree: &Path, lockfile: &Lockfile, args: &[&str]) -> Result<(), String> {
     let output = Command::new(lockfile.manager)
-        .args(lockfile.args)
+        .args(args)
         .current_dir(worktree)
         .stdin(Stdio::null())
         .output()
@@ -155,7 +176,7 @@ async fn install(worktree: &Path, lockfile: &Lockfile) -> Result<(), String> {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let detail = if stderr.trim().is_empty() { stdout } else { stderr };
-    Err(format!("{} {} failed: {}", lockfile.manager, lockfile.args.join(" "), tail(detail.trim(), MAX_OUTPUT_CHARS)))
+    Err(format!("{} {} failed: {}", lockfile.manager, args.join(" "), tail(detail.trim(), MAX_OUTPUT_CHARS)))
 }
 
 async fn same_content(left: &Path, right: &Path) -> bool {
@@ -230,7 +251,7 @@ mod tests {
         write(&worktree.join("package-lock.json"), "{}");
 
         let steps = Mutex::new(Vec::new());
-        prepare(&repo, &worktree, lockfile("package-lock.json"), &|message| steps.lock().unwrap().push(message)).await.unwrap();
+        prepare(&repo, &worktree, lockfile("package-lock.json"), Install::Updating, &|message| steps.lock().unwrap().push(message)).await.unwrap();
 
         assert!(worktree.join("node_modules/.bin/tsgo").is_file());
         assert!(!worktree.join("node_modules/.cache").exists(), "build caches are dropped from the clone");
@@ -253,10 +274,31 @@ mod tests {
         write(&worktree.join("package-lock.json"), r#"{"name":"fixture","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"fixture","version":"1.0.0"}}}"#);
 
         let steps = Mutex::new(Vec::new());
-        prepare(&repo, &worktree, lockfile("package-lock.json"), &|message| steps.lock().unwrap().push(message)).await.unwrap();
+        prepare(&repo, &worktree, lockfile("package-lock.json"), Install::Updating, &|message| steps.lock().unwrap().push(message)).await.unwrap();
 
         assert!(worktree.join("node_modules/.package-lock.json").is_file(), "npm wrote the worktree's node_modules");
         assert_eq!(steps.into_inner().unwrap(), vec!["Cloning node_modules from the repository…", "Running npm install…"]);
+    }
+
+    #[tokio::test]
+    async fn a_frozen_install_leaves_the_lockfile_alone() {
+        if std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).all(|dir| !dir.join("npm").is_file()) {
+            println!("npm not installed, skipping");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (repo, worktree) = (dir.path().join("repo"), dir.path().join("worktree"));
+        let package = r#"{"name":"fixture","version":"1.0.0","private":true}"#;
+        let lock = r#"{"name":"fixture","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"fixture","version":"1.0.0"}}}"#;
+        std::fs::create_dir_all(&repo).unwrap();
+        write(&worktree.join("package.json"), package);
+        write(&worktree.join("package-lock.json"), lock);
+
+        let steps = Mutex::new(Vec::new());
+        prepare(&repo, &worktree, lockfile("package-lock.json"), Install::Frozen, &|message| steps.lock().unwrap().push(message)).await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(worktree.join("package-lock.json")).unwrap(), lock);
+        assert_eq!(steps.into_inner().unwrap(), vec!["Running npm ci…"]);
     }
 
     #[test]

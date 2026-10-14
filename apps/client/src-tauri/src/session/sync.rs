@@ -1,10 +1,11 @@
 //! Keeps the local worktree of every connected remote session in sync with its worktree on the VM (`remote::sync`). A
 //! sync runs when the session connects, after the agent finished a tool call or a turn, every `TURN_POLL` while a turn
-//! runs (the agent's shell commands change files too) and after the watcher saw a local change; a prompt waits for the
-//! local changes to reach the VM (`flush`). Syncs of one session run one after the other, and requests that arrive
-//! meanwhile run one more afterwards. An adopted session without a local worktree gets one first, once the local
-//! checkout of its repository is known. Every sync that talks to the VM reports to the UI as `remote:sync`; a failure
-//! lands there and never fails a command.
+//! runs (the agent's shell commands change files too), after the watcher saw a local change and after Hunt itself
+//! changed a file (`note_local_change`); a prompt waits until the local changes reached the VM (`flush`). Syncs of one
+//! session run one after the other, and requests that arrive meanwhile run one more afterwards. An adopted session
+//! gets a local worktree first, once the local checkout of its repository is known; until then it is skipped quietly.
+//! Every sync that talks to the VM reports to the UI as `remote:sync`, with its failure and the files it could not
+//! sync; it never fails a command.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,12 +23,11 @@ use uuid::Uuid;
 use crate::git;
 use crate::graph::{self, WatcherRegistry};
 use crate::remote::retrieve;
-use crate::remote::ssh::Ssh;
+use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::sync::{self as file_sync, Direction, Outcome, SyncTarget};
 use crate::remote::RemoteTarget;
-use crate::session::commands::{announce_sessions_changed, ssh_dir};
-use crate::session::dependencies;
-use crate::session::store::{self, SessionRecord};
+use crate::session::dependencies::{self, Install};
+use crate::session::store::{self, announce_sessions_changed, SessionRecord};
 
 /// How often a sync runs while the agent's turn runs.
 const TURN_POLL: Duration = Duration::from_secs(10);
@@ -85,8 +85,35 @@ struct SyncEvent {
     /// When the sync that ended succeeded; `None` while one runs and after a failure.
     synced_at: Option<chrono::DateTime<chrono::Utc>>,
     error: Option<String>,
+    /// One line per file the sync that ended could not sync, with the reason.
+    conflicts: Vec<String>,
     /// Whether the sync that ended changed files of the local worktree, which the views then reload.
     changed_local: bool,
+}
+
+impl SyncEvent {
+    fn running(id: Uuid) -> Self {
+        SyncEvent { hunt_session_id: id, is_running: true, synced_at: None, error: None, conflicts: Vec::new(), changed_local: false }
+    }
+
+    /// The end of a sync the disconnect of its session cut short: nothing to report.
+    fn interrupted(id: Uuid) -> Self {
+        SyncEvent { is_running: false, ..Self::running(id) }
+    }
+
+    fn ended(id: Uuid, result: Result<Outcome, String>) -> Self {
+        match result {
+            Ok(outcome) => SyncEvent {
+                hunt_session_id: id,
+                is_running: false,
+                synced_at: Some(chrono::Utc::now()),
+                error: None,
+                changed_local: outcome.changed_local(),
+                conflicts: outcome.conflicts,
+            },
+            Err(error) => SyncEvent { is_running: false, error: Some(error), ..Self::running(id) },
+        }
+    }
 }
 
 /// Starts syncing the remote session `id`, which just connected: watches its local worktree and syncs right away,
@@ -130,15 +157,23 @@ pub async fn stop_and_wait(app: &AppHandle, id: Uuid) {
     }
 }
 
-/// Waits until the local changes of the connected remote session `id` reached its VM: until a running sync ended, and
-/// through one more when the watcher saw changes since. Does nothing for a session that does not sync.
+/// Waits until the local changes of the connected remote session `id` reached its VM: until a running sync ended, then
+/// through one more that sends what changed here (it talks to the VM only when something did). Does nothing for a
+/// session that does not sync.
 pub async fn flush(app: &AppHandle, id: Uuid) {
     let Some(state) = active(app, id) else { return };
     let _guard = state.lock.lock().await;
-    if state.is_stopped.load(Ordering::SeqCst) || !state.wants_local.swap(false, Ordering::SeqCst) {
+    if state.is_stopped.load(Ordering::SeqCst) {
         return;
     }
+    state.wants_local.store(false, Ordering::SeqCst);
     run_locked(app, id, &state, false).await;
+}
+
+/// Asks for a sync of the remote session `id` after Hunt changed a file of its local worktree; the watcher would see it
+/// too, later.
+pub fn note_local_change(app: &AppHandle, id: Uuid) {
+    request(app, id, Side::Local);
 }
 
 /// Asks for a sync after what `notification` of the remote session `id` tells: a finished tool call, or the relay's
@@ -237,50 +272,57 @@ fn drive(app: &AppHandle, id: Uuid, state: Arc<SessionSync>) {
 }
 
 /// Runs one sync of `id` while its lock is held and reports it; without `wants_remote` it talks to the VM only when the
-/// local worktree changed. A sync that fails after the session disconnected (its VM shut down) reports nothing.
+/// local worktree changed. A sync that fails because the session disconnected meanwhile (its VM shut down) ends without
+/// an error.
 async fn run_locked(app: &AppHandle, id: Uuid, state: &SessionSync, wants_remote: bool) {
-    let result = sync_once(app, id, wants_remote).await;
-    let event = match result {
+    let result = match sync_once(app, id, wants_remote).await {
         Ok(None) => return,
-        Err(_) if state.is_stopped.load(Ordering::SeqCst) => return,
-        Ok(Some(outcome)) => {
-            if outcome.changed_local() {
-                if let Err(error) = store::note_worktree_changed(app, id) {
-                    eprintln!("recording the synced changes of session {id} failed: {error}");
-                }
-            }
-            let synced_at = Some(chrono::Utc::now());
-            SyncEvent { hunt_session_id: id, is_running: false, synced_at, error: None, changed_local: outcome.changed_local() }
+        Ok(Some(outcome)) => Ok(outcome),
+        Err(_) if state.is_stopped.load(Ordering::SeqCst) => {
+            let _ = app.emit("remote:sync", SyncEvent::interrupted(id));
+            return;
         }
         Err(error) => {
             eprintln!("syncing the files of session {id} failed: {error}");
-            SyncEvent { hunt_session_id: id, is_running: false, synced_at: None, error: Some(error), changed_local: false }
+            Err(error)
         }
     };
-    let _ = app.emit("remote:sync", event);
+    if result.as_ref().is_ok_and(Outcome::changed_local) {
+        if let Err(error) = store::note_worktree_changed(app, id) {
+            eprintln!("recording the synced changes of session {id} failed: {error}");
+        }
+    }
+    let _ = app.emit("remote:sync", SyncEvent::ended(id, result));
 }
 
-/// One sync of `id`; `None` when it was asked for by a local change and the local worktree turned out unchanged.
+/// One sync of `id`; `None` when there was nothing to do: a local change was asked for and the local worktree turned out
+/// unchanged, or an adopted session has no local checkout of its repository yet.
 async fn sync_once(app: &AppHandle, id: Uuid, wants_remote: bool) -> Result<Option<Outcome>, String> {
     let record = store::find_session(app, id)?;
     let target = record.remote.clone().ok_or("failed to sync the session's files: it runs locally")?;
     if target.worktree_path.as_os_str().is_empty() {
         return Err("failed to sync the session's files: its worktree on the VM is not known yet".into());
     }
-    let manifest = manifest_path(app, id)?;
-    if !wants_remote && record.worktree_path.is_dir() && !file_sync::has_local_changes(&record.worktree_path, &manifest).await? {
+    let has_worktree = record.worktree_path.is_dir();
+    if !has_worktree && target.is_adopted() && record.repo_path.as_os_str().is_empty() {
         return Ok(None);
     }
-    let started = SyncEvent { hunt_session_id: id, is_running: true, synced_at: None, error: None, changed_local: false };
-    let _ = app.emit("remote:sync", started);
+    let manifest = manifest_path(app, id)?;
+    if !wants_remote && has_worktree && !file_sync::has_local_changes(&record.worktree_path, &manifest).await? {
+        return Ok(None);
+    }
+    let _ = app.emit("remote:sync", SyncEvent::running(id));
     let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
     let record = ensure_local_worktree(app, record, &target, &ssh).await?;
     let remote = target.worktree_path.display().to_string();
-    file_sync::sync(&SyncTarget { local: &record.worktree_path, remote: &remote, manifest: &manifest }, &ssh).await.map(Some)
+    let base_ref = target.start_ref(id);
+    let sync_target = SyncTarget { local: &record.worktree_path, remote: &remote, manifest: &manifest, base_ref: &base_ref };
+    file_sync::sync(&sync_target, &ssh).await.map(Some)
 }
 
 /// The record of the remote session `record` with a local worktree: an adopted session that has none yet gets one from
-/// a snapshot of its VM in the local checkout of its repository, prepared like a new session's.
+/// a snapshot of its VM in the local checkout of its repository, prepared like a new session's; its changes compare
+/// against the merge base with the default branch, so that they include the agent's commits.
 async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &RemoteTarget, ssh: &Ssh) -> Result<SessionRecord, String> {
     if record.worktree_path.is_dir() {
         return Ok(record);
@@ -288,24 +330,19 @@ async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &
     if !target.is_adopted() {
         return Err(format!("failed to sync the session's files: its local worktree {} is missing", record.worktree_path.display()));
     }
-    if record.repo_path.as_os_str().is_empty() {
-        return Err(format!(
-            "failed to sync the session's files: there is no local checkout of {}; start a session in one, then refresh the remote sessions",
-            target.repo
-        ));
-    }
     let id = record.id;
     let remote = target.worktree_path.display().to_string();
     let checked_out = retrieve::check_out_adopted(ssh, id, &remote, &target.branch, &record.repo_path, &record.worktree_path).await?;
     let record = store::update_session(app, id, |stored| {
         stored.branch = checked_out.branch.clone();
+        stored.diff_base = checked_out.diff_base.clone();
         if let Some(remote) = stored.remote.as_mut() {
             remote.handoff_head = checked_out.head.clone();
         }
     })?
     .ok_or_else(|| "failed to sync the session's files: the session was closed meanwhile".to_string())?;
     announce_sessions_changed(app);
-    dependencies::ensure(app, record.repo_path.clone(), record.worktree_path.clone());
+    dependencies::ensure(app, record.repo_path.clone(), record.worktree_path.clone(), Install::Frozen);
     if let Err(error) = git::exclude_hunt_dir(&record.worktree_path).await {
         eprintln!("excluding the diagram folder in the worktree of session {id} failed: {error}");
     }
@@ -384,5 +421,17 @@ mod tests {
         assert_eq!(relay_turn(Some(&meta(serde_json::json!({ "hunt": { "turn": "running" } })))), Some("running"));
         assert_eq!(relay_turn(Some(&meta(serde_json::json!({ "hunt": {} })))), None);
         assert_eq!(relay_turn(None), None);
+    }
+
+    #[test]
+    fn an_ended_sync_reports_its_conflicts_or_its_failure() {
+        let id = Uuid::nil();
+        let outcome = Outcome { pulled: 1, conflicts: vec!["src: a folder here is where the VM has a file".into()], ..Outcome::default() };
+        let ended = SyncEvent::ended(id, Ok(outcome));
+        assert!(!ended.is_running && ended.synced_at.is_some() && ended.error.is_none() && ended.changed_local);
+        assert_eq!(ended.conflicts, ["src: a folder here is where the VM has a file"]);
+        let failed = SyncEvent::ended(id, Err("failed to list the files on the VM".into()));
+        assert!(!failed.is_running && failed.synced_at.is_none() && failed.conflicts.is_empty());
+        assert_eq!(failed.error.as_deref(), Some("failed to list the files on the VM"));
     }
 }

@@ -11,9 +11,9 @@ type EditorGridProps = {
   workspace: Workspace;
   ide: IdeSession;
   /** Opens the sub chat popover for a selection or, with `subSessionId`, an existing sub chat (see EditorPane.tsx). */
-  onOpenSubChat: (request: SelectionRequest, subSessionId?: string) => void;
+  onOpenSubChat?: (request: SelectionRequest, subSessionId?: string) => void;
   /** Opens or closes the sub chat popover from the selection's floating button (see EditorPane.tsx). */
-  onToggleSubChat: (request: SelectionRequest) => void;
+  onToggleSubChat?: (request: SelectionRequest) => void;
 };
 
 /** The editor area: rows of panes, each resizable; empty until the first file is opened. */

@@ -170,6 +170,16 @@ impl RemoteTarget {
     pub fn is_adopted(&self) -> bool {
         self.origin != RemoteOrigin::Handoff
     }
+
+    /// The ref of the snapshot the local worktree of session `id` and its VM started from, which its first sync compares
+    /// against: the handoff's, or for an adopted session the one its local worktree was created from.
+    pub fn start_ref(&self, id: uuid::Uuid) -> String {
+        if self.is_adopted() {
+            retrieve::adopted_ref(id)
+        } else {
+            format!("refs/hunt/{id}/handoff")
+        }
+    }
 }
 
 /// Who started a remote session on its VM.

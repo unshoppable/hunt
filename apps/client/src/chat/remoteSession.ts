@@ -75,22 +75,28 @@ export function handOffBlocker(session: SessionView, sessions: SessionView[], co
   return null;
 }
 
+/** What else decides whether a remote session can come back: the editor's unsaved edits, which the last sync would miss. */
+export type RetrieveContext = { hasUnsavedEdits: boolean };
+
 /**
  * Why the remote `session` cannot be brought back right now, or `null` when it can: an adopted session needs a local
- * checkout of its repository. A running turn does not block it: the retrieval waits for its end.
+ * checkout of its repository, and the editor no unsaved edits. A running turn does not block it: the retrieval waits
+ * for its end.
  */
-export function retrieveBlocker(session: SessionView): string | null {
+export function retrieveBlocker(session: SessionView, context: RetrieveContext): string | null {
+  if (context.hasUnsavedEdits) return missingCheckoutBlocker(session) ?? "Save or discard the unsaved edits in the editor first.";
   return missingCheckoutBlocker(session);
 }
 
 /**
  * The state of a remote session's file sync next to its "On VM" button: "Syncing…" while a sync runs and `isSlow` (it
- * ran for a moment, so quick ones do not flicker), "Sync failed" after a failure, else when the last one succeeded with
- * `formatTime`; `null` before the first one.
+ * ran for a moment, so quick ones do not flicker), "Sync failed" after a failure, the number of files the last one could
+ * not sync, else when the last one succeeded with `formatTime`; `null` before the first one.
  */
 export function fileSyncLabel(fileSync: FileSync, isSlow: boolean, formatTime: (iso: string) => string): string | null {
   if (fileSync.isRunning && isSlow) return "Syncing…";
   if (fileSync.error) return "Sync failed";
+  if (fileSync.conflicts.length) return `${fileSync.conflicts.length} ${fileSync.conflicts.length === 1 ? "file" : "files"} not synced`;
   if (fileSync.syncedAt) return `Synced ${formatTime(fileSync.syncedAt)}`;
   return null;
 }

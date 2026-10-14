@@ -79,14 +79,17 @@ describe("retrieveBlocker", () => {
     issue: null,
   };
 
-  it("lets a session with a local checkout come back", () => {
-    expect(retrieveBlocker(session("top", { remote }))).toBeNull();
+  const saved = { hasUnsavedEdits: false };
+
+  it("lets a session with a local checkout come back once the editor saved its edits", () => {
+    expect(retrieveBlocker(session("top", { remote }), saved)).toBeNull();
+    expect(retrieveBlocker(session("top", { remote }), { hasUnsavedEdits: true })).toMatch(/unsaved edits/);
   });
 
   it("needs a local checkout for an adopted session", () => {
     const adopted = session("top", { repoPath: "", remote: { ...remote, origin: "swf", issue: 12 } });
-    expect(retrieveBlocker(adopted)).toMatch(/local checkout of acme\/app/);
-    expect(retrieveBlocker({ ...adopted, repoPath: "/src/app" })).toBeNull();
+    expect(retrieveBlocker(adopted, saved)).toMatch(/local checkout of acme\/app/);
+    expect(retrieveBlocker({ ...adopted, repoPath: "/src/app" }, saved)).toBeNull();
   });
 });
 
@@ -135,7 +138,7 @@ describe("moveStatus", () => {
 
 describe("fileSyncLabel", () => {
   const time = (iso: string) => iso.slice(11, 16);
-  const idle = { isRunning: false, syncedAt: null, error: null };
+  const idle = { isRunning: false, syncedAt: null, error: null, conflicts: [] };
 
   it("shows a running sync only once it ran for a moment", () => {
     const running = { ...idle, isRunning: true, syncedAt: "2026-10-14T10:05:00Z" };
@@ -147,6 +150,7 @@ describe("fileSyncLabel", () => {
     const failed = { ...idle, syncedAt: "2026-10-14T10:05:00Z", error: "failed to list the files on the VM" };
     expect(fileSyncLabel(failed, false, time)).toBe("Sync failed");
     expect(fileSyncLabel({ ...idle, syncedAt: "2026-10-14T10:05:00Z" }, false, time)).toBe("Synced 10:05");
+    expect(fileSyncLabel({ ...idle, syncedAt: "2026-10-14T10:05:00Z", conflicts: ["src: a folder here"] }, false, time)).toBe("1 file not synced");
     expect(fileSyncLabel(idle, false, time)).toBeNull();
   });
 });

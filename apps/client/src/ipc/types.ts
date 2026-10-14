@@ -220,10 +220,17 @@ export type RemoteProgressEvent = { huntSessionId: string; step: RemoteStep | nu
 
 /**
  * A sync of a remote session's files with its VM started (`isRunning`) or ended (mirror of `SyncEvent` in
- * src-tauri/src/session/sync.rs): `syncedAt` when it succeeded, `error` when it failed, and `changedLocal` when it
- * changed files of the local worktree.
+ * src-tauri/src/session/sync.rs): `syncedAt` when it succeeded, `error` when it failed, `conflicts` with one line per
+ * file it could not sync, and `changedLocal` when it changed files of the local worktree.
  */
-export type RemoteSyncEvent = { huntSessionId: string; isRunning: boolean; syncedAt: string | null; error: string | null; changedLocal: boolean };
+export type RemoteSyncEvent = {
+  huntSessionId: string;
+  isRunning: boolean;
+  syncedAt: string | null;
+  error: string | null;
+  conflicts: string[];
+  changedLocal: boolean;
+};
 
 /** A chunk of a terminal's output: base64 of its bytes, which may end inside a UTF-8 or an escape sequence. */
 export type TerminalOutputEvent = { id: string; data: string };

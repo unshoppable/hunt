@@ -60,8 +60,8 @@ export function ChangeList({
   hasUnsavedChanges: boolean;
   onSelect: (path: string) => void;
   onContextMenu: (event: MouseEvent, file: ChangedFile) => void;
-  /** Opens the sub chat about the whole file next to its agent button. */
-  onAskAgent: (file: ChangedFile, button: HTMLElement) => void;
+  /** Opens the sub chat about the whole file next to its agent button; without it (a remote session) there is none. */
+  onAskAgent?: (file: ChangedFile, button: HTMLElement) => void;
   /** Called after a shelve or unshelve so the owner reloads the worktree state. */
   onWorktreeChanged: () => void;
 }) {
@@ -224,15 +224,17 @@ export function ChangeList({
         {renderOwnerBadge(file.path)}
         {showDirectory ? <span className="ml-auto truncate pl-1 text-[0.85em] text-neutral-600">{dirName(file.path)}</span> : null}
       </button>
-      <AgentButton
-        onClick={(event) => onAskAgent(file, event.currentTarget)}
-        isBusy={fileChats.get(file.path) ?? false}
-        size={24}
-        sparkleSize={20}
-        className={`-my-1 transition-opacity focus-visible:opacity-100 ${fileChats.has(file.path) ? "" : "opacity-0 group-hover:opacity-100"}`}
-        title={fileChats.has(file.path) ? "Show the agent's chat about this file" : "Ask the agent about this file"}
-        aria-label={fileChats.has(file.path) ? "Show the agent's chat about this file" : "Ask the agent about this file"}
-      />
+      {onAskAgent ? (
+        <AgentButton
+          onClick={(event) => onAskAgent(file, event.currentTarget)}
+          isBusy={fileChats.get(file.path) ?? false}
+          size={24}
+          sparkleSize={20}
+          className={`-my-1 transition-opacity focus-visible:opacity-100 ${fileChats.has(file.path) ? "" : "opacity-0 group-hover:opacity-100"}`}
+          title={fileChats.has(file.path) ? "Show the agent's chat about this file" : "Ask the agent about this file"}
+          aria-label={fileChats.has(file.path) ? "Show the agent's chat about this file" : "Ask the agent about this file"}
+        />
+      ) : null}
     </li>
   );
 
@@ -271,9 +273,16 @@ export function ChangeList({
             {view === "flat" ? <TreeIcon /> : <ListIcon />}
           </button>
         ) : null}
-        <button type="button" onClick={() => void commands.openWorktreeInWebstorm(sessionId)} className={SECONDARY_BUTTON_XS} title="Open worktree in WebStorm">
-          WebStorm
-        </button>
+        {isRemote ? null : (
+          <button
+            type="button"
+            onClick={() => void commands.openWorktreeInWebstorm(sessionId)}
+            className={SECONDARY_BUTTON_XS}
+            title="Open worktree in WebStorm"
+          >
+            WebStorm
+          </button>
+        )}
       </div>
 
       {tab === "shelf" ? (

@@ -44,6 +44,9 @@ export function App() {
   const canSearchFiles = Boolean(activeSessionId) && !draft && hasLocalWorktree;
   /** A local session has no preview or terminal; it shows the diff instead. */
   const rightTab = !activeRemoteInstance && (storedTab === "preview" || storedTab === "terminal") ? "diff" : storedTab;
+  // The panels start over when the session moves to or from its VM, since a remote session offers no sub chats.
+  const placeKey = activeRemoteInstance ? "remote" : "local";
+  const panelKey = `${activeSessionId}:${placeKey}`;
 
   // ⌘P / double shift: "Go to File" for the active session's worktree.
   useFileSearchShortcut(() => {
@@ -120,16 +123,16 @@ export function App() {
             <div className="min-h-0 flex-1">
               {!activeSessionId || draft || isCreatingActive ? null : (
                 <>
-                  {rightTab === "preview" || rightTab === "terminal" ? null : !hasActiveWorktree ? (
+                  {rightTab === "preview" || rightTab === "terminal" ? null : activeRemoteInstance && !hasActiveWorktree ? (
                     <NoLocalWorktree sessionId={activeSessionId} />
                   ) : rightTab === "diff" ? (
-                    <DiffPanel key={activeSessionId} sessionId={activeSessionId} />
+                    <DiffPanel key={panelKey} sessionId={activeSessionId} />
                   ) : rightTab === "editor" ? (
-                    <IdePanel sessionId={activeSessionId} />
+                    <IdePanel key={placeKey} sessionId={activeSessionId} />
                   ) : rightTab === "pullRequest" ? (
-                    <PullRequestPanel key={activeSessionId} sessionId={activeSessionId} />
+                    <PullRequestPanel key={panelKey} sessionId={activeSessionId} />
                   ) : (
-                    <GraphPanel key={activeSessionId} sessionId={activeSessionId} />
+                    <GraphPanel key={panelKey} sessionId={activeSessionId} />
                   )}
                   {activeRemoteInstance && rightTab === "preview" ? <PreviewPanel key={activeSessionId} sessionId={activeSessionId} /> : null}
                   {/* The terminal stays mounted while another tab shows, so switching tabs keeps its connection. */}
@@ -163,7 +166,8 @@ function NoLocalWorktree({ sessionId }: { sessionId: string }) {
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
   const message =
     session?.remote && !session.repoPath
-      ? `There is no local checkout of ${session.remote.repo}. Start a session in one, then refresh the remote sessions in the sidebar; Hunt then copies this session's files here.`
+      ? `There is no local checkout of ${session.remote.repo}. Start a session in one, then refresh the remote sessions in the sidebar; ` +
+        "Hunt then copies this session's files here."
       : "Hunt copies the session's files here once it reached the VM; your next prompt starts the VM.";
   return <div className="flex h-full items-center justify-center px-8 text-center text-[14px] text-neutral-500">{message}</div>;
 }

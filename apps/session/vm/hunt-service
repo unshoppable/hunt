@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Runs the service $1 of the session's hunt.json as the user agent; hunt-service@.service starts it with the service's
+# environment, in which HUNT_SERVICE_DIR names the folder to run in and HUNT_SERVICE_COMMAND the command line. The
+# output goes to ~/logs/<name>.log, with a header line for every start; above 20 MiB the log moves to <name>.log.1 at
+# the next start. The script opens the log itself, as the agent: systemd would open it as root and follow a symlink the
+# agent put there. The command runs in a plain bash, not a login shell, so the service's environment is all it gets.
+#
+# Not named hunt-ctl: hunt-idle-check keeps the VM up while a process of that name runs.
+set -euo pipefail
+
+readonly NAME_PATTERN='^[a-z][a-z0-9-]{0,31}$'
+readonly MAX_LOG_BYTES=$((20 * 1024 * 1024))
+
+name=${1-}
+if [[ ! $name =~ $NAME_PATTERN ]]; then
+  echo "usage: hunt-service <name>" >&2
+  exit 2
+fi
+if [[ -z ${HUNT_SERVICE_DIR-} || -z ${HUNT_SERVICE_COMMAND-} ]]; then
+  echo "hunt-service: HUNT_SERVICE_DIR and HUNT_SERVICE_COMMAND must be set; run hunt-ctl session-config" >&2
+  exit 2
+fi
+
+log_dir=${HOME:?}/logs
+log=$log_dir/$name.log
+mkdir -p -- "$log_dir"
+if [[ -f $log ]] && (( $(stat -c %s -- "$log") > MAX_LOG_BYTES )); then
+  mv -f -- "$log" "$log.1"
+fi
+exec >>"$log" 2>&1
+
+printf '==== %s: starting %s in %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$HUNT_SERVICE_COMMAND" "$HUNT_SERVICE_DIR"
+cd -- "$HUNT_SERVICE_DIR"
+command=$HUNT_SERVICE_COMMAND
+unset HUNT_SERVICE_DIR HUNT_SERVICE_COMMAND
+exec /bin/bash -c "$command"

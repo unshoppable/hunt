@@ -13,9 +13,10 @@
 #     preview proxy; health checks are not logged), but only while the agent was active within PREVIEW_MAX_MINUTES, so
 #     that a forgotten browser tab cannot keep the VM running,
 #   - an interactive login, such as Hunt's terminal, had input within IDLE_MINUTES (the IDLE column of `w`).
-# Dev servers and containers the agent left running do not count. A heartbeat older than two minutes means the relay
-# is gone; its status does not count. IDLE_MINUTES, BOOT_GRACE_MINUTES and PREVIEW_MAX_MINUTES come from
-# /etc/hunt/idle.conf (defaults 30, 15 and 120). The HUNT_IDLE_* variables point it at other files, for tests.
+# Dev servers, the services of hunt.json (hunt-service@ units) included, and containers the agent left running do not
+# count. A heartbeat older than two minutes means the relay is gone; its status does not count. IDLE_MINUTES,
+# BOOT_GRACE_MINUTES and PREVIEW_MAX_MINUTES come from /etc/hunt/idle.conf (defaults 30, 15 and 120). The HUNT_IDLE_*
+# variables point it at other files, for tests.
 set -euo pipefail
 
 config=${HUNT_IDLE_CONFIG:-/etc/hunt/idle.conf}

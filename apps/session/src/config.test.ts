@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,47 +8,68 @@ import {
   buildSessionConfig,
   ConfigError,
   envFile,
-  parsePreviewConfig,
+  parseServices,
   proxyConfig,
+  publicUrl,
+  servicesPrompt,
   sessionEnv,
+  type CaddyConfig,
   type CaddyRoute,
-  type PreviewConfig,
+  type ServiceConfig,
   type SessionHost,
 } from "./config.ts";
 
 const CONFIG_CLI = fileURLToPath(new URL("./configCli.ts", import.meta.url));
 const HOST: SessionHost = { short: "7c0c6f2e", domain: "hunt.example.com" };
-const MAIN_URL = "https://7c0c6f2e.hunt.example.com";
+const WORKTREE = "/home/agent/acme";
 const PORT_RULE = "must be an integer from 1024 to 65535";
-const PREFIX_RULE = 'must be a path prefix such as "/api/": starting and ending with /, segments of letters, digits, ".", "_", "~" and "-", none . or ..';
+const NAME_RULE = "invalid name, must match ^[a-z][a-z0-9-]{0,31}$";
+const CWD_RULE =
+  'must be a folder relative to the worktree such as "apps/web": at most 255 characters, segments of letters, digits, ".", "_" and "-", none . or ..';
+const CONTRACT_2_PROBLEM = 'preview: the preview section of contract 2 is no longer read; hunt.json holds {"version": 3, "services": {…}} at its root';
 const IAP_HEADERS = ["X-Goog-Iap-Jwt-Assertion", "X-Goog-Authenticated-User-Email", "X-Goog-Authenticated-User-Id"];
 
-/** A hunt.json with a section of another contract and every field of the preview section. */
+/** A hunt.json with every field: a forward and a self reference, a folder, TLS and two services that are not guarded. */
 const COMPLETE = {
-  environment: { node: "24" },
-  preview: {
-    version: 2,
-    env: { BACKEND_DOMAIN: "${HUNT_PREVIEW_URL_3000}", APP_URL: "${HUNT_PREVIEW_URL}/app", PLAIN: "x" },
-    main: 4200,
-    routes: { "/api/": 3000, "/admin-api/": 3000, "/api/v2/": 3100 },
-    tls: [3000, 4400],
+  version: 3,
+  services: {
+    backend: {
+      command: "npm run start:backend",
+      port: 3000,
+      tls: true,
+      guarded: false,
+      env: {
+        BACKEND_DOMAIN: "${services.backend.publicUrl}",
+        UI_BASE_URL: "${services.ui.publicUrl}/app",
+        BOTH: "${services.ui.publicUrl};${services.admin.publicUrl}",
+        OTHER: "${HOME}",
+        PLAIN: "x",
+      },
+    },
+    ui: { command: "npm start -- --port 4200", cwd: "apps/ui", port: 4200, env: { DEV_BACKEND_ORIGIN: "${services.backend.publicUrl}" } },
+    docs: { command: "npx serve docs", port: 4400, tls: true },
+    admin: { command: 'echo "$PATH" && npm run admin', port: 4800, guarded: false },
   },
 };
 
-const COMPLETE_CONFIG: PreviewConfig = {
-  env: { BACKEND_DOMAIN: "${HUNT_PREVIEW_URL_3000}", APP_URL: "${HUNT_PREVIEW_URL}/app", PLAIN: "x" },
-  main: 4200,
-  routes: [
-    { prefix: "/api/", port: 3000 },
-    { prefix: "/admin-api/", port: 3000 },
-    { prefix: "/api/v2/", port: 3100 },
-  ],
-  tls: [3000, 4400],
-};
+const COMPLETE_SERVICES: ServiceConfig[] = [
+  {
+    name: "backend",
+    command: "npm run start:backend",
+    cwd: null,
+    port: 3000,
+    tls: true,
+    guarded: false,
+    env: COMPLETE.services.backend.env,
+  },
+  { name: "ui", command: "npm start -- --port 4200", cwd: "apps/ui", port: 4200, tls: false, guarded: true, env: COMPLETE.services.ui.env },
+  { name: "docs", command: "npx serve docs", cwd: null, port: 4400, tls: true, guarded: true, env: {} },
+  { name: "admin", command: 'echo "$PATH" && npm run admin', cwd: null, port: 4800, tls: false, guarded: false, env: {} },
+];
 
 function problemsOf(huntJson: unknown, host: SessionHost = HOST): string[] {
   try {
-    buildSessionConfig(huntJson, host);
+    buildSessionConfig(huntJson, host, WORKTREE);
   } catch (error) {
     if (error instanceof ConfigError) return error.problems;
     throw error;
@@ -56,147 +77,206 @@ function problemsOf(huntJson: unknown, host: SessionHost = HOST): string[] {
   return [];
 }
 
-function preview(fields: Record<string, unknown>): Record<string, unknown> {
-  return { preview: { version: 2, ...fields } };
+function withServices(services: Record<string, unknown>): Record<string, unknown> {
+  return { version: 3, services };
 }
 
-describe("parsePreviewConfig", () => {
-  it("reads every field of the preview section and ignores the other sections", () => {
-    expect(parsePreviewConfig(COMPLETE)).toEqual(COMPLETE_CONFIG);
+/** A hunt.json with the one service `web` on port 3000, extended by `fields`. */
+function web(fields: Record<string, unknown>): Record<string, unknown> {
+  return withServices({ web: { command: "npm start", port: 3000, ...fields } });
+}
+
+/** `count` services `s0`, `s1`, … on the ports from 3000 on. */
+function numbered(count: number): Record<string, unknown> {
+  return Object.fromEntries(Array.from({ length: count }, (_unused, index) => [`s${index}`, { command: "npm start", port: 3000 + index }]));
+}
+
+describe("parseServices", () => {
+  it("reads every field of every service in the order of hunt.json", () => {
+    expect(parseServices(COMPLETE)).toEqual(COMPLETE_SERVICES);
   });
 
-  it("gives a repository without hunt.json or without its preview section no variables, main port or routes", () => {
-    const empty: PreviewConfig = { env: {}, main: null, routes: [], tls: [] };
+  it("gives a repository without hunt.json no services and a service without the optional fields no folder, no TLS and IAP", () => {
+    expect(parseServices(undefined)).toEqual([]);
+    expect(parseServices(web({}))).toEqual([{ name: "web", command: "npm start", cwd: null, port: 3000, tls: false, guarded: true, env: {} }]);
+  });
 
-    expect(parsePreviewConfig(undefined)).toEqual(empty);
-    expect(parsePreviewConfig({ environment: { node: "24" } })).toEqual(empty);
-    expect(parsePreviewConfig({ preview: { version: 2 } })).toEqual(empty);
+  it("accepts the edges of every rule", () => {
+    const longest = { command: "x".repeat(4096), cwd: `${"a".repeat(127)}/${"b".repeat(127)}`, port: 65535 };
+    const huntJson = withServices({ ...numbered(62), ["a".repeat(32)]: longest, "w-2": { command: "npm start", cwd: ".config/a.b_c-D9", port: 1024 } });
+
+    expect(parseServices(huntJson)).toHaveLength(64);
+    expect(parseServices(huntJson).slice(62)).toEqual([
+      { name: "a".repeat(32), ...longest, tls: false, guarded: true, env: {} },
+      { name: "w-2", command: "npm start", cwd: ".config/a.b_c-D9", port: 1024, tls: false, guarded: true, env: {} },
+    ]);
   });
 
   it("reports every problem with the path of the offending value", () => {
     const cases: [unknown, string[]][] = [
       [[], ["hunt.json: must be an object"]],
-      [{ preview: "x" }, ["preview: must be an object"]],
-      [{ preview: {} }, ["preview.version: must be 2"]],
+      ["x", ["hunt.json: must be an object"]],
+      [{}, ["version: must be 3", "services: must be an object"]],
+      [{ ...web({}), version: 2 }, ["version: must be 3"]],
+      [{ ...web({}), version: "3" }, ["version: must be 3"]],
+      [{ preview: { version: 2, main: 4200 } }, [CONTRACT_2_PROBLEM, "version: must be 3", "services: must be an object"]],
+      [{ ...web({}), preview: { version: 2 } }, [CONTRACT_2_PROBLEM]],
+      [{ ...web({}), environment: {}, "two words": 1 }, ["environment: unknown field", '["two words"]: unknown field']],
+      [{ version: 3, services: [] }, ["services: must be an object"]],
+      [withServices({}), ["services: must hold 1 to 64 services"]],
+      [withServices(numbered(65)), ["services: must hold 1 to 64 services"]],
       [
-        { preview: { services: {}, processes: { web: { run: "npm start", port: 3000, main: true } } } },
-        ["preview.services: unknown field", "preview.processes: unknown field", "preview.version: must be 2"],
-      ],
-      [{ preview: { version: "2" } }, ["preview.version: must be 2"]],
-      [preview({ extra: 1, "two words": 2 }), ["preview.extra: unknown field", 'preview["two words"]: unknown field']],
-      [preview({ env: [] }), ["preview.env: must be an object"]],
-      [preview({ env: { lower: "x" } }), ["preview.env.lower: invalid name, must match ^[A-Z_][A-Z0-9_]*$"]],
-      [preview({ env: { "BAD-KEY": "x" } }), ["preview.env.BAD-KEY: invalid name, must match ^[A-Z_][A-Z0-9_]*$"]],
-      [preview({ env: { "1A": "x" } }), ['preview.env["1A"]: invalid name, must match ^[A-Z_][A-Z0-9_]*$']],
-      [preview({ env: { HUNT_URL: "x" } }), ["preview.env.HUNT_URL: reserved: names starting with CLAUDE_ or HUNT_ belong to Hunt"]],
-      [preview({ env: { CLAUDE_X: "x" } }), ["preview.env.CLAUDE_X: reserved: names starting with CLAUDE_ or HUNT_ belong to Hunt"]],
-      [preview({ env: { A: 1, B: null } }), ["preview.env.A: must be a string", "preview.env.B: must be a string"]],
-      [
-        preview({ env: { A: "x\ny", B: "x\ry", C: "x\0y" } }),
-        ["preview.env.A: must be a single line", "preview.env.B: must be a single line", "preview.env.C: must be a single line"],
-      ],
-      [
-        preview({ env: { A: "${HUNT_SECRET}", B: "${HUNT_PREVIEW_URL_TEMPLATE}" } }),
+        withServices({ Web: {}, "1web": {}, web_ui: {}, "-web": {}, ["a".repeat(33)]: {} }),
         [
-          "preview.env.A: unknown placeholder ${HUNT_SECRET}, only ${HUNT_PREVIEW_URL} and ${HUNT_PREVIEW_URL_<port>} are possible",
-          "preview.env.B: unknown placeholder ${HUNT_PREVIEW_URL_TEMPLATE}, only ${HUNT_PREVIEW_URL} and ${HUNT_PREVIEW_URL_<port>} are possible",
+          `services.Web: ${NAME_RULE}`,
+          `services["1web"]: ${NAME_RULE}`,
+          `services.web_ui: ${NAME_RULE}`,
+          `services["-web"]: ${NAME_RULE}`,
+          `services.${"a".repeat(33)}: ${NAME_RULE}`,
+        ],
+      ],
+      [withServices({ web: "npm start" }), ["services.web: must be an object"]],
+      [web({ run: "npm start", main: true }), ["services.web.run: unknown field", "services.web.main: unknown field"]],
+      [withServices({ web: { port: 3000 } }), ["services.web.command: must be a non-empty string"]],
+      [web({ command: "" }), ["services.web.command: must be a non-empty string"]],
+      [web({ command: "  " }), ["services.web.command: must be a non-empty string"]],
+      [web({ command: ["npm", "start"] }), ["services.web.command: must be a non-empty string"]],
+      [web({ command: "npm start\nrm -rf /" }), ["services.web.command: must be a single line"]],
+      [web({ command: "npm\rstart" }), ["services.web.command: must be a single line"]],
+      [web({ command: "x".repeat(4097) }), ["services.web.command: must be at most 4096 characters long"]],
+      ...["/srv/app", "../app", "a/../b", "./a", "a/.", "a//b", "a/", "a b", "a\\b", "", "x".repeat(256), 1].map(
+        (cwd): [unknown, string[]] => [web({ cwd }), [`services.web.cwd: ${CWD_RULE}`]],
+      ),
+      [withServices({ web: { command: "npm start" } }), [`services.web.port: ${PORT_RULE}`]],
+      [web({ port: "3000" }), [`services.web.port: ${PORT_RULE}`]],
+      [web({ port: 3000.5 }), [`services.web.port: ${PORT_RULE}`]],
+      [web({ port: 1023 }), [`services.web.port: ${PORT_RULE}`]],
+      [web({ port: 65536 }), [`services.web.port: ${PORT_RULE}`]],
+      [web({ port: 2019 }), ["services.web.port: 2019 is reserved for Caddy's admin API"]],
+      [web({ port: 2375 }), ["services.web.port: 2375 is reserved for the Docker API"]],
+      [web({ port: 2376 }), ["services.web.port: 2376 is reserved for the Docker API over TLS"]],
+      [web({ port: 8080 }), ["services.web.port: 8080 is reserved for the session VM's preview proxy"]],
+      [
+        withServices({ web: { command: "a", port: 3000 }, api: { command: "b", port: 3000 }, docs: { command: "c", port: 3000 } }),
+        ["services.api.port: 3000 is the port of the service web already", "services.docs.port: 3000 is the port of the service web already"],
+      ],
+      [web({ tls: "true", guarded: 0 }), ["services.web.tls: must be true or false", "services.web.guarded: must be true or false"]],
+      [web({ env: [] }), ["services.web.env: must be an object"]],
+      [web({ env: { lower: "x" } }), ["services.web.env.lower: invalid name, must match ^[A-Z_][A-Z0-9_]*$"]],
+      [web({ env: { "BAD-KEY": "x" } }), ["services.web.env.BAD-KEY: invalid name, must match ^[A-Z_][A-Z0-9_]*$"]],
+      [web({ env: { "1A": "x" } }), ['services.web.env["1A"]: invalid name, must match ^[A-Z_][A-Z0-9_]*$']],
+      [web({ env: { HUNT_URL: "x" } }), ["services.web.env.HUNT_URL: reserved: names starting with CLAUDE_ or HUNT_ belong to Hunt"]],
+      [web({ env: { CLAUDE_X: "x" } }), ["services.web.env.CLAUDE_X: reserved: names starting with CLAUDE_ or HUNT_ belong to Hunt"]],
+      [web({ env: { A: 1, B: null } }), ["services.web.env.A: must be a string", "services.web.env.B: must be a string"]],
+      [
+        web({ env: { A: "x\ny", B: "x\ry", C: "x\0y" } }),
+        ["services.web.env.A: must be a single line", "services.web.env.B: must be a single line", "services.web.env.C: must be a single line"],
+      ],
+      [
+        web({ env: { A: "${HUNT_PREVIEW_URL_3000}", B: "${HUNT_PREVIEW_URL}/app;${HUNT_PREVIEW_URL_TEMPLATE}" } }),
+        [
+          "services.web.env.A: ${HUNT_PREVIEW_URL_3000} is a placeholder of contract 2, use ${services.<name>.publicUrl}",
+          "services.web.env.B: ${HUNT_PREVIEW_URL} is a placeholder of contract 2, use ${services.<name>.publicUrl}",
+          "services.web.env.B: ${HUNT_PREVIEW_URL_TEMPLATE} is a placeholder of contract 2, use ${services.<name>.publicUrl}",
         ],
       ],
       [
-        preview({ env: { A: "${HUNT_PREVIEW_URL_80}", B: "${HUNT_PREVIEW_URL_65536}", C: "${HUNT_PREVIEW_URL_03000}", D: "${HUNT_PREVIEW_URL_8080}" } }),
+        web({ env: { A: "${services.api.publicUrl}", B: "${services.Web.publicUrl}" } }),
         [
-          `preview.env.A: \${HUNT_PREVIEW_URL_80}: the port ${PORT_RULE}`,
-          `preview.env.B: \${HUNT_PREVIEW_URL_65536}: the port ${PORT_RULE}`,
-          `preview.env.C: \${HUNT_PREVIEW_URL_03000}: the port ${PORT_RULE}`,
-          "preview.env.D: ${HUNT_PREVIEW_URL_8080}: the port 8080 is reserved for the session VM's preview proxy",
-        ],
-      ],
-      [preview({ main: "4200" }), [`preview.main: ${PORT_RULE}`]],
-      [preview({ main: 4200.5 }), [`preview.main: ${PORT_RULE}`]],
-      [preview({ main: 1023 }), [`preview.main: ${PORT_RULE}`]],
-      [preview({ main: 65536 }), [`preview.main: ${PORT_RULE}`]],
-      [preview({ main: 2019 }), ["preview.main: 2019 is reserved for Caddy's admin API"]],
-      [preview({ main: 2375 }), ["preview.main: 2375 is reserved for the Docker API"]],
-      [preview({ main: 2376 }), ["preview.main: 2376 is reserved for the Docker API over TLS"]],
-      [preview({ main: 8080 }), ["preview.main: 8080 is reserved for the session VM's preview proxy"]],
-      [preview({ routes: ["/api/"] }), ["preview.routes: must be an object"]],
-      [
-        preview({ routes: { "api/": 3000, "/api": 3000, "/": 3000, "/a b/": 3000, "/../": 3000, "/a/./": 3000, "/a//": 3000, "/api/*": 3000 } }),
-        [
-          `preview.routes["api/"]: ${PREFIX_RULE}`,
-          `preview.routes["/api"]: ${PREFIX_RULE}`,
-          `preview.routes["/"]: ${PREFIX_RULE}`,
-          `preview.routes["/a b/"]: ${PREFIX_RULE}`,
-          `preview.routes["/../"]: ${PREFIX_RULE}`,
-          `preview.routes["/a/./"]: ${PREFIX_RULE}`,
-          `preview.routes["/a//"]: ${PREFIX_RULE}`,
-          `preview.routes["/api/*"]: ${PREFIX_RULE}`,
+          "services.web.env.A: ${services.api.publicUrl}: hunt.json declares no service api",
+          "services.web.env.B: ${services.Web.publicUrl}: hunt.json declares no service Web",
         ],
       ],
       [
-        preview({ routes: { "/api/": "3000", "/admin/": 2376 } }),
-        [`preview.routes["/api/"]: ${PORT_RULE}`, 'preview.routes["/admin/"]: 2376 is reserved for the Docker API over TLS'],
+        web({ env: { A: "${services.web.url}", B: "${services.web}", C: "${services..publicUrl}", D: "${services.web.publicUrl.host}" } }),
+        [
+          "services.web.env.A: unknown placeholder ${services.web.url}, the form is ${services.<name>.publicUrl}",
+          "services.web.env.B: unknown placeholder ${services.web}, the form is ${services.<name>.publicUrl}",
+          "services.web.env.C: unknown placeholder ${services..publicUrl}, the form is ${services.<name>.publicUrl}",
+          "services.web.env.D: unknown placeholder ${services.web.publicUrl.host}, the form is ${services.<name>.publicUrl}",
+        ],
       ],
-      [preview({ tls: 3000 }), ["preview.tls: must be an array of ports"]],
-      [preview({ tls: [3000, "4400", 8080] }), [`preview.tls[1]: ${PORT_RULE}`, "preview.tls[2]: 8080 is reserved for the session VM's preview proxy"]],
-      [preview({ tls: [3000, 4400, 3000] }), ["preview.tls[2]: 3000 is listed already"]],
+      [
+        withServices({ Web: { command: "a", port: 3000 }, api: { command: "b", port: 3001, env: { A: "${services.Web.publicUrl}" } } }),
+        [`services.Web: ${NAME_RULE}`, "services.api.env.A: ${services.Web.publicUrl}: hunt.json declares no service Web"],
+      ],
     ];
 
     for (const [huntJson, problems] of cases) {
-      expect(problemsOf(huntJson), JSON.stringify(huntJson)).toEqual(problems);
+      expect(problemsOf(huntJson), JSON.stringify(huntJson).slice(0, 200)).toEqual(problems);
     }
   });
 
-  it("accepts the edges of the port range and every allowed prefix character", () => {
-    expect(parsePreviewConfig(preview({ main: 1024, routes: { "/a.b_c~d-e/F9/": 65535 } }))).toEqual({
-      env: {},
-      main: 1024,
-      routes: [{ prefix: "/a.b_c~d-e/F9/", port: 65535 }],
-      tls: [],
-    });
-  });
-
   it("rejects an invalid short ID or domain together with the problems of hunt.json", () => {
-    expect(problemsOf(preview({ main: 1 }), { short: "7C0C6F2E", domain: "localhost" })).toEqual([
+    expect(problemsOf(web({ port: 1 }), { short: "7C0C6F2E", domain: "localhost" })).toEqual([
       "short: must be the first 8 hex digits of the session ID, in lowercase",
       "domain: must be a lowercase host name with at least two labels, the last of letters only",
-      `preview.main: ${PORT_RULE}`,
+      `services.web.port: ${PORT_RULE}`,
     ]);
     expect(problemsOf(undefined, { short: "7c0c6f2", domain: "Hunt.Example.com" })).toHaveLength(2);
   });
 
-  it("accepts the domains hunt-ctl accepts: a top-level label of letters and room for the port hosts", () => {
+  it("accepts the domains hunt-ctl accepts: a top-level label of letters and room for the open hosts", () => {
     const domainOfLength = (length: number) => `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(length - 196)}.com`;
-    for (const domain of ["a-1.b2.example.de", domainOfLength(238)]) {
+    expect(`${HOST.short}-65535-open.${domainOfLength(233)}`).toHaveLength(253);
+    for (const domain of ["a-1.b2.example.de", domainOfLength(233)]) {
       expect(problemsOf(undefined, { short: "7c0c6f2e", domain }), domain).toEqual([]);
     }
-    for (const domain of ["hunt.example.c0m", "hunt.example.c", "hunt.example.123", "hunt.example.co-m", "-a.example.com", domainOfLength(239)]) {
+    for (const domain of ["hunt.example.c0m", "hunt.example.c", "hunt.example.123", "hunt.example.co-m", "-a.example.com", domainOfLength(234)]) {
       expect(problemsOf(undefined, { short: "7c0c6f2e", domain }), domain).toHaveLength(1);
     }
   });
 });
 
-describe("sessionEnv", () => {
-  it("puts the preview URLs first and resolves the placeholders of the repository's variables", () => {
-    const env = sessionEnv(
-      { ...COMPLETE_CONFIG, env: { ...COMPLETE_CONFIG.env, BOTH: "${HUNT_PREVIEW_URL};${HUNT_PREVIEW_URL_4400}", OTHER: "${HOME}" } },
-      HOST,
-    );
+describe("environments", () => {
+  const config = buildSessionConfig(COMPLETE, HOST, WORKTREE);
 
-    expect(Object.keys(env)).toEqual(["HUNT_PREVIEW_URL", "HUNT_PREVIEW_URL_TEMPLATE", "BACKEND_DOMAIN", "APP_URL", "PLAIN", "BOTH", "OTHER"]);
-    expect(env).toEqual({
-      HUNT_PREVIEW_URL: MAIN_URL,
-      HUNT_PREVIEW_URL_TEMPLATE: "https://7c0c6f2e-{port}.hunt.example.com",
-      BACKEND_DOMAIN: "https://7c0c6f2e-3000.hunt.example.com",
-      APP_URL: `${MAIN_URL}/app`,
-      PLAIN: "x",
-      BOTH: `${MAIN_URL};https://7c0c6f2e-4400.hunt.example.com`,
-      OTHER: "${HOME}",
+  it("gives the session only the URL template of its port hosts", () => {
+    expect(config.env).toEqual({ HUNT_PREVIEW_URL_TEMPLATE: "https://7c0c6f2e-{port}.hunt.example.com" });
+    expect(sessionEnv(HOST)).toEqual(config.env);
+    expect(buildSessionConfig(undefined, HOST, WORKTREE).env).toEqual(config.env);
+  });
+
+  it("resolves a service's URL to its open host when it is not guarded and to its port host otherwise", () => {
+    expect(COMPLETE_SERVICES.map((service) => publicUrl(service, HOST))).toEqual([
+      "https://7c0c6f2e-3000-open.hunt.example.com",
+      "https://7c0c6f2e-4200.hunt.example.com",
+      "https://7c0c6f2e-4400.hunt.example.com",
+      "https://7c0c6f2e-4800-open.hunt.example.com",
+    ]);
+  });
+
+  it("gives each service its variables with self and forward references resolved, then its folder and command", () => {
+    expect(Object.keys(config.serviceEnvs)).toEqual(["backend", "ui", "docs", "admin"]);
+    expect(Object.keys(config.serviceEnvs.backend)).toEqual([
+      ...["BACKEND_DOMAIN", "UI_BASE_URL", "BOTH", "OTHER", "PLAIN"],
+      ...["HUNT_SERVICE_DIR", "HUNT_SERVICE_COMMAND"],
+    ]);
+    expect(config.serviceEnvs).toEqual({
+      backend: {
+        BACKEND_DOMAIN: "https://7c0c6f2e-3000-open.hunt.example.com",
+        UI_BASE_URL: "https://7c0c6f2e-4200.hunt.example.com/app",
+        BOTH: "https://7c0c6f2e-4200.hunt.example.com;https://7c0c6f2e-4800-open.hunt.example.com",
+        OTHER: "${HOME}",
+        PLAIN: "x",
+        HUNT_SERVICE_DIR: WORKTREE,
+        HUNT_SERVICE_COMMAND: "npm run start:backend",
+      },
+      ui: {
+        DEV_BACKEND_ORIGIN: "https://7c0c6f2e-3000-open.hunt.example.com",
+        HUNT_SERVICE_DIR: "/home/agent/acme/apps/ui",
+        HUNT_SERVICE_COMMAND: "npm start -- --port 4200",
+      },
+      docs: { HUNT_SERVICE_DIR: WORKTREE, HUNT_SERVICE_COMMAND: "npx serve docs" },
+      admin: { HUNT_SERVICE_DIR: WORKTREE, HUNT_SERVICE_COMMAND: 'echo "$PATH" && npm run admin' },
     });
   });
 
-  it("is what buildSessionConfig returns", () => {
-    expect(buildSessionConfig(COMPLETE, HOST).env).toEqual(sessionEnv(COMPLETE_CONFIG, HOST));
+  it("returns the parsed services and everything derived from them", () => {
+    expect(config.services).toEqual(COMPLETE_SERVICES);
+    expect(config.proxy).toEqual(proxyConfig(COMPLETE_SERVICES, HOST));
+    expect(config.servicesPrompt).toBe(servicesPrompt(COMPLETE_SERVICES, HOST));
+    expect(buildSessionConfig(undefined, HOST, WORKTREE)).toMatchObject({ services: [], serviceEnvs: {}, servicesPrompt: servicesPrompt([], HOST) });
   });
 });
 
@@ -209,19 +289,18 @@ describe("envFile", () => {
     HASH: "#not a comment ;nor this",
     EMPTY: "",
     UNICODE: "Grüße 🚀",
+    HUNT_SERVICE_COMMAND: `npm run dev -- --host "$HOST" | tee 'out.log' && echo \`date\``,
   };
 
-  it("writes one double-quoted assignment per line and escapes \\, \", ` and $", () => {
-    expect(envFile({ A: "x", B: 'a"b\\c`d$e' })).toBe(
-      "# The session's environment from the preview section of the repository's hunt.json.\n" + 'A="x"\nB="a\\"b\\\\c\\`d\\$e"\n',
-    );
+  it("writes the header as a comment and one double-quoted assignment per line and escapes \\, \", ` and $", () => {
+    expect(envFile({ A: "x", B: 'a"b\\c`d$e' }, "The environment of web.")).toBe('# The environment of web.\nA="x"\nB="a\\"b\\\\c\\`d\\$e"\n');
   });
 
   it("reads back verbatim in a shell, which unquotes like systemd's EnvironmentFile", () => {
     const dir = mkdtempSync(join(tmpdir(), "hunt-env-"));
     try {
-      const file = join(dir, "session.env");
-      writeFileSync(file, envFile(TRICKY));
+      const file = join(dir, "web.env");
+      writeFileSync(file, envFile(TRICKY, "The environment of web."));
       const keys = Object.keys(TRICKY);
       const script = `set -a; . "$1"; for key in ${keys.join(" ")}; do printf '%s\\0' "\${!key}"; done`;
       const result = spawnSync("bash", ["--noprofile", "--norc", "-c", script, "bash", file], { encoding: "utf8", env: {} });
@@ -234,14 +313,85 @@ describe("envFile", () => {
   });
 });
 
-describe("proxyConfig", () => {
-  const config = proxyConfig(COMPLETE_CONFIG, HOST);
-  const server = config.apps.http.servers.preview;
-  const sessionRoutes = server.routes[2].handle[0].routes as CaddyRoute[];
-  const portPattern = (server.routes[2].match![1].vars_regexp as Record<string, { name: string; pattern: string }>)["{http.request.host}"];
+describe("servicesPrompt", () => {
+  it("tells the agent how to run the services and lists each with its port, URL and access", () => {
+    expect(servicesPrompt(COMPLETE_SERVICES, HOST)).toBe(
+      [
+        "### The repository's services",
+        "",
+        "Hunt runs the services of the repository's hunt.json on this VM, each as a systemd unit. Start only the services your task needs; " +
+          "the repository's hunt.agent.md, when it has one, says which belong together:",
+        "",
+        "```",
+        "sudo -n hunt-ctl service start <name>…",
+        "```",
+        "",
+        "`restart`, `stop` and `status` take names the same way; `status` without names reports every service. A service writes its output to " +
+          "`~/logs/<name>.log`. The variables hunt.json declares for a service apply to that service only, not to your shell.",
+        "",
+        "| Service | Port | URL | Access |",
+        "| --- | --- | --- | --- |",
+        "| backend | 3000 | https://7c0c6f2e-3000-open.hunt.example.com | public, app login only |",
+        "| ui | 4200 | https://7c0c6f2e-4200.hunt.example.com | Google login |",
+        "| docs | 4400 | https://7c0c6f2e-4400.hunt.example.com | Google login |",
+        "| admin | 4800 | https://7c0c6f2e-4800-open.hunt.example.com | public, app login only |",
+      ].join("\n"),
+    );
+  });
 
-  function upstreamOf(route: CaddyRoute) {
-    return route.handle[0] as { handler: string; upstreams: { dial: string }[]; transport?: unknown };
+  it("tells the agent to run the app itself without services", () => {
+    expect(servicesPrompt([], HOST)).toBe(
+      [
+        "### The repository's services",
+        "",
+        "The repository has no hunt.json or declares no services in it: run the app as a developer would locally, in the " +
+          "tmux session `app` as described above.",
+      ].join("\n"),
+    );
+  });
+});
+
+describe("proxyConfig", () => {
+  const config = proxyConfig(COMPLETE_SERVICES, HOST);
+  const server = config.apps.http.servers.preview;
+
+  type HostPattern = { name: string; pattern: string };
+
+  /** The first route of `proxy` that matches a request to `hostName` at `path`, as Caddy picks it, with the captures of its regexps. */
+  function routeFor(proxy: CaddyConfig, hostName: string, path = "/") {
+    for (const route of proxy.apps.http.servers.preview.routes) {
+      const captures: Record<string, RegExpExecArray> = {};
+      const matchesSet = (set: Record<string, unknown>) =>
+        Object.entries(set).every(([kind, value]) => {
+          if (kind === "host") return (value as string[]).includes(hostName);
+          if (kind === "path") return (value as string[]).includes(path);
+          if (kind !== "vars_regexp") throw new Error(`unknown matcher ${kind}`);
+          return Object.entries(value as Record<string, HostPattern>).every(([placeholder, { name, pattern }]) => {
+            expect(placeholder).toBe("{http.request.host}");
+            const match = new RegExp(pattern).exec(hostName);
+            if (match) {
+              captures[name] = match;
+            }
+            return Boolean(match);
+          });
+        });
+      if (!route.match || route.match.some(matchesSet)) return { route, captures };
+    }
+    throw new Error(`no route for ${hostName}${path}`);
+  }
+
+  /** What `proxy` answers a request to `hostName` at `path` with: a status code or the upstream URL. */
+  function answer(proxy: CaddyConfig, hostName: string, path = "/"): string {
+    const { route, captures } = routeFor(proxy, hostName, path);
+    const handler = route.handle.at(-1) as { handler: string; status_code?: number; upstreams?: { dial: string }[]; transport?: unknown };
+    if (handler.handler === "static_response") return String(handler.status_code);
+    const placeholder = /\{http\.regexp\.(\w+)\.(\d)\}/g;
+    const dial = handler.upstreams![0].dial.replace(placeholder, (_placeholder, name: string, group: string) => captures[name][Number(group)]);
+    return `${handler.transport ? "https" : "http"}://${dial}`;
+  }
+
+  function bodyFor(proxy: CaddyConfig, hostName: string): unknown {
+    return routeFor(proxy, hostName).route.handle.at(-1)?.body;
   }
 
   it("listens on :8080 in plain HTTP behind the gateway, with the admin API on a socket", () => {
@@ -264,56 +414,74 @@ describe("proxyConfig", () => {
       encoder: { format: "console", level_format: "upper" },
       exclude: ["http.log.access.preview"],
     });
-    expect(server.routes[0].handle[0]).toEqual({ handler: "vars", log_skip: true });
+    expect(routeFor(config, "7c0c6f2e-3000.hunt.example.com", "/hunt-healthz").route.handle[0]).toEqual({ handler: "vars", log_skip: true });
   });
 
-  it("answers the health check, refuses the reserved ports and sends the session's hosts to its subroute", () => {
-    expect(server.routes.map((route) => route.match)).toEqual([
-      [{ path: ["/hunt-healthz"] }],
-      [{ host: ["7c0c6f2e-2019.hunt.example.com", "7c0c6f2e-2375.hunt.example.com", "7c0c6f2e-2376.hunt.example.com", "7c0c6f2e-8080.hunt.example.com"] }],
-      [{ host: ["7c0c6f2e.hunt.example.com"] }, { vars_regexp: { "{http.request.host}": portPattern } }],
-      undefined,
+  it("ends every route but the last, which answers every other host with 404", () => {
+    expect(server.routes.slice(0, -1).every((route) => route.terminal && route.match)).toBe(true);
+    expect(server.routes.at(-1)).toEqual({ handle: [{ handler: "static_response", status_code: 404 }] });
+  });
+
+  it("serves every port host, the open hosts of the services that are not guarded only, and HTTPS for the services with tls", () => {
+    const cases: [string, string][] = [
+      ["7c0c6f2e-3000.hunt.example.com", "https://localhost:3000"],
+      ["7c0c6f2e-4200.hunt.example.com", "http://localhost:4200"],
+      ["7c0c6f2e-4400.hunt.example.com", "https://localhost:4400"],
+      ["7c0c6f2e-4800.hunt.example.com", "http://localhost:4800"],
+      ["7c0c6f2e-5173.hunt.example.com", "http://localhost:5173"],
+      ["7c0c6f2e-3000-open.hunt.example.com", "https://localhost:3000"],
+      ["7c0c6f2e-4800-open.hunt.example.com", "http://localhost:4800"],
+      ["7c0c6f2e-4200-open.hunt.example.com", "404"],
+      ["7c0c6f2e-4400-open.hunt.example.com", "404"],
+      ["7c0c6f2e-5173-open.hunt.example.com", "404"],
+      ["7c0c6f2e-open.hunt.example.com", "404"],
+      ["7c0c6f2e.hunt.example.com", "404"],
+      ["8d1d7a3f-3000.hunt.example.com", "404"],
+      ["8d1d7a3f-3000-open.hunt.example.com", "404"],
+      ["7c0c6f2e-3000-open.hunt.example.com.evil.com", "404"],
+      ["7c0c6f2e-2019.hunt.example.com", "403"],
+      ["7c0c6f2e-2375.hunt.example.com", "403"],
+      ["7c0c6f2e-2376.hunt.example.com", "403"],
+      ["7c0c6f2e-8080.hunt.example.com", "403"],
+    ];
+
+    for (const [hostName, expected] of cases) {
+      expect(answer(config, hostName), hostName).toBe(expected);
+      expect(answer(config, hostName, "/hunt-healthz"), hostName).toBe("200");
+    }
+    expect(server.routes.filter((route) => JSON.stringify(route.match ?? []).includes("-open.hunt")).map((route) => route.match)).toEqual([
+      [{ host: ["7c0c6f2e-3000-open.hunt.example.com"] }],
+      [{ host: ["7c0c6f2e-4800-open.hunt.example.com"] }],
     ]);
-    expect(server.routes[0].handle[1]).toEqual({ handler: "static_response", status_code: 200, body: "ok" });
-    expect(server.routes[1].handle).toEqual([{ handler: "static_response", status_code: 403, body: "This port is not served.\n" }]);
-    expect(server.routes[2].handle[0].handler).toBe("subroute");
-    expect(server.routes[3].handle).toEqual([{ handler: "static_response", status_code: 404 }]);
-    expect(server.routes.slice(0, 3).every((route) => route.terminal)).toBe(true);
   });
 
-  it("routes the path prefixes first, longest first, then the main host, the HTTPS ports and every other port, all on localhost", () => {
-    expect(sessionRoutes.map((route) => route.match)).toEqual([
-      [{ path: ["/admin-api/*"] }],
-      [{ path: ["/api/v2/*"] }],
-      [{ path: ["/api/*"] }],
-      [{ host: ["7c0c6f2e.hunt.example.com"] }],
-      [{ host: ["7c0c6f2e-3000.hunt.example.com"] }],
-      [{ host: ["7c0c6f2e-4400.hunt.example.com"] }],
-      [{ vars_regexp: { "{http.request.host}": portPattern } }],
-    ]);
-    expect(sessionRoutes.map((route) => upstreamOf(route).upstreams[0].dial)).toEqual([
-      "localhost:3000",
-      "localhost:3100",
-      "localhost:3000",
-      "localhost:4200",
-      "localhost:3000",
-      "localhost:4400",
-      "localhost:{http.regexp.port.1}",
-    ]);
-    expect(sessionRoutes.every((route) => route.terminal)).toBe(true);
+  it("explains the 404 of the main host and of an open host without a public service", () => {
+    expect(bodyFor(config, "7c0c6f2e.hunt.example.com")).toBe(
+      "This session has no main page: each service of the repository's hunt.json answers at https://7c0c6f2e-<port>.hunt.example.com.\n",
+    );
+    expect(bodyFor(config, "7c0c6f2e-4200-open.hunt.example.com")).toBe(
+      'This port has no public host: only a service with "guarded": false in the repository\'s hunt.json has one.\n',
+    );
+    expect(bodyFor(config, "7c0c6f2e-2019.hunt.example.com")).toBe("This port is not served.\n");
   });
 
-  it("reaches the ports in tls over HTTPS without checking their certificates", () => {
-    const tls = { protocol: "http", tls: { insecure_skip_verify: true } };
+  it("serves no open host without services that are not guarded", () => {
+    const guardedOnly = proxyConfig(
+      COMPLETE_SERVICES.map((service) => ({ ...service, guarded: true })),
+      HOST,
+    );
 
-    expect(sessionRoutes.map((route) => upstreamOf(route).transport)).toEqual([tls, undefined, tls, undefined, tls, tls, undefined]);
-    const mainOverTls = proxyConfig({ ...COMPLETE_CONFIG, tls: [4200] }, HOST).apps.http.servers.preview.routes[2].handle[0].routes as CaddyRoute[];
-    expect(upstreamOf(mainOverTls[3]).transport).toEqual(tls);
+    expect(answer(guardedOnly, "7c0c6f2e-3000-open.hunt.example.com")).toBe("404");
+    expect(answer(guardedOnly, "7c0c6f2e-3000.hunt.example.com")).toBe("https://localhost:3000");
+    expect(answer(proxyConfig([], HOST), "7c0c6f2e-3000.hunt.example.com")).toBe("http://localhost:3000");
   });
 
-  it("keeps the Host header, removes IAP's headers and cookies and flushes every response at once", () => {
-    for (const route of sessionRoutes) {
-      expect(route.handle[0]).toMatchObject({
+  it("keeps the Host header, removes IAP's headers and cookies and flushes every response at once, on the open hosts too", () => {
+    const proxies = server.routes.flatMap((route) => route.handle).filter((handler) => handler.handler === "reverse_proxy");
+    expect(proxies).toHaveLength(5);
+    expect(proxies).toContain(routeFor(config, "7c0c6f2e-3000-open.hunt.example.com").route.handle[0]);
+    for (const handler of proxies) {
+      expect(handler).toMatchObject({
         handler: "reverse_proxy",
         flush_interval: -1,
         headers: {
@@ -329,15 +497,21 @@ describe("proxyConfig", () => {
     expect("a=1; GCP_IAP_UID=u; __Host-GCP_IAP_AUTH_TOKEN_x=t; b=2".replace(cookie, "")).toBe("a=1; b=2");
   });
 
+  it("reaches the services with tls over HTTPS without checking their certificates", () => {
+    const { route } = routeFor(config, "7c0c6f2e-4400.hunt.example.com");
+    expect(route.handle[0].transport).toEqual({ protocol: "http", tls: { insecure_skip_verify: true } });
+  });
+
   it("takes the port of a port host from its name, from 1024 to 65535 only", () => {
+    const portRoute = server.routes.find((route) => JSON.stringify(route.match ?? []).includes('"name":"port"')) as CaddyRoute;
+    const portPattern = (portRoute.match![0].vars_regexp as Record<string, HostPattern>)["{http.request.host}"];
     const pattern = new RegExp(portPattern.pattern);
     const portOf = (host: string) => pattern.exec(host)?.[1] ?? null;
 
-    expect(portPattern.name).toBe("port");
     for (const port of [1024, 1029, 1030, 1099, 1100, 1999, 2000, 9999, 10000, 59999, 60000, 64999, 65000, 65499, 65500, 65529, 65530, 65535]) {
       expect(portOf(`7c0c6f2e-${port}.hunt.example.com`)).toBe(String(port));
     }
-    for (const port of ["80", "1023", "65536", "70000", "99999", "03000", "100000"]) {
+    for (const port of ["80", "1023", "65536", "70000", "99999", "03000", "100000", "3000-open"]) {
       expect(portOf(`7c0c6f2e-${port}.hunt.example.com`), port).toBeNull();
     }
     expect(portOf("7c0c6f2e.hunt.example.com")).toBeNull();
@@ -345,13 +519,6 @@ describe("proxyConfig", () => {
     expect(portOf("7c0c6f2e-3000.huntxexample.com")).toBeNull();
     expect(portOf("7c0c6f2e-3000.hunt.example.com.evil.com")).toBeNull();
     expect(portOf("x7c0c6f2e-3000.hunt.example.com")).toBeNull();
-  });
-
-  it("answers the main host with 404 and an explanation when hunt.json sets no main port", () => {
-    const routes = proxyConfig({ env: {}, main: null, routes: [], tls: [] }, HOST).apps.http.servers.preview.routes[2].handle[0].routes as CaddyRoute[];
-
-    expect(routes.map((route) => route.handle[0].handler)).toEqual(["static_response", "reverse_proxy"]);
-    expect(routes[0]).toMatchObject({ match: [{ host: ["7c0c6f2e.hunt.example.com"] }], handle: [{ status_code: 404 }] });
   });
 });
 
@@ -364,7 +531,7 @@ describe("configCli", () => {
     }
   });
 
-  /** A worktree holding `files` and an empty output folder. */
+  /** A worktree holding `files`, an empty output folder and the path of a services folder that does not exist yet. */
   function setup(files: Record<string, string>) {
     const dir = mkdtempSync(join(tmpdir(), "hunt-config-"));
     dirs.push(dir);
@@ -373,81 +540,131 @@ describe("configCli", () => {
     for (const [name, text] of Object.entries(files)) {
       writeFileSync(join(worktree, name), text);
     }
-    return { dir, worktree, envOut: join(dir, "session.env"), caddyOut: join(dir, "caddy.json") };
+    return { worktree, envOut: join(dir, "session.env"), caddyOut: join(dir, "caddy.json"), servicesDir: join(dir, "services") };
   }
 
-  function runCli(worktree: string, envOut: string, caddyOut: string, extra: string[] = []) {
-    const args = ["--worktree", worktree, "--short", HOST.short, "--domain", HOST.domain, "--env-out", envOut, "--caddy-out", caddyOut, ...extra];
+  type Paths = ReturnType<typeof setup>;
+
+  function runCli(paths: Paths, extra: string[] = []) {
+    const args = [
+      ...["--worktree", paths.worktree, "--short", HOST.short, "--domain", HOST.domain],
+      ...["--env-out", paths.envOut, "--caddy-out", paths.caddyOut, "--services-dir", paths.servicesDir, ...extra],
+    ];
     const result = spawnSync(process.execPath, [CONFIG_CLI, ...args], { encoding: "utf8" });
     return { status: result.status, stderr: result.stderr, output: JSON.parse(result.stdout) as unknown, lines: result.stdout.split("\n").length };
   }
 
-  it("writes the environment and the proxy configuration and prints the text of HUNT.md", () => {
-    const { worktree, envOut, caddyOut } = setup({ "hunt.json": JSON.stringify(COMPLETE), "HUNT.md": "\n# Preview\nStart the UIs with DEV_BACKEND_ORIGIN.\n\n" });
-    const result = runCli(worktree, envOut, caddyOut);
+  /** The assignments of an environment file, without its header comment. */
+  function assignments(text: string): string {
+    expect(text).toMatch(/^# \S/);
+    return text.slice(text.indexOf("\n") + 1);
+  }
+
+  it("writes the environments and the proxy configuration and prints the services, their prompt and hunt.agent.md", () => {
+    const paths = setup({ "hunt.json": JSON.stringify(COMPLETE), "hunt.agent.md": "\n# Services\nStart backend with ui.\n\n", "HUNT.md": "Old notes." });
+    const result = runCli(paths);
+    const expected = buildSessionConfig(COMPLETE, HOST, paths.worktree);
 
     expect(result).toEqual({
       status: 0,
       stderr: "",
-      output: { ok: true, main: COMPLETE_CONFIG.main, tls: COMPLETE_CONFIG.tls, hunt_md: "# Preview\nStart the UIs with DEV_BACKEND_ORIGIN." },
+      output: {
+        ok: true,
+        services: [
+          { name: "backend", port: 3000, tls: true, guarded: false },
+          { name: "ui", port: 4200, tls: false, guarded: true },
+          { name: "docs", port: 4400, tls: true, guarded: true },
+          { name: "admin", port: 4800, tls: false, guarded: false },
+        ],
+        services_prompt: expected.servicesPrompt,
+        agent_md: "# Services\nStart backend with ui.",
+      },
       lines: 2,
     });
-    const expected = buildSessionConfig(COMPLETE, HOST);
-    expect(readFileSync(envOut, "utf8")).toBe(envFile(expected.env));
-    expect(JSON.parse(readFileSync(caddyOut, "utf8"))).toEqual(expected.proxy);
-    expect(statSync(envOut).mode & 0o777).toBe(0o644);
-    expect(statSync(caddyOut).mode & 0o777).toBe(0o644);
+    expect(assignments(readFileSync(paths.envOut, "utf8"))).toBe('HUNT_PREVIEW_URL_TEMPLATE="https://7c0c6f2e-{port}.hunt.example.com"\n');
+    expect(JSON.parse(readFileSync(paths.caddyOut, "utf8"))).toEqual(expected.proxy);
+    expect(readdirSync(paths.servicesDir).sort()).toEqual(["admin.env", "backend.env", "docs.env", "ui.env"]);
+    for (const [name, env] of Object.entries(expected.serviceEnvs)) {
+      const file = join(paths.servicesDir, `${name}.env`);
+      expect(assignments(readFileSync(file, "utf8")), name).toBe(assignments(envFile(env, "x")));
+      expect(statSync(file).mode & 0o777).toBe(0o644);
+    }
+    expect(readFileSync(join(paths.servicesDir, "ui.env"), "utf8")).toContain(`HUNT_SERVICE_DIR="${paths.worktree}/apps/ui"\n`);
+    expect(statSync(paths.servicesDir).mode & 0o777).toBe(0o755);
+    expect(statSync(paths.envOut).mode & 0o777).toBe(0o644);
+    expect(statSync(paths.caddyOut).mode & 0o777).toBe(0o644);
   });
 
-  it("configures a repository without hunt.json and HUNT.md with the preview URLs only", () => {
-    const { worktree, envOut, caddyOut } = setup({});
+  it("deletes the environment files of services hunt.json no longer declares and keeps every other file", () => {
+    const paths = setup({ "hunt.json": JSON.stringify(COMPLETE) });
+    mkdirSync(join(paths.servicesDir, "folder.env"), { recursive: true });
+    for (const name of ["old.env", "backend.env", "notes.txt", "backend.env.bak"]) {
+      writeFileSync(join(paths.servicesDir, name), "STALE=1\n");
+    }
 
-    expect(runCli(worktree, envOut, caddyOut).output).toEqual({ ok: true, main: null, tls: [] });
-    expect(readFileSync(envOut, "utf8")).toContain(`HUNT_PREVIEW_URL="${MAIN_URL}"\nHUNT_PREVIEW_URL_TEMPLATE="https://7c0c6f2e-{port}.hunt.example.com"\n`);
+    expect(runCli(paths).status).toBe(0);
+    expect(readdirSync(paths.servicesDir).sort()).toEqual(["admin.env", "backend.env", "backend.env.bak", "docs.env", "folder.env", "notes.txt", "ui.env"]);
+    expect(readFileSync(join(paths.servicesDir, "backend.env"), "utf8")).not.toContain("STALE");
+  });
+
+  it("configures a repository without hunt.json and hunt.agent.md with the URL template only and ignores HUNT.md", () => {
+    const paths = setup({ "HUNT.md": "Old notes." });
+    mkdirSync(paths.servicesDir);
+    writeFileSync(join(paths.servicesDir, "web.env"), "STALE=1\n");
+
+    expect(runCli(paths).output).toEqual({ ok: true, services: [], services_prompt: servicesPrompt([], HOST) });
+    expect(assignments(readFileSync(paths.envOut, "utf8"))).toBe('HUNT_PREVIEW_URL_TEMPLATE="https://7c0c6f2e-{port}.hunt.example.com"\n');
+    expect(readdirSync(paths.servicesDir)).toEqual([]);
   });
 
   it("prints every problem, writes nothing and exits with 1", () => {
-    const { worktree, envOut, caddyOut } = setup({ "hunt.json": JSON.stringify(preview({ main: 80, extra: 1 })), "HUNT.md": "x".repeat(20 * 1024 + 1) });
-    const result = runCli(worktree, envOut, caddyOut);
+    const paths = setup({ "hunt.json": JSON.stringify(web({ port: 80, extra: 1 })), "hunt.agent.md": "x".repeat(20 * 1024 + 1) });
+    const result = runCli(paths);
 
     expect(result).toMatchObject({
       status: 1,
-      output: { ok: false, problems: ["HUNT.md: is larger than 20480 bytes", "preview.extra: unknown field", `preview.main: ${PORT_RULE}`] },
+      output: { ok: false, problems: ["hunt.agent.md: is larger than 20480 bytes", "services.web.extra: unknown field", `services.web.port: ${PORT_RULE}`] },
     });
-    expect(() => statSync(envOut)).toThrow();
-    expect(() => statSync(caddyOut)).toThrow();
+    expect(() => statSync(paths.envOut)).toThrow();
+    expect(() => statSync(paths.caddyOut)).toThrow();
+    expect(() => statSync(paths.servicesDir)).toThrow();
+
+    mkdirSync(paths.servicesDir);
+    writeFileSync(join(paths.servicesDir, "web.env"), "STALE=1\n");
+    expect(runCli(paths).status).toBe(1);
+    expect(readdirSync(paths.servicesDir)).toEqual(["web.env"]);
   });
 
   it("reports hunt.json that is no JSON, a symlink or no file", () => {
     const invalid = setup({ "hunt.json": "{oops" });
-    expect(runCli(invalid.worktree, invalid.envOut, invalid.caddyOut).output).toEqual({
-      ok: false,
-      problems: [expect.stringMatching(/^hunt\.json: not valid JSON: /)],
-    });
+    expect(runCli(invalid).output).toEqual({ ok: false, problems: [expect.stringMatching(/^hunt\.json: not valid JSON: /)] });
 
     const linked = setup({ "secret.json": JSON.stringify(COMPLETE) });
     symlinkSync(join(linked.worktree, "secret.json"), join(linked.worktree, "hunt.json"));
-    symlinkSync("/etc/hosts", join(linked.worktree, "HUNT.md"));
-    expect(runCli(linked.worktree, linked.envOut, linked.caddyOut).output).toEqual({
+    symlinkSync("/etc/hosts", join(linked.worktree, "hunt.agent.md"));
+    expect(runCli(linked).output).toEqual({
       ok: false,
-      problems: ["hunt.json: must be a file, not a symlink", "HUNT.md: must be a file, not a symlink"],
+      problems: ["hunt.json: must be a file, not a symlink", "hunt.agent.md: must be a file, not a symlink"],
     });
 
     const folder = setup({});
     mkdirSync(join(folder.worktree, "hunt.json"));
-    expect(runCli(folder.worktree, folder.envOut, folder.caddyOut).output).toEqual({ ok: false, problems: ["hunt.json: must be a file"] });
+    expect(runCli(folder).output).toEqual({ ok: false, problems: ["hunt.json: must be a file"] });
   });
 
   it("reports invalid host names and missing or unknown arguments", () => {
-    const { worktree, envOut, caddyOut } = setup({});
+    const paths = setup({});
 
-    expect(runCli(worktree, envOut, caddyOut, ["--short", "XYZ"]).output).toEqual({
+    expect(runCli(paths, ["--short", "XYZ"]).output).toEqual({
       ok: false,
       problems: ["short: must be the first 8 hex digits of the session ID, in lowercase"],
     });
-    const missing = spawnSync(process.execPath, [CONFIG_CLI, "--worktree", worktree, "--short", HOST.short], { encoding: "utf8" });
+    const missing = spawnSync(process.execPath, [CONFIG_CLI, "--worktree", paths.worktree, "--short", HOST.short], { encoding: "utf8" });
     expect(missing.status).toBe(1);
-    expect(JSON.parse(missing.stdout)).toEqual({ ok: false, problems: [expect.stringMatching(/^missing --domain, --env-out, --caddy-out; usage: /)] });
+    expect(JSON.parse(missing.stdout)).toEqual({
+      ok: false,
+      problems: [expect.stringMatching(/^missing --domain, --env-out, --caddy-out, --services-dir; usage: /)],
+    });
     const unknown = spawnSync(process.execPath, [CONFIG_CLI, "--port", "3000"], { encoding: "utf8" });
     expect(JSON.parse(unknown.stdout)).toEqual({ ok: false, problems: [expect.stringMatching(/^unknown argument --port; usage: /)] });
     const valueless = spawnSync(process.execPath, [CONFIG_CLI, "--worktree"], { encoding: "utf8" });

@@ -6,7 +6,7 @@
  *   node /srv/hunt/current/gateway/swf.mjs      (the bundle `nx build gateway` writes)
  *
  * Per issue, as long as fewer than `maxSessions` of its VMs (label `hunt-origin=swf`) are up: claim the issue first
- * (label `swf` → `swf:running` and a comment with the preview URL), then do what a handoff of the desktop does
+ * (label `swf` → `swf:running` and a comment with the preview URLs), then do what a handoff of the desktop does
  * (`apps/client/src-tauri/src/remote/handoff.rs`), with a clone from GitHub in place of the push: the orchestrator
  * (`orchestrator.ts`) creates the session VM from the instance template, records the session in its metadata, waits for
  * its startup script and installs the session release staged on the gateway; then `install-tools`, `clone`,
@@ -240,8 +240,9 @@ export class Poller {
     const cloned = await vm.huntCtl(["clone", names.id, "--repo", repo, "--branch", branch], `${tokens.github}\n`);
     if (typeof cloned.path !== "string" || !cloned.path) throw new Error("hunt-ctl clone returned no path");
     const sessionConfig = await vm.huntCtl(["session-config", names.id, "--domain", domain]);
-    const huntMd = typeof sessionConfig.hunt_md === "string" ? sessionConfig.hunt_md : null;
-    const systemPrompt = remoteSystemPrompt(this.deps.prompts(), huntMd);
+    const servicesPrompt = typeof sessionConfig.services_prompt === "string" ? sessionConfig.services_prompt : null;
+    const agentMd = typeof sessionConfig.agent_md === "string" ? sessionConfig.agent_md : null;
+    const systemPrompt = remoteSystemPrompt(this.deps.prompts(), servicesPrompt, agentMd);
     await vm.putClaudeFiles(names.id, { "hunt-session.json": huntSessionFile(names.id, cloned.path, systemPrompt) });
     log(`cloned ${repo} into ${cloned.path}; installing the dependencies`);
     await vm.huntCtl(["deps", names.id]);

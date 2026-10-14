@@ -339,8 +339,9 @@ needs no access to GitHub. The Git LFS objects of the checkout, the ignored file
 agent's `~/.claude` there (`/home/agent/.claude`) also gets the user's `CLAUDE.md`, `rules/`, `skills/`, `agents/`,
 `commands/` and `output-styles/`, and the memory of the repository (`projects/<slug of the main checkout>/memory/`);
 `settings.json` and plugins stay on the Mac. `libs/vm/hunt-ctl` checks the branch out there; `hunt-ctl
-session-config` writes the session's environment and preview proxy from the repository's `hunt.json` and returns its
-`HUNT.md`, which Hunt appends to the agent's system prompt. Then `hunt-ctl` installs the dependencies and starts the
+session-config` writes the session's services and preview proxy from the repository's `hunt.json` and returns the list
+of services and the repository's `hunt.agent.md`, which Hunt appends to the agent's system prompt. Then `hunt-ctl`
+installs the dependencies and starts the
 relay with the OAuth token of the selected Claude account, which Hunt passes on stdin; the local login stays on the
 Mac, so a remote session needs a token account. A failed handoff removes the session's worktree from the VM but keeps
 the VM (`leftoverVm` in `sessions.json`): the next attempt skips the first boot, and deleting the session deletes it.
@@ -362,7 +363,8 @@ another, and a permission request goes to all of them; the first answer counts, 
 the others. Diff, editor, graph and guardrails stay local and wait until the session comes back.
 
 Every session has a VM of its own, which is the isolation boundary: the agent works there as the user `agent`, with
-Docker and Docker Compose, and starts the app as a developer would locally. `libs/vm/hunt-ctl` runs every git, tar
+Docker and Docker Compose, and starts the services of the repository's `hunt.json` its task needs. `libs/vm/hunt-ctl`
+runs every git, tar
 or file operation in the session's files as `agent`, so the agent's hooks, Git config and symlinks act with no more
 rights than the agent has anyway. Files that come back from the VM are copied without following symlinks.
 
@@ -374,30 +376,36 @@ CLI, and Playwright's MCP server with Chromium (`apps/session/playwright/`, offe
 `apps/session/mcp-servers.json`); a tool that is at its version already is skipped. The image build of the session VMs
 runs it, so an image holds the tools; the app and the poller run it on every VM they set up, for an image that lacks
 some. The relay runs as `hunt-relay.service` (`apps/session/vm/systemd/`) with the agent's
-environment (`apps/session/vm/agent.env`), the session's variables and the tokens of `/etc/hunt/secrets.env`, which only
-root reads. A restart of the relay, such as `/clear`, leaves the dev servers and the tmux session the agent started
-running. Login shells of `agent`, such as the terminal's tmux session, get the same environment without the tokens
+environment (`apps/session/vm/agent.env`), `HUNT_PREVIEW_URL_TEMPLATE` and the tokens of `/etc/hunt/secrets.env`,
+which only root reads. A restart of the relay, such as `/clear`, leaves the services and the tmux session running. Login
+shells of `agent`, such as the terminal's tmux session, get the same environment without the tokens
 (`/etc/profile.d/hunt.sh`).
 
-`hunt-ctl session-config` reads the `preview` section of the repository's `hunt.json` (contract version 2,
-`apps/session/src/config.ts`): `env` with the placeholders `${HUNT_PREVIEW_URL}` and `${HUNT_PREVIEW_URL_<port>}`,
-`main`, `routes` (path prefix → port on every preview host) and `tls` (ports that speak HTTPS). It writes the session's
-environment, `/etc/hunt/session.env`, and the configuration of the VM's preview proxy, `hunt-proxy.service` (Caddy on
-port 8080), which serves `<short id>.<domain>` from the main port and `<short id>-<port>.<domain>` from that port on
-localhost (servers bound to 127.0.0.1 or ::1), keeps the Host header and logs every request to
-`/var/log/hunt-proxy/access.log`. `hunt-ctl preview-status` reports the main port, the ports that listen on all or the
-loopback addresses and whether the main port answers on localhost.
+`hunt-ctl session-config` reads the repository's `hunt.json` (contract version 3, `apps/session/src/config.ts`). It
+lists every service of the repository, a monorepo all of its apps, with its `command`, an optional `cwd`, its `port`,
+`tls` (the port speaks HTTPS), `guarded` (behind IAP, the default) and `env`, whose values may name a service's URL as
+`${services.<name>.publicUrl}`. `session-config` writes one environment file per service to
+`/etc/hunt/services/<name>.env`, the session's environment `/etc/hunt/session.env` and the configuration of the VM's
+preview proxy, `hunt-proxy.service` (Caddy on port 8080), which serves `<short id>-<port>.<domain>` from that port on
+localhost (servers bound to 127.0.0.1 or ::1) and `<short id>-<port>-open.<domain>` from the ports of services with
+`"guarded": false` only, keeps the Host header and logs every request to `/var/log/hunt-proxy/access.log`. Every service
+runs as `hunt-service@<name>.service` (`apps/session/vm/systemd/`) as the user `agent`, with its own variables, and
+writes its output to `~/logs/<name>.log`. The agent starts the services its task needs, as the repository's
+`hunt.agent.md` groups them, with `sudo -n hunt-ctl service start|restart|stop|status <name>…`, the only commands
+`/etc/sudoers.d/hunt-service` allows it. A started service stays enabled and starts again with the VM; bringing the
+session back or deleting it stops and disables every service. `hunt-ctl preview-status` reports the state of every
+service, whether its port answers on localhost and the ports that listen on all or the loopback addresses.
 
-The gateway, a VM that runs all the time, routes `https://<short id>.<domain>` to the session VM's main port, which the
-repository's `hunt.json` names, and `https://<short id>-<port>.<domain>` to any of its ports; the load balancer in
-front of it lets only IAP's access group through, and a request for a VM that is off starts it. The agent starts the
-app itself, as a developer would locally. The *Preview* tab next to a remote session's chat
-(`apps/client/src/preview/PreviewPanel.tsx`) polls `preview_status`, which runs `hunt-ctl preview-status <id>` on the
-VM, and shows the main URL, every port that listens with its URL and whether the main port answers; Hunt builds the URLs
-from the session ID and the preview domain the gateway reported at the handoff, the VM reports only port numbers. When
-the main port does not answer, *Start the app* (or *Open preview* in the cloud menu) sends the agent "Start the app for
-the preview as described in the repository (HUNT.md, README)." as a normal prompt, which starts a VM that is off, and
-opens the main URL once it answers.
+The gateway, a VM that runs all the time, routes `https://<short id>-<port>.<domain>` to any port of the session VM; the
+load balancer in front of it lets only IAP's access group through, and a request for a VM that is off starts it.
+`https://<short id>-<port>-open.<domain>` reaches the services marked `"guarded": false` without IAP, so a UI behind IAP
+can call its backend on a host of its own, as it does locally; only the app's own login protects them. The *Preview* tab
+next to a remote session's chat (`apps/client/src/preview/PreviewPanel.tsx`) polls `preview_status`, which runs
+`hunt-ctl preview-status <id>` on the VM, and shows every service with its state, URL and whether it answers, marks the
+public ones and lists the other ports that listen; Hunt builds the URLs from the session ID and the preview domain the
+gateway reported at the handoff, the VM reports only port numbers. While no service runs, *Start the app* sends the
+agent a normal prompt to start the services the task needs, which starts a VM that is off; *Open preview* in the cloud
+menu opens the tab.
 
 The gateway keeps no sessions. Its edge proxy `hunt-edge` (Caddy in Docker on port 8080 behind the load balancer)
 serves only the load balancer's address ranges, removes IAP's headers and cookies and forwards every preview host with
@@ -406,6 +414,8 @@ whole routing table. A request it cannot deliver (502, 503 or 504, because the V
 `hunt-wake.service` on 127.0.0.1:9180 (`apps/gateway/src/wake.ts`). It looks the VM up through the Compute Engine API
 with the gateway's service account, starts or resumes it for a page load, at most once every 30 seconds and never for
 a script's request of a tab already open, and answers with a page that reloads every 5 seconds until the VM answers.
+A second listener on port 8081 serves the load balancer's backend without IAP: it forwards only
+`<short id>-<port>-open.<domain>` the same way and answers 503 for a VM that is off, without starting it.
 
 The gateway API (`hunt-api.service`, `apps/gateway/src/api.ts`) is the control plane of the session VMs, with the
 contract of `libs/domain/src/gatewayApi.ts`. It listens on the Unix socket `/run/hunt-api/api.sock`, which only the
@@ -435,7 +445,8 @@ keeps every other user on the gateway, containers and the edge proxy included, o
 can create, start and delete VMs; only root and `hunt-gw` reach it, and everyone keeps DNS through it.
 
 Next to the preview, the *Terminal* tab (`apps/client/src/terminal/TerminalPanel.tsx`, xterm.js) attaches to the tmux
-session `app` on the VM, in which the agent runs the app's long-running processes, one window per process. The backend
+session `app` on the VM, in which the agent runs long-running processes outside the services of `hunt.json`, one window
+per process; `tail -F ~/logs/<name>.log` there follows a service. The backend
 (`apps/client/src-tauri/src/remote/terminal.rs`) runs `ssh -tt … sudo -n -iu agent tmux -u new-session -A -s app` in a
 local pseudo terminal (`portable-pty`), so the programs see a real TTY and keep their colors; several people can attach
 at once. The terminal joins the shared SSH connection when one is open but never starts it, and streams its output to
@@ -469,7 +480,7 @@ value keeps it idle. Every 2 minutes it lists the open issues through GitHub's R
 API and, while fewer of its VMs
 (label `hunt-origin=swf`, any status but `TERMINATED` and `STOPPED`) are up than the limit allows, claims the oldest
 issue: `swf` becomes `swf:running` (the labels `swf:running`, `swf:done` and `swf:failed` are created when missing) and
-a comment names the session's preview URL. Then it does what a handoff does, with the gateway's service account instead
+a comment names the session's preview hosts. Then it does what a handoff does, with the gateway's service account instead
 of a Mac: the orchestrator creates `vm-hunt-s-<short id>` from the configured instance template (labelled
 `hunt-origin=swf`, without an owner), records the session, repository,
 branch `feat/general/<issue>-<slug of the title>` (`fix/general/…` for an issue labelled `bug`), title and issue in the
@@ -478,8 +489,8 @@ VM's metadata, waits for the startup script and installs the staged session rele
 `hunt-ctl clone` clones the repository from GitHub as `agent` onto the branch (the origin's branch of that name
 when it exists, else a new one from the default branch) with the token's GitHub user as Git identity; `session-config`,
 `put-files --claude` with `hunt-session.json`, `deps`, `start` and `wait` follow as in a handoff. The system prompt is
-the remote part a handoff appends (`libs/domain/prompts/`, which the app and the poller compile in) and the repository's
-HUNT.md; the parts Hunt takes from its user's settings (response style, guardrail offer, diagram language) do not exist
+the remote part a handoff appends (`libs/domain/prompts/`, which the app and the poller compile in), the repository's
+services and its `hunt.agent.md`; the parts Hunt takes from its user's settings (response style, guardrail offer, diagram language) do not exist
 on the gateway. The poller then sends the issue with all its comments as the first prompt through the relay and
 disconnects; the relay runs the turn without a client. The prompt asks the agent to implement and check the issue, push
 the branch, open a pull request with `Closes #<issue>`, comment its link on the issue and replace `swf:running` with
@@ -507,16 +518,17 @@ that is seven days ago, asks in the main window whether to retrieve or delete it
 (`apps/client/src/sessions/StaleRemoteDialog.tsx`); "Later" asks again three days later. A session VM shuts itself down
 after 30 minutes without a running turn, client activity, terminal input or `hunt-ctl` run
 (`apps/session/vm/hunt-idle-check`, every minute through `hunt-idle.timer`); a preview page view or a request other than
-GET counts too, for at most two hours after the agent last worked. Dev servers and containers the agent left running do
-not count. The disk keeps everything: the next prompt or preview page starts the VM again, and the agent restarts the
-app's containers and dev servers.
+GET counts too, for at most two hours after the agent last worked. Services, dev servers and containers left running do
+not count. The disk keeps everything: the next prompt or preview page starts the VM again, the services that were
+started come back by themselves, and the agent restarts other dev servers and containers when its task needs them.
 
 Logs: `hunt-ctl` runs over SSH outside systemd and logs its steps to the journal under the identifier `hunt-ctl`
 (`journalctl -t hunt-ctl` on the VM): every command's start, its end with the duration, a failure with the exit status,
 the functions and lines it failed in and the last 20 lines of its stderr, and the main steps of `install`,
 `install-tools`, `stage-session`, `init`, `clone`, `prepare`, `deps` and `start`. The lines name the session ID,
 repository, branch and release, never what arrives on stdin; the stderr lines have the tokens of the run and well-known
-token formats replaced by `[redacted]`. `status` and `preview-status`, which Hunt polls, log only their failures. The
+token formats replaced by `[redacted]`. `status`, `preview-status` and `service status`, which Hunt and the agent poll,
+log only their failures. The services of `hunt.json` write their output to `/home/agent/logs/<name>.log`. The
 Hunt units set `SyslogIdentifier` to their own name, so no log line repeats it. The infrastructure repository ships the
 journal of the Hunt services to Cloud Logging with that identifier as the label `service`, where the steps of a handoff
 show up with `labels.service="hunt-ctl" AND labels."compute.googleapis.com/resource_name"="vm-hunt-s-<short id>"`.
@@ -544,7 +556,7 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 | `apps/client/src/` `chat/`, `diff/`, `ide/`, `graph/`, `guardrails/`, `preview/`, `review/`, `sessions/`, `settings/`, `terminal/` | One folder per tab or window |
 | `apps/client/src/ui/` | Primitives shared by every feature |
 | `apps/gateway/` | Nx project `gateway`: the gateway VM's API (`src/api.ts`, `src/orchestrator.ts`, `vm/hunt-api`), issue poller (`src/swf.ts`), wake service (`src/wake.ts`) and systemd units (`vm/systemd/`) |
-| `apps/session/` | Nx project `session`: the relay (`src/relay/`), the `hunt.json` preview contract (`src/config.ts`), the versions of the agent's tools and the session VM's files and systemd units (`vm/`) |
+| `apps/session/` | Nx project `session`: the relay (`src/relay/`), the `hunt.json` services contract (`src/config.ts`), the versions of the agent's tools and the session VM's files and systemd units (`vm/`) |
 | `libs/domain/` | Nx project `domain`: JSON-RPC and NDJSON framing, error messages and the remote session prompts the apps share |
 | `libs/vm/` | Nx project `vm`: `hunt-ctl`, which Hunt and the gateway run on the VMs |
 | `scripts/` | Nx project `scripts`: the build of the VM release artifacts (`buildVmArtifact.ts`) |

@@ -547,9 +547,9 @@ async fn local_token_input(app: &AppHandle) -> Result<String, String> {
     Ok(remote::token_input(&claude_token, github_token::read().await?.as_deref()))
 }
 
-/// The preview of the remote session `id`: its URLs, the ports that listen on its VM and whether the main port answers.
-/// A VM that is off has none; it is not started. A connected session proves a running VM, so only an unconnected one
-/// asks the gateway.
+/// The preview of the remote session `id`: the services of its repository's hunt.json with their state and URLs, and the
+/// other ports that listen on its VM. A VM that is off has none; it is not started. A connected session proves a running
+/// VM, so only an unconnected one asks the gateway.
 #[tauri::command]
 pub async fn preview_status(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid) -> Result<PreviewStatus, String> {
     let target = store::find_session(&app, id)?.remote.ok_or("failed to read the preview: the session runs locally")?;
@@ -559,7 +559,7 @@ pub async fn preview_status(app: AppHandle, registry: State<'_, SessionRegistry>
         .ok_or("failed to read the preview: the session was handed off without a preview domain; bring it back and hand it off again")?;
     let is_connected = registry.live.lock().await.contains_key(&id);
     if !is_connected && !gateway_api("read the preview").await?.is_vm_running(id).await? {
-        return Ok(remote::preview::stopped_status(id, domain));
+        return Ok(remote::preview::stopped_status());
     }
     let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
     let status = remote::hunt_ctl(&ssh, &["preview-status", &id.to_string()]).await?;
@@ -774,15 +774,21 @@ const REMOTE_GIT_PUSH_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_D
 const REMOTE_GIT_LOCAL_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/prompts/git-local.md"));
 
 /// What Hunt appends to the system prompt of a remote session: `base`, the usual addition, then `REMOTE_PROMPT`, the Git
-/// part that fits whether the agent has the user's GitHub token, and the repository's HUNT.md under a heading of its own.
-/// The gateway's poller (`apps/gateway/src/swf.ts`) composes the prompt of its sessions the same way, with an empty `base`.
-fn remote_system_prompt(base: &str, has_github_token: bool, hunt_md: Option<&str>) -> String {
+/// part that fits whether the agent has the user's GitHub token, the section on the repository's services that
+/// `hunt-ctl session-config` writes (`services_prompt`, skipped when empty) and the repository's hunt.agent.md under
+/// a heading of its own. The gateway's poller (`apps/gateway/src/swfPlan.ts`) composes the prompt of its sessions the
+/// same way, with an empty `base`.
+fn remote_system_prompt(base: &str, has_github_token: bool, services_prompt: &str, agent_md: Option<&str>) -> String {
     let git_prompt = if has_github_token { REMOTE_GIT_PUSH_PROMPT } else { REMOTE_GIT_LOCAL_PROMPT };
-    let prompt = format!("{base}\n\n{REMOTE_PROMPT}\n{git_prompt}");
-    match hunt_md.map(str::trim).filter(|text| !text.is_empty()) {
-        Some(text) => format!("{prompt}\n### The repository's HUNT.md\n{text}\n"),
-        None => prompt,
+    let mut prompt = format!("{base}\n\n{REMOTE_PROMPT}\n{git_prompt}");
+    let services_prompt = services_prompt.trim();
+    if !services_prompt.is_empty() {
+        prompt.push_str(&format!("\n{services_prompt}\n"));
     }
+    if let Some(text) = agent_md.map(str::trim).filter(|text| !text.is_empty()) {
+        prompt.push_str(&format!("\n### The repository's hunt.agent.md\n{text}\n"));
+    }
+    prompt
 }
 
 /// Moves the session `id` to a VM of its own, which the gateway of `settings` provisions: its agent stops here, its
@@ -822,10 +828,12 @@ pub async fn hand_off_session(
         let gateway = remote::gateway_vm(&settings).await?;
         store::update_session(&app, id, |stored| stored.leftover_vm = Some(gateway.session_vm(id)))?;
         let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt);
-        let local_hunt_md = remote::read_hunt_md(&record.worktree_path)?;
+        let local_agent_md = remote::read_agent_md(&record.worktree_path)?;
         let base_prompt = system_prompt_append(&app, context_prompt);
         let has_github_token = github_token.is_some();
-        let system_prompt = |hunt_md: Option<&str>| remote_system_prompt(&base_prompt, has_github_token, hunt_md.or(local_hunt_md.as_deref()));
+        let system_prompt = |services_prompt: &str, agent_md: Option<&str>| {
+            remote_system_prompt(&base_prompt, has_github_token, services_prompt, agent_md.or(local_agent_md.as_deref()))
+        };
         let token_input = remote::token_input(&claude_token, github_token.as_deref());
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
         let memory_base = memory_base_path(&app, id)?;
@@ -1954,23 +1962,35 @@ mod tests {
     }
 
     #[test]
-    fn remote_system_prompt_appends_the_git_part_and_the_hunt_md_of_the_repository() {
-        let with_token = remote_system_prompt("BASE", true, Some("\n# Preview\nStart the UIs.\n\n"));
+    fn remote_system_prompt_appends_the_git_part_the_services_and_the_agent_md_of_the_repository() {
+        let services = "\n### The repository's services\n- `api`: port 3000\n\n";
+        let with_token = remote_system_prompt("BASE", true, services, Some("\n# Services\nStart api.\n\n"));
         assert_eq!(
             with_token,
-            format!("BASE\n\n{REMOTE_PROMPT}\n{REMOTE_GIT_PUSH_PROMPT}\n### The repository's HUNT.md\n# Preview\nStart the UIs.\n")
+            format!(
+                "BASE\n\n{REMOTE_PROMPT}\n{REMOTE_GIT_PUSH_PROMPT}\n### The repository's services\n- `api`: port 3000\n\n\
+                 ### The repository's hunt.agent.md\n# Services\nStart api.\n"
+            )
+        );
+        let services_only = remote_system_prompt("BASE", true, services, None);
+        assert_eq!(
+            services_only,
+            format!("BASE\n\n{REMOTE_PROMPT}\n{REMOTE_GIT_PUSH_PROMPT}\n### The repository's services\n- `api`: port 3000\n")
         );
 
-        let without_token = remote_system_prompt("BASE", false, None);
+        let without_token = remote_system_prompt("BASE", false, "", None);
         assert_eq!(without_token, format!("BASE\n\n{REMOTE_PROMPT}\n{REMOTE_GIT_LOCAL_PROMPT}"));
-        assert_eq!(remote_system_prompt("BASE", false, Some(" \n")), without_token);
+        assert_eq!(remote_system_prompt("BASE", false, " \n", Some(" \n")), without_token);
+        assert!(REMOTE_PROMPT.contains("the section \"The repository's services\" below lists them"));
+        assert!(REMOTE_PROMPT.contains("```sh\nsudo -n hunt-ctl service start <name>…\n```"));
         assert!(REMOTE_PROMPT.contains("$HUNT_PREVIEW_URL_TEMPLATE` with `{port}`"));
         assert!(REMOTE_PROMPT.contains("tmux pipe-pane -o -t app:<name> 'cat >> ~/logs/<name>.log'\n```"));
 
-        let poller = remote_system_prompt("", false, None);
+        let poller = remote_system_prompt("", false, "", None);
         assert!(poller.starts_with("\n\n## Remote session\nThis session runs on a VM of its own. The user brings its commits back to their machine.\n\n"));
         assert!(poller.ends_with(
-            "follows at the end when it has one.\n\n### Git\nThere is no GitHub token for this session, so pushing fails: commit locally and do not push.\n"
+            "The repository's hunt.agent.md, its instructions for Hunt sessions, follows at the end when it has one.\n\n\
+             ### Git\nThere is no GitHub token for this session, so pushing fails: commit locally and do not push.\n"
         ));
     }
 

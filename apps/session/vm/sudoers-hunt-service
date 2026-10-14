@@ -1,0 +1,3 @@
+# Installed by hunt-ctl as /etc/sudoers.d/hunt-service on a session VM: the agent may start, stop, restart and query the
+# services of the session's hunt.json (`hunt-ctl service`), and nothing else through this rule.
+agent ALL=(root) NOPASSWD: /usr/local/bin/hunt-ctl service start *, /usr/local/bin/hunt-ctl service stop *, /usr/local/bin/hunt-ctl service restart *, /usr/local/bin/hunt-ctl service status, /usr/local/bin/hunt-ctl service status *

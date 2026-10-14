@@ -591,8 +591,9 @@ function RemoteSection() {
           <TextRow label="Google Cloud project" value={remote.project} onChange={(project) => setRemote({ project })} isMonospace />
           <p className="text-[13px] leading-snug text-neutral-500">
             Hunt finds the gateway, the VM of this project labelled hunt-role=gateway, with your gcloud login. It runs all the time and creates, starts
-            and deletes a VM of its own for each session you hand off, vm-hunt-s-&lt;id&gt;, and routes https://&lt;id&gt;.&lt;domain&gt; and
-            https://&lt;id&gt;-&lt;port&gt;.&lt;domain&gt; of its preview domain to them, starting a VM that is off. Hunt reaches the gateway and the session VMs
+            and deletes a VM of its own for each session you hand off, vm-hunt-s-&lt;id&gt;, and routes the previews of its preview domain to them:
+            https://&lt;id&gt;-&lt;port&gt;.&lt;domain&gt; behind your Google login, starting a VM that is off, and https://&lt;id&gt;-&lt;port&gt;-open.&lt;domain&gt;
+            without it for the services the repository's hunt.json marks public, protected only by the app's own login. Hunt reaches the gateway and the session VMs
             over SSH through an IAP tunnel. The infrastructure repository configures the gateway, the session VMs' instance template and the gateway's
             poller for GitHub issues labelled swf. The chat header offers the handoff once the project is set.
           </p>

@@ -84,10 +84,10 @@ describe("issue selection", () => {
 });
 
 describe("issue comments", () => {
-  it("claims with the preview URL, the session, its VM and its branch", () => {
+  it("claims with the preview URLs, the session, its VM and its branch", () => {
     const names = sessionNames("ab12cd34-0000-4000-8000-000000000001");
     expect(claimComment(names, "feat/general/12-fix-login", "hunt.example.com")).toBe(
-      "Hunt started a session for this issue: preview `https://ab12cd34.hunt.example.com` (available once the agent starts the app).\n\n" +
+      "Hunt started a session for this issue: previews at `https://ab12cd34-<port>.hunt.example.com` once the agent starts the services.\n\n" +
         "Session `ab12cd34-0000-4000-8000-000000000001` on the VM `vm-hunt-s-ab12cd34`, branch `feat/general/12-fix-login`.",
     );
   });
@@ -112,12 +112,15 @@ describe("session files", () => {
   };
 
   it("composes the system prompt like the desktop's remote_system_prompt with an empty base", () => {
-    const prompt = remoteSystemPrompt(prompts, "\n# Preview\nStart the UIs.\n\n");
-    expect(prompt).toBe(`\n\n${prompts.remote}\n${prompts.gitPush}\n### The repository's HUNT.md\n# Preview\nStart the UIs.\n`);
+    const services = "\n### The repository's services\n- `api`: port 3000\n\n";
+    const prompt = remoteSystemPrompt(prompts, services, "\n# Services\nStart api.\n\n");
+    const withServices = `\n\n${prompts.remote}\n${prompts.gitPush}\n### The repository's services\n- \`api\`: port 3000\n`;
+    expect(prompt).toBe(`${withServices}\n### The repository's hunt.agent.md\n# Services\nStart api.\n`);
     expect(prompt.startsWith("\n\n## Remote session\n")).toBe(true);
     expect(prompt).toContain("follows at the end when it has one.\n\n### Git\n`origin` is the repository on GitHub.");
-    expect(remoteSystemPrompt(prompts, " \n")).toBe(`\n\n${prompts.remote}\n${prompts.gitPush}`);
-    expect(remoteSystemPrompt(prompts, null)).toBe(remoteSystemPrompt(prompts, undefined));
+    expect(remoteSystemPrompt(prompts, services, null)).toBe(withServices);
+    expect(remoteSystemPrompt(prompts, "", " \n")).toBe(`\n\n${prompts.remote}\n${prompts.gitPush}`);
+    expect(remoteSystemPrompt(prompts, null, null)).toBe(remoteSystemPrompt(prompts, undefined, undefined));
   });
 
   it("writes hunt-session.json in the desktop's shape: a new conversation without permission requests", () => {

@@ -98,7 +98,7 @@ export function issuesToStart(issuesByRepo: { repo: string; issues: Issue[] }[],
 /** The comment that claims the issue. */
 export function claimComment(names: SessionNames, branch: string, domain: string): string {
   return (
-    `Hunt started a session for this issue: preview \`https://${names.short}.${domain}\` (available once the agent starts the app).\n\n` +
+    `Hunt started a session for this issue: previews at \`https://${names.short}-<port>.${domain}\` once the agent starts the services.\n\n` +
     `Session \`${names.id}\` on the VM \`${names.vm}\`, branch \`${branch}\`.`
   );
 }
@@ -138,12 +138,20 @@ export interface RemotePrompts {
  * What the relay appends to Claude Code's system prompt, composed like `remote_system_prompt` in
  * `apps/client/src-tauri/src/session/commands.rs` with an empty base: the gateway has none of the desktop user's settings
  * (response style, guardrail offer, diagram language), so only the remote part, the Git part for a session with a
- * GitHub token and the repository's HUNT.md remain.
+ * GitHub token, the section on the repository's services and its hunt.agent.md remain, the last two as
+ * `hunt-ctl session-config` reports them (`services_prompt`, `agent_md`).
  */
-export function remoteSystemPrompt(prompts: RemotePrompts, huntMd: string | null | undefined): string {
-  const prompt = `\n\n${prompts.remote}\n${prompts.gitPush}`;
-  const text = huntMd?.trim();
-  return text ? `${prompt}\n### The repository's HUNT.md\n${text}\n` : prompt;
+export function remoteSystemPrompt(prompts: RemotePrompts, servicesPrompt: string | null | undefined, agentMd: string | null | undefined): string {
+  let prompt = `\n\n${prompts.remote}\n${prompts.gitPush}`;
+  const services = servicesPrompt?.trim();
+  if (services) {
+    prompt += `\n${services}\n`;
+  }
+  const text = agentMd?.trim();
+  if (text) {
+    prompt += `\n### The repository's hunt.agent.md\n${text}\n`;
+  }
+  return prompt;
 }
 
 /** `hunt-session.json` of a new poller session, in the shape the desktop's handoff writes. */

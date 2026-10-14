@@ -37,7 +37,7 @@ pub struct Hello {
     /// Where the session VMs run.
     pub project: String,
     pub zone: String,
-    /// The domain of the preview hosts `<short>[-<port>].<domain>`.
+    /// The domain of the preview hosts `<short>-<port>.<domain>` and `<short>-<port>-open.<domain>`.
     pub preview_domain: String,
 }
 

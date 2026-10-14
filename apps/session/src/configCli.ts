@@ -1,35 +1,56 @@
 /**
- * Writes a session VM's configuration from the `preview` section of its repository's hunt.json (see `config.ts`);
- * `hunt-ctl session-config` runs it as root:
+ * Writes a session VM's configuration from its repository's hunt.json (see `config.ts`); `hunt-ctl session-config` runs
+ * it as root:
  *
  *   node configCli.ts --worktree <dir> --short <8 hex digits> --domain <domain> --env-out <file> --caddy-out <file>
+ *     --services-dir <dir>
  *
- * Writes the session's environment as a systemd EnvironmentFile to --env-out and the Caddy configuration of the VM's
- * preview proxy to --caddy-out, each through a temporary file and a rename, mode 0644. Prints one line of JSON:
- * `{"ok": true, "main": 4200, "tls": [3000], "hunt_md": "…"}` with the main port (null without one), the ports served
- * over HTTPS and the text of the repository's HUNT.md (instructions for Hunt sessions, at most 20 KiB) when it has one,
- * or `{"ok": false, "problems": […]}`, each problem starting with the path of the offending value; then it writes
- * nothing and exits with 1. The agent controls the worktree, so hunt.json and HUNT.md are read
- * only as regular files, never through a symlink.
+ * Writes the session's environment as a systemd EnvironmentFile to --env-out, the Caddy configuration of the VM's
+ * preview proxy to --caddy-out and the environment of each service to `<services-dir>/<name>.env`, each through a
+ * temporary file and a rename, mode 0644. It creates --services-dir (0755) when it is missing and deletes the `*.env`
+ * files there of services that hunt.json no longer declares; other files stay. Prints one line of JSON:
+ * `{"ok": true, "services": [{"name", "port", "tls", "guarded"}], "services_prompt": "…", "agent_md": "…"}` with the
+ * services in the order of hunt.json, the section of the agent's prompt that lists them (or says there are none) and
+ * the text of the repository's hunt.agent.md (instructions for the agent, at most 20 KiB) when it has one, or
+ * `{"ok": false, "problems": […]}`, each problem starting with the path of the offending value; then it writes nothing
+ * and exits with 1. The agent controls the worktree, so hunt.json and hunt.agent.md are read only as regular files,
+ * never through a symlink.
  */
-import { closeSync, constants, fstatSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import { buildSessionConfig, ConfigError, envFile } from "./config.ts";
 
 const HUNT_JSON_MAX_BYTES = 256 * 1024;
-const HUNT_MD_MAX_BYTES = 20 * 1024;
-const USAGE = "usage: configCli.ts --worktree <dir> --short <8 hex digits> --domain <domain> --env-out <file> --caddy-out <file>";
-const FLAGS = { "--worktree": "worktree", "--short": "short", "--domain": "domain", "--env-out": "envOut", "--caddy-out": "caddyOut" } as const;
+const AGENT_MD_NAME = "hunt.agent.md";
+const AGENT_MD_MAX_BYTES = 20 * 1024;
+const ENV_SUFFIX = ".env";
+const USAGE =
+  "usage: configCli.ts --worktree <dir> --short <8 hex digits> --domain <domain> --env-out <file> --caddy-out <file> --services-dir <dir>";
+const FLAGS = {
+  "--worktree": "worktree",
+  "--short": "short",
+  "--domain": "domain",
+  "--env-out": "envOut",
+  "--caddy-out": "caddyOut",
+  "--services-dir": "servicesDir",
+} as const;
 
 type Options = Record<(typeof FLAGS)[keyof typeof FLAGS], string>;
+
+interface ServiceSummary {
+  name: string;
+  port: number;
+  tls: boolean;
+  guarded: boolean;
+}
 
 interface Result {
   ok: boolean;
   problems?: string[];
-  main?: number | null;
-  tls?: number[];
-  hunt_md?: string;
+  services?: ServiceSummary[];
+  services_prompt?: string;
+  agent_md?: string;
 }
 
 function parseArguments(args: string[]): Options {
@@ -86,11 +107,24 @@ function writeAtomic(path: string, text: string): void {
   renameSync(temporary, path);
 }
 
+/** Writes `<dir>/<name>.env` for each entry of `envs` and deletes every other `*.env` file in `dir`. */
+function writeServiceEnvs(dir: string, envs: Record<string, Record<string, string>>): void {
+  mkdirSync(dir, { recursive: true, mode: 0o755 });
+  for (const [name, env] of Object.entries(envs)) {
+    writeAtomic(join(dir, `${name}${ENV_SUFFIX}`), envFile(env, `The environment of the service ${name} from the repository's hunt.json.`));
+  }
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory() || !entry.name.endsWith(ENV_SUFFIX)) continue;
+    if (Object.hasOwn(envs, entry.name.slice(0, -ENV_SUFFIX.length))) continue;
+    rmSync(join(dir, entry.name));
+  }
+}
+
 function run(args: string[]): Result {
   const options = parseArguments(args);
   const problems: string[] = [];
   const huntJsonText = readWorktreeFile(options.worktree, "hunt.json", HUNT_JSON_MAX_BYTES, problems);
-  const huntMd = readWorktreeFile(options.worktree, "HUNT.md", HUNT_MD_MAX_BYTES, problems)?.trim();
+  const agentMd = readWorktreeFile(options.worktree, AGENT_MD_NAME, AGENT_MD_MAX_BYTES, problems)?.trim();
   let huntJson: unknown;
   try {
     huntJson = huntJsonText === undefined ? undefined : JSON.parse(huntJsonText);
@@ -99,16 +133,18 @@ function run(args: string[]): Result {
   }
   let result: Result;
   try {
-    const config = buildSessionConfig(huntJson, { short: options.short, domain: options.domain });
+    const config = buildSessionConfig(huntJson, { short: options.short, domain: options.domain }, options.worktree);
     if (problems.length > 0) return { ok: false, problems };
-    writeAtomic(options.envOut, envFile(config.env));
+    writeAtomic(options.envOut, envFile(config.env, "The session's environment, written by Hunt."));
     writeAtomic(options.caddyOut, `${JSON.stringify(config.proxy, null, 2)}\n`);
-    result = { ok: true, main: config.preview.main, tls: config.preview.tls };
+    writeServiceEnvs(options.servicesDir, config.serviceEnvs);
+    const services = config.services.map(({ name, port, tls, guarded }) => ({ name, port, tls, guarded }));
+    result = { ok: true, services, services_prompt: config.servicesPrompt };
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;
     return { ok: false, problems: [...problems, ...error.problems] };
   }
-  return huntMd ? { ...result, hunt_md: huntMd } : result;
+  return agentMd ? { ...result, agent_md: agentMd } : result;
 }
 
 function main(): void {

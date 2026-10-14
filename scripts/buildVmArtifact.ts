@@ -32,6 +32,8 @@ const ARTIFACTS: Record<string, Artifact> = {
     files: [
       ["libs/vm/hunt-ctl", "vm/hunt-ctl"],
       ["apps/session/vm/hunt-idle-check", "vm/hunt-idle-check"],
+      ["apps/session/vm/hunt-service", "vm/hunt-service"],
+      ["apps/session/vm/sudoers-hunt-service", "vm/sudoers-hunt-service"],
       ["apps/session/vm/agent.env", "vm/agent.env"],
       ["apps/session/vm/profile.sh", "vm/profile.sh"],
       ["apps/session/vm/systemd", "vm/systemd/session"],

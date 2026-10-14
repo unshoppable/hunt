@@ -1,46 +1,61 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { PreviewStatus } from "../ipc/types";
+import type { PreviewService } from "../ipc/types";
 import { EMPTY_PREVIEW, usePreviewStore } from "../state/preview";
 import { useHuntStore } from "../state/store";
 import { HEADER_BAR } from "../ui/bars";
-import { GHOST_BUTTON_XS, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
+import { GHOST_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
+import { HoverTooltip } from "../ui/HoverTooltip";
 import { Spinner } from "../ui/icons";
+import { errorText } from "../ui/useLoad";
+import { describePreview, describeService, hasRespondingService, offersStart, shouldPollFast, type Tone } from "./services";
 
-/** How often the panel asks what listens on the VM: often while it waits for the app to answer, rarely otherwise. */
+/** How often the panel asks the VM about its services: often while it waits for one to start, rarely otherwise. */
 const WAITING_POLL_MS = 3000;
 const LIVE_POLL_MS = 10000;
 
 const LINK = "min-w-0 truncate text-left font-mono text-[13px] text-sky-300 hover:underline";
+const SECTION_LABEL = "text-[13px] text-neutral-500";
+const HINT = "text-[13px] leading-snug text-neutral-500";
+
+const TONE_COLOR: Record<Tone, string> = {
+  ok: "text-green-300",
+  pending: "text-neutral-300",
+  warning: "text-amber-300",
+  error: "text-red-300",
+  idle: "text-neutral-400",
+};
 
 /**
- * The Preview tab of a remote session: its main URL with whether the main port answers, and every port something
- * listens on with its URL. The agent starts the app itself; "Start the app" asks it to and opens the main URL once it
- * answers. The panel polls while the session is connected (a connected session proves a running VM) or while it waits
- * for the app, and only while the window is visible.
+ * The Preview tab of a remote session: every service of the repository's hunt.json with its state, whether it answers
+ * and its URL, and the other ports something listens on. The agent starts the services itself; "Start the app" asks it
+ * to. The panel polls while the session is connected (a connected session proves a running VM), while it waits for a
+ * service to answer or while one starts, and only while the window is visible.
  */
 export function PreviewPanel({ sessionId }: { sessionId: string }) {
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
   const preview = usePreviewStore((state) => state.previews[sessionId] ?? EMPTY_PREVIEW);
   const { refresh, startApp, stopWaiting } = usePreviewStore.getState();
+  const [openError, setOpenError] = useState<string | null>(null);
   const hasDomain = Boolean(session?.remote?.previewDomain);
   const isLive = Boolean(session?.isLive);
-  const { status, opensWhenReady } = preview;
+  const { status, awaitingStart } = preview;
+  const isPollingFast = shouldPollFast(status, awaitingStart);
 
   useEffect(() => {
     if (!hasDomain) return;
     void refresh(sessionId);
-    if (!isLive && !opensWhenReady) return;
+    if (!isLive && !isPollingFast) return;
     const timer = window.setInterval(
       () => {
         if (!document.hidden) {
           void refresh(sessionId);
         }
       },
-      opensWhenReady ? WAITING_POLL_MS : LIVE_POLL_MS,
+      isPollingFast ? WAITING_POLL_MS : LIVE_POLL_MS,
     );
     return () => window.clearInterval(timer);
-  }, [sessionId, hasDomain, isLive, opensWhenReady, refresh]);
+  }, [sessionId, hasDomain, isLive, isPollingFast, refresh]);
 
   if (!hasDomain) {
     return (
@@ -50,45 +65,74 @@ export function PreviewPanel({ sessionId }: { sessionId: string }) {
     );
   }
 
-  const state = describeStatus(status);
+  function open(url: string) {
+    setOpenError(null);
+    void openUrl(url).catch((reason) => setOpenError(errorText(reason)));
+  }
+
+  const summary = describePreview(status);
+  const isWaiting = awaitingStart && !(status && hasRespondingService(status));
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className={`${HEADER_BAR} gap-2 border-b border-(--line) px-4`}>
         <span className="text-sm font-medium text-neutral-100">Preview</span>
-        <span className={`min-w-0 truncate text-[13px] ${state.color}`}>{state.text}</span>
+        <span className={`min-w-0 truncate text-[13px] ${TONE_COLOR[summary.tone]}`}>{summary.text}</span>
         <span className="flex-1" />
         {preview.isRefreshing ? <Spinner /> : null}
-        {status ? (
-          <button type="button" onClick={() => void openUrl(status.mainUrl)} className={PRIMARY_BUTTON_XS}>
-            Open
-          </button>
-        ) : null}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4 text-sm text-neutral-300">
         {preview.error ? <p className="text-[13px] leading-snug break-words text-red-300">{preview.error}</p> : null}
+        {openError ? <p className="text-[13px] leading-snug break-words text-red-300">{openError}</p> : null}
 
-        {status ? (
-          <section className="flex flex-col gap-1">
-            <div className="text-[13px] text-neutral-500">{status.main ? `Main port ${status.main}` : "Main URL"}</div>
-            <button type="button" onClick={() => void openUrl(status.mainUrl)} className={LINK}>
-              {status.mainUrl}
-            </button>
+        {status && !status.vmRunning ? (
+          <p className={HINT}>The VM is off. The next prompt or opening a preview URL that is not public starts it.</p>
+        ) : null}
+
+        {status && status.vmRunning && !status.services.length ? (
+          <p className={HINT}>
+            {status.listening.length
+              ? "hunt.json declares no services; below are the ports something listens on."
+              : "hunt.json declares no services, and nothing listens on a port yet."}
+          </p>
+        ) : null}
+
+        {status?.services.length ? (
+          <section className="flex flex-col gap-3">
+            <div className={SECTION_LABEL}>Services</div>
+            {status.services.map((service) => (
+              <ServiceRow key={service.name} service={service} isVmRunning={status.vmRunning} onOpen={open} />
+            ))}
           </section>
         ) : null}
 
-        {status && !status.vmRunning ? (
-          <p className="text-[13px] leading-snug text-neutral-500">The VM is off. The next prompt or opening a preview URL starts it.</p>
+        {isWaiting ? (
+          <div className="flex items-center gap-2 text-[13px] text-neutral-400">
+            <Spinner />
+            <span className="min-w-0 flex-1">Waiting for a service to answer…</span>
+            <button type="button" onClick={() => stopWaiting(sessionId)} className={GHOST_BUTTON_XS}>
+              Stop waiting
+            </button>
+          </div>
+        ) : status && offersStart(status) ? (
+          <div className="flex flex-col items-start gap-2">
+            <button type="button" onClick={() => startApp(sessionId)} className={SECONDARY_BUTTON_XS}>
+              Start the app
+            </button>
+            <p className={HINT}>
+              Asks the agent to start the services this task needs, as the repository's hunt.agent.md describes. Started services come back after a VM restart.
+            </p>
+          </div>
         ) : null}
 
-        {status && status.listening.length ? (
+        {status?.listening.length ? (
           <section className="flex flex-col gap-1">
-            <div className="text-[13px] text-neutral-500">Listening ports</div>
+            <div className={SECTION_LABEL}>{status.services.length ? "Other ports" : "Listening ports"}</div>
             {status.listening.map((port) => (
               <div key={port.port} className="flex min-w-0 items-center gap-3">
                 <span className="w-14 shrink-0 font-mono text-[13px] text-neutral-200">{port.port}</span>
-                <button type="button" onClick={() => void openUrl(port.url)} className={LINK}>
+                <button type="button" onClick={() => open(port.url)} className={LINK}>
                   {port.url}
                 </button>
               </div>
@@ -96,38 +140,40 @@ export function PreviewPanel({ sessionId }: { sessionId: string }) {
           </section>
         ) : null}
 
-        {status && !status.mainResponds && (status.main !== null || !status.vmRunning) ? (
-          opensWhenReady ? (
-            <div className="flex items-center gap-2 text-[13px] text-neutral-400">
-              <Spinner />
-              <span className="min-w-0 flex-1">Waiting for the app to answer, then the preview opens in the browser…</span>
-              <button type="button" onClick={() => stopWaiting(sessionId)} className={GHOST_BUTTON_XS}>
-                Stop waiting
-              </button>
-            </div>
-          ) : (
-            <div className="flex flex-col items-start gap-2">
-              <button type="button" onClick={() => startApp(sessionId)} className={SECONDARY_BUTTON_XS}>
-                Start the app
-              </button>
-              <p className="text-[13px] leading-snug text-neutral-500">
-                Asks the agent to start the app as the repository describes it (HUNT.md, README) and opens the preview once its main port answers.
-              </p>
-            </div>
-          )
-        ) : null}
-
-        <p className="text-[13px] leading-snug text-neutral-500">Diff, editor, graph and review work again once you bring the session back.</p>
+        <p className={HINT}>Diff, editor, graph and review work again once you bring the session back.</p>
       </div>
     </div>
   );
 }
 
-/** The preview's state as the header shows it. */
-function describeStatus(status: PreviewStatus | null): { text: string; color: string } {
-  if (!status) return { text: "…", color: "text-neutral-400" };
-  if (!status.vmRunning) return { text: "VM off", color: "text-neutral-400" };
-  if (status.mainResponds) return { text: "Responds", color: "text-green-300" };
-  if (status.main === null) return { text: "No main port in hunt.json", color: "text-amber-300" };
-  return { text: `Nothing answers on port ${status.main}`, color: "text-amber-300" };
+/** A service of hunt.json: a dot that is green while it answers, its name, port, state and URL. */
+function ServiceRow({ service, isVmRunning, onOpen }: { service: PreviewService; isVmRunning: boolean; onOpen: (url: string) => void }) {
+  const state = describeService(service, isVmRunning);
+  return (
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <div className="flex min-w-0 items-center gap-2">
+        <span
+          className={`size-2 shrink-0 rounded-full ${service.responds ? "bg-green-400" : "bg-neutral-600"}`}
+          title={service.responds ? "Answers" : "Does not answer"}
+        />
+        <span className="min-w-0 truncate font-mono text-[13px] text-neutral-100">{service.name}</span>
+        <span className="shrink-0 font-mono text-[12px] text-neutral-500">{service.port}</span>
+        {service.guarded ? null : (
+          <HoverTooltip text="No Google login; only the app's own login protects it" className="flex shrink-0">
+            <span className="rounded-md border border-amber-400/30 bg-amber-400/10 px-1.5 text-[12px] font-medium text-amber-300">public</span>
+          </HoverTooltip>
+        )}
+        <span className="flex-1" />
+        <span
+          className={`shrink-0 text-[13px] ${TONE_COLOR[state.tone]}`}
+          title={service.state === "failed" ? `Its log is /home/agent/logs/${service.name}.log on the VM` : undefined}
+        >
+          {state.text}
+        </span>
+      </div>
+      <button type="button" onClick={() => onOpen(service.url)} className={`${LINK} max-w-full self-start pl-4`}>
+        {service.url}
+      </button>
+    </div>
+  );
 }

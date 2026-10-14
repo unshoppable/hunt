@@ -1,0 +1,85 @@
+#!/bin/bash
+# Fake systemctl of services.test.ts: logs the call; the state of unit <unit> (active, activating, failed, inactive) is in
+# /run/fake-systemd/<unit>, and enable links template instances into multi-user.target.wants.
+echo "systemctl $*" >>/var/log/systemctl.log
+states=/run/fake-systemd
+wants=/etc/systemd/system/multi-user.target.wants
+mkdir -p "$states" "$wants"
+verb=$1
+shift
+now=false
+value=false
+units=()
+while (( $# )); do
+  case $1 in
+    --quiet) ;;
+    --now) now=true ;;
+    --value) value=true ;;
+    --property) shift ;;
+    *) units+=("$1") ;;
+  esac
+  shift
+done
+# The units named, with a pattern such as hunt-service@*.service expanded to the units with a state.
+expanded() {
+  local unit file
+  for unit in "${units[@]}"; do
+    if [[ $unit == *'*'* ]]; then
+      for file in "$states"/$unit; do
+        [[ -e $file ]] && echo "${file##*/}"
+      done
+    else
+      echo "$unit"
+    fi
+  done
+}
+state_of() {
+  cat "$states/$1" 2>/dev/null || echo inactive
+}
+set_states() {
+  local unit
+  for unit in $(expanded); do
+    echo "$1" >"$states/$unit"
+  done
+}
+case $verb in
+  enable)
+    for unit in "${units[@]}"; do
+      if [[ $unit == *@?*.service ]]; then
+        ln -sfn "/etc/systemd/system/${unit%%@*}@.service" "$wants/$unit"
+      fi
+    done
+    if $now; then
+      set_states active
+    fi
+    ;;
+  disable)
+    for unit in "${units[@]}"; do
+      rm -f "$wants/$unit"
+    done
+    if $now; then
+      set_states inactive
+    fi
+    ;;
+  start | restart) set_states active ;;
+  stop) set_states inactive ;;
+  reset-failed)
+    for unit in $(expanded); do
+      if [[ $(state_of "$unit") == failed ]]; then
+        echo inactive >"$states/$unit"
+      fi
+    done
+    ;;
+  show)
+    separator=''
+    for unit in $(expanded); do
+      if $value; then
+        state_of "$unit"
+        continue
+      fi
+      printf '%sId=%s\nActiveState=%s\nSubState=x\nUnitFileState=%s\n' "$separator" "$unit" "$(state_of "$unit")" \
+        "$(if [[ -L $wants/$unit ]]; then echo enabled; else echo disabled; fi)"
+      separator=$'\n'
+    done
+    ;;
+esac

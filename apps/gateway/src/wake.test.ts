@@ -34,6 +34,7 @@ describe("sessionShort", () => {
     expect(sessionShort("7c0c6f2e")).toBeNull();
     expect(sessionShort("7c0c6f2ex.hunt.example.com")).toBeNull();
     expect(sessionShort("7c0c6f2e-api.hunt.example.com")).toBeNull();
+    expect(sessionShort("7c0c6f2e-3000-open.hunt.example.com")).toBeNull();
     expect(sessionShort(undefined)).toBeNull();
   });
 });

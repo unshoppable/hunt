@@ -1,0 +1,31 @@
+# A service of the session's hunt.json, such as hunt-service@med-backend.service: `hunt-ctl service start` enables and
+# starts it, so that it comes back when the VM boots, and `hunt-ctl service stop` stops and disables it. It runs the
+# service's command as the user agent through vm/hunt-service, with agent.env of the installed release, the session's
+# variables and the service's own environment, which `hunt-ctl session-config` writes to /etc/hunt/services/<name>.env.
+# The output goes to /home/agent/logs/<name>.log. %i, not %I: the unescaped instance name would turn `-` into `/`.
+[Unit]
+Description=Service %i of the session's hunt.json
+After=network-online.target docker.service google-startup-scripts.service
+Wants=network-online.target docker.service
+ConditionPathExists=/etc/hunt/services/%i.env
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+# Names the service's journal entries; Cloud Logging shows it as the label service.
+SyslogIdentifier=hunt-service
+Type=exec
+User=agent
+Group=agent
+WorkingDirectory=/home/agent
+EnvironmentFile=/srv/hunt/current/vm/agent.env
+EnvironmentFile=-/etc/hunt/session.env
+EnvironmentFile=/etc/hunt/services/%i.env
+ExecStart=/srv/hunt/current/vm/hunt-service %i
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

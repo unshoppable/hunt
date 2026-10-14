@@ -1,6 +1,7 @@
 /**
  * The preview domain of the gateway's edge proxy: `hunt-ctl install --domain` stores it in `/etc/hunt/preview-domain`,
- * and the edge serves `<short>.<domain>` and `<short>-<port>.<domain>` from it.
+ * and the edge serves `<short>.<domain>` and `<short>-<port>.<domain>` behind IAP and `<short>-<port>-open.<domain>`
+ * without it.
  */
 import { readFileSync } from "node:fs";
 import { messageOf } from "../../../libs/domain/src/errors.ts";

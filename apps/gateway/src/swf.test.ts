@@ -117,7 +117,7 @@ function fakeVm(failing?: { command: string; error: Error }) {
         case "clone":
           return { path: "/home/agent/app" };
         case "session-config":
-          return { hunt_md: "# Preview\nStart the UIs." };
+          return { services_prompt: "### The repository's services\n- `ui`: port 4200\n", agent_md: "# Services\nStart the UIs." };
         case "wait":
           return { state: "ready", acpSessionId: "acp-9" };
         default:
@@ -222,7 +222,7 @@ describe("Poller.cycle", () => {
       "comments acme/app#12",
       "unlabel acme/app#12 swf",
       "label acme/app#12 swf:running",
-      `comment acme/app#12 Hunt started a session for this issue: preview \`https://ab12cd34.hunt.example.com\` (available once the agent starts the app).\n\nSession \`${SESSION_ID}\` on the VM \`${VM}\`, branch \`fix/general/12-fix-login\`.`,
+      `comment acme/app#12 Hunt started a session for this issue: previews at \`https://ab12cd34-<port>.hunt.example.com\` once the agent starts the services.\n\nSession \`${SESSION_ID}\` on the VM \`${VM}\`, branch \`fix/general/12-fix-login\`.`,
     ]);
     expect(compute.inserted).toEqual([
       { name: VM, template: "tpl-hunt-session", machineType: null, labels: { "hunt-role": "session", "hunt-session": "ab12cd34", "hunt-origin": "swf" } },
@@ -252,7 +252,9 @@ describe("Poller.cycle", () => {
       huntSessionId: SESSION_ID,
       acpSessionId: null,
       cwd: "/home/agent/app",
-      systemPromptAppend: "\n\n## Remote session\n\n### Git\n\n### The repository's HUNT.md\n# Preview\nStart the UIs.\n",
+      systemPromptAppend:
+        "\n\n## Remote session\n\n### Git\n\n### The repository's services\n- `ui`: port 4200\n\n" +
+        "### The repository's hunt.agent.md\n# Services\nStart the UIs.\n",
       modeId: "bypassPermissions",
       configOptions: {},
     });

@@ -1,7 +1,6 @@
 import { useRef, useState } from "react";
 import { useIdeStore } from "../ide/ideStore";
 import { useAccountsStore } from "../state/accounts";
-import { usePreviewStore } from "../state/preview";
 import { configuredVmSettings, useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { SECONDARY_BUTTON_MD } from "../ui/buttons";
@@ -25,7 +24,7 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
   const isCreating = useHuntStore((state) => state.creatingIds.includes(sessionId));
   const handOffSession = useHuntStore((state) => state.handOffSession);
   const retrieveSession = useHuntStore((state) => state.retrieveSession);
-  const openPreview = usePreviewStore((state) => state.openPreview);
+  const setRemoteTab = useHuntStore((state) => state.setRemoteTab);
   const remoteSettings = useSettingsStore((state) => state.remote);
   const hasUnsavedEdits = useIdeStore((state) => (state.sessions[sessionId]?.dirtyPaths.length ?? 0) > 0);
   const hasClaudeAccount = useAccountsStore((state) => Boolean(state.accounts?.activeId));
@@ -45,6 +44,11 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
   function run(action: (id: string) => Promise<void>) {
     setIsMenuOpen(false);
     void action(sessionId);
+  }
+
+  function showPreview() {
+    setIsMenuOpen(false);
+    setRemoteTab("preview");
   }
 
   async function bringBack() {
@@ -91,11 +95,9 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
             </span>
           </button>
           {isRemote && previewDomain ? (
-            <button type="button" role="menuitem" onClick={() => run(openPreview)} className={MENU_ITEM}>
+            <button type="button" role="menuitem" onClick={showPreview} className={MENU_ITEM}>
               Open preview
-              <span className="block text-[12px] text-neutral-500">
-                {`Opens https://${sessionId.slice(0, 8)}.${previewDomain}; when the app does not answer there, the agent starts it first.`}
-              </span>
+              <span className="block text-[12px] text-neutral-500">The Preview tab lists the services from hunt.json with their URLs and can have the agent start them.</span>
             </button>
           ) : null}
         </div>

@@ -1,6 +1,7 @@
-//! Interactive terminals on the VM of a remote session. The agent runs the app's long-running processes there in the
-//! tmux session `app`, one window per process. A terminal is OpenSSH in a local pseudo terminal attached to that
-//! session, so the programs see a real TTY and keep their colors; several clients can attach at once (tmux's default).
+//! Interactive terminals on the VM of a remote session. The agent runs ad-hoc long-running processes there in the tmux
+//! session `app`, one window per process; the services of the repository's hunt.json run as systemd units instead and
+//! log to `~/logs/<name>.log`. A terminal is OpenSSH in a local pseudo terminal attached to that session, so the
+//! programs see a real TTY and keep their colors; several clients can attach at once (tmux's default).
 //! Knows nothing about Tauri; `session/commands.rs` owns the commands and forwards the output to the window.
 
 use std::collections::HashMap;

@@ -5,12 +5,14 @@
 # lists the commands.
 #
 # /etc/hunt/role names the kind of VM. A session VM (`session`) runs one session: its worktree, ~/.claude and agent
-# belong to the user agent, and the relay runs as hunt-relay.service. The VM is the isolation boundary: whatever
-# hunt-ctl does in the session's files runs as agent, so the agent's Git hooks, config and symlinks act with no more
-# rights than the agent has anyway. The gateway (`gateway`) holds no sessions: its edge proxy forwards the preview hosts
-# to the session VMs, hunt-wake.service starts a stopped one, hunt-api.service creates, starts and deletes them for the
-# desktop apps, and hunt-swf.service starts sessions for GitHub issues. CI deploys both releases by SSH into the
-# gateway: `install` for the gateway's own, `stage-session` for the one the gateway installs on the session VMs.
+# belong to the user agent, the relay runs as hunt-relay.service and the services of its hunt.json as
+# hunt-service@<name>.service, which the agent starts and stops through `sudo -n hunt-ctl service`. The VM is the
+# isolation boundary: whatever hunt-ctl does in the session's files runs as agent, so the agent's Git hooks, config and
+# symlinks act with no more rights than the agent has anyway. The gateway (`gateway`) holds no sessions: its edge proxy
+# forwards the preview hosts to the session VMs, hunt-wake.service starts a stopped one, hunt-api.service creates,
+# starts and deletes them for the desktop apps, and hunt-swf.service starts sessions for GitHub issues. CI deploys both
+# releases by SSH into the gateway: `install` for the gateway's own, `stage-session` for the one the gateway installs on
+# the session VMs.
 # shellcheck disable=SC2016 # jq programs and `sh -c` scripts are single-quoted on purpose.
 set -Eeuo pipefail
 shopt -s inherit_errexit nullglob
@@ -24,11 +26,11 @@ readonly ACTIVITY_FILE=/var/lib/hunt/activity
 # compares it with the session release it staged before it installs that on a session VM.
 readonly INSTALLED_HASH_FILE=/var/lib/hunt/installed-hash
 readonly UNIT_DIR=/etc/systemd/system
-# A preview domain: at least two labels, the last of letters only, and room for `<short>-<port>.` in front of it within
-# the 253 characters of a host name. apps/client/src-tauri/src/remote/preview.rs, apps/session/src/config.ts and
+# A preview domain: at least two labels, the last of letters only, and room for `<short>-<port>-open.` in front of it
+# within the 253 characters of a host name. apps/client/src-tauri/src/remote/preview.rs, apps/session/src/config.ts and
 # Hunt's settings check the same.
 readonly DOMAIN_PATTERN='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
-readonly MAX_DOMAIN_LENGTH=238
+readonly MAX_DOMAIN_LENGTH=233
 # Exit status of failures that were reported already; the ERR trap stays quiet for them.
 readonly REPORTED=3
 # The SYSLOG_IDENTIFIER of hunt-ctl's lines in the journal, which the infrastructure's Ops Agent ships to Cloud Logging.
@@ -62,6 +64,13 @@ readonly SESSION_ENV=/etc/hunt/session.env
 readonly SECRETS_ENV=/etc/hunt/secrets.env
 readonly PROXY_CONFIG=/etc/hunt/caddy.json
 readonly IDLE_CONFIG=/etc/hunt/idle.conf
+# The environment of each service of hunt.json, <name>.env, which `session-config` writes and hunt-service@.service
+# reads; the units' names are hunt-service@<name>.service.
+readonly SERVICES_DIR=/etc/hunt/services
+readonly SERVICE_UNIT_PREFIX=hunt-service@
+readonly SERVICE_NAME_PATTERN='^[a-z][a-z0-9-]{0,31}$'
+# The sudo rule that lets the agent run `hunt-ctl service` (apps/session/vm/sudoers-hunt-service).
+readonly SERVICE_SUDOERS_DROPIN=/etc/sudoers.d/hunt-service
 # A relay whose status.json heartbeat is older than this is gone.
 readonly HEARTBEAT_MAX_AGE_MS=120000
 # Ports preview-status never lists: Caddy's admin API, the Docker API and the preview proxy.
@@ -95,8 +104,10 @@ readonly SSHD_DROPIN=/etc/ssh/sshd_config.d/20-hunt-api.conf
 readonly SUDOERS_DROPIN=/etc/sudoers.d/hunt-api
 readonly EDGE_NAME=hunt-edge
 readonly EDGE_CONFIG_DIR=/etc/hunt-edge
-# The port the load balancer's instance group serves (named port `http`) and its health path; Terraform uses the same.
+# The ports the load balancer's instance group serves, EDGE_PORT behind IAP (named port `http`) and EDGE_OPEN_PORT for
+# the previews of services without IAP (named port `http-open`), and the health path of both; Terraform uses the same.
 readonly EDGE_PORT=8080
+readonly EDGE_OPEN_PORT=8081
 readonly EDGE_HEALTH_PATH=/hunt-healthz
 readonly EDGE_USER=2001:2001
 readonly EDGE_IMAGE=caddy:2-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
@@ -113,7 +124,8 @@ temporary_paths=()
 counts_as_activity=true
 # `session` or `gateway`, from ROLE_FILE.
 role=
-# What every journal line of the run starts with: the command and, when its first argument is a session id, the id.
+# What every journal line of the run starts with: the command and, when its first argument is a session id, the id, or
+# for `service` its action.
 log_subject=hunt-ctl
 # Whether the journal gets the start and end of a successful run; the queries Hunt polls log only their failures.
 logs_success=true
@@ -165,19 +177,26 @@ Session VM:
                          to the worktree; without one, Git LFS's hooks)
   deps <id>              install the worktree's dependencies (npm, pnpm or yarn, by lockfile)
   session-config <id> --domain <domain>
-                         write the session's environment, /etc/hunt/session.env, and the configuration of the VM's
-                         preview proxy, /etc/hunt/caddy.json, from the preview section of its hunt.json (version 2),
-                         and (re)start the proxy; prints the text of the repository's HUNT.md
-  start <id>             start the session's relay unless it runs, with the tokens from stdin (see read_tokens); an
-                         empty line keeps the token stored before
+                         write the session's environment, /etc/hunt/session.env, the environment of every service of
+                         its hunt.json (version 3), /etc/hunt/services/<name>.env, and the configuration of the VM's
+                         preview proxy, /etc/hunt/caddy.json, and (re)start the proxy; stops and disables the services
+                         hunt.json no longer declares; prints the services' section of the agent's prompt and the text
+                         of the repository's hunt.agent.md
+  service <start|stop|restart|status> [<name>…]
+                         start and enable (so that they come back when the VM boots), stop and disable, or restart the
+                         named services of the hunt.json of the VM's session; prints the state of every service, for
+                         status of those named (default: all). The agent may run it as `sudo -n hunt-ctl service …`
+  start <id>             start the session's relay unless it runs, with the tokens from stdin (see read_tokens), and
+                         its preview proxy once session-config wrote it; an empty line keeps the token stored before
   wait <id> [--timeout <seconds>]
                          wait until the session's relay serves its socket (default 120 seconds)
-  stop <id>              stop the session's relay
+  stop <id>              stop and disable the session's relay, services and preview proxy
   clear <id>             restart the session's relay with a new conversation; the tokens come from stdin
   snapshot <id>          record the worktree's state as refs/hunt/<id>/retrieve
   status <id>            relay state, relay status and session metadata
-  preview-status [<id>]  the main port of hunt.json, the ports that listen and whether the main port answers
-  destroy <id>           stop the session's relay and proxy and remove its worktree, ~/.claude and files
+  preview-status [<id>]  the services of hunt.json with their state and whether their port answers, and the ports that
+                         listen
+  destroy <id>           stop the session's relay, services and proxy and remove its worktree, ~/.claude and files
 
 Gateway:
   stage-session <dir>    keep the session release unpacked in <dir>, a CI build with .version and .hash, as the one the
@@ -434,7 +453,7 @@ cmd_install() {
     cp -R "$source/." "$staging/"
     chmod -R a+rX,go-w "$staging"
     chmod 0755 "$staging" "$staging/vm/hunt-ctl"
-    for script in hunt-idle-check hunt-api; do
+    for script in hunt-idle-check hunt-service hunt-api; do
       if [[ -f $staging/vm/$script ]]; then
         chmod 0755 "$staging/vm/$script"
       fi
@@ -478,7 +497,8 @@ cmd_install_tools() {
 }
 
 # Installs the systemd units of the current release for the VM's role, the hunt-ctl link and, on a session VM, the
-# agent's login profile and the idle defaults, and (re)starts the units that run all the time.
+# agent's login profile, the sudo rule of `hunt-ctl service` and the idle defaults, and (re)starts the units that run
+# all the time. Running services of hunt.json keep going; they take a changed unit at their next start.
 install_units() {
   local unit
   [[ -d $CURRENT/vm/systemd/$role ]] || die "no Hunt release is installed; run hunt-ctl install first"
@@ -495,6 +515,7 @@ install_units() {
   case $role in
     session)
       install -m 0644 "$CURRENT/vm/profile.sh" /etc/profile.d/hunt.sh
+      install_sudoers "$CURRENT/vm/sudoers-hunt-service" "$SERVICE_SUDOERS_DROPIN"
       if [[ ! -f $IDLE_CONFIG ]]; then
         install -d -m 0755 "${IDLE_CONFIG%/*}"
         printf 'IDLE_MINUTES=30\nBOOT_GRACE_MINUTES=15\nPREVIEW_MAX_MINUTES=120\n' >"$IDLE_CONFIG"
@@ -513,6 +534,17 @@ install_units() {
       ensure_edge
       ;;
   esac
+}
+
+# Installs the sudo rule in file $1 as the drop-in $2, once visudo accepts it. sudo skips files whose name contains a
+# dot, so the candidate takes no effect before it is checked.
+install_sudoers() {
+  local source=$1 dropin=$2
+  command -v visudo >/dev/null || die "installing $dropin needs sudo"
+  temporary_paths+=("$dropin.new")
+  install -m 0440 "$source" "$dropin.new"
+  visudo -c -q -f "$dropin.new" >/dev/null || die "the sudo rule $dropin does not validate"
+  mv -f "$dropin.new" "$dropin"
 }
 
 cmd_install_units() {
@@ -1172,16 +1204,18 @@ cmd_session_config() {
   worktree=$(worktree_of "$id")
   [[ -x $HUNT_NODE ]] || die "$HUNT_NODE is missing; this VM is no session VM"
   install -d -m 0755 "${SESSION_ENV%/*}"
-  # The CLI reads hunt.json and HUNT.md without following symlinks and writes both files only when both are valid.
+  # The CLI reads hunt.json and hunt.agent.md without following symlinks and writes its files only when both are valid.
   if ! result=$("$HUNT_NODE" "$CURRENT/session/configCli.mjs" --worktree "$worktree" --short "${id:0:8}" \
-    --domain "$domain" --env-out "$SESSION_ENV" --caddy-out "$PROXY_CONFIG"); then
+    --domain "$domain" --env-out "$SESSION_ENV" --caddy-out "$PROXY_CONFIG" --services-dir "$SERVICES_DIR"); then
     jq -r '.problems[]?' <<<"$result" >&2 2>/dev/null || true
-    die "the preview section of hunt.json or HUNT.md is not valid (see above)"
+    die "hunt.json or hunt.agent.md is not valid (see above)"
   fi
-  update_meta "$id" '. + {preview: {domain: $domain, main: $result.main, tls: $result.tls}}' --arg domain "$domain" --argjson result "$result"
+  update_meta "$id" '. + {preview: {domain: $domain, services: [$result.services[] | {name, port, tls, guarded}]}}' \
+    --arg domain "$domain" --argjson result "$result"
+  stop_undeclared_services "$id"
   systemctl enable --quiet "$PROXY_UNIT"
   systemctl reload-or-restart "$PROXY_UNIT"
-  emit --argjson result "$result" '{hunt_md: ($result.hunt_md // null)}'
+  emit --argjson result "$result" '{agent_md: ($result.agent_md // null), services_prompt: ($result.services_prompt // "")}'
 }
 
 cmd_start() {
@@ -1189,6 +1223,9 @@ cmd_start() {
   require_id "$1"
   require_prepared "$1"
   start_relay "$1"
+  if [[ -f $PROXY_CONFIG ]]; then
+    systemctl enable --quiet --now "$PROXY_UNIT"
+  fi
   emit '{relay: "running"}'
 }
 
@@ -1211,11 +1248,14 @@ cmd_wait() {
 }
 
 # The relay closes the adapter, which writes the transcript, within the unit's stop timeout. Disabled, it stays down
-# when the VM boots, until `start`.
+# when the VM boots, until `start`. The services and the preview proxy stop and stay disabled as well, so that no open
+# host stays reachable once the session is back on the Mac, not even for a process outside the services on its port.
 cmd_stop() {
   (( $# == 1 )) || usage
   require_id "$1"
   systemctl disable --quiet --now "$RELAY_UNIT"
+  stop_services
+  systemctl disable --quiet --now "$PROXY_UNIT"
   emit '{}'
 }
 
@@ -1293,7 +1333,7 @@ listening_ports() {
 
 cmd_preview_status() {
   (( $# <= 1 )) || usage
-  local file='' main=null listening responds=false scheme=http
+  local services='[]' listening
   local -a files
   if (( $# == 1 )); then
     require_id "$1"
@@ -1302,32 +1342,168 @@ cmd_preview_status() {
     files=("$SESSIONS"/*/meta.json)
   fi
   if (( ${#files[@]} == 1 )) && [[ -f ${files[0]} ]]; then
-    file=${files[0]}
-    main=$(jq -c '.preview.main // null | numbers // null' "$file")
+    services=$(service_report "${files[0]}")
   fi
   listening=$(listening_ports)
-  if [[ $main =~ ^[0-9]+$ ]]; then
-    if jq -e --argjson port "$main" 'any(.preview.tls[]?; . == $port)' "$file" >/dev/null; then
-      scheme=https
-    fi
-    # Any HTTP answer counts, also an error page. Like the proxy, it connects to localhost, which reaches servers bound to
-    # 127.0.0.1 as well as ::1.
-    if curl --silent --insecure --output /dev/null --max-time 5 "$scheme://localhost:$main/"; then
-      responds=true
-    fi
-  fi
-  emit --argjson main "$main" --argjson listening "$listening" --argjson responds "$responds" \
-    '{main: $main, listening: $listening, mainResponds: $responds}'
+  emit --argjson services "$services" --argjson listening "$listening" '{services: $services, listening: $listening}'
 }
 
-# Removes what session $1 has on the VM: its relay, proxy, environment and secrets, worktree, ~/.claude and metadata.
-# Folders the agent wrote to are removed without following symlinks.
+# ---- Session VM: the services of hunt.json ---------------------------------------------------------------------------
+# `session-config` writes each service's environment to SERVICES_DIR/<name>.env and records the services in meta.json as
+# .preview.services, [{name, port, tls, guarded}]; hunt-service@<name>.service runs one (apps/session/vm/hunt-service).
+# An enabled service starts again when the VM boots, so a preview link that wakes the VM brings the app back with it.
+
+# Prints the id of the VM's only session, whose services `session-config` recorded; fails without one or with several.
+only_session() {
+  local -a files=("$SESSIONS"/*/meta.json)
+  local id
+  (( ${#files[@]} )) || die "no session on this VM"
+  (( ${#files[@]} == 1 )) || die "this VM holds ${#files[@]} sessions; hunt-ctl service needs exactly one"
+  id=${files[0]%/meta.json}
+  id=${id##*/}
+  require_id "$id"
+  jq -e '.preview.services | arrays' "${files[0]}" >/dev/null 2>&1 || die "session $id has no services yet; run hunt-ctl session-config first"
+  printf '%s\n' "$id"
+}
+
+# Prints the names of the services enabled on the VM, one per line.
+enabled_services() {
+  local link name
+  for link in "$UNIT_DIR"/multi-user.target.wants/"$SERVICE_UNIT_PREFIX"*.service; do
+    name=${link##*/"$SERVICE_UNIT_PREFIX"}
+    printf '%s\n' "${name%.service}"
+  done
+}
+
+# Stops and disables every service on the VM, also one that runs without being enabled.
+stop_services() {
+  local name
+  local -a units=()
+  while IFS= read -r name; do
+    [[ -n $name ]] || continue
+    units+=("$SERVICE_UNIT_PREFIX$name.service")
+  done <<<"$(enabled_services)"
+  if (( ${#units[@]} )); then
+    systemctl disable --quiet "${units[@]}"
+  fi
+  systemctl stop "$SERVICE_UNIT_PREFIX*.service"
+  systemctl reset-failed "$SERVICE_UNIT_PREFIX*.service" 2>/dev/null || true
+}
+
+# Stops and disables the enabled services that the meta.json of session $1 no longer lists.
+stop_undeclared_services() {
+  local name declared
+  local -a units=()
+  declared=$(jq -r '[.preview.services[]?.name] | join(" ")' "$SESSIONS/$1/meta.json")
+  while IFS= read -r name; do
+    [[ -n $name && " $declared " != *" $name "* ]] || continue
+    units+=("$SERVICE_UNIT_PREFIX$name.service")
+  done <<<"$(enabled_services)"
+  (( ${#units[@]} )) || return 0
+  log info "stopping ${units[*]}, which hunt.json no longer declares"
+  systemctl disable --quiet --now "${units[@]}"
+  systemctl reset-failed "${units[@]}" 2>/dev/null || true
+}
+
+# Prints the services of meta.json $1 as a JSON array of {name, port, tls, guarded, enabled, state, responds}, with
+# their url after guarded when $2, the session's short id, is given. state is running, starting (also while systemd
+# waits to restart the service), failed or stopped, from one `systemctl show` for all services. responds tells whether
+# the port answers on localhost, which, as for the preview proxy, reaches servers bound to 127.0.0.1 as well as ::1; any
+# HTTP answer counts, also an error page. The probes run in parallel, each for at most 2 seconds.
+service_report() {
+  local file=$1 short=${2-} services url states pid responses
+  local -a units=() probes=() pids=() answers=()
+  services=$(jq -c --arg short "$short" '.preview.domain as $domain | [.preview.services[]? | {name, port, tls, guarded}
+    + (if $short == "" then {} else {url: "https://\($short)-\(.port)\(if .guarded then "" else "-open" end).\($domain)"} end)]' "$file")
+  if [[ $services == '[]' ]]; then
+    echo '[]'
+    return
+  fi
+  mapfile -t units < <(jq -r --arg prefix "$SERVICE_UNIT_PREFIX" '.[] | "\($prefix)\(.name).service"' <<<"$services")
+  mapfile -t probes < <(jq -r '.[] | "\(if .tls then "https" else "http" end)://localhost:\(.port)/"' <<<"$services")
+  for url in "${probes[@]}"; do
+    curl --silent --insecure --output /dev/null --max-time 2 "$url" >/dev/null 2>&1 &
+    pids+=("$!")
+  done
+  states=$(systemctl show --property Id,ActiveState,SubState,UnitFileState "${units[@]}" | jq -Rsc '
+    split("\n\n") | map(split("\n") | map(capture("^(?<key>[A-Za-z]+)=(?<value>.*)$")) | from_entries | select(.Id)
+      | {key: .Id, value: .}) | from_entries')
+  for pid in "${pids[@]}"; do
+    if wait "$pid"; then
+      answers+=(true)
+    else
+      answers+=(false)
+    fi
+  done
+  responses=$(printf '%s\n' "${answers[@]}" | jq -cs .)
+  jq -c --argjson states "$states" --argjson responses "$responses" --arg prefix "$SERVICE_UNIT_PREFIX" '
+    to_entries | map(.key as $index | .value | ($states["\($prefix)\(.name).service"] // {}) as $unit | . + {
+      enabled: ($unit.UnitFileState == "enabled"),
+      state: (
+        if $unit.ActiveState == "active" or $unit.ActiveState == "reloading" then "running"
+        elif $unit.ActiveState == "activating" then "starting"
+        elif $unit.ActiveState == "failed" then "failed"
+        else "stopped" end),
+      responds: $responses[$index]})' <<<"$services"
+}
+
+# Starts, stops, restarts or reports the services named of the VM's only session; see the usage. Prints the state of
+# every service, for status of those named, as service_report does.
+cmd_service() {
+  (( $# )) || usage
+  local action=$1 id file declared name report
+  local -a units=()
+  shift
+  case $action in
+    start | stop | restart) (( $# )) || usage ;;
+    status) ;;
+    *) usage ;;
+  esac
+  id=$(only_session)
+  file=$SESSIONS/$id/meta.json
+  declared=$(jq -r '[.preview.services[].name] | join(" ")' "$file")
+  for name in "$@"; do
+    [[ $name =~ $SERVICE_NAME_PATTERN ]] || die "invalid service name: $name"
+    [[ " $declared " == *" $name "* ]] || die "hunt.json declares no service $name; it declares: ${declared:-none}"
+    units+=("$SERVICE_UNIT_PREFIX$name.service")
+  done
+  case $action in
+    start)
+      log info "starting $*"
+      # A service that failed too often in a row refuses to start until its failure is reset.
+      systemctl reset-failed "${units[@]}" 2>/dev/null || true
+      systemctl enable --quiet --now "${units[@]}" || die "systemd could not start $*; see systemctl status ${units[*]}"
+      ;;
+    restart)
+      log info "restarting $*"
+      systemctl enable --quiet "${units[@]}"
+      systemctl reset-failed "${units[@]}" 2>/dev/null || true
+      systemctl restart "${units[@]}" || die "systemd could not restart $*; see systemctl status ${units[*]}"
+      ;;
+    stop)
+      log info "stopping $*"
+      systemctl disable --quiet --now "${units[@]}"
+      # Stopping a failed unit leaves it failed; reset, it reports stopped.
+      systemctl reset-failed "${units[@]}" 2>/dev/null || true
+      ;;
+  esac
+  report=$(service_report "$file" "${id:0:8}")
+  if [[ $action == status ]] && (( $# )); then
+    report=$(jq -c '[.[] | select(.name | IN($ARGS.positional[]))]' --args "$@" <<<"$report")
+  fi
+  emit --argjson services "$report" '{services: $services}'
+}
+
+# Removes what session $1 has on the VM: its relay, services, proxy, environments and secrets, worktree, ~/.claude and
+# metadata. Folders the agent wrote to are removed without following symlinks.
 destroy_session() {
   local id=$1 worktree=''
   systemctl disable --quiet --now "$RELAY_UNIT" 2>/dev/null || true
   systemctl reset-failed "$RELAY_UNIT" 2>/dev/null || true
+  stop_services 2>/dev/null || true
   systemctl disable --quiet --now "$PROXY_UNIT" 2>/dev/null || true
   rm -f -- "$SECRETS_ENV" "$SESSION_ENV" "$PROXY_CONFIG"
+  rm -rf -- "$SERVICES_DIR"
   if [[ -f $SESSIONS/$id/meta.json ]]; then
     worktree=$(jq -r '.worktree // empty' "$SESSIONS/$id/meta.json" 2>/dev/null) || worktree=
   fi
@@ -1345,11 +1521,15 @@ cmd_destroy() {
 }
 
 # ---- Gateway --------------------------------------------------------------------------------------------------------
-# The edge proxy (Caddy, container hunt-edge on the host network, port 8080 behind the load balancer and IAP) forwards
-# `<short>.<domain>` and `<short>-<port>.<domain>` with their Host header to the preview proxy of the session VM
-# vm-hunt-s-<short>, which picks the port. It keeps no state: the session VMs' internal DNS names carry the routing.
-# Requests it cannot deliver (502, 503, 504: the VM is stopped or still booting) go to hunt-wake.service, which starts
-# the VM and answers with a page that reloads until the VM answers.
+# The edge proxy (Caddy, container hunt-edge on the host network behind the load balancer) forwards preview hosts with
+# their Host header to the preview proxy of the session VM vm-hunt-s-<short>, which picks the port. It keeps no state:
+# the session VMs' internal DNS names carry the routing. It has two servers:
+#   - `edge` on EDGE_PORT, behind IAP, for `<short>.<domain>` and `<short>-<port>.<domain>`. Requests it cannot deliver
+#     (502, 503, 504: the VM is stopped or still booting) go to hunt-wake.service, which starts the VM and answers with
+#     a page that reloads until the VM answers.
+#   - `open` on EDGE_OPEN_PORT, without IAP, for `<short>-<port>-open.<domain>`: a service hunt.json declares with
+#     "guarded": false, which only the app's own login protects; the session VM's proxy serves no other `-open` host.
+#     It never wakes a VM: requests it cannot deliver get a plain 503.
 
 # Creates the system user GATEWAY_USER unless it exists.
 ensure_gateway_user() {
@@ -1368,12 +1548,7 @@ install_gateway_access() {
   command -v sshd >/dev/null && command -v visudo >/dev/null || die "the gateway needs openssh-server and sudo"
   ln -sfn "$CURRENT/vm/hunt-api" /usr/local/bin/hunt-api
   rm -f -- /etc/hunt/swf.json
-
-  # sudo skips files whose name contains a dot, so the candidate takes no effect before it is checked.
-  temporary_paths+=("$SUDOERS_DROPIN.new")
-  install -m 0440 "$CURRENT/vm/sudoers-hunt-api" "$SUDOERS_DROPIN.new"
-  visudo -c -q -f "$SUDOERS_DROPIN.new" >/dev/null || die "the sudo rule of hunt-api does not validate"
-  mv -f "$SUDOERS_DROPIN.new" "$SUDOERS_DROPIN"
+  install_sudoers "$CURRENT/vm/sudoers-hunt-api" "$SUDOERS_DROPIN"
 
   cmp -s "$CURRENT/vm/sshd-hunt-api.conf" "$SSHD_DROPIN" && return
   make_scratch_dir scratch
@@ -1423,39 +1598,48 @@ cmd_stage_session() {
   emit --arg version "$version" --arg hash "$hash" '{version: $version, hash: $hash}'
 }
 
-# Writes the edge's Caddy configuration for domain $1 and session VMs in zone $2 of project $3. Caddy serves only the
-# load balancer's ranges and answers its health check on every host; it removes IAP's credentials before a request
-# leaves the gateway.
+# Writes the edge's Caddy configuration for domain $1 and session VMs in zone $2 of project $3. Both servers serve only
+# the load balancer's ranges and answer its health check on every host; they remove IAP's headers and cookies, also
+# those a client sent itself, before a request leaves the gateway.
 write_edge_config() {
   local ranges
   ranges=$(printf '%s\n' "${LB_RANGES[@]}" | jq -R . | jq -cs .)
-  jq -n --arg domain "${1//./\\.}" --arg zone "$2" --arg project "$3" --argjson ranges "$ranges" --arg listen ":$EDGE_PORT" \
-    --arg health "$EDGE_HEALTH_PATH" --arg sessionPort "$SESSION_PROXY_PORT" --arg wake "$WAKE_ADDRESS" '
+  jq -n --arg domain "${1//./\\.}" --arg zone "$2" --arg project "$3" --argjson ranges "$ranges" \
+    --arg guardedListen ":$EDGE_PORT" --arg openListen ":$EDGE_OPEN_PORT" --arg health "$EDGE_HEALTH_PATH" \
+    --arg sessionPort "$SESSION_PROXY_PORT" --arg wake "$WAKE_ADDRESS" '
+    # A server on $listen that forwards the hosts matching $pattern to the session VM their first label names and
+    # answers what it cannot deliver there (502, 503, 504) with the handler $unreachable.
+    def server($listen; $pattern; $unreachable): {
+      listen: [$listen],
+      automatic_https: {disable: true},
+      trusted_proxies: {source: "static", ranges: $ranges},
+      routes: [
+        {match: [{path: [$health]}], terminal: true, handle: [{handler: "static_response", status_code: 200, body: "ok"}]},
+        {match: [{not: [{remote_ip: {ranges: $ranges}}]}], terminal: true, handle: [{handler: "static_response", status_code: 403}]},
+        {match: [{vars_regexp: {"{http.request.host}": {name: "session", pattern: $pattern}}}],
+          terminal: true,
+          handle: [{
+            handler: "reverse_proxy",
+            upstreams: [{dial: "vm-hunt-s-{http.regexp.session.1}.\($zone).c.\($project).internal:\($sessionPort)"}],
+            flush_interval: -1,
+            headers: {request: {
+              set: {Host: ["{http.request.hostport}"]},
+              delete: ["X-Goog-Iap-Jwt-Assertion", "X-Goog-Authenticated-User-Email", "X-Goog-Authenticated-User-Id"],
+              replace: {Cookie: [{search_regexp: "(^|;\\s*)(__Host-)?GCP_IAP[^=]*=[^;]*", replace: ""}]}}}}]},
+        {handle: [{handler: "static_response", status_code: 404}]}],
+      errors: {routes: [{match: [{expression: "{http.error.status_code} in [502, 503, 504]"}], handle: [$unreachable]}]}
+    };
     {
       admin: {listen: "unix//tmp/caddy-admin.sock"},
       logging: {logs: {default: {level: "WARN"}}},
-      apps: {http: {servers: {edge: {
-        listen: [$listen],
-        automatic_https: {disable: true},
-        trusted_proxies: {source: "static", ranges: $ranges},
-        routes: [
-          {match: [{path: [$health]}], terminal: true, handle: [{handler: "static_response", status_code: 200, body: "ok"}]},
-          {match: [{not: [{remote_ip: {ranges: $ranges}}]}], terminal: true, handle: [{handler: "static_response", status_code: 403}]},
-          {match: [{vars_regexp: {"{http.request.host}": {name: "session", pattern: "^([0-9a-f]{8})(-[0-9]{1,5})?\\.\($domain)$"}}}],
-            terminal: true,
-            handle: [{
-              handler: "reverse_proxy",
-              upstreams: [{dial: "vm-hunt-s-{http.regexp.session.1}.\($zone).c.\($project).internal:\($sessionPort)"}],
-              flush_interval: -1,
-              headers: {request: {
-                set: {Host: ["{http.request.hostport}"]},
-                delete: ["X-Goog-Iap-Jwt-Assertion", "X-Goog-Authenticated-User-Email", "X-Goog-Authenticated-User-Id"],
-                replace: {Cookie: [{search_regexp: "(^|;\\s*)(__Host-)?GCP_IAP[^=]*=[^;]*", replace: ""}]}}}}]},
-          {handle: [{handler: "static_response", status_code: 404}]}],
-        errors: {routes: [
-          {match: [{expression: "{http.error.status_code} in [502, 503, 504]"}],
-            handle: [{handler: "reverse_proxy", upstreams: [{dial: $wake}]}]}]}
-      }}}}
+      apps: {http: {servers: {
+        edge: server($guardedListen; "^([0-9a-f]{8})(-[0-9]{1,5})?\\.\($domain)$"; {handler: "reverse_proxy", upstreams: [{dial: $wake}]}),
+        open: server($openListen; "^([0-9a-f]{8})-[0-9]{1,5}-open\\.\($domain)$"; {
+          handler: "static_response",
+          status_code: 503,
+          headers: {"Content-Type": ["text/plain; charset=utf-8"]},
+          body: "The preview is not running.\n"})
+      }}}
     }' >"$EDGE_CONFIG_DIR/caddy.json.tmp"
   mv -f "$EDGE_CONFIG_DIR/caddy.json.tmp" "$EDGE_CONFIG_DIR/caddy.json"
 }
@@ -1464,7 +1648,7 @@ write_edge_config() {
 # when the edge runs with the pinned image, otherwise a new container.
 ensure_edge() {
   local domain zone project state
-  [[ -f $DOMAIN_FILE ]] || die "the gateway has no preview domain yet; set the instance metadata hunt-preview-domain"
+  [[ -f $DOMAIN_FILE ]] || die "the gateway has no preview domain yet; run hunt-ctl install <dir> --domain <domain>"
   domain=$(tr -d '[:space:]' <"$DOMAIN_FILE")
   zone=$(metadata instance/zone)
   zone=${zone##*/}
@@ -1499,7 +1683,7 @@ main() {
   case $command in
     install | install-units | version) ;;
     install-tools | init | clone | receive-pack | upload-pack | lfs-put | lfs-get | put-files | get-claude | prepare | deps | \
-      session-config | start | wait | stop | clear | snapshot | status | preview-status | destroy)
+      session-config | service | start | wait | stop | clear | snapshot | status | preview-status | destroy)
       [[ $role == session ]] || die "hunt-ctl $command runs on session VMs only; this VM is the gateway"
       ;;
     stage-session)
@@ -1513,12 +1697,16 @@ main() {
   case $command in
     status | preview-status) logs_success=false ;;
   esac
+  if [[ $command == service && ${1-} == status ]]; then
+    counts_as_activity=false
+    logs_success=false
+  fi
   install -d -m 0755 "$STATE_DIR"
   if $counts_as_activity; then
     touch "$ACTIVITY_FILE"
   fi
   log_subject=$command
-  if [[ ${1-} =~ $ID_PATTERN ]]; then
+  if [[ ${1-} =~ $ID_PATTERN || ( $command == service && ${1-} =~ ^(start|stop|restart|status)$ ) ]]; then
     log_subject+=" $1"
   fi
   started_us=${EPOCHREALTIME//[!0-9]/}
@@ -1561,6 +1749,7 @@ main() {
     prepare) cmd_prepare "$@" ;;
     deps) cmd_deps "$@" ;;
     session-config) cmd_session_config "$@" ;;
+    service) cmd_service "$@" ;;
     start) cmd_start "$@" ;;
     wait) cmd_wait "$@" ;;
     stop) cmd_stop "$@" ;;

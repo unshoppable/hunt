@@ -1,7 +1,7 @@
 //! Moving a session from the local worktree to a VM of its own, which the gateway provisions (`sessions.provision`): the
 //! session's branch and uncommitted work (as a snapshot commit), the Git LFS objects of its checkout, the ignored files
-//! it needs to run, and its Claude Code transcript. Afterwards `hunt-ctl` configures the session's environment and
-//! preview proxy, installs the dependencies and starts the relay.
+//! it needs to run, and its Claude Code transcript. Afterwards `hunt-ctl` configures the session's environment, the
+//! units of the services its hunt.json declares and the preview proxy, installs the dependencies and starts the relay.
 
 use std::path::{Path, PathBuf};
 
@@ -40,8 +40,9 @@ pub struct HandoffRequest<'a> {
     pub memory_base: &'a Path,
     /// Ignored files to copy, as glob patterns relative to the worktree root.
     pub file_patterns: &'a [String],
-    /// Builds what Hunt appends to Claude Code's system prompt from the repository's HUNT.md as the VM reads it.
-    pub system_prompt: &'a (dyn Fn(Option<&str>) -> String + Send + Sync),
+    /// Builds what Hunt appends to Claude Code's system prompt from the section on the repository's services and its
+    /// hunt.agent.md, as `hunt-ctl session-config` reads them on the VM.
+    pub system_prompt: &'a (dyn Fn(&str, Option<&str>) -> String + Send + Sync),
     /// Agent config values (`model`, `effort`) the session had locally.
     pub config_values: &'a [(String, String)],
     /// What `hunt-ctl start` reads on stdin: the Claude and GitHub tokens of `super::token_input`.
@@ -117,10 +118,11 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
         }
         hunt_ctl(&ssh, &prepare_args).await?;
         upload_ignored_files(worktree, &ssh, &id, &patterns, hooks_path.as_deref()).await?;
-        // Reads the worktree's hunt.json and HUNT.md, so it runs once the worktree is checked out, and before the
-        // relay's session file is written, which carries the HUNT.md in the system prompt.
+        // Reads the worktree's hunt.json and hunt.agent.md, so it runs once the worktree is checked out, and before the
+        // relay's session file is written, which carries both in the system prompt.
         let session_config = hunt_ctl(&ssh, &["session-config", &id, "--domain", &preview_domain]).await?;
-        let system_prompt = (request.system_prompt)(session_config["hunt_md"].as_str());
+        let services_prompt = session_config["services_prompt"].as_str().unwrap_or_default();
+        let system_prompt = (request.system_prompt)(services_prompt, session_config["agent_md"].as_str());
         upload_claude_dir(&request, &ssh, &remote_worktree, &system_prompt).await?;
 
         progress.step(RemoteStep::InstallingDependencies);

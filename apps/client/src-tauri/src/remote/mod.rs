@@ -256,22 +256,23 @@ pub fn token_input(claude_token: &str, github_token: Option<&str>) -> String {
     format!("{claude_token}\n{}\n", github_token.unwrap_or_default())
 }
 
-/// The most of a repository's HUNT.md that goes into a remote session's system prompt; `apps/session/src/configCli.ts`
-/// takes as much on the VM.
-const HUNT_MD_MAX_BYTES: u64 = 20 * 1024;
+/// The most of a repository's hunt.agent.md that goes into a remote session's system prompt;
+/// `apps/session/src/configCli.ts` takes as much on the VM.
+const AGENT_MD_MAX_BYTES: u64 = 20 * 1024;
 
-/// The text of the HUNT.md in `worktree`, the repository's instructions for Hunt sessions, or None when it has none.
-pub fn read_hunt_md(worktree: &Path) -> Result<Option<String>, String> {
-    let path = worktree.join("HUNT.md");
+/// The text of the hunt.agent.md in `worktree`, the repository's instructions for Hunt sessions, or None when it has
+/// none.
+pub fn read_agent_md(worktree: &Path) -> Result<Option<String>, String> {
+    let path = worktree.join("hunt.agent.md");
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("failed to read HUNT.md: {error}")),
+        Err(error) => return Err(format!("failed to read hunt.agent.md: {error}")),
     };
-    if !metadata.is_file() || metadata.len() > HUNT_MD_MAX_BYTES {
-        return Err(format!("failed to read HUNT.md: it must be a file of at most {HUNT_MD_MAX_BYTES} bytes"));
+    if !metadata.is_file() || metadata.len() > AGENT_MD_MAX_BYTES {
+        return Err(format!("failed to read hunt.agent.md: it must be a file of at most {AGENT_MD_MAX_BYTES} bytes"));
     }
-    std::fs::read_to_string(&path).map(Some).map_err(|error| format!("failed to read HUNT.md: {error}"))
+    std::fs::read_to_string(&path).map(Some).map_err(|error| format!("failed to read hunt.agent.md: {error}"))
 }
 
 /// Starts the VM of session `id` through `gateway` unless it runs and connects to it once it can run the agent (see
@@ -385,16 +386,18 @@ mod tests {
     }
 
     #[test]
-    fn read_hunt_md_reads_the_file_and_rejects_a_large_one() {
-        let dir = std::env::temp_dir().join(format!("hunt-md-{}", uuid::Uuid::new_v4()));
+    fn read_agent_md_reads_the_file_ignores_hunt_md_and_rejects_a_large_one() {
+        let dir = std::env::temp_dir().join(format!("hunt-agent-md-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(read_hunt_md(&dir), Ok(None));
+        assert_eq!(read_agent_md(&dir), Ok(None));
+        std::fs::write(dir.join("HUNT.md"), "# Old instructions\n").unwrap();
+        assert_eq!(read_agent_md(&dir), Ok(None));
 
-        std::fs::write(dir.join("HUNT.md"), "# Preview\n").unwrap();
-        assert_eq!(read_hunt_md(&dir), Ok(Some("# Preview\n".to_string())));
+        std::fs::write(dir.join("hunt.agent.md"), "# Services\n").unwrap();
+        assert_eq!(read_agent_md(&dir), Ok(Some("# Services\n".to_string())));
 
-        std::fs::write(dir.join("HUNT.md"), "x".repeat(20 * 1024 + 1)).unwrap();
-        assert_eq!(read_hunt_md(&dir), Err("failed to read HUNT.md: it must be a file of at most 20480 bytes".to_string()));
+        std::fs::write(dir.join("hunt.agent.md"), "x".repeat(20 * 1024 + 1)).unwrap();
+        assert_eq!(read_agent_md(&dir), Err("failed to read hunt.agent.md: it must be a file of at most 20480 bytes".to_string()));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -3,14 +3,15 @@
  *
  *   node /srv/hunt/current/gateway/wake.mjs      (listens on 127.0.0.1:9180)
  *
- * The edge proxy hands it every preview request it could not deliver to the session VM (502, 503 or 504) with the
- * request's own Host header, `<short>.<domain>` or `<short>-<port>.<domain>`; the edge has checked the domain, so only
- * the first label counts here. hunt-wake looks the VM `vm-hunt-s-<short>` up through the Compute Engine API (`gcp.ts`)
- * with the gateway's service account (token, project and zone from the metadata server) and starts or resumes it when
- * it is off, at most once per VM every START_INTERVAL_MS. Only a page load starts a VM: the polling of a forgotten tab
- * must not wake it again and again after the idle check powered it off. Every answer but the one for a VM that does not
- * exist is a page that reloads every RELOAD_SECONDS, until the session VM's preview proxy answers in its place. Runs on
- * Node 24 through type stripping; no dependencies.
+ * The edge proxy's server behind IAP hands it every preview request it could not deliver to the session VM (502, 503 or
+ * 504) with the request's own Host header, `<short>.<domain>` or `<short>-<port>.<domain>`; the edge has checked the
+ * domain, so only the first label counts here. The server for `<short>-<port>-open.<domain>`, which IAP does not guard,
+ * answers such requests itself, so an open preview never starts a VM. hunt-wake looks the VM `vm-hunt-s-<short>` up
+ * through the Compute Engine API (`gcp.ts`) with the gateway's service account (token, project and zone from the
+ * metadata server) and starts or resumes it when it is off, at most once per VM every START_INTERVAL_MS. Only a page
+ * load starts a VM: the polling of a forgotten tab must not wake it again and again after the idle check powered it
+ * off. Every answer but the one for a VM that does not exist is a page that reloads every RELOAD_SECONDS, until the
+ * session VM's preview proxy answers in its place. Runs on Node 24 through type stripping; no dependencies.
  */
 import { realpathSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from "node:http";

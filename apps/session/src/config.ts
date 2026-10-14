@@ -1,46 +1,51 @@
 /**
- * The `preview` section of a repository's `hunt.json` in contract version 2. Every session runs on a VM of its own,
- * where its agent starts the app as a developer would locally; the section holds only what differs on the VM:
+ * A repository's `hunt.json` in contract version 3: the services of the repository, which Hunt runs on a session's VM
+ * as systemd units that the agent starts when its task needs them.
  *
- *   "preview": {
- *     "version": 2,
- *     "env": { "BACKEND_DOMAIN": "${HUNT_PREVIEW_URL_3000}" },
- *     "main": 4200,
- *     "routes": { "/api/": 3000, "/admin-api/": 3000 },
- *     "tls": [3000]
+ *   {
+ *     "version": 3,
+ *     "services": {
+ *       "backend": {
+ *         "command": "npm run start:backend", "port": 3000, "tls": true, "guarded": false,
+ *         "env": { "UI_BASE_URL": "${services.ui.publicUrl}" }
+ *       },
+ *       "ui": { "command": "npm start", "cwd": "apps/ui", "port": 4200, "env": { "BACKEND_ORIGIN": "${services.backend.publicUrl}" } }
+ *     }
  *   }
  *
- * - `version` must be 2. Every other field is optional; a repository without hunt.json or without its `preview`
- *   section gets no variables, no main port and no routes.
- * - `env`: variables every command of the agent inherits. Keys match `^[A-Z_][A-Z0-9_]*$` and do not start with
- *   `CLAUDE_` or `HUNT_`; values are single lines. `${HUNT_PREVIEW_URL}` in a value becomes the main URL
- *   `https://<short>.<domain>`, `${HUNT_PREVIEW_URL_<port>}` the URL of a port, `https://<short>-<port>.<domain>`.
- * - `main`: the port `https://<short>.<domain>` serves.
- * - `routes`: path prefix → port, on every preview host of the session ahead of the host's own port; the longest
- *   matching prefix wins. A prefix starts and ends with `/`; its segments hold letters, digits, `.`, `_`, `~` and `-`.
- * - `tls`: ports whose dev servers speak HTTPS; their certificates are not checked, so self-signed ones work.
- * - Ports are integers from 1024 to 65535 and not reserved (RESERVED_PORTS). Unknown fields are errors.
+ * - `version` must be 3; `services` holds 1 to 64 services in the order of the file, each named by
+ *   `^[a-z][a-z0-9-]{0,31}$`. A repository without hunt.json has no services. Unknown fields are errors, contract 2's
+ *   `preview` section among them.
+ * - `command`: one non-empty line of at most 4096 characters, which bash runs in the service's folder.
+ * - `cwd`: that folder relative to the worktree, the worktree itself without it; at most 255 characters, segments of
+ *   letters, digits, `.`, `_` and `-`, none `.` or `..`.
+ * - `port`: an integer from 1024 to 65535, not reserved (RESERVED_PORTS) and the port of no other service.
+ * - `tls`: whether the service speaks HTTPS, false by default; its certificate is not checked, so a self-signed one works.
+ * - `guarded`: true by default. Every service answers at `https://<short>-<port>.<domain>` behind IAP's Google login; a
+ *   service with false also answers at `https://<short>-<port>-open.<domain>` without IAP, behind the app's own login only.
+ * - `env`: variables of this service only. Keys match `^[A-Z_][A-Z0-9_]*$` and do not start with `CLAUDE_` or `HUNT_`;
+ *   values are single lines. `${services.<name>.publicUrl}` in a value becomes the URL of that service, its open URL when
+ *   it is not guarded; every other `${…}` but contract 2's `${HUNT_…}` stays as it is.
  *
- * `<short>` is the first 8 hex digits of the session ID. `configCli.ts` writes the session's environment and the
- * configuration of the VM's preview proxy, which serves every port of the VM at `https://<short>-<port>.<domain>`.
+ * `<short>` is the first 8 hex digits of the session ID. `configCli.ts` writes the session's environment, one
+ * environment file per service and the configuration of the VM's preview proxy.
  */
+import { join } from "node:path";
 import { isRecord } from "../../../libs/domain/src/jsonRpc.ts";
 
-export interface PreviewRoute {
-  /** Starts and ends with `/`. */
-  prefix: string;
+export interface ServiceConfig {
+  name: string;
+  command: string;
+  /** Relative to the worktree; null for the worktree itself. */
+  cwd: string | null;
   port: number;
-}
-
-export interface PreviewConfig {
+  tls: boolean;
+  guarded: boolean;
+  /** The service's variables as hunt.json declares them, placeholders unresolved. */
   env: Record<string, string>;
-  main: number | null;
-  /** In the order of hunt.json. */
-  routes: PreviewRoute[];
-  tls: number[];
 }
 
-/** The host names of a session's preview: `<short>.<domain>` and `<short>-<port>.<domain>`. */
+/** The host names of a session's preview: `<short>-<port>.<domain>` and `<short>-<port>-open.<domain>`. */
 export interface SessionHost {
   /** The first 8 hex digits of the session ID. */
   short: string;
@@ -48,11 +53,15 @@ export interface SessionHost {
 }
 
 export interface SessionConfig {
-  /** The checked `preview` section. */
-  preview: PreviewConfig;
-  /** The repository's variables with their placeholders resolved, after HUNT_PREVIEW_URL and HUNT_PREVIEW_URL_TEMPLATE. */
+  /** In the order of hunt.json. */
+  services: ServiceConfig[];
+  /** The session's environment, which every command on the VM inherits. */
   env: Record<string, string>;
+  /** The environment of each service by name: its variables with their placeholders resolved, then HUNT_SERVICE_DIR and HUNT_SERVICE_COMMAND. */
+  serviceEnvs: Record<string, Record<string, string>>;
   proxy: CaddyConfig;
+  /** The section of the agent's prompt that lists the services; empty without services. */
+  servicesPrompt: string;
 }
 
 export interface CaddyRoute {
@@ -100,7 +109,7 @@ export class ConfigError extends Error {
   }
 }
 
-/** Ports no preview may use, with what holds them on the session VM. */
+/** Ports no service may use, with what holds them on the session VM. */
 const RESERVED_PORTS: ReadonlyMap<number, string> = new Map([
   [2019, "Caddy's admin API"],
   [2375, "the Docker API"],
@@ -119,23 +128,33 @@ const ACCESS_LOG = "/var/log/hunt-proxy/access.log";
 /** Caddy names the access logger of a server `http.log.access.<default_logger_name>`. */
 const ACCESS_LOGGER = "preview";
 
+const ROOT_FIELDS = ["version", "services"];
+const SERVICE_FIELDS = ["command", "cwd", "port", "tls", "guarded", "env"];
+const SERVICE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+const MAX_SERVICES = 64;
+const MAX_COMMAND_LENGTH = 4096;
+const MAX_CWD_LENGTH = 255;
+const CWD = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
+const CWD_RULE =
+  `must be a folder relative to the worktree such as "apps/web": at most ${MAX_CWD_LENGTH} characters, ` +
+  'segments of letters, digits, ".", "_" and "-", none . or ..';
+const LINE_BREAK = /[\n\r\0]/;
 const ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
 const RESERVED_ENV_PREFIXES = ["CLAUDE_", "HUNT_"];
-const PLACEHOLDER = /\$\{(HUNT_[A-Za-z0-9_]*)\}/g;
-const URL_PLACEHOLDER = /^HUNT_PREVIEW_URL(?:_([0-9]+))?$/;
-const ROUTE_PREFIX = /^\/(?:[A-Za-z0-9._~-]+\/)+$/;
-const ROUTE_PREFIX_RULE = 'must be a path prefix such as "/api/": starting and ending with /, segments of letters, digits, ".", "_", "~" and "-", none . or ..';
+const CONTRACT_2_PROBLEM = 'the preview section of contract 2 is no longer read; hunt.json holds {"version": 3, "services": {…}} at its root';
+const CONTRACT_2_PLACEHOLDER = /\$\{HUNT_[A-Za-z0-9_]*\}/g;
+/** Any `${services.…}`; capture group 1 must be `<name>.publicUrl`. */
+const SERVICE_PLACEHOLDER = /\$\{services\.([^}]*)\}/g;
+const SERVICE_REFERENCE = /^([^.]+)\.publicUrl$/;
+/** A valid `${services.<name>.publicUrl}`, with the name as capture group 1. */
+const PUBLIC_URL_PLACEHOLDER = /\$\{services\.([^.}]+)\.publicUrl\}/g;
 const SHORT = /^[0-9a-f]{8}$/;
-/**
- * At least two labels, the last of letters only; hunt-ctl's DOMAIN_PATTERN, apps/client/src-tauri/src/remote/preview.rs
- * and apps/client/src/state/settings.ts check the same.
- */
+/** At least two labels, the last of letters only; hunt-ctl's DOMAIN_PATTERN and apps/client/src-tauri/src/remote/preview.rs check the same. */
 const DOMAIN = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-/** Leaves room for the `<short>-<port>.` in front of the domain within the 253 characters of a host name. */
-const MAX_DOMAIN_LENGTH = 253 - "01234567-65535.".length;
+/** Leaves room for the `<short>-<port>-open.` in front of the domain within the 253 characters of a host name. */
+const MAX_DOMAIN_LENGTH = 253 - "01234567-65535-open.".length;
 const MIN_PORT = 1024;
 const MAX_PORT = 65535;
-const PREVIEW_FIELDS = ["version", "env", "main", "routes", "tls"];
 
 /** The private ranges of a VPC's internal addresses: the gateway connects from one, so its X-Forwarded-* headers pass on. */
 const PRIVATE_RANGES = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"];
@@ -143,18 +162,32 @@ const IAP_HEADERS = ["X-Goog-Iap-Jwt-Assertion", "X-Goog-Authenticated-User-Emai
 const IAP_COOKIE = "(^|;\\s*)(__Host-)?GCP_IAP[^=]*=[^;]*";
 /** A port from 1024 to 65535, without leading zeros, as capture group 1. */
 const PORT_PATTERN = "(102[4-9]|10[3-9][0-9]|1[1-9][0-9]{2}|[2-9][0-9]{3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])";
-const NO_MAIN_BODY = "This session has no main port: the preview section of the repository's hunt.json sets none.\n";
+const NO_SERVICES_PROMPT = [
+  "### The repository's services",
+  "",
+  "The repository has no hunt.json or declares no services in it: run the app as a developer would locally, in the tmux " +
+    "session `app` as described above.",
+].join("\n");
+const NOT_OPEN_BODY = 'This port has no public host: only a service with "guarded": false in the repository\'s hunt.json has one.\n';
 
-function mainUrl(host: SessionHost): string {
-  return `https://${host.short}.${host.domain}`;
+function portHost(host: SessionHost, port: number): string {
+  return `${host.short}-${port}.${host.domain}`;
 }
 
-function portUrl(host: SessionHost, port: number): string {
-  return `https://${host.short}-${port}.${host.domain}`;
+function openHost(host: SessionHost, port: number): string {
+  return `${host.short}-${port}-open.${host.domain}`;
 }
 
-/** Checks `huntJson` (the parsed file, undefined without one) and the session's host names; throws a ConfigError. */
-export function buildSessionConfig(huntJson: unknown, host: SessionHost): SessionConfig {
+/** The URL that `${services.<name>.publicUrl}` stands for: the open host of a service that is not guarded, else its port host. */
+export function publicUrl(service: Pick<ServiceConfig, "port" | "guarded">, host: SessionHost): string {
+  return `https://${service.guarded ? portHost(host, service.port) : openHost(host, service.port)}`;
+}
+
+/**
+ * Checks `huntJson` (the parsed file, undefined without one) and the session's host names and builds everything the
+ * session VM needs; `worktree` is the session's worktree on the VM. Throws a ConfigError.
+ */
+export function buildSessionConfig(huntJson: unknown, host: SessionHost, worktree: string): SessionConfig {
   const problems = new Problems();
   if (!SHORT.test(host.short)) {
     problems.add("short", "must be the first 8 hex digits of the session ID, in lowercase");
@@ -162,76 +195,106 @@ export function buildSessionConfig(huntJson: unknown, host: SessionHost): Sessio
   if (!isDomain(host.domain)) {
     problems.add("domain", "must be a lowercase host name with at least two labels, the last of letters only");
   }
-  const config = parseSection(huntJson, problems);
+  const services = parseRoot(huntJson, problems);
   if (problems.messages.length > 0) throw new ConfigError(problems.messages);
-  return { preview: config, env: sessionEnv(config, host), proxy: proxyConfig(config, host) };
-}
-
-/** Checks the `preview` section of `huntJson` (the parsed file, undefined without one); throws a ConfigError. */
-export function parsePreviewConfig(huntJson: unknown): PreviewConfig {
-  const problems = new Problems();
-  const config = parseSection(huntJson, problems);
-  if (problems.messages.length > 0) throw new ConfigError(problems.messages);
-  return config;
-}
-
-/**
- * The session's environment: `HUNT_PREVIEW_URL`, `HUNT_PREVIEW_URL_TEMPLATE` (the URL of a port with `{port}` in its
- * place) and the repository's variables with their placeholders resolved.
- */
-export function sessionEnv(config: PreviewConfig, host: SessionHost): Record<string, string> {
-  const env: Record<string, string> = {
-    HUNT_PREVIEW_URL: mainUrl(host),
-    HUNT_PREVIEW_URL_TEMPLATE: `https://${host.short}-{port}.${host.domain}`,
+  return {
+    services,
+    env: sessionEnv(host),
+    serviceEnvs: serviceEnvs(services, host, worktree),
+    proxy: proxyConfig(services, host),
+    servicesPrompt: servicesPrompt(services, host),
   };
-  for (const [key, value] of Object.entries(config.env)) {
-    env[key] = value.replace(PLACEHOLDER, (_placeholder, name: string) => {
-      const port = URL_PLACEHOLDER.exec(name)?.[1];
-      return port ? portUrl(host, Number(port)) : mainUrl(host);
-    });
-  }
-  return env;
+}
+
+/** The services of `huntJson` (the parsed file, undefined without one) in the order of the file; throws a ConfigError. */
+export function parseServices(huntJson: unknown): ServiceConfig[] {
+  const problems = new Problems();
+  const services = parseRoot(huntJson, problems);
+  if (problems.messages.length > 0) throw new ConfigError(problems.messages);
+  return services;
+}
+
+/** The session's environment: `HUNT_PREVIEW_URL_TEMPLATE`, the URL of a port with `{port}` in its place. */
+export function sessionEnv(host: SessionHost): Record<string, string> {
+  return { HUNT_PREVIEW_URL_TEMPLATE: `https://${host.short}-{port}.${host.domain}` };
 }
 
 /**
- * `env` as a systemd EnvironmentFile: one double-quoted assignment per line with `\`, `"`, `` ` `` and `$` escaped, which
- * systemd and a POSIX shell read back verbatim. Values must be single lines.
+ * The environment of each service by name: its variables with `${services.<name>.publicUrl}` resolved, then
+ * `HUNT_SERVICE_DIR`, the folder the service runs in, and `HUNT_SERVICE_COMMAND`, its command line.
  */
-export function envFile(env: Record<string, string>): string {
+export function serviceEnvs(services: readonly ServiceConfig[], host: SessionHost, worktree: string): Record<string, Record<string, string>> {
+  const urls = new Map(services.map((service) => [service.name, publicUrl(service, host)]));
+  const resolve = (value: string) => value.replace(PUBLIC_URL_PLACEHOLDER, (placeholder, name: string) => urls.get(name) ?? placeholder);
+  const envs: Record<string, Record<string, string>> = {};
+  for (const service of services) {
+    envs[service.name] = {
+      ...Object.fromEntries(Object.entries(service.env).map(([key, value]) => [key, resolve(value)])),
+      HUNT_SERVICE_DIR: service.cwd ? join(worktree, service.cwd) : worktree,
+      HUNT_SERVICE_COMMAND: service.command,
+    };
+  }
+  return envs;
+}
+
+/**
+ * `env` as a systemd EnvironmentFile: `header` as a comment line, then one double-quoted assignment per line with `\`,
+ * `"`, `` ` `` and `$` escaped, which systemd and a POSIX shell read back verbatim. Values must be single lines.
+ */
+export function envFile(env: Record<string, string>, header: string): string {
   const lines = Object.entries(env).map(([key, value]) => `${key}="${value.replace(/[\\"`$]/g, "\\$&")}"`);
-  return `# The session's environment from the preview section of the repository's hunt.json.\n${lines.join("\n")}\n`;
+  return `# ${header}\n${lines.join("\n")}\n`;
+}
+
+/**
+ * The section of the agent's prompt that tells it how to run the services and lists each one with its port, URL and
+ * who may open it; without services, it says so.
+ */
+export function servicesPrompt(services: readonly ServiceConfig[], host: SessionHost): string {
+  if (services.length === 0) return NO_SERVICES_PROMPT;
+  const rows = services.map((service) => {
+    const access = service.guarded ? "Google login" : "public, app login only";
+    return `| ${service.name} | ${service.port} | ${publicUrl(service, host)} | ${access} |`;
+  });
+  return [
+    "### The repository's services",
+    "",
+    "Hunt runs the services of the repository's hunt.json on this VM, each as a systemd unit. Start only the services " +
+      "your task needs; the repository's hunt.agent.md, when it has one, says which belong together:",
+    "",
+    "```",
+    "sudo -n hunt-ctl service start <name>…",
+    "```",
+    "",
+    "`restart`, `stop` and `status` take names the same way; `status` without names reports every service. A service " +
+      "writes its output to `~/logs/<name>.log`. The variables hunt.json declares for a service apply to that service " +
+      "only, not to your shell.",
+    "",
+    "| Service | Port | URL | Access |",
+    "| --- | --- | --- | --- |",
+    ...rows,
+  ].join("\n");
 }
 
 /**
  * The Caddy configuration of the session VM's preview proxy. It listens on PROXY_LISTEN in plain HTTP behind the
- * gateway and sends `<short>.<domain>` to the main port and `<short>-<port>.<domain>` to that port, both on localhost,
- * which reaches servers bound to 127.0.0.1 as well as ::1, except for the path prefixes of `routes`, which go to their
- * own port on every host. Ports in `tls` are reached over HTTPS without checking the certificate. Every upstream gets
- * the request's own Host header, which Caddy would replace with the upstream's address for HTTPS, but never IAP's
- * headers and cookies; responses are flushed at once (server-sent events). HEALTH_PATH answers 200 on every host and
- * the reserved ports answer 403. Every request except the health check goes to ACCESS_LOG as one JSON line; Caddy
- * writes Cookie and Authorization headers there redacted. Caddy's own warnings and errors, such as an upstream that
- * refuses the connection, go to stderr, hunt-proxy's journal, as one readable line each.
+ * gateway and sends `<short>-<port>.<domain>` to that port and `<short>-<port>-open.<domain>` of a service that is not
+ * guarded to the service's port, both on localhost, which reaches servers bound to 127.0.0.1 as well as ::1. The ports of
+ * services with `tls` are reached over HTTPS without checking the certificate. Every upstream gets the request's own
+ * Host header, which Caddy would replace with the upstream's address for HTTPS, but never IAP's headers and cookies;
+ * responses are flushed at once (server-sent events). HEALTH_PATH answers 200 on every host, the reserved ports answer
+ * 403, and `<short>.<domain>` and every other `-open` host answer 404 with an explanation. Every request except the
+ * health check goes to ACCESS_LOG as one JSON line; Caddy writes Cookie and Authorization headers there redacted. Caddy's
+ * own warnings and errors, such as an upstream that refuses the connection, go to stderr, hunt-proxy's journal, as one
+ * readable line each.
  */
-export function proxyConfig(config: PreviewConfig, host: SessionHost): CaddyConfig {
-  const mainHost = `${host.short}.${host.domain}`;
-  const portHost = (port: number) => `${host.short}-${port}.${host.domain}`;
-  const portHostMatch = {
-    vars_regexp: { "{http.request.host}": { name: "port", pattern: `^${host.short}-${PORT_PATTERN}\\.${host.domain.replaceAll(".", "\\.")}$` } },
-  };
-  const tls = new Set(config.tls);
-  const upstream = (port: number) => proxy(`localhost:${port}`, tls.has(port));
-  const prefixes = [...config.routes].sort((first, second) => second.prefix.length - first.prefix.length);
-  const sessionRoutes: CaddyRoute[] = [
-    ...prefixes.map(({ prefix, port }) => ({ match: [{ path: [`${prefix}*`] }], handle: [upstream(port)], terminal: true })),
-    {
-      match: [{ host: [mainHost] }],
-      handle: [config.main ? upstream(config.main) : { handler: "static_response", status_code: 404, body: NO_MAIN_BODY }],
-      terminal: true,
-    },
-    ...config.tls.map((port) => ({ match: [{ host: [portHost(port)] }], handle: [upstream(port)], terminal: true })),
-    { match: [portHostMatch], handle: [proxy("localhost:{http.regexp.port.1}", false)], terminal: true },
-  ];
+export function proxyConfig(services: readonly ServiceConfig[], host: SessionHost): CaddyConfig {
+  const hostMatch = (name: string, pattern: string) => ({
+    vars_regexp: { "{http.request.host}": { name, pattern: `^${host.short}-${pattern}\\.${host.domain.replaceAll(".", "\\.")}$` } },
+  });
+  const route = (match: Record<string, unknown>, handler: Record<string, unknown>): CaddyRoute => ({ match: [match], handle: [handler], terminal: true });
+  const notFound = (body: string) => ({ handler: "static_response", status_code: 404, body });
+  const mainHostBody = `This session has no main page: each service of the repository's hunt.json answers at https://${host.short}-<port>.${host.domain}.\n`;
   return {
     admin: { listen: PROXY_ADMIN, config: { persist: false } },
     logging: {
@@ -259,12 +322,19 @@ export function proxyConfig(config: PreviewConfig, host: SessionHost): CaddyConf
                 handle: [{ handler: "vars", log_skip: true }, { handler: "static_response", status_code: 200, body: "ok" }],
                 terminal: true,
               },
-              {
-                match: [{ host: [...RESERVED_PORTS.keys()].map(portHost) }],
-                handle: [{ handler: "static_response", status_code: 403, body: "This port is not served.\n" }],
-                terminal: true,
-              },
-              { match: [{ host: [mainHost] }, portHostMatch], handle: [{ handler: "subroute", routes: sessionRoutes }], terminal: true },
+              route(
+                { host: [...RESERVED_PORTS.keys()].map((port) => portHost(host, port)) },
+                { handler: "static_response", status_code: 403, body: "This port is not served.\n" },
+              ),
+              route({ host: [`${host.short}.${host.domain}`] }, notFound(mainHostBody)),
+              ...services
+                .filter((service) => !service.guarded)
+                .map((service) => route({ host: [openHost(host, service.port)] }, proxy(`localhost:${service.port}`, service.tls))),
+              route(hostMatch("open", "[0-9]+-open"), notFound(NOT_OPEN_BODY)),
+              ...services
+                .filter((service) => service.tls)
+                .map((service) => route({ host: [portHost(host, service.port)] }, proxy(`localhost:${service.port}`, true))),
+              route(hostMatch("port", PORT_PATTERN), proxy("localhost:{http.regexp.port.1}", false)),
               { handle: [{ handler: "static_response", status_code: 404 }] },
             ],
           },
@@ -300,9 +370,10 @@ class Problems {
   }
 }
 
-function at(path: string, key: string | number): string {
-  if (typeof key === "number") return `${path}[${key}]`;
-  return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(key) ? `${path}.${key}` : `${path}[${JSON.stringify(key)}]`;
+/** The path of `key` in the object at `path`; an empty `path` is the root of hunt.json. */
+function at(path: string, key: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(key)) return `${path}[${JSON.stringify(key)}]`;
+  return path ? `${path}.${key}` : key;
 }
 
 /** `value` as an object; keys outside `fields` are reported as unknown unless `fields` is null. */
@@ -316,25 +387,93 @@ function record(value: unknown, path: string, fields: readonly string[] | null, 
   return value;
 }
 
-function parseSection(huntJson: unknown, problems: Problems): PreviewConfig {
-  const config: PreviewConfig = { env: {}, main: null, routes: [], tls: [] };
-  if (huntJson === undefined) return config;
+function parseRoot(huntJson: unknown, problems: Problems): ServiceConfig[] {
+  if (huntJson === undefined) return [];
   const root = record(huntJson, "hunt.json", null, problems);
-  if (root?.preview === undefined) return config;
-  const preview = record(root.preview, "preview", PREVIEW_FIELDS, problems);
-  if (!preview) return config;
-  if (preview.version !== 2) {
-    problems.add("preview.version", "must be 2");
+  if (!root) return [];
+  for (const key of Object.keys(root)) {
+    if (ROOT_FIELDS.includes(key)) continue;
+    problems.add(at("", key), key === "preview" ? CONTRACT_2_PROBLEM : "unknown field");
   }
-  config.env = environment(preview.env, problems);
-  config.main = preview.main === undefined ? null : (checkPort(preview.main, "preview.main", problems) ?? null);
-  config.routes = parseRoutes(preview.routes, problems);
-  config.tls = parseTls(preview.tls, problems);
-  return config;
+  if (root.version !== 3) {
+    problems.add("version", "must be 3");
+  }
+  const declared = record(root.services, "services", null, problems);
+  const entries = Object.entries(declared ?? {});
+  if (declared && (entries.length === 0 || entries.length > MAX_SERVICES)) {
+    problems.add("services", `must hold 1 to ${MAX_SERVICES} services`);
+  }
+  const names = new Set(entries.map(([name]) => name).filter((name) => SERVICE_NAME.test(name)));
+  const portOwners = new Map<number, string>();
+  const services: ServiceConfig[] = [];
+  for (const [name, value] of entries) {
+    const service = parseService(name, value, names, problems);
+    if (!service) continue;
+    const owner = portOwners.get(service.port);
+    if (owner) {
+      problems.add(at(at("services", name), "port"), `${service.port} is the port of the service ${owner} already`);
+    } else {
+      portOwners.set(service.port, name);
+    }
+    services.push(service);
+  }
+  return services;
 }
 
-function environment(value: unknown, problems: Problems): Record<string, string> {
-  const path = "preview.env";
+/** The service `name`; undefined when its name, object or port is unusable. Every problem is reported. */
+function parseService(name: string, value: unknown, names: ReadonlySet<string>, problems: Problems): ServiceConfig | undefined {
+  const path = at("services", name);
+  if (!SERVICE_NAME.test(name)) return problems.add(path, `invalid name, must match ${SERVICE_NAME.source}`);
+  const fields = record(value, path, SERVICE_FIELDS, problems);
+  if (!fields) return undefined;
+  const command = commandLine(fields.command, at(path, "command"), problems);
+  const cwd = folder(fields.cwd, at(path, "cwd"), problems);
+  const port = checkPort(fields.port, at(path, "port"), problems);
+  const tls = flag(fields.tls, false, at(path, "tls"), problems);
+  const guarded = flag(fields.guarded, true, at(path, "guarded"), problems);
+  const env = environment(fields.env, at(path, "env"), names, problems);
+  if (port === undefined) return undefined;
+  return { name, command, cwd, port, tls, guarded, env };
+}
+
+function commandLine(value: unknown, path: string, problems: Problems): string {
+  if (typeof value !== "string" || !value.trim()) {
+    problems.add(path, "must be a non-empty string");
+    return "";
+  }
+  if (LINE_BREAK.test(value)) {
+    problems.add(path, "must be a single line");
+  }
+  if (value.length > MAX_COMMAND_LENGTH) {
+    problems.add(path, `must be at most ${MAX_COMMAND_LENGTH} characters long`);
+  }
+  return value;
+}
+
+/** `value` as a folder relative to the worktree; null without one. */
+function folder(value: unknown, path: string, problems: Problems): string | null {
+  if (value === undefined) return null;
+  const isFolder =
+    typeof value === "string" &&
+    value.length <= MAX_CWD_LENGTH &&
+    CWD.test(value) &&
+    !value.split("/").some((segment) => segment === "." || segment === "..");
+  if (isFolder) return value;
+  problems.add(path, CWD_RULE);
+  return null;
+}
+
+/** `value` as a boolean; `fallback` without one. */
+function flag(value: unknown, fallback: boolean, path: string, problems: Problems): boolean {
+  if (typeof value === "boolean") return value;
+  if (value !== undefined) {
+    problems.add(path, "must be true or false");
+  }
+  return fallback;
+}
+
+/** The variables at `path`, whose placeholders may name the services in `names`. */
+function environment(value: unknown, path: string, names: ReadonlySet<string>, problems: Problems): Record<string, string> {
   const env: Record<string, string> = {};
   if (value === undefined) return env;
   for (const [key, entry] of Object.entries(record(value, path, null, problems) ?? {})) {
@@ -351,86 +490,43 @@ function environment(value: unknown, problems: Problems): Record<string, string>
       problems.add(entryPath, "must be a string");
       continue;
     }
-    if (/[\n\r\0]/.test(entry)) {
+    if (LINE_BREAK.test(entry)) {
       problems.add(entryPath, "must be a single line");
       continue;
     }
-    if (checkPlaceholders(entry, entryPath, problems)) {
-      env[key] = entry;
-    }
+    checkPlaceholders(entry, entryPath, names, problems);
+    env[key] = entry;
   }
   return env;
 }
 
-/** Whether every `${HUNT_…}` in `value` is a preview URL placeholder with a usable port. */
-function checkPlaceholders(value: string, path: string, problems: Problems): boolean {
-  let isValid = true;
-  for (const match of value.matchAll(PLACEHOLDER)) {
-    const placeholder = URL_PLACEHOLDER.exec(match[1]);
-    if (!placeholder) {
-      problems.add(path, `unknown placeholder ${match[0]}, only \${HUNT_PREVIEW_URL} and \${HUNT_PREVIEW_URL_<port>} are possible`);
-      isValid = false;
+/** Reports every `${HUNT_…}` of contract 2 in `value` and every `${services.…}` that is no `publicUrl` of a service in `names`. */
+function checkPlaceholders(value: string, path: string, names: ReadonlySet<string>, problems: Problems): void {
+  for (const [placeholder] of value.matchAll(CONTRACT_2_PLACEHOLDER)) {
+    problems.add(path, `${placeholder} is a placeholder of contract 2, use \${services.<name>.publicUrl}`);
+  }
+  for (const [placeholder, reference] of value.matchAll(SERVICE_PLACEHOLDER)) {
+    const name = SERVICE_REFERENCE.exec(reference)?.[1];
+    if (name === undefined) {
+      problems.add(path, `unknown placeholder ${placeholder}, the form is \${services.<name>.publicUrl}`);
       continue;
     }
-    const portText = placeholder[1];
-    if (portText === undefined) continue;
-    const portNumber = /^[1-9][0-9]*$/.test(portText) ? Number(portText) : NaN;
-    if (checkPort(portNumber, path, problems, `${match[0]}: the port `) === undefined) {
-      isValid = false;
+    if (!names.has(name)) {
+      problems.add(path, `${placeholder}: hunt.json declares no service ${name}`);
     }
   }
-  return isValid;
 }
 
 function isPortNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= MIN_PORT && value <= MAX_PORT;
 }
 
-/** `value` as a port; `label` goes in front of the problem. */
-function checkPort(value: unknown, path: string, problems: Problems, label = ""): number | undefined {
-  if (!isPortNumber(value)) return problems.add(path, `${label}must be an integer from 1024 to 65535`);
+/** `value` as a port. */
+function checkPort(value: unknown, path: string, problems: Problems): number | undefined {
+  if (!isPortNumber(value)) return problems.add(path, "must be an integer from 1024 to 65535");
   const holder = RESERVED_PORTS.get(value);
-  if (holder) return problems.add(path, `${label}${value} is reserved for ${holder}`);
+  if (holder) return problems.add(path, `${value} is reserved for ${holder}`);
   return value;
-}
-
-function parseRoutes(value: unknown, problems: Problems): PreviewRoute[] {
-  const path = "preview.routes";
-  const routes: PreviewRoute[] = [];
-  if (value === undefined) return routes;
-  for (const [prefix, entry] of Object.entries(record(value, path, null, problems) ?? {})) {
-    const routePath = at(path, prefix);
-    const isPrefix = ROUTE_PREFIX.test(prefix) && !prefix.split("/").some((segment) => segment === "." || segment === "..");
-    if (!isPrefix) {
-      problems.add(routePath, ROUTE_PREFIX_RULE);
-      continue;
-    }
-    const routePort = checkPort(entry, routePath, problems);
-    if (routePort !== undefined) {
-      routes.push({ prefix, port: routePort });
-    }
-  }
-  return routes;
-}
-
-function parseTls(value: unknown, problems: Problems): number[] {
-  const path = "preview.tls";
-  const ports: number[] = [];
-  if (value === undefined) return ports;
-  if (!Array.isArray(value)) {
-    problems.add(path, "must be an array of ports");
-    return ports;
-  }
-  for (const [index, entry] of value.entries()) {
-    const tlsPort = checkPort(entry, at(path, index), problems);
-    if (tlsPort === undefined) continue;
-    if (ports.includes(tlsPort)) {
-      problems.add(at(path, index), `${tlsPort} is listed already`);
-      continue;
-    }
-    ports.push(tlsPort);
-  }
-  return ports;
 }
 
 function isDomain(value: string): boolean {

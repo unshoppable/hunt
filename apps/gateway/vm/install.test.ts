@@ -114,8 +114,47 @@ describe.skipIf(!hasDocker())("hunt-ctl install and stage-session on a gateway i
     expect(calls).toContain("systemctl enable --quiet hunt-swf.service hunt-api.service\n");
     expect(calls).toContain("systemctl reload-or-restart hunt-swf.service hunt-api.service\n");
     expect(calls).toContain("systemctl try-reload-or-restart ssh.service\n");
-    expect(JSON.parse(sh("hunt-ctl version").stdout)).toEqual({ version: "gateway@1.0.0", hash: hashOf(dir), protocol: 1 });
+    expect(JSON.parse(sh("hunt-ctl version").stdout)).toEqual({ version: "gateway@1.0.0", hash: hashOf(dir), protocol: 2 });
     expect(sh("hunt-ctl update").status).toBe(2);
+  });
+
+  it("configures the edge with a server behind IAP that wakes VMs and an open one for services without IAP that does not", () => {
+    interface Route {
+      match?: { vars_regexp?: Record<string, { pattern: string }> }[];
+      handle: unknown[];
+    }
+    interface Server {
+      listen: string[];
+      routes: Route[];
+      errors: { routes: { handle: unknown[] }[] };
+    }
+    const servers: Record<string, Server> = JSON.parse(sh("cat /etc/hunt-edge/caddy.json").stdout).apps.http.servers;
+    expect(Object.keys(servers)).toEqual(["edge", "open"]);
+    const [edge, open] = [servers.edge, servers.open];
+    expect(edge.listen).toEqual([":8080"]);
+    expect(open.listen).toEqual([":8081"]);
+
+    const sessionRoute = (server: Server) => server.routes.find((route) => route.match?.[0]?.vars_regexp)!;
+    const hostPattern = (server: Server) => new RegExp(sessionRoute(server).match![0].vars_regexp!["{http.request.host}"].pattern);
+    for (const [host, isGuarded, isOpen] of [
+      ["7c0c6f2e.hunt.example.com", true, false],
+      ["7c0c6f2e-4200.hunt.example.com", true, false],
+      ["7c0c6f2e-3000-open.hunt.example.com", false, true],
+      ["7c0c6f2e-open.hunt.example.com", false, false],
+      ["7c0c6f2e-3000-open.hunt.example.org", false, false],
+      ["7c0c6f2e-3000-open.x.hunt.example.com", false, false],
+    ] as const) {
+      expect(hostPattern(edge).test(host), host).toBe(isGuarded);
+      expect(hostPattern(open).test(host), host).toBe(isOpen);
+    }
+    expect(JSON.stringify(sessionRoute(open).handle)).toContain('"dial":"vm-hunt-s-{http.regexp.session.1}.europe-west1-c.c.medconomy-hunt.internal:8080"');
+    // Health check, the load balancer's ranges, the forward with IAP's headers and cookies removed, and 404 for the rest.
+    expect(open.routes.map((route) => route.handle)).toEqual(edge.routes.map((route) => route.handle));
+
+    expect(edge.errors.routes.map((route) => route.handle)).toEqual([[{ handler: "reverse_proxy", upstreams: [{ dial: "127.0.0.1:9180" }] }]]);
+    expect(open.errors.routes.map((route) => route.handle)).toEqual([
+      [{ handler: "static_response", status_code: 503, headers: { "Content-Type": ["text/plain; charset=utf-8"] }, body: "The preview is not running.\n" }],
+    ]);
   });
 
   it("runs the gateway's services as the system user hunt-gw", () => {

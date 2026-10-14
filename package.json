@@ -13,7 +13,7 @@
     "test:all": "nx run-many -t test test-rust --all",
     "check": "nx run-many -t typecheck lint test test-rust --all",
     "nx": "nx",
-    "prepare": "git config --get-all remote.origin.fetch | grep -qF 'refs/tags/deployed' || git config --add remote.origin.fetch '+refs/tags/deployed/*:refs/tags/deployed/*'"
+    "prepare": "husky install && (git config --get-all remote.origin.fetch | grep -qF 'refs/tags/deployed' || git config --add remote.origin.fetch '+refs/tags/deployed/*:refs/tags/deployed/*')"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.89.1",
@@ -52,6 +52,7 @@
     "esbuild": "^0.28.2",
     "eslint": "^9.39.5",
     "eslint-plugin-react-hooks": "^6.1.1",
+    "husky": "^8.0.3",
     "nx": "^23.1.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.71.1",

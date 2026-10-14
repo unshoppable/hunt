@@ -163,17 +163,23 @@ jobs:
           exit 1
 
       # The base setup writes /var/lib/hunt/session-ready last; until then SSH fails or the stamp is missing. The guest
-      # agent's final line for a failed startup script ends the wait early.
+      # agent's final line for a failed startup script ends the wait early. Every tenth attempt shows why the last one
+      # failed.
       - name: Wait for the base setup
         if: steps.decide.outputs.build == 'true'
         run: |
           deadline=$((SECONDS + 45 * 60))
+          attempt=0
           while true; do
-            if gcloud compute ssh "$VM" --project="$GCP_PROJECT" --zone="$ZONE" --tunnel-through-iap --quiet \
+            attempt=$((attempt + 1))
+            if output=$(gcloud compute ssh "$VM" --project="$GCP_PROJECT" --zone="$ZONE" --tunnel-through-iap --quiet \
               --ssh-key-expire-after=2h --ssh-flag=-oConnectTimeout=20 \
-              --command 'test -e /var/lib/hunt/session-ready' >/dev/null 2>&1; then
+              --command 'test -e /var/lib/hunt/session-ready && echo ready' 2>&1) && grep -qx ready <<<"$output"; then
               echo "The base setup finished on $VM."
               exit 0
+            fi
+            if [ $((attempt % 10)) -eq 1 ]; then
+              echo "Attempt $attempt: $(tail -n 5 <<<"$output")"
             fi
             serial=$(gcloud compute instances get-serial-port-output "$VM" --project="$GCP_PROJECT" --zone="$ZONE" 2>/dev/null || true)
             if grep -qE 'startup-script exit status [1-9]|"startup-script" failed with error' <<<"$serial"; then
@@ -183,6 +189,7 @@ jobs:
             fi
             if [ "$SECONDS" -gt "$deadline" ]; then
               tail -n 100 <<<"$serial"
+              echo "Last SSH attempt: $output"
               echo "::error::The base setup did not finish on $VM within 45 minutes."
               exit 1
             fi

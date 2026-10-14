@@ -30,10 +30,10 @@ use crate::graph::{self, WatcherRegistry};
 use crate::ide;
 use crate::lsp::{self, LspRegistry};
 use crate::remote::api::GatewayApi;
-use crate::remote::diff::RemoteChanges;
 use crate::remote::preview::PreviewStatus;
 use crate::remote::ssh::Ssh;
 use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize};
+use crate::remote::sync::Direction;
 use crate::remote::{self, RemoteStep, RemoteTarget, Reporter, VmRef, VmSettings};
 use crate::screenshots::{self, Screenshot};
 use crate::session::attribution::{self, FileVersion};
@@ -41,6 +41,7 @@ use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus};
 use crate::session::review;
 use crate::session::store::{self, SelectionContext, SessionRecord, Workspace};
 use crate::session::summary;
+use crate::session::sync;
 use crate::workspace;
 
 #[derive(Clone, Serialize)]
@@ -51,12 +52,15 @@ pub struct SessionView {
     pub is_live: bool,
     /// Progress of preparing the worktree's `node_modules`; `None` when nothing was or is being prepared.
     pub dependencies: Option<DependencyStatus>,
+    /// Whether the session's worktree exists here; a remote session adopted from its VM gets one with its first sync.
+    pub has_local_worktree: bool,
 }
 
 impl SessionView {
     fn new(app: &AppHandle, record: SessionRecord, is_live: bool) -> Self {
         let dependencies = app.state::<DependencyRegistry>().status(&record.worktree_path);
-        SessionView { record, is_live, dependencies }
+        let has_local_worktree = record.worktree_path.is_dir();
+        SessionView { record, is_live, dependencies, has_local_worktree }
     }
 }
 
@@ -359,13 +363,15 @@ pub async fn open_session(
     if !registry.claim_start(id).await {
         return Ok(SessionView::new(&app, store::find_session(&app, id)?, true));
     }
+    if record.worktree_path.is_dir() {
+        dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone());
+    }
     if record.remote.is_some() {
         let activated = activate_remote(&app, &registry, &watchers, record).await;
         registry.end_start(id).await;
         finish_progress(&app, id);
         return activated;
     }
-    dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone());
 
     let start = local_start(&record);
     let activated = activate(&app, &registry, &watchers, record, start, AgentTransport::Local).await;
@@ -434,16 +440,17 @@ pub async fn clear_session(
 /// this; the result shows up in the session list.
 #[tauri::command]
 pub async fn prepare_dependencies(app: AppHandle, id: Uuid) -> Result<(), String> {
-    let record = local_session(&app, id)?;
+    let record = worktree_session(&app, id)?;
     dependencies::ensure(&app, record.repo_path, record.worktree_path);
     announce_sessions_changed(&app);
     Ok(())
 }
 
 /// Connects the agent of `record` with `start` (its selection, if any, goes into the system prompt), stores the
-/// ACP session ID it got, registers the live session and starts watching its worktree for the diagram. The
-/// store may change while the agent starts (attribution, summary, or the session being closed), so the view is
-/// built from the record as stored afterwards; a session closed meanwhile gets its agent shut down again.
+/// ACP session ID it got, registers the live session and starts watching its worktree for the diagram; a remote
+/// session starts syncing its files. The store may change while the agent starts (attribution, summary, or the session
+/// being closed), so the view is built from the record as stored afterwards; a session closed meanwhile gets its agent
+/// shut down again.
 async fn activate(
     app: &AppHandle,
     registry: &SessionRegistry,
@@ -474,6 +481,9 @@ async fn activate(
     sessions.insert(id, live);
     drop(sessions);
     if !is_local {
+        sync::start(app, id);
+    }
+    if !record.worktree_path.is_dir() {
         return Ok(SessionView::new(app, record, true));
     }
 
@@ -655,45 +665,6 @@ async fn remote_worktree(app: &AppHandle, id: Uuid, target: &RemoteTarget, ssh: 
     Ok(meta.worktree)
 }
 
-/// The changes of the remote session `id` on its VM since its handoff (or, for a session the poller started, since its
-/// default branch), read-only. A VM that is off reports none and stays off unless `start_vm` is set.
-#[tauri::command]
-pub async fn remote_changes(
-    app: AppHandle,
-    registry: State<'_, SessionRegistry>,
-    id: Uuid,
-    start_vm: bool,
-) -> Result<RemoteChanges, String> {
-    let target = store::find_session(&app, id)?.remote.ok_or("failed to list the changes on the VM: the session runs locally")?;
-    let is_connected = registry.live.lock().await.contains_key(&id);
-    let vm = if is_connected {
-        target.vm.clone()
-    } else {
-        let gateway = gateway_api("list the changes on the VM").await?;
-        if start_vm {
-            gateway.start_vm(id, &|_| {}).await?
-        } else if gateway.is_vm_running(id).await? {
-            target.vm.clone()
-        } else {
-            return Ok(RemoteChanges::vm_off());
-        }
-    };
-    let ssh = Ssh::open(&vm, &ssh_dir()?).await?;
-    let worktree = remote_worktree(&app, id, &target, &ssh).await?;
-    remote::diff::changed_files(&ssh, &worktree, id, &target.handoff_head).await
-}
-
-/// The diff of the worktree-relative `path` of the remote session `id` on its VM against `base`, the commit
-/// `remote_changes` compared against.
-#[tauri::command]
-pub async fn read_remote_file_diff(app: AppHandle, id: Uuid, base: String, path: String) -> Result<FileDiff, String> {
-    git::ensure_inside_worktree(&path)?;
-    let target = store::find_session(&app, id)?.remote.ok_or("failed to read the diff on the VM: the session runs locally")?;
-    let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
-    let worktree = remote_worktree(&app, id, &target, &ssh).await?;
-    remote::diff::file_diff(&ssh, &worktree, &base, &path).await
-}
-
 /// A chunk of a terminal's output as base64 of its bytes, which may end inside a UTF-8 or an escape sequence.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -828,7 +799,6 @@ pub async fn hand_off_session(
     registry: State<'_, SessionRegistry>,
     watchers: State<'_, WatcherRegistry>,
     permissions: State<'_, PermissionRegistry>,
-    lsp: State<'_, LspRegistry>,
     id: Uuid,
     settings: VmSettings,
     file_patterns: Vec<String>,
@@ -886,8 +856,8 @@ pub async fn hand_off_session(
 
     let activated = match handed_off {
         Ok(handed_off) => {
-            lsp::forget_session(&lsp, id);
-            lsp::stop_for_worktree(&lsp, &record.worktree_path).await;
+            // The first sync takes the VM's files as they are after the handoff.
+            sync::forget(&app, id);
             let stored = store::update_session(&app, id, |stored| {
                 stored.remote = Some(handed_off.target.clone());
                 stored.leftover_vm = None;
@@ -949,7 +919,7 @@ pub async fn retrieve_session(
 ) -> Result<SessionView, String> {
     let record = store::find_session(&app, id)?;
     let target = record.remote.clone().ok_or("failed to retrieve the session: it runs locally")?;
-    let adopted_into = target.is_adopted().then_some(record.repo_path.as_path());
+    let adopted_into = (target.is_adopted() && !record.worktree_path.is_dir()).then_some(record.repo_path.as_path());
     if adopted_into.is_some_and(|repo| repo.as_os_str().is_empty()) {
         return Err(format!(
             "failed to bring back the session: there is no local checkout of {}; start a session in one, then refresh the remote sessions",
@@ -964,6 +934,7 @@ pub async fn retrieve_session(
     let activated = async {
         let (ssh_dir, claude_dir) = (ssh_dir()?, claude_dir()?);
         let memory_base = memory_base_path(&app, id)?;
+        let sync_manifest = sync::manifest_path(&app, id)?;
         let gateway = gateway_vm("retrieve the session").await?;
         let request = remote::retrieve::RetrieveRequest {
             hunt_session_id: id,
@@ -973,6 +944,7 @@ pub async fn retrieve_session(
             ssh_dir: &ssh_dir,
             claude_dir: &claude_dir,
             memory_base: &memory_base,
+            sync_manifest: &sync_manifest,
             adopted_into,
         };
         let retrieved = remote::retrieve::retrieve(request, &progress_reporter(&app, id)).await?;
@@ -987,6 +959,7 @@ pub async fn retrieve_session(
         })?
         .ok_or_else(|| "failed to retrieve the session: it was closed meanwhile".to_string())?;
         announce_sessions_changed(&app);
+        sync::forget(&app, id);
         forget_remote(&app, &target, id).await;
         dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone());
         let start = local_start(&record);
@@ -1056,7 +1029,7 @@ fn finish_progress(app: &AppHandle, id: Uuid) {
 }
 
 /// Where Hunt keeps its SSH key and known hosts for the VM; a path without spaces, which ssh options cannot hold.
-fn ssh_dir() -> Result<PathBuf, String> {
+pub(crate) fn ssh_dir() -> Result<PathBuf, String> {
     let home = std::env::var("HOME").map_err(|_| "failed to find the home folder: HOME is not set".to_string())?;
     Ok(PathBuf::from(home).join(".ssh").join("hunt"))
 }
@@ -1238,6 +1211,7 @@ async fn stop_agent_and_wait(app: &AppHandle, registry: &SessionRegistry, watche
     }
     graph::unwatch(watchers, id);
     attribution::forget_session(app, id);
+    sync::stop_and_wait(app, id).await;
 }
 
 #[tauri::command]
@@ -1273,9 +1247,11 @@ async fn end_session(
 
     let record = store::find_session(app, id)?;
     if let Some(target) = &record.remote {
+        sync::stop_and_wait(app, id).await;
         forget_remote(app, target, id).await;
-        // An adopted session has nothing here but its record.
-        if target.is_adopted() {
+        sync::forget(app, id);
+        // An adopted session that never synced has nothing here but its record.
+        if target.is_adopted() && !record.worktree_path.is_dir() {
             return store::remove_session(app, id);
         }
     } else if let Some(leftover) = &record.leftover_vm {
@@ -1371,7 +1347,7 @@ pub async fn snooze_remote_cleanup(app: AppHandle, id: Uuid) -> Result<(), Strin
     Ok(())
 }
 
-fn announce_sessions_changed(app: &AppHandle) {
+pub(crate) fn announce_sessions_changed(app: &AppHandle) {
     let _ = app.emit("sessions:changed", ());
 }
 
@@ -1383,12 +1359,13 @@ async fn stop_agent(app: &AppHandle, registry: &SessionRegistry, watchers: &Watc
     }
     graph::unwatch(watchers, id);
     attribution::forget_session(app, id);
+    sync::stop(app, id);
 }
 
 /// Sends one user turn (the text plus the image files in `images`) and resolves with the stop reason once the
 /// agent finished. A sub chat about writing a file (a selection with a task) gets the file's current content
-/// ahead of the text, so the agent always sees the version on disk. The finished turn is handed to the
-/// background summarizer, which refreshes the session's summary and title.
+/// ahead of the text, so the agent always sees the version on disk; a remote session's local edits reach its VM
+/// first. The finished turn is handed to the background summarizer, which refreshes the session's summary and title.
 #[tauri::command]
 pub async fn send_prompt(
     app: AppHandle,
@@ -1407,6 +1384,8 @@ pub async fn send_prompt(
             blocks.insert(0, block);
         }
     }
+    // The agent on a VM sees the files saved here before it reads the prompt.
+    sync::flush(&app, id).await;
     run_turn(&app, &registry, id, blocks, None).await
 }
 
@@ -1421,7 +1400,8 @@ fn file_context_block(target: &Path) -> Option<ContentBlock> {
 /// Asks the agent to rewrite the component diagram with the standard prompt. The turn runs with the agent config
 /// values `model` and `effort` from the diagram settings; afterwards the agent gets back the model and effort the chat
 /// showed before. The turn is recorded as hidden, so the chat shows neither the prompt text nor the agent's output,
-/// and it leaves the session summary alone.
+/// and it leaves the session summary alone. The agent of a remote session diffs against the commit the local worktree
+/// has checked out, which its VM has too; the schema goes there before the turn and the diagram comes back after it.
 #[tauri::command]
 pub async fn refresh_graph(
     app: AppHandle,
@@ -1430,8 +1410,13 @@ pub async fn refresh_graph(
     model: String,
     effort: String,
 ) -> Result<String, String> {
-    let record = local_session(&app, id)?;
-    let prompt = graph::refresh_prompt(&crate::preferences::ai_language(&app), record.diff_base());
+    let record = worktree_session(&app, id)?;
+    let is_remote = record.remote.is_some();
+    let diff_base = if is_remote { git::rev_parse(&record.worktree_path, "HEAD").await? } else { record.diff_base().to_string() };
+    if is_remote {
+        sync::copy_files(&app, id, Direction::Push, &[graph::SCHEMA_PATH.to_string()]).await?;
+    }
+    let prompt = graph::refresh_prompt(&crate::preferences::ai_language(&app), &diff_base);
     let blocks = vec![ContentBlock::Text(TextContent::new(prompt))];
     let LiveHandles { connection, acp_session_id, history } = live_session(&registry, id).await?;
 
@@ -1457,6 +1442,9 @@ pub async fn refresh_graph(
 
     let stop_reason = outcome?;
     restored?;
+    if is_remote {
+        sync::copy_files(&app, id, Direction::Pull, &[graph::GRAPH_PATH.to_string()]).await?;
+    }
     Ok(stop_reason)
 }
 
@@ -1658,7 +1646,7 @@ pub struct ChangedFileView {
 
 #[tauri::command]
 pub async fn list_changed_files(app: AppHandle, id: Uuid) -> Result<Vec<ChangedFileView>, String> {
-    let record = local_session(&app, id)?;
+    let record = worktree_session(&app, id)?;
     let files = git::changed_files(&record.worktree_path, record.diff_base()).await?;
     let mut touched_by = store::touched_by(&app, &record.worktree_path)?;
     Ok(files
@@ -1670,7 +1658,7 @@ pub async fn list_changed_files(app: AppHandle, id: Uuid) -> Result<Vec<ChangedF
 /// Added and removed lines of every changed file of the session (untracked files count as all added).
 #[tauri::command]
 pub async fn change_stats(app: AppHandle, id: Uuid) -> Result<Vec<git::ChangeStat>, String> {
-    let record = local_session(&app, id)?;
+    let record = worktree_session(&app, id)?;
     git::change_stats(&record.worktree_path, record.diff_base()).await
 }
 
@@ -1690,17 +1678,27 @@ pub async fn read_file_history(app: AppHandle, id: Uuid, path: String) -> Result
 /// The stored record of `id` and the absolute location of the worktree-relative `path` in its worktree. Every
 /// command that takes a path from the UI resolves it here: absolute paths and `..` segments are rejected.
 fn session_file(app: &AppHandle, id: Uuid, path: &str) -> Result<(SessionRecord, PathBuf), String> {
-    let record = local_session(app, id)?;
+    let record = worktree_session(app, id)?;
     let target = worktree_file(&record, path)?;
     Ok((record, target))
 }
 
-/// The stored record of `id` for a command that works on the local worktree or starts work next to it; a session
-/// handed off to a VM keeps its local worktree untouched until it is retrieved.
+/// The stored record of `id` for a command only a local session allows: work next to its agent, or a commit or push,
+/// which the agent of a session handed off to a VM makes there, since the local branch stays at the handoff commit.
 fn local_session(app: &AppHandle, id: Uuid) -> Result<SessionRecord, String> {
     let record = store::find_session(app, id)?;
     if record.remote.is_some() {
         return Err(format!("failed to use the worktree of session {id}: the session runs on a remote VM"));
+    }
+    Ok(record)
+}
+
+/// The stored record of `id` for a command that works on the local worktree: a local session's, or a remote session's,
+/// which `session::sync` keeps in sync with its VM; a session adopted from its VM gets one with its first sync.
+fn worktree_session(app: &AppHandle, id: Uuid) -> Result<SessionRecord, String> {
+    let record = store::find_session(app, id)?;
+    if record.remote.is_some() && !record.worktree_path.is_dir() {
+        return Err(format!("failed to use the worktree of session {id}: it has no local worktree yet; it gets one once Hunt reached its VM"));
     }
     Ok(record)
 }
@@ -1795,7 +1793,7 @@ pub async fn revert_file(app: AppHandle, id: Uuid, path: String) -> Result<(), S
 
 #[tauri::command]
 pub async fn shelve_files(app: AppHandle, id: Uuid, paths: Vec<String>, name: String) -> Result<(), String> {
-    let record = local_session(&app, id)?;
+    let record = worktree_session(&app, id)?;
     git::shelve_files(&record.worktree_path, &paths, &name).await?;
     store::forget_touched_files(&app, &record.worktree_path, &paths)?;
     store::note_worktree_changed(&app, id)
@@ -1803,21 +1801,21 @@ pub async fn shelve_files(app: AppHandle, id: Uuid, paths: Vec<String>, name: St
 
 #[tauri::command]
 pub async fn list_shelves(app: AppHandle, id: Uuid) -> Result<Vec<Shelf>, String> {
-    let record = local_session(&app, id)?;
+    let record = worktree_session(&app, id)?;
     git::list_shelves(&record.worktree_path, &record.branch).await
 }
 
 /// Restores a shelf into the worktree; `keep` leaves the shelf in place instead of dropping it.
 #[tauri::command]
 pub async fn unshelve(app: AppHandle, id: Uuid, reference: String, keep: bool) -> Result<(), String> {
-    let record = local_session(&app, id)?;
+    let record = worktree_session(&app, id)?;
     git::unshelve(&record.worktree_path, &reference, keep).await?;
     store::note_worktree_changed(&app, id)
 }
 
 #[tauri::command]
 pub async fn drop_shelf(app: AppHandle, id: Uuid, reference: String) -> Result<(), String> {
-    let record = local_session(&app, id)?;
+    let record = worktree_session(&app, id)?;
     git::drop_shelf(&record.worktree_path, &reference).await
 }
 
@@ -1838,7 +1836,7 @@ pub async fn push_branch(app: AppHandle, id: Uuid) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn open_worktree_in_webstorm(app: AppHandle, id: Uuid) -> Result<(), String> {
-    let record = local_session(&app, id)?;
+    let record = worktree_session(&app, id)?;
     ide::open_path(&record.worktree_path).await
 }
 
@@ -1854,7 +1852,7 @@ pub async fn open_file_in_webstorm(app: AppHandle, id: Uuid, path: String, line:
 /// The current side is a read-only copy: edits belong in the worktree, not in the snapshot.
 #[tauri::command]
 pub async fn open_changed_files_diff_in_webstorm(app: AppHandle, id: Uuid) -> Result<(), String> {
-    let record = local_session(&app, id)?;
+    let record = worktree_session(&app, id)?;
     let files = git::changed_files(&record.worktree_path, record.diff_base()).await?;
 
     let snapshot_dir = std::env::temp_dir().join("hunt").join(id.to_string());
@@ -1896,14 +1894,14 @@ fn create_parent_dir(path: &Path) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn read_graph(app: AppHandle, id: Uuid) -> Result<Option<serde_json::Value>, String> {
-    let record = local_session(&app, id)?;
+    let record = worktree_session(&app, id)?;
     graph::read_graph(&record.worktree_path)
 }
 
 /// When the session's diagram was generated and whether files of its worktree changed since.
 #[tauri::command]
 pub async fn graph_status(app: AppHandle, id: Uuid) -> Result<graph::GraphStatus, String> {
-    let record = local_session(&app, id)?;
+    let record = worktree_session(&app, id)?;
     let changed_at = store::worktree_changed_at(&app, &record.worktree_path)?;
     graph::status(&record.worktree_path, changed_at)
 }
@@ -1942,7 +1940,7 @@ pub async fn list_dir(app: AppHandle, id: Uuid, path: String) -> Result<Vec<work
 /// Every project file of the worktree for the file search (⌘P / double shift).
 #[tauri::command]
 pub async fn list_files(app: AppHandle, id: Uuid) -> Result<Vec<String>, String> {
-    let record = local_session(&app, id)?;
+    let record = worktree_session(&app, id)?;
     git::list_files(&record.worktree_path).await
 }
 
@@ -1956,7 +1954,7 @@ pub async fn read_file(app: AppHandle, id: Uuid, path: String) -> Result<String,
 /// Worktree files containing `word` as a whole word; candidates for the editor's usage search.
 #[tauri::command]
 pub async fn search_word(app: AppHandle, id: Uuid, word: String) -> Result<Vec<String>, String> {
-    let record = local_session(&app, id)?;
+    let record = worktree_session(&app, id)?;
     git::files_containing_word(&record.worktree_path, &word).await
 }
 

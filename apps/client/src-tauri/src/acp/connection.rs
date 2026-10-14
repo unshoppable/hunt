@@ -286,6 +286,7 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
                 if let Some(worktree) = &worktree {
                     attribution::observe(&notify_app, hunt_session_id, worktree, &notification);
                 }
+                crate::session::sync::observe(&notify_app, hunt_session_id, &notification);
                 publish_update(&notify_app, hunt_session_id, &history, notification);
                 Ok(())
             },
@@ -347,6 +348,7 @@ async fn forget_live_session(app: &AppHandle, hunt_session_id: Uuid) {
     app.state::<SessionRegistry>().end_start(hunt_session_id).await;
     crate::graph::unwatch(&app.state::<crate::graph::WatcherRegistry>(), hunt_session_id);
     attribution::forget_session(app, hunt_session_id);
+    crate::session::sync::stop(app, hunt_session_id);
     app.state::<PermissionRegistry>()
         .0
         .lock()

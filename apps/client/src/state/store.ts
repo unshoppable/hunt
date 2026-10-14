@@ -14,6 +14,7 @@ import type {
   PullRequestRef,
   RemoteProgressEvent,
   RemoteStep,
+  RemoteSyncEvent,
   Screenshot,
   SelectionContext,
   SessionView,
@@ -35,11 +36,14 @@ export type SessionMode = { id: string; name: string; description?: string | nul
 /** Fill level of the agent's context window in tokens, as last reported by the agent. */
 export type ContextUsage = { used: number; size: number };
 
-/** Views of the inspector pane: the changelist diff, the built-in editor or the component diagram. */
-export type RightTab = "diff" | "editor" | "graph" | "pullRequest";
+/**
+ * Views of the inspector pane: the changelist diff, the built-in editor, the component diagram or the reviewed pull
+ * request, and for a remote session also its preview and a terminal on its VM.
+ */
+export type RightTab = "diff" | "editor" | "graph" | "pullRequest" | "preview" | "terminal";
 
-/** Views of the inspector pane while it shows a remote session: its preview, its changes on the VM or a terminal there. */
-export type RemoteTab = "preview" | "diff" | "terminal";
+/** The sync of a remote session's files with its VM: whether one runs, when the last one succeeded and what the last one failed with. */
+export type FileSync = { isRunning: boolean; syncedAt: string | null; error: string | null };
 
 /** The last adoption of session VMs (see `syncRemoteSessions`): whether one runs and what the last one failed with. */
 export type RemoteSync = { isRunning: boolean; error: string | null };
@@ -113,6 +117,7 @@ function placeholderSession(id: string, title: string, target: WorktreeTarget, p
     remote: null,
     leftoverVm: null,
     dependencies: null,
+    hasLocalWorktree: false,
   };
 }
 
@@ -171,6 +176,8 @@ export type SessionChat = {
   isStale: boolean;
   /** The move to or from the VM the user asked for, from the click until it ended; `null` while none is asked for. */
   move: SessionMove | null;
+  /** The file sync of a remote session; idle for a local one. */
+  fileSync: FileSync;
 };
 
 /** Where a session moves: to a VM of its own (`handOff`) or back into its local worktree (`retrieve`). */
@@ -185,7 +192,6 @@ type HuntState = {
   activeSessionId: string | null;
   chats: Record<string, SessionChat>;
   rightTab: RightTab;
-  remoteTab: RemoteTab;
   /**
    * Set while the chat pane shows the start view for a new session; `parentId` names the session a sub session is
    * drafted for. A failed creation brings the view back with its `error` and the `prompt` that was not sent.
@@ -259,7 +265,6 @@ type HuntState = {
   setConfigOption: (id: string, configId: string, value: string) => Promise<void>;
   answerPermission: (id: string, requestId: string, optionId: string) => Promise<void>;
   setRightTab: (tab: RightTab) => void;
-  setRemoteTab: (tab: RemoteTab) => void;
   /** Bumps `editVersion` after a local write to the worktree (a save in the diff or editor pane) so every view reloads. */
   noteWorktreeChanged: (id: string) => void;
   /** Creates the empty chat record of `id` when there is none, so worktree-change events reach a window that shows the session without its chat (the editor window). */
@@ -271,6 +276,8 @@ type HuntState = {
   applyPermissionWithdrawn: (event: PermissionWithdrawnEvent) => void;
   applyClosed: (event: ClosedEvent) => void;
   applyRemoteProgress: (event: RemoteProgressEvent) => void;
+  /** Records the state of a remote session's file sync; a sync that changed local files reloads the views. */
+  applyRemoteSync: (event: RemoteSyncEvent) => void;
   applyGraphChanged: (huntSessionId: string) => void;
   applySummary: (event: SummaryEvent) => void;
   /** Reloads the changes of every open session that works in the worktree a tool call just changed. */
@@ -301,6 +308,7 @@ export function createEmptyChat(): SessionChat {
     remoteRun: null,
     isStale: false,
     move: null,
+    fileSync: { isRunning: false, syncedAt: null, error: null },
   };
 }
 
@@ -585,10 +593,13 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     }
   }
 
-  /** The empty chat a restarted agent fills; the mode, the queued prompts and a running remote operation or move carry over. */
+  /**
+   * The empty chat a restarted agent fills; the mode, the queued prompts, a running remote operation or move and the file
+   * sync carry over.
+   */
   function replacedChat(chat: SessionChat): SessionChat {
-    const { modeId, queue, isLoading, remoteStep, remoteDetail, remoteRun, move } = chat;
-    return { ...createEmptyChat(), modeId, queue, hasHistory: true, isLoading, remoteStep, remoteDetail, remoteRun, move };
+    const { modeId, queue, isLoading, remoteStep, remoteDetail, remoteRun, move, fileSync } = chat;
+    return { ...createEmptyChat(), modeId, queue, hasHistory: true, isLoading, remoteStep, remoteDetail, remoteRun, move, fileSync };
   }
 
   /** Resolves once the chat of `id` runs no turn, also when there is no such chat (any more). */
@@ -752,7 +763,6 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     activeSessionId: null,
     chats: {},
     rightTab: "diff",
-    remoteTab: "preview",
     draft: null,
     untitledIds: [],
     remoteSync: { isRunning: false, error: null },
@@ -938,7 +948,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     },
 
     refreshGraph: async (id) => {
-      if (get().sessions.find((candidate) => candidate.id === id)?.remote || get().chats[id]?.move) return;
+      if (get().chats[id]?.move) return;
       updateChat(id, (chat) => ({ ...chat, isGeneratingGraph: true, isHiddenTurn: true }));
       const { model, effort } = useSettingsStore.getState().graphAgent;
       const request = () => commands.refreshGraph(id, model, effort).finally(() => updateChat(id, (chat) => ({ ...chat, isGeneratingGraph: false })));
@@ -971,7 +981,6 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     },
 
     setRightTab: (rightTab) => set({ rightTab }),
-    setRemoteTab: (remoteTab) => set({ remoteTab }),
 
     noteWorktreeChanged: (id) => {
       updateChat(id, (chat) => ({ ...chat, editVersion: chat.editVersion + 1 }));
@@ -1027,6 +1036,18 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
         remoteStep: event.step,
         remoteDetail: event.detail,
         remoteRun: advanceRemoteRun(chat.remoteRun, event.step, Date.now(), Boolean(chat.move)),
+      }));
+    },
+
+    applyRemoteSync: (event) => {
+      // Only a chat that exists: creating one here would make `selectSession` skip the history rebuild.
+      if (!get().chats[event.huntSessionId]) return;
+      updateChat(event.huntSessionId, (chat) => ({
+        ...chat,
+        fileSync: event.isRunning
+          ? { ...chat.fileSync, isRunning: true }
+          : { isRunning: false, syncedAt: event.syncedAt ?? chat.fileSync.syncedAt, error: event.error },
+        editVersion: event.changedLocal ? chat.editVersion + 1 : chat.editVersion,
       }));
     },
 

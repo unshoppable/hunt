@@ -1,6 +1,6 @@
 import type { RemoteStep, SessionView } from "../ipc/types";
 import { missingCheckoutBlocker } from "../sessions/remoteOrigin";
-import type { SessionChat } from "../state/store";
+import type { FileSync, SessionChat } from "../state/store";
 
 /** What the chat shows while a step of a handoff, a retrieval or a connect to the VM runs. */
 export const REMOTE_STEP_LABELS: Record<RemoteStep, string> = {
@@ -81,4 +81,16 @@ export function handOffBlocker(session: SessionView, sessions: SessionView[], co
  */
 export function retrieveBlocker(session: SessionView): string | null {
   return missingCheckoutBlocker(session);
+}
+
+/**
+ * The state of a remote session's file sync next to its "On VM" button: "Syncing…" while a sync runs and `isSlow` (it
+ * ran for a moment, so quick ones do not flicker), "Sync failed" after a failure, else when the last one succeeded with
+ * `formatTime`; `null` before the first one.
+ */
+export function fileSyncLabel(fileSync: FileSync, isSlow: boolean, formatTime: (iso: string) => string): string | null {
+  if (fileSync.isRunning && isSlow) return "Syncing…";
+  if (fileSync.error) return "Sync failed";
+  if (fileSync.syncedAt) return `Synced ${formatTime(fileSync.syncedAt)}`;
+  return null;
 }

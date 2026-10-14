@@ -10,6 +10,7 @@ import type {
   PermissionEvent,
   PermissionWithdrawnEvent,
   RemoteProgressEvent,
+  RemoteSyncEvent,
   SummaryEvent,
   TerminalExitEvent,
   TerminalOutputEvent,
@@ -23,6 +24,8 @@ type EventPayloads = {
   "acp:closed": ClosedEvent;
   /** A handoff, retrieval or connect of a remote session moved on to another step, or ended. */
   "remote:progress": RemoteProgressEvent;
+  /** A sync of a remote session's files with its VM started or ended. */
+  "remote:sync": RemoteSyncEvent;
   "graph:changed": GraphChangedEvent;
   "session:summary": SummaryEvent;
   "attribution:changed": AttributionEvent;

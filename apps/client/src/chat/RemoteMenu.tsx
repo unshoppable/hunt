@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useIdeStore } from "../ide/ideStore";
 import { useAccountsStore } from "../state/accounts";
 import { configuredVmSettings, useSettingsStore } from "../state/settings";
@@ -8,14 +8,18 @@ import { CloudIcon } from "../ui/icons";
 import { useDismiss } from "../ui/useDismiss";
 import { confirmVmLoss } from "../sessions/confirmVmLoss";
 import { isAdopted } from "../sessions/remoteOrigin";
-import { handOffBlocker, retrieveBlocker } from "./remoteSession";
+import { fileSyncLabel, handOffBlocker, retrieveBlocker } from "./remoteSession";
 
 const MENU_ITEM = "block w-full rounded px-2 py-1 text-left enabled:hover:bg-(--row-hover) disabled:opacity-40";
 
+/** How long a file sync runs before the header says so; quicker ones would only flicker. */
+const SYNC_LABEL_DELAY_MS = 800;
+
 /**
  * Chat header button of the session's place: hands a local session off to a VM of its own, created from the settings,
- * or brings a remote one back, which deletes its VM; an adopted session asks first, since others may work on it. Hidden
- * while the remote settings are incomplete and the session runs locally.
+ * or brings a remote one back, which deletes its VM; an adopted session asks first, since others may work on it. Next to
+ * it, a remote session shows the state of its file sync. Hidden while the remote settings are incomplete and the session
+ * runs locally.
  */
 export function RemoteMenu({ sessionId }: { sessionId: string }) {
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
@@ -24,14 +28,25 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
   const isCreating = useHuntStore((state) => state.creatingIds.includes(sessionId));
   const handOffSession = useHuntStore((state) => state.handOffSession);
   const retrieveSession = useHuntStore((state) => state.retrieveSession);
-  const setRemoteTab = useHuntStore((state) => state.setRemoteTab);
+  const setRightTab = useHuntStore((state) => state.setRightTab);
   const remoteSettings = useSettingsStore((state) => state.remote);
   const hasUnsavedEdits = useIdeStore((state) => (state.sessions[sessionId]?.dirtyPaths.length ?? 0) > 0);
   const hasClaudeAccount = useAccountsStore((state) => Boolean(state.accounts?.activeId));
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isSyncSlow, setIsSyncSlow] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   useDismiss(menuRef, () => setIsMenuOpen(false), { anchorRefs: [buttonRef], closeOnWindowBlur: true, isEnabled: isMenuOpen });
+
+  const isSyncRunning = Boolean(chat?.fileSync.isRunning);
+  useEffect(() => {
+    if (!isSyncRunning) {
+      setIsSyncSlow(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setIsSyncSlow(true), SYNC_LABEL_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [isSyncRunning]);
 
   const vmSettings = configuredVmSettings(remoteSettings);
   if (!session || (!vmSettings && !session.remote)) return null;
@@ -40,6 +55,7 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
   const blocker = isRemote ? retrieveBlocker(session) : handOffBlocker(session, sessions, { hasUnsavedEdits, hasClaudeAccount });
   const previewDomain = session.remote?.previewDomain ?? null;
   const instance = session.remote?.vm.instance ?? "";
+  const syncLabel = isRemote && chat ? fileSyncLabel(chat.fileSync, isSyncSlow, formatSyncTime) : null;
 
   function run(action: (id: string) => Promise<void>) {
     setIsMenuOpen(false);
@@ -48,7 +64,7 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
 
   function showPreview() {
     setIsMenuOpen(false);
-    setRemoteTab("preview");
+    setRightTab("preview");
   }
 
   async function bringBack() {
@@ -63,11 +79,16 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
     ? "The VM starts now; the agent moves there once it finished its turn and continues, also while Hunt is closed."
     : "The agent continues on its own VM, also while Hunt is closed.";
   const bringBackHint = isAdopted(session)
-    ? `The session continues here in a new worktree and its VM ${instance} is deleted, also for others working on it.${afterTurn}`
+    ? `The session continues here in ${session.hasLocalWorktree ? "its local" : "a new"} worktree and its VM ${instance} is deleted, also for others working on it.${afterTurn}`
     : `The session continues here and its VM is deleted. Runs on ${instance}.${afterTurn}`;
 
   return (
-    <div className="relative shrink-0">
+    <div className="relative flex shrink-0 items-center gap-2">
+      {syncLabel ? (
+        <span className="text-[12px] text-neutral-500" title={chat?.fileSync.error ?? "Files are synced between the VM and this Mac in both directions."}>
+          {syncLabel}
+        </span>
+      ) : null}
       <button
         ref={buttonRef}
         type="button"
@@ -109,4 +130,9 @@ export function RemoteMenu({ sessionId }: { sessionId: string }) {
       ) : null}
     </div>
   );
+}
+
+/** The time of day of the ISO timestamp `iso`, in hours and minutes. */
+function formatSyncTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }

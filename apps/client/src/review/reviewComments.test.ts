@@ -27,6 +27,7 @@ function session(id: string, parentId: string | null, reviewComments: ReviewComm
     remote: null,
     leftoverVm: null,
     dependencies: null,
+    hasLocalWorktree: true,
   };
 }
 

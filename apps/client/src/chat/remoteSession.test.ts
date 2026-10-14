@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RemoteStep, SessionView } from "../ipc/types";
 import { createEmptyChat } from "../state/store";
-import { formatElapsed, handOffBlocker, moveStatus, remotePosition, retrieveBlocker } from "./remoteSession";
+import { fileSyncLabel, formatElapsed, handOffBlocker, moveStatus, remotePosition, retrieveBlocker } from "./remoteSession";
 
 function session(id: string, patch: Partial<SessionView> = {}): SessionView {
   return {
@@ -28,6 +28,7 @@ function session(id: string, patch: Partial<SessionView> = {}): SessionView {
     remote: null,
     leftoverVm: null,
     dependencies: null,
+    hasLocalWorktree: true,
     ...patch,
   };
 }
@@ -129,5 +130,23 @@ describe("moveStatus", () => {
     expect(moveStatus({ ...createEmptyChat(), move: "handOff", remoteStep: "installingRuntime" })).toBe("The session moves to the VM as soon as it is ready.");
     expect(moveStatus({ ...createEmptyChat(), move: "retrieve", isBusy: true })).toBe("The session comes back from the VM once the agent finished its turn.");
     expect(moveStatus({ ...createEmptyChat(), move: "handOff", isLoading: true, remoteStep: "transferringCode" })).toBeNull();
+  });
+});
+
+describe("fileSyncLabel", () => {
+  const time = (iso: string) => iso.slice(11, 16);
+  const idle = { isRunning: false, syncedAt: null, error: null };
+
+  it("shows a running sync only once it ran for a moment", () => {
+    const running = { ...idle, isRunning: true, syncedAt: "2026-10-14T10:05:00Z" };
+    expect(fileSyncLabel(running, false, time)).toBe("Synced 10:05");
+    expect(fileSyncLabel(running, true, time)).toBe("Syncing…");
+  });
+
+  it("names a failure before the last success and nothing before the first sync", () => {
+    const failed = { ...idle, syncedAt: "2026-10-14T10:05:00Z", error: "failed to list the files on the VM" };
+    expect(fileSyncLabel(failed, false, time)).toBe("Sync failed");
+    expect(fileSyncLabel({ ...idle, syncedAt: "2026-10-14T10:05:00Z" }, false, time)).toBe("Synced 10:05");
+    expect(fileSyncLabel(idle, false, time)).toBeNull();
   });
 });

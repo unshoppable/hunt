@@ -62,7 +62,7 @@ export const usePreviewStore = create<PreviewState>((set) => {
 
     startApp: (id) => {
       update(id, (current) => ({ ...current, error: null, awaitingStart: true }));
-      useHuntStore.getState().setRemoteTab("preview");
+      useHuntStore.getState().setRightTab("preview");
       // The normal prompt path: it starts a VM that is off and queues the prompt while the agent is busy.
       void useHuntStore.getState().sendPrompt(id, START_APP_PROMPT);
     },

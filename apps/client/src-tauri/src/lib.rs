@@ -21,6 +21,7 @@ use remote::terminal::TerminalRegistry;
 use session::attribution::AttributionRegistry;
 use session::dependencies::DependencyRegistry;
 use session::summary::SummaryRegistry;
+use session::sync::SyncRegistry;
 use tauri::webview::PageLoadEvent;
 use tauri::Manager;
 
@@ -35,6 +36,7 @@ pub fn run() {
         .manage(PermissionRegistry::default())
         .manage(WatcherRegistry::default())
         .manage(SummaryRegistry::default())
+        .manage(SyncRegistry::default())
         .manage(DependencyRegistry::default())
         .manage(preferences::Preferences::default())
         .menu(|app| menu::build(app))
@@ -67,8 +69,6 @@ pub fn run() {
             session::commands::preview_status,
             session::commands::adopt_session_vms,
             session::commands::set_remote_settings,
-            session::commands::remote_changes,
-            session::commands::read_remote_file_diff,
             session::commands::open_terminal,
             session::commands::write_terminal,
             session::commands::resize_terminal,

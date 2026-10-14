@@ -542,20 +542,14 @@ fn server_for(app: &AppHandle, registry: &LspRegistry, id: Uuid) -> Result<Arc<L
         Some(worktree) => worktree,
         None => {
             let record = store::find_session(app, id)?;
-            if record.remote.is_some() {
-                return Err(format!("failed to start the language server: session {id} runs on a remote VM"));
+            if record.remote.is_some() && !record.worktree_path.is_dir() {
+                return Err(format!("failed to start the language server: session {id} has no local worktree yet"));
             }
             registry.worktrees.lock().unwrap().insert(id, record.worktree_path.clone());
             record.worktree_path
         }
     };
     registry.get_or_start(&worktree, || Arc::new(TauriEvents(app.clone())))
-}
-
-/// Forgets which worktree session `id` uses, so the next request looks the session up again (after a handoff, the
-/// session has no local worktree to serve).
-pub fn forget_session(registry: &LspRegistry, id: Uuid) {
-    registry.worktrees.lock().unwrap().remove(&id);
 }
 
 #[tauri::command]

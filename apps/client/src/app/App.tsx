@@ -1,11 +1,10 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useHuntStore } from "../state/store";
 import { SessionSidebar } from "../sessions/SessionSidebar";
 import { NewSessionView } from "../sessions/NewSessionView";
 import { ChatPanel } from "../chat/ChatPanel";
 import { DiffPanel } from "../diff/DiffPanel";
-import { RemoteDiffPanel } from "../diff/RemoteDiffPanel";
 import { GraphPanel } from "../graph/GraphPanel";
 import { IdePanel } from "../ide/IdePanel";
 import { PullRequestPanel } from "../review/PullRequestPanel";
@@ -31,17 +30,20 @@ export function App() {
   const draft = useHuntStore((state) => state.draft);
   /** The active session is still being created: it has no worktree yet, so the inspector and the file search wait. */
   const isCreatingActive = useHuntStore((state) => Boolean(state.activeSessionId && state.creatingIds.includes(state.activeSessionId)));
-  /** The VM the active session runs on; its worktree is not local, so the inspector, the file search and the editor wait. */
+  /** The VM the active session runs on; it adds the Preview and Terminal tabs. */
   const activeRemoteInstance = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.remote?.vm.instance ?? null);
-  const rightTab = useHuntStore((state) => state.rightTab);
+  /** Whether the active session's worktree exists here; a remote session adopted from its VM gets one with its first sync. */
+  const hasActiveWorktree = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.hasLocalWorktree ?? false);
+  const storedTab = useHuntStore((state) => state.rightTab);
   const setRightTab = useHuntStore((state) => state.setRightTab);
-  const remoteTab = useHuntStore((state) => state.remoteTab);
-  const setRemoteTab = useHuntStore((state) => state.setRemoteTab);
   const openFile = useIdeStore((state) => state.openFile);
   const ideLayout = useIdeStore((state) => (activeSessionId ? state.sessions[activeSessionId]?.layout : null) ?? EMPTY_IDE_SESSION.layout);
   const openPaths = useMemo(() => [...new Set(allPanes(ideLayout).flatMap((pane) => pane.tabs))], [ideLayout]);
   const [isFileSearchOpen, setIsFileSearchOpen] = useState(false);
-  const canSearchFiles = Boolean(activeSessionId) && !draft && !isCreatingActive && !activeRemoteInstance;
+  const hasLocalWorktree = !isCreatingActive && hasActiveWorktree;
+  const canSearchFiles = Boolean(activeSessionId) && !draft && hasLocalWorktree;
+  /** A local session has no preview or terminal; it shows the diff instead. */
+  const rightTab = !activeRemoteInstance && (storedTab === "preview" || storedTab === "terminal") ? "diff" : storedTab;
 
   // ⌘P / double shift: "Go to File" for the active session's worktree.
   useFileSearchShortcut(() => {
@@ -71,11 +73,11 @@ export function App() {
   }, [refreshSessions, syncRemoteSessions]);
 
   // The active session's editor window boots hidden, so ⌘click in the diff only has to show it (see ide/editorWindows.ts).
-  const hasLocalWorktree = !isCreatingActive && !activeRemoteInstance;
   useEffect(() => keepEditorWindowWarm(hasLocalWorktree ? activeSessionId : null), [activeSessionId, hasLocalWorktree]);
 
-  // Likewise the guardrails window, so the "Guardrails" button in the chat header only has to show it.
-  useEffect(() => keepGuardrailsWindowWarm(hasLocalWorktree ? activeSessionId : null), [activeSessionId, hasLocalWorktree]);
+  // Likewise the guardrails window, so the "Guardrails" button in the chat header (shown for local sessions) only has to show it.
+  const hasGuardrails = hasLocalWorktree && !activeRemoteInstance;
+  useEffect(() => keepGuardrailsWindowWarm(hasGuardrails ? activeSessionId : null), [activeSessionId, hasGuardrails]);
 
   // A diff window boots hidden ahead of time, so a click on a changed file in the diagram only has to fill and show it (see graph/diffWindows.ts).
   useEffect(() => keepDiffWindowWarm(), []);
@@ -104,37 +106,35 @@ export function App() {
         <Panel id="inspector" defaultSize="62%" minSize={320} className="flex">
           <aside className="flex min-w-0 flex-1 flex-col bg-(--surface-inspector)">
             <nav data-tauri-drag-region="" className={`${HEADER_BAR} gap-1 border-b border-(--line) px-2`}>
+              <TabButton isActive={rightTab === "diff"} onClick={() => setRightTab("diff")} label="Diff" />
+              <TabButton isActive={rightTab === "editor"} onClick={() => setRightTab("editor")} label="Editor" />
+              <TabButton isActive={rightTab === "graph"} onClick={() => setRightTab("graph")} label="Dependency Graph" />
+              <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} label="PR Description" />
               {activeRemoteInstance ? (
                 <>
-                  <TabButton isActive={remoteTab === "preview"} onClick={() => setRemoteTab("preview")} label="Preview" />
-                  <TabButton isActive={remoteTab === "diff"} onClick={() => setRemoteTab("diff")} label="Diff" />
-                  <TabButton isActive={remoteTab === "terminal"} onClick={() => setRemoteTab("terminal")} label="Terminal" />
+                  <TabButton isActive={rightTab === "preview"} onClick={() => setRightTab("preview")} label="Preview" />
+                  <TabButton isActive={rightTab === "terminal"} onClick={() => setRightTab("terminal")} label="Terminal" />
                 </>
-              ) : (
-                <>
-                  <TabButton isActive={rightTab === "diff"} onClick={() => setRightTab("diff")} label="Diff" />
-                  <TabButton isActive={rightTab === "editor"} onClick={() => setRightTab("editor")} label="Editor" />
-                  <TabButton isActive={rightTab === "graph"} onClick={() => setRightTab("graph")} label="Dependency Graph" />
-                  <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} label="PR Description" />
-                </>
-              )}
+              ) : null}
             </nav>
             <div className="min-h-0 flex-1">
-              {!activeSessionId || draft || isCreatingActive ? null : activeRemoteInstance ? (
-                // The terminal stays mounted while the preview shows, so switching tabs keeps its connection.
-                <Fragment key={activeSessionId}>
-                  {remoteTab === "preview" ? <PreviewPanel sessionId={activeSessionId} /> : null}
-                  {remoteTab === "diff" ? <RemoteDiffPanel sessionId={activeSessionId} /> : null}
-                  <TerminalPanel sessionId={activeSessionId} isVisible={remoteTab === "terminal"} />
-                </Fragment>
-              ) : rightTab === "diff" ? (
-                <DiffPanel key={activeSessionId} sessionId={activeSessionId} />
-              ) : rightTab === "editor" ? (
-                <IdePanel sessionId={activeSessionId} />
-              ) : rightTab === "pullRequest" ? (
-                <PullRequestPanel key={activeSessionId} sessionId={activeSessionId} />
-              ) : (
-                <GraphPanel key={activeSessionId} sessionId={activeSessionId} />
+              {!activeSessionId || draft || isCreatingActive ? null : (
+                <>
+                  {rightTab === "preview" || rightTab === "terminal" ? null : !hasActiveWorktree ? (
+                    <NoLocalWorktree sessionId={activeSessionId} />
+                  ) : rightTab === "diff" ? (
+                    <DiffPanel key={activeSessionId} sessionId={activeSessionId} />
+                  ) : rightTab === "editor" ? (
+                    <IdePanel sessionId={activeSessionId} />
+                  ) : rightTab === "pullRequest" ? (
+                    <PullRequestPanel key={activeSessionId} sessionId={activeSessionId} />
+                  ) : (
+                    <GraphPanel key={activeSessionId} sessionId={activeSessionId} />
+                  )}
+                  {activeRemoteInstance && rightTab === "preview" ? <PreviewPanel key={activeSessionId} sessionId={activeSessionId} /> : null}
+                  {/* The terminal stays mounted while another tab shows, so switching tabs keeps its connection. */}
+                  {activeRemoteInstance ? <TerminalPanel key={activeSessionId} sessionId={activeSessionId} isVisible={rightTab === "terminal"} /> : null}
+                </>
               )}
             </div>
           </aside>
@@ -156,6 +156,16 @@ export function App() {
       ) : null}
     </>
   );
+}
+
+/** What the worktree tabs of a remote session show until Hunt copied its files here. */
+function NoLocalWorktree({ sessionId }: { sessionId: string }) {
+  const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
+  const message =
+    session?.remote && !session.repoPath
+      ? `There is no local checkout of ${session.remote.repo}. Start a session in one, then refresh the remote sessions in the sidebar; Hunt then copies this session's files here.`
+      : "Hunt copies the session's files here once it reached the VM; your next prompt starts the VM.";
+  return <div className="flex h-full items-center justify-center px-8 text-center text-[14px] text-neutral-500">{message}</div>;
 }
 
 function TabButton({ isActive, onClick, label }: { isActive: boolean; onClick: () => void; label: string }) {

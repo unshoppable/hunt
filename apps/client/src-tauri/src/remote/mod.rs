@@ -2,18 +2,19 @@
 //! provisions, starts and deletes the session VMs (`api.rs`),
 //! the names of the session VMs (`vm.rs`), the release check and tool install on them (`release.rs`), moving a session's
 //! git state and Claude Code transcript there and back (`handoff.rs`, `retrieve.rs`, `transcript.rs`), adopting session
-//! VMs no local session knows (`adoption.rs`), the changes on a VM (`diff.rs`), previews (`preview.rs`) and terminals
-//! attached to the VM's tmux session (`terminal.rs`). Knows nothing about Tauri; `session/commands.rs` owns the commands.
+//! VMs no local session knows (`adoption.rs`), keeping the files of the VM and the local worktree in sync (`sync.rs`),
+//! previews (`preview.rs`) and terminals attached to the VM's tmux session (`terminal.rs`). Knows nothing about Tauri;
+//! `session/commands.rs` owns the commands.
 
 pub mod adoption;
 pub mod api;
-pub mod diff;
 pub mod handoff;
 pub mod memory;
 pub mod preview;
 pub mod release;
 pub mod retrieve;
 pub mod ssh;
+pub mod sync;
 pub mod terminal;
 pub mod transcript;
 pub mod vm;

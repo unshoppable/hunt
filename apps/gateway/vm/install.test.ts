@@ -114,7 +114,7 @@ describe.skipIf(!hasDocker())("hunt-ctl install and stage-session on a gateway i
     expect(calls).toContain("systemctl enable --quiet hunt-swf.service hunt-api.service\n");
     expect(calls).toContain("systemctl reload-or-restart hunt-swf.service hunt-api.service\n");
     expect(calls).toContain("systemctl try-reload-or-restart ssh.service\n");
-    expect(JSON.parse(sh("hunt-ctl version").stdout)).toEqual({ version: "gateway@1.0.0", hash: hashOf(dir), protocol: 2 });
+    expect(JSON.parse(sh("hunt-ctl version").stdout)).toEqual({ version: "gateway@1.0.0", hash: hashOf(dir), protocol: 3 });
     expect(sh("hunt-ctl update").status).toBe(2);
   });
 

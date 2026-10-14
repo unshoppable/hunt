@@ -73,6 +73,8 @@ export function ChangeList({
   const session = sessions.find((candidate) => candidate.id === sessionId);
   const parentId = session?.parentId ?? null;
   const pullRequest = session?.pullRequest ?? null;
+  /** A remote session's local branch stays at its handoff commit; the agent commits on the VM. */
+  const isRemote = Boolean(session?.remote);
   const draftCount = useReviewDraftCount(sessionId);
   const [tab, setTab] = useState<Tab>("changes");
   /** Files are checked by default; only unchecked paths are stored so new files start checked. */
@@ -318,7 +320,13 @@ export function ChangeList({
             </button>
             {pullRequest ? null : (
               <>
-                <button type="button" disabled={!checkedPaths.length} onClick={() => void openFilesDialog("commit")} className={SECONDARY_BUTTON_XS} title="Commit the checked files on the session's branch">
+                <button
+                  type="button"
+                  disabled={!checkedPaths.length || isRemote}
+                  onClick={() => void openFilesDialog("commit")}
+                  className={SECONDARY_BUTTON_XS}
+                  title={isRemote ? "The agent commits on the VM; ask it in the chat." : "Commit the checked files on the session's branch"}
+                >
                   Commit…
                 </button>
                 <button type="button" disabled={!checkedPaths.length} onClick={() => void openFilesDialog("shelve")} className={SECONDARY_BUTTON_XS} title="Move the checked files to the shelf">

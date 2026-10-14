@@ -225,6 +225,12 @@ impl Ssh {
     pub fn git_url(&self, path: &str) -> String {
         format!("ssh://{}{}", self.vm.instance, path)
     }
+
+    /// The rsync location (`<host>:<path>`) of the absolute `path` on the VM, which rsync reaches with
+    /// `git_ssh_command` as its `-e`.
+    pub fn rsync_location(&self, path: &str) -> String {
+        format!("{}:{}", self.vm.instance, path)
+    }
 }
 
 /// The name `vm`'s host key is recorded under in Hunt's known hosts.
@@ -369,5 +375,6 @@ mod tests {
         assert!(command.contains("'ProxyCommand=gcloud compute start-iap-tunnel %h 22 --listen-on-stdin --project=acme-staging --zone=europe-west1-c --verbosity=warning'"));
         assert!(command.contains("'ControlPath=~/.ssh/hunt-%C'"));
         assert_eq!(ssh().git_url("/home/agent/app"), "ssh://vm-hunt/home/agent/app");
+        assert_eq!(ssh().rsync_location("/home/agent/app"), "vm-hunt:/home/agent/app");
     }
 }

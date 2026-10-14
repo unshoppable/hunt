@@ -104,6 +104,7 @@ export function useBackendEvents(): void {
   const applyGraphChanged = useHuntStore((state) => state.applyGraphChanged);
   const applySummary = useHuntStore((state) => state.applySummary);
   const applyRemoteProgress = useHuntStore((state) => state.applyRemoteProgress);
+  const applyRemoteSync = useHuntStore((state) => state.applyRemoteSync);
 
   useEffect(() => {
     const subscriptions = [
@@ -112,6 +113,7 @@ export function useBackendEvents(): void {
       listenTo("acp:permission-withdrawn", applyPermissionWithdrawn),
       listenTo("acp:closed", applyClosed),
       listenTo("remote:progress", applyRemoteProgress),
+      listenTo("remote:sync", applyRemoteSync),
       listenTo("graph:changed", (event) => applyGraphChanged(event.huntSessionId)),
       listenTo("session:summary", applySummary),
       listenTo("sessions:changed", () => void refreshSessions()),
@@ -129,6 +131,7 @@ export function useBackendEvents(): void {
     applyPermissionWithdrawn,
     applyClosed,
     applyRemoteProgress,
+    applyRemoteSync,
     applyGraphChanged,
     applySummary,
     applyAttributionChanged,

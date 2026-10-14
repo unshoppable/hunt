@@ -4,3 +4,4 @@ pub mod dependencies;
 pub mod review;
 pub mod store;
 pub mod summary;
+pub mod sync;

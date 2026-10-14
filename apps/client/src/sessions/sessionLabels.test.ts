@@ -27,6 +27,7 @@ function session(id: string, title: string, branch: string, parentId: string | n
     remote: null,
     leftoverVm: null,
     dependencies: null,
+    hasLocalWorktree: true,
   };
 }
 

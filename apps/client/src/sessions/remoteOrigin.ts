@@ -49,9 +49,13 @@ export function adoptedDeleteQuestion(session: SessionView): string {
   return `Delete session "${session.title}" and its VM ${instance}? ${warning}`;
 }
 
-/** The question before bringing the adopted `session` back, which deletes its VM for everybody. */
+/**
+ * The question before bringing the adopted `session` back, which deletes its VM for everybody; it continues in the local
+ * worktree its sync created, or in a new one.
+ */
 export function adoptedBringBackQuestion(session: SessionView): string {
   const instance = session.remote?.vm.instance ?? "";
   const warning = "Other people may be working on this session through Hunt; they lose it.";
-  return `Bring "${session.title}" back into a new worktree of ${repositoryLabel(session)}? Its VM ${instance} is deleted afterwards. ${warning}`;
+  const worktree = session.hasLocalWorktree ? "its local worktree in" : "a new worktree of";
+  return `Bring "${session.title}" back into ${worktree} ${repositoryLabel(session)}? Its VM ${instance} is deleted afterwards. ${warning}`;
 }

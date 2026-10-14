@@ -47,7 +47,7 @@ export type SessionView = {
    * which deleting the session keeps; otherwise Hunt created the branch and deletes it with the worktree.
    */
   keepsBranch: boolean;
-  /** Set while the session is handed off to a VM: its agent runs there and the local worktree waits for its retrieval. */
+  /** Set while the session is handed off to a VM: its agent runs there, and Hunt syncs its files with the local worktree. */
   remote: RemoteTarget | null;
   /**
    * The session VM a failed handoff left behind (also set while a handoff runs); the next handoff reuses it and
@@ -56,6 +56,8 @@ export type SessionView = {
   leftoverVm: VmRef | null;
   /** Progress of preparing the worktree's `node_modules`; `null` when nothing was or is being prepared. */
   dependencies: DependencyStatus | null;
+  /** Whether the session's worktree exists here; a remote session adopted from its VM gets one with its first sync. */
+  hasLocalWorktree: boolean;
 };
 
 /** What the preparation of a worktree's `node_modules` (clone from the repository, else install) is doing or ended with. */
@@ -167,13 +169,6 @@ export type RemoteTarget = {
   issue: number | null;
 };
 
-/**
- * The changes of a remote session on its VM (mirror of `RemoteChanges` in src-tauri/src/remote/diff.rs): the commit
- * they are compared against (the merge base with the handoff head or the default branch) and the changed files, sorted
- * by path. While the VM is off, `base` is null and `files` is empty.
- */
-export type RemoteChanges = { vmRunning: boolean; base: string | null; files: ChangedFile[] };
-
 /** A step of a handoff, a retrieval or a connect to a remote session that takes long enough to show. */
 export type RemoteStep =
   | "startingVm"
@@ -222,6 +217,13 @@ export type PreviewPort = { port: number; url: string };
  * the step, e.g. why the VM does not answer yet; `null` until it sends one.
  */
 export type RemoteProgressEvent = { huntSessionId: string; step: RemoteStep | null; detail: string | null };
+
+/**
+ * A sync of a remote session's files with its VM started (`isRunning`) or ended (mirror of `SyncEvent` in
+ * src-tauri/src/session/sync.rs): `syncedAt` when it succeeded, `error` when it failed, and `changedLocal` when it
+ * changed files of the local worktree.
+ */
+export type RemoteSyncEvent = { huntSessionId: string; isRunning: boolean; syncedAt: string | null; error: string | null; changedLocal: boolean };
 
 /** A chunk of a terminal's output: base64 of its bytes, which may end inside a UTF-8 or an escape sequence. */
 export type TerminalOutputEvent = { id: string; data: string };

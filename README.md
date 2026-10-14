@@ -356,7 +356,8 @@ session is then `ssh … sudo -n -u agent socat - UNIX-CONNECT:/run/hunt/relay.s
 client that connects later gets the conversation replayed, and the relay reports a running turn. Several clients, such
 as the Hunt apps of different people, can be attached at once: each gets every update live, their prompts run one after
 another, and a permission request goes to all of them; the first answer counts, and the relay withdraws the request from
-the others. Diff, editor, graph and guardrails stay local and wait until the session comes back.
+the others. The guardrails stay local and wait until the session comes back; diff, editor, graph and pull request work
+on the local worktree, which Hunt keeps in sync with the VM (below).
 
 Every session has a VM of its own, which is the isolation boundary: the agent works there as the user `agent`, with
 Docker and Docker Compose, and starts the services of the repository's `hunt.json` its task needs. `libs/vm/hunt-ctl`
@@ -462,16 +463,26 @@ the window that opened it as base64 chunks (`terminal:output`, then `terminal:ex
 shown, stays connected while the preview tab shows, and ends with the session's panel, its window or a reload; tmux
 keeps the processes running. A VM that is off is not started for it.
 
-The *Diff* tab of a remote session (`apps/client/src/diff/RemoteDiffPanel.tsx`) shows its changes on the VM read-only:
-committed and uncommitted, against the merge base of the VM's `HEAD` with the handoff head (for a session the poller
-started, with the origin's default branch). `apps/client/src-tauri/src/remote/diff.rs` runs one bash script per request
-as `agent` in the worktree on the VM and returns the shapes of the local changelist (`ChangedFile`, `FileDiff`). The
-list reloads after every turn that ends on the relay, whoever sent it, and on *Refresh*; a VM that is off starts only on
-request. Commit, revert, shelve and review comments stay switched off until the session is brought back.
+While a remote session is connected, Hunt syncs its files between the worktree on the VM and the local worktree in
+both directions (`apps/client/src-tauri/src/remote/sync.rs`, triggered by `apps/client/src-tauri/src/session/sync.rs`),
+so the *Diff*, *Editor*, *Dependency Graph* and *PR Description* tabs work as for a local session, next to *Preview* and
+*Terminal*, and edits made here reach the agent. Each side lists the files Git sees there (tracked and untracked, not
+ignored, so no `node_modules` or `.env*`) with size and modification time; the state after the last sync, kept in
+`remote-sync/<id>.json` in the app data folder, tells which side changed a file. A file changed here goes to the VM,
+also when the agent changed it too (the local version wins); a file changed only on the VM comes here; deletions
+follow the same rule. rsync (`hunt-ctl install-tools` installs it on the VM) copies the files over the session's SSH
+connection as `agent`; the listing and the deletions on the VM run as `agent` through `sudo`, so they do not keep the VM
+awake. Without a recorded state (the first sync after a handoff or an adoption) the VM's files replace the local ones.
+A sync runs when the session connects, after every tool call and turn the relay reports, every 10 seconds while a turn
+runs and after the watcher saw a local change; a prompt waits until local changes reached the VM. The local branch
+stays at the commit the session was handed off at, so the agent's commits show in the diff like its uncommitted work;
+committing and pushing stay with the agent, and the changelist's *Commit* is switched off for a remote session.
+The chat header shows when the last sync succeeded, and the chat shows a failure. A diagram refresh runs on the
+agent on the VM, against the local `HEAD`, and Hunt copies `.hunt/graph.json` back afterwards.
 
-Bringing it back (`retrieve_session`) stops the relay, snapshots the VM's worktree on top of the agent's commits
-(`refs/hunt/<id>/retrieve`), fetches it and applies it to the local worktree, which must still hold the handoff
-snapshot; the branch moves to the agent's last commit and the transcript returns. Then Hunt has the gateway delete the
+Bringing it back (`retrieve_session`) stops the relay, syncs once more, snapshots the VM's worktree on top of the
+agent's commits (`refs/hunt/<id>/retrieve`), fetches it and applies what the sync could not move to the local worktree;
+the branch moves to the agent's last commit and the transcript returns. Then Hunt has the gateway delete the
 VM with its disks (`vms.delete`), as it does when a remote session is deleted. A deletion that fails, for example
 offline, is kept in `remote-cleanups.json` in the app data folder and retried at the next start of Hunt, once the main
 window passed the remote settings. Hunt deletes no VM whose recorded name is not the session's `vm-hunt-s-<short id>`.
@@ -517,8 +528,8 @@ handoffs. An adopted session gets a record with origin `swf` or
 `desktop`, its title, branch and repository from the metadata and the local checkout among the recently used
 repositories whose `origin` is that repository; the sidebar labels it `swf #<issue>` or `remote`. Its worktree path on
 the VM comes from `/srv/hunt/sessions/<id>/meta.json` once Hunt reaches the VM, and the relay replays its conversation
-on `session/load`. Bringing it back creates a new worktree in the local checkout on the branch the VM has checked out
-and is offered only once a checkout is known. Deleting or bringing back an adopted session asks first, naming its VM,
+on `session/load`. Its first sync creates a new worktree in the local checkout on the branch the VM has checked out,
+from a snapshot of the VM's worktree, and bringing it back is offered only once a checkout is known. Deleting or bringing back an adopted session asks first, naming its VM,
 since other people may work on it; VMs this Mac deleted or still has to delete are never adopted again.
 
 A remote session keeps its VM, which costs only its disk while it is off, until it is retrieved or deleted. Hunt records

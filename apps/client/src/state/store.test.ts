@@ -31,6 +31,35 @@ describe("session summary", () => {
   });
 });
 
+describe("remote file sync", () => {
+  beforeEach(() => {
+    useHuntStore.setState({ chats: { [SESSION]: createEmptyChat() }, sessions: [], activeSessionId: null });
+  });
+
+  it("keeps the last success while a sync runs and reloads the views after one that changed local files", () => {
+    const { applyRemoteSync } = useHuntStore.getState();
+    applyRemoteSync({ huntSessionId: SESSION, isRunning: false, syncedAt: "2026-10-14T10:05:00Z", error: null, changedLocal: true });
+    applyRemoteSync({ huntSessionId: SESSION, isRunning: true, syncedAt: null, error: null, changedLocal: false });
+    const chat = useHuntStore.getState().chats[SESSION];
+    expect(chat.fileSync).toEqual({ isRunning: true, syncedAt: "2026-10-14T10:05:00Z", error: null });
+    expect(chat.editVersion).toBe(1);
+  });
+
+  it("records a failure until the next sync succeeds and leaves sessions without a chat alone", () => {
+    const { applyRemoteSync } = useHuntStore.getState();
+    applyRemoteSync({ huntSessionId: SESSION, isRunning: false, syncedAt: "2026-10-14T10:05:00Z", error: null, changedLocal: false });
+    const error = "failed to list the files on the VM";
+    applyRemoteSync({ huntSessionId: SESSION, isRunning: false, syncedAt: null, error, changedLocal: false });
+    expect(useHuntStore.getState().chats[SESSION].fileSync).toEqual({ isRunning: false, syncedAt: "2026-10-14T10:05:00Z", error });
+    applyRemoteSync({ huntSessionId: SESSION, isRunning: false, syncedAt: "2026-10-14T10:06:00Z", error: null, changedLocal: false });
+    expect(useHuntStore.getState().chats[SESSION].fileSync.error).toBeNull();
+    expect(useHuntStore.getState().chats[SESSION].editVersion).toBe(0);
+
+    applyRemoteSync({ huntSessionId: "other", isRunning: true, syncedAt: null, error: null, changedLocal: false });
+    expect(useHuntStore.getState().chats.other).toBeUndefined();
+  });
+});
+
 describe("acp update reducer", () => {
   beforeEach(() => {
     useHuntStore.setState({ chats: {}, sessions: [], activeSessionId: null });
@@ -254,6 +283,7 @@ function storedSession(id: string, title: string): SessionView {
     remote: null,
     leftoverVm: null,
     dependencies: null,
+    hasLocalWorktree: true,
   };
 }
 

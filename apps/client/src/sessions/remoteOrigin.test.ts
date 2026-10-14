@@ -69,5 +69,7 @@ describe("adopted session questions", () => {
     const adopted = session({ origin: "desktop" });
     expect(adoptedDeleteQuestion(adopted)).toMatch(/^Delete session "Fix login" and its VM vm-hunt-s-ab12cd34\? Other people/);
     expect(adoptedBringBackQuestion(adopted)).toMatch(/new worktree of app-framework\? Its VM vm-hunt-s-ab12cd34 is deleted afterwards\. Other people/);
+    const synced = session({ origin: "desktop" }, { hasLocalWorktree: true });
+    expect(adoptedBringBackQuestion(synced)).toMatch(/back into its local worktree in app-framework\? Its VM/);
   });
 });

@@ -22,6 +22,9 @@ const GRAPH_DIR: &str = ".hunt";
 const LEGACY_GRAPH_DIR: &str = ".harness";
 const GRAPH_FILE: &str = "graph.json";
 const SCHEMA_FILE: &str = "graph.schema.json";
+/// The diagram and its schema relative to the worktree, which the sync of a remote session copies explicitly.
+pub const GRAPH_PATH: &str = ".hunt/graph.json";
+pub const SCHEMA_PATH: &str = ".hunt/graph.schema.json";
 
 /// JSON schema of the diagram file; written into `.hunt/` so the agent can read it, and the
 /// frontend validates against the same shape.

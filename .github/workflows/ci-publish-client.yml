@@ -4,6 +4,8 @@
 #   1. build    – the Apple Silicon DMG plus the updater artifacts (Hunt.app.tar.gz, its .sig and latest.json) on a
 #                 draft release with the version's section of apps/client/CHANGELOG.md.
 #   2. publish  – publishes the draft once every target built; running installs then offer the update.
+# The release is created and published with the token of the release GitHub App (secrets RELEASE_APP_ID,
+# RELEASE_APP_PRIVATE_KEY): GITHUB_TOKEN may not create one on a commit range that changed workflow files.
 # TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD sign the updater artifacts with the key whose public
 # half is in tauri.conf.json. Code signing is enabled by adding APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD,
 # APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID as repository secrets and passing them through `env`.
@@ -72,9 +74,16 @@ jobs:
             echo 'NOTES'
           } >> "$GITHUB_OUTPUT"
 
+      - name: Generate the release token
+        id: release-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.release-token.outputs.token }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
@@ -98,8 +107,15 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Generate the release token
+        id: release-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - name: Publish the draft
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
           VERSION: ${{ inputs.version }}
         run: gh release edit "client@$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false --latest

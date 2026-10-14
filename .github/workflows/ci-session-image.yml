@@ -4,9 +4,9 @@
 # grants sa-image-hunt). Over SSH through IAP the job hands it the session release, runs that release's
 # `hunt-ctl install-tools`, seals the VM (`hunt-image-seal` of the base setup removes tokens, logs and the machine ID and
 # powers it off) and takes the image from its disk. The build is skipped when the newest image holds the tools of the
-# release already: its label hunt-tools is a hash of the files that pin them. ci-release calls it after a release was
-# deployed; workflow_dispatch builds on demand, also when the tools are current. The base setup runs again on every boot
-# of a session VM, so a change to it needs no new image.
+# release already: its label hunt-tools is a hash of the files that pin them. ci-release starts it after a release was
+# deployed (force false); dispatched by hand it builds also when the tools are current. The base setup runs again on
+# every boot of a session VM, so a change to it needs no new image.
 name: 🖼️ CI | Session image
 run-name: "session image (${{ inputs.ref || 'deployed/prod' }})"
 
@@ -17,12 +17,10 @@ on:
         description: 'Commit or tag on master to build from (default: deployed/prod)'
         type: string
         required: false
-  workflow_call:
-    inputs:
-      ref:
-        description: 'Commit to build from'
-        type: string
-        required: true
+      force:
+        description: 'Build also when the newest image holds the tools of the release already'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -54,7 +52,7 @@ jobs:
         shell: bash
     env:
       VM: vm-hunt-image-${{ github.run_id }}
-      IS_FORCED: ${{ github.event_name == 'workflow_dispatch' }}
+      IS_FORCED: ${{ inputs.force }}
     steps:
       - uses: actions/checkout@v4
         with:

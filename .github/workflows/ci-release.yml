@@ -2,8 +2,11 @@
 # touch it (independent versions, <app>@<version> tags, a CHANGELOG.md per app), commits and tags. A release commit
 # then deploys the server apps (gateway, session) affected since the commit deployed last, deployed/prod, onto the
 # gateway VM over SSH (ci-nx-affected-deploy), publishes the desktop app when it got a client tag, and moves
-# deployed/prod onto the release once every deploy succeeded. After the deploy it builds the session VMs' image when the
-# release changed the agent's tools (ci-session-image); a failed image build holds back nothing else.
+# deployed/prod onto the release once every deploy succeeded. After the deploy it starts the build of the session VMs'
+# image (ci-session-image) as a run of its own, which builds only when the release changed the agent's tools; neither a
+# long nor a failed image build holds back a later release. Moving deployed/prod and publishing the desktop app take the
+# token of the release GitHub App (secrets RELEASE_APP_ID, RELEASE_APP_PRIVATE_KEY), as in app-framework: GITHUB_TOKEN
+# may not move a ref across commits that change workflow files.
 name: 📦 CI | Release
 
 on:
@@ -71,12 +74,17 @@ jobs:
 
   session-image:
     needs: [release, deploy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/ci-session-image.yml
-    with:
-      ref: ${{ needs.release.outputs.release_sha }}
+      actions: write
+    steps:
+      # Of the events GITHUB_TOKEN raises, only workflow_dispatch and repository_dispatch start a run.
+      - name: Start the image build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.release.outputs.release_sha }}
+        run: gh workflow run ci-session-image.yml --repo "$GITHUB_REPOSITORY" --ref master -f ref="$RELEASE_SHA" -f force=false
 
   publish-client:
     needs: release
@@ -93,12 +101,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: write
+      contents: read
     steps:
+      - name: Generate the release token
+        id: release-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ needs.release.outputs.release_sha }}
+          token: ${{ steps.release-token.outputs.token }}
 
       - name: Move the deploy tag
         run: |

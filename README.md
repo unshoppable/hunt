@@ -119,8 +119,9 @@ patch, `!` or `BREAKING CHANGE` → major), independently per app: it writes the
 - deploys the VM apps (`gateway`, `session`) affected since the commit the VMs run, the tag `deployed/prod`
   ([`ci-nx-affected-deploy.yml`](.github/workflows/ci-nx-affected-deploy.yml),
   [`ci-build-and-deploy.yml`](.github/workflows/ci-build-and-deploy.yml)), and moves the tag;
-- builds the image new session VMs boot from, family `img-hunt-session`, when the session release changed the agent's
-  tools ([`ci-session-image.yml`](.github/workflows/ci-session-image.yml), also `workflow_dispatch`): a build VM from
+- starts a run of [`ci-session-image.yml`](.github/workflows/ci-session-image.yml) (also `workflow_dispatch`), so that
+  a long image build holds back no later release. It builds the image new session VMs boot from, family
+  `img-hunt-session`, when the session release changed the agent's tools (by hand also when not): a build VM from
   `tpl-hunt-session` runs the infrastructure repository's base setup, gets the release over SSH through IAP, runs its
   `hunt-ctl install-tools` and is sealed (`hunt-image-seal`), and its disk becomes the image, labelled `hunt-tools`
   (a hash of the files that pin the tools). It runs as `sa-image-hunt`, which only master may use. The newest three
@@ -138,7 +139,10 @@ Rust tests on macOS.
 
 The updater artifacts are signed with the key whose public half is in `apps/client/src-tauri/tauri.conf.json`
 (`plugins.updater.pubkey`); the workflow reads the private key from the repository secrets `TAURI_SIGNING_PRIVATE_KEY`
-and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. A local build only produces them with the same two variables set and
+and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Moving `deployed/prod` and creating and publishing the GitHub Release take
+the token of the release GitHub App, from the secrets `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` (permissions
+Contents and Workflows, read and write, installed on this repository), as in app-framework: `GITHUB_TOKEN` may not move a
+ref across commits that change workflow files. A local build only produces them with the same two variables set and
 `apps/client/src-tauri/tauri.release.conf.json` as an extra config
 (`npm run tauri -- build --config src-tauri/tauri.release.conf.json`, relative to `apps/client`). Losing the key means
 shipping a new key with a DMG that users install by hand.

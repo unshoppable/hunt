@@ -8,7 +8,8 @@
  * (`vm/hunt-api`), which runs the forwarder `apiClient.ts` as hunt-gw through sudo. The forwarder sends one line
  * `{caller, method, params}` over the socket, which only hunt-gw can open, with sudo's SUDO_USER as the caller, and
  * copies the NDJSON events of the answer to stdout. The methods that touch session VMs go through the orchestrator
- * (`orchestrator.ts`) and run on when their caller disconnects. A request's log lines and its outcome go to stdout (journald).
+ * (`orchestrator.ts`) and run on when their caller disconnects. A request's log lines and its outcome, every Compute
+ * Engine call and every command on a session VM go to the journal (`journal.ts`).
  * SIGHUP (the unit's reload, after an install) closes the socket and exits once the running requests ended, so that
  * systemd starts the new release. Runs on Node 24 through type stripping; no dependencies.
  */
@@ -20,6 +21,7 @@ import { messageOf } from "../../../libs/domain/src/errors.ts";
 import type { ApiEvent, HelloResult } from "../../../libs/domain/src/gatewayApi.ts";
 import { ApiError, encodeEvent, errorEvent, MAX_REQUEST_BYTES, parseRequest, SOCKET_PATH, type ApiRequest } from "./apiProtocol.ts";
 import { createCompute, createMetadata } from "./gcp.ts";
+import { writeLog } from "./journal.ts";
 import { DEFAULT_TEMPLATE, Orchestrator, type Reporter } from "./orchestrator.ts";
 import { readDomain } from "./previewDomain.ts";
 import { ensureSshKey, sessionVm } from "./sessionVm.ts";
@@ -180,15 +182,15 @@ function readRelease(): string {
 }
 
 async function main(): Promise<void> {
-  const log = (message: string) => console.log(`hunt-api: ${message}`);
+  const log = writeLog;
   ensureSshKey("hunt-api");
   const metadata = createMetadata();
   const location = { project: await metadata.project(), zone: await metadata.zone() };
-  const compute = createCompute(metadata);
+  const compute = createCompute(metadata, fetch, log);
   const orchestrator = new Orchestrator({
     compute,
     location,
-    vm: (name) => sessionVm(name, location),
+    vm: (name) => sessionVm(name, location, log),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: Date.now,
   });
@@ -218,7 +220,7 @@ async function main(): Promise<void> {
 // Node resolves the symlink /srv/hunt/current in the module's URL, not in argv.
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error: unknown) => {
-    console.log(`hunt-api: ${messageOf(error)}`);
+    writeLog(messageOf(error));
     process.exit(1);
   });
 }

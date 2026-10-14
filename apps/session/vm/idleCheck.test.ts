@@ -166,7 +166,7 @@ describe("hunt-idle-check", () => {
   });
 
   it("powers off through systemctl only without --dry-run and refuses other arguments", () => {
-    expect(run({}, [])).toMatchObject({ status: 0, stdout: `hunt-idle-check: ${POWEROFF.slice("poweroff: ".length)}; powering off`, systemctl: "poweroff\n" });
+    expect(run({}, [])).toMatchObject({ status: 0, stdout: `${POWEROFF.slice("poweroff: ".length)}; powering off`, systemctl: "poweroff\n" });
     expect(run({ status: { turn: "running" } }, [])).toMatchObject({ status: 0, stdout: "", systemctl: "" });
     expect(run({}, ["--now"])).toMatchObject({ status: 2, stderr: "usage: hunt-idle-check [--dry-run]\n", systemctl: "" });
   });

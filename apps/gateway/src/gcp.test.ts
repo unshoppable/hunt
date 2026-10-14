@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createCompute,
   createMetadata,
+  describeComputeCall,
   mergeMetadataItems,
   metadataValue,
   parseAccessToken,
@@ -228,6 +229,39 @@ describe("createCompute", () => {
     expect(await compute.get("vm-hunt-s-00000000")).toBeNull();
     await expect(compute.setMetadata("vm-hunt-s-ab12cd34", "fp1", [])).rejects.toThrow("failed to set the metadata of vm-hunt-s-ab12cd34: HTTP 412");
     expect(requests.at(-1)?.body).toEqual({ fingerprint: "fp1", items: [] });
+  });
+});
+
+describe("Compute Engine log", () => {
+  it("names the resource and filter of a call without base, project and zone", () => {
+    expect(describeComputeCall(`${ZONE_URL}/instances/vm-hunt-s-ab12cd34/start`)).toBe("instances/vm-hunt-s-ab12cd34/start");
+    expect(describeComputeCall(`${ZONE_URL}/instances?filter=${encodeURIComponent('labels.hunt-origin = "swf"')}&pageToken=p2`)).toBe(
+      'instances, filter labels.hunt-origin = "swf"',
+    );
+    expect(
+      describeComputeCall(
+        `https://compute.googleapis.com/compute/v1/projects/medconomy-hunt/aggregated/instances?returnPartialSuccess=true&filter=${encodeURIComponent("labels.a = b")}`,
+      ),
+    ).toBe("aggregated/instances, filter labels.a = b");
+  });
+
+  it("logs every call with its HTTP status or why it failed, and the duration", async () => {
+    const instance = `${ZONE_URL}/instances/vm-hunt-s-ab12cd34`;
+    const { fetchImpl } = fakeFetch({
+      [`GET ${instance}`]: () => new Response("not found", { status: 404 }),
+      [`POST ${instance}/start`]: () => Response.json({ kind: "compute#operation" }),
+    });
+    const lines: string[] = [];
+    const compute = createCompute(fixedMetadata, fetchImpl, (message) => lines.push(message));
+
+    expect(await compute.get("vm-hunt-s-ab12cd34")).toBeNull();
+    await compute.start("vm-hunt-s-ab12cd34");
+    await expect(compute.stop("vm-hunt-s-ab12cd34")).rejects.toThrow("unexpected request");
+    expect(lines.map((line) => line.replace(/\d+ ms/, "N ms"))).toEqual([
+      "Compute Engine GET instances/vm-hunt-s-ab12cd34: HTTP 404 in N ms",
+      "Compute Engine POST instances/vm-hunt-s-ab12cd34/start: HTTP 200 in N ms",
+      `Compute Engine POST instances/vm-hunt-s-ab12cd34/stop: failed after N ms: unexpected request POST ${instance}/stop`,
+    ]);
   });
 });
 

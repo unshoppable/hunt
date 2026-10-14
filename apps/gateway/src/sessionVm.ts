@@ -124,31 +124,40 @@ function tail(text: string): string {
   return text.trim().split("\n").slice(-STDERR_TAIL_LINES).join("\n");
 }
 
-/** Runs `program` with `args`, `input` on stdin; resolves with stdout, rejects with the end of stderr. */
-function run(program: string, args: string[], input: Buffer | string, timeoutMs: number, what: string): Promise<Buffer> {
+/**
+ * Runs `program` with `args`, `input` on stdin; resolves with stdout, rejects with the end of stderr. `log` hears the
+ * outcome and the duration.
+ */
+function run(program: string, args: string[], input: Buffer | string, timeoutMs: number, what: string, log: (message: string) => void): Promise<Buffer> {
+  const startedAt = Date.now();
   return new Promise((resolve, reject) => {
     const child = spawn(program, args, { stdio: ["pipe", "pipe", "pipe"] });
     const stdout: Buffer[] = [];
     let stderr = "";
+    let isSettled = false;
+    const fail = (reason: string) => {
+      clearTimeout(timer);
+      if (isSettled) return;
+      isSettled = true;
+      log(`${what}: failed after ${Date.now() - startedAt} ms: ${reason}`);
+      reject(new Error(`failed to ${what}: ${reason}`));
+    };
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      reject(new Error(`failed to ${what}: no result within ${Math.round(timeoutMs / 60_000)} minutes`));
+      fail(`no result within ${Math.round(timeoutMs / 60_000)} minutes`);
     }, timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => {
       stderr = (stderr + chunk.toString()).slice(-8192);
     });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(new Error(`failed to ${what}: ${error.message}`));
-    });
+    child.on("error", (error) => fail(error.message));
     child.on("close", (code) => {
+      if (code !== 0) return fail(`exit status ${code}${stderr.trim() ? `\n${tail(stderr)}` : ""}`);
       clearTimeout(timer);
-      if (code === 0) {
-        resolve(Buffer.concat(stdout));
-      } else {
-        reject(new Error(`failed to ${what}: exit status ${code}${stderr.trim() ? `\n${tail(stderr)}` : ""}`));
-      }
+      if (isSettled) return;
+      isSettled = true;
+      log(`${what}: ok in ${Date.now() - startedAt} ms`);
+      resolve(Buffer.concat(stdout));
     });
     child.stdin.on("error", () => {});
     child.stdin.end(input);
@@ -177,8 +186,10 @@ const HOUR_MS = 60 * 60_000;
 const READY_POLL_MS = 10_000;
 const READY_FAILURE_REPORT_MS = 60_000;
 
-export function sessionVm(vm: string, location: VmLocation): SessionVm {
-  const gcloud = (command: string, input: Buffer | string, timeoutMs: number, what: string) => run("gcloud", sshArgs(vm, location, command), input, timeoutMs, what);
+/** The session VM `vm`; `log` hears every command run there, with its outcome and duration. */
+export function sessionVm(vm: string, location: VmLocation, log: (message: string) => void = () => {}): SessionVm {
+  const gcloud = (command: string, input: Buffer | string, timeoutMs: number, what: string) =>
+    run("gcloud", sshArgs(vm, location, command), input, timeoutMs, what, log);
 
   const self: SessionVm = {
     async run(command, input = "", timeoutMs = 10 * 60_000) {
@@ -200,7 +211,8 @@ export function sessionVm(vm: string, location: VmLocation): SessionVm {
       let reportedAt = -Infinity;
       while (Date.now() < deadline) {
         try {
-          if ((await self.run(`test -e ${READY_STAMP} && echo ready || true`, "", 2 * 60_000)).trim() === "ready") return;
+          const answer = await gcloud(`test -e ${READY_STAMP} && echo ready || true`, "", 2 * 60_000, `check the ready stamp of ${vm}`);
+          if (answer.toString("utf8").trim() === "ready") return;
         } catch (error) {
           reason = (error as Error).message;
           if (Date.now() - reportedAt >= READY_FAILURE_REPORT_MS) {
@@ -219,10 +231,10 @@ export function sessionVm(vm: string, location: VmLocation): SessionVm {
     },
     async ensureRelease(onInstall) {
       const staged = readStagedRelease();
-      const installed = (await self.run(`cat ${INSTALLED_HASH} 2>/dev/null || true`, "", 2 * 60_000)).trim();
+      const installed = (await gcloud(`cat ${INSTALLED_HASH} 2>/dev/null || true`, "", 2 * 60_000, `read the installed release of ${vm}`)).toString("utf8").trim();
       if (installed === staged.hash) return staged.info;
       onInstall?.();
-      const archive = await run("tar", ["-czf", "-", "-C", staged.dir, "."], "", 5 * 60_000, "pack the session release");
+      const archive = await run("tar", ["-czf", "-", "-C", staged.dir, "."], "", 5 * 60_000, "pack the session release", log);
       const what = `install the session release ${staged.info.version ?? staged.hash} on ${vm}`;
       const output = (await gcloud(shellCommand("sudo", ["-n", "sh", "-c", installScript(staged.hash)]), archive, HOUR_MS, what)).toString("utf8").trim();
       let result: { hash?: unknown } | null = null;
@@ -240,14 +252,20 @@ export function sessionVm(vm: string, location: VmLocation): SessionVm {
         for (const [name, text] of Object.entries(files)) {
           writeFileSync(join(dir, name), text, { mode: 0o600 });
         }
-        const archive = await run("tar", ["-czf", "-", "-C", dir, "."], "", 60_000, "pack the session files");
+        const archive = await run("tar", ["-czf", "-", "-C", dir, "."], "", 60_000, "pack the session files", log);
         await self.huntCtl(["put-files", id, "--claude"], archive);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
     },
     openRelay() {
+      const startedAt = Date.now();
       const child = spawn("gcloud", sshArgs(vm, location, RELAY_COMMAND), { stdio: ["pipe", "pipe", "pipe"] });
+      child.on("error", (error) => log(`connect to the relay of ${vm}: failed: ${error.message}`));
+      child.on("close", (code) => {
+        const outcome = code ? `ended with exit status ${code}${stderr.trim() ? `\n${tail(stderr)}` : ""}` : "ended";
+        log(`connection to the relay of ${vm}: ${outcome} after ${Date.now() - startedAt} ms`);
+      });
       let stderr = "";
       child.stdout.setEncoding("utf8");
       child.stderr.on("data", (chunk: Buffer) => {

@@ -9,6 +9,8 @@ After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
+# Names the service's journal entries; Cloud Logging shows it as the label service.
+SyslogIdentifier=hunt-relay
 User=agent
 Group=agent
 WorkingDirectory=/home/agent

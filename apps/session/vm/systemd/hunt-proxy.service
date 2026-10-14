@@ -9,6 +9,8 @@ Wants=network-online.target
 ConditionPathExists=/etc/hunt/caddy.json
 
 [Service]
+# Names the service's journal entries; Cloud Logging shows it as the label service.
+SyslogIdentifier=hunt-proxy
 Type=notify
 DynamicUser=yes
 RuntimeDirectory=hunt-proxy

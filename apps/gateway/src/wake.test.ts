@@ -151,9 +151,9 @@ describe("createWakeServer", () => {
   });
 
   it("listens on 127.0.0.1:9180 when run as a script", async () => {
-    const child = spawn(process.execPath, [fileURLToPath(new URL("./wake.ts", import.meta.url))], { stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(process.execPath, [fileURLToPath(new URL("./wake.ts", import.meta.url))], { stdio: ["ignore", "pipe", "ignore"] });
     close = () => child.kill();
-    const line = await new Promise<string>((resolve) => child.stderr.once("data", (chunk: Buffer) => resolve(chunk.toString())));
-    expect(line).toMatch(/^hunt-wake: (listening on 127\.0\.0\.1:9180|failed to serve 127\.0\.0\.1:9180: .*EADDRINUSE)/);
+    const line = await new Promise<string>((resolve) => child.stdout.once("data", (chunk: Buffer) => resolve(chunk.toString())));
+    expect(line).toMatch(/^(listening on 127\.0\.0\.1:9180|failed to serve 127\.0\.0\.1:9180: .*EADDRINUSE)/);
   });
 });

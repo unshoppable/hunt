@@ -7,6 +7,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# Names the service's journal entries; Cloud Logging shows it as the label service.
+SyslogIdentifier=hunt-wake
 User=hunt-gw
 Group=hunt-gw
 ExecStart=/opt/hunt/node/bin/node /srv/hunt/current/gateway/wake.mjs

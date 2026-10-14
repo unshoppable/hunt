@@ -17,6 +17,7 @@ import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Serv
 import { fileURLToPath } from "node:url";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import { createCompute, createMetadata, type Compute } from "./gcp.ts";
+import { writeLog } from "./journal.ts";
 
 export const LISTEN_HOST = "127.0.0.1";
 export const LISTEN_PORT = 9180;
@@ -168,8 +169,8 @@ export function createWakeServer(waker: Waker, log: (message: string) => void): 
 }
 
 function main(): void {
-  const log = (message: string) => console.error(`hunt-wake: ${message}`);
-  const server = createWakeServer(new Waker({ compute: createCompute(createMetadata()), now: Date.now, log }), log);
+  const log = writeLog;
+  const server = createWakeServer(new Waker({ compute: createCompute(createMetadata(), fetch, log), now: Date.now, log }), log);
   server.on("error", (error) => {
     log(`failed to serve ${LISTEN_HOST}:${LISTEN_PORT}: ${error.message}`);
     process.exit(1);

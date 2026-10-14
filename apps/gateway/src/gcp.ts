@@ -4,6 +4,7 @@
  * tokens) and Compute Engine (the session VMs in the gateway's project and zone). Plain REST through `fetch`; no
  * dependencies.
  */
+import { messageOf } from "../../../libs/domain/src/errors.ts";
 
 const METADATA = "http://metadata.google.internal/computeMetadata/v1";
 const COMPUTE = "https://compute.googleapis.com/compute/v1";
@@ -233,7 +234,19 @@ export function metadataValue(instance: Instance, key: string): string | null {
   return instance.metadata.items.find((item) => item.key === key)?.value ?? null;
 }
 
-export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetch): Compute {
+/**
+ * The resource and filter of the Compute Engine call `url` for the log, without the API's base, the project and the zone:
+ * e.g. `instances/vm-hunt-s-ab12cd34/start` or `aggregated/instances, filter labels.hunt-role = "session"`.
+ */
+export function describeComputeCall(url: string): string {
+  const parsed = new URL(url);
+  const path = decodeURIComponent(parsed.pathname.replace(/^\/compute\/v1\/projects\/[^/]+\/(zones\/[^/]+\/)?/, ""));
+  const filter = parsed.searchParams.get("filter");
+  return filter ? `${path}, filter ${filter}` : path;
+}
+
+/** `log` hears one line per API call: method, resource, HTTP status (or why the call failed) and duration. */
+export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetch, log: (message: string) => void = () => {}): Compute {
   async function zoneUrl(): Promise<string> {
     return `${COMPUTE}/projects/${encodeURIComponent(await metadata.project())}/zones/${encodeURIComponent(await metadata.zone())}`;
   }
@@ -243,7 +256,16 @@ export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetc
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
     }
-    return fetchImpl(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    const what = `Compute Engine ${method} ${describeComputeCall(url)}`;
+    const startedAt = Date.now();
+    try {
+      const response = await fetchImpl(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      log(`${what}: HTTP ${response.status} in ${Date.now() - startedAt} ms`);
+      return response;
+    } catch (error) {
+      log(`${what}: failed after ${Date.now() - startedAt} ms: ${messageOf(error)}`);
+      throw error;
+    }
   }
 
   async function instanceUrl(name: string): Promise<string> {

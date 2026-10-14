@@ -26,8 +26,9 @@ import { HEARTBEAT_INTERVAL_MS, writeStatusFile } from "./status.ts";
 const STOP_TIMEOUT_MS = 10_000;
 const SOCKET_MODE = 0o660;
 
+/** Writes to stderr, which systemd hands to the journal under the unit's SyslogIdentifier. */
 function log(message: string): void {
-  console.error(`hunt-relay: ${message}`);
+  console.error(message);
 }
 
 function requireEnv(name: string): string {

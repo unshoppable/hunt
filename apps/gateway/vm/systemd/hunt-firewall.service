@@ -16,6 +16,8 @@ Description=Block the metadata server for everyone on Hunt's gateway but root an
 Before=docker.service
 
 [Service]
+# Names the service's journal entries; Cloud Logging shows it as the label service.
+SyslogIdentifier=hunt-firewall
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=-/usr/sbin/iptables -w -N HUNT-METADATA

@@ -33,6 +33,9 @@ readonly MAX_DOMAIN_LENGTH=238
 readonly REPORTED=3
 # The SYSLOG_IDENTIFIER of hunt-ctl's lines in the journal, which the infrastructure's Ops Agent ships to Cloud Logging.
 readonly LOG_TAG=hunt-ctl
+# How many of the last stderr lines of a failed command the journal gets, each cut to this many characters.
+readonly STDERR_LOG_LINES=20
+readonly STDERR_LINE_LIMIT=500
 # A session id: a lowercase UUID.
 readonly ID_PATTERN='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
@@ -118,6 +121,11 @@ logs_success=true
 started_us=0
 # Where the command failed, for the journal; see record_failure.
 failure=
+# The tokens read from stdin in this run; redact removes them from what reaches the journal.
+secrets=()
+# The tee that copies stderr into stderr_file, and that file; see capture_stderr.
+stderr_tee=
+stderr_file=
 
 usage() {
   cat >&2 <<'USAGE'
@@ -186,8 +194,7 @@ die() {
 }
 
 # Records where the command failed for the journal: $1, if given, then the calls from the caller of its caller outwards
-# as ` at <function>:<line> < <function>:<line> …`. The message of a failure stays out of the journal, since it may
-# quote arguments or stdin. A subshell records nothing; the command that ran it fails in turn.
+# as ` at <function>:<line> < <function>:<line> …`. A subshell records nothing; the command that ran it fails in turn.
 record_failure() {
   local index separator=' at '
   (( BASH_SUBSHELL == 0 )) || return 0
@@ -209,8 +216,8 @@ report_failure() {
 }
 
 # Writes `<log_subject>: <message>` to the journal with the syslog priority $1 (info or err). It never fails and prints
-# nothing, also where no syslog socket exists. Messages carry neither stdin nor tokens, only arguments that cannot hold
-# a secret; the source text of a failing command names variables, not their values.
+# nothing, also where no syslog socket exists. Messages carry no stdin, only arguments that cannot hold a secret and, for
+# a failure, the end of stderr after redact; the source text of a failing command names variables, not their values.
 log() {
   local priority=$1
   shift
@@ -221,10 +228,49 @@ elapsed_ms() {
   printf '%s\n' $(( (${EPOCHREALTIME//[!0-9]/} - started_us) / 1000 ))
 }
 
+# Prints the text on stdin with the tokens of this run and well-known token formats replaced by [redacted]: GitHub and
+# Anthropic tokens, Google access tokens, bearer tokens and the password of a URL.
+redact() {
+  local text secret
+  text=$(cat)
+  for secret in "${secrets[@]}"; do
+    [[ -n $secret ]] || continue
+    text=${text//"$secret"/[redacted]}
+  done
+  sed -E \
+    -e 's/\b(gh[pousr]_|github_pat_|sk-ant-)[A-Za-z0-9_-]+/[redacted]/g' \
+    -e 's/\bya29\.[A-Za-z0-9._-]+/[redacted]/g' \
+    -e 's/\b(bearer[[:space:]]+)[^[:space:]"]+/\1[redacted]/gI' \
+    -e 's#(://[^/:@[:space:]]+:)[^/@[:space:]]+@#\1[redacted]@#g' \
+    -e 's/(x-access-token:)[^@[:space:]]+@/\1[redacted]@/g' <<<"$text"
+}
+
+# Copies everything the command writes to stderr into stderr_file as well, for the journal lines of a failure; fd 4
+# keeps the original stderr.
+capture_stderr() {
+  local dir
+  make_scratch_dir dir
+  stderr_file=$dir/stderr
+  exec 4>&2 2> >(exec tee -a -- "$stderr_file" >&4)
+  stderr_tee=$!
+}
+
 on_exit() {
-  local status=$? path
+  local status=$? path line
+  if [[ -n $stderr_tee ]]; then
+    # With nothing writing to the tee any more it ends, and stderr_file holds all of stderr. Streaming commands wrote
+    # their stdout already.
+    exec 1>&4 2>&4
+    wait "$stderr_tee" 2>/dev/null || true
+  fi
   if (( status != 0 )); then
     log err "failed with exit status $status after $(elapsed_ms) ms$failure"
+    if [[ -n $stderr_file ]]; then
+      while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        log err "stderr: ${line:0:$STDERR_LINE_LIMIT}"
+      done < <(tail -n "$STDERR_LOG_LINES" -- "$stderr_file" 2>/dev/null | redact 2>/dev/null)
+    fi
   elif $logs_success; then
     log info "finished in $(elapsed_ms) ms"
   fi
@@ -705,6 +751,7 @@ read_tokens() {
   github_token=
   IFS= read -r claude_token || true
   IFS= read -r github_token || true
+  secrets+=("$claude_token" "$github_token")
   [[ $claude_token != *[[:space:]]* ]] || die "invalid Claude Code OAuth token on stdin: it contains whitespace"
   [[ $github_token != *[[:space:]]* ]] || die "invalid GitHub token on stdin: it contains whitespace"
 }
@@ -888,6 +935,7 @@ cmd_clone() {
   require_repository_key "$repo"
   { [[ $branch != -* ]] && git check-ref-format --branch "$branch" >/dev/null 2>&1; } || die "invalid branch: $branch"
   IFS= read -r token || true
+  secrets+=("$token")
   [[ $token =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid GitHub token on stdin: expected one line of letters, digits, _, . and -"
   current_hash >/dev/null
   log info "cloning $repo onto branch $branch"
@@ -1475,6 +1523,7 @@ main() {
   fi
   started_us=${EPOCHREALTIME//[!0-9]/}
   trap on_exit EXIT
+  capture_stderr
   if $logs_success; then
     log info started
   fi

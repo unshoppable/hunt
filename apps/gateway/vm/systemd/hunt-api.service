@@ -9,6 +9,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# Names the service's journal entries; Cloud Logging shows it as the label service.
+SyslogIdentifier=hunt-api
 User=hunt-gw
 Group=hunt-gw
 RuntimeDirectory=hunt-api

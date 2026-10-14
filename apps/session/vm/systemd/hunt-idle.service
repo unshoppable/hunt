@@ -2,5 +2,7 @@
 Description=Power off the session VM once its session is idle
 
 [Service]
+# Names the service's journal entries; Cloud Logging shows it as the label service.
+SyslogIdentifier=hunt-idle
 Type=oneshot
 ExecStart=/srv/hunt/current/vm/hunt-idle-check

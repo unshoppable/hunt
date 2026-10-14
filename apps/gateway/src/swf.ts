@@ -17,8 +17,8 @@
  *
  * The GitHub token (`HUNT_SWF_GITHUB_TOKEN`) and the Claude Code OAuth token (`HUNT_SWF_CLAUDE_TOKEN`) come from Secret
  * Manager; project, zone, access token and configuration from the metadata server; the preview domain from what
- * `hunt-ctl install` wrote (`previewDomain.ts`). One log line per decision goes to stdout (journald); tokens never
- * appear in logs or comments. SIGHUP (the unit's reload, after an install) makes the poller exit once the sessions it
+ * `hunt-ctl install` wrote (`previewDomain.ts`). One log line per decision, Compute Engine call and command on a
+ * session VM goes to the journal (`journal.ts`); tokens never appear in logs or comments. SIGHUP (the unit's reload, after an install) makes the poller exit once the sessions it
  * sets up are running, so that systemd starts the new release; SIGTERM marks those still being set up as failed and
  * exits. Runs on Node 24 through type stripping; no dependencies.
  */
@@ -30,6 +30,7 @@ import remotePrompt from "../../../libs/domain/prompts/remote.md?raw";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import { sendPrompt, type Transport } from "./acpClient.ts";
 import { createCompute, createMetadata, readSecret, type Compute, type Instance, type Metadata } from "./gcp.ts";
+import { writeLog } from "./journal.ts";
 import { createGitHub, type GitHub, type Issue, type IssueComment } from "./github.ts";
 import { DEFAULT_TEMPLATE, ORIGIN_LABEL, Orchestrator, type Origin, type Reporter } from "./orchestrator.ts";
 import { readDomain } from "./previewDomain.ts";
@@ -298,12 +299,12 @@ function readPrompts(): RemotePrompts {
 }
 
 async function main(): Promise<void> {
-  const log = (message: string) => console.log(`hunt-swf: ${message}`);
+  const log = (message: string) => writeLog(redact(message, []));
   ensureSshKey("hunt-swf");
   const metadata = createMetadata();
   const location = { project: await metadata.project(), zone: await metadata.zone() };
-  const compute = createCompute(metadata);
-  const vm = (name: string) => sessionVm(name, location);
+  const compute = createCompute(metadata, fetch, log);
+  const vm = (name: string) => sessionVm(name, location, log);
   let wake = () => {};
   let isStopping = false;
   const poller = new Poller({
@@ -356,7 +357,7 @@ async function main(): Promise<void> {
 // Node resolves the symlink /srv/hunt/current in the module's URL, not in argv.
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error: unknown) => {
-    console.log(`hunt-swf: ${redact(messageOf(error), [])}`);
+    writeLog(redact(messageOf(error), []));
     process.exit(1);
   });
 }

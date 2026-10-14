@@ -13,6 +13,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const BUNDLE = fileURLToPath(new URL("../../../dist/apps/session", import.meta.url));
 const TOKEN = "github_pat_11TEST0123456789_abcdefghijklmnop";
+/** A token in GitHub's format, which hunt-ctl redacts by its pattern. */
+const PATTERN_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+/** A wrong token in no known format, which hunt-ctl redacts because it read it from stdin. */
+const PLAIN_TOKEN = "plain.wrong-token";
 const DOCKER_TIMEOUT_MS = 600_000;
 
 const DOCKERFILE = `FROM debian:12
@@ -70,7 +74,8 @@ if [[ " $* " != *" --config - "* || " $* " != *" https://api.github.com/user "* 
   exit 2
 fi
 if [[ $config != "header = \"Authorization: Bearer $(cat /etc/fakegithub/token)\"" ]]; then
-  echo "curl: (22) The requested URL returned error: 401" >&2
+  # Quotes the token it got, so that the journal shows hunt-ctl redacting it.
+  echo "curl: (22) The requested URL returned error: 401 for the token \"$(sed 's/.*Bearer //' <<<"$config")" >&2
   exit 22
 fi
 echo '{"login": "hunt-bot", "id": 4242, "name": null}'
@@ -189,7 +194,7 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
     expect(sh('grep -rlF -- "$1" /home/agent /srv/hunt/sessions /var/tmp /tmp 2>/dev/null || true', [TOKEN]).stdout).toBe("");
   }, DOCKER_TIMEOUT_MS);
 
-  it("logs its steps to syslog under the identifier hunt-ctl without the token, and prints the same without a syslog socket", () => {
+  it("logs its steps and the end of a failure's stderr to syslog under the identifier hunt-ctl with tokens redacted, and prints the same without a syslog socket", () => {
     const id = "0c0c6f2e-0000-4000-8000-000000000004";
     expect(sh("test -e /dev/log").status).toBe(1);
     const withoutSyslog = clone(id, "acme/app", "feat/general/7-existing");
@@ -203,6 +208,8 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
       expect(clone(id, "acme/app", "feat/general/7-existing")).toEqual(withoutSyslog);
       expect(clone(id, "acme/app", "bad..branch").status).toBe(3);
       expect(sh('/srv/hunt/current/vm/hunt-ctl status "$1"', [id]).status).toBe(0);
+      expect(clone(id, "acme/app", `bad..${PATTERN_TOKEN}`).status).toBe(3);
+      expect(clone(id, "acme/app", "feat/general/1-x", PLAIN_TOKEN).status).toBe(3);
       const lines = sh("sleep 0.5; grep -F ' hunt-ctl: ' /var/log/messages | sed 's/^.* \\([a-z]*\\.[a-z]*\\) hunt-ctl: /\\1 /'").stdout;
       expect(lines).toMatch(
         new RegExp(
@@ -213,12 +220,24 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
               `user\\.info clone ${id}: finished in \\d+ ms`,
               `user\\.info clone ${id}: started`,
               `user\\.err clone ${id}: failed with exit status 3 after \\d+ ms at cmd_clone:\\d+ < main:\\d+`,
+              `user\\.err clone ${id}: stderr: hunt-ctl: invalid branch: bad\\.\\.branch`,
+              `user\\.info clone ${id}: started`,
+              `user\\.err clone ${id}: failed with exit status 3 after \\d+ ms at cmd_clone:\\d+ < main:\\d+`,
+              `user\\.err clone ${id}: stderr: hunt-ctl: invalid branch: bad\\.\\.\\[redacted\\]`,
+              `user\\.info clone ${id}: started`,
+              `user\\.info clone ${id}: cloning acme/app onto branch feat/general/1-x`,
+              `user\\.err clone ${id}: failed with exit status 3 after \\d+ ms: \`identity=\\$\\(github_identity .*\\)\` at cmd_clone:\\d+ < main:\\d+`,
+              `user\\.err clone ${id}: stderr: curl: \\(22\\) The requested URL returned error: 401 for the token "\\[redacted\\]"`,
+              `user\\.err clone ${id}: stderr: hunt-ctl: failed to read the GitHub user of the token`,
               "",
             ].join("\n") +
             "$",
         ),
       );
-      expect(sh("cat /var/log/messages").stdout).not.toContain(TOKEN);
+      const messages = sh("cat /var/log/messages").stdout;
+      for (const token of [TOKEN, PATTERN_TOKEN, PLAIN_TOKEN]) {
+        expect(messages).not.toContain(token);
+      }
     } finally {
       sh("kill $(cat /var/run/syslogd.pid); rm -f /dev/log");
     }

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { installScript, readStagedRelease, shellCommand, shellQuote, sshArgs } from "./sessionVm.ts";
 
 describe("shell quoting", () => {
@@ -16,6 +16,7 @@ describe("shell quoting", () => {
 
 describe("sshArgs", () => {
   it("reaches the VM on its internal IP in the gateway's zone and project without prompts, over one shared connection", () => {
+    vi.stubEnv("HOME", "/var/lib/hunt-api");
     expect(sshArgs("vm-hunt-s-ab12cd34", { project: "medconomy-hunt", zone: "europe-west3-a" }, "true")).toEqual([
       "compute",
       "ssh",
@@ -27,11 +28,15 @@ describe("sshArgs", () => {
       "--ssh-flag=-oServerAliveInterval=30",
       "--ssh-flag=-oConnectTimeout=20",
       "--ssh-flag=-oControlMaster=auto",
-      "--ssh-flag=-oControlPath=~/.ssh/hunt-%C",
+      "--ssh-flag=-oControlPath=/var/lib/hunt-api/.ssh/hunt-%C",
       "--ssh-flag=-oControlPersist=60",
       "--command",
       "true",
     ]);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 });
 

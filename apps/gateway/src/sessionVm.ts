@@ -35,7 +35,11 @@ export function shellCommand(program: string, args: string[]): string {
   return [program, ...args].map(shellQuote).join(" ");
 }
 
-/** The arguments of `gcloud` that run `command` on the VM `vm`. */
+/**
+ * The arguments of `gcloud` that run `command` on the VM `vm`. The control socket lives in `$HOME/.ssh`, the service's
+ * state directory: ssh expands `~` from the passwd entry, and hunt-gw's home is `/nonexistent`, where ssh cannot bind
+ * the socket and exits with 255 right after logging in.
+ */
 export function sshArgs(vm: string, location: VmLocation, command: string): string[] {
   return [
     "compute",
@@ -48,7 +52,7 @@ export function sshArgs(vm: string, location: VmLocation, command: string): stri
     "--ssh-flag=-oServerAliveInterval=30",
     "--ssh-flag=-oConnectTimeout=20",
     "--ssh-flag=-oControlMaster=auto",
-    "--ssh-flag=-oControlPath=~/.ssh/hunt-%C",
+    `--ssh-flag=-oControlPath=${join(homedir(), ".ssh", "hunt-%C")}`,
     "--ssh-flag=-oControlPersist=60",
     "--command",
     command,

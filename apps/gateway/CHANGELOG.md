@@ -1,3 +1,9 @@
+## 0.3.1 (2026-10-14)
+
+### 🩹 Fixes
+
+- **gateway:** keep the SSH control socket in the service's state directory ([98ae0ca](https://github.com/unshoppable/hunt/commit/98ae0ca))
+
 ## 0.3.0 (2026-10-14)
 
 ### 🚀 Features

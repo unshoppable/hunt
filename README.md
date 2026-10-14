@@ -384,11 +384,15 @@ lists every service of the repository, a monorepo all of its apps, with its `com
 `/etc/hunt/services/<name>.env`, the session's environment `/etc/hunt/session.env` and the configuration of the VM's
 preview proxy, `hunt-proxy.service` (Caddy on port 8080), which serves `<short id>-<port>.<domain>` from that port on
 localhost (servers bound to 127.0.0.1 or ::1) and `<short id>-<port>-open.<domain>` from the ports of services with
-`"guarded": false` only, keeps the Host header and logs every request to `/var/log/hunt-proxy/access.log`. Every service
+`"guarded": false` only, keeps the Host header and logs every request to `/var/log/hunt-proxy/access.log`. When nothing
+listens on the port, it answers 503 with a line that names the service of that port. Every service
 runs as `hunt-service@<name>.service` (`apps/session/vm/systemd/`) as the user `agent`, with its own variables, and
 writes its output to `~/logs/<name>.log`. The agent starts the services its task needs, as the repository's
 `hunt.agent.md` groups them, with `sudo -n hunt-ctl service start|restart|stop|status <name>…`, the only commands
-`/etc/sudoers.d/hunt-service` allows it. A started service stays enabled and starts again with the VM; bringing the
+`/etc/sudoers.d/hunt-service` allows it. Right after the handoff of a session whose chat holds a prompt, when no prompt
+is queued, hunt.json declares services and none of them runs, Hunt asks the agent in a turn of its own to start what its
+task needs (`HANDOFF_START_PROMPT` in `apps/client/src/preview/services.ts`); when its task leaves that unclear, the
+agent starts nothing. A started service stays enabled and starts again with the VM; bringing the
 session back or deleting it stops and disables every service. `hunt-ctl preview-status` reports the state of every
 service, whether its port answers on localhost and the ports that listen on all or the loopback addresses.
 

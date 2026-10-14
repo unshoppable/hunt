@@ -43,6 +43,14 @@ export function describePreview(status: PreviewStatus | null): Description {
   return { text: parts.join(", "), tone: failed ? "error" : running ? "ok" : "pending" };
 }
 
+/**
+ * What Hunt asks the agent right after it handed off a session whose chat holds a prompt, when hunt.json declares
+ * services and none of them runs or starts.
+ */
+export const HANDOFF_START_PROMPT =
+  "This session has just moved to its VM. Start the services your task needs, as the repository's hunt.agent.md describes; " +
+  "start nothing if it is not clear which app the task is about or what you are to do. Do nothing else in this turn.";
+
 /** Whether a service of hunt.json runs or is starting. */
 export function hasRunningService(status: PreviewStatus): boolean {
   return status.services.some((service) => service.state === "running" || service.state === "starting");

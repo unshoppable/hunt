@@ -10,6 +10,7 @@ import type {
   PermissionEvent,
   PermissionWithdrawnEvent,
   PlanEntry,
+  PreviewStatus,
   PullRequestRef,
   RemoteProgressEvent,
   RemoteStep,
@@ -23,6 +24,7 @@ import type {
 import { imageDataUrl, imagePlaceholder } from "../chat/imageData";
 import { repoName } from "../ui/path";
 import { titleFromPrompt } from "../sessions/sessionLabels";
+import { HANDOFF_START_PROMPT, hasRunningService } from "../preview/services";
 import { useAgentDefaultsStore } from "./agentDefaults";
 import { usePlanUsageStore } from "./planUsage";
 import { advanceRemoteRun, type RemoteRun } from "./remoteRun";
@@ -606,9 +608,11 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
    * Moves the session `id` to or from its VM through `start` once its agent finished the running turn, which `prepare`
    * (if any) accompanies. Prompts sent until the move ended stay queued: after a successful move the agent the session
    * runs with now gets them, after a failed one the composer takes them back. A failed `prepare` leaves the session where
-   * it is, with the error in its chat.
+   * it is, with the error in its chat. A handoff without queued prompts of a session whose chat holds a prompt ends with
+   * `startServicesAfterHandoff`.
    */
   async function moveSession(id: string, move: SessionMove, prepare: (() => Promise<void>) | null, start: () => Promise<SessionView>) {
+    const hasTask = move === "handOff" && Boolean(get().chats[id]?.items.some((item) => item.kind === "user"));
     updateChat(id, (chat) => ({ ...chat, move, error: null }));
     let isMoved = false;
     try {
@@ -628,7 +632,28 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     });
     if (next) {
       await runPrompt(id, next);
+    } else if (isMoved && isLive && hasTask) {
+      await startServicesAfterHandoff(id);
     }
+  }
+
+  /**
+   * Sends the agent of the session `id`, which has just moved to its VM, `HANDOFF_START_PROMPT` when hunt.json declares
+   * services and none of them runs or starts. Sends nothing once a prompt of the user ran or queued meanwhile, since its
+   * turn starts the services.
+   */
+  async function startServicesAfterHandoff(id: string) {
+    let status: PreviewStatus;
+    try {
+      status = await commands.previewStatus(id);
+    } catch (error) {
+      updateChat(id, (chat) => ({ ...chat, error: `failed to check the services on the VM: ${String(error)}` }));
+      return;
+    }
+    const chat = get().chats[id];
+    if (!chat || chat.isBusy || chat.move || chat.queue.length) return;
+    if (!status.services.length || hasRunningService(status)) return;
+    await runPromptTurn(id, { text: HANDOFF_START_PROMPT, images: [] });
   }
 
   /** Runs the turn of `prompt`, shown as the user's message in the chat. */

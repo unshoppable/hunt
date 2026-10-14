@@ -5,6 +5,7 @@ import type { SessionView } from "../ipc/types";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
+import { HANDOFF_START_PROMPT } from "../preview/services";
 import { useAgentDefaultsStore } from "./agentDefaults";
 import { DEFAULT_GRAPH_AGENT, DEFAULT_REMOTE, useSettingsStore } from "./settings";
 import { agentSetupOf, createEmptyChat, useHuntStore } from "./store";
@@ -873,6 +874,48 @@ describe("moving a session to and from the VM", () => {
     expect(calls()).toEqual(["hand_off_session", "list_sessions"]);
     expect(vi.mocked(invoke)).toHaveBeenCalledWith("hand_off_session", { id: SESSION, settings, filePatterns: DEFAULT_REMOTE.filePatterns });
     expect(useHuntStore.getState().chats[SESSION].move).toBeNull();
+  });
+
+  const stoppedService = { name: "ui", port: 4200, url: "https://x-4200.hunt.example.com", guarded: true, tls: false, enabled: false, state: "stopped", responds: false };
+
+  /** Answers the commands of a handoff with `previewStatus` for preview_status and ends every turn. */
+  function answerHandOff(previewStatus: () => Promise<unknown>) {
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "list_sessions") return Promise.resolve([handedOff]);
+      if (command === "hand_off_session") return Promise.resolve(handedOff);
+      if (command === "preview_status") return previewStatus();
+      return Promise.resolve("EndTurn");
+    });
+  }
+
+  it("has the agent start the services its task needs once a session with a prompt arrived on the VM", async () => {
+    answerHandOff(() => Promise.resolve({ vmRunning: true, services: [stoppedService], listening: [] }));
+    await useHuntStore.getState().sendPrompt(SESSION, "Fix the admin page");
+
+    await useHuntStore.getState().handOffSession(SESSION);
+
+    expect(calls()).toEqual(["send_prompt Fix the admin page", "hand_off_session", "list_sessions", "preview_status", `send_prompt ${HANDOFF_START_PROMPT}`]);
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ move: null, isBusy: false, error: null });
+  });
+
+  it("asks for no start after the handoff when a service runs already or hunt.json declares none, and reports a failed check", async () => {
+    const cases: [string, () => Promise<unknown>, string | null][] = [
+      ["running", () => Promise.resolve({ vmRunning: true, services: [{ ...stoppedService, state: "running", responds: true }], listening: [] }), null],
+      ["starting", () => Promise.resolve({ vmRunning: true, services: [{ ...stoppedService, state: "starting" }], listening: [] }), null],
+      ["no services", () => Promise.resolve({ vmRunning: true, services: [], listening: [] }), null],
+      ["failed check", () => Promise.reject("failed to read the preview status: ssh exited with 255"), "failed to check the services on the VM: failed to read the preview status: ssh exited with 255"],
+    ];
+    for (const [name, previewStatus, error] of cases) {
+      useHuntStore.setState({ chats: {}, sessions: [local] });
+      vi.mocked(invoke).mockReset();
+      answerHandOff(previewStatus);
+      await useHuntStore.getState().sendPrompt(SESSION, "Fix the admin page");
+
+      await useHuntStore.getState().handOffSession(SESSION);
+
+      expect(calls(), name).toEqual(["send_prompt Fix the admin page", "hand_off_session", "list_sessions", "preview_status"]);
+      expect(useHuntStore.getState().chats[SESSION].error, name).toBe(error);
+    }
   });
 
   it("keeps the session local when its VM cannot be brought up, and the turn and its queue go on", async () => {

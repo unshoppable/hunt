@@ -1431,8 +1431,11 @@ ensure_edge() {
   fi
   [[ $state == missing ]] || docker rm --force "$EDGE_NAME" >/dev/null
   docker image inspect "$EDGE_IMAGE" >/dev/null 2>&1 || docker pull --quiet "$EDGE_IMAGE" >/dev/null
+  # The image's /usr/bin/caddy carries the file capability cap_net_bind_service=ep: without NET_BIND_SERVICE in the
+  # container's bounding set, exec fails with "operation not permitted".
   docker run --detach --name "$EDGE_NAME" --restart unless-stopped --network host --user "$EDGE_USER" --read-only \
-    --tmpfs /tmp --tmpfs /data --tmpfs /config --cap-drop ALL --security-opt no-new-privileges --memory 256m \
+    --tmpfs /tmp --tmpfs /data --tmpfs /config --cap-drop ALL --cap-add NET_BIND_SERVICE \
+    --security-opt no-new-privileges --memory 256m \
     --pids-limit 256 --mount "type=bind,src=$EDGE_CONFIG_DIR,dst=/etc/hunt-edge,readonly" "$EDGE_IMAGE" \
     caddy run --config /etc/hunt-edge/caddy.json >/dev/null
 }

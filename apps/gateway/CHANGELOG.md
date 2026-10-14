@@ -1,3 +1,14 @@
+## 0.4.0 (2026-10-14)
+
+### 🚀 Features
+
+- **vm:** log hunt-ctl steps to the journal ([2624b92](https://github.com/unshoppable/hunt/commit/2624b92))
+- show the gateway's log lines while a remote session starts ([03dd8da](https://github.com/unshoppable/hunt/commit/03dd8da))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.3.1
+
 ## 0.3.1 (2026-10-14)
 
 ### 🩹 Fixes

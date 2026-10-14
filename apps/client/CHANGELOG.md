@@ -1,3 +1,9 @@
+## 0.7.0 (2026-10-14)
+
+### 🚀 Features
+
+- show the gateway's log lines while a remote session starts ([03dd8da](https://github.com/unshoppable/hunt/commit/03dd8da))
+
 ## 0.6.0 (2026-10-14)
 
 ### 🚀 Features

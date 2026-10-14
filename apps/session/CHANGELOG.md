@@ -1,3 +1,9 @@
+## 0.3.1 (2026-10-14)
+
+### 🚀 Features
+
+- **vm:** log hunt-ctl steps to the journal ([2624b92](https://github.com/unshoppable/hunt/commit/2624b92))
+
 ## 0.3.0 (2026-10-14)
 
 This was a version bump only for session to align it with other projects, there were no code changes.

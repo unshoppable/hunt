@@ -2,7 +2,8 @@
 # touch it (independent versions, <app>@<version> tags, a CHANGELOG.md per app), commits and tags. A release commit
 # then deploys the server apps (gateway, session) affected since the commit deployed last, deployed/prod, onto the
 # gateway VM over SSH (ci-nx-affected-deploy), publishes the desktop app when it got a client tag, and moves
-# deployed/prod onto the release once every deploy succeeded.
+# deployed/prod onto the release once every deploy succeeded. After the deploy it builds the session VMs' image when the
+# release changed the agent's tools (ci-session-image); a failed image build holds back nothing else.
 name: 📦 CI | Release
 
 on:
@@ -67,6 +68,15 @@ jobs:
       ref: ${{ needs.release.outputs.release_sha }}
       base: deployed/prod
     secrets: inherit
+
+  session-image:
+    needs: [release, deploy]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/ci-session-image.yml
+    with:
+      ref: ${{ needs.release.outputs.release_sha }}
 
   publish-client:
     needs: release

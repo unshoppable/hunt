@@ -1,0 +1,271 @@
+# Builds the image new session VMs boot from (family img-hunt-session), so that they find the agent's tools of the
+# session release instead of installing them on their first connect. A VM vm-hunt-image-<run id> boots a fresh Debian 12
+# from the template tpl-hunt-session and runs the base setup of the infrastructure repository (envs/hunt, which also
+# grants sa-image-hunt). Over SSH through IAP the job hands it the session release, runs that release's
+# `hunt-ctl install-tools`, seals the VM (`hunt-image-seal` of the base setup removes tokens, logs and the machine ID and
+# powers it off) and takes the image from its disk. The build is skipped when the newest image holds the tools of the
+# release already: its label hunt-tools is a hash of the files that pin them. ci-release calls it after a release was
+# deployed; workflow_dispatch builds on demand, also when the tools are current. The base setup runs again on every boot
+# of a session VM, so a change to it needs no new image.
+name: 🖼️ CI | Session image
+run-name: "session image (${{ inputs.ref || 'deployed/prod' }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Commit or tag on master to build from (default: deployed/prod)'
+        type: string
+        required: false
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Commit to build from'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: session-image
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: medconomy-hunt
+  REGION: europe-west1
+  FAMILY: img-hunt-session
+  TEMPLATE: tpl-hunt-session
+  # Older images stay for a rollback: `gcloud compute images deprecate` on the newest makes new VMs boot the one before.
+  KEEP_IMAGES: 3
+  WORKLOAD_IDENTITY_PROVIDER: projects/918789299522/locations/global/workloadIdentityPools/pool-github/providers/provider-github
+  SERVICE_ACCOUNT: sa-image-hunt@medconomy-hunt.iam.gserviceaccount.com
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        # An explicit bash runs with -o pipefail, the implicit default without.
+        shell: bash
+    env:
+      VM: vm-hunt-image-${{ github.run_id }}
+      IS_FORCED: ${{ github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref || 'deployed/prod' }}
+
+      # sa-image-hunt controls what every new session VM boots, and the steps after this one run code of the checked-out
+      # commit with the job's ID token: only commits on master may be built.
+      - name: Refuse commits outside master
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/master; then
+            echo "::error::$(git rev-parse HEAD) is not on master; only commits on master may be built"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: package.json
+          cache: npm
+
+      - run: npm ci
+
+      - name: Resolve the session version
+        run: .github/scripts/resolve-app-version.sh session >> "$GITHUB_ENV"
+
+      # The checkout replaces .github with the built commit's, so the steps after this one run inline scripts only.
+      # TOOLS_HASH covers what pins the agent's tools: hunt-ctl with its tool versions and packages, the agent's
+      # environment (Volta), the ACP adapter's version and Playwright's lockfile.
+      - name: Build the session release
+        run: |
+          git checkout --detach "$DEPLOY_SHA"
+          npm ci
+          npx nx run session:build --skip-nx-cache
+          dist=dist/apps/session
+          tools_hash=$(cat "$dist/vm/hunt-ctl" "$dist/vm/agent.env" "$dist/session/acp-version" \
+            "$dist/session/playwright/package.json" "$dist/session/playwright/package-lock.json" | sha256sum | cut -c1-32)
+          tarball="$RUNNER_TEMP/session-$APP_VERSION.tar.gz"
+          tar -czf "$tarball" --owner=0 --group=0 --numeric-owner -C "$dist" .
+          {
+            echo "TOOLS_HASH=$tools_hash"
+            echo "SESSION_LABEL=$(printf '%s' "$APP_VERSION" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"
+            echo "RELEASE_TARBALL=$tarball"
+          } >> "$GITHUB_ENV"
+          {
+            echo "### session image of $APP_VERSION"
+            echo "- Commit: \`$DEPLOY_SHA\`"
+            echo "- Tools hash: \`$tools_hash\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Decide whether to build
+        id: decide
+        run: |
+          current=$(gcloud compute images describe-from-family "$FAMILY" --project="$GCP_PROJECT" \
+            --format='value(labels.hunt-tools)' 2>/dev/null || true)
+          if [ "$current" = "$TOOLS_HASH" ] && [ "$IS_FORCED" != true ]; then
+            echo "The newest image holds these tools already."
+            echo "- The newest image holds these tools already; nothing built." >> "$GITHUB_STEP_SUMMARY"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "The newest image holds tools '${current:-none}'; building."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # gcloud compute ssh logs in with this key through OS Login as sa-image-hunt, as the deploy job does on the gateway.
+      - name: Generate the SSH key
+        if: steps.decide.outputs.build == 'true'
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keygen -q -t ed25519 -N '' -C "github-actions-$GITHUB_RUN_ID" -f ~/.ssh/google_compute_engine
+
+      # The template's boot image is replaced by a fresh Debian, so every build starts from scratch. The label keeps
+      # Hunt and the gateway from taking the VM for a session VM. The zones are the session zones of the gateway's
+      # instance metadata hunt-session-zones, tried in order: only a stockout of the machine type
+      # (ZONE_RESOURCE_POOL_EXHAUSTED) moves on to the next zone. The steps after this one use the zone in ZONE.
+      - name: Create the build VM
+        if: steps.decide.outputs.build == 'true'
+        run: |
+          zones=$(gcloud compute instances list --project="$GCP_PROJECT" --filter='labels.hunt-role=gateway' --format=json |
+            jq -r '[.[0].metadata.items[]? | select(.key == "hunt-session-zones") | .value][0] // empty' | tr ',' ' ')
+          if [ -z "$zones" ]; then
+            echo "::error::The gateway has no instance metadata hunt-session-zones."
+            exit 1
+          fi
+          for zone in $zones; do
+            if output=$(gcloud compute instances create "$VM" --project="$GCP_PROJECT" --zone="$zone" \
+              --source-instance-template="$TEMPLATE" \
+              --image-family=debian-12 --image-project=debian-cloud \
+              --labels=hunt-role=image-build 2>&1); then
+              echo "Created $VM in $zone."
+              echo "ZONE=$zone" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            if ! grep -q ZONE_RESOURCE_POOL_EXHAUSTED <<<"$output"; then
+              echo "$output"
+              echo "::error::Creating $VM in $zone failed."
+              exit 1
+            fi
+            echo "$zone has no capacity for the template's machine type; trying the next zone."
+          done
+          echo "::error::No session zone ($zones) has capacity for the template's machine type."
+          exit 1
+
+      # The base setup writes /var/lib/hunt/session-ready last; until then SSH fails or the stamp is missing. The guest
+      # agent's final line for a failed startup script ends the wait early.
+      - name: Wait for the base setup
+        if: steps.decide.outputs.build == 'true'
+        run: |
+          deadline=$((SECONDS + 45 * 60))
+          while true; do
+            if gcloud compute ssh "$VM" --project="$GCP_PROJECT" --zone="$ZONE" --tunnel-through-iap --quiet \
+              --ssh-key-expire-after=2h --ssh-flag=-oConnectTimeout=20 \
+              --command 'test -e /var/lib/hunt/session-ready' >/dev/null 2>&1; then
+              echo "The base setup finished on $VM."
+              exit 0
+            fi
+            serial=$(gcloud compute instances get-serial-port-output "$VM" --project="$GCP_PROJECT" --zone="$ZONE" 2>/dev/null || true)
+            if grep -qE 'startup-script exit status [1-9]|"startup-script" failed with error' <<<"$serial"; then
+              tail -n 100 <<<"$serial"
+              echo "::error::The base setup failed on $VM."
+              exit 1
+            fi
+            if [ "$SECONDS" -gt "$deadline" ]; then
+              tail -n 100 <<<"$serial"
+              echo "::error::The base setup did not finish on $VM within 45 minutes."
+              exit 1
+            fi
+            sleep 20
+          done
+
+      # The release goes to the remote command's stdin and is unpacked into a folder of its own below /srv/hunt/incoming;
+      # only install-tools runs, never install, which would make the image look like a session VM with a release.
+      # Exit status 255 is a failed SSH connection and is retried: install-tools skips what it installed already.
+      - name: Install the agent's tools
+        if: steps.decide.outputs.build == 'true'
+        run: |
+          read -r -d '' remote_script <<'SCRIPT' || true
+          set -eu
+          install -d -m 0755 /srv/hunt/incoming
+          dir=$(mktemp -d /srv/hunt/incoming/ci.XXXXXX)
+          trap "rm -rf -- $dir" EXIT
+          trap "exit 1" HUP INT TERM
+          tar -xzf - --no-same-owner -C "$dir"
+          chmod 0755 "$dir/vm/hunt-ctl"
+          "$dir/vm/hunt-ctl" install-tools "$dir"
+          SCRIPT
+          for attempt in 1 2 3; do
+            status=0
+            gcloud compute ssh "$VM" --project="$GCP_PROJECT" --zone="$ZONE" --tunnel-through-iap --quiet \
+              --ssh-key-expire-after=2h --ssh-flag=-oServerAliveInterval=30 \
+              --command "sudo -n sh -c '$remote_script' hunt-image" \
+              < "$RELEASE_TARBALL" > "$RUNNER_TEMP/result.json" || status=$?
+            if [ "$status" -ne 255 ] || [ "$attempt" -eq 3 ]; then break; fi
+            echo "::warning::SSH connection to $VM failed (attempt $attempt of 3)"
+            sleep $((attempt * 15))
+          done
+          if [ "$status" -ne 0 ]; then
+            echo "::error::hunt-ctl install-tools on $VM failed with exit status $status"
+            exit "$status"
+          fi
+          result=$(tr -d '\n' < "$RUNNER_TEMP/result.json")
+          echo "$result"
+          echo "- \`hunt-ctl install-tools\` on \`$VM\` ($ZONE): \`$result\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # hunt-image-seal powers the VM off once it removed what must not go into the image, so the SSH connection may end
+      # with 255; the VM's status decides.
+      - name: Seal the build VM
+        if: steps.decide.outputs.build == 'true'
+        run: |
+          gcloud compute ssh "$VM" --project="$GCP_PROJECT" --zone="$ZONE" --tunnel-through-iap --quiet \
+            --ssh-key-expire-after=2h --command 'sudo -n /usr/local/sbin/hunt-image-seal' || true
+          deadline=$((SECONDS + 5 * 60))
+          until [ "$(gcloud compute instances describe "$VM" --project="$GCP_PROJECT" --zone="$ZONE" --format='value(status)')" = TERMINATED ]; do
+            if [ "$SECONDS" -gt "$deadline" ]; then
+              echo "::error::$VM did not power off within 5 minutes after hunt-image-seal."
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Create the image
+        if: steps.decide.outputs.build == 'true'
+        run: |
+          image="$FAMILY-$(date -u +%Y%m%d-%H%M%S)"
+          gcloud compute images create "$image" --project="$GCP_PROJECT" \
+            --source-disk="$VM" --source-disk-zone="$ZONE" --family="$FAMILY" --storage-location="$REGION" \
+            --labels="hunt-role=session-image,hunt-tools=$TOOLS_HASH,hunt-session=$SESSION_LABEL"
+          echo "- Image: \`$image\` (family \`$FAMILY\`)" >> "$GITHUB_STEP_SUMMARY"
+
+      # Looked up in every zone: a failed creation does not set ZONE.
+      - name: Delete the build VM
+        if: always() && steps.decide.outputs.build == 'true'
+        run: |
+          zone=$(gcloud compute instances list --project="$GCP_PROJECT" --filter='labels.hunt-role=image-build' \
+            --format='value(name,zone.basename())' | awk -v vm="$VM" '$1 == vm { print $2 }')
+          if [ -n "$zone" ]; then
+            gcloud compute instances delete "$VM" --project="$GCP_PROJECT" --zone="$zone" --delete-disks=all --quiet
+          fi
+
+      - name: Delete old images
+        if: steps.decide.outputs.build == 'true'
+        run: |
+          gcloud compute images list --project="$GCP_PROJECT" --no-standard-images --filter="family=$FAMILY" \
+              --sort-by=~creationTimestamp --format='value(name)' |
+            tail -n +"$((KEEP_IMAGES + 1))" |
+            while read -r image; do
+              gcloud compute images delete "$image" --project="$GCP_PROJECT" --quiet
+            done

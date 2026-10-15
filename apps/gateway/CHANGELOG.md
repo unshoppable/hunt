@@ -1,3 +1,13 @@
+## 0.15.0 (2026-10-15)
+
+### 🚀 Features
+
+- **gateway:** delete session VMs stopped for more than a week ([ec765c3](https://github.com/unshoppable/hunt/commit/ec765c3))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.13.1
+
 ## 0.14.0 (2026-10-15)
 
 ### 🧱 Updated Dependencies

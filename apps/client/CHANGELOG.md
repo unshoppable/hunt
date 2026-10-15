@@ -1,3 +1,9 @@
+## 0.20.1 (2026-10-15)
+
+### 🩹 Fixes
+
+- **client:** continue a remote session here when its VM no longer exists ([ed32a84](https://github.com/unshoppable/hunt/commit/ed32a84))
+
 ## 0.20.0 (2026-10-15)
 
 ### 🚀 Features

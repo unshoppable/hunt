@@ -1,3 +1,9 @@
+## 0.22.1 (2026-10-15)
+
+### 🩹 Fixes
+
+- **client:** clear a remote session over one connection, without showing the VM connect steps ([61cc056](https://github.com/unshoppable/hunt/commit/61cc056))
+
 ## 0.22.0 (2026-10-15)
 
 ### 🚀 Features

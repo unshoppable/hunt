@@ -1,3 +1,9 @@
+## 0.16.0 (2026-10-15)
+
+### 🚀 Features
+
+- **gateway:** poll the issue repositories every 30 seconds ([1f57ad5](https://github.com/unshoppable/hunt/commit/1f57ad5))
+
 ## 0.15.0 (2026-10-15)
 
 ### 🚀 Features

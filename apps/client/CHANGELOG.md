@@ -1,3 +1,9 @@
+## 0.20.4 (2026-10-15)
+
+### 🩹 Fixes
+
+- **client:** write the architecture diagram with Claude Fable 5.1 by default ([46ea1ba](https://github.com/unshoppable/hunt/commit/46ea1ba))
+
 ## 0.20.3 (2026-10-15)
 
 ### 🩹 Fixes

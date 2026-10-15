@@ -1,3 +1,9 @@
+## 0.23.0 (2026-10-15)
+
+### 🚀 Features
+
+- **client:** drag the top edge of the prompt box to make the text area taller ([8973f8f](https://github.com/unshoppable/hunt/commit/8973f8f))
+
 ## 0.22.1 (2026-10-15)
 
 ### 🩹 Fixes

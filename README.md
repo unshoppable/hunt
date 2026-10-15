@@ -567,7 +567,7 @@ The gateway's poller `hunt-swf.service` (`apps/gateway/src/swf.ts`) starts a ses
 labelled `swf` in the repositories that the gateway's instance metadata `hunt-swf-repos` lists (comma-separated
 `<owner>/<repo>`), with at most `hunt-swf-max-sessions` (default 2, at most 10) at once. The infrastructure repository
 sets both; the poller reads them from the metadata server at every poll, so a change needs no restart, and an invalid
-value keeps it idle. Every 2 minutes it lists the open issues through GitHub's REST
+value keeps it idle. Every 30 seconds it lists the open issues through GitHub's REST
 API and, while fewer of its VMs
 (label `hunt-origin=swf`, any status but `TERMINATED` and `STOPPED`) are up than the limit allows, claims the oldest
 issue: `swf` becomes `swf:running` (the labels `swf:running`, `swf:done` and `swf:failed` are created when missing) and

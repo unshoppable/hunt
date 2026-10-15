@@ -58,7 +58,7 @@ import {
   type SwfLabels,
 } from "./swfPlan.ts";
 
-export const POLL_INTERVAL_MS = 120_000;
+export const POLL_INTERVAL_MS = 30_000;
 export const ORIGIN: Origin = "swf";
 const GITHUB_SECRET = "HUNT_SWF_GITHUB_TOKEN";
 const CLAUDE_SECRET = "HUNT_SWF_CLAUDE_TOKEN";

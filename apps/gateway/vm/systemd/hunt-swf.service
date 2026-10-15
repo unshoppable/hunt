@@ -1,5 +1,5 @@
 # Starts remote sessions for GitHub issues labelled swf (apps/gateway/src/swf.ts): polls the repositories that the
-# gateway's instance metadata hunt-swf-repos lists every 2 minutes and sets each session up on a VM of its own with
+# gateway's instance metadata hunt-swf-repos lists every 30 seconds and sets each session up on a VM of its own with
 # `gcloud compute ssh --internal-ip` and the gateway's service account, as hunt-gw, the one user next to root that
 # reaches the metadata server (hunt-firewall.service). gcloud and ssh keep their configuration and key in the state
 # directory. Once an hour it also deletes session VMs that have been stopped for more than a week (reaper.ts). A

@@ -1,3 +1,9 @@
+## 0.22.0 (2026-10-15)
+
+### 🚀 Features
+
+- **client:** attach images dropped into the chat, referenced as [Image #n] in the prompt ([66f9d5a](https://github.com/unshoppable/hunt/commit/66f9d5a))
+
 ## 0.21.0 (2026-10-15)
 
 ### 🚀 Features

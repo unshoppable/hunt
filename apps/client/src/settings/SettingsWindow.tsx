@@ -333,7 +333,7 @@ function AgentSection() {
           presets={choicesOf("effort")}
           isMonospace
         />
-        <p className="text-[13px] leading-snug text-neutral-500">The session's agent switches to this model and effort while it updates the architecture diagram and goes back to the chat's choice afterwards. A model option such as <code>opus</code> follows Claude Code to newer versions; a full model ID such as <code>claude-fable-5-1</code> stays on that version.</p>
+        <p className="text-[13px] leading-snug text-neutral-500">The session's agent switches to this model and effort while it updates the architecture diagram and goes back to the chat's choice afterwards. A model option such as <code>opus</code> follows Claude Code to newer versions; a full model ID such as <code>claude-opus-5-5</code> stays on that version.</p>
       </div>
     </section>
   );

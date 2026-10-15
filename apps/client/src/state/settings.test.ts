@@ -93,13 +93,6 @@ describe("migrateSettings", () => {
     expect(migrateSettings({ aiLanguage: "English" }, 12)).toEqual({ aiLanguage: "English" });
   });
 
-  it("lifts the old diagram model of version 13 and leaves a user's own choice alone", () => {
-    expect(migrateSettings({ graphAgent: { model: "claude-opus-5-5", effort: "max" } }, 13).graphAgent).toEqual({ model: DEFAULT_GRAPH_AGENT.model, effort: "max" });
-    expect(migrateSettings({ graphAgent: { model: "claude-opus-5-5" }, aiLanguage: "English" }, 9).graphAgent).toEqual({ model: DEFAULT_GRAPH_AGENT.model });
-    expect(migrateSettings({ graphAgent: { model: "opus", effort: "high" } }, 13).graphAgent).toEqual({ model: "opus", effort: "high" });
-    expect(migrateSettings({ aiLanguage: "English" }, 13)).toEqual({ aiLanguage: "English" });
-  });
-
   it("passes the current version through untouched", () => {
     const stored = { panes: { chat: { fontSize: 18 } }, aiLanguage: "English", later: true };
     expect(migrateSettings(stored, SETTINGS_VERSION)).toBe(stored);

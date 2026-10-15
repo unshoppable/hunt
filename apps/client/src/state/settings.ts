@@ -132,7 +132,7 @@ export const DEFAULT_SYSTEM_PROMPT = responseStylePrompt.trim();
  * option such as `opus` or a full model ID, an effort level such as `high`. The chat's own choice applies again after.
  */
 export type GraphAgent = { model: string; effort: string };
-export const DEFAULT_GRAPH_AGENT: GraphAgent = { model: "claude-fable-5-1", effort: "high" };
+export const DEFAULT_GRAPH_AGENT: GraphAgent = { model: "claude-opus-5-5", effort: "high" };
 
 /**
  * Where remote sessions run. The gateway, the VM of `project` labelled `hunt-role=gateway`, runs all the time; the
@@ -354,9 +354,6 @@ const VERSION_4_CHANGELIST_LINE_HEIGHT = 1.5;
 /** Chat line height that was the default up to version 7; a stored match is lifted to the current default. */
 const VERSION_7_CHAT_LINE_HEIGHT = 1.7;
 
-/** Diagram model that was the default up to version 13; a stored match is lifted to the current default. */
-const VERSION_13_GRAPH_MODEL = "claude-opus-5-5";
-
 /** What `persist` writes to storage: every user preference, each optional because older versions did not have it. */
 export type PersistedState = {
   panes?: Partial<Record<PaneKey, Partial<PaneSettings>>>;
@@ -423,7 +420,7 @@ function withDefaults(panes: Partial<Record<PaneKey, Partial<PaneSettings>>> | u
 }
 
 /** Current version of the persisted shape; `migrateSettings` brings older ones up to date. */
-export const SETTINGS_VERSION = 14;
+export const SETTINGS_VERSION = 13;
 
 /** Shape persisted up to version 6, which kept one field per resizable popup. */
 type Version6State = PersistedState & { usagesPopupSize?: PopupSize; fileSearchDialogSize?: PopupSize; subChatPopoverSize?: PopupSize };
@@ -484,26 +481,18 @@ function withoutInfrastructureFields(stored: PersistedState): PersistedState {
   return { ...stored, remote: Object.fromEntries(Object.entries(stored.remote).filter(([key]) => REMOTE_KEYS.includes(key))) };
 }
 
-/** Rewrites the diagram model still set to a previous version's default so users who never picked a model follow the new one. */
-function liftDefaultGraphModel(stored: PersistedState): PersistedState {
-  if (stored.graphAgent?.model !== VERSION_13_GRAPH_MODEL) return stored;
-  return { ...stored, graphAgent: { ...stored.graphAgent, model: DEFAULT_GRAPH_AGENT.model } };
-}
-
 /**
  * Brings a persisted state of an earlier `version` to the current shape: version 0 only knew one font size per pane,
- * versions 1 to 4, 7 and 13 had defaults that are lifted to the current ones where the user never changed them,
- * versions 5 and 6 kept the size of each resizable popup in its own field, versions up to 8 named Catppuccin icons in
- * their icon rules, and versions up to 12 kept remote settings that the infrastructure repository configures now.
- * Fields a version did not have (`guardrailDirs`, `showSummary`, `iconRules`, `folderIconRules`,
- * `confirmSessionDelete`, `diffLineScope`, `changelistScopes`, `graphExcludedFiles`, the file patterns, …) are filled
- * in from the defaults by `mergeSettings`.
+ * versions 1 to 4 and 7 had defaults that are lifted to the current ones where the user never changed them, versions
+ * 5 and 6 kept the size of each resizable popup in its own field, versions up to 8 named Catppuccin icons in their icon
+ * rules, and versions up to 12 kept remote settings that the infrastructure repository configures now. Fields a version did not have (`guardrailDirs`, `showSummary`, `iconRules`, `folderIconRules`, `confirmSessionDelete`,
+ * `diffLineScope`, `changelistScopes`, `graphExcludedFiles`, the file patterns, …) are filled in from the defaults by
+ * `mergeSettings`.
  */
 export function migrateSettings(persisted: unknown, version: number): PersistedState {
-  if (version >= 14) return persisted as PersistedState;
-  if (version >= 13) return liftDefaultGraphModel(persisted as PersistedState);
-  if (version >= 9) return liftDefaultGraphModel(withoutInfrastructureFields(persisted as PersistedState));
-  return liftDefaultGraphModel(withoutInfrastructureFields(renameCatppuccinIcons(migrateToVersion8(persisted, version))));
+  if (version >= 13) return persisted as PersistedState;
+  if (version >= 9) return withoutInfrastructureFields(persisted as PersistedState);
+  return withoutInfrastructureFields(renameCatppuccinIcons(migrateToVersion8(persisted, version)));
 }
 
 function migrateToVersion8(persisted: unknown, version: number): PersistedState {

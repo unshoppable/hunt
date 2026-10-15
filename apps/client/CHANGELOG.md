@@ -1,3 +1,10 @@
+## 0.20.3 (2026-10-15)
+
+### 🩹 Fixes
+
+- **client:** send queued prompts once the turn ends, and send a prompt now with ⌘↩ or the row's button ([15e0bed](https://github.com/unshoppable/hunt/commit/15e0bed))
+- **client:** start new sessions with effort high unless the user picked another level ([d62cf4c](https://github.com/unshoppable/hunt/commit/d62cf4c))
+
 ## 0.20.2 (2026-10-15)
 
 ### 🩹 Fixes

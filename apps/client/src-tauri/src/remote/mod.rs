@@ -290,13 +290,13 @@ pub fn read_agent_md(worktree: &Path) -> Result<Option<String>, String> {
 }
 
 /// Starts the VM of session `id` through `gateway` unless it runs and connects to it once it can run the agent (see
-/// `release::ensure_ready`); Hunt's SSH key lives in `ssh_dir`.
-pub async fn start_session_vm(gateway: &VmRef, id: uuid::Uuid, ssh_dir: &Path, progress: Progress<'_>) -> Result<ssh::Ssh, String> {
+/// `release::ensure_ready`); Hunt's SSH key lives in `ssh_dir`. `None` when the session's VM no longer exists.
+pub async fn start_session_vm(gateway: &VmRef, id: uuid::Uuid, ssh_dir: &Path, progress: Progress<'_>) -> Result<Option<ssh::Ssh>, String> {
     let api = api::GatewayApi::open(gateway, ssh_dir).await?;
-    let vm = api.start_vm(id, progress).await?;
+    let Some(vm) = api.start_vm(id, progress).await? else { return Ok(None) };
     let ssh = ssh::Ssh::open(&vm, ssh_dir).await?;
     release::ensure_ready(&ssh, progress).await?;
-    Ok(ssh)
+    Ok(Some(ssh))
 }
 
 /// Runs `hunt-ctl` with `args` on the VM as root and returns its JSON output.

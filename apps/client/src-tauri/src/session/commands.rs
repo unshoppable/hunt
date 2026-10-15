@@ -432,7 +432,9 @@ pub async fn clear_session(
         let activated = async {
             let progress = progress_reporter(&app, id);
             progress.step(RemoteStep::Connecting);
-            let ssh = remote::start_session_vm(&gateway_vm("clear session").await?, owner, &ssh_dir()?, &progress).await?;
+            let Some(ssh) = remote::start_session_vm(&gateway_vm("clear session").await?, owner, &ssh_dir()?, &progress).await? else {
+                return Err(format!("failed to clear session: its VM {} no longer exists; send a prompt to continue the session here", target.vm.instance));
+            };
             let status = if owner == id {
                 let token_input = remote::token_input(&claude_token, github_token::read().await?.as_deref());
                 remote::hunt_ctl_with_input(&ssh, &["clear", &id.to_string()], token_input.as_bytes()).await?
@@ -523,11 +525,13 @@ async fn activate(
 
 /// Connects to the relay of the remote session `record` (see `start_remote_relay`) and opens the ACP stream over SSH.
 /// The relay may have started a new conversation (`/clear`, or a transcript it could not load); the record then gets
-/// that conversation's ID.
+/// that conversation's ID. A session whose VM no longer exists continues here instead (`continue_without_vm`).
 async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: &WatcherRegistry, record: SessionRecord) -> Result<SessionView, String> {
     let id = record.id;
     let target = record.remote.clone().ok_or("failed to connect the remote session: it runs locally")?;
-    let (ssh, target) = start_remote_relay(app, id, target, &progress_reporter(app, id)).await?;
+    let Some((ssh, target)) = start_remote_relay(app, id, target.clone(), &progress_reporter(app, id)).await? else {
+        return continue_without_vm(app, registry, watchers, id, target).await;
+    };
     let status = remote::hunt_ctl(&ssh, &["wait", &id.to_string(), "--timeout", "180"]).await?;
     if let Some(at) = remote::relay_activity(&status, chrono::Utc::now()) {
         note_remote_activity(app, id, at);
@@ -553,7 +557,10 @@ async fn activate_remote_sub(
     target: RemoteTarget,
 ) -> Result<SessionView, String> {
     let id = record.id;
-    let (ssh, target) = start_remote_relay(app, owner, target, &progress_reporter(app, id)).await?;
+    let instance = target.vm.instance.clone();
+    let Some((ssh, target)) = start_remote_relay(app, owner, target, &progress_reporter(app, id)).await? else {
+        return Err(format!("failed to connect the sub chat: the VM {instance} of its session no longer exists; open the session to continue it here"));
+    };
     let (owner_arg, id_arg) = (owner.to_string(), id.to_string());
     let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt).unwrap_or_default();
     remote::hunt_ctl_with_input(&ssh, &["start", &owner_arg, "--sub", &id_arg], context_prompt.as_bytes()).await?;
@@ -569,11 +576,14 @@ async fn activate_remote_sub(
 
 /// Brings the VM of the remote session `id` up for a connect: has the gateway start it when it is off (it stops itself
 /// when idle), checks its release, installs the agent's tools, learns the worktree of an adopted session on its first
-/// connect and makes sure the session's relay runs. Returns the connection and `target` with its worktree on the VM.
-async fn start_remote_relay(app: &AppHandle, id: Uuid, target: RemoteTarget, progress: &ProgressEmitter) -> Result<(Ssh, RemoteTarget), String> {
+/// connect and makes sure the session's relay runs. Returns the connection and `target` with its worktree on the VM;
+/// `None` when the VM no longer exists.
+async fn start_remote_relay(app: &AppHandle, id: Uuid, target: RemoteTarget, progress: &ProgressEmitter) -> Result<Option<(Ssh, RemoteTarget)>, String> {
     progress.step(RemoteStep::Connecting);
     // A relay that runs keeps running on the release it started with.
-    let ssh = remote::start_session_vm(&gateway_vm("connect the remote session").await?, id, &ssh_dir()?, progress).await?;
+    let Some(ssh) = remote::start_session_vm(&gateway_vm("connect the remote session").await?, id, &ssh_dir()?, progress).await? else {
+        return Ok(None);
+    };
     // An adopted session learns its worktree on the VM with its first connect; the chat works without it.
     let target = if target.worktree_path.as_os_str().is_empty() {
         match remote_worktree(app, id, &target, &ssh).await {
@@ -590,7 +600,30 @@ async fn start_remote_relay(app: &AppHandle, id: Uuid, target: RemoteTarget, pro
     // A running relay keeps its tokens, so it stays reachable with the local login selected.
     let token_input = local_token_input(app).await?;
     remote::hunt_ctl_with_input(&ssh, &["start", &id.to_string()], token_input.as_bytes()).await?;
-    Ok((ssh, target))
+    Ok(Some((ssh, target)))
+}
+
+/// Makes the remote session `id` a local one again, since its VM `target.vm` no longer exists: whatever the agent did
+/// there is lost with it, the session continues here with the local worktree as the file sync left it and the
+/// conversation as of the handoff, and it can be handed off again. Once its local agent runs, fails with a message that
+/// says so, which the chat shows. An adopted session without a local worktree has nothing to continue with.
+async fn continue_without_vm(
+    app: &AppHandle,
+    registry: &SessionRegistry,
+    watchers: &WatcherRegistry,
+    id: Uuid,
+    target: RemoteTarget,
+) -> Result<SessionView, String> {
+    let instance = target.vm.instance.clone();
+    if target.is_adopted() && !store::find_session(app, id)?.worktree_path.is_dir() {
+        return Err(format!("failed to connect the session: its VM {instance} no longer exists and nothing of it is on this Mac; delete the session"));
+    }
+    let retrieved = remote::retrieve::Retrieved { acp_session_id: None, branch: None };
+    finish_retrieval(app, registry, watchers, id, &target, retrieved).await?;
+    Err(format!(
+        "the VM {instance} of the session no longer exists; the session continues here with the files of its local worktree and the \
+         conversation as of the handoff, and can be handed off again"
+    ))
 }
 
 /// The conversation a relay serves according to its `status`, else the one `record` knows; fails with `what` without
@@ -1095,37 +1128,51 @@ pub async fn retrieve_session(
             adopted_into,
         };
         let retrieved = remote::retrieve::retrieve(request, &progress_reporter(&app, id)).await?;
-        let record = store::update_session(&app, id, |stored| {
-            stored.remote = None;
-            if let Some(acp_session_id) = &retrieved.acp_session_id {
-                stored.acp_session_id = Some(acp_session_id.clone());
-            }
-            if let Some(branch) = &retrieved.branch {
-                stored.branch = branch.clone();
-            }
-        })?
-        .ok_or_else(|| "failed to retrieve the session: it was closed meanwhile".to_string())?;
-        announce_sessions_changed(&app);
-        sync::forget(&app, id);
-        forget_remote(&app, &target, id).await;
-        dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone(), Install::Updating);
-        let start = local_start(&record);
-        let view = activate(&app, &registry, &watchers, record, start, AgentTransport::Local).await?;
-        let LiveHandles { history, .. } = live_session(&registry, id).await?;
-        let mode = match target.restored_mode() {
-            mode if offers_mode(&history.lock().unwrap(), mode) => mode,
-            _ => "default",
-        };
-        set_mode(&registry, id, mode.to_string())
-            .await
-            .map_err(|error| format!("failed to restore the permission mode {mode} of the retrieved session: {error}"))?;
-        Ok(view)
+        finish_retrieval(&app, &registry, &watchers, id, &target, retrieved).await
     }
     .await;
     registry.end_start(id).await;
     finish_progress(&app, id);
     announce_sessions_changed(&app);
     activated
+}
+
+/// Makes the session `id`, retrieved from `target` with `retrieved`, run locally: stores the conversation and branch
+/// the retrieval brought, ends the remote side (the VM is deleted), prepares the worktree's dependencies and starts the
+/// local agent in the permission mode the session had before the handoff. The caller holds the session's start claim.
+async fn finish_retrieval(
+    app: &AppHandle,
+    registry: &SessionRegistry,
+    watchers: &WatcherRegistry,
+    id: Uuid,
+    target: &RemoteTarget,
+    retrieved: remote::retrieve::Retrieved,
+) -> Result<SessionView, String> {
+    let record = store::update_session(app, id, |stored| {
+        stored.remote = None;
+        if let Some(acp_session_id) = &retrieved.acp_session_id {
+            stored.acp_session_id = Some(acp_session_id.clone());
+        }
+        if let Some(branch) = &retrieved.branch {
+            stored.branch = branch.clone();
+        }
+    })?
+    .ok_or_else(|| "failed to retrieve the session: it was closed meanwhile".to_string())?;
+    announce_sessions_changed(app);
+    sync::forget(app, id);
+    forget_remote(app, target, id).await;
+    dependencies::ensure(app, record.repo_path.clone(), record.worktree_path.clone(), Install::Updating);
+    let start = local_start(&record);
+    let view = activate(app, registry, watchers, record, start, AgentTransport::Local).await?;
+    let LiveHandles { history, .. } = live_session(registry, id).await?;
+    let mode = match target.restored_mode() {
+        mode if offers_mode(&history.lock().unwrap(), mode) => mode,
+        _ => "default",
+    };
+    set_mode(registry, id, mode.to_string())
+        .await
+        .map_err(|error| format!("failed to restore the permission mode {mode} of the retrieved session: {error}"))?;
+    Ok(view)
 }
 
 /// Refuses to bring back `record` when it runs locally, or when it is an adopted session without a local worktree and

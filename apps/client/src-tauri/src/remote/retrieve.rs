@@ -3,7 +3,8 @@
 //! the files of the local worktree; the branch moves to the agent's last commit, the Git LFS objects follow and the
 //! transcript returns with its paths moved back. A retrieval that failed midway can be repeated. A session this Mac
 //! adopted gets a local worktree in the local checkout of its repository, on the branch the VM has checked out: while
-//! it runs there (`check_out_adopted`), or when it comes back without one.
+//! it runs there (`check_out_adopted`), or when it comes back without one. A session whose VM no longer exists comes
+//! back with what this Mac has: the local worktree as the file sync left it and the conversation as of the handoff.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -44,7 +45,8 @@ pub struct Retrieved {
 }
 
 /// Stops the session on its VM and applies its state to the local worktree. The VM stays; the caller deletes it once the
-/// session runs locally again.
+/// session runs locally again. Without the VM, the local worktree stays as it is and the conversation goes on from the
+/// one the handoff left here.
 pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> Result<Retrieved, String> {
     if let Some(repo) = request.adopted_into {
         return retrieve_adopted(&request, repo, progress).await;
@@ -54,7 +56,10 @@ pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> R
     let target = request.target;
     let retrieve_ref = format!("refs/hunt/{id}/retrieve");
 
-    let ssh = connect(&request, progress).await?;
+    let Some(ssh) = connect(&request, progress).await? else {
+        sync::clear_staging(worktree);
+        return Ok(Retrieved { acp_session_id: None, branch: None });
+    };
     let remote_worktree = remote_worktree(&request, &ssh).await?;
     progress.step(RemoteStep::StoppingAgent);
     hunt_ctl(&ssh, &["stop", &id]).await?;
@@ -302,7 +307,10 @@ async fn retrieve_adopted(request: &RetrieveRequest<'_>, repo: &Path, progress: 
         return Err(format!("failed to bring back the session: {} exists already", worktree.display()));
     }
 
-    let ssh = connect(request, progress).await?;
+    let Some(ssh) = connect(request, progress).await? else {
+        let instance = &target.vm.instance;
+        return Err(format!("failed to bring back the session: its VM {instance} no longer exists and nothing of it is on this Mac; delete the session"));
+    };
     let remote_worktree = remote_worktree(request, &ssh).await?;
     let checked_out = remote_branch(&ssh, &remote_worktree).await;
     let fallback = git::session_branch(&vm::short_id(request.hunt_session_id));
@@ -325,8 +333,8 @@ async fn retrieve_adopted(request: &RetrieveRequest<'_>, repo: &Path, progress: 
 }
 
 /// Starts the session's VM through the gateway when it is off and connects; the VM must speak this app's protocol, so
-/// that its `hunt-ctl` knows the commands the retrieval runs.
-async fn connect(request: &RetrieveRequest<'_>, progress: Progress<'_>) -> Result<Ssh, String> {
+/// that its `hunt-ctl` knows the commands the retrieval runs. `None` when the VM no longer exists.
+async fn connect(request: &RetrieveRequest<'_>, progress: Progress<'_>) -> Result<Option<Ssh>, String> {
     progress.step(RemoteStep::Connecting);
     start_session_vm(request.gateway, request.hunt_session_id, request.ssh_dir, progress).await
 }

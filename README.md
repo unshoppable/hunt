@@ -547,7 +547,10 @@ Only when the snapshot then holds the files of the local worktree, the local bra
 nothing changed here meanwhile does the branch move to the agent's last commit; otherwise the retrieval names each
 differing file with its side and the ignore rules that apply (or the local commits) and moves nothing.
 The transcript returns. Then Hunt has the gateway delete the
-VM with its disks (`vms.delete`), as it does when a remote session is deleted. A deletion that fails, for example
+VM with its disks (`vms.delete`), as it does when a remote session is deleted. A session whose VM no longer exists
+(deleted outside Hunt) comes back with what this Mac has, the local worktree as the file sync left it and the
+conversation as of the handoff, as soon as it is brought back or a prompt tries to connect it; the chat says so, and the
+session can be handed off again. A deletion that fails, for example
 offline, is kept in `remote-cleanups.json` in the app data folder and retried at the next start of Hunt, once the main
 window passed the remote settings. Hunt deletes no VM whose recorded name is not the session's `vm-hunt-s-<short id>`.
 What the agent changed in the memory is merged into the local one three-way against what the handoff sent

@@ -117,7 +117,7 @@ impl GatewayApi {
         let hello = match known {
             Some(hello) => hello,
             None => {
-                let hello: Hello = call(&ssh, "hello", &json!({}), &|_| {}).await.map_err(|error| without_api(gateway, error))?;
+                let hello: Hello = call(&ssh, "hello", &json!({}), &|_| {}).await.map_err(|error| without_api(gateway, error.into()))?;
                 check_api(&hello, api_version())?;
                 HELLOS.lock().unwrap().push((gateway.clone(), hello.clone()));
                 hello
@@ -137,12 +137,12 @@ impl GatewayApi {
 
     /// Calls `method` with `params` and returns its result.
     pub async fn call<T: DeserializeOwned>(&self, method: &str, params: &(impl Serialize + Sync)) -> Result<T, String> {
-        call(&self.ssh, method, params, &|_| {}).await
+        Ok(call(&self.ssh, method, params, &|_| {}).await?)
     }
 
     /// Calls `method` with `params`, reports the steps it streams to `progress` and returns its result.
     pub async fn call_streaming<T: DeserializeOwned>(&self, method: &str, params: &(impl Serialize + Sync), progress: Progress<'_>) -> Result<T, String> {
-        call(&self.ssh, method, params, progress).await
+        Ok(call(&self.ssh, method, params, progress).await?)
     }
 
     /// The sessions of the gateway's project, in every zone.
@@ -165,11 +165,16 @@ impl GatewayApi {
         Ok(provisioned)
     }
 
-    /// Starts or resumes the VM of session `id` unless it runs, waits until it answers and returns it.
-    pub async fn start_vm(&self, id: Uuid, progress: Progress<'_>) -> Result<VmRef, String> {
-        let started: StartedVm = self.call_streaming("vms.start", &json!({ "id": id }), progress).await?;
+    /// Starts or resumes the VM of session `id` unless it runs, waits until it answers and returns it; `None` when the
+    /// session has no VM any more.
+    pub async fn start_vm(&self, id: Uuid, progress: Progress<'_>) -> Result<Option<VmRef>, String> {
+        let started: StartedVm = match call(&self.ssh, "vms.start", &json!({ "id": id }), progress).await {
+            Ok(started) => started,
+            Err(error) if error.code.as_deref() == Some("notFound") => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
         started.vm.validate()?;
-        Ok(started.vm)
+        Ok(Some(started.vm))
     }
 
     /// Deletes the VM of session `id` with its disks; a VM that is gone already counts as deleted.
@@ -179,9 +184,29 @@ impl GatewayApi {
     }
 }
 
+/// Why a call failed: an error the gateway reported, with its code (`libs/domain/src/gatewayApi.ts`), or a failure of
+/// the call itself without one. The message explains either.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallError {
+    pub code: Option<String>,
+    pub message: String,
+}
+
+impl From<CallError> for String {
+    fn from(error: CallError) -> Self {
+        error.message
+    }
+}
+
+impl From<String> for CallError {
+    fn from(message: String) -> Self {
+        CallError { code: None, message }
+    }
+}
+
 /// Runs `hunt-api <method>` on the gateway behind `ssh` with `params` on stdin; see `Outcome` for how its output becomes
 /// the result.
-async fn call<T: DeserializeOwned>(ssh: &Ssh, method: &str, params: &(impl Serialize + Sync), progress: Progress<'_>) -> Result<T, String> {
+async fn call<T: DeserializeOwned>(ssh: &Ssh, method: &str, params: &(impl Serialize + Sync), progress: Progress<'_>) -> Result<T, CallError> {
     let mut input = serde_json::to_vec(params).map_err(|error| format!("failed to write the request of {method}: {error}"))?;
     input.push(b'\n');
     let mut outcome = Outcome::new(method);
@@ -253,18 +278,18 @@ impl<'a> Outcome<'a> {
 
     /// The result as `T`, given how the remote command ended: an error event goes before a failed `exit`, which goes
     /// before a missing result.
-    fn finish<T: DeserializeOwned>(self, exit: Result<(), String>) -> Result<T, String> {
+    fn finish<T: DeserializeOwned>(self, exit: Result<(), String>) -> Result<T, CallError> {
         let method = self.method;
         if let Some((code, message)) = self.error {
-            let reason = if message.trim().is_empty() { code } else { message };
-            return Err(format!("failed to run {method} on the gateway: {reason}"));
+            let reason = if message.trim().is_empty() { code.clone() } else { message };
+            return Err(CallError { code: Some(code), message: format!("failed to run {method} on the gateway: {reason}") });
         }
         exit?;
         let Some(data) = self.result else {
             let output = if self.stray.is_empty() { String::new() } else { format!(": {}", self.stray.join("\n")) };
-            return Err(format!("failed to run {method} on the gateway: it sent no result{output}"));
+            return Err(format!("failed to run {method} on the gateway: it sent no result{output}").into());
         };
-        serde_json::from_value(data).map_err(|error| format!("failed to read the result of {method} from the gateway: {error}"))
+        serde_json::from_value(data).map_err(|error| format!("failed to read the result of {method} from the gateway: {error}").into())
     }
 }
 
@@ -303,7 +328,7 @@ mod tests {
 
     /// Feeds `output` line by line into an outcome of `method` and finishes it with `exit`; returns the result and the
     /// steps reported.
-    fn run<T: DeserializeOwned>(method: &str, output: &str, exit: Result<(), String>) -> (Result<T, String>, Vec<RemoteStep>) {
+    fn run<T: DeserializeOwned>(method: &str, output: &str, exit: Result<(), String>) -> (Result<T, CallError>, Vec<RemoteStep>) {
         let steps = Mutex::new(Vec::new());
         let progress = |step: RemoteStep| steps.lock().unwrap().push(step);
         let mut outcome = Outcome::new(method);
@@ -359,32 +384,36 @@ mod tests {
     }
 
     #[test]
-    fn an_error_event_wins_over_the_exit_status_and_falls_back_to_its_code() {
+    fn an_error_event_wins_over_the_exit_status_keeps_its_code_and_falls_back_to_it() {
         let output = r#"{"type":"progress","step":"startingVm"}
 {"type":"error","code":"notFound","message":"the session ab12cd34 has no VM"}"#;
         let exit = Err("failed to run `hunt-api vms.start` on the VM vm-hunt-medc: ".to_string());
         let (result, steps) = run::<StartedVm>("vms.start", output, exit.clone());
-        assert_eq!(result.err().as_deref(), Some("failed to run vms.start on the gateway: the session ab12cd34 has no VM"));
+        let expected = CallError { code: Some("notFound".into()), message: "failed to run vms.start on the gateway: the session ab12cd34 has no VM".into() };
+        assert_eq!(result.err(), Some(expected));
         assert_eq!(steps, [RemoteStep::StartingVm]);
 
         let (result, _) = run::<StartedVm>("vms.start", r#"{"type":"error","code":"forbidden"}"#, exit);
-        assert_eq!(result.err().as_deref(), Some("failed to run vms.start on the gateway: forbidden"));
+        let error = result.err().unwrap();
+        assert_eq!((error.code.as_deref(), String::from(error.clone()).as_str()), (Some("forbidden"), "failed to run vms.start on the gateway: forbidden"));
     }
 
     #[test]
-    fn a_failed_command_without_an_error_event_reports_the_ssh_error() {
+    fn a_failed_command_without_an_error_event_reports_the_ssh_error_without_a_code() {
         let exit = Err("failed to run `hunt-api vms.get` on the VM vm-hunt-medc: Connection closed".to_string());
         let (result, _) = run::<IgnoredAny>("vms.get", "", exit.clone());
-        assert_eq!(result.err(), exit.err());
+        assert_eq!(result.err(), exit.err().map(CallError::from));
+        assert_eq!(CallError::from("x".to_string()).code, None);
     }
 
     #[test]
     fn output_without_a_result_or_of_the_wrong_shape_fails() {
         let (result, _) = run::<IgnoredAny>("sessions.list", "Welcome to the gateway\n{\"type\":\"log\",\"message\":\"x\"}", Ok(()));
-        assert_eq!(result.err().as_deref(), Some("failed to run sessions.list on the gateway: it sent no result: Welcome to the gateway"));
+        assert_eq!(result.err().map(String::from).as_deref(), Some("failed to run sessions.list on the gateway: it sent no result: Welcome to the gateway"));
 
         let (result, _) = run::<SessionList>("sessions.list", r#"{"type":"result","data":{"vms":[]}}"#, Ok(()));
-        assert!(result.err().is_some_and(|error| error.starts_with("failed to read the result of sessions.list from the gateway: missing field `sessions`")));
+        let expected = "failed to read the result of sessions.list from the gateway: missing field `sessions`";
+        assert!(result.err().is_some_and(|error| error.message.starts_with(expected)));
     }
 
     #[test]

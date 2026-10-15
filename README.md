@@ -119,19 +119,17 @@ patch, `!` or `BREAKING CHANGE` → major), independently per app: it writes the
 - deploys the VM apps (`gateway`, `session`) affected since the commit the VMs run, the tag `deployed/prod`
   ([`ci-nx-affected-deploy.yml`](.github/workflows/ci-nx-affected-deploy.yml),
   [`ci-build-and-deploy.yml`](.github/workflows/ci-build-and-deploy.yml)), and moves the tag;
-- starts a run of [`ci-session-image.yml`](.github/workflows/ci-session-image.yml) (also `workflow_dispatch`), so that
-  a long image build holds back no later release. It builds the image new session VMs boot from, family
-  `img-hunt-session`, when the session release changed the agent's tools (by hand also when not): a build VM from
-  `tpl-hunt-session` runs the infrastructure repository's base setup, gets the release over SSH through IAP, runs its
-  `hunt-ctl install-tools` and is sealed (`hunt-image-seal`), and its disk becomes the image, labelled `hunt-tools`
-  (a hash of the files that pin the tools). It runs as `sa-image-hunt`, which only master may use. The newest three
-  images stay; `gcloud compute images deprecate <newest>` makes new VMs boot the one before. Session VMs still run
-  `install-tools` on every connect, which skips tools at their version;
+- publishes the session release when it got a `session@<version>` tag
+  ([`ci-publish-session.yml`](.github/workflows/ci-publish-session.yml), also `workflow_dispatch`): the built release
+  (`dist/apps/session`) as the asset `session.tar.gz` on the GitHub Release `session@<version>`, never marked latest.
+  The infrastructure repository builds the image new session VMs boot from, family `img-hunt-session`, out of the
+  newest of these releases: its build VM downloads the asset and runs its `hunt-ctl install-tools`. Hunt's CI never
+  touches that VM. Session VMs still run `install-tools` on every connect, which skips tools at their version;
 - publishes the desktop app when it got a `client@<version>` tag
   ([`ci-publish-client.yml`](.github/workflows/ci-publish-client.yml)): the Apple Silicon DMG plus the updater
   artifacts (`Hunt.app.tar.gz`, its `.sig` and `latest.json`) on the GitHub Release `client@<version>`, published as
   the latest once the build is green. Publishing is what makes running installs offer the update: the in-app updater
-  reads `latest.json` of the latest *published* release. VM releases get no GitHub Release.
+  reads `latest.json` of the latest *published* release. The gateway release gets no GitHub Release.
 
 `npx nx release --skip-publish --dry-run` shows what the next run would do. Pull requests run
 [`ci-pull-request.yml`](.github/workflows/ci-pull-request.yml): `nx affected` typecheck, lint, test and build, and the

@@ -1,12 +1,11 @@
 # Releases every push to master: nx release derives the next version of each app from the Conventional Commits that
 # touch it (independent versions, <app>@<version> tags, a CHANGELOG.md per app), commits and tags. A release commit
 # then deploys the server apps (gateway, session) affected since the commit deployed last, deployed/prod, onto the
-# gateway VM over SSH (ci-nx-affected-deploy), publishes the desktop app when it got a client tag, and moves
-# deployed/prod onto the release once every deploy succeeded. After the deploy it starts the build of the session VMs'
-# image (ci-session-image) as a run of its own, which builds only when the release changed the agent's tools; neither a
-# long nor a failed image build holds back a later release. Moving deployed/prod and publishing the desktop app take the
-# token of the release GitHub App (secrets RELEASE_APP_ID, RELEASE_APP_PRIVATE_KEY), as in app-framework: GITHUB_TOKEN
-# may not move a ref across commits that change workflow files.
+# gateway VM over SSH (ci-nx-affected-deploy), publishes the desktop app when it got a client tag and the session
+# release when it got a session tag (ci-publish-session, from which the infrastructure repository builds the session
+# VMs' image), and moves deployed/prod onto the release once every deploy succeeded. Moving deployed/prod and publishing
+# take the token of the release GitHub App (secrets RELEASE_APP_ID, RELEASE_APP_PRIVATE_KEY), as in app-framework:
+# GITHUB_TOKEN may not move a ref across commits that change workflow files.
 name: 📦 CI | Release
 
 on:
@@ -32,6 +31,7 @@ jobs:
       is_release: ${{ steps.release.outputs.is_release }}
       release_sha: ${{ steps.release.outputs.release_sha }}
       client_version: ${{ steps.release.outputs.client_version }}
+      session_version: ${{ steps.release.outputs.session_version }}
     permissions:
       contents: write
     steps:
@@ -72,20 +72,6 @@ jobs:
       base: deployed/prod
     secrets: inherit
 
-  session-image:
-    needs: [release, deploy]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      actions: write
-    steps:
-      # Of the events GITHUB_TOKEN raises, only workflow_dispatch and repository_dispatch start a run.
-      - name: Start the image build
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_SHA: ${{ needs.release.outputs.release_sha }}
-        run: gh workflow run ci-session-image.yml --repo "$GITHUB_REPOSITORY" --ref master -f ref="$RELEASE_SHA" -f force=false
-
   publish-client:
     needs: release
     if: needs.release.outputs.client_version != ''
@@ -94,6 +80,16 @@ jobs:
     uses: ./.github/workflows/ci-publish-client.yml
     with:
       version: ${{ needs.release.outputs.client_version }}
+    secrets: inherit
+
+  publish-session:
+    needs: release
+    if: needs.release.outputs.session_version != ''
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-publish-session.yml
+    with:
+      version: ${{ needs.release.outputs.session_version }}
     secrets: inherit
 
   tag-deploy:

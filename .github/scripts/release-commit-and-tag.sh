@@ -14,6 +14,7 @@
 #               commit created just now, or one an earlier run pushed but failed to deploy>
 #   release_sha=<HEAD, only when is_release is true>
 #   client_version=<the version of client@<version> on HEAD, empty when this release has none>
+#   session_version=<the version of session@<version> on HEAD, empty when this release has none>
 set -euo pipefail
 
 DEPLOY_TAG="${DEPLOY_TAG:-deployed/prod}"
@@ -57,14 +58,17 @@ fi
 DEPLOYED_COMMIT=$(git rev-parse --verify --quiet "refs/tags/${DEPLOY_TAG}^{commit}" || true)
 if git tag --points-at HEAD | grep -Eq "@${SEMVER_PATTERN}$" && [ "$DEPLOYED_COMMIT" != "$(git rev-parse HEAD)" ]; then
   CLIENT_TAG=$(git tag --points-at HEAD | grep -E "^client@${SEMVER_PATTERN}$" | head -n1 || true)
+  SESSION_TAG=$(git tag --points-at HEAD | grep -E "^session@${SEMVER_PATTERN}$" | head -n1 || true)
   {
     echo "is_release=true"
     echo "release_sha=$(git rev-parse HEAD)"
     echo "client_version=${CLIENT_TAG#client@}"
+    echo "session_version=${SESSION_TAG#session@}"
   } >> "$GITHUB_OUTPUT"
 else
   {
     echo "is_release=false"
     echo "client_version="
+    echo "session_version="
   } >> "$GITHUB_OUTPUT"
 fi

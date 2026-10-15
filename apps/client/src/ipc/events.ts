@@ -1,4 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type {
   AttributionEvent,
   ClosedEvent,
@@ -63,4 +64,35 @@ export function listenTo<Name extends keyof EventPayloads>(
   options: { target?: string } = {},
 ): Promise<UnlistenFn> {
   return listen<EventPayloads[Name]>(name, (event) => handler(event.payload), options.target ? { target: options.target } : undefined);
+}
+
+/**
+ * A native file drag over this window. `enter` and `drop` carry the dragged files' absolute paths, `over` only the
+ * cursor; `position` is in CSS pixels relative to the viewport, so it compares to `getBoundingClientRect()`.
+ */
+export type FileDragEvent =
+  | { type: "enter"; paths: string[]; position: { x: number; y: number } }
+  | { type: "over"; position: { x: number; y: number } }
+  | { type: "drop"; paths: string[]; position: { x: number; y: number } }
+  | { type: "leave" };
+
+/**
+ * Subscribes to native file drags over this window. Tauri takes file drops before the webview sees them, so this is
+ * the only way the page learns about dropped files; the HTML `drop` event never carries them.
+ */
+export function listenToFileDrag(handler: (event: FileDragEvent) => void): Promise<UnlistenFn> {
+  return getCurrentWebview().onDragDropEvent((event) => {
+    const payload = event.payload;
+    if (payload.type === "leave") {
+      handler({ type: "leave" });
+      return;
+    }
+    const logical = payload.position.toLogical(window.devicePixelRatio);
+    const position = { x: logical.x, y: logical.y };
+    if (payload.type === "over") {
+      handler({ type: "over", position });
+    } else {
+      handler({ type: payload.type, paths: payload.paths, position });
+    }
+  });
 }

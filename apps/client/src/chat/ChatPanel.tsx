@@ -72,6 +72,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const [guardrailContext, setGuardrailContext] = useState("");
   const showSummary = useSettingsStore((state) => state.showSummary);
   const setGuardrailChatOffset = useSettingsStore((state) => state.setGuardrailChatOffset);
+  const panelRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const columnRef = useRef<HTMLDivElement>(null);
   const [isVerbose, setIsVerbose] = useState(false);
@@ -152,7 +153,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   }
 
   return (
-    <div className="chat flex h-full min-h-0 flex-col bg-(--chat-bg)">
+    <div ref={panelRef} className="chat flex h-full min-h-0 flex-col bg-(--chat-bg)">
       <header data-tauri-drag-region="" className={`${HEADER_BAR} gap-3 border-b border-(--line) px-4`}>
         <div data-tauri-drag-region="" className="min-w-0 flex-1">
           <div data-tauri-drag-region="" className="truncate text-sm font-semibold">{session.title}</div>
@@ -269,6 +270,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           onModeChange={(nextModeId) => void setMode(sessionId, nextModeId)}
           onConfigChange={(configId, value) => void setConfigOption(sessionId, configId, value)}
           pullRequest={session.pullRequest}
+          dropZoneRef={panelRef}
         />
       ) : isCreating || chat?.isLoading ? (
         <div className="px-5 pb-4 pt-2">

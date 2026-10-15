@@ -187,6 +187,8 @@ export const commands = {
   removeGithubToken: () => invoke<GithubTokenStatus>("remove_github_token"),
   /** Every image in the macOS screenshot folder, newest first. */
   listScreenshots: () => invoke<Screenshot[]>("list_screenshots"),
+  /** The image files among `paths` (e.g. files dropped into the chat) as attachments; other files are left out. */
+  imageFiles: (paths: string[]) => invoke<Screenshot[]>("image_files", { paths }),
   openWorktreeInWebstorm: (id: string) => invoke<void>("open_worktree_in_webstorm", { id }),
   /** Opens a worktree file in WebStorm with the caret on `line`:`column` (1-based). */
   openFileInWebstorm: (id: string, path: string, line: number, column: number) =>

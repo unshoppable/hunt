@@ -1799,6 +1799,12 @@ pub async fn list_screenshots() -> Result<Vec<Screenshot>, String> {
     screenshots::list_screenshots().await
 }
 
+/// The image files among `paths`, e.g. files dropped into the chat, as attachments; other files are left out.
+#[tauri::command]
+pub fn image_files(paths: Vec<String>) -> Vec<Screenshot> {
+    screenshots::image_files(&paths)
+}
+
 /// Every notification of a running session so far, for rebuilding its chat in the UI.
 #[tauri::command]
 pub async fn session_history(registry: State<'_, SessionRegistry>, id: Uuid) -> Result<Vec<SessionNotification>, String> {

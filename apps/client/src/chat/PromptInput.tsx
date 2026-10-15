@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AvailableCommand, PullRequestRef, Screenshot } from "../ipc/types";
 import type { PromptDraft, QueuedPrompt } from "../state/store";
@@ -11,6 +11,8 @@ import { CloseIcon, EraserIcon, GitHubIcon, SendIcon } from "../ui/icons";
 import { useAutoGrow } from "../ui/useAutoGrow";
 import { useDismiss } from "../ui/useDismiss";
 import { matchCommands, slashQueryOf } from "./slashCommands";
+import { insertImageReference, removeImageReference, shiftImageReferences } from "./imageReferences";
+import { useImageDrop } from "./useImageDrop";
 
 /** One agent config dropdown (model, effort, …) shown in the prompt toolbar. */
 export type ConfigSelect = { id: string; name: string; value: string; choices: DropdownOption[] };
@@ -54,6 +56,7 @@ export function PromptInput({
   initialDraft = null,
   placeholder = "Ask anything, / for commands",
   hint = "",
+  dropZoneRef,
 }: {
   isBusy: boolean;
   /** A pending permission request owns the keyboard; the prompt is disabled until it is answered. */
@@ -85,14 +88,21 @@ export function PromptInput({
   placeholder?: string;
   /** Text under the box, e.g. what is still missing before a session can start; none inside a session. */
   hint?: string;
+  /** Element whose area takes dropped image files as attachments; the box itself without it. */
+  dropZoneRef?: RefObject<HTMLElement | null>;
 }) {
   const [text, setText] = useState(initialDraft?.text ?? "");
   const [attachments, setAttachments] = useState<Screenshot[]>(initialDraft?.images ?? []);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
   /** Set when Escape or a click outside closed the suggestions for the current text; typing shows them again. */
   const [isSuggestionsDismissed, setIsSuggestionsDismissed] = useState(false);
+  /** Shown under the box after a drop that attached nothing; cleared by the next successful drop or after a while. */
+  const [dropError, setDropError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const suggestionsRef = useRef<HTMLUListElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  /** Where the caret goes once the text holds a freshly inserted image reference. */
+  const pendingCaretRef = useRef<number | null>(null);
 
   const slashQuery = isSuggestionsDismissed ? null : slashQueryOf(text);
   const suggestions = slashQuery === null ? [] : matchCommands(commands, slashQuery);
@@ -110,6 +120,27 @@ export function PromptInput({
 
   useReturnedPrompts(isBusy, queue, onTakeQueue, takeBack);
 
+  useEffect(() => {
+    const caret = pendingCaretRef.current;
+    if (caret === null) return;
+    pendingCaretRef.current = null;
+    textareaRef.current?.setSelectionRange(caret, caret);
+  }, [text]);
+
+  const isDropTarget = useImageDrop(dropZoneRef ?? rootRef, {
+    onDrop: (images) => {
+      setDropError(null);
+      addAttachments(images);
+    },
+    onNoImages: () => setDropError("Only images can be attached: PNG, JPEG, GIF or WebP."),
+  });
+
+  useEffect(() => {
+    if (!dropError) return;
+    const timer = window.setTimeout(() => setDropError(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [dropError]);
+
   function submit(sendsNow = false) {
     const trimmed = text.trim();
     const images = attachments;
@@ -123,19 +154,48 @@ export function PromptInput({
     setAttachments([]);
   }
 
-  /** Puts `prompts` back into the box, after the text and attachments it holds. */
+  /** Puts `prompts` back into the box, after the text and attachments it holds; their image references follow. */
   function takeBack(prompts: QueuedPrompt[]) {
-    setText((current) => appendPromptTexts(current, prompts));
-    addAttachments(prompts.flatMap((prompt) => prompt.images));
+    let offset = attachments.length;
+    const shifted = prompts.map((prompt) => {
+      const text = shiftImageReferences(prompt.text, offset);
+      offset += prompt.images.length;
+      return { ...prompt, text };
+    });
+    setText((current) => appendPromptTexts(current, shifted));
+    attach(prompts.flatMap((prompt) => prompt.images));
+    textareaRef.current?.focus();
   }
 
-  /** Attaches `screenshots` that are not attached yet and returns the focus to the text. */
+  /** Attaches `screenshots` that are not attached yet; returns the attached ones. */
+  function attach(screenshots: Screenshot[]): Screenshot[] {
+    const known = new Set(attachments.map((attachment) => attachment.path));
+    const added = screenshots.filter((screenshot) => !known.has(screenshot.path));
+    if (added.length) {
+      setAttachments([...attachments, ...added]);
+    }
+    return added;
+  }
+
+  /** Attaches `screenshots`, writes a `[Image #n]` reference for each at the caret and returns the focus to the text. */
   function addAttachments(screenshots: Screenshot[]) {
-    setAttachments((current) => {
-      const known = new Set(current.map((attachment) => attachment.path));
-      return [...current, ...screenshots.filter((screenshot) => !known.has(screenshot.path))];
+    const added = attach(screenshots);
+    let next = text;
+    let caret = textareaRef.current?.selectionStart ?? text.length;
+    added.forEach((_, offset) => {
+      ({ text: next, caret } = insertImageReference(next, caret, attachments.length + offset + 1));
     });
+    if (added.length) {
+      setText(next);
+      pendingCaretRef.current = caret;
+    }
     textareaRef.current?.focus();
+  }
+
+  /** Detaches the image at `index` and drops its reference from the text, renumbering the ones after it. */
+  function removeAttachment(index: number) {
+    setAttachments(attachments.filter((_, other) => other !== index));
+    setText(removeImageReference(text, index + 1));
   }
 
   function completeSuggestion() {
@@ -175,7 +235,7 @@ export function PromptInput({
   }
 
   return (
-    <div className="px-9 pb-6 pt-2">
+    <div ref={rootRef} className="px-9 pb-6 pt-2">
       <div className="chat-column min-w-[400px]">
         <QueuedPrompts
           queue={queue}
@@ -188,16 +248,24 @@ export function PromptInput({
             takeBack([prompt]);
           }}
         />
-        <div className="relative z-10 rounded-2xl border border-(--line) bg-(--surface-input) shadow-lg shadow-black/20 focus-within:border-neutral-500">
+        <div
+          className={`relative z-10 rounded-2xl border bg-(--surface-input) shadow-lg shadow-black/20 ${isDropTarget ? "border-dashed border-neutral-400" : "border-(--line) focus-within:border-neutral-500"}`}
+        >
+          {isDropTarget ? (
+            <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-(--surface-input)/90 text-sm text-neutral-200">
+              Drop images to attach them
+            </div>
+          ) : null}
           {attachments.length ? (
             <div className="flex flex-wrap gap-2 px-3 pt-3">
-              {attachments.map((attachment) => (
-                <span key={attachment.path} className="group relative block" title={attachment.name}>
+              {attachments.map((attachment, index) => (
+                <span key={attachment.path} className="group relative block" title={`${attachment.name} – [Image #${index + 1}]`}>
                   <img src={screenshotUrl(attachment)} alt="" className="size-16 rounded-md border border-white/10 bg-black/30 object-cover" />
+                  <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1 text-[12px] leading-4 text-neutral-200">#{index + 1}</span>
                   <button
                     type="button"
                     aria-label={`Remove ${attachment.name}`}
-                    onClick={() => setAttachments((current) => current.filter((other) => other.path !== attachment.path))}
+                    onClick={() => removeAttachment(index)}
                     className="absolute -top-2 -right-2 flex size-6 items-center justify-center rounded-full border border-neutral-500 bg-neutral-800 text-neutral-200 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-neutral-700"
                   >
                     <CloseIcon className="size-2.5" />
@@ -297,6 +365,7 @@ export function PromptInput({
           </div>
         </div>
         {extension}
+        {dropError ? <div className="px-1 pt-4 text-[13px] text-red-300">{dropError}</div> : null}
         {hint ? <div className="px-1 pt-4 text-[13px] text-neutral-500">{hint}</div> : null}
       </div>
     </div>

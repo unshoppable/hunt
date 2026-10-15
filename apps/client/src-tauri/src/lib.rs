@@ -110,6 +110,7 @@ pub fn run() {
             session::commands::resolve_imports,
             session::commands::search_word,
             session::commands::list_screenshots,
+            session::commands::image_files,
             lsp::lsp_request,
             lsp::lsp_notify,
             lsp::lsp_cancel,

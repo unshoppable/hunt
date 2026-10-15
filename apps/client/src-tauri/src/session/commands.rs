@@ -34,7 +34,7 @@ use crate::remote::preview::PreviewStatus;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize, TerminalTarget, TmuxWindow};
 use crate::remote::sync::Direction;
-use crate::remote::{self, claude_dir, RemoteStep, RemoteTarget, Reporter, VmRef, VmSettings};
+use crate::remote::{self, claude_dir, Progress, RemoteStep, RemoteTarget, Reporter, VmRef, VmSettings};
 use crate::screenshots::{self, Screenshot};
 use crate::session::attribution::{self, FileVersion};
 use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus, Install};
@@ -430,10 +430,11 @@ pub async fn clear_session(
     }
     if let Some((owner, target)) = host {
         let activated = async {
+            // A clear on a running VM shows no steps, like a local one; only a VM that has to boot first shows them.
             let progress = progress_reporter(&app, id);
-            progress.step(RemoteStep::Connecting);
-            let Some(ssh) = remote::start_session_vm(&gateway_vm("clear session").await?, owner, &ssh_dir()?, &progress).await? else {
-                return Err(format!("failed to clear session: its VM {} no longer exists; send a prompt to continue the session here", target.vm.instance));
+            let instance = target.vm.instance.clone();
+            let Some((ssh, target)) = start_remote_relay(&app, owner, target, &BootProgress::new(&progress)).await? else {
+                return Err(format!("failed to clear session: its VM {instance} no longer exists; send a prompt to continue the session here"));
             };
             let status = if owner == id {
                 let token_input = remote::token_input(&claude_token, github_token::read().await?.as_deref());
@@ -445,9 +446,9 @@ pub async fn clear_session(
             let record = store::update_session(&app, id, |stored| stored.acp_session_id = Some(acp_session_id))?
                 .ok_or_else(|| "failed to clear session: the session was closed meanwhile".to_string())?;
             if owner == id {
-                activate_remote(&app, &registry, &watchers, record).await
+                open_remote_relay(&app, &registry, &watchers, id, ssh, target).await
             } else {
-                activate_remote_sub(&app, &registry, &watchers, record, owner, target).await
+                open_remote_sub_relay(&app, &registry, &watchers, record, owner, ssh, target).await
             }
         }
         .await;
@@ -532,6 +533,19 @@ async fn activate_remote(app: &AppHandle, registry: &SessionRegistry, watchers: 
     let Some((ssh, target)) = start_remote_relay(app, id, target.clone(), &progress_reporter(app, id)).await? else {
         return continue_without_vm(app, registry, watchers, id, target).await;
     };
+    open_remote_relay(app, registry, watchers, id, ssh, target).await
+}
+
+/// Opens the ACP stream to the relay of the remote session `id`, which `start_remote_relay` brought up on its VM behind
+/// `ssh` (`target` names its worktree there), once the relay serves a conversation.
+async fn open_remote_relay(
+    app: &AppHandle,
+    registry: &SessionRegistry,
+    watchers: &WatcherRegistry,
+    id: Uuid,
+    ssh: Ssh,
+    target: RemoteTarget,
+) -> Result<SessionView, String> {
     let status = remote::hunt_ctl(&ssh, &["wait", &id.to_string(), "--timeout", "180"]).await?;
     if let Some(at) = remote::relay_activity(&status, chrono::Utc::now()) {
         note_remote_activity(app, id, at);
@@ -561,6 +575,23 @@ async fn activate_remote_sub(
     let Some((ssh, target)) = start_remote_relay(app, owner, target, &progress_reporter(app, id)).await? else {
         return Err(format!("failed to connect the sub chat: the VM {instance} of its session no longer exists; open the session to continue it here"));
     };
+    open_remote_sub_relay(app, registry, watchers, record, owner, ssh, target).await
+}
+
+/// Has `hunt-ctl` start the relay of the sub chat `record` of the remote session `owner` on the session's VM behind
+/// `ssh` (`target` names the session's worktree there), which `start_remote_relay` brought up, and opens the ACP stream
+/// to it once it serves a conversation. The sub chat's selection goes into the system prompt of a relay that starts for
+/// the first time.
+async fn open_remote_sub_relay(
+    app: &AppHandle,
+    registry: &SessionRegistry,
+    watchers: &WatcherRegistry,
+    record: SessionRecord,
+    owner: Uuid,
+    ssh: Ssh,
+    target: RemoteTarget,
+) -> Result<SessionView, String> {
+    let id = record.id;
     let (owner_arg, id_arg) = (owner.to_string(), id.to_string());
     let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt).unwrap_or_default();
     remote::hunt_ctl_with_input(&ssh, &["start", &owner_arg, "--sub", &id_arg], context_prompt.as_bytes()).await?;
@@ -578,7 +609,7 @@ async fn activate_remote_sub(
 /// when idle), checks its release, installs the agent's tools, learns the worktree of an adopted session on its first
 /// connect and makes sure the session's relay runs. Returns the connection and `target` with its worktree on the VM;
 /// `None` when the VM no longer exists.
-async fn start_remote_relay(app: &AppHandle, id: Uuid, target: RemoteTarget, progress: &ProgressEmitter) -> Result<Option<(Ssh, RemoteTarget)>, String> {
+async fn start_remote_relay(app: &AppHandle, id: Uuid, target: RemoteTarget, progress: Progress<'_>) -> Result<Option<(Ssh, RemoteTarget)>, String> {
     progress.step(RemoteStep::Connecting);
     // A relay that runs keeps running on the release it started with.
     let Some(ssh) = remote::start_session_vm(&gateway_vm("connect the remote session").await?, id, &ssh_dir()?, progress).await? else {
@@ -1267,6 +1298,41 @@ impl Reporter for ProgressEmitter {
 /// Reports the steps of a remote operation on session `id` to the UI; see `ProgressEmitter`.
 fn progress_reporter(app: &AppHandle, id: Uuid) -> ProgressEmitter {
     ProgressEmitter { app: app.clone(), id, current: std::sync::Mutex::new(None) }
+}
+
+/// Passes the steps of a connect to `inner` only from the moment the VM has to boot: a connect to a running VM, such
+/// as a `/clear`, reports nothing, like a restart of a local agent, while one that starts the VM reports its boot and
+/// every step after it.
+struct BootProgress<'a> {
+    inner: &'a dyn Reporter,
+    is_booting: std::sync::atomic::AtomicBool,
+}
+
+impl<'a> BootProgress<'a> {
+    fn new(inner: &'a dyn Reporter) -> Self {
+        BootProgress { inner, is_booting: std::sync::atomic::AtomicBool::new(false) }
+    }
+
+    fn is_booting(&self) -> bool {
+        self.is_booting.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Reporter for BootProgress<'_> {
+    fn step(&self, step: RemoteStep) {
+        if matches!(step, RemoteStep::StartingVm | RemoteStep::CreatingVm | RemoteStep::WaitingForVm) {
+            self.is_booting.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        if self.is_booting() {
+            self.inner.step(step);
+        }
+    }
+
+    fn log(&self, message: &str) {
+        if self.is_booting() {
+            self.inner.log(message);
+        }
+    }
 }
 
 /// Tells the UI that the remote operation on session `id` ended, successful or not.
@@ -2264,6 +2330,47 @@ pub async fn resolve_imports(app: AppHandle, id: Uuid, from: String, specifiers:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Records the steps and log lines it hears, in order.
+    #[derive(Default)]
+    struct Recorder(std::sync::Mutex<Vec<String>>);
+
+    impl Reporter for Recorder {
+        fn step(&self, step: RemoteStep) {
+            self.0.lock().unwrap().push(format!("{step:?}"));
+        }
+
+        fn log(&self, message: &str) {
+            self.0.lock().unwrap().push(format!("log: {message}"));
+        }
+    }
+
+    #[test]
+    fn a_connect_to_a_running_vm_reports_no_steps() {
+        let recorder = Recorder::default();
+        let progress = BootProgress::new(&recorder);
+        progress.step(RemoteStep::Connecting);
+        progress.step(RemoteStep::InstallingRuntime);
+        progress.log("installing the agent's tools");
+        progress.step(RemoteStep::StartingAgent);
+        assert!(recorder.0.into_inner().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_connect_that_boots_the_vm_reports_its_boot_and_every_step_after_it() {
+        let recorder = Recorder::default();
+        let progress = BootProgress::new(&recorder);
+        progress.step(RemoteStep::Connecting);
+        progress.step(RemoteStep::StartingVm);
+        progress.log("starting vm-hunt-s-ab12cd34");
+        progress.step(RemoteStep::WaitingForVm);
+        progress.step(RemoteStep::InstallingRuntime);
+        progress.step(RemoteStep::StartingAgent);
+        assert_eq!(
+            recorder.0.into_inner().unwrap(),
+            ["StartingVm", "log: starting vm-hunt-s-ab12cd34", "WaitingForVm", "InstallingRuntime", "StartingAgent"]
+        );
+    }
 
     #[test]
     fn a_sub_chat_runs_on_the_vm_of_its_remote_parent() {

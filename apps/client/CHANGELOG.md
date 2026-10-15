@@ -1,3 +1,9 @@
+## 0.21.0 (2026-10-15)
+
+### 🚀 Features
+
+- **client:** back up the transcripts of a remote session after every turn ([e93fece](https://github.com/unshoppable/hunt/commit/e93fece))
+
 ## 0.20.4 (2026-10-15)
 
 ### 🩹 Fixes

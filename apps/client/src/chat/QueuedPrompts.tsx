@@ -1,13 +1,26 @@
 import { useEffect, useRef } from "react";
 import type { QueuedPrompt } from "../state/store";
-import { CloseIcon } from "../ui/icons";
+import { CloseIcon, SendIcon } from "../ui/icons";
 import { screenshotUrl } from "./ScreenshotPicker";
+
+/** A row's button, shown while the row is hovered or the button focused. */
+const ROW_BUTTON =
+  "flex size-5 shrink-0 items-center justify-center rounded text-neutral-500 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-(--row-hover) hover:text-white focus-visible:opacity-100";
 
 /**
  * Prompts waiting for the running turn to end, shown dimmed above the composer in sending order, like the queued
- * messages of the Claude Code terminal. The button of a row takes the prompt back into the composer.
+ * messages of the Claude Code terminal. The buttons of a row send the prompt at once, interrupting the running turn,
+ * or take it back into the composer.
  */
-export function QueuedPrompts({ queue, onTakeBack }: { queue: QueuedPrompt[]; onTakeBack: (prompt: QueuedPrompt) => void }) {
+export function QueuedPrompts({
+  queue,
+  onSendNow,
+  onTakeBack,
+}: {
+  queue: QueuedPrompt[];
+  onSendNow: (prompt: QueuedPrompt) => void;
+  onTakeBack: (prompt: QueuedPrompt) => void;
+}) {
   if (!queue.length) return null;
   return (
     <ul aria-label="Queued prompts" className="mb-2 flex flex-col gap-1 px-1 text-[13px] text-neutral-500">
@@ -22,13 +35,10 @@ export function QueuedPrompts({ queue, onTakeBack }: { queue: QueuedPrompt[]; on
           {prompt.images.map((image) => (
             <img key={image.path} src={screenshotUrl(image)} alt="" title={image.name} className="size-5 shrink-0 rounded border border-white/10 object-cover" />
           ))}
-          <button
-            type="button"
-            onClick={() => onTakeBack(prompt)}
-            title="Take back into the prompt box"
-            aria-label="Take the queued prompt back into the prompt box"
-            className="flex size-5 shrink-0 items-center justify-center rounded text-neutral-500 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-(--row-hover) hover:text-white focus-visible:opacity-100"
-          >
+          <button type="button" onClick={() => onSendNow(prompt)} title="Send now; stops the running turn" aria-label="Send the queued prompt now" className={ROW_BUTTON}>
+            <SendIcon className="size-3" />
+          </button>
+          <button type="button" onClick={() => onTakeBack(prompt)} title="Take back into the prompt box" aria-label="Take the queued prompt back into the prompt box" className={ROW_BUTTON}>
             <CloseIcon className="size-2.5" />
           </button>
         </li>

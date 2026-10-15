@@ -4,6 +4,7 @@ import type { SelectionContext } from "../ipc/types";
 import { useAgentDefaultsStore } from "../state/agentDefaults";
 import { useSettingsStore } from "../state/settings";
 import { agentSetupOf, useHuntStore } from "../state/store";
+import type { QueuedPrompt } from "../state/store";
 import { DeleteSessionDialog } from "../sessions/DeleteSessionDialog";
 import { findSelectOption, listChoiceOptions } from "./configOptions";
 import { MessageList } from "./MessageList";
@@ -15,7 +16,7 @@ import { ContextCard, describeLines, describeSelection, SelectionCard } from "./
 import { useFollowScroll } from "./useFollowScroll";
 import { titleFromPrompt } from "../sessions/sessionLabels";
 import { DANGER_CLEAR_BUTTON, GHOST_BUTTON_XS, ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SEND_BUTTON } from "../ui/buttons";
-import { CloseIcon, TrashIcon } from "../ui/icons";
+import { CloseIcon, SendIcon, TrashIcon } from "../ui/icons";
 import { trackDrag } from "../ui/pointerDrag";
 import { ResizeGrips } from "../ui/ResizeGrips";
 import { useAutoGrow } from "../ui/useAutoGrow";
@@ -114,6 +115,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   const loadHistory = useHuntStore((state) => state.loadHistory);
   const resumeSession = useHuntStore((state) => state.resumeSession);
   const sendPrompt = useHuntStore((state) => state.sendPrompt);
+  const sendPromptNow = useHuntStore((state) => state.sendPromptNow);
   const takeQueue = useHuntStore((state) => state.takeQueue);
   const unqueuePrompt = useHuntStore((state) => state.unqueuePrompt);
   const answerPermission = useHuntStore((state) => state.answerPermission);
@@ -301,15 +303,23 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
     }
   }
 
-  /** Sends the question; while a turn of the sub session runs, it is queued instead. */
-  async function submit() {
+  /** Sends the queued `prompt` at once, interrupting the running turn. */
+  function sendQueuedNow(prompt: QueuedPrompt) {
+    if (!subSessionId) return;
+    unqueuePrompt(subSessionId, prompt.id);
+    followEnd();
+    void sendPromptNow(subSessionId, prompt.text, prompt.images);
+  }
+
+  /** Sends the question; while a turn of the sub session runs, it is queued instead, unless `sendsNow` interrupts the turn. */
+  async function submit(sendsNow = false) {
     const trimmed = text.trim();
     if (!trimmed || (isBusy && !subSessionId)) return;
     setText("");
     setError(null);
     followEnd();
     if (subSessionId) {
-      void sendPrompt(subSessionId, trimmed);
+      void (sendsNow ? sendPromptNow(subSessionId, trimmed) : sendPrompt(subSessionId, trimmed));
       return;
     }
     // The first question creates the session, which starts with the parent's agent setup and sends the question itself.
@@ -373,7 +383,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   function onTextareaKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      void submit();
+      void submit(event.metaKey);
     }
   }
 
@@ -436,7 +446,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
 
       {isLive || canPromptRemote ? (
         <div className="border-t border-(--line) bg-(--surface-input) px-12 py-3">
-          <QueuedPrompts queue={queue} onTakeBack={(prompt) => takeBack(prompt.id, prompt.text)} />
+          <QueuedPrompts queue={queue} onSendNow={sendQueuedNow} onTakeBack={(prompt) => takeBack(prompt.id, prompt.text)} />
           <div className="flex items-end gap-2">
             <textarea
               ref={textareaRef}
@@ -466,12 +476,10 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
               type="button"
               onClick={() => void submit()}
               disabled={!text.trim() || isCreating || hasPermission}
-              title={chat?.isBusy ? "Queue for after this turn (enter)" : "Send (enter)"}
+              title={chat?.isBusy ? "Queue for after this turn (enter); ⌘↩ sends now" : "Send (enter)"}
               className={SEND_BUTTON}
             >
-              <svg viewBox="0 0 16 16" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M8 13V3M4 7l4-4 4 4" />
-              </svg>
+              <SendIcon />
             </button>
           </div>
         </div>

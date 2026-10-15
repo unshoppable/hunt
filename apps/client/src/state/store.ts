@@ -258,6 +258,11 @@ type HuntState = {
    * conversation over instead.
    */
   sendPrompt: (id: string, text: string, images?: Screenshot[]) => Promise<void>;
+  /**
+   * Sends `text` with `images` without waiting: a running turn is interrupted and the prompt sent before every other
+   * queued prompt; otherwise it is sent like `sendPrompt`.
+   */
+  sendPromptNow: (id: string, text: string, images?: Screenshot[]) => Promise<void>;
   /** Takes every queued prompt out of the queue and returns them, for the composer to show them again. */
   takeQueue: (id: string) => QueuedPrompt[];
   /** Takes the queued prompt `promptId` out of the queue. */
@@ -514,6 +519,11 @@ function reduceChat(chat: SessionChat, notification: SessionNotification): Sessi
 }
 
 export const useHuntStore = create<HuntState>((set, get, store) => {
+  /** Sessions with a turn this client runs (see `runTurn`). */
+  const runningTurnIds = new Set<string>();
+  /** Sessions whose running turn `sendPromptNow` interrupted; the queue goes on after the interrupted turn. */
+  const interruptedToSendIds = new Set<string>();
+
   function updateChat(id: string, updater: (chat: SessionChat) => SessionChat) {
     set((state) => {
       const current = state.chats[id] ?? createEmptyChat();
@@ -533,9 +543,9 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
   /**
    * Shows `item` for the turn (none when it is shown already or the turn is hidden), runs `request` and marks the chat
    * busy meanwhile. A shown item ends a hidden turn before it. A turn that ends while another session is active leaves the chat marked as having unseen activity; every ended turn
-   * refreshes the plan usage (throttled, see `state/planUsage.ts`). A completed turn sends the next queued prompt in
-   * the same step, so the chat never shows as idle in between; a stopped or failed turn, or one the session moves
-   * after, leaves the queue alone.
+   * refreshes the plan usage (throttled, see `state/planUsage.ts`). A completed turn, or one `sendPromptNow`
+   * interrupted, sends the next queued prompt in the same step, so the chat never shows as idle in between; a stopped
+   * or failed turn, or one the session moves after, leaves the queue alone.
    */
   async function runTurn(id: string, item: ChatItem | null, request: () => Promise<string>) {
     updateChat(id, (chat) => ({
@@ -545,15 +555,20 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       isBusy: true,
       error: null,
     }));
+    runningTurnIds.add(id);
     let next: QueuedPrompt | null = null;
     try {
       const stopReason = await request();
+      const sendsQueue = stopReason !== CANCELLED_STOP_REASON || interruptedToSendIds.has(id);
       updateChat(id, (chat) => {
-        next = stopReason === CANCELLED_STOP_REASON || chat.move ? null : (chat.queue[0] ?? null);
+        next = sendsQueue && !chat.move ? (chat.queue[0] ?? null) : null;
         return { ...chat, isBusy: Boolean(next), queue: next ? chat.queue.slice(1) : chat.queue, editVersion: chat.editVersion + 1 };
       });
     } catch (error) {
       updateChat(id, (chat) => ({ ...chat, isBusy: false, error: String(error) }));
+    } finally {
+      runningTurnIds.delete(id);
+      interruptedToSendIds.delete(id);
     }
     if (get().activeSessionId !== id) {
       updateChat(id, (chat) => ({ ...chat, hasUnseenActivity: true }));
@@ -938,6 +953,16 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       await runPrompt(id, { text, images });
     },
 
+    sendPromptNow: async (id, text, images = []) => {
+      if (!get().chats[id]?.isBusy || !runningTurnIds.has(id)) {
+        await get().sendPrompt(id, text, images);
+        return;
+      }
+      updateChat(id, (chat) => ({ ...chat, queue: [{ id: nextItemId(), text, images }, ...chat.queue] }));
+      interruptedToSendIds.add(id);
+      await get().cancelPrompt(id);
+    },
+
     takeQueue: (id) => {
       const queue = get().chats[id]?.queue ?? [];
       if (queue.length) {
@@ -998,6 +1023,9 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       if (notification.update.sessionUpdate === "config_option_update") {
         useAgentDefaultsStore.getState().rememberOptions(notification.update.configOptions);
       }
+      // The relay reports a turn as idle before the prompt call of this client returns; that return ends the turn and
+      // sends the next queued prompt, so the relay's turn state counts only for turns this client did not start.
+      if (notification.update.sessionUpdate === "session_info_update" && huntTurnOf(notification.update._meta) && runningTurnIds.has(huntSessionId)) return;
       updateChat(huntSessionId, (chat) => reduceChat(chat.isStale ? replacedChat(chat) : chat, notification));
       if (notification.update.sessionUpdate === "available_commands_update") {
         rememberCommandsOf(huntSessionId);

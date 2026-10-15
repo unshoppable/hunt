@@ -7,7 +7,7 @@ import { appendPromptTexts, QueuedPrompts, useReturnedPrompts } from "./QueuedPr
 import { ScreenshotTrigger, screenshotUrl } from "./ScreenshotPicker";
 import { CLEAR_BUTTON, SEND_BUTTON } from "../ui/buttons";
 import type { DropdownOption } from "../ui/floatingMenu";
-import { CloseIcon, EraserIcon, GitHubIcon } from "../ui/icons";
+import { CloseIcon, EraserIcon, GitHubIcon, SendIcon } from "../ui/icons";
 import { useAutoGrow } from "../ui/useAutoGrow";
 import { useDismiss } from "../ui/useDismiss";
 import { matchCommands, slashQueryOf } from "./slashCommands";
@@ -31,7 +31,7 @@ const MODE_CLASS: Record<string, string | undefined> = {
  * model, effort and mode pills. Used inside a session and, with an `extension` bar for repository and branch, as the
  * start view's composer. The screenshot picker sits in the left margin of the box. While the agent is busy, sending
  * queues the prompt (shown above the box) for the end of the running turn; the send button therefore never turns into
- * a stop button, Escape stops the turn.
+ * a stop button, Escape stops the turn. ⌘↩ sends the prompt at once, stopping the running turn.
  */
 export function PromptInput({
   isBusy,
@@ -44,6 +44,7 @@ export function PromptInput({
   configSelects,
   commands,
   onSend,
+  onSendNow = onSend,
   onClear,
   onCycleMode,
   onModeChange,
@@ -63,6 +64,8 @@ export function PromptInput({
   onTakeQueue?: () => QueuedPrompt[];
   /** Takes one prompt out of the queue, after the box took it back. */
   onUnqueue?: (promptId: string) => void;
+  /** Sends a prompt at once while the agent is busy, interrupting the running turn (⌘↩, or the queued row's button). */
+  onSendNow?: (text: string, images: Screenshot[]) => void;
   modeId: string;
   modes: DropdownOption[];
   configSelects: ConfigSelect[];
@@ -107,11 +110,15 @@ export function PromptInput({
 
   useReturnedPrompts(isBusy, queue, onTakeQueue, takeBack);
 
-  function submit() {
+  function submit(sendsNow = false) {
     const trimmed = text.trim();
     const images = attachments;
     if ((!trimmed && !images.length) || isBlocked) return;
-    onSend(trimmed, images);
+    if (sendsNow) {
+      onSendNow(trimmed, images);
+    } else {
+      onSend(trimmed, images);
+    }
     setText("");
     setAttachments([]);
   }
@@ -163,7 +170,7 @@ export function PromptInput({
     }
     if (event.key === "Enter" && !event.shiftKey && !event.defaultPrevented) {
       event.preventDefault();
-      submit();
+      submit(event.metaKey);
     }
   }
 
@@ -172,6 +179,10 @@ export function PromptInput({
       <div className="chat-column min-w-[400px]">
         <QueuedPrompts
           queue={queue}
+          onSendNow={(prompt) => {
+            onUnqueue(prompt.id);
+            onSendNow(prompt.text, prompt.images);
+          }}
           onTakeBack={(prompt) => {
             onUnqueue(prompt.id);
             takeBack([prompt]);
@@ -276,14 +287,12 @@ export function PromptInput({
             ) : null}
             <button
               type="button"
-              onClick={submit}
+              onClick={() => submit()}
               disabled={!canSend}
-              title={isBusy ? "Queue for after this turn (enter); esc stops the turn" : "Send (enter)"}
+              title={isBusy ? "Queue for after this turn (enter); ⌘↩ sends now, esc stops the turn" : "Send (enter)"}
               className={SEND_BUTTON}
             >
-              <svg viewBox="0 0 16 16" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M8 13V3M4 7l4-4 4 4" />
-              </svg>
+              <SendIcon />
             </button>
           </div>
         </div>

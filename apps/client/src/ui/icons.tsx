@@ -9,6 +9,15 @@ export function CloseIcon({ className = "size-3.5" }: { className?: string }) {
   );
 }
 
+/** The arrow of the send button. */
+export function SendIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M8 13V3M4 7l4-4 4 4" />
+    </svg>
+  );
+}
+
 export function SearchIcon({ className = "size-4" }: { className?: string }) {
   return (
     <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">

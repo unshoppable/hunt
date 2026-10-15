@@ -433,10 +433,64 @@ describe("prompt queue", () => {
     expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the turn busy when the relay reports it idle before the prompt call returns, and sends the queue then", async () => {
+    const first = deferredTurn();
+    const second = deferredTurn();
+    vi.mocked(invoke).mockReturnValueOnce(first.turn).mockReturnValueOnce(second.turn);
+
+    const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
+    await useHuntStore.getState().sendPrompt(SESSION, "two");
+    useHuntStore.getState().applyUpdate(SESSION, notification({ sessionUpdate: "session_info_update", _meta: { hunt: { turn: "idle" } } }));
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ isBusy: true, editVersion: 0 });
+    expect(useHuntStore.getState().chats[SESSION].queue.map((prompt) => prompt.text)).toEqual(["two"]);
+
+    first.finish("EndTurn");
+    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "two", images: [] });
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ isBusy: true, queue: [], editVersion: 1 });
+
+    second.finish("EndTurn");
+    await firstSend;
+    useHuntStore.getState().applyUpdate(SESSION, notification({ sessionUpdate: "session_info_update", _meta: { hunt: { turn: "running" } } }));
+    expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(true);
+  });
+
+  it("sends a prompt at once by interrupting the running turn, ahead of the queue", async () => {
+    const first = deferredTurn();
+    const second = deferredTurn();
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "cancel_prompt") {
+        first.finish("Cancelled");
+        return Promise.resolve(null);
+      }
+      return vi.mocked(invoke).mock.calls.filter(([name]) => name === "send_prompt").length === 1 ? first.turn : second.turn;
+    });
+
+    const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
+    await useHuntStore.getState().sendPrompt(SESSION, "two");
+    await useHuntStore.getState().sendPromptNow(SESSION, "now");
+    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "now", images: [] }));
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("cancel_prompt", { id: SESSION });
+    expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(true);
+    expect(useHuntStore.getState().chats[SESSION].queue.map((prompt) => prompt.text)).toEqual(["two"]);
+
+    second.finish("EndTurn");
+    await firstSend;
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "two", images: [] });
+  });
+
+  it("sends a prompt at once like any other while no turn runs", async () => {
+    vi.mocked(invoke).mockResolvedValue("EndTurn");
+    await useHuntStore.getState().sendPromptNow(SESSION, "now");
+    expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "now", images: [] });
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ isBusy: false, queue: [] });
+  });
+
   it("hands the queue over and takes single prompts out", async () => {
     const first = deferredTurn();
     vi.mocked(invoke).mockReturnValueOnce(first.turn);
-    void useHuntStore.getState().sendPrompt(SESSION, "one");
+    const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
     await useHuntStore.getState().sendPrompt(SESSION, "two");
     await useHuntStore.getState().sendPrompt(SESSION, "three");
 
@@ -447,6 +501,8 @@ describe("prompt queue", () => {
     expect(useHuntStore.getState().takeQueue(SESSION).map((prompt) => prompt.text)).toEqual(["three"]);
     expect(useHuntStore.getState().chats[SESSION].queue).toEqual([]);
     expect(useHuntStore.getState().takeQueue(SESSION)).toEqual([]);
+    first.finish("EndTurn");
+    await firstSend;
   });
 });
 

@@ -56,6 +56,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const chat = useHuntStore((state) => state.chats[sessionId]);
   const isCreating = useHuntStore((state) => state.creatingIds.includes(sessionId));
   const sendPrompt = useHuntStore((state) => state.sendPrompt);
+  const sendPromptNow = useHuntStore((state) => state.sendPromptNow);
   const takeQueue = useHuntStore((state) => state.takeQueue);
   const unqueuePrompt = useHuntStore((state) => state.unqueuePrompt);
   const cancelPrompt = useHuntStore((state) => state.cancelPrompt);
@@ -255,6 +256,10 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           onSend={(text, images) => {
             followEnd();
             void sendPrompt(sessionId, text, images);
+          }}
+          onSendNow={(text, images) => {
+            followEnd();
+            void sendPromptNow(sessionId, text, images);
           }}
           onClear={() => {
             followEnd();

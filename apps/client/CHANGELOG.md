@@ -1,3 +1,10 @@
+## 0.20.0 (2026-10-15)
+
+### 🚀 Features
+
+- let the local branch of a remote session follow the commits on its VM ([49cace8](https://github.com/unshoppable/hunt/commit/49cace8))
+- commit and push remote sessions from the changelist on their VM ([7816dab](https://github.com/unshoppable/hunt/commit/7816dab))
+
 ## 0.19.0 (2026-10-14)
 
 ### 🚀 Features

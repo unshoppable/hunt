@@ -1,3 +1,9 @@
+## 0.13.0 (2026-10-15)
+
+### 🚀 Features
+
+- commit and push remote sessions from the changelist on their VM ([7816dab](https://github.com/unshoppable/hunt/commit/7816dab))
+
 ## 0.12.0 (2026-10-14)
 
 ### 🚀 Features

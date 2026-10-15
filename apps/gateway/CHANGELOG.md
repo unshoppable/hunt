@@ -1,3 +1,9 @@
+## 0.14.0 (2026-10-15)
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.13.0
+
 ## 0.13.0 (2026-10-14)
 
 ### 🧱 Updated Dependencies

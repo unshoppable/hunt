@@ -37,6 +37,9 @@ const DEFAULT_BASE_REFS = ["master", "main"];
 /** Mode a new session starts in unless the user picked another one; manual when the agent does not offer it. */
 const DEFAULT_MODE = "auto";
 
+/** Config values a new session starts with unless the user picked others; the agent's own value when it does not offer them. */
+const DEFAULT_CONFIG_VALUES: Record<string, string> = { effort: "high" };
+
 /** Where a new session works unless the user picked otherwise. */
 const DEFAULT_WORKSPACE: Workspace = "worktree";
 
@@ -189,7 +192,7 @@ export function NewSessionView({
     const option = findSelectOption(knownOptions, id);
     if (!option) return [];
     const choices = listChoiceOptions(option);
-    const value = preferred[id] && choices.some((choice) => choice.id === preferred[id]) ? preferred[id] : option.currentValue;
+    const value = [preferred[id], DEFAULT_CONFIG_VALUES[id]].find((candidate) => candidate && choices.some((choice) => choice.id === candidate)) ?? option.currentValue;
     return [{ id, name: option.name, value, choices }];
   });
   const modes = listModes(knownOptions);

@@ -1,3 +1,9 @@
+## 0.20.2 (2026-10-15)
+
+### 🩹 Fixes
+
+- **client:** switch the inspector tabs of a remote session again ([05e5a89](https://github.com/unshoppable/hunt/commit/05e5a89))
+
 ## 0.20.1 (2026-10-15)
 
 ### 🩹 Fixes

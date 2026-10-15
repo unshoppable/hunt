@@ -528,7 +528,11 @@ turn the relay reports, every 10 seconds while a turn runs, after the watcher sa
 move, delete, revert or shelve in Hunt; a prompt and a diagram refresh wait until local changes reached the VM. After
 every sync the local branch points at the commit the VM's worktree has checked out (fetched as `refs/hunt/<id>/head`,
 `apps/client/src-tauri/src/remote/commit.rs`), so the diff shows what is uncommitted on the VM, as for a local session,
-also after the agent committed; a local branch that holds a commit the VM lacks stays put, and the chat says so. The
+also after the agent committed; a local branch that holds a commit the VM lacks stays put, and the chat says so. After
+every turn that ends, the sync also copies the Claude Code transcripts of the session and its sub chats from the VM into
+the local project folder, with their paths moved here, as a backup for a VM that gets lost (`back_up_transcripts` in
+`apps/client/src-tauri/src/remote/retrieve.rs`); the records keep the VM's permission mode until the session runs here
+again, and the memory stays on the VM for the merge below. The
 changelist's *Commit* runs `hunt-ctl commit` on the VM after a sync that sent the local edits, while no other sync
 runs: the checked files are committed under the local Git identity, and the repository's hooks run with the agent's
 environment; *Commit and push* then pushes from the VM (`hunt-ctl push`) with the GitHub token of Settings → Remote VM.
@@ -546,11 +550,12 @@ ignores stay.
 Only when the snapshot then holds the files of the local worktree, the local branch holds no commit the VM lacks and
 nothing changed here meanwhile does the branch move to the agent's last commit; otherwise the retrieval names each
 differing file with its side and the ignore rules that apply (or the local commits) and moves nothing.
-The transcript returns. Then Hunt has the gateway delete the
+The transcript returns, and the transcripts of the session and its sub chats get the session's
+permission mode from before the handoff in place of the VM's. Then Hunt has the gateway delete the
 VM with its disks (`vms.delete`), as it does when a remote session is deleted. A session whose VM no longer exists
 (deleted outside Hunt) comes back with what this Mac has, the local worktree as the file sync left it and the
-conversation as of the handoff, as soon as it is brought back or a prompt tries to connect it; the chat says so, and the
-session can be handed off again. A deletion that fails, for example
+conversation as of the agent's last finished turn, which the sync backed up, as soon as it is brought back or a prompt
+tries to connect it; the chat says so, and the session can be handed off again. A deletion that fails, for example
 offline, is kept in `remote-cleanups.json` in the app data folder and retried at the next start of Hunt, once the main
 window passed the remote settings. Hunt deletes no VM whose recorded name is not the session's `vm-hunt-s-<short id>`.
 What the agent changed in the memory is merged into the local one three-way against what the handoff sent

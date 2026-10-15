@@ -28,6 +28,15 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+/// Claude Code's configuration folder on this Mac, where transcripts, the global `CLAUDE.md` and skills live.
+pub fn claude_dir() -> Result<PathBuf, String> {
+    if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    let home = std::env::var("HOME").map_err(|_| "failed to find the home folder: HOME is not set".to_string())?;
+    Ok(PathBuf::from(home).join(".claude"))
+}
+
 /// A Compute Engine VM: the VM of one remote session, or the gateway that routes previews to them.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]

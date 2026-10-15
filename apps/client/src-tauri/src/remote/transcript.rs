@@ -79,6 +79,12 @@ pub fn copy_session(from_dir: &Path, to_dir: &Path, acp_session_id: &str, replac
     Ok(true)
 }
 
+/// Rewrites the transcript of `acp_session_id` (its `.jsonl` and the folder of the same name, when present) in the
+/// project folder `project` in place with `replacements`. Returns whether a transcript existed.
+pub fn rewrite_session(project: &Path, acp_session_id: &str, replacements: &[(String, String)]) -> Result<bool, String> {
+    copy_session(project, project, acp_session_id, replacements)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +127,22 @@ mod tests {
         assert!(!to.path().join("other.jsonl").exists());
         assert!(!copy_session(from.path(), to.path(), "missing", &replacements).unwrap());
         assert!(copy_session(from.path(), to.path(), "../abc", &replacements).is_err());
+    }
+
+    #[test]
+    fn rewrite_session_changes_the_transcript_and_its_folder_in_place() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("abc.jsonl"), "{\"permissionMode\":\"bypassPermissions\"}\n").unwrap();
+        std::fs::create_dir_all(project.path().join("abc/subagents")).unwrap();
+        std::fs::write(project.path().join("abc/subagents/agent-1.jsonl"), "{\"permissionMode\":\"bypassPermissions\"}\n").unwrap();
+        std::fs::write(project.path().join("other.jsonl"), "{\"permissionMode\":\"bypassPermissions\"}\n").unwrap();
+        let replacements = vec![("\"permissionMode\":\"bypassPermissions\"".to_string(), "\"permissionMode\":\"auto\"".to_string())];
+
+        assert!(rewrite_session(project.path(), "abc", &replacements).unwrap());
+        assert_eq!(std::fs::read_to_string(project.path().join("abc.jsonl")).unwrap(), "{\"permissionMode\":\"auto\"}\n");
+        assert_eq!(std::fs::read_to_string(project.path().join("abc/subagents/agent-1.jsonl")).unwrap(), "{\"permissionMode\":\"auto\"}\n");
+        assert_eq!(std::fs::read_to_string(project.path().join("other.jsonl")).unwrap(), "{\"permissionMode\":\"bypassPermissions\"}\n");
+        assert!(!rewrite_session(project.path(), "missing", &replacements).unwrap());
     }
 
     #[test]

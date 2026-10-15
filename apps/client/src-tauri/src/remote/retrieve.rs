@@ -4,10 +4,11 @@
 //! transcript returns with its paths moved back. A retrieval that failed midway can be repeated. A session this Mac
 //! adopted gets a local worktree in the local checkout of its repository, on the branch the VM has checked out: while
 //! it runs there (`check_out_adopted`), or when it comes back without one. A session whose VM no longer exists comes
-//! back with what this Mac has: the local worktree as the file sync left it and the conversation as of the handoff.
+//! back with what this Mac has: the local worktree as the file sync left it and the conversation as of the agent's
+//! last finished turn, which the file sync backs up (`back_up_transcripts`).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
@@ -483,40 +484,121 @@ pub(crate) async fn finish_worktree(worktree: &Path, retrieve_ref: &str) -> Resu
 
 /// Copies the session's project folder back from the VM with its paths moved to the local worktree and merges its
 /// memory into the repository's local one; returns the ACP session id the relay last served. A failed merge is only
-/// logged: the session comes back regardless.
+/// logged: the session comes back regardless. The records keep the VM's permission mode; `restore_mode` gives them the
+/// local one once the session runs here.
 async fn retrieve_transcript(request: &RetrieveRequest<'_>, ssh: &Ssh, remote_worktree: &str) -> Result<Option<String>, String> {
-    let id = request.hunt_session_id.to_string();
-    let remote_slug = transcript::project_slug(remote_worktree);
-    let archive = ssh.run_with_input(&shell_command("sudo", &["-n", "hunt-ctl", "get-claude", &id, "--project", &remote_slug]), &[]).await?;
-
-    let staging = std::env::temp_dir().join(format!("hunt-retrieve-{}", Uuid::new_v4()));
+    let id = request.hunt_session_id;
+    let fetched = fetch_claude_project(ssh, id, remote_worktree).await?;
     let result = async {
-        std::fs::create_dir_all(&staging).map_err(|error| format!("failed to create {}: {error}", staging.display()))?;
-        tar_extract(&archive, &staging).await?;
-        let acp_session_id = relay_session_id(&staging.join("hunt-session.json"))?;
-        let local_worktree = request.worktree.display().to_string();
-        let local_project = request.claude_dir.join("projects").join(transcript::project_slug(&local_worktree));
-        let mut replacements = vec![
-            (remote_worktree.to_string(), local_worktree),
-            (format!("{REMOTE_CLAUDE_DIR}/projects/{remote_slug}"), local_project.display().to_string()),
-        ];
-        replacements.extend(mode_replacement(request.target.restored_mode()));
-        let project = staging.join("projects").join(&remote_slug);
-        let remote_memory = staging.join("memory");
-        if std::fs::symlink_metadata(project.join("memory")).is_ok_and(|metadata| metadata.is_dir()) {
-            std::fs::rename(project.join("memory"), &remote_memory).map_err(|error| format!("failed to move the memory aside: {error}"))?;
-        }
-        if std::fs::symlink_metadata(&project).is_ok_and(|metadata| metadata.is_dir()) {
-            transcript::copy_rewritten(&project, &local_project, &replacements)?;
-        }
+        let replacements = path_replacements(request.worktree, request.claude_dir, remote_worktree);
+        let remote_memory = fetched.staging.join("memory");
+        fetched.copy_transcripts(request.worktree, request.claude_dir, &replacements, Some(&remote_memory))?;
         if let Err(error) = merge_memory(request, &remote_memory, &replacements).await {
             eprintln!("merging the memory of session {id} into the local one failed: {error}");
         }
-        Ok(acp_session_id)
+        Ok(fetched.acp_session_id.clone())
     }
     .await;
-    let _ = std::fs::remove_dir_all(&staging);
+    let _ = std::fs::remove_dir_all(&fetched.staging);
     result
+}
+
+/// Copies the transcripts of the remote session `hunt_session_id` and its sub chats from its VM into the local project
+/// folder of `worktree`, with their paths moved there, as a backup for a VM that gets lost: the records keep the VM's
+/// permission mode, and the memory stays on the VM for the retrieval's merge.
+pub async fn back_up_transcripts(
+    ssh: &Ssh,
+    hunt_session_id: Uuid,
+    worktree: &Path,
+    claude_dir: &Path,
+    remote_worktree: &str,
+) -> Result<(), String> {
+    let fetched = fetch_claude_project(ssh, hunt_session_id, remote_worktree).await?;
+    let replacements = path_replacements(worktree, claude_dir, remote_worktree);
+    let result = fetched.copy_transcripts(worktree, claude_dir, &replacements, None);
+    let _ = std::fs::remove_dir_all(&fetched.staging);
+    result
+}
+
+/// The project folder of a session as the VM sent it, unpacked into `staging` (`projects/<slug>` with the memory
+/// inside, next to the relay's `hunt-session.json`); the caller removes `staging`.
+struct FetchedProject {
+    staging: PathBuf,
+    remote_slug: String,
+    /// The ACP session id the relay last served.
+    acp_session_id: Option<String>,
+}
+
+impl FetchedProject {
+    /// Copies the fetched project folder into the local project folder of `worktree`, rewriting its text with
+    /// `replacements`; the memory inside it is moved to `memory_aside` first or, without one, left out.
+    fn copy_transcripts(
+        &self,
+        worktree: &Path,
+        claude_dir: &Path,
+        replacements: &[(String, String)],
+        memory_aside: Option<&Path>,
+    ) -> Result<(), String> {
+        let project = self.staging.join("projects").join(&self.remote_slug);
+        let memory = project.join("memory");
+        if std::fs::symlink_metadata(&memory).is_ok_and(|metadata| metadata.is_dir()) {
+            match memory_aside {
+                Some(aside) => std::fs::rename(&memory, aside).map_err(|error| format!("failed to move the memory aside: {error}"))?,
+                None => std::fs::remove_dir_all(&memory).map_err(|error| format!("failed to leave the memory out: {error}"))?,
+            }
+        }
+        if std::fs::symlink_metadata(&project).is_ok_and(|metadata| metadata.is_dir()) {
+            transcript::copy_rewritten(&project, &local_project(worktree, claude_dir), replacements)?;
+        }
+        Ok(())
+    }
+}
+
+/// Fetches the project folder of the remote session `hunt_session_id` working in `remote_worktree` from its VM.
+async fn fetch_claude_project(ssh: &Ssh, hunt_session_id: Uuid, remote_worktree: &str) -> Result<FetchedProject, String> {
+    let id = hunt_session_id.to_string();
+    let remote_slug = transcript::project_slug(remote_worktree);
+    let archive = ssh.run_with_input(&shell_command("sudo", &["-n", "hunt-ctl", "get-claude", &id, "--project", &remote_slug]), &[]).await?;
+    let staging = std::env::temp_dir().join(format!("hunt-retrieve-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&staging).map_err(|error| format!("failed to create {}: {error}", staging.display()))?;
+    let result = async {
+        tar_extract(&archive, &staging).await?;
+        relay_session_id(&staging.join("hunt-session.json"))
+    }
+    .await;
+    match result {
+        Ok(acp_session_id) => Ok(FetchedProject { staging, remote_slug, acp_session_id }),
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            Err(error)
+        }
+    }
+}
+
+/// Claude Code's project folder of a session working in `worktree` on this Mac.
+fn local_project(worktree: &Path, claude_dir: &Path) -> PathBuf {
+    claude_dir.join("projects").join(transcript::project_slug(&worktree.display().to_string()))
+}
+
+/// The replacements that move the text of a transcript from the VM to this Mac: the worktree and the project folder.
+fn path_replacements(worktree: &Path, claude_dir: &Path, remote_worktree: &str) -> Vec<(String, String)> {
+    let remote_slug = transcript::project_slug(remote_worktree);
+    vec![
+        (remote_worktree.to_string(), worktree.display().to_string()),
+        (format!("{REMOTE_CLAUDE_DIR}/projects/{remote_slug}"), local_project(worktree, claude_dir).display().to_string()),
+    ]
+}
+
+/// Gives the local transcripts `acp_session_ids` of a session working in `worktree` (the session's own and its sub
+/// chats') the permission mode `local_mode` in place of the VM's: every record the agent wrote there carries
+/// `REMOTE_MODE`, and a local agent resumes in the mode of the last record. Transcripts that do not exist are skipped.
+pub fn restore_mode(claude_dir: &Path, worktree: &Path, local_mode: &str, acp_session_ids: &[String]) -> Result<(), String> {
+    let Some(replacement) = mode_replacement(local_mode) else { return Ok(()) };
+    let project = local_project(worktree, claude_dir);
+    for acp_session_id in acp_session_ids {
+        transcript::rewrite_session(&project, acp_session_id, std::slice::from_ref(&replacement))?;
+    }
+    Ok(())
 }
 
 /// Merges the memory the agent left on the VM (`remote_dir`, its paths moved back with `replacements`) into the local
@@ -546,8 +628,8 @@ fn relay_session_id(path: &Path) -> Result<Option<String>, String> {
     Ok(config["acpSessionId"].as_str().map(str::to_string))
 }
 
-/// Every record the agent wrote on the VM carries `REMOTE_MODE`, and a local agent resumes in the mode of the last
-/// record; this replacement gives those records the session's local mode instead.
+/// The replacement that gives the records the agent wrote on the VM (`REMOTE_MODE`) the local mode `local_mode`;
+/// `None` when they are the same.
 fn mode_replacement(local_mode: &str) -> Option<(String, String)> {
     let field = |mode: &str| format!("\"permissionMode\":{}", serde_json::Value::from(mode));
     (local_mode != REMOTE_MODE).then(|| (field(REMOTE_MODE), field(local_mode)))
@@ -566,6 +648,26 @@ mod tests {
             r#"{"type":"user","permissionMode":"auto","message":{"content":"say \"permissionMode\":\"bypassPermissions\""}}"#
         );
         assert_eq!(mode_replacement(REMOTE_MODE), None);
+    }
+
+    #[test]
+    fn restore_mode_rewrites_the_named_transcripts_of_the_local_project_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let (claude_dir, worktree) = (root.path().join("claude"), root.path().join("wt"));
+        let project = local_project(&worktree, &claude_dir);
+        std::fs::create_dir_all(&project).unwrap();
+        let record = "{\"permissionMode\":\"bypassPermissions\",\"cwd\":\"/wt\"}\n";
+        for name in ["session.jsonl", "sub.jsonl", "other.jsonl"] {
+            std::fs::write(project.join(name), record).unwrap();
+        }
+
+        restore_mode(&claude_dir, &worktree, "auto", &["session".to_string(), "sub".to_string(), "missing".to_string()]).unwrap();
+
+        let restored = "{\"permissionMode\":\"auto\",\"cwd\":\"/wt\"}\n";
+        assert_eq!(read(&project, "session.jsonl").as_deref(), Some(restored));
+        assert_eq!(read(&project, "sub.jsonl").as_deref(), Some(restored));
+        assert_eq!(read(&project, "other.jsonl").as_deref(), Some(record));
+        assert!(!project.join("missing.jsonl").exists());
     }
 
     async fn git(dir: &Path, args: &[&str]) -> String {

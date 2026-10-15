@@ -2,11 +2,13 @@
 //! sync runs when an agent of the VM connects (the session's own or a sub chat's), after an agent finished a tool call
 //! or a turn, every `TURN_POLL` while a turn runs (the agent's shell commands change files too), after the watcher saw
 //! a local change and after Hunt itself changed a file (`note_local_change`); a prompt waits until the local changes
-//! reached the VM (`flush`), and a commit on the VM runs while no sync does (`exclusive`). Syncs of one session run one
-//! after the other, and requests that arrive meanwhile run one more afterwards; the sync stops when the last agent of
-//! the VM disconnected. An adopted session gets a local worktree first, once the local checkout of its repository is
-//! known; until then it is skipped quietly. Every sync that talks to the VM reports to the UI as `remote:sync` with the
-//! remote session's id, its failure and the files it could not sync; only the sync before a commit fails its command.
+//! reached the VM (`flush`), and a commit on the VM runs while no sync does (`exclusive`). The sync after a turn ended
+//! also backs the VM's transcripts up into the local project folder (`remote::retrieve::back_up_transcripts`), so a VM
+//! that gets lost costs at most the running turn. Syncs of one session run one after the other, and requests that
+//! arrive meanwhile run one more afterwards; the sync stops when the last agent of the VM disconnected. An adopted
+//! session gets a local worktree first, once the local checkout of its repository is known; until then it is skipped
+//! quietly. Every sync that talks to the VM reports to the UI as `remote:sync` with the remote session's id, its failure
+//! and the files it could not sync; only the sync before a commit fails its command.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -28,7 +30,7 @@ use crate::remote::commit::follow_vm_head;
 use crate::remote::retrieve;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::sync::{self as file_sync, Direction, Outcome, SyncTarget};
-use crate::remote::RemoteTarget;
+use crate::remote::{claude_dir, RemoteTarget};
 use crate::session::dependencies::{self, Install};
 use crate::session::store::{self, announce_sessions_changed, SessionRecord};
 
@@ -57,6 +59,8 @@ struct SessionSync {
     wants_remote: AtomicBool,
     /// The local worktree may have changed files since the last sync.
     wants_local: AtomicBool,
+    /// A turn ended since the last sync, so the transcripts on the VM are to be backed up here.
+    wants_transcript: AtomicBool,
     /// Whether a task runs the syncs the session asked for.
     is_driven: AtomicBool,
     /// Set once the session disconnected; no sync starts after that.
@@ -74,6 +78,7 @@ impl SessionSync {
             turns: Mutex::default(),
             wants_remote: AtomicBool::new(true),
             wants_local: AtomicBool::new(true),
+            wants_transcript: AtomicBool::new(false),
             is_driven: AtomicBool::new(false),
             is_stopped: AtomicBool::new(false),
             watcher: Mutex::new(None),
@@ -224,7 +229,7 @@ pub async fn flush(app: &AppHandle, id: Uuid) {
         return;
     }
     state.wants_local.store(false, Ordering::SeqCst);
-    let _ = run_locked(app, id, &state, false).await;
+    let _ = run_locked(app, id, &state, Wanted::default()).await;
 }
 
 /// Runs `work` on the VM of the connected remote session `id` while no sync of it runs, after a sync that sent the local
@@ -244,7 +249,9 @@ where
             return Err(not_connected());
         }
         state.wants_local.store(false, Ordering::SeqCst);
-        let outcome = run_locked(app, id, &state, false).await.map_err(|error| format!("failed to bring the local changes to the VM: {error}"))?;
+        let outcome = run_locked(app, id, &state, Wanted::default())
+            .await
+            .map_err(|error| format!("failed to bring the local changes to the VM: {error}"))?;
         work(outcome).await
     };
     request(app, id, Side::Remote);
@@ -275,6 +282,7 @@ pub fn observe(app: &AppHandle, id: Uuid, agent: Uuid, notification: &SessionNot
             }
             Some("idle") => {
                 state.end_turn(agent);
+                state.wants_transcript.store(true, Ordering::SeqCst);
                 request(app, id, Side::Remote);
             }
             _ => {}
@@ -341,11 +349,14 @@ fn drive(app: &AppHandle, id: Uuid, state: Arc<SessionSync>) {
         loop {
             let wants_remote = state.wants_remote.swap(false, Ordering::SeqCst);
             let wants_local = state.wants_local.swap(false, Ordering::SeqCst);
+            let wants_transcript = state.wants_transcript.swap(false, Ordering::SeqCst);
             let is_stopped = state.is_stopped.load(Ordering::SeqCst);
-            if is_stopped || (!wants_remote && !wants_local) {
+            if is_stopped || (!wants_remote && !wants_local && !wants_transcript) {
                 state.is_driven.store(false, Ordering::SeqCst);
                 // A request that came in after the swaps above found this task still running.
-                let is_waiting = state.wants_remote.load(Ordering::SeqCst) || state.wants_local.load(Ordering::SeqCst);
+                let is_waiting = state.wants_remote.load(Ordering::SeqCst)
+                    || state.wants_local.load(Ordering::SeqCst)
+                    || state.wants_transcript.load(Ordering::SeqCst);
                 if is_stopped || !is_waiting || state.is_driven.swap(true, Ordering::SeqCst) {
                     break;
                 }
@@ -355,16 +366,23 @@ fn drive(app: &AppHandle, id: Uuid, state: Arc<SessionSync>) {
             if state.is_stopped.load(Ordering::SeqCst) {
                 continue;
             }
-            let _ = run_locked(&app, id, &state, wants_remote).await;
+            let _ = run_locked(&app, id, &state, Wanted { remote: wants_remote, transcript: wants_transcript }).await;
         }
     });
 }
 
+/// What a sync is asked to do besides sending the local changes: bring the VM's changes, back up its transcripts.
+#[derive(Clone, Copy, Default)]
+struct Wanted {
+    remote: bool,
+    transcript: bool,
+}
+
 /// Runs one sync of `id` while its lock is held, reports it and returns its outcome, `None` when there was nothing to do;
-/// without `wants_remote` it talks to the VM only when the local worktree changed. A sync that fails because the session
-/// disconnected meanwhile (its VM shut down) reports no error.
-async fn run_locked(app: &AppHandle, id: Uuid, state: &SessionSync, wants_remote: bool) -> Result<Option<Outcome>, String> {
-    let result = match sync_once(app, id, wants_remote).await {
+/// without `wanted.remote` it talks to the VM only when the local worktree changed or a transcript backup is wanted. A
+/// sync that fails because the session disconnected meanwhile (its VM shut down) reports no error.
+async fn run_locked(app: &AppHandle, id: Uuid, state: &SessionSync, wanted: Wanted) -> Result<Option<Outcome>, String> {
+    let result = match sync_once(app, id, wanted).await {
         Ok(None) => return Ok(None),
         Ok(Some(outcome)) => Ok(outcome),
         Err(error) if state.is_stopped.load(Ordering::SeqCst) => {
@@ -386,8 +404,9 @@ async fn run_locked(app: &AppHandle, id: Uuid, state: &SessionSync, wants_remote
 }
 
 /// One sync of `id`; `None` when there was nothing to do: a local change was asked for and the local worktree turned out
-/// unchanged, or an adopted session has no local checkout of its repository yet.
-async fn sync_once(app: &AppHandle, id: Uuid, wants_remote: bool) -> Result<Option<Outcome>, String> {
+/// unchanged, or an adopted session has no local checkout of its repository yet. A transcript backup that fails is
+/// reported with the files the sync could not sync and fails nothing else.
+async fn sync_once(app: &AppHandle, id: Uuid, wanted: Wanted) -> Result<Option<Outcome>, String> {
     let record = store::find_session(app, id)?;
     let target = record.remote.clone().ok_or("failed to sync the session's files: it runs locally")?;
     if target.worktree_path.as_os_str().is_empty() {
@@ -398,7 +417,7 @@ async fn sync_once(app: &AppHandle, id: Uuid, wants_remote: bool) -> Result<Opti
         return Ok(None);
     }
     let manifest = manifest_path(app, id)?;
-    if !wants_remote && has_worktree && !file_sync::has_local_changes(&record.worktree_path, &manifest).await? {
+    if !wanted.remote && !wanted.transcript && has_worktree && !file_sync::has_local_changes(&record.worktree_path, &manifest).await? {
         return Ok(None);
     }
     let _ = app.emit("remote:sync", SyncEvent::running(id));
@@ -412,6 +431,12 @@ async fn sync_once(app: &AppHandle, id: Uuid, wants_remote: bool) -> Result<Opti
     match follow_head(app, id, &ssh, &target, &record.worktree_path).await {
         Ok(moved) => outcome.moved_head = moved,
         Err(error) => outcome.conflicts.push(format!("branch {}: {error}", target.branch)),
+    }
+    if wanted.transcript {
+        let backup = async { retrieve::back_up_transcripts(&ssh, id, &record.worktree_path, &claude_dir()?, &remote).await };
+        if let Err(error) = backup.await {
+            outcome.conflicts.push(format!("transcript backup: {error}"));
+        }
     }
     Ok(Some(outcome))
 }

@@ -34,7 +34,7 @@ use crate::remote::preview::PreviewStatus;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize, TerminalTarget, TmuxWindow};
 use crate::remote::sync::Direction;
-use crate::remote::{self, RemoteStep, RemoteTarget, Reporter, VmRef, VmSettings};
+use crate::remote::{self, claude_dir, RemoteStep, RemoteTarget, Reporter, VmRef, VmSettings};
 use crate::screenshots::{self, Screenshot};
 use crate::session::attribution::{self, FileVersion};
 use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus, Install};
@@ -604,9 +604,10 @@ async fn start_remote_relay(app: &AppHandle, id: Uuid, target: RemoteTarget, pro
 }
 
 /// Makes the remote session `id` a local one again, since its VM `target.vm` no longer exists: whatever the agent did
-/// there is lost with it, the session continues here with the local worktree as the file sync left it and the
-/// conversation as of the handoff, and it can be handed off again. Once its local agent runs, fails with a message that
-/// says so, which the chat shows. An adopted session without a local worktree has nothing to continue with.
+/// there since is lost with it, the session continues here with the local worktree as the file sync left it and the
+/// conversation as of the agent's last finished turn, which the sync backed up, and it can be handed off again. Once
+/// its local agent runs, fails with a message that says so, which the chat shows. An adopted session without a local
+/// worktree has nothing to continue with.
 async fn continue_without_vm(
     app: &AppHandle,
     registry: &SessionRegistry,
@@ -622,7 +623,7 @@ async fn continue_without_vm(
     finish_retrieval(app, registry, watchers, id, &target, retrieved).await?;
     Err(format!(
         "the VM {instance} of the session no longer exists; the session continues here with the files of its local worktree and the \
-         conversation as of the handoff, and can be handed off again"
+         conversation as of the agent's last finished turn, and can be handed off again"
     ))
 }
 
@@ -1161,6 +1162,7 @@ async fn finish_retrieval(
     announce_sessions_changed(app);
     sync::forget(app, id);
     forget_remote(app, target, id).await;
+    restore_transcript_mode(app, &record, target)?;
     dependencies::ensure(app, record.repo_path.clone(), record.worktree_path.clone(), Install::Updating);
     let start = local_start(&record);
     let view = activate(app, registry, watchers, record, start, AgentTransport::Local).await?;
@@ -1173,6 +1175,18 @@ async fn finish_retrieval(
         .await
         .map_err(|error| format!("failed to restore the permission mode {mode} of the retrieved session: {error}"))?;
     Ok(view)
+}
+
+/// Gives the local transcripts of the retrieved session `record` and its sub chats, which the VM wrote in its own
+/// permission mode, the mode the session gets back (`RemoteTarget::restored_mode`).
+fn restore_transcript_mode(app: &AppHandle, record: &SessionRecord, target: &RemoteTarget) -> Result<(), String> {
+    let acp_session_ids: Vec<String> = store::load_sessions(app)?
+        .into_iter()
+        .filter(|session| session.id == record.id || session.parent_id == Some(record.id))
+        .filter_map(|session| session.acp_session_id)
+        .collect();
+    remote::retrieve::restore_mode(&claude_dir()?, &record.worktree_path, target.restored_mode(), &acp_session_ids)
+        .map_err(|error| format!("failed to restore the permission mode of the retrieved session's transcript: {error}"))
 }
 
 /// Refuses to bring back `record` when it runs locally, or when it is an adopted session without a local worktree and
@@ -1258,15 +1272,6 @@ fn progress_reporter(app: &AppHandle, id: Uuid) -> ProgressEmitter {
 /// Tells the UI that the remote operation on session `id` ended, successful or not.
 fn finish_progress(app: &AppHandle, id: Uuid) {
     let _ = app.emit("remote:progress", RemoteProgressEvent { hunt_session_id: id, step: None, detail: None });
-}
-
-/// Claude Code's configuration folder, where transcripts, the global `CLAUDE.md` and skills live.
-fn claude_dir() -> Result<PathBuf, String> {
-    if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
-        return Ok(PathBuf::from(dir));
-    }
-    let home = std::env::var("HOME").map_err(|_| "failed to find the home folder: HOME is not set".to_string())?;
-    Ok(PathBuf::from(home).join(".claude"))
 }
 
 /// Where Hunt keeps the base of the repository memory the handoff of session `id` sent.

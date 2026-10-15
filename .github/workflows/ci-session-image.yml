@@ -1,0 +1,162 @@
+# Builds the image new session VMs boot from (family img-hunt-session) out of the newest published session release
+# (ci-publish-session), so that a new session VM finds the agent's tools instead of installing them on its first
+# connect. The job creates vm-hunt-image-<run id> from the template tpl-hunt-session on a fresh Debian 12, in the first
+# session zone of the gateway's instance metadata hunt-session-zones with capacity for the template's machine type. The
+# VM's base setup, which the infrastructure repository keeps in the project metadata (envs/hunt of
+# unshoppable/infrastructure), recognizes the name: it downloads session.tar.gz of the newest session@<version> release,
+# runs that release's `hunt-ctl install-tools`, cleans the disk and powers the VM off. Nobody logs in to the VM. The
+# job takes the image from the VM's disk once it is TERMINATED, labels it with the release the base setup reported on
+# the serial console, deletes the VM and keeps the newest three images of the family. Called by ci-release after the
+# session release was published; dispatchable to build from the newest release by hand. The image identity
+# sa-image-hunt (Workload Identity Federation, no key) trusts only this repository's runs on master (attribute
+# repository_ref), so a dispatch from another branch fails at the sign-in.
+name: 🖼️ CI | Session image
+run-name: 'Session image (${{ github.ref_name }})'
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# Runs one after the other; a queued run builds from the release that is newest when it starts.
+concurrency:
+  group: session-image
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: medconomy-hunt
+  REGION: europe-west1
+  FAMILY: img-hunt-session
+  TEMPLATE: tpl-hunt-session
+  # Older images stay for a rollback: `gcloud compute images deprecate` on the newest makes new VMs boot the one before.
+  KEEP_IMAGES: 3
+  WORKLOAD_IDENTITY_PROVIDER: projects/918789299522/locations/global/workloadIdentityPools/pool-github/providers/provider-github
+  SERVICE_ACCOUNT: sa-image-hunt@medconomy-hunt.iam.gserviceaccount.com
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        # An explicit bash runs with -o pipefail, the implicit default without.
+        shell: bash
+    env:
+      VM: vm-hunt-image-${{ github.run_id }}
+    steps:
+      # The same release the base setup picks on the VM: the newest whose tag starts with session@ and which carries
+      # session.tar.gz. A missing release fails here instead of on the VM.
+      - name: Resolve the session release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq \
+            'first(.[] | select(.tag_name | startswith("session@")) | select(any(.assets[]; .name == "session.tar.gz")) | .tag_name)')
+          if [ -z "$release" ]; then
+            echo "::error::$GITHUB_REPOSITORY has no session@<version> release with the asset session.tar.gz."
+            exit 1
+          fi
+          echo "The build VM installs the tools of $release."
+          echo "### session image of $release" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # The template's boot image is replaced by a fresh Debian, so every build starts from scratch. The label keeps
+      # Hunt and the gateway from taking the VM for a session VM. The zones are tried in order: only a stockout of the
+      # machine type (ZONE_RESOURCE_POOL_EXHAUSTED) moves on to the next zone. The steps after this one use ZONE.
+      - name: Create the build VM
+        run: |
+          zones=$(gcloud compute instances list --project="$GCP_PROJECT" --filter='labels.hunt-role=gateway' --format=json |
+            jq -r '[.[0].metadata.items[]? | select(.key == "hunt-session-zones") | .value][0] // empty' | tr ',' ' ')
+          if [ -z "$zones" ]; then
+            echo "::error::The gateway has no instance metadata hunt-session-zones."
+            exit 1
+          fi
+          for zone in $zones; do
+            if output=$(gcloud compute instances create "$VM" --project="$GCP_PROJECT" --zone="$zone" \
+              --source-instance-template="$TEMPLATE" \
+              --image-family=debian-12 --image-project=debian-cloud \
+              --labels=hunt-role=image-build 2>&1); then
+              echo "Created $VM in $zone."
+              echo "ZONE=$zone" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            if ! grep -q ZONE_RESOURCE_POOL_EXHAUSTED <<<"$output"; then
+              echo "$output"
+              echo "::error::Creating $VM in $zone failed."
+              exit 1
+            fi
+            echo "$zone has no capacity for the template's machine type; trying the next zone."
+          done
+          echo "::error::No session zone ($zones) has capacity for the template's machine type."
+          exit 1
+
+      # The base setup powers the VM off only after a successful run; a failed run leaves it running, and the guest
+      # agent's final line for a failed script ends the wait early. The base setup prints the session release whose
+      # tools it installs as hunt-image-hunt-release=<tag> before it installs them.
+      - name: Wait for the base setup
+        id: setup
+        run: |
+          deadline=$((SECONDS + 45 * 60))
+          release=
+          while true; do
+            status=$(gcloud compute instances describe "$VM" --project="$GCP_PROJECT" --zone="$ZONE" --format='value(status)')
+            if [ "$status" = TERMINATED ]; then
+              echo "The base setup finished and powered $VM off (${release:-unknown release})."
+              echo "release-label=$(printf '%s' "${release:-unknown}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            serial=$(gcloud compute instances get-serial-port-output "$VM" --project="$GCP_PROJECT" --zone="$ZONE" 2>/dev/null || true)
+            seen=$(grep -oE 'hunt-image-hunt-release=[^[:space:]]+' <<<"$serial" | tail -n 1 | cut -d= -f2 || true)
+            release=${seen:-$release}
+            if grep -qE 'startup-script exit status [1-9]|"startup-script" failed with error' <<<"$serial"; then
+              tail -n 100 <<<"$serial"
+              echo "::error::The base setup failed on $VM."
+              exit 1
+            fi
+            if [ "$SECONDS" -gt "$deadline" ]; then
+              tail -n 100 <<<"$serial"
+              echo "::error::The base setup did not power $VM off within 45 minutes."
+              exit 1
+            fi
+            sleep 15
+          done
+
+      - name: Create the image
+        env:
+          RELEASE_LABEL: ${{ steps.setup.outputs.release-label }}
+        run: |
+          image="$FAMILY-$(date -u +%Y%m%d-%H%M%S)"
+          gcloud compute images create "$image" --project="$GCP_PROJECT" \
+            --source-disk="$VM" --source-disk-zone="$ZONE" --family="$FAMILY" --storage-location="$REGION" \
+            --labels="hunt-role=session-image,hunt-release=$RELEASE_LABEL"
+          echo "- Image: \`$image\` (family \`$FAMILY\`, release label \`$RELEASE_LABEL\`)" >> "$GITHUB_STEP_SUMMARY"
+
+      # Looked up in every zone: a failed creation does not set ZONE.
+      - name: Delete the build VM
+        if: always()
+        run: |
+          zone=$(gcloud compute instances list --project="$GCP_PROJECT" --filter='labels.hunt-role=image-build' \
+            --format='value(name,zone.basename())' | awk -v vm="$VM" '$1 == vm { print $2 }')
+          if [ -n "$zone" ]; then
+            gcloud compute instances delete "$VM" --project="$GCP_PROJECT" --zone="$zone" --delete-disks=all --quiet
+          fi
+
+      - name: Delete old images
+        run: |
+          gcloud compute images list --project="$GCP_PROJECT" --no-standard-images --filter="family=$FAMILY" \
+              --sort-by=~creationTimestamp --format='value(name)' |
+            tail -n +"$((KEEP_IMAGES + 1))" |
+            while read -r image; do
+              gcloud compute images delete "$image" --project="$GCP_PROJECT" --quiet
+            done

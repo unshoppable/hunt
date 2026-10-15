@@ -1,10 +1,10 @@
 # Builds the VM release of a session@<version> release tag and publishes it as the asset session.tar.gz of the GitHub
-# Release session@<version>, laid out as /srv/hunt/current expects (vm/hunt-ctl, session/, relay/). The infrastructure
-# repository builds the image new session VMs boot from out of the newest of these releases: its build VM runs the
-# release's `hunt-ctl install-tools`, so that new session VMs find the agent's tools. The release is never marked
-# latest; the in-app updater reads the latest release, which stays the client's. Called by ci-release when a release
-# commit carries a session tag; dispatchable to retry one. The release is created with the token of the release GitHub
-# App (secrets RELEASE_APP_ID, RELEASE_APP_PRIVATE_KEY): GITHUB_TOKEN may not create one on a commit range that changed
+# Release session@<version>, laid out as /srv/hunt/current expects (vm/hunt-ctl, session/, relay/). ci-session-image
+# builds the image new session VMs boot from out of the newest of these releases: its build VM runs the release's
+# `hunt-ctl install-tools`, so that new session VMs find the agent's tools. The release is never marked latest; the
+# in-app updater reads the latest release, which stays the client's. Called by ci-release when a release commit
+# carries a session tag; dispatchable to retry one. The release is created with the token of the release GitHub App
+# (secrets RELEASE_APP_ID, RELEASE_APP_PRIVATE_KEY): GITHUB_TOKEN may not create one on a commit range that changed
 # workflow files.
 name: 🖼️ CI | Publish Session
 run-name: 'Publish session ${{ inputs.version }}'

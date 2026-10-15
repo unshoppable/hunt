@@ -121,10 +121,14 @@ patch, `!` or `BREAKING CHANGE` → major), independently per app: it writes the
   [`ci-build-and-deploy.yml`](.github/workflows/ci-build-and-deploy.yml)), and moves the tag;
 - publishes the session release when it got a `session@<version>` tag
   ([`ci-publish-session.yml`](.github/workflows/ci-publish-session.yml), also `workflow_dispatch`): the built release
-  (`dist/apps/session`) as the asset `session.tar.gz` on the GitHub Release `session@<version>`, never marked latest.
-  The infrastructure repository builds the image new session VMs boot from, family `img-hunt-session`, out of the
-  newest of these releases: its build VM downloads the asset and runs its `hunt-ctl install-tools`. Hunt's CI never
-  touches that VM. Session VMs still run `install-tools` on every connect, which skips tools at their version;
+  (`dist/apps/session`) as the asset `session.tar.gz` on the GitHub Release `session@<version>`, never marked latest;
+- builds the image new session VMs boot from, family `img-hunt-session`, out of the newest of these releases
+  ([`ci-session-image.yml`](.github/workflows/ci-session-image.yml), also `workflow_dispatch`): as `sa-image-hunt`
+  (Workload Identity Federation, master only) it creates a build VM from the session VM template in the first session
+  zone with capacity; the VM's base setup, which the infrastructure repository keeps in the project metadata,
+  downloads the asset, runs its `hunt-ctl install-tools`, cleans the disk and powers the VM off, and the job takes the
+  image from its disk. Nobody logs in to that VM. Session VMs still run `install-tools` on every connect, which skips
+  tools at their version;
 - publishes the desktop app when it got a `client@<version>` tag
   ([`ci-publish-client.yml`](.github/workflows/ci-publish-client.yml)): the Apple Silicon DMG plus the updater
   artifacts (`Hunt.app.tar.gz`, its `.sig` and `latest.json`) on the GitHub Release `client@<version>`, published as

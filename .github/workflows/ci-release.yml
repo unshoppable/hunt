@@ -2,10 +2,10 @@
 # touch it (independent versions, <app>@<version> tags, a CHANGELOG.md per app), commits and tags. A release commit
 # then deploys the server apps (gateway, session) affected since the commit deployed last, deployed/prod, onto the
 # gateway VM over SSH (ci-nx-affected-deploy), publishes the desktop app when it got a client tag and the session
-# release when it got a session tag (ci-publish-session, from which the infrastructure repository builds the session
-# VMs' image), and moves deployed/prod onto the release once every deploy succeeded. Moving deployed/prod and publishing
-# take the token of the release GitHub App (secrets RELEASE_APP_ID, RELEASE_APP_PRIVATE_KEY), as in app-framework:
-# GITHUB_TOKEN may not move a ref across commits that change workflow files.
+# release when it got a session tag (ci-publish-session), builds the session VMs' image from that release
+# (ci-session-image), and moves deployed/prod onto the release once every deploy succeeded. Moving deployed/prod and
+# publishing take the token of the release GitHub App (secrets RELEASE_APP_ID, RELEASE_APP_PRIVATE_KEY), as in
+# app-framework: GITHUB_TOKEN may not move a ref across commits that change workflow files.
 name: 📦 CI | Release
 
 on:
@@ -91,6 +91,14 @@ jobs:
     with:
       version: ${{ needs.release.outputs.session_version }}
     secrets: inherit
+
+  # The image is taken from the release ci-publish-session just published; its failure does not hold deployed/prod back.
+  session-image:
+    needs: publish-session
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/ci-session-image.yml
 
   tag-deploy:
     needs: [release, deploy]

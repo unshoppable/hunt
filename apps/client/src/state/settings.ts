@@ -299,6 +299,8 @@ type SettingsState = {
   /** Changed files unchecked in the dependency graph's file filter, keyed by session id; every other file is shown. */
   graphExcludedFiles: Record<string, string[]>;
   popupSizes: Record<PopupKey, PopupSize>;
+  /** Height in px the user dragged the chat's prompt box to; null sizes the box to its text. */
+  promptHeight: number | null;
   /** How far the guardrail chat's bottom right corner sits from its default place above the "Guardrail" button. */
   guardrailChatOffset: PopupOffset;
   graphFilter: GraphFilter;
@@ -322,6 +324,7 @@ type SettingsState = {
   setChangelistScope: (sessionId: string, scope: ChangelistScope) => void;
   setGraphExcludedFiles: (sessionId: string, paths: string[]) => void;
   setPopupSize: (key: PopupKey, size: PopupSize) => void;
+  setPromptHeight: (height: number | null) => void;
   setGuardrailChatOffset: (offset: PopupOffset) => void;
   setGraphFilter: (patch: Partial<GraphFilter>) => void;
   setAiLanguage: (language: string) => void;
@@ -362,6 +365,7 @@ export type PersistedState = {
   changelistScopes?: Record<string, ChangelistScope>;
   graphExcludedFiles?: Record<string, string[]>;
   popupSizes?: Partial<Record<PopupKey, PopupSize>>;
+  promptHeight?: number | null;
   guardrailChatOffset?: PopupOffset;
   graphFilter?: GraphFilter;
   aiLanguage?: string;
@@ -551,6 +555,7 @@ export const useSettingsStore = create<SettingsState>()(
       changelistScopes: {},
       graphExcludedFiles: {},
       popupSizes: DEFAULT_POPUP_SIZES,
+      promptHeight: null,
       guardrailChatOffset: { x: 0, y: 0 },
       graphFilter: DEFAULT_GRAPH_FILTER,
       aiLanguage: DEFAULT_AI_LANGUAGE,
@@ -590,6 +595,7 @@ export const useSettingsStore = create<SettingsState>()(
           return { graphExcludedFiles: paths.length ? { ...rest, [sessionId]: [...paths].sort() } : rest };
         }),
       setPopupSize: (key, size) => set((state) => ({ popupSizes: { ...state.popupSizes, [key]: roundedSize(size) } })),
+      setPromptHeight: (height) => set({ promptHeight: height === null ? null : Math.round(height) }),
       setGuardrailChatOffset: (offset) => set({ guardrailChatOffset: { x: Math.round(offset.x), y: Math.round(offset.y) } }),
       setGraphFilter: (patch) =>
         set((state) => {
@@ -623,6 +629,7 @@ export const useSettingsStore = create<SettingsState>()(
         changelistScopes: state.changelistScopes,
         graphExcludedFiles: state.graphExcludedFiles,
         popupSizes: state.popupSizes,
+        promptHeight: state.promptHeight,
         guardrailChatOffset: state.guardrailChatOffset,
         graphFilter: state.graphFilter,
         aiLanguage: state.aiLanguage,

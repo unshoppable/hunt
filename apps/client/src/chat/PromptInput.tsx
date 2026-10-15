@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AvailableCommand, PullRequestRef, Screenshot } from "../ipc/types";
+import { useSettingsStore } from "../state/settings";
 import type { PromptDraft, QueuedPrompt } from "../state/store";
 import { PillSelect } from "./PillSelect";
 import { appendPromptTexts, QueuedPrompts, useReturnedPrompts } from "./QueuedPrompts";
@@ -8,7 +9,8 @@ import { ScreenshotTrigger, screenshotUrl } from "./ScreenshotPicker";
 import { CLEAR_BUTTON, SEND_BUTTON } from "../ui/buttons";
 import type { DropdownOption } from "../ui/floatingMenu";
 import { CloseIcon, EraserIcon, GitHubIcon, SendIcon } from "../ui/icons";
-import { useAutoGrow } from "../ui/useAutoGrow";
+import { ResizeGrips } from "../ui/ResizeGrips";
+import { rowsHeight, useAutoGrow } from "../ui/useAutoGrow";
 import { useDismiss } from "../ui/useDismiss";
 import { matchCommands, slashQueryOf } from "./slashCommands";
 import { insertImageReference, removeImageReference, shiftImageReferences } from "./imageReferences";
@@ -28,12 +30,16 @@ const MODE_CLASS: Record<string, string | undefined> = {
   bypassPermissions: "text-[#f098a4]",
 };
 
+/** Share of the window height the text area may be dragged to at most. */
+const MAX_PROMPT_HEIGHT_SHARE = 0.6;
+
 /**
  * The prompt box: a rounded card with the text area, attached screenshots, slash-command suggestions and a toolbar of
- * model, effort and mode pills. Used inside a session and, with an `extension` bar for repository and branch, as the
- * start view's composer. The screenshot picker sits in the left margin of the box. While the agent is busy, sending
- * queues the prompt (shown above the box) for the end of the running turn; the send button therefore never turns into
- * a stop button, Escape stops the turn. ⌘↩ sends the prompt at once, stopping the running turn.
+ * model, effort and mode pills. Dragging its top edge makes the text area taller; the height is remembered until it is
+ * dragged back to the two lines the box starts with. Used inside a session and, with an `extension` bar for repository
+ * and branch, as the start view's composer. The screenshot picker sits in the left margin of the box. While the agent
+ * is busy, sending queues the prompt (shown above the box) for the end of the running turn; the send button therefore
+ * never turns into a stop button, Escape stops the turn. ⌘↩ sends the prompt at once, stopping the running turn.
  */
 export function PromptInput({
   isBusy,
@@ -103,6 +109,12 @@ export function PromptInput({
   const rootRef = useRef<HTMLDivElement>(null);
   /** Where the caret goes once the text holds a freshly inserted image reference. */
   const pendingCaretRef = useRef<number | null>(null);
+  const promptHeight = useSettingsStore((state) => state.promptHeight);
+  const setPromptHeight = useSettingsStore((state) => state.setPromptHeight);
+  /** Text area height while its top edge is dragged; null outside a drag. */
+  const [dragHeight, setDragHeight] = useState<number | null>(null);
+  /** Height the text area had when the drag started and the one it has now; read when the drag ends. */
+  const dragRef = useRef({ start: 0, height: 0 });
 
   const slashQuery = isSuggestionsDismissed ? null : slashQueryOf(text);
   const suggestions = slashQuery === null ? [] : matchCommands(commands, slashQuery);
@@ -110,7 +122,7 @@ export function PromptInput({
   const canSend = Boolean(text.trim() || attachments.length) && !isBlocked;
 
   useDismiss(suggestionsRef, () => setIsSuggestionsDismissed(true), { anchorRefs: [textareaRef], isEnabled: suggestions.length > 0 });
-  useAutoGrow(textareaRef, text, 8);
+  useAutoGrow(textareaRef, text, 8, dragHeight ?? promptHeight ?? 0);
 
   useEffect(() => {
     if (!isBlocked) {
@@ -196,6 +208,25 @@ export function PromptInput({
   function removeAttachment(index: number) {
     setAttachments(attachments.filter((_, other) => other !== index));
     setText(removeImageReference(text, index + 1));
+  }
+
+  function startHeightDrag() {
+    const height = textareaRef.current?.offsetHeight ?? 0;
+    dragRef.current = { start: height, height };
+  }
+
+  function dragHeightBy(dy: number) {
+    const height = Math.max(0, Math.min(dragRef.current.start + dy, window.innerHeight * MAX_PROMPT_HEIGHT_SHARE));
+    dragRef.current.height = height;
+    setDragHeight(height);
+  }
+
+  /** Remembers the dragged height; dragged down to the box's own two lines, the box follows its text again. */
+  function endHeightDrag() {
+    const element = textareaRef.current;
+    const { height } = dragRef.current;
+    setPromptHeight(element && height > rowsHeight(element, element.rows) ? height : null);
+    setDragHeight(null);
   }
 
   function completeSuggestion() {
@@ -363,6 +394,7 @@ export function PromptInput({
               <SendIcon />
             </button>
           </div>
+          <ResizeGrips edges={{ top: true }} onStart={startHeightDrag} onDrag={({ dy }) => dragHeightBy(dy)} onEnd={endHeightDrag} />
         </div>
         {extension}
         {dropError ? <div className="px-1 pt-4 text-[13px] text-red-300">{dropError}</div> : null}

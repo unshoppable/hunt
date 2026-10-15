@@ -15,7 +15,7 @@ function fakeCompute(statuses: Record<string, string>, failure?: Error) {
       if (failure) throw failure;
       const status = statuses[name];
       if (!status) return null;
-      return { name, zone: "europe-west3-b", status, creationTimestamp: "", labels: {}, metadata: { fingerprint: "", items: [] }, disks: [] };
+      return { name, zone: "europe-west3-b", status, creationTimestamp: "", lastStopTimestamp: "", lastSuspendedTimestamp: "", labels: {}, metadata: { fingerprint: "", items: [] }, disks: [] };
     },
     start: async (zone, name) => {
       calls.push(`start ${name} in ${zone}`);

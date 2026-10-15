@@ -13,7 +13,8 @@
  * `session-config`, `hunt-session.json` through `put-files --claude`, `deps`, `start` with the tokens on stdin and
  * `wait`. Then the issue goes to the agent as its first prompt through the relay; the agent opens the pull request and
  * sets `swf:done` or `swf:failed` itself. When the setup fails, the poller sets `swf:failed` with the error and leaves
- * the VM for inspection; Hunt desktops adopt the VM either way.
+ * the VM for inspection; Hunt desktops adopt the VM either way. Between polls, the reaper (`reaper.ts`) deletes
+ * session VMs that have been stopped for more than a week.
  *
  * The GitHub token (`HUNT_SWF_GITHUB_TOKEN`) and the Claude Code OAuth token (`HUNT_SWF_CLAUDE_TOKEN`) come from Secret
  * Manager; project, zone, access token and configuration from the metadata server; the preview domain from what
@@ -35,6 +36,7 @@ import { writeLog } from "./journal.ts";
 import { createGitHub, type GitHub, type Issue, type IssueComment } from "./github.ts";
 import { DEFAULT_TEMPLATE, ORIGIN_LABEL, Orchestrator, type Origin, type Reporter } from "./orchestrator.ts";
 import { readDomain } from "./previewDomain.ts";
+import { Reaper } from "./reaper.ts";
 import { ensureSshKey, sessionVm, type SessionVm } from "./sessionVm.ts";
 import { readSessionZones } from "./sessionZones.ts";
 import { readSwfConfig, REPOS_ATTRIBUTE, SWF_LABEL, type SwfConfig } from "./swfConfig.ts";
@@ -310,26 +312,28 @@ async function main(): Promise<void> {
   const vm = (name: string, zone: string) => sessionVm(name, { project: location.project, zone }, log);
   let wake = () => {};
   let isStopping = false;
+  const orchestrator = new Orchestrator({
+    compute,
+    location,
+    zones: () => readSessionZones(location.zone),
+    vm,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: Date.now,
+  });
   const poller = new Poller({
     readConfig: () => readSwfConfig(metadata),
     readDomain: () => readDomain(),
     tokens: secretsReader(metadata),
     github: (token) => createGitHub(token),
     compute,
-    orchestrator: new Orchestrator({
-      compute,
-      location,
-      zones: () => readSessionZones(location.zone),
-      vm,
-      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-      now: Date.now,
-    }),
+    orchestrator,
     vm,
     prompts: readPrompts,
     sendPrompt,
     newId: randomUUID,
     log,
   });
+  const reaper = new Reaper({ compute, orchestrator, zone: location.zone, now: Date.now, log });
 
   process.on("SIGHUP", () => {
     log("reload: exiting once the sessions being set up run");
@@ -352,6 +356,7 @@ async function main(): Promise<void> {
     } catch (error) {
       log(`poll failed: ${redact(messageOf(error), [])}`, "error");
     }
+    await reaper.cycle();
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, POLL_INTERVAL_MS);
       wake = () => {

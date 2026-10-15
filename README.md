@@ -553,7 +553,7 @@ differing file with its side and the ignore rules that apply (or the local commi
 The transcript returns, and the transcripts of the session and its sub chats get the session's
 permission mode from before the handoff in place of the VM's. Then Hunt has the gateway delete the
 VM with its disks (`vms.delete`), as it does when a remote session is deleted. A session whose VM no longer exists
-(deleted outside Hunt) comes back with what this Mac has, the local worktree as the file sync left it and the
+(deleted by the gateway after a week stopped, see below, or outside Hunt) comes back with what this Mac has, the local worktree as the file sync left it and the
 conversation as of the agent's last finished turn, which the sync backed up, as soon as it is brought back or a prompt
 tries to connect it; the chat says so, and the session can be handed off again. A deletion that fails, for example
 offline, is kept in `remote-cleanups.json` in the app data folder and retried at the next start of Hunt, once the main
@@ -590,6 +590,14 @@ with the error; its VM stays for inspection. The poller's GitHub token and the C
 with come from Secret Manager (`HUNT_SWF_GITHUB_TOKEN`, `HUNT_SWF_CLAUDE_TOKEN`) and never reach a log line, a comment
 or a command line; `journalctl -u hunt-swf` on the gateway shows one line per decision, Compute Engine call and command
 on a session VM.
+
+The same service deletes forgotten session VMs (`apps/gateway/src/reaper.ts`): once an hour it lists the VMs labelled
+`hunt-role=session` and deletes, with all its disks, every one that Compute Engine reports as stopped or suspended for
+more than 7 days (`lastStopTimestamp`, `lastSuspendedTimestamp`). Since the idle check on a session VM powers it off
+half an hour after the agent's, the client's or a preview's last activity, that is a week without anyone touching the
+session. Right before deleting, it reads the VM once more and keeps one that was started meanwhile; a VM that names no
+session is only reported. A session whose VM went this way continues on the Mac as described above, and `journalctl -u
+hunt-swf` shows one line per deletion.
 
 The labels and metadata of the session VMs are the directory of remote sessions. At its start and from the sidebar's
 *Refresh remote sessions* button, Hunt asks the gateway for them (`sessions.list`), keeps those in the gateway's

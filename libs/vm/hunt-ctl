@@ -11,7 +11,8 @@
 # session's files runs as agent, so the agent's Git hooks, config and symlinks act with no more rights than the agent
 # has anyway. The gateway (`gateway`) holds no sessions: its edge proxy forwards the preview hosts to the session VMs,
 # hunt-wake.service starts a stopped one, hunt-api.service creates, starts and deletes them for the desktop apps, and
-# hunt-swf.service starts sessions for GitHub issues. CI deploys both releases by SSH into the gateway: `install` for the
+# hunt-swf.service starts sessions for GitHub issues and deletes session VMs stopped for more than a week. CI deploys
+# both releases by SSH into the gateway: `install` for the
 # gateway's own, `stage-session` for the one the gateway installs on the session VMs.
 # shellcheck disable=SC2016 # jq programs and `sh -c` scripts are single-quoted on purpose.
 set -Eeuo pipefail

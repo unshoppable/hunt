@@ -5,8 +5,8 @@
  */
 import type { Issue, IssueComment } from "./github.ts";
 
-/** The VM statuses that do not count towards the session limit. */
-const STOPPED_STATUSES = new Set(["TERMINATED", "STOPPED"]);
+/** The VM statuses that do not count towards the session limit; the reaper deletes VMs that stay in them. */
+export const STOPPED_STATUSES = new Set(["TERMINATED", "STOPPED"]);
 const SLUG_MAX_LENGTH = 40;
 /** The scope of every session branch: `<type>/general/<name>`. */
 const BRANCH_SCOPE = "general";

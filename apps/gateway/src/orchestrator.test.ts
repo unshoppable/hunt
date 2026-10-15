@@ -44,6 +44,8 @@ function instance(overrides: Partial<Instance> & { sessionId?: string }): Instan
     zone: ZONE,
     status: "RUNNING",
     creationTimestamp: "2026-10-13T08:00:00.000-07:00",
+    lastStopTimestamp: "",
+    lastSuspendedTimestamp: "",
     labels: SESSION_LABELS,
     metadata: { fingerprint: "fp0", items },
     disks: [{ deviceName: "persistent-disk-0", autoDelete: true }],

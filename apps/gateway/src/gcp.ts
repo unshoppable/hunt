@@ -126,6 +126,10 @@ export interface Instance {
   status: string;
   /** RFC 3339, as Compute Engine writes it; empty when the resource names none. */
   creationTimestamp: string;
+  /** When the VM was last stopped, RFC 3339; empty for one that never was. */
+  lastStopTimestamp: string;
+  /** When the VM was last suspended, RFC 3339; empty for one that never was. */
+  lastSuspendedTimestamp: string;
   labels: Record<string, string>;
   metadata: { fingerprint: string; items: MetadataItem[] };
   disks: AttachedDisk[];
@@ -227,6 +231,8 @@ export function parseInstance(value: unknown): Instance {
     zone?: unknown;
     status?: unknown;
     creationTimestamp?: unknown;
+    lastStopTimestamp?: unknown;
+    lastSuspendedTimestamp?: unknown;
     labels?: unknown;
     metadata?: { fingerprint?: unknown; items?: unknown };
     disks?: unknown;
@@ -246,6 +252,8 @@ export function parseInstance(value: unknown): Instance {
     zone: lastSegment(raw.zone),
     status: typeof raw.status === "string" ? raw.status : "",
     creationTimestamp: typeof raw.creationTimestamp === "string" ? raw.creationTimestamp : "",
+    lastStopTimestamp: typeof raw.lastStopTimestamp === "string" ? raw.lastStopTimestamp : "",
+    lastSuspendedTimestamp: typeof raw.lastSuspendedTimestamp === "string" ? raw.lastSuspendedTimestamp : "",
     labels,
     metadata: {
       fingerprint: typeof raw.metadata?.fingerprint === "string" ? raw.metadata.fingerprint : "",

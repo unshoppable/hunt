@@ -293,7 +293,7 @@ The Dependency Graph tab asks the agent (hidden turn, standard prompt in `apps/c
 plus the unchanged files that explain the change, and one edge per dependency with a label stating how the source uses
 the target (one to three words, a verb, a noun or both, in the AI language from the settings) and a description of how
 it is used. The refresh prompt names the session's diff base: `HEAD`, or the merge base of a reviewed pull request. For
-the refresh turn the session's agent switches to the model and effort from Settings → Agent (default `claude-opus-5-5`
+the refresh turn the session's agent switches to the model and effort from Settings → Agent (default `claude-fable-5-1`
 with `high`) and back to the chat's choice afterwards. `apps/client/src/graph/` validates it, fills pairs the agent left
 out with unlabeled edges read from the import statements and lays it out with ELK inside React Flow.
 

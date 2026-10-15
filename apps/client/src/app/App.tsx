@@ -120,20 +120,21 @@ export function App() {
             <div className="min-h-0 flex-1">
               {!activeSessionId || draft || isCreatingActive ? null : (
                 <>
+                  {/* The panels are siblings of one fragment, so their keys carry the tab as well as the session: a shared key would keep React from removing a panel that another tab replaced. */}
                   {rightTab === "preview" || rightTab === "terminal" ? null : activeRemoteInstance && !hasActiveWorktree ? (
                     <NoLocalWorktree sessionId={activeSessionId} />
                   ) : rightTab === "diff" ? (
-                    <DiffPanel key={activeSessionId} sessionId={activeSessionId} />
+                    <DiffPanel key={`diff:${activeSessionId}`} sessionId={activeSessionId} />
                   ) : rightTab === "editor" ? (
                     <IdePanel sessionId={activeSessionId} />
                   ) : rightTab === "pullRequest" ? (
-                    <PullRequestPanel key={activeSessionId} sessionId={activeSessionId} />
+                    <PullRequestPanel key={`pullRequest:${activeSessionId}`} sessionId={activeSessionId} />
                   ) : (
-                    <GraphPanel key={activeSessionId} sessionId={activeSessionId} />
+                    <GraphPanel key={`graph:${activeSessionId}`} sessionId={activeSessionId} />
                   )}
-                  {activeRemoteInstance && rightTab === "preview" ? <PreviewPanel key={activeSessionId} sessionId={activeSessionId} /> : null}
+                  {activeRemoteInstance && rightTab === "preview" ? <PreviewPanel key={`preview:${activeSessionId}`} sessionId={activeSessionId} /> : null}
                   {/* The terminal stays mounted while another tab shows, so switching tabs keeps its connection. */}
-                  {activeRemoteInstance ? <TerminalPanel key={activeSessionId} sessionId={activeSessionId} isVisible={rightTab === "terminal"} /> : null}
+                  {activeRemoteInstance ? <TerminalPanel key={`terminal:${activeSessionId}`} sessionId={activeSessionId} isVisible={rightTab === "terminal"} /> : null}
                 </>
               )}
             </div>

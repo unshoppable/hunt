@@ -1,3 +1,9 @@
+## 0.26.2 (2026-10-16)
+
+### 🩹 Fixes
+
+- **client:** list sessions oldest first, so that a new session joins the end of the sidebar and the marks of the existing ones stay put ([b92b46e](https://github.com/unshoppable/hunt/commit/b92b46e))
+
 ## 0.26.1 (2026-10-16)
 
 ### 🩹 Fixes

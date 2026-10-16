@@ -14,8 +14,8 @@ pub const ENGLISH_TERMS: &str = "Keep the English technical terms and abbreviati
 untranslated, e.g. utils, helper, service, store, hook, endpoint, payload, parser; never invent a translation for them.";
 
 /// Response-style instructions appended to the agent's system prompt in every session; the frontend imports the
-/// same file (`prompts/response-style.md`) as its default, so the settings dialog can tell a default from an edit.
-pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/response-style.md"));
+/// same file (`system-prompts/response-style.md`) as its default, so the settings dialog can tell a default from an edit.
+pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../system-prompts/response-style.md"));
 
 pub struct Preferences {
     ai_language: Mutex<String>,

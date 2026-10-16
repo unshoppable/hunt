@@ -191,7 +191,7 @@ sub chat in its popover; the sub session's chat pane offers "Open in editor" for
 The "Agent" page of the settings dialog holds what Hunt tells the agent on its own: the language of every output
 Hunt asks for itself (session summaries and titles in `apps/client/src-tauri/src/session/summary.rs`, the dependency
 graph), German by default, and the system prompt addition of every new session, by default the response-style
-instructions in `apps/client/prompts/response-style.md` (plain language for software engineers). The frontend pushes
+instructions in `apps/client/system-prompts/response-style.md` (plain language for software engineers). The frontend pushes
 both to `apps/client/src-tauri/src/preferences.rs` at start and on change; `apps/client/src-tauri/src/acp/connection.rs`
 appends the prompt, the diagram instructions and the selection context of a sub session to Claude Code's system prompt
 via the ACP `systemPrompt` meta.
@@ -674,7 +674,7 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 
 | Path | Owns |
 | --- | --- |
-| `apps/client/` | Nx project `client`: the desktop app, with the Rust shell in `src-tauri/`, the React UI in `src/`, one HTML page per window and the default agent prompts in `prompts/` |
+| `apps/client/` | Nx project `client`: the desktop app, with the Rust shell in `src-tauri/`, the React UI in `src/`, one HTML page per window and the default system-prompt parts in `system-prompts/` |
 | `apps/client/src-tauri/src/acp/` | Agent process per session, ACP event forwarding |
 | `apps/client/src-tauri/src/git.rs` | Worktrees, changelists, shelve, revert, commit and push |
 | `apps/client/src-tauri/src/github.rs` | Pull requests through `gh` |

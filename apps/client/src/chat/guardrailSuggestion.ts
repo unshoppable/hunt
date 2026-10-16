@@ -6,7 +6,7 @@ const KINDS: GuardrailKind[] = ["instruction", "rule", "skill", "agent", "adr"];
 /** A guardrail the agent proposed at the end of a reply: its kind and what it should say. */
 export type GuardrailSuggestion = { kind: GuardrailKind; summary: string };
 
-/** `<!-- hunt:guardrail adr: Summary -->`, which the agent ends a reply with when it holds a guardrail (see `prompts/guardrail-offer.md`). */
+/** `<!-- hunt:guardrail adr: Summary -->`, which the agent ends a reply with when it holds a guardrail (see `system-prompts/guardrail-offer.md`). */
 const MARKER = /<!--\s*hunt:guardrail\s+(\w+)\s*:?\s*([\s\S]*?)\s*-->/;
 /** A comment at the end of a reply, also any prefix of one while the marker is still streaming in. */
 const TRAILING_MARKER = /\s*<(?:!(?:-(?:-[^>]*>?)?)?)?\s*$/;

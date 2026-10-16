@@ -425,7 +425,7 @@ async fn new_session(
 }
 
 /// Asks the agent to offer recording an answer the user accepted as an ADR, skill, rule, agent or instruction.
-const GUARDRAIL_OFFER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/guardrail-offer.md"));
+const GUARDRAIL_OFFER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../system-prompts/guardrail-offer.md"));
 
 /// Everything Hunt appends to the agent's system prompt: the user's response-style prompt from the settings (if
 /// not cleared), the guardrail offer, the diagram instructions in the user's AI language and the optional selection

@@ -1,4 +1,5 @@
 import { hasPendingQuestion, useHuntStore } from "../state/store";
+import { runsOnVm } from "./remoteOrigin";
 
 const HEIGHT = 18;
 /** Extra width per character beyond the first, so `B2` stretches the circle into a pill. */
@@ -30,7 +31,7 @@ export function SessionMark({ sessionId, mark, title }: { sessionId: string; mar
     if (!chat || chat.items.length === 0) return state.sessions.find((session) => session.id === sessionId)?.remote?.agent === "question";
     return hasPendingQuestion(chat);
   });
-  const isRemote = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === sessionId)?.remote));
+  const isRemote = useHuntStore((state) => runsOnVm(sessionId, state.sessions));
   const hasUnseenActivity = useHuntStore((state) => state.activeSessionId !== sessionId && (state.chats[sessionId]?.hasUnseenActivity ?? false));
   const tone = hasQuestion ? "question" : isRemote ? "remote" : hasUnseenActivity ? "unseen" : "idle";
   return <MarkGlyph mark={mark} isBusy={isBusy} tone={tone} label={title ?? mark} title={title} />;

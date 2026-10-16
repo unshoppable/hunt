@@ -7,6 +7,17 @@ export function isAdopted(session: SessionView): boolean {
 }
 
 /**
+ * Whether the agent of the session `sessionId` runs on a VM: the session's own `remote`, or for a sub session its
+ * parent's, since a sub session runs on the VM of the session that owns the worktree. `sessions` is the store's list.
+ */
+export function runsOnVm(sessionId: string, sessions: SessionView[]): boolean {
+  const session = sessions.find((candidate) => candidate.id === sessionId);
+  if (!session) return false;
+  if (session.remote) return true;
+  return Boolean(session.parentId && sessions.find((candidate) => candidate.id === session.parentId)?.remote);
+}
+
+/**
  * The sidebar badge of an adopted session: `swf #123` (or `swf` without an issue) for one the gateway's poller started,
  * `remote` for another person's handoff; null for a session this Mac runs or handed off.
  */

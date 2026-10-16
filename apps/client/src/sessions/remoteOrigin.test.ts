@@ -10,6 +10,7 @@ import {
   remoteOriginTitle,
   removeFromSidebarQuestion,
   repositoryLabel,
+  runsOnVm,
 } from "./remoteOrigin";
 
 function session(remote: Partial<RemoteTarget> | null, patch: Partial<SessionView> = {}): SessionView {
@@ -30,6 +31,19 @@ function session(remote: Partial<RemoteTarget> | null, patch: Partial<SessionVie
   };
   return { id: "s1", title: "Fix login", repoPath: "/src/app-framework", remote: remote ? { ...target, ...remote } : null, ...patch } as SessionView;
 }
+
+describe("runsOnVm", () => {
+  it("is set for a remote session and for a sub session of one, not for a local one or an unknown id", () => {
+    const owner = session({}, { id: "owner" });
+    const local = session(null, { id: "local" });
+    const sessions = [owner, local, session(null, { id: "sub", parentId: "owner" }), session(null, { id: "localSub", parentId: "local" })];
+    expect(runsOnVm("owner", sessions)).toBe(true);
+    expect(runsOnVm("sub", sessions)).toBe(true);
+    expect(runsOnVm("local", sessions)).toBe(false);
+    expect(runsOnVm("localSub", sessions)).toBe(false);
+    expect(runsOnVm("missing", sessions)).toBe(false);
+  });
+});
 
 describe("remoteOriginLabel", () => {
   it("labels adopted sessions by who started them", () => {

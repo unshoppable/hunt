@@ -24,7 +24,7 @@ import { AGENT_CHIP, Chip } from "../ui/Chip";
 import { PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { ShieldIcon } from "../ui/icons";
 import { OpenInWebstormButton } from "./OpenInWebstormButton";
-import { RemoteMenu } from "./RemoteMenu";
+import { RemoteToggle } from "./RemoteToggle";
 import { remoteDeleteQuestion } from "../sessions/remoteOrigin";
 import { confirmDestructive } from "../ui/confirm";
 import { moveStatus, remoteOf } from "./remoteSession";
@@ -178,7 +178,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           </Chip>
         ) : null}
         {remote ? null : <OpenInWebstormButton sessionId={sessionId} disabled={isCreating} />}
-        <RemoteMenu sessionId={sessionId} />
+        <RemoteToggle sessionId={sessionId} />
         <button type="button" onClick={() => void openGuardrailsWindow(sessionId)} disabled={isCreating} className={SECONDARY_BUTTON_MD}>
           <ShieldIcon />
           Guardrails

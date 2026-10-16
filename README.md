@@ -455,7 +455,7 @@ next to a remote session's chat (`apps/client/src/preview/PreviewPanel.tsx`) pol
 public ones and lists the other ports that listen, except the reserved ones (`RESERVED_PORTS`: Caddy, Docker, the
 preview proxy, LLMNR and the Ops Agent), which no service may take and the preview proxy refuses; Hunt builds the URLs from the session ID and the preview domain the gateway reported at the handoff, the VM reports only
 port numbers. While no service runs, *Start the app* sends the agent a normal prompt to start the services the task
-needs, which starts a VM that is off; *Open preview* in the cloud menu opens the tab.
+needs, which starts a VM that is off.
 
 The gateway keeps no sessions. Its edge proxy `hunt-edge` (Caddy in Docker on port 8080 behind the load balancer)
 serves only the load balancer's address ranges, removes IAP's headers and cookies and forwards every preview host with

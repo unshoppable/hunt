@@ -403,7 +403,8 @@ first start from the session's `hunt-session.json`, a new conversation in the sa
 the text Hunt sends on stdin (the selected lines), and starts the unit with the session's tokens; `wait`, `clear` and
 `stop` take `--sub` the same way, and `stop --sub` also removes the configuration when the sub chat is deleted. The
 unit is not enabled: Hunt starts it whenever it connects the sub chat, and it runs until the sub chat is deleted, the
-session comes back or the VM shuts down. `hunt-ctl stop` and `destroy` stop the sub chats' relays with the session's.
+session comes back or the VM shuts down. Connecting the session (opening it, a prompt after its idle VM shut down, or
+its handoff) connects its stopped sub chats behind it, one after another, so they need no click of their own. `hunt-ctl stop` and `destroy` stop the sub chats' relays with the session's.
 Their transcripts live in the session's project folder, so bringing the session back brings them along, and the sub
 chats continue on this Mac. A handoff takes the sub chats along the same way: their local agents stop, their
 transcripts go to the VM with the session's and each gets its configuration in `hunt-subs/`, so its relay continues

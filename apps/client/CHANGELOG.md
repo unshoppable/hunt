@@ -1,3 +1,10 @@
+## 0.32.0 (2026-10-16)
+
+### 🚀 Features
+
+- **client:** show the number of a reviewed pull request with its own icon on the sidebar's repository line instead of in the title ([3321365](https://github.com/unshoppable/hunt/commit/3321365))
+- **client:** drop the cloud icon from the sidebar rows and show a session's issue as a ticket on its repository line ([191e337](https://github.com/unshoppable/hunt/commit/191e337))
+
 ## 0.31.0 (2026-10-16)
 
 ### 🚀 Features

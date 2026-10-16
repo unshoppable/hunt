@@ -332,8 +332,10 @@ error. The app passes session IDs and, to `sessions.provision`, the chosen machi
 template's. The gateway names the VM `vm-hunt-s-<short id>` (`<short id>` is the first 8 hex digits of the session ID)
 and owns its project, zone, instance template and preview domain, which `hello` reports.
 The first call to a gateway in an app run checks that its `hello.api` is the `api` of `libs/domain/protocol.json` and
-otherwise asks to update Hunt or to wait for the next server deploy. The handoff calls `sessions.provision`, connects
-and diffs call `vms.start` or `vms.get`, deleting a session calls `vms.delete`, adoption calls `sessions.list`. So the
+otherwise asks to update Hunt or to wait for the next server deploy. The handoff calls `sessions.provision`; a connect
+calls `vms.get` and reaches a running VM directly, since the gateway's `vms.start` also waits for the boot and checks
+the release over `gcloud compute ssh`, which takes seconds, and calls `vms.start` only for a VM that is off or does
+not answer; diffs call `vms.get`, deleting a session calls `vms.delete`, adoption calls `sessions.list`. So the
 gcloud login needs no Compute Engine rights to change VMs: Hunt uses it for the IAP tunnel to the gateway and the
 session VMs, for registering its SSH key with OS Login, and once per app run to find the gateway, the VM of the project
 labelled `hunt-role=gateway`, with its zone (`gcloud compute instances list`, which needs `compute.instances.list`, e.g.

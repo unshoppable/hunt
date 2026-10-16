@@ -304,17 +304,30 @@ pub fn read_agent_md(worktree: &Path) -> Result<Option<String>, String> {
     std::fs::read_to_string(&path).map(Some).map_err(|error| format!("failed to read hunt.agent.md: {error}"))
 }
 
-/// Starts the VM of session `id` through `gateway` unless it runs and connects to it once it can run the agent (see
-/// `release::ensure_ready`); Hunt's SSH key lives in `ssh_dir`. Returns the connection and the VM as the gateway
+/// Connects to the VM of session `id`, stored as `known`, once it can run the agent (see `release::ensure_ready`);
+/// Hunt's SSH key lives in `ssh_dir`. A VM the gateway reports as running is reached directly: the gateway's start
+/// also waits for the VM's boot and checks its release over `gcloud compute ssh`, which takes seconds a running VM
+/// does not need. A VM that is off, or that does not answer under its stored name and zone, is started through
+/// `gateway`, which boots it and installs the staged release. Returns the connection and the VM as the gateway
 /// reports it, which may lie in another zone than the one stored when the gateway had to move it for the start.
 /// `None` when the session's VM no longer exists.
 pub async fn start_session_vm(
     gateway: &VmRef,
     id: uuid::Uuid,
+    known: &VmRef,
     ssh_dir: &Path,
     progress: Progress<'_>,
 ) -> Result<Option<(ssh::Ssh, VmRef)>, String> {
     let api = api::GatewayApi::open(gateway, ssh_dir).await?;
+    if api.is_vm_running(id).await? {
+        let ssh = ssh::Ssh::open(known, ssh_dir).await?;
+        match release::ensure_ready(&ssh, progress).await {
+            Ok(()) => return Ok(Some((ssh, known.clone()))),
+            Err(error) => {
+                eprintln!("connecting to the running VM {} of session {id} directly failed, starting it through the gateway: {error}", known.instance);
+            }
+        }
+    }
     let Some(vm) = api.start_vm(id, progress).await? else { return Ok(None) };
     let ssh = ssh::Ssh::open(&vm, ssh_dir).await?;
     release::ensure_ready(&ssh, progress).await?;

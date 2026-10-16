@@ -625,7 +625,7 @@ async fn start_remote_relay(app: &AppHandle, id: Uuid, target: RemoteTarget, pro
     progress.step(RemoteStep::Connecting);
     // A relay that runs keeps running on the release it started with.
     let gateway = gateway_vm("connect the remote session").await?;
-    let Some((ssh, vm)) = remote::start_session_vm(&gateway, id, &ssh_dir()?, progress).await? else {
+    let Some((ssh, vm)) = remote::start_session_vm(&gateway, id, &target.vm, &ssh_dir()?, progress).await? else {
         return Ok(None);
     };
     let target = if vm == target.vm {

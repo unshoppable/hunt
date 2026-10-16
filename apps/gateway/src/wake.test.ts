@@ -15,7 +15,7 @@ function fakeCompute(statuses: Record<string, string>, failure?: Error) {
       if (failure) throw failure;
       const status = statuses[name];
       if (!status) return null;
-      return { name, zone: "europe-west3-b", status, creationTimestamp: "", lastStopTimestamp: "", lastSuspendedTimestamp: "", labels: {}, metadata: { fingerprint: "", items: [] }, disks: [] };
+      return { name, zone: "europe-west3-b", status, creationTimestamp: "", lastStopTimestamp: "", lastSuspendedTimestamp: "", labels: {}, metadata: { fingerprint: "", items: [] }, disks: [], machineType: "" };
     },
     start: async (zone, name) => {
       calls.push(`start ${name} in ${zone}`);
@@ -102,6 +102,14 @@ describe("Waker", () => {
 
     expect(await waker.page("7c0c6f2e.hunt.example.com", true)).toMatchObject({ status: 404, reloads: false });
     expect(await waker.page("hunt.example.com", true)).toMatchObject({ status: 400, reloads: false });
+  });
+
+  it("keeps reloading for a VM the gateway is moving to another zone, without starting anything", async () => {
+    const { compute, calls } = fakeCompute({ "vm-hunt-s-7c0c6f2e-moving": "TERMINATED" });
+    const waker = new Waker({ compute, now: () => 0, log });
+
+    expect(await waker.page("7c0c6f2e.hunt.example.com", true)).toMatchObject({ status: 503, reloads: true, text: "The session VM vm-hunt-s-7c0c6f2e is moving to another zone." });
+    expect(calls).toEqual([]);
   });
 
   it("reports a failing Compute Engine call on a page that keeps reloading", async () => {

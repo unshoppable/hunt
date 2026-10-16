@@ -7,12 +7,14 @@ import {
   mergeMetadataItems,
   metadataValue,
   parseAccessToken,
+  parseDisk,
   parseInstance,
   parseOperation,
   parseProject,
   parseSecretPayload,
   parseZone,
   readSecret,
+  regionOf,
   type Metadata,
 } from "./gcp.ts";
 
@@ -267,6 +269,62 @@ describe("createCompute", () => {
     ]);
   });
 
+  it("creates a moved VM from the template with an existing boot disk and the metadata given", async () => {
+    const template = encodeURIComponent("projects/medconomy-hunt/global/instanceTemplates/tpl-hunt-session");
+    const { fetchImpl, requests } = fakeFetch({
+      [`POST ${ZONE_URL}/instances?sourceInstanceTemplate=${template}`]: () => Response.json({ kind: "compute#operation", name: "operation-1" }),
+    });
+    const compute = createCompute(fixedMetadata, fetchImpl);
+    const labels = { "hunt-role": "session", "hunt-session": "ab12cd34", "hunt-origin": "desktop" };
+    const metadata = [{ key: "startup-script", value: "#!/bin/sh" }, { key: "hunt-session-id", value: "ab12cd34-0000-4000-8000-000000000001" }];
+
+    await compute.insert("europe-west3-a", { name: "vm-hunt-s-ab12cd34", template: "tpl-hunt-session", labels, machineType: "c4d-standard-8", metadata, bootDisk: "vm-hunt-s-ab12cd34" });
+    expect(requests[0].body).toEqual({
+      name: "vm-hunt-s-ab12cd34",
+      labels,
+      machineType: "zones/europe-west3-a/machineTypes/c4d-standard-8",
+      metadata: { items: metadata },
+      disks: [{ boot: true, autoDelete: true, deviceName: "persistent-disk-0", source: "zones/europe-west3-a/disks/vm-hunt-s-ab12cd34" }],
+    });
+  });
+
+  it("renames a VM, reads, snapshots, creates and deletes disks and deletes snapshots, with global operations for the latter", async () => {
+    const instance = `${ZONE_URL}/instances/vm-hunt-s-ab12cd34`;
+    const disk = `${ZONE_URL}/disks/vm-hunt-s-ab12cd34`;
+    const { fetchImpl, requests } = fakeFetch({
+      [`POST ${instance}/setName`]: () => Response.json({ kind: "compute#operation", name: "operation-1" }),
+      [`GET ${disk}`]: () => Response.json({ name: "vm-hunt-s-ab12cd34", type: `${ZONE_URL}/diskTypes/hyperdisk-balanced`, sizeGb: "50" }),
+      [`GET ${ZONE_URL}/disks/vm-hunt-s-00000000`]: () => new Response("not found", { status: 404 }),
+      [`POST ${disk}/createSnapshot`]: () => Response.json({ kind: "compute#operation", name: "operation-2" }),
+      [`POST ${ZONE_URL}/disks`]: () => Response.json({ kind: "compute#operation", name: "operation-3" }),
+      [`DELETE ${disk}`]: () => Response.json({ kind: "compute#operation", name: "operation-4" }),
+      [`DELETE ${PROJECT_URL}/global/snapshots/vm-hunt-s-ab12cd34-move`]: () => Response.json({ kind: "compute#operation", name: "operation-5" }),
+      [`DELETE ${PROJECT_URL}/global/snapshots/vm-hunt-s-00000000-move`]: () => new Response("not found", { status: 404 }),
+      [`GET ${PROJECT_URL}/global/operations/operation-5`]: () => Response.json({ name: "operation-5", status: "DONE" }),
+    });
+    const compute = createCompute(fixedMetadata, fetchImpl);
+    const zone = "europe-west3-a";
+
+    expect(await compute.setName(zone, "vm-hunt-s-ab12cd34", "vm-hunt-s-ab12cd34-moving")).toEqual({ name: "operation-1", zone });
+    expect(await compute.getDisk(zone, "vm-hunt-s-ab12cd34")).toEqual({ type: "hyperdisk-balanced", sizeGb: 50 });
+    await expect(compute.getDisk(zone, "vm-hunt-s-00000000")).rejects.toThrow("failed to look up the disk vm-hunt-s-00000000 in europe-west3-a: HTTP 404 not found");
+    expect(await compute.createSnapshot(zone, "vm-hunt-s-ab12cd34", "vm-hunt-s-ab12cd34-move")).toEqual({ name: "operation-2", zone });
+    expect(await compute.insertDisk(zone, { name: "vm-hunt-s-ab12cd34", sourceSnapshot: "vm-hunt-s-ab12cd34-move", type: "hyperdisk-balanced", sizeGb: 50 })).toEqual({ name: "operation-3", zone });
+    expect(await compute.deleteDisk(zone, "vm-hunt-s-ab12cd34")).toEqual({ name: "operation-4", zone });
+    const deletion = await compute.deleteSnapshot("vm-hunt-s-ab12cd34-move");
+    expect(deletion).toEqual({ name: "operation-5", zone: null });
+    expect(await compute.operation(deletion)).toEqual({ isDone: true, error: null });
+    await expect(compute.deleteSnapshot("vm-hunt-s-00000000-move")).rejects.toThrow("failed to delete the snapshot vm-hunt-s-00000000-move: HTTP 404 not found");
+    expect(requests.slice(0, 5).map((request) => request.body)).toEqual([
+      { name: "vm-hunt-s-ab12cd34-moving", currentName: "vm-hunt-s-ab12cd34" },
+      undefined,
+      undefined,
+      { name: "vm-hunt-s-ab12cd34-move", storageLocations: ["europe-west3"] },
+      { name: "vm-hunt-s-ab12cd34", sourceSnapshot: "global/snapshots/vm-hunt-s-ab12cd34-move", type: "zones/europe-west3-a/diskTypes/hyperdisk-balanced", sizeGb: "50" },
+    ]);
+    expect(describeComputeCall(`${PROJECT_URL}/global/snapshots/vm-hunt-s-ab12cd34-move`)).toBe("global/snapshots/vm-hunt-s-ab12cd34-move");
+  });
+
   it("reads an instance, answers null for a missing one and sets metadata with the fingerprint", async () => {
     const { fetchImpl, requests } = fakeFetch({
       [`GET ${ZONE_URL}/instances/vm-hunt-s-ab12cd34`]: () =>
@@ -383,6 +441,7 @@ describe("metadata items", () => {
       labels: { a: "b" },
       metadata: { fingerprint: "", items: [] },
       disks: [],
+      machineType: "",
     });
   });
 
@@ -393,19 +452,31 @@ describe("metadata items", () => {
       creationTimestamp: "2026-10-13T01:02:03.456-07:00",
       lastStopTimestamp: "2026-10-14T01:02:03.456-07:00",
       metadata: { items: [{ key: "hunt-session-id", value: "ab12cd34-0000-4000-8000-000000000001" }] },
-      disks: [{ deviceName: "persistent-disk-0", autoDelete: true, boot: true }, { deviceName: "data", autoDelete: false }, { autoDelete: true }],
+      machineType: "https://www.googleapis.com/compute/v1/projects/medconomy-hunt/zones/europe-west3-a/machineTypes/c4d-standard-8",
+      disks: [
+        { deviceName: "persistent-disk-0", autoDelete: true, boot: true, source: "https://www.googleapis.com/compute/v1/projects/medconomy-hunt/zones/europe-west3-a/disks/vm-hunt-s-ab12cd34" },
+        { deviceName: "data", autoDelete: false },
+        { autoDelete: true },
+      ],
     });
     expect(instance).toMatchObject({
       zone: "europe-west3-a",
       creationTimestamp: "2026-10-13T01:02:03.456-07:00",
       lastStopTimestamp: "2026-10-14T01:02:03.456-07:00",
       lastSuspendedTimestamp: "",
+      machineType: "c4d-standard-8",
       disks: [
-        { deviceName: "persistent-disk-0", autoDelete: true },
-        { deviceName: "data", autoDelete: false },
+        { deviceName: "persistent-disk-0", autoDelete: true, boot: true, source: "vm-hunt-s-ab12cd34" },
+        { deviceName: "data", autoDelete: false, boot: false, source: "" },
       ],
     });
     expect(metadataValue(instance, "hunt-session-id")).toBe("ab12cd34-0000-4000-8000-000000000001");
     expect(metadataValue(instance, "hunt-repo")).toBeNull();
+  });
+
+  it("parses a disk's type and size, and a zone's region", () => {
+    expect(parseDisk({ type: `${ZONE_URL}/diskTypes/hyperdisk-balanced`, sizeGb: "50" })).toEqual({ type: "hyperdisk-balanced", sizeGb: 50 });
+    expect(parseDisk({})).toEqual({ type: "", sizeGb: 0 });
+    expect(regionOf("europe-west1-c")).toBe("europe-west1");
   });
 });

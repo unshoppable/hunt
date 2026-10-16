@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 import type { ProgressStep } from "../../../libs/domain/src/gatewayApi.ts";
 import type { Transport } from "./acpClient.ts";
 import { ApiError } from "./apiProtocol.ts";
-import type { Compute, Instance, InstanceRequest, MetadataItem, OperationError, OperationState } from "./gcp.ts";
-import { CREATE_TIMEOUT_MS, labelValue, Orchestrator, START_TIMEOUT_MS, type ProvisionRequest, type Reporter } from "./orchestrator.ts";
+import type { Compute, Disk, Instance, InstanceRequest, MetadataItem, OperationError, OperationState } from "./gcp.ts";
+import { CREATE_TIMEOUT_MS, labelValue, Orchestrator, SNAPSHOT_TIMEOUT_MS, START_TIMEOUT_MS, type ProvisionRequest, type Reporter } from "./orchestrator.ts";
 import type { SessionVm } from "./sessionVm.ts";
 
 const ID = "ab12cd34-0000-4000-8000-000000000001";
 const OTHER_ID = "ab12cd34-0000-4000-8000-000000000002";
 const VM = "vm-hunt-s-ab12cd34";
+const MOVING = `${VM}-moving`;
+const SNAPSHOT = `${VM}-move`;
+const BOOT_DISK: Disk = { type: "hyperdisk-balanced", sizeGb: 50 };
 const ZONE = "europe-west3-a";
 const ZONE_B = "europe-west3-b";
 const ZONE_C = "europe-west3-c";
@@ -48,27 +51,33 @@ function instance(overrides: Partial<Instance> & { sessionId?: string }): Instan
     lastSuspendedTimestamp: "",
     labels: SESSION_LABELS,
     metadata: { fingerprint: "fp0", items },
-    disks: [{ deviceName: "persistent-disk-0", autoDelete: true }],
+    disks: [{ deviceName: "persistent-disk-0", autoDelete: true, boot: true, source: rest.name ?? VM }],
+    machineType: "c4d-standard-8",
     ...rest,
   };
 }
 
 /**
- * A Compute Engine with the VMs in `vms`, each in its own zone; a call that names another zone than the VM's finds
- * nothing, as the API does. Each `get` of a VM first applies the next status of its queue in `statuses`; insert, start
- * and resume queue the statuses a VM goes through. `insertErrors` makes the insert in a zone fail: an `OperationError`
- * as the operation's error, an `Error` as the API's answer to the call. Every change is recorded in `calls`.
+ * A Compute Engine with the VMs in `vms`, each in its own zone with its boot disk (`disks`, by `<zone>/<name>`); a call
+ * that names another zone than the VM's finds nothing, as the API does. Each `get` of a VM first applies the next
+ * status of its queue in `statuses`; insert, start and resume queue the statuses a VM goes through. `insertErrors`
+ * makes the insert in a zone fail: an `OperationError` as the operation's error, an `Error` as the API's answer to the
+ * call; `failStart` does the same for the start in a zone. Every change is recorded in `calls`.
  */
 function fakeCompute(vms: Instance[] = []) {
   const instances = new Map(vms.map((vm) => [vm.name, structuredClone(vm)]));
+  const disks = new Map<string, Disk>(vms.flatMap((vm) => vm.disks.filter((disk) => disk.boot).map((disk) => [`${vm.zone}/${disk.source}`, { ...BOOT_DISK }])));
+  const snapshots = new Set<string>();
   const statuses = new Map<string, string[]>();
   const operations = new Map<string, OperationState>();
   const calls: string[] = [];
   const inserted: InstanceRequest[] = [];
   const insertedZones: string[] = [];
   const insertErrors = new Map<string, OperationError | Error>();
-  let startError: OperationError | null = null;
-  let isOperationStuck = false;
+  const startErrors = new Map<string, OperationError>();
+  let resumeError: OperationError | null = null;
+  let snapshotError: OperationError | null = null;
+  let stuckFrom: number | null = null;
   let metadataFailures = 0;
 
   function find(zone: string, name: string): Instance {
@@ -77,10 +86,14 @@ function fakeCompute(vms: Instance[] = []) {
     return vm;
   }
 
-  function operation(zone: string, error: OperationError | null) {
+  function operation(zone: string | null, error: OperationError | null) {
     const name = `operation-${operations.size + 1}`;
     operations.set(name, { isDone: true, error });
     return { name, zone };
+  }
+
+  function gone(what: string): Error {
+    return new Error(`failed to delete ${what}: HTTP 404 not found`);
   }
 
   const compute: Compute = {
@@ -100,17 +113,68 @@ function fakeCompute(vms: Instance[] = []) {
       return structuredClone(vm);
     },
     insert: async (zone, request) => {
-      calls.push(`insert ${request.name}`);
+      calls.push(`insert ${request.name} in ${zone}`);
       inserted.push(request);
       insertedZones.push(zone);
+      if (request.bootDisk && !disks.has(`${zone}/${request.bootDisk}`)) throw new Error(`failed to create ${request.name} in ${zone}: HTTP 400 the disk does not exist`);
       const error = insertErrors.get(zone);
       if (error instanceof Error) throw error;
       if (error) return operation(zone, error);
-      instances.set(request.name, instance({ name: request.name, zone, status: "PROVISIONING", labels: request.labels }));
+      const created = instance({ name: request.name, zone, status: "PROVISIONING", labels: request.labels, machineType: request.machineType ?? "c4d-standard-8" });
+      if (request.metadata) {
+        created.metadata.items = request.metadata;
+      }
+      if (request.bootDisk) {
+        created.disks = [{ deviceName: "persistent-disk-0", autoDelete: true, boot: true, source: request.bootDisk }];
+      } else {
+        disks.set(`${zone}/${request.name}`, { ...BOOT_DISK });
+      }
+      instances.set(request.name, created);
       statuses.set(request.name, ["PROVISIONING", "STAGING", "STAGING", "RUNNING"]);
       return operation(zone, null);
     },
-    operation: async ({ name }) => (isOperationStuck ? { isDone: false, error: null } : operations.get(name)!),
+    operation: async ({ name }) => {
+      const index = Number(name.replace("operation-", ""));
+      return stuckFrom !== null && index > stuckFrom ? { isDone: false, error: null } : operations.get(name)!;
+    },
+    setName: async (zone, name, newName) => {
+      calls.push(`setName ${name} ${newName}`);
+      const vm = find(zone, name);
+      if (vm.status !== "TERMINATED") throw new Error(`failed to rename ${name}: HTTP 400 the VM is ${vm.status}`);
+      if (instances.has(newName)) throw new Error(`failed to rename ${name}: HTTP 409 ${newName} exists`);
+      instances.delete(name);
+      instances.set(newName, { ...vm, name: newName });
+      return operation(zone, null);
+    },
+    getDisk: async (zone, name) => {
+      calls.push(`getDisk ${name} in ${zone}`);
+      const disk = disks.get(`${zone}/${name}`);
+      if (!disk) throw new Error(`failed to look up the disk ${name} in ${zone}: HTTP 404 not found`);
+      return { ...disk };
+    },
+    createSnapshot: async (zone, disk, snapshot) => {
+      calls.push(`createSnapshot ${disk} in ${zone} as ${snapshot}`);
+      if (!disks.has(`${zone}/${disk}`)) throw new Error(`failed to snapshot the disk ${disk} in ${zone}: HTTP 404 not found`);
+      if (snapshotError) return operation(zone, snapshotError);
+      snapshots.add(snapshot);
+      return operation(zone, null);
+    },
+    deleteSnapshot: async (snapshot) => {
+      calls.push(`deleteSnapshot ${snapshot}`);
+      if (!snapshots.delete(snapshot)) throw gone(`the snapshot ${snapshot}`);
+      return operation(null, null);
+    },
+    insertDisk: async (zone, request) => {
+      calls.push(`insertDisk ${request.name} in ${zone} from ${request.sourceSnapshot}`);
+      if (!snapshots.has(request.sourceSnapshot)) throw new Error(`failed to create the disk ${request.name} in ${zone}: HTTP 404 no snapshot ${request.sourceSnapshot}`);
+      disks.set(`${zone}/${request.name}`, { type: request.type, sizeGb: request.sizeGb });
+      return operation(zone, null);
+    },
+    deleteDisk: async (zone, name) => {
+      calls.push(`deleteDisk ${name} in ${zone}`);
+      if (!disks.delete(`${zone}/${name}`)) throw gone(`the disk ${name} in ${zone}`);
+      return operation(zone, null);
+    },
     setMetadata: async (zone, name, fingerprint, items) => {
       calls.push(`setMetadata ${name} ${fingerprint}`);
       const vm = find(zone, name);
@@ -123,13 +187,15 @@ function fakeCompute(vms: Instance[] = []) {
     start: async (zone, name) => {
       calls.push(`start ${name}`);
       find(zone, name);
-      if (startError) return operation(zone, startError);
+      const error = startErrors.get(zone);
+      if (error) return operation(zone, error);
       statuses.set(name, ["TERMINATED", "STAGING", "RUNNING"]);
       return operation(zone, null);
     },
     resume: async (zone, name) => {
       calls.push(`resume ${name}`);
       find(zone, name);
+      if (resumeError) return operation(zone, resumeError);
       statuses.set(name, ["RESUMING", "RUNNING"]);
       return operation(zone, null);
     },
@@ -144,7 +210,12 @@ function fakeCompute(vms: Instance[] = []) {
     },
     delete: async (zone, name) => {
       calls.push(`delete ${name}`);
-      find(zone, name);
+      const vm = find(zone, name);
+      for (const disk of vm.disks) {
+        if (disk.autoDelete) {
+          disks.delete(`${zone}/${disk.source}`);
+        }
+      }
       instances.delete(name);
     },
   };
@@ -156,14 +227,23 @@ function fakeCompute(vms: Instance[] = []) {
     insertErrors,
     statuses,
     instances,
+    disks,
+    snapshots,
     failMetadata: (count: number) => {
       metadataFailures = count;
     },
-    failStart: (error: OperationError) => {
-      startError = error;
+    failStart: (error: OperationError, zone = ZONE) => {
+      startErrors.set(zone, error);
     },
-    stickOperations: () => {
-      isOperationStuck = true;
+    failResume: (error: OperationError) => {
+      resumeError = error;
+    },
+    failSnapshot: (error: OperationError) => {
+      snapshotError = error;
+    },
+    /** Leaves every operation after the first `after` ones unfinished. */
+    stickOperations: (after = 0) => {
+      stuckFrom = after;
     },
   };
 }
@@ -518,6 +598,211 @@ describe("Orchestrator.start", () => {
   });
 });
 
+describe("Orchestrator.start moving the VM", () => {
+  const SESSION_ITEMS: MetadataItem[] = [
+    { key: "startup-script", value: "#!/bin/sh" },
+    { key: "hunt-session-id", value: ID },
+    { key: "hunt-repo", value: "acme/app" },
+    { key: "hunt-title", value: "Fix login" },
+  ];
+  const stoppedVm = () =>
+    instance({ status: "TERMINATED", labels: { ...SESSION_LABELS, "hunt-owner": "jane_doe_example_com" }, metadata: { fingerprint: "fp0", items: SESSION_ITEMS } });
+  const unavailable = `A c4d-standard-8 VM instance is currently unavailable in the ${ZONE} zone.`;
+
+  it("moves a stopped VM whose zone has no capacity to the next zone, with its disk, labels, machine type and metadata", async () => {
+    const fake = fakeCompute([stoppedVm()]);
+    fake.failStart({ ...STOCKOUT, message: unavailable });
+    const { orchestrator, vmZones } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B, ZONE_C]);
+    const { reporter, steps, logs } = recorder();
+
+    const result = await orchestrator.start(ID, reporter);
+    expect(result).toEqual({ vm: { project: "medconomy-hunt", zone: ZONE_B, instance: VM }, wasRunning: false, release: RELEASE });
+    expect(fake.calls).toEqual([
+      `start ${VM}`,
+      `deleteSnapshot ${SNAPSHOT}`,
+      `getDisk ${VM} in ${ZONE}`,
+      `createSnapshot ${VM} in ${ZONE} as ${SNAPSHOT}`,
+      `setName ${VM} ${MOVING}`,
+      `insertDisk ${VM} in ${ZONE_B} from ${SNAPSHOT}`,
+      `insert ${VM} in ${ZONE_B}`,
+      `delete ${MOVING}`,
+      `deleteSnapshot ${SNAPSHOT}`,
+    ]);
+    expect(fake.inserted).toEqual([
+      {
+        name: VM,
+        template: "tpl-hunt-session",
+        labels: { ...SESSION_LABELS, "hunt-owner": "jane_doe_example_com" },
+        machineType: "c4d-standard-8",
+        metadata: SESSION_ITEMS,
+        bootDisk: VM,
+      },
+    ]);
+    expect(fake.instances.get(VM)).toMatchObject({ zone: ZONE_B, status: "RUNNING", metadata: { items: SESSION_ITEMS } });
+    expect(fake.instances.has(MOVING)).toBe(false);
+    expect([...fake.disks.keys()]).toEqual([`${ZONE_B}/${VM}`]);
+    expect(fake.disks.get(`${ZONE_B}/${VM}`)).toEqual(BOOT_DISK);
+    expect(fake.snapshots.size).toBe(0);
+    expect(steps).toEqual(["startingVm", "movingVm"]);
+    expect(vmZones).toEqual([ZONE_B]);
+    expect(logs).toEqual([
+      `starting ${VM}`,
+      `c4d-standard-8 is unavailable in ${ZONE}; moving ${VM} to another zone`,
+      `snapshotting the disk ${VM} of ${VM} in ${ZONE} as ${SNAPSHOT}`,
+      `creating the disk ${VM} in ${ZONE_B} from ${SNAPSHOT}`,
+      `creating ${VM} from tpl-hunt-session in ${ZONE_B} with that disk`,
+      `moved ${VM} from ${ZONE} to ${ZONE_B}; deleting the VM it replaced and the snapshot`,
+      `${VM} is ready; checking its release`,
+    ]);
+  });
+
+  it("skips a zone without capacity for the new VM, deleting the disk it made there, and lands in the next", async () => {
+    const fake = fakeCompute([stoppedVm()]);
+    fake.failStart(STOCKOUT);
+    fake.insertErrors.set(ZONE_B, STOCKOUT);
+    const { orchestrator } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B, ZONE_C]);
+    const { reporter, logs } = recorder();
+
+    expect((await orchestrator.start(ID, reporter)).vm.zone).toBe(ZONE_C);
+    expect(fake.calls.slice(5, 10)).toEqual([
+      `insertDisk ${VM} in ${ZONE_B} from ${SNAPSHOT}`,
+      `insert ${VM} in ${ZONE_B}`,
+      `deleteDisk ${VM} in ${ZONE_B}`,
+      `insertDisk ${VM} in ${ZONE_C} from ${SNAPSHOT}`,
+      `insert ${VM} in ${ZONE_C}`,
+    ]);
+    expect(logs).toContain(`c4d-standard-8 is unavailable in ${ZONE_B}; trying ${ZONE_C}`);
+    expect([...fake.disks.keys()]).toEqual([`${ZONE_C}/${VM}`]);
+  });
+
+  it("skips a zone as well when Compute Engine refuses the creation itself for lack of capacity", async () => {
+    const fake = fakeCompute([stoppedVm()]);
+    fake.failStart(STOCKOUT);
+    fake.insertErrors.set(ZONE_B, new Error(`failed to create ${VM} from tpl-hunt-session in ${ZONE_B}: HTTP 503 {"error":{"errors":[{"reason":"ZONE_RESOURCE_POOL_EXHAUSTED"}]}}`));
+    const { orchestrator } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B, ZONE_C]);
+
+    expect((await orchestrator.start(ID, reporter())).vm.zone).toBe(ZONE_C);
+    expect(fake.calls).toContain(`deleteDisk ${VM} in ${ZONE_B}`);
+  });
+
+  it("gives the VM its name back and names every zone when none has capacity", async () => {
+    const fake = fakeCompute([stoppedVm()]);
+    fake.failStart(STOCKOUT);
+    fake.insertErrors.set(ZONE_B, STOCKOUT);
+    fake.insertErrors.set(ZONE_C, STOCKOUT);
+    const { orchestrator, elapsed } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B, ZONE_C]);
+    const { reporter, logs } = recorder();
+
+    const error = await rejection(orchestrator.start(ID, reporter));
+    expect(error).toMatchObject({ code: "unavailable", message: `failed to start ${VM}: c4d-standard-8 is unavailable in ${ZONE}, ${ZONE_B} and ${ZONE_C}; try again later` });
+    expect(fake.calls.slice(-3)).toEqual([`deleteDisk ${VM} in ${ZONE_C}`, `setName ${MOVING} ${VM}`, `deleteSnapshot ${SNAPSHOT}`]);
+    expect(fake.instances.get(VM)).toMatchObject({ zone: ZONE, status: "TERMINATED" });
+    expect(fake.instances.has(MOVING)).toBe(false);
+    expect([...fake.disks.keys()]).toEqual([`${ZONE}/${VM}`]);
+    expect(fake.snapshots.size).toBe(0);
+    expect(logs).toContain(`${VM} stays in ${ZONE}`);
+    expect(elapsed()).toBeLessThan(START_TIMEOUT_MS);
+  });
+
+  it("rolls the move back at a failure other than a lack of capacity", async () => {
+    const fake = fakeCompute([stoppedVm()]);
+    fake.failStart(STOCKOUT);
+    fake.insertErrors.set(ZONE_B, { code: "QUOTA_EXCEEDED", message: "Quota 'C4D_CPUS' exceeded.", machineType: null });
+    const { orchestrator } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B, ZONE_C]);
+
+    const error = await rejection(orchestrator.start(ID, reporter()));
+    expect(error.message).toBe(`failed to create ${VM} in ${ZONE_B}: Quota 'C4D_CPUS' exceeded.`);
+    expect(fake.insertedZones).toEqual([ZONE_B]);
+    expect(fake.calls.slice(-3)).toEqual([`deleteDisk ${VM} in ${ZONE_B}`, `setName ${MOVING} ${VM}`, `deleteSnapshot ${SNAPSHOT}`]);
+    expect(fake.instances.get(VM)).toMatchObject({ zone: ZONE });
+  });
+
+  it("leaves the VM untouched when its disk cannot be snapshotted", async () => {
+    const fake = fakeCompute([stoppedVm()]);
+    fake.failStart(STOCKOUT);
+    fake.failSnapshot({ code: "RESOURCE_NOT_READY", message: "The disk is not ready.", machineType: null });
+    const { orchestrator } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B]);
+
+    const error = await rejection(orchestrator.start(ID, reporter()));
+    expect(error.message).toBe(`failed to move ${VM}: snapshotting its disk failed: The disk is not ready.`);
+    expect(fake.calls).not.toContain(`setName ${VM} ${MOVING}`);
+    expect(fake.instances.get(VM)).toMatchObject({ zone: ZONE, status: "TERMINATED" });
+  });
+
+  it("gives up on a snapshot Compute Engine does not finish within the snapshot timeout", async () => {
+    const fake = fakeCompute([stoppedVm()]);
+    fake.failStart(STOCKOUT);
+    fake.stickOperations(1);
+    const { orchestrator, elapsed } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B]);
+
+    const error = await rejection(orchestrator.start(ID, reporter()));
+    expect(error.message).toBe(`failed to snapshot the disk of ${VM}: Compute Engine has not finished after 10 minutes`);
+    expect(elapsed()).toBeGreaterThanOrEqual(SNAPSHOT_TIMEOUT_MS);
+    expect(fake.calls).not.toContain(`setName ${VM} ${MOVING}`);
+  });
+
+  it("does not move a suspended VM whose zone has no capacity for its resume", async () => {
+    const fake = fakeCompute([instance({ sessionId: ID, status: "SUSPENDED" })]);
+    fake.failResume(STOCKOUT);
+    const { orchestrator } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B]);
+
+    const error = await rejection(orchestrator.start(ID, reporter()));
+    expect(error.message).toBe(`failed to resume ${VM}: The zone does not have enough resources available to fulfill the request; its disk stays in ${ZONE}, try again later`);
+    expect(fake.calls).toEqual([`resume ${VM}`]);
+  });
+
+  it("finishes an interrupted move that created no VM: the VM gets its name back and the leftovers go", async () => {
+    const fake = fakeCompute([instance({ name: MOVING, status: "TERMINATED", sessionId: ID })]);
+    fake.disks.set(`${ZONE_B}/${VM}`, { ...BOOT_DISK });
+    fake.snapshots.add(SNAPSHOT);
+    const { orchestrator } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B, ZONE_C]);
+    const { reporter, logs } = recorder();
+
+    const result = await orchestrator.start(ID, reporter);
+    expect(result.vm.zone).toBe(ZONE);
+    expect(fake.calls).toEqual([`setName ${MOVING} ${VM}`, `deleteSnapshot ${SNAPSHOT}`, `deleteDisk ${VM} in ${ZONE_B}`, `deleteDisk ${VM} in ${ZONE_C}`, `start ${VM}`]);
+    expect([...fake.disks.keys()]).toEqual([`${ZONE}/${MOVING}`]);
+    expect(fake.snapshots.size).toBe(0);
+    expect(logs[0]).toBe(`finishing an interrupted move of ${VM}: it stays in ${ZONE}`);
+  });
+
+  it("finishes an interrupted move whose new VM exists: the replaced VM and the snapshot go", async () => {
+    const fake = fakeCompute([instance({ zone: ZONE_B, sessionId: ID }), instance({ name: MOVING, status: "TERMINATED", sessionId: ID })]);
+    fake.snapshots.add(SNAPSHOT);
+    const { orchestrator } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B]);
+
+    const result = await orchestrator.start(ID, reporter());
+    expect(result).toMatchObject({ vm: { zone: ZONE_B }, wasRunning: true });
+    expect(fake.calls).toEqual([`delete ${MOVING}`, `deleteSnapshot ${SNAPSHOT}`]);
+    expect(fake.instances.has(MOVING)).toBe(false);
+  });
+
+  it("moves a stopped VM a provision reuses as well", async () => {
+    const fake = fakeCompute([stoppedVm()]);
+    fake.failStart(STOCKOUT);
+    const { orchestrator } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B]);
+
+    const result = await orchestrator.provision(REQUEST, reporter());
+    expect(result).toMatchObject({ vm: { zone: ZONE_B }, created: false });
+  });
+
+  it("deletes a VM still under its moving name with the session, and reports it as existing", async () => {
+    const fake = fakeCompute([instance({ name: MOVING, status: "TERMINATED", sessionId: ID })]);
+    fake.snapshots.add(SNAPSHOT);
+    const { orchestrator } = createOrchestrator(fake.compute);
+
+    expect(await orchestrator.get(ID)).toEqual({ exists: true, name: VM, status: "TERMINATED" });
+    await orchestrator.stop(ID);
+    expect(await orchestrator.delete(ID)).toEqual({ alreadyGone: false });
+    expect(fake.calls).toEqual([`delete ${MOVING}`, `deleteSnapshot ${SNAPSHOT}`]);
+    expect(fake.snapshots.size).toBe(0);
+  });
+
+  function reporter(): Reporter {
+    return recorder().reporter;
+  }
+});
+
 describe("Orchestrator.stop, delete and get", () => {
   it("stops a running VM and leaves one that is off alone", async () => {
     const fake = fakeCompute([instance({ sessionId: ID })]);
@@ -535,8 +820,8 @@ describe("Orchestrator.stop, delete and get", () => {
       instance({
         sessionId: ID,
         disks: [
-          { deviceName: "persistent-disk-0", autoDelete: true },
-          { deviceName: "data", autoDelete: false },
+          { deviceName: "persistent-disk-0", autoDelete: true, boot: true, source: VM },
+          { deviceName: "data", autoDelete: false, boot: false, source: "data" },
         ],
       }),
     ]);
@@ -588,6 +873,7 @@ describe("Orchestrator.listSessions", () => {
       }),
       instance({ name: "vm-hunt-s-00000002" }),
       instance({ name: "vm-hunt-s-00000003", sessionId: ID }),
+      instance({ name: MOVING, zone: ZONE_B, status: "TERMINATED", sessionId: ID }),
       instance({ name: "vm-hunt-medc", labels: { "hunt-role": "gateway" } }),
     ]);
 

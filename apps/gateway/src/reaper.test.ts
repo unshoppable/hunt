@@ -23,7 +23,8 @@ function sessionVm(name: string, id: string | null, overrides: Partial<Instance>
     lastSuspendedTimestamp: "",
     labels: { "hunt-role": "session", "hunt-origin": "desktop" },
     metadata: { fingerprint: "fp0", items: id ? [{ key: "hunt-session-id", value: id }] : [] },
-    disks: [{ deviceName: "persistent-disk-0", autoDelete: true }],
+    disks: [{ deviceName: "persistent-disk-0", autoDelete: true, boot: true, source: name }],
+    machineType: "c4d-standard-8",
     ...overrides,
   };
 }
@@ -54,6 +55,12 @@ function fakeCompute(vms: Instance[], current = new Map<string, Instance | null>
       calls.push(`delete ${name}`);
       if (name === OTHER_VM) throw new Error(`failed to delete ${name}: HTTP 500`);
     },
+    setName: unexpected,
+    getDisk: unexpected,
+    createSnapshot: unexpected,
+    deleteSnapshot: unexpected,
+    insertDisk: unexpected,
+    deleteDisk: unexpected,
   };
   return { compute, calls };
 }

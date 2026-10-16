@@ -69,6 +69,7 @@ function listedVm(name: string, status: string, labels: Record<string, string> =
     labels,
     metadata: { fingerprint: "fp0", items: [{ key: "startup-script", value: "#!/bin/sh" }, ...Object.entries(metadata).map(([key, value]) => ({ key, value }))] },
     disks: [],
+    machineType: "c4d-standard-8",
   };
 }
 
@@ -126,6 +127,12 @@ function fakeCompute(listed: Instance[] = [], insertError?: Error): Compute & { 
     stop: unexpected,
     setDiskAutoDelete: unexpected,
     delete: unexpected,
+    setName: unexpected,
+    getDisk: unexpected,
+    createSnapshot: unexpected,
+    deleteSnapshot: unexpected,
+    insertDisk: unexpected,
+    deleteDisk: unexpected,
   };
 }
 

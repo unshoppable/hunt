@@ -7,7 +7,12 @@
  * up to date from the issue's labels). These labels and metadata are the directory of remote sessions.
  *
  * A new VM goes into the first of the session zones (`sessionZones.ts`) that has capacity for its machine type: when
- * Compute Engine answers a zone with a stockout, the next zone is tried. An existing VM stays in its zone.
+ * Compute Engine answers a zone with a stockout, the next zone is tried. An existing VM whose own zone has no capacity
+ * for its start moves to the next zone that has: its boot disk is snapshotted (`vm-hunt-s-<short id>-move`), the VM is
+ * renamed to `vm-hunt-s-<short id>-moving`, a disk from the snapshot and a VM from the template with that disk, the
+ * old VM's labels, machine type and metadata are created in the new zone, and the old VM and the snapshot are deleted.
+ * When every zone is out, the VM gets its name back. A move an earlier call left unfinished is finished or rolled back
+ * before the VM is used again; only hunt-api starts existing VMs, so this needs no lock between processes.
  *
  * Bringing a VM up starts a stopped one, resumes a suspended one and waits out a shutdown in progress, then waits until
  * it answers over SSH and its startup script finished, and hands it the staged session release. Calls that bring up the
@@ -17,7 +22,7 @@
 import type { ProgressStep, ReleaseInfo, SessionSummary, VmRef } from "../../../libs/domain/src/gatewayApi.ts";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import { ApiError, SESSION_ID } from "./apiProtocol.ts";
-import { isStockout, mergeMetadataItems, metadataValue, type Compute, type Instance, type Operation as ComputeOperation, type OperationError } from "./gcp.ts";
+import { isStockout, mergeMetadataItems, metadataValue, type Compute, type Disk, type Instance, type Operation as ComputeOperation, type OperationError } from "./gcp.ts";
 import type { SessionVm, VmLocation } from "./sessionVm.ts";
 import { sessionNames, type SessionNames } from "./swfPlan.ts";
 
@@ -36,8 +41,11 @@ export const CREATE_TIMEOUT_MS = 2 * 60_000;
 export const START_TIMEOUT_MS = 6 * 60_000;
 export const READY_TIMEOUT_MS = 15 * 60_000;
 export const DISK_TIMEOUT_MS = 2 * 60_000;
+export const SNAPSHOT_TIMEOUT_MS = 10 * 60_000;
 export const INSTANCE_POLL_MS = 3_000;
 const METADATA_ATTEMPTS = 3;
+const MOVING_SUFFIX = "-moving";
+const SNAPSHOT_SUFFIX = "-move";
 const OFF_STATUSES = new Set(["TERMINATED", "STOPPED", "SUSPENDED"]);
 const SHUTDOWN_STATUSES = new Set(["STOPPING", "SUSPENDING"]);
 
@@ -97,6 +105,21 @@ interface Operation {
   promise: Promise<unknown>;
   events: Event[];
   reporters: Set<Reporter>;
+}
+
+/** The name a session's VM carries while a move to another zone replaces it. */
+export function movingName(names: SessionNames): string {
+  return `${names.vm}${MOVING_SUFFIX}`;
+}
+
+/** The snapshot of a session VM's boot disk that a move to another zone creates the new disk from. */
+export function snapshotName(names: SessionNames): string {
+  return `${names.vm}${SNAPSHOT_SUFFIX}`;
+}
+
+/** Whether `error` says the resource is gone already. */
+function isGone(error: unknown): boolean {
+  return messageOf(error).includes("HTTP 404");
 }
 
 /** `text` as a label value: lowercase letters, digits, `_` and `-`, at most 63 characters. */
@@ -164,53 +187,56 @@ export class Orchestrator {
   /** Brings the session's VM up; see the module comment. */
   start(id: string, reporter: Reporter): Promise<StartResult> {
     return this.exclusive(id, "start", reporter, async (shared) => {
-      const name = sessionNames(id).vm;
-      const instance = await this.deps.compute.locate(name);
-      if (!instance) throw new ApiError("notFound", `the session ${id} has no VM ${name}`);
+      const names = sessionNames(id);
+      const instance = await this.recover(names, shared);
+      if (!instance) throw new ApiError("notFound", `the session ${id} has no VM ${names.vm}`);
       checkSession(instance, id);
-      const { wasRunning, release } = await this.bringUp(instance.zone, name, shared);
-      return { vm: this.ref(name, instance.zone), wasRunning, release };
+      const { zone, wasRunning, release } = await this.bringUp(instance.zone, names, shared);
+      return { vm: this.ref(names.vm, zone), wasRunning, release };
     });
   }
 
-  /** Stops the session's VM unless it is off or shuts down already. */
+  /** Stops the session's VM unless it is off or shuts down already; a VM still under its moving name is off. */
   async stop(id: string): Promise<void> {
-    const name = sessionNames(id).vm;
-    const instance = await this.deps.compute.locate(name);
-    if (!instance) throw new ApiError("notFound", `the session ${id} has no VM ${name}`);
-    checkSession(instance, id);
-    if (instance.status === "TERMINATED" || instance.status === "STOPPED" || instance.status === "STOPPING") return;
-    await this.deps.compute.stop(instance.zone, name);
+    const names = sessionNames(id);
+    const { vm, moving } = await this.locateSession(names);
+    if (!vm && !moving) throw new ApiError("notFound", `the session ${id} has no VM ${names.vm}`);
+    if (!vm) return;
+    checkSession(vm, id);
+    if (vm.status === "TERMINATED" || vm.status === "STOPPED" || vm.status === "STOPPING") return;
+    await this.deps.compute.stop(vm.zone, names.vm);
   }
 
-  /** Deletes the session's VM with all its disks; returns once Compute Engine accepted the deletion. */
+  /**
+   * Deletes the session's VM with all its disks, and with it whatever an unfinished move left (the VM under its moving
+   * name, the snapshot); returns once Compute Engine accepted the deletion.
+   */
   async delete(id: string): Promise<{ alreadyGone: boolean }> {
-    const name = sessionNames(id).vm;
-    if (!name.startsWith(SESSION_VM_PREFIX)) throw new ApiError("forbidden", `${name} is no session VM`);
-    const instance = await this.deps.compute.locate(name);
-    if (!instance) return { alreadyGone: true };
-    checkSession(instance, id);
-    const { zone } = instance;
-    const kept = instance.disks.filter((disk) => !disk.autoDelete);
-    for (const disk of kept) {
-      await this.deps.compute.setDiskAutoDelete(zone, name, disk.deviceName);
+    const names = sessionNames(id);
+    if (!names.vm.startsWith(SESSION_VM_PREFIX)) throw new ApiError("forbidden", `${names.vm} is no session VM`);
+    const { vm, moving } = await this.locateSession(names);
+    let isDeleted = false;
+    for (const instance of [vm, moving]) {
+      if (!instance) continue;
+      checkSession(instance, id);
+      try {
+        await this.deleteInstance(instance);
+        isDeleted = true;
+      } catch (error) {
+        if (!isGone(error)) throw error;
+      }
     }
-    if (kept.length > 0) {
-      await this.waitFor(zone, name, (found) => !found || found.disks.every((disk) => disk.autoDelete), DISK_TIMEOUT_MS, () => "mark its disks for deletion");
+    if (moving) {
+      await this.discardSnapshot(snapshotName(names), SILENT);
     }
-    try {
-      await this.deps.compute.delete(zone, name);
-    } catch (error) {
-      if (messageOf(error).includes("HTTP 404")) return { alreadyGone: true };
-      throw error;
-    }
-    return { alreadyGone: false };
+    return { alreadyGone: !isDeleted };
   }
 
   async get(id: string): Promise<{ exists: boolean; name: string; status: string | null }> {
-    const name = sessionNames(id).vm;
-    const instance = await this.deps.compute.locate(name);
-    return { exists: instance !== null, name, status: instance?.status ?? null };
+    const names = sessionNames(id);
+    const { vm, moving } = await this.locateSession(names);
+    const instance = vm ?? moving;
+    return { exists: instance !== null, name: names.vm, status: instance?.status ?? null };
   }
 
   /** The session VMs of every zone of the gateway's project, oldest first. */
@@ -225,7 +251,7 @@ export class Orchestrator {
 
   private async runProvision(request: ProvisionRequest, reporter: Reporter): Promise<ProvisionResult> {
     const names = sessionNames(request.id);
-    const existing = await this.deps.compute.locate(names.vm);
+    const existing = await this.recover(names, reporter);
     let zone: string;
     if (existing) {
       checkSession(existing, request.id);
@@ -247,8 +273,8 @@ export class Orchestrator {
       entries[AGENT_METADATA] = "running";
     }
     await this.recordSession(zone, names.vm, request.id, entries);
-    const { release } = await this.bringUp(zone, names.vm, reporter);
-    return { vm: this.ref(names.vm, zone), created: !existing, release };
+    const broughtUp = await this.bringUp(zone, names, reporter);
+    return { vm: this.ref(names.vm, broughtUp.zone), created: !existing, release: broughtUp.release };
   }
 
   /**
@@ -307,11 +333,14 @@ export class Orchestrator {
   }
 
   /**
-   * Starts or resumes the VM in `zone` unless it runs, waits until it is ready and hands it the staged session release.
-   * A start Compute Engine refuses, such as one without capacity in the zone, fails at once: the VM's disk cannot move.
+   * Starts or resumes the session's VM in `initialZone` unless it runs, waits until it is ready and hands it the staged
+   * session release. A stopped VM whose zone has no capacity for its start moves to the next session zone that has
+   * (`move`); any other start Compute Engine refuses fails at once. Returns the zone the VM runs in.
    */
-  private async bringUp(zone: string, name: string, reporter: Reporter): Promise<{ wasRunning: boolean; release: ReleaseInfo }> {
-    const deadline = this.deps.now() + START_TIMEOUT_MS;
+  private async bringUp(initialZone: string, names: SessionNames, reporter: Reporter): Promise<{ zone: string; wasRunning: boolean; release: ReleaseInfo }> {
+    const name = names.vm;
+    let zone = initialZone;
+    let deadline = this.deps.now() + START_TIMEOUT_MS;
     let wasRunning: boolean | null = null;
     let isStarting = false;
     let isReported = false;
@@ -331,6 +360,12 @@ export class Orchestrator {
         isStarting = true;
         const error = await this.waitForOperation(operation, Math.max(deadline - this.deps.now(), 0), `${verb} ${name}`);
         if (error) {
+          const others = this.deps.zones().filter((candidate) => candidate !== zone);
+          if (verb === "start" && isStockout(error.code) && others.length > 0) {
+            zone = await this.move(instance, names, error.machineType, others, reporter);
+            deadline = this.deps.now() + START_TIMEOUT_MS;
+            continue;
+          }
           const reason = (error.message || error.code).replace(/\.$/, "");
           const stays = isStockout(error.code) ? `; its disk stays in ${zone}, try again later` : "";
           throw new ApiError("unavailable", `failed to ${verb} ${name}: ${reason}${stays}`);
@@ -360,7 +395,172 @@ export class Orchestrator {
       reporter.progress("installingRuntime");
       reporter.log(`installing the staged session release on ${name}`);
     });
-    return { wasRunning, release };
+    return { zone, wasRunning, release };
+  }
+
+  /**
+   * Moves the session's VM `instance`, which is off in a zone without capacity for its machine type (`machineType`
+   * when the stockout named it), to the first of `zones` with capacity, and returns that zone; see the module comment.
+   * Nothing changes the VM before its disk is snapshotted; when every zone is out, it gets its name back and the start
+   * fails with the zones tried.
+   */
+  private async move(instance: Instance, names: SessionNames, machineType: string | null, zones: string[], reporter: Reporter): Promise<string> {
+    const oldZone = instance.zone;
+    const moving = movingName(names);
+    const snapshot = snapshotName(names);
+    let type = machineType ?? (instance.machineType || "its machine type");
+    reporter.progress("movingVm");
+    reporter.log(`${type} is unavailable in ${oldZone}; moving ${names.vm} to another zone`);
+    const bootDisk = instance.disks.find((disk) => disk.boot);
+    if (!bootDisk) throw new ApiError("unavailable", `failed to move ${names.vm}: it has no boot disk`);
+    const diskName = bootDisk.source || names.vm;
+    await this.discardSnapshot(snapshot, reporter, true);
+    const disk = await this.deps.compute.getDisk(oldZone, diskName);
+    reporter.log(`snapshotting the disk ${diskName} of ${names.vm} in ${oldZone} as ${snapshot}`);
+    const snapshotOperation = await this.deps.compute.createSnapshot(oldZone, diskName, snapshot);
+    const snapshotError = await this.waitForOperation(snapshotOperation, SNAPSHOT_TIMEOUT_MS, `snapshot the disk of ${names.vm}`);
+    if (snapshotError) throw new ApiError("unavailable", `failed to move ${names.vm}: snapshotting its disk failed: ${snapshotError.message || snapshotError.code}`);
+    await this.rename(oldZone, names.vm, moving);
+    try {
+      for (const [index, zone] of zones.entries()) {
+        const stockout = await this.createMovedVm(zone, instance, names, snapshot, disk, reporter);
+        if (!stockout) {
+          reporter.log(`moved ${names.vm} from ${oldZone} to ${zone}; deleting the VM it replaced and the snapshot`);
+          await this.discard(this.deleteInstance({ ...instance, name: moving }), reporter, `delete ${moving}`);
+          await this.discardSnapshot(snapshot, reporter);
+          return zone;
+        }
+        type = stockout.machineType ?? type;
+        const next = zones[index + 1];
+        reporter.log(`${type} is unavailable in ${zone}${next ? `; trying ${next}` : ""}`);
+      }
+    } catch (error) {
+      await this.rollBackMove(oldZone, names, reporter);
+      throw error;
+    }
+    await this.rollBackMove(oldZone, names, reporter);
+    throw new ApiError("unavailable", `failed to start ${names.vm}: ${type} is unavailable in ${listed([oldZone, ...zones])}; try again later`);
+  }
+
+  /**
+   * Creates the session's VM in `zone` from the template with a disk made from `snapshot` (of the type and size of
+   * `disk`) and the labels, machine type and metadata of `instance`, the VM it replaces. Returns the stockout that
+   * prevented it, after deleting the disk; any other failure deletes the disk and throws.
+   */
+  private async createMovedVm(zone: string, instance: Instance, names: SessionNames, snapshot: string, disk: Disk, reporter: Reporter): Promise<OperationError | null> {
+    reporter.log(`creating the disk ${names.vm} in ${zone} from ${snapshot}`);
+    const diskOperation = await this.deps.compute.insertDisk(zone, { name: names.vm, sourceSnapshot: snapshot, type: disk.type, sizeGb: disk.sizeGb });
+    const diskError = await this.waitForOperation(diskOperation, DISK_TIMEOUT_MS, `create the disk ${names.vm} in ${zone}`);
+    if (diskError) throw new ApiError("unavailable", `failed to create the disk ${names.vm} in ${zone}: ${diskError.message || diskError.code}`);
+    let error: OperationError | null;
+    try {
+      const request = {
+        name: names.vm,
+        template: DEFAULT_TEMPLATE,
+        labels: instance.labels,
+        machineType: instance.machineType || null,
+        metadata: instance.metadata.items,
+        bootDisk: names.vm,
+      };
+      const operation = await this.deps.compute.insert(zone, request);
+      reporter.log(`creating ${names.vm} from ${DEFAULT_TEMPLATE} in ${zone} with that disk`);
+      error = await this.waitForOperation(operation, CREATE_TIMEOUT_MS, `create ${names.vm} in ${zone}`);
+    } catch (thrown) {
+      await this.discard(this.deps.compute.deleteDisk(zone, names.vm), reporter, `delete the disk ${names.vm} in ${zone}`);
+      if (!isStockout(messageOf(thrown))) throw thrown;
+      return { code: "ZONE_RESOURCE_POOL_EXHAUSTED", message: messageOf(thrown), machineType: null };
+    }
+    if (!error) return null;
+    await this.discard(this.deps.compute.deleteDisk(zone, names.vm), reporter, `delete the disk ${names.vm} in ${zone}`);
+    if (!isStockout(error.code)) throw new ApiError("unavailable", `failed to create ${names.vm} in ${zone}: ${error.message || error.code}`);
+    return error;
+  }
+
+  /** Gives the VM in `zone` its name back after a move that created no VM, and drops the snapshot; failures are logged. */
+  private async rollBackMove(zone: string, names: SessionNames, reporter: Reporter): Promise<void> {
+    reporter.log(`${names.vm} stays in ${zone}`);
+    await this.discard(this.rename(zone, movingName(names), names.vm), reporter, `rename ${movingName(names)} back to ${names.vm}`);
+    await this.discardSnapshot(snapshotName(names), reporter);
+  }
+
+  /** Renames the VM `from` in `zone` to `to` and waits until it is done. */
+  private async rename(zone: string, from: string, to: string): Promise<void> {
+    const operation = await this.deps.compute.setName(zone, from, to);
+    const error = await this.waitForOperation(operation, DISK_TIMEOUT_MS, `rename ${from} to ${to}`);
+    if (error) throw new ApiError("unavailable", `failed to rename ${from} to ${to}: ${error.message || error.code}`);
+  }
+
+  /**
+   * Finishes a move of the session's VM that an earlier call left behind, before the VM is used again, and returns the
+   * VM under its name (null when the session has none): a VM still under its moving name without a successor gets its
+   * name back and the move's snapshot and disks are deleted; one whose successor exists is deleted with the snapshot.
+   */
+  private async recover(names: SessionNames, reporter: Reporter): Promise<Instance | null> {
+    const { vm, moving } = await this.locateSession(names);
+    if (!moving) return vm;
+    checkSession(moving, names.id);
+    if (vm) {
+      reporter.log(`finishing an interrupted move of ${names.vm}: deleting the VM it replaced in ${moving.zone}`);
+      await this.discard(this.deleteInstance(moving), reporter, `delete ${moving.name}`);
+      await this.discardSnapshot(snapshotName(names), reporter);
+      return vm;
+    }
+    reporter.log(`finishing an interrupted move of ${names.vm}: it stays in ${moving.zone}`);
+    await this.rename(moving.zone, moving.name, names.vm);
+    await this.discardSnapshot(snapshotName(names), reporter);
+    for (const zone of this.deps.zones()) {
+      if (zone === moving.zone) continue;
+      await this.discard(this.deps.compute.deleteDisk(zone, names.vm), reporter, `delete the disk ${names.vm} in ${zone}`);
+    }
+    return this.deps.compute.get(moving.zone, names.vm);
+  }
+
+  /** The session's VM under its name and under its moving name; null for each that does not exist. */
+  private async locateSession(names: SessionNames): Promise<{ vm: Instance | null; moving: Instance | null }> {
+    const [vm, moving] = await Promise.all([this.deps.compute.locate(names.vm), this.deps.compute.locate(movingName(names))]);
+    return { vm, moving };
+  }
+
+  /** Deletes `instance` with all its disks; returns once Compute Engine accepted the deletion. */
+  private async deleteInstance(instance: Instance): Promise<void> {
+    const { zone, name } = instance;
+    const kept = instance.disks.filter((disk) => !disk.autoDelete);
+    for (const disk of kept) {
+      await this.deps.compute.setDiskAutoDelete(zone, name, disk.deviceName);
+    }
+    if (kept.length > 0) {
+      await this.waitFor(zone, name, (found) => !found || found.disks.every((disk) => disk.autoDelete), DISK_TIMEOUT_MS, () => "mark its disks for deletion");
+    }
+    await this.deps.compute.delete(zone, name);
+  }
+
+  /**
+   * Deletes the snapshot unless it is gone already; a failure is logged, not thrown, unless `isAwaited`, which waits
+   * until the snapshot is deleted so that a new one can take its name.
+   */
+  private async discardSnapshot(snapshot: string, reporter: Reporter, isAwaited = false): Promise<void> {
+    let operation: ComputeOperation;
+    try {
+      operation = await this.deps.compute.deleteSnapshot(snapshot);
+    } catch (error) {
+      if (isGone(error)) return;
+      if (isAwaited) throw error;
+      reporter.log(`failed to delete the snapshot ${snapshot}: ${messageOf(error)}`);
+      return;
+    }
+    if (!isAwaited) return;
+    const error = await this.waitForOperation(operation, DISK_TIMEOUT_MS, `delete the snapshot ${snapshot} of an earlier move`);
+    if (error) throw new ApiError("unavailable", `failed to delete the snapshot ${snapshot} of an earlier move: ${error.message || error.code}`);
+  }
+
+  /** Awaits a cleanup `call` whose failure must not fail the operation: a resource that is gone already is no failure, any other is logged. */
+  private async discard(call: Promise<unknown>, reporter: Reporter, what: string): Promise<void> {
+    try {
+      await call;
+    } catch (error) {
+      if (isGone(error)) return;
+      reporter.log(`failed to ${what}: ${messageOf(error)}`);
+    }
   }
 
   private async waitFor(

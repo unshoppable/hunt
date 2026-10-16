@@ -27,6 +27,9 @@ function fakeCompute() {
     return instance ? structuredClone(instance) : null;
   };
   const operation = (zone: string) => ({ name: "operation-1", zone });
+  const unexpected = async () => {
+    throw new Error("unexpected call");
+  };
   const compute: Compute = {
     list: async () => [...instances.values()].map((instance) => structuredClone(instance)),
     listByLabel: async () => [],
@@ -44,10 +47,17 @@ function fakeCompute() {
         labels: request.labels,
         metadata: { fingerprint: "fp0", items: [] },
         disks: [],
+        machineType: request.machineType ?? "c4d-standard-8",
       });
       return operation(zone);
     },
     operation: async () => ({ isDone: true, error: null }),
+    setName: unexpected,
+    getDisk: unexpected,
+    createSnapshot: unexpected,
+    deleteSnapshot: unexpected,
+    insertDisk: unexpected,
+    deleteDisk: unexpected,
     setMetadata: async (_zone, name, _fingerprint, items) => {
       instances.get(name)!.metadata.items = items;
     },

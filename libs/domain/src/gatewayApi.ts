@@ -6,8 +6,11 @@
  * zone, instance template and preview domain. `api` in `libs/domain/protocol.json` numbers this contract.
  */
 
-/** The progress steps the server reports; the desktop's `RemoteStep` serde names, unknown ones are ignored. */
-export type ProgressStep = "creatingVm" | "startingVm" | "waitingForVm" | "installingRuntime";
+/**
+ * The progress steps the server reports; the desktop's `RemoteStep` serde names, unknown ones are ignored. `movingVm`
+ * follows `startingVm` when the VM's zone has no capacity for it and the gateway moves it to another zone.
+ */
+export type ProgressStep = "creatingVm" | "startingVm" | "movingVm" | "waitingForVm" | "installingRuntime";
 
 export type ErrorCode = "invalidParams" | "notFound" | "conflict" | "forbidden" | "unavailable" | "internal";
 

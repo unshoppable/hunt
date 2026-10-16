@@ -465,7 +465,9 @@ A request it cannot deliver (502, 503 or 504, because the VM is off, still booti
 `hunt-wake.service` on 127.0.0.1:9180 (`apps/gateway/src/wake.ts`). It looks the VM up in every zone through the
 Compute Engine API with the gateway's service account, starts or resumes it for a page load, at most once every 30
 seconds and never for a script's request of a tab already open, and answers with a page that reloads every 5 seconds
-until the VM answers.
+until the VM answers. A VM the gateway is moving to another zone (below) gets a reloading page as well; hunt-wake
+itself never moves a VM, and a start it requests in a zone without capacity fails quietly until the session is
+started from Hunt.
 A second listener on port 8081 serves the load balancer's backend without IAP: it forwards only
 `<short id>-<port>-open.<domain>` the same way and answers 503 for a VM that is off, without starting it.
 
@@ -484,13 +486,19 @@ order, `/etc/hunt/session-zones`, which `hunt-ctl install` writes from the gatew
 `hunt-session-zones` (comma-separated, only zones of the gateway's region count; without it the gateway's own zone), and
 moves on to the next only when Compute Engine reports a stockout (`ZONE_RESOURCE_POOL_EXHAUSTED`) for the machine type;
 any other error of the creation ends the call. Changing the list takes effect with the next install, for the gateway and
-the edge alike. An existing VM stays in its zone: a stockout on its start fails the call at once, since its disk cannot
-move. The new VM is labelled `hunt-role=session`,
+the edge alike. A stopped VM whose own zone reports a stockout for its start moves to the next session zone with
+capacity: the gateway snapshots its boot disk (`vm-hunt-s-<short id>-move`), renames the VM to
+`vm-hunt-s-<short id>-moving`, creates a disk from the snapshot and a VM from the template with that disk and the old
+VM's labels, machine type and metadata in the next zone (trying the following one on another stockout), then deletes
+the renamed VM and the snapshot; when every zone is out, the VM gets its name back and the call fails naming the zones.
+The VM keeps its name and disk contents but gets a new internal IP and instance ID, which the client records from the
+call's result. A move a crash left unfinished is finished or rolled back by the next `vms.start` or
+`sessions.provision` of the session, and `vms.delete` removes its leftovers. The new VM is labelled `hunt-role=session`,
 `hunt-session=<short id>`, `hunt-origin=desktop` and `hunt-owner=<caller>`, records the session's ID, repository,
 branch and title in its metadata and refuses a VM that holds another session (`conflict`); it and `vms.start` start a
 stopped VM, resume a suspended one, wait out a shutdown in progress, wait until the VM answers over SSH and its startup
 script wrote `/var/lib/hunt/session-ready`, and install the staged session release, streaming `creatingVm`,
-`startingVm`, `waitingForVm` and `installingRuntime`. Concurrent calls of one method for one session share one
+`startingVm`, `movingVm`, `waitingForVm` and `installingRuntime`. Concurrent calls of one method for one session share one
 operation; the second hears its progress from the start. `vms.delete` deletes the VM with all its disks and answers
 `alreadyGone` for a VM that does not exist; `sessions.list` lists the session VMs of every zone of the project.
 Running requests go on when their caller disconnects, and a reload after

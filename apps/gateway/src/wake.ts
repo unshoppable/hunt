@@ -27,6 +27,8 @@ export const START_INTERVAL_MS = 30_000;
 export const RELOAD_SECONDS = 5;
 
 const SESSION_HOST = /^([0-9a-f]{8})(?:-[0-9]{1,5})?\./;
+/** The suffix of a session VM's name while the gateway moves it to another zone (`movingName` in `orchestrator.ts`). */
+const MOVING_SUFFIX = "-moving";
 
 export interface WakeOptions {
   /** The Compute Engine calls hunt-wake needs, on VMs in the gateway's project. */
@@ -115,7 +117,7 @@ export class Waker {
       this.options.log(`failed to look up ${name}: ${messageOf(error)}`, "error");
       return { status: 502, title: "Preview unavailable", text: `The session VM ${name} could not be looked up: ${messageOf(error)}`, reloads: true };
     }
-    if (!instance) return { status: 404, title: "No such session", text: `There is no session VM ${name}. The session may have been removed.`, reloads: false };
+    if (!instance) return this.missing(name);
     switch (instance.status) {
       case "TERMINATED":
       case "STOPPED":
@@ -130,6 +132,21 @@ export class Waker {
       default:
         return waiting(`The session VM ${name} is starting.`);
     }
+  }
+
+  /**
+   * The page for a VM that does not exist under its name: one the gateway is moving to another zone (`orchestrator.ts`
+   * renames it meanwhile) answers soon, any other is gone.
+   */
+  private async missing(name: string): Promise<Page> {
+    let moving: Instance | null = null;
+    try {
+      moving = await this.options.compute.locate(`${name}${MOVING_SUFFIX}`);
+    } catch (error) {
+      this.options.log(`failed to look up ${name}${MOVING_SUFFIX}: ${messageOf(error)}`, "error");
+    }
+    if (moving) return waiting(`The session VM ${name} is moving to another zone.`);
+    return { status: 404, title: "No such session", text: `There is no session VM ${name}. The session may have been removed.`, reloads: false };
   }
 
   private async wake({ name, zone }: Instance, isLoad: boolean, verb: "start" | "resume"): Promise<Page> {

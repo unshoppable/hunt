@@ -13,6 +13,8 @@ const SECRET_MANAGER = "https://secretmanager.googleapis.com/v1";
 /** A cached access token is renewed this long before it expires. */
 const TOKEN_MARGIN_MS = 60_000;
 const ERROR_TEXT_LIMIT = 300;
+/** The device name of the boot disk the session template attaches. */
+export const BOOT_DEVICE_NAME = "persistent-disk-0";
 
 export interface Metadata {
   project(): Promise<string>;
@@ -133,12 +135,31 @@ export interface Instance {
   labels: Record<string, string>;
   metadata: { fingerprint: string; items: MetadataItem[] };
   disks: AttachedDisk[];
+  /** The machine type's name, e.g. `c4d-standard-8`; empty when the resource names none. */
+  machineType: string;
 }
 
 export interface AttachedDisk {
   deviceName: string;
   /** Whether Compute Engine deletes the disk with the VM. */
   autoDelete: boolean;
+  boot: boolean;
+  /** The disk's name, in the VM's zone; empty when the resource names none. */
+  source: string;
+}
+
+/** A disk resource in the shape the gateway reads: its type's name, e.g. `hyperdisk-balanced`, and its size. */
+export interface Disk {
+  type: string;
+  sizeGb: number;
+}
+
+/** What `disks.insert` gets to create a disk from a snapshot of the project. */
+export interface DiskRequest {
+  name: string;
+  sourceSnapshot: string;
+  type: string;
+  sizeGb: number;
 }
 
 export interface MetadataItem {
@@ -146,10 +167,10 @@ export interface MetadataItem {
   value: string;
 }
 
-/** A zonal operation of Compute Engine, as `insert`, `start` and `resume` return it. */
+/** An operation of Compute Engine, as the calls that change a resource return it; `zone` is null for a global one. */
 export interface Operation {
   name: string;
-  zone: string;
+  zone: string | null;
 }
 
 export interface OperationError {
@@ -178,6 +199,10 @@ export interface InstanceRequest {
   /** Replace the template's labels, so they repeat its `hunt-role`. */
   labels: Record<string, string>;
   machineType: string | null;
+  /** Replace the template's metadata items; absent keeps the template's. */
+  metadata?: MetadataItem[];
+  /** An existing disk of the VM's zone that replaces the template's boot disk, deleted with the VM; absent keeps the template's. */
+  bootDisk?: string | null;
 }
 
 /**
@@ -197,6 +222,18 @@ export interface Compute {
   /** Requests the VM from the instance template in `zone`. */
   insert(zone: string, request: InstanceRequest): Promise<Operation>;
   operation(operation: Operation): Promise<OperationState>;
+  /** Renames the VM, which must be `TERMINATED`; `newName` must be free in the project. */
+  setName(zone: string, name: string, newName: string): Promise<Operation>;
+  /** The disk `name` in `zone`; fails when it does not exist. */
+  getDisk(zone: string, name: string): Promise<Disk>;
+  /** Requests a snapshot `snapshot` of the disk, stored in the zone's region. */
+  createSnapshot(zone: string, disk: string, snapshot: string): Promise<Operation>;
+  /** Requests the deletion of the snapshot; a global operation. Fails with `HTTP 404` for one that does not exist. */
+  deleteSnapshot(snapshot: string): Promise<Operation>;
+  /** Requests a disk in `zone` from a snapshot of the project. */
+  insertDisk(zone: string, request: DiskRequest): Promise<Operation>;
+  /** Requests the deletion of the disk, which no VM may use. Fails with `HTTP 404` for one that does not exist. */
+  deleteDisk(zone: string, name: string): Promise<Operation>;
   /** Replaces the VM's metadata items; `fingerprint` is the one of the metadata read before. */
   setMetadata(zone: string, name: string, fingerprint: string, items: MetadataItem[]): Promise<void>;
   /** Starts a `TERMINATED` (or `STOPPED`) VM. */
@@ -224,6 +261,11 @@ function lastSegment(value: unknown): string {
   return typeof value === "string" ? (value.split("/").pop() ?? "") : "";
 }
 
+/** The region of a zone: `europe-west1` for `europe-west1-c`. */
+export function regionOf(zone: string): string {
+  return zone.replace(/-[a-z]$/, "");
+}
+
 /** An instance resource of the Compute Engine API in the shape the gateway reads. */
 export function parseInstance(value: unknown): Instance {
   const raw = (value ?? {}) as {
@@ -236,6 +278,7 @@ export function parseInstance(value: unknown): Instance {
     labels?: unknown;
     metadata?: { fingerprint?: unknown; items?: unknown };
     disks?: unknown;
+    machineType?: unknown;
   };
   const labels: Record<string, string> = {};
   if (raw.labels && typeof raw.labels === "object") {
@@ -246,7 +289,7 @@ export function parseInstance(value: unknown): Instance {
     }
   }
   const items = Array.isArray(raw.metadata?.items) ? (raw.metadata.items as { key?: unknown; value?: unknown }[]) : [];
-  const disks = Array.isArray(raw.disks) ? (raw.disks as { deviceName?: unknown; autoDelete?: unknown }[]) : [];
+  const disks = Array.isArray(raw.disks) ? (raw.disks as { deviceName?: unknown; autoDelete?: unknown; boot?: unknown; source?: unknown }[]) : [];
   return {
     name: typeof raw.name === "string" ? raw.name : "",
     zone: lastSegment(raw.zone),
@@ -263,12 +306,20 @@ export function parseInstance(value: unknown): Instance {
     },
     disks: disks
       .filter((disk) => typeof disk.deviceName === "string")
-      .map((disk) => ({ deviceName: disk.deviceName as string, autoDelete: disk.autoDelete === true })),
+      .map((disk) => ({ deviceName: disk.deviceName as string, autoDelete: disk.autoDelete === true, boot: disk.boot === true, source: lastSegment(disk.source) })),
+    machineType: lastSegment(raw.machineType),
   };
 }
 
-/** A zonal operation resource of the Compute Engine API; `zone` stands in when the resource names none. */
-export function parseOperation(value: unknown, zone: string): Operation & OperationState {
+/** A disk resource of the Compute Engine API in the shape the gateway reads. */
+export function parseDisk(value: unknown): Disk {
+  const raw = (value ?? {}) as { type?: unknown; sizeGb?: unknown };
+  const sizeGb = Number(raw.sizeGb);
+  return { type: lastSegment(raw.type), sizeGb: Number.isFinite(sizeGb) && sizeGb > 0 ? sizeGb : 0 };
+}
+
+/** An operation resource of the Compute Engine API; `zone` stands in when the resource names none, null for a global one. */
+export function parseOperation(value: unknown, zone: string | null): Operation & OperationState {
   const raw = (value ?? {}) as { name?: unknown; zone?: unknown; status?: unknown; error?: { errors?: unknown } };
   const errors = Array.isArray(raw.error?.errors) ? (raw.error.errors as { code?: unknown; message?: unknown; errorDetails?: unknown }[]) : [];
   const first = errors[0];
@@ -337,6 +388,10 @@ export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetc
     return `${await zoneUrl(zone)}/instances/${encodeURIComponent(name)}`;
   }
 
+  async function diskUrl(zone: string, name: string): Promise<string> {
+    return `${await zoneUrl(zone)}/disks/${encodeURIComponent(name)}`;
+  }
+
   async function post(zone: string, name: string, verb: string, what: string, query = ""): Promise<Response> {
     const response = await call("POST", `${await instanceUrl(zone, name)}/${verb}${query}`);
     if (!response.ok) throw await failure(response, what);
@@ -344,7 +399,7 @@ export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetc
   }
 
   /** The operation a successful call answered with. */
-  async function operationOf(response: Response, zone: string): Promise<Operation> {
+  async function operationOf(response: Response, zone: string | null): Promise<Operation> {
     const { name } = parseOperation(await response.json(), zone);
     return { name, zone };
   }
@@ -392,15 +447,58 @@ export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetc
       if (request.machineType) {
         body.machineType = `zones/${zone}/machineTypes/${request.machineType}`;
       }
+      if (request.metadata) {
+        body.metadata = { items: request.metadata };
+      }
+      if (request.bootDisk) {
+        body.disks = [{ boot: true, autoDelete: true, deviceName: BOOT_DEVICE_NAME, source: `zones/${zone}/disks/${request.bootDisk}` }];
+      }
       const response = await call("POST", `${await zoneUrl(zone)}/instances?sourceInstanceTemplate=${encodeURIComponent(template)}`, body);
       if (!response.ok) throw await failure(response, `create ${request.name} from ${request.template} in ${zone}`);
       return operationOf(response, zone);
     },
     async operation({ name, zone }) {
-      const response = await call("GET", `${await zoneUrl(zone)}/operations/${encodeURIComponent(name)}`);
+      const base = zone ? `${await zoneUrl(zone)}/operations` : `${await projectUrl()}/global/operations`;
+      const response = await call("GET", `${base}/${encodeURIComponent(name)}`);
       if (!response.ok) throw await failure(response, `read the operation ${name}`);
       const { isDone, error } = parseOperation(await response.json(), zone);
       return { isDone, error };
+    },
+    async setName(zone, name, newName) {
+      const response = await call("POST", `${await instanceUrl(zone, name)}/setName`, { name: newName, currentName: name });
+      if (!response.ok) throw await failure(response, `rename ${name} to ${newName}`);
+      return operationOf(response, zone);
+    },
+    async getDisk(zone, name) {
+      const response = await call("GET", await diskUrl(zone, name));
+      if (!response.ok) throw await failure(response, `look up the disk ${name} in ${zone}`);
+      return parseDisk(await response.json());
+    },
+    async createSnapshot(zone, disk, snapshot) {
+      const response = await call("POST", `${await diskUrl(zone, disk)}/createSnapshot`, { name: snapshot, storageLocations: [regionOf(zone)] });
+      if (!response.ok) throw await failure(response, `snapshot the disk ${disk} in ${zone} as ${snapshot}`);
+      return operationOf(response, zone);
+    },
+    async deleteSnapshot(snapshot) {
+      const response = await call("DELETE", `${await projectUrl()}/global/snapshots/${encodeURIComponent(snapshot)}`);
+      if (!response.ok) throw await failure(response, `delete the snapshot ${snapshot}`);
+      return operationOf(response, null);
+    },
+    async insertDisk(zone, request) {
+      const body = {
+        name: request.name,
+        sourceSnapshot: `global/snapshots/${request.sourceSnapshot}`,
+        type: `zones/${zone}/diskTypes/${request.type}`,
+        sizeGb: String(request.sizeGb),
+      };
+      const response = await call("POST", `${await zoneUrl(zone)}/disks`, body);
+      if (!response.ok) throw await failure(response, `create the disk ${request.name} in ${zone} from the snapshot ${request.sourceSnapshot}`);
+      return operationOf(response, zone);
+    },
+    async deleteDisk(zone, name) {
+      const response = await call("DELETE", await diskUrl(zone, name));
+      if (!response.ok) throw await failure(response, `delete the disk ${name} in ${zone}`);
+      return operationOf(response, zone);
     },
     async setMetadata(zone, name, fingerprint, items) {
       const response = await call("POST", `${await instanceUrl(zone, name)}/setMetadata`, { fingerprint, items });

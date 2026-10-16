@@ -24,6 +24,12 @@ describe("stripGuardrailMarker", () => {
     expect(stripGuardrailMarker("Done.\n\n<!-- hunt:guardrail skill: x -->\n")).toBe("Done.");
     expect(stripGuardrailMarker("Done.\n<!-- hunt:guard")).toBe("Done.");
   });
+
+  it("strips a marker whose text holds a > and keeps a comment that is not at the end", () => {
+    expect(stripGuardrailMarker("Done.\n<!-- hunt:guardrail rule: Extend `Base<TText>` and mark fields. -->")).toBe("Done.");
+    expect(stripGuardrailMarker("Done.\n<!-- hunt:guardrail rule: Extend `Base<TText>` and")).toBe("Done.");
+    expect(stripGuardrailMarker("<!-- note --> Done.")).toBe("<!-- note --> Done.");
+  });
 });
 
 describe("buildGuardrailRequest", () => {

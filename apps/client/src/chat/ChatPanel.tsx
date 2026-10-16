@@ -179,12 +179,10 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         ) : null}
         {remote ? null : <OpenInWebstormButton sessionId={sessionId} disabled={isCreating} />}
         <RemoteMenu sessionId={sessionId} />
-        {remote ? null : (
-          <button type="button" onClick={() => void openGuardrailsWindow(sessionId)} disabled={isCreating} className={SECONDARY_BUTTON_MD}>
-            <ShieldIcon />
-            Guardrails
-          </button>
-        )}
+        <button type="button" onClick={() => void openGuardrailsWindow(sessionId)} disabled={isCreating} className={SECONDARY_BUTTON_MD}>
+          <ShieldIcon />
+          Guardrails
+        </button>
         <SessionSummaryToggle />
       </header>
 
@@ -241,7 +239,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         <div className="px-9 pt-2">
           <div className="chat-column flex items-center gap-3">
             {chat?.contextUsage ? <ContextMeter usage={chat.contextUsage} /> : null}
-            {remote ? null : <SaveGuardrailButton isSuggested={!!guardrailSuggestion} isDisabled={hasPermission} onOpen={(bounds) => void openGuardrailChat(bounds)} />}
+            <SaveGuardrailButton isSuggested={!!guardrailSuggestion} isDisabled={hasPermission} onOpen={(bounds) => void openGuardrailChat(bounds)} />
           </div>
         </div>
       ) : canPromptRemote ? (

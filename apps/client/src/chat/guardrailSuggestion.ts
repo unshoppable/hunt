@@ -9,8 +9,8 @@ export type GuardrailSuggestion = { kind: GuardrailKind; summary: string };
 
 /** `<!-- hunt:guardrail adr: Summary -->`, which the agent ends a reply with when it holds a guardrail (see `prompts/guardrail-offer.system-prompt.md`). */
 const MARKER = /<!--\s*hunt:guardrail\s+(\w+)\s*:?\s*([\s\S]*?)\s*-->/;
-/** A comment at the end of a reply, also any prefix of one while the marker is still streaming in. */
-const TRAILING_MARKER = /\s*<(?:!(?:-(?:-[^>]*>?)?)?)?\s*$/;
+/** A comment at the end of a reply (its text may hold `>`), also any prefix of one while the marker is still streaming in. */
+const TRAILING_MARKER = /\s*<(?:!(?:-(?:-(?:(?!-->)[\s\S])*(?:-->)?)?)?)?\s*$/;
 /** The first line of every guardrail request the "Guardrail" button prefills. */
 const REQUEST_LEAD = "Erzeuge eine passende Guardrail für folgendes:";
 /** Characters of the conversation handed to the guardrail agent; older messages are cut off beyond that. */

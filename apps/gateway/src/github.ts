@@ -7,6 +7,8 @@ const API = "https://api.github.com";
 const PER_PAGE = 100;
 const ERROR_TEXT_LIMIT = 300;
 
+export type IssueState = "open" | "closed";
+
 export interface Issue {
   number: number;
   title: string;
@@ -17,6 +19,7 @@ export interface Issue {
   url: string;
   /** The names of the issue's labels. */
   labels: string[];
+  state: IssueState;
 }
 
 export interface IssueComment {
@@ -35,6 +38,8 @@ export interface LabelSpec {
 export interface GitHub {
   /** The open issues of `repo` with `label`, oldest first; pull requests are left out. */
   openIssues(repo: string, label: string): Promise<Issue[]>;
+  /** The issue with its current labels and state; null when it does not exist (any more). */
+  issue(repo: string, issue: number): Promise<Issue | null>;
   /** Every comment of the issue, oldest first. */
   comments(repo: string, issue: number): Promise<IssueComment[]>;
   /** Removes `label` from the issue; false when the issue did not have it. */
@@ -63,6 +68,7 @@ interface RawIssue {
   html_url?: unknown;
   pull_request?: unknown;
   labels?: unknown;
+  state?: unknown;
 }
 
 /** The names of an issue's labels, which GitHub lists as objects with a `name` or, per its schema, as plain strings. */
@@ -85,6 +91,7 @@ export function parseIssues(items: unknown[]): Issue[] {
       createdAt: typeof item.created_at === "string" ? item.created_at : "",
       url: typeof item.html_url === "string" ? item.html_url : "",
       labels: labelNames(item.labels),
+      state: item.state === "closed" ? "closed" : "open",
     }));
 }
 
@@ -140,6 +147,12 @@ export function createGitHub(token: string, fetchImpl: typeof fetch = fetch): Gi
     async openIssues(repo, label) {
       const query = `state=open&labels=${encodeURIComponent(label)}&sort=created&direction=asc&per_page=${PER_PAGE}`;
       return parseIssues(await list(`/repos/${repoPath(repo)}/issues?${query}`, `list the issues of ${repo} labelled ${label}`));
+    },
+    async issue(repo, issue) {
+      const response = await call("GET", `/repos/${repoPath(repo)}/issues/${issue}`);
+      if (response.status === 404) return null;
+      if (!response.ok) throw await failure(response, `read ${repo}#${issue}`);
+      return parseIssues([await response.json()])[0] ?? null;
     },
     async comments(repo, issue) {
       return parseComments(await list(`/repos/${repoPath(repo)}/issues/${issue}/comments?per_page=${PER_PAGE}`, `read the comments of ${repo}#${issue}`));

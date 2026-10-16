@@ -3,7 +3,8 @@
  * is `vm-hunt-s-<short id>` (`<short id>`: the first 8 hex digits of the session ID), created from an instance template
  * with the labels `hunt-role=session`, `hunt-session=<short id>`, `hunt-origin=desktop|swf` and, for a person's session,
  * `hunt-owner=<OS Login user>`; its metadata records the session (`hunt-session-id`, `hunt-repo`, `hunt-branch`,
- * `hunt-title`, `hunt-issue`). These labels and metadata are the directory of remote sessions.
+ * `hunt-title`, `hunt-issue`) and, for a poller session, the state of its agent (`hunt-agent`, which the poller keeps
+ * up to date from the issue's labels). These labels and metadata are the directory of remote sessions.
  *
  * A new VM goes into the first of the session zones (`sessionZones.ts`) that has capacity for its machine type: when
  * Compute Engine answers a zone with a stockout, the next zone is tried. An existing VM stays in its zone.
@@ -25,6 +26,8 @@ export const SESSION_LABEL = "hunt-session";
 export const ORIGIN_LABEL = "hunt-origin";
 export const OWNER_LABEL = "hunt-owner";
 export const SESSION_ROLE = "session";
+/** The metadata key of the agent state of a poller session (`AgentState` in `swfPlan.ts`). */
+export const AGENT_METADATA = "hunt-agent";
 export const SESSION_VM_PREFIX = "vm-hunt-s-";
 /** The instance template session VMs are created from. */
 export const DEFAULT_TEMPLATE = "tpl-hunt-session";
@@ -117,6 +120,7 @@ export function sessionSummary(instance: Instance, fallbackZone: string): Sessio
     branch: metadataValue(instance, "hunt-branch") ?? "",
     title: metadataValue(instance, "hunt-title") ?? "",
     issue: /^[1-9][0-9]{0,9}$/.test(issue) ? Number(issue) : null,
+    agent: metadataValue(instance, AGENT_METADATA) ?? "",
     createdAt: instance.creationTimestamp,
   };
 }
@@ -239,6 +243,9 @@ export class Orchestrator {
     if (request.issue !== null) {
       entries["hunt-issue"] = String(request.issue);
     }
+    if (request.origin === "swf") {
+      entries[AGENT_METADATA] = "running";
+    }
     await this.recordSession(zone, names.vm, request.id, entries);
     const { release } = await this.bringUp(zone, names.vm, reporter);
     return { vm: this.ref(names.vm, zone), created: !existing, release };
@@ -280,8 +287,11 @@ export class Orchestrator {
     throw new ApiError("unavailable", `failed to create ${names.vm}: ${type} is unavailable in ${listed(zones)}; try again later or pick another machine type`);
   }
 
-  /** Adds `entries` to the VM's metadata, keeping the template's keys; retries when the metadata changed meanwhile. */
-  private async recordSession(zone: string, name: string, id: string, entries: Record<string, string>): Promise<void> {
+  /**
+   * Adds `entries` to the metadata of the VM of session `id`, keeping the template's keys and the entries it has;
+   * retries when the metadata changed meanwhile. Nothing is written when the VM has the entries already.
+   */
+  async recordSession(zone: string, name: string, id: string, entries: Record<string, string>): Promise<void> {
     for (let attempt = 1; ; attempt++) {
       const instance = await this.deps.compute.get(zone, name);
       if (!instance) throw new ApiError("notFound", `failed to record the session in ${name}: it does not exist`);

@@ -4,7 +4,7 @@ import type { Compute, Instance, InstanceRequest, MetadataItem } from "./gcp.ts"
 import type { GitHub, Issue } from "./github.ts";
 import { Orchestrator } from "./orchestrator.ts";
 import type { SessionVm } from "./sessionVm.ts";
-import { Poller, type PollerDeps } from "./swf.ts";
+import { Poller, relayStatus, type PollerDeps } from "./swf.ts";
 import { readSwfConfig, type SwfConfig } from "./swfConfig.ts";
 
 const GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
@@ -15,17 +15,24 @@ const VM = "vm-hunt-s-ab12cd34";
 
 function issue(number: number, title = `Issue ${number}`, labels = ["swf"]): Issue {
   const url = `https://github.com/acme/app/issues/${number}`;
-  return { number, title, body: `Body of ${number}`, author: "alice", createdAt: "2026-10-13T08:00:00Z", url, labels };
+  return { number, title, body: `Body of ${number}`, author: "alice", createdAt: "2026-10-13T08:00:00Z", url, labels, state: "open" };
 }
 
-/** A GitHub whose issues are `issues` by repository; every call is recorded as one line. */
-function fakeGitHub(issues: Record<string, Issue[]>, options: { labelGone?: number[] } = {}): GitHub & { calls: string[] } {
+/**
+ * A GitHub whose open issues with the label are `issues` by repository and whose single issues are `lookup` by
+ * `<repo>#<number>` (null: deleted); every call is recorded as one line.
+ */
+function fakeGitHub(issues: Record<string, Issue[]>, options: { labelGone?: number[]; lookup?: Record<string, Issue | null> } = {}): GitHub & { calls: string[] } {
   const calls: string[] = [];
   return {
     calls,
     openIssues: async (repo, label) => {
       calls.push(`issues ${repo} ${label}`);
       return issues[repo] ?? [];
+    },
+    issue: async (repo, number) => {
+      calls.push(`issue ${repo}#${number}`);
+      return options.lookup?.[`${repo}#${number}`] ?? null;
     },
     comments: async (repo, number) => {
       calls.push(`comments ${repo}#${number}`);
@@ -47,8 +54,8 @@ function fakeGitHub(issues: Record<string, Issue[]>, options: { labelGone?: numb
   };
 }
 
-/** A VM as Compute Engine lists it, with the template's metadata. */
-function listedVm(name: string, status: string, labels: Record<string, string> = {}): Instance {
+/** A VM as Compute Engine lists it, with the template's metadata and `metadata` on top. */
+function listedVm(name: string, status: string, labels: Record<string, string> = {}, metadata: Record<string, string> = {}): Instance {
   return {
     name,
     zone: "europe-west3-a",
@@ -57,9 +64,15 @@ function listedVm(name: string, status: string, labels: Record<string, string> =
     lastStopTimestamp: "",
     lastSuspendedTimestamp: "",
     labels,
-    metadata: { fingerprint: "fp0", items: [{ key: "startup-script", value: "#!/bin/sh" }] },
+    metadata: { fingerprint: "fp0", items: [{ key: "startup-script", value: "#!/bin/sh" }, ...Object.entries(metadata).map(([key, value]) => ({ key, value }))] },
     disks: [],
   };
+}
+
+/** The running VM of session SESSION_ID for acme/app#12, as the poller created it, with the agent state `agent`. */
+function sessionVmOf(agent: string): Instance {
+  const metadata = { "hunt-session-id": SESSION_ID, "hunt-repo": "acme/app", "hunt-branch": "feat/general/12-issue-12", "hunt-title": "Issue 12", "hunt-issue": "12", "hunt-agent": agent };
+  return listedVm(VM, "RUNNING", { "hunt-role": "session", "hunt-session": "ab12cd34", "hunt-origin": "swf" }, metadata);
 }
 
 /** A Compute whose label listing returns `listed`; inserted VMs appear as PROVISIONING and run from their third look on. */
@@ -86,7 +99,7 @@ function fakeCompute(listed: Instance[] = [], insertError?: Error): Compute & { 
     },
     get: async (_zone, name) => {
       const vm = vms.get(name);
-      if (!vm) return null;
+      if (!vm) return listed.find((instance) => instance.name === name) ?? null;
       vm.looks++;
       vm.instance.status = vm.looks < 3 ? "PROVISIONING" : "RUNNING";
       return structuredClone(vm.instance);
@@ -102,7 +115,8 @@ function fakeCompute(listed: Instance[] = [], insertError?: Error): Compute & { 
     setMetadata: async (_zone, name, fingerprint, items) => {
       calls.push(`metadata ${name} ${fingerprint}`);
       metadata.push(items);
-      vms.get(name)!.instance.metadata = { fingerprint: `${fingerprint}+`, items };
+      const instance = vms.get(name)?.instance ?? listed.find((candidate) => candidate.name === name);
+      instance!.metadata = { fingerprint: `${fingerprint}+`, items };
     },
     start: unexpected,
     resume: unexpected,
@@ -112,8 +126,16 @@ function fakeCompute(listed: Instance[] = [], insertError?: Error): Compute & { 
   };
 }
 
-/** A session VM that records every hunt-ctl call with its stdin and fails the one named in `failing`. */
-function fakeVm(failing?: { command: string; error: Error }) {
+/** The `hunt-ctl status` result of a relay whose last turn ended at `lastTurnEndedAt` (null: none ended yet). */
+function statusOf(turn: "running" | "idle", lastTurnEndedAt: number | null, clientConnected = false): Record<string, unknown> {
+  return { relay: "running", status: { state: "ready", acpSessionId: "acp-9", turn, clientConnected, lastTurnEndedAt }, meta: { worktree: "/home/agent/app" } };
+}
+
+/**
+ * A session VM that records every hunt-ctl call with its stdin, fails the one named in `failing` and answers `status`
+ * with the result of `status()`.
+ */
+function fakeVm(failing?: { command: string; error: Error }, status: () => Record<string, unknown> = () => statusOf("running", null)) {
   const calls: string[] = [];
   const claudeFiles: Record<string, string>[] = [];
   const vm: SessionVm = {
@@ -122,6 +144,8 @@ function fakeVm(failing?: { command: string; error: Error }) {
       calls.push(`hunt-ctl ${args.join(" ")}${input ? ` <<< ${JSON.stringify(String(input))}` : ""}`);
       if (failing?.command === args[0]) throw failing.error;
       switch (args[0]) {
+        case "status":
+          return status();
         case "clone":
           return { path: "/home/agent/app" };
         case "session-config":
@@ -226,6 +250,7 @@ describe("Poller.cycle", () => {
     expect(github.calls).toEqual([
       "issues acme/app swf",
       "ensure acme/app swf:running",
+      "ensure acme/app swf:question",
       "ensure acme/app swf:done",
       "ensure acme/app swf:failed",
       "comments acme/app#12",
@@ -244,6 +269,7 @@ describe("Poller.cycle", () => {
         { key: "hunt-branch", value: "fix/general/12-fix-login" },
         { key: "hunt-title", value: "Fix login" },
         { key: "hunt-issue", value: "12" },
+        { key: "hunt-agent", value: "running" },
       ],
     ]);
     expect(calls).toEqual([
@@ -348,6 +374,115 @@ describe("Poller.cycle", () => {
     expect(github.calls).not.toContain("unlabel acme/app#3 swf");
     expect(compute.inserted).toEqual([]);
     expect(logs).toContain("acme/app#3: failed to claim the issue: failed to read the comments of acme/app#3: HTTP 502 Bad Gateway");
+  });
+});
+
+describe("Poller.cycle follows running sessions", () => {
+  const key = "acme/app#12";
+
+  it("records the state the issue's labels report in the VM, once per change", async () => {
+    const listed = [sessionVmOf("running")];
+    const github = fakeGitHub({}, { lookup: { [key]: issue(12, "Issue 12", ["swf:question"]) } });
+    const compute = fakeCompute(listed);
+    const { vm, calls } = fakeVm();
+    const { poller, logs, prompts } = createPoller({ github, compute, vm });
+
+    await poller.cycle();
+    await poller.cycle();
+    expect(compute.calls).toEqual(["list hunt-origin=swf", `metadata ${VM} fp0`, "list hunt-origin=swf"]);
+    expect(compute.metadata[0]).toContainEqual({ key: "hunt-agent", value: "question" });
+    expect(logs).toContain(`${key}: the agent is question`);
+    expect(calls).toEqual([]);
+    expect(prompts).toEqual([]);
+
+    github.issue = async () => issue(12, "Issue 12", ["swf:running"]);
+    await poller.cycle();
+    expect(compute.metadata[1]).toContainEqual({ key: "hunt-agent", value: "running" });
+    expect(calls).toEqual([`hunt-ctl status ${SESSION_ID}`]);
+  });
+
+  it("counts a closed or deleted issue as done", async () => {
+    const compute = fakeCompute([sessionVmOf("running")]);
+    const github = fakeGitHub({}, { lookup: { [key]: { ...issue(12, "Issue 12", ["swf:running"]), state: "closed" } } });
+    const { poller } = createPoller({ github, compute });
+    await poller.cycle();
+    expect(compute.metadata[0]).toContainEqual({ key: "hunt-agent", value: "done" });
+
+    const deleted = fakeCompute([sessionVmOf("running")]);
+    const { poller: other } = createPoller({ github: fakeGitHub({}, { lookup: { [key]: null } }), compute: deleted });
+    await other.cycle();
+    expect(deleted.metadata[0]).toContainEqual({ key: "hunt-agent", value: "done" });
+  });
+
+  it("reminds an agent that ended its turn with the issue still running once, then marks the issue as failed", async () => {
+    let status = statusOf("running", null);
+    const github = fakeGitHub({}, { lookup: { [key]: issue(12, "Issue 12", ["swf:running"]) } });
+    const compute = fakeCompute([sessionVmOf("running")]);
+    const { vm } = fakeVm(undefined, () => status);
+    const { poller, logs, prompts } = createPoller({ github, compute, vm });
+
+    await poller.cycle();
+    expect(prompts).toEqual([]);
+
+    status = statusOf("idle", 1_000);
+    await poller.cycle();
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatchObject({ sessionId: "acp-9", cwd: "/home/agent/app" });
+    expect(prompts[0].text.startsWith("Your last turn ended, but issue #12 of acme/app still has the label `swf:running`")).toBe(true);
+    expect(logs).toContain(`${key}: the agent ended its turn with the issue still labelled swf:running; reminded it (prompt started)`);
+
+    await poller.cycle();
+    status = statusOf("running", 1_000);
+    await poller.cycle();
+    expect(prompts).toHaveLength(1);
+    expect(github.calls.filter((call) => call.startsWith("unlabel"))).toEqual([]);
+
+    status = statusOf("idle", 2_000);
+    await poller.cycle();
+    expect(prompts).toHaveLength(1);
+    expect(github.calls.filter((call) => !call.startsWith("issue"))).toEqual([
+      "unlabel acme/app#12 swf:running",
+      "label acme/app#12 swf:failed",
+      `comment acme/app#12 Hunt's agent ended its turn twice without opening a pull request, asking a question or giving up, so this issue is marked as failed. The VM \`${VM}\` keeps the session: open it in Hunt to see what happened and to continue.`,
+    ]);
+    expect(logs).toContain(`${key}: the agent ended its turn again with the issue still labelled swf:running; marking the issue as failed`);
+
+    await poller.cycle();
+    expect(github.calls.filter((call) => call.startsWith("unlabel"))).toHaveLength(1);
+  });
+
+  it("sends no reminder while a desktop is connected to the session, nor to a VM being set up or stopped", async () => {
+    const github = fakeGitHub({}, { lookup: { [key]: issue(12, "Issue 12", ["swf:running"]) } });
+    const compute = fakeCompute([sessionVmOf("running"), { ...sessionVmOf("running"), name: "vm-hunt-s-00000002", status: "TERMINATED" }]);
+    const { vm, calls } = fakeVm(undefined, () => statusOf("idle", 1_000, true));
+    const { poller, prompts } = createPoller({ github, compute, vm });
+
+    await poller.cycle();
+    expect(calls).toEqual([`hunt-ctl status ${SESSION_ID}`]);
+    expect(prompts).toEqual([]);
+    expect(github.calls.filter((call) => call.startsWith("issue "))).toEqual([`issue ${key}`]);
+  });
+
+  it("logs a lasting failure to follow a session once and goes on with the other sessions", async () => {
+    const github = fakeGitHub({}, { lookup: { [key]: issue(12, "Issue 12", ["swf:running"]) } });
+    github.issue = async () => {
+      throw new Error("failed to read acme/app#12: HTTP 502 Bad Gateway");
+    };
+    const compute = fakeCompute([sessionVmOf("running")]);
+    const { poller, logs } = createPoller({ github, compute });
+
+    await poller.cycle();
+    await poller.cycle();
+    expect(logs.filter((line) => line.includes("HTTP 502"))).toEqual([`${key}: failed to read acme/app#12: HTTP 502 Bad Gateway`]);
+    expect(logs.at(-1)).toBe("polling acme/app: no open issues labelled swf");
+  });
+});
+
+describe("relayStatus", () => {
+  it("reads the relay's turn and the worktree, and is null without an ACP session or worktree", () => {
+    expect(relayStatus(statusOf("idle", 5, true))).toEqual({ acpSessionId: "acp-9", turn: "idle", clientConnected: true, lastTurnEndedAt: 5, worktree: "/home/agent/app" });
+    expect(relayStatus({ relay: "stopped", status: {}, meta: { worktree: "/home/agent/app" } })).toBeNull();
+    expect(relayStatus({ relay: "running", status: { acpSessionId: "acp-9" }, meta: {} })).toBeNull();
   });
 });
 

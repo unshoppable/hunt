@@ -1,9 +1,9 @@
 /**
  * The decisions and texts of hunt-swf (`swf.ts`), free of I/O: which issues get a session, the names of a session's
- * VM and branch, what the poller writes on an issue, the system prompt and `hunt-session.json` of a session, and the
- * first prompt its agent gets.
+ * VM and branch, what the poller writes on an issue, the system prompt and `hunt-session.json` of a session, the
+ * prompts its agent gets and the state of the agent the issue's labels report.
  */
-import type { Issue, IssueComment } from "./github.ts";
+import type { Issue, IssueComment, IssueState } from "./github.ts";
 
 /** The VM statuses that do not count towards the session limit; the reaper deletes VMs that stay in them. */
 export const STOPPED_STATUSES = new Set(["TERMINATED", "STOPPED"]);
@@ -19,21 +19,39 @@ export const REMOTE_MODE = "bypassPermissions";
 export interface SwfLabels {
   requested: string;
   running: string;
+  /** The agent asked a question on the issue and waits for the answer. */
+  question: string;
   done: string;
   failed: string;
 }
 
 export function swfLabels(label: string): SwfLabels {
-  return { requested: label, running: `${label}:running`, done: `${label}:done`, failed: `${label}:failed` };
+  return { requested: label, running: `${label}:running`, question: `${label}:question`, done: `${label}:done`, failed: `${label}:failed` };
 }
 
 /** The repository labels the poller creates when they are missing. */
 export function labelSpecs(labels: SwfLabels): { name: string; color: string; description: string }[] {
   return [
     { name: labels.running, color: "fbca04", description: "Hunt works on this issue on a session VM" },
+    { name: labels.question, color: "d876e3", description: "Hunt's agent asked a question on this issue and waits for the answer" },
     { name: labels.done, color: "0e8a16", description: "Hunt opened a pull request for this issue" },
     { name: labels.failed, color: "d93f0b", description: "Hunt could not complete this issue" },
   ];
+}
+
+/** The state of a session's agent, as the VM metadata `hunt-agent` records it for Hunt's lists. */
+export type AgentState = "running" | "question" | "done" | "failed";
+
+/**
+ * The agent state the issue's labels report: `question` while the agent waits for an answer on the issue, `done` once
+ * it finished (a closed or deleted issue counts as finished), `failed` when it gave up, `running` otherwise.
+ */
+export function agentStateOf(issue: { state: IssueState; labels: string[] } | null, labels: SwfLabels): AgentState {
+  if (!issue) return "done";
+  if (issue.labels.includes(labels.question)) return "question";
+  if (issue.labels.includes(labels.done)) return "done";
+  if (issue.labels.includes(labels.failed)) return "failed";
+  return issue.state === "closed" ? "done" : "running";
 }
 
 /** A new session's IDs: the session ID, its short ID (first 8 hex digits) and its VM. */
@@ -103,6 +121,14 @@ export function claimComment(names: SessionNames, branch: string, domain: string
   );
 }
 
+/** The comment that marks an issue as failed because its agent ended its turn twice without finishing, asking or giving up. */
+export function stoppedComment(vm: string): string {
+  return (
+    "Hunt's agent ended its turn twice without opening a pull request, asking a question or giving up, so this issue is marked as failed. " +
+    `The VM \`${vm}\` keeps the session: open it in Hunt to see what happened and to continue.`
+  );
+}
+
 /** The comment that reports why the session could not start; `error` has been redacted. */
 export function failureComment(error: string, vm: string | null): string {
   const kept = vm ? `\n\nThe VM \`${vm}\` stays for inspection.` : "";
@@ -166,13 +192,18 @@ function formatDate(iso: string): string {
   return match ? `${match[1]} ${match[2]} UTC` : iso;
 }
 
+/** The `gh` command that replaces the label `from` of the issue with `to`. */
+function relabelCommand(repo: string, issue: number, from: string, to: string): string {
+  return `gh issue edit ${issue} --repo ${repo} --remove-label ${from} --add-label ${to}`;
+}
+
 /** The first prompt of a poller session: the issue with all its comments and what the agent is to do with it. */
 export function firstPrompt(repo: string, issue: Issue, comments: IssueComment[], branch: string, labels: SwfLabels): string {
   const body = issue.body.trim() || "(no description)";
   const thread = comments.length
     ? comments.map((comment) => `**@${comment.author}** on ${formatDate(comment.createdAt)}:\n\n${comment.body.trim()}`).join("\n\n---\n\n")
     : "(none)";
-  const relabel = (label: string) => `gh issue edit ${issue.number} --repo ${repo} --remove-label ${labels.running} --add-label ${label}`;
+  const relabel = (label: string) => relabelCommand(repo, issue.number, labels.running, label);
   return [
     `Work on GitHub issue #${issue.number} of ${repo}: ${issue.title}`,
     issue.url,
@@ -187,7 +218,7 @@ export function firstPrompt(repo: string, issue: Issue, comments: IssueComment[]
     "",
     "## Your task",
     "",
-    `Hunt's poller started this session because the issue has the label \`${labels.requested}\`. Nobody watches while you work: decide details on your own and name them in the pull request.`,
+    `Hunt's poller started this session because the issue has the label \`${labels.requested}\`. Nobody watches while you work: decide details on your own where the issue, the repository and its conventions settle them, and name your decisions in the pull request.`,
     "",
     "1. Implement the issue in this repository. Read the README, CLAUDE.md and the other instructions of the repository first.",
     "2. Check your change as a developer would locally: build it and run the tests and linters the repository uses; for changes the user sees, start the app and check it with the Playwright tools.",
@@ -196,5 +227,27 @@ export function firstPrompt(repo: string, issue: Issue, comments: IssueComment[]
     `5. Finally replace the label \`${labels.running}\` with \`${labels.done}\`: \`${relabel(labels.done)}\`.`,
     "",
     `When you cannot complete the task, replace \`${labels.running}\` with \`${labels.failed}\` instead (\`${relabel(labels.failed)}\`) and comment on the issue why.`,
+    "",
+    `When you need an answer only a person can give, ask on the issue instead of deciding: comment your question (\`gh issue comment ${issue.number} --repo ${repo} --body "…"\`), replace \`${labels.running}\` with \`${labels.question}\` (\`${relabel(labels.question)}\`) and end your turn with the question as your last words. The answer reaches you as your next prompt; then replace \`${labels.question}\` with \`${labels.running}\` (\`${relabelCommand(repo, issue.number, labels.question, labels.running)}\`) and go on with the steps above.`,
+    "",
+    "Do not end your turn in any other way before step 5 is done: a turn that ends with the issue still labelled running counts as an unfinished task.",
+  ].join("\n");
+}
+
+/**
+ * The prompt the poller sends when the agent ended its turn with the issue still labelled running: neither a pull
+ * request, a question nor a failure was reported.
+ */
+export function nudgePrompt(repo: string, issue: number, labels: SwfLabels): string {
+  const relabel = (label: string) => relabelCommand(repo, issue, labels.running, label);
+  return [
+    `Your last turn ended, but issue #${issue} of ${repo} still has the label \`${labels.running}\`: no pull request link was commented on it and none of \`${labels.done}\`, \`${labels.question}\` and \`${labels.failed}\` is set.`,
+    "",
+    "Do one of these now, then end your turn:",
+    `- finish the task: commit, push, open the pull request whose description contains \`Closes #${issue}\`, comment its link on the issue and replace \`${labels.running}\` with \`${labels.done}\` (\`${relabel(labels.done)}\`);`,
+    `- or ask the question you need answered as a comment on the issue and replace \`${labels.running}\` with \`${labels.question}\` (\`${relabel(labels.question)}\`);`,
+    `- or give up: replace \`${labels.running}\` with \`${labels.failed}\` (\`${relabel(labels.failed)}\`) and comment on the issue why.`,
+    "",
+    "When this turn ends with the issue still labelled running, Hunt marks the issue as failed.",
   ].join("\n");
 }

@@ -12,9 +12,18 @@
  * its startup script and installs the session release staged on the gateway; then `install-tools`, `clone`,
  * `session-config`, `hunt-session.json` through `put-files --claude`, `deps`, `start` with the tokens on stdin and
  * `wait`. Then the issue goes to the agent as its first prompt through the relay; the agent opens the pull request and
- * sets `swf:done` or `swf:failed` itself. When the setup fails, the poller sets `swf:failed` with the error and leaves
- * the VM for inspection; Hunt desktops adopt the VM either way. Between polls, the reaper (`reaper.ts`) deletes
- * session VMs that have been stopped for more than a week.
+ * sets `swf:done` or `swf:failed` itself, or asks a question on the issue and sets `swf:question` until the answer
+ * arrives. When the setup fails, the poller sets `swf:failed` with the error and leaves the VM for inspection; Hunt
+ * desktops adopt the VM either way.
+ *
+ * Every poll also follows the agent of each running session VM: the issue's labels give the agent's state (`running`,
+ * `question`, `done`, `failed`; `swfPlan.ts`), which the VM's metadata `hunt-agent` records for Hunt's lists. While
+ * the issue is still labelled `swf:running`, the relay's status (`hunt-ctl status`) tells whether the agent ended its
+ * turn without finishing: then the poller reminds it once (`nudgePrompt`) and, when the next turn ends the same way,
+ * marks the issue as failed. No reminder goes to a session a Hunt desktop is connected to, since a person is working
+ * with the agent there. The reminders are remembered only in memory: after a restart of the poller a session may be
+ * reminded once more. Between polls, the reaper (`reaper.ts`) deletes session VMs that have been stopped for more than
+ * a week.
  *
  * The GitHub token (`HUNT_SWF_GITHUB_TOKEN`) and the Claude Code OAuth token (`HUNT_SWF_CLAUDE_TOKEN`) come from Secret
  * Manager; project, zone, access token and configuration from the metadata server; the preview domain from what
@@ -31,10 +40,10 @@ import remotePrompt from "../../../libs/domain/prompts/remote.md?raw";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import type { Log, LogLevel } from "../../../libs/domain/src/journal.ts";
 import { sendPrompt, type Transport } from "./acpClient.ts";
-import { createCompute, createMetadata, readSecret, type Compute, type Instance, type Metadata } from "./gcp.ts";
+import { createCompute, createMetadata, metadataValue, readSecret, type Compute, type Instance, type Metadata } from "./gcp.ts";
 import { writeLog } from "./journal.ts";
 import { createGitHub, type GitHub, type Issue, type IssueComment } from "./github.ts";
-import { DEFAULT_TEMPLATE, ORIGIN_LABEL, Orchestrator, type Origin, type Reporter } from "./orchestrator.ts";
+import { AGENT_METADATA, DEFAULT_TEMPLATE, ORIGIN_LABEL, Orchestrator, sessionSummary, type Origin, type Reporter } from "./orchestrator.ts";
 import { readDomain } from "./previewDomain.ts";
 import { Reaper } from "./reaper.ts";
 import { ensureSshKey, sessionVm, type SessionVm } from "./sessionVm.ts";
@@ -42,6 +51,7 @@ import { readSessionZones } from "./sessionZones.ts";
 import { readSwfConfig, REPOS_ATTRIBUTE, SWF_LABEL, type SwfConfig } from "./swfConfig.ts";
 import {
   activeSessionVms,
+  agentStateOf,
   branchName,
   claimComment,
   failureComment,
@@ -49,9 +59,11 @@ import {
   huntSessionFile,
   issuesToStart,
   labelSpecs,
+  nudgePrompt,
   redact,
   remoteSystemPrompt,
   sessionNames,
+  stoppedComment,
   swfLabels,
   type RemotePrompts,
   type SessionNames,
@@ -100,11 +112,48 @@ interface Setup {
   done: Promise<void>;
 }
 
+/** What the poller remembers about the agent of a running session between polls. */
+interface Watched {
+  /** The relay's `lastTurnEndedAt` the reminder answered; null while no reminder was sent. */
+  remindedAt: number | null;
+  /** The last error of following the session, so that a lasting one is logged once. */
+  error: string;
+}
+
+/** The fields of `hunt-ctl status` the poller reads: the relay's status and the session's worktree. */
+interface RelayStatus {
+  acpSessionId: string;
+  turn: string;
+  clientConnected: boolean;
+  lastTurnEndedAt: number | null;
+  worktree: string;
+}
+
+/** The relay status of a `hunt-ctl status` result; null while the relay has no ACP session or the worktree is unknown. */
+export function relayStatus(result: Record<string, unknown>): RelayStatus | null {
+  const status = isRecord(result.status) ? result.status : {};
+  const meta = isRecord(result.meta) ? result.meta : {};
+  if (typeof status.acpSessionId !== "string" || !status.acpSessionId || typeof meta.worktree !== "string" || !meta.worktree) return null;
+  return {
+    acpSessionId: status.acpSessionId,
+    turn: typeof status.turn === "string" ? status.turn : "",
+    clientConnected: status.clientConnected === true,
+    lastTurnEndedAt: typeof status.lastTurnEndedAt === "number" ? status.lastTurnEndedAt : null,
+    worktree: meta.worktree,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** One poll after another; see the module comment. */
 export class Poller {
   private readonly deps: PollerDeps;
   /** Setups in progress by VM name; they count towards the limit until Compute Engine lists their VM. */
   private readonly setups = new Map<string, Setup>();
+  /** The running sessions the poller follows, by VM name. */
+  private readonly watched = new Map<string, Watched>();
   /** Repositories whose labels exist, by `<repo> <label>`. */
   private readonly labelledRepos = new Set<string>();
   private lastNote = "";
@@ -154,6 +203,7 @@ export class Poller {
     }
     const github = this.deps.github(tokens.github);
     const labels = swfLabels(SWF_LABEL);
+    await this.watchSessions(github, labels, vms);
     const active = activeSessionVms(vms, this.setups.keys());
     const issuesByRepo: { repo: string; issues: Issue[] }[] = [];
     for (const repo of config.repos) {
@@ -177,6 +227,60 @@ export class Poller {
     }
     for (const { repo, issue } of start) {
       await this.claimAndStart(domain, tokens, github, labels, repo, issue);
+    }
+  }
+
+  /** Follows the agent of every running session VM that is not being set up; a failure with one VM is logged once. */
+  private async watchSessions(github: GitHub, labels: SwfLabels, vms: Instance[]): Promise<void> {
+    const running = new Set<string>();
+    for (const instance of vms) {
+      const session = sessionSummary(instance, instance.zone);
+      if (!session || session.issue === null || instance.status !== "RUNNING" || this.setups.has(instance.name)) continue;
+      running.add(instance.name);
+      const watched = this.watched.get(instance.name) ?? { remindedAt: null, error: "" };
+      this.watched.set(instance.name, watched);
+      try {
+        await this.watchSession(github, labels, instance, session.id, session.repo, session.issue, watched);
+        watched.error = "";
+      } catch (error) {
+        const message = this.redacted(error);
+        if (watched.error !== message) {
+          this.deps.log(`${session.repo}#${session.issue}: ${message}`, "error");
+        }
+        watched.error = message;
+      }
+    }
+    for (const vm of this.watched.keys()) {
+      if (!running.has(vm)) {
+        this.watched.delete(vm);
+      }
+    }
+  }
+
+  /**
+   * Records the agent's state in the VM and, while the issue is still labelled running, reminds an agent that ended its
+   * turn, or marks the issue as failed when the reminded turn ended the same way; see the module comment.
+   */
+  private async watchSession(github: GitHub, labels: SwfLabels, instance: Instance, id: string, repo: string, issue: number, watched: Watched): Promise<void> {
+    const key = `${repo}#${issue}`;
+    const state = agentStateOf(await github.issue(repo, issue), labels);
+    if (metadataValue(instance, AGENT_METADATA) !== state) {
+      await this.deps.orchestrator.recordSession(instance.zone, instance.name, id, { [AGENT_METADATA]: state });
+      this.deps.log(`${key}: the agent is ${state}`);
+    }
+    if (state !== "running") return;
+    const vm = this.deps.vm(instance.name, instance.zone);
+    const status = relayStatus(await vm.huntCtl(["status", id]));
+    if (!status || status.turn !== "idle" || status.clientConnected || status.lastTurnEndedAt === null) return;
+    if (watched.remindedAt === null) {
+      watched.remindedAt = status.lastTurnEndedAt;
+      const text = nudgePrompt(repo, issue, labels);
+      const outcome = await this.deps.sendPrompt(vm.openRelay(), { sessionId: status.acpSessionId, cwd: status.worktree, text });
+      this.deps.log(`${key}: the agent ended its turn with the issue still labelled ${labels.running}; reminded it (prompt ${outcome})`);
+    } else if (status.lastTurnEndedAt > watched.remindedAt) {
+      watched.remindedAt = status.lastTurnEndedAt;
+      this.deps.log(`${key}: the agent ended its turn again with the issue still labelled ${labels.running}; marking the issue as failed`, "warn");
+      await this.failIssue(key, github, repo, issue, labels, stoppedComment(instance.name));
     }
   }
 
@@ -258,14 +362,19 @@ export class Poller {
     log(`the agent of session ${names.id} works on the issue (prompt ${outcome})`);
   }
 
-  /** Replaces `<label>:running` with `<label>:failed` and comments the error; failures here are only logged. */
+  /** Replaces `<label>:running` with `<label>:failed` and comments the error of the setup; failures here are only logged. */
   private async markFailed(setup: Setup, error: string): Promise<void> {
     const { key, repo, issue, github, labels, names } = setup;
     this.deps.log(`${key}: failed: ${error}`, "error");
+    await this.failIssue(key, github, repo, issue, labels, failureComment(error, setup.isVmCreated ? names.vm : null));
+  }
+
+  /** Replaces `<label>:running` with `<label>:failed` and comments `comment`; failures here are only logged. */
+  private async failIssue(key: string, github: GitHub, repo: string, issue: number, labels: SwfLabels, comment: string): Promise<void> {
     const steps: [string, () => Promise<unknown>][] = [
       [`remove ${labels.running}`, () => github.removeLabel(repo, issue, labels.running)],
       [`add ${labels.failed}`, () => github.addLabels(repo, issue, [labels.failed])],
-      ["comment the error", () => github.comment(repo, issue, failureComment(error, setup.isVmCreated ? names.vm : null))],
+      ["comment on the issue", () => github.comment(repo, issue, comment)],
     ];
     for (const [what, step] of steps) {
       try {

@@ -284,7 +284,10 @@ describe("Orchestrator.provision", () => {
 
     await orchestrator.provision({ ...REQUEST, origin: "swf", owner: "", issue: 12 }, recorder().reporter);
     expect(fake.inserted[0].labels).toEqual({ "hunt-role": "session", "hunt-session": "ab12cd34", "hunt-origin": "swf" });
-    expect(fake.instances.get(VM)!.metadata.items.at(-1)).toEqual({ key: "hunt-issue", value: "12" });
+    expect(fake.instances.get(VM)!.metadata.items.slice(-2)).toEqual([
+      { key: "hunt-issue", value: "12" },
+      { key: "hunt-agent", value: "running" },
+    ]);
   });
 
   it("reuses the session's existing VM, starts it when it is off and leaves metadata that is current alone", async () => {
@@ -600,6 +603,7 @@ describe("Orchestrator.listSessions", () => {
         branch: "",
         title: "",
         issue: 42,
+        agent: "",
         createdAt: "2026-10-12T09:00:00.000-07:00",
       },
       {
@@ -613,6 +617,7 @@ describe("Orchestrator.listSessions", () => {
         branch: "feat/login",
         title: "Fix login",
         issue: null,
+        agent: "",
         createdAt: "2026-10-13T09:00:00.000-07:00",
       },
     ]);

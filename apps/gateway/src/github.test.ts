@@ -37,6 +37,7 @@ describe("parseIssues", () => {
         created_at: "2026-10-13T08:00:00Z",
         html_url: "https://github.com/acme/app/issues/3",
         labels: [{ id: 1, name: "swf" }, "bug", { id: 2 }, null],
+        state: "closed",
       },
       { number: 4, title: "A pull request", pull_request: { url: "x" } },
       { number: 5, title: "Deleted author", user: null },
@@ -50,8 +51,9 @@ describe("parseIssues", () => {
         createdAt: "2026-10-13T08:00:00Z",
         url: "https://github.com/acme/app/issues/3",
         labels: ["swf", "bug"],
+        state: "closed",
       },
-      { number: 5, title: "Deleted author", body: "", author: "ghost", createdAt: "", url: "", labels: [] },
+      { number: 5, title: "Deleted author", body: "", author: "ghost", createdAt: "", url: "", labels: [], state: "open" },
     ]);
   });
 });
@@ -69,6 +71,18 @@ describe("createGitHub", () => {
     expect(issues.map((issue) => issue.number)).toEqual([1, 2]);
     expect(requests[0].headers.get("Authorization")).toBe("Bearer ghp_token");
     expect(requests[0].headers.get("X-GitHub-Api-Version")).toBe("2022-11-28");
+  });
+
+  it("reads one issue with its labels and state, and reports a missing one as null", async () => {
+    const { fetchImpl } = fakeFetch({
+      "GET /repos/acme/app/issues/7": () => Response.json({ number: 7, title: "Seven", labels: [{ name: "swf:question" }], state: "open" }),
+      "GET /repos/acme/app/issues/8": () => Response.json({ message: "Not Found" }, { status: 404 }),
+      "GET /repos/acme/app/issues/9": () => new Response("down", { status: 503 }),
+    });
+    const github = createGitHub("ghp_token", fetchImpl);
+    expect(await github.issue("acme/app", 7)).toMatchObject({ number: 7, labels: ["swf:question"], state: "open" });
+    expect(await github.issue("acme/app", 8)).toBeNull();
+    await expect(github.issue("acme/app", 9)).rejects.toThrow("failed to read acme/app#9: HTTP 503 down");
   });
 
   it("refuses to send the token to a host other than GitHub's API", async () => {

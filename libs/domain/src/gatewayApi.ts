@@ -56,6 +56,11 @@ export interface SessionSummary {
   title: string;
   /** The GitHub issue of a poller session. */
   issue: number | null;
+  /**
+   * The state of a poller session's agent as its VM records it: `running`, `question` (it waits for an answer on the
+   * issue), `done` or `failed`; empty for a person's session.
+   */
+  agent: string;
   createdAt: string;
 }
 

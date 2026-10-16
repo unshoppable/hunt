@@ -3,21 +3,24 @@ import { describe, expect, it } from "vitest";
 import type { Issue } from "./github.ts";
 import {
   activeSessionVms,
+  agentStateOf,
   branchName,
   claimComment,
   failureComment,
   firstPrompt,
   huntSessionFile,
   issuesToStart,
+  nudgePrompt,
   redact,
   remoteSystemPrompt,
   sessionNames,
   slugify,
+  stoppedComment,
   swfLabels,
 } from "./swfPlan.ts";
 
 function issue(number: number, title = `Issue ${number}`, labels = ["swf"]): Issue {
-  return { number, title, body: "", author: "alice", createdAt: "2026-10-13T08:04:05Z", url: `https://github.com/acme/app/issues/${number}`, labels };
+  return { number, title, body: "", author: "alice", createdAt: "2026-10-13T08:04:05Z", url: `https://github.com/acme/app/issues/${number}`, labels, state: "open" };
 }
 
 describe("names", () => {
@@ -52,7 +55,24 @@ describe("names", () => {
   });
 
   it("derives the labels of a run from the configured label", () => {
-    expect(swfLabels("swf")).toEqual({ requested: "swf", running: "swf:running", done: "swf:done", failed: "swf:failed" });
+    expect(swfLabels("swf")).toEqual({ requested: "swf", running: "swf:running", question: "swf:question", done: "swf:done", failed: "swf:failed" });
+  });
+});
+
+describe("agentStateOf", () => {
+  const labels = swfLabels("swf");
+
+  it("reads the agent's state from the issue's labels, a question first", () => {
+    expect(agentStateOf({ state: "open", labels: ["swf:running"] }, labels)).toBe("running");
+    expect(agentStateOf({ state: "open", labels: ["bug"] }, labels)).toBe("running");
+    expect(agentStateOf({ state: "open", labels: ["swf:question", "swf:running"] }, labels)).toBe("question");
+    expect(agentStateOf({ state: "open", labels: ["swf:done"] }, labels)).toBe("done");
+    expect(agentStateOf({ state: "open", labels: ["swf:failed"] }, labels)).toBe("failed");
+  });
+
+  it("counts a closed or deleted issue as done", () => {
+    expect(agentStateOf({ state: "closed", labels: ["swf:running"] }, labels)).toBe("done");
+    expect(agentStateOf(null, labels)).toBe("done");
   });
 });
 
@@ -152,9 +172,32 @@ describe("firstPrompt", () => {
     expect(text).toContain("replace `swf:running` with `swf:failed` instead (`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:failed`)");
   });
 
+  it("tells the agent to ask on the issue with the question label and to take it back with the answer", () => {
+    const text = firstPrompt("acme/app", issue(12), [], "feat/general/12-issue-12", swfLabels("swf"));
+    expect(text).toContain("replace `swf:running` with `swf:question` (`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:question`) and end your turn with the question as your last words.");
+    expect(text).toContain("replace `swf:question` with `swf:running` (`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:running`)");
+    expect(text).toContain("Do not end your turn in any other way before step 5 is done");
+  });
+
   it("says when the issue has no description or comments", () => {
     const text = firstPrompt("acme/app", issue(3), [], "feat/general/3-issue-3", swfLabels("swf"));
     expect(text).toContain("(no description)");
     expect(text).toContain("## Comments\n\n(none)\n");
+  });
+});
+
+describe("nudgePrompt", () => {
+  it("names the three ways out and the consequence of ending the turn again", () => {
+    const text = nudgePrompt("acme/app", 12, swfLabels("swf"));
+    expect(text.startsWith("Your last turn ended, but issue #12 of acme/app still has the label `swf:running`")).toBe(true);
+    expect(text).toContain("`Closes #12`");
+    expect(text).toContain("(`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:done`)");
+    expect(text).toContain("(`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:question`)");
+    expect(text).toContain("(`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:failed`)");
+    expect(text).toContain("When this turn ends with the issue still labelled running, Hunt marks the issue as failed.");
+  });
+
+  it("names the VM in the comment that marks a stopped session as failed", () => {
+    expect(stoppedComment("vm-hunt-s-ab12cd34")).toContain("The VM `vm-hunt-s-ab12cd34` keeps the session");
   });
 });

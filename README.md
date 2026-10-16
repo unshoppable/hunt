@@ -593,15 +593,20 @@ VM's metadata, waits for the startup script and installs the staged session rele
 `hunt-ctl clone` clones the repository from GitHub as `agent` onto the branch (the origin's branch of that name
 when it exists, else a new one from the default branch) with the token's GitHub user as Git identity; `session-config`,
 `put-files --claude` with `hunt-session.json`, `deps`, `start` and `wait` follow as in a handoff. The system prompt is
-the remote part a handoff appends (`libs/domain/prompts/`, which the app and the poller compile in), the repository's
-services and its `hunt.agent.md`; the parts Hunt takes from its user's settings (response style, guardrail offer, diagram language) do not exist
-on the gateway. The poller then sends the issue with all its comments as the first prompt through the relay and
-disconnects; the relay runs the turn without a client. The prompt asks the agent to implement and check the issue, push
-the branch, open a pull request with `Closes #<issue>`, comment its link on the issue and replace `swf:running` with
-`swf:done`, or with `swf:failed` and a comment when it cannot finish. When it needs an answer only a person can give, it
-is to comment the question on the issue, replace `swf:running` with `swf:question` and end its turn with the question;
-the answer reaches it as its next prompt, from a Hunt desktop that opened the session, and it takes the label back to
-`swf:running`. A setup that fails gets `swf:failed` and a comment with the error; its VM stays for inspection.
+the remote, Git and question parts a handoff appends (`libs/domain/prompts/`, which the app and the poller compile in),
+the poller's own `apps/gateway/prompts/swf.system-prompt.md` with the issue's workflow, the repository's services and
+its `hunt.agent.md`; the parts Hunt takes from its user's settings (response style, guardrail offer, diagram language)
+do not exist on the gateway. The poller then sends the issue with all its comments as the first prompt through the
+relay and disconnects; the relay runs the turn without a client. The workflow has six steps: read the issue and the
+repository's instructions; ask every question only a person can answer in one comment on the issue, replace
+`swf:running` with `swf:question` and end the turn with the questions and the marker `<!-- hunt:question -->` (the
+answer reaches the agent as its next prompt, from a Hunt desktop that opened the session, and it takes the label back
+to `swf:running`); comment a short implementation plan on the issue and carry it out without waiting for approval;
+implement and check the change as a developer would locally; push the branch, open a pull request with `Closes
+#<issue>` and the decisions it took and comment its link on the issue; stop the services and tmux windows it started,
+delete its scratch files, leave the working tree clean and replace `swf:running` with `swf:done`. When it cannot
+finish, it sets `swf:failed` with a comment instead. A setup that fails gets `swf:failed` and a comment with the error;
+its VM stays for inspection.
 
 Every poll also follows the agent of each running session VM the poller is not setting up: it reads the issue and
 records the state its labels report (`running`, `question`, `done`, `failed`; a closed or deleted issue counts as

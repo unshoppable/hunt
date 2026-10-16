@@ -155,10 +155,15 @@ export function redact(text: string, secrets: string[]): string {
   return result;
 }
 
-/** The prompt files the poller compiles in: the system-prompt parts of `libs/domain/prompts/` and its own user prompts. */
+/**
+ * The prompt files the poller compiles in: the system-prompt parts of `libs/domain/prompts/`, its own swf system prompt
+ * and its user prompts.
+ */
 export interface PromptFiles {
   remote: string;
   gitPush: string;
+  question: string;
+  swfSystem: string;
   swfFirst: string;
   swfNudge: string;
 }
@@ -166,12 +171,13 @@ export interface PromptFiles {
 /**
  * What the relay appends to Claude Code's system prompt, composed like `remote_system_prompt` in
  * `apps/client/src-tauri/src/session/commands.rs` with an empty base: the gateway has none of the desktop user's settings
- * (response style, guardrail offer, diagram language), so only the remote part, the Git part for a session with a
- * GitHub token, the section on the repository's services and its hunt.agent.md remain, the last two as
+ * (response style, guardrail offer, diagram language), so the remote part, the Git part for a session with a GitHub
+ * token and the part on questions to the user come first, then `swfPrompt`, the filled swf system prompt with the
+ * steps of the issue's workflow, then the section on the repository's services and its hunt.agent.md, the last two as
  * `hunt-ctl session-config` reports them (`services_prompt`, `agent_md`).
  */
-export function remoteSystemPrompt(prompts: PromptFiles, servicesPrompt: string | null | undefined, agentMd: string | null | undefined): string {
-  let prompt = `\n\n${prompts.remote}\n${prompts.gitPush}`;
+export function remoteSystemPrompt(prompts: PromptFiles, swfPrompt: string, servicesPrompt: string | null | undefined, agentMd: string | null | undefined): string {
+  let prompt = `\n\n${prompts.remote}\n${prompts.gitPush}\n${prompts.question}\n${swfPrompt}`;
   const services = servicesPrompt?.trim();
   if (services) {
     prompt += `\n${services}\n`;
@@ -228,8 +234,16 @@ function labelValues(repo: string, issue: number, labels: SwfLabels): Record<str
 }
 
 /**
+ * The swf part of a poller session's system prompt, `swf.system-prompt.md` filled with the issue's number, repository,
+ * branch and the labels the agent is to set: the steps from reading the issue to the pull request and `<label>:done`.
+ */
+export function swfSystemPrompt(template: string, repo: string, issue: number, branch: string, labels: SwfLabels): string {
+  return fillPrompt(template, { ...labelValues(repo, issue, labels), branch });
+}
+
+/**
  * The first prompt of a poller session, `swf-first.user-prompt.md` filled with the issue, all its comments and the
- * labels the agent is to set.
+ * branch; it sends the agent to the steps of the system prompt.
  */
 export function firstPrompt(template: string, repo: string, issue: Issue, comments: IssueComment[], branch: string, labels: SwfLabels): string {
   const thread = comments.length

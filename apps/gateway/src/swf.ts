@@ -11,9 +11,10 @@
  * (`orchestrator.ts`) creates the session VM from the instance template, records the session in its metadata, waits for
  * its startup script and installs the session release staged on the gateway; then `install-tools`, `clone`,
  * `session-config`, `hunt-session.json` through `put-files --claude`, `deps`, `start` with the tokens on stdin and
- * `wait`. Then the issue goes to the agent as its first prompt through the relay; the agent opens the pull request and
- * sets `swf:done` or `swf:failed` itself, or asks a question on the issue and sets `swf:question` until the answer
- * arrives. When the setup fails, the poller sets `swf:failed` with the error and leaves the VM for inspection; Hunt
+ * `wait`. The session's system prompt holds the steps of the workflow (`prompts/swf.system-prompt.md`: read the
+ * issue, ask open questions, comment a plan, implement and check, open the pull request, clean up); then the issue
+ * goes to the agent as its first prompt through the relay. The agent opens the pull request and sets `swf:done` or
+ * `swf:failed` itself, or asks a question on the issue and sets `swf:question` until the answer arrives. When the setup fails, the poller sets `swf:failed` with the error and leaves the VM for inspection; Hunt
  * desktops adopt the VM either way.
  *
  * Every poll also follows the agent of each running session VM: the issue's labels give the agent's state (`running`,
@@ -36,9 +37,11 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import gitPushPrompt from "../../../libs/domain/prompts/git-push.system-prompt.md?raw";
+import questionPrompt from "../../../libs/domain/prompts/question.system-prompt.md?raw";
 import remotePrompt from "../../../libs/domain/prompts/remote.system-prompt.md?raw";
 import swfFirstPrompt from "../prompts/swf-first.user-prompt.md?raw";
 import swfNudgePrompt from "../prompts/swf-nudge.user-prompt.md?raw";
+import swfSystemPromptFile from "../prompts/swf.system-prompt.md?raw";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import type { Log, LogLevel } from "../../../libs/domain/src/journal.ts";
 import { sendPrompt, type Transport } from "./acpClient.ts";
@@ -67,6 +70,7 @@ import {
   sessionNames,
   stoppedComment,
   swfLabels,
+  swfSystemPrompt,
   type PromptFiles,
   type SessionNames,
   type SwfLabels,
@@ -351,7 +355,9 @@ export class Poller {
     const sessionConfig = await vm.huntCtl(["session-config", names.id, "--domain", domain]);
     const servicesPrompt = typeof sessionConfig.services_prompt === "string" ? sessionConfig.services_prompt : null;
     const agentMd = typeof sessionConfig.agent_md === "string" ? sessionConfig.agent_md : null;
-    const systemPrompt = remoteSystemPrompt(this.deps.prompts(), servicesPrompt, agentMd);
+    const prompts = this.deps.prompts();
+    const swfPrompt = swfSystemPrompt(prompts.swfSystem, repo, issue.number, branch, setup.labels);
+    const systemPrompt = remoteSystemPrompt(prompts, swfPrompt, servicesPrompt, agentMd);
     await vm.putClaudeFiles(names.id, { "hunt-session.json": huntSessionFile(names.id, cloned.path, systemPrompt) });
     log(`cloned ${repo} into ${cloned.path}; installing the dependencies`);
     await vm.huntCtl(["deps", names.id]);
@@ -359,7 +365,7 @@ export class Poller {
     const status = await vm.huntCtl(["wait", names.id, "--timeout", "180"]);
     if (typeof status.acpSessionId !== "string" || !status.acpSessionId) throw new Error("the relay reports no ACP session");
 
-    const text = firstPrompt(this.deps.prompts().swfFirst, repo, issue, comments, branch, setup.labels);
+    const text = firstPrompt(prompts.swfFirst, repo, issue, comments, branch, setup.labels);
     const outcome = await this.deps.sendPrompt(vm.openRelay(), { sessionId: status.acpSessionId, cwd: cloned.path, text });
     log(`the agent of session ${names.id} works on the issue (prompt ${outcome})`);
   }
@@ -411,7 +417,14 @@ function secretsReader(metadata: Metadata): () => Promise<Tokens> {
 
 /** The prompt files, bundled into the poller at build time. */
 function readPrompts(): PromptFiles {
-  return { remote: remotePrompt, gitPush: gitPushPrompt, swfFirst: swfFirstPrompt, swfNudge: swfNudgePrompt };
+  return {
+    remote: remotePrompt,
+    gitPush: gitPushPrompt,
+    question: questionPrompt,
+    swfSystem: swfSystemPromptFile,
+    swfFirst: swfFirstPrompt,
+    swfNudge: swfNudgePrompt,
+  };
 }
 
 async function main(): Promise<void> {

@@ -15,6 +15,7 @@ import {
   redact,
   remoteSystemPrompt,
   sessionNames,
+  swfSystemPrompt,
   slugify,
   stoppedComment,
   swfLabels,
@@ -129,6 +130,8 @@ describe("issue comments", () => {
 const prompts = {
   remote: readFileSync(new URL("../../../libs/domain/prompts/remote.system-prompt.md", import.meta.url), "utf8"),
   gitPush: readFileSync(new URL("../../../libs/domain/prompts/git-push.system-prompt.md", import.meta.url), "utf8"),
+  question: readFileSync(new URL("../../../libs/domain/prompts/question.system-prompt.md", import.meta.url), "utf8"),
+  swfSystem: readFileSync(new URL("../prompts/swf.system-prompt.md", import.meta.url), "utf8"),
   swfFirst: readFileSync(new URL("../prompts/swf-first.user-prompt.md", import.meta.url), "utf8"),
   swfNudge: readFileSync(new URL("../prompts/swf-nudge.user-prompt.md", import.meta.url), "utf8"),
 };
@@ -142,16 +145,40 @@ describe("fillPrompt", () => {
 
 describe("session files", () => {
 
-  it("composes the system prompt like the desktop's remote_system_prompt with an empty base", () => {
+  it("composes the system prompt like the desktop's remote_system_prompt with an empty base, the swf steps after the shared parts", () => {
     const services = "\n### The repository's services\n- `api`: port 3000\n\n";
-    const prompt = remoteSystemPrompt(prompts, services, "\n# Services\nStart api.\n\n");
-    const withServices = `\n\n${prompts.remote}\n${prompts.gitPush}\n### The repository's services\n- \`api\`: port 3000\n`;
+    const prompt = remoteSystemPrompt(prompts, "## Working on a GitHub issue\n", services, "\n# Services\nStart api.\n\n");
+    const shared = `\n\n${prompts.remote}\n${prompts.gitPush}\n${prompts.question}\n## Working on a GitHub issue\n`;
+    const withServices = `${shared}\n### The repository's services\n- \`api\`: port 3000\n`;
     expect(prompt).toBe(`${withServices}\n### The repository's hunt.agent.md\n# Services\nStart api.\n`);
     expect(prompt.startsWith("\n\n## Remote session\n")).toBe(true);
     expect(prompt).toContain("follows at the end when it has one.\n\n### Git\n`origin` is the repository on GitHub.");
-    expect(remoteSystemPrompt(prompts, services, null)).toBe(withServices);
-    expect(remoteSystemPrompt(prompts, "", " \n")).toBe(`\n\n${prompts.remote}\n${prompts.gitPush}`);
-    expect(remoteSystemPrompt(prompts, null, null)).toBe(remoteSystemPrompt(prompts, undefined, undefined));
+    expect(prompt).toContain("## Questions to the user\n\nWhen you end a turn because you need an answer only the user can give");
+    expect(remoteSystemPrompt(prompts, "## Working on a GitHub issue\n", services, null)).toBe(withServices);
+    expect(remoteSystemPrompt(prompts, "## Working on a GitHub issue\n", "", " \n")).toBe(shared);
+    expect(remoteSystemPrompt(prompts, "", null, null)).toBe(remoteSystemPrompt(prompts, "", undefined, undefined));
+  });
+
+  it("fills the swf system prompt with the issue, the branch, the labels and the commands that move the issue between them", () => {
+    const prompt = swfSystemPrompt(prompts.swfSystem, "acme/app", 12, "feat/general/12-fix-login", swfLabels("swf"));
+    expect(prompt.startsWith("## Working on a GitHub issue\n\nHunt's poller started this session for issue #12 of acme/app, which carries the label `swf`;")).toBe(true);
+    expect(prompt).toContain("1. **Read the task.**");
+    expect(prompt).toContain(
+      "gather every open question into one comment on the issue (`gh issue comment 12 --repo acme/app --body \"…\"`) with the options you see and your " +
+        "recommendation, replace `swf:running` with `swf:question` (`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:question`) " +
+        "and end your turn with the questions as your last words and the marker `<!-- hunt:question -->`.",
+    );
+    expect(prompt).toContain("then replace `swf:question` with `swf:running` (`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:running`)");
+    expect(prompt).toContain("3. **Plan.** Comment a short implementation plan on the issue");
+    expect(prompt).toContain("5. **Pull request.** Commit to the current branch `feat/general/12-fix-login`, push it and open a pull request whose description contains `Closes #12`");
+    expect(prompt).toContain(
+      "6. **Clean up and finish.** Stop the services you started (`sudo -n hunt-ctl service stop <name>…`) and close the tmux windows you opened, delete the " +
+        "scratch files you created outside the repository and leave the working tree clean: `git status` shows nothing uncommitted. Then replace `swf:running` " +
+        "with `swf:done`: `gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:done`.",
+    );
+    expect(prompt).toContain("replace `swf:running` with `swf:failed` instead (`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:failed`)");
+    expect(prompt.endsWith("a turn that ends with the issue still labelled `swf:running` counts as an unfinished task.\n")).toBe(true);
+    expect(prompt).not.toContain("{{");
   });
 
   it("writes hunt-session.json in the desktop's shape: a new conversation without permission requests", () => {
@@ -167,7 +194,7 @@ describe("session files", () => {
 });
 
 describe("firstPrompt", () => {
-  it("gives the agent the issue with every comment and the steps up to the label", () => {
+  it("gives the agent the issue with every comment and sends it to the steps of the system prompt", () => {
     const comments = [
       { author: "bob", createdAt: "2026-10-13T09:00:00Z", body: "Also the logout.\n" },
       { author: "carol", createdAt: "2026-10-13T10:30:00Z", body: "Agreed." },
@@ -177,17 +204,11 @@ describe("firstPrompt", () => {
     expect(text.startsWith("Work on GitHub issue #12 of acme/app: Fix login\nhttps://github.com/acme/app/issues/12\n")).toBe(true);
     expect(text).toContain("## Issue, opened by @alice on 2026-10-13 08:04 UTC\n\nThe login fails.\n");
     expect(text).toContain("**@bob** on 2026-10-13 09:00 UTC:\n\nAlso the logout.\n\n---\n\n**@carol** on 2026-10-13 10:30 UTC:\n\nAgreed.");
-    expect(text).toContain("Commit to the current branch `feat/general/12-fix-login`, push it and open a pull request whose description contains `Closes #12`.");
-    expect(text).toContain("`gh issue comment 12 --repo acme/app --body");
-    expect(text).toContain("`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:done`");
-    expect(text).toContain("replace `swf:running` with `swf:failed` instead (`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:failed`)");
-  });
-
-  it("tells the agent to ask on the issue with the question label and to take it back with the answer", () => {
-    const text = firstPrompt(prompts.swfFirst, "acme/app", issue(12), [], "feat/general/12-issue-12", swfLabels("swf"));
-    expect(text).toContain("replace `swf:running` with `swf:question` (`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:question`) and end your turn with the question as your last words.");
-    expect(text).toContain("replace `swf:question` with `swf:running` (`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:running`)");
-    expect(text).toContain("Do not end your turn in any other way before step 5 is done");
+    expect(text.endsWith(
+      "Hunt's poller started this session because the issue has the label `swf`. Begin with step 1 of \"Working on a GitHub issue\" in your instructions " +
+        "and work through the steps on the branch `feat/general/12-fix-login`.\n",
+    )).toBe(true);
+    expect(text).not.toContain("{{");
   });
 
   it("says when the issue has no description or comments", () => {

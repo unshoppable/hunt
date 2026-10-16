@@ -1,3 +1,9 @@
+## 0.27.0 (2026-10-16)
+
+### 🚀 Features
+
+- **client:** let the user pick which remote sessions join the sidebar from the list, which shows their marks and agent state like the sidebar ([b28f051](https://github.com/unshoppable/hunt/commit/b28f051))
+
 ## 0.26.2 (2026-10-16)
 
 ### 🩹 Fixes

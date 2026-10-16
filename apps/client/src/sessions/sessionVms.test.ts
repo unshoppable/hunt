@@ -96,10 +96,10 @@ describe("sessionVmStatusLabel", () => {
 
 describe("sessionVmMarkState", () => {
   it("is busy only while the agent runs on a running VM and amber while it waits for an answer", () => {
-    expect(sessionVmMarkState(sessionVm())).toEqual({ isBusy: true, tone: "idle" });
-    expect(sessionVmMarkState(sessionVm({ isRunning: false, status: "TERMINATED" }))).toEqual({ isBusy: false, tone: "idle" });
+    expect(sessionVmMarkState(sessionVm())).toEqual({ isBusy: true, tone: "remote" });
+    expect(sessionVmMarkState(sessionVm({ isRunning: false, status: "TERMINATED" }))).toEqual({ isBusy: false, tone: "remote" });
     expect(sessionVmMarkState(sessionVm({ agent: "question" }))).toEqual({ isBusy: false, tone: "question" });
-    expect(sessionVmMarkState(sessionVm({ agent: "done" }))).toEqual({ isBusy: false, tone: "idle" });
-    expect(sessionVmMarkState(sessionVm({ agent: "" }))).toEqual({ isBusy: false, tone: "idle" });
+    expect(sessionVmMarkState(sessionVm({ agent: "done" }))).toEqual({ isBusy: false, tone: "remote" });
+    expect(sessionVmMarkState(sessionVm({ agent: "" }))).toEqual({ isBusy: false, tone: "remote" });
   });
 });

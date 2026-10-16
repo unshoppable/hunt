@@ -10,13 +10,17 @@ const SPINNER_ARC = 0.3;
 /** Radius of the question badge at the top right corner. */
 const BADGE_RADIUS = 4.5;
 
-/** The colour of a mark: amber while the agent waits for an answer, green for a response the user has not looked at yet. */
-export type MarkTone = "question" | "unseen" | "idle";
+/**
+ * The colour of a mark: amber while the agent waits for an answer, blue for a session that runs on a VM, green for a
+ * response the user has not looked at yet.
+ */
+export type MarkTone = "question" | "remote" | "unseen" | "idle";
 
 /**
  * Circle with a session's mark (A, B, … for sessions, 1, 2, … for sub sessions), showing the state of its agent from
  * the store: while the agent works, an arc runs around the outline; an agent that ended its turn with a question
- * turns the mark amber with a `?` badge at the corner, a response the user has not looked at yet turns it green.
+ * turns the mark amber with a `?` badge at the corner, a session on a VM is blue, a response the user has not looked
+ * at yet turns a local one green.
  */
 export function SessionMark({ sessionId, mark, title }: { sessionId: string; mark: string; title?: string }) {
   const isBusy = useHuntStore((state) => state.chats[sessionId]?.isBusy ?? false);
@@ -26,8 +30,9 @@ export function SessionMark({ sessionId, mark, title }: { sessionId: string; mar
     if (!chat || chat.items.length === 0) return state.sessions.find((session) => session.id === sessionId)?.remote?.agent === "question";
     return hasPendingQuestion(chat);
   });
+  const isRemote = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === sessionId)?.remote));
   const hasUnseenActivity = useHuntStore((state) => state.activeSessionId !== sessionId && (state.chats[sessionId]?.hasUnseenActivity ?? false));
-  const tone = hasQuestion ? "question" : hasUnseenActivity ? "unseen" : "idle";
+  const tone = hasQuestion ? "question" : isRemote ? "remote" : hasUnseenActivity ? "unseen" : "idle";
   return <MarkGlyph mark={mark} isBusy={isBusy} tone={tone} label={title ?? mark} title={title} />;
 }
 
@@ -42,7 +47,7 @@ export function MarkGlyph({ mark, isBusy, tone, label, title }: { mark: string; 
   const diameter = HEIGHT - 1;
   // Outline length of the rounded rect: two straight edges plus one full circle from the two caps.
   const perimeter = 2 * (width - HEIGHT) + Math.PI * diameter;
-  const state = isBusy ? "agent is working" : tone === "question" ? "waiting for an answer" : tone === "unseen" ? "unseen response" : null;
+  const state = isBusy ? "agent is working" : tone === "question" ? "waiting for an answer" : tone === "unseen" ? "unseen response" : tone === "remote" ? "on a VM" : null;
   return (
     <svg
       width={width}
@@ -85,6 +90,11 @@ export function MarkGlyph({ mark, isBusy, tone, label, title }: { mark: string; 
   );
 }
 
-const TEXT = { question: "text-amber-300", unseen: "text-emerald-300", idle: "text-neutral-300" };
-const OUTLINE = { question: "fill-amber-400/15 stroke-amber-400/60", unseen: "fill-emerald-400/15 stroke-emerald-400/60", idle: "" };
-const SPINNER = { question: "stroke-amber-300", unseen: "stroke-emerald-300", idle: "stroke-neutral-200" };
+const TEXT = { question: "text-amber-300", remote: "text-sky-300", unseen: "text-emerald-300", idle: "text-neutral-300" };
+const OUTLINE = {
+  question: "fill-amber-400/15 stroke-amber-400/60",
+  remote: "fill-sky-400/15 stroke-sky-400/60",
+  unseen: "fill-emerald-400/15 stroke-emerald-400/60",
+  idle: "",
+};
+const SPINNER = { question: "stroke-amber-300", remote: "stroke-sky-300", unseen: "stroke-emerald-300", idle: "stroke-neutral-200" };

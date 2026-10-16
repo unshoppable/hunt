@@ -165,7 +165,9 @@ describe("session files", () => {
     expect(prompt).toContain("1. **Read the task.**");
     expect(prompt).toContain(
       "gather every open question into one comment on the issue (`gh issue comment 12 --repo acme/app --body \"…\"`) with the options you see and your " +
-        "recommendation, replace `swf:running` with `swf:question` (`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:question`) " +
+        "recommendation. Start the comment by mentioning everyone who is to answer, so that GitHub notifies them: every current assignee of the issue " +
+        "(`gh issue view 12 --repo acme/app --json assignees -q '.assignees[].login'`) as `@login`, or the issue's author when it has no assignee. " +
+        "Then replace `swf:running` with `swf:question` (`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:question`) " +
         "and end your turn with the questions as your last words and the marker `<!-- hunt:question -->`.",
     );
     expect(prompt).toContain("then replace `swf:question` with `swf:running` (`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:running`)");

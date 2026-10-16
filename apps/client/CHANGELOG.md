@@ -1,3 +1,9 @@
+## 0.33.0 (2026-10-16)
+
+### 🚀 Features
+
+- **client:** colour the sidebar's issue badge amber and the pull request badge green, grey, purple or red by its state on GitHub ([4964eef](https://github.com/unshoppable/hunt/commit/4964eef))
+
 ## 0.32.0 (2026-10-16)
 
 ### 🚀 Features

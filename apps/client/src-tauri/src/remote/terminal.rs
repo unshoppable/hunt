@@ -21,7 +21,7 @@ use super::shell_command;
 use super::ssh::Ssh;
 use super::RemoteTarget;
 
-/// The tmux session in which the agent runs the app's processes (see `libs/domain/system-prompts/remote.md`).
+/// The tmux session in which the agent runs the app's processes (see `libs/domain/prompts/remote.system-prompt.md`).
 const APP_SESSION: &str = "app";
 
 /// `APP_SESSION` as a tmux target that matches its name exactly, not as a prefix.

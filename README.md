@@ -191,7 +191,7 @@ sub chat in its popover; the sub session's chat pane offers "Open in editor" for
 The "Agent" page of the settings dialog holds what Hunt tells the agent on its own: the language of every output
 Hunt asks for itself (session summaries and titles in `apps/client/src-tauri/src/session/summary.rs`, the dependency
 graph), German by default, and the system prompt addition of every new session, by default the response-style
-instructions in `apps/client/system-prompts/response-style.md` (plain language for software engineers). The frontend pushes
+instructions in `apps/client/prompts/response-style.system-prompt.md` (plain language for software engineers). The frontend pushes
 both to `apps/client/src-tauri/src/preferences.rs` at start and on change; `apps/client/src-tauri/src/acp/connection.rs`
 appends the prompt, the diagram instructions and the selection context of a sub session to Claude Code's system prompt
 via the ACP `systemPrompt` meta.
@@ -593,7 +593,7 @@ VM's metadata, waits for the startup script and installs the staged session rele
 `hunt-ctl clone` clones the repository from GitHub as `agent` onto the branch (the origin's branch of that name
 when it exists, else a new one from the default branch) with the token's GitHub user as Git identity; `session-config`,
 `put-files --claude` with `hunt-session.json`, `deps`, `start` and `wait` follow as in a handoff. The system prompt is
-the remote part a handoff appends (`libs/domain/system-prompts/`, which the app and the poller compile in), the repository's
+the remote part a handoff appends (`libs/domain/prompts/`, which the app and the poller compile in), the repository's
 services and its `hunt.agent.md`; the parts Hunt takes from its user's settings (response style, guardrail offer, diagram language) do not exist
 on the gateway. The poller then sends the issue with all its comments as the first prompt through the relay and
 disconnects; the relay runs the turn without a client. The prompt asks the agent to implement and check the issue, push
@@ -674,7 +674,7 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 
 | Path | Owns |
 | --- | --- |
-| `apps/client/` | Nx project `client`: the desktop app, with the Rust shell in `src-tauri/`, the React UI in `src/`, one HTML page per window and the default system-prompt parts in `system-prompts/` |
+| `apps/client/` | Nx project `client`: the desktop app, with the Rust shell in `src-tauri/`, the React UI in `src/`, one HTML page per window and the system-prompt parts and prompts in `prompts/` |
 | `apps/client/src-tauri/src/acp/` | Agent process per session, ACP event forwarding |
 | `apps/client/src-tauri/src/git.rs` | Worktrees, changelists, shelve, revert, commit and push |
 | `apps/client/src-tauri/src/github.rs` | Pull requests through `gh` |
@@ -687,7 +687,7 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 | `apps/client/src/state/` | Zustand stores and chat reducers |
 | `apps/client/src/` `chat/`, `diff/`, `ide/`, `graph/`, `guardrails/`, `preview/`, `review/`, `sessions/`, `settings/`, `terminal/` | One folder per tab or window |
 | `apps/client/src/ui/` | Primitives shared by every feature |
-| `apps/gateway/` | Nx project `gateway`: the gateway VM's API (`src/api.ts`, `src/orchestrator.ts`, `vm/hunt-api`), issue poller (`src/swf.ts`), wake service (`src/wake.ts`) and systemd units (`vm/systemd/`) |
+| `apps/gateway/` | Nx project `gateway`: the gateway VM's API (`src/api.ts`, `src/orchestrator.ts`, `vm/hunt-api`), issue poller (`src/swf.ts`, its prompts in `prompts/`), wake service (`src/wake.ts`) and systemd units (`vm/systemd/`) |
 | `apps/session/` | Nx project `session`: the relay (`src/relay/`), the `hunt.json` services contract (`src/config.ts`), the versions of the agent's tools and the session VM's files and systemd units (`vm/`) |
 | `libs/domain/` | Nx project `domain`: JSON-RPC and NDJSON framing, error messages and the system-prompt parts of remote sessions the apps share |
 | `libs/vm/` | Nx project `vm`: `hunt-ctl`, which Hunt and the gateway run on the VMs |

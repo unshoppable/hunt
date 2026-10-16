@@ -66,8 +66,8 @@
       "inputs": [
         "{projectRoot}/src-tauri/**/*",
         "!{projectRoot}/src-tauri/target/**/*",
-        "{projectRoot}/system-prompts/**/*",
-        "{workspaceRoot}/libs/domain/system-prompts/**/*"
+        "{projectRoot}/prompts/**/*",
+        "{workspaceRoot}/libs/domain/prompts/**/*"
       ]
     }
   }

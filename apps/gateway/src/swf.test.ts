@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { Transport } from "./acpClient.ts";
 import type { Compute, Instance, InstanceRequest, MetadataItem } from "./gcp.ts";
@@ -7,6 +8,8 @@ import type { SessionVm } from "./sessionVm.ts";
 import { Poller, relayStatus, type PollerDeps } from "./swf.ts";
 import { readSwfConfig, type SwfConfig } from "./swfConfig.ts";
 
+const SWF_FIRST = readFileSync(new URL("../prompts/swf-first.user-prompt.md", import.meta.url), "utf8");
+const SWF_NUDGE = readFileSync(new URL("../prompts/swf-nudge.user-prompt.md", import.meta.url), "utf8");
 const GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
 const CLAUDE_TOKEN = "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz";
 const CONFIG: SwfConfig = { repos: ["acme/app"], maxSessions: 2 };
@@ -195,7 +198,7 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
     },
     compute,
     orchestrator,
-    prompts: () => ({ remote: "## Remote session\n", gitPush: "### Git\n" }),
+    prompts: () => ({ remote: "## Remote session\n", gitPush: "### Git\n", swfFirst: SWF_FIRST, swfNudge: SWF_NUDGE }),
     sendPrompt: async (_transport, request) => {
       prompts.push(request);
       return "started";

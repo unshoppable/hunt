@@ -938,13 +938,13 @@ pub fn close_terminal(terminals: State<'_, TerminalRegistry>, terminal_id: Uuid)
 }
 
 /// What Hunt tells the agent of a remote session on top of its usual system prompt addition, whatever the repository.
-const REMOTE_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/system-prompts/remote.md"));
+const REMOTE_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/prompts/remote.system-prompt.md"));
 
 /// The Git part of `REMOTE_PROMPT` when Hunt hands the user's GitHub token to the agent on the VM.
-const REMOTE_GIT_PUSH_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/system-prompts/git-push.md"));
+const REMOTE_GIT_PUSH_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/prompts/git-push.system-prompt.md"));
 
 /// The Git part of `REMOTE_PROMPT` without a GitHub token.
-const REMOTE_GIT_LOCAL_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/system-prompts/git-local.md"));
+const REMOTE_GIT_LOCAL_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/prompts/git-local.system-prompt.md"));
 
 /// What Hunt appends to the system prompt of a remote session: `base`, the usual addition, then `REMOTE_PROMPT`, the Git
 /// part that fits whether the agent has the user's GitHub token, the section on the repository's services that

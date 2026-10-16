@@ -35,8 +35,10 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import gitPushPrompt from "../../../libs/domain/system-prompts/git-push.md?raw";
-import remotePrompt from "../../../libs/domain/system-prompts/remote.md?raw";
+import gitPushPrompt from "../../../libs/domain/prompts/git-push.system-prompt.md?raw";
+import remotePrompt from "../../../libs/domain/prompts/remote.system-prompt.md?raw";
+import swfFirstPrompt from "../prompts/swf-first.user-prompt.md?raw";
+import swfNudgePrompt from "../prompts/swf-nudge.user-prompt.md?raw";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import type { Log, LogLevel } from "../../../libs/domain/src/journal.ts";
 import { sendPrompt, type Transport } from "./acpClient.ts";
@@ -65,7 +67,7 @@ import {
   sessionNames,
   stoppedComment,
   swfLabels,
-  type RemotePrompts,
+  type PromptFiles,
   type SessionNames,
   type SwfLabels,
 } from "./swfPlan.ts";
@@ -94,7 +96,7 @@ export interface PollerDeps {
   compute: Compute;
   orchestrator: Orchestrator;
   vm(name: string, zone: string): SessionVm;
-  prompts(): RemotePrompts;
+  prompts(): PromptFiles;
   sendPrompt(transport: Transport, request: { sessionId: string; cwd: string; text: string }): Promise<string>;
   newId(): string;
   log(message: string, level?: LogLevel): void;
@@ -274,7 +276,7 @@ export class Poller {
     if (!status || status.turn !== "idle" || status.clientConnected || status.lastTurnEndedAt === null) return;
     if (watched.remindedAt === null) {
       watched.remindedAt = status.lastTurnEndedAt;
-      const text = nudgePrompt(repo, issue, labels);
+      const text = nudgePrompt(this.deps.prompts().swfNudge, repo, issue, labels);
       const outcome = await this.deps.sendPrompt(vm.openRelay(), { sessionId: status.acpSessionId, cwd: status.worktree, text });
       this.deps.log(`${key}: the agent ended its turn with the issue still labelled ${labels.running}; reminded it (prompt ${outcome})`);
     } else if (status.lastTurnEndedAt > watched.remindedAt) {
@@ -357,7 +359,7 @@ export class Poller {
     const status = await vm.huntCtl(["wait", names.id, "--timeout", "180"]);
     if (typeof status.acpSessionId !== "string" || !status.acpSessionId) throw new Error("the relay reports no ACP session");
 
-    const text = firstPrompt(repo, issue, comments, branch, setup.labels);
+    const text = firstPrompt(this.deps.prompts().swfFirst, repo, issue, comments, branch, setup.labels);
     const outcome = await this.deps.sendPrompt(vm.openRelay(), { sessionId: status.acpSessionId, cwd: cloned.path, text });
     log(`the agent of session ${names.id} works on the issue (prompt ${outcome})`);
   }
@@ -407,9 +409,9 @@ function secretsReader(metadata: Metadata): () => Promise<Tokens> {
   };
 }
 
-/** The remote prompts, bundled into the poller at build time. */
-function readPrompts(): RemotePrompts {
-  return { remote: remotePrompt, gitPush: gitPushPrompt };
+/** The prompt files, bundled into the poller at build time. */
+function readPrompts(): PromptFiles {
+  return { remote: remotePrompt, gitPush: gitPushPrompt, swfFirst: swfFirstPrompt, swfNudge: swfNudgePrompt };
 }
 
 async function main(): Promise<void> {

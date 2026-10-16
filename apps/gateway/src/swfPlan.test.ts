@@ -7,6 +7,7 @@ import {
   branchName,
   claimComment,
   failureComment,
+  fillPrompt,
   firstPrompt,
   huntSessionFile,
   issuesToStart,
@@ -125,11 +126,21 @@ describe("issue comments", () => {
   });
 });
 
+const prompts = {
+  remote: readFileSync(new URL("../../../libs/domain/prompts/remote.system-prompt.md", import.meta.url), "utf8"),
+  gitPush: readFileSync(new URL("../../../libs/domain/prompts/git-push.system-prompt.md", import.meta.url), "utf8"),
+  swfFirst: readFileSync(new URL("../prompts/swf-first.user-prompt.md", import.meta.url), "utf8"),
+  swfNudge: readFileSync(new URL("../prompts/swf-nudge.user-prompt.md", import.meta.url), "utf8"),
+};
+
+describe("fillPrompt", () => {
+  it("replaces every placeholder and refuses one without a value", () => {
+    expect(fillPrompt("Issue #{{number}} of {{repo}}, #{{number}}", { number: "3", repo: "acme/app" })).toBe("Issue #3 of acme/app, #3");
+    expect(() => fillPrompt("{{missing}}", {})).toThrow("failed to fill the prompt: no value for {{missing}}");
+  });
+});
+
 describe("session files", () => {
-  const prompts = {
-    remote: readFileSync(new URL("../../../libs/domain/system-prompts/remote.md", import.meta.url), "utf8"),
-    gitPush: readFileSync(new URL("../../../libs/domain/system-prompts/git-push.md", import.meta.url), "utf8"),
-  };
 
   it("composes the system prompt like the desktop's remote_system_prompt with an empty base", () => {
     const services = "\n### The repository's services\n- `api`: port 3000\n\n";
@@ -161,7 +172,7 @@ describe("firstPrompt", () => {
       { author: "bob", createdAt: "2026-10-13T09:00:00Z", body: "Also the logout.\n" },
       { author: "carol", createdAt: "2026-10-13T10:30:00Z", body: "Agreed." },
     ];
-    const text = firstPrompt("acme/app", { ...issue(12, "Fix login"), body: "The login fails." }, comments, "feat/general/12-fix-login", swfLabels("swf"));
+    const text = firstPrompt(prompts.swfFirst, "acme/app", { ...issue(12, "Fix login"), body: "The login fails." }, comments, "feat/general/12-fix-login", swfLabels("swf"));
 
     expect(text.startsWith("Work on GitHub issue #12 of acme/app: Fix login\nhttps://github.com/acme/app/issues/12\n")).toBe(true);
     expect(text).toContain("## Issue, opened by @alice on 2026-10-13 08:04 UTC\n\nThe login fails.\n");
@@ -173,14 +184,14 @@ describe("firstPrompt", () => {
   });
 
   it("tells the agent to ask on the issue with the question label and to take it back with the answer", () => {
-    const text = firstPrompt("acme/app", issue(12), [], "feat/general/12-issue-12", swfLabels("swf"));
+    const text = firstPrompt(prompts.swfFirst, "acme/app", issue(12), [], "feat/general/12-issue-12", swfLabels("swf"));
     expect(text).toContain("replace `swf:running` with `swf:question` (`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:question`) and end your turn with the question as your last words.");
     expect(text).toContain("replace `swf:question` with `swf:running` (`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:running`)");
     expect(text).toContain("Do not end your turn in any other way before step 5 is done");
   });
 
   it("says when the issue has no description or comments", () => {
-    const text = firstPrompt("acme/app", issue(3), [], "feat/general/3-issue-3", swfLabels("swf"));
+    const text = firstPrompt(prompts.swfFirst, "acme/app", issue(3), [], "feat/general/3-issue-3", swfLabels("swf"));
     expect(text).toContain("(no description)");
     expect(text).toContain("## Comments\n\n(none)\n");
   });
@@ -188,7 +199,7 @@ describe("firstPrompt", () => {
 
 describe("nudgePrompt", () => {
   it("names the three ways out and the consequence of ending the turn again", () => {
-    const text = nudgePrompt("acme/app", 12, swfLabels("swf"));
+    const text = nudgePrompt(prompts.swfNudge, "acme/app", 12, swfLabels("swf"));
     expect(text.startsWith("Your last turn ended, but issue #12 of acme/app still has the label `swf:running`")).toBe(true);
     expect(text).toContain("`Closes #12`");
     expect(text).toContain("(`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:done`)");

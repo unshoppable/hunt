@@ -1,4 +1,5 @@
 import type { PreviewService, PreviewServiceState, PreviewStatus } from "../ipc/types";
+import handoffStartPrompt from "../../prompts/handoff-start.user-prompt.md?raw";
 
 /** How a state reads in the Preview tab: answering, on its way, needing a look, broken, or at rest. */
 export type Tone = "ok" | "pending" | "warning" | "error" | "idle";
@@ -47,9 +48,7 @@ export function describePreview(status: PreviewStatus | null): Description {
  * What Hunt asks the agent right after it handed off a session whose chat holds a prompt, when hunt.json declares
  * services and none of them runs or starts.
  */
-export const HANDOFF_START_PROMPT =
-  "This session has just moved to its VM. Start the services your task needs, as the repository's hunt.agent.md describes; " +
-  "start nothing if it is not clear which app the task is about or what you are to do. Do nothing else in this turn.";
+export const HANDOFF_START_PROMPT = handoffStartPrompt.trim();
 
 /** Whether a service of hunt.json runs or is starting. */
 export function hasRunningService(status: PreviewStatus): boolean {

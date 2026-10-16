@@ -1,3 +1,13 @@
+## 0.18.0 (2026-10-16)
+
+### 🚀 Features
+
+- **gateway:** give swf sessions a system prompt with the issue's workflow, from reading it to the clean-up ([9584610](https://github.com/unshoppable/hunt/commit/9584610))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.13.3
+
 ## 0.17.0 (2026-10-16)
 
 ### 🚀 Features

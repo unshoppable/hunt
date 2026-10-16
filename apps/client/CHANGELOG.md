@@ -1,3 +1,9 @@
+## 0.26.0 (2026-10-16)
+
+### 🚀 Features
+
+- **client:** mark a session whose agent ended its reply with the question marker, in the chat pane as well ([6954a6c](https://github.com/unshoppable/hunt/commit/6954a6c))
+
 ## 0.25.0 (2026-10-16)
 
 ### 🚀 Features

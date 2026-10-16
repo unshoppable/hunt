@@ -140,6 +140,31 @@ export type VmSettings = { project: string; machineType: string | null };
  */
 export type RemoteOrigin = "handoff" | "desktop" | "swf";
 
+/**
+ * A session VM as the gateway lists it (mirror of `AdoptableSession` in src-tauri/src/remote/adoption.rs): started by
+ * the gateway's poller for a GitHub issue (`swf`) or handed off by someone's Hunt (`desktop`), running or not.
+ */
+export type SessionVm = {
+  id: string;
+  vm: VmRef;
+  /** The session's title, or one made from the issue or the repository when the VM names none. */
+  title: string;
+  /** `<owner>/<repo>` of the session's repository. */
+  repo: string;
+  /** The branch the session started on; empty when the VM names none. */
+  branch: string;
+  origin: "desktop" | "swf";
+  /** The OS Login user who handed a `desktop` session off; empty for a `swf` session. */
+  owner: string;
+  /** The GitHub issue of a `swf` session. */
+  issue: number | null;
+  /** The Compute Engine status of the VM, e.g. `RUNNING` or `TERMINATED`. */
+  status: string;
+  isRunning: boolean;
+  /** When the VM was created, ISO 8601; null when the gateway reports no time. */
+  createdAt: string | null;
+};
+
 /** Where a session handed off to a VM runs (mirror of `RemoteTarget` in src-tauri/src/remote/mod.rs). */
 export type RemoteTarget = {
   /** The session's own VM, `vm-hunt-s-<short>`. */

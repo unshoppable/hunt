@@ -56,6 +56,9 @@ pub struct SessionSummary {
     pub status: String,
     /// `desktop` or `swf`.
     pub origin: String,
+    /// The OS Login user who handed the session off; empty for a VM the poller created.
+    #[serde(default)]
+    pub owner: String,
     /// `<owner>/<repo>`.
     pub repo: String,
     pub branch: String,

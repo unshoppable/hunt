@@ -508,7 +508,9 @@ mod tests {
             repo: "acme/app".into(),
             branch: "fix/general/123-fix-login".into(),
             origin: crate::remote::RemoteOrigin::Swf,
+            owner: String::new(),
             issue: Some(123),
+            status: "TERMINATED".into(),
             is_running: false,
             created_at: chrono::DateTime::from_timestamp(1_760_000_000, 0),
         };

@@ -165,7 +165,11 @@ A session starts in the start view of the chat pane ("New" in the sidebar), whic
 last. Choosing a repository there, from the folder dialog or the list of recently used ones, creates the session right
 away, so the sidebar lists it and the diff, editor and graph panes work before anything was asked; such a session is
 titled after its repository until its first prompt names it (`rename_session`). With the preselected repository the
-first prompt creates the session and titles it; "PR review" starts a review session on a pull request's branch.
+first prompt creates the session and titles it. The view's header has "PR review" and "Remote sessions": each replaces
+the view's body with a list in the chat pane (no popover), of the repository's open pull requests or of the session
+VMs the gateway lists; choosing a pull request starts a review session on its branch, choosing a remote session shows
+it, adopting it first when this Mac does not know it (`apps/client/src/sessions/PullRequestList.tsx`,
+`SessionVmList.tsx`, `list_session_vms`).
 
 A sub session is a fresh agent session in the worktree of an existing session. "sub session" on a session in the
 sidebar starts one with a title; selecting text on the right side of a diff and choosing "Ask Claude about
@@ -214,8 +218,8 @@ read-only, only the lines the session and its parent changed.
 #### Pull request reviews
 
 `apps/client/src-tauri/src/github.rs` lists the open pull requests of a repository and reads one with its conversation
-through the `gh` CLI. The "PR review" button of the new-session view (`apps/client/src/sessions/PullRequestPopover.tsx`)
-shows them with a search box; picking one starts the session right away, without a prompt: a worktree on the pull
+through the `gh` CLI. The "PR review" button of the new-session view (`apps/client/src/sessions/PullRequestList.tsx`)
+lists them in the chat pane with a search box; picking one starts the session right away, without a prompt: a worktree on the pull
 request's own branch, titled after the pull request, with the pull request and the merge base with its target branch
 stored in the session (`pullRequest` and `diffBase` in `sessions.json`). The worktree checks the local branch of that
 name out, or creates it to track the branch on its remote; it fails when another worktree, the repository's checkout
@@ -599,8 +603,10 @@ session. Right before deleting, it reads the VM once more and keeps one that was
 session is only reported. A session whose VM went this way continues on the Mac as described above, and `journalctl -u
 hunt-swf` shows one line per deletion.
 
-The labels and metadata of the session VMs are the directory of remote sessions. At its start and from the sidebar's
-*Refresh remote sessions* button, Hunt asks the gateway for them (`sessions.list`), keeps those in the gateway's
+The labels and metadata of the session VMs are the directory of remote sessions. The start view's "Remote sessions"
+button lists them as the gateway reports them (`list_session_vms`), running ones first, and opens one on a click. At its
+start, from the sidebar's *Refresh remote sessions* button and when a listed session this Mac does not know is opened,
+Hunt asks the gateway for them (`sessions.list`), keeps those in the gateway's
 region, whose zones the gateway creates session VMs in (`adopt_session_vms`,
 `apps/client/src-tauri/src/remote/adoption.rs`), and adopts every session whose VM is named after it and that no local
 session has: VMs the gateway's poller started for `swf` issues (`hunt-origin=swf`, `hunt-issue`) and other people's

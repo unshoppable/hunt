@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { commands } from "../ipc/commands";
 import { useHuntStore, type AgentSetup, type PromptDraft, type SessionStart, type WorktreeTarget } from "../state/store";
 import { commandsFor, useAgentDefaultsStore } from "../state/agentDefaults";
+import { configuredVmSettings, useSettingsStore } from "../state/settings";
 import { findSelectOption, listChoiceOptions, listModes } from "../chat/configOptions";
 import { PromptInput, type ConfigSelect } from "../chat/PromptInput";
 import type { PullRequest, Screenshot, Workspace } from "../ipc/types";
@@ -12,10 +13,11 @@ import { HEADER_BAR } from "../ui/bars";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { Dropdown } from "../ui/Dropdown";
 import type { DropdownOption } from "../ui/floatingMenu";
-import { BranchIcon, CheckIcon, ChevronDownIcon, GitHubIcon } from "../ui/icons";
+import { BranchIcon, CheckIcon, ChevronDownIcon, CloudIcon, GitHubIcon } from "../ui/icons";
 import { useDismiss } from "../ui/useDismiss";
-import { PullRequestPopover } from "./PullRequestPopover";
+import { PullRequestList } from "./PullRequestList";
 import { findPullRequestBranch } from "./pullRequests";
+import { SessionVmList } from "./SessionVmList";
 import { titleFromPrompt } from "./sessionLabels";
 
 /** Where a session can work; "New environment" (issue #2) is announced but not built yet, hence disabled. */
@@ -43,6 +45,12 @@ const DEFAULT_CONFIG_VALUES: Record<string, string> = { effort: "high" };
 /** Where a new session works unless the user picked otherwise. */
 const DEFAULT_WORKSPACE: Workspace = "worktree";
 
+/** What fills the view below its header: the start view itself, or one of the lists its header buttons open. */
+type View = "start" | "pullRequests" | "sessionVms";
+
+/** A header button that opens one of the lists; pressed while its list shows. */
+const LIST_TOGGLE = `${SECONDARY_BUTTON_XS} aria-pressed:border-white/15 aria-pressed:bg-(--row-active) aria-pressed:text-white`;
+
 /**
  * Start view for a new session, shown in the chat pane instead of a dialog. The repository used last is preselected;
  * choosing a repository (folder dialog or the list of recent ones) creates the session right away, titled after the
@@ -51,7 +59,8 @@ const DEFAULT_WORKSPACE: Workspace = "worktree";
  * at once, and is sent as soon as the agent runs with the chosen model, effort and mode. A top-level session gets a
  * worktree from the chosen base branch, or works in the repository's own checkout on its current branch; a sub session
  * (`parentId` set) runs in the parent's worktree. After a failed creation the view comes back with `initialError` and
- * the unsent `initialPrompt`.
+ * the unsent `initialPrompt`. The header's "PR review" and "Remote sessions" buttons replace the view's body with the
+ * repository's open pull requests or the session VMs the gateway lists; choosing one starts or opens that session.
  */
 export function NewSessionView({
   parentId,
@@ -73,6 +82,8 @@ export function NewSessionView({
   const preferred = useAgentDefaultsStore((state) => state.preferred);
   const setPreferred = useAgentDefaultsStore((state) => state.setPreferred);
   const recentRepoPaths = useAgentDefaultsStore((state) => state.recentRepoPaths);
+  /** Whether the remote settings name a gateway; without one there are no remote sessions to list. */
+  const hasGateway = useSettingsStore((state) => configuredVmSettings(state.remote) !== null);
   const [repoPath, setRepoPath] = useState(() => (parentId ? "" : (recentRepoPaths[0] ?? latestRepoPath ?? "")));
   const [branches, setBranches] = useState<string[]>([]);
   const [baseRef, setBaseRef] = useState("");
@@ -83,10 +94,9 @@ export function NewSessionView({
   const [error, setError] = useState<string | null>(initialError);
   /** Set when the user chose a repository: the session starts as soon as the repository's branches are known. */
   const [startsWhenLoaded, setStartsWhenLoaded] = useState(false);
-  const [showsPullRequests, setShowsPullRequests] = useState(false);
+  const [view, setView] = useState<View>("start");
   /** Which repository menu is open: the one under the heading's repository name or the one in the target bar. */
   const [repoMenu, setRepoMenu] = useState<"heading" | "bar" | null>(null);
-  const pullRequestButtonRef = useRef<HTMLButtonElement>(null);
   const headingRepoButtonRef = useRef<HTMLButtonElement>(null);
   const recentReposButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -165,7 +175,7 @@ export function NewSessionView({
    * Both branches must have been fetched into the repository.
    */
   function selectPullRequest(selected: PullRequest) {
-    setShowsPullRequests(false);
+    setView("start");
     const branch = findPullRequestBranch(branches, selected.headRefName);
     const targetBranch = findPullRequestBranch(branches, selected.baseRefName);
     if (!branch || !targetBranch) {
@@ -184,6 +194,11 @@ export function NewSessionView({
     };
     startSession(`#${selected.number} ${selected.title}`, target, null);
     setRightTab("diff");
+  }
+
+  /** Shows the list `next`, or the start view again when it shows already. */
+  function toggleView(next: View) {
+    setView((current) => (current === next ? "start" : next));
   }
 
   const hasTarget = Boolean(parent || (repoPath && startRef));
@@ -287,113 +302,121 @@ export function NewSessionView({
         <span data-tauri-drag-region="" className="text-neutral-600">/</span>
         <span data-tauri-drag-region="" className="truncate font-semibold">{parent ? `New sub session of ${parent.title}` : "New session"}</span>
         {!parent ? (
-          <span className="relative ml-auto">
+          <span className="ml-auto flex items-center gap-2">
             <button
-              ref={pullRequestButtonRef}
               type="button"
               disabled={!repoPath}
-              onClick={() => setShowsPullRequests((current) => !current)}
-              className={`${SECONDARY_BUTTON_XS} pr-0`}
+              onClick={() => toggleView("pullRequests")}
+              className={LIST_TOGGLE}
               title={repoPath ? "Start a review session of an open pull request of this repository" : "Choose a repository first"}
-              aria-haspopup="dialog"
-              aria-expanded={showsPullRequests}
+              aria-pressed={view === "pullRequests"}
             >
               <GitHubIcon className="size-4" />
               PR review
-              {/* Split-button look like GitHub's: a divider and a chevron announce the list that opens. */}
-              <span className="ml-1.5 flex h-full items-center border-l border-white/10 px-2 text-neutral-400">
-                <ChevronDownIcon />
-              </span>
             </button>
-            {showsPullRequests ? (
-              <PullRequestPopover repoPath={repoPath} anchorRef={pullRequestButtonRef} onSelect={selectPullRequest} onClose={() => setShowsPullRequests(false)} />
-            ) : null}
+            <button
+              type="button"
+              disabled={!hasGateway}
+              onClick={() => toggleView("sessionVms")}
+              className={LIST_TOGGLE}
+              title={hasGateway ? "The remote sessions running on session VMs: swf issues and handoffs" : "Set the project under Settings → Remote VM first"}
+              aria-pressed={view === "sessionVms"}
+            >
+              <CloudIcon className="size-4" />
+              Remote sessions
+            </button>
           </span>
         ) : null}
       </header>
-      <div className="flex min-h-0 flex-1 flex-col justify-center overflow-y-auto py-8">
-        <div className="chat-column px-5 text-center">
-          <h1 className="text-3xl font-medium tracking-tight text-neutral-100">
-            What should we build
-            {parent ? (
-              <>
-                {" in "}
-                <span title={parent.worktreePath} className="underline decoration-neutral-500 decoration-dotted underline-offset-6">
-                  {parent.title}
-                </span>
-              </>
-            ) : repoPath ? (
-              <>
-                {" in "}
-                <span className="relative inline-block">
-                  <button
-                    ref={headingRepoButtonRef}
-                    type="button"
-                    onClick={() => setRepoMenu((current) => (current === "heading" ? null : "heading"))}
-                    title={repoPath}
-                    aria-haspopup="menu"
-                    aria-expanded={repoMenu === "heading"}
-                    className="group inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 py-0.5 pr-2 pl-3 transition-colors hover:border-white/20 hover:bg-white/10 aria-expanded:border-white/20 aria-expanded:bg-white/10"
-                  >
-                    {repoName(repoPath)}
-                    <span className="text-neutral-400 transition-transform group-aria-expanded:rotate-180 [&>svg]:size-5">
-                      <ChevronDownIcon />
-                    </span>
-                  </button>
-                  {repoMenu === "heading" ? (
-                    <RepositoryMenu
-                      anchorRef={headingRepoButtonRef}
-                      repoPath={repoPath}
-                      recentRepoPaths={recentRepoPaths}
-                      onSelect={selectRepository}
-                      onPick={() => void pickRepository()}
-                      onClose={() => setRepoMenu(null)}
-                      className="top-full left-1/2 -translate-x-1/2 text-left font-normal tracking-normal"
-                    />
-                  ) : null}
-                </span>
-              </>
+      {view === "pullRequests" ? (
+        <PullRequestList repoPath={repoPath} onSelect={selectPullRequest} onClose={() => setView("start")} />
+      ) : view === "sessionVms" ? (
+        <SessionVmList onClose={() => setView("start")} />
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col justify-center overflow-y-auto py-8">
+          <div className="chat-column px-5 text-center">
+            <h1 className="text-3xl font-medium tracking-tight text-neutral-100">
+              What should we build
+              {parent ? (
+                <>
+                  {" in "}
+                  <span title={parent.worktreePath} className="underline decoration-neutral-500 decoration-dotted underline-offset-6">
+                    {parent.title}
+                  </span>
+                </>
+              ) : repoPath ? (
+                <>
+                  {" in "}
+                  <span className="relative inline-block">
+                    <button
+                      ref={headingRepoButtonRef}
+                      type="button"
+                      onClick={() => setRepoMenu((current) => (current === "heading" ? null : "heading"))}
+                      title={repoPath}
+                      aria-haspopup="menu"
+                      aria-expanded={repoMenu === "heading"}
+                      className="group inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 py-0.5 pr-2 pl-3 transition-colors hover:border-white/20 hover:bg-white/10 aria-expanded:border-white/20 aria-expanded:bg-white/10"
+                    >
+                      {repoName(repoPath)}
+                      <span className="text-neutral-400 transition-transform group-aria-expanded:rotate-180 [&>svg]:size-5">
+                        <ChevronDownIcon />
+                      </span>
+                    </button>
+                    {repoMenu === "heading" ? (
+                      <RepositoryMenu
+                        anchorRef={headingRepoButtonRef}
+                        repoPath={repoPath}
+                        recentRepoPaths={recentRepoPaths}
+                        onSelect={selectRepository}
+                        onPick={() => void pickRepository()}
+                        onClose={() => setRepoMenu(null)}
+                        className="top-full left-1/2 -translate-x-1/2 text-left font-normal tracking-normal"
+                      />
+                    ) : null}
+                  </span>
+                </>
+              ) : null}
+              ?
+            </h1>
+            {!parent && !repoPath ? (
+              <p className="mt-3 text-base">
+                <button type="button" onClick={() => void pickRepository()} className="text-neutral-300 underline underline-offset-4 hover:text-white">
+                  Choose a repository to start
+                </button>
+              </p>
             ) : null}
-            ?
-          </h1>
-          {!parent && !repoPath ? (
-            <p className="mt-3 text-base">
-              <button type="button" onClick={() => void pickRepository()} className="text-neutral-300 underline underline-offset-4 hover:text-white">
-                Choose a repository to start
-              </button>
-            </p>
-          ) : null}
+          </div>
+          <div className="mt-6">
+            <PromptInput
+              isBusy={false}
+              isBlocked={false}
+              modeId={modeId}
+              modes={modes}
+              configSelects={configSelects}
+              commands={slashCommands}
+              onSend={start}
+              onCycleMode={() => {}}
+              onModeChange={(value) => setPreferred("mode", value)}
+              onConfigChange={setPreferred}
+              extension={targetBar}
+              placeholder="Describe what to build or change"
+              initialDraft={initialPrompt}
+              hint={
+                startsWhenLoaded
+                  ? "Starting the session…"
+                  : !hasTarget
+                    ? "Choose a repository to start the session right away"
+                    : "enter starts the session · shift+enter adds a line · choosing a repository starts one there right away"
+              }
+            />
+            {error ? (
+              <div className="chat-column px-5">
+                <p className="mt-3 rounded-lg border border-red-400/40 bg-red-400/10 px-3 py-2 text-sm text-red-300 break-words">{error}</p>
+              </div>
+            ) : null}
+          </div>
         </div>
-        <div className="mt-6">
-          <PromptInput
-            isBusy={false}
-            isBlocked={false}
-            modeId={modeId}
-            modes={modes}
-            configSelects={configSelects}
-            commands={slashCommands}
-            onSend={start}
-            onCycleMode={() => {}}
-            onModeChange={(value) => setPreferred("mode", value)}
-            onConfigChange={setPreferred}
-            extension={targetBar}
-            placeholder="Describe what to build or change"
-            initialDraft={initialPrompt}
-            hint={
-              startsWhenLoaded
-                ? "Starting the session…"
-                : !hasTarget
-                  ? "Choose a repository to start the session right away"
-                  : "enter starts the session · shift+enter adds a line · choosing a repository starts one there right away"
-            }
-          />
-          {error ? (
-            <div className="chat-column px-5">
-              <p className="mt-3 rounded-lg border border-red-400/40 bg-red-400/10 px-3 py-2 text-sm text-red-300 break-words">{error}</p>
-            </div>
-          ) : null}
-        </div>
-      </div>
+      )}
     </div>
   );
 }

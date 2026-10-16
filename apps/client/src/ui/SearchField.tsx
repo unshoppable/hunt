@@ -7,15 +7,18 @@ type SearchFieldProps = {
   placeholder?: string;
   ariaLabel: string;
   autoFocus?: boolean;
+  /** Called by Escape on an empty field instead of blurring it, e.g. to close the list the field filters. */
+  onEscape?: () => void;
   /** Margins and other layout classes of the field itself; the field is 40px high and fills its width. */
   className?: string;
 };
 
 /**
  * The search box of the session sidebar, shared with every list that filters the same way: a magnifier, the text
- * and a clear button once there is text. Escape clears the text, a second Escape on an empty field blurs it.
+ * and a clear button once there is text. Escape clears the text, a second Escape on an empty field blurs it or
+ * calls `onEscape`.
  */
-export function SearchField({ value, onChange, placeholder = "Search", ariaLabel, autoFocus = false, className = "" }: SearchFieldProps) {
+export function SearchField({ value, onChange, placeholder = "Search", ariaLabel, autoFocus = false, onEscape, className = "" }: SearchFieldProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [initialFocus] = useState(autoFocus);
 
@@ -34,6 +37,8 @@ export function SearchField({ value, onChange, placeholder = "Search", ariaLabel
           event.stopPropagation();
           if (value) {
             onChange("");
+          } else if (onEscape) {
+            onEscape();
           } else {
             event.currentTarget.blur();
           }

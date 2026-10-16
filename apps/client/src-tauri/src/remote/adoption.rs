@@ -6,14 +6,16 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
 use uuid::Uuid;
 
 use super::api::SessionSummary;
 use super::ssh::Ssh;
 use super::{handoff, shell_command, vm, RemoteOrigin, VmRef};
 
-/// A session VM Hunt adopts, as the gateway lists it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A session VM Hunt adopts or lists, as the gateway lists it (mirror of `SessionVm` in src/ipc/types.ts).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AdoptableSession {
     pub id: Uuid,
     pub vm: VmRef,
@@ -24,24 +26,31 @@ pub struct AdoptableSession {
     /// The branch the session started on; empty when the VM names none.
     pub branch: String,
     pub origin: RemoteOrigin,
+    /// The OS Login user who handed a `desktop` session off; empty for a `swf` session.
+    pub owner: String,
     /// The GitHub issue of a `swf` session.
     pub issue: Option<u64>,
+    /// The Compute Engine status of the VM, e.g. `RUNNING` or `TERMINATED`.
+    pub status: String,
     pub is_running: bool,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// The sessions of `listed` to adopt, in the order listed: every session whose VM is in `project` and in the region of
-/// `gateway_zone` (the gateway creates session VMs in any zone of its region), that none of `known` is, whose VM is named
-/// after it and whose repository is an `<owner>/<repo>`. Sessions that fail these checks are no sessions Hunt can
-/// continue and stay alone.
-pub fn sessions_to_adopt(listed: &[SessionSummary], project: &str, gateway_zone: &str, known: &HashSet<Uuid>) -> Vec<AdoptableSession> {
+/// The session VMs of `listed` Hunt can continue, in the order listed: every session whose VM is in `project` and in
+/// the region of `gateway_zone` (the gateway creates session VMs in any zone of its region), whose VM is named after it
+/// and whose repository is an `<owner>/<repo>`. Sessions that fail these checks stay alone.
+pub fn list_session_vms(listed: &[SessionSummary], project: &str, gateway_zone: &str) -> Vec<AdoptableSession> {
     let region = region_of(gateway_zone);
     listed
         .iter()
         .filter(|session| region_of(&session.zone) == region)
         .filter_map(|session| adoptable(session, project))
-        .filter(|session| !known.contains(&session.id))
         .collect()
+}
+
+/// The sessions of `listed` to adopt: those of `list_session_vms` that none of `known` is.
+pub fn sessions_to_adopt(listed: &[SessionSummary], project: &str, gateway_zone: &str, known: &HashSet<Uuid>) -> Vec<AdoptableSession> {
+    list_session_vms(listed, project, gateway_zone).into_iter().filter(|session| !known.contains(&session.id)).collect()
 }
 
 /// The region of `zone`, e.g. `europe-west1` for `europe-west1-c`.
@@ -73,7 +82,9 @@ fn adoptable(listed: &SessionSummary, project: &str) -> Option<AdoptableSession>
         branch: listed.branch.trim().to_string(),
         repo,
         origin,
+        owner: listed.owner.trim().to_string(),
         issue,
+        status: listed.status.clone(),
         is_running: listed.status == "RUNNING",
         created_at: chrono::DateTime::parse_from_rfc3339(&listed.created_at).ok().map(|time| time.with_timezone(&chrono::Utc)),
     })
@@ -158,6 +169,7 @@ mod tests {
             zone: ZONE.into(),
             status: "TERMINATED".into(),
             origin: "swf".into(),
+            owner: "".into(),
             repo: "acme/app".into(),
             branch: "fix/general/123-fix-login".into(),
             title: " Fix login ".into(),
@@ -174,6 +186,7 @@ mod tests {
             zone: "europe-west1-b".into(),
             status: "RUNNING".into(),
             origin: "desktop".into(),
+            owner: " jane ".into(),
             branch: "".into(),
             title: "".into(),
             issue: None,
@@ -189,10 +202,12 @@ mod tests {
         let (title, repo, branch) = (adopted[0].title.as_str(), adopted[0].repo.as_str(), adopted[0].branch.as_str());
         assert_eq!((title, repo, branch), ("Fix login", "acme/app", "fix/general/123-fix-login"));
         assert_eq!((adopted[0].origin, adopted[0].issue, adopted[0].is_running), (RemoteOrigin::Swf, Some(123), false));
+        assert_eq!((adopted[0].status.as_str(), adopted[0].owner.as_str()), ("TERMINATED", ""));
         assert_eq!(adopted[0].created_at.map(|time| time.to_rfc3339()).as_deref(), Some("2026-10-12T10:04:05.678+00:00"));
         assert_eq!((adopted[1].title.as_str(), adopted[1].branch.as_str()), ("Remote session of acme/app", ""));
         assert_eq!(adopted[1].vm.zone, "europe-west1-b");
         assert_eq!((adopted[1].origin, adopted[1].issue, adopted[1].is_running), (RemoteOrigin::Desktop, None, true));
+        assert_eq!((adopted[1].status.as_str(), adopted[1].owner.as_str()), ("RUNNING", "jane"));
         assert_eq!(adopted[1].created_at, None);
     }
 
@@ -200,6 +215,7 @@ mod tests {
     fn sessions_to_adopt_skips_known_sessions_vms_of_other_regions_and_vms_that_do_not_belong_to_their_session() {
         let known = HashSet::from([Uuid::parse_str(ID).unwrap()]);
         assert!(sessions_to_adopt(&[swf_session()], "acme-hunt", ZONE, &known).is_empty());
+        assert_eq!(list_session_vms(&[swf_session()], "acme-hunt", ZONE).len(), 1);
 
         let listed = [
             SessionSummary { vm: "vm-hunt-medc".into(), ..swf_session() },

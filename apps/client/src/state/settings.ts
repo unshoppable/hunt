@@ -70,18 +70,17 @@ export type ChangelistScope = "own" | "all";
 export type PopupSize = { width: number; height: number };
 
 /** The floating popups and dialogs whose size the user may drag; each remembers its last size (see ui/usePopupSize.ts). */
-export type PopupKey = "usages" | "fileSearch" | "subChat" | "screenshots" | "pullRequests" | "fileFilter" | "change";
+export type PopupKey = "usages" | "fileSearch" | "subChat" | "screenshots" | "fileFilter" | "change";
 
 /**
  * Size each popup opens with until the user resizes it. A popup that is as tall as its content treats the height as
- * the most it may take (sub chat, pull requests, file filter, change); the window caps every size.
+ * the most it may take (sub chat, file filter, change); the window caps every size.
  */
 export const DEFAULT_POPUP_SIZES: Record<PopupKey, PopupSize> = {
   usages: { width: 1040, height: 600 },
   fileSearch: { width: 960, height: 760 },
   subChat: { width: 640, height: 760 },
   screenshots: { width: 760, height: 640 },
-  pullRequests: { width: 760, height: 560 },
   fileFilter: { width: 320, height: 384 },
   change: { width: 720, height: 320 },
 };

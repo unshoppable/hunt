@@ -213,6 +213,11 @@ type HuntState = {
    * settings are incomplete or an adoption runs; a failure lands in `remoteSync.error`.
    */
   syncRemoteSessions: () => Promise<void>;
+  /**
+   * Shows the session of the VM `id` the gateway lists: a session this Mac knows is selected; another one is adopted
+   * first (`syncRemoteSessions`). Rejects when the gateway no longer lists it or the adoption failed.
+   */
+  openSessionVm: (id: string) => Promise<void>;
   selectSession: (id: string) => Promise<void>;
   /** Starts the agent of a stopped session again; its chat starts empty because the agent's conversation is gone. */
   resumeSession: (id: string) => Promise<void>;
@@ -805,6 +810,15 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       } catch (error) {
         set({ remoteSync: { isRunning: false, error: String(error) } });
       }
+    },
+
+    openSessionVm: async (id) => {
+      const isKnown = () => get().sessions.some((session) => session.id === id);
+      if (!isKnown()) {
+        await get().syncRemoteSessions();
+        if (!isKnown()) throw new Error(get().remoteSync.error ?? `the gateway no longer lists session ${id}`);
+      }
+      await get().selectSession(id);
     },
 
     startDraft: (parentId) => {

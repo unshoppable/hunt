@@ -714,6 +714,16 @@ pub async fn preview_status(app: AppHandle, registry: State<'_, SessionRegistry>
     remote::preview::parse_status(&status, id, domain)
 }
 
+/// The session VMs the gateway of the remote settings lists, running or not (see `remote::adoption::list_session_vms`),
+/// for the start view's list of remote sessions.
+#[tauri::command]
+pub async fn list_session_vms() -> Result<Vec<remote::adoption::AdoptableSession>, String> {
+    let gateway = gateway_api("list the remote sessions").await?;
+    let listed = gateway.list_sessions().await?;
+    let hello = gateway.hello();
+    Ok(remote::adoption::list_session_vms(&listed, &hello.project, &hello.zone))
+}
+
 /// Adopts the sessions the gateway of `settings` lists that no local session knows (see `remote::adoption`): each becomes
 /// a remote session of this Mac in the local checkout of its repository, found among `repo_paths` and the repositories
 /// of the stored sessions, or without one when none matches. Adopted sessions still without a checkout get another

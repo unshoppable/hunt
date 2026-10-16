@@ -1,22 +1,16 @@
-import { useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { commands } from "../ipc/commands";
 import type { CheckSummary, PullRequest, PullRequestLabel, ViewerReview } from "../ipc/types";
 import { formatRelativeTime } from "../chat/ScreenshotPicker";
-import { SearchField } from "../ui/SearchField";
 import { CheckIcon, CloseIcon, CommentIcon, ExternalIcon } from "../ui/icons";
-import { ResizeGrips } from "../ui/ResizeGrips";
-import { useDismiss } from "../ui/useDismiss";
 import { errorText, useLoad } from "../ui/useLoad";
-import { usePopupSize } from "../ui/usePopupSize";
-import { useViewportSize } from "../ui/useViewportSize";
+import { ListPane } from "./ListPane";
 import { filterPullRequests } from "./pullRequests";
 
-type PullRequestPopoverProps = {
+type PullRequestListProps = {
   /** Repository whose GitHub remote is asked for its open pull requests. */
   repoPath: string;
-  /** The button that opened the popover; pressing it again closes without reopening. */
-  anchorRef: RefObject<Element | null>;
   onSelect: (pullRequest: PullRequest) => void;
   onClose: () => void;
 };
@@ -35,83 +29,66 @@ const REVIEW_DECISIONS: Record<string, { label: string; className: string }> = {
   CHANGES_REQUESTED: { label: "Changes requested", className: "text-red-300" },
 };
 
-const MIN_SIZE = { width: 420, height: 200 };
-/** Space the popover keeps from the window's edges. */
-const MARGIN = 16;
-
 /**
- * Anchored list of the repository's open pull requests, filtered by a search box like the session sidebar's. Each
- * row carries the metadata GitHub's own list shows (labels, review state, tasks, checks, comments) and marks
- * whether the signed-in user already reviewed it. Loads once when shown; a row hands its pull request to
- * `onSelect`, the arrow at its end opens it on GitHub. It hangs below its button's right edge and is as tall as
- * its rows up to the remembered height; dragging its left or bottom edge resizes it.
+ * The repository's open pull requests, filling the chat pane in place of the start view, filtered by a search box
+ * like the session sidebar's. Each row carries the metadata GitHub's own list shows (labels, review state, tasks,
+ * checks, comments) and marks whether the signed-in user already reviewed it. Loads once when shown; a row hands
+ * its pull request to `onSelect`, the arrow at its end opens it on GitHub.
  */
-export function PullRequestPopover({ repoPath, anchorRef, onSelect, onClose }: PullRequestPopoverProps) {
-  const rootRef = useRef<HTMLDivElement>(null);
+export function PullRequestList({ repoPath, onSelect, onClose }: PullRequestListProps) {
   const [query, setQuery] = useState("");
   const [pullRequests, setPullRequests] = useState<PullRequest[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const rows = useMemo(() => filterPullRequests(pullRequests ?? [], query), [pullRequests, query]);
-  const viewport = useViewportSize();
-  const { size, isHeightSet, grips } = usePopupSize("pullRequests", { min: MIN_SIZE, max: { width: viewport.width - 2 * MARGIN, height: viewport.height * 0.7 } });
 
-  useDismiss(rootRef, onClose, { anchorRefs: [anchorRef] });
   useLoad(() => commands.listPullRequests(repoPath), { onValue: setPullRequests, onError: (reason) => setError(errorText(reason)) }, [repoPath]);
 
   return (
-    <div
-      ref={rootRef}
-      role="dialog"
-      aria-label="Open pull requests"
-      className="absolute top-full right-0 z-50 mt-1.5 flex max-w-[calc(100cqw-2rem)] flex-col overflow-hidden rounded-xl border border-neutral-600 bg-(--surface-chat) text-sm shadow-2xl shadow-black/50"
-      style={{ width: size.width, maxHeight: size.height, height: isHeightSet ? size.height : undefined }}
+    <ListPane
+      query={query}
+      onQueryChange={setQuery}
+      searchPlaceholder="Search pull requests"
+      ariaLabel="Open pull requests"
+      error={error}
+      isLoading={!pullRequests}
+      emptyText="No open pull requests"
+      noMatchText={`No pull requests match “${query}”`}
+      rowCount={rows.length}
+      hasItems={Boolean(pullRequests?.length)}
+      onClose={onClose}
     >
-      <SearchField value={query} onChange={setQuery} placeholder="Search pull requests" ariaLabel="Search pull requests" autoFocus className="mx-2 mt-2 mb-2" />
-      <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-x-hidden overflow-y-auto px-2 pb-2">
-        {error ? <li className="rounded-lg border border-red-400/40 bg-red-400/10 px-3 py-2 text-red-300 break-words">{error}</li> : null}
-        {!error && !pullRequests ? <li className="px-2.5 py-1.5 text-[13px] text-neutral-500">Loading pull requests…</li> : null}
-        {pullRequests && pullRequests.length === 0 ? <li className="px-2.5 py-1.5 text-[13px] text-neutral-500">No open pull requests</li> : null}
-        {query && pullRequests && pullRequests.length > 0 && rows.length === 0 ? (
-          <li className="px-2.5 py-1.5 text-[13px] text-neutral-500">No pull requests match “{query}”</li>
-        ) : null}
-        {rows.map((pullRequest) => (
-          <li key={pullRequest.number}>
-            <div className="group flex items-center rounded-lg transition-colors hover:bg-(--row-hover)">
-              <button
-                type="button"
-                onClick={() => onSelect(pullRequest)}
-                className="flex min-w-0 flex-1 flex-col items-start gap-0.5 overflow-hidden py-2 pr-1 pl-3 text-left"
-              >
-                <span className="flex w-full items-center gap-1.5">
-                  <span className="min-w-0 flex-1 truncate font-medium text-neutral-100">{pullRequest.title}</span>
-                  {pullRequest.labels.map((label) => (
-                    <LabelChip key={label.name} label={label} />
-                  ))}
-                  {pullRequest.isDraft ? <Chip className="border-white/10 text-neutral-400">Draft</Chip> : null}
-                  {pullRequest.viewerReview ? (
-                    <Chip className={VIEWER_REVIEW_CHIPS[pullRequest.viewerReview].className}>
-                      {VIEWER_REVIEW_CHIPS[pullRequest.viewerReview].icon}
-                      {VIEWER_REVIEW_CHIPS[pullRequest.viewerReview].label}
-                    </Chip>
-                  ) : null}
-                </span>
-                <MetaLine pullRequest={pullRequest} />
-              </button>
-              <button
-                type="button"
-                onClick={() => void openUrl(pullRequest.url)}
-                className="mr-1 flex size-8 shrink-0 items-center justify-center rounded-md text-neutral-500 opacity-0 transition-colors group-hover:opacity-100 hover:bg-white/10 hover:text-white focus-visible:opacity-100"
-                title="Open on GitHub"
-                aria-label={`Open #${pullRequest.number} on GitHub`}
-              >
-                <ExternalIcon />
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
-      <ResizeGrips edges={{ left: true, bottom: true }} {...grips} />
-    </div>
+      {rows.map((pullRequest) => (
+        <li key={pullRequest.number}>
+          <div className="group flex items-center rounded-lg transition-colors hover:bg-(--row-hover)">
+            <button type="button" onClick={() => onSelect(pullRequest)} className="flex min-w-0 flex-1 flex-col items-start gap-0.5 overflow-hidden py-2 pr-1 pl-3 text-left">
+              <span className="flex w-full items-center gap-1.5">
+                <span className="min-w-0 flex-1 truncate font-medium text-neutral-100">{pullRequest.title}</span>
+                {pullRequest.labels.map((label) => (
+                  <LabelChip key={label.name} label={label} />
+                ))}
+                {pullRequest.isDraft ? <Chip className="border-white/10 text-neutral-400">Draft</Chip> : null}
+                {pullRequest.viewerReview ? (
+                  <Chip className={VIEWER_REVIEW_CHIPS[pullRequest.viewerReview].className}>
+                    {VIEWER_REVIEW_CHIPS[pullRequest.viewerReview].icon}
+                    {VIEWER_REVIEW_CHIPS[pullRequest.viewerReview].label}
+                  </Chip>
+                ) : null}
+              </span>
+              <MetaLine pullRequest={pullRequest} />
+            </button>
+            <button
+              type="button"
+              onClick={() => void openUrl(pullRequest.url)}
+              className="mr-1 flex size-8 shrink-0 items-center justify-center rounded-md text-neutral-500 opacity-0 transition-colors group-hover:opacity-100 hover:bg-white/10 hover:text-white focus-visible:opacity-100"
+              title="Open on GitHub"
+              aria-label={`Open #${pullRequest.number} on GitHub`}
+            >
+              <ExternalIcon />
+            </button>
+          </div>
+        </li>
+      ))}
+    </ListPane>
   );
 }
 
@@ -193,7 +170,8 @@ function ChecksBadge({ checks }: { checks: CheckSummary }) {
   );
 }
 
-function Chip({ className, children }: { className: string; children: ReactNode }) {
+/** A small bordered label at the end of a row's title line; the lists of pull requests and session VMs share it. */
+export function Chip({ className, children }: { className: string; children: ReactNode }) {
   return <span className={`flex shrink-0 items-center gap-1 rounded-md border px-1.5 text-[11px] whitespace-nowrap ${className}`}>{children}</span>;
 }
 
@@ -214,6 +192,7 @@ function LabelChip({ label }: { label: PullRequestLabel }) {
   );
 }
 
-function Separator() {
+/** The dot between the parts of a row's second line; the lists of pull requests and session VMs share it. */
+export function Separator() {
   return <span className="shrink-0">·</span>;
 }

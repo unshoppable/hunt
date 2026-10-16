@@ -22,6 +22,7 @@ import type {
   SelectionContext,
   SessionNotification,
   SessionView,
+  SessionVm,
   Shelf,
   TerminalTarget,
   TmuxWindow,
@@ -106,6 +107,8 @@ export const commands = {
    * repository among `repoPaths` and the stored sessions' repositories; resolves with the IDs of the new sessions.
    */
   adoptSessionVms: (settings: VmSettings, repoPaths: string[]) => invoke<string[]>("adopt_session_vms", { settings, repoPaths }),
+  /** The session VMs the gateway of the remote settings lists, running or not, for the start view's list of remote sessions. */
+  listSessionVms: () => invoke<SessionVm[]>("list_session_vms"),
   /**
    * The remote settings, or null while they are incomplete; the main window pushes them at its start and on every
    * change, and commands on stored remote sessions reach the gateway they name.

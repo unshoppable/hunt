@@ -1,3 +1,7 @@
+## 0.13.4 (2026-10-16)
+
+This was a version bump only for session to align it with other projects, there were no code changes.
+
 ## 0.13.3 (2026-10-16)
 
 This was a version bump only for session to align it with other projects, there were no code changes.

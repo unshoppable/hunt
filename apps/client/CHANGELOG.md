@@ -1,3 +1,14 @@
+## 0.28.0 (2026-10-16)
+
+### 🚀 Features
+
+- **client:** remove a remote session from the sidebar with an × that keeps its VM, and delete it with its VM from a trash button under the prompt box ([bf3f0f0](https://github.com/unshoppable/hunt/commit/bf3f0f0))
+- **client:** follow a session VM the gateway moved to another zone ([d68a904](https://github.com/unshoppable/hunt/commit/d68a904))
+
+### 🩹 Fixes
+
+- **client:** show the guardrail buttons for remote sessions and hide a suggestion marker whose text holds a > ([f968bce](https://github.com/unshoppable/hunt/commit/f968bce))
+
 ## 0.27.0 (2026-10-16)
 
 ### 🚀 Features

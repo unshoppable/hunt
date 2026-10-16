@@ -1,3 +1,13 @@
+## 0.20.0 (2026-10-16)
+
+### 🚀 Features
+
+- **gateway:** move a stopped session VM to the next zone when its own has no capacity for its start ([#34](https://github.com/unshoppable/hunt/issues/34))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.13.4
+
 ## 0.19.0 (2026-10-16)
 
 ### 🚀 Features

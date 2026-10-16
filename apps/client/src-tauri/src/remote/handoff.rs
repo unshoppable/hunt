@@ -191,6 +191,7 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
         preview_domain: Some(preview_domain),
         origin: RemoteOrigin::Handoff,
         issue: None,
+        agent: String::new(),
     };
     let acp_session_id = status["acpSessionId"].as_str().map(str::to_string);
     Ok(HandedOff { target, acp_session_id })

@@ -8,7 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { HANDOFF_START_PROMPT } from "../preview/services";
 import { useAgentDefaultsStore } from "./agentDefaults";
 import { DEFAULT_GRAPH_AGENT, DEFAULT_REMOTE, useSettingsStore } from "./settings";
-import { agentSetupOf, createEmptyChat, useHuntStore } from "./store";
+import { agentSetupOf, createEmptyChat, endsWithQuestion, hasPendingQuestion, useHuntStore } from "./store";
 
 const SESSION = "11111111-1111-1111-1111-111111111111";
 
@@ -318,6 +318,30 @@ function storedSession(id: string, title: string): SessionView {
 
 const TARGET = { repoPath: "/repo", baseRef: "main", workspace: "worktree" as const, pullRequest: null, diffBaseRef: null, pullRequestBranch: null };
 const START = { setup: { configValues: { model: "fable", effort: "high" }, modeId: "plan" }, prompt: { text: "build it", images: [] } };
+
+describe("pending question", () => {
+  const agent = (text: string) => ({ kind: "agent" as const, id: "a1", text, images: [] });
+
+  it("ends with a question when the last paragraph does, markdown emphasis and quotes aside", () => {
+    expect(endsWithQuestion("Shall I also rename the column?")).toBe(true);
+    expect(endsWithQuestion("Done.\n\n**Shall I push the branch?**\n")).toBe(true);
+    expect(endsWithQuestion("Which one do you prefer (A or B)?")).toBe(true);
+    expect(endsWithQuestion("Should I keep `legacy`?")).toBe(true);
+    expect(endsWithQuestion("Shall I push? I committed the change meanwhile.")).toBe(false);
+    expect(endsWithQuestion("I pushed the branch.")).toBe(false);
+    expect(endsWithQuestion("")).toBe(false);
+  });
+
+  it("is pending only while the turn ended with the agent's question as the last item", () => {
+    const chat = { ...createEmptyChat(), items: [agent("Shall I push?")] };
+    expect(hasPendingQuestion(chat)).toBe(true);
+    expect(hasPendingQuestion({ ...chat, isBusy: true })).toBe(false);
+    expect(hasPendingQuestion({ ...chat, queue: [{ id: "q1", text: "yes", images: [] }] })).toBe(false);
+    expect(hasPendingQuestion({ ...chat, items: [agent("Shall I push?"), { kind: "user", id: "u1", text: "Yes.", images: [] }] })).toBe(false);
+    expect(hasPendingQuestion({ ...chat, items: [agent("Done, pushed.")] })).toBe(false);
+    expect(hasPendingQuestion({ ...chat, items: [agent("Shall I push?"), { kind: "thought", id: "t1", text: "…" }] })).toBe(false);
+  });
+});
 
 describe("unseen activity", () => {
   const OTHER = "22222222-2222-2222-2222-222222222222";
@@ -777,6 +801,7 @@ describe("remote sessions", () => {
     previewDomain: null,
     origin: "handoff" as const,
     issue: null,
+    agent: "",
   };
 
   beforeEach(() => {
@@ -960,6 +985,7 @@ describe("moving a session to and from the VM", () => {
     previewDomain: null,
     origin: "handoff" as const,
     issue: null,
+    agent: "",
   };
   const local = storedSession(SESSION, "Build it");
   const handedOff = { ...local, remote };

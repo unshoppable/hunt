@@ -3,8 +3,8 @@ import { formatRelativeTime } from "../chat/ScreenshotPicker";
 
 /**
  * The session VMs of the start view's list: only the running ones unless `showsStopped`, filtered by `query` (every
- * word must occur in the title, repository, branch, `#issue`, owner or VM name, case-insensitively), running ones
- * first and within that the newest first.
+ * word must occur in the title, repository, branch, `#issue`, owner or VM name, case-insensitively), sessions whose
+ * agent waits for an answer first, then running VMs, and within that the newest first.
  */
 export function filterSessionVms(vms: SessionVm[], query: string, showsStopped: boolean): SessionVm[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -15,7 +15,11 @@ export function filterSessionVms(vms: SessionVm[], query: string, showsStopped: 
       const haystack = `${vm.title} ${vm.repo} ${vm.branch} ${vm.issue ? `#${vm.issue}` : ""} ${vm.owner} ${vm.vm.instance}`.toLowerCase();
       return words.every((word) => haystack.includes(word));
     })
-    .sort((a, b) => Number(b.isRunning) - Number(a.isRunning) || createdTime(b) - createdTime(a));
+    .sort((a, b) => Number(hasQuestion(b)) - Number(hasQuestion(a)) || Number(b.isRunning) - Number(a.isRunning) || createdTime(b) - createdTime(a));
+}
+
+function hasQuestion(vm: SessionVm): boolean {
+  return vm.agent === "question";
 }
 
 function createdTime(vm: SessionVm): number {
@@ -58,4 +62,18 @@ export function sessionVmStatusLabel(vm: SessionVm): string {
   if (vm.status === "TERMINATED" || vm.status === "STOPPED") return "Stopped";
   const word = vm.status.toLowerCase();
   return word ? word.charAt(0).toUpperCase() + word.slice(1) : "Unknown";
+}
+
+/** The chip and its colour for the state of a poller session's agent; null while it runs or is unknown. */
+export function sessionVmAgentLabel(vm: SessionVm): { label: string; tone: "question" | "done" | "failed"; title: string } | null {
+  switch (vm.agent) {
+    case "question":
+      return { label: "Question", tone: "question", title: "The agent asked a question on the issue and waits for the answer" };
+    case "done":
+      return { label: "Done", tone: "done", title: "The agent opened a pull request for the issue" };
+    case "failed":
+      return { label: "Failed", tone: "failed", title: "The agent could not complete the issue" };
+    default:
+      return null;
+  }
 }

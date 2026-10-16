@@ -326,6 +326,27 @@ export function createEmptyChat(): SessionChat {
   };
 }
 
+/** Markdown and quote characters a question mark may be wrapped in at the end of a paragraph. */
+const TRAILING_MARKUP = /[\s*_`~)\]"'»”’]+$/u;
+
+/** Whether the last non-empty paragraph of `text` ends with a question mark, markdown emphasis and quotes aside. */
+export function endsWithQuestion(text: string): boolean {
+  const paragraphs = text.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
+  const last = paragraphs[paragraphs.length - 1] ?? "";
+  return last.replace(TRAILING_MARKUP, "").endsWith("?");
+}
+
+/**
+ * Whether the agent of `chat` waits for the user's answer: its last turn ended (nothing running, queued or asked for
+ * permission) with a message whose last paragraph is a question. Derived from the items, so it holds for a replayed
+ * remote session too and ends by itself once the user's answer follows.
+ */
+export function hasPendingQuestion(chat: SessionChat): boolean {
+  if (chat.isBusy || chat.queue.length > 0 || chat.permission) return false;
+  const last = chat.items[chat.items.length - 1];
+  return last?.kind === "agent" && endsWithQuestion(last.text);
+}
+
 /** The turn state the relay of a remote session reports in `_meta.hunt.turn` of a `session_info_update`, if any. */
 function huntTurnOf(meta: unknown): "running" | "idle" | null {
   const turn = (meta as { hunt?: { turn?: unknown } } | null | undefined)?.hunt?.turn;

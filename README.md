@@ -171,6 +171,15 @@ VMs the gateway lists; choosing a pull request starts a review session on its br
 it, adopting it first when this Mac does not know it (`apps/client/src/sessions/PullRequestList.tsx`,
 `SessionVmList.tsx`, `list_session_vms`).
 
+The mark of a session in the sidebar (`apps/client/src/sessions/SessionMark.tsx`) shows what its agent is up to: an arc
+runs around it while a turn runs; it turns amber with a `?` badge when the agent ended its turn with a question
+(`hasPendingQuestion` in `src/state/store.ts`: the chat is idle and its last item is an agent message whose last
+paragraph ends with a question mark, so the state ends by itself once the user's answer follows and holds for a
+remote session's replayed conversation too); it turns green when a turn finished while another session was active
+and the user has not opened the session since. A question shows for the active session as well. A remote session
+whose conversation was never loaded takes the agent state the gateway recorded for its VM (`remote.agent`, see
+"Remote sessions").
+
 A sub session is a fresh agent session in the worktree of an existing session. "sub session" on a session in the
 sidebar starts one with a title; selecting text on the right side of a diff and choosing "Ask Claude about
 selection" in the context menu starts one as a sub chat with the selected lines in its system prompt. Sub sessions
@@ -574,8 +583,8 @@ sets both; the poller reads them from the metadata server at every poll, so a ch
 value keeps it idle. Every 30 seconds it lists the open issues through GitHub's REST
 API and, while fewer of its VMs
 (label `hunt-origin=swf`, any status but `TERMINATED` and `STOPPED`) are up than the limit allows, claims the oldest
-issue: `swf` becomes `swf:running` (the labels `swf:running`, `swf:done` and `swf:failed` are created when missing) and
-a comment names the session's preview hosts. Then it does what a handoff does, with the gateway's service account instead
+issue: `swf` becomes `swf:running` (the labels `swf:running`, `swf:question`, `swf:done` and `swf:failed` are created
+when missing) and a comment names the session's preview hosts. Then it does what a handoff does, with the gateway's service account instead
 of a Mac: the orchestrator creates `vm-hunt-s-<short id>` from the configured instance template (labelled
 `hunt-origin=swf`, without an owner), records the session, repository,
 branch `feat/general/<issue>-<slug of the title>` (`fix/general/…` for an issue labelled `bug`), title and issue in the
@@ -589,8 +598,19 @@ services and its `hunt.agent.md`; the parts Hunt takes from its user's settings 
 on the gateway. The poller then sends the issue with all its comments as the first prompt through the relay and
 disconnects; the relay runs the turn without a client. The prompt asks the agent to implement and check the issue, push
 the branch, open a pull request with `Closes #<issue>`, comment its link on the issue and replace `swf:running` with
-`swf:done`, or with `swf:failed` and a comment when it cannot finish. A setup that fails gets `swf:failed` and a comment
-with the error; its VM stays for inspection. The poller's GitHub token and the Claude Code OAuth token its sessions run
+`swf:done`, or with `swf:failed` and a comment when it cannot finish. When it needs an answer only a person can give, it
+is to comment the question on the issue, replace `swf:running` with `swf:question` and end its turn with the question;
+the answer reaches it as its next prompt, from a Hunt desktop that opened the session, and it takes the label back to
+`swf:running`. A setup that fails gets `swf:failed` and a comment with the error; its VM stays for inspection.
+
+Every poll also follows the agent of each running session VM the poller is not setting up: it reads the issue and
+records the state its labels report (`running`, `question`, `done`, `failed`; a closed or deleted issue counts as
+`done`) in the VM's metadata `hunt-agent` when it changed, which `sessions.list` reports as `agent` and the desktop
+shows in its lists. While the issue is still labelled `swf:running`, `hunt-ctl status` tells whether the relay's turn
+ended: then the poller reminds the agent once with a prompt that names the three ways out (finish, ask with
+`swf:question`, give up with `swf:failed`), and when the reminded turn ends the same way it replaces `swf:running` with
+`swf:failed` and comments that the VM keeps the session. No reminder goes to a session a Hunt desktop is connected to.
+The reminders live only in the poller's memory, so after a restart a session may be reminded once more. The poller's GitHub token and the Claude Code OAuth token its sessions run
 with come from Secret Manager (`HUNT_SWF_GITHUB_TOKEN`, `HUNT_SWF_CLAUDE_TOKEN`) and never reach a log line, a comment
 or a command line; `journalctl -u hunt-swf` on the gateway shows one line per decision, Compute Engine call and command
 on a session VM.
@@ -604,15 +624,19 @@ session is only reported. A session whose VM went this way continues on the Mac 
 hunt-swf` shows one line per deletion.
 
 The labels and metadata of the session VMs are the directory of remote sessions. The start view's "Remote sessions"
-button lists them as the gateway reports them (`list_session_vms`), running ones first, and opens one on a click. At its
+button lists them as the gateway reports them (`list_session_vms`), sessions whose agent waits for an answer first,
+then running ones, with a chip for an agent that asks (amber), finished (green) or failed (red), and opens one on a
+click. At its
 start, from the sidebar's *Refresh remote sessions* button and when a listed session this Mac does not know is opened,
 Hunt asks the gateway for them (`sessions.list`), keeps those in the gateway's
 region, whose zones the gateway creates session VMs in (`adopt_session_vms`,
 `apps/client/src-tauri/src/remote/adoption.rs`), and adopts every session whose VM is named after it and that no local
 session has: VMs the gateway's poller started for `swf` issues (`hunt-origin=swf`, `hunt-issue`) and other people's
 handoffs. An adopted session gets a record with origin `swf` or
-`desktop`, its title, branch and repository from the metadata and the local checkout among the recently used
-repositories whose `origin` is that repository; the sidebar labels it `swf #<issue>` or `remote`. Its worktree path on
+`desktop`, its title, branch, repository and agent state from the metadata and the local checkout among the recently
+used repositories whose `origin` is that repository; the sidebar labels it `swf #<issue>` or `remote`, and every
+listing also brings the agent state of the remote sessions this Mac has up to date (`remote.agent`), so the sidebar
+marks a session whose agent asked on the issue before its conversation is loaded. Its worktree path on
 the VM comes from `/srv/hunt/sessions/<id>/meta.json` once Hunt reaches the VM, and the relay replays its conversation
 on `session/load`. Its first sync creates a new worktree in the local checkout on the branch the VM has checked out (a
 numbered name when the checkout has that branch already), from a snapshot of the VM's worktree; until a checkout is

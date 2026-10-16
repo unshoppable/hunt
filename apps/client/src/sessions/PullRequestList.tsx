@@ -171,8 +171,12 @@ function ChecksBadge({ checks }: { checks: CheckSummary }) {
 }
 
 /** A small bordered label at the end of a row's title line; the lists of pull requests and session VMs share it. */
-export function Chip({ className, children }: { className: string; children: ReactNode }) {
-  return <span className={`flex shrink-0 items-center gap-1 rounded-md border px-1.5 text-[11px] whitespace-nowrap ${className}`}>{children}</span>;
+export function Chip({ className, title, children }: { className: string; title?: string; children: ReactNode }) {
+  return (
+    <span className={`flex shrink-0 items-center gap-1 rounded-md border px-1.5 text-[11px] whitespace-nowrap ${className}`} title={title}>
+      {children}
+    </span>
+  );
 }
 
 /** A label in its GitHub colour, lightened for the text so a dark label stays readable on the dark surface. */

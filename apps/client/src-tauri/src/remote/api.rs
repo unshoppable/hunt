@@ -67,6 +67,10 @@ pub struct SessionSummary {
     pub issue: Option<u64>,
     /// When the VM was created, RFC 3339.
     pub created_at: String,
+    /// The state of the session's agent as the gateway recorded it: `running`, `question` (waits for an answer), `done`
+    /// or `failed`; empty when unknown.
+    #[serde(default)]
+    pub agent: String,
 }
 
 #[derive(Deserialize)]

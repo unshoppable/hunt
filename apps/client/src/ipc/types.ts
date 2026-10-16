@@ -163,6 +163,11 @@ export type SessionVm = {
   isRunning: boolean;
   /** When the VM was created, ISO 8601; null when the gateway reports no time. */
   createdAt: string | null;
+  /**
+   * The state of the session's agent as the gateway recorded it: `running`, `question` (waits for an answer), `done` or
+   * `failed`; empty when unknown.
+   */
+  agent: string;
 };
 
 /** Where a session handed off to a VM runs (mirror of `RemoteTarget` in src-tauri/src/remote/mod.rs). */
@@ -192,6 +197,11 @@ export type RemoteTarget = {
   origin: RemoteOrigin;
   /** The GitHub issue a `swf` session works on. */
   issue: number | null;
+  /**
+   * The state of the session's agent as the gateway recorded it: `running`, `question` (waits for an answer), `done` or
+   * `failed`; empty when unknown.
+   */
+  agent: string;
 };
 
 /** A step of a handoff, a retrieval or a connect to a remote session that takes long enough to show. */

@@ -168,6 +168,10 @@ pub struct RemoteTarget {
     /// The GitHub issue a `swf` session works on.
     #[serde(default)]
     pub issue: Option<u64>,
+    /// The state of the session's agent as the gateway recorded it: `running`, `question` (waits for an answer), `done`
+    /// or `failed`; empty when unknown.
+    #[serde(default)]
+    pub agent: String,
 }
 
 impl RemoteTarget {

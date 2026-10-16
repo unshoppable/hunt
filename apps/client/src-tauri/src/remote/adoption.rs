@@ -3,7 +3,7 @@
 //! session VMs) is the directory of remote sessions: Hunt picks the ones to adopt, finds the local checkout of their
 //! repository and reads where the session's worktree lies on the VM.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::api::SessionSummary;
 use super::ssh::Ssh;
-use super::{handoff, shell_command, vm, RemoteOrigin, VmRef};
+use super::{handoff, shell_command, vm, RemoteOrigin, RemoteTarget, VmRef};
 
 /// A session VM Hunt adopts or lists, as the gateway lists it (mirror of `SessionVm` in src/ipc/types.ts).
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -34,6 +34,9 @@ pub struct AdoptableSession {
     pub status: String,
     pub is_running: bool,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The state of the session's agent as the gateway recorded it: `running`, `question` (waits for an answer), `done`
+    /// or `failed`; empty when unknown.
+    pub agent: String,
 }
 
 /// The session VMs of `listed` Hunt can continue, in the order listed: every session whose VM is in `project` and in
@@ -87,7 +90,19 @@ fn adoptable(listed: &SessionSummary, project: &str) -> Option<AdoptableSession>
         status: listed.status.clone(),
         is_running: listed.status == "RUNNING",
         created_at: chrono::DateTime::parse_from_rfc3339(&listed.created_at).ok().map(|time| time.with_timezone(&chrono::Utc)),
+        agent: listed.agent.trim().to_string(),
     })
+}
+
+/// The agent states to record anew: `(id, agent)` of every session of `listed` (see `list_session_vms`) that `remote`
+/// holds as a remote session on the listed VM and whose recorded agent state differs from the listed one, in the order
+/// listed. A session this Mac knows on another VM keeps its state.
+pub fn agent_updates(listed: &[AdoptableSession], remote: &HashMap<Uuid, &RemoteTarget>) -> Vec<(Uuid, String)> {
+    listed
+        .iter()
+        .filter(|session| remote.get(&session.id).is_some_and(|target| target.vm == session.vm && target.agent != session.agent))
+        .map(|session| (session.id, session.agent.clone()))
+        .collect()
 }
 
 /// Whether `value` is an `<owner>/<repo>` as `hunt-ctl` accepts it: two parts of letters, digits, `-`, `_` and `.`,
@@ -175,6 +190,7 @@ mod tests {
             title: " Fix login ".into(),
             issue: Some(123),
             created_at: "2026-10-12T03:04:05.678-07:00".into(),
+            agent: " question ".into(),
         }
     }
 
@@ -191,6 +207,7 @@ mod tests {
             title: "".into(),
             issue: None,
             created_at: "".into(),
+            agent: "".into(),
             ..swf_session()
         };
         let adopted = sessions_to_adopt(&[swf_session(), desktop], "acme-hunt", ZONE, &HashSet::new());
@@ -204,11 +221,45 @@ mod tests {
         assert_eq!((adopted[0].origin, adopted[0].issue, adopted[0].is_running), (RemoteOrigin::Swf, Some(123), false));
         assert_eq!((adopted[0].status.as_str(), adopted[0].owner.as_str()), ("TERMINATED", ""));
         assert_eq!(adopted[0].created_at.map(|time| time.to_rfc3339()).as_deref(), Some("2026-10-12T10:04:05.678+00:00"));
+        assert_eq!(adopted[0].agent, "question");
         assert_eq!((adopted[1].title.as_str(), adopted[1].branch.as_str()), ("Remote session of acme/app", ""));
         assert_eq!(adopted[1].vm.zone, "europe-west1-b");
         assert_eq!((adopted[1].origin, adopted[1].issue, adopted[1].is_running), (RemoteOrigin::Desktop, None, true));
         assert_eq!((adopted[1].status.as_str(), adopted[1].owner.as_str()), ("RUNNING", "jane"));
         assert_eq!(adopted[1].created_at, None);
+        assert_eq!(adopted[1].agent, "");
+    }
+
+    #[test]
+    fn agent_updates_names_the_known_sessions_whose_agent_state_changed() {
+        let listed = list_session_vms(&[swf_session(), SessionSummary { agent: "done".into(), ..swf_session() }], "acme-hunt", ZONE);
+        let id = Uuid::parse_str(ID).unwrap();
+        let target = |agent: &str, instance: &str| RemoteTarget {
+            vm: VmRef { project: "acme-hunt".into(), zone: ZONE.into(), instance: instance.into() },
+            worktree_path: PathBuf::new(),
+            repo: "acme/app".into(),
+            branch: "fix/general/123-fix-login".into(),
+            handoff_head: String::new(),
+            handed_off_at: chrono::Utc::now(),
+            local_mode: None,
+            last_active_at: None,
+            cleanup_asked_at: None,
+            preview_domain: None,
+            origin: RemoteOrigin::Swf,
+            issue: Some(123),
+            agent: agent.into(),
+        };
+
+        let running = target("running", "vm-hunt-s-ab12cd34");
+        let updates = agent_updates(&listed, &HashMap::from([(id, &running)]));
+        assert_eq!(updates, vec![(id, "question".to_string()), (id, "done".to_string())]);
+
+        let question = target("question", "vm-hunt-s-ab12cd34");
+        assert_eq!(agent_updates(&listed, &HashMap::from([(id, &question)])), vec![(id, "done".to_string())]);
+
+        let elsewhere = target("running", "vm-hunt-medc");
+        assert!(agent_updates(&listed, &HashMap::from([(id, &elsewhere)])).is_empty());
+        assert!(agent_updates(&listed, &HashMap::new()).is_empty());
     }
 
     #[test]

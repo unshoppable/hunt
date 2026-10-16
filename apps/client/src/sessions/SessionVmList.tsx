@@ -8,7 +8,14 @@ import { CloudIcon, CloudSyncIcon, ExternalIcon, Spinner } from "../ui/icons";
 import { errorText, useLoad } from "../ui/useLoad";
 import { ListPane } from "./ListPane";
 import { Chip, Separator } from "./PullRequestList";
-import { filterSessionVms, sessionVmMeta, sessionVmOriginLabel, sessionVmStatusLabel, sessionVmUrl } from "./sessionVms";
+import { filterSessionVms, sessionVmAgentLabel, sessionVmMeta, sessionVmOriginLabel, sessionVmStatusLabel, sessionVmUrl } from "./sessionVms";
+
+/** The colours of the agent chip: amber for a question, green once the pull request is open, red for a failure. */
+const AGENT_CHIP = {
+  question: "border-amber-400/40 bg-amber-400/10 text-amber-300",
+  done: "border-emerald-400/40 bg-emerald-400/10 text-emerald-300",
+  failed: "border-red-400/40 bg-red-400/10 text-red-300",
+};
 
 /**
  * The session VMs the gateway lists, filling the chat pane in place of the start view: the running ones, or every one
@@ -93,6 +100,7 @@ export function SessionVmList({ onClose }: { onClose: () => void }) {
     >
       {rows.map((vm) => {
         const isKnown = knownIds.has(vm.id);
+        const agent = sessionVmAgentLabel(vm);
         return (
           <li key={vm.id}>
             <div className="group flex items-center rounded-lg transition-colors hover:bg-(--row-hover)">
@@ -114,6 +122,11 @@ export function SessionVmList({ onClose }: { onClose: () => void }) {
                   ) : (
                     <Chip className="border-white/10 text-neutral-400">{sessionVmStatusLabel(vm)}</Chip>
                   )}
+                  {agent ? (
+                    <Chip className={AGENT_CHIP[agent.tone]} title={agent.title}>
+                      {agent.label}
+                    </Chip>
+                  ) : null}
                   {isKnown ? <Chip className="border-white/10 text-neutral-400">In sidebar</Chip> : null}
                   {openingId === vm.id ? <Spinner className="size-3.5 shrink-0" /> : null}
                 </span>

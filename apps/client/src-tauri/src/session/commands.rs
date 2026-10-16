@@ -2,7 +2,7 @@
 //! thin commands themselves: `lsp_request`, `lsp_notify` and `lsp_cancel` live in `lsp.rs`, `set_ai_language` in
 //! `preferences.rs`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -727,7 +727,8 @@ pub async fn list_session_vms() -> Result<Vec<remote::adoption::AdoptableSession
 /// Adopts the sessions the gateway of `settings` lists that no local session knows (see `remote::adoption`): each becomes
 /// a remote session of this Mac in the local checkout of its repository, found among `repo_paths` and the repositories
 /// of the stored sessions, or without one when none matches. Adopted sessions still without a checkout get another
-/// chance to find one. VMs this Mac deletes or deleted are left out. Returns the IDs of the new sessions.
+/// chance to find one. VMs this Mac deletes or deleted are left out. The remote sessions this Mac already has take the
+/// agent state the listing reports for them. Returns the IDs of the new sessions.
 #[tauri::command]
 pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths: Vec<String>) -> Result<Vec<Uuid>, String> {
     settings.validate()?;
@@ -738,12 +739,26 @@ pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths:
     let mut known: HashSet<Uuid> = sessions.iter().map(|session| session.id).collect();
     known.extend(deleted_session_vms(&app));
     let hello = gateway.hello();
+    let remote_targets: HashMap<Uuid, &RemoteTarget> = sessions.iter().filter_map(|session| Some((session.id, session.remote.as_ref()?))).collect();
+    let listed_vms = remote::adoption::list_session_vms(&listed, &hello.project, &hello.zone);
+    let agent_updates = remote::adoption::agent_updates(&listed_vms, &remote_targets);
+    for (id, agent) in agent_updates.iter().cloned() {
+        store::update_session(&app, id, |stored| {
+            if let Some(target) = stored.remote.as_mut() {
+                target.agent = agent;
+            }
+        })?;
+    }
+    let mut has_changed = !agent_updates.is_empty();
     let adoptable = remote::adoption::sessions_to_adopt(&listed, &hello.project, &hello.zone, &known);
     let without_checkout: Vec<&SessionRecord> = sessions
         .iter()
         .filter(|session| session.remote.as_ref().is_some_and(RemoteTarget::is_adopted) && session.repo_path.as_os_str().is_empty())
         .collect();
     if adoptable.is_empty() && without_checkout.is_empty() {
+        if has_changed {
+            announce_sessions_changed(&app);
+        }
         return Ok(Vec::new());
     }
 
@@ -759,7 +774,7 @@ pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths:
             adopted.push(session.id);
         }
     }
-    let mut has_changed = !adopted.is_empty();
+    has_changed |= !adopted.is_empty();
     for session in without_checkout {
         let Some(repo) = session.remote.as_ref().map(|target| target.repo.as_str()) else { continue };
         let Some(repo_path) = remote::adoption::matching_repository(&repositories, repo) else { continue };
@@ -2401,6 +2416,7 @@ mod tests {
             preview_domain: None,
             origin: Default::default(),
             issue: None,
+            agent: String::new(),
         };
         let mut parent = local("parent");
         let sub_chat = SessionRecord::sub_session(Uuid::new_v4(), "sub".into(), &parent, None);

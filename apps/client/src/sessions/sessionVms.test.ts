@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionVm } from "../ipc/types";
-import { filterSessionVms, sessionVmMeta, sessionVmOriginLabel, sessionVmStatusLabel, sessionVmUrl } from "./sessionVms";
+import { filterSessionVms, sessionVmAgentLabel, sessionVmMeta, sessionVmOriginLabel, sessionVmStatusLabel, sessionVmUrl } from "./sessionVms";
 
 function sessionVm(overrides: Partial<SessionVm> = {}): SessionVm {
   return {
@@ -15,6 +15,7 @@ function sessionVm(overrides: Partial<SessionVm> = {}): SessionVm {
     status: "RUNNING",
     isRunning: true,
     createdAt: "2026-10-16T06:00:00Z",
+    agent: "running",
     ...overrides,
   };
 }
@@ -38,9 +39,24 @@ describe("filterSessionVms", () => {
     expect(filterSessionVms(vms, "nothing", true)).toEqual([]);
   });
 
+  it("puts a session whose agent waits for an answer first, even a stopped one", () => {
+    const asking = sessionVm({ id: "5", agent: "question", status: "TERMINATED", isRunning: false, createdAt: "2026-10-14T06:00:00Z" });
+    expect(filterSessionVms([older, asking, running], "", true).map((vm) => vm.id)).toEqual([asking.id, running.id, older.id]);
+  });
+
   it("treats a missing creation time as the oldest", () => {
     const undated = sessionVm({ id: "4", createdAt: null });
     expect(filterSessionVms([undated, running], "", false).map((vm) => vm.id)).toEqual([running.id, undated.id]);
+  });
+});
+
+describe("sessionVmAgentLabel", () => {
+  it("names a question, a finished and a failed agent, nothing for a running or unknown one", () => {
+    expect(sessionVmAgentLabel(sessionVm({ agent: "question" }))).toMatchObject({ label: "Question", tone: "question" });
+    expect(sessionVmAgentLabel(sessionVm({ agent: "done" }))).toMatchObject({ label: "Done", tone: "done" });
+    expect(sessionVmAgentLabel(sessionVm({ agent: "failed" }))).toMatchObject({ label: "Failed", tone: "failed" });
+    expect(sessionVmAgentLabel(sessionVm({ agent: "running" }))).toBeNull();
+    expect(sessionVmAgentLabel(sessionVm({ agent: "" }))).toBeNull();
   });
 });
 

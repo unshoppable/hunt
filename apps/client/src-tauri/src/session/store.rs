@@ -144,6 +144,7 @@ impl SessionRecord {
             preview_domain: Some(preview_domain),
             origin: session.origin,
             issue: session.issue,
+            agent: session.agent.clone(),
         };
         let branch = session.branch.clone();
         let mut record = Self::new(session.id, session.title.clone(), repo_path, worktree_path, branch.clone(), branch, String::new());
@@ -513,11 +514,13 @@ mod tests {
             status: "TERMINATED".into(),
             is_running: false,
             created_at: chrono::DateTime::from_timestamp(1_760_000_000, 0),
+            agent: "question".into(),
         };
         let adopted = SessionRecord::adopted(&session, PathBuf::new(), "/worktrees/ab12cd34".into(), "hunt.example.com".into());
         let remote = adopted.remote.as_ref().unwrap();
         assert!(remote.is_adopted() && remote.worktree_path.as_os_str().is_empty() && remote.handoff_head.is_empty());
         assert_eq!((remote.issue, remote.preview_domain.as_deref()), (Some(123), Some("hunt.example.com")));
+        assert_eq!(remote.agent, "question");
         assert_eq!((remote.branch.as_str(), adopted.branch.as_str()), ("fix/general/123-fix-login", "fix/general/123-fix-login"));
         assert_eq!((adopted.title.as_str(), adopted.created_at), ("Fix login", session.created_at.unwrap()));
         assert!(adopted.repo_path.as_os_str().is_empty() && adopted.acp_session_id.is_none());
@@ -527,8 +530,10 @@ mod tests {
         let object = stored["remote"].as_object_mut().unwrap();
         object.remove("origin");
         object.remove("issue");
+        object.remove("agent");
         let loaded: SessionRecord = serde_json::from_value(stored).unwrap();
-        assert!(!loaded.remote.unwrap().is_adopted());
+        let remote = loaded.remote.unwrap();
+        assert!(!remote.is_adopted() && remote.agent.is_empty());
     }
 
     #[test]

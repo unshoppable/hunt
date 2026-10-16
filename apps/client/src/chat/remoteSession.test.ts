@@ -74,6 +74,7 @@ const remote = {
   previewDomain: null,
   origin: "handoff" as const,
   issue: null,
+  agent: "",
 };
 
 describe("remoteOf", () => {

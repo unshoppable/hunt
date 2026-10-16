@@ -192,7 +192,7 @@ export function NewSessionView({
       diffBaseRef: targetBranch,
       pullRequestBranch: selected.headRefName,
     };
-    startSession(`#${selected.number} ${selected.title}`, target, null);
+    startSession(selected.title, target, null);
     setRightTab("diff");
   }
 

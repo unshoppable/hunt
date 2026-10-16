@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionView } from "../ipc/types";
-import { cycleSessionId, filterSessionRows, groupSessions, latestTopLevelSession, sessionMarks, titleFromPrompt } from "./sessionLabels";
+import { cycleSessionId, filterSessionRows, groupSessions, latestTopLevelSession, sessionMarks, sessionReference, sidebarTitle, titleFromPrompt } from "./sessionLabels";
 
 function session(id: string, title: string, branch: string, parentId: string | null = null, path?: string): SessionView {
   return {
@@ -40,6 +40,26 @@ const sessions = [
 ];
 
 const ids = (rows: ReturnType<typeof groupSessions>) => rows.map(({ session, isSubChat }) => `${isSubChat ? "  " : ""}${session.id}`);
+
+describe("sessionReference", () => {
+  it("names the pull request a session reviews, else the issue of a swf session", () => {
+    const review = { ...session("r", "Review", "feat/x"), pullRequest: { number: 1465, url: "https://github.com/o/r/pull/1465" } };
+    expect(sessionReference(review)).toEqual({ kind: "pullRequest", label: "#1465", title: "Reviews pull request https://github.com/o/r/pull/1465" });
+    const swf = session("s", "Issue", "feat/x");
+    swf.remote = { origin: "swf", issue: 687, repo: "o/r", vm: { project: "p", zone: "z", instance: "vm-1" } } as SessionView["remote"];
+    expect(sessionReference(swf)).toMatchObject({ kind: "issue", label: "#687" });
+    expect(sessionReference(sessions[0])).toBeNull();
+  });
+});
+
+describe("sidebarTitle", () => {
+  it("drops the pull request number an older session's title starts with", () => {
+    const pullRequest = { number: 1465, url: "https://github.com/o/r/pull/1465" };
+    expect(sidebarTitle({ ...session("r", "#1465 feat: compress images", "feat/x"), pullRequest })).toBe("feat: compress images");
+    expect(sidebarTitle({ ...session("r", "feat: compress images", "feat/x"), pullRequest })).toBe("feat: compress images");
+    expect(sidebarTitle(session("r", "#1465 not a review", "feat/x"))).toBe("#1465 not a review");
+  });
+});
 
 describe("groupSessions", () => {
   it("lists each top-level session followed by its sub chats and orphans on top level", () => {

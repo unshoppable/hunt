@@ -231,6 +231,18 @@ export function CloudSyncIcon({ className = "size-4" }: { className?: string }) 
   );
 }
 
+/** Two branches with a merge arrow, the common symbol for a pull request. */
+export function PullRequestIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="6" cy="5" r="2" />
+      <circle cx="6" cy="19" r="2" />
+      <circle cx="18" cy="19" r="2" />
+      <path d="M6 7v10M18 17v-7a3 3 0 0 0-3-3h-3M14.5 4.5 12 7l2.5 2.5" />
+    </svg>
+  );
+}
+
 /** A ticket stub with a perforation, for the issue a session works on. */
 export function TicketIcon({ className = "size-3.5" }: { className?: string }) {
   return (

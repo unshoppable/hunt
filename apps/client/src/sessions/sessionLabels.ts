@@ -1,5 +1,26 @@
 import type { SelectionContext, SessionView } from "../ipc/types";
 import { baseName } from "../ui/path";
+import { issueLabel, remoteOriginTitle } from "./remoteOrigin";
+
+/** The pull request or issue a session works on, shown as `#123` with its own icon on the sidebar's repository line. */
+export type SessionReference = { kind: "pullRequest" | "issue"; label: string; title: string };
+
+/** The pull request a session reviews, else the issue it works on; null for a session on neither. */
+export function sessionReference(session: SessionView): SessionReference | null {
+  if (session.pullRequest) {
+    return { kind: "pullRequest", label: `#${session.pullRequest.number}`, title: `Reviews pull request ${session.pullRequest.url}` };
+  }
+  const issue = issueLabel(session);
+  if (issue) return { kind: "issue", label: issue, title: remoteOriginTitle(session) ?? "" };
+  return null;
+}
+
+/** The session's title for the sidebar, without the `#123 ` of its pull request that older sessions were named with. */
+export function sidebarTitle(session: SessionView): string {
+  if (!session.pullRequest) return session.title;
+  const prefix = `#${session.pullRequest.number} `;
+  return session.title.startsWith(prefix) ? session.title.slice(prefix.length) : session.title;
+}
 
 /** File name and line range a sub chat was opened from, e.g. `store.ts:L10-L12`. */
 export function describeSubChatSource(selection: SelectionContext): string {

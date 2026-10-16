@@ -6,17 +6,17 @@ import { configuredVmSettings, useSettingsStore } from "../state/settings";
 import { accountOptions, LOCAL_LOGIN, useAccountsStore } from "../state/accounts";
 import { openSettingsWindow } from "../settings/openSettingsWindow";
 import { useFileIconUrl } from "../diff/fileIcons";
-import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, sessionSubtitle } from "./sessionLabels";
+import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, sessionReference, sessionSubtitle, sidebarTitle } from "./sessionLabels";
 import { SessionMark } from "./SessionMark";
 import { DeleteSessionDialog } from "./DeleteSessionDialog";
 import { StaleRemoteDialog } from "./StaleRemoteDialog";
-import { issueLabel, remoteOriginLabel, remoteOriginTitle, removeFromSidebarQuestion, repositoryLabel } from "./remoteOrigin";
+import { remoteOriginLabel, remoteOriginTitle, removeFromSidebarQuestion, repositoryLabel } from "./remoteOrigin";
 import { PlanUsageBar } from "./PlanUsageBar";
 import { HEADER_BAR } from "../ui/bars";
 import { ICON_BUTTON, PRIMARY_BUTTON_XS } from "../ui/buttons";
 import { Dropdown } from "../ui/Dropdown";
 import { SearchField } from "../ui/SearchField";
-import { BranchIcon, CloseIcon, CloudSyncIcon, GitHubIcon, PlusIcon, RepoIcon, Spinner, TicketIcon } from "../ui/icons";
+import { BranchIcon, CloseIcon, CloudSyncIcon, GitHubIcon, PlusIcon, PullRequestIcon, RepoIcon, Spinner, TicketIcon } from "../ui/icons";
 import { useLoad } from "../ui/useLoad";
 
 export function SessionSidebar() {
@@ -179,6 +179,7 @@ export function SessionSidebar() {
           const isBusy = chats[session.id]?.isBusy ?? false;
           // A session the backend still creates has no worktree or agent yet: nothing can be started in or done to it.
           const isCreating = creatingIds.includes(session.id);
+          const reference = sessionReference(session);
           return (
             <li key={session.id} data-active={isActive || undefined}>
               <button
@@ -189,7 +190,7 @@ export function SessionSidebar() {
               >
                 <span className="relative flex w-full items-center gap-2">
                   <SessionMark sessionId={session.id} mark={marks.get(session.id) ?? ""} />
-                  <span className={`min-w-0 flex-1 truncate text-[0.875em] ${isSubChat ? "text-neutral-300" : "font-medium text-neutral-100"}`}>{session.title}</span>
+                  <span className={`min-w-0 flex-1 truncate text-[0.875em] ${isSubChat ? "text-neutral-300" : "font-medium text-neutral-100"}`}>{sidebarTitle(session)}</span>
                   {isCreating ? <span className="shrink-0 text-[0.75em] text-neutral-500">Starting</span> : null}
                   {remoteOriginLabel(session) ? (
                     <span
@@ -248,10 +249,10 @@ export function SessionSidebar() {
                   >
                     <RepoIcon className="size-4 shrink-0" />
                     <span className="truncate">{repositoryLabel(session)}</span>
-                    {issueLabel(session) ? (
-                      <span className="ml-auto flex shrink-0 items-center gap-1 pl-2 text-neutral-400" title={remoteOriginTitle(session) ?? undefined}>
-                        <TicketIcon className="size-4" />
-                        {issueLabel(session)}
+                    {reference ? (
+                      <span className="ml-auto flex shrink-0 items-center gap-1 pl-2 text-neutral-400" title={reference.title || undefined}>
+                        {reference.kind === "pullRequest" ? <PullRequestIcon className="size-4" /> : <TicketIcon className="size-4" />}
+                        {reference.label}
                       </span>
                     ) : null}
                   </span>

@@ -231,6 +231,16 @@ export function CloudSyncIcon({ className = "size-4" }: { className?: string }) 
   );
 }
 
+/** A ticket stub with a perforation, for the issue a session works on. */
+export function TicketIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 9V7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a3 3 0 0 0 0 6v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a3 3 0 0 0 0-6Z" />
+      <path d="M14 5v2M14 11v2M14 17v2" />
+    </svg>
+  );
+}
+
 /** A bound book, the common symbol for a repository. */
 export function RepoIcon({ className = "size-3.5" }: { className?: string }) {
   return (

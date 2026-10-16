@@ -10,13 +10,13 @@ import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, session
 import { SessionMark } from "./SessionMark";
 import { DeleteSessionDialog } from "./DeleteSessionDialog";
 import { StaleRemoteDialog } from "./StaleRemoteDialog";
-import { remoteOriginLabel, remoteOriginTitle, removeFromSidebarQuestion, repositoryLabel } from "./remoteOrigin";
+import { issueLabel, remoteOriginLabel, remoteOriginTitle, removeFromSidebarQuestion, repositoryLabel } from "./remoteOrigin";
 import { PlanUsageBar } from "./PlanUsageBar";
 import { HEADER_BAR } from "../ui/bars";
 import { ICON_BUTTON, PRIMARY_BUTTON_XS } from "../ui/buttons";
 import { Dropdown } from "../ui/Dropdown";
 import { SearchField } from "../ui/SearchField";
-import { BranchIcon, CloseIcon, CloudIcon, CloudSyncIcon, GitHubIcon, PlusIcon, RepoIcon, Spinner } from "../ui/icons";
+import { BranchIcon, CloseIcon, CloudSyncIcon, GitHubIcon, PlusIcon, RepoIcon, Spinner, TicketIcon } from "../ui/icons";
 import { useLoad } from "../ui/useLoad";
 
 export function SessionSidebar() {
@@ -191,14 +191,12 @@ export function SessionSidebar() {
                   <SessionMark sessionId={session.id} mark={marks.get(session.id) ?? ""} />
                   <span className={`min-w-0 flex-1 truncate text-[0.875em] ${isSubChat ? "text-neutral-300" : "font-medium text-neutral-100"}`}>{session.title}</span>
                   {isCreating ? <span className="shrink-0 text-[0.75em] text-neutral-500">Starting</span> : null}
-                  {session.remote ? (
-                    <span className="flex shrink-0 items-center gap-1 text-sky-300" title={remoteOriginTitle(session) ?? undefined}>
-                      <CloudIcon className="size-4" />
-                      {remoteOriginLabel(session) ? (
-                        <span className="rounded-md bg-sky-400/10 px-1.5 text-[length:max(13px,0.875em)] leading-5 font-medium">
-                          {remoteOriginLabel(session)}
-                        </span>
-                      ) : null}
+                  {remoteOriginLabel(session) ? (
+                    <span
+                      className="shrink-0 rounded-md bg-sky-400/10 px-1.5 text-[length:max(13px,0.875em)] leading-5 font-medium text-sky-300"
+                      title={remoteOriginTitle(session) ?? undefined}
+                    >
+                      {remoteOriginLabel(session)}
                     </span>
                   ) : null}
                   {!isSubChat && !isCreating ? (
@@ -250,6 +248,12 @@ export function SessionSidebar() {
                   >
                     <RepoIcon className="size-4 shrink-0" />
                     <span className="truncate">{repositoryLabel(session)}</span>
+                    {issueLabel(session) ? (
+                      <span className="ml-auto flex shrink-0 items-center gap-1 pl-2 text-neutral-400" title={remoteOriginTitle(session) ?? undefined}>
+                        <TicketIcon className="size-4" />
+                        {issueLabel(session)}
+                      </span>
+                    ) : null}
                   </span>
                 ) : null}
                 {!isCreating && isBusy ? (

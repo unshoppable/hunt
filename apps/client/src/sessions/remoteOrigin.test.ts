@@ -4,6 +4,7 @@ import {
   adoptedBringBackQuestion,
   adoptedDeleteQuestion,
   isAdopted,
+  issueLabel,
   missingCheckoutBlocker,
   remoteDeleteQuestion,
   remoteOriginLabel,
@@ -46,10 +47,16 @@ describe("runsOnVm", () => {
 });
 
 describe("remoteOriginLabel", () => {
-  it("labels adopted sessions by who started them", () => {
-    expect(remoteOriginLabel(session({ origin: "swf", issue: 123 }))).toBe("swf #123");
+  it("labels adopted sessions without an issue by who started them", () => {
+    expect(remoteOriginLabel(session({ origin: "swf", issue: 123 }))).toBeNull();
     expect(remoteOriginLabel(session({ origin: "swf" }))).toBe("swf");
     expect(remoteOriginLabel(session({ origin: "desktop" }))).toBe("remote");
+  });
+
+  it("names the issue a session works on", () => {
+    expect(issueLabel(session({ origin: "swf", issue: 123 }))).toBe("#123");
+    expect(issueLabel(session({ origin: "swf" }))).toBeNull();
+    expect(issueLabel(session(null))).toBeNull();
   });
 
   it("leaves sessions this Mac handed off or runs without a label", () => {

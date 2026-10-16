@@ -18,14 +18,21 @@ export function runsOnVm(sessionId: string, sessions: SessionView[]): boolean {
 }
 
 /**
- * The sidebar badge of an adopted session: `swf #123` (or `swf` without an issue) for one the gateway's poller started,
- * `remote` for another person's handoff; null for a session this Mac runs or handed off.
+ * The sidebar badge of an adopted session that no issue identifies: `swf` for one the gateway's poller started without
+ * an issue, `remote` for another person's handoff; null for a session on an issue (`issueLabel` names it) and for one
+ * this Mac runs or handed off.
  */
 export function remoteOriginLabel(session: SessionView): string | null {
   const remote = session.remote;
   if (!remote || remote.origin === "handoff") return null;
-  if (remote.origin === "swf") return remote.issue ? `swf #${remote.issue}` : "swf";
+  if (remote.origin === "swf") return remote.issue ? null : "swf";
   return "remote";
+}
+
+/** The issue the `session` works on, as `#123` for the sidebar's repository line; null without one. */
+export function issueLabel(session: SessionView): string | null {
+  const issue = session.remote?.issue;
+  return issue ? `#${issue}` : null;
 }
 
 /** The tooltip of the sidebar badge or cloud icon: who started the remote `session` and which VM it runs on. */

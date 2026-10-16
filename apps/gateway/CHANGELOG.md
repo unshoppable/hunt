@@ -1,3 +1,9 @@
+## 0.20.1 (2026-10-16)
+
+### 🩹 Fixes
+
+- **gateway:** let Compute Engine create the moved VM's disk from the snapshot with the VM, and drop the snapshot when the VM cannot be renamed ([2a1aab3](https://github.com/unshoppable/hunt/commit/2a1aab3))
+
 ## 0.20.0 (2026-10-16)
 
 ### 🚀 Features

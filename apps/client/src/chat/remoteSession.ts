@@ -5,6 +5,7 @@ import type { FileSync, SessionChat } from "../state/store";
 /** What the chat shows while a step of a handoff, a retrieval or a connect to the VM runs. */
 export const REMOTE_STEP_LABELS: Record<RemoteStep, string> = {
   startingVm: "Starting the VM…",
+  movingVm: "Moving the VM to a zone with capacity…",
   creatingVm: "Creating the session's VM…",
   waitingForVm: "Waiting for the VM to finish its setup, the first boot takes a few minutes…",
   connecting: "Connecting to the VM…",
@@ -19,11 +20,22 @@ export const REMOTE_STEP_LABELS: Record<RemoteStep, string> = {
 /** A remote operation whose steps the chat counts: a move to or from the VM, or a connect to it. */
 export type RemoteOperation = "handOff" | "retrieve" | "connect";
 
-/** The steps of each remote operation in their order; a slot lists the steps that take its place. */
+/**
+ * The steps of each remote operation in their order; a slot lists the steps that take its place, and several of them in
+ * a row (a VM start that moves the VM to another zone) still count as one.
+ */
 const REMOTE_PLANS: Record<RemoteOperation, RemoteStep[][]> = {
-  handOff: [["connecting"], ["creatingVm", "startingVm"], ["waitingForVm"], ["installingRuntime"], ["transferringCode"], ["installingDependencies"], ["startingAgent"]],
-  retrieve: [["connecting"], ["startingVm"], ["waitingForVm"], ["installingRuntime"], ["stoppingAgent"], ["retrievingCode"]],
-  connect: [["connecting"], ["startingVm"], ["waitingForVm"], ["installingRuntime"], ["startingAgent"]],
+  handOff: [
+    ["connecting"],
+    ["creatingVm", "startingVm", "movingVm"],
+    ["waitingForVm"],
+    ["installingRuntime"],
+    ["transferringCode"],
+    ["installingDependencies"],
+    ["startingAgent"],
+  ],
+  retrieve: [["connecting"], ["startingVm", "movingVm"], ["waitingForVm"], ["installingRuntime"], ["stoppingAgent"], ["retrievingCode"]],
+  connect: [["connecting"], ["startingVm", "movingVm"], ["waitingForVm"], ["installingRuntime"], ["startingAgent"]],
 };
 
 /** The operation the remote steps of `chat` belong to. */

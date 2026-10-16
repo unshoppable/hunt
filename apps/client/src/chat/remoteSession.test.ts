@@ -140,6 +140,13 @@ describe("remotePosition", () => {
     expect(remotePosition("handOff", [...prepared, "connecting", "installingRuntime", "transferringCode"])).toEqual({ position: 5, total: 7 });
   });
 
+  it("counts a VM start that moves the VM to another zone as one step", () => {
+    expect(remotePosition("connect", ["connecting", "startingVm", "movingVm"])).toEqual({ position: 2, total: 5 });
+    expect(remotePosition("connect", ["connecting", "startingVm", "movingVm", "waitingForVm"])).toEqual({ position: 3, total: 5 });
+    expect(remotePosition("retrieve", ["connecting", "startingVm", "movingVm", "waitingForVm"])).toEqual({ position: 3, total: 6 });
+    expect(remotePosition("handOff", ["connecting", "startingVm", "movingVm", "waitingForVm"])).toEqual({ position: 3, total: 7 });
+  });
+
   it("ignores steps outside the operation's plan", () => {
     expect(remotePosition("connect", ["retrievingCode"])).toBeNull();
   });

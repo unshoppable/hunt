@@ -608,13 +608,23 @@ async fn open_remote_sub_relay(
 
 /// Brings the VM of the remote session `id` up for a connect: has the gateway start it when it is off (it stops itself
 /// when idle), checks its release, installs the agent's tools, learns the worktree of an adopted session on its first
-/// connect and makes sure the session's relay runs. Returns the connection and `target` with its worktree on the VM;
-/// `None` when the VM no longer exists.
+/// connect and makes sure the session's relay runs. Returns the connection and `target` with its worktree on the VM and
+/// the VM where the gateway runs it, which every stored session on the VM takes over when the start moved it to another
+/// zone; `None` when the VM no longer exists.
 async fn start_remote_relay(app: &AppHandle, id: Uuid, target: RemoteTarget, progress: Progress<'_>) -> Result<Option<(Ssh, RemoteTarget)>, String> {
     progress.step(RemoteStep::Connecting);
     // A relay that runs keeps running on the release it started with.
-    let Some(ssh) = remote::start_session_vm(&gateway_vm("connect the remote session").await?, id, &ssh_dir()?, progress).await? else {
+    let gateway = gateway_vm("connect the remote session").await?;
+    let Some((ssh, vm)) = remote::start_session_vm(&gateway, id, &ssh_dir()?, progress).await? else {
         return Ok(None);
+    };
+    let target = if vm == target.vm {
+        target
+    } else {
+        if store::replace_remote_vm(app, &target.vm, &vm)? > 0 {
+            announce_sessions_changed(app);
+        }
+        RemoteTarget { vm, ..target }
     };
     // An adopted session learns its worktree on the VM with its first connect; the chat works without it.
     let target = if target.worktree_path.as_os_str().is_empty() {
@@ -750,7 +760,16 @@ pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths:
             }
         })?;
     }
-    let mut has_changed = !agent_updates.is_empty();
+    // A VM the gateway moved to another zone keeps its name; the stored session follows it there.
+    let vm_updates = remote::adoption::vm_updates(&listed_vms, &remote_targets);
+    for (id, vm) in vm_updates.iter().cloned() {
+        store::update_session(&app, id, |stored| {
+            if let Some(target) = stored.remote.as_mut() {
+                target.vm = vm;
+            }
+        })?;
+    }
+    let mut has_changed = !agent_updates.is_empty() || !vm_updates.is_empty();
     let adoptable: Vec<_> = remote::adoption::sessions_to_adopt(&listed, &hello.project, &hello.zone, &known)
         .into_iter()
         .filter(|session| ids.contains(&session.id))

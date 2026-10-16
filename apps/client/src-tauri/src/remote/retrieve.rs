@@ -337,7 +337,7 @@ async fn retrieve_adopted(request: &RetrieveRequest<'_>, repo: &Path, progress: 
 /// that its `hunt-ctl` knows the commands the retrieval runs. `None` when the VM no longer exists.
 async fn connect(request: &RetrieveRequest<'_>, progress: Progress<'_>) -> Result<Option<Ssh>, String> {
     progress.step(RemoteStep::Connecting);
-    start_session_vm(request.gateway, request.hunt_session_id, request.ssh_dir, progress).await
+    Ok(start_session_vm(request.gateway, request.hunt_session_id, request.ssh_dir, progress).await?.map(|(ssh, _)| ssh))
 }
 
 /// The worktree of the session on its running VM: the one the record names, or for an adopted session that never

@@ -315,6 +315,24 @@ impl Store {
         let sessions: Vec<SessionRecord> = self.load()?.into_iter().filter(|session| session.id != id).collect();
         self.save(&sessions)
     }
+
+    /// Moves every remote session on the VM `from` to the VM `to` (the owner's record and its sub sessions share the
+    /// VM); returns how many records changed, and saves nothing when none did.
+    fn replace_remote_vm(&self, from: &VmRef, to: &VmRef) -> Result<usize, String> {
+        let mut sessions = self.load()?;
+        let mut changed = 0;
+        for target in sessions.iter_mut().filter_map(|session| session.remote.as_mut()) {
+            if target.vm != *from {
+                continue;
+            }
+            target.vm = to.clone();
+            changed += 1;
+        }
+        if changed > 0 {
+            self.save(&sessions)?;
+        }
+        Ok(changed)
+    }
 }
 
 pub fn load_sessions(app: &AppHandle) -> Result<Vec<SessionRecord>, String> {
@@ -392,6 +410,12 @@ pub fn remove_session(app: &AppHandle, id: Uuid) -> Result<(), String> {
     Store::open(app)?.remove(id)
 }
 
+/// Moves every stored remote session on the VM `from` to the VM `to`, as the gateway did when it moved the VM to
+/// another zone; returns how many records changed.
+pub fn replace_remote_vm(app: &AppHandle, from: &VmRef, to: &VmRef) -> Result<usize, String> {
+    Store::open(app)?.replace_remote_vm(from, to)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,6 +473,43 @@ mod tests {
         assert_eq!(loaded[0].title, "first");
         assert_eq!(loaded[1].title, "renamed");
         assert!(!dir.path().join("sessions.json.tmp").exists());
+    }
+
+    #[test]
+    fn replace_remote_vm_moves_the_owner_and_its_sub_sessions_and_leaves_other_vms_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in(&dir);
+        let vm = |zone: &str, instance: &str| VmRef { project: "acme-hunt".into(), zone: zone.into(), instance: instance.into() };
+        let target = |vm: VmRef| RemoteTarget {
+            vm,
+            worktree_path: "/home/agent/app".into(),
+            repo: "acme/app".into(),
+            branch: "feat/general/x".into(),
+            handoff_head: "abc".into(),
+            handed_off_at: chrono::Utc::now(),
+            local_mode: None,
+            last_active_at: None,
+            cleanup_asked_at: None,
+            preview_domain: None,
+            origin: crate::remote::RemoteOrigin::Handoff,
+            issue: None,
+            agent: String::new(),
+        };
+        let (old, new) = (vm("europe-west1-c", "vm-hunt-s-ab12cd34"), vm("europe-west1-b", "vm-hunt-s-ab12cd34"));
+        let mut owner = record("owner");
+        owner.remote = Some(target(old.clone()));
+        let mut sub = SessionRecord::sub_session(Uuid::new_v4(), "sub".into(), &owner, None);
+        sub.remote = Some(target(old.clone()));
+        let mut other = record("other");
+        other.remote = Some(target(vm("europe-west1-c", "vm-hunt-s-ffffffff")));
+        store.save(&[owner.clone(), sub.clone(), other.clone(), record("local")]).unwrap();
+
+        assert_eq!(store.replace_remote_vm(&old, &new).unwrap(), 2);
+        let loaded = store.load().unwrap();
+        let vms: Vec<Option<&VmRef>> = loaded.iter().map(|session| session.remote.as_ref().map(|target| &target.vm)).collect();
+        assert_eq!(vms, vec![Some(&new), Some(&new), Some(&other.remote.as_ref().unwrap().vm), None]);
+        assert_eq!(loaded[1].parent_id, Some(owner.id));
+        assert_eq!(store.replace_remote_vm(&old, &new).unwrap(), 0);
     }
 
     #[test]

@@ -207,6 +207,7 @@ export type RemoteTarget = {
 /** A step of a handoff, a retrieval or a connect to a remote session that takes long enough to show. */
 export type RemoteStep =
   | "startingVm"
+  | "movingVm"
   | "creatingVm"
   | "waitingForVm"
   | "connecting"

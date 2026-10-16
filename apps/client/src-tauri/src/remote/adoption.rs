@@ -95,13 +95,28 @@ fn adoptable(listed: &SessionSummary, project: &str) -> Option<AdoptableSession>
 }
 
 /// The agent states to record anew: `(id, agent)` of every session of `listed` (see `list_session_vms`) that `remote`
-/// holds as a remote session on the listed VM and whose recorded agent state differs from the listed one, in the order
-/// listed. A session this Mac knows on another VM keeps its state.
+/// holds as a remote session on a VM of the listed VM's name (a VM the gateway moved to another zone keeps its name) and
+/// whose recorded agent state differs from the listed one, in the order listed. A session this Mac knows on another VM
+/// keeps its state.
 pub fn agent_updates(listed: &[AdoptableSession], remote: &HashMap<Uuid, &RemoteTarget>) -> Vec<(Uuid, String)> {
     listed
         .iter()
-        .filter(|session| remote.get(&session.id).is_some_and(|target| target.vm == session.vm && target.agent != session.agent))
+        .filter(|session| {
+            remote.get(&session.id).is_some_and(|target| target.vm.instance == session.vm.instance && target.agent != session.agent)
+        })
         .map(|session| (session.id, session.agent.clone()))
+        .collect()
+}
+
+/// The VMs to record anew: `(id, vm)` of every session of `listed` that `remote` holds on a VM of the listed VM's name
+/// in another zone or project, since the gateway moved it there, in the order listed.
+pub fn vm_updates(listed: &[AdoptableSession], remote: &HashMap<Uuid, &RemoteTarget>) -> Vec<(Uuid, VmRef)> {
+    listed
+        .iter()
+        .filter(|session| {
+            remote.get(&session.id).is_some_and(|target| target.vm.instance == session.vm.instance && target.vm != session.vm)
+        })
+        .map(|session| (session.id, session.vm.clone()))
         .collect()
 }
 
@@ -260,6 +275,41 @@ mod tests {
         let elsewhere = target("running", "vm-hunt-medc");
         assert!(agent_updates(&listed, &HashMap::from([(id, &elsewhere)])).is_empty());
         assert!(agent_updates(&listed, &HashMap::new()).is_empty());
+
+        let mut moved = target("running", "vm-hunt-s-ab12cd34");
+        moved.vm.zone = "europe-west1-b".into();
+        assert_eq!(agent_updates(&listed, &HashMap::from([(id, &moved)])), vec![(id, "question".to_string()), (id, "done".to_string())]);
+    }
+
+    #[test]
+    fn vm_updates_names_the_known_sessions_whose_vm_moved_to_another_zone() {
+        let listed = list_session_vms(&[swf_session()], "acme-hunt", ZONE);
+        let id = Uuid::parse_str(ID).unwrap();
+        let target = |zone: &str, instance: &str| RemoteTarget {
+            vm: VmRef { project: "acme-hunt".into(), zone: zone.into(), instance: instance.into() },
+            worktree_path: PathBuf::new(),
+            repo: "acme/app".into(),
+            branch: "fix/general/123-fix-login".into(),
+            handoff_head: String::new(),
+            handed_off_at: chrono::Utc::now(),
+            local_mode: None,
+            last_active_at: None,
+            cleanup_asked_at: None,
+            preview_domain: None,
+            origin: RemoteOrigin::Swf,
+            issue: Some(123),
+            agent: "question".into(),
+        };
+
+        let moved = target("europe-west1-b", "vm-hunt-s-ab12cd34");
+        assert_eq!(vm_updates(&listed, &HashMap::from([(id, &moved)])), vec![(id, listed[0].vm.clone())]);
+        assert_eq!(listed[0].vm.zone, ZONE);
+
+        let same = target(ZONE, "vm-hunt-s-ab12cd34");
+        assert!(vm_updates(&listed, &HashMap::from([(id, &same)])).is_empty());
+        let elsewhere = target("europe-west1-b", "vm-hunt-medc");
+        assert!(vm_updates(&listed, &HashMap::from([(id, &elsewhere)])).is_empty());
+        assert!(vm_updates(&listed, &HashMap::new()).is_empty());
     }
 
     #[test]

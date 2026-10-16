@@ -227,6 +227,8 @@ pub fn relay_activity(status: &serde_json::Value, now: chrono::DateTime<chrono::
 #[serde(rename_all = "camelCase")]
 pub enum RemoteStep {
     StartingVm,
+    /// The gateway recreates the stopped VM in another zone, since its own has no capacity for its start.
+    MovingVm,
     CreatingVm,
     WaitingForVm,
     Connecting,
@@ -303,13 +305,20 @@ pub fn read_agent_md(worktree: &Path) -> Result<Option<String>, String> {
 }
 
 /// Starts the VM of session `id` through `gateway` unless it runs and connects to it once it can run the agent (see
-/// `release::ensure_ready`); Hunt's SSH key lives in `ssh_dir`. `None` when the session's VM no longer exists.
-pub async fn start_session_vm(gateway: &VmRef, id: uuid::Uuid, ssh_dir: &Path, progress: Progress<'_>) -> Result<Option<ssh::Ssh>, String> {
+/// `release::ensure_ready`); Hunt's SSH key lives in `ssh_dir`. Returns the connection and the VM as the gateway
+/// reports it, which may lie in another zone than the one stored when the gateway had to move it for the start.
+/// `None` when the session's VM no longer exists.
+pub async fn start_session_vm(
+    gateway: &VmRef,
+    id: uuid::Uuid,
+    ssh_dir: &Path,
+    progress: Progress<'_>,
+) -> Result<Option<(ssh::Ssh, VmRef)>, String> {
     let api = api::GatewayApi::open(gateway, ssh_dir).await?;
     let Some(vm) = api.start_vm(id, progress).await? else { return Ok(None) };
     let ssh = ssh::Ssh::open(&vm, ssh_dir).await?;
     release::ensure_ready(&ssh, progress).await?;
-    Ok(Some(ssh))
+    Ok(Some((ssh, vm)))
 }
 
 /// Runs `hunt-ctl` with `args` on the VM as root and returns its JSON output.
@@ -465,8 +474,11 @@ mod tests {
 
     #[test]
     fn remote_step_reads_the_gateways_steps_and_takes_unknown_ones_as_unknown() {
-        let steps: Vec<RemoteStep> = serde_json::from_str(r#"["creatingVm","startingVm","waitingForVm","installingRuntime","resizingDisk"]"#).unwrap();
-        assert_eq!(steps, [RemoteStep::CreatingVm, RemoteStep::StartingVm, RemoteStep::WaitingForVm, RemoteStep::InstallingRuntime, RemoteStep::Unknown]);
+        let steps: Vec<RemoteStep> =
+            serde_json::from_str(r#"["creatingVm","startingVm","movingVm","waitingForVm","installingRuntime","resizingDisk"]"#).unwrap();
+        let known = [RemoteStep::CreatingVm, RemoteStep::StartingVm, RemoteStep::MovingVm, RemoteStep::WaitingForVm];
+        assert_eq!(steps[..4], known);
+        assert_eq!(steps[4..], [RemoteStep::InstallingRuntime, RemoteStep::Unknown]);
     }
 
     #[test]

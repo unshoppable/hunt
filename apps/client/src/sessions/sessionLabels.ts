@@ -1,18 +1,37 @@
-import type { SelectionContext, SessionView } from "../ipc/types";
+import type { PullRequestState, SelectionContext, SessionView } from "../ipc/types";
 import { baseName } from "../ui/path";
 import { issueLabel, remoteOriginTitle } from "./remoteOrigin";
 
-/** The pull request or issue a session works on, shown as `#123` with its own icon on the sidebar's repository line. */
-export type SessionReference = { kind: "pullRequest" | "issue"; label: string; title: string };
+/**
+ * The pull request or issue a session works on, shown as `#123` with its own icon on the sidebar's repository line.
+ * The tone follows GitHub: an issue is amber, an open pull request green, a draft grey, a merged one purple, a closed
+ * one red; `neutral` while the pull request's state is not known yet.
+ */
+export type SessionReference = { kind: "pullRequest" | "issue"; label: string; title: string; tone: ReferenceTone };
+export type ReferenceTone = "amber" | "green" | "grey" | "purple" | "red" | "neutral";
 
-/** The pull request a session reviews, else the issue it works on; null for a session on neither. */
-export function sessionReference(session: SessionView): SessionReference | null {
+/** The pull request a session reviews (in `pullRequestState` as last fetched), else the issue it works on; null for a session on neither. */
+export function sessionReference(session: SessionView, pullRequestState: PullRequestState | null = null): SessionReference | null {
   if (session.pullRequest) {
-    return { kind: "pullRequest", label: `#${session.pullRequest.number}`, title: `Reviews pull request ${session.pullRequest.url}` };
+    const state = pullRequestState ? describePullRequestState(pullRequestState) : null;
+    return {
+      kind: "pullRequest",
+      label: `#${session.pullRequest.number}`,
+      title: `Reviews pull request ${session.pullRequest.url}${state ? ` (${state.label})` : ""}`,
+      tone: state?.tone ?? "neutral",
+    };
   }
   const issue = issueLabel(session);
-  if (issue) return { kind: "issue", label: issue, title: remoteOriginTitle(session) ?? "" };
+  if (issue) return { kind: "issue", label: issue, title: remoteOriginTitle(session) ?? "", tone: "amber" };
   return null;
+}
+
+/** The word and tone of a pull request's state, as GitHub shows it. */
+function describePullRequestState({ state, isDraft }: PullRequestState): { label: string; tone: ReferenceTone } {
+  if (state === "MERGED") return { label: "merged", tone: "purple" };
+  if (state === "CLOSED") return { label: "closed", tone: "red" };
+  if (isDraft) return { label: "draft", tone: "grey" };
+  return { label: "open", tone: "green" };
 }
 
 /** The session's title for the sidebar, without the `#123 ` of its pull request that older sessions were named with. */

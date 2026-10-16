@@ -34,9 +34,19 @@ export function PullRequestPanel({ sessionId }: { sessionId: string }) {
   const [details, setDetails] = useState<PullRequestDetails | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useLoad(() => commands.viewPullRequest(sessionId), { onValue: setDetails, onError: (reason) => setError(errorText(reason)) }, [sessionId], {
-    isEnabled: !!pullRequest,
-  });
+  const notePullRequestState = useHuntStore((state) => state.notePullRequestState);
+  useLoad(
+    () => commands.viewPullRequest(sessionId),
+    {
+      onValue: (loaded) => {
+        setDetails(loaded);
+        notePullRequestState(sessionId, { state: loaded.state, isDraft: loaded.isDraft });
+      },
+      onError: (reason) => setError(errorText(reason)),
+    },
+    [sessionId],
+    { isEnabled: !!pullRequest },
+  );
 
   if (!pullRequest) {
     return <EmptyState>This session does not review a pull request. Start a session from “PR review” to see its description here.</EmptyState>;

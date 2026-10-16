@@ -291,6 +291,15 @@ pub struct ReviewThreadComment {
     pub url: String,
 }
 
+/// State of a pull request, as `gh pr view --json state,isDraft` prints it (mirror of `PullRequestState` in src/ipc/types.ts).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestState {
+    /// `OPEN`, `CLOSED` or `MERGED`.
+    pub state: String,
+    pub is_draft: bool,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GhPullRequestDetails {
@@ -803,6 +812,13 @@ pub async fn view_pull_request(repo: &Path, number: u64) -> Result<PullRequestDe
     let number = number.to_string();
     let stdout = run_gh(repo, &["pr", "view", &number, "--json", DETAIL_JSON_FIELDS], "view pull request").await?;
     parse_pull_request_details(&stdout)
+}
+
+/// The state of pull request `number` with whether it is a draft; fetches only these two fields, for the sidebar's badge.
+pub async fn pull_request_state(repo: &Path, number: u64) -> Result<PullRequestState, String> {
+    let number = number.to_string();
+    let stdout = run_gh(repo, &["pr", "view", &number, "--json", "state,isDraft"], "view pull request state").await?;
+    serde_json::from_slice(&stdout).map_err(|error| format!("failed to parse pull request state: {error}"))
 }
 
 /// The pull request in the JSON `gh pr view --json` prints.

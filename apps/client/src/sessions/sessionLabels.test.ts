@@ -44,11 +44,19 @@ const ids = (rows: ReturnType<typeof groupSessions>) => rows.map(({ session, isS
 describe("sessionReference", () => {
   it("names the pull request a session reviews, else the issue of a swf session", () => {
     const review = { ...session("r", "Review", "feat/x"), pullRequest: { number: 1465, url: "https://github.com/o/r/pull/1465" } };
-    expect(sessionReference(review)).toEqual({ kind: "pullRequest", label: "#1465", title: "Reviews pull request https://github.com/o/r/pull/1465" });
+    expect(sessionReference(review)).toEqual({ kind: "pullRequest", label: "#1465", title: "Reviews pull request https://github.com/o/r/pull/1465", tone: "neutral" });
     const swf = session("s", "Issue", "feat/x");
     swf.remote = { origin: "swf", issue: 687, repo: "o/r", vm: { project: "p", zone: "z", instance: "vm-1" } } as SessionView["remote"];
-    expect(sessionReference(swf)).toMatchObject({ kind: "issue", label: "#687" });
+    expect(sessionReference(swf)).toMatchObject({ kind: "issue", label: "#687", tone: "amber" });
     expect(sessionReference(sessions[0])).toBeNull();
+  });
+
+  it("colours a pull request by its state like GitHub", () => {
+    const review = { ...session("r", "Review", "feat/x"), pullRequest: { number: 1, url: "https://github.com/o/r/pull/1" } };
+    expect(sessionReference(review, { state: "OPEN", isDraft: false })).toMatchObject({ tone: "green", title: "Reviews pull request https://github.com/o/r/pull/1 (open)" });
+    expect(sessionReference(review, { state: "OPEN", isDraft: true })).toMatchObject({ tone: "grey" });
+    expect(sessionReference(review, { state: "MERGED", isDraft: false })).toMatchObject({ tone: "purple" });
+    expect(sessionReference(review, { state: "CLOSED", isDraft: false })).toMatchObject({ tone: "red" });
   });
 });
 

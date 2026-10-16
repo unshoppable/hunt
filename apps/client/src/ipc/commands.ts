@@ -14,6 +14,7 @@ import type {
   PullRequest,
   PullRequestDetails,
   PullRequestRef,
+  PullRequestState,
   ReplyTarget,
   ReviewComment,
   ReviewEvent,
@@ -47,6 +48,8 @@ export const commands = {
   githubViewer: (repoPath: string) => invoke<GithubViewer>("github_viewer", { repoPath }),
   /** Description and conversation of the pull request the session reviews; rejects when it reviews none. */
   viewPullRequest: (sessionId: string) => invoke<PullRequestDetails>("view_pull_request", { sessionId }),
+  /** State and draft flag of the pull request the session reviews; rejects when it reviews none. */
+  pullRequestState: (sessionId: string) => invoke<PullRequestState>("pull_request_state", { sessionId }),
   /** Review threads of the pull request the session reviews, with their replies; rejects when it reviews none. */
   listReviewThreads: (sessionId: string) => invoke<ReviewThread[]>("list_review_threads", { sessionId }),
   /** Submits a review of the pull request the session reviews; `body` is its summary comment. */

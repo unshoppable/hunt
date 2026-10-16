@@ -6,7 +6,7 @@ import { configuredVmSettings, useSettingsStore } from "../state/settings";
 import { accountOptions, LOCAL_LOGIN, useAccountsStore } from "../state/accounts";
 import { openSettingsWindow } from "../settings/openSettingsWindow";
 import { useFileIconUrl } from "../diff/fileIcons";
-import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, sessionReference, sessionSubtitle, sidebarTitle } from "./sessionLabels";
+import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, sessionReference, sessionSubtitle, sidebarTitle, type ReferenceTone } from "./sessionLabels";
 import { SessionMark } from "./SessionMark";
 import { DeleteSessionDialog } from "./DeleteSessionDialog";
 import { StaleRemoteDialog } from "./StaleRemoteDialog";
@@ -36,6 +36,18 @@ export function SessionSidebar() {
   const [query, setQuery] = useState("");
   const rows = useMemo(() => filterSessionRows(groupSessions(sessions), query), [sessions, query]);
   const marks = useMemo(() => sessionMarks(sessions), [sessions]);
+  const pullRequestStates = useHuntStore((state) => state.pullRequestStates);
+  const refreshPullRequestStates = useHuntStore((state) => state.refreshPullRequestStates);
+  // The badges of reviewed pull requests follow their state on GitHub: fetched when the set of reviewing sessions
+  // changes and whenever the window comes back to the front.
+  const reviewingIds = sessions.filter((session) => session.pullRequest && !session.parentId).map((session) => session.id).join(",");
+  useEffect(() => {
+    if (!reviewingIds) return;
+    const refresh = () => void refreshPullRequestStates();
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [reviewingIds, refreshPullRequestStates]);
   const listRef = useRef<HTMLUListElement>(null);
   // A new session joins the end of the list, so the row of a newly active session is scrolled into view.
   useEffect(() => {
@@ -179,7 +191,7 @@ export function SessionSidebar() {
           const isBusy = chats[session.id]?.isBusy ?? false;
           // A session the backend still creates has no worktree or agent yet: nothing can be started in or done to it.
           const isCreating = creatingIds.includes(session.id);
-          const reference = sessionReference(session);
+          const reference = sessionReference(session, pullRequestStates[session.id] ?? null);
           return (
             <li key={session.id} data-active={isActive || undefined}>
               <button
@@ -250,7 +262,7 @@ export function SessionSidebar() {
                     <RepoIcon className="size-4 shrink-0" />
                     <span className="truncate">{repositoryLabel(session)}</span>
                     {reference ? (
-                      <span className="ml-auto flex shrink-0 items-center gap-1 pl-2 text-neutral-400" title={reference.title || undefined}>
+                      <span className={`ml-auto flex shrink-0 items-center gap-1 pl-2 ${REFERENCE_TONE[reference.tone]}`} title={reference.title || undefined}>
                         {reference.kind === "pullRequest" ? <PullRequestIcon className="size-4" /> : <TicketIcon className="size-4" />}
                         {reference.label}
                       </span>
@@ -319,3 +331,13 @@ function AccountSwitcher() {
     />
   );
 }
+
+/** Text colour of the pull request or issue badge on the repository line, by `SessionReference.tone`. */
+const REFERENCE_TONE: Record<ReferenceTone, string> = {
+  amber: "text-amber-300",
+  green: "text-emerald-300",
+  grey: "text-neutral-400",
+  purple: "text-violet-300",
+  red: "text-red-300",
+  neutral: "text-neutral-400",
+};

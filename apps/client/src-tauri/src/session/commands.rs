@@ -111,6 +111,16 @@ pub async fn view_pull_request(app: AppHandle, session_id: Uuid) -> Result<PullR
     github::view_pull_request(&record.repo_path, pull_request.number).await
 }
 
+/// State of the pull request the session reviews, for the sidebar's badge.
+#[tauri::command]
+pub async fn pull_request_state(app: AppHandle, session_id: Uuid) -> Result<github::PullRequestState, String> {
+    let record = store::find_session(&app, session_id)?;
+    let Some(pull_request) = record.pull_request else {
+        return Err("failed to view pull request state: the session does not review one".into());
+    };
+    github::pull_request_state(&record.repo_path, pull_request.number).await
+}
+
 /// Review threads of the pull request the session reviews, with their replies, as the diff shows them.
 #[tauri::command]
 pub async fn list_review_threads(app: AppHandle, session_id: Uuid) -> Result<Vec<ReviewThread>, String> {

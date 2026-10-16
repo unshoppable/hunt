@@ -12,6 +12,7 @@ import type {
   PlanEntry,
   PreviewStatus,
   PullRequestRef,
+  PullRequestState,
   RemoteProgressEvent,
   RemoteStep,
   RemoteSyncEvent,
@@ -208,6 +209,8 @@ type HuntState = {
   /** Ids of sessions created without a prompt, titled after their repository until their first prompt names them. */
   untitledIds: string[];
   remoteSync: RemoteSync;
+  /** State of the pull request each reviewing session works on, by session id, as last fetched from GitHub. */
+  pullRequestStates: Record<string, PullRequestState>;
 
   /** Reloads the stored sessions; a session still being created stays listed until the backend lists it itself. */
   refreshSessions: () => Promise<void>;
@@ -218,6 +221,13 @@ type HuntState = {
    * incomplete or a sync runs; a failure lands in `remoteSync.error`.
    */
   syncRemoteSessions: (ids?: string[]) => Promise<void>;
+  /**
+   * Fetches the state of every reviewed pull request from GitHub for the sidebar's badges; a failed fetch keeps the
+   * state last seen.
+   */
+  refreshPullRequestStates: () => Promise<void>;
+  /** Records the state of the pull request `sessionId` reviews, as a view of its details just reported it. */
+  notePullRequestState: (sessionId: string, state: PullRequestState) => void;
   /**
    * Shows the session of the VM `id` the gateway lists: a session this Mac knows is selected; another one is adopted
    * into the sidebar first (`syncRemoteSessions`). Rejects when the gateway no longer lists it or the adoption failed.
@@ -830,6 +840,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     draft: null,
     untitledIds: [],
     remoteSync: { isRunning: false, error: null },
+    pullRequestStates: {},
 
     refreshSessions: async () => {
       const listed = await commands.listSessions();
@@ -850,6 +861,18 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       } catch (error) {
         set({ remoteSync: { isRunning: false, error: String(error) } });
       }
+    },
+
+    refreshPullRequestStates: async () => {
+      const reviewing = get().sessions.filter((session) => session.pullRequest && !session.parentId);
+      const states = await Promise.all(
+        reviewing.map((session) => commands.pullRequestState(session.id).then((state) => [session.id, state] as const, () => null)),
+      );
+      set((state) => ({ pullRequestStates: { ...state.pullRequestStates, ...Object.fromEntries(states.filter((entry) => entry !== null)) } }));
+    },
+
+    notePullRequestState: (sessionId, state) => {
+      set((current) => ({ pullRequestStates: { ...current.pullRequestStates, [sessionId]: state } }));
     },
 
     openSessionVm: async (id) => {

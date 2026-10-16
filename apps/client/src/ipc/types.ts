@@ -287,6 +287,13 @@ export type TerminalOutputEvent = { id: string; data: string };
 /** The end of a terminal's program; `code` is `null` when a signal ended it. */
 export type TerminalExitEvent = { id: string; code: number | null };
 
+/** State of a pull request (mirror of `PullRequestState` in src-tauri/src/github.rs), for the sidebar's badge. */
+export type PullRequestState = {
+  /** `OPEN`, `CLOSED` or `MERGED`. */
+  state: string;
+  isDraft: boolean;
+};
+
 /** The pull request a session reviews: enough to show it and to open it on GitHub. */
 export type PullRequestRef = {
   number: number;

@@ -50,6 +50,7 @@ pub fn run() {
             session::commands::list_pull_requests,
             session::commands::github_viewer,
             session::commands::view_pull_request,
+            session::commands::pull_request_state,
             session::commands::list_review_threads,
             session::commands::submit_pull_request_review,
             session::commands::add_review_comment,

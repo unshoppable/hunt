@@ -486,14 +486,16 @@ order, `/etc/hunt/session-zones`, which `hunt-ctl install` writes from the gatew
 `hunt-session-zones` (comma-separated, only zones of the gateway's region count; without it the gateway's own zone), and
 moves on to the next only when Compute Engine reports a stockout (`ZONE_RESOURCE_POOL_EXHAUSTED`) for the machine type;
 any other error of the creation ends the call. Changing the list takes effect with the next install, for the gateway and
-the edge alike. A stopped VM whose own zone reports a stockout for its start moves to the next session zone with
-capacity: the gateway snapshots its boot disk (`vm-hunt-s-<short id>-move`), renames the VM to
-`vm-hunt-s-<short id>-moving`, creates a disk from the snapshot and a VM from the template with that disk and the old
-VM's labels, machine type and metadata in the next zone (trying the following one on another stockout), then deletes
-the renamed VM and the snapshot; when every zone is out, the VM gets its name back and the call fails naming the zones.
-The VM keeps its name and disk contents but gets a new internal IP and instance ID, which the client records from the
-call's result. A move a crash left unfinished is finished or rolled back by the next `vms.start` or
-`sessions.provision` of the session, and `vms.delete` removes its leftovers. The new VM is labelled `hunt-role=session`,
+the edge alike. A stopped VM whose own zone reports a stockout for its start moves to the first other session zone with
+capacity, in list order: the gateway snapshots its boot disk (`vm-hunt-s-<short id>-move`), renames the VM to
+`vm-hunt-s-<short id>-moving` and creates a VM from the template in the other zone with a boot disk Compute Engine makes
+from the snapshot and the old VM's labels, machine type and metadata (a creation a stockout refuses leaves no disk
+behind, and the following zone is tried), then deletes the renamed VM and the snapshot; when every zone is out, the VM
+gets its name back and the call fails naming the zones. A disk can be snapshotted six times an hour, so repeated starts
+while every zone stays out fail on the snapshot after that. The VM keeps its name and disk contents but gets a new
+internal IP and instance ID, which the client records from the call's result. A move a crash left unfinished is finished
+or rolled back by the next `vms.start` or `sessions.provision` of the session, and `vms.delete` removes its leftovers.
+Only a start moves a VM; a suspended VM whose zone is out of capacity stays. The new VM is labelled `hunt-role=session`,
 `hunt-session=<short id>`, `hunt-origin=desktop` and `hunt-owner=<caller>`, records the session's ID, repository,
 branch and title in its metadata and refuses a VM that holds another session (`conflict`); it and `vms.start` start a
 stopped VM, resume a suspended one, wait out a shutdown in progress, wait until the VM answers over SSH and its startup

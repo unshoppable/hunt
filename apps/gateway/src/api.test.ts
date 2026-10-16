@@ -56,8 +56,6 @@ function fakeCompute() {
     getDisk: unexpected,
     createSnapshot: unexpected,
     deleteSnapshot: unexpected,
-    insertDisk: unexpected,
-    deleteDisk: unexpected,
     setMetadata: async (_zone, name, _fingerprint, items) => {
       instances.get(name)!.metadata.items = items;
     },

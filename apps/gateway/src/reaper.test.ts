@@ -59,8 +59,6 @@ function fakeCompute(vms: Instance[], current = new Map<string, Instance | null>
     getDisk: unexpected,
     createSnapshot: unexpected,
     deleteSnapshot: unexpected,
-    insertDisk: unexpected,
-    deleteDisk: unexpected,
   };
   return { compute, calls };
 }

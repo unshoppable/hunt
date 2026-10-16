@@ -8,11 +8,12 @@
  *
  * A new VM goes into the first of the session zones (`sessionZones.ts`) that has capacity for its machine type: when
  * Compute Engine answers a zone with a stockout, the next zone is tried. An existing VM whose own zone has no capacity
- * for its start moves to the next zone that has: its boot disk is snapshotted (`vm-hunt-s-<short id>-move`), the VM is
- * renamed to `vm-hunt-s-<short id>-moving`, a disk from the snapshot and a VM from the template with that disk, the
- * old VM's labels, machine type and metadata are created in the new zone, and the old VM and the snapshot are deleted.
- * When every zone is out, the VM gets its name back. A move an earlier call left unfinished is finished or rolled back
- * before the VM is used again; only hunt-api starts existing VMs, so this needs no lock between processes.
+ * for its start moves to the first other session zone that has, in list order: its boot disk is snapshotted
+ * (`vm-hunt-s-<short id>-move`), the VM is renamed to `vm-hunt-s-<short id>-moving`, a VM from the template with a boot
+ * disk from the snapshot and the old VM's labels, machine type and metadata is created in the new zone, and the old VM
+ * and the snapshot are deleted. Compute Engine creates the disk with the VM, so a creation a stockout refuses leaves no
+ * disk behind. When every zone is out, the VM gets its name back. A move an earlier call left unfinished is finished or
+ * rolled back before the VM is used again; only hunt-api starts existing VMs, so this needs no lock between processes.
  *
  * Bringing a VM up starts a stopped one, resumes a suspended one and waits out a shutdown in progress, then waits until
  * it answers over SSH and its startup script finished, and hands it the staged session release. Calls that bring up the
@@ -420,7 +421,12 @@ export class Orchestrator {
     const snapshotOperation = await this.deps.compute.createSnapshot(oldZone, diskName, snapshot);
     const snapshotError = await this.waitForOperation(snapshotOperation, SNAPSHOT_TIMEOUT_MS, `snapshot the disk of ${names.vm}`);
     if (snapshotError) throw new ApiError("unavailable", `failed to move ${names.vm}: snapshotting its disk failed: ${snapshotError.message || snapshotError.code}`);
-    await this.rename(oldZone, names.vm, moving);
+    try {
+      await this.rename(oldZone, names.vm, moving);
+    } catch (error) {
+      await this.discardSnapshot(snapshot, reporter);
+      throw error;
+    }
     try {
       for (const [index, zone] of zones.entries()) {
         const stockout = await this.createMovedVm(zone, instance, names, snapshot, disk, reporter);
@@ -443,35 +449,29 @@ export class Orchestrator {
   }
 
   /**
-   * Creates the session's VM in `zone` from the template with a disk made from `snapshot` (of the type and size of
-   * `disk`) and the labels, machine type and metadata of `instance`, the VM it replaces. Returns the stockout that
-   * prevented it, after deleting the disk; any other failure deletes the disk and throws.
+   * Creates the session's VM in `zone` from the template with a boot disk Compute Engine makes from `snapshot` (of the
+   * type and size of `disk`) and the labels, machine type and metadata of `instance`, the VM it replaces. Returns the
+   * stockout that prevented it, which leaves nothing behind in `zone`; any other failure throws.
    */
   private async createMovedVm(zone: string, instance: Instance, names: SessionNames, snapshot: string, disk: Disk, reporter: Reporter): Promise<OperationError | null> {
-    reporter.log(`creating the disk ${names.vm} in ${zone} from ${snapshot}`);
-    const diskOperation = await this.deps.compute.insertDisk(zone, { name: names.vm, sourceSnapshot: snapshot, type: disk.type, sizeGb: disk.sizeGb });
-    const diskError = await this.waitForOperation(diskOperation, DISK_TIMEOUT_MS, `create the disk ${names.vm} in ${zone}`);
-    if (diskError) throw new ApiError("unavailable", `failed to create the disk ${names.vm} in ${zone}: ${diskError.message || diskError.code}`);
+    const request = {
+      name: names.vm,
+      template: DEFAULT_TEMPLATE,
+      labels: instance.labels,
+      machineType: instance.machineType || null,
+      metadata: instance.metadata.items,
+      bootDisk: { snapshot, type: disk.type, sizeGb: disk.sizeGb },
+    };
     let error: OperationError | null;
     try {
-      const request = {
-        name: names.vm,
-        template: DEFAULT_TEMPLATE,
-        labels: instance.labels,
-        machineType: instance.machineType || null,
-        metadata: instance.metadata.items,
-        bootDisk: names.vm,
-      };
       const operation = await this.deps.compute.insert(zone, request);
-      reporter.log(`creating ${names.vm} from ${DEFAULT_TEMPLATE} in ${zone} with that disk`);
+      reporter.log(`creating ${names.vm} from ${DEFAULT_TEMPLATE} in ${zone} with a disk from ${snapshot}`);
       error = await this.waitForOperation(operation, CREATE_TIMEOUT_MS, `create ${names.vm} in ${zone}`);
     } catch (thrown) {
-      await this.discard(this.deps.compute.deleteDisk(zone, names.vm), reporter, `delete the disk ${names.vm} in ${zone}`);
       if (!isStockout(messageOf(thrown))) throw thrown;
       return { code: "ZONE_RESOURCE_POOL_EXHAUSTED", message: messageOf(thrown), machineType: null };
     }
     if (!error) return null;
-    await this.discard(this.deps.compute.deleteDisk(zone, names.vm), reporter, `delete the disk ${names.vm} in ${zone}`);
     if (!isStockout(error.code)) throw new ApiError("unavailable", `failed to create ${names.vm} in ${zone}: ${error.message || error.code}`);
     return error;
   }
@@ -493,7 +493,7 @@ export class Orchestrator {
   /**
    * Finishes a move of the session's VM that an earlier call left behind, before the VM is used again, and returns the
    * VM under its name (null when the session has none): a VM still under its moving name without a successor gets its
-   * name back and the move's snapshot and disks are deleted; one whose successor exists is deleted with the snapshot.
+   * name back and the move's snapshot is deleted; one whose successor exists is deleted with the snapshot.
    */
   private async recover(names: SessionNames, reporter: Reporter): Promise<Instance | null> {
     const { vm, moving } = await this.locateSession(names);
@@ -508,10 +508,6 @@ export class Orchestrator {
     reporter.log(`finishing an interrupted move of ${names.vm}: it stays in ${moving.zone}`);
     await this.rename(moving.zone, moving.name, names.vm);
     await this.discardSnapshot(snapshotName(names), reporter);
-    for (const zone of this.deps.zones()) {
-      if (zone === moving.zone) continue;
-      await this.discard(this.deps.compute.deleteDisk(zone, names.vm), reporter, `delete the disk ${names.vm} in ${zone}`);
-    }
     return this.deps.compute.get(moving.zone, names.vm);
   }
 

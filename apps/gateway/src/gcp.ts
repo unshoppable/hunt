@@ -154,14 +154,6 @@ export interface Disk {
   sizeGb: number;
 }
 
-/** What `disks.insert` gets to create a disk from a snapshot of the project. */
-export interface DiskRequest {
-  name: string;
-  sourceSnapshot: string;
-  type: string;
-  sizeGb: number;
-}
-
 export interface MetadataItem {
   key: string;
   value: string;
@@ -201,8 +193,17 @@ export interface InstanceRequest {
   machineType: string | null;
   /** Replace the template's metadata items; absent keeps the template's. */
   metadata?: MetadataItem[];
-  /** An existing disk of the VM's zone that replaces the template's boot disk, deleted with the VM; absent keeps the template's. */
-  bootDisk?: string | null;
+  /**
+   * A boot disk Compute Engine creates with the VM from a snapshot of the project, of this type and size, named like
+   * the VM and deleted with it, in place of the template's; absent keeps the template's.
+   */
+  bootDisk?: BootDiskFromSnapshot | null;
+}
+
+export interface BootDiskFromSnapshot {
+  snapshot: string;
+  type: string;
+  sizeGb: number;
 }
 
 /**
@@ -230,10 +231,6 @@ export interface Compute {
   createSnapshot(zone: string, disk: string, snapshot: string): Promise<Operation>;
   /** Requests the deletion of the snapshot; a global operation. Fails with `HTTP 404` for one that does not exist. */
   deleteSnapshot(snapshot: string): Promise<Operation>;
-  /** Requests a disk in `zone` from a snapshot of the project. */
-  insertDisk(zone: string, request: DiskRequest): Promise<Operation>;
-  /** Requests the deletion of the disk, which no VM may use. Fails with `HTTP 404` for one that does not exist. */
-  deleteDisk(zone: string, name: string): Promise<Operation>;
   /** Replaces the VM's metadata items; `fingerprint` is the one of the metadata read before. */
   setMetadata(zone: string, name: string, fingerprint: string, items: MetadataItem[]): Promise<void>;
   /** Starts a `TERMINATED` (or `STOPPED`) VM. */
@@ -451,7 +448,9 @@ export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetc
         body.metadata = { items: request.metadata };
       }
       if (request.bootDisk) {
-        body.disks = [{ boot: true, autoDelete: true, deviceName: BOOT_DEVICE_NAME, source: `zones/${zone}/disks/${request.bootDisk}` }];
+        const { snapshot, type, sizeGb } = request.bootDisk;
+        const initializeParams = { diskName: request.name, sourceSnapshot: `global/snapshots/${snapshot}`, diskType: `zones/${zone}/diskTypes/${type}`, diskSizeGb: String(sizeGb) };
+        body.disks = [{ boot: true, autoDelete: true, deviceName: BOOT_DEVICE_NAME, initializeParams }];
       }
       const response = await call("POST", `${await zoneUrl(zone)}/instances?sourceInstanceTemplate=${encodeURIComponent(template)}`, body);
       if (!response.ok) throw await failure(response, `create ${request.name} from ${request.template} in ${zone}`);
@@ -483,22 +482,6 @@ export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetc
       const response = await call("DELETE", `${await projectUrl()}/global/snapshots/${encodeURIComponent(snapshot)}`);
       if (!response.ok) throw await failure(response, `delete the snapshot ${snapshot}`);
       return operationOf(response, null);
-    },
-    async insertDisk(zone, request) {
-      const body = {
-        name: request.name,
-        sourceSnapshot: `global/snapshots/${request.sourceSnapshot}`,
-        type: `zones/${zone}/diskTypes/${request.type}`,
-        sizeGb: String(request.sizeGb),
-      };
-      const response = await call("POST", `${await zoneUrl(zone)}/disks`, body);
-      if (!response.ok) throw await failure(response, `create the disk ${request.name} in ${zone} from the snapshot ${request.sourceSnapshot}`);
-      return operationOf(response, zone);
-    },
-    async deleteDisk(zone, name) {
-      const response = await call("DELETE", await diskUrl(zone, name));
-      if (!response.ok) throw await failure(response, `delete the disk ${name} in ${zone}`);
-      return operationOf(response, zone);
     },
     async setMetadata(zone, name, fingerprint, items) {
       const response = await call("POST", `${await instanceUrl(zone, name)}/setMetadata`, { fingerprint, items });

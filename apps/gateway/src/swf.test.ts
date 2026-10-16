@@ -131,8 +131,6 @@ function fakeCompute(listed: Instance[] = [], insertError?: Error): Compute & { 
     getDisk: unexpected,
     createSnapshot: unexpected,
     deleteSnapshot: unexpected,
-    insertDisk: unexpected,
-    deleteDisk: unexpected,
   };
 }
 

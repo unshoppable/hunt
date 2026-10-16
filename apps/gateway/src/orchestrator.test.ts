@@ -77,6 +77,7 @@ function fakeCompute(vms: Instance[] = []) {
   const startErrors = new Map<string, OperationError>();
   let resumeError: OperationError | null = null;
   let snapshotError: OperationError | null = null;
+  let renameError: OperationError | null = null;
   let stuckFrom: number | null = null;
   let metadataFailures = 0;
 
@@ -116,7 +117,7 @@ function fakeCompute(vms: Instance[] = []) {
       calls.push(`insert ${request.name} in ${zone}`);
       inserted.push(request);
       insertedZones.push(zone);
-      if (request.bootDisk && !disks.has(`${zone}/${request.bootDisk}`)) throw new Error(`failed to create ${request.name} in ${zone}: HTTP 400 the disk does not exist`);
+      if (request.bootDisk && !snapshots.has(request.bootDisk.snapshot)) throw new Error(`failed to create ${request.name} in ${zone}: HTTP 404 no snapshot ${request.bootDisk.snapshot}`);
       const error = insertErrors.get(zone);
       if (error instanceof Error) throw error;
       if (error) return operation(zone, error);
@@ -124,11 +125,7 @@ function fakeCompute(vms: Instance[] = []) {
       if (request.metadata) {
         created.metadata.items = request.metadata;
       }
-      if (request.bootDisk) {
-        created.disks = [{ deviceName: "persistent-disk-0", autoDelete: true, boot: true, source: request.bootDisk }];
-      } else {
-        disks.set(`${zone}/${request.name}`, { ...BOOT_DISK });
-      }
+      disks.set(`${zone}/${request.name}`, request.bootDisk ? { type: request.bootDisk.type, sizeGb: request.bootDisk.sizeGb } : { ...BOOT_DISK });
       instances.set(request.name, created);
       statuses.set(request.name, ["PROVISIONING", "STAGING", "STAGING", "RUNNING"]);
       return operation(zone, null);
@@ -140,6 +137,7 @@ function fakeCompute(vms: Instance[] = []) {
     setName: async (zone, name, newName) => {
       calls.push(`setName ${name} ${newName}`);
       const vm = find(zone, name);
+      if (renameError) return operation(zone, renameError);
       if (vm.status !== "TERMINATED") throw new Error(`failed to rename ${name}: HTTP 400 the VM is ${vm.status}`);
       if (instances.has(newName)) throw new Error(`failed to rename ${name}: HTTP 409 ${newName} exists`);
       instances.delete(name);
@@ -163,17 +161,6 @@ function fakeCompute(vms: Instance[] = []) {
       calls.push(`deleteSnapshot ${snapshot}`);
       if (!snapshots.delete(snapshot)) throw gone(`the snapshot ${snapshot}`);
       return operation(null, null);
-    },
-    insertDisk: async (zone, request) => {
-      calls.push(`insertDisk ${request.name} in ${zone} from ${request.sourceSnapshot}`);
-      if (!snapshots.has(request.sourceSnapshot)) throw new Error(`failed to create the disk ${request.name} in ${zone}: HTTP 404 no snapshot ${request.sourceSnapshot}`);
-      disks.set(`${zone}/${request.name}`, { type: request.type, sizeGb: request.sizeGb });
-      return operation(zone, null);
-    },
-    deleteDisk: async (zone, name) => {
-      calls.push(`deleteDisk ${name} in ${zone}`);
-      if (!disks.delete(`${zone}/${name}`)) throw gone(`the disk ${name} in ${zone}`);
-      return operation(zone, null);
     },
     setMetadata: async (zone, name, fingerprint, items) => {
       calls.push(`setMetadata ${name} ${fingerprint}`);
@@ -237,6 +224,9 @@ function fakeCompute(vms: Instance[] = []) {
     },
     failResume: (error: OperationError) => {
       resumeError = error;
+    },
+    failRename: (error: OperationError) => {
+      renameError = error;
     },
     failSnapshot: (error: OperationError) => {
       snapshotError = error;
@@ -623,7 +613,6 @@ describe("Orchestrator.start moving the VM", () => {
       `getDisk ${VM} in ${ZONE}`,
       `createSnapshot ${VM} in ${ZONE} as ${SNAPSHOT}`,
       `setName ${VM} ${MOVING}`,
-      `insertDisk ${VM} in ${ZONE_B} from ${SNAPSHOT}`,
       `insert ${VM} in ${ZONE_B}`,
       `delete ${MOVING}`,
       `deleteSnapshot ${SNAPSHOT}`,
@@ -635,7 +624,7 @@ describe("Orchestrator.start moving the VM", () => {
         labels: { ...SESSION_LABELS, "hunt-owner": "jane_doe_example_com" },
         machineType: "c4d-standard-8",
         metadata: SESSION_ITEMS,
-        bootDisk: VM,
+        bootDisk: { snapshot: SNAPSHOT, type: "hyperdisk-balanced", sizeGb: 50 },
       },
     ]);
     expect(fake.instances.get(VM)).toMatchObject({ zone: ZONE_B, status: "RUNNING", metadata: { items: SESSION_ITEMS } });
@@ -649,14 +638,13 @@ describe("Orchestrator.start moving the VM", () => {
       `starting ${VM}`,
       `c4d-standard-8 is unavailable in ${ZONE}; moving ${VM} to another zone`,
       `snapshotting the disk ${VM} of ${VM} in ${ZONE} as ${SNAPSHOT}`,
-      `creating the disk ${VM} in ${ZONE_B} from ${SNAPSHOT}`,
-      `creating ${VM} from tpl-hunt-session in ${ZONE_B} with that disk`,
+      `creating ${VM} from tpl-hunt-session in ${ZONE_B} with a disk from ${SNAPSHOT}`,
       `moved ${VM} from ${ZONE} to ${ZONE_B}; deleting the VM it replaced and the snapshot`,
       `${VM} is ready; checking its release`,
     ]);
   });
 
-  it("skips a zone without capacity for the new VM, deleting the disk it made there, and lands in the next", async () => {
+  it("skips a zone without capacity for the new VM, where nothing stays behind, and lands in the next", async () => {
     const fake = fakeCompute([stoppedVm()]);
     fake.failStart(STOCKOUT);
     fake.insertErrors.set(ZONE_B, STOCKOUT);
@@ -664,13 +652,7 @@ describe("Orchestrator.start moving the VM", () => {
     const { reporter, logs } = recorder();
 
     expect((await orchestrator.start(ID, reporter)).vm.zone).toBe(ZONE_C);
-    expect(fake.calls.slice(5, 10)).toEqual([
-      `insertDisk ${VM} in ${ZONE_B} from ${SNAPSHOT}`,
-      `insert ${VM} in ${ZONE_B}`,
-      `deleteDisk ${VM} in ${ZONE_B}`,
-      `insertDisk ${VM} in ${ZONE_C} from ${SNAPSHOT}`,
-      `insert ${VM} in ${ZONE_C}`,
-    ]);
+    expect(fake.calls.slice(5, 7)).toEqual([`insert ${VM} in ${ZONE_B}`, `insert ${VM} in ${ZONE_C}`]);
     expect(logs).toContain(`c4d-standard-8 is unavailable in ${ZONE_B}; trying ${ZONE_C}`);
     expect([...fake.disks.keys()]).toEqual([`${ZONE_C}/${VM}`]);
   });
@@ -682,7 +664,7 @@ describe("Orchestrator.start moving the VM", () => {
     const { orchestrator } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B, ZONE_C]);
 
     expect((await orchestrator.start(ID, reporter())).vm.zone).toBe(ZONE_C);
-    expect(fake.calls).toContain(`deleteDisk ${VM} in ${ZONE_B}`);
+    expect(fake.insertedZones).toEqual([ZONE_B, ZONE_C]);
   });
 
   it("gives the VM its name back and names every zone when none has capacity", async () => {
@@ -695,7 +677,7 @@ describe("Orchestrator.start moving the VM", () => {
 
     const error = await rejection(orchestrator.start(ID, reporter));
     expect(error).toMatchObject({ code: "unavailable", message: `failed to start ${VM}: c4d-standard-8 is unavailable in ${ZONE}, ${ZONE_B} and ${ZONE_C}; try again later` });
-    expect(fake.calls.slice(-3)).toEqual([`deleteDisk ${VM} in ${ZONE_C}`, `setName ${MOVING} ${VM}`, `deleteSnapshot ${SNAPSHOT}`]);
+    expect(fake.calls.slice(-2)).toEqual([`setName ${MOVING} ${VM}`, `deleteSnapshot ${SNAPSHOT}`]);
     expect(fake.instances.get(VM)).toMatchObject({ zone: ZONE, status: "TERMINATED" });
     expect(fake.instances.has(MOVING)).toBe(false);
     expect([...fake.disks.keys()]).toEqual([`${ZONE}/${VM}`]);
@@ -713,8 +695,22 @@ describe("Orchestrator.start moving the VM", () => {
     const error = await rejection(orchestrator.start(ID, reporter()));
     expect(error.message).toBe(`failed to create ${VM} in ${ZONE_B}: Quota 'C4D_CPUS' exceeded.`);
     expect(fake.insertedZones).toEqual([ZONE_B]);
-    expect(fake.calls.slice(-3)).toEqual([`deleteDisk ${VM} in ${ZONE_B}`, `setName ${MOVING} ${VM}`, `deleteSnapshot ${SNAPSHOT}`]);
+    expect(fake.calls.slice(-2)).toEqual([`setName ${MOVING} ${VM}`, `deleteSnapshot ${SNAPSHOT}`]);
     expect(fake.instances.get(VM)).toMatchObject({ zone: ZONE });
+  });
+
+  it("deletes the snapshot and leaves the VM where it is when it cannot be renamed", async () => {
+    const fake = fakeCompute([stoppedVm()]);
+    fake.failStart(STOCKOUT);
+    fake.failRename({ code: "RESOURCE_NOT_READY", message: `The resource '${VM}' is not ready`, machineType: null });
+    const { orchestrator } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B]);
+
+    const error = await rejection(orchestrator.start(ID, reporter()));
+    expect(error.message).toBe(`failed to rename ${VM} to ${MOVING}: The resource '${VM}' is not ready`);
+    expect(fake.calls.slice(-2)).toEqual([`setName ${VM} ${MOVING}`, `deleteSnapshot ${SNAPSHOT}`]);
+    expect(fake.insertedZones).toEqual([]);
+    expect(fake.instances.get(VM)).toMatchObject({ zone: ZONE, status: "TERMINATED" });
+    expect(fake.snapshots.size).toBe(0);
   });
 
   it("leaves the VM untouched when its disk cannot be snapshotted", async () => {
@@ -751,16 +747,15 @@ describe("Orchestrator.start moving the VM", () => {
     expect(fake.calls).toEqual([`resume ${VM}`]);
   });
 
-  it("finishes an interrupted move that created no VM: the VM gets its name back and the leftovers go", async () => {
+  it("finishes an interrupted move that created no VM: the VM gets its name back and the snapshot goes", async () => {
     const fake = fakeCompute([instance({ name: MOVING, status: "TERMINATED", sessionId: ID })]);
-    fake.disks.set(`${ZONE_B}/${VM}`, { ...BOOT_DISK });
     fake.snapshots.add(SNAPSHOT);
     const { orchestrator } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B, ZONE_C]);
     const { reporter, logs } = recorder();
 
     const result = await orchestrator.start(ID, reporter);
     expect(result.vm.zone).toBe(ZONE);
-    expect(fake.calls).toEqual([`setName ${MOVING} ${VM}`, `deleteSnapshot ${SNAPSHOT}`, `deleteDisk ${VM} in ${ZONE_B}`, `deleteDisk ${VM} in ${ZONE_C}`, `start ${VM}`]);
+    expect(fake.calls).toEqual([`setName ${MOVING} ${VM}`, `deleteSnapshot ${SNAPSHOT}`, `start ${VM}`]);
     expect([...fake.disks.keys()]).toEqual([`${ZONE}/${MOVING}`]);
     expect(fake.snapshots.size).toBe(0);
     expect(logs[0]).toBe(`finishing an interrupted move of ${VM}: it stays in ${ZONE}`);

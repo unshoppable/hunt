@@ -269,7 +269,7 @@ describe("createCompute", () => {
     ]);
   });
 
-  it("creates a moved VM from the template with an existing boot disk and the metadata given", async () => {
+  it("creates a moved VM from the template with a boot disk from a snapshot and the metadata given", async () => {
     const template = encodeURIComponent("projects/medconomy-hunt/global/instanceTemplates/tpl-hunt-session");
     const { fetchImpl, requests } = fakeFetch({
       [`POST ${ZONE_URL}/instances?sourceInstanceTemplate=${template}`]: () => Response.json({ kind: "compute#operation", name: "operation-1" }),
@@ -278,17 +278,30 @@ describe("createCompute", () => {
     const labels = { "hunt-role": "session", "hunt-session": "ab12cd34", "hunt-origin": "desktop" };
     const metadata = [{ key: "startup-script", value: "#!/bin/sh" }, { key: "hunt-session-id", value: "ab12cd34-0000-4000-8000-000000000001" }];
 
-    await compute.insert("europe-west3-a", { name: "vm-hunt-s-ab12cd34", template: "tpl-hunt-session", labels, machineType: "c4d-standard-8", metadata, bootDisk: "vm-hunt-s-ab12cd34" });
+    const bootDisk = { snapshot: "vm-hunt-s-ab12cd34-move", type: "hyperdisk-balanced", sizeGb: 50 };
+    await compute.insert("europe-west3-a", { name: "vm-hunt-s-ab12cd34", template: "tpl-hunt-session", labels, machineType: "c4d-standard-8", metadata, bootDisk });
     expect(requests[0].body).toEqual({
       name: "vm-hunt-s-ab12cd34",
       labels,
       machineType: "zones/europe-west3-a/machineTypes/c4d-standard-8",
       metadata: { items: metadata },
-      disks: [{ boot: true, autoDelete: true, deviceName: "persistent-disk-0", source: "zones/europe-west3-a/disks/vm-hunt-s-ab12cd34" }],
+      disks: [
+        {
+          boot: true,
+          autoDelete: true,
+          deviceName: "persistent-disk-0",
+          initializeParams: {
+            diskName: "vm-hunt-s-ab12cd34",
+            sourceSnapshot: "global/snapshots/vm-hunt-s-ab12cd34-move",
+            diskType: "zones/europe-west3-a/diskTypes/hyperdisk-balanced",
+            diskSizeGb: "50",
+          },
+        },
+      ],
     });
   });
 
-  it("renames a VM, reads, snapshots, creates and deletes disks and deletes snapshots, with global operations for the latter", async () => {
+  it("renames a VM, reads and snapshots disks and deletes snapshots, with global operations for the latter", async () => {
     const instance = `${ZONE_URL}/instances/vm-hunt-s-ab12cd34`;
     const disk = `${ZONE_URL}/disks/vm-hunt-s-ab12cd34`;
     const { fetchImpl, requests } = fakeFetch({
@@ -296,8 +309,6 @@ describe("createCompute", () => {
       [`GET ${disk}`]: () => Response.json({ name: "vm-hunt-s-ab12cd34", type: `${ZONE_URL}/diskTypes/hyperdisk-balanced`, sizeGb: "50" }),
       [`GET ${ZONE_URL}/disks/vm-hunt-s-00000000`]: () => new Response("not found", { status: 404 }),
       [`POST ${disk}/createSnapshot`]: () => Response.json({ kind: "compute#operation", name: "operation-2" }),
-      [`POST ${ZONE_URL}/disks`]: () => Response.json({ kind: "compute#operation", name: "operation-3" }),
-      [`DELETE ${disk}`]: () => Response.json({ kind: "compute#operation", name: "operation-4" }),
       [`DELETE ${PROJECT_URL}/global/snapshots/vm-hunt-s-ab12cd34-move`]: () => Response.json({ kind: "compute#operation", name: "operation-5" }),
       [`DELETE ${PROJECT_URL}/global/snapshots/vm-hunt-s-00000000-move`]: () => new Response("not found", { status: 404 }),
       [`GET ${PROJECT_URL}/global/operations/operation-5`]: () => Response.json({ name: "operation-5", status: "DONE" }),
@@ -309,18 +320,15 @@ describe("createCompute", () => {
     expect(await compute.getDisk(zone, "vm-hunt-s-ab12cd34")).toEqual({ type: "hyperdisk-balanced", sizeGb: 50 });
     await expect(compute.getDisk(zone, "vm-hunt-s-00000000")).rejects.toThrow("failed to look up the disk vm-hunt-s-00000000 in europe-west3-a: HTTP 404 not found");
     expect(await compute.createSnapshot(zone, "vm-hunt-s-ab12cd34", "vm-hunt-s-ab12cd34-move")).toEqual({ name: "operation-2", zone });
-    expect(await compute.insertDisk(zone, { name: "vm-hunt-s-ab12cd34", sourceSnapshot: "vm-hunt-s-ab12cd34-move", type: "hyperdisk-balanced", sizeGb: 50 })).toEqual({ name: "operation-3", zone });
-    expect(await compute.deleteDisk(zone, "vm-hunt-s-ab12cd34")).toEqual({ name: "operation-4", zone });
     const deletion = await compute.deleteSnapshot("vm-hunt-s-ab12cd34-move");
     expect(deletion).toEqual({ name: "operation-5", zone: null });
     expect(await compute.operation(deletion)).toEqual({ isDone: true, error: null });
     await expect(compute.deleteSnapshot("vm-hunt-s-00000000-move")).rejects.toThrow("failed to delete the snapshot vm-hunt-s-00000000-move: HTTP 404 not found");
-    expect(requests.slice(0, 5).map((request) => request.body)).toEqual([
+    expect(requests.slice(0, 4).map((request) => request.body)).toEqual([
       { name: "vm-hunt-s-ab12cd34-moving", currentName: "vm-hunt-s-ab12cd34" },
       undefined,
       undefined,
       { name: "vm-hunt-s-ab12cd34-move", storageLocations: ["europe-west3"] },
-      { name: "vm-hunt-s-ab12cd34", sourceSnapshot: "global/snapshots/vm-hunt-s-ab12cd34-move", type: "zones/europe-west3-a/diskTypes/hyperdisk-balanced", sizeGb: "50" },
     ]);
     expect(describeComputeCall(`${PROJECT_URL}/global/snapshots/vm-hunt-s-ab12cd34-move`)).toBe("global/snapshots/vm-hunt-s-ab12cd34-move");
   });

@@ -154,7 +154,7 @@ export function redact(text: string, secrets: string[]): string {
   return result;
 }
 
-/** The remote prompts of `libs/domain/prompts/` a poller session gets. */
+/** The system-prompt parts of `libs/domain/system-prompts/` a poller session gets. */
 export interface RemotePrompts {
   remote: string;
   gitPush: string;

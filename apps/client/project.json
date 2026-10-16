@@ -67,7 +67,7 @@
         "{projectRoot}/src-tauri/**/*",
         "!{projectRoot}/src-tauri/target/**/*",
         "{projectRoot}/prompts/**/*",
-        "{workspaceRoot}/libs/domain/prompts/**/*"
+        "{workspaceRoot}/libs/domain/system-prompts/**/*"
       ]
     }
   }

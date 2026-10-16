@@ -127,8 +127,8 @@ describe("issue comments", () => {
 
 describe("session files", () => {
   const prompts = {
-    remote: readFileSync(new URL("../../../libs/domain/prompts/remote.md", import.meta.url), "utf8"),
-    gitPush: readFileSync(new URL("../../../libs/domain/prompts/git-push.md", import.meta.url), "utf8"),
+    remote: readFileSync(new URL("../../../libs/domain/system-prompts/remote.md", import.meta.url), "utf8"),
+    gitPush: readFileSync(new URL("../../../libs/domain/system-prompts/git-push.md", import.meta.url), "utf8"),
   };
 
   it("composes the system prompt like the desktop's remote_system_prompt with an empty base", () => {

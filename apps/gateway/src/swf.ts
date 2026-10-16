@@ -35,8 +35,8 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import gitPushPrompt from "../../../libs/domain/prompts/git-push.md?raw";
-import remotePrompt from "../../../libs/domain/prompts/remote.md?raw";
+import gitPushPrompt from "../../../libs/domain/system-prompts/git-push.md?raw";
+import remotePrompt from "../../../libs/domain/system-prompts/remote.md?raw";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import type { Log, LogLevel } from "../../../libs/domain/src/journal.ts";
 import { sendPrompt, type Transport } from "./acpClient.ts";

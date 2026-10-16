@@ -593,7 +593,7 @@ VM's metadata, waits for the startup script and installs the staged session rele
 `hunt-ctl clone` clones the repository from GitHub as `agent` onto the branch (the origin's branch of that name
 when it exists, else a new one from the default branch) with the token's GitHub user as Git identity; `session-config`,
 `put-files --claude` with `hunt-session.json`, `deps`, `start` and `wait` follow as in a handoff. The system prompt is
-the remote part a handoff appends (`libs/domain/prompts/`, which the app and the poller compile in), the repository's
+the remote part a handoff appends (`libs/domain/system-prompts/`, which the app and the poller compile in), the repository's
 services and its `hunt.agent.md`; the parts Hunt takes from its user's settings (response style, guardrail offer, diagram language) do not exist
 on the gateway. The poller then sends the issue with all its comments as the first prompt through the relay and
 disconnects; the relay runs the turn without a client. The prompt asks the agent to implement and check the issue, push
@@ -689,7 +689,7 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 | `apps/client/src/ui/` | Primitives shared by every feature |
 | `apps/gateway/` | Nx project `gateway`: the gateway VM's API (`src/api.ts`, `src/orchestrator.ts`, `vm/hunt-api`), issue poller (`src/swf.ts`), wake service (`src/wake.ts`) and systemd units (`vm/systemd/`) |
 | `apps/session/` | Nx project `session`: the relay (`src/relay/`), the `hunt.json` services contract (`src/config.ts`), the versions of the agent's tools and the session VM's files and systemd units (`vm/`) |
-| `libs/domain/` | Nx project `domain`: JSON-RPC and NDJSON framing, error messages and the remote session prompts the apps share |
+| `libs/domain/` | Nx project `domain`: JSON-RPC and NDJSON framing, error messages and the system-prompt parts of remote sessions the apps share |
 | `libs/vm/` | Nx project `vm`: `hunt-ctl`, which Hunt and the gateway run on the VMs |
 | `scripts/` | Nx project `scripts`: the build of the VM release artifacts (`buildVmArtifact.ts`) |
 | `docs/adr/` | Architectural decision records |

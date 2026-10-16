@@ -1,3 +1,9 @@
+## 0.31.0 (2026-10-16)
+
+### 🚀 Features
+
+- **client:** show the blue session mark also for the sub sessions of a session that runs on a VM ([e0cd3af](https://github.com/unshoppable/hunt/commit/e0cd3af))
+
 ## 0.30.0 (2026-10-16)
 
 ### 🚀 Features

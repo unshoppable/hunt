@@ -634,17 +634,19 @@ hunt-swf` shows one line per deletion.
 
 The labels and metadata of the session VMs are the directory of remote sessions. The start view's "Remote sessions"
 button lists them as the gateway reports them (`list_session_vms`), sessions whose agent waits for an answer first,
-then running ones, with a chip for an agent that asks (amber), finished (green) or failed (red), and opens one on a
-click. At its
-start, from the sidebar's *Refresh remote sessions* button and when a listed session this Mac does not know is opened,
-Hunt asks the gateway for them (`sessions.list`), keeps those in the gateway's
-region, whose zones the gateway creates session VMs in (`adopt_session_vms`,
-`apps/client/src-tauri/src/remote/adoption.rs`), and adopts every session whose VM is named after it and that no local
-session has: VMs the gateway's poller started for `swf` issues (`hunt-origin=swf`, `hunt-issue`) and other people's
-handoffs. An adopted session gets a record with origin `swf` or
+then running ones. A row starts with the session's mark as the sidebar shows it: the sidebar's letter with its live
+state for a session this Mac knows, else a `+` that runs an arc while the agent works and turns amber while it waits
+for an answer, as the gateway recorded it; a chip names an agent that asks (amber), finished (green) or failed (red).
+A click shows the session; the user chooses this way which session VMs the sidebar lists, since nothing adopts them on
+its own. Opening a listed session this Mac does not know asks the gateway for it (`sessions.list`), keeps it when its
+VM is in the gateway's region, whose zones the gateway creates session VMs in (`adopt_session_vms`,
+`apps/client/src-tauri/src/remote/adoption.rs`), is named after the session and no local session has it: VMs the
+gateway's poller started for `swf` issues (`hunt-origin=swf`, `hunt-issue`) and other people's handoffs. An adopted
+session gets a record with origin `swf` or
 `desktop`, its title, branch, repository and agent state from the metadata and the local checkout among the recently
-used repositories whose `origin` is that repository; the sidebar labels it `swf #<issue>` or `remote`, and every
-listing also brings the agent state of the remote sessions this Mac has up to date (`remote.agent`), so the sidebar
+used repositories whose `origin` is that repository; the sidebar labels it `swf #<issue>` or `remote`. At its start
+and from the sidebar's *Refresh remote sessions* button Hunt runs the same listing without adopting anything, which
+brings the agent state of the remote sessions this Mac has up to date (`remote.agent`), so the sidebar
 marks a session whose agent asked on the issue before its conversation is loaded. Its worktree path on
 the VM comes from `/srv/hunt/sessions/<id>/meta.json` once Hunt reaches the VM, and the relay replays its conversation
 on `session/load`. Its first sync creates a new worktree in the local checkout on the branch the VM has checked out (a

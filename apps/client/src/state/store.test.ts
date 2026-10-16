@@ -815,7 +815,7 @@ describe("remote sessions", () => {
     vi.mocked(invoke).mockReset();
   });
 
-  it("adopts session VMs only with complete settings and keeps the failure", async () => {
+  it("syncs remote sessions only with complete settings and keeps the failure", async () => {
     useHuntStore.setState({ remoteSync: { isRunning: false, error: null } });
     useSettingsStore.setState({ remote: DEFAULT_REMOTE });
     await useHuntStore.getState().syncRemoteSessions();
@@ -827,7 +827,7 @@ describe("remote sessions", () => {
     const failure = "failed to run sessions.list on the gateway: forbidden";
     vi.mocked(invoke).mockImplementation((command) => (command === "adopt_session_vms" ? Promise.reject(failure) : Promise.resolve([])));
     await useHuntStore.getState().syncRemoteSessions();
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith("adopt_session_vms", { settings: { ...vm, machineType: null }, repoPaths: ["/src/app"] });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("adopt_session_vms", { settings: { ...vm, machineType: null }, repoPaths: ["/src/app"], ids: [] });
     expect(useHuntStore.getState().remoteSync).toEqual({ isRunning: false, error: failure });
 
     vi.mocked(invoke).mockImplementation((command) => Promise.resolve(command === "adopt_session_vms" ? ["new-id"] : []));

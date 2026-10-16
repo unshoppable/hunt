@@ -66,7 +66,7 @@ export function App() {
     void restoreWindowBounds("main", { fillScreenByDefault: true }).finally(() => getCurrentWindow().show());
   }, []);
 
-  // Session VMs that no local session knows yet (swf issues, other people's handoffs) become remote sessions here.
+  // The remote sessions take the agent state the gateway recorded; the start view's list adopts further session VMs.
   useEffect(() => {
     void refreshSessions();
     void syncRemoteSessions();

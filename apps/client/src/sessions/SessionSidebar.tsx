@@ -138,7 +138,7 @@ export function SessionSidebar() {
               title={
                 remoteSync.error
                   ? `Refresh remote sessions · the last refresh failed: ${remoteSync.error}`
-                  : "Refresh remote sessions: adopt the session VMs of swf issues and other people's handoffs"
+                  : "Refresh remote sessions: bring the state of the remote sessions up to date from the gateway"
               }
               aria-label="Refresh remote sessions"
             >

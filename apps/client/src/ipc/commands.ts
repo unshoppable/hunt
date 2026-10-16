@@ -103,10 +103,11 @@ export const commands = {
   /** What listens on the remote session's VM and whether its main port answers; a VM that is off reports nothing and stays off. */
   previewStatus: (id: string) => invoke<PreviewStatus>("preview_status", { id }),
   /**
-   * Adopts the sessions the gateway of `settings` lists that no local session knows, each in the local checkout of its
-   * repository among `repoPaths` and the stored sessions' repositories; resolves with the IDs of the new sessions.
+   * Adopts the sessions of `ids` the gateway of `settings` lists that no local session knows, each in the local checkout
+   * of its repository among `repoPaths` and the stored sessions' repositories, and brings the agent state of the remote
+   * sessions this Mac has up to date; resolves with the IDs of the new sessions.
    */
-  adoptSessionVms: (settings: VmSettings, repoPaths: string[]) => invoke<string[]>("adopt_session_vms", { settings, repoPaths }),
+  adoptSessionVms: (settings: VmSettings, repoPaths: string[], ids: string[]) => invoke<string[]>("adopt_session_vms", { settings, repoPaths, ids }),
   /** The session VMs the gateway of the remote settings lists, running or not, for the start view's list of remote sessions. */
   listSessionVms: () => invoke<SessionVm[]>("list_session_vms"),
   /**

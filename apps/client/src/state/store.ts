@@ -50,7 +50,7 @@ export type RightTab = "diff" | "editor" | "graph" | "pullRequest" | "preview" |
  */
 export type FileSync = { isRunning: boolean; syncedAt: string | null; error: string | null; conflicts: string[] };
 
-/** The last adoption of session VMs (see `syncRemoteSessions`): whether one runs and what the last one failed with. */
+/** The last sync with the gateway's listing of session VMs (see `syncRemoteSessions`): whether one runs and what the last one failed with. */
 export type RemoteSync = { isRunning: boolean; error: string | null };
 
 /** Text and screenshots of a prompt before it is sent. */
@@ -211,14 +211,15 @@ type HuntState = {
   /** Reloads the stored sessions; a session still being created stays listed until the backend lists it itself. */
   refreshSessions: () => Promise<void>;
   /**
-   * Adopts the session VMs no local session knows (started by the swf poller or another person's Hunt) as remote
-   * sessions, in the local checkout of their repository among the recently used ones. Does nothing while the remote
-   * settings are incomplete or an adoption runs; a failure lands in `remoteSync.error`.
+   * Brings the agent state of the remote sessions up to date from the gateway's listing and adopts the session VMs of
+   * `ids` that no local session knows (started by the swf poller or another person's Hunt) as remote sessions, in the
+   * local checkout of their repository among the recently used ones. Does nothing while the remote settings are
+   * incomplete or a sync runs; a failure lands in `remoteSync.error`.
    */
-  syncRemoteSessions: () => Promise<void>;
+  syncRemoteSessions: (ids?: string[]) => Promise<void>;
   /**
    * Shows the session of the VM `id` the gateway lists: a session this Mac knows is selected; another one is adopted
-   * first (`syncRemoteSessions`). Rejects when the gateway no longer lists it or the adoption failed.
+   * into the sidebar first (`syncRemoteSessions`). Rejects when the gateway no longer lists it or the adoption failed.
    */
   openSessionVm: (id: string) => Promise<void>;
   selectSession: (id: string) => Promise<void>;
@@ -836,12 +837,12 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       });
     },
 
-    syncRemoteSessions: async () => {
+    syncRemoteSessions: async (ids = []) => {
       const settings = configuredVmSettings(useSettingsStore.getState().remote);
       if (!settings || get().remoteSync.isRunning) return;
       set({ remoteSync: { isRunning: true, error: null } });
       try {
-        await commands.adoptSessionVms(settings, useAgentDefaultsStore.getState().recentRepoPaths);
+        await commands.adoptSessionVms(settings, useAgentDefaultsStore.getState().recentRepoPaths, ids);
         set({ remoteSync: { isRunning: false, error: null } });
         await get().refreshSessions();
       } catch (error) {
@@ -852,7 +853,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     openSessionVm: async (id) => {
       const isKnown = () => get().sessions.some((session) => session.id === id);
       if (!isKnown()) {
-        await get().syncRemoteSessions();
+        await get().syncRemoteSessions([id]);
         if (!isKnown()) throw new Error(get().remoteSync.error ?? `the gateway no longer lists session ${id}`);
       }
       await get().selectSession(id);

@@ -725,13 +725,13 @@ pub async fn list_session_vms() -> Result<Vec<remote::adoption::AdoptableSession
     Ok(remote::adoption::list_session_vms(&listed, &hello.project, &hello.zone))
 }
 
-/// Adopts the sessions the gateway of `settings` lists that no local session knows (see `remote::adoption`): each becomes
-/// a remote session of this Mac in the local checkout of its repository, found among `repo_paths` and the repositories
-/// of the stored sessions, or without one when none matches. Adopted sessions still without a checkout get another
-/// chance to find one. VMs this Mac deletes or deleted are left out. The remote sessions this Mac already has take the
-/// agent state the listing reports for them. Returns the IDs of the new sessions.
+/// Adopts the sessions of `ids` the gateway of `settings` lists that no local session knows (see `remote::adoption`):
+/// each becomes a remote session of this Mac in the local checkout of its repository, found among `repo_paths` and the
+/// repositories of the stored sessions, or without one when none matches. With or without `ids`, adopted sessions still
+/// without a checkout get another chance to find one, and the remote sessions this Mac already has take the agent state
+/// the listing reports for them. VMs this Mac deletes or deleted are left out. Returns the IDs of the new sessions.
 #[tauri::command]
-pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths: Vec<String>) -> Result<Vec<Uuid>, String> {
+pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths: Vec<String>, ids: Vec<Uuid>) -> Result<Vec<Uuid>, String> {
     settings.validate()?;
     let gateway = GatewayApi::open(&remote::gateway_vm(&settings).await?, &ssh_dir()?).await?;
     let preview_domain = gateway.preview_domain()?;
@@ -751,7 +751,10 @@ pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths:
         })?;
     }
     let mut has_changed = !agent_updates.is_empty();
-    let adoptable = remote::adoption::sessions_to_adopt(&listed, &hello.project, &hello.zone, &known);
+    let adoptable: Vec<_> = remote::adoption::sessions_to_adopt(&listed, &hello.project, &hello.zone, &known)
+        .into_iter()
+        .filter(|session| ids.contains(&session.id))
+        .collect();
     let without_checkout: Vec<&SessionRecord> = sessions
         .iter()
         .filter(|session| session.remote.as_ref().is_some_and(RemoteTarget::is_adopted) && session.repo_path.as_os_str().is_empty())

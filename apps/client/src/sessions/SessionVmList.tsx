@@ -9,19 +9,22 @@ import { CloudIcon, CloudSyncIcon, ExternalIcon, Spinner } from "../ui/icons";
 import { errorText, useLoad } from "../ui/useLoad";
 import { ListPane } from "./ListPane";
 import { Separator } from "./PullRequestList";
-import { filterSessionVms, sessionVmAgentLabel, sessionVmMeta, sessionVmOriginLabel, sessionVmStatusLabel, sessionVmUrl } from "./sessionVms";
+import { sessionMarks } from "./sessionLabels";
+import { MarkGlyph, SessionMark } from "./SessionMark";
+import { filterSessionVms, sessionVmAgentLabel, sessionVmMarkState, sessionVmMeta, sessionVmOriginLabel, sessionVmStatusLabel, sessionVmUrl } from "./sessionVms";
 
 /**
  * The session VMs the gateway lists, filling the chat pane in place of the start view: the running ones, or every one
- * with "Show stopped", filtered by a search box. A row names the session, its origin (`swf #123` for the poller's,
- * `remote` for another person's handoff) and whether the sidebar lists it already; clicking it opens the session,
- * adopting it first when this Mac does not know it, and the arrow at its end opens the issue or repository on GitHub.
- * Loads once when shown and again with the reload button.
+ * with "Show stopped", filtered by a search box. A row starts with the session's mark as the sidebar shows it (its
+ * letter and live state for a session the sidebar lists, else a `+` with the state the gateway recorded), names the
+ * session and its origin (`swf #123` for the poller's, `remote` for another person's handoff); clicking it shows the
+ * session, adopting it into the sidebar first when this Mac does not know it, and the arrow at its end opens the issue
+ * or repository on GitHub. Loads once when shown and again with the reload button.
  */
 export function SessionVmList({ onClose }: { onClose: () => void }) {
   const sessions = useHuntStore((state) => state.sessions);
   const openSessionVm = useHuntStore((state) => state.openSessionVm);
-  const knownIds = useMemo(() => new Set(sessions.map((session) => session.id)), [sessions]);
+  const marks = useMemo(() => sessionMarks(sessions), [sessions]);
   const [query, setQuery] = useState("");
   const [showsStopped, setShowsStopped] = useState(false);
   const [vms, setVms] = useState<SessionVm[] | null>(null);
@@ -93,8 +96,10 @@ export function SessionVmList({ onClose }: { onClose: () => void }) {
       onClose={onClose}
     >
       {rows.map((vm) => {
-        const isKnown = knownIds.has(vm.id);
+        const mark = marks.get(vm.id);
+        const isKnown = mark !== undefined;
         const agent = sessionVmAgentLabel(vm);
+        const markState = sessionVmMarkState(vm);
         return (
           <li key={vm.id}>
             <div className="group flex items-center rounded-lg transition-colors hover:bg-(--row-hover)">
@@ -103,9 +108,14 @@ export function SessionVmList({ onClose }: { onClose: () => void }) {
                 onClick={() => void open(vm)}
                 disabled={openingId !== null}
                 className="flex min-w-0 flex-1 flex-col items-start gap-0.5 overflow-hidden py-2 pr-1 pl-3 text-left disabled:opacity-60"
-                title={isKnown ? "Show the session" : "Adopt the session into the sidebar and show it"}
+                title={isKnown ? "Show the session" : "Add the session to the sidebar and show it"}
               >
                 <span className="flex w-full items-center gap-1.5">
+                  {isKnown ? (
+                    <SessionMark sessionId={vm.id} mark={mark} />
+                  ) : (
+                    <MarkGlyph mark="+" isBusy={markState.isBusy} tone={markState.tone} label="Not in the sidebar" />
+                  )}
                   <span className="min-w-0 flex-1 truncate font-medium text-neutral-100">{vm.title}</span>
                   <span className="flex shrink-0 items-center gap-1 text-sky-300" title={`Runs on the VM ${vm.vm.instance} in ${vm.vm.zone}`}>
                     <CloudIcon className="size-4" />
@@ -124,7 +134,7 @@ export function SessionVmList({ onClose }: { onClose: () => void }) {
                   {isKnown ? <Chip className="border-white/10 text-neutral-400">In sidebar</Chip> : null}
                   {openingId === vm.id ? <Spinner className="size-3.5 shrink-0" /> : null}
                 </span>
-                <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden text-[12px] text-neutral-500">
+                <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden pl-6 text-[12px] text-neutral-500">
                   {sessionVmMeta(vm).map((part, index) => (
                     <span key={part} className={`${index === 0 ? "shrink-0" : "truncate"} flex min-w-0 items-center gap-1`}>
                       {index > 0 ? <Separator /> : null}

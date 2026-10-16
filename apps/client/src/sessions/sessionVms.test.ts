@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionVm } from "../ipc/types";
-import { filterSessionVms, sessionVmAgentLabel, sessionVmMeta, sessionVmOriginLabel, sessionVmStatusLabel, sessionVmUrl } from "./sessionVms";
+import { filterSessionVms, sessionVmAgentLabel, sessionVmMarkState, sessionVmMeta, sessionVmOriginLabel, sessionVmStatusLabel, sessionVmUrl } from "./sessionVms";
 
 function sessionVm(overrides: Partial<SessionVm> = {}): SessionVm {
   return {
@@ -91,5 +91,15 @@ describe("sessionVmStatusLabel", () => {
     expect(sessionVmStatusLabel(sessionVm({ status: "TERMINATED", isRunning: false }))).toBe("Stopped");
     expect(sessionVmStatusLabel(sessionVm({ status: "STAGING", isRunning: false }))).toBe("Staging");
     expect(sessionVmStatusLabel(sessionVm({ status: "", isRunning: false }))).toBe("Unknown");
+  });
+});
+
+describe("sessionVmMarkState", () => {
+  it("is busy only while the agent runs on a running VM and amber while it waits for an answer", () => {
+    expect(sessionVmMarkState(sessionVm())).toEqual({ isBusy: true, tone: "idle" });
+    expect(sessionVmMarkState(sessionVm({ isRunning: false, status: "TERMINATED" }))).toEqual({ isBusy: false, tone: "idle" });
+    expect(sessionVmMarkState(sessionVm({ agent: "question" }))).toEqual({ isBusy: false, tone: "question" });
+    expect(sessionVmMarkState(sessionVm({ agent: "done" }))).toEqual({ isBusy: false, tone: "idle" });
+    expect(sessionVmMarkState(sessionVm({ agent: "" }))).toEqual({ isBusy: false, tone: "idle" });
   });
 });

@@ -1,3 +1,9 @@
+## 0.29.0 (2026-10-16)
+
+### 🚀 Features
+
+- **client:** turn the cloud menu into a toggle that hands the session off to the VM or brings it back on a click, without the Open preview entry ([303cfab](https://github.com/unshoppable/hunt/commit/303cfab))
+
 ## 0.28.0 (2026-10-16)
 
 ### 🚀 Features

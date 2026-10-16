@@ -1,3 +1,9 @@
+## 0.19.0 (2026-10-16)
+
+### 🚀 Features
+
+- **gateway:** have the agent's question comment mention the issue's current assignees, so that GitHub notifies them ([b84193d](https://github.com/unshoppable/hunt/commit/b84193d))
+
 ## 0.18.0 (2026-10-16)
 
 ### 🚀 Features

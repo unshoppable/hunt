@@ -60,6 +60,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const sendPromptNow = useHuntStore((state) => state.sendPromptNow);
   const takeQueue = useHuntStore((state) => state.takeQueue);
   const unqueuePrompt = useHuntStore((state) => state.unqueuePrompt);
+  const promptDraft = useHuntStore((state) => state.promptDrafts[sessionId]);
+  const setPromptDraft = useHuntStore((state) => state.setPromptDraft);
   const cancelPrompt = useHuntStore((state) => state.cancelPrompt);
   const setMode = useHuntStore((state) => state.setMode);
   const setConfigOption = useHuntStore((state) => state.setConfigOption);
@@ -254,7 +256,11 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         </div>
       ) : null}
       {session.isLive || canPromptRemote ? (
+        // Keyed by the session so that a switch shows the other session's own draft instead of carrying this one over.
         <PromptInput
+          key={sessionId}
+          initialDraft={promptDraft}
+          onDraftChange={(draft) => setPromptDraft(sessionId, draft)}
           isBusy={isBusy || Boolean(chat?.move)}
           isBlocked={hasPermission}
           queue={chat?.queue ?? []}

@@ -60,6 +60,7 @@ export function PromptInput({
   pullRequest,
   extension,
   initialDraft = null,
+  onDraftChange,
   placeholder = "Ask anything, / for commands",
   hint = "",
   dropZoneRef,
@@ -91,6 +92,8 @@ export function PromptInput({
   extension?: ReactNode;
   /** Text and attachments the box starts with, e.g. a prompt whose session could not be created. */
   initialDraft?: PromptDraft | null;
+  /** Called with the text and attachments whenever they change, so the caller can keep what the box holds beyond its lifetime. */
+  onDraftChange?: (draft: PromptDraft) => void;
   placeholder?: string;
   /** Text under the box, e.g. what is still missing before a session can start; none inside a session. */
   hint?: string;
@@ -131,6 +134,12 @@ export function PromptInput({
   }, [isBlocked]);
 
   useReturnedPrompts(isBusy, queue, onTakeQueue, takeBack);
+
+  const onDraftChangeRef = useRef(onDraftChange);
+  onDraftChangeRef.current = onDraftChange;
+  useEffect(() => {
+    onDraftChangeRef.current?.({ text, images: attachments });
+  }, [text, attachments]);
 
   useEffect(() => {
     const caret = pendingCaretRef.current;

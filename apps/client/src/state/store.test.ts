@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionNotification } from "@agentclientprotocol/sdk";
-import type { SessionView } from "../ipc/types";
+import type { Screenshot, SessionView } from "../ipc/types";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -1167,5 +1167,45 @@ describe("clearing", () => {
     await firstSend;
     await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("clear_session", { id: SESSION }));
     expect(useHuntStore.getState().chats[SESSION].queue).toEqual([]);
+  });
+});
+
+describe("prompt draft", () => {
+  const OTHER = "22222222-2222-2222-2222-222222222222";
+
+  beforeEach(() => {
+    useHuntStore.setState({ chats: { [SESSION]: createEmptyChat(), [OTHER]: createEmptyChat() }, promptDrafts: {}, sessions: [] });
+  });
+
+  it("keeps the draft of every session apart and forgets one that was emptied", () => {
+    const { setPromptDraft } = useHuntStore.getState();
+    setPromptDraft(SESSION, { text: "what about", images: [] });
+    setPromptDraft(OTHER, { text: "/clear", images: [] });
+    expect(useHuntStore.getState().promptDrafts).toEqual({ [SESSION]: { text: "what about", images: [] }, [OTHER]: { text: "/clear", images: [] } });
+
+    setPromptDraft(SESSION, { text: "", images: [] });
+    expect(useHuntStore.getState().promptDrafts).toEqual({ [OTHER]: { text: "/clear", images: [] } });
+  });
+
+  it("leaves the state alone for a draft that did not change or is empty like the missing one", () => {
+    const { setPromptDraft } = useHuntStore.getState();
+    const before = useHuntStore.getState();
+    setPromptDraft(SESSION, { text: "", images: [] });
+    expect(useHuntStore.getState()).toBe(before);
+
+    const images = [{ path: "/tmp/one.png", name: "one.png", width: 1, height: 1 }] as unknown as Screenshot[];
+    setPromptDraft(SESSION, { text: "look", images });
+    const stored = useHuntStore.getState();
+    setPromptDraft(SESSION, { text: "look", images });
+    expect(useHuntStore.getState()).toBe(stored);
+  });
+
+  it("drops the draft together with the chat when the session is closed", async () => {
+    vi.mocked(invoke).mockReset();
+    vi.mocked(invoke).mockResolvedValue([]);
+    useHuntStore.getState().setPromptDraft(SESSION, { text: "unsent", images: [] });
+    await useHuntStore.getState().closeSession(SESSION, false);
+    expect(useHuntStore.getState().promptDrafts[SESSION]).toBeUndefined();
+    expect(useHuntStore.getState().chats[SESSION]).toBeUndefined();
   });
 });

@@ -196,6 +196,8 @@ type HuntState = {
   removingIds: string[];
   activeSessionId: string | null;
   chats: Record<string, SessionChat>;
+  /** What the prompt box of a session holds but has not sent yet, by session id; the box shows it again when the session is opened again. */
+  promptDrafts: Record<string, PromptDraft>;
   rightTab: RightTab;
   /**
    * Set while the chat pane shows the start view for a new session; `parentId` names the session a sub session is
@@ -273,6 +275,8 @@ type HuntState = {
   takeQueue: (id: string) => QueuedPrompt[];
   /** Takes the queued prompt `promptId` out of the queue. */
   unqueuePrompt: (id: string, promptId: string) => void;
+  /** Remembers what the prompt box of `id` holds (see `promptDrafts`); an empty draft forgets it. */
+  setPromptDraft: (id: string, draft: PromptDraft) => void;
   /** Asks the agent for a fresh component diagram as a hidden turn (see `SessionChat.isHiddenTurn`). */
   refreshGraph: (id: string) => Promise<void>;
   cancelPrompt: (id: string) => Promise<void>;
@@ -325,6 +329,17 @@ export function createEmptyChat(): SessionChat {
     move: null,
     fileSync: { isRunning: false, syncedAt: null, error: null, conflicts: [] },
   };
+}
+
+/** The chats and prompt drafts of `state` without those of the sessions `ids`. */
+function withoutSessions(state: HuntState, ids: string[]): Pick<HuntState, "chats" | "promptDrafts"> {
+  const chats = { ...state.chats };
+  const promptDrafts = { ...state.promptDrafts };
+  for (const id of ids) {
+    delete chats[id];
+    delete promptDrafts[id];
+  }
+  return { chats, promptDrafts };
 }
 
 /** Markdown and quote characters a question mark may be wrapped in at the end of a paragraph. */
@@ -745,14 +760,12 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       session = await create();
     } catch (error) {
       set((state) => {
-        const chats = { ...state.chats };
-        delete chats[id];
         const isActive = state.activeSessionId === id;
         return {
           sessions: state.sessions.filter((candidate) => candidate.id !== id),
           creatingIds: state.creatingIds.filter((candidate) => candidate !== id),
           untitledIds: state.untitledIds.filter((candidate) => candidate !== id),
-          chats,
+          ...withoutSessions(state, [id]),
           ...(isActive ? { activeSessionId: null, draft: { parentId: draftParentId, error: String(error), prompt: start.prompt } } : {}),
         };
       });
@@ -809,6 +822,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     removingIds: [],
     activeSessionId: null,
     chats: {},
+    promptDrafts: {},
     rightTab: "diff",
     draft: null,
     untitledIds: [],
@@ -931,29 +945,19 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       if (get().creatingIds.includes(id)) return;
       if (!removeWorktree) {
         await commands.closeSession(id, false);
-        set((state) => {
-          const chats = { ...state.chats };
-          delete chats[id];
-          return { chats };
-        });
+        set((state) => withoutSessions(state, [id]));
         await get().refreshSessions();
         return;
       }
 
       const { sessions, activeSessionId: previousActiveId } = get();
       const removedIds = [id, ...sessions.filter((session) => session.parentId === id).map((session) => session.id)];
-      set((state) => {
-        const chats = { ...state.chats };
-        for (const removedId of removedIds) {
-          delete chats[removedId];
-        }
-        return {
-          chats,
-          sessions: state.sessions.filter((session) => !removedIds.includes(session.id)),
-          removingIds: [...state.removingIds, ...removedIds],
-          activeSessionId: state.activeSessionId && removedIds.includes(state.activeSessionId) ? null : state.activeSessionId,
-        };
-      });
+      set((state) => ({
+        ...withoutSessions(state, removedIds),
+        sessions: state.sessions.filter((session) => !removedIds.includes(session.id)),
+        removingIds: [...state.removingIds, ...removedIds],
+        activeSessionId: state.activeSessionId && removedIds.includes(state.activeSessionId) ? null : state.activeSessionId,
+      }));
       try {
         await commands.closeSession(id, true);
       } catch (error) {
@@ -1010,6 +1014,21 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
 
     unqueuePrompt: (id, promptId) => {
       updateChat(id, (chat) => ({ ...chat, queue: chat.queue.filter((prompt) => prompt.id !== promptId) }));
+    },
+
+    setPromptDraft: (id, draft) => {
+      set((state) => {
+        const current = state.promptDrafts[id];
+        if (current && current.text === draft.text && current.images === draft.images) return state;
+        const promptDrafts = { ...state.promptDrafts };
+        if (!draft.text && !draft.images.length) {
+          if (!current) return state;
+          delete promptDrafts[id];
+        } else {
+          promptDrafts[id] = draft;
+        }
+        return { promptDrafts };
+      });
     },
 
     refreshGraph: async (id) => {

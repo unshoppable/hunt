@@ -1,3 +1,9 @@
+## 0.26.1 (2026-10-16)
+
+### 🩹 Fixes
+
+- **client:** keep the unsent text of the prompt box with its session instead of carrying it into the next one ([683296c](https://github.com/unshoppable/hunt/commit/683296c))
+
 ## 0.26.0 (2026-10-16)
 
 ### 🚀 Features

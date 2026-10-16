@@ -18,7 +18,7 @@ import { useDismiss } from "../ui/useDismiss";
 import { PullRequestList } from "./PullRequestList";
 import { findPullRequestBranch } from "./pullRequests";
 import { SessionVmList } from "./SessionVmList";
-import { titleFromPrompt } from "./sessionLabels";
+import { latestTopLevelSession, titleFromPrompt } from "./sessionLabels";
 
 /** Where a session can work; "New environment" (issue #2) is announced but not built yet, hence disabled. */
 const WORKSPACE_OPTIONS: DropdownOption[] = [
@@ -73,7 +73,7 @@ export function NewSessionView({
 }) {
   const parent = useHuntStore((state) => state.sessions.find((session) => session.id === parentId));
   /** Repository of the newest top-level session; preselected when no repository was remembered yet. */
-  const latestRepoPath = useHuntStore((state) => state.sessions.find((session) => !session.parentId)?.repoPath ?? null);
+  const latestRepoPath = useHuntStore((state) => latestTopLevelSession(state.sessions)?.repoPath ?? null);
   const createSession = useHuntStore((state) => state.createSession);
   const createSubSession = useHuntStore((state) => state.createSubSession);
   const setRightTab = useHuntStore((state) => state.setRightTab);

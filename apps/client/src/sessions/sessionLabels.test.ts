@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionView } from "../ipc/types";
-import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, titleFromPrompt } from "./sessionLabels";
+import { cycleSessionId, filterSessionRows, groupSessions, latestTopLevelSession, sessionMarks, titleFromPrompt } from "./sessionLabels";
 
 function session(id: string, title: string, branch: string, parentId: string | null = null, path?: string): SessionView {
   return {
@@ -94,6 +94,14 @@ describe("sessionMarks", () => {
     const many = Array.from({ length: 28 }, (_, index) => session(`s${index}`, "t", "b"));
     const marks = sessionMarks(many);
     expect([marks.get("s25"), marks.get("s26"), marks.get("s27")]).toEqual(["Z", "AA", "AB"]);
+  });
+});
+
+describe("latestTopLevelSession", () => {
+  it("returns the last top-level session, skipping sub chats and orphans with a parent id", () => {
+    expect(latestTopLevelSession(sessions)?.id).toBe("b");
+    expect(latestTopLevelSession([sessions[0], sessions[1]])?.id).toBe("a");
+    expect(latestTopLevelSession([])).toBeNull();
   });
 });
 

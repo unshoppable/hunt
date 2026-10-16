@@ -16,7 +16,7 @@ export function sessionSubtitle(session: SessionView): string {
 
 export type SessionRow = { session: SessionView; isSubChat: boolean };
 
-/** Top-level sessions in store order, each followed by its sub chats; a sub chat whose parent is gone is listed on top level. */
+/** Top-level sessions in store order (oldest first), each followed by its sub chats; a sub chat whose parent is gone is listed on top level. */
 export function groupSessions(sessions: SessionView[]): SessionRow[] {
   const ids = new Set(sessions.map((session) => session.id));
   const rows: SessionRow[] = [];
@@ -32,6 +32,14 @@ export function groupSessions(sessions: SessionView[]): SessionRow[] {
   return rows;
 }
 
+/** The most recently created top-level session: the last one of the list, which is in creation order. */
+export function latestTopLevelSession(sessions: SessionView[]): SessionView | null {
+  for (let index = sessions.length - 1; index >= 0; index--) {
+    if (!sessions[index].parentId) return sessions[index];
+  }
+  return null;
+}
+
 /** Spreadsheet-style letters for a 0-based index: 0 → A, 25 → Z, 26 → AA. */
 function letterFor(index: number): string {
   let letters = "";
@@ -44,7 +52,7 @@ function letterFor(index: number): string {
 /**
  * Short marks that identify sessions in the sidebar and wherever a session is referenced: top-level sessions get
  * letters (A, B, …) in sidebar order, sub sessions get numbers (1, 2, …) counted per parent. Marks are derived from
- * the current list, so they shift when a session is added or deleted.
+ * the current list, which is in creation order, so they shift only when a session is deleted.
  */
 export function sessionMarks(sessions: SessionView[]): Map<string, string> {
   const marks = new Map<string, string>();

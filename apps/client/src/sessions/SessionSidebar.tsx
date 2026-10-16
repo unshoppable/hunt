@@ -37,6 +37,11 @@ export function SessionSidebar() {
   const [query, setQuery] = useState("");
   const rows = useMemo(() => filterSessionRows(groupSessions(sessions), query), [sessions, query]);
   const marks = useMemo(() => sessionMarks(sessions), [sessions]);
+  const listRef = useRef<HTMLUListElement>(null);
+  // A new session joins the end of the list, so the row of a newly active session is scrolled into view.
+  useEffect(() => {
+    listRef.current?.querySelector("[data-active]")?.scrollIntoView({ block: "nearest" });
+  }, [activeSessionId]);
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
   /** The session the confirmation dialog is open for, with the question it shows. */
@@ -166,7 +171,7 @@ export function SessionSidebar() {
           Refreshing the remote sessions failed: {remoteSync.error}
         </p>
       ) : null}
-      <ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-2 font-(family-name:--sidebar-font-family) text-(length:--sidebar-font-size) leading-(--sidebar-line-height)">
+      <ul ref={listRef} className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-2 font-(family-name:--sidebar-font-family) text-(length:--sidebar-font-size) leading-(--sidebar-line-height)">
         {query && rows.length === 0 ? <li className="px-2.5 py-1.5 text-[0.875em] text-neutral-500">No sessions match “{query}”</li> : null}
         {rows.map(({ session, isSubChat }) => {
           const isActive = session.id === activeSessionId;
@@ -174,7 +179,7 @@ export function SessionSidebar() {
           // A session the backend still creates has no worktree or agent yet: nothing can be started in or done to it.
           const isCreating = creatingIds.includes(session.id);
           return (
-            <li key={session.id}>
+            <li key={session.id} data-active={isActive || undefined}>
               <button
                 type="button"
                 onClick={() => void selectSession(session.id)}

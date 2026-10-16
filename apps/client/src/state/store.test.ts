@@ -667,13 +667,13 @@ describe("createSession", () => {
     expect(state.untitledIds).toEqual([]);
   });
 
-  it("keeps a session being created when the stored list is reloaded without it", async () => {
+  it("keeps a session being created at the end when the stored list is reloaded without it", async () => {
     vi.mocked(invoke).mockImplementation((command) => (command === "create_session" ? new Promise(() => {}) : Promise.resolve([storedSession("old", "Older")])));
     void useHuntStore.getState().createSession(TARGET, "Build it", START);
 
     await useHuntStore.getState().refreshSessions();
 
-    expect(useHuntStore.getState().sessions.map((session) => session.title)).toEqual(["Build it", "Older"]);
+    expect(useHuntStore.getState().sessions.map((session) => session.title)).toEqual(["Older", "Build it"]);
   });
 });
 
@@ -691,11 +691,11 @@ describe("createSubSession", () => {
     const creation = useHuntStore.getState().createSubSession("parent", "Sub", null, { setup: { configValues: {}, modeId: "default" }, prompt: null }, false);
 
     const pending = useHuntStore.getState();
-    expect(pending.sessions.map((session) => [session.title, session.parentId, session.worktreePath])).toEqual([["Sub", "parent", "/worktrees/parent"], ["Parent", null, "/worktrees/parent"]]);
+    expect(pending.sessions.map((session) => [session.title, session.parentId, session.worktreePath])).toEqual([["Parent", null, "/worktrees/parent"], ["Sub", "parent", "/worktrees/parent"]]);
     expect(pending.activeSessionId).toBe("parent");
 
     const id = await creation;
-    expect(useHuntStore.getState().sessions[0]).toEqual({ ...storedSession(id, "Sub"), parentId: "parent" });
+    expect(useHuntStore.getState().sessions[1]).toEqual({ ...storedSession(id, "Sub"), parentId: "parent" });
     expect(vi.mocked(invoke).mock.calls).toEqual([["create_sub_session", { id, parentId: "parent", title: "Sub", selection: null }]]);
   });
 

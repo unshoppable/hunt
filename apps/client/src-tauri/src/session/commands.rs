@@ -74,7 +74,8 @@ pub async fn list_sessions(app: AppHandle, registry: State<'_, SessionRegistry>)
             SessionView::new(&app, record, is_live)
         })
         .collect();
-    sessions.sort_by(|left, right| right.record.created_at.cmp(&left.record.created_at));
+    // Oldest first, so that a new session joins the end of the sidebar and the marks of the existing ones stay put.
+    sessions.sort_by(|left, right| left.record.created_at.cmp(&right.record.created_at));
     Ok(sessions)
 }
 

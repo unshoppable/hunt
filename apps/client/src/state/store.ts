@@ -742,7 +742,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
   function listPlaceholder(placeholder: SessionView, prompt: PromptDraft | null, isActivated: boolean) {
     const items: ChatItem[] = prompt ? [{ kind: "user", id: nextItemId(), text: prompt.text, images: prompt.images.map((image) => assetUrl(image.path)) }] : [];
     set((state) => ({
-      sessions: [placeholder, ...state.sessions],
+      sessions: [...state.sessions, placeholder],
       creatingIds: [...state.creatingIds, placeholder.id],
       chats: { ...state.chats, [placeholder.id]: { ...createEmptyChat(), items, hasHistory: true } },
       ...(isActivated ? { activeSessionId: placeholder.id, draft: null } : {}),
@@ -832,7 +832,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       const listed = await commands.listSessions();
       set((state) => {
         const creating = state.sessions.filter((session) => state.creatingIds.includes(session.id) && !listed.some((candidate) => candidate.id === session.id));
-        return { sessions: [...creating, ...listed.filter((session) => !state.removingIds.includes(session.id))] };
+        return { sessions: [...listed.filter((session) => !state.removingIds.includes(session.id)), ...creating] };
       });
     },
 

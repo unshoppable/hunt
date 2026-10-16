@@ -1,3 +1,9 @@
+## 0.24.0 (2026-10-16)
+
+### 🚀 Features
+
+- **client:** list pull requests and remote sessions in the start view instead of a popover ([4a04cf3](https://github.com/unshoppable/hunt/commit/4a04cf3))
+
 ## 0.23.0 (2026-10-15)
 
 ### 🚀 Features

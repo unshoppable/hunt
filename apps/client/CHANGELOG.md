@@ -1,3 +1,9 @@
+## 0.30.0 (2026-10-16)
+
+### 🚀 Features
+
+- **client:** show a blue session mark for a session that runs on a VM instead of the grey or green one ([b8b8e63](https://github.com/unshoppable/hunt/commit/b8b8e63))
+
 ## 0.29.0 (2026-10-16)
 
 ### 🚀 Features

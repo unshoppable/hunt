@@ -1240,7 +1240,7 @@ async fn finish_retrieval(
     .ok_or_else(|| "failed to retrieve the session: it was closed meanwhile".to_string())?;
     announce_sessions_changed(app);
     sync::forget(app, id);
-    forget_remote(app, target, id).await;
+    forget_remote(app, target, id, true).await;
     restore_transcript_mode(app, &record, target)?;
     dependencies::ensure(app, record.repo_path.clone(), record.worktree_path.clone(), Install::Updating);
     let start = local_start(&record);
@@ -1462,13 +1462,15 @@ fn change_pending_cleanups(app: &AppHandle, change: impl FnOnce(&mut Vec<Pending
     }
 }
 
-/// Ends the remote side `target` of session `id` for good: the base of its memory merge goes, and its VM is deleted.
-/// Failures are only logged.
-async fn forget_remote(app: &AppHandle, target: &RemoteTarget, id: Uuid) {
+/// Forgets what this Mac keeps for the remote session `id` on `target` (the base of its memory merge) and, with
+/// `delete_vm`, deletes its VM. Failures are only logged.
+async fn forget_remote(app: &AppHandle, target: &RemoteTarget, id: Uuid, delete_vm: bool) {
     if let Ok(path) = memory_base_path(app, id) {
         let _ = std::fs::remove_file(path);
     }
-    delete_session_vm(app, &target.vm, id).await;
+    if delete_vm {
+        delete_session_vm(app, &target.vm, id).await;
+    }
 }
 
 /// Stops the relay of the deleted sub chat `id` on `target`, the VM of the remote session `owner`, and removes its
@@ -1575,6 +1577,18 @@ async fn stop_agent_and_wait(app: &AppHandle, registry: &SessionRegistry, watche
     sync::stop_and_wait(app, id).await;
 }
 
+/// How `close_session` ends a session (mirror of `SessionEnding` in src/ipc/types.ts).
+#[derive(Debug, Clone, Copy, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum Ending {
+    /// Only the agent stops; the session stays listed.
+    Stop,
+    /// The session goes with its sub chats, worktree, branch and, for a remote session, its VM.
+    Delete,
+    /// Like `Delete`, but a remote session's VM stays for the other people working on it and for a later adoption.
+    Forget,
+}
+
 #[tauri::command]
 pub async fn close_session(
     app: AppHandle,
@@ -1583,15 +1597,16 @@ pub async fn close_session(
     permissions: State<'_, PermissionRegistry>,
     lsp: State<'_, LspRegistry>,
     id: Uuid,
-    remove_worktree: bool,
+    ending: Ending,
 ) -> Result<(), String> {
-    let result = end_session(&app, &registry, &watchers, &permissions, &lsp, id, remove_worktree).await;
+    let result = end_session(&app, &registry, &watchers, &permissions, &lsp, id, ending).await;
     announce_sessions_changed(&app);
     result
 }
 
-/// Stops the agent of `id` and, with `remove_worktree`, deletes the session record together with its sub chats,
-/// worktree and branch; a session in the repository's own checkout only loses its records.
+/// Stops the agent of `id` and, unless `ending` is `Stop`, deletes the session record together with its sub chats,
+/// worktree and branch; a session in the repository's own checkout only loses its records. A remote session's VM
+/// goes only with `Delete`.
 async fn end_session(
     app: &AppHandle,
     registry: &SessionRegistry,
@@ -1599,10 +1614,10 @@ async fn end_session(
     permissions: &PermissionRegistry,
     lsp: &LspRegistry,
     id: Uuid,
-    remove_worktree: bool,
+    ending: Ending,
 ) -> Result<(), String> {
     stop_agent(app, registry, watchers, permissions, id).await;
-    if !remove_worktree {
+    if ending == Ending::Stop {
         return Ok(());
     }
 
@@ -1621,14 +1636,16 @@ async fn end_session(
     }
     if let Some(target) = &record.remote {
         sync::stop_and_wait(app, id).await;
-        forget_remote(app, target, id).await;
+        forget_remote(app, target, id, ending == Ending::Delete).await;
         sync::forget(app, id);
         // An adopted session that never synced has nothing here but its record.
         if target.is_adopted() && !record.worktree_path.is_dir() {
             return store::remove_session(app, id);
         }
     } else if let Some(leftover) = &record.leftover_vm {
-        delete_session_vm(app, leftover, id).await;
+        if ending == Ending::Delete {
+            delete_session_vm(app, leftover, id).await;
+        }
     }
     if record.workspace == Workspace::Checkout {
         store::remove_session(app, id)?;

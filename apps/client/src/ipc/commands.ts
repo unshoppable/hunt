@@ -20,6 +20,7 @@ import type {
   ReviewThread,
   Screenshot,
   SelectionContext,
+  SessionEnding,
   SessionNotification,
   SessionView,
   SessionVm,
@@ -133,7 +134,7 @@ export const commands = {
   openShellWindow: (id: string) => invoke<string>("open_shell_window", { id }),
   /** Ends the tmux window `windowId` on the VM of the remote session `id` and the processes in it. */
   closeTerminalWindow: (id: string, windowId: string) => invoke<void>("close_terminal_window", { id, windowId }),
-  closeSession: (id: string, removeWorktree: boolean) => invoke<void>("close_session", { id, removeWorktree }),
+  closeSession: (id: string, ending: SessionEnding) => invoke<void>("close_session", { id, ending }),
   /** Prepares the worktree's `node_modules` again after a failed attempt; progress arrives through `sessions:changed`. */
   prepareDependencies: (id: string) => invoke<void>("prepare_dependencies", { id }),
   /** Sends the text plus the image files at `images` (absolute paths) as one user turn. */

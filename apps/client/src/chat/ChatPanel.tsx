@@ -25,6 +25,8 @@ import { PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../
 import { ShieldIcon } from "../ui/icons";
 import { OpenInWebstormButton } from "./OpenInWebstormButton";
 import { RemoteMenu } from "./RemoteMenu";
+import { remoteDeleteQuestion } from "../sessions/remoteOrigin";
+import { confirmDestructive } from "../ui/confirm";
 import { moveStatus, remoteOf } from "./remoteSession";
 import { RemoteRunStatus, RemoteStepProgress } from "./RemoteProgress";
 
@@ -63,6 +65,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const promptDraft = useHuntStore((state) => state.promptDrafts[sessionId]);
   const setPromptDraft = useHuntStore((state) => state.setPromptDraft);
   const cancelPrompt = useHuntStore((state) => state.cancelPrompt);
+  const closeSession = useHuntStore((state) => state.closeSession);
   const setMode = useHuntStore((state) => state.setMode);
   const setConfigOption = useHuntStore((state) => state.setConfigOption);
   const answerPermission = useHuntStore((state) => state.answerPermission);
@@ -129,6 +132,13 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   }, [sessionId, worktreePath, isCreating]);
 
   const followEnd = useFollowScroll(scrollRef, columnRef, `${sessionId}:${hasSession}`);
+
+  /** Deletes the remote session with its VM after confirmation; the sidebar's × only takes it out of the sidebar. */
+  async function deleteRemoteSession() {
+    const current = useHuntStore.getState().sessions.find((candidate) => candidate.id === sessionId);
+    if (!current?.remote || !(await confirmDestructive(remoteDeleteQuestion(current), "Delete"))) return;
+    await closeSession(sessionId, "delete");
+  }
 
   if (!session) return null;
   /** A session whose agent runs on a VM takes prompts while not connected: the first one starts its VM and connects. */
@@ -282,6 +292,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
             followEnd();
             void sendPrompt(sessionId, "/clear");
           }}
+          onDelete={session.remote && !session.parentId ? () => void deleteRemoteSession() : undefined}
           onCycleMode={cycleMode}
           onModeChange={(nextModeId) => void setMode(sessionId, nextModeId)}
           onConfigChange={(configId, value) => void setConfigOption(sessionId, configId, value)}

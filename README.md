@@ -659,8 +659,12 @@ marks a session whose agent asked on the issue before its conversation is loaded
 the VM comes from `/srv/hunt/sessions/<id>/meta.json` once Hunt reaches the VM, and the relay replays its conversation
 on `session/load`. Its first sync creates a new worktree in the local checkout on the branch the VM has checked out (a
 numbered name when the checkout has that branch already), from a snapshot of the VM's worktree; until a checkout is
-known it is not synced, and bringing it back is not offered. Deleting or bringing back an adopted session asks first,
-naming its VM, since other people may work on it; VMs this Mac deleted or still has to delete are never adopted again.
+known it is not synced, and bringing it back is not offered. The × of a remote session in the sidebar (also ⌘W) only
+takes it out of the sidebar (`close_session` with ending `forget`): its record, sync state and local worktree go, its
+VM keeps running and the list of remote sessions brings it back; the dialog honours *Don't ask again* like a local
+deletion. The red trash button beside the send button of a remote session's prompt box deletes the session with its VM
+(ending `delete`), after a confirmation that for an adopted session names the other people working on it. Bringing an
+adopted session back asks the same way; VMs this Mac deleted or still has to delete are never adopted again.
 
 A remote session keeps its VM, which costs only its disk while it is off, until it is retrieved or deleted. Hunt records
 when its agent last worked (a prompt it sent, a turn that ended, or the relay's last turn when it connects) and, once

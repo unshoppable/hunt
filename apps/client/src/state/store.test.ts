@@ -737,7 +737,7 @@ describe("closeSession", () => {
       command === "close_session" ? new Promise<void>((resolve) => { finish = resolve; }) : Promise.resolve([storedSession("other", "Other")]),
     );
 
-    const closing = useHuntStore.getState().closeSession("parent", true);
+    const closing = useHuntStore.getState().closeSession("parent", "delete");
 
     const pending = useHuntStore.getState();
     expect(pending.sessions.map((session) => session.id)).toEqual(["other"]);
@@ -748,7 +748,7 @@ describe("closeSession", () => {
     finish();
     await closing;
     expect(useHuntStore.getState().removingIds).toEqual([]);
-    expect(vi.mocked(invoke).mock.calls).toEqual([["close_session", { id: "parent", removeWorktree: true }], ["list_sessions"]]);
+    expect(vi.mocked(invoke).mock.calls).toEqual([["close_session", { id: "parent", ending: "delete" }], ["list_sessions"]]);
   });
 
   it("keeps a session the backend still deletes out of a concurrent reload", async () => {
@@ -756,7 +756,7 @@ describe("closeSession", () => {
       command === "close_session" ? new Promise(() => {}) : Promise.resolve([storedSession("parent", "Parent"), storedSession("other", "Other")]),
     );
 
-    void useHuntStore.getState().closeSession("parent", true);
+    void useHuntStore.getState().closeSession("parent", "forget");
     await useHuntStore.getState().refreshSessions();
 
     expect(useHuntStore.getState().sessions.map((session) => session.id)).toEqual(["other"]);
@@ -767,7 +767,7 @@ describe("closeSession", () => {
       command === "close_session" ? Promise.reject("failed to remove the worktree") : Promise.resolve([storedSession("parent", "Parent"), storedSession("other", "Other")]),
     );
 
-    await useHuntStore.getState().closeSession("parent", true);
+    await useHuntStore.getState().closeSession("parent", "delete");
 
     const state = useHuntStore.getState();
     expect(state.sessions.map((session) => session.id)).toEqual(["parent", "other"]);
@@ -1204,7 +1204,7 @@ describe("prompt draft", () => {
     vi.mocked(invoke).mockReset();
     vi.mocked(invoke).mockResolvedValue([]);
     useHuntStore.getState().setPromptDraft(SESSION, { text: "unsent", images: [] });
-    await useHuntStore.getState().closeSession(SESSION, false);
+    await useHuntStore.getState().closeSession(SESSION, "stop");
     expect(useHuntStore.getState().promptDrafts[SESSION]).toBeUndefined();
     expect(useHuntStore.getState().chats[SESSION]).toBeUndefined();
   });

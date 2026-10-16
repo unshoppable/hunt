@@ -50,6 +50,23 @@ export function adoptedDeleteQuestion(session: SessionView): string {
 }
 
 /**
+ * The question before deleting the remote `session` with its VM: the adopted one's, which names the other people, or
+ * for this Mac's own handoff a warning about the work on the VM.
+ */
+export function remoteDeleteQuestion(session: SessionView): string {
+  if (isAdopted(session)) return adoptedDeleteQuestion(session);
+  const instance = session.remote?.vm.instance ?? "";
+  return `Delete session "${session.title}", its local worktree and its VM ${instance}? Work on the VM that was not synced here is lost.`;
+}
+
+/** The question before removing the remote `session` from the sidebar, which leaves its VM alone. */
+export function removeFromSidebarQuestion(session: SessionView): string {
+  const instance = session.remote?.vm.instance ?? "";
+  const worktree = session.hasLocalWorktree ? " and its local worktree is deleted" : "";
+  return `Remove session "${session.title}" from the sidebar? Its VM ${instance} keeps running${worktree}; the list of remote sessions brings it back.`;
+}
+
+/**
  * The question before bringing the adopted `session` back, which deletes its VM for everybody; it continues in the local
  * worktree its sync created, or in a new one.
  */

@@ -141,6 +141,13 @@ export type VmSettings = { project: string; machineType: string | null };
 export type RemoteOrigin = "handoff" | "desktop" | "swf";
 
 /**
+ * How a session ends (mirror of `Ending` in src-tauri/src/session/commands.rs): `stop` only stops its agent, `delete`
+ * removes it with its sub chats, worktree, branch and, for a remote session, its VM; `forget` removes everything this
+ * Mac keeps of it but leaves a remote session's VM for the others working on it and for a later adoption.
+ */
+export type SessionEnding = "stop" | "delete" | "forget";
+
+/**
  * A session VM as the gateway lists it (mirror of `AdoptableSession` in src-tauri/src/remote/adoption.rs): started by
  * the gateway's poller for a GitHub issue (`swf`) or handed off by someone's Hunt (`desktop`), running or not.
  */

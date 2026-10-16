@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { SessionView } from "../ipc/types";
+import type { SessionEnding, SessionView } from "../ipc/types";
 import { checkForUpdate } from "../ipc/updater";
 import { useHuntStore } from "../state/store";
 import { configuredVmSettings, useSettingsStore } from "../state/settings";
@@ -10,14 +10,13 @@ import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, session
 import { SessionMark } from "./SessionMark";
 import { DeleteSessionDialog } from "./DeleteSessionDialog";
 import { StaleRemoteDialog } from "./StaleRemoteDialog";
-import { confirmVmLoss } from "./confirmVmLoss";
-import { isAdopted, remoteOriginLabel, remoteOriginTitle, repositoryLabel } from "./remoteOrigin";
+import { remoteOriginLabel, remoteOriginTitle, removeFromSidebarQuestion, repositoryLabel } from "./remoteOrigin";
 import { PlanUsageBar } from "./PlanUsageBar";
 import { HEADER_BAR } from "../ui/bars";
 import { ICON_BUTTON, PRIMARY_BUTTON_XS } from "../ui/buttons";
 import { Dropdown } from "../ui/Dropdown";
 import { SearchField } from "../ui/SearchField";
-import { BranchIcon, CloudIcon, CloudSyncIcon, GitHubIcon, PlusIcon, RepoIcon, Spinner, TrashIcon } from "../ui/icons";
+import { BranchIcon, CloseIcon, CloudIcon, CloudSyncIcon, GitHubIcon, PlusIcon, RepoIcon, Spinner } from "../ui/icons";
 import { useLoad } from "../ui/useLoad";
 
 export function SessionSidebar() {
@@ -45,7 +44,7 @@ export function SessionSidebar() {
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
   /** The session the confirmation dialog is open for, with the question it shows. */
-  const [pendingDelete, setPendingDelete] = useState<{ sessionId: string; question: string } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ sessionId: string; question: string; ending: SessionEnding } | null>(null);
   /** Version of the newer Hunt the release feed offers; shown as a dot on the gear. */
   const [availableVersion, setAvailableVersion] = useState<string | null>(null);
 
@@ -59,27 +58,29 @@ export function SessionSidebar() {
   );
 
   /**
-   * Deletes the session (a top-level session takes its sub sessions and worktree along), after confirmation unless
-   * the user turned the dialog off. An adopted remote session always asks, since its VM goes for everybody.
+   * Takes the session out of the sidebar, after confirmation unless the user turned the dialog off: a local session
+   * is deleted (a top-level one takes its sub sessions and worktree along); a remote session is only forgotten here,
+   * its VM keeps running and the list of remote sessions brings it back. The trash button under the prompt box
+   * deletes a remote session with its VM.
    */
-  const deleteSession = (session: SessionView, isSubChat: boolean) => {
-    if (isAdopted(session)) {
-      void confirmVmLoss(session, "delete").then((isConfirmed) => (isConfirmed ? closeSession(session.id, true) : undefined));
-      return;
-    }
+  const removeSession = (session: SessionView, isSubChat: boolean) => {
+    const ending = session.remote && !isSubChat ? "forget" : "delete";
     if (!useSettingsStore.getState().confirmSessionDelete) {
-      void closeSession(session.id, true);
+      void closeSession(session.id, ending);
       return;
     }
-    const question = isSubChat
-      ? `Delete sub session "${session.title}"?`
-      : session.workspace === "checkout"
-        ? `Delete session "${session.title}" and its sub sessions? The repository's checkout keeps its changes.`
-        : `Delete session "${session.title}", its sub sessions and its worktree?`;
-    setPendingDelete({ sessionId: session.id, question });
+    const question =
+      ending === "forget"
+        ? removeFromSidebarQuestion(session)
+        : isSubChat
+          ? `Delete sub session "${session.title}"?`
+          : session.workspace === "checkout"
+            ? `Delete session "${session.title}" and its sub sessions? The repository's checkout keeps its changes.`
+            : `Delete session "${session.title}", its sub sessions and its worktree?`;
+    setPendingDelete({ sessionId: session.id, question, ending });
   };
-  const deleteSessionRef = useRef(deleteSession);
-  deleteSessionRef.current = deleteSession;
+  const removeSessionRef = useRef(removeSession);
+  removeSessionRef.current = removeSession;
 
   // Cmd+, (Ctrl+, elsewhere) opens the settings like a native macOS app.
   useEffect(() => {
@@ -105,7 +106,7 @@ export function SessionSidebar() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // ⌘W while the focus is inside the sidebar deletes the selected session. Runs in the capture phase and stops the
+  // ⌘W while the focus is inside the sidebar removes the selected session. Runs in the capture phase and stops the
   // event so the editor's own ⌘W (close tab) does not fire for the same key press.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -117,7 +118,7 @@ export function SessionSidebar() {
       if (!row) return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      deleteSessionRef.current(row.session, row.isSubChat);
+      removeSessionRef.current(row.session, row.isSubChat);
     }
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
@@ -224,13 +225,13 @@ export function SessionSidebar() {
                         role="button"
                         onClick={(event) => {
                           event.stopPropagation();
-                          deleteSession(session, isSubChat);
+                          removeSession(session, isSubChat);
                         }}
-                        className="flex size-7 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-red-400/10 hover:text-red-400"
-                        title="Delete session"
-                        aria-label="Delete session"
+                        className={`flex size-7 items-center justify-center rounded-md text-neutral-400 transition-colors ${session.remote && !isSubChat ? "hover:bg-white/10 hover:text-white" : "hover:bg-red-400/10 hover:text-red-400"}`}
+                        title={session.remote && !isSubChat ? "Remove from the sidebar; the VM keeps running" : "Delete session"}
+                        aria-label={session.remote && !isSubChat ? "Remove from sidebar" : "Delete session"}
                       >
-                        <TrashIcon className="size-3.5" />
+                        <CloseIcon className="size-3.5" />
                       </span>
                     </span>
                   ) : null}
@@ -274,7 +275,8 @@ export function SessionSidebar() {
       {pendingDelete ? (
         <DeleteSessionDialog
           question={pendingDelete.question}
-          onConfirm={() => void closeSession(pendingDelete.sessionId, true)}
+          isRemoval={pendingDelete.ending === "forget"}
+          onConfirm={() => void closeSession(pendingDelete.sessionId, pendingDelete.ending)}
           onClose={() => setPendingDelete(null)}
         />
       ) : null}

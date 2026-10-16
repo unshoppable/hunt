@@ -46,7 +46,7 @@ export function StaleRemoteDialog() {
     if (!(await confirmVmLoss(session, action))) return;
     setError(null);
     setAnsweredIds((ids) => new Set(ids).add(session.id));
-    void (action === "delete" ? closeSession(session.id, true) : retrieveSession(session.id));
+    void (action === "delete" ? closeSession(session.id, "delete") : retrieveSession(session.id));
   };
 
   const later = async () => {

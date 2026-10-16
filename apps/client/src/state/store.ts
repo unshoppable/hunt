@@ -17,6 +17,7 @@ import type {
   RemoteSyncEvent,
   Screenshot,
   SelectionContext,
+  SessionEnding,
   SessionView,
   Workspace,
   SummaryEvent,
@@ -258,7 +259,8 @@ type HuntState = {
    * leaves the list at once while the backend still cleans up; a failed deletion lists it again with the error in its
    * chat. A session still being created cannot be closed.
    */
-  closeSession: (id: string, removeWorktree: boolean) => Promise<void>;
+  /** Ends the session as `ending` says (see `SessionEnding`); `delete` and `forget` take it off the list at once. */
+  closeSession: (id: string, ending: SessionEnding) => Promise<void>;
   /** Rebuilds the chat of a live session from the backend's history when this store has none (after a webview reload). */
   loadHistory: (id: string) => Promise<void>;
   /**
@@ -942,10 +944,10 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       return completeCreation(id, () => commands.createSubSession(id, parentId, listedTitle, selection), start, parentId);
     },
 
-    closeSession: async (id, removeWorktree) => {
+    closeSession: async (id, ending) => {
       if (get().creatingIds.includes(id)) return;
-      if (!removeWorktree) {
-        await commands.closeSession(id, false);
+      if (ending === "stop") {
+        await commands.closeSession(id, "stop");
         set((state) => withoutSessions(state, [id]));
         await get().refreshSessions();
         return;
@@ -960,14 +962,14 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
         activeSessionId: state.activeSessionId && removedIds.includes(state.activeSessionId) ? null : state.activeSessionId,
       }));
       try {
-        await commands.closeSession(id, true);
+        await commands.closeSession(id, ending);
       } catch (error) {
         set((state) => ({
           removingIds: state.removingIds.filter((candidate) => !removedIds.includes(candidate)),
           ...(previousActiveId && removedIds.includes(previousActiveId) && !state.activeSessionId ? { activeSessionId: previousActiveId } : {}),
         }));
         await get().refreshSessions();
-        updateChat(id, (chat) => ({ ...chat, error: `Deleting the session failed: ${String(error)}` }));
+        updateChat(id, (chat) => ({ ...chat, error: `${ending === "forget" ? "Removing" : "Deleting"} the session failed: ${String(error)}` }));
         return;
       }
       set((state) => ({ removingIds: state.removingIds.filter((candidate) => !removedIds.includes(candidate)) }));

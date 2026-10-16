@@ -6,9 +6,9 @@ import type { PromptDraft, QueuedPrompt } from "../state/store";
 import { PillSelect } from "./PillSelect";
 import { appendPromptTexts, QueuedPrompts, useReturnedPrompts } from "./QueuedPrompts";
 import { ScreenshotTrigger, screenshotUrl } from "./ScreenshotPicker";
-import { CLEAR_BUTTON, SEND_BUTTON } from "../ui/buttons";
+import { CLEAR_BUTTON, DANGER_CLEAR_BUTTON, SEND_BUTTON } from "../ui/buttons";
 import type { DropdownOption } from "../ui/floatingMenu";
-import { CloseIcon, EraserIcon, GitHubIcon, SendIcon } from "../ui/icons";
+import { CloseIcon, EraserIcon, GitHubIcon, SendIcon, TrashIcon } from "../ui/icons";
 import { ResizeGrips } from "../ui/ResizeGrips";
 import { rowsHeight, useAutoGrow } from "../ui/useAutoGrow";
 import { useDismiss } from "../ui/useDismiss";
@@ -54,6 +54,7 @@ export function PromptInput({
   onSend,
   onSendNow = onSend,
   onClear,
+  onDelete,
   onCycleMode,
   onModeChange,
   onConfigChange,
@@ -83,6 +84,8 @@ export function PromptInput({
   onSend: (text: string, images: Screenshot[]) => void;
   /** Clears the conversation like typing `/clear`; the clear button is only shown when this is given. */
   onClear?: () => void;
+  /** Deletes the remote session with its VM, after confirmation; the red trash button beside the send button. */
+  onDelete?: () => void;
   onCycleMode: () => void;
   onModeChange: (modeId: string) => void;
   onConfigChange: (configId: string, value: string) => void;
@@ -382,6 +385,11 @@ export function PromptInput({
               </button>
             ) : null}
             <ScreenshotTrigger onPick={addAttachments} className="mr-3" />
+            {onDelete ? (
+              <button type="button" onClick={onDelete} title="Delete the session and its VM" aria-label="Delete the session and its VM" className={`${DANGER_CLEAR_BUTTON} mr-3`}>
+                <TrashIcon className="size-4" />
+              </button>
+            ) : null}
             {onClear ? (
               <button
                 type="button"

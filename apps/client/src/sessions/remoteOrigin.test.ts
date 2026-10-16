@@ -5,8 +5,10 @@ import {
   adoptedDeleteQuestion,
   isAdopted,
   missingCheckoutBlocker,
+  remoteDeleteQuestion,
   remoteOriginLabel,
   remoteOriginTitle,
+  removeFromSidebarQuestion,
   repositoryLabel,
 } from "./remoteOrigin";
 
@@ -72,5 +74,21 @@ describe("adopted session questions", () => {
     expect(adoptedBringBackQuestion(adopted)).toMatch(/new worktree of app-framework\? Its VM vm-hunt-s-ab12cd34 is deleted afterwards\. Other people/);
     const synced = session({ origin: "desktop" }, { hasLocalWorktree: true });
     expect(adoptedBringBackQuestion(synced)).toMatch(/back into its local worktree in app-framework\? Its VM/);
+  });
+});
+
+describe("remote session questions", () => {
+  it("warn about other people for an adopted session and about unsynced work for an own handoff", () => {
+    expect(remoteDeleteQuestion(session({ origin: "swf", issue: 123 }))).toBe(adoptedDeleteQuestion(session({ origin: "swf", issue: 123 })));
+    expect(remoteDeleteQuestion(session({ origin: "handoff" }))).toBe(
+      'Delete session "Fix login", its local worktree and its VM vm-hunt-s-ab12cd34? Work on the VM that was not synced here is lost.',
+    );
+  });
+
+  it("say that removing from the sidebar keeps the VM and names the local worktree only when there is one", () => {
+    expect(removeFromSidebarQuestion(session({ origin: "desktop" }))).toBe(
+      'Remove session "Fix login" from the sidebar? Its VM vm-hunt-s-ab12cd34 keeps running; the list of remote sessions brings it back.',
+    );
+    expect(removeFromSidebarQuestion(session({ origin: "handoff" }, { hasLocalWorktree: true }))).toMatch(/keeps running and its local worktree is deleted; the list/);
   });
 });

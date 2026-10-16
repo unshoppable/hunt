@@ -289,7 +289,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   function deleteSubSession() {
     if (!subSessionId) return;
     setIsConfirmingDelete(false);
-    void closeSession(subSessionId, true);
+    void closeSession(subSessionId, "delete");
     onClose();
   }
 

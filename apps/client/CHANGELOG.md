@@ -1,3 +1,13 @@
+## 0.34.0 (2026-10-16)
+
+### 🚀 Features
+
+- **client:** connect the stopped sub chats of a remote session behind the session once it connected to its VM ([7af525e](https://github.com/unshoppable/hunt/commit/7af525e))
+
+### 🔥 Performance
+
+- **client:** connect to a running session VM directly instead of through the gateway's start, which costs seconds for its boot wait and release check ([5cb8e2b](https://github.com/unshoppable/hunt/commit/5cb8e2b))
+
 ## 0.33.0 (2026-10-16)
 
 ### 🚀 Features

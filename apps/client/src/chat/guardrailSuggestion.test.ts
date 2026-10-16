@@ -36,6 +36,7 @@ describe("buildGuardrailRequest", () => {
 describe("buildTranscript", () => {
   it("keeps user and agent messages without markers", () => {
     expect(buildTranscript([user("q"), { kind: "thought", id: "t", text: "hm" }, agent("a\n<!-- hunt:guardrail rule: x -->")])).toBe("### User\nq\n\n### Agent\na");
+    expect(buildTranscript([agent("Which one?\n<!-- hunt:question -->\n")])).toBe("### Agent\nWhich one?");
   });
 });
 

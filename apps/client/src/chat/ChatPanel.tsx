@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useIdeStore } from "../ide/ideStore";
-import { useHuntStore } from "../state/store";
+import { hasPendingQuestion, useHuntStore } from "../state/store";
 import { findSelectOption, listChoiceOptions, listModes } from "./configOptions";
 import { MessageList } from "./MessageList";
 import { PermissionPrompt } from "./PermissionPrompt";
@@ -20,6 +20,7 @@ import { SubChatPopover, useSubChatPopover } from "./SubChatPopover";
 import { SaveGuardrailButton } from "./SaveGuardrailButton";
 import { ContextMeter } from "./ContextMeter";
 import { HEADER_BAR } from "../ui/bars";
+import { AGENT_CHIP, Chip } from "../ui/Chip";
 import { PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { ShieldIcon } from "../ui/icons";
 import { OpenInWebstormButton } from "./OpenInWebstormButton";
@@ -79,6 +80,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const hasSession = Boolean(session);
   const isBusy = chat?.isBusy ?? false;
   const guardrailSuggestion = isBusy ? null : findGuardrailSuggestion(chat?.items ?? []);
+  const hasQuestion = !!chat && !isCreating && hasPendingQuestion(chat);
   const hasPermission = Boolean(chat?.permission);
   const moveText = chat ? moveStatus(chat) : null;
   const modeId = chat?.modeId ?? "default";
@@ -158,6 +160,11 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         <div data-tauri-drag-region="" className="min-w-0 flex-1">
           <div data-tauri-drag-region="" className="truncate text-sm font-semibold">{session.title}</div>
         </div>
+        {hasQuestion ? (
+          <Chip className={AGENT_CHIP.question} title="The agent waits for your answer">
+            Question
+          </Chip>
+        ) : null}
         {remote ? null : <OpenInWebstormButton sessionId={sessionId} disabled={isCreating} />}
         <RemoteMenu sessionId={sessionId} />
         {remote ? null : (
@@ -187,6 +194,9 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
               permission={chat.permission}
               onAnswer={(optionId) => void answerPermission(sessionId, chat.permission!.requestId, optionId)}
             />
+          ) : null}
+          {hasQuestion ? (
+            <div className="mt-4 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-amber-200 break-words">The agent waits for your answer.</div>
           ) : null}
           {chat?.error ? <div className="mt-4 rounded-lg border border-red-400/40 bg-red-400/10 px-3 py-2 text-red-300 break-words">{chat.error}</div> : null}
           {session.remote && chat?.fileSync.error ? (

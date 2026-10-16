@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { commands } from "../ipc/commands";
 import type { CheckSummary, PullRequest, PullRequestLabel, ViewerReview } from "../ipc/types";
 import { formatRelativeTime } from "../chat/ScreenshotPicker";
+import { Chip } from "../ui/Chip";
 import { CheckIcon, CloseIcon, CommentIcon, ExternalIcon } from "../ui/icons";
 import { errorText, useLoad } from "../ui/useLoad";
 import { ListPane } from "./ListPane";
@@ -166,15 +167,6 @@ function ChecksBadge({ checks }: { checks: CheckSummary }) {
         <CheckIcon className="size-3.5 text-emerald-400" />
       )}
       {checks.passed}/{total}
-    </span>
-  );
-}
-
-/** A small bordered label at the end of a row's title line; the lists of pull requests and session VMs share it. */
-export function Chip({ className, title, children }: { className: string; title?: string; children: ReactNode }) {
-  return (
-    <span className={`flex shrink-0 items-center gap-1 rounded-md border px-1.5 text-[11px] whitespace-nowrap ${className}`} title={title}>
-      {children}
     </span>
   );
 }

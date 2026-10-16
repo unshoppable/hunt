@@ -950,7 +950,7 @@ const REMOTE_GIT_LOCAL_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_
 /// part that fits whether the agent has the user's GitHub token, the section on the repository's services that
 /// `hunt-ctl session-config` writes (`services_prompt`, skipped when empty) and the repository's hunt.agent.md under
 /// a heading of its own. The gateway's poller (`apps/gateway/src/swfPlan.ts`) composes the prompt of its sessions the
-/// same way, with an empty `base`.
+/// same way, with an empty `base` and the shared question part and its swf workflow before the services.
 fn remote_system_prompt(base: &str, has_github_token: bool, services_prompt: &str, agent_md: Option<&str>) -> String {
     let git_prompt = if has_github_token { REMOTE_GIT_PUSH_PROMPT } else { REMOTE_GIT_LOCAL_PROMPT };
     let mut prompt = format!("{base}\n\n{REMOTE_PROMPT}\n{git_prompt}");

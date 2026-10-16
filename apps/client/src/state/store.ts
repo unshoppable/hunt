@@ -23,6 +23,7 @@ import type {
   ToolCallView,
 } from "../ipc/types";
 import { imageDataUrl, imagePlaceholder } from "../chat/imageData";
+import { hasQuestionMarker } from "../chat/questionMarker";
 import { remoteOf } from "../chat/remoteSession";
 import { repoName } from "../ui/path";
 import { titleFromPrompt } from "../sessions/sessionLabels";
@@ -338,13 +339,14 @@ export function endsWithQuestion(text: string): boolean {
 
 /**
  * Whether the agent of `chat` waits for the user's answer: its last turn ended (nothing running, queued or asked for
- * permission) with a message whose last paragraph is a question. Derived from the items, so it holds for a replayed
- * remote session too and ends by itself once the user's answer follows.
+ * permission) with a message the agent marked as a question (`<!-- hunt:question -->`) or whose last paragraph ends
+ * with a question mark. Derived from the items, so it holds for a replayed remote session too and ends by itself once
+ * the user's answer follows.
  */
 export function hasPendingQuestion(chat: SessionChat): boolean {
   if (chat.isBusy || chat.queue.length > 0 || chat.permission) return false;
   const last = chat.items[chat.items.length - 1];
-  return last?.kind === "agent" && endsWithQuestion(last.text);
+  return last?.kind === "agent" && (hasQuestionMarker(last.text) || endsWithQuestion(last.text));
 }
 
 /** The turn state the relay of a remote session reports in `_meta.hunt.turn` of a `session_info_update`, if any. */

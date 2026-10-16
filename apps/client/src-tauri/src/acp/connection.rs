@@ -427,9 +427,13 @@ async fn new_session(
 /// Asks the agent to offer recording an answer the user accepted as an ADR, skill, rule, agent or instruction.
 const GUARDRAIL_OFFER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/guardrail-offer.system-prompt.md"));
 
+/// Asks the agent to end a reply that waits for the user's answer with the `<!-- hunt:question -->` marker; shared
+/// with the gateway's poller, so a remote session marks its questions the same way.
+const QUESTION_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/prompts/question.system-prompt.md"));
+
 /// Everything Hunt appends to the agent's system prompt: the user's response-style prompt from the settings (if
-/// not cleared), the guardrail offer, the diagram instructions in the user's AI language and the optional selection
-/// context.
+/// not cleared), the guardrail offer, the question marker, the diagram instructions in the user's AI language and
+/// the optional selection context, each section separated from the next by a blank line.
 pub fn system_prompt_append(app: &AppHandle, context_prompt: Option<String>) -> String {
     let style = crate::preferences::system_prompt(app);
     let diagram = crate::graph::system_prompt(&crate::preferences::ai_language(app));
@@ -439,6 +443,8 @@ pub fn system_prompt_append(app: &AppHandle, context_prompt: Option<String>) -> 
         append.push_str("\n\n");
     }
     append.push_str(GUARDRAIL_OFFER_PROMPT);
+    append.push('\n');
+    append.push_str(QUESTION_PROMPT);
     append.push_str(&diagram);
     append.push_str(context_prompt.as_deref().unwrap_or_default());
     append

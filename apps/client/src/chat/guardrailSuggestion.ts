@@ -1,5 +1,6 @@
 import type { ChatItem } from "../ipc/types";
 import type { GuardrailKind } from "../state/settings";
+import { QUESTION_MARKER } from "./questionMarker";
 
 const KINDS: GuardrailKind[] = ["instruction", "rule", "skill", "agent", "adr"];
 
@@ -38,11 +39,11 @@ export function buildGuardrailRequest(suggestion: GuardrailSuggestion | null, ki
   return suggestion ? `${REQUEST_LEAD}\n${kindLabel}: ${suggestion.summary}` : `${REQUEST_LEAD}\n`;
 }
 
-/** The user and agent messages of a chat as Markdown, newest last, cut to the last `TRANSCRIPT_LIMIT` characters. */
+/** The user and agent messages of a chat as Markdown without Hunt's markers, newest last, cut to the last `TRANSCRIPT_LIMIT` characters. */
 export function buildTranscript(items: ChatItem[]): string {
   const messages = items.flatMap((item) => {
     if (item.kind === "user") return [`### User\n${item.text}`];
-    if (item.kind === "agent") return [`### Agent\n${item.text.replace(MARKER, "").trimEnd()}`];
+    if (item.kind === "agent") return [`### Agent\n${item.text.replace(MARKER, "").replace(QUESTION_MARKER, "").trimEnd()}`];
     return [];
   });
   const transcript = messages.join("\n\n");

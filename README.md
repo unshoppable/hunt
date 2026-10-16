@@ -173,12 +173,16 @@ it, adopting it first when this Mac does not know it (`apps/client/src/sessions/
 
 The mark of a session in the sidebar (`apps/client/src/sessions/SessionMark.tsx`) shows what its agent is up to: an arc
 runs around it while a turn runs; it turns amber with a `?` badge when the agent ended its turn with a question
-(`hasPendingQuestion` in `src/state/store.ts`: the chat is idle and its last item is an agent message whose last
-paragraph ends with a question mark, so the state ends by itself once the user's answer follows and holds for a
-remote session's replayed conversation too); it turns green when a turn finished while another session was active
-and the user has not opened the session since. A question shows for the active session as well. A remote session
-whose conversation was never loaded takes the agent state the gateway recorded for its VM (`remote.agent`, see
-"Remote sessions").
+(`hasPendingQuestion` in `src/state/store.ts`: the chat is idle and its last item is an agent message that asks one,
+so the state ends by itself once the user's answer follows and holds for a remote session's replayed conversation
+too); it turns green when a turn finished while another session was active and the user has not opened the session
+since. The agent marks a question explicitly by ending its reply with `<!-- hunt:question -->` (`hasQuestionMarker`
+in `src/chat/questionMarker.ts`); `libs/domain/prompts/question.system-prompt.md` tells it so and is part of every
+session's system prompt, local and remote. A last paragraph ending with a question mark remains the fallback
+(`endsWithQuestion`). The marker is hidden in the chat like the guardrail marker and dropped from the transcript the
+guardrail agent gets. The chat pane shows the state as well: a "Question" chip in its header and a note under the
+messages (`ChatPanel.tsx`). A remote session whose conversation was never loaded takes the agent state the gateway
+recorded for its VM (`remote.agent`, see "Remote sessions").
 
 A sub session is a fresh agent session in the worktree of an existing session. "sub session" on a session in the
 sidebar starts one with a title; selecting text on the right side of a diff and choosing "Ask Claude about

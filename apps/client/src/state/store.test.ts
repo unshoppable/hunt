@@ -341,6 +341,13 @@ describe("pending question", () => {
     expect(hasPendingQuestion({ ...chat, items: [agent("Done, pushed.")] })).toBe(false);
     expect(hasPendingQuestion({ ...chat, items: [agent("Shall I push?"), { kind: "thought", id: "t1", text: "…" }] })).toBe(false);
   });
+
+  it("is pending when the agent ended its reply with the question marker, question mark or not", () => {
+    const chat = { ...createEmptyChat(), items: [agent("Pick A or B.\n\n<!-- hunt:question -->\n")] };
+    expect(hasPendingQuestion(chat)).toBe(true);
+    expect(hasPendingQuestion({ ...chat, isBusy: true })).toBe(false);
+    expect(hasPendingQuestion({ ...chat, items: [agent("<!-- hunt:question -->\nI pushed the branch.")] })).toBe(false);
+  });
 });
 
 describe("unseen activity", () => {

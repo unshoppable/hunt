@@ -4,18 +4,12 @@ import { commands } from "../ipc/commands";
 import type { SessionVm } from "../ipc/types";
 import { useHuntStore } from "../state/store";
 import { ICON_BUTTON_SM } from "../ui/buttons";
+import { AGENT_CHIP, Chip } from "../ui/Chip";
 import { CloudIcon, CloudSyncIcon, ExternalIcon, Spinner } from "../ui/icons";
 import { errorText, useLoad } from "../ui/useLoad";
 import { ListPane } from "./ListPane";
-import { Chip, Separator } from "./PullRequestList";
+import { Separator } from "./PullRequestList";
 import { filterSessionVms, sessionVmAgentLabel, sessionVmMeta, sessionVmOriginLabel, sessionVmStatusLabel, sessionVmUrl } from "./sessionVms";
-
-/** The colours of the agent chip: amber for a question, green once the pull request is open, red for a failure. */
-const AGENT_CHIP = {
-  question: "border-amber-400/40 bg-amber-400/10 text-amber-300",
-  done: "border-emerald-400/40 bg-emerald-400/10 text-emerald-300",
-  failed: "border-red-400/40 bg-red-400/10 text-red-300",
-};
 
 /**
  * The session VMs the gateway lists, filling the chat pane in place of the start view: the running ones, or every one

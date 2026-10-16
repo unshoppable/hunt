@@ -1,3 +1,13 @@
+## 0.17.0 (2026-10-16)
+
+### 🚀 Features
+
+- **gateway:** follow swf sessions until the pull request and record the agent's state in the VM ([62c6815](https://github.com/unshoppable/hunt/commit/62c6815))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.13.2
+
 ## 0.16.0 (2026-10-15)
 
 ### 🚀 Features

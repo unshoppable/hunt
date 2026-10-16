@@ -1,3 +1,9 @@
+## 0.25.0 (2026-10-16)
+
+### 🚀 Features
+
+- **client:** mark sessions whose agent waits for an answer in the sidebar and the remote list ([2b5ed60](https://github.com/unshoppable/hunt/commit/2b5ed60))
+
 ## 0.24.0 (2026-10-16)
 
 ### 🚀 Features

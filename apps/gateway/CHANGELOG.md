@@ -1,3 +1,9 @@
+## 0.22.0 (2026-10-17)
+
+### 🚀 Features
+
+- **gateway:** unpack the private files of a swf repository from the secret HUNT_SWF_FILES_<owner>_<repo> into the session's worktree ([31e9105](https://github.com/unshoppable/hunt/commit/31e9105))
+
 ## 0.21.0 (2026-10-17)
 
 ### 🧱 Updated Dependencies

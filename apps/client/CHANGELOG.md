@@ -1,3 +1,9 @@
+## 0.38.0 (2026-10-17)
+
+### 🚀 Features
+
+- declare the ignored files a service needs per service as worktreeInclude in hunt.json ([d576906](https://github.com/unshoppable/hunt/commit/d576906))
+
 ## 0.37.0 (2026-10-17)
 
 ### 🚀 Features

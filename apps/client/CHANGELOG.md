@@ -1,3 +1,9 @@
+## 0.35.0 (2026-10-17)
+
+### 🚀 Features
+
+- send the local tokens to a poller session's relay too, which takes them only where its VM stores none (hunt-ctl start/clear --keep-stored, protocol 6) ([4c221c3](https://github.com/unshoppable/hunt/commit/4c221c3))
+
 ## 0.34.0 (2026-10-16)
 
 ### 🚀 Features

@@ -1,3 +1,9 @@
+## 0.21.0 (2026-10-17)
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.14.0
+
 ## 0.20.1 (2026-10-16)
 
 ### 🩹 Fixes

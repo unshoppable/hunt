@@ -1,3 +1,13 @@
+## 0.23.0 (2026-10-17)
+
+### 🚀 Features
+
+- act on GitHub as a GitHub App in poller sessions, with one-hour installation tokens the poller renews on running VMs (hunt-ctl github-token, gh wrapper, clone --git-name/--git-email) ([#36](https://github.com/unshoppable/hunt/issues/36))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.15.0
+
 ## 0.22.0 (2026-10-17)
 
 ### 🚀 Features

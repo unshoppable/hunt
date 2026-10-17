@@ -207,6 +207,12 @@ via the ACP `systemPrompt` meta.
 request's own branch), lists their changes against the session's diff base (`HEAD`, or the merge base of a reviewed
 pull request) and supports shelving and reverting them.
 
+A new worktree has none of the repository's ignored files either. The ones matching the patterns of *Settings → Remote
+VM* (default `**/.env.private`; `apps/client/src-tauri/src/private_files.rs`, which the main window feeds at its start
+and on every change) are copied from the repository's own checkout into every worktree Hunt creates, for a new session,
+an adopted remote session and a retrieved one, files inside ignored folders included and `node_modules` left out; a file
+the worktree has already stays.
+
 A new worktree has no `node_modules`, so `apps/client/src-tauri/src/session/dependencies.rs` prepares it in the
 background: when the repository has an installed `node_modules`, it is cloned with one APFS `clonefile` call
 (copy-on-write, seconds instead of minutes, no extra disk space); when the worktree's lockfile differs from the
@@ -364,7 +370,8 @@ that runs keeps running and starts on the new release with its next start.
 A handoff (`hand_off_session`) stops the local agent and pushes the branch plus a snapshot commit of the uncommitted
 work (`refs/hunt/<id>/handoff`) into the session's repository on its VM, `/home/agent/<repository name>`, so the handoff
 needs no access to GitHub. The Git LFS objects of the checkout, the ignored files matching the settings' patterns
-(default `**/.env.private`) and the Claude Code transcript follow, the transcript with its paths moved to the VM. The
+(default `**/.env.private`, listed as for a new worktree) and the Claude Code transcript follow, the transcript with its
+paths moved to the VM. The
 agent's `~/.claude` there (`/home/agent/.claude`) also gets the user's `CLAUDE.md`, `rules/`, `skills/`, `agents/`,
 `commands/` and `output-styles/`, and the memory of the repository (`projects/<slug of the main checkout>/memory/`);
 `settings.json` and plugins stay on the Mac. `libs/vm/hunt-ctl` checks the branch out there; `hunt-ctl

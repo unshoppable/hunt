@@ -73,13 +73,15 @@ export function useAgentPreferencesSync(): void {
 
 /**
  * Pushes the remote settings to the backend at start and on every change (null while the project is missing):
- * commands on stored remote sessions and the retry of failed VM deletions reach the gateway they name.
+ * commands on stored remote sessions and the retry of failed VM deletions reach the gateway they name. The patterns
+ * of the private files go along, so new worktrees get those files from the repository's checkout.
  */
 export function useRemoteSettingsSync(): void {
   const remote = useSettingsStore((state) => state.remote);
 
   useEffect(() => {
     commands.setRemoteSettings(configuredVmSettings(remote)).catch((reason) => console.error("failed to set the remote settings", reason));
+    commands.setFilePatterns(remote.filePatterns).catch((reason) => console.error("failed to set the file patterns", reason));
   }, [remote]);
 }
 

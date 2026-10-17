@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use glob::{MatchOptions, Pattern};
+use glob::Pattern;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -14,6 +14,7 @@ use super::ssh::{self, Ssh};
 use super::{hunt_ctl, hunt_ctl_with_input, release, tar_create, Progress, RemoteOrigin, RemoteStep, RemoteTarget, VmRef};
 use super::{memory, transcript};
 use crate::git;
+use crate::private_files::{compile_patterns, list_ignored};
 
 /// Where the agent's `~/.claude` lives on the VM; transcripts there name this path.
 pub const REMOTE_CLAUDE_DIR: &str = "/home/agent/.claude";
@@ -408,35 +409,10 @@ async fn upload_lfs_objects(worktree: &Path, ssh: &Ssh, id: &str, references: &[
     Ok(())
 }
 
-/// The glob patterns from the settings; absolute patterns and `..` segments are rejected.
-fn compile_patterns(patterns: &[String]) -> Result<Vec<Pattern>, String> {
-    patterns
-        .iter()
-        .map(|pattern| pattern.trim())
-        .filter(|pattern| !pattern.is_empty())
-        .map(|pattern| {
-            if pattern.starts_with('/') || pattern.split('/').any(|segment| segment == "..") {
-                return Err(format!("failed to use the file pattern {pattern:?}: it must stay inside the worktree"));
-            }
-            Pattern::new(pattern).map_err(|error| format!("failed to use the file pattern {pattern:?}: {error}"))
-        })
-        .collect()
-}
-
-/// Whether the worktree-relative `path` matches one of `patterns`; `*` stays within a folder, `**` crosses folders.
-fn matches_any(patterns: &[Pattern], path: &str) -> bool {
-    let options = MatchOptions { case_sensitive: true, require_literal_separator: true, require_literal_leading_dot: false };
-    patterns.iter().any(|pattern| pattern.matches_with(path, options))
-}
-
 /// Copies the ignored files of the worktree that match `patterns` (e.g. `.env.private`) and those in `hooks_path`
 /// (husky's generated `.husky/_`) to the same paths on the VM.
 async fn upload_ignored_files(worktree: &Path, ssh: &Ssh, id: &str, patterns: &[Pattern], hooks_path: Option<&str>) -> Result<(), String> {
-    let mut files: Vec<String> = Vec::new();
-    if !patterns.is_empty() {
-        let output = git::run_git(worktree, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]).await?;
-        files.extend(output.split('\0').filter(|path| !path.is_empty() && !path.ends_with('/')).filter(|path| matches_any(patterns, path)).map(str::to_string));
-    }
+    let mut files = list_ignored(worktree, patterns).await?;
     if let Some(hooks_path) = hooks_path {
         let output = git::run_git(worktree, &["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", hooks_path]).await?;
         files.extend(output.split('\0').filter(|path| !path.is_empty()).map(str::to_string));
@@ -651,18 +627,6 @@ mod tests {
         assert_eq!(github_https_url("https://github.com/team/repo/tree/main"), None);
         assert_eq!(github_https_url("https://github.com/team/.hidden"), None);
         assert_eq!(github_https_url("/Users/me/repo"), None);
-    }
-
-    #[test]
-    fn patterns_match_nested_files_and_reject_paths_outside_the_worktree() {
-        let patterns = compile_patterns(&["**/.env.private".to_string(), "config/*.local".to_string(), " ".to_string()]).unwrap();
-        assert!(matches_any(&patterns, ".env.private"));
-        assert!(matches_any(&patterns, "apps/med/.env.private"));
-        assert!(matches_any(&patterns, "config/app.local"));
-        assert!(!matches_any(&patterns, "config/nested/app.local"));
-        assert!(!matches_any(&patterns, "apps/med/.env"));
-        assert!(compile_patterns(&["../secrets".to_string()]).is_err());
-        assert!(compile_patterns(&["/etc/passwd".to_string()]).is_err());
     }
 
     #[test]

@@ -26,6 +26,7 @@ use crate::acp::{
 use crate::git::{self, ChangedFile, FileDiff, Shelf};
 use crate::github::{self, GithubViewer, PullRequest, PullRequestDetails, PullRequestRef, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread};
 use crate::github_token;
+use crate::private_files;
 use crate::graph::{self, WatcherRegistry};
 use crate::ide;
 use crate::lsp::{self, LspRegistry};
@@ -301,6 +302,7 @@ pub async fn create_session(
         } else {
             git::worktree_add(&repo_path, &branch, &worktree_path, &base_commit).await?;
         }
+        private_files::copy_into_worktree(&repo_path, &worktree_path, &private_files::file_patterns()).await?;
         dependencies::ensure(&app, repo_path.clone(), worktree_path.clone(), Install::Updating);
     }
 
@@ -1218,6 +1220,7 @@ pub async fn retrieve_session(
         let memory_base = memory_base_path(&app, id)?;
         let sync_manifest = sync::manifest_path(&app, id)?;
         let sync_base_ref = target.start_ref(id);
+        let file_patterns = private_files::file_patterns();
         let gateway = gateway_vm("retrieve the session").await?;
         let request = remote::retrieve::RetrieveRequest {
             hunt_session_id: id,
@@ -1230,6 +1233,7 @@ pub async fn retrieve_session(
             sync_manifest: &sync_manifest,
             sync_base_ref: &sync_base_ref,
             adopted_into,
+            file_patterns: &file_patterns,
         };
         let retrieved = remote::retrieve::retrieve(request, &progress_reporter(&app, id)).await?;
         finish_retrieval(&app, &registry, &watchers, id, &target, retrieved).await

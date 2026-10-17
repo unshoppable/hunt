@@ -120,6 +120,11 @@ export const commands = {
    */
   setRemoteSettings: (settings: VmSettings | null) => invoke<void>("set_remote_settings", { settings }),
   /**
+   * The glob patterns of the private files (Settings → Remote VM), which a new worktree gets from the repository's
+   * checkout; the main window pushes them at its start and on every change.
+   */
+  setFilePatterns: (patterns: string[]) => invoke<void>("set_file_patterns", { patterns }),
+  /**
    * Opens a terminal with `cols` × `rows` cells showing `process` on the VM of the remote session `id`. The caller picks
    * `terminalId` and listens before it calls, since the output (`terminal:output`, then `terminal:exit`, both sent to
    * this window only) may arrive before the promise resolves. A VM that is off stays off.

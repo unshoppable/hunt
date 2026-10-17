@@ -25,6 +25,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::git;
+use crate::private_files;
 use crate::graph::{self, WatcherRegistry};
 use crate::remote::commit::follow_vm_head;
 use crate::remote::retrieve;
@@ -466,7 +467,7 @@ async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &
     }
     let id = record.id;
     let remote = target.worktree_path.display().to_string();
-    let checked_out = retrieve::check_out_adopted(ssh, id, &remote, &target.branch, &record.repo_path, &record.worktree_path).await?;
+    let checked_out = retrieve::check_out_adopted(ssh, id, &remote, &target.branch, &record.repo_path, &record.worktree_path, &private_files::file_patterns()).await?;
     let record = store::update_session(app, id, |stored| {
         stored.branch = checked_out.branch.clone();
         if let Some(remote) = stored.remote.as_mut() {

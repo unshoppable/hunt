@@ -10,6 +10,7 @@ mod lsp;
 mod menu;
 mod plan_usage;
 mod preferences;
+mod private_files;
 mod remote;
 mod screenshots;
 mod workspace;
@@ -71,6 +72,7 @@ pub fn run() {
             session::commands::adopt_session_vms,
             session::commands::list_session_vms,
             session::commands::set_remote_settings,
+            private_files::set_file_patterns,
             session::commands::open_terminal,
             session::commands::write_terminal,
             session::commands::resize_terminal,

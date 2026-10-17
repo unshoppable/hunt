@@ -1,6 +1,6 @@
-//! The private files of a repository: the ignored files matching the glob patterns its `hunt.json` names under
-//! `privateFiles` (such as `**/.env.private`, the files a service reads). A new worktree gets them from the
-//! repository's own checkout (`copy_into_worktree`), since git does not carry ignored files into a worktree, and a
+//! The private files of a repository: the ignored files its services need in a worktree, which `hunt.json` names per
+//! service under `worktreeInclude` as glob patterns (such as `apps/med/.env.private`). A new worktree gets them from
+//! the repository's own checkout (`copy_into_worktree`), since git does not carry ignored files into a worktree, and a
 //! handoff takes them to the VM (`list_ignored`).
 use std::path::Path;
 
@@ -9,9 +9,9 @@ use serde_json::Value;
 
 use crate::git;
 
-/// The glob patterns of the private files from the `privateFiles` list of the worktree's `hunt.json`; none without
-/// the file or the list. The VM validates the file fully (`apps/session/src/config.ts`); here only the list's shape
-/// matters.
+/// The glob patterns of the `worktreeInclude` lists of every service in the worktree's `hunt.json`, in the file's
+/// order without repeats; none without the file or the lists. The VM validates the file fully
+/// (`apps/session/src/config.ts`); here only the lists' shape matters.
 pub fn patterns_of(worktree: &Path) -> Result<Vec<String>, String> {
     let path = worktree.join("hunt.json");
     let text = match std::fs::read_to_string(&path) {
@@ -20,12 +20,23 @@ pub fn patterns_of(worktree: &Path) -> Result<Vec<String>, String> {
         Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
     };
     let json: Value = serde_json::from_str(&text).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    let invalid = || format!("failed to read {}: privateFiles must be a list of glob patterns", path.display());
-    match json.get("privateFiles") {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(Value::Array(items)) => items.iter().map(|item| item.as_str().map(str::to_string).ok_or_else(invalid)).collect(),
-        Some(_) => Err(invalid()),
+    let Some(Value::Object(services)) = json.get("services") else { return Ok(Vec::new()) };
+    let mut patterns: Vec<String> = Vec::new();
+    for (name, service) in services {
+        let invalid = || format!("failed to read {}: services.{name}.worktreeInclude must be a list of glob patterns", path.display());
+        let items = match service.get("worktreeInclude") {
+            None | Some(Value::Null) => continue,
+            Some(Value::Array(items)) => items,
+            Some(_) => return Err(invalid()),
+        };
+        for item in items {
+            let pattern = item.as_str().ok_or_else(invalid)?;
+            if !patterns.iter().any(|known| known == pattern) {
+                patterns.push(pattern.to_string());
+            }
+        }
     }
+    Ok(patterns)
 }
 
 /// The glob patterns from the settings; absolute patterns and `..` segments are rejected.
@@ -59,8 +70,8 @@ pub async fn list_ignored(worktree: &Path, patterns: &[Pattern]) -> Result<Vec<S
     Ok(output.split('\0').filter(|path| !path.is_empty() && matches_any(patterns, path)).map(str::to_string).collect())
 }
 
-/// Copies the private files of the repository's checkout `repo`, those matching the `privateFiles` patterns of the
-/// worktree's `hunt.json`, to the same paths in `worktree`; a file the worktree has already stays as it is, and symlinks
+/// Copies the private files of the repository's checkout `repo`, those matching the `worktreeInclude` patterns of the
+/// services in the worktree's `hunt.json`, to the same paths in `worktree`; a file the worktree has already stays as it is, and symlinks
 /// stay behind. Returns the copied paths.
 pub async fn copy_into_worktree(repo: &Path, worktree: &Path) -> Result<Vec<String>, String> {
     let patterns = compile_patterns(&patterns_of(worktree)?)?;
@@ -113,7 +124,7 @@ mod tests {
         std::os::unix::fs::symlink("apps/med/.env.private", repo.join(".env.private")).unwrap();
         std::fs::create_dir_all(worktree.join("apps/ppp-rl")).unwrap();
         std::fs::write(worktree.join("apps/ppp-rl/.env.private"), "MINE=1\n").unwrap();
-        std::fs::write(worktree.join("hunt.json"), r#"{ "version": 3, "privateFiles": ["**/.env.private"], "services": {} }"#).unwrap();
+        std::fs::write(worktree.join("hunt.json"), r#"{ "version": 3, "services": { "web": { "worktreeInclude": ["**/.env.private"] } } }"#).unwrap();
 
         let copied = copy_into_worktree(&repo, &worktree).await.unwrap();
 
@@ -128,17 +139,22 @@ mod tests {
     }
 
     #[test]
-    fn patterns_come_from_the_private_files_list_of_hunt_json() {
+    fn patterns_come_from_the_worktree_include_lists_of_the_services_in_hunt_json() {
         let dir = tempfile::tempdir().unwrap();
         let worktree = dir.path();
+        let write = |json: &str| std::fs::write(worktree.join("hunt.json"), json).unwrap();
         assert_eq!(patterns_of(worktree).unwrap(), Vec::<String>::new(), "no hunt.json");
-        std::fs::write(worktree.join("hunt.json"), r#"{ "version": 3, "services": {} }"#).unwrap();
-        assert_eq!(patterns_of(worktree).unwrap(), Vec::<String>::new(), "no list");
-        std::fs::write(worktree.join("hunt.json"), r#"{ "version": 3, "privateFiles": ["**/.env.private", "config/*.local"] }"#).unwrap();
-        assert_eq!(patterns_of(worktree).unwrap(), ["**/.env.private", "config/*.local"]);
-        std::fs::write(worktree.join("hunt.json"), r#"{ "version": 3, "privateFiles": "**/.env.private" }"#).unwrap();
-        assert!(patterns_of(worktree).unwrap_err().ends_with("hunt.json: privateFiles must be a list of glob patterns"));
-        std::fs::write(worktree.join("hunt.json"), "{").unwrap();
+        write(r#"{ "version": 3, "services": { "web": { "command": "npm start", "port": 3000 } } }"#);
+        assert_eq!(patterns_of(worktree).unwrap(), Vec::<String>::new(), "no lists");
+        write(r#"{ "version": 3, "services": {
+            "backend": { "worktreeInclude": ["apps/med/.env.private", "config/*.local"] },
+            "ui": { "worktreeInclude": [] },
+            "admin": { "worktreeInclude": ["apps/med/.env.private", "apps/admin/.env.private"] }
+        } }"#);
+        assert_eq!(patterns_of(worktree).unwrap(), ["apps/med/.env.private", "config/*.local", "apps/admin/.env.private"]);
+        write(r#"{ "version": 3, "services": { "web": { "worktreeInclude": "apps/web/.env.private" } } }"#);
+        assert!(patterns_of(worktree).unwrap_err().ends_with("hunt.json: services.web.worktreeInclude must be a list of glob patterns"));
+        write("{");
         assert!(patterns_of(worktree).is_err());
     }
 }

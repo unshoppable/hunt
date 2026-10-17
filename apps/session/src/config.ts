@@ -1,14 +1,14 @@
 /**
  * A repository's `hunt.json` in contract version 3: the services of the repository, which Hunt runs on a session's VM
- * as systemd units that the agent starts when its task needs them, and the private files every session needs.
+ * as systemd units that the agent starts when its task needs them, each with the ignored files it needs in a worktree.
  *
  *   {
  *     "version": 3,
- *     "privateFiles": ["**\/.env.private"],
  *     "services": {
  *       "backend": {
  *         "command": "npm run start:backend", "port": 3000, "tls": true, "guarded": false,
- *         "env": { "UI_BASE_URL": "${services.ui.publicUrl}" }
+ *         "env": { "UI_BASE_URL": "${services.ui.publicUrl}" },
+ *         "worktreeInclude": ["apps/backend/.env.private"]
  *       },
  *       "ui": { "command": "npm start", "cwd": "apps/ui", "port": 4200, "env": { "BACKEND_ORIGIN": "${services.backend.publicUrl}" } }
  *     }
@@ -17,11 +17,6 @@
  * - `version` must be 3; `services` holds 1 to 64 services in the order of the file, each named by
  *   `^[a-z][a-z0-9-]{0,31}$`. A repository without hunt.json has no services. Unknown fields are errors, contract 2's
  *   `preview` section among them.
- * - `privateFiles`: optional, up to 64 glob patterns relative to the worktree (`*` stays within a folder, `**` crosses
- *   folders), each one line of at most 255 characters that is not absolute and has no `..` segment. They name the
- *   ignored files git leaves out of a checkout, such as `.env.private`: Hunt copies the matching files of the
- *   repository's checkout into every worktree it creates and takes them along to the session VM. The VM only validates
- *   the field.
  * - `command`: one non-empty line of at most 4096 characters, which bash runs in the service's folder.
  * - `cwd`: that folder relative to the worktree, the worktree itself without it; at most 255 characters, segments of
  *   letters, digits, `.`, `_` and `-`, none `.` or `..`.
@@ -32,6 +27,11 @@
  * - `env`: variables of this service only. Keys match `^[A-Z_][A-Z0-9_]*$` and do not start with `CLAUDE_` or `HUNT_`;
  *   values are single lines. `${services.<name>.publicUrl}` in a value becomes the URL of that service, its open URL when
  *   it is not guarded; every other `${…}` but contract 2's `${HUNT_…}` stays as it is.
+ * - `worktreeInclude`: the ignored files this service needs, which git leaves out of a checkout, such as its
+ *   `.env.private`: up to 64 glob patterns relative to the worktree (`*` stays within a folder, `**` crosses folders),
+ *   each one line of at most 255 characters that is not absolute and has no `..` segment; none by default. Hunt copies
+ *   the matching files of the repository's checkout into every worktree it creates and takes them along to the session
+ *   VM; the VM only validates the list.
  *
  * `<short>` is the first 8 hex digits of the session ID. `configCli.ts` writes the session's environment, one
  * environment file per service and the configuration of the VM's preview proxy.
@@ -49,6 +49,8 @@ export interface ServiceConfig {
   guarded: boolean;
   /** The service's variables as hunt.json declares them, placeholders unresolved. */
   env: Record<string, string>;
+  /** The glob patterns of the ignored files the service needs in a worktree, relative to the worktree. */
+  worktreeInclude: string[];
 }
 
 /** The host names of a session's preview: `<short>-<port>.<domain>` and `<short>-<port>-open.<domain>`. */
@@ -139,11 +141,11 @@ const ACCESS_LOG = "/var/log/hunt-proxy/access.log";
 /** Caddy names the access logger of a server `http.log.access.<default_logger_name>`. */
 const ACCESS_LOGGER = "preview";
 
-const ROOT_FIELDS = ["version", "privateFiles", "services"];
-/** The rule a `privateFiles` entry must follow. */
-export const PRIVATE_FILE_RULE = "must be a glob pattern relative to the worktree: one line of at most 255 characters, not absolute, without a .. segment";
-const MAX_PRIVATE_FILES = 64;
-const SERVICE_FIELDS = ["command", "cwd", "port", "tls", "guarded", "env"];
+const ROOT_FIELDS = ["version", "services"];
+/** The rule a `worktreeInclude` entry must follow. */
+export const WORKTREE_INCLUDE_RULE = "must be a glob pattern relative to the worktree: one line of at most 255 characters, not absolute, without a .. segment";
+const MAX_WORKTREE_INCLUDE = 64;
+const SERVICE_FIELDS = ["command", "cwd", "port", "tls", "guarded", "env", "worktreeInclude"];
 const SERVICE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 const MAX_SERVICES = 64;
 const MAX_COMMAND_LENGTH = 4096;
@@ -431,7 +433,6 @@ function parseRoot(huntJson: unknown, problems: Problems): ServiceConfig[] {
   if (root.version !== 3) {
     problems.add("version", "must be 3");
   }
-  checkPrivateFiles(root.privateFiles, problems);
   const declared = record(root.services, "services", null, problems);
   const entries = Object.entries(declared ?? {});
   if (declared && (entries.length === 0 || entries.length > MAX_SERVICES)) {
@@ -454,13 +455,14 @@ function parseRoot(huntJson: unknown, problems: Problems): ServiceConfig[] {
   return services;
 }
 
-/** Reports the problems of the optional `privateFiles` list; see the module comment. */
-function checkPrivateFiles(value: unknown, problems: Problems): void {
-  if (value === undefined) return;
-  if (!Array.isArray(value) || value.length > MAX_PRIVATE_FILES) {
-    problems.add("privateFiles", `must be a list of at most ${MAX_PRIVATE_FILES} glob patterns`);
-    return;
+/** The optional `worktreeInclude` list of a service at `path`; see the module comment. Every problem is reported. */
+function worktreeInclude(value: unknown, path: string, problems: Problems): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_WORKTREE_INCLUDE) {
+    problems.add(path, `must be a list of at most ${MAX_WORKTREE_INCLUDE} glob patterns`);
+    return [];
   }
+  const patterns: string[] = [];
   value.forEach((pattern, index) => {
     const isUsable =
       typeof pattern === "string" &&
@@ -470,9 +472,12 @@ function checkPrivateFiles(value: unknown, problems: Problems): void {
       !pattern.startsWith("/") &&
       !pattern.split("/").includes("..");
     if (!isUsable) {
-      problems.add(`privateFiles[${index}]`, PRIVATE_FILE_RULE);
+      problems.add(`${path}[${index}]`, WORKTREE_INCLUDE_RULE);
+      return;
     }
+    patterns.push(pattern as string);
   });
+  return patterns;
 }
 
 /** The service `name`; undefined when its name, object or port is unusable. Every problem is reported. */
@@ -487,8 +492,9 @@ function parseService(name: string, value: unknown, names: ReadonlySet<string>, 
   const tls = flag(fields.tls, false, at(path, "tls"), problems);
   const guarded = flag(fields.guarded, true, at(path, "guarded"), problems);
   const env = environment(fields.env, at(path, "env"), names, problems);
+  const include = worktreeInclude(fields.worktreeInclude, at(path, "worktreeInclude"), problems);
   if (port === undefined) return undefined;
-  return { name, command, cwd, port, tls, guarded, env };
+  return { name, command, cwd, port, tls, guarded, env, worktreeInclude: include };
 }
 
 function commandLine(value: unknown, path: string, problems: Problems): string {

@@ -9,7 +9,7 @@ import {
   ConfigError,
   envFile,
   parseServices,
-  PRIVATE_FILE_RULE,
+  WORKTREE_INCLUDE_RULE,
   proxyConfig,
   publicUrl,
   servicesPrompt,
@@ -62,10 +62,11 @@ const COMPLETE_SERVICES: ServiceConfig[] = [
     tls: true,
     guarded: false,
     env: COMPLETE.services.backend.env,
+    worktreeInclude: [],
   },
-  { name: "ui", command: "npm start -- --port 4200", cwd: "apps/ui", port: 4200, tls: false, guarded: true, env: COMPLETE.services.ui.env },
-  { name: "docs", command: "npx serve docs", cwd: null, port: 4400, tls: true, guarded: true, env: {} },
-  { name: "admin", command: 'echo "$PATH" && npm run admin', cwd: null, port: 4800, tls: false, guarded: false, env: {} },
+  { name: "ui", command: "npm start -- --port 4200", cwd: "apps/ui", port: 4200, tls: false, guarded: true, env: COMPLETE.services.ui.env, worktreeInclude: [] },
+  { name: "docs", command: "npx serve docs", cwd: null, port: 4400, tls: true, guarded: true, env: {}, worktreeInclude: [] },
+  { name: "admin", command: 'echo "$PATH" && npm run admin', cwd: null, port: 4800, tls: false, guarded: false, env: {}, worktreeInclude: [] },
 ];
 
 function problemsOf(huntJson: unknown, host: SessionHost = HOST): string[] {
@@ -99,9 +100,9 @@ describe("parseServices", () => {
 
   it("gives a repository without hunt.json no services and a service without the optional fields no folder, no TLS and IAP", () => {
     expect(parseServices(undefined)).toEqual([]);
-    expect(parseServices({ ...web({}), privateFiles: ["**/.env.private", "config/*.local"] })).toHaveLength(1);
-    expect(parseServices({ ...web({}), privateFiles: [] })).toHaveLength(1);
-    expect(parseServices(web({}))).toEqual([{ name: "web", command: "npm start", cwd: null, port: 3000, tls: false, guarded: true, env: {} }]);
+    expect(parseServices(web({ worktreeInclude: ["apps/web/.env.private", "config/*.local"] }))[0].worktreeInclude).toEqual(["apps/web/.env.private", "config/*.local"]);
+    expect(parseServices(web({ worktreeInclude: [] }))[0].worktreeInclude).toEqual([]);
+    expect(parseServices(web({}))).toEqual([{ name: "web", command: "npm start", cwd: null, port: 3000, tls: false, guarded: true, env: {}, worktreeInclude: [] }]);
   });
 
   it("accepts the edges of every rule", () => {
@@ -110,8 +111,8 @@ describe("parseServices", () => {
 
     expect(parseServices(huntJson)).toHaveLength(64);
     expect(parseServices(huntJson).slice(62)).toEqual([
-      { name: "a".repeat(32), ...longest, tls: false, guarded: true, env: {} },
-      { name: "w-2", command: "npm start", cwd: ".config/a.b_c-D9", port: 1024, tls: false, guarded: true, env: {} },
+      { name: "a".repeat(32), ...longest, tls: false, guarded: true, env: {}, worktreeInclude: [] },
+      { name: "w-2", command: "npm start", cwd: ".config/a.b_c-D9", port: 1024, tls: false, guarded: true, env: {}, worktreeInclude: [] },
     ]);
   });
 
@@ -138,11 +139,11 @@ describe("parseServices", () => {
           `services.${"a".repeat(33)}: ${NAME_RULE}`,
         ],
       ],
-      [{ ...web({}), privateFiles: "**/.env.private" }, ["privateFiles: must be a list of at most 64 glob patterns"]],
-      [{ ...web({}), privateFiles: Array.from({ length: 65 }, () => ".env") }, ["privateFiles: must be a list of at most 64 glob patterns"]],
+      [web({ worktreeInclude: "**/.env.private" }), ["services.web.worktreeInclude: must be a list of at most 64 glob patterns"]],
+      [web({ worktreeInclude: Array.from({ length: 65 }, () => ".env") }), ["services.web.worktreeInclude: must be a list of at most 64 glob patterns"]],
       [
-        { ...web({}), privateFiles: ["**/.env.private", "", " ", "/etc/hosts", "../secret", "a/../b", "a\nb", "x".repeat(256), 1] },
-        [1, 2, 3, 4, 5, 6, 7, 8].map((index) => `privateFiles[${index}]: ${PRIVATE_FILE_RULE}`),
+        web({ worktreeInclude: ["**/.env.private", "", " ", "/etc/hosts", "../secret", "a/../b", "a\nb", "x".repeat(256), 1] }),
+        [1, 2, 3, 4, 5, 6, 7, 8].map((index) => `services.web.worktreeInclude[${index}]: ${WORKTREE_INCLUDE_RULE}`),
       ],
       [withServices({ web: "npm start" }), ["services.web: must be an object"]],
       [web({ run: "npm start", main: true }), ["services.web.run: unknown field", "services.web.main: unknown field"]],

@@ -139,7 +139,7 @@ export const DEFAULT_GRAPH_AGENT: GraphAgent = { model: "claude-opus-5-5", effor
  * `hunt-swf`. Its API provisions each handed-off session's own VM `vm-hunt-s-<short>`, starts and deletes it, and the
  * gateway routes the session's preview URLs to it. `machineType`, one of `SESSION_MACHINE_TYPES` or empty for the
  * template's, applies to the session VMs the gateway creates from now on. Handoffs are offered once the project is
- * set. The private files a handoff copies along are those the repository's hunt.json names (`privateFiles`).
+ * set. The private files a handoff copies along are those the repository's hunt.json names (`worktreeInclude`).
  */
 export type RemoteSettings = {
   project: string;
@@ -467,14 +467,14 @@ function renameCatppuccinIcons(stored: PersistedState): PersistedState {
 
 /**
  * The remote fields a store of version 13 or older keeps; those versions also held what the infrastructure repository
- * configures and, up to 13, the file patterns the repository's hunt.json names now.
+ * configures and, up to 13, the file patterns the repository's hunt.json names now (`worktreeInclude`).
  */
 const REMOTE_KEYS: string[] = ["project"] satisfies (keyof RemoteSettings)[];
 
 /**
  * Drops the remote settings Hunt no longer keeps: up to version 9 the VM all sessions shared, up to version 11 the
  * instance template and preview domain, up to version 12 the gateway's zone, instance, the machine type and the
- * poller's repositories and session limit, up to version 13 the file patterns (`privateFiles` in hunt.json now).
+ * poller's repositories and session limit, up to version 13 the file patterns (`worktreeInclude` in hunt.json now).
  */
 function withoutInfrastructureFields(stored: PersistedState): PersistedState {
   if (!stored.remote) return stored;

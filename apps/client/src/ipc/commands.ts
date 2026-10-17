@@ -96,11 +96,11 @@ export const commands = {
   clearSession: (id: string) => invoke<SessionView>("clear_session", { id }),
   /**
    * Moves the session to a VM of its own, which the gateway of `settings` provisions when the session has none yet; the
-   * ignored files matching `filePatterns` go along.
+   * private files the worktree's hunt.json names go along.
    */
   /** Brings up the VM a handoff of the session moves to while its agent still works locally; the session stays as it is. */
   prepareHandOff: (id: string, settings: VmSettings) => invoke<void>("prepare_hand_off", { id, settings }),
-  handOffSession: (id: string, settings: VmSettings, filePatterns: string[]) => invoke<SessionView>("hand_off_session", { id, settings, filePatterns }),
+  handOffSession: (id: string, settings: VmSettings) => invoke<SessionView>("hand_off_session", { id, settings }),
   retrieveSession: (id: string) => invoke<SessionView>("retrieve_session", { id }),
   /** Keeps the idle remote session for now; Hunt asks again whether to retrieve or delete it three days later. */
   snoozeRemoteCleanup: (id: string) => invoke<void>("snooze_remote_cleanup", { id }),
@@ -119,11 +119,6 @@ export const commands = {
    * change, and commands on stored remote sessions reach the gateway they name.
    */
   setRemoteSettings: (settings: VmSettings | null) => invoke<void>("set_remote_settings", { settings }),
-  /**
-   * The glob patterns of the private files (Settings → Remote VM), which a new worktree gets from the repository's
-   * checkout; the main window pushes them at its start and on every change.
-   */
-  setFilePatterns: (patterns: string[]) => invoke<void>("set_file_patterns", { patterns }),
   /**
    * Opens a terminal with `cols` × `rows` cells showing `process` on the VM of the remote session `id`. The caller picks
    * `terminalId` and listens before it calls, since the output (`terminal:output`, then `terminal:exit`, both sent to

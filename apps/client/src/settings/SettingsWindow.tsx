@@ -617,14 +617,6 @@ function RemoteSection() {
           </p>
         </div>
         <GithubTokenRow />
-        <div className="flex flex-col gap-1">
-          <div className="text-sm text-neutral-100">Ignored files to copy</div>
-          <TextArea ariaLabel="Ignored files to copy" value={remote.filePatterns.join("\n")} onChange={(text) => setRemote({ filePatterns: text.split("\n") })} />
-          <p className="text-[13px] leading-snug text-neutral-500">
-            One glob per line, relative to the worktree, such as **/.env.private. Git leaves ignored files out of the branch; these are copied to the VM as
-            they are. Changes the agent makes to them stay on the VM.
-          </p>
-        </div>
       </div>
     </section>
   );

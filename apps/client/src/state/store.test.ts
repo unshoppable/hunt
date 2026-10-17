@@ -1104,7 +1104,7 @@ describe("moving a session to and from the VM", () => {
     await useHuntStore.getState().handOffSession(SESSION);
 
     expect(calls()).toEqual(["hand_off_session", "list_sessions"]);
-    expect(vi.mocked(invoke)).toHaveBeenCalledWith("hand_off_session", { id: SESSION, settings, filePatterns: DEFAULT_REMOTE.filePatterns });
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("hand_off_session", { id: SESSION, settings });
     expect(useHuntStore.getState().chats[SESSION].move).toBeNull();
   });
 

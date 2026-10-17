@@ -1,30 +1,31 @@
-//! The private files of a repository: the ignored files matching the glob patterns of Settings → Remote VM (default
-//! `**/.env.private`), such as the `.env.private` a service reads. A new worktree gets them from the repository's own
-//! checkout (`copy_into_worktree`), since git does not carry ignored files into a worktree, and a handoff takes them to
-//! the VM (`list_ignored`). The main window stores the patterns here at its start and on every change
-//! (`set_file_patterns`).
+//! The private files of a repository: the ignored files matching the glob patterns its `hunt.json` names under
+//! `privateFiles` (such as `**/.env.private`, the files a service reads). A new worktree gets them from the
+//! repository's own checkout (`copy_into_worktree`), since git does not carry ignored files into a worktree, and a
+//! handoff takes them to the VM (`list_ignored`).
 use std::path::Path;
-use std::sync::Mutex;
 
 use glob::{MatchOptions, Pattern};
+use serde_json::Value;
 
 use crate::git;
 
-/// The patterns of the main window's settings; empty until it sent them.
-static FILE_PATTERNS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-/// Takes the glob patterns of the private files from the main window, at its start and on every change; invalid
-/// patterns are refused and leave the stored ones.
-#[tauri::command]
-pub fn set_file_patterns(patterns: Vec<String>) -> Result<(), String> {
-    compile_patterns(&patterns)?;
-    *FILE_PATTERNS.lock().unwrap() = patterns;
-    Ok(())
-}
-
-/// The stored glob patterns of the private files.
-pub fn file_patterns() -> Vec<String> {
-    FILE_PATTERNS.lock().unwrap().clone()
+/// The glob patterns of the private files from the `privateFiles` list of the worktree's `hunt.json`; none without
+/// the file or the list. The VM validates the file fully (`apps/session/src/config.ts`); here only the list's shape
+/// matters.
+pub fn patterns_of(worktree: &Path) -> Result<Vec<String>, String> {
+    let path = worktree.join("hunt.json");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
+    };
+    let json: Value = serde_json::from_str(&text).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let invalid = || format!("failed to read {}: privateFiles must be a list of glob patterns", path.display());
+    match json.get("privateFiles") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) => items.iter().map(|item| item.as_str().map(str::to_string).ok_or_else(invalid)).collect(),
+        Some(_) => Err(invalid()),
+    }
 }
 
 /// The glob patterns from the settings; absolute patterns and `..` segments are rejected.
@@ -58,10 +59,11 @@ pub async fn list_ignored(worktree: &Path, patterns: &[Pattern]) -> Result<Vec<S
     Ok(output.split('\0').filter(|path| !path.is_empty() && matches_any(patterns, path)).map(str::to_string).collect())
 }
 
-/// Copies the private files of the repository's checkout `repo` that match `patterns` to the same paths in `worktree`;
-/// a file the worktree has already stays as it is, and symlinks stay behind. Returns the copied paths.
-pub async fn copy_into_worktree(repo: &Path, worktree: &Path, patterns: &[String]) -> Result<Vec<String>, String> {
-    let patterns = compile_patterns(patterns)?;
+/// Copies the private files of the repository's checkout `repo`, those matching the `privateFiles` patterns of the
+/// worktree's `hunt.json`, to the same paths in `worktree`; a file the worktree has already stays as it is, and symlinks
+/// stay behind. Returns the copied paths.
+pub async fn copy_into_worktree(repo: &Path, worktree: &Path) -> Result<Vec<String>, String> {
+    let patterns = compile_patterns(&patterns_of(worktree)?)?;
     let mut copied = Vec::new();
     for path in list_ignored(repo, &patterns).await? {
         let (source, target) = (repo.join(&path), worktree.join(&path));
@@ -111,8 +113,9 @@ mod tests {
         std::os::unix::fs::symlink("apps/med/.env.private", repo.join(".env.private")).unwrap();
         std::fs::create_dir_all(worktree.join("apps/ppp-rl")).unwrap();
         std::fs::write(worktree.join("apps/ppp-rl/.env.private"), "MINE=1\n").unwrap();
+        std::fs::write(worktree.join("hunt.json"), r#"{ "version": 3, "privateFiles": ["**/.env.private"], "services": {} }"#).unwrap();
 
-        let copied = copy_into_worktree(&repo, &worktree, &["**/.env.private".to_string()]).await.unwrap();
+        let copied = copy_into_worktree(&repo, &worktree).await.unwrap();
 
         assert_eq!(copied, ["apps/med/.env.private", "apps/med/downloads/.env.private"]);
         let read = |path: &str| std::fs::read_to_string(worktree.join(path)).unwrap();
@@ -122,6 +125,20 @@ mod tests {
         assert!(!worktree.join("apps/med/.env").exists(), "a file no pattern matches stays behind");
         assert!(!worktree.join("node_modules").exists());
         assert!(worktree.join(".env.private").symlink_metadata().is_err(), "symlinks stay behind");
-        assert_eq!(copy_into_worktree(&repo, &worktree, &[]).await.unwrap(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn patterns_come_from_the_private_files_list_of_hunt_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path();
+        assert_eq!(patterns_of(worktree).unwrap(), Vec::<String>::new(), "no hunt.json");
+        std::fs::write(worktree.join("hunt.json"), r#"{ "version": 3, "services": {} }"#).unwrap();
+        assert_eq!(patterns_of(worktree).unwrap(), Vec::<String>::new(), "no list");
+        std::fs::write(worktree.join("hunt.json"), r#"{ "version": 3, "privateFiles": ["**/.env.private", "config/*.local"] }"#).unwrap();
+        assert_eq!(patterns_of(worktree).unwrap(), ["**/.env.private", "config/*.local"]);
+        std::fs::write(worktree.join("hunt.json"), r#"{ "version": 3, "privateFiles": "**/.env.private" }"#).unwrap();
+        assert!(patterns_of(worktree).unwrap_err().ends_with("hunt.json: privateFiles must be a list of glob patterns"));
+        std::fs::write(worktree.join("hunt.json"), "{").unwrap();
+        assert!(patterns_of(worktree).is_err());
     }
 }

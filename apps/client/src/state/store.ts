@@ -942,7 +942,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
         id,
         "handOff",
         () => commands.prepareHandOff(id, settings),
-        () => commands.handOffSession(id, settings, remote.filePatterns),
+        () => commands.handOffSession(id, settings),
       );
       void connectSubSessions(id);
     },

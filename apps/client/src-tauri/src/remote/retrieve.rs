@@ -37,8 +37,6 @@ pub struct RetrieveRequest<'a> {
     /// For a session this Mac adopted that has no local worktree yet: the local repository in which the retrieval
     /// creates the worktree `worktree`.
     pub adopted_into: Option<&'a Path>,
-    /// The glob patterns of the private files a new worktree gets from the local repository's checkout.
-    pub file_patterns: &'a [String],
 }
 
 /// The ACP session id the transcript continues under, as the relay left it, and for an adopted session the branch its
@@ -248,8 +246,8 @@ pub fn adopted_ref(id: Uuid) -> String {
 /// Creates the local worktree `worktree` of the adopted session `id` in the local repository `repo` while the session
 /// runs on its VM behind `ssh`: on the branch the VM's worktree `remote_worktree` has checked out (else `target_branch`
 /// or the session's own branch name, with a number added when the repository has that branch already), with the VM's
-/// commits and uncommitted work as a snapshot shows them, which `adopted_ref` keeps, and the private files matching
-/// `file_patterns` from the checkout. The agent keeps running; the sync brings what it changes afterwards.
+/// commits and uncommitted work as a snapshot shows them, which `adopted_ref` keeps, and the private files its
+/// hunt.json names from the checkout. The agent keeps running; the sync brings what it changes afterwards.
 pub async fn check_out_adopted(
     ssh: &Ssh,
     id: Uuid,
@@ -257,7 +255,6 @@ pub async fn check_out_adopted(
     target_branch: &str,
     repo: &Path,
     worktree: &Path,
-    file_patterns: &[String],
 ) -> Result<CheckedOut, String> {
     if worktree.exists() {
         return Err(format!("failed to create the local worktree of the session: {} exists already", worktree.display()));
@@ -270,7 +267,7 @@ pub async fn check_out_adopted(
     hunt_ctl(ssh, &["snapshot", &id_text]).await?;
     fetch(repo, ssh, remote_worktree, &retrieve_ref).await?;
     download_lfs_objects(repo, ssh, &id_text, &retrieve_ref).await?;
-    create_worktree_from_snapshot(repo, worktree, &branch, &retrieve_ref, file_patterns).await?;
+    create_worktree_from_snapshot(repo, worktree, &branch, &retrieve_ref).await?;
     let snapshot = git::rev_parse(repo, &retrieve_ref).await?;
     git::run_git(repo, &["update-ref", &adopted_ref(id), &snapshot]).await?;
     let head = git::rev_parse(worktree, "HEAD").await?;
@@ -327,7 +324,7 @@ async fn retrieve_adopted(request: &RetrieveRequest<'_>, repo: &Path, progress: 
     hunt_ctl(&ssh, &["snapshot", &id]).await?;
     fetch(repo, &ssh, &remote_worktree, &retrieve_ref).await?;
     download_lfs_objects(repo, &ssh, &id, &retrieve_ref).await?;
-    create_worktree_from_snapshot(repo, worktree, &branch, &retrieve_ref, request.file_patterns).await?;
+    create_worktree_from_snapshot(repo, worktree, &branch, &retrieve_ref).await?;
     match retrieve_transcript(request, &ssh, &remote_worktree).await {
         Ok(acp_session_id) => Ok(Retrieved { acp_session_id, branch: Some(branch) }),
         Err(error) => {
@@ -381,14 +378,14 @@ async fn local_branch_name(repo: &Path, candidates: &[Option<&str>]) -> Result<S
 }
 
 /// Creates the worktree `worktree` of `repo` on the new branch `branch` at the commit the agent left on the VM (the
-/// parent of the retrieval snapshot), with the snapshot's uncommitted work applied and the private files matching
-/// `file_patterns` copied from the checkout `repo`; removes it again on failure.
-async fn create_worktree_from_snapshot(repo: &Path, worktree: &Path, branch: &str, retrieve_ref: &str, file_patterns: &[String]) -> Result<(), String> {
+/// parent of the retrieval snapshot), with the snapshot's uncommitted work applied and the private files its hunt.json
+/// names copied from the checkout `repo`; removes it again on failure.
+async fn create_worktree_from_snapshot(repo: &Path, worktree: &Path, branch: &str, retrieve_ref: &str) -> Result<(), String> {
     git::worktree_add(repo, branch, worktree, &format!("{retrieve_ref}^")).await?;
     let applied = async {
         apply_tree_change(worktree, "HEAD", retrieve_ref).await?;
         finish_worktree(worktree, retrieve_ref).await?;
-        private_files::copy_into_worktree(repo, worktree, file_patterns).await.map(|_| ())
+        private_files::copy_into_worktree(repo, worktree).await.map(|_| ())
     }
     .await;
     if let Err(error) = applied {
@@ -943,7 +940,7 @@ mod tests {
         let branch = local_branch_name(&local, &[Some(" fix/general/123-fix "), Some("feat/general/ab12cd34")]).await.unwrap();
         assert_eq!(branch, "fix/general/123-fix");
         let worktree = local_dir.path().join("worktrees").join("x");
-        create_worktree_from_snapshot(&local, &worktree, &branch, "refs/hunt/x/retrieve", &[]).await.unwrap();
+        create_worktree_from_snapshot(&local, &worktree, &branch, "refs/hunt/x/retrieve").await.unwrap();
 
         assert_eq!(git(&worktree, &["rev-parse", "HEAD"]).await, remote_head);
         assert_eq!(git(&worktree, &["symbolic-ref", "--short", "HEAD"]).await, "fix/general/123-fix");

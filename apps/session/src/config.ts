@@ -1,9 +1,10 @@
 /**
  * A repository's `hunt.json` in contract version 3: the services of the repository, which Hunt runs on a session's VM
- * as systemd units that the agent starts when its task needs them.
+ * as systemd units that the agent starts when its task needs them, and the private files every session needs.
  *
  *   {
  *     "version": 3,
+ *     "privateFiles": ["**\/.env.private"],
  *     "services": {
  *       "backend": {
  *         "command": "npm run start:backend", "port": 3000, "tls": true, "guarded": false,
@@ -16,6 +17,11 @@
  * - `version` must be 3; `services` holds 1 to 64 services in the order of the file, each named by
  *   `^[a-z][a-z0-9-]{0,31}$`. A repository without hunt.json has no services. Unknown fields are errors, contract 2's
  *   `preview` section among them.
+ * - `privateFiles`: optional, up to 64 glob patterns relative to the worktree (`*` stays within a folder, `**` crosses
+ *   folders), each one line of at most 255 characters that is not absolute and has no `..` segment. They name the
+ *   ignored files git leaves out of a checkout, such as `.env.private`: Hunt copies the matching files of the
+ *   repository's checkout into every worktree it creates and takes them along to the session VM. The VM only validates
+ *   the field.
  * - `command`: one non-empty line of at most 4096 characters, which bash runs in the service's folder.
  * - `cwd`: that folder relative to the worktree, the worktree itself without it; at most 255 characters, segments of
  *   letters, digits, `.`, `_` and `-`, none `.` or `..`.
@@ -133,7 +139,10 @@ const ACCESS_LOG = "/var/log/hunt-proxy/access.log";
 /** Caddy names the access logger of a server `http.log.access.<default_logger_name>`. */
 const ACCESS_LOGGER = "preview";
 
-const ROOT_FIELDS = ["version", "services"];
+const ROOT_FIELDS = ["version", "privateFiles", "services"];
+/** The rule a `privateFiles` entry must follow. */
+export const PRIVATE_FILE_RULE = "must be a glob pattern relative to the worktree: one line of at most 255 characters, not absolute, without a .. segment";
+const MAX_PRIVATE_FILES = 64;
 const SERVICE_FIELDS = ["command", "cwd", "port", "tls", "guarded", "env"];
 const SERVICE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 const MAX_SERVICES = 64;
@@ -422,6 +431,7 @@ function parseRoot(huntJson: unknown, problems: Problems): ServiceConfig[] {
   if (root.version !== 3) {
     problems.add("version", "must be 3");
   }
+  checkPrivateFiles(root.privateFiles, problems);
   const declared = record(root.services, "services", null, problems);
   const entries = Object.entries(declared ?? {});
   if (declared && (entries.length === 0 || entries.length > MAX_SERVICES)) {
@@ -442,6 +452,27 @@ function parseRoot(huntJson: unknown, problems: Problems): ServiceConfig[] {
     services.push(service);
   }
   return services;
+}
+
+/** Reports the problems of the optional `privateFiles` list; see the module comment. */
+function checkPrivateFiles(value: unknown, problems: Problems): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value) || value.length > MAX_PRIVATE_FILES) {
+    problems.add("privateFiles", `must be a list of at most ${MAX_PRIVATE_FILES} glob patterns`);
+    return;
+  }
+  value.forEach((pattern, index) => {
+    const isUsable =
+      typeof pattern === "string" &&
+      pattern.trim() !== "" &&
+      !/[\r\n]/.test(pattern) &&
+      pattern.length <= 255 &&
+      !pattern.startsWith("/") &&
+      !pattern.split("/").includes("..");
+    if (!isUsable) {
+      problems.add(`privateFiles[${index}]`, PRIVATE_FILE_RULE);
+    }
+  });
 }
 
 /** The service `name`; undefined when its name, object or port is unusable. Every problem is reported. */

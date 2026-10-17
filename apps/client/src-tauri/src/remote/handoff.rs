@@ -14,7 +14,7 @@ use super::ssh::{self, Ssh};
 use super::{hunt_ctl, hunt_ctl_with_input, release, tar_create, Progress, RemoteOrigin, RemoteStep, RemoteTarget, VmRef};
 use super::{memory, transcript};
 use crate::git;
-use crate::private_files::{compile_patterns, list_ignored};
+use crate::private_files::{self, compile_patterns, list_ignored};
 
 /// Where the agent's `~/.claude` lives on the VM; transcripts there name this path.
 pub const REMOTE_CLAUDE_DIR: &str = "/home/agent/.claude";
@@ -39,8 +39,6 @@ pub struct HandoffRequest<'a> {
     pub claude_dir: &'a Path,
     /// Where Hunt keeps the base of the repository memory the handoff sends, for the retrieval's merge.
     pub memory_base: &'a Path,
-    /// Ignored files to copy, as glob patterns relative to the worktree root.
-    pub file_patterns: &'a [String],
     /// Builds what Hunt appends to Claude Code's system prompt from the section on the repository's services and its
     /// hunt.agent.md, as `hunt-ctl session-config` reads them on the VM.
     pub system_prompt: &'a (dyn Fn(&str, Option<&str>) -> String + Send + Sync),
@@ -120,7 +118,7 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     let id = request.hunt_session_id.to_string();
     let worktree = request.worktree;
     ensure_movable(worktree).await?;
-    let patterns = compile_patterns(request.file_patterns)?;
+    let patterns = compile_patterns(&private_files::patterns_of(worktree)?)?;
     let branch = movable_branch(worktree).await?;
     let head = git::rev_parse(worktree, "HEAD").await?;
     let snapshot = git::snapshot_commit(worktree, "Hunt handoff snapshot").await?;

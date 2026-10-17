@@ -302,7 +302,7 @@ pub async fn create_session(
         } else {
             git::worktree_add(&repo_path, &branch, &worktree_path, &base_commit).await?;
         }
-        private_files::copy_into_worktree(&repo_path, &worktree_path, &private_files::file_patterns()).await?;
+        private_files::copy_into_worktree(&repo_path, &worktree_path).await?;
         dependencies::ensure(&app, repo_path.clone(), worktree_path.clone(), Install::Updating);
     }
 
@@ -1041,7 +1041,7 @@ pub async fn prepare_hand_off(app: AppHandle, id: Uuid, settings: VmSettings) ->
 }
 
 /// Moves the session `id` to a VM of its own, which the gateway of `settings` provisions: its agent stops here, its
-/// branch, uncommitted work, transcript and the ignored files matching `file_patterns` go to the VM, and the chat
+/// branch, uncommitted work, transcript and the private files its hunt.json names go to the VM, and the chat
 /// continues with the agent there. Its sub chats move along: their agents stop here, their transcripts go to the VM,
 /// and they continue there once they are opened. On failure the session stays local, its agent starts again and the VM
 /// stays for the next attempt.
@@ -1053,7 +1053,6 @@ pub async fn hand_off_session(
     permissions: State<'_, PermissionRegistry>,
     id: Uuid,
     settings: VmSettings,
-    file_patterns: Vec<String>,
 ) -> Result<SessionView, String> {
     let record = local_session(&app, id)?;
     ensure_hand_off_allowed(&record)?;
@@ -1121,7 +1120,6 @@ pub async fn hand_off_session(
             ssh_dir: &ssh_dir,
             claude_dir: &claude_dir,
             memory_base: &memory_base,
-            file_patterns: &file_patterns,
             system_prompt: &system_prompt,
             config_values: &config_values,
             token_input: &token_input,
@@ -1220,7 +1218,6 @@ pub async fn retrieve_session(
         let memory_base = memory_base_path(&app, id)?;
         let sync_manifest = sync::manifest_path(&app, id)?;
         let sync_base_ref = target.start_ref(id);
-        let file_patterns = private_files::file_patterns();
         let gateway = gateway_vm("retrieve the session").await?;
         let request = remote::retrieve::RetrieveRequest {
             hunt_session_id: id,
@@ -1233,7 +1230,6 @@ pub async fn retrieve_session(
             sync_manifest: &sync_manifest,
             sync_base_ref: &sync_base_ref,
             adopted_into,
-            file_patterns: &file_patterns,
         };
         let retrieved = remote::retrieve::retrieve(request, &progress_reporter(&app, id)).await?;
         finish_retrieval(&app, &registry, &watchers, id, &target, retrieved).await

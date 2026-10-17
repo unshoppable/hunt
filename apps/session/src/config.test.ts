@@ -9,6 +9,7 @@ import {
   ConfigError,
   envFile,
   parseServices,
+  PRIVATE_FILE_RULE,
   proxyConfig,
   publicUrl,
   servicesPrompt,
@@ -98,6 +99,8 @@ describe("parseServices", () => {
 
   it("gives a repository without hunt.json no services and a service without the optional fields no folder, no TLS and IAP", () => {
     expect(parseServices(undefined)).toEqual([]);
+    expect(parseServices({ ...web({}), privateFiles: ["**/.env.private", "config/*.local"] })).toHaveLength(1);
+    expect(parseServices({ ...web({}), privateFiles: [] })).toHaveLength(1);
     expect(parseServices(web({}))).toEqual([{ name: "web", command: "npm start", cwd: null, port: 3000, tls: false, guarded: true, env: {} }]);
   });
 
@@ -134,6 +137,12 @@ describe("parseServices", () => {
           `services["-web"]: ${NAME_RULE}`,
           `services.${"a".repeat(33)}: ${NAME_RULE}`,
         ],
+      ],
+      [{ ...web({}), privateFiles: "**/.env.private" }, ["privateFiles: must be a list of at most 64 glob patterns"]],
+      [{ ...web({}), privateFiles: Array.from({ length: 65 }, () => ".env") }, ["privateFiles: must be a list of at most 64 glob patterns"]],
+      [
+        { ...web({}), privateFiles: ["**/.env.private", "", " ", "/etc/hosts", "../secret", "a/../b", "a\nb", "x".repeat(256), 1] },
+        [1, 2, 3, 4, 5, 6, 7, 8].map((index) => `privateFiles[${index}]: ${PRIVATE_FILE_RULE}`),
       ],
       [withServices({ web: "npm start" }), ["services.web: must be an object"]],
       [web({ run: "npm start", main: true }), ["services.web.run: unknown field", "services.web.main: unknown field"]],

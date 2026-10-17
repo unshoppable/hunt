@@ -76,7 +76,8 @@ describe("migrateSettings", () => {
     ]);
   });
 
-  it("keeps only the project and file patterns of the remote settings up to version 12", () => {
+  it("keeps only the project of the remote settings up to version 13", () => {
+    expect(migrateSettings({ remote: { project: "p", filePatterns: ["**/.env.private"] }, aiLanguage: "English" }, 13)).toEqual({ remote: { project: "p" }, aiLanguage: "English" });
     const version12 = {
       project: "p",
       zone: "europe-west1-c",
@@ -86,7 +87,7 @@ describe("migrateSettings", () => {
       swfRepos: ["acme/app"],
       swfMaxSessions: 3,
     };
-    expect(migrateSettings({ remote: version12, aiLanguage: "English" }, 12)).toEqual({ remote: { project: "p", filePatterns: ["**/.env.private"] }, aiLanguage: "English" });
+    expect(migrateSettings({ remote: version12, aiLanguage: "English" }, 12)).toEqual({ remote: { project: "p" }, aiLanguage: "English" });
     const version11 = { project: "p", zone: "z", gatewayInstance: "vm-hunt", sessionTemplate: "tpl-hunt-session", previewDomain: "hunt.example.com" };
     expect(migrateSettings({ remote: version11 }, 11).remote).toEqual({ project: "p" });
     expect(migrateSettings({ remote: { project: "p", zone: "z", instance: "vm-hunt" } }, 6).remote).toEqual({ project: "p" });
@@ -139,10 +140,9 @@ describe("mergeSettings", () => {
     expect(mergeSettings({ remote: { project: "p", machineType: "c4d-standard-16" } }, current).remote.machineType).toBe("c4d-standard-16");
   });
 
-  it("keeps the default file patterns when only the VM fields were stored", () => {
+  it("keeps the default machine type when only the VM fields were stored", () => {
     const merged = mergeSettings(migrateSettings({ remote: { project: "p", zone: "z", instance: "vm", sessionTemplate: "tpl" } }, 9), current);
     expect(merged.remote).toEqual({ ...DEFAULT_REMOTE, project: "p" });
-    expect(merged.remote.filePatterns).toEqual(["**/.env.private"]);
   });
 
   it("returns the defaults when nothing is persisted", () => {
@@ -171,8 +171,4 @@ describe("remote settings", () => {
     expect(normalizeRemote({ ...DEFAULT_REMOTE, machineType: "e2-standard-8" }).machineType).toBe("");
   });
 
-  it("drops blank, absolute and worktree-leaving file patterns", () => {
-    const remote = normalizeRemote({ ...DEFAULT_REMOTE, filePatterns: [" **/.env.private ", "", "/etc/hosts", "../secret", "config/*.local"] });
-    expect(remote.filePatterns).toEqual(["**/.env.private", "config/*.local"]);
-  });
 });

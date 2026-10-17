@@ -137,19 +137,16 @@ export const DEFAULT_GRAPH_AGENT: GraphAgent = { model: "claude-opus-5-5", effor
  * Where remote sessions run. The gateway, the VM of `project` labelled `hunt-role=gateway`, runs all the time; the
  * infrastructure repository configures it, the instance template of the session VMs and the gateway's poller
  * `hunt-swf`. Its API provisions each handed-off session's own VM `vm-hunt-s-<short>`, starts and deletes it, and the
- * gateway routes the session's preview URLs to it. `filePatterns` are the ignored files a handoff copies along, as glob
- * patterns relative to the worktree (`*` stays within a folder, `**` crosses folders). `machineType`, one of
- * `SESSION_MACHINE_TYPES` or empty for the template's, applies to the session VMs the gateway creates from now on.
- * Handoffs are offered once the project is set.
+ * gateway routes the session's preview URLs to it. `machineType`, one of `SESSION_MACHINE_TYPES` or empty for the
+ * template's, applies to the session VMs the gateway creates from now on. Handoffs are offered once the project is
+ * set. The private files a handoff copies along are those the repository's hunt.json names (`privateFiles`).
  */
 export type RemoteSettings = {
   project: string;
-  filePatterns: string[];
   machineType: string;
 };
 export const DEFAULT_REMOTE: RemoteSettings = {
   project: "",
-  filePatterns: ["**/.env.private"],
   machineType: "",
 };
 
@@ -160,12 +157,9 @@ export function configuredVmSettings(remote: RemoteSettings): VmSettings | null 
   return { project, machineType: remote.machineType || null };
 }
 
-/** `remote` with trimmed fields, without blank, absolute or worktree-leaving file patterns and without a machine type Hunt does not offer. */
+/** `remote` with a trimmed project and without a machine type Hunt does not offer. */
 export function normalizeRemote(remote: RemoteSettings): RemoteSettings {
-  const filePatterns = remote.filePatterns
-    .map((pattern) => pattern.trim())
-    .filter((pattern) => pattern && !pattern.startsWith("/") && !pattern.split("/").includes(".."));
-  return { project: remote.project.trim(), filePatterns, machineType: isSessionMachineType(remote.machineType) ? remote.machineType : "" };
+  return { project: remote.project.trim(), machineType: isSessionMachineType(remote.machineType) ? remote.machineType : "" };
 }
 
 /** The kinds of guardrail that live in a folder of their own, set below. */
@@ -423,7 +417,7 @@ function withDefaults(panes: Partial<Record<PaneKey, Partial<PaneSettings>>> | u
 }
 
 /** Current version of the persisted shape; `migrateSettings` brings older ones up to date. */
-export const SETTINGS_VERSION = 13;
+export const SETTINGS_VERSION = 14;
 
 /** Shape persisted up to version 6, which kept one field per resizable popup. */
 type Version6State = PersistedState & { usagesPopupSize?: PopupSize; fileSearchDialogSize?: PopupSize; subChatPopoverSize?: PopupSize };
@@ -471,13 +465,16 @@ function renameCatppuccinIcons(stored: PersistedState): PersistedState {
   return { ...stored, iconRules: stored.iconRules.map((rule) => ({ ...rule, icon: CATPPUCCIN_TO_ATOM_ICONS[rule.icon] ?? rule.icon })) };
 }
 
-/** The remote fields a store of version 12 or older keeps; those versions also held what the infrastructure repository configures. */
-const REMOTE_KEYS: string[] = ["project", "filePatterns"] satisfies (keyof RemoteSettings)[];
+/**
+ * The remote fields a store of version 13 or older keeps; those versions also held what the infrastructure repository
+ * configures and, up to 13, the file patterns the repository's hunt.json names now.
+ */
+const REMOTE_KEYS: string[] = ["project"] satisfies (keyof RemoteSettings)[];
 
 /**
  * Drops the remote settings Hunt no longer keeps: up to version 9 the VM all sessions shared, up to version 11 the
  * instance template and preview domain, up to version 12 the gateway's zone, instance, the machine type and the
- * poller's repositories and session limit.
+ * poller's repositories and session limit, up to version 13 the file patterns (`privateFiles` in hunt.json now).
  */
 function withoutInfrastructureFields(stored: PersistedState): PersistedState {
   if (!stored.remote) return stored;
@@ -488,12 +485,13 @@ function withoutInfrastructureFields(stored: PersistedState): PersistedState {
  * Brings a persisted state of an earlier `version` to the current shape: version 0 only knew one font size per pane,
  * versions 1 to 4 and 7 had defaults that are lifted to the current ones where the user never changed them, versions
  * 5 and 6 kept the size of each resizable popup in its own field, versions up to 8 named Catppuccin icons in their icon
- * rules, and versions up to 12 kept remote settings that the infrastructure repository configures now. Fields a version did not have (`guardrailDirs`, `showSummary`, `iconRules`, `folderIconRules`, `confirmSessionDelete`,
- * `diffLineScope`, `changelistScopes`, `graphExcludedFiles`, the file patterns, …) are filled in from the defaults by
- * `mergeSettings`.
+ * rules, and versions up to 13 kept remote settings that the infrastructure repository or the repository's hunt.json
+ * configures now. Fields a version did not have (`guardrailDirs`, `showSummary`, `iconRules`, `folderIconRules`,
+ * `confirmSessionDelete`, `diffLineScope`, `changelistScopes`, `graphExcludedFiles`, …) are filled in from the defaults
+ * by `mergeSettings`.
  */
 export function migrateSettings(persisted: unknown, version: number): PersistedState {
-  if (version >= 13) return persisted as PersistedState;
+  if (version >= 14) return persisted as PersistedState;
   if (version >= 9) return withoutInfrastructureFields(persisted as PersistedState);
   return withoutInfrastructureFields(renameCatppuccinIcons(migrateToVersion8(persisted, version)));
 }

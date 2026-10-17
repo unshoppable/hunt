@@ -1,8 +1,8 @@
 /**
  * The Google Cloud APIs the gateway's services use, with the access token of the gateway's service account from the
  * metadata server: the metadata server itself (project, zone, token, instance attributes), Secret Manager (the poller's
- * tokens) and Compute Engine (the session VMs in the gateway's project, in any of its zones). Plain REST through
- * `fetch`; no dependencies.
+ * tokens and the private files of its repositories) and Compute Engine (the session VMs in the gateway's project, in
+ * any of its zones). Plain REST through `fetch`; no dependencies.
  */
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import type { Log } from "../../../libs/domain/src/journal.ts";
@@ -50,8 +50,8 @@ export function parseAccessToken(text: string): { value: string; expiresInSecond
   return { value, expiresInSeconds };
 }
 
-/** The text of a Secret Manager `versions/<v>:access` response: its base64 payload, without surrounding whitespace. */
-export function parseSecretPayload(text: string, name: string): string {
+/** The bytes of a Secret Manager `versions/<v>:access` response: its base64 payload. */
+export function parseSecretBytes(text: string, name: string): Buffer {
   let body: unknown;
   try {
     body = JSON.parse(text);
@@ -60,7 +60,12 @@ export function parseSecretPayload(text: string, name: string): string {
   }
   const data = (body as { payload?: { data?: unknown } } | null)?.payload?.data;
   if (typeof data !== "string") throw new Error(`failed to read the secret ${name}: the response has no payload`);
-  const secret = Buffer.from(data, "base64").toString("utf8").trim();
+  return Buffer.from(data, "base64");
+}
+
+/** The text of a Secret Manager `versions/<v>:access` response: its base64 payload, without surrounding whitespace. */
+export function parseSecretPayload(text: string, name: string): string {
+  const secret = parseSecretBytes(text, name).toString("utf8").trim();
   if (!secret || /\s/.test(secret)) throw new Error(`failed to read the secret ${name}: its latest version is empty or contains whitespace`);
   return secret;
 }
@@ -113,10 +118,30 @@ export function createMetadata(fetchImpl: typeof fetch = fetch, now: () => numbe
 
 /** Reads the latest version of the secret `name` in the gateway's project. */
 export async function readSecret(metadata: Metadata, name: string, fetchImpl: typeof fetch = fetch): Promise<string> {
-  const url = `${SECRET_MANAGER}/projects/${encodeURIComponent(await metadata.project())}/secrets/${encodeURIComponent(name)}/versions/latest:access`;
-  const response = await fetchImpl(url, { headers: { Authorization: `Bearer ${await metadata.accessToken()}` } });
+  const response = await accessSecret(metadata, name, fetchImpl);
   if (!response.ok) throw await failure(response, `read the secret ${name}`);
   return parseSecretPayload(await response.text(), name);
+}
+
+/** An optional secret's latest version as bytes, or why there is none: it has no version, or the gateway may not read it. */
+export type OptionalSecret = { bytes: Buffer; absent?: undefined } | { bytes?: undefined; absent: string };
+
+/**
+ * Reads the latest version of the optional secret `name` in the gateway's project as bytes. A secret that does not
+ * exist or has no version (HTTP 404) and one the gateway may not read (HTTP 403, which Secret Manager also answers for
+ * a secret that does not exist) count as absent; any other failure throws.
+ */
+export async function readOptionalSecretBytes(metadata: Metadata, name: string, fetchImpl: typeof fetch = fetch): Promise<OptionalSecret> {
+  const response = await accessSecret(metadata, name, fetchImpl);
+  if (response.status === 404) return { absent: "has no version" };
+  if (response.status === 403) return { absent: `cannot be read by the gateway: ${(await failure(response, "read it")).message}` };
+  if (!response.ok) throw await failure(response, `read the secret ${name}`);
+  return { bytes: parseSecretBytes(await response.text(), name) };
+}
+
+async function accessSecret(metadata: Metadata, name: string, fetchImpl: typeof fetch): Promise<Response> {
+  const url = `${SECRET_MANAGER}/projects/${encodeURIComponent(await metadata.project())}/secrets/${encodeURIComponent(name)}/versions/latest:access`;
+  return fetchImpl(url, { headers: { Authorization: `Bearer ${await metadata.accessToken()}` } });
 }
 
 /** A VM as Compute Engine lists it. */

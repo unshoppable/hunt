@@ -613,7 +613,13 @@ branch `feat/general/<issue>-<slug of the title>` (`fix/general/…` for an issu
 VM's metadata, waits for the startup script and installs the staged session release, over `gcloud compute ssh
 --internal-ip` (OS Login as admin, one shared SSH connection per VM); `hunt-ctl install-tools` follows.
 `hunt-ctl clone` clones the repository from GitHub as `agent` onto the branch (the origin's branch of that name
-when it exists, else a new one from the default branch) with the token's GitHub user as Git identity; `session-config`,
+when it exists, else a new one from the default branch) with the token's GitHub user as Git identity. The repository's
+private files follow through `put-files` when the Secret Manager secret `HUNT_SWF_FILES_<owner>_<repo>` (every
+character a secret name cannot hold becomes `_`: `HUNT_SWF_FILES_unshoppable_app-framework`) holds a version: a gzipped
+tar archive of the ignored files a handoff copies from the Mac, such as `.env.private`, with paths relative to the
+repository's root and at most 64 KiB, which the infrastructure repository's README shows how to add. A secret without
+a version, or one the gateway may not read, means no private files and a warning in the journal; a version that is no
+such archive fails the setup. Then `session-config`,
 `put-files --claude` with `hunt-session.json`, `deps`, `start` and `wait` follow as in a handoff. The system prompt is
 the remote, Git and question parts a handoff appends (`libs/domain/prompts/`, which the app and the poller compile in),
 the poller's own `apps/gateway/prompts/swf.system-prompt.md` with the issue's workflow, the repository's services and
@@ -638,9 +644,9 @@ ended: then the poller reminds the agent once with a prompt that names the three
 `swf:question`, give up with `swf:failed`), and when the reminded turn ends the same way it replaces `swf:running` with
 `swf:failed` and comments that the VM keeps the session. No reminder goes to a session a Hunt desktop is connected to.
 The reminders live only in the poller's memory, so after a restart a session may be reminded once more. The poller's GitHub token and the Claude Code OAuth token its sessions run
-with come from Secret Manager (`HUNT_SWF_GITHUB_TOKEN`, `HUNT_SWF_CLAUDE_TOKEN`) and never reach a log line, a comment
-or a command line; `journalctl -u hunt-swf` on the gateway shows one line per decision, Compute Engine call and command
-on a session VM.
+with come from Secret Manager (`HUNT_SWF_GITHUB_TOKEN`, `HUNT_SWF_CLAUDE_TOKEN`), as do the private files of its
+repositories (`HUNT_SWF_FILES_<owner>_<repo>`), and none of them reaches a log line, a comment or a command line;
+`journalctl -u hunt-swf` on the gateway shows one line per decision, Compute Engine call and command on a session VM.
 
 The same service deletes forgotten session VMs (`apps/gateway/src/reaper.ts`): once an hour it lists the VMs labelled
 `hunt-role=session` and deletes, with all its disks, every one that Compute Engine reports as stopped or suspended for

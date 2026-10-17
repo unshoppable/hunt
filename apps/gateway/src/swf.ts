@@ -9,9 +9,11 @@
  * (label `swf` → `swf:running` and a comment with the preview URLs), then do what a handoff of the desktop does
  * (`apps/client/src-tauri/src/remote/handoff.rs`), with a clone from GitHub in place of the push: the orchestrator
  * (`orchestrator.ts`) creates the session VM from the instance template, records the session in its metadata, waits for
- * its startup script and installs the session release staged on the gateway; then `install-tools`, `clone`,
- * `session-config`, `hunt-session.json` through `put-files --claude`, `deps`, `start` with the tokens on stdin and
- * `wait`. The session's system prompt holds the steps of the workflow (`prompts/swf.system-prompt.md`: read the
+ * its startup script and installs the session release staged on the gateway; then `install-tools`, `clone`, the
+ * repository's private files (the ignored files a handoff copies, such as `.env.private`) from the secret
+ * `HUNT_SWF_FILES_<owner>_<repo>` through `put-files`, `session-config`, `hunt-session.json` through `put-files
+ * --claude`, `deps`, `start` with the tokens on stdin and `wait`. The session's system prompt holds the steps of the
+ * workflow (`prompts/swf.system-prompt.md`: read the
  * issue, ask open questions, comment a plan, implement and check, open the pull request, clean up); then the issue
  * goes to the agent as its first prompt through the relay. The agent opens the pull request and sets `swf:done` or
  * `swf:failed` itself, or asks a question on the issue and sets `swf:question` until the answer arrives. When the setup fails, the poller sets `swf:failed` with the error and leaves the VM for inspection; Hunt
@@ -26,7 +28,8 @@
  * reminded once more. Between polls, the reaper (`reaper.ts`) deletes session VMs that have been stopped for more than
  * a week.
  *
- * The GitHub token (`HUNT_SWF_GITHUB_TOKEN`) and the Claude Code OAuth token (`HUNT_SWF_CLAUDE_TOKEN`) come from Secret
+ * The GitHub token (`HUNT_SWF_GITHUB_TOKEN`), the Claude Code OAuth token (`HUNT_SWF_CLAUDE_TOKEN`) and the private
+ * files of each repository (`HUNT_SWF_FILES_<owner>_<repo>`, a gzipped tar archive, optional) come from Secret
  * Manager; project, zone, access token and configuration from the metadata server; the preview domain from what
  * `hunt-ctl install` wrote (`previewDomain.ts`). One log line per decision, Compute Engine call and command on a
  * session VM goes to the journal (`journal.ts`); tokens never appear in logs or comments. SIGHUP (the unit's reload, after an install) makes the poller exit once the sessions it
@@ -45,7 +48,7 @@ import swfSystemPromptFile from "../prompts/swf.system-prompt.md?raw";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import type { Log, LogLevel } from "../../../libs/domain/src/journal.ts";
 import { sendPrompt, type Transport } from "./acpClient.ts";
-import { createCompute, createMetadata, metadataValue, readSecret, type Compute, type Instance, type Metadata } from "./gcp.ts";
+import { createCompute, createMetadata, metadataValue, readOptionalSecretBytes, readSecret, type Compute, type Instance, type Metadata, type OptionalSecret } from "./gcp.ts";
 import { writeLog } from "./journal.ts";
 import { createGitHub, type GitHub, type Issue, type IssueComment } from "./github.ts";
 import { AGENT_METADATA, DEFAULT_TEMPLATE, ORIGIN_LABEL, Orchestrator, sessionSummary, type Origin, type Reporter } from "./orchestrator.ts";
@@ -58,6 +61,7 @@ import {
   activeSessionVms,
   agentStateOf,
   branchName,
+  checkPrivateFilesArchive,
   claimComment,
   failureComment,
   firstPrompt,
@@ -65,6 +69,7 @@ import {
   issuesToStart,
   labelSpecs,
   nudgePrompt,
+  privateFilesSecret,
   redact,
   remoteSystemPrompt,
   sessionNames,
@@ -96,6 +101,8 @@ export interface PollerDeps {
   /** The preview domain of the gateway's edge proxy. Throws without one. */
   readDomain(): string;
   tokens(): Promise<Tokens>;
+  /** The latest version of the optional secret `name` as bytes, or why there is none. */
+  secretBytes(name: string): Promise<OptionalSecret>;
   github(token: string): GitHub;
   compute: Compute;
   orchestrator: Orchestrator;
@@ -352,6 +359,7 @@ export class Poller {
 
     const cloned = await vm.huntCtl(["clone", names.id, "--repo", repo, "--branch", branch], `${tokens.github}\n`);
     if (typeof cloned.path !== "string" || !cloned.path) throw new Error("hunt-ctl clone returned no path");
+    await this.putPrivateFiles(vm, key, names.id, repo);
     const sessionConfig = await vm.huntCtl(["session-config", names.id, "--domain", domain]);
     const servicesPrompt = typeof sessionConfig.services_prompt === "string" ? sessionConfig.services_prompt : null;
     const agentMd = typeof sessionConfig.agent_md === "string" ? sessionConfig.agent_md : null;
@@ -368,6 +376,23 @@ export class Poller {
     const text = firstPrompt(prompts.swfFirst, repo, issue, comments, branch, setup.labels);
     const outcome = await this.deps.sendPrompt(vm.openRelay(), { sessionId: status.acpSessionId, cwd: cloned.path, text });
     log(`the agent of session ${names.id} works on the issue (prompt ${outcome})`);
+  }
+
+  /**
+   * Unpacks the repository's private files, the gzipped tar archive in the secret `HUNT_SWF_FILES_<owner>_<repo>`, into
+   * the session's worktree; a repository whose secret is absent (no version, or the gateway may not read it) gets
+   * none, with a warning in the journal. The archive's content never reaches the log.
+   */
+  private async putPrivateFiles(vm: SessionVm, key: string, id: string, repo: string): Promise<void> {
+    const name = privateFilesSecret(repo);
+    const secret = await this.deps.secretBytes(name);
+    if (!secret.bytes) {
+      this.deps.log(`${key}: no private files: the secret ${name} ${secret.absent}`, "warn");
+      return;
+    }
+    checkPrivateFilesArchive(secret.bytes, name);
+    await vm.huntCtl(["put-files", id], secret.bytes);
+    this.deps.log(`${key}: put the private files of ${repo} from the secret ${name} (${secret.bytes.length} bytes) into the worktree`);
   }
 
   /** Replaces `<label>:running` with `<label>:failed` and comments the error of the setup; failures here are only logged. */
@@ -448,6 +473,7 @@ async function main(): Promise<void> {
     readConfig: () => readSwfConfig(metadata),
     readDomain: () => readDomain(),
     tokens: secretsReader(metadata),
+    secretBytes: (name) => readOptionalSecretBytes(metadata, name),
     github: (token) => createGitHub(token),
     compute,
     orchestrator,

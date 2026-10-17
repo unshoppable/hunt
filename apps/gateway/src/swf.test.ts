@@ -201,6 +201,7 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
       tokenReads++;
       return { github: GITHUB_TOKEN, claude: CLAUDE_TOKEN };
     },
+    secretBytes: async () => ({ absent: "has no version" }),
     compute,
     orchestrator,
     prompts: () => ({ remote: "## Remote session\n", gitPush: "### Git\n", question: "## Questions\n", swfSystem: "## Issue #{{number}} on {{branch}}\n", swfFirst: SWF_FIRST, swfNudge: SWF_NUDGE }),
@@ -291,6 +292,7 @@ describe("Poller.cycle", () => {
       `hunt-ctl start ${SESSION_ID} <<< ${JSON.stringify(`${CLAUDE_TOKEN}\n${GITHUB_TOKEN}\n`)}`,
       `hunt-ctl wait ${SESSION_ID} --timeout 180`,
     ]);
+    expect(logs).toContain("acme/app#12: no private files: the secret HUNT_SWF_FILES_acme_app has no version");
     expect(JSON.parse(claudeFiles[0]["hunt-session.json"])).toEqual({
       huntSessionId: SESSION_ID,
       acpSessionId: null,
@@ -307,6 +309,60 @@ describe("Poller.cycle", () => {
     expect(prompts[0].text).toContain("**@bob** on 2026-10-13 09:00 UTC:\n\nPlease hurry.");
     expect(logs.at(-1)).toBe(`acme/app#12: the agent of session ${SESSION_ID} works on the issue (prompt started)`);
     expect(logs.join("\n")).not.toContain(GITHUB_TOKEN);
+  });
+
+  it("unpacks the repository's private files from its secret into the worktree right after the clone", async () => {
+    const github = fakeGitHub({ "acme/app": [issue(12, "Fix login")] });
+    const { vm, calls } = fakeVm();
+    const archive = Buffer.concat([Buffer.from([0x1f, 0x8b]), Buffer.from("tgz OPENAI_API_KEY=sk-secret")]);
+    const secretReads: string[] = [];
+    const { poller, logs } = createPoller({
+      github,
+      vm,
+      secretBytes: async (name) => {
+        secretReads.push(name);
+        return { bytes: archive };
+      },
+    });
+
+    await poller.cycle();
+    await poller.drain();
+
+    expect(secretReads).toEqual(["HUNT_SWF_FILES_acme_app"]);
+    const clone = calls.findIndex((call) => call.startsWith("hunt-ctl clone"));
+    expect(calls[clone + 1]).toBe(`hunt-ctl put-files ${SESSION_ID} <<< ${JSON.stringify(archive.toString())}`);
+    expect(calls[clone + 2]).toBe(`hunt-ctl session-config ${SESSION_ID} --domain hunt.example.com`);
+    expect(logs).toContain(`acme/app#12: put the private files of acme/app from the secret HUNT_SWF_FILES_acme_app (${archive.length} bytes) into the worktree`);
+    expect(logs.join("\n")).not.toContain("sk-secret");
+  });
+
+  it("goes on without private files when the gateway may not read the secret, and says so", async () => {
+    const { vm, calls } = fakeVm();
+    const { poller, logs } = createPoller({ github: fakeGitHub({ "acme/app": [issue(12, "Fix login")] }), vm, secretBytes: async () => ({ absent: "cannot be read by the gateway: failed to read it: HTTP 403 denied" }) });
+    await poller.cycle();
+    await poller.drain();
+    expect(logs).toContain("acme/app#12: no private files: the secret HUNT_SWF_FILES_acme_app cannot be read by the gateway: failed to read it: HTTP 403 denied");
+    expect(calls.some((call) => call.startsWith("hunt-ctl put-files"))).toBe(false);
+    expect(calls.at(-1)).toBe(`hunt-ctl wait ${SESSION_ID} --timeout 180`);
+  });
+
+  it("fails the issue when the private files cannot be read or are no archive", async () => {
+    const denied = createPoller({ github: fakeGitHub({ "acme/app": [issue(12, "Fix login")] }), secretBytes: async () => {
+      throw new Error("failed to read the secret HUNT_SWF_FILES_acme_app: HTTP 500 boom");
+    } });
+    await denied.poller.cycle();
+    await denied.poller.drain();
+    expect(denied.logs).toContain("acme/app#12: failed: failed to read the secret HUNT_SWF_FILES_acme_app: HTTP 500 boom");
+
+    const text = fakeGitHub({ "acme/app": [issue(12, "Fix login")] });
+    const plain = createPoller({ github: text, secretBytes: async () => ({ bytes: Buffer.from("OPENAI_API_KEY=sk-secret\n") }) });
+    await plain.poller.cycle();
+    await plain.poller.drain();
+    expect(plain.logs).toContain(
+      "acme/app#12: failed: the secret HUNT_SWF_FILES_acme_app is no gzipped tar archive (tar -czf - <files> | gcloud secrets versions add HUNT_SWF_FILES_acme_app --data-file=-)",
+    );
+    expect(plain.logs.join("\n")).not.toContain("sk-secret");
+    expect(text.calls).toContain("label acme/app#12 swf:failed");
   });
 
   it("skips an issue whose label someone else removed meanwhile", async () => {

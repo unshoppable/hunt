@@ -12,6 +12,7 @@ import {
   parseOperation,
   parseProject,
   parseSecretPayload,
+  readOptionalSecretBytes,
   parseZone,
   readSecret,
   regionOf,
@@ -143,6 +144,33 @@ describe("readSecret", () => {
 
     await expect(readSecret(fixedMetadata, "HUNT_SWF_GITHUB_TOKEN", fetchImpl)).rejects.toThrow(
       'failed to read the secret HUNT_SWF_GITHUB_TOKEN: HTTP 403 {"error": {"code": 403, "message": "Permission denied"}}',
+    );
+  });
+});
+
+describe("readOptionalSecretBytes", () => {
+  const url = "https://secretmanager.googleapis.com/v1/projects/medconomy-hunt/secrets/HUNT_SWF_FILES_acme_app/versions/latest:access";
+
+  it("returns the payload's bytes as they are", async () => {
+    const bytes = Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x0a, 0x20]);
+    const { fetchImpl, requests } = fakeFetch({ [`GET ${url}`]: () => Response.json({ payload: { data: bytes.toString("base64") } }) });
+
+    expect(await readOptionalSecretBytes(fixedMetadata, "HUNT_SWF_FILES_acme_app", fetchImpl)).toEqual({ bytes });
+    expect(requests[0].authorization).toBe("Bearer token-1");
+  });
+
+  it("reports a missing version or denied access as absent and throws for any other failure", async () => {
+    const missing = fakeFetch({ [`GET ${url}`]: () => new Response('{"error": {"code": 404, "message": "Secret Version [latest] not found."}}', { status: 404 }) });
+    expect(await readOptionalSecretBytes(fixedMetadata, "HUNT_SWF_FILES_acme_app", missing.fetchImpl)).toEqual({ absent: "has no version" });
+
+    const denied = fakeFetch({ [`GET ${url}`]: () => new Response('{"error": {"code": 403, "message": "Permission denied"}}', { status: 403 }) });
+    expect(await readOptionalSecretBytes(fixedMetadata, "HUNT_SWF_FILES_acme_app", denied.fetchImpl)).toEqual({
+      absent: 'cannot be read by the gateway: failed to read it: HTTP 403 {"error": {"code": 403, "message": "Permission denied"}}',
+    });
+
+    const broken = fakeFetch({ [`GET ${url}`]: () => new Response("boom", { status: 500 }) });
+    await expect(readOptionalSecretBytes(fixedMetadata, "HUNT_SWF_FILES_acme_app", broken.fetchImpl)).rejects.toThrow(
+      "failed to read the secret HUNT_SWF_FILES_acme_app: HTTP 500 boom",
     );
   });
 });

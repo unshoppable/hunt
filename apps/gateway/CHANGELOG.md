@@ -1,3 +1,9 @@
+## 0.24.0 (2026-10-17)
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.16.0
+
 ## 0.23.0 (2026-10-17)
 
 ### 🚀 Features

@@ -1,3 +1,9 @@
+## 0.16.0 (2026-10-17)
+
+### 🚀 Features
+
+- name the private files of a repository in its hunt.json (privateFiles) instead of the app's settings ([85bc8c4](https://github.com/unshoppable/hunt/commit/85bc8c4))
+
 ## 0.15.0 (2026-10-17)
 
 ### 🚀 Features

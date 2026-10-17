@@ -1,3 +1,9 @@
+## 0.36.1 (2026-10-17)
+
+### 🩹 Fixes
+
+- **client:** copy the private files of the repository's checkout into every new worktree, files inside ignored folders included ([e1daecb](https://github.com/unshoppable/hunt/commit/e1daecb))
+
 ## 0.36.0 (2026-10-17)
 
 This was a version bump only for client to align it with other projects, there were no code changes.

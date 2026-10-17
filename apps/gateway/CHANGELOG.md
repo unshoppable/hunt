@@ -1,3 +1,13 @@
+## 0.26.0 (2026-10-17)
+
+### 🚀 Features
+
+- remote secrets for the services of session VMs, maintained in Hunt under Settings → Remote VM ([f2dd755](https://github.com/unshoppable/hunt/commit/f2dd755))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.18.0
+
 ## 0.25.0 (2026-10-17)
 
 ### 🧱 Updated Dependencies

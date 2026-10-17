@@ -8,6 +8,7 @@
  *       "backend": {
  *         "command": "npm run start:backend", "port": 3000, "tls": true, "guarded": false,
  *         "env": { "UI_BASE_URL": "${services.ui.publicUrl}" },
+ *         "remoteSecrets": { "OPENAI_API_KEY": "$MED_OPENAI_API_KEY" },
  *         "worktreeInclude": ["apps/backend/.env.private"]
  *       },
  *       "ui": { "command": "npm start", "cwd": "apps/ui", "port": 4200, "env": { "BACKEND_ORIGIN": "${services.backend.publicUrl}" } }
@@ -27,6 +28,9 @@
  * - `env`: variables of this service only. Keys match `^[A-Z_][A-Z0-9_]*$` and do not start with `CLAUDE_` or `HUNT_`;
  *   values are single lines. `${services.<name>.publicUrl}` in a value becomes the URL of that service, its open URL when
  *   it is not guarded; every other `${…}` but contract 2's `${HUNT_…}` stays as it is.
+ * - `remoteSecrets`: variables of this service whose values are remote secrets (`libs/domain/src/remoteSecrets.ts`),
+ *   which a person stores in Hunt under Settings → Remote VM and the gateway puts on the VM. Keys follow the rules of
+ *   `env` and appear in only one of the two; each value is `$<NAME>`, the name of a remote secret, which must exist.
  * - `worktreeInclude`: the ignored files this service needs, which git leaves out of a checkout, such as its
  *   `.env.private`: up to 64 glob patterns relative to the worktree (`*` stays within a folder, `**` crosses folders),
  *   each one line of at most 255 characters that is not absolute and has no `..` segment; none by default. Hunt copies
@@ -38,6 +42,7 @@
  */
 import { join } from "node:path";
 import { isRecord } from "../../../libs/domain/src/jsonRpc.ts";
+import { REMOTE_SECRET_NAME } from "../../../libs/domain/src/remoteSecrets.ts";
 
 export interface ServiceConfig {
   name: string;
@@ -49,6 +54,8 @@ export interface ServiceConfig {
   guarded: boolean;
   /** The service's variables as hunt.json declares them, placeholders unresolved. */
   env: Record<string, string>;
+  /** The service's variables whose values are remote secrets: variable → name of the remote secret, without the `$`. */
+  remoteSecrets: Record<string, string>;
   /** The glob patterns of the ignored files the service needs in a worktree, relative to the worktree. */
   worktreeInclude: string[];
 }
@@ -65,7 +72,10 @@ export interface SessionConfig {
   services: ServiceConfig[];
   /** The session's environment, which every command on the VM inherits. */
   env: Record<string, string>;
-  /** The environment of each service by name: its variables with their placeholders resolved, then HUNT_SERVICE_DIR and HUNT_SERVICE_COMMAND. */
+  /**
+   * The environment of each service by name: its variables with their placeholders resolved, its remote secrets, then
+   * HUNT_SERVICE_DIR and HUNT_SERVICE_COMMAND.
+   */
   serviceEnvs: Record<string, Record<string, string>>;
   proxy: CaddyConfig;
   /** The section of the agent's prompt that lists the services; empty without services. */
@@ -145,7 +155,7 @@ const ROOT_FIELDS = ["version", "services"];
 /** The rule a `worktreeInclude` entry must follow. */
 export const WORKTREE_INCLUDE_RULE = "must be a glob pattern relative to the worktree: one line of at most 255 characters, not absolute, without a .. segment";
 const MAX_WORKTREE_INCLUDE = 64;
-const SERVICE_FIELDS = ["command", "cwd", "port", "tls", "guarded", "env", "worktreeInclude"];
+const SERVICE_FIELDS = ["command", "cwd", "port", "tls", "guarded", "env", "remoteSecrets", "worktreeInclude"];
 const SERVICE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 const MAX_SERVICES = 64;
 const MAX_COMMAND_LENGTH = 4096;
@@ -157,6 +167,8 @@ const CWD_RULE =
 const LINE_BREAK = /[\n\r\0]/;
 const ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
 const RESERVED_ENV_PREFIXES = ["CLAUDE_", "HUNT_"];
+/** A `remoteSecrets` value, with the name of the remote secret as capture group 1. */
+const REMOTE_SECRET_REFERENCE = new RegExp(`^\\$(${REMOTE_SECRET_NAME.source.slice(1, -1)})$`);
 const CONTRACT_2_PROBLEM = 'the preview section of contract 2 is no longer read; hunt.json holds {"version": 3, "services": {…}} at its root';
 const CONTRACT_2_PLACEHOLDER = /\$\{HUNT_[A-Za-z0-9_]*\}/g;
 /** Any `${services.…}`; capture group 1 must be `<name>.publicUrl`. */
@@ -205,9 +217,10 @@ export function publicUrl(service: Pick<ServiceConfig, "port" | "guarded">, host
 
 /**
  * Checks `huntJson` (the parsed file, undefined without one) and the session's host names and builds everything the
- * session VM needs; `worktree` is the session's worktree on the VM. Throws a ConfigError.
+ * session VM needs; `worktree` is the session's worktree on the VM and `secrets` the remote secrets the gateway put
+ * there, of which every one a service names must exist. Throws a ConfigError.
  */
-export function buildSessionConfig(huntJson: unknown, host: SessionHost, worktree: string): SessionConfig {
+export function buildSessionConfig(huntJson: unknown, host: SessionHost, worktree: string, secrets: Readonly<Record<string, string>> = {}): SessionConfig {
   const problems = new Problems();
   if (!SHORT.test(host.short)) {
     problems.add("short", "must be the first 8 hex digits of the session ID, in lowercase");
@@ -216,11 +229,17 @@ export function buildSessionConfig(huntJson: unknown, host: SessionHost, worktre
     problems.add("domain", "must be a lowercase host name with at least two labels, the last of letters only");
   }
   const services = parseRoot(huntJson, problems);
+  for (const service of services) {
+    for (const [key, name] of Object.entries(service.remoteSecrets)) {
+      if (Object.hasOwn(secrets, name)) continue;
+      problems.add(at(at(at("services", service.name), "remoteSecrets"), key), `no remote secret ${name}; set it in Hunt under Settings → Remote VM`);
+    }
+  }
   if (problems.messages.length > 0) throw new ConfigError(problems.messages);
   return {
     services,
     env: sessionEnv(host),
-    serviceEnvs: serviceEnvs(services, host, worktree),
+    serviceEnvs: serviceEnvs(services, host, worktree, secrets),
     proxy: proxyConfig(services, host),
     servicesPrompt: servicesPrompt(services, host),
   };
@@ -240,16 +259,23 @@ export function sessionEnv(host: SessionHost): Record<string, string> {
 }
 
 /**
- * The environment of each service by name: its variables with `${services.<name>.publicUrl}` resolved, then
- * `HUNT_SERVICE_DIR`, the folder the service runs in, and `HUNT_SERVICE_COMMAND`, its command line.
+ * The environment of each service by name: its variables with `${services.<name>.publicUrl}` resolved, its remote
+ * secrets from `secrets` (a missing one is left out), then `HUNT_SERVICE_DIR`, the folder the service runs in, and
+ * `HUNT_SERVICE_COMMAND`, its command line.
  */
-export function serviceEnvs(services: readonly ServiceConfig[], host: SessionHost, worktree: string): Record<string, Record<string, string>> {
+export function serviceEnvs(
+  services: readonly ServiceConfig[],
+  host: SessionHost,
+  worktree: string,
+  secrets: Readonly<Record<string, string>> = {},
+): Record<string, Record<string, string>> {
   const urls = new Map(services.map((service) => [service.name, publicUrl(service, host)]));
   const resolve = (value: string) => value.replace(PUBLIC_URL_PLACEHOLDER, (placeholder, name: string) => urls.get(name) ?? placeholder);
   const envs: Record<string, Record<string, string>> = {};
   for (const service of services) {
     envs[service.name] = {
       ...Object.fromEntries(Object.entries(service.env).map(([key, value]) => [key, resolve(value)])),
+      ...Object.fromEntries(Object.entries(service.remoteSecrets).flatMap(([key, name]) => (Object.hasOwn(secrets, name) ? [[key, secrets[name]]] : []))),
       HUNT_SERVICE_DIR: service.cwd ? join(worktree, service.cwd) : worktree,
       HUNT_SERVICE_COMMAND: service.command,
     };
@@ -492,9 +518,10 @@ function parseService(name: string, value: unknown, names: ReadonlySet<string>, 
   const tls = flag(fields.tls, false, at(path, "tls"), problems);
   const guarded = flag(fields.guarded, true, at(path, "guarded"), problems);
   const env = environment(fields.env, at(path, "env"), names, problems);
+  const secrets = remoteSecrets(fields.remoteSecrets, at(path, "remoteSecrets"), env, problems);
   const include = worktreeInclude(fields.worktreeInclude, at(path, "worktreeInclude"), problems);
   if (port === undefined) return undefined;
-  return { name, command, cwd, port, tls, guarded, env, worktreeInclude: include };
+  return { name, command, cwd, port, tls, guarded, env, remoteSecrets: secrets, worktreeInclude: include };
 }
 
 function commandLine(value: unknown, path: string, problems: Problems): string {
@@ -539,14 +566,7 @@ function environment(value: unknown, path: string, names: ReadonlySet<string>, p
   if (value === undefined) return env;
   for (const [key, entry] of Object.entries(record(value, path, null, problems) ?? {})) {
     const entryPath = at(path, key);
-    if (!ENV_KEY.test(key)) {
-      problems.add(entryPath, "invalid name, must match ^[A-Z_][A-Z0-9_]*$");
-      continue;
-    }
-    if (RESERVED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
-      problems.add(entryPath, "reserved: names starting with CLAUDE_ or HUNT_ belong to Hunt");
-      continue;
-    }
+    if (!isEnvKey(key, entryPath, problems)) continue;
     if (typeof entry !== "string") {
       problems.add(entryPath, "must be a string");
       continue;
@@ -559,6 +579,40 @@ function environment(value: unknown, path: string, names: ReadonlySet<string>, p
     env[key] = entry;
   }
   return env;
+}
+
+/** The remote secrets at `path` by variable, without the `$`; a variable may not appear in `env` as well. */
+function remoteSecrets(value: unknown, path: string, env: Readonly<Record<string, string>>, problems: Problems): Record<string, string> {
+  const secrets: Record<string, string> = {};
+  if (value === undefined) return secrets;
+  for (const [key, entry] of Object.entries(record(value, path, null, problems) ?? {})) {
+    const entryPath = at(path, key);
+    if (!isEnvKey(key, entryPath, problems)) continue;
+    if (Object.hasOwn(env, key)) {
+      problems.add(entryPath, "is set in env already");
+      continue;
+    }
+    const name = typeof entry === "string" ? REMOTE_SECRET_REFERENCE.exec(entry)?.[1] : undefined;
+    if (!name) {
+      problems.add(entryPath, `must be "$<NAME>", the name of a remote secret matching ${REMOTE_SECRET_NAME.source}`);
+      continue;
+    }
+    secrets[key] = name;
+  }
+  return secrets;
+}
+
+/** Whether `key` may name a variable of a service; reports why not. */
+function isEnvKey(key: string, path: string, problems: Problems): boolean {
+  if (!ENV_KEY.test(key)) {
+    problems.add(path, "invalid name, must match ^[A-Z_][A-Z0-9_]*$");
+    return false;
+  }
+  if (RESERVED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+    problems.add(path, "reserved: names starting with CLAUDE_ or HUNT_ belong to Hunt");
+    return false;
+  }
+  return true;
 }
 
 /** Reports every `${HUNT_…}` of contract 2 in `value` and every `${services.…}` that is no `publicUrl` of a service in `names`. */

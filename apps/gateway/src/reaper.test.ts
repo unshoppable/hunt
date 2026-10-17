@@ -72,6 +72,7 @@ function createReaper(vms: Instance[], current?: Map<string, Instance | null>) {
     location: { project: "medconomy-hunt", zone: ZONE },
     zones: () => [ZONE],
     vm: () => ({}) as never,
+    remoteSecrets: async () => ({}),
     sleep: async () => {},
     now: () => now,
   });

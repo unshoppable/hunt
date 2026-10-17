@@ -78,6 +78,55 @@ struct SessionList {
     sessions: Vec<SessionSummary>,
 }
 
+/// A remote secret as `secrets.list` reports it: its name and, for a value of at least 12 characters, its last four
+/// characters; the value itself never leaves the gateway.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteSecretSummary {
+    pub name: String,
+    pub hint: String,
+}
+
+#[derive(Deserialize)]
+struct RemoteSecretList {
+    secrets: Vec<RemoteSecretSummary>,
+}
+
+#[derive(Deserialize)]
+struct DeletedRemoteSecret {
+    existed: bool,
+}
+
+/// The most characters the gateway accepts in the value of a remote secret.
+const MAX_REMOTE_SECRET_VALUE_CHARS: usize = 8192;
+
+/// Accepts the name of a remote secret as the gateway does: an uppercase letter, then up to 63 uppercase letters, digits
+/// or underscores. The error says what is wrong.
+pub fn validate_remote_secret_name(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let starts_with_letter = chars.next().is_some_and(|first| first.is_ascii_uppercase());
+    let rest_is_valid = chars.all(|char| char.is_ascii_uppercase() || char.is_ascii_digit() || char == '_');
+    if !starts_with_letter || !rest_is_valid || name.len() > 64 {
+        return Err("the name must start with an uppercase letter and hold at most 64 uppercase letters, digits and underscores".into());
+    }
+    Ok(())
+}
+
+/// Accepts the value of a remote secret as the gateway does: not empty, at most 8192 characters, no line break and no
+/// NUL. The error never repeats the value.
+pub fn validate_remote_secret_value(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err("the value is empty".into());
+    }
+    if value.chars().count() > MAX_REMOTE_SECRET_VALUE_CHARS {
+        return Err(format!("the value is longer than {MAX_REMOTE_SECRET_VALUE_CHARS} characters"));
+    }
+    if value.contains(['\n', '\r', '\0']) {
+        return Err("the value holds a line break or a NUL character".into());
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct VmStatus {
     exists: bool,
@@ -188,6 +237,24 @@ impl GatewayApi {
     pub async fn delete_vm(&self, id: Uuid) -> Result<(), String> {
         let _: IgnoredAny = self.call("vms.delete", &json!({ "id": id })).await?;
         Ok(())
+    }
+
+    /// The remote secrets the gateway keeps for every session VM, sorted by name.
+    pub async fn list_remote_secrets(&self) -> Result<Vec<RemoteSecretSummary>, String> {
+        let listed: RemoteSecretList = self.call("secrets.list", &json!({})).await?;
+        Ok(listed.secrets)
+    }
+
+    /// Creates the remote secret `name` or replaces its value.
+    pub async fn set_remote_secret(&self, name: &str, value: &str) -> Result<(), String> {
+        let _: IgnoredAny = self.call("secrets.set", &json!({ "name": name, "value": value })).await?;
+        Ok(())
+    }
+
+    /// Deletes the remote secret `name`; returns whether it existed.
+    pub async fn delete_remote_secret(&self, name: &str) -> Result<bool, String> {
+        let deleted: DeletedRemoteSecret = self.call("secrets.delete", &json!({ "name": name })).await?;
+        Ok(deleted.existed)
     }
 }
 
@@ -432,6 +499,30 @@ mod tests {
         let sessions = result.unwrap().sessions;
         assert_eq!(sessions.len(), 1);
         assert_eq!((sessions[0].vm.as_str(), sessions[0].origin.as_str(), sessions[0].issue), ("vm-hunt-s-ab12cd34", "swf", Some(123)));
+    }
+
+    #[test]
+    fn remote_secrets_read_the_listing_and_their_rules_match_the_gateways() {
+        let output = r#"{"type":"result","data":{"secrets":[{"name":"MED_OPENAI_API_KEY","hint":"x9Qz"},{"name":"SHORT","hint":""}]}}"#;
+        let (result, _) = run::<RemoteSecretList>("secrets.list", output, Ok(()));
+        let secrets = result.unwrap().secrets;
+        assert_eq!(secrets[0], RemoteSecretSummary { name: "MED_OPENAI_API_KEY".into(), hint: "x9Qz".into() });
+        assert_eq!(serde_json::to_value(&secrets[1]).unwrap(), json!({ "name": "SHORT", "hint": "" }));
+        let (deleted, _) = run::<DeletedRemoteSecret>("secrets.delete", r#"{"type":"result","data":{"existed":false}}"#, Ok(()));
+        assert!(!deleted.unwrap().existed);
+
+        for name in ["A", "MED_OPENAI_API_KEY", "X9_", &format!("A{}", "B".repeat(63))] {
+            assert_eq!(validate_remote_secret_name(name), Ok(()), "{name}");
+        }
+        for name in ["", "_A", "9A", "med_key", "A-B", "ÄB", &format!("A{}", "B".repeat(64))] {
+            assert!(validate_remote_secret_name(name).is_err(), "{name}");
+        }
+        assert_eq!(validate_remote_secret_value("sk-1"), Ok(()));
+        assert_eq!(validate_remote_secret_value(&"ä".repeat(8192)), Ok(()));
+        for value in ["", "sk-1\nsk-2", "sk-1\r", "sk\0", &"a".repeat(8193)] {
+            let error = validate_remote_secret_value(value).unwrap_err();
+            assert!(value.is_empty() || !error.contains(value), "{error}");
+        }
     }
 
     #[test]

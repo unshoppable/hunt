@@ -43,7 +43,7 @@ install -m 0755 /fixtures/systemctl /usr/local/bin/systemctl
  */
 const SEED = String.raw`
 set -euo pipefail
-rm -rf /srv/hunt/sessions /etc/hunt/services /etc/hunt/session.env /etc/hunt/caddy.json /home/agent/app /home/agent/logs \
+rm -rf /srv/hunt/sessions /etc/hunt/services /etc/hunt/session.env /etc/hunt/caddy.json /etc/hunt/remote-secrets.json /home/agent/app /home/agent/logs \
   /run/fake-systemd /etc/systemd/system/multi-user.target.wants /var/log/systemctl.log
 install -d -m 0700 /srv/hunt/sessions "/srv/hunt/sessions/$1"
 install -d -o agent -g agent /home/agent/app /home/agent/app/admin
@@ -99,6 +99,11 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
 
   function huntCtl(...args: string[]) {
     return docker(["exec", container, "hunt-ctl", ...args]);
+  }
+
+  /** Runs `hunt-ctl` with `input` on stdin. */
+  function huntCtlWithInput(input: string, ...args: string[]) {
+    return docker(["exec", "--interactive", container, "hunt-ctl", ...args], input);
   }
 
   /** Runs `hunt-ctl` and returns its JSON result, failing on any stderr or exit status. */
@@ -222,6 +227,37 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
       services: Object.entries(DECLARED).map(([name, declared]) => ({ name, ...declared })),
     });
     expect(systemctlCalls()).toEqual(["systemctl enable --quiet hunt-proxy.service", "systemctl reload-or-restart hunt-proxy.service"]);
+  });
+
+  it("gives a service the remote secrets its hunt.json names from the file the gateway put there, which only root reads", () => {
+    seed({ version: 3, services: { api: { command: "node server.js", port: 3000, remoteSecrets: { OPENAI_API_KEY: "$MED_OPENAI_API_KEY" } } } });
+    const put = huntCtlWithInput(JSON.stringify({ MED_OPENAI_API_KEY: 'sk-test-"1234"', OTHER: "o" }), "put-remote-secrets");
+    expect(put).toMatchObject({ status: 0, stderr: "" });
+    expect(JSON.parse(put.stdout)).toEqual({ count: 2 });
+    expect(sh("stat -c '%a %U' /etc/hunt/remote-secrets.json").stdout).toBe("600 root\n");
+
+    sessionConfig();
+    const api = sh("cat /etc/hunt/services/api.env").stdout;
+    expect(api).toContain('\nOPENAI_API_KEY="sk-test-\\"1234\\""\n');
+    expect(api).not.toContain("OTHER");
+    expect(sh("stat -c '%a %U' /etc/hunt/services/api.env").stdout).toBe("600 root\n");
+
+    for (const input of ['{"A": "sk-bad\\nvalue"}', '{"A": 1}', '["sk-bad"]', "sk-bad"]) {
+      const refused = huntCtlWithInput(input, "put-remote-secrets");
+      expect(refused.status, input).not.toBe(0);
+      expect(refused.stderr, input).toContain("hunt-ctl: invalid remote secrets on stdin: expected a JSON object of single-line strings");
+      expect(refused.stderr, input).not.toContain("sk-bad");
+    }
+    expect(sh("cat /etc/hunt/remote-secrets.json").stdout).toContain("MED_OPENAI_API_KEY");
+
+    expect(huntCtlJson("destroy", ID)).toEqual({});
+    expect(sh("test -e /etc/hunt/remote-secrets.json || echo removed").stdout).toBe("removed\n");
+    seed({ version: 3, services: { api: { command: "node server.js", port: 3000, remoteSecrets: { OPENAI_API_KEY: "$MED_OPENAI_API_KEY" } } } });
+    const missing = huntCtl("session-config", ID, "--domain", DOMAIN);
+    expect(missing.status).toBe(3);
+    expect(missing.stderr).toContain(
+      "services.api.remoteSecrets.OPENAI_API_KEY: no remote secret MED_OPENAI_API_KEY; set it in Hunt under Settings → Remote VM",
+    );
   });
 
   it("prints null for a repository without hunt.agent.md and no services without hunt.json", () => {

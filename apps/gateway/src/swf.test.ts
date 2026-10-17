@@ -210,6 +210,7 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
     location: { project: "medconomy-hunt", zone: "europe-west3-a" },
     zones: () => ["europe-west3-a"],
     vm: () => vm,
+    remoteSecrets: async () => ({}),
     sleep: async () => {},
     now: () => 0,
   });
@@ -304,6 +305,7 @@ describe("Poller.cycle", () => {
     expect(calls).toEqual([
       "wait until ready",
       "ensure release",
+      `hunt-ctl put-remote-secrets <<< ${JSON.stringify("{}")}`,
       "hunt-ctl install-tools",
       `hunt-ctl clone ${SESSION_ID} --repo acme/app --branch fix/general/12-fix-login --git-name ${BOT_NAME} --git-email ${BOT_EMAIL} <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`,
       `hunt-ctl session-config ${SESSION_ID} --domain hunt.example.com`,

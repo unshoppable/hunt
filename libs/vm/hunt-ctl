@@ -79,6 +79,9 @@ readonly IDLE_CONFIG=/etc/hunt/idle.conf
 # The environment of each service of hunt.json, <name>.env, which `session-config` writes and hunt-service@.service
 # reads; the units' names are hunt-service@<name>.service.
 readonly SERVICES_DIR=/etc/hunt/services
+# The remote secrets the gateway puts on the VM (`put-remote-secrets`), a JSON object name → value that only root reads;
+# `session-config` gives each service the ones the `remoteSecrets` of its hunt.json name.
+readonly REMOTE_SECRETS_FILE=/etc/hunt/remote-secrets.json
 readonly SERVICE_UNIT_PREFIX=hunt-service@
 readonly SERVICE_NAME_PATTERN='^[a-z][a-z0-9-]{0,31}$'
 # The sudo rule that lets the agent run `hunt-ctl service` (apps/session/vm/sudoers-hunt-service).
@@ -190,6 +193,8 @@ Session VM:
   lfs-get <id>           write a tar.gz of the Git LFS objects listed on stdin, one <aa>/<bb>/<oid> per line (streams)
   put-files <id> [--claude]
                          unpack the tar.gz on stdin into the session's worktree, or with --claude into ~/.claude
+  put-remote-secrets     replace the VM's remote secrets, /etc/hunt/remote-secrets.json (root only), by the JSON object
+                         on stdin (name → single-line value)
   get-claude <id> --project <slug>
                          write a tar.gz of hunt-session.json and projects/<slug> of ~/.claude (streams)
   prepare <id> --branch <branch> --snapshot <ref> --git-name <name> --git-email <email> [--origin <url>]
@@ -200,10 +205,11 @@ Session VM:
   deps <id>              install the worktree's dependencies (npm, pnpm or yarn, by lockfile)
   session-config <id> --domain <domain>
                          write the session's environment, /etc/hunt/session.env, the environment of every service of
-                         its hunt.json (version 3), /etc/hunt/services/<name>.env, and the configuration of the VM's
-                         preview proxy, /etc/hunt/caddy.json, and (re)start the proxy; stops and disables the services
-                         hunt.json no longer declares; prints the services' section of the agent's prompt and the text
-                         of the repository's hunt.agent.md
+                         its hunt.json (version 3), /etc/hunt/services/<name>.env with the remote secrets its
+                         remoteSecrets name (each must exist), and the configuration of the VM's preview proxy,
+                         /etc/hunt/caddy.json, and (re)start the proxy; stops and disables the services hunt.json no
+                         longer declares; prints the services' section of the agent's prompt and the text of the
+                         repository's hunt.agent.md
   service <start|stop|restart|status> [<name>…]
                          start and enable (so that they come back when the VM boots), stop and disable, or restart the
                          named services of the hunt.json of the VM's session; prints the state of every service, for
@@ -1329,6 +1335,21 @@ cmd_deps() {
   emit '{installed: true}'
 }
 
+# Replaces REMOTE_SECRETS_FILE by the JSON object on stdin, whose values join the secrets `redact` hides.
+cmd_put_remote_secrets() {
+  (( $# == 0 )) || usage
+  local text count values
+  text=$(cat)
+  count=$(jq -e 'if type == "object" and all(.[]; type == "string" and (test("[\n\r\u0000]") | not)) then length else null end' \
+    <<<"$text" 2>/dev/null) || die "invalid remote secrets on stdin: expected a JSON object of single-line strings"
+  mapfile -t values < <(jq -r '.[]' <<<"$text")
+  secrets+=("${values[@]}")
+  install -d -m 0755 "${REMOTE_SECRETS_FILE%/*}"
+  (umask 077 && printf '%s\n' "$text" >"$REMOTE_SECRETS_FILE.tmp")
+  mv -f "$REMOTE_SECRETS_FILE.tmp" "$REMOTE_SECRETS_FILE"
+  emit --argjson count "$count" '{count: $count}'
+}
+
 cmd_session_config() {
   (( $# >= 1 )) || usage
   local id=$1 domain='' worktree result
@@ -1348,7 +1369,8 @@ cmd_session_config() {
   install -d -m 0755 "${SESSION_ENV%/*}"
   # The CLI reads hunt.json and hunt.agent.md without following symlinks and writes its files only when both are valid.
   if ! result=$("$HUNT_NODE" "$CURRENT/session/configCli.mjs" --worktree "$worktree" --short "${id:0:8}" \
-    --domain "$domain" --env-out "$SESSION_ENV" --caddy-out "$PROXY_CONFIG" --services-dir "$SERVICES_DIR"); then
+    --domain "$domain" --env-out "$SESSION_ENV" --caddy-out "$PROXY_CONFIG" --services-dir "$SERVICES_DIR" \
+    --secrets "$REMOTE_SECRETS_FILE"); then
     jq -r '.problems[]?' <<<"$result" >&2 2>/dev/null || true
     die "hunt.json or hunt.agent.md is not valid (see above)"
   fi
@@ -1756,7 +1778,7 @@ destroy_session() {
   stop_sub_relays 2>/dev/null || true
   stop_services 2>/dev/null || true
   systemctl disable --quiet --now "$PROXY_UNIT" 2>/dev/null || true
-  rm -f -- "$SECRETS_ENV" "$GITHUB_TOKEN_FILE" "$SESSION_ENV" "$PROXY_CONFIG"
+  rm -f -- "$SECRETS_ENV" "$GITHUB_TOKEN_FILE" "$SESSION_ENV" "$PROXY_CONFIG" "$REMOTE_SECRETS_FILE"
   rm -rf -- "$SERVICES_DIR"
   if [[ -f $SESSIONS/$id/meta.json ]]; then
     worktree=$(jq -r '.worktree // empty' "$SESSIONS/$id/meta.json" 2>/dev/null) || worktree=
@@ -1970,8 +1992,8 @@ main() {
   role=$(read_role)
   case $command in
     install | install-units | version) ;;
-    install-tools | init | clone | receive-pack | upload-pack | lfs-put | lfs-get | put-files | get-claude | prepare | deps | \
-      session-config | service | start | wait | stop | clear | snapshot | commit | push | github-token | status | preview-status | \
+    install-tools | init | clone | receive-pack | upload-pack | lfs-put | lfs-get | put-files | put-remote-secrets | get-claude | \
+      prepare | deps | session-config | service | start | wait | stop | clear | snapshot | commit | push | github-token | status | preview-status | \
       destroy)
       [[ $role == session ]] || die "hunt-ctl $command runs on session VMs only; this VM is the gateway"
       ;;
@@ -1981,7 +2003,7 @@ main() {
     *) usage ;;
   esac
   case $command in
-    version | status | preview-status | install-tools | stage-session | github-token) counts_as_activity=false ;;
+    version | status | preview-status | install-tools | stage-session | github-token | put-remote-secrets) counts_as_activity=false ;;
   esac
   case $command in
     status | preview-status) logs_success=false ;;
@@ -2035,6 +2057,7 @@ main() {
     clone) cmd_clone "$@" ;;
     lfs-put) cmd_lfs_put "$@" ;;
     put-files) cmd_put_files "$@" ;;
+    put-remote-secrets) cmd_put_remote_secrets "$@" ;;
     prepare) cmd_prepare "$@" ;;
     deps) cmd_deps "$@" ;;
     session-config) cmd_session_config "$@" ;;

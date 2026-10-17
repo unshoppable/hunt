@@ -11,6 +11,9 @@ import {
   parseInstance,
   parseOperation,
   parseProject,
+  addSecretVersion,
+  destroySecretVersion,
+  listEnabledSecretVersions,
   parseSecretPayload,
   readOptionalSecretBytes,
   parseZone,
@@ -180,6 +183,47 @@ describe("readOptionalSecretBytes", () => {
     const broken = fakeFetch({ [`GET ${url}`]: () => new Response("boom", { status: 500 }) });
     await expect(readOptionalSecretBytes(fixedMetadata, "HUNT_SWF_FILES_acme_app", broken.fetchImpl)).rejects.toThrow(
       "failed to read the secret HUNT_SWF_FILES_acme_app: HTTP 500 boom",
+    );
+  });
+});
+
+describe("secret versions", () => {
+  const secret = "https://secretmanager.googleapis.com/v1/projects/medconomy-hunt/secrets/HUNT_REMOTE_SECRETS";
+  const version = (n: number) => `projects/123/secrets/HUNT_REMOTE_SECRETS/versions/${n}`;
+
+  it("adds a version with the payload in base64 and returns its name", async () => {
+    const { fetchImpl, requests } = fakeFetch({ [`POST ${secret}:addVersion`]: () => Response.json({ name: version(3), state: "ENABLED" }) });
+
+    expect(await addSecretVersion(fixedMetadata, "HUNT_REMOTE_SECRETS", Buffer.from('{"A":"b"}'), fetchImpl)).toBe(version(3));
+    expect(requests).toEqual([
+      { method: "POST", url: `${secret}:addVersion`, authorization: "Bearer token-1", body: { payload: { data: Buffer.from('{"A":"b"}').toString("base64") } } },
+    ]);
+  });
+
+  it("lists the enabled versions page by page and destroys one", async () => {
+    const list = `${secret}/versions?filter=state%3AENABLED&pageSize=100`;
+    const { fetchImpl, requests } = fakeFetch({
+      [`GET ${list}`]: () => Response.json({ versions: [{ name: version(3) }, { name: version(2) }], nextPageToken: "p2" }),
+      [`GET ${list}&pageToken=p2`]: () => Response.json({ versions: [{ name: version(1) }] }),
+      [`POST https://secretmanager.googleapis.com/v1/${version(2)}:destroy`]: () => Response.json({ name: version(2), state: "DESTROYED" }),
+    });
+
+    expect(await listEnabledSecretVersions(fixedMetadata, "HUNT_REMOTE_SECRETS", fetchImpl)).toEqual([version(3), version(2), version(1)]);
+    await destroySecretVersion(fixedMetadata, version(2), fetchImpl);
+    expect(requests.map((request) => request.authorization)).toEqual(["Bearer token-1", "Bearer token-1", "Bearer token-1"]);
+    expect(requests[2].body).toEqual({});
+  });
+
+  it("names the secret but never the payload when a call fails", async () => {
+    const { fetchImpl } = fakeFetch({
+      [`POST ${secret}:addVersion`]: () => new Response('{"error": {"code": 403, "message": "Permission denied"}}', { status: 403 }),
+      [`GET ${secret}/versions?filter=state%3AENABLED&pageSize=100`]: () => new Response("boom", { status: 500 }),
+    });
+
+    const adding = addSecretVersion(fixedMetadata, "HUNT_REMOTE_SECRETS", Buffer.from("sk-secret"), fetchImpl);
+    await expect(adding).rejects.toThrow('failed to add a version to the secret HUNT_REMOTE_SECRETS: HTTP 403 {"error": {"code": 403, "message": "Permission denied"}}');
+    await expect(listEnabledSecretVersions(fixedMetadata, "HUNT_REMOTE_SECRETS", fetchImpl)).rejects.toThrow(
+      "failed to list the versions of the secret HUNT_REMOTE_SECRETS: HTTP 500 boom",
     );
   });
 });

@@ -58,6 +58,7 @@ import { createGitHub, type GitHub, type Issue, type IssueComment } from "./gith
 import { createGitHubApp, type AppCredentials, type GitHubApp } from "./githubApp.ts";
 import { AGENT_METADATA, DEFAULT_TEMPLATE, ORIGIN_LABEL, Orchestrator, sessionSummary, type Origin, type Reporter } from "./orchestrator.ts";
 import { readDomain } from "./previewDomain.ts";
+import { remoteSecretStore } from "./remoteSecretStore.ts";
 import { Reaper } from "./reaper.ts";
 import { ensureSshKey, sessionVm, type SessionVm } from "./sessionVm.ts";
 import { readSessionZones } from "./sessionZones.ts";
@@ -494,6 +495,7 @@ async function main(): Promise<void> {
   const location = { project: await metadata.project(), zone: await metadata.zone() };
   const compute = createCompute(metadata, fetch, log);
   const vm = (name: string, zone: string) => sessionVm(name, { project: location.project, zone }, log);
+  const remoteSecrets = remoteSecretStore(metadata, log);
   let wake = () => {};
   let isStopping = false;
   const orchestrator = new Orchestrator({
@@ -501,6 +503,7 @@ async function main(): Promise<void> {
     location,
     zones: () => readSessionZones(location.zone),
     vm,
+    remoteSecrets: () => remoteSecrets.all(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: Date.now,
   });

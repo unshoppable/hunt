@@ -566,3 +566,9 @@ export type ClaudeAccounts = { accounts: ClaudeAccount[]; activeId: string | nul
 
 /** Whether the GitHub token of remote sessions is stored; `hint` holds its last four characters. */
 export type GithubTokenStatus = { saved: boolean; hint: string | null };
+
+/**
+ * A remote secret the gateway keeps for every session VM (mirror of `RemoteSecretSummary` in src-tauri/src/remote/api.rs);
+ * `hint` holds the last four characters of a value of at least 12 characters, else it is empty. Hunt never reads values back.
+ */
+export type RemoteSecretSummary = { name: string; hint: string };

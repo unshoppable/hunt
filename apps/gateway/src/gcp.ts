@@ -1,8 +1,8 @@
 /**
  * The Google Cloud APIs the gateway's services use, with the access token of the gateway's service account from the
  * metadata server: the metadata server itself (project, zone, token, instance attributes), Secret Manager (the poller's
- * tokens and the private files of its repositories) and Compute Engine (the session VMs in the gateway's project, in
- * any of its zones). Plain REST through `fetch`; no dependencies.
+ * tokens, the private files of its repositories and the remote secrets) and Compute Engine (the session VMs in the
+ * gateway's project, in any of its zones). Plain REST through `fetch`; no dependencies.
  */
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import type { Log } from "../../../libs/domain/src/journal.ts";
@@ -129,6 +129,9 @@ export async function readSecret(metadata: Metadata, name: string, fetchImpl: ty
   return parseSecretPayload(await response.text(), name, options);
 }
 
+/** Why `readOptionalSecretBytes` finds no secret when the secret has no version (HTTP 404). */
+export const NO_SECRET_VERSION = "has no version";
+
 /** An optional secret's latest version as bytes, or why there is none: it has no version, or the gateway may not read it. */
 export type OptionalSecret = { bytes: Buffer; absent?: undefined } | { bytes?: undefined; absent: string };
 
@@ -139,15 +142,67 @@ export type OptionalSecret = { bytes: Buffer; absent?: undefined } | { bytes?: u
  */
 export async function readOptionalSecretBytes(metadata: Metadata, name: string, fetchImpl: typeof fetch = fetch): Promise<OptionalSecret> {
   const response = await accessSecret(metadata, name, fetchImpl);
-  if (response.status === 404) return { absent: "has no version" };
+  if (response.status === 404) return { absent: NO_SECRET_VERSION };
   if (response.status === 403) return { absent: `cannot be read by the gateway: ${(await failure(response, "read it")).message}` };
   if (!response.ok) throw await failure(response, `read the secret ${name}`);
   return { bytes: parseSecretBytes(await response.text(), name) };
 }
 
 async function accessSecret(metadata: Metadata, name: string, fetchImpl: typeof fetch): Promise<Response> {
-  const url = `${SECRET_MANAGER}/projects/${encodeURIComponent(await metadata.project())}/secrets/${encodeURIComponent(name)}/versions/latest:access`;
-  return fetchImpl(url, { headers: { Authorization: `Bearer ${await metadata.accessToken()}` } });
+  return fetchImpl(`${await secretUrl(metadata, name)}/versions/latest:access`, { headers: await authorization(metadata) });
+}
+
+/**
+ * Adds `bytes` as the latest version of the secret `name` in the gateway's project and returns the version's resource
+ * name, `projects/<number>/secrets/<name>/versions/<n>`.
+ */
+export async function addSecretVersion(metadata: Metadata, name: string, bytes: Buffer, fetchImpl: typeof fetch = fetch): Promise<string> {
+  const response = await fetchImpl(`${await secretUrl(metadata, name)}:addVersion`, {
+    method: "POST",
+    headers: { ...(await authorization(metadata)), "Content-Type": "application/json" },
+    body: JSON.stringify({ payload: { data: bytes.toString("base64") } }),
+  });
+  if (!response.ok) throw await failure(response, `add a version to the secret ${name}`);
+  const version = ((await response.json()) as { name?: unknown } | null)?.name;
+  if (typeof version !== "string" || !version) throw new Error(`failed to add a version to the secret ${name}: the response names no version`);
+  return version;
+}
+
+/** The resource names of the enabled versions of the secret `name` in the gateway's project. */
+export async function listEnabledSecretVersions(metadata: Metadata, name: string, fetchImpl: typeof fetch = fetch): Promise<string[]> {
+  const versions: string[] = [];
+  let pageToken = "";
+  do {
+    const query = new URLSearchParams({ filter: "state:ENABLED", pageSize: "100", ...(pageToken ? { pageToken } : {}) });
+    const response = await fetchImpl(`${await secretUrl(metadata, name)}/versions?${query}`, { headers: await authorization(metadata) });
+    if (!response.ok) throw await failure(response, `list the versions of the secret ${name}`);
+    const body = (await response.json()) as { versions?: { name?: unknown }[]; nextPageToken?: unknown } | null;
+    for (const version of body?.versions ?? []) {
+      if (typeof version.name === "string") {
+        versions.push(version.name);
+      }
+    }
+    pageToken = typeof body?.nextPageToken === "string" ? body.nextPageToken : "";
+  } while (pageToken);
+  return versions;
+}
+
+/** Destroys the secret version `version`, a resource name as `addSecretVersion` returns it, for good. */
+export async function destroySecretVersion(metadata: Metadata, version: string, fetchImpl: typeof fetch = fetch): Promise<void> {
+  const response = await fetchImpl(`${SECRET_MANAGER}/${version}:destroy`, {
+    method: "POST",
+    headers: { ...(await authorization(metadata)), "Content-Type": "application/json" },
+    body: "{}",
+  });
+  if (!response.ok) throw await failure(response, `destroy the secret version ${version}`);
+}
+
+async function secretUrl(metadata: Metadata, name: string): Promise<string> {
+  return `${SECRET_MANAGER}/projects/${encodeURIComponent(await metadata.project())}/secrets/${encodeURIComponent(name)}`;
+}
+
+async function authorization(metadata: Metadata): Promise<Record<string, string>> {
+  return { Authorization: `Bearer ${await metadata.accessToken()}` };
 }
 
 /** A VM as Compute Engine lists it. */

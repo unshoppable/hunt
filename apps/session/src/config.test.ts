@@ -29,6 +29,8 @@ const CWD_RULE =
   'must be a folder relative to the worktree such as "apps/web": at most 255 characters, segments of letters, digits, ".", "_" and "-", none . or ..';
 const CONTRACT_2_PROBLEM = 'preview: the preview section of contract 2 is no longer read; hunt.json holds {"version": 3, "services": {…}} at its root';
 const IAP_HEADERS = ["X-Goog-Iap-Jwt-Assertion", "X-Goog-Authenticated-User-Email", "X-Goog-Authenticated-User-Id"];
+const REMOTE_SECRET_RULE = 'must be "$<NAME>", the name of a remote secret matching ^[A-Z][A-Z0-9_]{0,63}$';
+const MISSING_SECRET = "services.web.remoteSecrets.OPENAI_API_KEY: no remote secret MED_OPENAI_API_KEY; set it in Hunt under Settings → Remote VM";
 
 /** A hunt.json with every field: a forward and a self reference, a folder, TLS and two services that are not guarded. */
 const COMPLETE = {
@@ -62,16 +64,17 @@ const COMPLETE_SERVICES: ServiceConfig[] = [
     tls: true,
     guarded: false,
     env: COMPLETE.services.backend.env,
+    remoteSecrets: {},
     worktreeInclude: [],
   },
-  { name: "ui", command: "npm start -- --port 4200", cwd: "apps/ui", port: 4200, tls: false, guarded: true, env: COMPLETE.services.ui.env, worktreeInclude: [] },
-  { name: "docs", command: "npx serve docs", cwd: null, port: 4400, tls: true, guarded: true, env: {}, worktreeInclude: [] },
-  { name: "admin", command: 'echo "$PATH" && npm run admin', cwd: null, port: 4800, tls: false, guarded: false, env: {}, worktreeInclude: [] },
+  { name: "ui", command: "npm start -- --port 4200", cwd: "apps/ui", port: 4200, tls: false, guarded: true, env: COMPLETE.services.ui.env, remoteSecrets: {}, worktreeInclude: [] },
+  { name: "docs", command: "npx serve docs", cwd: null, port: 4400, tls: true, guarded: true, env: {}, remoteSecrets: {}, worktreeInclude: [] },
+  { name: "admin", command: 'echo "$PATH" && npm run admin', cwd: null, port: 4800, tls: false, guarded: false, env: {}, remoteSecrets: {}, worktreeInclude: [] },
 ];
 
-function problemsOf(huntJson: unknown, host: SessionHost = HOST): string[] {
+function problemsOf(huntJson: unknown, host: SessionHost = HOST, secrets: Record<string, string> = {}): string[] {
   try {
-    buildSessionConfig(huntJson, host, WORKTREE);
+    buildSessionConfig(huntJson, host, WORKTREE, secrets);
   } catch (error) {
     if (error instanceof ConfigError) return error.problems;
     throw error;
@@ -102,7 +105,12 @@ describe("parseServices", () => {
     expect(parseServices(undefined)).toEqual([]);
     expect(parseServices(web({ worktreeInclude: ["apps/web/.env.private", "config/*.local"] }))[0].worktreeInclude).toEqual(["apps/web/.env.private", "config/*.local"]);
     expect(parseServices(web({ worktreeInclude: [] }))[0].worktreeInclude).toEqual([]);
-    expect(parseServices(web({}))).toEqual([{ name: "web", command: "npm start", cwd: null, port: 3000, tls: false, guarded: true, env: {}, worktreeInclude: [] }]);
+    expect(parseServices(web({}))).toEqual([{ name: "web", command: "npm start", cwd: null, port: 3000, tls: false, guarded: true, env: {}, remoteSecrets: {}, worktreeInclude: [] }]);
+  });
+
+  it("reads the remote secrets of a service by variable, without the $", () => {
+    const huntJson = web({ env: { A: "x" }, remoteSecrets: { OPENAI_API_KEY: "$MED_OPENAI_API_KEY", B: `$B${"9".repeat(63)}` } });
+    expect(parseServices(huntJson)[0].remoteSecrets).toEqual({ OPENAI_API_KEY: "MED_OPENAI_API_KEY", B: `B${"9".repeat(63)}` });
   });
 
   it("accepts the edges of every rule", () => {
@@ -111,8 +119,8 @@ describe("parseServices", () => {
 
     expect(parseServices(huntJson)).toHaveLength(64);
     expect(parseServices(huntJson).slice(62)).toEqual([
-      { name: "a".repeat(32), ...longest, tls: false, guarded: true, env: {}, worktreeInclude: [] },
-      { name: "w-2", command: "npm start", cwd: ".config/a.b_c-D9", port: 1024, tls: false, guarded: true, env: {}, worktreeInclude: [] },
+      { name: "a".repeat(32), ...longest, tls: false, guarded: true, env: {}, remoteSecrets: {}, worktreeInclude: [] },
+      { name: "w-2", command: "npm start", cwd: ".config/a.b_c-D9", port: 1024, tls: false, guarded: true, env: {}, remoteSecrets: {}, worktreeInclude: [] },
     ]);
   });
 
@@ -209,6 +217,19 @@ describe("parseServices", () => {
           "services.web.env.D: unknown placeholder ${services.web.publicUrl.host}, the form is ${services.<name>.publicUrl}",
         ],
       ],
+      [web({ remoteSecrets: [] }), ["services.web.remoteSecrets: must be an object"]],
+      [
+        web({ remoteSecrets: { lower: "$A", HUNT_KEY: "$A" } }),
+        [
+          "services.web.remoteSecrets.lower: invalid name, must match ^[A-Z_][A-Z0-9_]*$",
+          "services.web.remoteSecrets.HUNT_KEY: reserved: names starting with CLAUDE_ or HUNT_ belong to Hunt",
+        ],
+      ],
+      [web({ env: { A: "x" }, remoteSecrets: { A: "$A" } }), ["services.web.remoteSecrets.A: is set in env already"]],
+      [
+        web({ remoteSecrets: { A: "MED_KEY", B: "${MED_KEY}", C: "$med_key", D: "$", E: 1, F: `$A${"B".repeat(64)}`, G: "$A B" } }),
+        ["A", "B", "C", "D", "E", "F", "G"].map((key) => `services.web.remoteSecrets.${key}: ${REMOTE_SECRET_RULE}`),
+      ],
       [
         withServices({ Web: { command: "a", port: 3000 }, api: { command: "b", port: 3001, env: { A: "${services.Web.publicUrl}" } } }),
         [`services.Web: ${NAME_RULE}`, "services.api.env.A: ${services.Web.publicUrl}: hunt.json declares no service Web"],
@@ -283,6 +304,16 @@ describe("environments", () => {
       docs: { HUNT_SERVICE_DIR: WORKTREE, HUNT_SERVICE_COMMAND: "npx serve docs" },
       admin: { HUNT_SERVICE_DIR: WORKTREE, HUNT_SERVICE_COMMAND: 'echo "$PATH" && npm run admin' },
     });
+  });
+
+  it("gives a service the remote secrets it names after its variables and reports each one that is missing", () => {
+    const huntJson = web({ env: { PLAIN: "x" }, remoteSecrets: { OPENAI_API_KEY: "$MED_OPENAI_API_KEY", TOKEN: "$TOKEN" } });
+    const env = buildSessionConfig(huntJson, HOST, WORKTREE, { MED_OPENAI_API_KEY: "sk-1 $x", TOKEN: "t", OTHER: "o" }).serviceEnvs.web;
+
+    expect(Object.keys(env)).toEqual(["PLAIN", "OPENAI_API_KEY", "TOKEN", "HUNT_SERVICE_DIR", "HUNT_SERVICE_COMMAND"]);
+    expect(env).toMatchObject({ PLAIN: "x", OPENAI_API_KEY: "sk-1 $x", TOKEN: "t" });
+    expect(problemsOf(huntJson, HOST, { TOKEN: "t" })).toEqual([MISSING_SECRET]);
+    expect(problemsOf(huntJson)).toEqual([MISSING_SECRET, "services.web.remoteSecrets.TOKEN: no remote secret TOKEN; set it in Hunt under Settings → Remote VM"]);
   });
 
   it("returns the parsed services and everything derived from them", () => {
@@ -632,7 +663,7 @@ describe("configCli", () => {
     for (const [name, env] of Object.entries(expected.serviceEnvs)) {
       const file = join(paths.servicesDir, `${name}.env`);
       expect(assignments(readFileSync(file, "utf8")), name).toBe(assignments(envFile(env, "x")));
-      expect(statSync(file).mode & 0o777).toBe(0o644);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
     }
     expect(readFileSync(join(paths.servicesDir, "ui.env"), "utf8")).toContain(`HUNT_SERVICE_DIR="${paths.worktree}/apps/ui"\n`);
     expect(statSync(paths.servicesDir).mode & 0o777).toBe(0o755);
@@ -678,6 +709,32 @@ describe("configCli", () => {
     writeFileSync(join(paths.servicesDir, "web.env"), "STALE=1\n");
     expect(runCli(paths).status).toBe(1);
     expect(readdirSync(paths.servicesDir)).toEqual(["web.env"]);
+  });
+
+  it("gives the services the remote secrets of --secrets and reports a missing one or an invalid file", () => {
+    const huntJson = JSON.stringify(web({ remoteSecrets: { OPENAI_API_KEY: "$MED_OPENAI_API_KEY" } }));
+    const paths = setup({ "hunt.json": huntJson });
+    const secretsFile = join(paths.worktree, "..", "remote-secrets.json");
+    writeFileSync(secretsFile, JSON.stringify({ MED_OPENAI_API_KEY: 'sk-"1"', OTHER: "o" }));
+    expect(runCli(paths, ["--secrets", secretsFile]).status).toBe(0);
+    const env = readFileSync(join(paths.servicesDir, "web.env"), "utf8");
+    expect(env).toContain('\nOPENAI_API_KEY="sk-\\"1\\""\n');
+    expect(env).not.toContain("OTHER");
+
+    const missing = setup({ "hunt.json": huntJson });
+    expect(runCli(missing).output).toEqual({ ok: false, problems: [MISSING_SECRET] });
+    expect(runCli(missing, ["--secrets", join(missing.worktree, "..", "absent.json")]).output).toEqual({ ok: false, problems: [MISSING_SECRET] });
+    expect(() => statSync(missing.servicesDir)).toThrow();
+
+    const invalid = setup({});
+    const invalidFile = join(invalid.worktree, "..", "remote-secrets.json");
+    writeFileSync(invalidFile, '{"lower": "sk-secret"}');
+    const result = runCli(invalid, ["--secrets", invalidFile]);
+    expect(result.output).toEqual({
+      ok: false,
+      problems: [`remote secrets: ${invalidFile}: the remote secret "lower" is invalid: the name must match ^[A-Z][A-Z0-9_]{0,63}$`],
+    });
+    expect(JSON.stringify(result)).not.toContain("sk-secret");
   });
 
   it("reports hunt.json that is no JSON, a symlink or no file", () => {

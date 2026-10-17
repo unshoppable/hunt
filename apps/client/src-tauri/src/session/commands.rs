@@ -30,7 +30,7 @@ use crate::private_files;
 use crate::graph::{self, WatcherRegistry};
 use crate::ide;
 use crate::lsp::{self, LspRegistry};
-use crate::remote::api::GatewayApi;
+use crate::remote::api::{validate_remote_secret_name, validate_remote_secret_value, GatewayApi, RemoteSecretSummary};
 use crate::remote::preview::PreviewStatus;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize, TerminalTarget, TmuxWindow};
@@ -761,6 +761,28 @@ pub async fn list_session_vms() -> Result<Vec<remote::adoption::AdoptableSession
     Ok(remote::adoption::list_session_vms(&listed, &hello.project, &hello.zone))
 }
 
+/// The remote secrets the gateway of `settings` keeps for every session VM, as names and hints.
+#[tauri::command]
+pub async fn list_remote_secrets(settings: VmSettings) -> Result<Vec<RemoteSecretSummary>, String> {
+    gateway_of(&settings).await?.list_remote_secrets().await
+}
+
+/// Creates the remote secret `name` with `value` or replaces its value; session VMs get it when their session starts or
+/// is handed off.
+#[tauri::command]
+pub async fn set_remote_secret(settings: VmSettings, name: String, value: String) -> Result<(), String> {
+    validate_remote_secret_name(&name).map_err(|error| format!("failed to save the remote secret: {error}"))?;
+    validate_remote_secret_value(&value).map_err(|error| format!("failed to save the remote secret {name}: {error}"))?;
+    gateway_of(&settings).await?.set_remote_secret(&name, &value).await
+}
+
+/// Deletes the remote secret `name`; returns whether it existed.
+#[tauri::command]
+pub async fn delete_remote_secret(settings: VmSettings, name: String) -> Result<bool, String> {
+    validate_remote_secret_name(&name).map_err(|error| format!("failed to delete the remote secret: {error}"))?;
+    gateway_of(&settings).await?.delete_remote_secret(&name).await
+}
+
 /// Adopts the sessions of `ids` the gateway of `settings` lists that no local session knows (see `remote::adoption`):
 /// each becomes a remote session of this Mac in the local checkout of its repository, found among `repo_paths` and the
 /// repositories of the stored sessions, or without one when none matches. With or without `ids`, adopted sessions still
@@ -1450,6 +1472,12 @@ async fn gateway_vm(what: &str) -> Result<VmRef, String> {
 /// The gateway API of the remote settings, for `what` (the action).
 async fn gateway_api(what: &str) -> Result<GatewayApi, String> {
     GatewayApi::open(&gateway_vm(what).await?, &ssh_dir()?).await
+}
+
+/// The gateway API of the project in `settings`, which the calling window passes along with the call.
+async fn gateway_of(settings: &VmSettings) -> Result<GatewayApi, String> {
+    settings.validate()?;
+    GatewayApi::open(&remote::gateway_vm(settings).await?, &ssh_dir()?).await
 }
 
 /// A session VM whose deletion failed, e.g. while the Mac was offline; Hunt deletes it through the gateway at its next

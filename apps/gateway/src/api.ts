@@ -8,7 +8,8 @@
  * (`vm/hunt-api`), which runs the forwarder `apiClient.ts` as hunt-gw through sudo. The forwarder sends one line
  * `{caller, method, params}` over the socket, which only hunt-gw can open, with sudo's SUDO_USER as the caller, and
  * copies the NDJSON events of the answer to stdout. The methods that touch session VMs go through the orchestrator
- * (`orchestrator.ts`) and run on when their caller disconnects. A request's log lines and its outcome, every Compute
+ * (`orchestrator.ts`) and run on when their caller disconnects; the `secrets.*` methods change the remote secrets in
+ * Secret Manager (`remoteSecretStore.ts`). A request's log lines and its outcome, every Compute
  * Engine call and every command on a session VM go to the journal (`journal.ts`).
  * SIGHUP (the unit's reload, after an install) closes the socket and exits once the running requests ended, so that
  * systemd starts the new release. Runs on Node 24 through type stripping; no dependencies.
@@ -25,6 +26,7 @@ import { createCompute, createMetadata } from "./gcp.ts";
 import { writeLog } from "./journal.ts";
 import { DEFAULT_TEMPLATE, Orchestrator, type Reporter } from "./orchestrator.ts";
 import { readDomain } from "./previewDomain.ts";
+import { remoteSecretStore, type RemoteSecretStore } from "./remoteSecretStore.ts";
 import { ensureSshKey, sessionVm } from "./sessionVm.ts";
 import { readSessionZones } from "./sessionZones.ts";
 
@@ -42,6 +44,7 @@ export interface GatewayInfo {
 
 export interface ApiDeps {
   orchestrator: Pick<Orchestrator, "provision" | "start" | "stop" | "delete" | "get" | "listSessions">;
+  secrets: Pick<RemoteSecretStore, "list" | "set" | "delete">;
   gatewayInfo(): Promise<GatewayInfo>;
   log(message: string, level?: LogLevel): void;
 }
@@ -76,6 +79,13 @@ export async function dispatch(deps: ApiDeps, request: ApiRequest, reporter: Rep
       return {};
     case "vms.delete":
       return deps.orchestrator.delete(request.params.id);
+    case "secrets.list":
+      return { secrets: await deps.secrets.list() };
+    case "secrets.set":
+      await deps.secrets.set(request.params.name, request.params.value);
+      return {};
+    case "secrets.delete":
+      return { existed: await deps.secrets.delete(request.params.name) };
   }
 }
 
@@ -107,9 +117,11 @@ function readRequestLine(socket: Socket): Promise<string> {
   });
 }
 
-/** `method` and the session ID of a request, for the log. */
+/** `method` and the session ID or secret name of a request, for the log; never a secret's value. */
 function describeRequest(request: ApiRequest): string {
-  return "id" in request.params ? `${request.method} ${request.params.id}` : request.method;
+  if ("id" in request.params) return `${request.method} ${request.params.id}`;
+  if ("name" in request.params) return `${request.method} ${request.params.name}`;
+  return request.method;
 }
 
 /** Answers one connection: reads its request, streams the events and ends it. */
@@ -196,16 +208,19 @@ async function main(): Promise<void> {
   const metadata = createMetadata();
   const location = { project: await metadata.project(), zone: await metadata.zone() };
   const compute = createCompute(metadata, fetch, log);
+  const secrets = remoteSecretStore(metadata, log);
   const orchestrator = new Orchestrator({
     compute,
     location,
     zones: () => readSessionZones(location.zone),
     vm: (name, zone) => sessionVm(name, { project: location.project, zone }, log),
+    remoteSecrets: () => secrets.all(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: Date.now,
   });
   const api = createApiServer({
     orchestrator,
+    secrets,
     gatewayInfo: async () => ({ release: readRelease(), ...location, previewDomain: readDomain() }),
     log,
   });

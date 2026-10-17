@@ -15,6 +15,7 @@ import type {
   PullRequestDetails,
   PullRequestRef,
   PullRequestState,
+  RemoteSecretSummary,
   ReplyTarget,
   ReviewComment,
   ReviewEvent,
@@ -193,6 +194,12 @@ export const commands = {
   /** Stores the GitHub token remote sessions push and run `gh` with, replacing an earlier one. */
   setGithubToken: (token: string) => invoke<GithubTokenStatus>("set_github_token", { token }),
   removeGithubToken: () => invoke<GithubTokenStatus>("remove_github_token"),
+  /** The remote secrets the gateway puts on every session VM, sorted by name; rejects while the gateway is unreachable. */
+  listRemoteSecrets: (settings: VmSettings) => invoke<RemoteSecretSummary[]>("list_remote_secrets", { settings }),
+  /** Creates the remote secret `name` or replaces its value. */
+  setRemoteSecret: (settings: VmSettings, name: string, value: string) => invoke<void>("set_remote_secret", { settings, name, value }),
+  /** Deletes the remote secret `name`; resolves to whether it existed. */
+  deleteRemoteSecret: (settings: VmSettings, name: string) => invoke<boolean>("delete_remote_secret", { settings, name }),
   /** Every image in the macOS screenshot folder, newest first. */
   listScreenshots: () => invoke<Screenshot[]>("list_screenshots"),
   /** The image files among `paths` (e.g. files dropped into the chat) as attachments; other files are left out. */

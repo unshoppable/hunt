@@ -9,8 +9,9 @@ import type { Transport } from "./acpClient.ts";
 import { createApiServer, type ApiServer } from "./api.ts";
 import { forward } from "./apiClient.ts";
 import { parseEvent } from "./apiProtocol.ts";
-import type { Compute, Instance } from "./gcp.ts";
+import { NO_SECRET_VERSION, type Compute, type Instance } from "./gcp.ts";
 import { Orchestrator } from "./orchestrator.ts";
+import { createRemoteSecretStore, type RemoteSecretStore } from "./remoteSecretStore.ts";
 import type { SessionVm } from "./sessionVm.ts";
 
 const ID = "ab12cd34-0000-4000-8000-000000000001";
@@ -77,13 +78,32 @@ function fakeCompute() {
   return { compute, calls, instances };
 }
 
+/** The remote secret store over an in-memory Secret Manager. */
+function fakeSecrets(): RemoteSecretStore {
+  let latest: string | null = null;
+  return createRemoteSecretStore({
+    read: async () => (latest === null ? { absent: NO_SECRET_VERSION } : { bytes: Buffer.from(latest) }),
+    addVersion: async (_name, bytes) => {
+      latest = bytes.toString("utf8");
+      return "projects/1/secrets/HUNT_REMOTE_SECRETS/versions/1";
+    },
+    listVersions: async () => ["projects/1/secrets/HUNT_REMOTE_SECRETS/versions/1"],
+    destroyVersion: async () => {},
+    log: () => {},
+  });
+}
+
 /** A session VM that boots and needs the staged release; `release` holds `ensureRelease` until it is opened. */
 function fakeVm() {
   let open = () => {};
   let isOpen = Promise.resolve();
+  const huntCtlCalls: string[] = [];
   const vm: SessionVm = {
     run: async () => "",
-    huntCtl: async () => ({}),
+    huntCtl: async (args, input) => {
+      huntCtlCalls.push(`${args.join(" ")} <<< ${String(input)}`);
+      return {};
+    },
     waitUntilReady: async (_timeoutMs, onWaiting) => {
       onWaiting?.();
     },
@@ -97,6 +117,7 @@ function fakeVm() {
   };
   return {
     vm,
+    huntCtlCalls,
     hold: () => {
       isOpen = new Promise((resolve) => {
         open = resolve;
@@ -112,6 +133,7 @@ describe("the gateway API over its Unix socket", () => {
   let api: ApiServer;
   let compute: ReturnType<typeof fakeCompute>;
   let vm: ReturnType<typeof fakeVm>;
+  let secrets: RemoteSecretStore;
   let logs: string[];
 
   beforeEach(async () => {
@@ -120,10 +142,20 @@ describe("the gateway API over its Unix socket", () => {
     socketPath = join(dir, "api.sock");
     compute = fakeCompute();
     vm = fakeVm();
+    secrets = fakeSecrets();
     logs = [];
     const location = { project: "medconomy-hunt", zone: "europe-west3-a" };
     api = createApiServer({
-      orchestrator: new Orchestrator({ compute: compute.compute, location, zones: () => [location.zone], vm: () => vm.vm, sleep: async () => {}, now: () => 0 }),
+      orchestrator: new Orchestrator({
+        compute: compute.compute,
+        location,
+        zones: () => [location.zone],
+        vm: () => vm.vm,
+        remoteSecrets: () => secrets.all(),
+        sleep: async () => {},
+        now: () => 0,
+      }),
+      secrets,
       gatewayInfo: async () => ({ release: "gateway@2.0.0", ...location, previewDomain: "hunt.example.com" }),
       log: (message) => logs.push(message),
     });
@@ -189,6 +221,30 @@ describe("the gateway API over its Unix socket", () => {
 
     const listed = await call("sessions.list");
     expect(listed.final).toMatchObject({ type: "result", data: { sessions: [{ id: ID, vm: VM, owner: "jane_doe_example_com", repo: "acme/app" }] } });
+  });
+
+  it("stores remote secrets, lists them without values, puts them on the VMs it brings up and logs only their names", async () => {
+    expect((await call("secrets.list")).final).toEqual({ type: "result", data: { secrets: [] } });
+    expect((await call("secrets.set", { name: "MED_OPENAI_API_KEY", value: "sk-proj-abcdefgh1234" })).final).toEqual({ type: "result", data: {} });
+    expect((await call("secrets.list")).final).toEqual({ type: "result", data: { secrets: [{ name: "MED_OPENAI_API_KEY", hint: "1234" }] } });
+
+    await call("sessions.provision", PROVISION);
+    expect(vm.huntCtlCalls).toEqual(['put-remote-secrets <<< {"MED_OPENAI_API_KEY":"sk-proj-abcdefgh1234"}']);
+    expect((await call("secrets.delete", { name: "MED_OPENAI_API_KEY" })).final).toEqual({ type: "result", data: { existed: true } });
+    expect((await call("secrets.delete", { name: "MED_OPENAI_API_KEY" })).final).toEqual({ type: "result", data: { existed: false } });
+
+    expect((await call("secrets.set", { name: "lower", value: "sk-proj-x" })).final).toEqual({
+      type: "error",
+      code: "invalidParams",
+      message: "the name must match ^[A-Z][A-Z0-9_]{0,63}$",
+    });
+    expect((await call("secrets.set", { name: "KEY", value: "sk-proj\nx" })).final).toEqual({
+      type: "error",
+      code: "invalidParams",
+      message: "the value must be a single line",
+    });
+    expect(logs).toContainEqual(expect.stringMatching(/^jane_doe_example_com: secrets\.set MED_OPENAI_API_KEY: ok in \d+ ms$/));
+    expect(logs.join("\n")).not.toContain("sk-proj");
   });
 
   it("reports missing VMs as the contract says: notFound for start, exists false for get, alreadyGone for delete", async () => {

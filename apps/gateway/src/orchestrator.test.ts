@@ -238,6 +238,9 @@ function fakeCompute(vms: Instance[] = []) {
   };
 }
 
+/** The call that puts the remote secrets of `createOrchestrator` on a VM. */
+const PUT_SECRETS = `hunt-ctl put-remote-secrets <<< {"MED_OPENAI_API_KEY":"sk-1"}`;
+
 /**
  * A session VM whose startup script finished unless `isBooting`, that fails a readiness check with `failure` while it
  * boots and needs the staged release when `isOutdated`.
@@ -246,7 +249,10 @@ function fakeVm(options: { isBooting?: boolean; failure?: string; isOutdated?: b
   const calls: string[] = [];
   const vm: SessionVm = {
     run: async () => "",
-    huntCtl: async () => ({}),
+    huntCtl: async (args, input) => {
+      calls.push(`hunt-ctl ${args.join(" ")} <<< ${String(input)}`);
+      return {};
+    },
     waitUntilReady: async (_timeoutMs, onWaiting, onFailure) => {
       calls.push("wait until ready");
       if (options.isBooting) {
@@ -288,6 +294,7 @@ function createOrchestrator(compute: Compute, vm: SessionVm = fakeVm().vm, zones
       vmZones.push(zone);
       return vm;
     },
+    remoteSecrets: async () => ({ MED_OPENAI_API_KEY: "sk-1" }),
     sleep: async (ms) => {
       time += ms;
       await Promise.resolve();
@@ -333,7 +340,7 @@ describe("Orchestrator.provision", () => {
       { key: "hunt-title", value: "Fix login" },
     ]);
     expect(steps).toEqual(["creatingVm", "waitingForVm", "installingRuntime"]);
-    expect(calls).toEqual(["wait until ready", "ensure release"]);
+    expect(calls).toEqual(["wait until ready", "ensure release", PUT_SECRETS]);
     expect(logs[0]).toBe(`creating ${VM} from tpl-hunt-session in ${ZONE}`);
   });
 
@@ -491,7 +498,7 @@ describe("Orchestrator.start", () => {
     expect(result).toEqual({ vm: { project: "medconomy-hunt", zone: ZONE, instance: VM }, wasRunning: true, release: RELEASE });
     expect(fake.calls).toEqual([]);
     expect(steps).toEqual([]);
-    expect(calls).toEqual(["wait until ready", "ensure release"]);
+    expect(calls).toEqual(["wait until ready", "ensure release", PUT_SECRETS]);
   });
 
   it("resumes a suspended VM", async () => {
@@ -567,7 +574,7 @@ describe("Orchestrator.start", () => {
     expect(a).toEqual(b);
     expect(a.wasRunning).toBe(false);
     expect(fake.calls).toEqual([`start ${VM}`]);
-    expect(calls).toEqual(["wait until ready", "ensure release"]);
+    expect(calls).toEqual(["wait until ready", "ensure release", PUT_SECRETS]);
     expect(first.steps).toEqual(["startingVm", "installingRuntime"]);
     expect(second.steps).toEqual(["startingVm", "installingRuntime"]);
   });
@@ -584,7 +591,7 @@ describe("Orchestrator.start", () => {
 
     expect(order).toEqual(["start", "provision"]);
     expect(fake.calls).toEqual([`start ${VM}`, `setMetadata ${VM} fp0`]);
-    expect(calls).toEqual(["wait until ready", "ensure release", "wait until ready", "ensure release"]);
+    expect(calls).toEqual(["wait until ready", "ensure release", PUT_SECRETS, "wait until ready", "ensure release", PUT_SECRETS]);
   });
 });
 
@@ -641,6 +648,7 @@ describe("Orchestrator.start moving the VM", () => {
       `creating ${VM} from tpl-hunt-session in ${ZONE_B} with a disk from ${SNAPSHOT}`,
       `moved ${VM} from ${ZONE} to ${ZONE_B}; deleting the VM it replaced and the snapshot`,
       `${VM} is ready; checking its release`,
+      `put the remote secrets on ${VM} (1)`,
     ]);
   });
 

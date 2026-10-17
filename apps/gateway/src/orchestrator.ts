@@ -16,7 +16,8 @@
  * rolled back before the VM is used again; only hunt-api starts existing VMs, so this needs no lock between processes.
  *
  * Bringing a VM up starts a stopped one, resumes a suspended one and waits out a shutdown in progress, then waits until
- * it answers over SSH and its startup script finished, and hands it the staged session release. Calls that bring up the
+ * it answers over SSH and its startup script finished, hands it the staged session release and puts the remote secrets
+ * on it (`hunt-ctl put-remote-secrets`), which `hunt-ctl session-config` gives the services. Calls that bring up the
  * VM of one session share one operation: a second identical call joins the first and hears its progress from the
  * start, a different one waits until the first ended.
  */
@@ -94,6 +95,8 @@ export interface OrchestratorDeps {
   /** The zones a new session VM may go into, in order of preference. */
   zones(): string[];
   vm(name: string, zone: string): SessionVm;
+  /** Every remote secret by name (`remoteSecretStore.ts`), which each VM gets when it is brought up. */
+  remoteSecrets(): Promise<Record<string, string>>;
   sleep(ms: number): Promise<void>;
   now(): number;
 }
@@ -396,6 +399,9 @@ export class Orchestrator {
       reporter.progress("installingRuntime");
       reporter.log(`installing the staged session release on ${name}`);
     });
+    const secrets = await this.deps.remoteSecrets();
+    await vm.huntCtl(["put-remote-secrets"], JSON.stringify(secrets));
+    reporter.log(`put the remote secrets on ${name} (${Object.keys(secrets).length})`);
     return { zone, wasRunning, release };
   }
 

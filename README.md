@@ -342,7 +342,8 @@ The first call to a gateway in an app run checks that its `hello.api` is the `ap
 otherwise asks to update Hunt or to wait for the next server deploy. The handoff calls `sessions.provision`; a connect
 calls `vms.get` and reaches a running VM directly, since the gateway's `vms.start` also waits for the boot and checks
 the release over `gcloud compute ssh`, which takes seconds, and calls `vms.start` only for a VM that is off or does
-not answer; diffs call `vms.get`, deleting a session calls `vms.delete`, adoption calls `sessions.list`. So the
+not answer; diffs call `vms.get`, deleting a session calls `vms.delete`, adoption calls `sessions.list`, and the remote
+secrets of *Settings → Remote VM* call `secrets.list`, `secrets.set` and `secrets.delete`. So the
 gcloud login needs no Compute Engine rights to change VMs: Hunt uses it for the IAP tunnel to the gateway and the
 session VMs, for registering its SSH key with OS Login, and once per app run to find the gateway, the VM of the project
 labelled `hunt-role=gateway`, with its zone (`gcloud compute instances list`, which needs `compute.instances.list`, e.g.
@@ -399,6 +400,18 @@ agent does on GitHub happens as the poller's GitHub App; only what the user does
 uses the keychain's token. Connecting while the poller still sets the session up fails until its relay runs, since
 nothing is stored yet.
 
+Values a service needs that the repository does not hold, such as an API key, are remote secrets
+(`libs/domain/src/remoteSecrets.ts`): *Settings → Remote VM* lists them by name with the last four characters of
+longer values, adds, replaces and deletes them through the gateway, and never reads a value back. The gateway keeps
+all of them as one JSON object in the latest version of the Secret Manager secret `HUNT_REMOTE_SECRETS`
+(`apps/gateway/src/remoteSecretStore.ts`; a change adds a version and destroys the others) and puts the object on every
+session VM it brings up for a handoff, a start or the poller (`hunt-ctl put-remote-secrets`,
+`/etc/hunt/remote-secrets.json`, which only root reads). A service of `hunt.json` names the ones it needs under
+`remoteSecrets` (`"OPENAI_API_KEY": "$MED_OPENAI_API_KEY"`), and `session-config` writes them into its environment file;
+a name without a remote secret fails `session-config` like any other problem of `hunt.json`. A changed value reaches
+the sessions that start or are handed off afterwards. While the gateway may not read the secret, the session VMs get
+none and the journal says why.
+
 The relay (`apps/session/src/relay/`) runs on the VM as the systemd service `hunt-relay` of the user `agent`: it owns
 the ACP adapter, loads the conversation once and serves it over `/run/hunt/relay.sock`. Hunt's agent process for the
 session is then `ssh … sudo -n -u agent socat - UNIX-CONNECT:/run/hunt/relay.sock`, so the chat works as before; a
@@ -450,11 +463,12 @@ wrapper and `/etc/hunt/github-token`.
 `hunt-ctl session-config` reads the repository's `hunt.json` (contract version 3, `apps/session/src/config.ts`). It
 lists every service of the repository, a monorepo all of its apps, with its `command`, an optional `cwd`, its `port`,
 `tls` (the port speaks HTTPS), `guarded` (behind IAP, the default) and `env`, whose values may name a service's URL as
-`${services.<name>.publicUrl}`, and `worktreeInclude`, the ignored files the service needs, as glob patterns, which
-every worktree and session VM gets from the checkout (see "Worktrees and changes") and the VM only validates.
+`${services.<name>.publicUrl}`, `remoteSecrets`, variables whose values are remote secrets (`"$<NAME>"`, see "Remote
+sessions"), and `worktreeInclude`, the ignored files the service needs, as glob patterns, which every worktree and
+session VM gets from the checkout (see "Worktrees and changes") and the VM only validates.
 `session-config` writes one environment file per service to
-`/etc/hunt/services/<name>.env`, the session's environment `/etc/hunt/session.env` and the configuration of the VM's
-preview proxy, `hunt-proxy.service` (Caddy on port 8080), which serves `<short id>-<port>.<domain>` from that port on
+`/etc/hunt/services/<name>.env` (mode 0600, read by systemd only), the session's environment `/etc/hunt/session.env`
+and the configuration of the VM's preview proxy, `hunt-proxy.service` (Caddy on port 8080), which serves `<short id>-<port>.<domain>` from that port on
 localhost (servers bound to 127.0.0.1 or ::1) and `<short id>-<port>-open.<domain>` from the ports of services with
 `"guarded": false` only, keeps the Host header and logs every request to `/var/log/hunt-proxy/access.log`. When nothing
 listens on the port, it answers 503 with a line that names the service of that port. Every service
@@ -521,10 +535,13 @@ Only a start moves a VM; a suspended VM whose zone is out of capacity stays. The
 `hunt-session=<short id>`, `hunt-origin=desktop` and `hunt-owner=<caller>`, records the session's ID, repository,
 branch and title in its metadata and refuses a VM that holds another session (`conflict`); it and `vms.start` start a
 stopped VM, resume a suspended one, wait out a shutdown in progress, wait until the VM answers over SSH and its startup
-script wrote `/var/lib/hunt/session-ready`, and install the staged session release, streaming `creatingVm`,
+script wrote `/var/lib/hunt/session-ready`, install the staged session release and put the remote secrets on it,
+streaming `creatingVm`,
 `startingVm`, `movingVm`, `waitingForVm` and `installingRuntime`. Concurrent calls of one method for one session share one
 operation; the second hears its progress from the start. `vms.delete` deletes the VM with all its disks and answers
 `alreadyGone` for a VM that does not exist; `sessions.list` lists the session VMs of every zone of the project.
+`secrets.list` answers names and hints only, `secrets.set` and `secrets.delete` change one remote secret at a time, and
+the journal names the secret, never its value.
 Running requests go on when their caller disconnects, and a reload after
 an install lets them finish before the new release starts. `journalctl -u hunt-api` shows one line per request with its
 caller and its outcome, and one per Compute Engine call (method, resource, HTTP status, duration) and per command on a
@@ -662,7 +679,8 @@ The reminders live only in the poller's memory, so after a restart a session may
 
 The poller acts on GitHub as a GitHub App (`apps/gateway/src/githubApp.ts`): its App ID and private key come from
 Secret Manager (`HUNT_SWF_GITHUB_APP_ID`, `HUNT_SWF_GITHUB_APP_KEY`), as do the Claude Code OAuth token its sessions
-run with (`HUNT_SWF_CLAUDE_TOKEN`) and the private files of its repositories (`HUNT_SWF_FILES_<owner>_<repo>`). The
+run with (`HUNT_SWF_CLAUDE_TOKEN`), the private files of its repositories (`HUNT_SWF_FILES_<owner>_<repo>`) and the
+remote secrets (`HUNT_REMOTE_SECRETS`). The
 key signs a JWT per request; the poller exchanges it for an installation token per repository, valid for an hour and
 scoped to that repository, and renews it twenty minutes before it expires. Its own REST calls, `hunt-ctl clone` and
 `hunt-ctl start` take the repository's current token, and every poll gives each running session VM whose token the

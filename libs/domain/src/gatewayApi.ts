@@ -5,6 +5,7 @@
  * The app passes only session IDs: the server derives the VM name (`vm-hunt-s-<first 8 hex digits>`) and owns project,
  * zone, instance template and preview domain. `api` in `libs/domain/protocol.json` numbers this contract.
  */
+import type { RemoteSecretSummary } from "./remoteSecrets.ts";
 
 /**
  * The progress steps the server reports; the desktop's `RemoteStep` serde names, unknown ones are ignored. `movingVm`
@@ -84,6 +85,11 @@ export interface Methods {
   "vms.start": { request: { id: string }; result: { vm: VmRef; wasRunning: boolean; release: ReleaseInfo } };
   "vms.stop": { request: { id: string }; result: Record<string, never> };
   "vms.delete": { request: { id: string }; result: { alreadyGone: boolean } };
+  /** The remote secrets (`remoteSecrets.ts`) by name, each with the hint of its value; never a value. */
+  "secrets.list": { request: Record<string, never>; result: { secrets: RemoteSecretSummary[] } };
+  /** Creates or replaces a remote secret; session VMs the gateway brings up afterwards get it. */
+  "secrets.set": { request: { name: string; value: string }; result: Record<string, never> };
+  "secrets.delete": { request: { name: string }; result: { existed: boolean } };
 }
 
 export type Method = keyof Methods;
@@ -96,4 +102,7 @@ export const METHODS: readonly Method[] = [
   "vms.start",
   "vms.stop",
   "vms.delete",
+  "secrets.list",
+  "secrets.set",
+  "secrets.delete",
 ];

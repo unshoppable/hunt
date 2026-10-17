@@ -6,6 +6,7 @@
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import { METHODS, type ApiEvent, type ErrorCode, type Method, type Methods } from "../../../libs/domain/src/gatewayApi.ts";
 import { encodeLine, parseLine } from "../../../libs/domain/src/ndjson.ts";
+import { remoteSecretNameProblem, remoteSecretValueProblem } from "../../../libs/domain/src/remoteSecrets.ts";
 import { isSessionMachineType, SESSION_MACHINE_TYPES } from "../../../libs/domain/src/sessionMachineTypes.ts";
 import { REPOSITORY } from "./swfConfig.ts";
 
@@ -75,6 +76,13 @@ function sessionId(params: Record<string, unknown>): string {
   return id;
 }
 
+/** The name of a remote secret. */
+function secretName(params: Record<string, unknown>): string {
+  const problem = remoteSecretNameProblem(params.name);
+  if (problem) throw invalid(problem);
+  return params.name as string;
+}
+
 /** The machine type a provision asks for; null keeps the template's. */
 function machineType(params: Record<string, unknown>): string | null {
   const value = params.machineType ?? null;
@@ -91,6 +99,7 @@ export function parseParams(method: Method, value: unknown): Methods[Method]["re
   switch (method) {
     case "hello":
     case "sessions.list":
+    case "secrets.list":
       return {};
     case "vms.get":
     case "vms.start":
@@ -106,6 +115,14 @@ export function parseParams(method: Method, value: unknown): Methods[Method]["re
       if (typeof branch !== "string" || !isBranchName(branch)) throw invalid("branch must be a valid Git branch name");
       return { id: sessionId(params), title, repo, branch, machineType: machineType(params) };
     }
+    case "secrets.set": {
+      const name = secretName(params);
+      const problem = remoteSecretValueProblem(params.value);
+      if (problem) throw invalid(problem);
+      return { name, value: params.value as string };
+    }
+    case "secrets.delete":
+      return { name: secretName(params) };
   }
 }
 

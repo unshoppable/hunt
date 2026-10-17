@@ -381,7 +381,12 @@ the agent pushes and runs `gh` as the user: the token goes on stdin next to the 
 and git and Git LFS authenticate through gh's credential helper. A repository's `core.hooksPath` inside the worktree
 (husky's `.husky`) comes along with its ignored files, so commits and pushes on the VM run the same hooks; without one,
 Git LFS's hooks upload LFS files on push. Everyone with root on the VM can read the token, so it should be a
-fine-grained token limited to the repositories handed off.
+fine-grained token limited to the repositories handed off. A session the gateway's poller started for a `swf` issue
+keeps the poller's tokens from Secret Manager (`RemoteOrigin::keeps_vm_tokens`): connecting to or clearing it runs
+`hunt-ctl start` and `clear` with `--keep-stored`, which keeps the tokens stored on the VM and takes the ones Hunt sends
+only where the VM stores none, so everything its agent does on GitHub happens as the poller; only what the user does
+from Hunt, such as *Commit and push*, uses the keychain's token. Connecting while the poller still sets the session up
+fails until its relay runs, since nothing is stored yet.
 
 The relay (`apps/session/src/relay/`) runs on the VM as the systemd service `hunt-relay` of the user `agent`: it owns
 the ACP adapter, loads the conversation once and serves it over `/run/hunt/relay.sock`. Hunt's agent process for the

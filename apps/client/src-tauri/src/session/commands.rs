@@ -425,10 +425,18 @@ pub async fn clear_session(
     let record = store::find_session(&app, id)?;
     let host = remote_host(&app, &record);
     // Fetched before anything stops: without a token the remote conversation keeps running as it is. A sub chat's relay
-    // runs with the tokens of its session's.
-    let claude_token = match &host {
-        Some((owner, _)) if *owner == id => remote_claude_token(&app, "clear session").await?,
-        _ => String::new(),
+    // runs with the tokens of its session's; a poller session's keeps the ones stored on its VM and takes this Mac's
+    // only where it stores none, so it needs no Claude account selected.
+    let token_input = match &host {
+        Some((owner, target)) if *owner == id => {
+            let claude_token = if target.origin.keeps_vm_tokens() {
+                accounts::active_token(&app).await?.unwrap_or_default()
+            } else {
+                remote_claude_token(&app, "clear session").await?
+            };
+            remote::token_input(&claude_token, github_token::read().await?.as_deref())
+        }
+        _ => remote::token_input("", None),
     };
     drop_pending_permissions(&permissions, id);
     let finished = registry.live.lock().await.remove(&id).and_then(|mut live| live.shutdown());
@@ -448,8 +456,10 @@ pub async fn clear_session(
                 return Err(format!("failed to clear session: its VM {instance} no longer exists; send a prompt to continue the session here"));
             };
             let status = if owner == id {
-                let token_input = remote::token_input(&claude_token, github_token::read().await?.as_deref());
-                remote::hunt_ctl_with_input(&ssh, &["clear", &id.to_string()], token_input.as_bytes()).await?
+                let id_text = id.to_string();
+                let mut args = vec!["clear", &id_text];
+                args.extend(target.origin.relay_token_args());
+                remote::hunt_ctl_with_input(&ssh, &args, token_input.as_bytes()).await?
             } else {
                 remote::hunt_ctl(&ssh, &["clear", &owner.to_string(), "--sub", &id.to_string()]).await?
             };
@@ -651,7 +661,10 @@ async fn start_remote_relay(app: &AppHandle, id: Uuid, target: RemoteTarget, pro
     progress.step(RemoteStep::StartingAgent);
     // A running relay keeps its tokens, so it stays reachable with the local login selected.
     let token_input = local_token_input(app).await?;
-    remote::hunt_ctl_with_input(&ssh, &["start", &id.to_string()], token_input.as_bytes()).await?;
+    let id_text = id.to_string();
+    let mut args = vec!["start", &id_text];
+    args.extend(target.origin.relay_token_args());
+    remote::hunt_ctl_with_input(&ssh, &args, token_input.as_bytes()).await?;
     Ok(Some((ssh, target)))
 }
 
@@ -710,7 +723,8 @@ async fn remote_claude_token(app: &AppHandle, what: &str) -> Result<String, Stri
     })
 }
 
-/// The tokens for `hunt-ctl start` with the Claude account selected now, empty with the local login.
+/// The tokens for `hunt-ctl start` of a session: the Claude account selected now (empty with the local login) and the
+/// keychain's GitHub token. A poller session's relay takes them only where its VM stores none (`relay_token_args`).
 async fn local_token_input(app: &AppHandle) -> Result<String, String> {
     let claude_token = accounts::active_token(app).await?.unwrap_or_default();
     Ok(remote::token_input(&claude_token, github_token::read().await?.as_deref()))

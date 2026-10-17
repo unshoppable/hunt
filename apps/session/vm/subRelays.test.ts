@@ -1,5 +1,6 @@
 /**
- * The relays of a session's sub chats (`hunt-ctl start|wait|clear|stop <id> --sub <sub id>`, hunt-relay@.service) in a
+ * The relays of a session's sub chats (`hunt-ctl start|wait|clear|stop <id> --sub <sub id>`, hunt-relay@.service) and
+ * the tokens the session's own relay stores (`hunt-ctl start <id> [--keep-stored]`, /etc/hunt/secrets.env) in a
  * Debian 12 container with Node 24, the base of the session VMs; skipped without a Docker daemon. The container runs
  * the built session artifact (`nx build session`) with the fake `systemctl` of `fixtures/systemctl`, which logs its
  * calls to /var/log/systemctl.log and keeps each unit's state in /run/fake-systemd/<unit>. No relay runs: the tests write
@@ -48,7 +49,7 @@ rm -rf /srv/hunt/sessions /home/agent/app /home/agent/.claude /etc/hunt/secrets.
   /var/log/systemctl.log
 install -d -m 0700 /srv/hunt/sessions "/srv/hunt/sessions/$1"
 install -d -o agent -g agent /home/agent/app
-printf '{"repo": "acme/app", "worktree": "/home/agent/app", "branch": "feat/general/x", "createdAt": 1}\n' \
+printf '{"repo": "acme/app", "worktree": "/home/agent/app", "branch": "feat/general/x", "createdAt": 1, "gitName": "Agent", "gitEmail": "agent@example.com"}\n' \
   >"/srv/hunt/sessions/$1/meta.json"
 install -d -o agent -g agent -m 0700 /home/agent/.claude
 printf '%s' "$2" | runuser -u agent -- tee /home/agent/.claude/hunt-session.json >/dev/null
@@ -157,6 +158,37 @@ describe.skipIf(!hasDocker())("the relays of a session's sub chats in a Debian c
     const seeded = sh(SEED, [ID, JSON.stringify(SESSION_CONFIG)]);
     expect(seeded.stderr).toBe("");
     expect(seeded.status).toBe(0);
+  });
+
+  /** The token lines of the relay's secrets file. */
+  function storedTokens(): string[] {
+    return sh("grep -E '^(CLAUDE_CODE_OAUTH_TOKEN|GH_TOKEN)=' /etc/hunt/secrets.env").stdout.split("\n").filter((line) => line !== "");
+  }
+
+  it("starts the session's relay with the tokens on stdin, which with --keep-stored only fill what the VM has not stored", () => {
+    expect(huntCtlJson(["start", ID, "--keep-stored"], "sk-ant-new\ngithub_pat_1\n")).toEqual({ relay: "running" });
+    expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="token"', 'GH_TOKEN="github_pat_1"']);
+    expect(systemctlCalls()).toEqual([
+      "systemctl is-active --quiet hunt-relay.service",
+      "systemctl enable --quiet hunt-relay.service",
+      "systemctl restart hunt-relay.service",
+    ]);
+
+    // Without the flag a given token replaces the stored one and an empty line keeps it.
+    setState("hunt-relay.service", "inactive");
+    expect(huntCtlJson(["start", ID], "sk-ant-new\n\n")).toEqual({ relay: "running" });
+    expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="sk-ant-new"', 'GH_TOKEN="github_pat_1"']);
+
+    // A VM that lost its secrets takes both tokens even with the flag.
+    setState("hunt-relay.service", "inactive");
+    sh("rm /etc/hunt/secrets.env");
+    expect(huntCtlJson(["start", ID, "--keep-stored"], "sk-ant-other\ngithub_pat_2\n")).toEqual({ relay: "running" });
+    expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="sk-ant-other"', 'GH_TOKEN="github_pat_2"']);
+    expect(sh("stat -c %a /etc/hunt/secrets.env").stdout).toBe("600\n");
+
+    for (const args of [["stop", ID, "--keep-stored"], ["start", ID, "--keep-stored", "extra"], ["start", ID, "--sub", SUB, "--keep-stored"]]) {
+      expect(huntCtl(args).stderr, args.join(" ")).toContain("usage: hunt-ctl");
+    }
   });
 
   it("installs the template unit of the sub chats' relays", () => {

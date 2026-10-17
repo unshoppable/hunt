@@ -211,6 +211,26 @@ pub enum RemoteOrigin {
     Swf,
 }
 
+impl RemoteOrigin {
+    /// Whether the session's relay keeps the tokens stored on its VM over this Mac's: a poller session runs with the
+    /// poller's tokens from Secret Manager, so that everything its agent does on GitHub happens as the poller, and takes
+    /// this Mac's only where its VM stores none. This Mac's GitHub token otherwise serves only what the user does from
+    /// Hunt, such as `hunt-ctl push`.
+    pub fn keeps_vm_tokens(self) -> bool {
+        self == RemoteOrigin::Swf
+    }
+
+    /// The arguments after the session id of `hunt-ctl start` and `clear` for a session of this origin: `--keep-stored`
+    /// makes the relay keep the tokens its VM stores and take those on stdin only where it stores none.
+    pub fn relay_token_args(self) -> &'static [&'static str] {
+        if self.keeps_vm_tokens() {
+            &["--keep-stored"]
+        } else {
+            &[]
+        }
+    }
+}
+
 /// The time of the agent's last work the relay reports in its status (`hunt-ctl wait` or `status`): `now` while a turn
 /// runs, else when the last turn ended (Unix ms); `None` when no turn ended since the relay started. Client activity
 /// does not count, since every connect of Hunt is some.
@@ -425,6 +445,15 @@ mod tests {
         assert_eq!(relay_activity(&serde_json::json!({ "turn": "running", "lastTurnEndedAt": null }), now), Some(now));
         assert_eq!(relay_activity(&serde_json::json!({ "turn": "idle", "lastTurnEndedAt": null }), now), None);
         assert_eq!(relay_activity(&serde_json::Value::Null, now), None);
+    }
+
+    #[test]
+    fn only_a_poller_session_keeps_the_tokens_of_its_vm() {
+        assert!(RemoteOrigin::Swf.keeps_vm_tokens());
+        assert!(!RemoteOrigin::Handoff.keeps_vm_tokens());
+        assert!(!RemoteOrigin::Desktop.keeps_vm_tokens());
+        assert_eq!(RemoteOrigin::Swf.relay_token_args(), ["--keep-stored"]);
+        assert_eq!(RemoteOrigin::Handoff.relay_token_args(), [] as [&str; 0]);
     }
 
     #[test]

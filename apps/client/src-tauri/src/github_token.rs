@@ -1,5 +1,6 @@
 //! The GitHub token remote sessions push and use `gh` with: one fine-grained personal access token per user, kept in
-//! the macOS keychain. Hunt hands it to the session's container on the VM, where it is `GH_TOKEN`.
+//! the macOS keychain. Hunt hands it to the session's VM, where `hunt-ctl` keeps it in `/etc/hunt/github-token` for
+//! gh's wrapper and git's credential helper.
 
 use serde::Serialize;
 

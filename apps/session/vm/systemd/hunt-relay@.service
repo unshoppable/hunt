@@ -2,8 +2,9 @@
 # (apps/session/src/relay/main.ts) with its own conversation, which it serves on /run/hunt-sub/<id>/relay.sock; Hunt
 # reaches it with `sudo -n -u agent socat - UNIX-CONNECT:…`, and the idle check reads /run/hunt-sub/<id>/status.json. Its
 # configuration, ~/.claude/hunt-subs/<id>.json, is the session's hunt-session.json with the sub chat's part of the system
-# prompt appended (`hunt-ctl start <session> --sub <id>`). The environment is the session relay's, tokens included. Hunt
-# starts it when it connects to the sub chat; it is never enabled, so it stays down after the VM boots until then.
+# prompt appended (`hunt-ctl start <session> --sub <id>`). The environment is the session relay's, the Claude token
+# included; the GitHub token comes through gh's wrapper. Hunt starts it when it connects to the sub chat; it is never
+# enabled, so it stays down after the VM boots until then.
 [Unit]
 Description=Relay of a sub chat of Hunt's remote session (%i)
 After=network-online.target docker.service

@@ -63,10 +63,16 @@ export function parseSecretBytes(text: string, name: string): Buffer {
   return Buffer.from(data, "base64");
 }
 
+/** How a secret's text is checked: one line without whitespace by default; `multiline` for a text such as a PEM key. */
+export interface SecretOptions {
+  multiline?: boolean;
+}
+
 /** The text of a Secret Manager `versions/<v>:access` response: its base64 payload, without surrounding whitespace. */
-export function parseSecretPayload(text: string, name: string): string {
+export function parseSecretPayload(text: string, name: string, options: SecretOptions = {}): string {
   const secret = parseSecretBytes(text, name).toString("utf8").trim();
-  if (!secret || /\s/.test(secret)) throw new Error(`failed to read the secret ${name}: its latest version is empty or contains whitespace`);
+  if (!secret || (!options.multiline && /\s/.test(secret))) throw new Error(`failed to read the secret ${name}: its latest version is empty or contains whitespace`);
+  if (secret.includes("\0")) throw new Error(`failed to read the secret ${name}: its latest version is no text`);
   return secret;
 }
 
@@ -117,10 +123,10 @@ export function createMetadata(fetchImpl: typeof fetch = fetch, now: () => numbe
 }
 
 /** Reads the latest version of the secret `name` in the gateway's project. */
-export async function readSecret(metadata: Metadata, name: string, fetchImpl: typeof fetch = fetch): Promise<string> {
+export async function readSecret(metadata: Metadata, name: string, fetchImpl: typeof fetch = fetch, options: SecretOptions = {}): Promise<string> {
   const response = await accessSecret(metadata, name, fetchImpl);
   if (!response.ok) throw await failure(response, `read the secret ${name}`);
-  return parseSecretPayload(await response.text(), name);
+  return parseSecretPayload(await response.text(), name, options);
 }
 
 /** An optional secret's latest version as bytes, or why there is none: it has no version, or the gateway may not read it. */

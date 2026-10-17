@@ -1,7 +1,8 @@
 /**
  * The relays of a session's sub chats (`hunt-ctl start|wait|clear|stop <id> --sub <sub id>`, hunt-relay@.service) and
- * the tokens the session's own relay stores (`hunt-ctl start <id> [--keep-stored]`, /etc/hunt/secrets.env) in a
- * Debian 12 container with Node 24, the base of the session VMs; skipped without a Docker daemon. The container runs
+ * the tokens the session's own relay stores (`hunt-ctl start <id> [--keep-stored]`, /etc/hunt/secrets.env and
+ * /etc/hunt/github-token, which `hunt-ctl github-token` replaces and gh's wrapper vm/hunt-gh reads) in a Debian 12
+ * container with Node 24, the base of the session VMs; skipped without a Docker daemon. The container runs
  * the built session artifact (`nx build session`) with the fake `systemctl` of `fixtures/systemctl`, which logs its
  * calls to /var/log/systemctl.log and keeps each unit's state in /run/fake-systemd/<unit>. No relay runs: the tests write
  * the status.json a relay would write.
@@ -45,8 +46,8 @@ install -m 0755 /fixtures/systemctl /usr/local/bin/systemctl
  */
 const SEED = String.raw`
 set -euo pipefail
-rm -rf /srv/hunt/sessions /home/agent/app /home/agent/.claude /etc/hunt/secrets.env /run/fake-systemd /run/hunt-sub \
-  /var/log/systemctl.log
+rm -rf /srv/hunt/sessions /home/agent/app /home/agent/.claude /etc/hunt/secrets.env /etc/hunt/github-token \
+  /var/lib/hunt/activity /run/fake-systemd /run/hunt-sub /var/log/systemctl.log
 install -d -m 0700 /srv/hunt/sessions "/srv/hunt/sessions/$1"
 install -d -o agent -g agent /home/agent/app
 printf '{"repo": "acme/app", "worktree": "/home/agent/app", "branch": "feat/general/x", "createdAt": 1, "gitName": "Agent", "gitEmail": "agent@example.com"}\n' \
@@ -160,35 +161,84 @@ describe.skipIf(!hasDocker())("the relays of a session's sub chats in a Debian c
     expect(seeded.status).toBe(0);
   });
 
-  /** The token lines of the relay's secrets file. */
+  /** The token lines of the relay's secrets file (never a GH_TOKEN) followed by the GitHub token file's line, if any. */
   function storedTokens(): string[] {
-    return sh("grep -E '^(CLAUDE_CODE_OAUTH_TOKEN|GH_TOKEN)=' /etc/hunt/secrets.env").stdout.split("\n").filter((line) => line !== "");
+    const secrets = sh("cat /etc/hunt/secrets.env").stdout;
+    expect(secrets).not.toContain("GH_TOKEN");
+    const claude = secrets.split("\n").filter((line) => line.startsWith("CLAUDE_CODE_OAUTH_TOKEN="));
+    const github = sh("cat /etc/hunt/github-token 2>/dev/null || true").stdout.split("\n").filter((line) => line !== "");
+    return [...claude, ...github];
   }
 
   it("starts the session's relay with the tokens on stdin, which with --keep-stored only fill what the VM has not stored", () => {
     expect(huntCtlJson(["start", ID, "--keep-stored"], "sk-ant-new\ngithub_pat_1\n")).toEqual({ relay: "running" });
-    expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="token"', 'GH_TOKEN="github_pat_1"']);
+    expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="token"', "github_pat_1"]);
     expect(systemctlCalls()).toEqual([
       "systemctl is-active --quiet hunt-relay.service",
       "systemctl enable --quiet hunt-relay.service",
       "systemctl restart hunt-relay.service",
     ]);
+    // The agent reads the GitHub token through gh's wrapper; only root writes it.
+    expect(sh('stat -c "%a %U %G" /etc/hunt/github-token').stdout).toBe("640 root agent\n");
+    expect(sh("stat -c %a /etc/hunt/secrets.env").stdout).toBe("600\n");
 
     // Without the flag a given token replaces the stored one and an empty line keeps it.
     setState("hunt-relay.service", "inactive");
     expect(huntCtlJson(["start", ID], "sk-ant-new\n\n")).toEqual({ relay: "running" });
-    expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="sk-ant-new"', 'GH_TOKEN="github_pat_1"']);
+    expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="sk-ant-new"', "github_pat_1"]);
+    setState("hunt-relay.service", "inactive");
+    expect(huntCtlJson(["start", ID], "\ngithub_pat_3\n")).toEqual({ relay: "running" });
+    expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="sk-ant-new"', "github_pat_3"]);
 
     // A VM that lost its secrets takes both tokens even with the flag.
     setState("hunt-relay.service", "inactive");
-    sh("rm /etc/hunt/secrets.env");
+    sh("rm /etc/hunt/secrets.env /etc/hunt/github-token");
     expect(huntCtlJson(["start", ID, "--keep-stored"], "sk-ant-other\ngithub_pat_2\n")).toEqual({ relay: "running" });
-    expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="sk-ant-other"', 'GH_TOKEN="github_pat_2"']);
-    expect(sh("stat -c %a /etc/hunt/secrets.env").stdout).toBe("600\n");
+    expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="sk-ant-other"', "github_pat_2"]);
 
     for (const args of [["stop", ID, "--keep-stored"], ["start", ID, "--keep-stored", "extra"], ["start", ID, "--sub", SUB, "--keep-stored"]]) {
       expect(huntCtl(args).stderr, args.join(" ")).toContain("usage: hunt-ctl");
     }
+  });
+
+  it("replaces the GitHub token with github-token without touching the relay, and does not count that as activity", () => {
+    huntCtlJson(["start", ID], "sk-ant-new\ngithub_pat_1\n");
+    systemctlCalls();
+    sh("rm -f /var/lib/hunt/activity");
+    expect(huntCtlJson(["github-token", ID], "ghs_new\n")).toEqual({});
+    expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="sk-ant-new"', "ghs_new"]);
+    expect(sh('stat -c "%a %U %G" /etc/hunt/github-token').stdout).toBe("640 root agent\n");
+    expect(systemctlCalls()).toEqual([]);
+    expect(sh("test -e /var/lib/hunt/activity || echo none").stdout).toBe("none\n");
+
+    expect(huntCtl(["github-token", ID], "two words\n")).toMatchObject({
+      status: 3,
+      stdout: "",
+      stderr: expect.stringContaining("hunt-ctl: invalid GitHub token on stdin"),
+    });
+    expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="sk-ant-new"', "ghs_new"]);
+    expect(huntCtl(["github-token", OTHER_SUB], "ghs_other\n").stderr).toContain(`hunt-ctl: session ${OTHER_SUB} is not initialized on this VM`);
+    expect(huntCtl(["github-token", ID, "extra"], "ghs_other\n").stderr).toContain("usage: hunt-ctl");
+  });
+
+  it("runs gh through the wrapper vm/hunt-gh, which exports the token file as GH_TOKEN at every invocation", () => {
+    // The real gh is a script that prints GH_TOKEN and its arguments.
+    const fakeGh = '#!/bin/sh\nprintf "%s|%s\\n" "${GH_TOKEN-unset}" "$*"\n';
+    const installed = sh(
+      "install -m 0755 /srv/hunt/current/vm/hunt-gh /usr/local/bin/gh && install -d -m 0755 /usr/local/libexec/hunt && " +
+        'printf "%s" "$1" >/usr/local/libexec/hunt/gh && chmod 0755 /usr/local/libexec/hunt/gh',
+      [fakeGh],
+    );
+    expect(installed).toMatchObject({ status: 0, stderr: "" });
+    huntCtlJson(["start", ID], "sk-ant-new\ngithub_pat_1\n");
+    const asAgent = (...args: string[]) => docker(["exec", "-u", "agent", container, "env", ...args]);
+    expect(asAgent("gh", "auth", "git-credential", "get")).toMatchObject({ status: 0, stdout: "github_pat_1|auth git-credential get\n" });
+    huntCtlJson(["github-token", ID], "ghs_new\n");
+    // A stale GH_TOKEN of a relay started before the refresh loses to the file.
+    expect(asAgent("GH_TOKEN=old", "gh", "pr", "list")).toMatchObject({ status: 0, stdout: "ghs_new|pr list\n" });
+    sh("rm /etc/hunt/github-token");
+    expect(asAgent("GH_TOKEN=old", "gh", "x")).toMatchObject({ status: 0, stdout: "old|x\n" });
+    expect(asAgent("gh", "x")).toMatchObject({ status: 0, stdout: "unset|x\n" });
   });
 
   it("installs the template unit of the sub chats' relays", () => {

@@ -1,6 +1,7 @@
 /**
- * The GitHub REST calls of hunt-swf (`swf.ts`) with the poller's token: open issues with a label, their comments,
- * labels and comments on an issue, and the repository labels the poller sets. Plain `fetch`; no dependencies.
+ * The GitHub REST calls of hunt-swf (`swf.ts`) with the installation token of the repository (`githubApp.ts`): open
+ * issues with a label, their comments, labels and comments on an issue, and the repository labels the poller sets.
+ * Plain `fetch`; no dependencies.
  */
 
 const API = "https://api.github.com";
@@ -108,11 +109,12 @@ function repoPath(repo: string): string {
   return repo.split("/").map(encodeURIComponent).join("/");
 }
 
-export function createGitHub(token: string, fetchImpl: typeof fetch = fetch): GitHub {
-  async function call(method: string, path: string, body?: unknown): Promise<Response> {
+/** `tokenFor` gives the token every call to a repository goes with; it is asked per request, so a renewed token counts. */
+export function createGitHub(tokenFor: (repo: string) => Promise<string>, fetchImpl: typeof fetch = fetch): GitHub {
+  async function call(repo: string, method: string, path: string, body?: unknown): Promise<Response> {
     const headers: Record<string, string> = {
       Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${await tokenFor(repo)}`,
       "User-Agent": "hunt-swf",
       "X-GitHub-Api-Version": "2022-11-28",
     };
@@ -122,7 +124,7 @@ export function createGitHub(token: string, fetchImpl: typeof fetch = fetch): Gi
     // Pagination links are absolute; the token goes to GitHub's API only.
     if (!path.startsWith("/") && !path.startsWith(`${API}/`)) throw new Error(`refused to call ${path.slice(0, 100)} with the GitHub token`);
     const url = path.startsWith("/") ? `${API}${path}` : path;
-    return fetchImpl(url,{ method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    return fetchImpl(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   }
 
   async function failure(response: Response, what: string): Promise<Error> {
@@ -130,12 +132,12 @@ export function createGitHub(token: string, fetchImpl: typeof fetch = fetch): Gi
     return new Error(`failed to ${what}: HTTP ${response.status} ${text}`);
   }
 
-  /** Every item of a paginated list. */
-  async function list(path: string, what: string): Promise<unknown[]> {
+  /** Every item of a paginated list of `repo`. */
+  async function list(repo: string, path: string, what: string): Promise<unknown[]> {
     const items: unknown[] = [];
     let next: string | null = path;
     while (next) {
-      const response = await call("GET", next);
+      const response = await call(repo, "GET", next);
       if (!response.ok) throw await failure(response, what);
       items.push(...((await response.json()) as unknown[]));
       next = nextPageUrl(response.headers.get("link"));
@@ -146,36 +148,36 @@ export function createGitHub(token: string, fetchImpl: typeof fetch = fetch): Gi
   return {
     async openIssues(repo, label) {
       const query = `state=open&labels=${encodeURIComponent(label)}&sort=created&direction=asc&per_page=${PER_PAGE}`;
-      return parseIssues(await list(`/repos/${repoPath(repo)}/issues?${query}`, `list the issues of ${repo} labelled ${label}`));
+      return parseIssues(await list(repo, `/repos/${repoPath(repo)}/issues?${query}`, `list the issues of ${repo} labelled ${label}`));
     },
     async issue(repo, issue) {
-      const response = await call("GET", `/repos/${repoPath(repo)}/issues/${issue}`);
+      const response = await call(repo, "GET", `/repos/${repoPath(repo)}/issues/${issue}`);
       if (response.status === 404) return null;
       if (!response.ok) throw await failure(response, `read ${repo}#${issue}`);
       return parseIssues([await response.json()])[0] ?? null;
     },
     async comments(repo, issue) {
-      return parseComments(await list(`/repos/${repoPath(repo)}/issues/${issue}/comments?per_page=${PER_PAGE}`, `read the comments of ${repo}#${issue}`));
+      return parseComments(await list(repo, `/repos/${repoPath(repo)}/issues/${issue}/comments?per_page=${PER_PAGE}`, `read the comments of ${repo}#${issue}`));
     },
     async removeLabel(repo, issue, label) {
-      const response = await call("DELETE", `/repos/${repoPath(repo)}/issues/${issue}/labels/${encodeURIComponent(label)}`);
+      const response = await call(repo, "DELETE", `/repos/${repoPath(repo)}/issues/${issue}/labels/${encodeURIComponent(label)}`);
       if (response.status === 404) return false;
       if (!response.ok) throw await failure(response, `remove the label ${label} from ${repo}#${issue}`);
       return true;
     },
     async addLabels(repo, issue, labels) {
-      const response = await call("POST", `/repos/${repoPath(repo)}/issues/${issue}/labels`, { labels });
+      const response = await call(repo, "POST", `/repos/${repoPath(repo)}/issues/${issue}/labels`, { labels });
       if (!response.ok) throw await failure(response, `label ${repo}#${issue} with ${labels.join(", ")}`);
     },
     async comment(repo, issue, body) {
-      const response = await call("POST", `/repos/${repoPath(repo)}/issues/${issue}/comments`, { body });
+      const response = await call(repo, "POST", `/repos/${repoPath(repo)}/issues/${issue}/comments`, { body });
       if (!response.ok) throw await failure(response, `comment on ${repo}#${issue}`);
     },
     async ensureLabel(repo, label) {
-      const existing = await call("GET", `/repos/${repoPath(repo)}/labels/${encodeURIComponent(label.name)}`);
+      const existing = await call(repo, "GET", `/repos/${repoPath(repo)}/labels/${encodeURIComponent(label.name)}`);
       if (existing.ok) return;
       if (existing.status !== 404) throw await failure(existing, `look up the label ${label.name} of ${repo}`);
-      const created = await call("POST", `/repos/${repoPath(repo)}/labels`, label);
+      const created = await call(repo, "POST", `/repos/${repoPath(repo)}/labels`, label);
       // 422: created meanwhile.
       if (!created.ok && created.status !== 422) throw await failure(created, `create the label ${label.name} in ${repo}`);
     },

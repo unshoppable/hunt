@@ -28,15 +28,19 @@
  * reminded once more. Between polls, the reaper (`reaper.ts`) deletes session VMs that have been stopped for more than
  * a week.
  *
- * The GitHub token (`HUNT_SWF_GITHUB_TOKEN`), the Claude Code OAuth token (`HUNT_SWF_CLAUDE_TOKEN`) and the private
- * files of each repository (`HUNT_SWF_FILES_<owner>_<repo>`, a gzipped tar archive, optional) come from Secret
+ * On GitHub the poller and its sessions act as a GitHub App (`githubApp.ts`): the app's id and private key
+ * (`HUNT_SWF_GITHUB_APP_ID`, `HUNT_SWF_GITHUB_APP_KEY`), the Claude Code OAuth token (`HUNT_SWF_CLAUDE_TOKEN`) and the
+ * private files of each repository (`HUNT_SWF_FILES_<owner>_<repo>`, a gzipped tar archive, optional) come from Secret
  * Manager; project, zone, access token and configuration from the metadata server; the preview domain from what
- * `hunt-ctl install` wrote (`previewDomain.ts`). One log line per decision, Compute Engine call and command on a
- * session VM goes to the journal (`journal.ts`); tokens never appear in logs or comments. SIGHUP (the unit's reload, after an install) makes the poller exit once the sessions it
+ * `hunt-ctl install` wrote (`previewDomain.ts`). The app's installation tokens are valid for one hour and limited to one
+ * repository each: a session's clone, its commits (with the app's bot identity) and its relay get the current one, and
+ * every poll hands a renewed token to each running session VM (`hunt-ctl github-token`), so git, Git LFS and `gh` there
+ * keep working without a relay restart. One log line per decision, Compute Engine call and command on a session VM
+ * goes to the journal (`journal.ts`); tokens and the key never appear in logs or comments. SIGHUP (the unit's reload, after an install) makes the poller exit once the sessions it
  * sets up are running, so that systemd starts the new release; SIGTERM marks those still being set up as failed and
  * exits. Runs on Node 24 through type stripping; no dependencies.
  */
-import { randomUUID } from "node:crypto";
+import { createPrivateKey, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import gitPushPrompt from "../../../libs/domain/prompts/git-push.system-prompt.md?raw";
@@ -51,6 +55,7 @@ import { sendPrompt, type Transport } from "./acpClient.ts";
 import { createCompute, createMetadata, metadataValue, readOptionalSecretBytes, readSecret, type Compute, type Instance, type Metadata, type OptionalSecret } from "./gcp.ts";
 import { writeLog } from "./journal.ts";
 import { createGitHub, type GitHub, type Issue, type IssueComment } from "./github.ts";
+import { createGitHubApp, type AppCredentials, type GitHubApp } from "./githubApp.ts";
 import { AGENT_METADATA, DEFAULT_TEMPLATE, ORIGIN_LABEL, Orchestrator, sessionSummary, type Origin, type Reporter } from "./orchestrator.ts";
 import { readDomain } from "./previewDomain.ts";
 import { Reaper } from "./reaper.ts";
@@ -83,16 +88,18 @@ import {
 
 export const POLL_INTERVAL_MS = 30_000;
 export const ORIGIN: Origin = "swf";
-const GITHUB_SECRET = "HUNT_SWF_GITHUB_TOKEN";
+const GITHUB_APP_ID_SECRET = "HUNT_SWF_GITHUB_APP_ID";
+const GITHUB_APP_KEY_SECRET = "HUNT_SWF_GITHUB_APP_KEY";
 const CLAUDE_SECRET = "HUNT_SWF_CLAUDE_TOKEN";
 /** Secrets are read again after this long, so a new version takes effect without a restart. */
 const SECRETS_TTL_MS = 10 * 60_000;
 /** How long SIGTERM waits for the issues of unfinished setups to be marked as failed. */
 const ABORT_TIMEOUT_MS = 20_000;
 
-export interface Tokens {
-  github: string;
+/** The secrets the poller runs with: the Claude Code OAuth token of its sessions and the GitHub App's credentials. */
+export interface Secrets {
   claude: string;
+  app: AppCredentials;
 }
 
 export interface PollerDeps {
@@ -100,10 +107,12 @@ export interface PollerDeps {
   readConfig(): Promise<SwfConfig>;
   /** The preview domain of the gateway's edge proxy. Throws without one. */
   readDomain(): string;
-  tokens(): Promise<Tokens>;
+  secrets(): Promise<Secrets>;
   /** The latest version of the optional secret `name` as bytes, or why there is none. */
   secretBytes(name: string): Promise<OptionalSecret>;
-  github(token: string): GitHub;
+  github: GitHub;
+  /** The GitHub App's tokens and identity; its token cache outlives a poll. */
+  githubApp: GitHubApp;
   compute: Compute;
   orchestrator: Orchestrator;
   vm(name: string, zone: string): SessionVm;
@@ -118,7 +127,6 @@ interface Setup {
   key: string;
   repo: string;
   issue: number;
-  github: GitHub;
   labels: SwfLabels;
   names: SessionNames;
   isVmCreated: boolean;
@@ -131,6 +139,8 @@ interface Watched {
   remindedAt: number | null;
   /** The last error of following the session, so that a lasting one is logged once. */
   error: string;
+  /** The GitHub token the poller last gave the VM; empty until it gave one. */
+  token: string;
 }
 
 /** The fields of `hunt-ctl status` the poller reads: the relay's status and the session's worktree. */
@@ -172,7 +182,8 @@ export class Poller {
   private lastNote = "";
   /** The last error of each repository whose issues could not be listed, so that a lasting one is logged once. */
   private readonly repoErrors = new Map<string, string>();
-  private secrets: string[] = [];
+  /** The Claude Code token last read, for redaction. */
+  private claudeToken = "";
 
   constructor(deps: PollerDeps) {
     this.deps = deps;
@@ -186,7 +197,7 @@ export class Poller {
   }
 
   private redacted(error: unknown): string {
-    return redact(messageOf(error), this.secrets);
+    return redact(messageOf(error), [this.claudeToken, ...this.deps.githubApp.secrets()]);
   }
 
   /** One poll: claims the issues that get a session now and starts their setups in the background. */
@@ -204,17 +215,17 @@ export class Poller {
       this.note(`idle: ${this.redacted(error)}`, "error");
       return;
     }
-    let tokens: Tokens;
+    let secrets: Secrets;
     let vms: Instance[];
     try {
-      tokens = await this.deps.tokens();
-      this.secrets = [tokens.github, tokens.claude];
+      secrets = await this.deps.secrets();
+      this.claudeToken = secrets.claude;
       vms = await this.deps.compute.listByLabel(ORIGIN_LABEL, ORIGIN);
     } catch (error) {
       this.note(`poll failed: ${this.redacted(error)}`, "error");
       return;
     }
-    const github = this.deps.github(tokens.github);
+    const github = this.deps.github;
     const labels = swfLabels(SWF_LABEL);
     await this.watchSessions(github, labels, vms);
     const active = activeSessionVms(vms, this.setups.keys());
@@ -239,18 +250,21 @@ export class Poller {
       this.note(`polling ${config.repos.join(", ")}: no open issues labelled ${labels.requested}`);
     }
     for (const { repo, issue } of start) {
-      await this.claimAndStart(domain, tokens, github, labels, repo, issue);
+      await this.claimAndStart(domain, secrets.claude, github, labels, repo, issue);
     }
   }
 
-  /** Follows the agent of every running session VM that is not being set up; a failure with one VM is logged once. */
+  /**
+   * Hands every running session VM that is not being set up the current GitHub token of its repository when it
+   * changed, and follows its agent; a failure with one VM is logged once.
+   */
   private async watchSessions(github: GitHub, labels: SwfLabels, vms: Instance[]): Promise<void> {
     const running = new Set<string>();
     for (const instance of vms) {
       const session = sessionSummary(instance, instance.zone);
       if (!session || session.issue === null || instance.status !== "RUNNING" || this.setups.has(instance.name)) continue;
       running.add(instance.name);
-      const watched = this.watched.get(instance.name) ?? { remindedAt: null, error: "" };
+      const watched = this.watched.get(instance.name) ?? { remindedAt: null, error: "", token: "" };
       this.watched.set(instance.name, watched);
       try {
         await this.watchSession(github, labels, instance, session.id, session.repo, session.issue, watched);
@@ -271,11 +285,18 @@ export class Poller {
   }
 
   /**
-   * Records the agent's state in the VM and, while the issue is still labelled running, reminds an agent that ended its
-   * turn, or marks the issue as failed when the reminded turn ended the same way; see the module comment.
+   * Gives the VM the repository's GitHub token unless it has it, records the agent's state in the VM and, while the issue
+   * is still labelled running, reminds an agent that ended its turn, or marks the issue as failed when the reminded turn
+   * ended the same way; see the module comment.
    */
   private async watchSession(github: GitHub, labels: SwfLabels, instance: Instance, id: string, repo: string, issue: number, watched: Watched): Promise<void> {
     const key = `${repo}#${issue}`;
+    const token = await this.deps.githubApp.tokenFor(repo);
+    if (token !== watched.token) {
+      await this.deps.vm(instance.name, instance.zone).huntCtl(["github-token", id], `${token}\n`);
+      watched.token = token;
+      this.deps.log(`${key}: gave the VM a fresh GitHub token`);
+    }
     const state = agentStateOf(await github.issue(repo, issue), labels);
     if (metadataValue(instance, AGENT_METADATA) !== state) {
       await this.deps.orchestrator.recordSession(instance.zone, instance.name, id, { [AGENT_METADATA]: state });
@@ -298,7 +319,7 @@ export class Poller {
   }
 
   /** Claims the issue and starts its setup in the background; an issue that cannot be claimed stays for the next poll. */
-  private async claimAndStart(domain: string, tokens: Tokens, github: GitHub, labels: SwfLabels, repo: string, issue: Issue): Promise<void> {
+  private async claimAndStart(domain: string, claudeToken: string, github: GitHub, labels: SwfLabels, repo: string, issue: Issue): Promise<void> {
     const key = `${repo}#${issue.number}`;
     let comments: IssueComment[];
     try {
@@ -316,13 +337,13 @@ export class Poller {
     const names = sessionNames(this.deps.newId());
     const branch = branchName(issue);
     this.deps.log(`${key}: claimed; session ${names.id} on ${names.vm}, branch ${branch}`);
-    const setup: Setup = { key, repo, issue: issue.number, github, labels, names, isVmCreated: false, done: Promise.resolve() };
+    const setup: Setup = { key, repo, issue: issue.number, labels, names, isVmCreated: false, done: Promise.resolve() };
     this.setups.set(names.vm, setup);
     setup.done = (async () => {
       try {
         await github.addLabels(repo, issue.number, [labels.running]);
         await github.comment(repo, issue.number, claimComment(names, branch, domain));
-        await this.setUp(setup, domain, tokens, branch, issue, comments);
+        await this.setUp(setup, domain, claudeToken, branch, issue, comments);
       } catch (error) {
         await this.markFailed(setup, this.redacted(error));
       } finally {
@@ -341,7 +362,7 @@ export class Poller {
   }
 
   /** The handoff of the desktop, from the VM to the first prompt; see the module comment. */
-  private async setUp(setup: Setup, domain: string, tokens: Tokens, branch: string, issue: Issue, comments: IssueComment[]): Promise<void> {
+  private async setUp(setup: Setup, domain: string, claudeToken: string, branch: string, issue: Issue, comments: IssueComment[]): Promise<void> {
     const { key, repo, names } = setup;
     const log = (message: string) => this.deps.log(`${key}: ${message}`);
     const reporter: Reporter = {
@@ -357,7 +378,10 @@ export class Poller {
     const vm = this.deps.vm(names.vm, provisioned.vm.zone);
     await vm.huntCtl(["install-tools"]);
 
-    const cloned = await vm.huntCtl(["clone", names.id, "--repo", repo, "--branch", branch], `${tokens.github}\n`);
+    // The clone, the commits and the relay act as the app: the token of the moment, since one is valid for an hour only.
+    const identity = await this.deps.githubApp.identity();
+    const cloneArgs = ["clone", names.id, "--repo", repo, "--branch", branch, "--git-name", identity.name, "--git-email", identity.email];
+    const cloned = await vm.huntCtl(cloneArgs, `${await this.deps.githubApp.tokenFor(repo)}\n`);
     if (typeof cloned.path !== "string" || !cloned.path) throw new Error("hunt-ctl clone returned no path");
     await this.putPrivateFiles(vm, key, names.id, repo);
     const sessionConfig = await vm.huntCtl(["session-config", names.id, "--domain", domain]);
@@ -369,7 +393,7 @@ export class Poller {
     await vm.putClaudeFiles(names.id, { "hunt-session.json": huntSessionFile(names.id, cloned.path, systemPrompt) });
     log(`cloned ${repo} into ${cloned.path}; installing the dependencies`);
     await vm.huntCtl(["deps", names.id]);
-    await vm.huntCtl(["start", names.id], `${tokens.claude}\n${tokens.github}\n`);
+    await vm.huntCtl(["start", names.id], `${claudeToken}\n${await this.deps.githubApp.tokenFor(repo)}\n`);
     const status = await vm.huntCtl(["wait", names.id, "--timeout", "180"]);
     if (typeof status.acpSessionId !== "string" || !status.acpSessionId) throw new Error("the relay reports no ACP session");
 
@@ -397,9 +421,9 @@ export class Poller {
 
   /** Replaces `<label>:running` with `<label>:failed` and comments the error of the setup; failures here are only logged. */
   private async markFailed(setup: Setup, error: string): Promise<void> {
-    const { key, repo, issue, github, labels, names } = setup;
+    const { key, repo, issue, labels, names } = setup;
     this.deps.log(`${key}: failed: ${error}`, "error");
-    await this.failIssue(key, github, repo, issue, labels, failureComment(error, setup.isVmCreated ? names.vm : null));
+    await this.failIssue(key, this.deps.github, repo, issue, labels, failureComment(error, setup.isVmCreated ? names.vm : null));
   }
 
   /** Replaces `<label>:running` with `<label>:failed` and comments `comment`; failures here are only logged. */
@@ -429,14 +453,25 @@ export class Poller {
   }
 }
 
-/** The tokens from Secret Manager, read again after SECRETS_TTL_MS. */
-function secretsReader(metadata: Metadata): () => Promise<Tokens> {
-  let cached: { tokens: Tokens; readAt: number } | null = null;
+/** The secrets from Secret Manager, read again after SECRETS_TTL_MS; an id that is no number or a key that is no PEM throws. */
+export function secretsReader(metadata: Metadata, fetchImpl: typeof fetch = fetch, now: () => number = Date.now): () => Promise<Secrets> {
+  let cached: { secrets: Secrets; readAt: number } | null = null;
   return async () => {
-    if (cached && Date.now() - cached.readAt < SECRETS_TTL_MS) return cached.tokens;
-    const [github, claude] = await Promise.all([readSecret(metadata, GITHUB_SECRET), readSecret(metadata, CLAUDE_SECRET)]);
-    cached = { tokens: { github, claude }, readAt: Date.now() };
-    return cached.tokens;
+    if (cached && now() - cached.readAt < SECRETS_TTL_MS) return cached.secrets;
+    const [appId, pem, claude] = await Promise.all([
+      readSecret(metadata, GITHUB_APP_ID_SECRET, fetchImpl),
+      readSecret(metadata, GITHUB_APP_KEY_SECRET, fetchImpl, { multiline: true }),
+      readSecret(metadata, CLAUDE_SECRET, fetchImpl),
+    ]);
+    if (!/^[0-9]+$/.test(appId)) throw new Error(`failed to read the secret ${GITHUB_APP_ID_SECRET}: its latest version is no GitHub App id`);
+    let privateKey;
+    try {
+      privateKey = createPrivateKey(pem);
+    } catch (error) {
+      throw new Error(`failed to read the secret ${GITHUB_APP_KEY_SECRET}: its latest version is no private key: ${messageOf(error)}`);
+    }
+    cached = { secrets: { claude, app: { appId, privateKey } }, readAt: now() };
+    return cached.secrets;
   };
 }
 
@@ -469,12 +504,15 @@ async function main(): Promise<void> {
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: Date.now,
   });
+  const secrets = secretsReader(metadata);
+  const githubApp = createGitHubApp({ credentials: async () => (await secrets()).app });
   const poller = new Poller({
     readConfig: () => readSwfConfig(metadata),
     readDomain: () => readDomain(),
-    tokens: secretsReader(metadata),
+    secrets,
     secretBytes: (name) => readOptionalSecretBytes(metadata, name),
-    github: (token) => createGitHub(token),
+    github: createGitHub((repo) => githubApp.tokenFor(repo)),
+    githubApp,
     compute,
     orchestrator,
     vm,

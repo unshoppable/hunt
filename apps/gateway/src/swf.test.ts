@@ -1,16 +1,20 @@
+import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { Transport } from "./acpClient.ts";
-import type { Compute, Instance, InstanceRequest, MetadataItem } from "./gcp.ts";
+import type { Compute, Instance, InstanceRequest, Metadata, MetadataItem } from "./gcp.ts";
 import type { GitHub, Issue } from "./github.ts";
 import { Orchestrator } from "./orchestrator.ts";
 import type { SessionVm } from "./sessionVm.ts";
-import { Poller, relayStatus, type PollerDeps } from "./swf.ts";
+import type { GitHubApp } from "./githubApp.ts";
+import { Poller, relayStatus, secretsReader, type PollerDeps } from "./swf.ts";
 import { readSwfConfig, type SwfConfig } from "./swfConfig.ts";
 
 const SWF_FIRST = readFileSync(new URL("../prompts/swf-first.user-prompt.md", import.meta.url), "utf8");
 const SWF_NUDGE = readFileSync(new URL("../prompts/swf-nudge.user-prompt.md", import.meta.url), "utf8");
-const GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+const GITHUB_TOKEN = "ghs_abcdefghijklmnopqrstuvwxyz0123456789";
+const BOT_NAME = "hunt-claude[bot]";
+const BOT_EMAIL = "4242+hunt-claude[bot]@users.noreply.github.com";
 const CLAUDE_TOKEN = "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz";
 const CONFIG: SwfConfig = { repos: ["acme/app"], maxSessions: 2 };
 const SESSION_ID = "ab12cd34-0000-4000-8000-000000000001";
@@ -180,9 +184,24 @@ function fakeVm(failing?: { command: string; error: Error }, status: () => Recor
   return { vm, calls, claudeFiles };
 }
 
-type Overrides = Omit<Partial<PollerDeps>, "github" | "vm" | "orchestrator"> & { github?: GitHub; vm?: SessionVm };
+/** A GitHub App whose installation token for every repository is the last one given to `setToken`. */
+function fakeGitHubApp(): GitHubApp & { setToken(token: string): void } {
+  let token = GITHUB_TOKEN;
+  const minted = [token];
+  return {
+    setToken: (next) => {
+      token = next;
+      minted.push(next);
+    },
+    tokenFor: async () => token,
+    identity: async () => ({ name: BOT_NAME, email: BOT_EMAIL }),
+    secrets: () => [...minted],
+  };
+}
 
-function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fakeCompute(), ...overrides }: Overrides = {}) {
+type Overrides = Omit<Partial<PollerDeps>, "github" | "vm" | "orchestrator" | "githubApp"> & { github?: GitHub; vm?: SessionVm; githubApp?: GitHubApp };
+
+function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fakeCompute(), githubApp = fakeGitHubApp(), ...overrides }: Overrides = {}) {
   const logs: string[] = [];
   const prompts: { sessionId: string; cwd: string; text: string }[] = [];
   let tokenReads = 0;
@@ -197,9 +216,9 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
   const deps: PollerDeps = {
     readConfig: async () => CONFIG,
     readDomain: () => "hunt.example.com",
-    tokens: async () => {
+    secrets: async () => {
       tokenReads++;
-      return { github: GITHUB_TOKEN, claude: CLAUDE_TOKEN };
+      return { claude: CLAUDE_TOKEN, app: { appId: "4711", privateKey: {} as never } };
     },
     secretBytes: async () => ({ absent: "has no version" }),
     compute,
@@ -212,7 +231,8 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
     newId: () => SESSION_ID,
     log: (message) => logs.push(message),
     ...overrides,
-    github: () => github,
+    github,
+    githubApp,
     vm: () => vm,
   };
   return { poller: new Poller(deps), logs, prompts, tokenReads: () => tokenReads };
@@ -285,7 +305,7 @@ describe("Poller.cycle", () => {
       "wait until ready",
       "ensure release",
       "hunt-ctl install-tools",
-      `hunt-ctl clone ${SESSION_ID} --repo acme/app --branch fix/general/12-fix-login <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`,
+      `hunt-ctl clone ${SESSION_ID} --repo acme/app --branch fix/general/12-fix-login --git-name ${BOT_NAME} --git-email ${BOT_EMAIL} <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`,
       `hunt-ctl session-config ${SESSION_ID} --domain hunt.example.com`,
       `put-files ${SESSION_ID} --claude hunt-session.json`,
       `hunt-ctl deps ${SESSION_ID}`,
@@ -456,13 +476,64 @@ describe("Poller.cycle follows running sessions", () => {
     expect(compute.calls).toEqual(["list hunt-origin=swf", `metadata ${VM} fp0`, "list hunt-origin=swf"]);
     expect(compute.metadata[0]).toContainEqual({ key: "hunt-agent", value: "question" });
     expect(logs).toContain(`${key}: the agent is question`);
-    expect(calls).toEqual([]);
+    expect(calls).toEqual([`hunt-ctl github-token ${SESSION_ID} <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`]);
     expect(prompts).toEqual([]);
 
     github.issue = async () => issue(12, "Issue 12", ["swf:running"]);
     await poller.cycle();
     expect(compute.metadata[1]).toContainEqual({ key: "hunt-agent", value: "running" });
-    expect(calls).toEqual([`hunt-ctl status ${SESSION_ID}`]);
+    expect(calls.slice(1)).toEqual([`hunt-ctl status ${SESSION_ID}`]);
+  });
+
+  it("gives every running VM the repository's GitHub token whenever it changed, whatever the agent's state", async () => {
+    const github = fakeGitHub({}, { lookup: { [key]: { ...issue(12, "Issue 12", ["swf:done"]), state: "closed" } } });
+    const compute = fakeCompute([sessionVmOf("done")]);
+    const githubApp = fakeGitHubApp();
+    const { vm, calls } = fakeVm();
+    const { poller, logs } = createPoller({ github, compute, vm, githubApp });
+
+    await poller.cycle();
+    await poller.cycle();
+    expect(calls).toEqual([`hunt-ctl github-token ${SESSION_ID} <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`]);
+    expect(logs.filter((line) => line.includes("fresh"))).toEqual([`${key}: gave the VM a fresh GitHub token`]);
+
+    githubApp.setToken("ghs_renewed0123456789abcdefghijklmnopq");
+    await poller.cycle();
+    await poller.cycle();
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toBe(`hunt-ctl github-token ${SESSION_ID} <<< ${JSON.stringify("ghs_renewed0123456789abcdefghijklmnopq\n")}`);
+    expect(logs.join("\n")).not.toContain("ghs_");
+  });
+
+  it("gives a VM that stopped and runs again the token once more", async () => {
+    const listed = [sessionVmOf("running")];
+    const github = fakeGitHub({}, { lookup: { [key]: issue(12, "Issue 12", ["swf:question"]) } });
+    const compute = fakeCompute(listed);
+    const { vm, calls } = fakeVm();
+    const { poller } = createPoller({ github, compute, vm });
+
+    await poller.cycle();
+    const refresh = `hunt-ctl github-token ${SESSION_ID} <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`;
+    expect(calls).toEqual([refresh]);
+    listed[0].status = "TERMINATED";
+    await poller.cycle();
+    expect(calls).toEqual([refresh]);
+    listed[0].status = "RUNNING";
+    await poller.cycle();
+    expect(calls).toEqual([refresh, refresh]);
+  });
+
+  it("logs a VM that takes no token once and still follows the others", async () => {
+    const github = fakeGitHub({}, { lookup: { [key]: issue(12, "Issue 12", ["swf:running"]) } });
+    const compute = fakeCompute([sessionVmOf("running")]);
+    const { vm, calls } = fakeVm({ command: "github-token", error: new Error(`failed to run hunt-ctl github-token on ${VM}: exit status 2\nusage: hunt-ctl …`) });
+    const { poller, logs } = createPoller({ github, compute, vm });
+
+    await poller.cycle();
+    await poller.cycle();
+    expect(calls).toHaveLength(2);
+    expect(logs.filter((line) => line.includes("exit status 2"))).toEqual([`${key}: failed to run hunt-ctl github-token on ${VM}: exit status 2\nusage: hunt-ctl …`]);
+    expect(github.calls.filter((call) => call.startsWith("issue "))).toEqual([]);
   });
 
   it("counts a closed or deleted issue as done", async () => {
@@ -522,7 +593,7 @@ describe("Poller.cycle follows running sessions", () => {
     const { poller, prompts } = createPoller({ github, compute, vm });
 
     await poller.cycle();
-    expect(calls).toEqual([`hunt-ctl status ${SESSION_ID}`]);
+    expect(calls).toEqual([`hunt-ctl github-token ${SESSION_ID} <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`, `hunt-ctl status ${SESSION_ID}`]);
     expect(prompts).toEqual([]);
     expect(github.calls.filter((call) => call.startsWith("issue "))).toEqual([`issue ${key}`]);
   });
@@ -565,5 +636,44 @@ describe("Poller.abort", () => {
       "label acme/app#11 swf:failed",
       `comment acme/app#11 Hunt could not start a session for this issue:\n\n\`\`\`\nthe gateway's poller stopped while it set the session up\n\`\`\`\n\nThe VM \`${VM}\` stays for inspection.`,
     ]);
+  });
+});
+
+describe("secretsReader", () => {
+  const metadata: Metadata = { project: async () => "medconomy-hunt", zone: async () => "europe-west3-a", accessToken: async () => "ya29.x", attribute: async () => null };
+  const pem = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs1", format: "pem" }).toString();
+
+  /** A Secret Manager answering the three secrets with `values`, counting the reads. */
+  function fakeSecrets(values: Record<string, string>) {
+    let reads = 0;
+    const fetchImpl = (async (input: string | URL | Request) => {
+      reads++;
+      const name = /secrets\/([A-Z_]+)\/versions/.exec(String(input))?.[1] ?? "";
+      return Response.json({ payload: { data: Buffer.from(values[name] ?? "").toString("base64") } });
+    }) as typeof fetch;
+    return { fetchImpl, reads: () => reads };
+  }
+
+  it("reads the app's id and key and the Claude token, and reads them again after their ttl", async () => {
+    let now = 0;
+    const { fetchImpl, reads } = fakeSecrets({ HUNT_SWF_GITHUB_APP_ID: "4711\n", HUNT_SWF_GITHUB_APP_KEY: pem, HUNT_SWF_CLAUDE_TOKEN: CLAUDE_TOKEN });
+    const read = secretsReader(metadata, fetchImpl, () => now);
+    const secrets = await read();
+    expect(secrets.claude).toBe(CLAUDE_TOKEN);
+    expect(secrets.app.appId).toBe("4711");
+    expect(secrets.app.privateKey.asymmetricKeyType).toBe("rsa");
+    now = 9 * 60_000;
+    expect(await read()).toBe(secrets);
+    expect(reads()).toBe(3);
+    now = 11 * 60_000;
+    expect(await read()).not.toBe(secrets);
+    expect(reads()).toBe(6);
+  });
+
+  it("rejects an id that is no number and a key that is no private key, without quoting either", async () => {
+    const badId = secretsReader(metadata, fakeSecrets({ HUNT_SWF_GITHUB_APP_ID: "Iv1.abc", HUNT_SWF_GITHUB_APP_KEY: pem, HUNT_SWF_CLAUDE_TOKEN: CLAUDE_TOKEN }).fetchImpl);
+    await expect(badId()).rejects.toThrow("failed to read the secret HUNT_SWF_GITHUB_APP_ID: its latest version is no GitHub App id");
+    const badKey = secretsReader(metadata, fakeSecrets({ HUNT_SWF_GITHUB_APP_ID: "4711", HUNT_SWF_GITHUB_APP_KEY: "not a key", HUNT_SWF_CLAUDE_TOKEN: CLAUDE_TOKEN }).fetchImpl);
+    await expect(badKey()).rejects.toThrow(/^failed to read the secret HUNT_SWF_GITHUB_APP_KEY: its latest version is no private key: (?!.*not a key)/);
   });
 });

@@ -70,6 +70,15 @@ describe("metadata parsing", () => {
     expect(() => parseSecretPayload(payload("two words"), "s")).toThrow("contains whitespace");
     expect(() => parseSecretPayload("{}", "s")).toThrow("has no payload");
   });
+
+  it("accepts a text of several lines, such as a PEM key, only with the multiline option", () => {
+    const payload = (text: string) => JSON.stringify({ payload: { data: Buffer.from(text).toString("base64") } });
+    const pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIE\nAB==\n-----END RSA PRIVATE KEY-----";
+    expect(parseSecretPayload(payload(`${pem}\n`), "k", { multiline: true })).toBe(pem);
+    expect(() => parseSecretPayload(payload(pem), "k")).toThrow("contains whitespace");
+    expect(() => parseSecretPayload(payload("  \n"), "k", { multiline: true })).toThrow("empty");
+    expect(() => parseSecretPayload(payload("a\0b"), "k", { multiline: true })).toThrow("failed to read the secret k: its latest version is no text");
+  });
 });
 
 describe("createMetadata", () => {

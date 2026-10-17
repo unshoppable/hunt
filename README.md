@@ -376,17 +376,20 @@ Mac, so a remote session needs a token account. A failed handoff removes the ses
 the VM (`leftoverVm` in `sessions.json`): the next attempt skips the first boot, and deleting the session deletes it.
 
 With a GitHub token under *Settings → Remote VM* (`apps/client/src-tauri/src/github_token.rs`, kept in the keychain),
-the agent pushes and runs `gh` as the user: the token goes on stdin next to the Claude token into the relay's
-`GH_TOKEN`, the repository there gets `origin` as `https://github.com/<owner>/<repo>.git` with the branch's upstream,
-and git and Git LFS authenticate through gh's credential helper. A repository's `core.hooksPath` inside the worktree
-(husky's `.husky`) comes along with its ignored files, so commits and pushes on the VM run the same hooks; without one,
-Git LFS's hooks upload LFS files on push. Everyone with root on the VM can read the token, so it should be a
-fine-grained token limited to the repositories handed off. A session the gateway's poller started for a `swf` issue
-keeps the poller's tokens from Secret Manager (`RemoteOrigin::keeps_vm_tokens`): connecting to or clearing it runs
-`hunt-ctl start` and `clear` with `--keep-stored`, which keeps the tokens stored on the VM and takes the ones Hunt sends
-only where the VM stores none, so everything its agent does on GitHub happens as the poller; only what the user does
-from Hunt, such as *Commit and push*, uses the keychain's token. Connecting while the poller still sets the session up
-fails until its relay runs, since nothing is stored yet.
+the agent pushes and runs `gh` as the user: the token goes on stdin next to the Claude token, `hunt-ctl` keeps it in
+`/etc/hunt/github-token` (root and `agent` read it), `/usr/local/bin/gh` is Hunt's wrapper (`apps/session/vm/hunt-gh`)
+that exports it as `GH_TOKEN` for each run of the real gh, the repository there gets `origin` as
+`https://github.com/<owner>/<repo>.git` with the branch's upstream, and git and Git LFS authenticate through gh's
+credential helper. Nothing holds the token in its environment, so a token replaced on the VM counts from the next
+`gh` or git call on. A repository's `core.hooksPath` inside the worktree (husky's `.husky`) comes along with its
+ignored files, so commits and pushes on the VM run the same hooks; without one, Git LFS's hooks upload LFS files on
+push. Everyone with root on the VM can read the token, so it should be a fine-grained token limited to the
+repositories handed off. A session the gateway's poller started for a `swf` issue keeps the poller's tokens
+(`RemoteOrigin::keeps_vm_tokens`): connecting to or clearing it runs `hunt-ctl start` and `clear` with `--keep-stored`,
+which keeps the tokens stored on the VM and takes the ones Hunt sends only where the VM stores none, so everything its
+agent does on GitHub happens as the poller's GitHub App; only what the user does from Hunt, such as *Commit and push*,
+uses the keychain's token. Connecting while the poller still sets the session up fails until its relay runs, since
+nothing is stored yet.
 
 The relay (`apps/session/src/relay/`) runs on the VM as the systemd service `hunt-relay` of the user `agent`: it owns
 the ACP adapter, loads the conversation once and serves it over `/run/hunt/relay.sock`. Hunt's agent process for the
@@ -430,10 +433,11 @@ CLI, and Playwright's MCP server with Chromium (`apps/session/playwright/`, offe
 `apps/session/mcp-servers.json`); a tool that is at its version already is skipped. The image build of the session VMs
 runs it, so an image holds the tools; the app and the poller run it on every VM they set up, for an image that lacks
 some. The relay runs as `hunt-relay.service` (`apps/session/vm/systemd/`) with the agent's
-environment (`apps/session/vm/agent.env`), `HUNT_PREVIEW_URL_TEMPLATE` and the tokens of `/etc/hunt/secrets.env`,
-which only root reads. A restart of the relay, such as `/clear`, leaves the services and the tmux session running. Login
-shells of `agent`, such as the terminal's tmux session, get the same environment without the tokens
-(`/etc/profile.d/hunt.sh`).
+environment (`apps/session/vm/agent.env`), `HUNT_PREVIEW_URL_TEMPLATE` and the Claude Code token and Git identity of
+`/etc/hunt/secrets.env`, which only root reads. A restart of the relay, such as `/clear`, leaves the services and the
+tmux session running. Login shells of `agent`, such as the terminal's tmux session, get the same environment without
+the Claude Code token (`/etc/profile.d/hunt.sh`); `gh` and git reach GitHub from them as from the agent, through the
+wrapper and `/etc/hunt/github-token`.
 
 `hunt-ctl session-config` reads the repository's `hunt.json` (contract version 3, `apps/session/src/config.ts`). It
 lists every service of the repository, a monorepo all of its apps, with its `command`, an optional `cwd`, its `port`,
@@ -613,7 +617,8 @@ branch `feat/general/<issue>-<slug of the title>` (`fix/general/…` for an issu
 VM's metadata, waits for the startup script and installs the staged session release, over `gcloud compute ssh
 --internal-ip` (OS Login as admin, one shared SSH connection per VM); `hunt-ctl install-tools` follows.
 `hunt-ctl clone` clones the repository from GitHub as `agent` onto the branch (the origin's branch of that name
-when it exists, else a new one from the default branch) with the token's GitHub user as Git identity. The repository's
+when it exists, else a new one from the default branch) with the App's bot as Git identity (`<slug>[bot]`,
+`<id>+<slug>[bot]@users.noreply.github.com`, passed as `--git-name` and `--git-email`). The repository's
 private files follow through `put-files` when the Secret Manager secret `HUNT_SWF_FILES_<owner>_<repo>` (every
 character a secret name cannot hold becomes `_`: `HUNT_SWF_FILES_unshoppable_app-framework`) holds a version: a gzipped
 tar archive of the ignored files a handoff copies from the Mac, such as `.env.private`, with paths relative to the
@@ -643,9 +648,18 @@ shows in its lists. While the issue is still labelled `swf:running`, `hunt-ctl s
 ended: then the poller reminds the agent once with a prompt that names the three ways out (finish, ask with
 `swf:question`, give up with `swf:failed`), and when the reminded turn ends the same way it replaces `swf:running` with
 `swf:failed` and comments that the VM keeps the session. No reminder goes to a session a Hunt desktop is connected to.
-The reminders live only in the poller's memory, so after a restart a session may be reminded once more. The poller's GitHub token and the Claude Code OAuth token its sessions run
-with come from Secret Manager (`HUNT_SWF_GITHUB_TOKEN`, `HUNT_SWF_CLAUDE_TOKEN`), as do the private files of its
-repositories (`HUNT_SWF_FILES_<owner>_<repo>`), and none of them reaches a log line, a comment or a command line;
+The reminders live only in the poller's memory, so after a restart a session may be reminded once more.
+
+The poller acts on GitHub as a GitHub App (`apps/gateway/src/githubApp.ts`): its App ID and private key come from
+Secret Manager (`HUNT_SWF_GITHUB_APP_ID`, `HUNT_SWF_GITHUB_APP_KEY`), as do the Claude Code OAuth token its sessions
+run with (`HUNT_SWF_CLAUDE_TOKEN`) and the private files of its repositories (`HUNT_SWF_FILES_<owner>_<repo>`). The
+key signs a JWT per request; the poller exchanges it for an installation token per repository, valid for an hour and
+scoped to that repository, and renews it twenty minutes before it expires. Its own REST calls, `hunt-ctl clone` and
+`hunt-ctl start` take the repository's current token, and every poll gives each running session VM whose token the
+poller has renewed the new one (`hunt-ctl github-token`, which replaces `/etc/hunt/github-token` without touching the
+relay), whatever the issue's state; a VM that was stopped gets it on the first poll after its start. So the comments,
+commits (author `<slug>[bot]`), pushes and pull requests of a poller session show the App, and a leaked token is worth
+an hour on one repository. None of the key, tokens or files reaches a log line, a comment or a command line;
 `journalctl -u hunt-swf` on the gateway shows one line per decision, Compute Engine call and command on a session VM.
 
 The same service deletes forgotten session VMs (`apps/gateway/src/reaper.ts`): once an hour it lists the VMs labelled

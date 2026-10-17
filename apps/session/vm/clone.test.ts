@@ -1,8 +1,7 @@
 /**
  * `hunt-ctl clone` in a Debian 12 container, the base of the session VMs; skipped without a Docker daemon. GitHub is
  * faked inside the container: git reaches https://github.com/ through `url.<…>.insteadOf` at a busybox httpd that serves
- * bare repositories over Git's dumb HTTP protocol behind Basic authentication with the token, and a `curl` earlier on
- * PATH answers https://api.github.com/user when its configuration on stdin carries the token. A system-wide credential
+ * bare repositories over Git's dumb HTTP protocol behind Basic authentication with the token. A system-wide credential
  * helper with a wrong password proves that the clone uses only the token from stdin. The container runs the built
  * session artifact (`nx build session`).
  */
@@ -17,6 +16,9 @@ const TOKEN = "github_pat_11TEST0123456789_abcdefghijklmnop";
 const PATTERN_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
 /** A wrong token in no known format, which hunt-ctl redacts because it read it from stdin. */
 const PLAIN_TOKEN = "plain.wrong-token";
+/** The Git identity the poller passes: its GitHub App's bot user. */
+const GIT_NAME = "hunt[bot]";
+const GIT_EMAIL = "4242+hunt[bot]@users.noreply.github.com";
 const DOCKER_TIMEOUT_MS = 600_000;
 
 const DOCKERFILE = `FROM debian:12
@@ -64,23 +66,6 @@ rm -rf /var/tmp/seed
 busybox httpd -p 127.0.0.1:8080 -h /srv/github -c /etc/fakegithub/httpd.conf
 git config --system url."http://127.0.0.1:8080/".insteadOf "https://github.com/"
 git config --system credential.helper '!f() { echo username=x-access-token; echo password=wrong; }; f'
-
-cat >/usr/local/bin/curl <<'CURL'
-#!/bin/bash
-# GET https://api.github.com/user for the token in /etc/fakegithub/token, read from the configuration on stdin.
-config=$(cat)
-if [[ " $* " != *" --config - "* || " $* " != *" https://api.github.com/user "* ]]; then
-  echo "fake curl: unexpected arguments: $*" >&2
-  exit 2
-fi
-if [[ $config != "header = \"Authorization: Bearer $(cat /etc/fakegithub/token)\"" ]]; then
-  # Quotes the token it got, so that the journal shows hunt-ctl redacting it.
-  echo "curl: (22) The requested URL returned error: 401 for the token \"$(sed 's/.*Bearer //' <<<"$config")" >&2
-  exit 22
-fi
-echo '{"login": "hunt-bot", "id": 4242, "name": null}'
-CURL
-chmod 0755 /usr/local/bin/curl
 echo "$main $existing"
 `;
 
@@ -110,8 +95,9 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
     return result.stdout.trim();
   }
 
-  function clone(id: string, repo: string, branch: string, token = TOKEN) {
-    return docker(["exec", "-i", container, "/srv/hunt/current/vm/hunt-ctl", "clone", id, "--repo", repo, "--branch", branch], `${token}\n`);
+  function clone(id: string, repo: string, branch: string, token = TOKEN, name = GIT_NAME, email = GIT_EMAIL) {
+    const args = ["clone", id, "--repo", repo, "--branch", branch, "--git-name", name, "--git-email", email];
+    return docker(["exec", "-i", container, "/srv/hunt/current/vm/hunt-ctl", ...args], `${token}\n`);
   }
 
   beforeAll(() => {
@@ -131,7 +117,7 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
     docker(["rm", "--force", container]);
   });
 
-  it("clones the repository as the agent onto a new branch from the default branch and records the token's user", () => {
+  it("clones the repository as the agent onto a new branch from the default branch and records the Git identity", () => {
     const id = "0c0c6f2e-0000-4000-8000-000000000001";
     const result = clone(id, "acme/app", "fix/general/12-fix-login");
     expect(result.stderr).toBe("");
@@ -153,8 +139,8 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
       worktree: "/home/agent/app",
       createdAt: expect.any(Number),
       branch: "fix/general/12-fix-login",
-      gitName: "hunt-bot",
-      gitEmail: "4242+hunt-bot@users.noreply.github.com",
+      gitName: GIT_NAME,
+      gitEmail: GIT_EMAIL,
       origin: "swf",
     });
 
@@ -182,7 +168,9 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
       [clone(id, "../etc", "feat/general/1-x"), "invalid repository: ../etc"],
       [clone(id, "acme/app", "feat/general/1-x", "two words"), "invalid GitHub token on stdin"],
       [clone(id, "acme/app", "feat/general/1-x", ""), "invalid GitHub token on stdin"],
-      [clone(id, "acme/app", "feat/general/1-x", "github_pat_wrong"), "failed to read the GitHub user of the token"],
+      [clone(id, "acme/app", "feat/general/1-x", TOKEN, ""), "invalid git name: expected one non-empty line"],
+      [clone(id, "acme/app", "feat/general/1-x", TOKEN, GIT_NAME, "two\nlines"), "invalid git email: expected one non-empty line"],
+      [clone(id, "acme/app", "feat/general/1-x", "github_pat_wrong"), "failed to clone https://github.com/acme/app.git"],
       [clone(id, "acme/missing", "feat/general/1-x"), "failed to clone https://github.com/acme/missing.git"],
     ];
     for (const [result, message] of cases) {
@@ -209,6 +197,7 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
       expect(clone(id, "acme/app", "bad..branch").status).toBe(3);
       expect(sh('/srv/hunt/current/vm/hunt-ctl status "$1"', [id]).status).toBe(0);
       expect(clone(id, "acme/app", `bad..${PATTERN_TOKEN}`).status).toBe(3);
+      expect(clone(id, "acme/app", "feat/general/1-x", TOKEN, "").status).toBe(3);
       expect(clone(id, "acme/app", "feat/general/1-x", PLAIN_TOKEN).status).toBe(3);
       const lines = sh("sleep 0.5; grep -F ' hunt-ctl: ' /var/log/messages | sed 's/^.* \\([a-z]*\\.[a-z]*\\) hunt-ctl: /\\1 /'").stdout;
       expect(lines).toMatch(
@@ -225,15 +214,16 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
               `user\\.err clone ${id}: failed with exit status 3 after \\d+ ms at cmd_clone:\\d+ < main:\\d+`,
               `user\\.err clone ${id}: stderr: hunt-ctl: invalid branch: bad\\.\\.\\[redacted\\]`,
               `user\\.info clone ${id}: started`,
+              `user\\.err clone ${id}: failed with exit status 3 after \\d+ ms at require_line:\\d+ < cmd_clone:\\d+ < main:\\d+`,
+              `user\\.err clone ${id}: stderr: hunt-ctl: invalid git name: expected one non-empty line`,
+              `user\\.info clone ${id}: started`,
               `user\\.info clone ${id}: cloning acme/app onto branch feat/general/1-x`,
-              `user\\.err clone ${id}: failed with exit status 3 after \\d+ ms: \`identity=\\$\\(github_identity .*\\)\` at cmd_clone:\\d+ < main:\\d+`,
-              `user\\.err clone ${id}: stderr: curl: \\(22\\) The requested URL returned error: 401 for the token "\\[redacted\\]"`,
-              `user\\.err clone ${id}: stderr: hunt-ctl: failed to read the GitHub user of the token`,
-              "",
-            ].join("\n") +
-            "$",
+              `user\\.err clone ${id}: failed with exit status 3 after \\d+ ms`,
+            ].join("\n"),
         ),
       );
+      // The wrong token's clone fails at GitHub; the failure's last line names no token.
+      expect(lines).toMatch(/\nuser\.err clone [0-9a-f-]+: stderr: hunt-ctl: failed to clone https:\/\/github\.com\/acme\/app\.git\n$/);
       const messages = sh("cat /var/log/messages").stdout;
       for (const token of [TOKEN, PATTERN_TOKEN, PLAIN_TOKEN]) {
         expect(messages).not.toContain(token);

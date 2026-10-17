@@ -1,0 +1,10 @@
+#!/bin/sh
+# /usr/local/bin/gh of a session VM (`hunt-ctl install-tools`): runs gh with the session's GitHub token, which
+# `hunt-ctl start` and `github-token` write to /etc/hunt/github-token for the agent to read. Every invocation reads the
+# file anew, so a refreshed token reaches git, Git LFS (gh's credential helper) and gh without a relay restart, and
+# wins over a GH_TOKEN a long-running relay still holds in its environment. Without the file gh runs as it is.
+if [ -r /etc/hunt/github-token ]; then
+  GH_TOKEN=$(cat /etc/hunt/github-token)
+  export GH_TOKEN
+fi
+exec /usr/local/libexec/hunt/gh "$@"

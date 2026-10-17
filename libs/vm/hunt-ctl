@@ -69,6 +69,11 @@ readonly SUB_RELAYS=/run/hunt-sub
 readonly SUB_CONFIGS=/home/agent/.claude/hunt-subs
 readonly SESSION_ENV=/etc/hunt/session.env
 readonly SECRETS_ENV=/etc/hunt/secrets.env
+# The GitHub token git, Git LFS and gh act with, which only root writes and the agent reads: /usr/local/bin/gh is
+# Hunt's wrapper vm/hunt-gh, which exports it as GH_TOKEN for GH_BINARY, so a refreshed token (`github-token`) reaches
+# every later invocation without a relay restart.
+readonly GITHUB_TOKEN_FILE=/etc/hunt/github-token
+readonly GH_BINARY=/usr/local/libexec/hunt/gh
 readonly PROXY_CONFIG=/etc/hunt/caddy.json
 readonly IDLE_CONFIG=/etc/hunt/idle.conf
 # The environment of each service of hunt.json, <name>.env, which `session-config` writes and hunt-service@.service
@@ -175,10 +180,10 @@ Session VM:
   init <id> --repo <owner>/<repo>
                          create the session's empty repository /home/agent/<repo> (removing what an earlier handoff
                          left)
-  clone <id> --repo <owner>/<repo> --branch <branch>
+  clone <id> --repo <owner>/<repo> --branch <branch> --git-name <name> --git-email <email>
                          clone https://github.com/<owner>/<repo>.git into /home/agent/<repo> with the GitHub token on
                          stdin and check <branch> out: the origin's branch of that name, else a new one from the default
-                         branch; the token's GitHub user becomes the Git identity (removes what an earlier session left)
+                         branch; <name> and <email> become the Git identity (removes what an earlier session left)
   receive-pack <path>    git-receive-pack into the repository of the session at <path> (streams; for git push)
   upload-pack <path>     git-upload-pack from the repository of the session at <path> (streams; for git fetch)
   lfs-put <id>           unpack the tar.gz of Git LFS objects on stdin into the session's repository
@@ -204,9 +209,10 @@ Session VM:
                          named services of the hunt.json of the VM's session; prints the state of every service, for
                          status of those named (default: all). The agent may run it as `sudo -n hunt-ctl service …`
   start <id> [--keep-stored]
-                         start the session's relay unless it runs, with the tokens from stdin (see read_tokens), and
-                         its preview proxy once session-config wrote it; an empty line keeps the token stored before,
-                         and with --keep-stored so does a given one, which then only fills what the VM has not stored
+                         start the session's relay unless it runs, with the tokens from stdin (see read_tokens; the
+                         GitHub token goes to /etc/hunt/github-token for git, Git LFS and gh), and its preview proxy
+                         once session-config wrote it; an empty line keeps the token stored before, and with
+                         --keep-stored so does a given one, which then only fills what the VM has not stored
   start <id> --sub <sub id>
                          start the relay of the session's sub chat <sub id> unless it runs, with the tokens the
                          session's relay got; the sub chat's first start appends the text on stdin to the session's
@@ -227,6 +233,8 @@ Session VM:
                          refs/hunt/<id>/commit
   push <id>              push the branch the worktree has checked out to its origin and make that its upstream, with the
                          GitHub token on stdin
+  github-token <id>      replace the GitHub token the session's git, Git LFS and gh act with by the one on stdin; the
+                         relay keeps running
   status <id>            relay state, relay status and session metadata
   preview-status [<id>]  the services of hunt.json with their state and whether their port answers, and the ports that
                          listen
@@ -490,7 +498,7 @@ cmd_install() {
     cp -R "$source/." "$staging/"
     chmod -R a+rX,go-w "$staging"
     chmod 0755 "$staging" "$staging/vm/hunt-ctl"
-    for script in hunt-idle-check hunt-service hunt-api; do
+    for script in hunt-idle-check hunt-service hunt-api hunt-gh; do
       if [[ -f $staging/vm/$script ]]; then
         chmod 0755 "$staging/vm/$script"
       fi
@@ -614,6 +622,7 @@ install_agent_tools() {
   install -d -m 0755 "$AGENT_TOOLS" "$TOOL_STAMPS"
   install_packages
   install_gh
+  install -m 0755 "$release/vm/hunt-gh" /usr/local/bin/gh
   install_terraform
   install_volta "$release"
   install_acp "$release"
@@ -622,8 +631,8 @@ install_agent_tools() {
   if [[ -f /opt/hunt/node/lib/node_modules/corepack/dist/corepack.js ]]; then
     ln -sfn /opt/hunt/node/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
   fi
-  # git and Git LFS authenticate to GitHub with the GH_TOKEN of the relay's environment through gh; the empty entry
-  # drops helpers configured before it.
+  # git and Git LFS authenticate to GitHub through gh's credential helper; /usr/local/bin/gh is Hunt's wrapper, which
+  # takes the token of GITHUB_TOKEN_FILE. The empty entry drops helpers configured before it.
   git config --system --unset-all credential.https://github.com.helper || true
   git config --system --add credential.https://github.com.helper ''
   git config --system --add credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'
@@ -644,14 +653,15 @@ install_packages() {
   DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 -q install -y --no-install-recommends "${missing[@]}"
 }
 
+# Installs gh as GH_BINARY, behind the wrapper install_agent_tools puts at /usr/local/bin/gh.
 install_gh() {
   local dir
-  [[ -x /usr/local/bin/gh ]] && tool_current gh "$GH_VERSION" && return
+  [[ -x $GH_BINARY ]] && tool_current gh "$GH_VERSION" && return
   log info "installing gh $GH_VERSION"
   make_scratch_dir dir
   download "https://github.com/cli/cli/releases/download/v$GH_VERSION/gh_${GH_VERSION}_linux_amd64.tar.gz" "$GH_SHA256" "$dir/gh.tar.gz"
   tar -xzf "$dir/gh.tar.gz" -C "$dir" --no-same-owner
-  install -m 0755 "$dir/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh
+  install -D -m 0755 "$dir/gh_${GH_VERSION}_linux_amd64/bin/gh" "$GH_BINARY"
   mark_tool gh "$GH_VERSION"
 }
 
@@ -814,9 +824,9 @@ session_of_path() {
 }
 
 # Reads the tokens Hunt sends on stdin into the caller's claude_token and github_token: the Claude Code OAuth token of
-# the Claude account picked in Hunt by whoever starts the session on the first line and that user's GitHub token on the
-# second. Either line may be empty or missing; write_secrets then keeps the value stored before, as it keeps every
-# stored one with --keep-stored.
+# the Claude account picked in Hunt by whoever starts the session on the first line and the GitHub token on the second.
+# Either line may be empty or missing; write_secrets and write_github_token then keep the value stored before, as they
+# keep every stored one with --keep-stored.
 read_tokens() {
   claude_token=
   github_token=
@@ -850,13 +860,12 @@ env_line() {
   printf '%s="%s"\n' "$1" "$value"
 }
 
-# Rewrites SECRETS_ENV, the relay's tokens and identity, for session $1: the Claude Code token $2 and the GitHub token
-# $3 (`gh`, and git through gh's credential helper), each the one stored before when empty, the Git identity of
-# meta.json and the session's id. With $4 set (--keep-stored), a stored token wins over the one given, so the tokens of
-# whoever set the session up stay and the given ones only fill what the VM lost. Only root reads the file; systemd hands
-# it to the relay.
+# Rewrites SECRETS_ENV, the relay's token and identity, for session $1: the Claude Code token $2, the one stored before
+# when empty, the Git identity of meta.json and the session's id. With $3 set (--keep-stored), a stored token wins over
+# the one given, so the token of whoever set the session up stays and the given one only fills what the VM lost. Only
+# root reads the file; systemd hands it to the relay.
 write_secrets() {
-  local id=$1 claude=$2 github=$3 keep_stored=${4-} stored='' git_name git_email text
+  local id=$1 claude=$2 keep_stored=${3-} stored='' git_name git_email text
   git_name=$(meta "$id" gitName)
   git_email=$(meta "$id" gitEmail)
   if [[ -f $SECRETS_ENV ]]; then
@@ -864,7 +873,6 @@ write_secrets() {
   fi
   text=$(
     token_line CLAUDE_CODE_OAUTH_TOKEN "$claude" "$stored" "$keep_stored"
-    token_line GH_TOKEN "$github" "$stored" "$keep_stored"
     env_line GIT_AUTHOR_NAME "$git_name"
     env_line GIT_AUTHOR_EMAIL "$git_email"
     env_line GIT_COMMITTER_NAME "$git_name"
@@ -878,6 +886,23 @@ write_secrets() {
     printf '%s\n' "$text" >"$SECRETS_ENV.tmp"
   )
   mv -f "$SECRETS_ENV.tmp" "$SECRETS_ENV"
+}
+
+# Writes the GitHub token $1 to GITHUB_TOKEN_FILE, which git, Git LFS and gh read through gh's wrapper; an empty token
+# keeps the stored one, and with $2 set (--keep-stored) so does a given one when the VM stores one. Root writes it, the
+# agent reads it.
+write_github_token() {
+  local token=$1 keep_stored=${2-}
+  [[ -n $token ]] || return 0
+  if [[ -n $keep_stored && -s $GITHUB_TOKEN_FILE ]]; then
+    return 0
+  fi
+  (
+    umask 027
+    printf '%s\n' "$token" >"$GITHUB_TOKEN_FILE.tmp"
+  )
+  chown "root:$AGENT" "$GITHUB_TOKEN_FILE.tmp"
+  mv -f "$GITHUB_TOKEN_FILE.tmp" "$GITHUB_TOKEN_FILE"
 }
 
 relay_running() {
@@ -894,7 +919,8 @@ start_relay() {
   fi
   [[ -f $CLAUDE_HOME/hunt-session.json ]] || die "session $id has no hunt-session.json; run hunt-ctl put-files $id --claude first"
   read_tokens
-  write_secrets "$id" "$claude_token" "$github_token" "$keep_stored"
+  write_secrets "$id" "$claude_token" "$keep_stored"
+  write_github_token "$github_token" "$keep_stored"
   log info "starting the relay"
   systemctl enable --quiet "$RELAY_UNIT"
   systemctl restart "$RELAY_UNIT"
@@ -1070,26 +1096,13 @@ write_agent_token() {
   printf -v "$1" '%s' "$token_folder"
 }
 
-# Prints the name (else the login) and the noreply email of the GitHub user of token $1, one per line. curl reads the
-# Authorization header from its configuration on stdin, so the token is in no argv.
-github_identity() {
-  local user login user_id name
-  user=$(curl -fsS --retry 3 --max-time 30 --config - -H 'Accept: application/vnd.github+json' https://api.github.com/user \
-    <<<"header = \"Authorization: Bearer $1\"") || die "failed to read the GitHub user of the token"
-  login=$(jq -r '.login | strings' <<<"$user" 2>/dev/null) || login=
-  user_id=$(jq -r '.id | numbers' <<<"$user" 2>/dev/null) || user_id=
-  [[ $login =~ ^[A-Za-z0-9-]+(\[bot\])?$ && $user_id =~ ^[0-9]+$ ]] || die "GitHub's answer for the token's user has no valid login and id"
-  name=$(jq -r 'if (.name | type) == "string" and (.name | length) > 0 then .name else .login end' <<<"$user")
-  require_line "git name" "$name"
-  printf '%s\n%s+%s@users.noreply.github.com\n' "$name" "$user_id" "$login"
-}
-
 # Creates the session's repository from GitHub instead of a handoff's push, for a session no Mac hands off, such as one
 # hunt-swf.service starts for an issue. The token on stdin authenticates the clone and Git LFS only; afterwards git and
-# gh act with the GH_TOKEN of `start` through the system's gh credential helper.
+# gh act with the token of GITHUB_TOKEN_FILE (`start`, `github-token`) through gh's wrapper. The Git identity comes
+# with the options, since the poller's installation token names no user.
 cmd_clone() {
   (( $# )) || usage
-  local id=$1 repo='' branch='' token='' identity git_name git_email worktree token_dir created_at _
+  local id=$1 repo='' branch='' token='' git_name='' git_email='' worktree token_dir created_at _
   require_id "$id"
   shift
   while (( $# )); do
@@ -1097,19 +1110,19 @@ cmd_clone() {
     case $1 in
       --repo) repo=$2 ;;
       --branch) branch=$2 ;;
+      --git-name) git_name=$2 ;;
+      --git-email) git_email=$2 ;;
       *) usage ;;
     esac
     shift 2
   done
   require_repository_key "$repo"
   { [[ $branch != -* ]] && git check-ref-format --branch "$branch" >/dev/null 2>&1; } || die "invalid branch: $branch"
+  require_line "git name" "$git_name"
+  require_line "git email" "$git_email"
   read_github_token token
   _=$(current_hash)
   log info "cloning $repo onto branch $branch"
-  identity=$(github_identity "$token")
-  git_name=${identity%%$'\n'*}
-  git_email=${identity#*$'\n'}
-  require_line "git email" "$git_email"
 
   destroy_session "$id"
   worktree=$AGENT_HOME/${repo#*/}
@@ -1526,6 +1539,18 @@ cmd_push() {
   emit '{}'
 }
 
+# Replaces the GitHub token of session $1 by the one on stdin, for the poller, whose installation tokens expire after an
+# hour: the relay keeps running, and git, Git LFS and gh take the new token at their next invocation.
+cmd_github_token() {
+  (( $# == 1 )) || usage
+  local id=$1 token _
+  require_id "$id"
+  _=$(worktree_of "$id")
+  read_github_token token
+  write_github_token "$token"
+  emit '{}'
+}
+
 cmd_status() {
   (( $# == 1 )) || usage
   local id=$1 relay status meta_json
@@ -1731,7 +1756,7 @@ destroy_session() {
   stop_sub_relays 2>/dev/null || true
   stop_services 2>/dev/null || true
   systemctl disable --quiet --now "$PROXY_UNIT" 2>/dev/null || true
-  rm -f -- "$SECRETS_ENV" "$SESSION_ENV" "$PROXY_CONFIG"
+  rm -f -- "$SECRETS_ENV" "$GITHUB_TOKEN_FILE" "$SESSION_ENV" "$PROXY_CONFIG"
   rm -rf -- "$SERVICES_DIR"
   if [[ -f $SESSIONS/$id/meta.json ]]; then
     worktree=$(jq -r '.worktree // empty' "$SESSIONS/$id/meta.json" 2>/dev/null) || worktree=
@@ -1946,7 +1971,8 @@ main() {
   case $command in
     install | install-units | version) ;;
     install-tools | init | clone | receive-pack | upload-pack | lfs-put | lfs-get | put-files | get-claude | prepare | deps | \
-      session-config | service | start | wait | stop | clear | snapshot | commit | push | status | preview-status | destroy)
+      session-config | service | start | wait | stop | clear | snapshot | commit | push | github-token | status | preview-status | \
+      destroy)
       [[ $role == session ]] || die "hunt-ctl $command runs on session VMs only; this VM is the gateway"
       ;;
     stage-session)
@@ -1955,7 +1981,7 @@ main() {
     *) usage ;;
   esac
   case $command in
-    version | status | preview-status | install-tools | stage-session) counts_as_activity=false ;;
+    version | status | preview-status | install-tools | stage-session | github-token) counts_as_activity=false ;;
   esac
   case $command in
     status | preview-status) logs_success=false ;;
@@ -2020,6 +2046,7 @@ main() {
     snapshot) cmd_snapshot "$@" ;;
     commit) cmd_commit "$@" ;;
     push) cmd_push "$@" ;;
+    github-token) cmd_github_token "$@" ;;
     status) cmd_status "$@" ;;
     preview-status) cmd_preview_status "$@" ;;
     destroy) cmd_destroy "$@" ;;

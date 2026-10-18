@@ -10,6 +10,7 @@ import { Checkbox, type CheckState } from "./Checkbox";
 import { CommitBox } from "./CommitBox";
 import { useFileIconUrl, useFolderIconUrl } from "./fileIcons";
 import { useReviewDraftCount } from "../review/reviewComments";
+import { useLoad } from "../ui/useLoad";
 import { ReviewDialog } from "./ReviewDialog";
 import { ReviewBars } from "../graph/ReviewBars";
 import { ShelfList } from "./ShelfList";
@@ -19,7 +20,7 @@ import { ShelveDialog } from "./ShelveDialog";
 import { baseName, dirName } from "../ui/path";
 import { STATUS_NAME_CLASS } from "./styles";
 import { AgentButton } from "../ui/AgentButton";
-import { isWorktreeLocked, remoteOf } from "../chat/remoteSession";
+import { isWorktreeLocked, pushTarget, remoteOf } from "../chat/remoteSession";
 import { ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { GlobFilterInput } from "../ui/GlobFilterInput";
@@ -32,8 +33,11 @@ type Dialog = { kind: "shelve"; paths: string[] } | { kind: "review" } | null;
 /** One visible row of the tree view; `depth` is the indentation level. */
 type Row = { node: TreeNode; depth: number };
 
-/** Checked and collapsed paths of every session's changelist, kept across session switches for the window's lifetime. */
-const checkedBySession = new Map<string, Set<string>>();
+/**
+ * Checked and collapsed paths of every changelist, kept across session switches for the window's lifetime. A session and
+ * its sub sessions share one checked set, keyed by the parent's ID, so a selection made in one of them shows in all.
+ */
+const checkedByFamily = new Map<string, Set<string>>();
 const collapsedBySession = new Map<string, Set<string>>();
 
 /**
@@ -90,24 +94,38 @@ export function ChangeList({
   const session = sessions.find((candidate) => candidate.id === sessionId);
   const parentId = session?.parentId ?? null;
   const pullRequest = session?.pullRequest ?? null;
-  /** The worktree and Git history of a remote session and its sub chats live on its VM, which commits and pushes for them. */
-  const isRemote = Boolean(session && remoteOf(session, sessions));
+  /** The worktree and Git history of a remote session and its sub chats live on its VM, which commits for them. */
+  const remote = session ? remoteOf(session, sessions) : null;
+  const isRemote = Boolean(remote);
+  /** A poller session's branch is pushed from its VM with the poller's token; every other session's from this Mac. */
+  const pushesFromVm = remote?.origin === "swf";
+  /** The branch on `origin` a push lands on: the one the session was created from. */
+  const target = session ? pushTarget(session, remote) : "";
   const isLocked = useHuntStore((state) => isWorktreeLocked(state.sessions, state.remoteLinks, sessionId));
   const draftCount = useReviewDraftCount(sessionId);
   const [tab, setTab] = useState<Tab>("changes");
-  /** Files start unchecked; the checked paths of a session survive a switch to another session and back. */
-  const [checked, setCheckedState] = useState<Set<string>>(() => checkedBySession.get(sessionId) ?? new Set());
+  /** Files start unchecked; the checked paths survive a switch to another session and back and are shared with the parent and its sub sessions. */
+  const checkedKey = parentId ?? sessionId;
+  const [checked, setCheckedState] = useState<Set<string>>(() => checkedByFamily.get(checkedKey) ?? new Set());
   const [collapsed, setCollapsedState] = useState<Set<string>>(() => collapsedBySession.get(sessionId) ?? new Set());
   const [dialog, setDialog] = useState<Dialog>(null);
   /** Shown in the footer once a review went out, until the next dialog opens. */
   const [notice, setNotice] = useState<string | null>(null);
-  /** Bumped after shelf operations so the shelf list reloads even when the file list is unchanged. */
+  /** Bumped after shelf and push operations so the shelf list and the push state reload even when the file list is unchanged. */
   const [shelfVersion, setShelfVersion] = useState(0);
+  /** Commits a push would publish, reloaded with the file list; `null` until known or when the count failed. */
+  const [unpushedCount, setUnpushedCount] = useState<number | null>(null);
+
+  useLoad(
+    () => commands.unpushedCommitCount(sessionId),
+    { onValue: setUnpushedCount, onError: () => setUnpushedCount(null) },
+    [sessionId, files, shelfVersion],
+  );
 
   useEffect(() => {
-    setCheckedState(checkedBySession.get(sessionId) ?? new Set());
+    setCheckedState(checkedByFamily.get(checkedKey) ?? new Set());
     setCollapsedState(collapsedBySession.get(sessionId) ?? new Set());
-  }, [sessionId]);
+  }, [sessionId, checkedKey]);
 
   const tree = useMemo(() => buildChangeTree(files), [files]);
   const filesByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
@@ -186,11 +204,25 @@ export function ChangeList({
         next.delete(file.path);
       }
     }
-    checkedBySession.set(sessionId, next);
+    checkedByFamily.set(checkedKey, next);
     setCheckedState(next);
   };
 
   const toggleGroup = (targets: ChangedFile[]) => setChecked(targets, stateOf(targets) !== "checked");
+
+  // ⌘Space toggles the checkbox of the selected file; bubble phase, so a focused editor or dialog keeps its own binding.
+  useEffect(() => {
+    if (tab !== "changes" || dialog) return;
+    const selected = selectedPath ? filesByPath.get(selectedPath) : undefined;
+    if (!selected) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.code !== "Space" || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      event.preventDefault();
+      setChecked([selected], !checked.has(selected.path));
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   /** Unchecks the files a commit or shelve took out of the list, so a later change of the same file starts unchecked. */
   const uncheckPaths = (paths: string[]) => {
@@ -198,7 +230,7 @@ export function ChangeList({
     for (const path of paths) {
       next.delete(path);
     }
-    checkedBySession.set(sessionId, next);
+    checkedByFamily.set(checkedKey, next);
     setCheckedState(next);
   };
 
@@ -371,6 +403,9 @@ export function ChangeList({
               paths={checkedPaths}
               isLocked={isLocked}
               isRemote={isRemote}
+              pushesFromVm={pushesFromVm}
+              target={target}
+              unpushedCount={unpushedCount}
               notice={notice}
               onCommit={confirmSavedContent}
               onCommitted={(paths) => {
@@ -378,7 +413,10 @@ export function ChangeList({
                 uncheckPaths(paths);
                 worktreeChanged();
               }}
-              onPushed={() => setNotice("Pushed")}
+              onPushed={() => {
+                setNotice(`Pushed to ${target}`);
+                setShelfVersion((version) => version + 1);
+              }}
               onShelve={() => void openShelveDialog()}
             />
           )}

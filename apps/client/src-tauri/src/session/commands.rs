@@ -98,6 +98,13 @@ pub async fn list_pull_requests(repo_path: String) -> Result<Vec<PullRequest>, S
     github::list_open_pull_requests(Path::new(&repo_path)).await
 }
 
+/// The title of the issue or pull request `number` of the GitHub repository `owner`/`name`, as `gh` sees it from
+/// `repo_path`.
+#[tauri::command]
+pub async fn issue_title(repo_path: String, owner: String, name: String, number: u64) -> Result<String, String> {
+    github::issue_title(Path::new(&repo_path), &owner, &name, number).await
+}
+
 /// The GitHub account `gh` is logged in as for the host of the repository's remote.
 #[tauri::command]
 pub async fn github_viewer(repo_path: String) -> Result<GithubViewer, String> {
@@ -2303,32 +2310,66 @@ async fn commit_on_vm(app: &AppHandle, id: Uuid, worktree: &Path, paths: &[Strin
     .await
 }
 
-/// Pushes the session's current branch to `origin` from here, with this Mac's Git credentials, and makes the pushed
-/// branch its upstream. A remote session's local branch first catches up with the commit its VM has checked out
-/// (`push_followed`). Only a poller session's branch is pushed from its VM with the poller's stored token, so that the
-/// push shows the poller's GitHub App like the rest of what its agent does on GitHub.
+/// Pushes the session's commits from here, with this Mac's Git credentials, to the branch on `origin` the session was
+/// created from (`push_target`), after a rebase onto that branch when it moved on; the session's own branch never
+/// reaches `origin`. A remote session's local branch first catches up with the commit its VM has checked out, and the
+/// rebase runs on the VM (`push_followed`). Only a poller session's branch is pushed from its VM under its own name with
+/// the poller's stored token, so that the push shows the poller's GitHub App like the rest of what its agent does on
+/// GitHub.
 #[tauri::command]
 pub async fn push_branch(app: AppHandle, id: Uuid) -> Result<(), String> {
     let record = worktree_session(&app, id)?;
     let Some((owner, target)) = remote_host(&app, &record) else {
-        return git::push_branch(&record.worktree_path).await;
+        return git::push_branch(&record.worktree_path, &push_target(&record, None)).await;
     };
     if target.origin.keeps_vm_tokens() {
         let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
-        return remote::commit::push_stored(&ssh, owner).await;
+        remote::commit::push_stored(&ssh, owner).await?;
+        // The local remote-tracking ref learns about the VM's push, so `unpushed_commit_count` stops offering one.
+        if let Err(error) = git::fetch_branch(&record.worktree_path, &target.branch).await {
+            eprintln!("failed to fetch the pushed branch {} of session {id}: {error}", target.branch);
+        }
+        return Ok(());
     }
-    push_followed(&app, owner, &record.worktree_path).await
+    push_followed(&app, owner, &record.worktree_path, &push_target(&record, Some(&target))).await
 }
 
-/// Pushes the local branch of the remote session `id`, checked out in its local worktree `worktree`, from here after it
-/// caught up with the VM's commit (`sync::follow_head`), while no sync of the session runs; a local branch that holds a
-/// commit the VM lacks fails the push with the message of the follow.
-async fn push_followed(app: &AppHandle, id: Uuid, worktree: &Path) -> Result<(), String> {
+/// The branch on `origin` a push of the session `record`, which runs on the VM `remote` when any, lands on: the branch
+/// the session was created from, named without its remote when the base was `origin/<branch>`, except for a poller
+/// session, whose VM pushes its branch under its own name.
+fn push_target(record: &SessionRecord, remote: Option<&RemoteTarget>) -> String {
+    if remote.is_some_and(|target| target.origin.keeps_vm_tokens()) {
+        return record.branch.clone();
+    }
+    record.base_ref.strip_prefix("origin/").unwrap_or(&record.base_ref).to_string()
+}
+
+/// Number of commits `push_branch` would publish, counted in the session's local worktree against the branch the push
+/// lands on, as fetched last; a remote session's local branch follows its VM's commits.
+#[tauri::command]
+pub async fn unpushed_commit_count(app: AppHandle, id: Uuid) -> Result<u32, String> {
+    let record = worktree_session(&app, id)?;
+    let remote = remote_host(&app, &record).map(|(_, target)| target);
+    git::unpushed_commit_count(&record.worktree_path, &push_target(&record, remote.as_ref())).await
+}
+
+/// Pushes the commits of the remote session `id`, checked out in its local worktree `worktree`, to the branch `target`
+/// on `origin` from here, while no sync of the session runs: the local branch catches up with the VM's commit
+/// (`sync::follow_head`), the VM's branch is rebased onto `origin/<target>` when that moved on
+/// (`remote::commit::rebase_onto_origin`) and the local branch follows the rebased commit, then `HEAD` is pushed. A
+/// local branch that holds a commit the VM lacks fails the push with the message of the follow.
+async fn push_followed(app: &AppHandle, id: Uuid, worktree: &Path, target: &str) -> Result<(), String> {
     sync::exclusive(app, id, |_| async move {
-        let target = store::find_session(app, id)?.remote.ok_or("failed to push: the session runs locally now")?;
-        let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
-        sync::follow_head(app, id, &ssh, &target, worktree).await?;
-        git::push_branch(worktree).await
+        let vm_target = || store::find_session(app, id)?.remote.ok_or_else(|| "failed to push: the session runs locally now".to_string());
+        let remote = vm_target()?;
+        let ssh = Ssh::open(&remote.vm, &ssh_dir()?).await?;
+        sync::follow_head(app, id, &ssh, &remote, worktree).await?;
+        git::fetch_branch(worktree, target).await?;
+        if remote::commit::rebase_onto_origin(&ssh, &remote, worktree, target).await? {
+            // The follow above recorded the commit the local branch follows; the rebased one is checked against that.
+            sync::follow_head(app, id, &ssh, &vm_target()?, worktree).await?;
+        }
+        git::push_head(worktree, target).await
     })
     .await
 }
@@ -2578,6 +2619,7 @@ mod tests {
     fn worktree_branch_name_is_a_feat_general_branch_with_a_lowercase_collapsed_slug() {
         let id = Uuid::parse_str("0123abcd-1111-2222-3333-444455556666").unwrap();
         assert_eq!(worktree_branch_name("Fix the Login  Bug!", id), "feat/general/fix-the-login-bug-0123abcd");
+        assert_eq!(worktree_branch_name("#527 Multilingual emails", id), "feat/general/527-multilingual-emails-0123abcd");
         assert_eq!(worktree_branch_name("  ---  ", id), "feat/general/0123abcd");
         assert_eq!(worktree_branch_name("", id), "feat/general/0123abcd");
         assert_eq!(worktree_branch_name("Ärger mit Umlauten", id), "feat/general/rger-mit-umlauten-0123abcd");

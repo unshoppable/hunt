@@ -708,13 +708,90 @@ pub async fn commit_files(worktree: &Path, paths: &[String], message: &str) -> R
     Ok(())
 }
 
-/// Pushes the worktree's current branch to the branch of the same name on `origin` and makes that its upstream, which
-/// for a session branch created from `origin/<default branch>` is that default branch until the first push.
-pub async fn push_branch(worktree: &Path) -> Result<(), String> {
+/// Pushes the worktree's `HEAD` to the branch `target` on `origin`, the branch the session was created from, so a
+/// session's own branch never reaches `origin`, and makes `origin/<target>` the upstream of the worktree's branch. When
+/// `origin/<target>` has commits `HEAD` lacks, the worktree's branch is rebased onto it first (`rebase_onto_origin`).
+pub async fn push_branch(worktree: &Path, target: &str) -> Result<(), String> {
+    ensure_branch_name(worktree, target).await?;
     if current_branch(worktree).await? == "HEAD" {
         return Err("the worktree has no branch checked out".into());
     }
-    run_git(worktree, &["push", "-q", "-u", "--", "origin", "HEAD"]).await?;
+    fetch_branch(worktree, target).await?;
+    if is_behind_origin(worktree, target).await {
+        rebase_onto_origin(worktree, target).await?;
+    }
+    push_head(worktree, target).await
+}
+
+/// Pushes the worktree's `HEAD` to the branch `target` on `origin` and makes that the upstream of the worktree's branch;
+/// `origin` rejects the push when `origin/<target>` has commits `HEAD` lacks.
+pub async fn push_head(worktree: &Path, target: &str) -> Result<(), String> {
+    ensure_branch_name(worktree, target).await?;
+    run_git(worktree, &["push", "-q", "-u", "--", "origin", &format!("HEAD:refs/heads/{target}")]).await?;
+    Ok(())
+}
+
+/// Whether `origin/<branch>`, as fetched last, has commits the worktree's `HEAD` lacks, so that a push to it needs a
+/// rebase first; `false` without a remote-tracking ref of the branch.
+pub async fn is_behind_origin(worktree: &Path, branch: &str) -> bool {
+    let remote_ref = format!("refs/remotes/origin/{branch}");
+    rev_parse(worktree, &remote_ref).await.is_ok() && !is_ancestor(worktree, &remote_ref, "HEAD").await
+}
+
+/// Rebases the worktree's branch onto `origin/<branch>` as fetched last, with the uncommitted changes stashed
+/// meanwhile; a conflict aborts the rebase, which leaves branch and files as they were, and fails with git's report.
+pub async fn rebase_onto_origin(worktree: &Path, branch: &str) -> Result<(), String> {
+    ensure_branch_name(worktree, branch).await?;
+    let remote_ref = format!("refs/remotes/origin/{branch}");
+    if let Err(error) = run_git(worktree, &["rebase", "-q", "--autostash", &remote_ref]).await {
+        let conflicts = run_git(worktree, &["diff", "--name-only", "--diff-filter=U", "--"]).await.unwrap_or_default();
+        let _ = run_git(worktree, &["rebase", "--abort"]).await;
+        return Err(rebase_error(branch, &conflicts, &error));
+    }
+    Ok(())
+}
+
+/// The message of a failed rebase onto `origin/<branch>`: the files `conflicts` (one per line) the rebase stopped at,
+/// else git's own `error`.
+pub fn rebase_error(branch: &str, conflicts: &str, error: &str) -> String {
+    let files: Vec<&str> = conflicts.lines().filter(|line| !line.is_empty()).collect();
+    if files.is_empty() {
+        return format!("failed to rebase onto origin/{branch}: {error}");
+    }
+    format!("failed to rebase onto origin/{branch}: conflicts in {}; resolve them in the chat or by hand, then push again", files.join(", "))
+}
+
+/// Number of commits a push to the branch `target` on `origin` would publish: those `origin/<target>`, as fetched last,
+/// lacks or, without a remote-tracking ref of it, those no branch of `origin` has. A detached HEAD has nothing to push.
+pub async fn unpushed_commit_count(worktree: &Path, target: &str) -> Result<u32, String> {
+    ensure_branch_name(worktree, target).await?;
+    if current_branch(worktree).await? == "HEAD" {
+        return Ok(0);
+    }
+    let remote_ref = format!("refs/remotes/origin/{target}");
+    let output = if rev_parse(worktree, &remote_ref).await.is_ok() {
+        run_git(worktree, &["rev-list", "--count", &format!("{remote_ref}..HEAD"), "--"]).await?
+    } else {
+        run_git(worktree, &["rev-list", "--count", "HEAD", "--not", "--remotes=origin", "--"]).await?
+    };
+    output.trim().parse().map_err(|error| format!("failed to count unpushed commits: {error}"))
+}
+
+/// Updates the worktree's remote-tracking ref of `branch` from `origin`; `false` when `origin` has no such branch.
+pub async fn fetch_branch(worktree: &Path, branch: &str) -> Result<bool, String> {
+    ensure_branch_name(worktree, branch).await?;
+    match run_git(worktree, &["fetch", "-q", "origin", branch]).await {
+        Ok(_) => Ok(true),
+        Err(error) if error.contains("couldn't find remote ref") => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Rejects `branch` unless git accepts it as a branch name, which rules out options and refspecs.
+async fn ensure_branch_name(repo: &Path, branch: &str) -> Result<(), String> {
+    if branch.starts_with('-') || run_git(repo, &["check-ref-format", "--branch", branch]).await.is_err() {
+        return Err(format!("invalid branch name: {branch:?}"));
+    }
     Ok(())
 }
 
@@ -731,6 +808,8 @@ pub async fn files_containing_word(worktree: &Path, word: &str) -> Result<Vec<St
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
@@ -835,20 +914,120 @@ mod tests {
         assert_eq!(commit_files(dir.path(), &["tracked.txt".into()], " \n").await.unwrap_err(), "commit message must not be empty");
     }
 
+    /// A clone of `origin`, whose `develop` branch exists next to its checked-out `main`, with the session branch
+    /// `feat/general/x` created from `origin/develop` and checked out.
+    async fn session_clone(origin: &Path, clone_dir: &Path) -> PathBuf {
+        git(origin, &["branch", "develop"]).await;
+        let repo = clone_dir.join("repo");
+        git(clone_dir, &["clone", "-q", origin.to_str().unwrap(), repo.to_str().unwrap()]).await;
+        git(&repo, &["checkout", "-q", "-b", "feat/general/x", "origin/develop"]).await;
+        repo
+    }
+
+    /// Commits `content` of `tracked.txt` on `origin`'s `develop` branch, as a push of someone else would.
+    async fn commit_on_origin_develop(origin: &Path, content: &str) -> String {
+        git(origin, &["checkout", "-q", "develop"]).await;
+        std::fs::write(origin.join("tracked.txt"), content).unwrap();
+        git(origin, &["commit", "-q", "-am", "elsewhere"]).await;
+        let commit = run_git(origin, &["rev-parse", "HEAD"]).await.unwrap();
+        git(origin, &["checkout", "-q", "main"]).await;
+        commit
+    }
+
     #[tokio::test]
-    async fn push_branch_pushes_to_the_branch_of_the_same_name_and_tracks_it() {
+    async fn push_branch_pushes_head_to_the_base_branch_and_tracks_it() {
         let origin = fixture().await;
         let clone_dir = tempfile::tempdir().unwrap();
-        let repo = clone_dir.path().join("repo");
-        git(clone_dir.path(), &["clone", "-q", origin.path().to_str().unwrap(), repo.to_str().unwrap()]).await;
-        git(&repo, &["checkout", "-q", "--track", "-b", "feat/general/x", "origin/main"]).await;
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+        std::fs::write(repo.join("tracked.txt"), "two\n").unwrap();
+        commit_files(&repo, &["tracked.txt".into()], "one").await.unwrap();
 
-        push_branch(&repo).await.unwrap();
+        push_branch(&repo, "develop").await.unwrap();
 
-        let pushed = run_git(origin.path(), &["rev-parse", "feat/general/x"]).await.unwrap();
+        let pushed = run_git(origin.path(), &["rev-parse", "develop"]).await.unwrap();
         assert_eq!(pushed, run_git(&repo, &["rev-parse", "HEAD"]).await.unwrap());
         let upstream = run_git(&repo, &["rev-parse", "--abbrev-ref", "@{upstream}"]).await.unwrap();
-        assert_eq!(upstream.trim(), "origin/feat/general/x");
+        assert_eq!(upstream.trim(), "origin/develop");
+        let branches = run_git(origin.path(), &["branch", "--list", "feat/general/*"]).await.unwrap();
+        assert_eq!(branches.trim(), "");
+        assert_eq!(push_branch(&repo, "--all").await.unwrap_err(), "invalid branch name: \"--all\"");
+    }
+
+    #[tokio::test]
+    async fn push_branch_rebases_onto_the_base_branch_when_origin_moved_on() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+        std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+        commit_files(&repo, &["new.txt".into()], "session commit").await.unwrap();
+        let elsewhere = commit_on_origin_develop(origin.path(), "two\n").await;
+        std::fs::write(repo.join("other.txt"), "edited\n").unwrap();
+
+        push_branch(&repo, "develop").await.unwrap();
+
+        let head = run_git(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        assert_eq!(run_git(origin.path(), &["rev-parse", "develop"]).await.unwrap(), head);
+        assert_eq!(run_git(&repo, &["rev-parse", "HEAD^"]).await.unwrap(), elsewhere);
+        assert_eq!(run_git(&repo, &["log", "-1", "--format=%s"]).await.unwrap().trim(), "session commit");
+        assert_eq!(std::fs::read_to_string(repo.join("tracked.txt")).unwrap(), "two\n");
+        assert_eq!(std::fs::read_to_string(repo.join("other.txt")).unwrap(), "edited\n");
+    }
+
+    #[tokio::test]
+    async fn push_branch_aborts_a_conflicting_rebase_and_pushes_nothing() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+        std::fs::write(repo.join("tracked.txt"), "mine\n").unwrap();
+        commit_files(&repo, &["tracked.txt".into()], "session commit").await.unwrap();
+        let before = run_git(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        let elsewhere = commit_on_origin_develop(origin.path(), "theirs\n").await;
+
+        let error = push_branch(&repo, "develop").await.unwrap_err();
+
+        assert_eq!(error, "failed to rebase onto origin/develop: conflicts in tracked.txt; resolve them in the chat or by hand, then push again");
+        assert_eq!(run_git(&repo, &["rev-parse", "HEAD"]).await.unwrap(), before);
+        assert_eq!(run_git(origin.path(), &["rev-parse", "develop"]).await.unwrap(), elsewhere);
+        assert_eq!(run_git(&repo, &["status", "--porcelain"]).await.unwrap().trim(), "");
+        assert_eq!(std::fs::read_to_string(repo.join("tracked.txt")).unwrap(), "mine\n");
+    }
+
+    #[tokio::test]
+    async fn unpushed_commit_count_counts_the_commits_the_base_branch_on_origin_lacks() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+        assert_eq!(unpushed_commit_count(&repo, "develop").await.unwrap(), 0);
+
+        std::fs::write(repo.join("tracked.txt"), "two\n").unwrap();
+        commit_files(&repo, &["tracked.txt".into()], "one").await.unwrap();
+        assert_eq!(unpushed_commit_count(&repo, "develop").await.unwrap(), 1);
+        assert_eq!(unpushed_commit_count(&repo, "feature/new").await.unwrap(), 1);
+
+        push_branch(&repo, "develop").await.unwrap();
+        assert_eq!(unpushed_commit_count(&repo, "develop").await.unwrap(), 0);
+
+        std::fs::write(repo.join("tracked.txt"), "three\n").unwrap();
+        commit_files(&repo, &["tracked.txt".into()], "two").await.unwrap();
+        std::fs::write(repo.join("tracked.txt"), "four\n").unwrap();
+        commit_files(&repo, &["tracked.txt".into()], "three").await.unwrap();
+        assert_eq!(unpushed_commit_count(&repo, "develop").await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn fetch_branch_tells_whether_origin_has_the_branch() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+
+        assert!(fetch_branch(&repo, "develop").await.unwrap());
+        assert!(!fetch_branch(&repo, "feature/new").await.unwrap());
+        assert!(!is_behind_origin(&repo, "feature/new").await);
+        assert!(!is_behind_origin(&repo, "develop").await);
+        commit_on_origin_develop(origin.path(), "two\n").await;
+        assert!(!is_behind_origin(&repo, "develop").await);
+        assert!(fetch_branch(&repo, "develop").await.unwrap());
+        assert!(is_behind_origin(&repo, "develop").await);
     }
 
     async fn head_branch(worktree: &Path) -> String {

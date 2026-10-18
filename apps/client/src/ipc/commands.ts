@@ -13,6 +13,8 @@ export const commands = {
   currentBranch: (repoPath: string) => invoke<string>("current_branch", { repoPath }),
   /** Open pull requests of the repository's GitHub remote, newest first; needs the `gh` CLI to be installed and logged in. */
   listPullRequests: (repoPath: string) => invoke<PullRequest[]>("list_pull_requests", { repoPath }),
+  /** Title of the issue or pull request `number` of the GitHub repository `owner`/`name`, as `gh` sees it from `repoPath`. */
+  issueTitle: (repoPath: string, owner: string, name: string, number: number) => invoke<string>("issue_title", { repoPath, owner, name, number }),
   /** The GitHub account `gh` is logged in as for the repository's host; rejects when `gh` is missing or logged out. */
   githubViewer: (repoPath: string) => invoke<GithubViewer>("github_viewer", { repoPath }),
   /** Description and conversation of the pull request the session reviews; rejects when it reviews none. */
@@ -143,8 +145,13 @@ export const commands = {
   dropShelf: (id: string, reference: string) => invoke<void>("drop_shelf", { id, reference }),
   /** Commits exactly `paths` with `message` on the session's current branch; other staged changes stay out. */
   commitFiles: (id: string, paths: string[], message: string) => invoke<void>("commit_files", { id, paths, message }),
-  /** Pushes the session's current branch to the branch of the same name on `origin` and tracks it. */
+  /**
+   * Pushes the session's commits to the branch it was created from on `origin` (`pushTarget` in `chat/remoteSession.ts`),
+   * rebased onto it first when it moved on; the session's own branch never reaches `origin`.
+   */
   pushBranch: (id: string) => invoke<void>("push_branch", { id }),
+  /** Number of commits `pushBranch` would publish; 0 when they are on `origin` already. */
+  unpushedCommitCount: (id: string) => invoke<number>("unpushed_commit_count", { id }),
   /** Language (English name, e.g. `German`) of the agent output Hunt asks for itself: diagram labels, summaries, titles. */
   setAiLanguage: (language: string) => invoke<void>("set_ai_language", { language }),
   /** System prompt addition for every agent session started afterwards; empty switches it off. */

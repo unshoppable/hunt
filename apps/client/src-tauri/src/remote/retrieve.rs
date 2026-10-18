@@ -439,6 +439,19 @@ pub(crate) async fn fetch_into(worktree: &Path, ssh: &Ssh, remote_worktree: &str
     Ok(())
 }
 
+/// Pushes the local ref `source` into the ref `destination` of the VM's repository at `remote_worktree`, replacing what
+/// it pointed to; the repository's pre-push hooks are skipped, as they guard pushes to the team's remote.
+pub(crate) async fn push_into(worktree: &Path, ssh: &Ssh, remote_worktree: &str, source: &str, destination: &str) -> Result<(), String> {
+    let url = ssh.git_url(remote_worktree);
+    let refspec = format!("+{source}:{destination}");
+    let ssh_command = ssh.git_ssh_command();
+    let args = ["push", "--no-verify", "--quiet", "--receive-pack=sudo -n hunt-ctl receive-pack", url.as_str(), refspec.as_str()];
+    git::run_git_with_env(worktree, &args, &[("GIT_SSH_COMMAND", ssh_command.as_str())])
+        .await
+        .map_err(|error| format!("failed to push {source} to the VM: {error}"))?;
+    Ok(())
+}
+
 /// Copies the LFS objects of `reference` that the local store lacks from the VM.
 async fn download_lfs_objects(worktree: &Path, ssh: &Ssh, id: &str, reference: &str) -> Result<(), String> {
     let objects_dir = lfs_objects_dir(worktree).await?;

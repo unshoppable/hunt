@@ -30,7 +30,7 @@ import type {
 import { imageDataUrl, imagePlaceholder } from "../chat/imageData";
 import { hasQuestionMarker } from "../chat/questionMarker";
 import { repoName } from "../ui/path";
-import { titleFromPrompt } from "../sessions/sessionLabels";
+import { issueFromPrompt, titleFromPrompt } from "../sessions/sessionLabels";
 import { HANDOFF_START_PROMPT, hasRunningService } from "../preview/services";
 import { useAgentDefaultsStore } from "./agentDefaults";
 import { usePlanUsageStore } from "./planUsage";
@@ -834,7 +834,27 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       creatingIds: state.creatingIds.filter((candidate) => candidate !== id),
     }));
     void applyStart(id, start);
+    if (start.prompt) {
+      void nameAfterIssue(id, session.repoPath, start.prompt.text);
+    }
     return id;
+  }
+
+  /**
+   * Names the session `id` after the GitHub issue or pull request its first prompt `text` starts with, `#<number>
+   * <title>`, once `gh` looked the title up from `repoPath`; a prompt without one, or a failed lookup, which lands in
+   * the chat's error, leaves the title as it is.
+   */
+  async function nameAfterIssue(id: string, repoPath: string, text: string) {
+    const issue = issueFromPrompt(text);
+    if (!issue) return;
+    try {
+      const title = await commands.issueTitle(repoPath, issue.owner, issue.name, issue.number);
+      const session = await commands.renameSession(id, titleFromPrompt(`#${issue.number} ${title}`));
+      set((state) => ({ sessions: state.sessions.map((candidate) => (candidate.id === id ? session : candidate)) }));
+    } catch (error) {
+      updateChat(id, (chat) => ({ ...chat, error: String(error) }));
+    }
   }
 
   /**
@@ -874,12 +894,15 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
   /** Names the untitled session `id` after its first prompt; the backend keeps the branch slug of the placeholder title. */
   async function nameAfterPrompt(id: string, text: string) {
     set((state) => ({ untitledIds: state.untitledIds.filter((candidate) => candidate !== id) }));
+    let session: SessionView;
     try {
-      const session = await commands.renameSession(id, titleFromPrompt(text) || "Screenshot");
+      session = await commands.renameSession(id, titleFromPrompt(text) || "Screenshot");
       set((state) => ({ sessions: state.sessions.map((candidate) => (candidate.id === id ? session : candidate)) }));
     } catch (error) {
       updateChat(id, (chat) => ({ ...chat, error: String(error) }));
+      return;
     }
+    await nameAfterIssue(id, session.repoPath, text);
   }
 
   /** Ids of the sessions whose link `loadRemoteLinks` is asking the backend for. */

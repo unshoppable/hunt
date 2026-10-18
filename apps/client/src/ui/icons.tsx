@@ -18,6 +18,16 @@ export function SendIcon({ className = "size-3.5" }: { className?: string }) {
   );
 }
 
+/** Paper plane of the push button. */
+export function PaperPlaneIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M14.5 1.5L1.5 6.3l5.3 2.4 2.4 5.8z" />
+      <path d="M14.5 1.5L6.8 8.7" />
+    </svg>
+  );
+}
+
 export function SearchIcon({ className = "size-4" }: { className?: string }) {
   return (
     <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
@@ -380,6 +390,15 @@ export function WebstormIcon({ className = "size-4" }: { className?: string }) {
       <rect x="3" y="3" width="10" height="10" rx="0.5" fill="#000" />
       <text x="4" y="8.6" fill="#fff" fontFamily="system-ui, sans-serif" fontSize="4.6" fontWeight="700">WS</text>
       <rect x="4" y="10.6" width="3.8" height="0.9" fill="#fff" />
+    </svg>
+  );
+}
+
+/** Folder outline, 16px: marks a repository. */
+export function FolderIcon({ className = "size-4 shrink-0" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
     </svg>
   );
 }

@@ -49,6 +49,7 @@ decision records that steer the agent.
 ### ✨ Features
 
 - **Isolated sessions.** Each session gets a `feat/general/<slug>-<id>` worktree; shelve, revert and commit per file.
+  *Push* lands the commits on the branch the session was created from; the worktree's branch never reaches `origin`.
 - **Sub sessions.** Start a background agent in an existing worktree, or ask Claude about a selected diff range.
 - **Change attribution.** Sessions sharing a worktree see only their own files; shared files carry a badge.
 - **Built-in IDE.** Project tree, Monaco panes with tabs, breadcrumbs, go-to-declaration, usages, inlay hints and
@@ -205,7 +206,11 @@ via the ACP `systemPrompt` meta.
 `apps/client/src-tauri/src/git.rs` creates `feat/general/<slug>-<id>` worktrees under the app data directory (the
 `<type>/<scope>/<name>` form repositories check branch names against; a pull request review works on the pull
 request's own branch), lists their changes against the session's diff base (`HEAD`, or the merge base of a reviewed
-pull request) and supports shelving and reverting them.
+pull request) and supports shelving and reverting them. The worktree's branch is local only: the changelist's *Push*
+(`push_branch`) pushes `HEAD` to the branch the session was created from on `origin` (`push_target` in
+`session/commands.rs`: the base branch, a reviewed pull request's branch, the checkout's own), after a rebase onto it
+when it moved on; a conflict aborts the rebase and names the files. A first prompt that starts with the URL of a GitHub
+issue or pull request titles the session `#<number> <title>` (`issueFromPrompt`, `issue_title` via `gh`).
 
 A new worktree has none of the repository's ignored files either, which is where a service's `.env.private` lives. Each
 service of the repository's `hunt.json` names the ones it needs as glob patterns under `worktreeInclude`
@@ -641,9 +646,12 @@ chats' transcripts alone, whose copies on the VM are the stream's. The records f
 until the session runs here again, and the memory stays on the VM for the merge below. The
 changelist's *Commit* runs `hunt-ctl commit` on the VM after a sync that sent the local edits, while no other sync
 runs: the checked files are committed under the local Git identity, and the repository's hooks run with the agent's
-environment. *Push* pushes the branch from this Mac with its Git credentials, as for a local session, after the local
-branch caught up with the VM's commit; only a poller session's branch is pushed from its VM with the poller's stored
-token (`hunt-ctl push --stored`), so that the push shows the GitHub App like its agent's commits.
+environment. *Push* pushes the commits to the branch the session was created from on `origin` from this Mac with its
+Git credentials, as for a local session, after the local branch caught up with the VM's commit; when that branch moved
+on, the VM's branch is rebased onto it first (`remote::commit::rebase_onto_origin`: this Mac fetches the branch and
+pushes the ref to the VM, so the VM needs no access to GitHub). Only a poller session's branch is pushed from its VM
+under its own name with the poller's stored token (`hunt-ctl push --stored`), so that the push shows the GitHub App
+like its agent's commits.
 *WebStorm* is switched off for a remote session and its sub chats. Its `node_modules` install leaves the lockfile alone (`npm ci`, `--frozen-lockfile`). The chat header
 shows when the last sync succeeded, and the chat shows a failure. A diagram refresh runs on the agent on the VM,
 against the session's diff base, and Hunt copies `.hunt/graph.json` back afterwards. Known limits: an edit that keeps

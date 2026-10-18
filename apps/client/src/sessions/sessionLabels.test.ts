@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionView } from "../ipc/types";
-import { cycleSessionId, filterSessionRows, groupSessions, latestTopLevelSession, sessionMarks, sessionReference, sidebarTitle, titleFromPrompt } from "./sessionLabels";
+import { cycleSessionId, filterSessionRows, groupSessions, issueFromPrompt, latestTopLevelSession, sessionMarks, sessionReference, sidebarTitle, titleFromPrompt } from "./sessionLabels";
 
 function session(id: string, title: string, branch: string, parentId: string | null = null, path?: string): SessionView {
   return {
@@ -104,6 +104,22 @@ describe("titleFromPrompt", () => {
   it("uses the first non-empty line and shortens it with an ellipsis", () => {
     expect(titleFromPrompt("\n  hello world \nsecond")).toBe("hello world");
     expect(titleFromPrompt("x".repeat(60))).toBe(`${"x".repeat(47)}…`);
+  });
+
+  it("names a GitHub issue or pull request URL by its number", () => {
+    expect(titleFromPrompt("https://github.com/unshoppable/app-framework/issues/527")).toBe("#527");
+    expect(titleFromPrompt("https://github.com/unshoppable/app-framework/pull/1468#issuecomment-1 please review\nmore")).toBe("#1468 please review");
+    expect(titleFromPrompt("see https://github.com/unshoppable/app-framework/issues/527")).toBe("see https://github.com/unshoppable/app-framewor…");
+  });
+});
+
+describe("issueFromPrompt", () => {
+  it("parses the issue or pull request the first line starts with", () => {
+    expect(issueFromPrompt("\n https://github.com/unshoppable/app-framework/issues/527 \n")).toEqual({ owner: "unshoppable", name: "app-framework", number: 527 });
+    expect(issueFromPrompt("https://github.com/a-b/c.d/pull/12/files?x=1 review it")).toEqual({ owner: "a-b", name: "c.d", number: 12 });
+    expect(issueFromPrompt("https://github.com/unshoppable/app-framework/issues/527x")).toBeNull();
+    expect(issueFromPrompt("https://github.com/unshoppable/app-framework")).toBeNull();
+    expect(issueFromPrompt("fix https://github.com/unshoppable/app-framework/issues/527")).toBeNull();
   });
 });
 

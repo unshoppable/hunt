@@ -82,6 +82,16 @@ export function remoteOf(session: SessionView, sessions: SessionView[]): RemoteT
 }
 
 /**
+ * The branch on `origin` a push of `session`, whose worktree lives on `remote` when any, lands on (`push_target` in
+ * `session/commands.rs`): the branch the session was created from, named without its remote, except for a poller
+ * session, whose VM pushes its branch under its own name. A session's own worktree branch never reaches `origin`.
+ */
+export function pushTarget(session: SessionView, remote: RemoteTarget | null): string {
+  if (remote?.origin === "swf") return session.branch;
+  return session.baseRef.replace(/^origin\//, "");
+}
+
+/**
  * What else decides whether a session can move: the editor's unsaved edits, the selected Claude account and whether one
  * of its sub chats runs a turn.
  */

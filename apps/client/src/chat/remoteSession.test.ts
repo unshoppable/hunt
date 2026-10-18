@@ -8,6 +8,7 @@ import {
   hasBusySubChat,
   isWorktreeLocked,
   moveStatus,
+  pushTarget,
   remoteOf,
   remotePosition,
   retrieveBlocker,
@@ -87,6 +88,15 @@ const remote = {
   issue: null,
   agent: "",
 };
+
+describe("pushTarget", () => {
+  it("is the base branch without its remote, or a poller session's own branch", () => {
+    expect(pushTarget(session("top"), null)).toBe("main");
+    expect(pushTarget(session("top", { baseRef: "origin/feature/med/homepage" }), remote)).toBe("feature/med/homepage");
+    expect(pushTarget(session("top", { baseRef: "fix/sentry/errors", branch: "fix/sentry/errors" }), null)).toBe("fix/sentry/errors");
+    expect(pushTarget(session("top", { branch: "feat/general/12-x" }), { ...remote, origin: "swf", issue: 12 })).toBe("feat/general/12-x");
+  });
+});
 
 describe("remoteOf", () => {
   it("is the VM of the session's own worktree, or of its parent's for a sub chat", () => {

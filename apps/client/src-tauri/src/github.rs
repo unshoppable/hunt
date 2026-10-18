@@ -502,6 +502,24 @@ pub struct GithubViewer {
     pub avatar_url: String,
 }
 
+/// The title of the issue or pull request `number` of the GitHub repository `owner`/`name`, looked up with `gh` from
+/// `repo`, whose host and login it uses.
+pub async fn issue_title(repo: &Path, owner: &str, name: &str, number: u64) -> Result<String, String> {
+    for part in [owner, name] {
+        let is_valid = !part.is_empty() && part.chars().all(|character| character.is_ascii_alphanumeric() || "-_.".contains(character));
+        if !is_valid {
+            return Err(format!("failed to look up the issue: invalid repository name {owner}/{name}"));
+        }
+    }
+    let endpoint = format!("repos/{owner}/{name}/issues/{number}");
+    let stdout = run_gh(repo, &["api", &endpoint, "--jq", ".title"], "look up the issue").await?;
+    let title = String::from_utf8_lossy(&stdout).trim().to_string();
+    if title.is_empty() {
+        return Err(format!("failed to look up the issue: #{number} of {owner}/{name} has no title"));
+    }
+    Ok(title)
+}
+
 /// The account `gh` is logged in as for the host of `repo`'s remote.
 pub async fn viewer(repo: &Path) -> Result<GithubViewer, String> {
     let stdout = run_gh(repo, &["api", "user"], "look up the GitHub user").await?;

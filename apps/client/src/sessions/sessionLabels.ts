@@ -159,8 +159,29 @@ export function cycleSessionId(rows: SessionRow[], activeId: string | null, step
 
 const TITLE_LENGTH = 48;
 
-/** Session title derived from the first prompt: its first line, trimmed to a sidebar-friendly length. */
+/** A GitHub issue or pull request a prompt names by its URL. */
+export type IssueRef = { owner: string; name: string; number: number };
+
+const ISSUE_URL = /^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:issues|pull)\/(\d+)(?:[/#?]\S*)?(?=\s|$)/;
+
+/** The issue or pull request whose GitHub URL the first non-empty line of the prompt `text` starts with; else `null`. */
+export function issueFromPrompt(text: string): IssueRef | null {
+  const match = ISSUE_URL.exec(firstLine(text));
+  if (!match) return null;
+  return { owner: match[1], name: match[2], number: Number(match[3]) };
+}
+
+/**
+ * Session title derived from the first prompt: its first line, trimmed to a sidebar-friendly length. A line starting
+ * with the URL of a GitHub issue or pull request names it as `#<number>` plus the rest of the line; `issueFromPrompt`
+ * tells which issue, so the title can get the issue's own title once it is looked up.
+ */
 export function titleFromPrompt(text: string): string {
-  const firstLine = (text.split("\n").find((line) => line.trim()) ?? text).trim();
-  return firstLine.length > TITLE_LENGTH ? `${firstLine.slice(0, TITLE_LENGTH - 1).trimEnd()}…` : firstLine;
+  const line = firstLine(text).replace(ISSUE_URL, (_, _owner, _name, number) => `#${number}`);
+  return line.length > TITLE_LENGTH ? `${line.slice(0, TITLE_LENGTH - 1).trimEnd()}…` : line;
+}
+
+/** The first non-empty line of `text`, trimmed. */
+function firstLine(text: string): string {
+  return (text.split("\n").find((line) => line.trim()) ?? text).trim();
 }

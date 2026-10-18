@@ -40,6 +40,31 @@ pub async fn follow_vm_head(ssh: &Ssh, id: Uuid, target: &RemoteTarget, worktree
     Ok(Some(commit))
 }
 
+/// Rebases the branch the VM's worktree of the remote session `target` has checked out onto `origin/<base>` as the
+/// local worktree `worktree` fetched it last, when that has commits the local branch, which follows the VM's, lacks: the
+/// local remote-tracking ref goes to the VM first, so the VM needs no access to GitHub, and the rebase runs there as the
+/// agent's user with the uncommitted work stashed meanwhile. A conflict aborts the rebase and fails with git's report.
+/// Returns whether the branch was rebased; the local branch follows the VM's new commit with the next `follow_vm_head`.
+pub async fn rebase_onto_origin(ssh: &Ssh, target: &RemoteTarget, worktree: &Path, base: &str) -> Result<bool, String> {
+    if !git::is_behind_origin(worktree, base).await {
+        return Ok(false);
+    }
+    let remote_ref = format!("refs/remotes/origin/{base}");
+    let remote_worktree = target.worktree_path.display().to_string();
+    retrieve::push_into(worktree, ssh, &remote_worktree, &remote_ref, &remote_ref).await?;
+    let git = |args: &[&str]| {
+        let mut all = vec!["-n", "-u", "agent", "git", "-C", remote_worktree.as_str()];
+        all.extend_from_slice(args);
+        shell_command("sudo", &all)
+    };
+    if let Err(error) = ssh.run(&git(&["rebase", "-q", "--autostash", &remote_ref])).await {
+        let conflicts = ssh.run(&git(&["diff", "--name-only", "--diff-filter=U", "--"])).await.unwrap_or_default();
+        let _ = ssh.run(&git(&["rebase", "--abort"])).await;
+        return Err(format!("on the VM: {}", git::rebase_error(base, &conflicts, &error)));
+    }
+    Ok(true)
+}
+
 /// Pushes the branch the VM's worktree of the remote session `id` has checked out to its origin with the GitHub token
 /// its VM stores, the poller's for a poller session, and makes that the branch's upstream.
 pub async fn push_stored(ssh: &Ssh, id: Uuid) -> Result<(), String> {

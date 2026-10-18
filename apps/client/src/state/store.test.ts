@@ -961,13 +961,10 @@ describe("remote sessions", () => {
     expect(calls.indexOf("send_prompt")).toBeGreaterThan(calls.indexOf("open_session"));
   });
 
-  it("connects the stopped sub chats behind a remote session once the session itself connected, not those of a local one", async () => {
+  it("leaves the stopped sub chats of a remote session alone when the session connects: they run here when opened", async () => {
     const parent = { ...storedSession(SESSION, "Remote"), isLive: false, remote };
     const subs = ["sub-a", "sub-b"].map((id) => ({ ...storedSession(id, id), parentId: SESSION, isLive: false }));
-    const liveSub = { ...storedSession("sub-live", "Live sub"), parentId: SESSION, isLive: true };
-    const localParent = { ...storedSession("local", "Local"), isLive: false };
-    const localSub = { ...storedSession("local-sub", "Local sub"), parentId: "local", isLive: false };
-    useHuntStore.setState({ chats: {}, sessions: [parent, ...subs, liveSub, localParent, localSub], creatingIds: [], activeSessionId: SESSION, draft: null, untitledIds: [] });
+    useHuntStore.setState({ chats: {}, sessions: [parent, ...subs], creatingIds: [], activeSessionId: SESSION, draft: null, untitledIds: [] });
     const opened = new Set<string>();
     vi.mocked(invoke).mockImplementation((command, args) => {
       if (command === "open_session") {
@@ -980,39 +977,16 @@ describe("remote sessions", () => {
     });
 
     await useHuntStore.getState().resumeSession(SESSION);
-    await vi.waitFor(() => expect(useHuntStore.getState().sessions.filter((session) => session.isLive).map((session) => session.id)).toEqual([SESSION, "sub-a", "sub-b", "sub-live"]));
-    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "open_session").map(([, args]) => (args as { id: string }).id)).toEqual([SESSION, "sub-a", "sub-b"]);
-
-    await useHuntStore.getState().resumeSession("local");
     await useHuntStore.getState().refreshSessions();
-    expect(opened.has("local-sub")).toBe(false);
+    expect([...opened]).toEqual([SESSION]);
+    expect(useHuntStore.getState().sessions.filter((session) => session.isLive).map((session) => session.id)).toEqual([SESSION]);
   });
 
-  it("leaves the sub chats alone when the remote session's connect failed, and keeps a sub chat's failure in its own chat", async () => {
-    const parent = { ...storedSession(SESSION, "Remote"), isLive: false, remote };
-    const sub = { ...storedSession("sub", "Sub"), parentId: SESSION, isLive: false };
-    useHuntStore.setState({ chats: {}, sessions: [parent, sub], creatingIds: [], activeSessionId: SESSION, draft: null, untitledIds: [] });
-    vi.mocked(invoke).mockImplementation((command) => (command === "open_session" ? Promise.reject("failed to start the VM vm-hunt") : Promise.resolve(command === "list_sessions" ? [parent, sub] : [])));
-    await useHuntStore.getState().resumeSession(SESSION);
-    await useHuntStore.getState().refreshSessions();
-    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "open_session")).toHaveLength(1);
-    expect(useHuntStore.getState().chats.sub).toBeUndefined();
-
-    vi.mocked(invoke).mockImplementation((command, args) => {
-      if (command === "open_session") return (args as { id: string }).id === SESSION ? Promise.resolve({ ...parent, isLive: true }) : Promise.reject("failed to connect the sub chat on the VM");
-      if (command === "list_sessions") return Promise.resolve([{ ...parent, isLive: true }, sub]);
-      return Promise.resolve(command === "session_history" ? [] : undefined);
-    });
-    await useHuntStore.getState().resumeSession(SESSION);
-    await vi.waitFor(() => expect(useHuntStore.getState().chats.sub?.error).toBe("failed to connect the sub chat on the VM"));
-    expect(useHuntStore.getState().chats[SESSION].error).toBeNull();
-  });
-
-  it("does not report a dropped VM connection of a sub chat as an error", () => {
+  it("reports a stopped agent of a remote session's sub chat as an error, since it runs here", () => {
     useHuntStore.setState({ chats: {}, sessions: [{ ...storedSession("sub", "Sub"), parentId: SESSION }, { ...storedSession(SESSION, "Remote"), remote }] });
     useHuntStore.getState().ensureChat("sub");
     useHuntStore.getState().applyClosed({ huntSessionId: "sub", error: "Process exited with exit status: 255" });
-    expect(useHuntStore.getState().chats.sub.error).toBeNull();
+    expect(useHuntStore.getState().chats.sub.error).toBe("Agent stopped: Process exited with exit status: 255");
   });
 
   it("does not report a dropped VM connection as an error", () => {
@@ -1108,28 +1082,24 @@ describe("moving a session to and from the VM", () => {
     expect(useHuntStore.getState().chats[SESSION].move).toBeNull();
   });
 
-  it("connects the sub chats that moved along once the session arrived on the VM", async () => {
+  it("leaves the sub chats stopped after the handoff: they start here again when opened", async () => {
     const sub = { ...storedSession("sub", "Sub"), parentId: SESSION, isLive: false };
     useHuntStore.setState({ sessions: [local, sub] });
     let isHandedOff = false;
-    let isSubOpened = false;
     vi.mocked(invoke).mockImplementation((command) => {
       if (command === "hand_off_session") {
         isHandedOff = true;
         return Promise.resolve(handedOff);
       }
-      if (command === "open_session") {
-        isSubOpened = true;
-        return Promise.resolve({ ...sub, isLive: true });
-      }
-      if (command === "list_sessions") return Promise.resolve([isHandedOff ? handedOff : local, isSubOpened ? { ...sub, isLive: true } : sub]);
+      if (command === "list_sessions") return Promise.resolve([isHandedOff ? handedOff : local, sub]);
       return Promise.resolve(command === "session_history" ? [] : undefined);
     });
 
     await useHuntStore.getState().handOffSession(SESSION);
+    await useHuntStore.getState().refreshSessions();
 
-    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("open_session", { id: "sub" }));
-    expect(calls().indexOf("open_session")).toBeGreaterThan(calls().indexOf("hand_off_session"));
+    expect(calls()).not.toContain("open_session");
+    expect(useHuntStore.getState().sessions.find((session) => session.id === "sub")?.isLive).toBe(false);
   });
 
   const stoppedService = { name: "ui", port: 4200, url: "https://x-4200.hunt.example.com", guarded: true, tls: false, enabled: false, state: "stopped", responds: false };

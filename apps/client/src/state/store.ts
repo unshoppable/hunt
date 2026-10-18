@@ -241,10 +241,7 @@ type HuntState = {
    */
   openSessionVm: (id: string) => Promise<void>;
   selectSession: (id: string) => Promise<void>;
-  /**
-   * Starts the agent of a stopped session again; its chat starts empty because the agent's conversation is gone. A remote
-   * session's stopped sub chats connect to its VM behind it (`connectSubSessions`).
-   */
+  /** Starts the agent of a stopped session again; its chat starts empty because the agent's conversation is gone. */
   resumeSession: (id: string) => Promise<void>;
   /** Starts the conversation over (`/clear`): the agent is restarted with a new, empty conversation. */
   clearSession: (id: string) => Promise<void>;
@@ -685,23 +682,6 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
   }
 
   /**
-   * Connects the stopped sub chats of the remote session `id` one after another once the session itself is connected:
-   * they run as further agents on its VM, which the session's connect brought up, so they take part again instead of
-   * waiting for their first click. A sub chat that fails to connect keeps the error in its own chat; the session's chat
-   * does not wait for them. Does nothing for a local session or one whose connect failed.
-   */
-  async function connectSubSessions(id: string) {
-    const session = get().sessions.find((candidate) => candidate.id === id);
-    if (!session?.remote || !session.isLive) return;
-    const subIds = get().sessions.filter((candidate) => candidate.parentId === id && !candidate.isLive).map((candidate) => candidate.id);
-    for (const subId of subIds) {
-      const sub = get().sessions.find((candidate) => candidate.id === subId);
-      if (!sub || sub.isLive || get().creatingIds.includes(subId) || get().chats[subId]?.isLoading) continue;
-      await restartChat(subId, () => commands.openSession(subId), true);
-    }
-  }
-
-  /**
    * The empty chat a restarted agent fills; the mode, the queued prompts, a running remote operation or move and the file
    * sync carry over.
    */
@@ -969,7 +949,6 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
 
     resumeSession: async (id) => {
       await restartChat(id, () => commands.openSession(id), true);
-      void connectSubSessions(id);
     },
 
     clearSession: async (id) => {
@@ -989,7 +968,6 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
         () => commands.prepareHandOff(id, settings),
         () => commands.handOffSession(id, settings),
       );
-      void connectSubSessions(id);
     },
 
     retrieveSession: (id) => moveSession(id, "retrieve", null, () => commands.retrieveSession(id)),
@@ -1198,8 +1176,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     applyClosed: (event) => {
       if (!get().chats[event.huntSessionId]) return;
       // An agent on a VM loses its connection whenever its idle VM shuts down; the chat says so without an error.
-      const session = get().sessions.find((candidate) => candidate.id === event.huntSessionId);
-      const isRemote = Boolean(session && remoteOf(session, get().sessions));
+      const isRemote = Boolean(get().sessions.find((candidate) => candidate.id === event.huntSessionId)?.remote);
       updateChat(event.huntSessionId, (chat) => ({
         ...chat,
         isBusy: false,

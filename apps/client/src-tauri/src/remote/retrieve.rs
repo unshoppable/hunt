@@ -519,9 +519,9 @@ async fn retrieve_transcript(request: &RetrieveRequest<'_>, ssh: &Ssh, remote_wo
     result
 }
 
-/// Copies the transcripts of the remote session `hunt_session_id` and its sub chats from its VM into the local project
-/// folder of `worktree`, with their paths moved there, as a backup for a VM that gets lost: the records keep the VM's
-/// permission mode, and the memory stays on the VM for the retrieval's merge.
+/// Copies the transcript of the remote session `hunt_session_id` from its VM into the local project folder of
+/// `worktree`, with its paths moved there, as a backup for a VM that gets lost: the records keep the VM's permission
+/// mode, and the memory stays on the VM for the retrieval's merge.
 pub async fn back_up_transcripts(
     ssh: &Ssh,
     hunt_session_id: Uuid,

@@ -10,7 +10,6 @@ import { findSelectOption, listChoiceOptions } from "./configOptions";
 import { MessageList } from "./MessageList";
 import { PillSelect } from "./PillSelect";
 import { PermissionPrompt } from "./PermissionPrompt";
-import { remoteOf } from "./remoteSession";
 import { appendPromptTexts, QueuedPrompts, useReturnedPrompts } from "./QueuedPrompts";
 import { ContextCard, describeLines, describeSelection, SelectionCard } from "./SelectionCard";
 import { useFollowScroll } from "./useFollowScroll";
@@ -128,16 +127,9 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   const parentChat = useHuntStore((state) => state.chats[parentSessionId]);
   const subSession = useHuntStore((state) => state.sessions.find((session) => session.id === subSessionId));
   const parent = useHuntStore((state) => state.sessions.find((session) => session.id === parentSessionId));
-  /** The VM the sub chat's agent runs on: the remote session's it belongs to; `null` for an agent on this Mac. */
-  const remote = useHuntStore((state) => {
-    const current = state.sessions.find((session) => session.id === parentSessionId);
-    return current ? remoteOf(current, state.sessions) : null;
-  });
   const isBusy = isCreating || (chat?.isBusy ?? false);
   const isLive = !subSessionId || (subSession?.isLive ?? false);
   const [isResuming, setIsResuming] = useState(false);
-  /** A sub chat on a VM takes prompts while not connected: the first one starts its VM and connects (see `sendPrompt`). */
-  const canPromptRemote = Boolean(remote) && !isLive && !isResuming && !chat?.isLoading;
   const queue = chat?.queue ?? [];
 
   // The sub session's own options once it announced them, before that the parent's, in a secondary window without
@@ -432,7 +424,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
           {showsSelection ? <SelectionCard selection={request.selection} isOpen label={lines} /> : null}
           {showsContext && context ? <ContextCard label={context.label} text={context.text} /> : null}
           {chat?.isLoading ? <p className="text-neutral-500">Loading session…</p> : null}
-          {chat ? <MessageList items={chat.items} plan={chat.plan} isBusy={chat.isBusy} isVerbose={false} basePath={remote?.worktreePath ?? parent?.worktreePath ?? ""} /> : null}
+          {chat ? <MessageList items={chat.items} plan={chat.plan} isBusy={chat.isBusy} isVerbose={false} basePath={parent?.worktreePath ?? ""} /> : null}
           {subSessionId && chat?.permission ? (
             <PermissionPrompt
               permission={chat.permission}
@@ -444,7 +436,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
         </div>
       </div>
 
-      {isLive || canPromptRemote ? (
+      {isLive ? (
         <div className="border-t border-(--line) bg-(--surface-input) px-12 py-3">
           <QueuedPrompts queue={queue} onSendNow={sendQueuedNow} onTakeBack={(prompt) => takeBack(prompt.id, prompt.text)} />
           <div className="flex items-end gap-2">

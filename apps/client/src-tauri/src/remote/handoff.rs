@@ -48,19 +48,6 @@ pub struct HandoffRequest<'a> {
     pub token_input: &'a str,
     /// The permission mode of the local agent, which the retrieval restores.
     pub local_mode: Option<&'a str>,
-    /// The session's sub chats, which move along and continue on the VM.
-    pub sub_sessions: &'a [SubSessionMove],
-}
-
-/// A sub chat that moves to the VM with its session: its conversation goes along, and its relay there starts it again
-/// (`hunt-relay@<id>.service`, see `hunt-ctl start --sub`).
-pub struct SubSessionMove {
-    pub hunt_session_id: Uuid,
-    pub acp_session_id: Option<String>,
-    /// The sub chat's part of the system prompt (its selection), appended to the session's.
-    pub context_prompt: Option<String>,
-    /// Agent config values (`model`, `effort`) the sub chat had locally.
-    pub config_values: Vec<(String, String)>,
 }
 
 impl HandoffRequest<'_> {
@@ -445,9 +432,8 @@ fn copy_profile(claude_dir: &Path, staging: &Path) -> Result<(), String> {
 }
 
 /// Fills the agent's `~/.claude` on the VM: the session's transcript with its paths moved to the VM, the user's profile
-/// (`PROFILE_ENTRIES`), the memory of the repository, `hunt-session.json` for the relay with `system_prompt` and the
-/// transcripts and relay configurations of the sub chats (`stage_sub_sessions`). The memory sent becomes the base of the
-/// retrieval's merge.
+/// (`PROFILE_ENTRIES`), the memory of the repository and `hunt-session.json` for the relay with `system_prompt`. The
+/// memory sent becomes the base of the retrieval's merge.
 async fn upload_claude_dir(request: &HandoffRequest<'_>, ssh: &Ssh, remote_worktree: &str, system_prompt: &str) -> Result<(), String> {
     let staging = std::env::temp_dir().join(format!("hunt-handoff-{}", Uuid::new_v4()));
     let result = async {
@@ -474,8 +460,6 @@ async fn upload_claude_dir(request: &HandoffRequest<'_>, ssh: &Ssh, remote_workt
         let acp_session_id = if has_transcript { request.acp_session_id } else { None };
         let session = relay_config(request.hunt_session_id, acp_session_id, remote_worktree, system_prompt, request.config_values);
         write_json(&staging.join("hunt-session.json"), &session)?;
-        let project = ProjectMove { local: &local_project, remote_slug: &remote_slug, remote_worktree, replacements: &replacements };
-        stage_sub_sessions(&staging, &project, system_prompt, request.sub_sessions)?;
 
         let archive = tar_create(&staging, &[".".to_string()]).await?;
         hunt_ctl_with_input(ssh, &["put-files", &request.hunt_session_id.to_string(), "--claude"], &archive).await?;
@@ -484,34 +468,6 @@ async fn upload_claude_dir(request: &HandoffRequest<'_>, ssh: &Ssh, remote_workt
     .await;
     let _ = std::fs::remove_dir_all(&staging);
     result
-}
-
-/// Where a session's project folder moves: from `local` to `projects/<remote_slug>` of the agent's `~/.claude` on the VM,
-/// with its paths rewritten by `replacements` for a session working in `remote_worktree`.
-struct ProjectMove<'a> {
-    local: &'a Path,
-    remote_slug: &'a str,
-    remote_worktree: &'a str,
-    replacements: &'a [(String, String)],
-}
-
-/// Adds the sub chats `subs` to the `~/.claude` staged in `staging` as if their relays had run on the VM before: each
-/// transcript in the session's project folder, and each relay's configuration in `hunt-subs/<id>.json`, whose system
-/// prompt is the session's (`system_prompt`) with the sub chat's part appended, as `hunt-ctl start --sub` composes it.
-fn stage_sub_sessions(staging: &Path, project: &ProjectMove<'_>, system_prompt: &str, subs: &[SubSessionMove]) -> Result<(), String> {
-    let remote_project = staging.join("projects").join(project.remote_slug);
-    for sub in subs {
-        let has_transcript = match &sub.acp_session_id {
-            Some(acp_session_id) => transcript::copy_session(project.local, &remote_project, acp_session_id, project.replacements)?,
-            None => false,
-        };
-        let parts = [system_prompt, sub.context_prompt.as_deref().unwrap_or_default()];
-        let prompt = parts.into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join("\n\n");
-        let acp_session_id = sub.acp_session_id.as_deref().filter(|_| has_transcript);
-        let config = relay_config(sub.hunt_session_id, acp_session_id, project.remote_worktree, &prompt, &sub.config_values);
-        write_json(&staging.join("hunt-subs").join(format!("{}.json", sub.hunt_session_id)), &config)?;
-    }
-    Ok(())
 }
 
 /// The configuration a relay on the VM starts its conversation with (`apps/session/src/relay/config.ts`): the Hunt
@@ -541,50 +497,6 @@ fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stage_sub_sessions_moves_each_transcript_and_writes_its_relay_configuration() {
-        let root = std::env::temp_dir().join(format!("hunt-sub-sessions-{}", Uuid::new_v4()));
-        let (local, staging) = (root.join("projects/-local-app"), root.join("staging"));
-        std::fs::create_dir_all(local.join("acp-1/tool-results")).unwrap();
-        std::fs::write(local.join("acp-1.jsonl"), "{\"cwd\":\"/local/app\"}\n").unwrap();
-        std::fs::write(local.join("acp-1/tool-results/a.txt"), "/local/app/src").unwrap();
-        let replacements = vec![("/local/app".to_string(), "/home/agent/app".to_string())];
-        let project = ProjectMove { local: &local, remote_slug: "-home-agent-app", remote_worktree: "/home/agent/app", replacements: &replacements };
-        let (asked, started) = (Uuid::new_v4(), Uuid::new_v4());
-        let subs = [
-            SubSessionMove {
-                hunt_session_id: asked,
-                acp_session_id: Some("acp-1".into()),
-                context_prompt: Some("## Selected code".into()),
-                config_values: vec![("model".into(), "opus".into())],
-            },
-            SubSessionMove { hunt_session_id: started, acp_session_id: Some("acp-2".into()), context_prompt: None, config_values: Vec::new() },
-        ];
-
-        stage_sub_sessions(&staging, &project, "## Hunt", &subs).unwrap();
-        let moved = staging.join("projects/-home-agent-app");
-        assert_eq!(std::fs::read_to_string(moved.join("acp-1.jsonl")).unwrap(), "{\"cwd\":\"/home/agent/app\"}\n");
-        assert_eq!(std::fs::read_to_string(moved.join("acp-1/tool-results/a.txt")).unwrap(), "/home/agent/app/src");
-        let config = |id: Uuid| -> serde_json::Value {
-            serde_json::from_str(&std::fs::read_to_string(staging.join(format!("hunt-subs/{id}.json"))).unwrap()).unwrap()
-        };
-        assert_eq!(
-            config(asked),
-            json!({
-                "huntSessionId": asked.to_string(),
-                "acpSessionId": "acp-1",
-                "cwd": "/home/agent/app",
-                "systemPromptAppend": "## Hunt\n\n## Selected code",
-                "modeId": REMOTE_MODE,
-                "configOptions": { "model": "opus" },
-            })
-        );
-        // Without a transcript here, the relay starts a new conversation.
-        assert_eq!(config(started)["acpSessionId"], serde_json::Value::Null);
-        assert_eq!(config(started)["systemPromptAppend"], "## Hunt");
-        std::fs::remove_dir_all(&root).unwrap();
-    }
 
     #[test]
     fn repository_key_reads_owner_and_name_from_ssh_and_https_urls() {

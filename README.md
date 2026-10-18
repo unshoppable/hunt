@@ -188,7 +188,7 @@ A sub session is a fresh agent session in the worktree of an existing session. "
 sidebar starts one with a title; selecting text on the right side of a diff and choosing "Ask Claude about
 selection" in the context menu starts one as a sub chat with the selected lines in its system prompt. Sub sessions
 run in the background, are listed under their parent in the sidebar and are removed together with it; those of a remote
-session run on its VM next to its own agent (see *Remote sessions*). Every code
+session run on this Mac as well, in the session's local worktree (see *Remote sessions*). Every code
 view of the worktree marks the first line of such a selection with a button right of the line number that reopens the
 sub chat in its popover; the sub session's chat pane offers "Open in editor" for the selected lines.
 
@@ -381,7 +381,9 @@ session-config` writes the session's services and preview proxy from the reposit
 of services and the repository's `hunt.agent.md`, which Hunt appends to the agent's system prompt. Then `hunt-ctl`
 installs the dependencies and starts the
 relay with the OAuth token of the selected Claude account, which Hunt passes on stdin; the local login stays on the
-Mac, so a remote session needs a token account. A failed handoff removes the session's worktree from the VM but keeps
+Mac, so a remote session needs a token account. Every connect sends the token of the account selected now, and a relay
+that runs with another one restarts with it between turns (`hunt-ctl start`), so a prompt from Hunt runs with the account
+picked in Hunt, as it does locally; while a turn runs, the relay keeps its account until its next start. A failed handoff removes the session's worktree from the VM but keeps
 the VM (`leftoverVm` in `sessions.json`): the next attempt skips the first boot, and deleting the session deletes it.
 
 With a GitHub token under *Settings → Remote VM* (`apps/client/src-tauri/src/github_token.rs`, kept in the keychain),
@@ -424,21 +426,13 @@ writes one line to the journal, which the Ops Agent ships to Cloud Logging (`too
 for a command its exit code and number of output lines, and the title, for Bash the whole command. The output stays
 out.
 
-A sub chat of a remote session (sub session) runs on the session's VM as a second agent with a relay of its own,
-`hunt-relay@<sub chat id>.service` (`apps/session/vm/systemd/hunt-relay@.service`): the same relay program with the
-configuration `/home/agent/.claude/hunt-subs/<sub chat id>.json` and the socket and status in
-`/run/hunt-sub/<sub chat id>/`. `hunt-ctl start <id> --sub <sub chat id>` writes that configuration on the sub chat's
-first start from the session's `hunt-session.json`, a new conversation in the same worktree whose system prompt adds
-the text Hunt sends on stdin (the selected lines), and starts the unit with the session's tokens; `wait`, `clear` and
-`stop` take `--sub` the same way, and `stop --sub` also removes the configuration when the sub chat is deleted. The
-unit is not enabled: Hunt starts it whenever it connects the sub chat, and it runs until the sub chat is deleted, the
-session comes back or the VM shuts down. Connecting the session (opening it, a prompt after its idle VM shut down, or
-its handoff) connects its stopped sub chats behind it, one after another, so they need no click of their own. `hunt-ctl stop` and `destroy` stop the sub chats' relays with the session's.
-Their transcripts live in the session's project folder, so bringing the session back brings them along, and the sub
-chats continue on this Mac. A handoff takes the sub chats along the same way: their local agents stop, their
-transcripts go to the VM with the session's and each gets its configuration in `hunt-subs/`, so its relay continues
-its conversation once the sub chat is opened again. While a sub chat runs a turn, the chat header offers neither the
-handoff nor bringing the session back, since either would cut the turn short. The sub chat's tool calls and turns trigger the session's file sync like the session's own.
+A sub chat of a remote session (sub session) runs on this Mac, in the session's local worktree, wherever its session
+runs: its agent is a local one, what it changes reaches the VM through the session's file sync like an edit in the
+editor, and its commits and pushes go through the VM like the session's. Its transcript lives in the local project
+folder, so a handoff and a retrieval leave it alone; both stop the sub chats' agents while the worktree moves, and a sub
+chat starts again when it is opened next. While a sub chat runs a turn, the chat header offers neither the handoff nor
+bringing the session back, since either would cut the turn short. A sub chat that ran on a VM with an earlier release
+(protocol 7 and before) continues here with its transcript as the sync backed it up after its last finished turn.
 
 Every session has a VM of its own, which is the isolation boundary: the agent works there as the user `agent`, with
 Docker and Docker Compose, and starts the services of the repository's `hunt.json` its task needs. `libs/vm/hunt-ctl`
@@ -643,8 +637,7 @@ ignores stay.
 Only when the snapshot then holds the files of the local worktree, the local branch holds no commit the VM lacks and
 nothing changed here meanwhile does the branch move to the agent's last commit; otherwise the retrieval names each
 differing file with its side and the ignore rules that apply (or the local commits) and moves nothing.
-The transcript returns, and the transcripts of the session and its sub chats get the session's
-permission mode from before the handoff in place of the VM's. Then Hunt has the gateway delete the
+The transcript returns and gets the session's permission mode from before the handoff in place of the VM's. Then Hunt has the gateway delete the
 VM with its disks (`vms.delete`), as it does when a remote session is deleted. A session whose VM no longer exists
 (deleted by the gateway after a week stopped, see below, or outside Hunt) comes back with what this Mac has, the local worktree as the file sync left it and the
 conversation as of the agent's last finished turn, which the sync backed up, as soon as it is brought back or a prompt
@@ -684,15 +677,18 @@ the remote, Git and question parts a handoff appends (`libs/domain/prompts/`, wh
 the poller's own `apps/gateway/prompts/swf.system-prompt.md` with the issue's workflow, the repository's services and
 its `hunt.agent.md`; the parts Hunt takes from its user's settings (response style, guardrail offer, diagram language)
 do not exist on the gateway. The poller then sends the issue with all its comments as the first prompt through the
-relay and disconnects; the relay runs the turn without a client. The workflow has six steps: read the issue and the
-repository's instructions; ask every question only a person can answer in one comment on the issue, replace
-`swf:running` with `swf:question` and end the turn with the questions and the marker `<!-- hunt:question -->` (the
-answer reaches the agent as its next prompt, from a Hunt desktop that opened the session, and it takes the label back
-to `swf:running`); comment a short implementation plan on the issue and carry it out without waiting for approval;
-implement and check the change as a developer would locally; push the branch, open a pull request with `Closes
-#<issue>` and the decisions it took and comment its link on the issue; stop the services and tmux windows it started,
-delete its scratch files, leave the working tree clean and replace `swf:running` with `swf:done`. When it cannot
-finish, it sets `swf:failed` with a comment instead. A setup that fails gets `swf:failed` and a comment with the error;
+relay and disconnects; the relay runs the turn without a client. The workflow has eight steps: read the issue and the
+repository's guardrails (README, CLAUDE.md, rules, skills, ADRs, `hunt.agent.md`); ask every question only a person can
+answer in one comment on the issue, replace `swf:running` with `swf:question` and end the turn with the questions and
+the marker `<!-- hunt:question -->` (the answer reaches the agent as its next prompt, from a Hunt desktop that opened
+the session, and it takes the label back to `swf:running`); comment a short implementation plan on the issue and carry
+it out without waiting for approval; then a loop of three steps until a pass finds nothing: implement the plan or the
+last findings, check the change as a developer would locally (build, tests, linters, and for anything the user sees the
+goal in the browser with the Playwright tools) and review the whole diff as a critical reviewer against the issue and
+the guardrails, at most three passes before it asks the assignees with `swf:question`; push the branch, open a pull request with `Closes #<issue>`, the decisions it took and how it checked
+the change, comment its link on the issue and watch the pull request's checks (a failure sends it back into the loop);
+stop the services and tmux windows it started, delete its scratch files, leave the working tree clean and replace
+`swf:running` with `swf:done`. When it cannot finish, it sets `swf:failed` with a comment instead. A setup that fails gets `swf:failed` and a comment with the error;
 its VM stays for inspection.
 
 Every poll also follows the agent of each running session VM the poller is not setting up: it reads the issue and
@@ -789,7 +785,7 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 | `apps/client/src-tauri/src/session/` | Session commands, store, attribution, summaries, reviews |
 | `apps/client/src-tauri/src/lsp.rs` | One `tsgo --lsp` process per worktree |
 | `apps/client/src-tauri/src/workspace.rs` | Project tree and file access |
-| `apps/client/src-tauri/src/graph.rs` | Dependency graph prompt and status |
+| `apps/client/src-tauri/src/graph.rs` | Architecture diagram prompts, files and status |
 | `apps/client/src-tauri/src/remote/` | Session VMs, SSH to them, handoff and retrieval of remote sessions, previews, terminals |
 | `apps/client/src/ipc/` | Every Tauri command, event and shared type |
 | `apps/client/src/state/` | Zustand stores and chat reducers |

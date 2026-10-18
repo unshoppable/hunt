@@ -4,22 +4,22 @@ import { useBusyChatIds } from "../ide/selectionChats";
 import { useAccountsStore } from "../state/accounts";
 import { configuredVmSettings, useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
-import { BUTTON_MD, SECONDARY_BUTTON_MD } from "../ui/buttons";
+import { SECONDARY_BUTTON_MD } from "../ui/buttons";
 import { CloudIcon } from "../ui/icons";
 import { confirmVmLoss } from "../sessions/confirmVmLoss";
 import { isAdopted } from "../sessions/remoteOrigin";
-import { fileSyncLabel, handOffBlocker, hasBusySubChat, remoteOf, retrieveBlocker } from "./remoteSession";
+import { fileSyncLabel, handOffBlocker, hasBusySubChat, retrieveBlocker } from "./remoteSession";
 
 /** How long a file sync runs before the header says so; quicker ones would only flicker. */
 const SYNC_LABEL_DELAY_MS = 800;
 
 /**
  * Chat header toggle of the session's place: a click hands a local session off to a VM of its own, created from the
- * settings, together with its sub chats, or brings a remote one back, which deletes its VM; an adopted session asks
+ * settings, or brings a remote one back, which deletes its VM; an adopted session asks
  * first, since others may work on it. The tooltip explains the click or why it is blocked, in which case a click does
  * nothing and the button is dimmed. Next to it, a remote session shows the state of its file sync. Hidden while the
- * remote settings are incomplete and the session runs locally. A sub chat moves only with its session: it shows where
- * it runs while that is the session's VM, and nothing otherwise.
+ * remote settings are incomplete and the session runs locally, and for a sub chat, whose agent runs on this Mac in its
+ * session's worktree wherever the session runs.
  */
 export function RemoteToggle({ sessionId }: { sessionId: string }) {
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
@@ -45,16 +45,7 @@ export function RemoteToggle({ sessionId }: { sessionId: string }) {
   }, [isSyncRunning]);
 
   const vmSettings = configuredVmSettings(remoteSettings);
-  if (!session) return null;
-  if (session.parentId) {
-    const vm = remoteOf(session, sessions)?.vm;
-    return vm ? (
-      <span title={`Runs on the VM ${vm.instance} with its session`} className={`${BUTTON_MD} border border-white/10 bg-white/4 text-sky-300`}>
-        <CloudIcon className="size-4" />
-        On VM
-      </span>
-    ) : null;
-  }
+  if (!session || session.parentId) return null;
   if (!vmSettings && !session.remote) return null;
   const isRemote = Boolean(session.remote);
   const isRunning = Boolean(chat?.remoteStep) || Boolean(chat?.isLoading) || Boolean(chat?.move);

@@ -392,8 +392,6 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(huntCtlJson("stop", ID)).toEqual({});
     expect(systemctlCalls()).toEqual([
       "systemctl disable --quiet --now hunt-relay.service",
-      "systemctl stop hunt-relay@*.service",
-      "systemctl reset-failed hunt-relay@*.service",
       "systemctl disable --quiet hunt-service@admin.service hunt-service@api.service",
       "systemctl stop hunt-service@*.service",
       "systemctl reset-failed hunt-service@*.service",
@@ -414,8 +412,6 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(systemctlCalls()).toEqual([
       "systemctl disable --quiet --now hunt-relay.service",
       "systemctl reset-failed hunt-relay.service",
-      "systemctl stop hunt-relay@*.service",
-      "systemctl reset-failed hunt-relay@*.service",
       "systemctl disable --quiet hunt-service@ui.service",
       "systemctl stop hunt-service@*.service",
       "systemctl reset-failed hunt-service@*.service",

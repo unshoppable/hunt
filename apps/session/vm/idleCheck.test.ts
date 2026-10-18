@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,18 +25,14 @@ const SHIMS: Record<string, string> = {
 /** A relay's status.json; times given as minutes before now. */
 type RelayStatus = { heartbeat?: number; turn?: "running" | "idle"; turnEnded?: number; clientActivity?: number; permission?: number };
 
-const SUB_CHAT = "7c0c6f2e-0000-4000-8000-0000000000aa";
-
 interface Fixture {
   uptimeMinutes?: number;
   config?: string;
   /** Minutes since hunt-ctl last ran; no activity file without it. */
   huntCtlMinutesAgo?: number;
   isHuntCtlRunning?: boolean;
-  /** The session relay's status.json. */
+  /** The relay's status.json. */
   status?: RelayStatus;
-  /** The status.json of each sub chat's relay, by sub chat id. */
-  subStatuses?: Record<string, RelayStatus>;
   /** Access log lines: minutes before now, method and Sec-Fetch-Mode. */
   requests?: { minutesAgo: number; method: string; mode?: string }[];
   /** The `w` output after its header. */
@@ -90,10 +86,6 @@ describe("hunt-idle-check", () => {
     if (fixture.status) {
       writeStatus(join(dir, "status.json"), fixture.status);
     }
-    for (const [id, status] of Object.entries(fixture.subStatuses ?? {})) {
-      mkdirSync(join(dir, "hunt-sub", id), { recursive: true });
-      writeStatus(join(dir, "hunt-sub", id, "status.json"), status);
-    }
     const lines = (fixture.requests ?? []).map(({ minutesAgo, method, mode }) =>
       JSON.stringify({ ts: (NOW_MS - minutesAgo * MINUTE_MS) / 1000, request: { method, headers: mode ? { "Sec-Fetch-Mode": [mode] } : {} } }),
     );
@@ -107,7 +99,6 @@ describe("hunt-idle-check", () => {
       HUNT_TEST_DIR: dir,
       HUNT_IDLE_CONFIG: join(dir, "idle.conf"),
       HUNT_IDLE_STATUS_FILE: join(dir, "status.json"),
-      HUNT_IDLE_SUB_STATUS_DIR: join(dir, "hunt-sub"),
       HUNT_IDLE_ACTIVITY_FILE: join(dir, "activity"),
       HUNT_IDLE_UPTIME_FILE: join(dir, "uptime"),
       HUNT_IDLE_PROXY_LOG: join(dir, "access.log"),
@@ -152,22 +143,6 @@ describe("hunt-idle-check", () => {
     expect(decision({ status: { permission: 20 } })).toBe("keep: a permission request arrived within 30 min");
     expect(decision({ status: { permission: 31, turnEnded: 45 } })).toBe(POWEROFF);
     expect(decision({ status: { heartbeat: 3, turn: "running" } })).toBe(POWEROFF);
-  });
-
-  it("keeps the VM up for the turns and clients of a sub chat's relay, unless its heartbeat is stale", () => {
-    const idle = { turnEnded: 45 };
-    expect(decision({ status: idle, subStatuses: { [SUB_CHAT]: { turn: "running" } } })).toBe(`keep: a turn is running in sub chat ${SUB_CHAT}`);
-    expect(decision({ subStatuses: { [SUB_CHAT]: { clientActivity: 5 } } })).toBe(`keep: a client sent something within 30 min in sub chat ${SUB_CHAT}`);
-    expect(decision({ status: { turn: "running" }, subStatuses: { [SUB_CHAT]: { turn: "running" } } })).toBe("keep: a turn is running");
-    expect(decision({ status: idle, subStatuses: { [SUB_CHAT]: { heartbeat: 3, turn: "running" } } })).toBe(POWEROFF);
-  });
-
-  it("counts a preview page while a sub chat's agent was active within two hours", () => {
-    const request = { minutesAgo: 4, method: "GET", mode: "navigate" };
-    expect(decision({ status: { turnEnded: 130 }, subStatuses: { [SUB_CHAT]: { turnEnded: 90 } }, requests: [request] })).toBe(
-      "keep: a preview page was used 4 min ago",
-    );
-    expect(decision({ subStatuses: { [SUB_CHAT]: { heartbeat: 3, turnEnded: 90 } }, requests: [request] })).toBe(POWEROFF);
   });
 
   it("counts preview page loads and other than GET requests only while the agent was active within two hours", () => {

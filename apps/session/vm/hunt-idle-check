@@ -6,9 +6,9 @@
 # The VM stays up while
 #   - it booted less than BOOT_GRACE_MINUTES ago,
 #   - hunt-ctl runs, or ran within IDLE_MINUTES (the mtime of /var/lib/hunt/activity),
-#   - a relay, the session's (/run/hunt/status.json) or one of its sub chats' (/run/hunt-sub/<id>/status.json), with
-#     a fresh heartbeat in its status file, has a running turn, or a turn ended, a client sent something or a
-#     permission request arrived within IDLE_MINUTES (an unanswered permission request counts as idle after that),
+#   - the relay, with a fresh heartbeat in its status file (/run/hunt/status.json), has a running turn, or a turn ended,
+#     a client sent something or a permission request arrived within IDLE_MINUTES (an unanswered permission request
+#     counts as idle after that),
 #   - someone opened a preview page or sent a request other than GET within IDLE_MINUTES (the access log of the VM's
 #     preview proxy; health checks are not logged), but only while the agent was active within PREVIEW_MAX_MINUTES, so
 #     that a forgotten browser tab cannot keep the VM running,
@@ -21,7 +21,6 @@ set -euo pipefail
 
 config=${HUNT_IDLE_CONFIG:-/etc/hunt/idle.conf}
 status_file=${HUNT_IDLE_STATUS_FILE:-/run/hunt/status.json}
-sub_status_dir=${HUNT_IDLE_SUB_STATUS_DIR:-/run/hunt-sub}
 activity_file=${HUNT_IDLE_ACTIVITY_FILE:-/var/lib/hunt/activity}
 uptime_file=${HUNT_IDLE_UPTIME_FILE:-/proc/uptime}
 proxy_log=${HUNT_IDLE_PROXY_LOG:-/var/log/hunt-proxy/access.log}
@@ -69,53 +68,35 @@ last_preview_request_ms() {
       or ((.request.headers["Sec-Fetch-Mode"] // [])[0] == "navigate")) | .ts * 1000 | floor' 2>/dev/null | tail -n 1
 }
 
-# Prints the status files of every relay that has one: the session's, then its sub chats'.
-status_files() {
-  local file
-  for file in "$status_file" "$sub_status_dir"/*/status.json; do
-    if [[ -f $file ]]; then
-      printf '%s\n' "$file"
-    fi
-  done
-}
-
-# Prints what keeps a relay busy ("a turn is running", "… in sub chat <id>"), for the first busy one; nothing when all
-# are idle or gone.
+# Prints what keeps the relay busy ("a turn is running"); nothing when it is idle or gone.
 relay_busy_reason() {
-  local file reason where
-  while IFS= read -r file; do
-    where=''
-    if [[ $file != "$status_file" ]]; then
-      where=" in sub chat $(basename "$(dirname "$file")")"
-    fi
-    reason=$(jq -r --argjson now "$1" --argjson idle "$((IDLE_MINUTES * 60000))" --argjson maxAge "$HEARTBEAT_MAX_AGE_MS" '
-      def within($time): ($time // 0) > $now - $idle;
-      if (.heartbeatAt // 0) < $now - $maxAge then empty
-      elif .turn == "running" then "a turn is running"
-      elif within(.lastTurnEndedAt) then "a turn ended within \($idle / 60000) min"
-      elif within(.lastClientActivityAt) then "a client sent something within \($idle / 60000) min"
-      elif within(.pendingPermissionSince) then "a permission request arrived within \($idle / 60000) min"
-      else empty end' "$file" 2>/dev/null) || reason=
-    if [[ -n $reason ]]; then
-      echo "$reason$where"
-      return
-    fi
-  done < <(status_files)
+  local reason
+  [[ -f $status_file ]] || return 0
+  reason=$(jq -r --argjson now "$1" --argjson idle "$((IDLE_MINUTES * 60000))" --argjson maxAge "$HEARTBEAT_MAX_AGE_MS" '
+    def within($time): ($time // 0) > $now - $idle;
+    if (.heartbeatAt // 0) < $now - $maxAge then empty
+    elif .turn == "running" then "a turn is running"
+    elif within(.lastTurnEndedAt) then "a turn ended within \($idle / 60000) min"
+    elif within(.lastClientActivityAt) then "a client sent something within \($idle / 60000) min"
+    elif within(.pendingPermissionSince) then "a permission request arrived within \($idle / 60000) min"
+    else empty end' "$status_file" 2>/dev/null) || reason=
+  echo "$reason"
 }
 
-# Prints the time in ms of the newest activity of any agent (a running turn counts as now); 0 when every relay is gone.
+# Prints the time in ms of the newest activity of the agent (a running turn counts as now); 0 when the relay is gone.
 last_agent_activity_ms() {
-  local file time latest=0
-  while IFS= read -r file; do
+  local time=0
+  if [[ -f $status_file ]]; then
     time=$(jq -r --argjson now "$1" --argjson maxAge "$HEARTBEAT_MAX_AGE_MS" '
       if (.heartbeatAt // 0) < $now - $maxAge then 0
       elif .turn == "running" then $now
-      else [.lastTurnEndedAt // 0, .lastClientActivityAt // 0] | max end' "$file" 2>/dev/null) || time=
-    if [[ $time =~ ^[0-9]+$ ]] && (( time > latest )); then
-      latest=$time
-    fi
-  done < <(status_files)
-  echo "$latest"
+      else [.lastTurnEndedAt // 0, .lastClientActivityAt // 0] | max end' "$status_file" 2>/dev/null) || time=
+  fi
+  if [[ $time =~ ^[0-9]+$ ]]; then
+    echo "$time"
+  else
+    echo 0
+  fi
 }
 
 decide() {

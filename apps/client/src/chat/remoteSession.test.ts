@@ -53,7 +53,7 @@ describe("handOffBlocker", () => {
   });
 
   it("keeps sub sessions, checkout sessions and reviews local", () => {
-    expect(handOffBlocker(session("sub", { parentId: "top" }), READY)).toMatch(/parent/);
+    expect(handOffBlocker(session("sub", { parentId: "top" }), READY)).toMatch(/sub session runs here/);
     expect(handOffBlocker(session("c", { workspace: "checkout" }), READY)).toMatch(/checkout/);
     expect(handOffBlocker(session("r", { pullRequest: { number: 1, url: "https://github.com/o/r/pull/1" } }), READY)).toMatch(/review/);
   });
@@ -89,7 +89,7 @@ const remote = {
 };
 
 describe("remoteOf", () => {
-  it("is the session's own VM, or its parent's for a sub chat", () => {
+  it("is the VM of the session's own worktree, or of its parent's for a sub chat", () => {
     const top = session("top", { remote });
     const sub = session("sub", { parentId: "top" });
     expect(remoteOf(top, [top, sub])).toBe(remote);

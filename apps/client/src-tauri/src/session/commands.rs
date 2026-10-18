@@ -321,8 +321,8 @@ pub async fn create_session(
 
 /// Starts the sub session `id` of `parent_id`: a fresh agent session in the parent's worktree, listed under the
 /// parent in the UI, which picks the id so it can list the session before this returns. A sub chat opened from the
-/// diff passes the `selection`, which goes into the system prompt. The sub session of a remote session runs on its VM,
-/// next to the session's own agent.
+/// diff passes the `selection`, which goes into the system prompt. The sub session of a remote session runs on this
+/// Mac as well, in the session's local worktree, which the session's file sync keeps in step with the VM.
 #[tauri::command]
 pub async fn create_sub_session(
     app: AppHandle,
@@ -335,18 +335,10 @@ pub async fn create_sub_session(
 ) -> Result<SessionView, String> {
     ensure_new_id(&app, id)?;
     let parent = store::find_session(&app, parent_id)?;
-    let host = remote_host(&app, &parent);
     let record = SessionRecord::sub_session(id, title, &parent, selection);
     store::upsert_session(&app, record.clone())?;
     announce_sessions_changed(&app);
-    let view = match host {
-        Some((owner, target)) => {
-            let activated = activate_remote_sub(&app, &registry, &watchers, record, owner, target).await;
-            finish_progress(&app, id);
-            activated?
-        }
-        None => activate(&app, &registry, &watchers, record, SessionStart::New { cwd: parent.worktree_path }, AgentTransport::Local).await?,
-    };
+    let view = activate(&app, &registry, &watchers, record, SessionStart::New { cwd: parent.worktree_path }, AgentTransport::Local).await?;
     announce_sessions_changed(&app);
     Ok(view)
 }
@@ -389,12 +381,8 @@ pub async fn open_session(
     if record.worktree_path.is_dir() {
         dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone(), install_for(&app, &record));
     }
-    if let Some((owner, target)) = remote_host(&app, &record) {
-        let activated = if owner == id {
-            activate_remote(&app, &registry, &watchers, record).await
-        } else {
-            activate_remote_sub(&app, &registry, &watchers, record, owner, target).await
-        };
+    if record.remote.is_some() {
+        let activated = activate_remote(&app, &registry, &watchers, record).await;
         registry.end_start(id).await;
         finish_progress(&app, id);
         return activated;
@@ -426,12 +414,11 @@ pub async fn clear_session(
     id: Uuid,
 ) -> Result<SessionView, String> {
     let record = store::find_session(&app, id)?;
-    let host = remote_host(&app, &record);
-    // Fetched before anything stops: without a token the remote conversation keeps running as it is. A sub chat's relay
-    // runs with the tokens of its session's; a poller session's keeps the ones stored on its VM and takes this Mac's
-    // only where it stores none, so it needs no Claude account selected.
-    let token_input = match &host {
-        Some((owner, target)) if *owner == id => {
+    // Fetched before anything stops: without a token the remote conversation keeps running as it is. A poller session's
+    // relay keeps the tokens stored on its VM and takes this Mac's only where it stores none, so it needs no Claude
+    // account selected.
+    let token_input = match &record.remote {
+        Some(target) => {
             let claude_token = if target.origin.keeps_vm_tokens() {
                 accounts::active_token(&app).await?.unwrap_or_default()
             } else {
@@ -439,7 +426,7 @@ pub async fn clear_session(
             };
             remote::token_input(&claude_token, github_token::read().await?.as_deref())
         }
-        _ => remote::token_input("", None),
+        None => remote::token_input("", None),
     };
     drop_pending_permissions(&permissions, id);
     let finished = registry.live.lock().await.remove(&id).and_then(|mut live| live.shutdown());
@@ -450,30 +437,21 @@ pub async fn clear_session(
     if !registry.claim_start(id).await {
         return Err("failed to clear session: its agent was started again meanwhile".into());
     }
-    if let Some((owner, target)) = host {
+    if let Some(target) = record.remote.clone() {
         let activated = async {
-            // A clear on a running VM shows no steps, like a local one; only a VM that has to boot first shows them.
-            let progress = progress_reporter(&app, id);
+            // The chat shows the connect's steps, which take a while even on a running VM.
             let instance = target.vm.instance.clone();
-            let Some((ssh, target)) = start_remote_relay(&app, owner, target, &BootProgress::new(&progress)).await? else {
+            let Some((ssh, target)) = start_remote_relay(&app, id, target, &BootProgress::new(&progress_reporter(&app, id))).await? else {
                 return Err(format!("failed to clear session: its VM {instance} no longer exists; send a prompt to continue the session here"));
             };
-            let status = if owner == id {
-                let id_text = id.to_string();
-                let mut args = vec!["clear", &id_text];
-                args.extend(target.origin.relay_token_args());
-                remote::hunt_ctl_with_input(&ssh, &args, token_input.as_bytes()).await?
-            } else {
-                remote::hunt_ctl(&ssh, &["clear", &owner.to_string(), "--sub", &id.to_string()]).await?
-            };
+            let id_text = id.to_string();
+            let mut args = vec!["clear", &id_text];
+            args.extend(target.origin.relay_token_args());
+            let status = remote::hunt_ctl_with_input(&ssh, &args, token_input.as_bytes()).await?;
             let acp_session_id = status["acpSessionId"].as_str().map(str::to_string).ok_or("failed to clear session: the relay reports no new session")?;
-            let record = store::update_session(&app, id, |stored| stored.acp_session_id = Some(acp_session_id))?
+            store::update_session(&app, id, |stored| stored.acp_session_id = Some(acp_session_id))?
                 .ok_or_else(|| "failed to clear session: the session was closed meanwhile".to_string())?;
-            if owner == id {
-                open_remote_relay(&app, &registry, &watchers, id, ssh, target).await
-            } else {
-                open_remote_sub_relay(&app, &registry, &watchers, record, owner, ssh, target).await
-            }
+            open_remote_relay(&app, &registry, &watchers, id, ssh, target).await
         }
         .await;
         registry.end_start(id).await;
@@ -582,53 +560,6 @@ async fn open_remote_relay(
     activate(app, registry, watchers, record, start, AgentTransport::Remote { ssh_args, sync_owner: id }).await
 }
 
-/// Connects to the relay of the sub chat `record` of the remote session `owner`, which runs on the session's VM
-/// (`target`) next to the session's own relay: brings the VM and the session's relay up as `activate_remote` does, has
-/// `hunt-ctl` start the sub chat's relay, which gets the chat's selection in its system prompt when it first starts,
-/// and opens the ACP stream to it.
-async fn activate_remote_sub(
-    app: &AppHandle,
-    registry: &SessionRegistry,
-    watchers: &WatcherRegistry,
-    record: SessionRecord,
-    owner: Uuid,
-    target: RemoteTarget,
-) -> Result<SessionView, String> {
-    let id = record.id;
-    let instance = target.vm.instance.clone();
-    let Some((ssh, target)) = start_remote_relay(app, owner, target, &progress_reporter(app, id)).await? else {
-        return Err(format!("failed to connect the sub chat: the VM {instance} of its session no longer exists; open the session to continue it here"));
-    };
-    open_remote_sub_relay(app, registry, watchers, record, owner, ssh, target).await
-}
-
-/// Has `hunt-ctl` start the relay of the sub chat `record` of the remote session `owner` on the session's VM behind
-/// `ssh` (`target` names the session's worktree there), which `start_remote_relay` brought up, and opens the ACP stream
-/// to it once it serves a conversation. The sub chat's selection goes into the system prompt of a relay that starts for
-/// the first time.
-async fn open_remote_sub_relay(
-    app: &AppHandle,
-    registry: &SessionRegistry,
-    watchers: &WatcherRegistry,
-    record: SessionRecord,
-    owner: Uuid,
-    ssh: Ssh,
-    target: RemoteTarget,
-) -> Result<SessionView, String> {
-    let id = record.id;
-    let (owner_arg, id_arg) = (owner.to_string(), id.to_string());
-    let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt).unwrap_or_default();
-    remote::hunt_ctl_with_input(&ssh, &["start", &owner_arg, "--sub", &id_arg], context_prompt.as_bytes()).await?;
-    let status = remote::hunt_ctl(&ssh, &["wait", &owner_arg, "--sub", &id_arg, "--timeout", "180"]).await?;
-    if let Some(at) = remote::relay_activity(&status, chrono::Utc::now()) {
-        note_remote_activity(app, owner, at);
-    }
-    let acp_session_id = relay_conversation(&status, &record, "failed to connect the sub chat on the VM")?;
-    let ssh_args = ssh.stream_args(&relay_command(&sub_relay_socket(id)));
-    let start = SessionStart::Load { cwd: target.worktree_path.clone(), acp_session_id };
-    activate(app, registry, watchers, record, start, AgentTransport::Remote { ssh_args, sync_owner: owner }).await
-}
-
 /// Brings the VM of the remote session `id` up for a connect: has the gateway start it when it is off (it stops itself
 /// when idle), checks its release, installs the agent's tools, learns the worktree of an adopted session on its first
 /// connect and makes sure the session's relay runs. Returns the connection and `target` with its worktree on the VM and
@@ -712,11 +643,6 @@ fn relay_command(socket: &str) -> String {
 
 /// The relay of a session VM, as `socat` addresses it.
 const RELAY_SOCKET: &str = "UNIX-CONNECT:/run/hunt/relay.sock";
-
-/// The relay of the sub chat `id` on its parent's VM (`hunt-relay@<id>.service`), as `socat` addresses it.
-fn sub_relay_socket(id: Uuid) -> String {
-    format!("UNIX-CONNECT:/run/hunt-sub/{id}/relay.sock")
-}
 
 /// The OAuth token of the active Claude account, which the relay on the VM runs Claude Code with. The local login
 /// stays in this Mac's keychain, so it fails with `what` (the action) and a hint where to pick an account.
@@ -1065,9 +991,9 @@ pub async fn prepare_hand_off(app: AppHandle, id: Uuid, settings: VmSettings) ->
 
 /// Moves the session `id` to a VM of its own, which the gateway of `settings` provisions: its agent stops here, its
 /// branch, uncommitted work, transcript and the private files its hunt.json names go to the VM, and the chat
-/// continues with the agent there. Its sub chats move along: their agents stop here, their transcripts go to the VM,
-/// and they continue there once they are opened. On failure the session stays local, its agent starts again and the VM
-/// stays for the next attempt.
+/// continues with the agent there. Its sub chats stay on this Mac: their agents stop while the worktree moves and start
+/// again once they are opened. On failure the session stays local, its agent starts again and the VM stays for the next
+/// attempt.
 #[tauri::command]
 pub async fn hand_off_session(
     app: AppHandle,
@@ -1090,33 +1016,21 @@ pub async fn hand_off_session(
         }
         Err(_) => (Vec::new(), None),
     };
-    // The sub chats move along. Their agents stop here, and their starts stay claimed until the handoff ended, so that
-    // opening one meanwhile waits and then connects to wherever the session runs by then.
-    let children: Vec<SessionRecord> = store::load_sessions(&app)?.into_iter().filter(|session| session.parent_id == Some(id)).collect();
-    let mut sub_sessions: Vec<remote::handoff::SubSessionMove> = Vec::new();
-    for child in &children {
-        let config_values = match live_session(&registry, child.id).await {
-            Ok(handles) => {
-                let history = handles.history.lock().unwrap();
-                shown_config_values(&history, &[MODEL_CONFIG_ID, EFFORT_CONFIG_ID])
-            }
-            Err(_) => Vec::new(),
-        };
-        stop_agent_and_wait(&app, &registry, &watchers, &permissions, child.id).await;
-        if !registry.claim_start(child.id).await {
-            end_starts(&registry, sub_sessions.iter().map(|sub| sub.hunt_session_id)).await;
+    // The sub chats' agents stop while the worktree moves, and their starts stay claimed until the handoff ended, so that
+    // opening one meanwhile waits until the worktree settled.
+    let child_ids: Vec<Uuid> = store::load_sessions(&app)?.into_iter().filter(|session| session.parent_id == Some(id)).map(|session| session.id).collect();
+    let mut claimed_children: Vec<Uuid> = Vec::new();
+    for child_id in child_ids {
+        stop_agent_and_wait(&app, &registry, &watchers, &permissions, child_id).await;
+        if !registry.claim_start(child_id).await {
+            end_starts(&registry, claimed_children.into_iter()).await;
             return Err("failed to hand off the session: one of its sub chats was started again meanwhile".into());
         }
-        sub_sessions.push(remote::handoff::SubSessionMove {
-            hunt_session_id: child.id,
-            acp_session_id: child.acp_session_id.clone(),
-            context_prompt: child.selection.as_ref().map(SelectionContext::to_system_prompt),
-            config_values,
-        });
+        claimed_children.push(child_id);
     }
     stop_agent_and_wait(&app, &registry, &watchers, &permissions, id).await;
     if !registry.claim_start(id).await {
-        end_starts(&registry, sub_sessions.iter().map(|sub| sub.hunt_session_id)).await;
+        end_starts(&registry, claimed_children.into_iter()).await;
         return Err("failed to hand off the session: its agent was started again meanwhile".into());
     }
 
@@ -1147,7 +1061,6 @@ pub async fn hand_off_session(
             config_values: &config_values,
             token_input: &token_input,
             local_mode: local_mode.as_deref(),
-            sub_sessions: &sub_sessions,
         };
         remote::handoff::hand_off(request, &progress_reporter(&app, id)).await
     }
@@ -1181,8 +1094,8 @@ pub async fn hand_off_session(
         }
     };
     registry.end_start(id).await;
-    // The sub chats connect when they are opened next: on the VM, or here after a failed handoff.
-    end_starts(&registry, sub_sessions.iter().map(|sub| sub.hunt_session_id)).await;
+    // The sub chats start again here when they are opened next.
+    end_starts(&registry, claimed_children.into_iter()).await;
     finish_progress(&app, id);
     announce_sessions_changed(&app);
     activated
@@ -1195,11 +1108,11 @@ async fn end_starts(registry: &SessionRegistry, ids: impl Iterator<Item = Uuid>)
     }
 }
 
-/// Rejects sessions that cannot run on a VM: sub sessions, which run where their parent runs and move with it, sessions
-/// in the repository's own checkout, and pull request reviews.
+/// Rejects sessions that cannot run on a VM: sub sessions, which run here in their session's worktree, sessions in the
+/// repository's own checkout, and pull request reviews.
 fn ensure_hand_off_allowed(record: &SessionRecord) -> Result<(), String> {
     if record.parent_id.is_some() {
-        return Err("failed to hand off the session: a sub session runs where its parent runs".into());
+        return Err("failed to hand off the session: a sub session runs here in its session's worktree".into());
     }
     if record.workspace != Workspace::Worktree {
         return Err("failed to hand off the session: sessions in the repository's own checkout stay local".into());
@@ -1221,8 +1134,7 @@ pub async fn retrieve_session(
     id: Uuid,
 ) -> Result<SessionView, String> {
     ensure_retrievable(&store::find_session(&app, id)?)?;
-    // The sub chats' relays on the VM stop with the session's; their conversations come back with its project folder
-    // and continue here.
+    // The sub chats' agents stop while the worktree comes back and start again once they are opened.
     for child in store::load_sessions(&app)?.into_iter().filter(|session| session.parent_id == Some(id)) {
         stop_agent_and_wait(&app, &registry, &watchers, &permissions, child.id).await;
     }
@@ -1349,7 +1261,7 @@ async fn finish_retrieval(
             preserve_and_delete_vm(app, target, id, &record.worktree_path);
         }
     }
-    restore_transcript_mode(app, &record, target)?;
+    restore_transcript_mode(&record, target)?;
     dependencies::ensure(app, record.repo_path.clone(), record.worktree_path.clone(), Install::Updating);
     let start = local_start(&record);
     let view = activate(app, registry, watchers, record, start, AgentTransport::Local).await?;
@@ -1364,14 +1276,10 @@ async fn finish_retrieval(
     Ok(view)
 }
 
-/// Gives the local transcripts of the retrieved session `record` and its sub chats, which the VM wrote in its own
-/// permission mode, the mode the session gets back (`RemoteTarget::restored_mode`).
-fn restore_transcript_mode(app: &AppHandle, record: &SessionRecord, target: &RemoteTarget) -> Result<(), String> {
-    let acp_session_ids: Vec<String> = store::load_sessions(app)?
-        .into_iter()
-        .filter(|session| session.id == record.id || session.parent_id == Some(record.id))
-        .filter_map(|session| session.acp_session_id)
-        .collect();
+/// Gives the local transcript of the retrieved session `record`, which the VM wrote in its own permission mode, the mode
+/// the session gets back (`RemoteTarget::restored_mode`).
+fn restore_transcript_mode(record: &SessionRecord, target: &RemoteTarget) -> Result<(), String> {
+    let acp_session_ids: Vec<String> = record.acp_session_id.iter().cloned().collect();
     remote::retrieve::restore_mode(&claude_dir()?, &record.worktree_path, target.restored_mode(), &acp_session_ids)
         .map_err(|error| format!("failed to restore the permission mode of the retrieved session's transcript: {error}"))
 }
@@ -1398,8 +1306,8 @@ fn install_for(app: &AppHandle, record: &SessionRecord) -> Install {
     }
 }
 
-/// The VM the agent of `record` works on, with the id of the remote session that owns it: the session's own, or for a
-/// sub chat its parent's; `None` for an agent on this Mac.
+/// The VM the worktree of `record` lives on, with the id of the remote session that owns it: the session's own, or for
+/// a sub chat its parent's, whose worktree it works in; `None` for a worktree only on this Mac.
 fn remote_host(app: &AppHandle, record: &SessionRecord) -> Option<(Uuid, RemoteTarget)> {
     let parent = record.remote.is_none().then_some(record.parent_id).flatten().and_then(|id| store::find_session(app, id).ok());
     host_of(record, parent.as_ref())
@@ -1651,22 +1559,6 @@ async fn run_cleanup(cleanup: &PendingCleanup) -> Result<(), String> {
     gateway_api("delete the session's VM").await?.delete_vm(id).await
 }
 
-/// Stops the relay of the deleted sub chat `id` on `target`, the VM of the remote session `owner`, and removes its
-/// configuration there, in the background. A VM that is off runs no relay, so a failure is only logged.
-fn forget_remote_sub(target: &RemoteTarget, owner: Uuid, id: Uuid) {
-    let vm = target.vm.clone();
-    tauri::async_runtime::spawn(async move {
-        let stopped = async {
-            let ssh = Ssh::open(&vm, &ssh_dir()?).await?;
-            remote::hunt_ctl(&ssh, &["stop", &owner.to_string(), "--sub", &id.to_string()]).await
-        }
-        .await;
-        if let Err(error) = stopped {
-            eprintln!("stopping the relay of sub chat {id} on the VM of session {owner} failed: {error}");
-        }
-    });
-}
-
 /// Sessions whose VM this run of Hunt asked the gateway to delete. The VM stays listed while it shuts down, and an
 /// adoption in that time must not bring its session back.
 static DELETED_SESSION_VMS: std::sync::Mutex<Vec<Uuid>> = std::sync::Mutex::new(Vec::new());
@@ -1808,11 +1700,8 @@ async fn end_session(
     }
 
     let record = store::find_session(app, id)?;
-    // A sub chat only owns its record (and on a VM its relay); the worktree belongs to its parent.
+    // A sub chat only owns its record; the worktree belongs to its parent.
     if record.parent_id.is_some() {
-        if let Some((owner, target)) = remote_host(app, &record) {
-            forget_remote_sub(&target, owner, id);
-        }
         return store::remove_session(app, id);
     }
 
@@ -1883,11 +1772,9 @@ fn forget_edit_log_if_unused(app: &AppHandle, worktree: &Path) {
     }
 }
 
-/// Records `at` as the last work of the agent of the remote session `id`, or of the remote session whose sub chat `id`
-/// is, unless a later one is known; a local session is left alone. Failures are only logged: the activity only times
-/// the reminder about idle sessions.
+/// Records `at` as the last work of the agent of the remote session `id` unless a later one is known; a local session
+/// is left alone. Failures are only logged: the activity only times the reminder about idle sessions.
 fn note_remote_activity(app: &AppHandle, id: Uuid, at: chrono::DateTime<chrono::Utc>) {
-    let Some((id, _)) = store::find_session(app, id).ok().and_then(|record| remote_host(app, &record)) else { return };
     let updated = store::update_session(app, id, |record| {
         if let Some(remote) = record.remote.as_mut() {
             remote.last_active_at = remote.last_active_at.max(Some(at));
@@ -1941,8 +1828,8 @@ pub async fn send_prompt(
     if let Some(selection) = record.selection.as_ref().filter(|selection| selection.task.is_some()) {
         if let Ok(target) = worktree_file(&record, &selection.path) {
             // The agent on a VM knows the file by its path there; the local copy holds the same content once synced.
-            let shown_as = match remote_host(&app, &record) {
-                Some((_, host)) => host.worktree_path.join(&selection.path),
+            let shown_as = match &record.remote {
+                Some(host) => host.worktree_path.join(&selection.path),
                 None => target.clone(),
             };
             if let Some(block) = file_context_block(&target, &shown_as) {
@@ -2631,7 +2518,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sub_chat_runs_on_the_vm_of_its_remote_parent() {
+    fn the_worktree_of_a_sub_chat_lives_on_the_vm_of_its_remote_parent() {
         let local = |title: &str| {
             let worktree = PathBuf::from(format!("/worktrees/{title}"));
             SessionRecord::new(Uuid::new_v4(), title.into(), PathBuf::from("/repo"), worktree, "feat/x".into(), "main".into(), "abc".into())

@@ -1,12 +1,11 @@
 //! Keeps the local worktree of every connected remote session in sync with its worktree on the VM (`remote::sync`), live:
 //! the sync helper on the VM (`remote::channel`) reports each change there as it happens and the watcher each local one
-//! after `LOCAL_DEBOUNCE`, and a live sync moves just these paths. A full sync, which lists both sides, runs when an
-//! agent of the VM connects (the session's own or a sub chat's), after the channel (re)opened, when the helper asks for
-//! one, after a turn ended and whenever a live sync cannot tell the change file by file. Without a channel (a VM whose
+//! after `LOCAL_DEBOUNCE`, and a live sync moves just these paths. A full sync, which lists both sides, runs when the
+//! agent of the VM connects, after the channel (re)opened, when the helper asks for one, after a turn ended and whenever a live sync cannot tell the change file by file. Without a channel (a VM whose
 //! release lacks the helper, or while it reconnects) full syncs also run after every finished tool call and every
 //! `TURN_POLL` while a turn runs. Hunt's own changes (`note_local_change`) have the local side listed anew; a prompt
 //! waits until the local changes reached the VM (`flush`), and a commit on the VM runs while no sync does (`exclusive`).
-//! The sync after a turn ended also backs the VM's transcripts up into the local project folder
+//! The sync after a turn ended also backs the VM's transcript up into the local project folder
 //! (`remote::retrieve::back_up_transcripts`), so a VM that gets lost costs at most the running turn. Syncs of one
 //! session run one after the other, and requests that arrive meanwhile run one more afterwards; the sync stops when the
 //! last agent of the VM disconnected. An adopted session gets a local worktree first, once the local checkout of its
@@ -59,7 +58,7 @@ pub struct SyncRegistry {
 struct SessionSync {
     /// Held while a sync of the session runs.
     lock: Arc<tokio::sync::Mutex<()>>,
-    /// The Hunt sessions whose agents on the VM are connected: the remote session's own and those of its sub chats.
+    /// The Hunt sessions whose agents on the VM are connected: the remote session's own; sub chats run on this Mac.
     agents: Mutex<HashSet<Uuid>>,
     /// The agents among them whose turn runs.
     turns: Mutex<HashSet<Uuid>>,
@@ -207,8 +206,8 @@ impl SyncEvent {
     }
 }
 
-/// Syncs the remote session `id` while the agent of the Hunt session `agent` is connected to its VM: the session's own
-/// or a sub chat's. The first agent starts the sync: it watches the local worktree and syncs right away, which also
+/// Syncs the remote session `id` while the agent of the Hunt session `agent` is connected to its VM. The first agent
+/// starts the sync: it watches the local worktree and syncs right away, which also
 /// sends what changed here while nobody was connected; a later one syncs once more.
 pub fn attach(app: &AppHandle, id: Uuid, agent: Uuid) {
     let registry = app.state::<SyncRegistry>();

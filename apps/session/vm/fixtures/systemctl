@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fake systemctl of services.test.ts and subRelays.test.ts: logs the call; the state of unit <unit> (active, activating,
+# Fake systemctl of services.test.ts and relayTokens.test.ts: logs the call; the state of unit <unit> (active, activating,
 # failed, inactive) is in /run/fake-systemd/<unit>, and enable links template instances into multi-user.target.wants.
 echo "systemctl $*" >>/var/log/systemctl.log
 states=/run/fake-systemd

@@ -51,8 +51,10 @@ function guardrailChatAnchor(bounds: DOMRect): SelectionRequest["anchor"] {
 export function ChatPanel({ sessionId }: { sessionId: string }) {
   const fileIconUrl = useFileIconUrl();
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
-  /** The VM the agent runs on: the session's own, or its parent's for a sub chat; `null` for an agent on this Mac. */
-  const remote = useHuntStore((state) => {
+  /** The VM the agent runs on; `null` for an agent on this Mac, which a sub chat's always is. */
+  const remote = session?.remote ?? null;
+  /** The VM the worktree lives on: the session's own, or its parent's for a sub chat; `null` for a local worktree. */
+  const worktreeRemote = useHuntStore((state) => {
     const current = state.sessions.find((candidate) => candidate.id === sessionId);
     return current ? remoteOf(current, state.sessions) : null;
   });
@@ -190,7 +192,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
             Question
           </Chip>
         ) : null}
-        {remote ? null : <OpenInWebstormButton sessionId={sessionId} disabled={isCreating} />}
+        {worktreeRemote ? null : <OpenInWebstormButton sessionId={sessionId} disabled={isCreating} />}
         <RemoteToggle sessionId={sessionId} />
         <button type="button" onClick={() => void openGuardrailsWindow(sessionId)} disabled={isCreating} className={SECONDARY_BUTTON_MD}>
           <ShieldIcon />

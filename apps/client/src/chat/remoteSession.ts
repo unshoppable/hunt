@@ -70,9 +70,10 @@ export function moveStatus(chat: SessionChat): string | null {
 }
 
 /**
- * The VM the agent of `session` runs on: its own while it is handed off, else its parent's, since a sub chat of a remote
- * session runs as a second agent on that session's VM; `null` for an agent on this Mac. Use `session.remote` instead
- * where the session must own the VM (moving it back, deleting it, its preview and terminal).
+ * The VM the worktree of `session` lives on: its own while it is handed off, else its parent's for a sub chat, which
+ * works in that session's worktree; `null` for a worktree only on this Mac. The agent of a sub chat runs on this Mac
+ * either way, so use `session.remote` where the session's own agent or VM matters (its chat, moving it back, deleting
+ * it, its preview and terminal).
  */
 export function remoteOf(session: SessionView, sessions: SessionView[]): RemoteTarget | null {
   if (session.remote) return session.remote;
@@ -89,11 +90,10 @@ export type HandOffContext = { hasUnsavedEdits: boolean; hasClaudeAccount: boole
 /**
  * Why `session` cannot be handed off to the VM right now, or `null` when it can. Only a top-level session in a worktree
  * of its own moves, with a Claude account selected (the local login stays on this Mac), no unsaved edits in its editor
- * and no sub chat running a turn: its sub chats move along, and moving stops their agents, which would cut a turn
- * short. The session's own running turn does not block it: the handoff waits for its end (see `handOffSession`).
+ * and no sub chat running a turn: moving the worktree stops their agents, which would cut a turn short. The session's own running turn does not block it: the handoff waits for its end (see `handOffSession`).
  */
 export function handOffBlocker(session: SessionView, context: HandOffContext): string | null {
-  if (session.parentId) return "A sub session runs where its parent runs.";
+  if (session.parentId) return "A sub session runs here in its session's worktree.";
   if (session.workspace !== "worktree") return "Sessions in the repository's own checkout stay local.";
   if (session.pullRequest) return "Pull request reviews stay local.";
   if (!context.hasClaudeAccount) return "Pick a Claude account in the sidebar first; the local login cannot run on the VM.";
@@ -110,8 +110,8 @@ export type RetrieveContext = { hasUnsavedEdits: boolean; hasBusySubChat: boolea
 
 /**
  * Why the remote `session` cannot be brought back right now, or `null` when it can: an adopted session needs a local
- * checkout of its repository, the editor no unsaved edits, and no sub chat may run a turn, since its relay on the VM
- * stops with the session's and its conversation comes back along. The session's own running turn does not block it:
+ * checkout of its repository, the editor no unsaved edits, and no sub chat may run a turn, since its agent stops while
+ * the worktree comes back. The session's own running turn does not block it:
  * the retrieval waits for its end.
  */
 export function retrieveBlocker(session: SessionView, context: RetrieveContext): string | null {

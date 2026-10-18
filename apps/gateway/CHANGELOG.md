@@ -1,3 +1,17 @@
+## 0.27.1 (2026-10-18)
+
+### 🩹 Fixes
+
+- **gateway:** let NTP through the metadata firewall, whose block let the gateway's clock drift ([01d8f1c](https://github.com/unshoppable/hunt/commit/01d8f1c))
+
+### 🔥 Performance
+
+- faster start of session VMs: operation waits, a 2 s readiness poll, the release check in the same call and an early connect of the desktop ([13c594e](https://github.com/unshoppable/hunt/commit/13c594e))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.19.1
+
 ## 0.27.0 (2026-10-18)
 
 ### 🧱 Updated Dependencies

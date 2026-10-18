@@ -1,3 +1,9 @@
+## 0.40.1 (2026-10-18)
+
+### 🔥 Performance
+
+- faster start of session VMs: operation waits, a 2 s readiness poll, the release check in the same call and an early connect of the desktop ([13c594e](https://github.com/unshoppable/hunt/commit/13c594e))
+
 ## 0.40.0 (2026-10-18)
 
 ### 🚀 Features

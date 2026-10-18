@@ -1,3 +1,9 @@
+## 0.23.0 (2026-10-18)
+
+### 🚀 Features
+
+- suspend idle session VMs instead of powering them off; a resume into a stockout stops and moves the VM ([#40](https://github.com/unshoppable/hunt/issues/40))
+
 ## 0.22.0 (2026-10-18)
 
 ### 🚀 Features

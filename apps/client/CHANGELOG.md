@@ -1,3 +1,9 @@
+## 0.39.1 (2026-10-18)
+
+### 🩹 Fixes
+
+- **client:** hide the permission mode of a remote session, whose agent always bypasses permissions ([db8b065](https://github.com/unshoppable/hunt/commit/db8b065))
+
 ## 0.39.0 (2026-10-17)
 
 ### 🚀 Features

@@ -13,6 +13,7 @@ import { PermissionPrompt } from "./PermissionPrompt";
 import { appendPromptTexts, QueuedPrompts, useReturnedPrompts } from "./QueuedPrompts";
 import { ContextCard, describeLines, describeSelection, SelectionCard } from "./SelectionCard";
 import { useFollowScroll } from "./useFollowScroll";
+import { useVmConnect } from "./useVmConnect";
 import { titleFromPrompt } from "../sessions/sessionLabels";
 import { DANGER_CLEAR_BUTTON, GHOST_BUTTON_XS, ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SEND_BUTTON } from "../ui/buttons";
 import { CloseIcon, SendIcon, TrashIcon } from "../ui/icons";
@@ -127,6 +128,8 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   const parentChat = useHuntStore((state) => state.chats[parentSessionId]);
   const subSession = useHuntStore((state) => state.sessions.find((session) => session.id === subSessionId));
   const parent = useHuntStore((state) => state.sessions.find((session) => session.id === parentSessionId));
+  // A remote session's worktree that is locked for want of a connection connects on its own while the popover is open.
+  useVmConnect(parentSessionId);
   const isBusy = isCreating || (chat?.isBusy ?? false);
   const isLive = !subSessionId || (subSession?.isLive ?? false);
   const [isResuming, setIsResuming] = useState(false);

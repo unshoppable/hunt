@@ -27,8 +27,9 @@ import { OpenInWebstormButton } from "./OpenInWebstormButton";
 import { RemoteToggle } from "./RemoteToggle";
 import { remoteDeleteQuestion } from "../sessions/remoteOrigin";
 import { confirmDestructive } from "../ui/confirm";
-import { continueLocallyQuestion, moveStatus, remoteOf, worktreeLock } from "./remoteSession";
+import { continueLocallyQuestion, moveStatus, remoteOf } from "./remoteSession";
 import { RemoteRunStatus, RemoteStepProgress } from "./RemoteProgress";
+import { useVmConnect } from "./useVmConnect";
 
 /** Order in which shift+tab cycles the session mode, as in the terminal; modes the agent does not offer are skipped. */
 const MODE_CYCLE = ["default", "acceptEdits", "plan", "auto"];
@@ -58,8 +59,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     const current = state.sessions.find((candidate) => candidate.id === sessionId);
     return current ? remoteOf(current, state.sessions) : null;
   });
-  /** Why the local worktree is read-only while this Mac cannot sync with the VM; `null` while it may change. */
-  const lock = useHuntStore((state) => worktreeLock(state.sessions, state.remoteLinks, sessionId));
+  /** The connect to the VM of a locked worktree, which runs on its own (see `useVmConnect`); `lock` says why it is locked. */
+  const { ownerId, lock, isConnecting, hasConnectFailed, stepLabel } = useVmConnect(sessionId);
   const chat = useHuntStore((state) => state.chats[sessionId]);
   const isCreating = useHuntStore((state) => state.creatingIds.includes(sessionId));
   const sendPrompt = useHuntStore((state) => state.sendPrompt);
@@ -145,9 +146,6 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     if (!current?.remote || !(await confirmDestructive(remoteDeleteQuestion(current), "Delete"))) return;
     await closeSession(sessionId, "delete");
   }
-
-  /** The remote session that owns the VM: this one, or the parent of a sub chat. */
-  const ownerId = session?.parentId ?? sessionId;
 
   /** Continues the remote session, whose VM cannot be reached, on this Mac after confirmation. */
   async function continueOwnerLocally() {
@@ -239,11 +237,14 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
               </ul>
             </div>
           ) : null}
-          {lock ? (
+          {isConnecting ? (
+            <p className="mt-4 text-[13px] text-neutral-500">{stepLabel ?? "Connecting to the VM…"}</p>
+          ) : null}
+          {lock === "unreachable" || hasConnectFailed ? (
             <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-amber-200">
               <span className="min-w-0 break-words">
                 {lock === "vmRunning"
-                  ? "Not connected to the VM. Local files are read-only while the agent may be working there."
+                  ? "Connecting to the VM failed. Local files are read-only while the agent may be working there."
                   : "The VM cannot be reached. Local files are read-only so that this Mac and the VM cannot diverge."}
               </span>
               <button

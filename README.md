@@ -622,9 +622,12 @@ changed meanwhile.
 Only one side writes while the two cannot sync (`apps/client/src-tauri/src/session/link.rs`). The local worktree may
 change while the channel is open or the agent of the VM is connected, and while the gateway says the VM is off (the
 next sync sends the changes). Otherwise it is locked: the VM runs without a connection here, or neither it nor the
-gateway can be reached. Hunt then refuses its own writes (saves, moves, deletions, revert, shelve, unshelve, commit),
-its editors turn read-only, and the chat offers *Connect* or, while nothing can be reached, *Continue locally*; editors
-outside Hunt are not held back. A locked session is checked again every 15 seconds. *Continue locally*
+gateway can be reached. Hunt then refuses its own writes (saves, moves, deletions, revert, shelve, unshelve, commit)
+and its editors turn read-only; editors outside Hunt are not held back. A chat of the locked worktree (the session's or
+a sub chat's, in the chat pane or the sub chat popover) connects the session to its running VM on its own
+(`apps/client/src/chat/useVmConnect.ts`), which brings the sync back and lifts the lock, and shows the connect's step
+meanwhile; only a failed connect offers *Connect* to try again, and a VM that cannot be reached offers *Continue
+locally*. A locked session is checked again every 15 seconds. *Continue locally*
 (`continue_locally`) makes the session local with the files as last synced and the conversation as of the agent's last
 finished turn; once the VM can be reached (tried every minute and at each start of Hunt), Hunt stops the session
 there, fetches a snapshot of what the agent left as `refs/hunt/<id>/abandoned` and deletes the VM.

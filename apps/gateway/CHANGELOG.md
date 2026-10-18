@@ -1,3 +1,13 @@
+## 0.30.0 (2026-10-18)
+
+### 🚀 Features
+
+- transcripts of a remote session stream live both ways, and .hunt/sessions.md tells the agents of a worktree about one another ([d875510](https://github.com/unshoppable/hunt/commit/d875510))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.22.0
+
 ## 0.29.0 (2026-10-18)
 
 ### 🚀 Features

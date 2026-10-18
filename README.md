@@ -549,7 +549,7 @@ session VM (what it does, outcome, duration, and the end of stderr when it faile
 
 `hunt-api`, `hunt-swf` and `hunt-wake` run as `hunt-gw`, which `hunt-ctl install` creates. `hunt-firewall.service`
 keeps every other user on the gateway, containers and the edge proxy included, off the metadata server, whose token
-can create, start and delete VMs; only root and `hunt-gw` reach it, and everyone keeps DNS through it.
+can create, start and delete VMs; only root and `hunt-gw` reach it, and everyone keeps DNS and NTP through it.
 
 Next to the preview, the *Terminal* tab (`apps/client/src/terminal/TerminalPanel.tsx`, xterm.js) shows one tab per
 process of the app, like the tabs of a local terminal. Each service of `hunt.json` gets a read-only tab that follows its

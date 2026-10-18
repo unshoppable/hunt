@@ -238,6 +238,7 @@ describe.skipIf(!hasDocker())("hunt-ctl install and stage-session on a gateway i
         `-A HUNT-METADATA -m owner --uid-owner ${uid} -j RETURN`,
         "-A HUNT-METADATA -p udp -m udp --dport 53 -j RETURN",
         "-A HUNT-METADATA -p tcp -m tcp --dport 53 -j RETURN",
+        "-A HUNT-METADATA -p udp -m udp --dport 123 -j RETURN",
         "-A HUNT-METADATA -p tcp -j REJECT --reject-with tcp-reset",
         "-A HUNT-METADATA -j REJECT --reject-with icmp-port-unreachable",
         "",

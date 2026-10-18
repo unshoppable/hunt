@@ -1,3 +1,9 @@
+## 0.19.0 (2026-10-18)
+
+### 🚀 Features
+
+- live two-way file sync of remote sessions through a sync helper on the VM, and a read-only local worktree while the VM cannot be reached ([3dc8a42](https://github.com/unshoppable/hunt/commit/3dc8a42))
+
 ## 0.18.0 (2026-10-17)
 
 ### 🚀 Features

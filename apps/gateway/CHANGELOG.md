@@ -1,3 +1,13 @@
+## 0.29.0 (2026-10-18)
+
+### 🚀 Features
+
+- architecture tab with six diagram types, inline commit box and file filter in the changelist, queued prompts for every session, and swf answer delivery ([b78ef11](https://github.com/unshoppable/hunt/commit/b78ef11))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.21.0
+
 ## 0.28.1 (2026-10-18)
 
 ### 🧱 Updated Dependencies

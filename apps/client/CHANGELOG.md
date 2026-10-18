@@ -1,3 +1,11 @@
+## 0.43.0 (2026-10-18)
+
+### 🚀 Features
+
+- push a remote session's branch from this Mac, and a poller session's from its VM with the stored token (hunt-ctl push --stored, protocol 9) ([c0e4b19](https://github.com/unshoppable/hunt/commit/c0e4b19))
+- **client:** ⌘click on a changed line of the diff's left side goes to the declaration when the name still exists ([4a8e72c](https://github.com/unshoppable/hunt/commit/4a8e72c))
+- architecture tab with six diagram types, inline commit box and file filter in the changelist, queued prompts for every session, and swf answer delivery ([b78ef11](https://github.com/unshoppable/hunt/commit/b78ef11))
+
 ## 0.42.0 (2026-10-18)
 
 ### 🚀 Features

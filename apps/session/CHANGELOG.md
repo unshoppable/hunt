@@ -1,3 +1,9 @@
+## 0.21.0 (2026-10-18)
+
+### 🚀 Features
+
+- push a remote session's branch from this Mac, and a poller session's from its VM with the stored token (hunt-ctl push --stored, protocol 9) ([c0e4b19](https://github.com/unshoppable/hunt/commit/c0e4b19))
+
 ## 0.20.1 (2026-10-18)
 
 This was a version bump only for session to align it with other projects, there were no code changes.

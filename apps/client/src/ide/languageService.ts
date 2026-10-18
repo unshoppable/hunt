@@ -1,7 +1,7 @@
 import * as monaco from "monaco-editor";
 import type { Workspace } from "./documents";
 import { lspClientForModel, type LspClient } from "./lsp/client";
-import { asLocationLinks, elementKindOf, hoverSignature, rangeContains, symbolsAt, toLspPosition, toMonacoRange, type DocumentSymbol, type Hover, type Location, type LocationLink, type Position } from "./lsp/protocol";
+import { asLocationLinks, elementKindOf, hoverSignature, rangeContains, symbolsAt, toLspPosition, toMonacoRange, type DocumentSymbol, type Hover, type Location, type LocationLink, type Position, type WorkspaceSymbol } from "./lsp/protocol";
 import { containerOf, FUNCTION_KINDS, isImportLine, isSourceFile, parameterTypesOf, sortUsages, usageOnLine, type Usage } from "./usages";
 
 export type DefinitionTarget = { uri: monaco.Uri; range: monaco.IRange };
@@ -47,21 +47,55 @@ export async function navigationAt(model: monaco.editor.ITextModel, position: mo
 
 export type FilePosition = { path: string; line: number; column: number };
 
+/** Monaco's default `wordSeparators`, which make `findMatches` match whole words only. */
+const WORD_SEPARATORS = "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?";
+
 /**
  * Where a ⌘click on `name` at `position` of the worktree file `path` lands, for clicks outside the editor (diffs)
- * whose text may differ from the file: the declaration when the language server knows one elsewhere inside the
- * worktree, otherwise the clicked position itself (the click sits on the declaration, the file has another word
- * there, or the server does not serve the file), so the click always opens the editor.
+ * whose text may differ from the file: the declaration when the language server knows one inside the worktree,
+ * asked from the clicked position when the file has `name` there, else from its nearest other occurrence in the
+ * file, else by name from the server's workspace symbols (the name left the file, e.g. with a deleted import).
+ * A click on the declaration itself lands on that occurrence. Otherwise the clicked position (the worktree lost
+ * the name, or the server does not serve the file), so the click always opens the editor.
  */
 export async function resolveDefinition(workspace: Workspace, path: string, position: monaco.IPosition, name: string): Promise<FilePosition> {
   const clicked = { path, line: position.lineNumber, column: position.column };
   const { model } = await workspace.open(path);
-  if (model.getWordAtPosition(position)?.word !== name) return clicked;
-  const navigation = await navigationAt(model, position).catch(() => null);
-  if (navigation?.type !== "definition") return clicked;
-  const targetPath = workspace.pathOf(navigation.target.uri);
-  if (!targetPath) return clicked;
-  return { path: targetPath, line: navigation.target.range.startLineNumber, column: navigation.target.range.startColumn };
+  const occurrence = nearestOccurrence(model, position, name);
+  const navigation = occurrence ? await navigationAt(model, occurrence).catch(() => null) : null;
+  if (navigation?.type === "declaration" && occurrence) return { path, line: occurrence.lineNumber, column: occurrence.column };
+  const target = navigation?.type === "definition" ? navigation.target : occurrence ? null : await workspaceDefinition(model, name).catch(() => null);
+  const targetPath = target ? workspace.pathOf(target.uri) : null;
+  if (!target || !targetPath) return clicked;
+  return { path: targetPath, line: target.range.startLineNumber, column: target.range.startColumn };
+}
+
+/** `position` when the word there is `name`, else the whole-word occurrence of `name` on the line closest to it; null without one. */
+function nearestOccurrence(model: monaco.editor.ITextModel, position: monaco.IPosition, name: string): monaco.IPosition | null {
+  if (model.getWordAtPosition(position)?.word === name) return position;
+  let nearest: monaco.IPosition | null = null;
+  let distance = Infinity;
+  for (const match of model.findMatches(name, false, false, true, WORD_SEPARATORS, false)) {
+    const gap = Math.abs(match.range.startLineNumber - position.lineNumber);
+    if (gap >= distance) continue;
+    nearest = match.range.getStartPosition();
+    distance = gap;
+  }
+  return nearest;
+}
+
+/** The declaration named exactly `name` inside the worktree, from the server's workspace symbols; null without one. */
+async function workspaceDefinition(model: monaco.editor.ITextModel, name: string): Promise<DefinitionTarget | null> {
+  const client = lspClientForModel(model);
+  if (!client) return null;
+  const symbols = (await client.request<WorkspaceSymbol[] | null>("workspace/symbol", { query: name })) ?? [];
+  for (const symbol of symbols) {
+    if (symbol.name !== name || !("range" in symbol.location)) continue;
+    const uri = monaco.Uri.parse(symbol.location.uri);
+    if (!isInside(uri, client)) continue;
+    return { uri, range: toMonacoRange(symbol.location.range) };
+  }
+  return null;
 }
 
 function isInside(uri: monaco.Uri, client: LspClient): boolean {

@@ -10,7 +10,7 @@ import { workspaceFor } from "../ide/documents";
 import { attachSelectionAgent } from "../ide/selectionAgent";
 import { SelectionChatMarkers } from "../ide/selectionChatMarkers";
 import { useBusyChatIds, useSelectionChats } from "../ide/selectionChats";
-import { computeChangeBlocks, mapUnchangedLine, type Side } from "./lineDiff";
+import { computeChangeBlocks, mapLine, type Side } from "./lineDiff";
 import { AddCommentGlyph, type CommentTarget } from "../review/addCommentGlyph";
 import { ReviewCommentZones } from "../review/ReviewCommentZones";
 import { FILE_SPAN, isInsideHunk, useReviewedPullRequest } from "../review/reviewComments";
@@ -64,7 +64,8 @@ type CodeDiffEditorProps = {
   onDirtyChange: (isDirty: boolean) => void;
   /**
    * Called on ⌘click on a name in either side (go to its declaration) with the name and its 1-based position in the
-   * saved right side (`diff.newContent`); a click on a changed line of the left side has no such position and is ignored.
+   * saved right side (`diff.newContent`); a click on a changed line of the left side reports the nearest line of the
+   * right side, and the receiver locates the name from there (see `resolveDefinition` in ide/languageService.ts).
    */
   onNavigate: (line: number, column: number, name: string) => void;
   /** Called with the clicked 1-based position on ⇧⌘click in either side (open in WebStorm). */
@@ -227,8 +228,8 @@ export function CodeDiffEditor({
     const link = attachIdeLink(sideEditor, {
       onNavigate: (line, column) => {
         const name = sideEditor.getModel()?.getWordAtPosition({ lineNumber: line, column })?.word;
-        const savedLine = side === "modified" ? line : mapUnchangedLine(blocksRef.current, "original", line);
-        if (!name || !savedLine) return;
+        if (!name) return;
+        const savedLine = side === "modified" ? line : Math.max(1, Math.round(mapLine(blocksRef.current, "original", line)));
         onNavigateRef.current(savedLine, column, name);
       },
       onOpenInIde: (line, column) => onOpenInIdeRef.current(line, column),

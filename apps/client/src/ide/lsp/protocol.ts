@@ -11,6 +11,7 @@ export type InlayHintLabelPart = { value: string; tooltip?: string | MarkupConte
 export type InlayHint = { position: Position; label: string | InlayHintLabelPart[]; kind?: 1 | 2; paddingLeft?: boolean; paddingRight?: boolean };
 export type DocumentHighlight = { range: Range; kind?: 1 | 2 | 3 };
 export type DocumentSymbol = { name: string; detail?: string; kind: number; range: Range; selectionRange: Range; children?: DocumentSymbol[] };
+export type WorkspaceSymbol = { name: string; kind: number; containerName?: string; location: Location | { uri: string } };
 export type Diagnostic = { range: Range; severity?: 1 | 2 | 3 | 4; code?: number | string; source?: string; message: string; tags?: number[] };
 export type DocumentDiagnosticReport = { kind: "full"; items: Diagnostic[] } | { kind: "unchanged" };
 export type TextDocumentContentChangeEvent = { range: Range; text: string } | { text: string };

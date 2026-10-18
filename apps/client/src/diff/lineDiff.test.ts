@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clipUnchangedRegion, computeChangeBlocks, computeInnerChanges, computeRevertEdit, computeUnchangedRegions, mapLine, mapUnchangedLine, type TextEdit } from "./lineDiff";
+import { clipUnchangedRegion, computeChangeBlocks, computeInnerChanges, computeRevertEdit, computeUnchangedRegions, mapLine, type TextEdit } from "./lineDiff";
 
 const lines = (count: number, prefix = "line") => Array.from({ length: count }, (_, index) => `${prefix} ${index + 1}`).join("\n") + "\n";
 
@@ -82,26 +82,6 @@ describe("mapLine", () => {
   it("interpolates inside a block", () => {
     expect(mapLine(blocks, "modified", 5)).toBe(3);
     expect(mapLine(blocks, "original", 11)).toBe(14.5);
-  });
-});
-
-describe("mapUnchangedLine", () => {
-  const blocks = [
-    { original: { start: 3, end: 3 }, modified: { start: 3, end: 7 } },
-    { original: { start: 10, end: 12 }, modified: { start: 14, end: 15 } },
-  ];
-
-  it("maps unchanged lines like mapLine", () => {
-    expect(mapUnchangedLine(blocks, "original", 3)).toBe(7);
-    expect(mapUnchangedLine(blocks, "original", 12)).toBe(15);
-    expect(mapUnchangedLine(blocks, "modified", 2)).toBe(2);
-  });
-
-  it("returns null inside a change block", () => {
-    expect(mapUnchangedLine(blocks, "original", 10)).toBeNull();
-    expect(mapUnchangedLine(blocks, "original", 11)).toBeNull();
-    expect(mapUnchangedLine(blocks, "modified", 3)).toBeNull();
-    expect(mapUnchangedLine(blocks, "modified", 14)).toBeNull();
   });
 });
 

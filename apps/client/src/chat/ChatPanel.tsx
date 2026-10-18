@@ -98,7 +98,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   });
 
   function cycleMode() {
-    if (!session?.isLive) return;
+    if (!session?.isLive || remote) return;
     const cycle = MODE_CYCLE.filter((id) => modes.some((mode) => mode.id === id));
     const index = cycle.indexOf(modeId);
     void setMode(sessionId, cycle[(index + 1) % cycle.length]);
@@ -274,7 +274,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           queue={chat?.queue ?? []}
           onTakeQueue={() => takeQueue(sessionId)}
           onUnqueue={(promptId) => unqueuePrompt(sessionId, promptId)}
-          modeId={modeId}
+          modeId={remote ? null : modeId}
           modes={modes}
           configSelects={configSelects}
           commands={[CLEAR_COMMAND, ...(chat?.commands ?? [])]}

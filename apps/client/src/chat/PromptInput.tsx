@@ -77,7 +77,8 @@ export function PromptInput({
   onUnqueue?: (promptId: string) => void;
   /** Sends a prompt at once while the agent is busy, interrupting the running turn (⌘↩, or the queued row's button). */
   onSendNow?: (text: string, images: Screenshot[]) => void;
-  modeId: string;
+  /** The agent's permission mode; `null` hides the mode select, as for an agent on a VM, which always bypasses permissions. */
+  modeId: string | null;
   modes: DropdownOption[];
   configSelects: ConfigSelect[];
   commands: AvailableCommand[];
@@ -365,13 +366,15 @@ export function PromptInput({
                 <PillSeparator />
               </Fragment>
             ))}
-            <PillSelect
-              title="Mode (shift+tab to cycle)"
-              value={modeId}
-              options={modes}
-              onChange={onModeChange}
-              className={MODE_CLASS[modeId] ?? ""}
-            />
+            {modeId ? (
+              <PillSelect
+                title="Mode (shift+tab to cycle)"
+                value={modeId}
+                options={modes}
+                onChange={onModeChange}
+                className={MODE_CLASS[modeId] ?? ""}
+              />
+            ) : null}
             <span className="flex-1" />
             {pullRequest ? (
               <button

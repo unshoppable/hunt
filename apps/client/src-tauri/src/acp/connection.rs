@@ -265,7 +265,7 @@ pub async fn connect(
         sync_owner,
         history: history.clone(),
         start,
-        system_prompt: system_prompt_append(&app, context_prompt),
+        system_prompt: system_prompt_append(&app, hunt_session_id, context_prompt),
         may_start_over: is_local,
         ready,
         shutdown: shutdown_receiver,
@@ -366,6 +366,7 @@ async fn forget_live_session(app: &AppHandle, hunt_session_id: Uuid) {
     crate::graph::unwatch(&app.state::<crate::graph::WatcherRegistry>(), hunt_session_id);
     attribution::forget_session(app, hunt_session_id);
     crate::session::sync::detach(app, hunt_session_id);
+    crate::session::related::agent_stopped(app, hunt_session_id);
     app.state::<PermissionRegistry>()
         .0
         .lock()
@@ -431,10 +432,15 @@ const GUARDRAIL_OFFER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_D
 /// with the gateway's poller, so a remote session marks its questions the same way.
 const QUESTION_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/prompts/question.system-prompt.md"));
 
-/// Everything Hunt appends to the agent's system prompt: the user's response-style prompt from the settings (if
-/// not cleared), the guardrail offer, the question marker, the diagram instructions in the user's AI language and
-/// the optional selection context, each section separated from the next by a blank line.
-pub fn system_prompt_append(app: &AppHandle, context_prompt: Option<String>) -> String {
+/// Points the agent at `.hunt/sessions.md`, the file on the sessions that share its worktree (`session::related`), with
+/// its own Hunt session id filled in; shared with the gateway's poller.
+const SESSIONS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/prompts/sessions.system-prompt.md"));
+
+/// Everything Hunt appends to the system prompt of the agent of the Hunt session `hunt_session_id`: the user's
+/// response-style prompt from the settings (if not cleared), the guardrail offer, the question marker, the sessions
+/// file, the diagram instructions in the user's AI language and the optional selection context, each section separated
+/// from the next by a blank line.
+pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prompt: Option<String>) -> String {
     let style = crate::preferences::system_prompt(app);
     let diagram = crate::graph::system_prompt(&crate::preferences::ai_language(app));
     let mut append = String::new();
@@ -445,6 +451,8 @@ pub fn system_prompt_append(app: &AppHandle, context_prompt: Option<String>) -> 
     append.push_str(GUARDRAIL_OFFER_PROMPT);
     append.push('\n');
     append.push_str(QUESTION_PROMPT);
+    append.push('\n');
+    append.push_str(&crate::graph::fill_prompt(SESSIONS_PROMPT, &[("huntSessionId", &hunt_session_id.to_string())]));
     append.push_str(&diagram);
     append.push_str(context_prompt.as_deref().unwrap_or_default());
     append

@@ -192,6 +192,8 @@ export interface PromptFiles {
   remote: string;
   gitPush: string;
   question: string;
+  /** The part on `.hunt/sessions.md`, with the `{{huntSessionId}}` placeholder. */
+  sessions: string;
   swfSystem: string;
   swfFirst: string;
   swfNudge: string;
@@ -202,12 +204,20 @@ export interface PromptFiles {
  * What the relay appends to Claude Code's system prompt, composed like `remote_system_prompt` in
  * `apps/client/src-tauri/src/session/commands.rs` with an empty base: the gateway has none of the desktop user's settings
  * (response style, guardrail offer, diagram language), so the remote part, the Git part for a session with a GitHub
- * token and the part on questions to the user come first, then `swfPrompt`, the filled swf system prompt with the
- * steps of the issue's workflow, then the section on the repository's services and its hunt.agent.md, the last two as
- * `hunt-ctl session-config` reports them (`services_prompt`, `agent_md`).
+ * token, the part on questions to the user and the part on the sessions file, filled with the Hunt session id
+ * `huntSessionId`, come first, then `swfPrompt`, the filled swf system prompt with the steps of the issue's workflow,
+ * then the section on the repository's services and its hunt.agent.md, the last two as `hunt-ctl session-config`
+ * reports them (`services_prompt`, `agent_md`).
  */
-export function remoteSystemPrompt(prompts: PromptFiles, swfPrompt: string, servicesPrompt: string | null | undefined, agentMd: string | null | undefined): string {
-  let prompt = `\n\n${prompts.remote}\n${prompts.gitPush}\n${prompts.question}\n${swfPrompt}`;
+export function remoteSystemPrompt(
+  prompts: PromptFiles,
+  huntSessionId: string,
+  swfPrompt: string,
+  servicesPrompt: string | null | undefined,
+  agentMd: string | null | undefined,
+): string {
+  const sessions = fillPrompt(prompts.sessions, { huntSessionId });
+  let prompt = `\n\n${prompts.remote}\n${prompts.gitPush}\n${prompts.question}\n${sessions}\n${swfPrompt}`;
   const services = servicesPrompt?.trim();
   if (services) {
     prompt += `\n${services}\n`;

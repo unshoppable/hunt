@@ -5,8 +5,9 @@
 //! release lacks the helper, or while it reconnects) full syncs also run after every finished tool call and every
 //! `TURN_POLL` while a turn runs. Hunt's own changes (`note_local_change`) have the local side listed anew; a prompt
 //! waits until the local changes reached the VM (`flush`), and a commit on the VM runs while no sync does (`exclusive`).
-//! The sync after a turn ended also backs the VM's transcript up into the local project folder
-//! (`remote::retrieve::back_up_transcripts`), so a VM that gets lost costs at most the running turn. Syncs of one
+//! The transcripts move apart from the files, live and both ways (`session::transcripts`), started and stopped with
+//! the sync; while that stream has no channel, the sync after a turn ended backs the VM's transcript up into the local
+//! project folder (`remote::retrieve::back_up_transcripts`), so a VM that gets lost costs at most the running turn. Syncs of one
 //! session run one after the other, and requests that arrive meanwhile run one more afterwards; the sync stops when the
 //! last agent of the VM disconnected. An adopted session gets a local worktree first, once the local checkout of its
 //! repository is known; until then it is skipped quietly. Every sync that talks to the VM reports to the UI as
@@ -37,14 +38,16 @@ use crate::remote::sync::{self as file_sync, Direction, Live, Outcome, SyncTarge
 use crate::remote::{claude_dir, RemoteTarget};
 use crate::session::dependencies::{self, Install};
 use crate::session::link::{self, Link};
+use crate::session::related;
 use crate::session::store::{self, announce_sessions_changed, SessionRecord};
+use crate::session::transcripts::{self, TranscriptLink};
 
 /// How often a sync runs while the agent's turn runs and no channel reports the VM's changes.
 const TURN_POLL: Duration = Duration::from_secs(10);
 /// How long the watcher gathers local changes before it asks for a sync.
 const LOCAL_DEBOUNCE: Duration = Duration::from_millis(50);
 /// How long a channel that failed or ended waits before it opens again, growing with each failure in a row.
-const CHANNEL_RETRY: [Duration; 4] = [Duration::from_secs(1), Duration::from_secs(5), Duration::from_secs(15), Duration::from_secs(30)];
+pub(super) const CHANNEL_RETRY: [Duration; 4] = [Duration::from_secs(1), Duration::from_secs(5), Duration::from_secs(15), Duration::from_secs(30)];
 
 /// The sync state of the connected remote sessions, and per session the lock that runs its syncs one at a time, which
 /// outlives a reconnect.
@@ -89,6 +92,8 @@ struct SessionSync {
     /// Local paths and VM changes reported since the last sync.
     local_paths: Mutex<BTreeSet<String>>,
     remote_changes: Mutex<Vec<RemoteChange>>,
+    /// The transcript stream of the session, which runs beside the sync.
+    transcripts: Arc<TranscriptLink>,
 }
 
 impl SessionSync {
@@ -112,6 +117,7 @@ impl SessionSync {
             live: Mutex::new(None),
             local_paths: Mutex::default(),
             remote_changes: Mutex::default(),
+            transcripts: Arc::default(),
         }
     }
 
@@ -155,6 +161,7 @@ impl SessionSync {
             task.abort();
         }
         self.lose_channel();
+        self.transcripts.stop();
     }
 }
 
@@ -225,10 +232,18 @@ pub fn attach(app: &AppHandle, id: Uuid, agent: Uuid) {
     if let Ok(record) = store::find_session(app, id) {
         if record.worktree_path.is_dir() {
             watch(app, id, &state, &record.worktree_path);
+            stream_transcripts(app, id, &state);
         }
     }
     open_channel(app, id, &state);
     drive(app, id, state);
+}
+
+/// Starts the transcript stream of `id` beside its sync; a failure is only logged, the per-turn backup still runs.
+fn stream_transcripts(app: &AppHandle, id: Uuid, state: &SessionSync) {
+    if let Err(error) = transcripts::start(app, id, &state.transcripts) {
+        eprintln!("starting the transcript stream of session {id} failed: {error}");
+    }
 }
 
 /// Ends the part of the agent of `agent` in the sync of its VM, whose connection ended; the sync stops with the last
@@ -344,10 +359,12 @@ pub fn observe(app: &AppHandle, id: Uuid, agent: Uuid, notification: &SessionNot
         SessionUpdate::SessionInfoUpdate(update) => match relay_turn(update.meta.as_ref()) {
             Some("running") => {
                 state.turns.lock().unwrap().insert(agent);
+                related::set_turn(app, agent, true);
                 poll(app, id, &state);
             }
             Some("idle") => {
                 state.end_turn(agent);
+                related::set_turn(app, agent, false);
                 state.wants_transcript.store(true, Ordering::SeqCst);
                 request(app, id, Side::Remote);
             }
@@ -366,9 +383,12 @@ pub async fn copy_files(app: &AppHandle, id: Uuid, direction: Direction, paths: 
     file_sync::copy_files(&ssh, direction, &record.worktree_path, &target.worktree_path.display().to_string(), paths).await
 }
 
-/// Deletes the sync state of `id`, whose local worktree no longer follows a VM.
+/// Deletes the sync state of `id`, whose local worktree no longer follows a VM, and the state of its transcript stream.
 pub fn forget(app: &AppHandle, id: Uuid) {
-    let result = manifest_path(app, id).and_then(|path| file_sync::forget(&path));
+    let result = manifest_path(app, id).and_then(|path| {
+        file_sync::forget(&path)?;
+        file_sync::forget(&path.with_extension("transcripts.json"))
+    });
     if let Err(error) = result {
         eprintln!("deleting the sync state of session {id} failed: {error}");
     }
@@ -493,6 +513,8 @@ async fn run_locked(app: &AppHandle, id: Uuid, state: &SessionSync, wanted: Want
 /// no local checkout of its repository yet. A transcript backup that fails is reported with the files the sync could not
 /// sync and fails nothing else.
 async fn sync_once(app: &AppHandle, id: Uuid, state: &SessionSync, wanted: Wanted) -> Result<Option<Outcome>, String> {
+    // The transcript stream, while its channel is open, brings the VM's transcript as it grows; the backup covers the rest.
+    let wanted = Wanted { transcript: wanted.transcript && !state.transcripts.has_channel(), ..wanted };
     if !wanted.full && !wanted.transcript {
         match sync_live_once(app, id, state, wanted).await {
             Some(Ok(outcome)) => return Ok(outcome),
@@ -535,7 +557,10 @@ async fn sync_once(app: &AppHandle, id: Uuid, state: &SessionSync, wanted: Wante
         Err(error) => outcome.conflicts.push(format!("branch {}: {error}", target.branch)),
     }
     if wanted.transcript {
-        let backup = async { retrieve::back_up_transcripts(&ssh, id, &record.worktree_path, &claude_dir()?, &remote).await };
+        let backup = async {
+            let local_ids = store::sub_chat_acp_ids(app, id)?;
+            retrieve::back_up_transcripts(&ssh, id, &record.worktree_path, &claude_dir()?, &remote, &local_ids).await
+        };
         if let Err(error) = backup.await {
             outcome.conflicts.push(format!("transcript backup: {error}"));
         }
@@ -699,6 +724,7 @@ async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &
     }
     if let Some(state) = active(app, id) {
         watch(app, id, &state, &record.worktree_path);
+        stream_transcripts(app, id, &state);
     }
     Ok(record)
 }

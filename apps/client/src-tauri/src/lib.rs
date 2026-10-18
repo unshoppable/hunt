@@ -39,6 +39,7 @@ pub fn run() {
         .manage(SummaryRegistry::default())
         .manage(SyncRegistry::default())
         .manage(session::link::LinkRegistry::default())
+        .manage(session::related::RelatedRegistry::default())
         .manage(DependencyRegistry::default())
         .manage(preferences::Preferences::default())
         .menu(|app| menu::build(app))

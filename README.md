@@ -453,6 +453,16 @@ chat starts again when it is opened next. While a sub chat runs a turn, the chat
 bringing the session back, since either would cut the turn short. A sub chat that ran on a VM with an earlier release
 (protocol 7 and before) continues here with its transcript as the sync backed it up after its last finished turn.
 
+The agents that share a worktree learn of one another from `.hunt/sessions.md`, which Hunt writes there
+(`apps/client/src-tauri/src/session/related.rs`) and the system prompt points at
+(`libs/domain/prompts/sessions.system-prompt.md`, with the agent's own Hunt session id filled in): every session of the
+worktree (the session and its sub chats) with its Hunt session id, role (the session, or a sub chat with the selection
+or task it was opened from), title, whether its agent works right now, where it runs and the path of its transcript on
+each machine that has a copy, plus the summary bullets. The file is written anew whenever the stored sessions change, a
+session gets its title, an agent starts or stops or a turn starts or ends, and a connected remote session's copy goes
+to its VM a moment later (`sync::copy_files`, as the diagram does). `.hunt/` is excluded from Git and left out of the
+file sync, so the file never reaches the repository.
+
 Every session has a VM of its own, which is the isolation boundary: the agent works there as the user `agent`, with
 Docker and Docker Compose, and starts the services of the repository's `hunt.json` its task needs. `libs/vm/hunt-ctl`
 runs every git, tar
@@ -610,11 +620,24 @@ diagram refresh wait until local changes reached the VM. Without the channel (a 
 reconnects) a full sync also runs after every tool call and every 10 seconds while a turn runs. After every sync that
 may have moved it, the local branch points at the commit the VM's worktree has checked out (fetched as `refs/hunt/<id>/head`,
 `apps/client/src-tauri/src/remote/commit.rs`), so the diff shows what is uncommitted on the VM, as for a local session,
-also after the agent committed; a local branch that holds a commit the VM lacks stays put, and the chat says so. After
-every turn that ends, the sync also copies the Claude Code transcript of the session from the VM into the local project
-folder, with its paths moved here, as a backup for a VM that gets lost (`back_up_transcripts` in
-`apps/client/src-tauri/src/remote/retrieve.rs`); the records keep the VM's permission mode until the session runs here
-again, and the memory stays on the VM for the merge below. The
+also after the agent committed; a local branch that holds a commit the VM lacks stays put, and the chat says so.
+
+The Claude Code transcripts move beside the files, live and both ways (`apps/client/src-tauri/src/session/transcripts.rs`,
+`remote/transcript_sync.rs`): the transcript helper on the VM (`apps/session/src/sync/transcripts.ts`, started over the
+same SSH connection as the sync helper) watches the agent's project folder `~/.claude/projects/<slug>` there and reports
+every file the agent writes (the session's transcript, its subagent transcripts, tool results; the memory excepted) as
+it grows, from the offset this Mac holds, and Hunt appends the complete lines, with their paths moved here, to a mirror in
+the local project folder of the worktree, so a sub chat can read the running turn of its session. The other way, Hunt
+watches the local project folder and sends the files this Mac owns, the transcripts of the session's sub chats, to the
+VM's project folder the same way, so the agent on the VM can read what its sub chats did. Every offset is remembered per
+side (`remote-sync/<id>.transcripts.json` in the app data folder), so a channel that reopens asks only for what is
+missing; a mirror that changed under the stream is pulled from the start again, and a VM copy that is not as long as
+expected is sent from the start again. The protocol is in `apps/session/src/sync/transcriptProtocol.ts`. While the
+stream has no channel (a VM on an older release, or while it reconnects), the sync after every turn that ends copies
+the session's transcript from the VM into the local project folder instead, as a backup for a VM that gets lost
+(`back_up_transcripts` in `apps/client/src-tauri/src/remote/retrieve.rs`); the backup and the retrieval leave the sub
+chats' transcripts alone, whose copies on the VM are the stream's. The records from the VM keep its permission mode
+until the session runs here again, and the memory stays on the VM for the merge below. The
 changelist's *Commit* runs `hunt-ctl commit` on the VM after a sync that sent the local edits, while no other sync
 runs: the checked files are committed under the local Git identity, and the repository's hooks run with the agent's
 environment. *Push* pushes the branch from this Mac with its Git credentials, as for a local session, after the local

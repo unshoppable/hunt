@@ -40,6 +40,7 @@ use crate::screenshots::{self, Screenshot};
 use crate::session::attribution::{self, FileVersion};
 use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus, Install};
 use crate::session::link::{self, Link};
+use crate::session::related;
 use crate::session::review;
 use crate::session::store::{self, announce_sessions_changed, SelectionContext, SessionRecord, Workspace};
 use crate::session::summary;
@@ -512,6 +513,7 @@ async fn activate(
     if let Some(owner) = sync_owner {
         sync::attach(app, owner, id);
     }
+    related::agent_started(app, id);
     if !record.worktree_path.is_dir() {
         return Ok(SessionView::new(app, record, true));
     }
@@ -1039,7 +1041,7 @@ pub async fn hand_off_session(
         store::update_session(&app, id, |stored| stored.leftover_vm = Some(gateway.session_vm(id)))?;
         let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt);
         let local_agent_md = remote::read_agent_md(&record.worktree_path)?;
-        let base_prompt = system_prompt_append(&app, context_prompt);
+        let base_prompt = system_prompt_append(&app, id, context_prompt);
         let has_github_token = github_token.is_some();
         let system_prompt = |services_prompt: &str, agent_md: Option<&str>| {
             remote_system_prompt(&base_prompt, has_github_token, services_prompt, agent_md.or(local_agent_md.as_deref()))
@@ -1153,6 +1155,7 @@ pub async fn retrieve_session(
         let memory_base = memory_base_path(&app, id)?;
         let sync_manifest = sync::manifest_path(&app, id)?;
         let sync_base_ref = target.start_ref(id);
+        let local_ids = store::sub_chat_acp_ids(&app, id)?;
         let gateway = gateway_vm("retrieve the session").await?;
         let request = remote::retrieve::RetrieveRequest {
             hunt_session_id: id,
@@ -1165,6 +1168,7 @@ pub async fn retrieve_session(
             sync_manifest: &sync_manifest,
             sync_base_ref: &sync_base_ref,
             adopted_into,
+            local_ids: &local_ids,
         };
         let retrieved = remote::retrieve::retrieve(request, &progress_reporter(&app, id)).await?;
         finish_retrieval(&app, &registry, &watchers, id, &target, retrieved, VmEnd::Delete).await
@@ -1939,11 +1943,10 @@ async fn run_turn(
         turn_start
     };
 
-    let response = connection
-        .send_request(PromptRequest::new(acp_session_id, blocks))
-        .block_task()
-        .await
-        .map_err(|error| format!("failed to send the prompt: {error}"))?;
+    related::set_turn(app, id, true);
+    let response = connection.send_request(PromptRequest::new(acp_session_id, blocks)).block_task().await;
+    related::set_turn(app, id, false);
+    let response = response.map_err(|error| format!("failed to send the prompt: {error}"))?;
 
     note_remote_activity(app, id, chrono::Utc::now());
     if hidden_meta.is_none() {

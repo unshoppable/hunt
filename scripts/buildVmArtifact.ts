@@ -32,6 +32,7 @@ const ARTIFACTS: Record<string, Artifact> = {
       "relay/main": "apps/session/src/relay/main.ts",
       "session/configCli": "apps/session/src/configCli.ts",
       "session/syncHelper": "apps/session/src/sync/helper.ts",
+      "session/transcriptHelper": "apps/session/src/sync/transcripts.ts",
     },
     files: [
       ["libs/vm/hunt-ctl", "vm/hunt-ctl"],

@@ -1,7 +1,8 @@
 //! Sessions handed off to a VM of their own: SSH through an IAP tunnel (`ssh.rs`), the gateway API that lists,
 //! provisions, starts and deletes the session VMs (`api.rs`),
 //! the names of the session VMs (`vm.rs`), the release check and tool install on them (`release.rs`), moving a session's
-//! git state and Claude Code transcript there and back (`handoff.rs`, `retrieve.rs`, `transcript.rs`), adopting session
+//! git state and Claude Code transcript there and back (`handoff.rs`, `retrieve.rs`, `transcript.rs`), streaming the
+//! transcripts both ways while the session is connected (`transcript_channel.rs`, `transcript_sync.rs`), adopting session
 //! VMs no local session knows (`adoption.rs`), keeping the files of the VM and the local worktree in sync (`sync.rs`),
 //! committing and pushing on the VM for the changelist (`commit.rs`),
 //! previews (`preview.rs`) and terminals attached to the VM's tmux session (`terminal.rs`). Knows nothing about Tauri;
@@ -20,6 +21,8 @@ pub mod ssh;
 pub mod sync;
 pub mod terminal;
 pub mod transcript;
+pub mod transcript_channel;
+pub mod transcript_sync;
 pub mod vm;
 
 use std::path::{Path, PathBuf};

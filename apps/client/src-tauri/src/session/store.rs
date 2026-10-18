@@ -212,6 +212,7 @@ Questions refer to this selection unless stated otherwise.\n```\n{}\n```\n",
 /// removed, or its title or state changed.
 pub fn announce_sessions_changed(app: &AppHandle) {
     let _ = app.emit("sessions:changed", ());
+    crate::session::related::refresh_all(app);
 }
 
 pub fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -341,6 +342,11 @@ pub fn load_sessions(app: &AppHandle) -> Result<Vec<SessionRecord>, String> {
 
 pub fn find_session(app: &AppHandle, id: Uuid) -> Result<SessionRecord, String> {
     Store::open(app)?.find(id)
+}
+
+/// The ACP session ids of the sub chats of `id`, whose transcripts live in the local project folder of its worktree.
+pub fn sub_chat_acp_ids(app: &AppHandle, id: Uuid) -> Result<Vec<String>, String> {
+    Ok(load_sessions(app)?.into_iter().filter(|session| session.parent_id == Some(id)).filter_map(|session| session.acp_session_id).collect())
 }
 
 pub fn upsert_session(app: &AppHandle, record: SessionRecord) -> Result<(), String> {

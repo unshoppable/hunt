@@ -2,12 +2,42 @@
 //! directory>/<session id>.jsonl` plus a folder of the same name (subagent transcripts, tool results). Its text names
 //! the working directory and that project folder, so both are rewritten when the session changes machines.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use super::handoff::REMOTE_CLAUDE_DIR;
 
 /// Claude Code's folder name below `~/.claude/projects` for a session working in `cwd`: every character other than
 /// an ASCII letter or digit becomes `-`.
 pub fn project_slug(cwd: &str) -> String {
     cwd.chars().map(|character| if character.is_ascii_alphanumeric() { character } else { '-' }).collect()
+}
+
+/// Claude Code's project folder of a session working in `worktree` on this Mac.
+pub fn local_project(worktree: &Path, claude_dir: &Path) -> PathBuf {
+    claude_dir.join("projects").join(project_slug(&worktree.display().to_string()))
+}
+
+/// Claude Code's project folder of a session working in `remote_worktree` on its VM.
+pub fn remote_project(remote_worktree: &str) -> String {
+    format!("{REMOTE_CLAUDE_DIR}/projects/{}", project_slug(remote_worktree))
+}
+
+/// The replacements that move the text of a transcript between this Mac and the VM: the worktree and the project
+/// folder, each way.
+pub struct Replacements {
+    pub to_local: Vec<(String, String)>,
+    pub to_remote: Vec<(String, String)>,
+}
+
+impl Replacements {
+    pub fn new(worktree: &Path, claude_dir: &Path, remote_worktree: &str) -> Self {
+        let to_local = vec![
+            (remote_worktree.to_string(), worktree.display().to_string()),
+            (remote_project(remote_worktree), local_project(worktree, claude_dir).display().to_string()),
+        ];
+        let to_remote = to_local.iter().map(|(from, to)| (to.clone(), from.clone())).collect();
+        Replacements { to_local, to_remote }
+    }
 }
 
 /// `text` with every `from` of `replacements` replaced by its `to`, the longest `from` first so that a path is never
@@ -96,6 +126,16 @@ mod tests {
             "-Users-jane-Library-Application-Support-info-medconomy-harness-worktrees-0123abcd-1111"
         );
         assert_eq!(project_slug("/srv/worktrees/a_b"), "-srv-worktrees-a-b");
+    }
+
+    #[test]
+    fn replacements_move_the_worktree_and_the_project_folder_each_way() {
+        let worktree = Path::new("/Users/jane/Library/Application Support/hunt/worktrees/x");
+        let replacements = Replacements::new(worktree, Path::new("/Users/jane/.claude"), "/home/agent/app");
+        let local = "cwd /Users/jane/Library/Application Support/hunt/worktrees/x, project /Users/jane/.claude/projects/-Users-jane-Library-Application-Support-hunt-worktrees-x";
+        let remote = "cwd /home/agent/app, project /home/agent/.claude/projects/-home-agent-app";
+        assert_eq!(rewrite(local, &replacements.to_remote), remote);
+        assert_eq!(rewrite(remote, &replacements.to_local), local);
     }
 
     #[test]

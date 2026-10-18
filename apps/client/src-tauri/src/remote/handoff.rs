@@ -438,13 +438,9 @@ async fn upload_claude_dir(request: &HandoffRequest<'_>, ssh: &Ssh, remote_workt
     let staging = std::env::temp_dir().join(format!("hunt-handoff-{}", Uuid::new_v4()));
     let result = async {
         std::fs::create_dir_all(&staging).map_err(|error| format!("failed to create {}: {error}", staging.display()))?;
-        let local_worktree = request.worktree.display().to_string();
-        let local_project = request.claude_dir.join("projects").join(transcript::project_slug(&local_worktree));
+        let local_project = transcript::local_project(request.worktree, request.claude_dir);
         let remote_slug = transcript::project_slug(remote_worktree);
-        let replacements = vec![
-            (local_worktree, remote_worktree.to_string()),
-            (local_project.display().to_string(), format!("{REMOTE_CLAUDE_DIR}/projects/{remote_slug}")),
-        ];
+        let replacements = transcript::Replacements::new(request.worktree, request.claude_dir, remote_worktree).to_remote;
         let has_transcript = match request.acp_session_id {
             Some(acp_session_id) => transcript::copy_session(&local_project, &staging.join("projects").join(&remote_slug), acp_session_id, &replacements)?,
             None => false,

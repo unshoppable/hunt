@@ -151,6 +151,7 @@ const prompts = {
   remote: readFileSync(new URL("../../../libs/domain/prompts/remote.system-prompt.md", import.meta.url), "utf8"),
   gitPush: readFileSync(new URL("../../../libs/domain/prompts/git-push.system-prompt.md", import.meta.url), "utf8"),
   question: readFileSync(new URL("../../../libs/domain/prompts/question.system-prompt.md", import.meta.url), "utf8"),
+  sessions: readFileSync(new URL("../../../libs/domain/prompts/sessions.system-prompt.md", import.meta.url), "utf8"),
   swfSystem: readFileSync(new URL("../prompts/swf.system-prompt.md", import.meta.url), "utf8"),
   swfFirst: readFileSync(new URL("../prompts/swf-first.user-prompt.md", import.meta.url), "utf8"),
   swfNudge: readFileSync(new URL("../prompts/swf-nudge.user-prompt.md", import.meta.url), "utf8"),
@@ -173,16 +174,20 @@ describe("session files", () => {
 
   it("composes the system prompt like the desktop's remote_system_prompt with an empty base, the swf steps after the shared parts", () => {
     const services = "\n### The repository's services\n- `api`: port 3000\n\n";
-    const prompt = remoteSystemPrompt(prompts, "## Working on a GitHub issue\n", services, "\n# Services\nStart api.\n\n");
-    const shared = `\n\n${prompts.remote}\n${prompts.gitPush}\n${prompts.question}\n## Working on a GitHub issue\n`;
+    const id = "7a1d0c2e-0000-4000-8000-000000000001";
+    const prompt = remoteSystemPrompt(prompts, id, "## Working on a GitHub issue\n", services, "\n# Services\nStart api.\n\n");
+    const sessions = prompts.sessions.replace("{{huntSessionId}}", id);
+    const shared = `\n\n${prompts.remote}\n${prompts.gitPush}\n${prompts.question}\n${sessions}\n## Working on a GitHub issue\n`;
     const withServices = `${shared}\n### The repository's services\n- \`api\`: port 3000\n`;
     expect(prompt).toBe(`${withServices}\n### The repository's hunt.agent.md\n# Services\nStart api.\n`);
     expect(prompt.startsWith("\n\n## Remote session\n")).toBe(true);
     expect(prompt).toContain("follows at the end when it has one.\n\n### Git\n`origin` is the repository on GitHub.");
     expect(prompt).toContain("## Questions to the user\n\nWhen you end a turn because you need an answer only the user can give");
-    expect(remoteSystemPrompt(prompts, "## Working on a GitHub issue\n", services, null)).toBe(withServices);
-    expect(remoteSystemPrompt(prompts, "## Working on a GitHub issue\n", "", " \n")).toBe(shared);
-    expect(remoteSystemPrompt(prompts, "", null, null)).toBe(remoteSystemPrompt(prompts, "", undefined, undefined));
+    expect(prompt).toContain(`## Other sessions in this worktree\n\nHunt keeps \`.hunt/sessions.md\``);
+    expect(prompt).toContain(`Your own Hunt session id is \`${id}\`.`);
+    expect(remoteSystemPrompt(prompts, id, "## Working on a GitHub issue\n", services, null)).toBe(withServices);
+    expect(remoteSystemPrompt(prompts, id, "## Working on a GitHub issue\n", "", " \n")).toBe(shared);
+    expect(remoteSystemPrompt(prompts, id, "", null, null)).toBe(remoteSystemPrompt(prompts, id, "", undefined, undefined));
   });
 
   it("fills the swf system prompt with the issue, the branch, the labels and the commands that move the issue between them", () => {

@@ -226,7 +226,7 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
     secretBytes: async () => ({ absent: "has no version" }),
     compute,
     orchestrator,
-    prompts: () => ({ remote: "## Remote session\n", gitPush: "### Git\n", question: "## Questions\n", swfSystem: "## Issue #{{number}} on {{branch}}\n", swfFirst: SWF_FIRST, swfNudge: SWF_NUDGE, swfAnswer: SWF_ANSWER }),
+    prompts: () => ({ remote: "## Remote session\n", gitPush: "### Git\n", question: "## Questions\n", sessions: "## Sessions {{huntSessionId}}\n", swfSystem: "## Issue #{{number}} on {{branch}}\n", swfFirst: SWF_FIRST, swfNudge: SWF_NUDGE, swfAnswer: SWF_ANSWER }),
     sendPrompt: async (_transport, request) => {
       prompts.push(request);
       return "started";
@@ -322,7 +322,7 @@ describe("Poller.cycle", () => {
       acpSessionId: null,
       cwd: "/home/agent/app",
       systemPromptAppend:
-        "\n\n## Remote session\n\n### Git\n\n## Questions\n\n## Issue #12 on fix/general/12-fix-login\n\n### The repository's services\n- `ui`: port 4200\n\n" +
+        `\n\n## Remote session\n\n### Git\n\n## Questions\n\n## Sessions ${SESSION_ID}\n\n## Issue #12 on fix/general/12-fix-login\n\n### The repository's services\n- \`ui\`: port 4200\n\n` +
         "### The repository's hunt.agent.md\n# Services\nStart the UIs.\n",
       modeId: "bypassPermissions",
       configOptions: {},

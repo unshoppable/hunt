@@ -52,6 +52,7 @@ import { fileURLToPath } from "node:url";
 import gitPushPrompt from "../../../libs/domain/prompts/git-push.system-prompt.md?raw";
 import questionPrompt from "../../../libs/domain/prompts/question.system-prompt.md?raw";
 import remotePrompt from "../../../libs/domain/prompts/remote.system-prompt.md?raw";
+import sessionsPrompt from "../../../libs/domain/prompts/sessions.system-prompt.md?raw";
 import swfAnswerPrompt from "../prompts/swf-answer.user-prompt.md?raw";
 import swfFirstPrompt from "../prompts/swf-first.user-prompt.md?raw";
 import swfNudgePrompt from "../prompts/swf-nudge.user-prompt.md?raw";
@@ -493,7 +494,7 @@ export class Poller {
     const agentMd = typeof sessionConfig.agent_md === "string" ? sessionConfig.agent_md : null;
     const prompts = this.deps.prompts();
     const swfPrompt = swfSystemPrompt(prompts.swfSystem, repo, issue.number, branch, setup.labels);
-    const systemPrompt = remoteSystemPrompt(prompts, swfPrompt, servicesPrompt, agentMd);
+    const systemPrompt = remoteSystemPrompt(prompts, names.id, swfPrompt, servicesPrompt, agentMd);
     await vm.putClaudeFiles(names.id, { "hunt-session.json": huntSessionFile(names.id, cloned.path, systemPrompt) });
     log(`cloned ${repo} into ${cloned.path}; installing the dependencies`);
     await vm.huntCtl(["deps", names.id]);
@@ -585,6 +586,7 @@ function readPrompts(): PromptFiles {
     remote: remotePrompt,
     gitPush: gitPushPrompt,
     question: questionPrompt,
+    sessions: sessionsPrompt,
     swfSystem: swfSystemPromptFile,
     swfFirst: swfFirstPrompt,
     swfNudge: swfNudgePrompt,

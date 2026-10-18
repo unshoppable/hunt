@@ -100,7 +100,7 @@ const ERD_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../p
 const PROCESS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/diagram/diagram-process.user-prompt.md"));
 
 /// Replaces every `{{name}}` placeholder of `template` with its value.
-fn fill_prompt(template: &str, values: &[(&str, &str)]) -> String {
+pub(crate) fn fill_prompt(template: &str, values: &[(&str, &str)]) -> String {
     values.iter().fold(template.to_string(), |text, (name, value)| text.replace(&format!("{{{{{name}}}}}"), value))
 }
 

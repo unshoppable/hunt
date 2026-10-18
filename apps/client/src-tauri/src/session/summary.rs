@@ -106,6 +106,7 @@ async fn summarize(app: &AppHandle, hunt_session_id: Uuid, turn: &[SessionNotifi
         return Ok(());
     };
 
+    crate::session::related::refresh_family(app, hunt_session_id);
     app.emit("session:summary", SummaryEvent { hunt_session_id, title: updated.title, summary: updated.summary })
         .map_err(|error| error.to_string())
 }

@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-use super::handoff::{lfs_object_ids, lfs_object_path, lfs_objects_dir, REMOTE_CLAUDE_DIR, REMOTE_MODE};
+use super::handoff::{lfs_object_ids, lfs_object_path, lfs_objects_dir, REMOTE_MODE};
+use super::transcript::{local_project, Replacements};
 use super::ssh::Ssh;
 use super::sync::{self, SyncTarget};
 use super::{adoption, memory, transcript};
@@ -37,6 +38,9 @@ pub struct RetrieveRequest<'a> {
     /// For a session this Mac adopted that has no local worktree yet: the local repository in which the retrieval
     /// creates the worktree `worktree`.
     pub adopted_into: Option<&'a Path>,
+    /// The ACP session ids of the transcripts this Mac owns (the session's sub chats), whose copies on the VM are not
+    /// brought back over them.
+    pub local_ids: &'a [String],
 }
 
 /// The ACP session id the transcript continues under, as the relay left it, and for an adopted session the branch its
@@ -506,9 +510,9 @@ async fn retrieve_transcript(request: &RetrieveRequest<'_>, ssh: &Ssh, remote_wo
     let id = request.hunt_session_id;
     let fetched = fetch_claude_project(ssh, id, remote_worktree).await?;
     let result = async {
-        let replacements = path_replacements(request.worktree, request.claude_dir, remote_worktree);
+        let replacements = Replacements::new(request.worktree, request.claude_dir, remote_worktree).to_local;
         let remote_memory = fetched.staging.join("memory");
-        fetched.copy_transcripts(request.worktree, request.claude_dir, &replacements, Some(&remote_memory))?;
+        fetched.copy_transcripts(request.worktree, request.claude_dir, &replacements, Some(&remote_memory), request.local_ids)?;
         if let Err(error) = merge_memory(request, &remote_memory, &replacements).await {
             eprintln!("merging the memory of session {id} into the local one failed: {error}");
         }
@@ -521,17 +525,19 @@ async fn retrieve_transcript(request: &RetrieveRequest<'_>, ssh: &Ssh, remote_wo
 
 /// Copies the transcript of the remote session `hunt_session_id` from its VM into the local project folder of
 /// `worktree`, with its paths moved there, as a backup for a VM that gets lost: the records keep the VM's permission
-/// mode, and the memory stays on the VM for the retrieval's merge.
+/// mode, the memory stays on the VM for the retrieval's merge, and the transcripts `local_ids` this Mac owns are left
+/// as they are here.
 pub async fn back_up_transcripts(
     ssh: &Ssh,
     hunt_session_id: Uuid,
     worktree: &Path,
     claude_dir: &Path,
     remote_worktree: &str,
+    local_ids: &[String],
 ) -> Result<(), String> {
     let fetched = fetch_claude_project(ssh, hunt_session_id, remote_worktree).await?;
-    let replacements = path_replacements(worktree, claude_dir, remote_worktree);
-    let result = fetched.copy_transcripts(worktree, claude_dir, &replacements, None);
+    let replacements = Replacements::new(worktree, claude_dir, remote_worktree).to_local;
+    let result = fetched.copy_transcripts(worktree, claude_dir, &replacements, None, local_ids);
     let _ = std::fs::remove_dir_all(&fetched.staging);
     result
 }
@@ -547,13 +553,15 @@ struct FetchedProject {
 
 impl FetchedProject {
     /// Copies the fetched project folder into the local project folder of `worktree`, rewriting its text with
-    /// `replacements`; the memory inside it is moved to `memory_aside` first or, without one, left out.
+    /// `replacements`; the memory inside it is moved to `memory_aside` first or, without one, left out, and the
+    /// transcripts `local_ids` (copies of this Mac's own, which the transcript stream sent) are left out too.
     fn copy_transcripts(
         &self,
         worktree: &Path,
         claude_dir: &Path,
         replacements: &[(String, String)],
         memory_aside: Option<&Path>,
+        local_ids: &[String],
     ) -> Result<(), String> {
         let project = self.staging.join("projects").join(&self.remote_slug);
         let memory = project.join("memory");
@@ -563,10 +571,23 @@ impl FetchedProject {
                 None => std::fs::remove_dir_all(&memory).map_err(|error| format!("failed to leave the memory out: {error}"))?,
             }
         }
+        for local_id in local_ids {
+            transcript::ensure_session_id(local_id)?;
+            leave_out(&project.join(format!("{local_id}.jsonl")), std::fs::remove_file(&project.join(format!("{local_id}.jsonl"))))?;
+            leave_out(&project.join(local_id), std::fs::remove_dir_all(project.join(local_id)))?;
+        }
         if std::fs::symlink_metadata(&project).is_ok_and(|metadata| metadata.is_dir()) {
             transcript::copy_rewritten(&project, &local_project(worktree, claude_dir), replacements)?;
         }
         Ok(())
+    }
+}
+
+/// The result of removing `path` from the fetched project folder; a path that is not there is fine.
+fn leave_out(path: &Path, removed: std::io::Result<()>) -> Result<(), String> {
+    match removed {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(format!("failed to leave {} out: {error}", path.display())),
+        _ => Ok(()),
     }
 }
 
@@ -591,22 +612,8 @@ async fn fetch_claude_project(ssh: &Ssh, hunt_session_id: Uuid, remote_worktree:
     }
 }
 
-/// Claude Code's project folder of a session working in `worktree` on this Mac.
-fn local_project(worktree: &Path, claude_dir: &Path) -> PathBuf {
-    claude_dir.join("projects").join(transcript::project_slug(&worktree.display().to_string()))
-}
-
-/// The replacements that move the text of a transcript from the VM to this Mac: the worktree and the project folder.
-fn path_replacements(worktree: &Path, claude_dir: &Path, remote_worktree: &str) -> Vec<(String, String)> {
-    let remote_slug = transcript::project_slug(remote_worktree);
-    vec![
-        (remote_worktree.to_string(), worktree.display().to_string()),
-        (format!("{REMOTE_CLAUDE_DIR}/projects/{remote_slug}"), local_project(worktree, claude_dir).display().to_string()),
-    ]
-}
-
-/// Gives the local transcripts `acp_session_ids` of a session working in `worktree` (the session's own and its sub
-/// chats') the permission mode `local_mode` in place of the VM's: every record the agent wrote there carries
+/// Gives the local transcripts `acp_session_ids` of a session working in `worktree` the permission mode `local_mode`
+/// in place of the VM's: every record the agent wrote there carries
 /// `REMOTE_MODE`, and a local agent resumes in the mode of the last record. Transcripts that do not exist are skipped.
 pub fn restore_mode(claude_dir: &Path, worktree: &Path, local_mode: &str, acp_session_ids: &[String]) -> Result<(), String> {
     let Some(replacement) = mode_replacement(local_mode) else { return Ok(()) };

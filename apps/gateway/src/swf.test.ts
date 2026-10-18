@@ -129,6 +129,7 @@ function fakeCompute(listed: Instance[] = [], insertError?: Error): Compute & { 
     },
     start: unexpected,
     resume: unexpected,
+    suspend: unexpected,
     stop: unexpected,
     setDiskAutoDelete: unexpected,
     delete: unexpected,
@@ -181,6 +182,7 @@ function fakeVm(failing?: { command: string; error: Error }, status: () => Recor
       calls.push(`put-files ${id} --claude ${Object.keys(files).join(",")}`);
       claudeFiles.push(files);
     },
+    idleDecision: async () => "keep: a turn is running",
     openRelay: () => ({}) as Transport,
   };
   return { vm, calls, claudeFiles };

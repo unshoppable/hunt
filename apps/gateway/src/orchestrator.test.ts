@@ -3,7 +3,7 @@ import type { ProgressStep } from "../../../libs/domain/src/gatewayApi.ts";
 import type { Transport } from "./acpClient.ts";
 import { ApiError } from "./apiProtocol.ts";
 import type { Compute, Disk, Instance, InstanceRequest, MetadataItem, OperationError, OperationState } from "./gcp.ts";
-import { CREATE_TIMEOUT_MS, labelValue, Orchestrator, SNAPSHOT_TIMEOUT_MS, START_TIMEOUT_MS, type ProvisionRequest, type Reporter } from "./orchestrator.ts";
+import { CREATE_TIMEOUT_MS, labelValue, Orchestrator, SNAPSHOT_TIMEOUT_MS, START_TIMEOUT_MS, SUSPEND_TIMEOUT_MS, type ProvisionRequest, type Reporter } from "./orchestrator.ts";
 import type { SessionVm } from "./sessionVm.ts";
 
 const ID = "ab12cd34-0000-4000-8000-000000000001";
@@ -64,7 +64,8 @@ function instance(overrides: Partial<Instance> & { sessionId?: string }): Instan
  * that names another zone than the VM's finds nothing, as the API does. Each `get` of a VM first applies the next
  * status of its queue in `statuses`; insert, start and resume queue the statuses a VM goes through. `insertErrors`
  * makes the insert in a zone fail: an `OperationError` as the operation's error, an `Error` as the API's answer to the
- * call; `failStart` does the same for the start in a zone. Every change is recorded in `calls`.
+ * call; `failStart` does the same for the start in a zone, `failResume`, `failSuspend` and `failStop` for those calls.
+ * Every change is recorded in `calls`.
  */
 function fakeCompute(vms: Instance[] = []) {
   const instances = new Map(vms.map((vm) => [vm.name, structuredClone(vm)]));
@@ -78,6 +79,8 @@ function fakeCompute(vms: Instance[] = []) {
   const insertErrors = new Map<string, OperationError | Error>();
   const startErrors = new Map<string, OperationError>();
   let resumeError: OperationError | null = null;
+  let suspendError: OperationError | null = null;
+  let stopError: Error | null = null;
   let snapshotError: OperationError | null = null;
   let renameError: OperationError | null = null;
   let stuckFrom: number | null = null;
@@ -188,9 +191,18 @@ function fakeCompute(vms: Instance[] = []) {
       statuses.set(name, ["RESUMING", "RUNNING"]);
       return operation(zone, null);
     },
+    suspend: async (zone, name) => {
+      calls.push(`suspend ${name}`);
+      find(zone, name);
+      if (suspendError) return operation(zone, suspendError);
+      statuses.set(name, ["SUSPENDING", "SUSPENDED"]);
+      return operation(zone, null);
+    },
     stop: async (zone, name) => {
       calls.push(`stop ${name}`);
       find(zone, name);
+      if (stopError) throw stopError;
+      statuses.set(name, ["STOPPING", "TERMINATED"]);
     },
     setDiskAutoDelete: async (zone, name, deviceName) => {
       calls.push(`setDiskAutoDelete ${name} ${deviceName}`);
@@ -226,6 +238,12 @@ function fakeCompute(vms: Instance[] = []) {
     },
     failResume: (error: OperationError) => {
       resumeError = error;
+    },
+    failSuspend: (error: OperationError) => {
+      suspendError = error;
+    },
+    failStop: (error: Error) => {
+      stopError = error;
     },
     failRename: (error: OperationError) => {
       renameError = error;
@@ -276,6 +294,7 @@ function fakeVm(options: { isBooting?: boolean; failure?: string; isOutdated?: b
       return RELEASE;
     },
     putClaudeFiles: async () => {},
+    idleDecision: async () => "keep: a turn is running",
     openRelay: () => ({}) as Transport,
   };
   return { vm, calls };
@@ -751,14 +770,41 @@ describe("Orchestrator.start moving the VM", () => {
     expect(fake.calls).not.toContain(`setName ${VM} ${MOVING}`);
   });
 
-  it("does not move a suspended VM whose zone has no capacity for its resume", async () => {
+  it("stops a suspended VM whose zone has no capacity for its resume and moves it once it is off", async () => {
     const fake = fakeCompute([instance({ sessionId: ID, status: "SUSPENDED" })]);
     fake.failResume(STOCKOUT);
+    fake.failStart(STOCKOUT);
     const { orchestrator } = createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B]);
+    const { reporter: hearer, steps, logs } = recorder();
 
-    const error = await rejection(orchestrator.start(ID, reporter()));
-    expect(error.message).toBe(`failed to resume ${VM}: The zone does not have enough resources available to fulfill the request; its disk stays in ${ZONE}, try again later`);
-    expect(fake.calls).toEqual([`resume ${VM}`]);
+    const result = await orchestrator.start(ID, hearer);
+    expect(result.vm.zone).toBe(ZONE_B);
+    expect(fake.calls.slice(0, 4)).toEqual([`resume ${VM}`, `stop ${VM}`, `start ${VM}`, `deleteSnapshot ${SNAPSHOT}`]);
+    expect(fake.calls.slice(-3)).toEqual([`insert ${VM} in ${ZONE_B}`, `delete ${MOVING}`, `deleteSnapshot ${SNAPSHOT}`]);
+    expect(steps).toEqual(["startingVm", "movingVm", "vmReady"]);
+    expect(logs.slice(0, 4)).toEqual([
+      `resuming ${VM}`,
+      `c4d-standard-8 is unavailable in ${ZONE}; stopping ${VM} to move it`,
+      `starting ${VM}`,
+      `c4d-standard-8 is unavailable in ${ZONE}; moving ${VM} to another zone`,
+    ]);
+  });
+
+  it("fails the resume of a suspended VM without capacity when it cannot be stopped, or when no other zone exists", async () => {
+    const fake = fakeCompute([instance({ sessionId: ID, status: "SUSPENDED" })]);
+    fake.failResume(STOCKOUT);
+    fake.failStop(new Error(`failed to stop ${VM}: HTTP 400 the VM is SUSPENDED`));
+    const error = await rejection(createOrchestrator(fake.compute, fakeVm().vm, [ZONE, ZONE_B]).orchestrator.start(ID, reporter()));
+    expect(error.message).toBe(
+      `failed to resume ${VM}: The zone does not have enough resources available to fulfill the request; stopping it to move it failed: failed to stop ${VM}: HTTP 400 the VM is SUSPENDED`,
+    );
+    expect(fake.calls).toEqual([`resume ${VM}`, `stop ${VM}`]);
+
+    const alone = fakeCompute([instance({ sessionId: ID, status: "SUSPENDED" })]);
+    alone.failResume(STOCKOUT);
+    const aloneError = await rejection(createOrchestrator(alone.compute, fakeVm().vm, [ZONE]).orchestrator.start(ID, reporter()));
+    expect(aloneError.message).toBe(`failed to resume ${VM}: The zone does not have enough resources available to fulfill the request; its disk stays in ${ZONE}, try again later`);
+    expect(alone.calls).toEqual([`resume ${VM}`]);
   });
 
   it("finishes an interrupted move that created no VM: the VM gets its name back and the snapshot goes", async () => {
@@ -812,7 +858,35 @@ describe("Orchestrator.start moving the VM", () => {
   }
 });
 
-describe("Orchestrator.stop, delete and get", () => {
+describe("Orchestrator.suspend, stop, delete and get", () => {
+  it("suspends a running VM, waits for it, and leaves one that is not running alone", async () => {
+    const fake = fakeCompute([instance({ sessionId: ID })]);
+    const { orchestrator } = createOrchestrator(fake.compute);
+
+    await orchestrator.suspend(ID);
+    expect(fake.calls).toEqual([`suspend ${VM}`]);
+    fake.instances.get(VM)!.status = "SUSPENDED";
+    await orchestrator.suspend(ID);
+    fake.instances.get(VM)!.status = "STOPPING";
+    await orchestrator.suspend(ID);
+    expect(fake.calls).toEqual([`suspend ${VM}`]);
+    expect((await rejection(orchestrator.suspend(OTHER_ID.replace("ab12cd34", "00000000")))).code).toBe("notFound");
+    expect((await rejection(createOrchestrator(fakeCompute([instance({ sessionId: OTHER_ID })]).compute).orchestrator.suspend(ID))).code).toBe("conflict");
+  });
+
+  it("fails a suspend Compute Engine refuses or does not finish in time", async () => {
+    const refused = fakeCompute([instance({ sessionId: ID })]);
+    refused.failSuspend({ code: "UNSUPPORTED_OPERATION", message: "Suspend is not supported for this machine type.", machineType: null });
+    const error = await rejection(createOrchestrator(refused.compute).orchestrator.suspend(ID));
+    expect(error).toMatchObject({ code: "unavailable", message: `failed to suspend ${VM}: Suspend is not supported for this machine type` });
+
+    const stuck = fakeCompute([instance({ sessionId: ID })]);
+    stuck.stickOperations();
+    const { orchestrator, elapsed } = createOrchestrator(stuck.compute);
+    expect((await rejection(orchestrator.suspend(ID))).message).toBe(`failed to suspend ${VM}: Compute Engine has not finished after 10 minutes`);
+    expect(elapsed()).toBeGreaterThanOrEqual(SUSPEND_TIMEOUT_MS);
+  });
+
   it("stops a running VM and leaves one that is off alone", async () => {
     const fake = fakeCompute([instance({ sessionId: ID })]);
     const { orchestrator } = createOrchestrator(fake.compute);

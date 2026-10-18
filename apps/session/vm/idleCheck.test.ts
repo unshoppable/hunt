@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,12 @@ interface Fixture {
   requests?: { minutesAgo: number; method: string; mode?: string }[];
   /** The `w` output after its header. */
   logins?: string[];
+  /** Minutes since the last run recorded itself; no record without it (the VM booted since, or never ran). */
+  lastRunMinutesAgo?: number;
+  /** Minutes since the resume the last run recorded. */
+  resumedMinutesAgo?: number;
+  /** Minutes since a run first found the VM idle; no idle-since file without it. */
+  idleSinceMinutesAgo?: number;
 }
 
 describe("hunt-idle-check", () => {
@@ -93,6 +99,15 @@ describe("hunt-idle-check", () => {
     if (fixture.logins) {
       writeFileSync(join(dir, "w.txt"), ["USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT", ...fixture.logins].join("\n") + "\n");
     }
+    const state = join(dir, "state");
+    mkdirSync(state);
+    if (fixture.lastRunMinutesAgo !== undefined) {
+      const resumed = fixture.resumedMinutesAgo === undefined ? "" : ` ${seconds(fixture.resumedMinutesAgo)}`;
+      writeFileSync(join(state, "idle-last-run"), `${seconds(fixture.lastRunMinutesAgo)}${resumed}\n`);
+    }
+    if (fixture.idleSinceMinutesAgo !== undefined) {
+      writeFileSync(join(state, "idle-since"), `${seconds(fixture.idleSinceMinutesAgo)}\n`);
+    }
     const env = {
       ...process.env,
       PATH: `${dir}${delimiter}${process.env.PATH ?? ""}`,
@@ -102,6 +117,7 @@ describe("hunt-idle-check", () => {
       HUNT_IDLE_ACTIVITY_FILE: join(dir, "activity"),
       HUNT_IDLE_UPTIME_FILE: join(dir, "uptime"),
       HUNT_IDLE_PROXY_LOG: join(dir, "access.log"),
+      HUNT_IDLE_STATE_DIR: state,
     };
     const result = spawnSync("bash", [SCRIPT, ...args], { env, encoding: "utf8" });
     let systemctl = "";
@@ -110,7 +126,24 @@ describe("hunt-idle-check", () => {
     } catch {
       systemctl = "";
     }
-    return { status: result.status, stdout: result.stdout.trim(), stderr: result.stderr, systemctl };
+    return { status: result.status, stdout: result.stdout.trim(), stderr: result.stderr, systemctl, state: readState(state) };
+  }
+
+  /** The epoch seconds of a time `minutes` before now. */
+  function seconds(minutes: number): number {
+    return (NOW_MS - minutes * MINUTE_MS) / 1000;
+  }
+
+  /** The state files a run left, by name, trimmed; `null` for a missing one. */
+  function readState(dir: string): { lastRun: string | null; idleSince: string | null } {
+    const read = (name: string) => {
+      try {
+        return readFileSync(join(dir, name), "utf8").trim();
+      } catch {
+        return null;
+      }
+    };
+    return { lastRun: read("idle-last-run"), idleSince: read("idle-since") };
   }
 
   function decision(fixture: Fixture): string {
@@ -120,19 +153,35 @@ describe("hunt-idle-check", () => {
     return result.stdout;
   }
 
-  const POWEROFF = "poweroff: no turn, client, permission request, preview page view, login or hunt-ctl activity for 30 min";
+  const IDLE = "idle: no turn, client, permission request, preview page view, login or hunt-ctl activity for 30 min";
+  const NOW_S = NOW_MS / 1000;
 
   it("keeps a VM up within the boot grace period", () => {
     expect(decision({ uptimeMinutes: 10 })).toBe("keep: booted 10 min ago, within the grace period of 15 min");
   });
 
-  it("powers an idle VM off", () => {
-    expect(decision({})).toBe(POWEROFF);
+  it("reports an idle VM", () => {
+    expect(decision({})).toBe(IDLE);
+  });
+
+  it("keeps a VM up within the grace period after a resume, which a gap between two runs shows", () => {
+    expect(decision({ lastRunMinutesAgo: 1 })).toBe(IDLE);
+    expect(decision({ lastRunMinutesAgo: 4 })).toBe("keep: resumed 0 min ago, within the grace period of 15 min");
+    expect(decision({ lastRunMinutesAgo: 1, resumedMinutesAgo: 14 })).toBe("keep: resumed 14 min ago, within the grace period of 15 min");
+    expect(decision({ lastRunMinutesAgo: 1, resumedMinutesAgo: 15 })).toBe(IDLE);
+    expect(decision({ lastRunMinutesAgo: 4, idleSinceMinutesAgo: 40 })).toBe("keep: resumed 0 min ago, within the grace period of 15 min");
+  });
+
+  it("powers the VM off once it has been idle for the suspend wait without being suspended", () => {
+    expect(decision({ idleSinceMinutesAgo: 14 })).toBe(IDLE);
+    expect(decision({ idleSinceMinutesAgo: 15 })).toBe("poweroff: idle for 15 min and not suspended by the gateway");
+    expect(decision({ idleSinceMinutesAgo: 20, status: { turn: "running" } })).toBe("keep: a turn is running");
+    expect(decision({ config: "SUSPEND_WAIT_MINUTES=30", idleSinceMinutesAgo: 20 })).toBe(IDLE);
   });
 
   it("keeps the VM up while hunt-ctl runs or ran within the idle time", () => {
     expect(decision({ huntCtlMinutesAgo: 12 })).toBe("keep: hunt-ctl ran 12 min ago");
-    expect(decision({ huntCtlMinutesAgo: 31 })).toBe(POWEROFF);
+    expect(decision({ huntCtlMinutesAgo: 31 })).toBe(IDLE);
     expect(decision({ isHuntCtlRunning: true })).toBe("keep: hunt-ctl is running");
   });
 
@@ -141,25 +190,25 @@ describe("hunt-idle-check", () => {
     expect(decision({ status: { turnEnded: 29 } })).toBe("keep: a turn ended within 30 min");
     expect(decision({ status: { clientActivity: 5, turnEnded: 40 } })).toBe("keep: a client sent something within 30 min");
     expect(decision({ status: { permission: 20 } })).toBe("keep: a permission request arrived within 30 min");
-    expect(decision({ status: { permission: 31, turnEnded: 45 } })).toBe(POWEROFF);
-    expect(decision({ status: { heartbeat: 3, turn: "running" } })).toBe(POWEROFF);
+    expect(decision({ status: { permission: 31, turnEnded: 45 } })).toBe(IDLE);
+    expect(decision({ status: { heartbeat: 3, turn: "running" } })).toBe(IDLE);
   });
 
   it("counts preview page loads and other than GET requests only while the agent was active within two hours", () => {
     const active = { turnEnded: 90 };
     expect(decision({ status: active, requests: [{ minutesAgo: 4, method: "GET", mode: "navigate" }] })).toBe("keep: a preview page was used 4 min ago");
     expect(decision({ status: active, requests: [{ minutesAgo: 10, method: "POST", mode: "cors" }] })).toBe("keep: a preview page was used 10 min ago");
-    expect(decision({ status: active, requests: [{ minutesAgo: 2, method: "GET", mode: "cors" }, { minutesAgo: 1, method: "HEAD" }] })).toBe(POWEROFF);
-    expect(decision({ status: active, requests: [{ minutesAgo: 35, method: "GET", mode: "navigate" }] })).toBe(POWEROFF);
-    expect(decision({ status: { turnEnded: 121 }, requests: [{ minutesAgo: 1, method: "GET", mode: "navigate" }] })).toBe(POWEROFF);
-    expect(decision({ requests: [{ minutesAgo: 1, method: "GET", mode: "navigate" }] })).toBe(POWEROFF);
+    expect(decision({ status: active, requests: [{ minutesAgo: 2, method: "GET", mode: "cors" }, { minutesAgo: 1, method: "HEAD" }] })).toBe(IDLE);
+    expect(decision({ status: active, requests: [{ minutesAgo: 35, method: "GET", mode: "navigate" }] })).toBe(IDLE);
+    expect(decision({ status: { turnEnded: 121 }, requests: [{ minutesAgo: 1, method: "GET", mode: "navigate" }] })).toBe(IDLE);
+    expect(decision({ requests: [{ minutesAgo: 1, method: "GET", mode: "navigate" }] })).toBe(IDLE);
   });
 
   it("keeps the VM up while an interactive login had input within the idle time", () => {
     const login = (idle: string) => `agent    pts/0    35.235.240.1     10:00   ${idle}  0.10s  0.01s tmux`;
     expect(decision({ logins: [login("3days"), login("4:05")] })).toBe("keep: an interactive login had input 4 min ago");
     expect(decision({ logins: [login("12.00s")] })).toBe("keep: an interactive login had input 0 min ago");
-    expect(decision({ logins: [login("1:05m")] })).toBe(POWEROFF);
+    expect(decision({ logins: [login("1:05m")] })).toBe(IDLE);
   });
 
   it("reads its times from idle.conf and ignores malformed lines", () => {
@@ -167,12 +216,24 @@ describe("hunt-idle-check", () => {
     expect(decision({ config, status: { turnEnded: 45 } })).toBe("keep: a turn ended within 60 min");
     expect(decision({ config, uptimeMinutes: 14 })).toBe("keep: booted 14 min ago, within the grace period of 15 min");
     expect(decision({ config, status: { turnEnded: 61 }, requests: [{ minutesAgo: 1, method: "GET", mode: "navigate" }] })).toBe(
-      "poweroff: no turn, client, permission request, preview page view, login or hunt-ctl activity for 60 min",
+      "idle: no turn, client, permission request, preview page view, login or hunt-ctl activity for 60 min",
     );
   });
 
+  it("records its run and since when the VM is idle, reports idleness once, and changes nothing with --dry-run", () => {
+    expect(run({})).toMatchObject({ stdout: IDLE, state: { lastRun: null, idleSince: null } });
+    expect(run({}, [])).toMatchObject({ status: 0, stdout: `${IDLE.slice("idle: ".length)}; waiting for the gateway to suspend the VM`, systemctl: "" });
+    expect(run({}, []).state).toEqual({ lastRun: `${NOW_S}`, idleSince: `${NOW_S}` });
+    expect(run({ idleSinceMinutesAgo: 5 }, [])).toMatchObject({ stdout: "", systemctl: "", state: { idleSince: `${NOW_S - 300}` } });
+    expect(run({ status: { turn: "running" }, idleSinceMinutesAgo: 5 }, [])).toMatchObject({ stdout: "", state: { lastRun: `${NOW_S}`, idleSince: null } });
+    expect(run({ lastRunMinutesAgo: 4, idleSinceMinutesAgo: 40 }, []).state).toEqual({ lastRun: `${NOW_S} ${NOW_S}`, idleSince: null });
+    expect(run({ lastRunMinutesAgo: 1, resumedMinutesAgo: 10 }, []).state).toEqual({ lastRun: `${NOW_S} ${NOW_S - 600}`, idleSince: null });
+  });
+
   it("powers off through systemctl only without --dry-run and refuses other arguments", () => {
-    expect(run({}, [])).toMatchObject({ status: 0, stdout: `${POWEROFF.slice("poweroff: ".length)}; powering off`, systemctl: "poweroff\n" });
+    const poweroff = run({ idleSinceMinutesAgo: 15 }, []);
+    expect(poweroff).toMatchObject({ status: 0, stdout: "idle for 15 min and not suspended by the gateway; powering off", systemctl: "poweroff\n" });
+    expect(run({ idleSinceMinutesAgo: 15 })).toMatchObject({ systemctl: "", state: { lastRun: null } });
     expect(run({ status: { turn: "running" } }, [])).toMatchObject({ status: 0, stdout: "", systemctl: "" });
     expect(run({}, ["--now"])).toMatchObject({ status: 2, stderr: "usage: hunt-idle-check [--dry-run]\n", systemctl: "" });
   });

@@ -24,6 +24,9 @@ const READY_STAMP = "/var/lib/hunt/session-ready";
  */
 export const READY_COMMAND = `test -e ${READY_STAMP} && { echo ready; cat ${INSTALLED_HASH} 2>/dev/null; } || true`;
 const RELAY_COMMAND = "sudo -n -u agent socat - UNIX-CONNECT:/run/hunt/relay.sock";
+/** The idle check of the session release on the VM, which prints its decision and changes nothing. */
+const IDLE_CHECK_COMMAND = "sudo -n /srv/hunt/current/vm/hunt-idle-check --dry-run";
+const IDLE_CHECK_TIMEOUT_MS = 60_000;
 const STDERR_TAIL_LINES = 15;
 
 /** Where a VM lives: its project and its own zone. */
@@ -198,6 +201,11 @@ export interface SessionVm {
   ensureRelease(installedHash: string, onInstall?: () => void): Promise<ReleaseInfo>;
   /** Unpacks `files` (name → text, mode 0600) into the agent's ~/.claude through `hunt-ctl put-files <id> --claude`. */
   putClaudeFiles(id: string, files: Record<string, string>): Promise<void>;
+  /**
+   * The decision of the VM's idle check (`apps/session/vm/hunt-idle-check --dry-run`): `keep: <reason>`, `idle: <reason>`
+   * or `poweroff: <reason>`.
+   */
+  idleDecision(): Promise<string>;
   /** A connection to the session's relay socket. */
   openRelay(): Transport;
 }
@@ -276,6 +284,9 @@ export function sessionVm(vm: string, location: VmLocation, log: Log = () => {})
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    },
+    async idleDecision() {
+      return (await gcloud(IDLE_CHECK_COMMAND, "", IDLE_CHECK_TIMEOUT_MS, `run the idle check of ${vm}`)).toString("utf8").trim();
     },
     openRelay() {
       const startedAt = Date.now();

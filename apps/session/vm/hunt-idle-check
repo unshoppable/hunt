@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Powers the session VM off once its session has been idle for IDLE_MINUTES; hunt-idle.timer runs it every minute. The
-# disk keeps everything; Hunt or the gateway starts the VM again when the session is needed. With --dry-run it prints
-# its decision ("keep: <reason>" or "poweroff: <reason>") instead of acting on it.
+# Decides every minute (hunt-idle.timer) whether the session on this VM is idle. Once it has been idle for IDLE_MINUTES
+# the script reports it, and the gateway's sweeper (`apps/gateway/src/idle.ts`), which runs it with --dry-run over SSH,
+# suspends the VM: a VM cannot suspend itself. The VM powers itself off only when SUSPEND_WAIT_MINUTES pass idle without
+# a suspend, so that a gateway that cannot suspend (an outage, a missing permission) does not leave it running. The disk
+# keeps everything; Hunt or the gateway resumes or starts the VM again when the session is needed. With --dry-run it
+# prints its decision ("keep: <reason>", "idle: <reason>" or "poweroff: <reason>") and changes nothing.
 #
 # The VM stays up while
-#   - it booted less than BOOT_GRACE_MINUTES ago,
+#   - it booted, or resumed from a suspend, less than BOOT_GRACE_MINUTES ago (a resume shows as a gap of more than
+#     RESUME_GAP_SECONDS between two runs, which the timer never leaves on its own),
 #   - hunt-ctl runs, or ran within IDLE_MINUTES (the mtime of /var/lib/hunt/activity),
 #   - the relay, with a fresh heartbeat in its status file (/run/hunt/status.json), has a running turn, or a turn ended,
 #     a client sent something or a permission request arrived within IDLE_MINUTES (an unanswered permission request
@@ -15,8 +19,9 @@
 #   - an interactive login, such as Hunt's terminal, had input within IDLE_MINUTES (the IDLE column of `w`).
 # Dev servers, the services of hunt.json (hunt-service@ units) included, and containers the agent left running do not
 # count. A heartbeat older than two minutes means the relay is gone; its status does not count. IDLE_MINUTES,
-# BOOT_GRACE_MINUTES and PREVIEW_MAX_MINUTES come from /etc/hunt/idle.conf (defaults 30, 15 and 120). The HUNT_IDLE_*
-# variables point it at other files, for tests.
+# BOOT_GRACE_MINUTES, PREVIEW_MAX_MINUTES and SUSPEND_WAIT_MINUTES come from /etc/hunt/idle.conf (defaults 30, 15, 120
+# and 15). The state of the runs (when the last one ran, when the VM resumed, since when it is idle) lives in
+# /run/hunt, which a boot clears and a suspend keeps. The HUNT_IDLE_* variables point it at other files, for tests.
 set -euo pipefail
 
 config=${HUNT_IDLE_CONFIG:-/etc/hunt/idle.conf}
@@ -24,21 +29,26 @@ status_file=${HUNT_IDLE_STATUS_FILE:-/run/hunt/status.json}
 activity_file=${HUNT_IDLE_ACTIVITY_FILE:-/var/lib/hunt/activity}
 uptime_file=${HUNT_IDLE_UPTIME_FILE:-/proc/uptime}
 proxy_log=${HUNT_IDLE_PROXY_LOG:-/var/log/hunt-proxy/access.log}
+state_dir=${HUNT_IDLE_STATE_DIR:-/run/hunt}
+last_run_file=$state_dir/idle-last-run
+idle_since_file=$state_dir/idle-since
 readonly HEARTBEAT_MAX_AGE_MS=120000
+readonly RESUME_GAP_SECONDS=180
 
 IDLE_MINUTES=30
 BOOT_GRACE_MINUTES=15
 PREVIEW_MAX_MINUTES=120
+SUSPEND_WAIT_MINUTES=15
 
-# Reads IDLE_MINUTES, BOOT_GRACE_MINUTES and PREVIEW_MAX_MINUTES from the config file; other lines and malformed values
-# are ignored.
+# Reads IDLE_MINUTES, BOOT_GRACE_MINUTES, PREVIEW_MAX_MINUTES and SUSPEND_WAIT_MINUTES from the config file; other lines
+# and malformed values are ignored.
 read_config() {
   local key value
   [[ -r $config ]] || return 0
   while IFS='=' read -r key value || [[ -n $key ]]; do
     key=${key//[[:space:]]/}
     value=${value//[[:space:]\"\']/}
-    if [[ $key =~ ^(IDLE_MINUTES|BOOT_GRACE_MINUTES|PREVIEW_MAX_MINUTES)$ && $value =~ ^[0-9]+$ ]]; then
+    if [[ $key =~ ^(IDLE_MINUTES|BOOT_GRACE_MINUTES|PREVIEW_MAX_MINUTES|SUSPEND_WAIT_MINUTES)$ && $value =~ ^[0-9]+$ ]]; then
       printf -v "$key" '%d' "$((10#$value))"
     fi
   done <"$config"
@@ -99,13 +109,57 @@ last_agent_activity_ms() {
   fi
 }
 
+# Prints the seconds since the VM last resumed from a suspend, given the current time in seconds: 0 when the last run
+# was more than RESUME_GAP_SECONDS ago (the VM was suspended in between), else the time since the resume the last run
+# recorded; nothing when the VM has not resumed since it booted. `record_run` keeps the file this reads.
+seconds_since_resume() {
+  local last_run resumed_at
+  [[ -r $last_run_file ]] || return 0
+  read -r last_run resumed_at <"$last_run_file" || true
+  [[ $last_run =~ ^[0-9]+$ ]] || return 0
+  if (( $1 - last_run > RESUME_GAP_SECONDS )); then
+    echo 0
+  elif [[ $resumed_at =~ ^[0-9]+$ ]]; then
+    echo $(( $1 - resumed_at ))
+  fi
+  return 0
+}
+
+# Records this run for `seconds_since_resume`: the current time in seconds and, when the VM resumed, when it did.
+record_run() {
+  local since resumed_at=
+  since=$(seconds_since_resume "$1")
+  if [[ -n $since ]]; then
+    resumed_at=$(( $1 - since ))
+  fi
+  mkdir -p "$state_dir"
+  echo "$1 $resumed_at" >"$last_run_file"
+}
+
+# Prints the seconds the VM has been idle according to the idle-since file, given the current time in seconds; nothing
+# when the last run found it busy.
+seconds_idle() {
+  local since
+  [[ -r $idle_since_file ]] || return 0
+  read -r since <"$idle_since_file" || true
+  if [[ $since =~ ^[0-9]+$ ]]; then
+    echo $(( $1 - since ))
+  fi
+  return 0
+}
+
 decide() {
-  local now_ms uptime modified activity_age reason login_idle preview_ms
+  local now_ms uptime resumed modified activity_age reason login_idle preview_ms idle
   now_ms=$(date +%s%3N)
   read -r uptime _ <"$uptime_file"
   uptime=${uptime%.*}
   if (( uptime < BOOT_GRACE_MINUTES * 60 )); then
     echo "keep: booted $((uptime / 60)) min ago, within the grace period of $BOOT_GRACE_MINUTES min"
+    return
+  fi
+  resumed=$(seconds_since_resume "$((now_ms / 1000))")
+  if [[ -n $resumed ]] && (( resumed < BOOT_GRACE_MINUTES * 60 )); then
+    echo "keep: resumed $((resumed / 60)) min ago, within the grace period of $BOOT_GRACE_MINUTES min"
     return
   fi
 
@@ -141,7 +195,12 @@ decide() {
     echo "keep: an interactive login had input $login_idle min ago"
     return
   fi
-  echo "poweroff: no turn, client, permission request, preview page view, login or hunt-ctl activity for $IDLE_MINUTES min"
+  idle=$(seconds_idle "$((now_ms / 1000))")
+  if [[ -n $idle ]] && (( idle >= SUSPEND_WAIT_MINUTES * 60 )); then
+    echo "poweroff: idle for $((idle / 60)) min and not suspended by the gateway"
+    return
+  fi
+  echo "idle: no turn, client, permission request, preview page view, login or hunt-ctl activity for $IDLE_MINUTES min"
 }
 
 dry_run=false
@@ -157,7 +216,22 @@ read_config
 decision=$(decide)
 if $dry_run; then
   echo "$decision"
-elif [[ $decision == poweroff:* ]]; then
-  echo "${decision#poweroff: }; powering off"
-  systemctl poweroff
+  exit 0
 fi
+now_s=$(( $(date +%s%3N) / 1000 ))
+record_run "$now_s"
+case $decision in
+  keep:*)
+    rm -f "$idle_since_file"
+    ;;
+  idle:*)
+    if [[ ! -e $idle_since_file ]]; then
+      echo "$now_s" >"$idle_since_file"
+      echo "${decision#idle: }; waiting for the gateway to suspend the VM"
+    fi
+    ;;
+  poweroff:*)
+    echo "${decision#poweroff: }; powering off"
+    systemctl poweroff
+    ;;
+esac

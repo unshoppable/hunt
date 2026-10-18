@@ -1,5 +1,5 @@
 [Unit]
-Description=Power off the session VM once its session is idle
+Description=Decide whether the session on this VM is idle, for the gateway's sweeper to suspend it
 
 [Service]
 # Names the service's journal entries; Cloud Logging shows it as the label service.

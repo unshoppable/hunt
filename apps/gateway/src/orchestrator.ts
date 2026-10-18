@@ -15,7 +15,8 @@
  * disk behind. When every zone is out, the VM gets its name back. A move an earlier call left unfinished is finished or
  * rolled back before the VM is used again. hunt-api starts existing VMs for the desktops and hunt-swf (`swf.ts`) the
  * stopped VM of an agent whose question got its answer; the two processes share no lock, so a start of one VM from
- * both at once is not guarded.
+ * both at once is not guarded. A suspended VM whose zone has no capacity for its resume is stopped first, which
+ * discards its saved memory, and then moved like a stopped one.
  *
  * Bringing a VM up starts a stopped one, resumes a suspended one and waits out a shutdown in progress, then waits until
  * it answers over SSH and its startup script finished, hands it the staged session release and puts the remote secrets
@@ -46,6 +47,8 @@ export const START_TIMEOUT_MS = 6 * 60_000;
 export const READY_TIMEOUT_MS = 15 * 60_000;
 export const DISK_TIMEOUT_MS = 2 * 60_000;
 export const SNAPSHOT_TIMEOUT_MS = 10 * 60_000;
+/** Compute Engine writes the VM's memory to storage; 31 GB take a minute or two. */
+export const SUSPEND_TIMEOUT_MS = 10 * 60_000;
 /** How often the status of a VM is read while it changes, and the pause after an operation wait that passed its deadline. */
 export const INSTANCE_POLL_MS = 1_000;
 const METADATA_ATTEMPTS = 3;
@@ -203,6 +206,22 @@ export class Orchestrator {
     });
   }
 
+  /**
+   * Suspends the session's VM unless it is not running, and waits until Compute Engine has done it; a VM still under its
+   * moving name is off. The idle sweeper (`idle.ts`) calls this for a VM whose session is idle.
+   */
+  async suspend(id: string): Promise<void> {
+    const names = sessionNames(id);
+    const { vm, moving } = await this.locateSession(names);
+    if (!vm && !moving) throw new ApiError("notFound", `the session ${id} has no VM ${names.vm}`);
+    if (!vm) return;
+    checkSession(vm, id);
+    if (vm.status !== "RUNNING") return;
+    const operation = await this.deps.compute.suspend(vm.zone, names.vm);
+    const error = await this.waitForOperation(operation, SUSPEND_TIMEOUT_MS, `suspend ${names.vm}`);
+    if (error) throw new ApiError("unavailable", `failed to suspend ${names.vm}: ${(error.message || error.code).replace(/\.$/, "")}`);
+  }
+
   /** Stops the session's VM unless it is off or shuts down already; a VM still under its moving name is off. */
   async stop(id: string): Promise<void> {
     const names = sessionNames(id);
@@ -342,7 +361,8 @@ export class Orchestrator {
   /**
    * Starts or resumes the session's VM in `initialZone` unless it runs, waits until it is ready and hands it the staged
    * session release. A stopped VM whose zone has no capacity for its start moves to the next session zone that has
-   * (`move`); any other start Compute Engine refuses fails at once. Returns the zone the VM runs in.
+   * (`move`); a suspended one whose zone has no capacity for its resume is stopped and, once it is off, started and so
+   * moved the same way; any other start Compute Engine refuses fails at once. Returns the zone the VM runs in.
    */
   private async bringUp(initialZone: string, names: SessionNames, reporter: Reporter): Promise<{ zone: string; wasRunning: boolean; release: ReleaseInfo }> {
     const name = names.vm;
@@ -350,13 +370,17 @@ export class Orchestrator {
     let deadline = this.deps.now() + START_TIMEOUT_MS;
     let wasRunning: boolean | null = null;
     let isStarting = false;
+    let isStopping = false;
     let isReported = false;
     for (;;) {
       const instance = await this.deps.compute.get(zone, name);
       if (!instance) throw new ApiError("notFound", `${name} does not exist`);
       wasRunning ??= instance.status === "RUNNING";
       if (instance.status === "RUNNING") break;
-      if (OFF_STATUSES.has(instance.status) && !isStarting) {
+      if (isStopping && instance.status !== "SUSPENDED" && !SHUTDOWN_STATUSES.has(instance.status)) {
+        isStopping = false;
+      }
+      if (OFF_STATUSES.has(instance.status) && !isStarting && !isStopping) {
         const verb = instance.status === "SUSPENDED" ? "resume" : "start";
         if (!isReported) {
           reporter.progress("startingVm");
@@ -368,16 +392,23 @@ export class Orchestrator {
         const error = await this.waitForOperation(operation, Math.max(deadline - this.deps.now(), 0), `${verb} ${name}`);
         if (error) {
           const others = this.deps.zones().filter((candidate) => candidate !== zone);
-          if (verb === "start" && isStockout(error.code) && others.length > 0) {
-            zone = await this.move(instance, names, error.machineType, others, reporter);
-            deadline = this.deps.now() + START_TIMEOUT_MS;
-            continue;
+          if (isStockout(error.code) && others.length > 0) {
+            if (verb === "start") {
+              zone = await this.move(instance, names, error.machineType, others, reporter);
+              deadline = this.deps.now() + START_TIMEOUT_MS;
+              continue;
+            }
+            reporter.log(`${error.machineType ?? "its machine type"} is unavailable in ${zone}; stopping ${name} to move it`);
+            await this.stopForMove(zone, name, error);
+            isStarting = false;
+            isStopping = true;
+          } else {
+            const reason = (error.message || error.code).replace(/\.$/, "");
+            const stays = isStockout(error.code) ? `; its disk stays in ${zone}, try again later` : "";
+            throw new ApiError("unavailable", `failed to ${verb} ${name}: ${reason}${stays}`);
           }
-          const reason = (error.message || error.code).replace(/\.$/, "");
-          const stays = isStockout(error.code) ? `; its disk stays in ${zone}, try again later` : "";
-          throw new ApiError("unavailable", `failed to ${verb} ${name}: ${reason}${stays}`);
         }
-      } else if (SHUTDOWN_STATUSES.has(instance.status)) {
+      } else if (SHUTDOWN_STATUSES.has(instance.status) || isStopping) {
         if (!isReported) {
           reporter.progress("startingVm");
           reporter.log(`waiting for ${name} to finish shutting down`);
@@ -407,6 +438,19 @@ export class Orchestrator {
     await vm.huntCtl(["put-remote-secrets"], JSON.stringify(secrets));
     reporter.log(`put the remote secrets on ${name} (${Object.keys(secrets).length})`);
     return { zone, wasRunning, release };
+  }
+
+  /**
+   * Stops the suspended VM `name` in `zone`, whose resume `stockout` refused, so that it can be moved; when Compute
+   * Engine refuses the stop, the resume fails with both messages.
+   */
+  private async stopForMove(zone: string, name: string, stockout: OperationError): Promise<void> {
+    try {
+      await this.deps.compute.stop(zone, name);
+    } catch (error) {
+      const reason = (stockout.message || stockout.code).replace(/\.$/, "");
+      throw new ApiError("unavailable", `failed to resume ${name}: ${reason}; stopping it to move it failed: ${messageOf(error)}`);
+    }
   }
 
   /**

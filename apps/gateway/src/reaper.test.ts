@@ -49,6 +49,7 @@ function fakeCompute(vms: Instance[], current = new Map<string, Instance | null>
     setMetadata: unexpected,
     start: unexpected,
     resume: unexpected,
+    suspend: unexpected,
     stop: unexpected,
     setDiskAutoDelete: unexpected,
     delete: async (_zone, name) => {

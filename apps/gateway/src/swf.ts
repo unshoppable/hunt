@@ -32,7 +32,8 @@
  * the agent takes the label back itself. No reminder and no answer goes to a session a Hunt desktop is connected to,
  * since a person is working with the agent there. Reminders and delivered answers are remembered only in memory: after
  * a restart of the poller a session may be reminded once more or get an answer a second time. Between polls, the
- * reaper (`reaper.ts`) deletes session VMs that have been stopped for more than a week.
+ * idle sweeper (`idle.ts`) suspends session VMs whose session is idle, and the reaper (`reaper.ts`) deletes session VMs
+ * that have been off for more than a week.
  *
  * On GitHub the poller and its sessions act as a GitHub App (`githubApp.ts`): the app's id and private key
  * (`HUNT_SWF_GITHUB_APP_ID`, `HUNT_SWF_GITHUB_APP_KEY`), the Claude Code OAuth token (`HUNT_SWF_CLAUDE_TOKEN`) and the
@@ -76,6 +77,7 @@ import {
 } from "./orchestrator.ts";
 import { readDomain } from "./previewDomain.ts";
 import { remoteSecretStore } from "./remoteSecretStore.ts";
+import { IdleSweeper } from "./idle.ts";
 import { Reaper } from "./reaper.ts";
 import { ensureSshKey, sessionVm, type SessionVm } from "./sessionVm.ts";
 import { readSessionZones } from "./sessionZones.ts";
@@ -94,6 +96,7 @@ import {
   labelSpecs,
   newAnswers,
   nudgePrompt,
+  OFF_STATUSES,
   privateFilesSecret,
   redact,
   remoteSystemPrompt,
@@ -166,9 +169,6 @@ interface Watched {
   /** The last error of starting the VM for an answer, so that a lasting one is logged once. */
   startError: string;
 }
-
-/** The VM statuses from which the poller starts the VM of an agent whose question got its answer. */
-const OFF_STATUSES = new Set(["TERMINATED", "STOPPED", "SUSPENDED"]);
 
 /** The fields of `hunt-ctl status` the poller reads: the relay's status and the session's worktree. */
 interface RelayStatus {
@@ -631,6 +631,7 @@ async function main(): Promise<void> {
     log,
   });
   const reaper = new Reaper({ compute, orchestrator, zone: location.zone, now: Date.now, log });
+  const sweeper = new IdleSweeper({ compute, orchestrator, vm, zone: location.zone, now: Date.now, log });
 
   process.on("SIGHUP", () => {
     log("reload: exiting once the sessions being set up run");
@@ -653,6 +654,7 @@ async function main(): Promise<void> {
     } catch (error) {
       log(`poll failed: ${redact(messageOf(error), [])}`, "error");
     }
+    await sweeper.cycle();
     await reaper.cycle();
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, POLL_INTERVAL_MS);

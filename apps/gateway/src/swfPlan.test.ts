@@ -96,7 +96,7 @@ describe("agentStateOf", () => {
 });
 
 describe("issue selection", () => {
-  it("counts every VM that is not stopped and the VMs being created", () => {
+  it("counts every VM that is not off, stopped or suspended, and the VMs being created", () => {
     const vms = [
       { name: "vm-hunt-s-00000001", status: "RUNNING" },
       { name: "vm-hunt-s-00000002", status: "TERMINATED" },
@@ -105,7 +105,7 @@ describe("issue selection", () => {
       { name: "vm-hunt-s-00000005", status: "SUSPENDED" },
     ];
     const active = activeSessionVms(vms, ["vm-hunt-s-00000001", "vm-hunt-s-00000009"]);
-    expect([...active].sort()).toEqual(["vm-hunt-s-00000001", "vm-hunt-s-00000004", "vm-hunt-s-00000005", "vm-hunt-s-00000009"]);
+    expect([...active].sort()).toEqual(["vm-hunt-s-00000001", "vm-hunt-s-00000004", "vm-hunt-s-00000009"]);
   });
 
   it("starts the oldest issues of the repositories in their configured order and lets the rest wait", () => {

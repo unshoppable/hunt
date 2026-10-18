@@ -324,11 +324,12 @@ describe("createCompute", () => {
     expect(vms.map((vm) => `${vm.name} ${vm.zone}`)).toEqual(["vm-hunt-s-00000001 europe-west3-a", "vm-hunt-s-00000002 europe-west1-c"]);
   });
 
-  it("starts, resumes, stops and deletes a VM in its zone and marks its disks for deletion", async () => {
+  it("starts, resumes, suspends, stops and deletes a VM in its zone and marks its disks for deletion", async () => {
     const instance = `${PROJECT_URL}/zones/europe-west3-b/instances/vm-hunt-s-ab12cd34`;
     const { fetchImpl, requests } = fakeFetch({
       [`POST ${instance}/start`]: () => Response.json({ kind: "compute#operation", name: "operation-3" }),
       [`POST ${instance}/resume`]: () => new Response("denied", { status: 403 }),
+      [`POST ${instance}/suspend`]: () => Response.json({ kind: "compute#operation", name: "operation-4" }),
       [`POST ${instance}/stop`]: () => Response.json({ kind: "compute#operation" }),
       [`POST ${instance}/setDiskAutoDelete?autoDelete=true&deviceName=data%201`]: () => Response.json({ kind: "compute#operation" }),
       [`DELETE ${instance}`]: () => Response.json({ kind: "compute#operation" }),
@@ -338,12 +339,14 @@ describe("createCompute", () => {
 
     expect(await compute.start(zone, "vm-hunt-s-ab12cd34")).toEqual({ name: "operation-3", zone });
     await expect(compute.resume(zone, "vm-hunt-s-ab12cd34")).rejects.toThrow("failed to resume vm-hunt-s-ab12cd34: HTTP 403 denied");
+    expect(await compute.suspend(zone, "vm-hunt-s-ab12cd34")).toEqual({ name: "operation-4", zone });
     await compute.stop(zone, "vm-hunt-s-ab12cd34");
     await compute.setDiskAutoDelete(zone, "vm-hunt-s-ab12cd34", "data 1");
     await compute.delete(zone, "vm-hunt-s-ab12cd34");
     expect(requests.map((request) => `${request.method} ${request.url.slice(instance.length)} ${request.authorization}`)).toEqual([
       "POST /start Bearer token-1",
       "POST /resume Bearer token-1",
+      "POST /suspend Bearer token-1",
       "POST /stop Bearer token-1",
       "POST /setDiskAutoDelete?autoDelete=true&deviceName=data%201 Bearer token-1",
       "DELETE  Bearer token-1",

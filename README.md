@@ -554,7 +554,8 @@ gets its name back and the call fails naming the zones. A disk can be snapshotte
 while every zone stays out fail on the snapshot after that. The VM keeps its name and disk contents but gets a new
 internal IP and instance ID, which the client records from the call's result. A move a crash left unfinished is finished
 or rolled back by the next `vms.start` or `sessions.provision` of the session, and `vms.delete` removes its leftovers.
-Only a start moves a VM; a suspended VM whose zone is out of capacity stays. The new VM is labelled `hunt-role=session`,
+A suspended VM whose zone is out of capacity for its resume is stopped first, which discards its saved memory, and then
+moved the same way once it is off. The new VM is labelled `hunt-role=session`,
 `hunt-session=<short id>`, `hunt-origin=desktop` and `hunt-owner=<caller>`, records the session's ID, repository,
 branch and title in its metadata and refuses a VM that holds another session (`conflict`); it and `vms.start` start a
 stopped VM, resume a suspended one, wait out a shutdown in progress, wait until the VM answers over SSH and its startup
@@ -686,7 +687,7 @@ nothing changed here meanwhile does the branch move to the agent's last commit; 
 differing file with its side and the ignore rules that apply (or the local commits) and moves nothing.
 The transcript returns and gets the session's permission mode from before the handoff in place of the VM's. Then Hunt has the gateway delete the
 VM with its disks (`vms.delete`), as it does when a remote session is deleted. A session whose VM no longer exists
-(deleted by the gateway after a week stopped, see below, or outside Hunt) comes back with what this Mac has, the local worktree as the file sync left it and the
+(deleted by the gateway after a week off, see below, or outside Hunt) comes back with what this Mac has, the local worktree as the file sync left it and the
 conversation as of the agent's last finished turn, which the sync backed up, as soon as it is brought back or a prompt
 tries to connect it; the chat says so, and the session can be handed off again. A deletion that fails, for example
 offline, is kept in `remote-cleanups.json` in the app data folder and retried at the next start of Hunt, once the main
@@ -702,7 +703,7 @@ labelled `swf` in the repositories that the gateway's instance metadata `hunt-sw
 sets both; the poller reads them from the metadata server at every poll, so a change needs no restart, and an invalid
 value keeps it idle. Every 30 seconds it lists the open issues through GitHub's REST
 API and, while fewer of its VMs
-(label `hunt-origin=swf`, any status but `TERMINATED` and `STOPPED`) are up than the limit allows, claims the oldest
+(label `hunt-origin=swf`, any status but `TERMINATED`, `STOPPED` and `SUSPENDED`) are up than the limit allows, claims the oldest
 issue: `swf` becomes `swf:running` (the labels `swf:running`, `swf:question`, `swf:done` and `swf:failed` are created
 when missing) and a comment names the session's preview hosts. Then it does what a handoff does, with the gateway's service account instead
 of a Mac: the orchestrator creates `vm-hunt-s-<short id>` from the configured instance template (labelled
@@ -765,13 +766,17 @@ commits (author `<slug>[bot]`), pushes and pull requests of a poller session sho
 an hour on one repository. None of the key, tokens or files reaches a log line, a comment or a command line;
 `journalctl -u hunt-swf` on the gateway shows one line per decision, Compute Engine call and command on a session VM.
 
-The same service deletes forgotten session VMs (`apps/gateway/src/reaper.ts`): once an hour it lists the VMs labelled
-`hunt-role=session` and deletes, with all its disks, every one that Compute Engine reports as stopped or suspended for
-more than 7 days (`lastStopTimestamp`, `lastSuspendedTimestamp`). Since the idle check on a session VM powers it off
-half an hour after the agent's, the client's or a preview's last activity, that is a week without anyone touching the
-session. Right before deleting, it reads the VM once more and keeps one that was started meanwhile; a VM that names no
-session is only reported. A session whose VM went this way continues on the Mac as described above, and `journalctl -u
-hunt-swf` shows one line per deletion.
+The same service suspends idle session VMs (`apps/gateway/src/idle.ts`): once a minute it lists the running VMs labelled
+`hunt-role=session`, runs the idle check of each (`hunt-idle-check --dry-run`, below) over SSH and suspends every VM
+whose check reports `idle` through the Compute Engine API, waiting until Compute Engine has saved the VM's memory. A VM
+that fails (one still booting does not answer over SSH yet, a suspend Compute Engine refuses) is logged once per failure.
+It also deletes forgotten session VMs (`apps/gateway/src/reaper.ts`): once an hour it lists the VMs labelled
+`hunt-role=session` and deletes, with all its disks, every one that Compute Engine reports as suspended or stopped for
+more than 7 days (`lastSuspendedTimestamp`, `lastStopTimestamp`). Since a session VM is suspended half an hour after the
+agent's, the client's or a preview's last activity, that is a week without anyone touching the session. Right before
+deleting, it reads the VM once more and keeps one that was started meanwhile; a VM that names no session is only
+reported. A session whose VM went this way continues on the Mac as described above, and `journalctl -u hunt-swf` shows
+one line per suspend and deletion.
 
 The labels and metadata of the session VMs are the directory of remote sessions. The start view's "Remote sessions"
 button lists them as the gateway reports them (`list_session_vms`), sessions whose agent waits for an answer first,
@@ -799,16 +804,21 @@ deletion. The red trash button beside the send button of a remote session's prom
 (ending `delete`), after a confirmation that for an adopted session names the other people working on it. Bringing an
 adopted session back asks the same way; VMs this Mac deleted or still has to delete are never adopted again.
 
-A remote session keeps its VM, which costs only its disk while it is off, until it is retrieved or deleted. Hunt records
+A remote session keeps its VM, which costs only its disk and its saved memory (about 0.15 EUR a day for 31 GB) while it is
+off, until it is retrieved or deleted. Hunt records
 when its agent last worked (a prompt it sent, a turn that ended, or the relay's last turn when it connects) and, once
 that is seven days ago, asks in the main window whether to retrieve or delete it
-(`apps/client/src/sessions/StaleRemoteDialog.tsx`); "Later" asks again three days later. A session VM shuts itself down
-after 30 minutes without a running turn, client activity, terminal input or
-`hunt-ctl` run
-(`apps/session/vm/hunt-idle-check`, every minute through `hunt-idle.timer`); a preview page view or a request other than
-GET counts too, for at most two hours after the agent last worked. Services, dev servers and containers left running do
-not count. The disk keeps everything: the next prompt or preview page starts the VM again, the services that were
-started come back by themselves, and the agent restarts other dev servers and containers when its task needs them.
+(`apps/client/src/sessions/StaleRemoteDialog.tsx`); "Later" asks again three days later. A session VM is suspended by
+the gateway after 30 minutes without a running turn, client activity, terminal input or `hunt-ctl` run: its idle check
+(`apps/session/vm/hunt-idle-check`, every minute through `hunt-idle.timer`) decides and the gateway's sweeper (above)
+asks it and suspends; a preview page view or a request other than GET counts too, for at most two hours after the agent
+last worked. Services, dev servers and containers left running do not count. A VM cannot suspend itself, so when the
+gateway has not suspended it 15 minutes after it first reported idle (`SUSPEND_WAIT_MINUTES` in `/etc/hunt/idle.conf`),
+it powers itself off as a fallback. A suspended VM keeps its memory: the next prompt or preview page resumes it within
+seconds, with its services, dev servers and containers as they were, and a resumed VM gets the same 15-minute grace as
+a booted one (the check sees a resume as a gap between two of its runs). After a poweroff the disk keeps everything: the
+next prompt or preview page starts the VM again, the services that were started come back by themselves, and the agent
+restarts other dev servers and containers when its task needs them.
 
 Logs: `hunt-ctl` runs over SSH outside systemd and logs its steps to the journal under the identifier `hunt-ctl`
 (`journalctl -t hunt-ctl` on the VM): every command's start, its end with the duration, a failure with the exit status,

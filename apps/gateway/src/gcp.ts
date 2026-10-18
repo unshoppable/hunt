@@ -327,6 +327,8 @@ export interface Compute {
   start(zone: string, name: string): Promise<Operation>;
   /** Resumes a `SUSPENDED` VM. */
   resume(zone: string, name: string): Promise<Operation>;
+  /** Suspends a `RUNNING` VM: Compute Engine saves its memory and keeps its processes for a resume. */
+  suspend(zone: string, name: string): Promise<Operation>;
   stop(zone: string, name: string): Promise<void>;
   /** Makes Compute Engine delete the disk `deviceName` with the VM. */
   setDiskAutoDelete(zone: string, name: string, deviceName: string): Promise<void>;
@@ -579,6 +581,7 @@ export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetc
     },
     start: async (zone, name) => operationOf(await post(zone, name, "start", `start ${name}`), zone),
     resume: async (zone, name) => operationOf(await post(zone, name, "resume", `resume ${name}`), zone),
+    suspend: async (zone, name) => operationOf(await post(zone, name, "suspend", `suspend ${name}`), zone),
     async stop(zone, name) {
       await post(zone, name, "stop", `stop ${name}`);
     },

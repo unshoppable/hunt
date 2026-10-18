@@ -9,8 +9,8 @@
  * answers such requests itself, so an open preview never starts a VM. hunt-wake looks the VM `vm-hunt-s-<short>` up
  * through the Compute Engine API (`gcp.ts`) in every zone of the gateway's project, with the gateway's service account
  * (token and project from the metadata server), and starts or resumes it when it is off, at most once per VM every START_INTERVAL_MS. Only a page
- * load starts a VM: the polling of a forgotten tab must not wake it again and again after the idle check powered it
- * off. Every answer but the one for a VM that does not exist is a page that reloads every RELOAD_SECONDS, until the
+ * load starts a VM: the polling of a forgotten tab must not wake it again and again after the idle sweeper suspended
+ * it. Every answer but the one for a VM that does not exist is a page that reloads every RELOAD_SECONDS, until the
  * session VM's preview proxy answers in its place. Runs on Node 24 through type stripping; no dependencies.
  */
 import { realpathSync } from "node:fs";

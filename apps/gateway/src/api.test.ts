@@ -66,6 +66,7 @@ function fakeCompute() {
       return operation(zone);
     },
     resume: async (zone) => operation(zone),
+    suspend: async (zone) => operation(zone),
     stop: async (_zone, name) => {
       calls.push(`stop ${name}`);
     },
@@ -114,6 +115,7 @@ function fakeVm() {
       return RELEASE;
     },
     putClaudeFiles: async () => {},
+    idleDecision: async () => "keep: a turn is running",
     openRelay: () => ({}) as Transport,
   };
   return {

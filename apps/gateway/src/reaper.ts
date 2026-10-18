@@ -1,7 +1,8 @@
 /**
- * Deletes session VMs that have been stopped for longer than RETENTION_DAYS, with their disks. The idle check on a
- * session VM powers it off half an hour after its last activity, so a VM stopped that long belongs to a session nobody
- * came back to; Hunt continues such a session on the Mac with what the file sync and the transcript backup left there.
+ * Deletes session VMs that have been suspended or stopped for longer than RETENTION_DAYS, with their disks. The idle
+ * sweeper (`idle.ts`) suspends a session VM half an hour after its last activity, so a VM off that long belongs to a
+ * session nobody came back to; Hunt continues such a session on the Mac with what the file sync and the transcript
+ * backup left there.
  * `hunt-swf.service` (`swf.ts`) calls `cycle()` at every poll; a sweep runs once per SWEEP_INTERVAL_MS.
  */
 import type { LogLevel } from "../../../libs/domain/src/journal.ts";

@@ -6,8 +6,13 @@
  */
 import type { Issue, IssueComment, IssueState } from "./github.ts";
 
-/** The VM statuses that do not count towards the session limit; the reaper deletes VMs that stay in them. */
+/** The statuses of a stopped VM, whose `lastStopTimestamp` says since when. */
 export const STOPPED_STATUSES = new Set(["TERMINATED", "STOPPED"]);
+/**
+ * The statuses of a VM that is off, stopped or suspended: they do not count towards the session limit, the poller starts
+ * such a VM for an answer, and the reaper deletes a VM that stays in them.
+ */
+export const OFF_STATUSES = new Set([...STOPPED_STATUSES, "SUSPENDED"]);
 const SLUG_MAX_LENGTH = 40;
 /** The scope of every session branch: `<type>/general/<name>`. */
 const BRANCH_SCOPE = "general";
@@ -108,11 +113,11 @@ export function branchName(issue: Issue): string {
   return `${type}/${BRANCH_SCOPE}/${slug ? `${issue.number}-${slug}` : issue.number}`;
 }
 
-/** The poller's VMs that count towards the limit (any status but stopped) plus the VMs it is creating right now. */
+/** The poller's VMs that count towards the limit (any status but off) plus the VMs it is creating right now. */
 export function activeSessionVms(vms: { name: string; status: string }[], creating: Iterable<string>): Set<string> {
   const active = new Set(creating);
   for (const vm of vms) {
-    if (!STOPPED_STATUSES.has(vm.status)) {
+    if (!OFF_STATUSES.has(vm.status)) {
       active.add(vm.name);
     }
   }

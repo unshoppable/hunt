@@ -2,7 +2,8 @@
 # gateway's instance metadata hunt-swf-repos lists every 30 seconds and sets each session up on a VM of its own with
 # `gcloud compute ssh --internal-ip` and the gateway's service account, as hunt-gw, the one user next to root that
 # reaches the metadata server (hunt-firewall.service). gcloud and ssh keep their configuration and key in the state
-# directory. Once an hour it also deletes session VMs that have been stopped for more than a week (reaper.ts). A
+# directory. Once a minute it suspends session VMs whose session is idle (idle.ts), and once an hour it deletes session
+# VMs that have been off for more than a week (reaper.ts). A
 # reload (after `hunt-ctl install`) makes the poller exit once the sessions it sets up run, and systemd starts the new
 # release.
 [Unit]

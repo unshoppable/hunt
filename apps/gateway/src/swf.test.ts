@@ -119,7 +119,7 @@ function fakeCompute(listed: Instance[] = [], insertError?: Error): Compute & { 
       vms.set(request.name, { instance: listedVm(request.name, "PROVISIONING", request.labels), looks: 0 });
       return { name: "operation-1", zone };
     },
-    operation: async () => ({ isDone: true, error: null }),
+    waitOperation: async () => ({ isDone: true, error: null }),
     setMetadata: async (_zone, name, fingerprint, items) => {
       calls.push(`metadata ${name} ${fingerprint}`);
       metadata.push(items);
@@ -170,6 +170,7 @@ function fakeVm(failing?: { command: string; error: Error }, status: () => Recor
     },
     waitUntilReady: async () => {
       calls.push("wait until ready");
+      return "";
     },
     ensureRelease: async () => {
       calls.push("ensure release");
@@ -401,8 +402,8 @@ describe("Poller.cycle", () => {
 
   it("counts a session being set up until Compute Engine lists its VM", async () => {
     let finishSetup = () => {};
-    const blocked = new Promise<void>((resolve) => {
-      finishSetup = resolve;
+    const blocked = new Promise<string>((resolve) => {
+      finishSetup = () => resolve("");
     });
     const { vm } = fakeVm();
     vm.waitUntilReady = () => blocked;

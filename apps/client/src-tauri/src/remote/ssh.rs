@@ -139,6 +139,12 @@ impl Ssh {
             .map_err(|error| format!("failed to run ssh: {error}"))
     }
 
+    /// Opens the shared connection to the VM, so that the next command finds its master up instead of waiting for the
+    /// tunnel and the handshake; fails like `run` when the VM cannot be reached.
+    pub async fn warm_up(&self) -> Result<(), String> {
+        self.run("true").await.map(|_| ())
+    }
+
     /// Runs `command` on the VM and returns its standard output as text.
     pub async fn run(&self, command: &str) -> Result<String, String> {
         let output = self.run_with_input(command, &[]).await?;

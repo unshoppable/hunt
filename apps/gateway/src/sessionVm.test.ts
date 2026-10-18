@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { installScript, readStagedRelease, shellCommand, shellQuote, sshArgs } from "./sessionVm.ts";
+import { installScript, parseReadyAnswer, READY_COMMAND, readStagedRelease, shellCommand, shellQuote, sshArgs } from "./sessionVm.ts";
 
 describe("shell quoting", () => {
   it("quotes like shell_quote of the desktop", () => {
@@ -37,6 +37,16 @@ describe("sshArgs", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+});
+
+describe("the ready check", () => {
+  it("asks for the stamp and the installed hash in one command and reads both from the answer", () => {
+    expect(READY_COMMAND).toBe("test -e /var/lib/hunt/session-ready && { echo ready; cat /var/lib/hunt/installed-hash 2>/dev/null; } || true");
+    expect(parseReadyAnswer("")).toBeNull();
+    expect(parseReadyAnswer("\n")).toBeNull();
+    expect(parseReadyAnswer("ready\n")).toBe("");
+    expect(parseReadyAnswer("ready\n0123456789abcdef\n")).toBe("0123456789abcdef");
   });
 });
 

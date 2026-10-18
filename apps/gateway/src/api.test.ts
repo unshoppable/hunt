@@ -52,7 +52,7 @@ function fakeCompute() {
       });
       return operation(zone);
     },
-    operation: async () => ({ isDone: true, error: null }),
+    waitOperation: async () => ({ isDone: true, error: null }),
     setName: unexpected,
     getDisk: unexpected,
     createSnapshot: unexpected,
@@ -106,8 +106,9 @@ function fakeVm() {
     },
     waitUntilReady: async (_timeoutMs, onWaiting) => {
       onWaiting?.();
+      return "";
     },
-    ensureRelease: async (onInstall) => {
+    ensureRelease: async (_installedHash, onInstall) => {
       onInstall?.();
       await isOpen;
       return RELEASE;
@@ -209,6 +210,7 @@ describe("the gateway API over its Unix socket", () => {
     expect(events.filter((event) => event.type === "progress")).toEqual([
       { type: "progress", step: "creatingVm" },
       { type: "progress", step: "waitingForVm" },
+      { type: "progress", step: "vmReady" },
       { type: "progress", step: "installingRuntime" },
     ]);
     expect(events.at(-1)).toEqual({
@@ -285,6 +287,7 @@ describe("the gateway API over its Unix socket", () => {
     expect(b.events.filter((event) => event.type === "progress").map((event) => (event as { step: string }).step)).toEqual([
       "startingVm",
       "waitingForVm",
+      "vmReady",
       "installingRuntime",
     ]);
     expect(compute.calls.filter((entry) => entry.startsWith("start"))).toEqual([`start ${VM}`]);

@@ -45,7 +45,7 @@ function fakeCompute(vms: Instance[], current = new Map<string, Instance | null>
       return find(name);
     },
     insert: unexpected,
-    operation: unexpected,
+    waitOperation: unexpected,
     setMetadata: unexpected,
     start: unexpected,
     resume: unexpected,

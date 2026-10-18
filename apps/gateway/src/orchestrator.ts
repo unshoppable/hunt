@@ -44,7 +44,8 @@ export const START_TIMEOUT_MS = 6 * 60_000;
 export const READY_TIMEOUT_MS = 15 * 60_000;
 export const DISK_TIMEOUT_MS = 2 * 60_000;
 export const SNAPSHOT_TIMEOUT_MS = 10 * 60_000;
-export const INSTANCE_POLL_MS = 3_000;
+/** How often the status of a VM is read while it changes, and the pause after an operation wait that passed its deadline. */
+export const INSTANCE_POLL_MS = 1_000;
 const METADATA_ATTEMPTS = 3;
 const MOVING_SUFFIX = "-moving";
 const SNAPSHOT_SUFFIX = "-move";
@@ -389,13 +390,14 @@ export class Orchestrator {
     }
 
     const vm = this.deps.vm(name, zone);
-    await vm.waitUntilReady(
+    const installedHash = await vm.waitUntilReady(
       READY_TIMEOUT_MS,
       () => reporter.progress("waitingForVm"),
       (reason) => reporter.log(`${name} does not answer yet: ${reason}`),
     );
+    reporter.progress("vmReady");
     reporter.log(`${name} is ready; checking its release`);
-    const release = await vm.ensureRelease(() => {
+    const release = await vm.ensureRelease(installedHash, () => {
       reporter.progress("installingRuntime");
       reporter.log(`installing the staged session release on ${name}`);
     });
@@ -581,11 +583,15 @@ export class Orchestrator {
     }
   }
 
-  /** Waits until `operation` is done and returns its error; null when it succeeded. `what` names it in a timeout. */
+  /**
+   * Waits until `operation` is done and returns its error; null when it succeeded. `what` names it in a timeout. Each
+   * wait blocks on Compute Engine's side for up to about two minutes; the pause after one that passed its deadline
+   * guards against an API that answers at once.
+   */
   private async waitForOperation(operation: ComputeOperation, timeoutMs: number, what: string): Promise<OperationError | null> {
     const deadline = this.deps.now() + timeoutMs;
     for (;;) {
-      const state = await this.deps.compute.operation(operation);
+      const state = await this.deps.compute.waitOperation(operation);
       if (state.isDone) return state.error;
       if (this.deps.now() >= deadline) throw new ApiError("unavailable", `failed to ${what}: Compute Engine has not finished after ${minutes(timeoutMs)}`);
       await this.deps.sleep(INSTANCE_POLL_MS);

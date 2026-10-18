@@ -24,10 +24,12 @@ pub mod vm;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio::task::JoinHandle;
 
 /// Claude Code's configuration folder on this Mac, where transcripts, the global `CLAUDE.md` and skills live.
 pub fn claude_dir() -> Result<PathBuf, String> {
@@ -252,6 +254,9 @@ pub enum RemoteStep {
     MovingVm,
     CreatingVm,
     WaitingForVm,
+    /// The VM answers over SSH and its startup script is done, while the gateway still checks its release and pushes the
+    /// secrets: a signal for `StartSteps`, which opens Hunt's own connection meanwhile; the UI never sees it.
+    VmReady,
     Connecting,
     InstallingRuntime,
     TransferringCode,
@@ -280,6 +285,55 @@ impl<F: Fn(RemoteStep) + Send + Sync> Reporter for F {
 
 /// Receives the steps of a running remote operation.
 pub type Progress<'a> = &'a dyn Reporter;
+
+/// Hears the steps of a gateway call that starts a VM on behalf of the UI's reporter `ui`: every step but `VmReady`,
+/// and every log line. `VmReady`, the gateway's signal that the VM answers over SSH while the gateway still checks its
+/// release and pushes the secrets, instead opens the shared SSH connection to `vm` in the background, so that the first
+/// command after the call finds its control master up; without a `vm` the signal is dropped. `join` waits for that
+/// connection; a `StartSteps` dropped before it stops the attempt.
+pub struct StartSteps<'a> {
+    ui: Progress<'a>,
+    vm: Mutex<Option<ssh::Ssh>>,
+    warm_up: OnceLock<JoinHandle<Result<(), String>>>,
+}
+
+impl<'a> StartSteps<'a> {
+    pub fn new(ui: Progress<'a>, vm: Option<ssh::Ssh>) -> Self {
+        StartSteps { ui, vm: Mutex::new(vm), warm_up: OnceLock::new() }
+    }
+
+    /// Waits for the connection `VmReady` opened, if any. A failure only means the next command opens the connection
+    /// itself, such as when the gateway moved the VM to another zone than the one it was known in.
+    pub async fn join(mut self) {
+        let Some(warm_up) = self.warm_up.take() else { return };
+        if let Err(error) = warm_up.await.unwrap_or_else(|error| Err(error.to_string())) {
+            eprintln!("opening the connection to the VM early failed, the next command opens it: {error}");
+        }
+    }
+}
+
+impl Reporter for StartSteps<'_> {
+    fn step(&self, step: RemoteStep) {
+        if step != RemoteStep::VmReady {
+            self.ui.step(step);
+            return;
+        }
+        let Some(ssh) = self.vm.lock().unwrap().take() else { return };
+        let _ = self.warm_up.set(tokio::spawn(async move { ssh.warm_up().await }));
+    }
+
+    fn log(&self, message: &str) {
+        self.ui.log(message);
+    }
+}
+
+impl Drop for StartSteps<'_> {
+    fn drop(&mut self) {
+        if let Some(warm_up) = self.warm_up.take() {
+            warm_up.abort();
+        }
+    }
+}
 
 /// `value` quoted for a POSIX shell, so it reaches the remote command (or `GIT_SSH_COMMAND`) as one word.
 pub fn shell_quote(value: &str) -> String {
@@ -329,9 +383,10 @@ pub fn read_agent_md(worktree: &Path) -> Result<Option<String>, String> {
 /// Hunt's SSH key lives in `ssh_dir`. A VM the gateway reports as running is reached directly: the gateway's start
 /// also waits for the VM's boot and checks its release over `gcloud compute ssh`, which takes seconds a running VM
 /// does not need. A VM that is off, or that does not answer under its stored name and zone, is started through
-/// `gateway`, which boots it and installs the staged release. Returns the connection and the VM as the gateway
-/// reports it, which may lie in another zone than the one stored when the gateway had to move it for the start.
-/// `None` when the session's VM no longer exists.
+/// `gateway`, which boots it and installs the staged release; Hunt's own connection to the VM opens as soon as the
+/// gateway reports the VM ready (`StartSteps`), while the gateway still checks its release. Returns the connection and
+/// the VM as the gateway reports it, which may lie in another zone than the one stored when the gateway had to move it
+/// for the start. `None` when the session's VM no longer exists.
 pub async fn start_session_vm(
     gateway: &VmRef,
     id: uuid::Uuid,
@@ -340,16 +395,18 @@ pub async fn start_session_vm(
     progress: Progress<'_>,
 ) -> Result<Option<(ssh::Ssh, VmRef)>, String> {
     let api = api::GatewayApi::open(gateway, ssh_dir).await?;
+    let known_ssh = ssh::Ssh::open(known, ssh_dir).await?;
     if api.is_vm_running(id).await? {
-        let ssh = ssh::Ssh::open(known, ssh_dir).await?;
-        match release::ensure_ready(&ssh, progress).await {
-            Ok(()) => return Ok(Some((ssh, known.clone()))),
+        match release::ensure_ready(&known_ssh, progress).await {
+            Ok(()) => return Ok(Some((known_ssh, known.clone()))),
             Err(error) => {
                 eprintln!("connecting to the running VM {} of session {id} directly failed, starting it through the gateway: {error}", known.instance);
             }
         }
     }
-    let Some(vm) = api.start_vm(id, progress).await? else { return Ok(None) };
+    let steps = StartSteps::new(progress, Some(known_ssh));
+    let Some(vm) = api.start_vm(id, &steps).await? else { return Ok(None) };
+    steps.join().await;
     let ssh = ssh::Ssh::open(&vm, ssh_dir).await?;
     release::ensure_ready(&ssh, progress).await?;
     Ok(Some((ssh, vm)))
@@ -517,11 +574,42 @@ mod tests {
 
     #[test]
     fn remote_step_reads_the_gateways_steps_and_takes_unknown_ones_as_unknown() {
-        let steps: Vec<RemoteStep> =
-            serde_json::from_str(r#"["creatingVm","startingVm","movingVm","waitingForVm","installingRuntime","resizingDisk"]"#).unwrap();
+        let gateway_steps = r#"["creatingVm","startingVm","movingVm","waitingForVm","vmReady","installingRuntime","resizingDisk"]"#;
+        let steps: Vec<RemoteStep> = serde_json::from_str(gateway_steps).unwrap();
         let known = [RemoteStep::CreatingVm, RemoteStep::StartingVm, RemoteStep::MovingVm, RemoteStep::WaitingForVm];
         assert_eq!(steps[..4], known);
-        assert_eq!(steps[4..], [RemoteStep::InstallingRuntime, RemoteStep::Unknown]);
+        assert_eq!(steps[4..], [RemoteStep::VmReady, RemoteStep::InstallingRuntime, RemoteStep::Unknown]);
+    }
+
+    /// Records the steps and log lines it hears, in order.
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<String>>);
+
+    impl Reporter for Recorder {
+        fn step(&self, step: RemoteStep) {
+            self.0.lock().unwrap().push(format!("{step:?}"));
+        }
+
+        fn log(&self, message: &str) {
+            self.0.lock().unwrap().push(format!("log: {message}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn start_steps_keep_vm_ready_from_the_ui_and_pass_the_rest_on() {
+        let recorder = Recorder::default();
+        let steps = StartSteps::new(&recorder, None);
+        steps.step(RemoteStep::StartingVm);
+        steps.log("waiting for vm-hunt-s-ab12cd34 to finish shutting down");
+        steps.step(RemoteStep::WaitingForVm);
+        steps.step(RemoteStep::VmReady);
+        steps.step(RemoteStep::VmReady);
+        steps.step(RemoteStep::InstallingRuntime);
+        steps.join().await;
+        assert_eq!(
+            recorder.0.into_inner().unwrap(),
+            ["StartingVm", "log: waiting for vm-hunt-s-ab12cd34 to finish shutting down", "WaitingForVm", "InstallingRuntime"]
+        );
     }
 
     #[test]

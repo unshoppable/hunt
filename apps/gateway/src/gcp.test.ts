@@ -290,16 +290,16 @@ describe("createCompute", () => {
     ]);
   });
 
-  it("reads an operation's state and the error of a failed one", async () => {
+  it("waits for an operation through its wait endpoint and reads the state and the error of a finished one", async () => {
     const { fetchImpl } = fakeFetch({
-      [`GET ${ZONE_URL}/operations/operation-1`]: () => Response.json({ name: "operation-1", status: "RUNNING" }),
-      [`GET ${ZONE_URL}/operations/operation-2`]: () =>
+      [`POST ${ZONE_URL}/operations/operation-1/wait`]: () => Response.json({ name: "operation-1", status: "RUNNING" }),
+      [`POST ${ZONE_URL}/operations/operation-2/wait`]: () =>
         Response.json({ name: "operation-2", status: "DONE", error: { errors: [{ code: "QUOTA_EXCEEDED", message: "Quota exceeded." }] } }),
     });
     const compute = createCompute(fixedMetadata, fetchImpl);
 
-    expect(await compute.operation({ name: "operation-1", zone: "europe-west3-a" })).toEqual({ isDone: false, error: null });
-    expect(await compute.operation({ name: "operation-2", zone: "europe-west3-a" })).toEqual({
+    expect(await compute.waitOperation({ name: "operation-1", zone: "europe-west3-a" })).toEqual({ isDone: false, error: null });
+    expect(await compute.waitOperation({ name: "operation-2", zone: "europe-west3-a" })).toEqual({
       isDone: true,
       error: { code: "QUOTA_EXCEEDED", message: "Quota exceeded.", machineType: null },
     });
@@ -392,7 +392,7 @@ describe("createCompute", () => {
       [`POST ${disk}/createSnapshot`]: () => Response.json({ kind: "compute#operation", name: "operation-2" }),
       [`DELETE ${PROJECT_URL}/global/snapshots/vm-hunt-s-ab12cd34-move`]: () => Response.json({ kind: "compute#operation", name: "operation-5" }),
       [`DELETE ${PROJECT_URL}/global/snapshots/vm-hunt-s-00000000-move`]: () => new Response("not found", { status: 404 }),
-      [`GET ${PROJECT_URL}/global/operations/operation-5`]: () => Response.json({ name: "operation-5", status: "DONE" }),
+      [`POST ${PROJECT_URL}/global/operations/operation-5/wait`]: () => Response.json({ name: "operation-5", status: "DONE" }),
     });
     const compute = createCompute(fixedMetadata, fetchImpl);
     const zone = "europe-west3-a";
@@ -403,7 +403,7 @@ describe("createCompute", () => {
     expect(await compute.createSnapshot(zone, "vm-hunt-s-ab12cd34", "vm-hunt-s-ab12cd34-move")).toEqual({ name: "operation-2", zone });
     const deletion = await compute.deleteSnapshot("vm-hunt-s-ab12cd34-move");
     expect(deletion).toEqual({ name: "operation-5", zone: null });
-    expect(await compute.operation(deletion)).toEqual({ isDone: true, error: null });
+    expect(await compute.waitOperation(deletion)).toEqual({ isDone: true, error: null });
     await expect(compute.deleteSnapshot("vm-hunt-s-00000000-move")).rejects.toThrow("failed to delete the snapshot vm-hunt-s-00000000-move: HTTP 404 not found");
     expect(requests.slice(0, 4).map((request) => request.body)).toEqual([
       { name: "vm-hunt-s-ab12cd34-moving", currentName: "vm-hunt-s-ab12cd34" },

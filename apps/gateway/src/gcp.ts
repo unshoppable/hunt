@@ -308,7 +308,11 @@ export interface Compute {
   get(zone: string, name: string): Promise<Instance | null>;
   /** Requests the VM from the instance template in `zone`. */
   insert(zone: string, request: InstanceRequest): Promise<Operation>;
-  operation(operation: Operation): Promise<OperationState>;
+  /**
+   * Waits until `operation` is done, or until Compute Engine's own deadline of about two minutes passes, and returns its
+   * state; a state that is not done means the deadline passed.
+   */
+  waitOperation(operation: Operation): Promise<OperationState>;
   /** Renames the VM, which must be `TERMINATED`; `newName` must be free in the project. */
   setName(zone: string, name: string, newName: string): Promise<Operation>;
   /** The disk `name` in `zone`; fails when it does not exist. */
@@ -542,10 +546,10 @@ export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetc
       if (!response.ok) throw await failure(response, `create ${request.name} from ${request.template} in ${zone}`);
       return operationOf(response, zone);
     },
-    async operation({ name, zone }) {
+    async waitOperation({ name, zone }) {
       const base = zone ? `${await zoneUrl(zone)}/operations` : `${await projectUrl()}/global/operations`;
-      const response = await call("GET", `${base}/${encodeURIComponent(name)}`);
-      if (!response.ok) throw await failure(response, `read the operation ${name}`);
+      const response = await call("POST", `${base}/${encodeURIComponent(name)}/wait`);
+      if (!response.ok) throw await failure(response, `wait for the operation ${name}`);
       const { isDone, error } = parseOperation(await response.json(), zone);
       return { isDone, error };
     },

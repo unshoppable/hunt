@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use super::release::PROTOCOL_JSON;
 use super::ssh::Ssh;
-use super::{preview, shell_command, Progress, RemoteStep, VmRef};
+use super::{preview, shell_command, Progress, RemoteStep, StartSteps, VmRef};
 
 #[derive(Deserialize)]
 struct ApiFile {
@@ -214,17 +214,20 @@ impl GatewayApi {
     }
 
     /// Creates the VM of the session unless it exists, records the session in its metadata, starts it and waits until
-    /// its startup script and release are in place. Fails when the VM holds another session.
+    /// its startup script and release are in place. Fails when the VM holds another session. `progress` hears the steps
+    /// the UI shows; the `vmReady` signal of the start stays here.
     pub async fn provision(&self, request: &ProvisionRequest<'_>, progress: Progress<'_>) -> Result<Provisioned, String> {
-        let provisioned: Provisioned = self.call_streaming("sessions.provision", request, progress).await?;
+        let steps = StartSteps::new(progress, None);
+        let provisioned: Provisioned = self.call_streaming("sessions.provision", request, &steps).await?;
         provisioned.vm.validate()?;
         Ok(provisioned)
     }
 
     /// Starts or resumes the VM of session `id` unless it runs, waits until it answers and returns it; `None` when the
-    /// session has no VM any more.
-    pub async fn start_vm(&self, id: Uuid, progress: Progress<'_>) -> Result<Option<VmRef>, String> {
-        let started: StartedVm = match call(&self.ssh, "vms.start", &json!({ "id": id }), progress).await {
+    /// session has no VM any more. `steps` hears the UI's steps and the `vmReady` signal, on which it may open Hunt's own
+    /// connection to the VM already.
+    pub async fn start_vm(&self, id: Uuid, steps: &StartSteps<'_>) -> Result<Option<VmRef>, String> {
+        let started: StartedVm = match call(&self.ssh, "vms.start", &json!({ "id": id }), steps).await {
             Ok(started) => started,
             Err(error) if error.code.as_deref() == Some("notFound") => return Ok(None),
             Err(error) => return Err(error.into()),

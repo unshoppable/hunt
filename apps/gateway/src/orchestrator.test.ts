@@ -17,6 +17,8 @@ const ZONE_B = "europe-west3-b";
 const ZONE_C = "europe-west3-c";
 const LOCATION = { project: "medconomy-hunt", zone: ZONE };
 const RELEASE = { version: "session@1.4.0", protocol: 1 };
+/** The hash of the session release staged on the gateway, which an up-to-date VM reports as installed. */
+const STAGED_HASH = "0123456789abcdef";
 const SESSION_LABELS = { "hunt-role": "session", "hunt-session": "ab12cd34", "hunt-origin": "desktop" };
 const STOCKOUT: OperationError = {
   code: "ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS",
@@ -130,7 +132,7 @@ function fakeCompute(vms: Instance[] = []) {
       statuses.set(request.name, ["PROVISIONING", "STAGING", "STAGING", "RUNNING"]);
       return operation(zone, null);
     },
-    operation: async ({ name }) => {
+    waitOperation: async ({ name }) => {
       const index = Number(name.replace("operation-", ""));
       return stuckFrom !== null && index > stuckFrom ? { isDone: false, error: null } : operations.get(name)!;
     },
@@ -240,10 +242,13 @@ function fakeCompute(vms: Instance[] = []) {
 
 /** The call that puts the remote secrets of `createOrchestrator` on a VM. */
 const PUT_SECRETS = `hunt-ctl put-remote-secrets <<< {"MED_OPENAI_API_KEY":"sk-1"}`;
+/** The release check of a VM that runs the staged release, and of one without any. */
+const KEEP_RELEASE = `ensure release over ${STAGED_HASH}`;
+const INSTALL_RELEASE = "ensure release over none";
 
 /**
  * A session VM whose startup script finished unless `isBooting`, that fails a readiness check with `failure` while it
- * boots and needs the staged release when `isOutdated`.
+ * boots and reports no installed release when `isOutdated`, so that it needs the staged one.
  */
 function fakeVm(options: { isBooting?: boolean; failure?: string; isOutdated?: boolean } = {}) {
   const calls: string[] = [];
@@ -261,10 +266,11 @@ function fakeVm(options: { isBooting?: boolean; failure?: string; isOutdated?: b
           onFailure?.(options.failure);
         }
       }
+      return options.isOutdated ? "" : STAGED_HASH;
     },
-    ensureRelease: async (onInstall) => {
-      calls.push("ensure release");
-      if (options.isOutdated) {
+    ensureRelease: async (installedHash, onInstall) => {
+      calls.push(`ensure release over ${installedHash || "none"}`);
+      if (installedHash !== STAGED_HASH) {
         onInstall?.();
       }
       return RELEASE;
@@ -339,8 +345,8 @@ describe("Orchestrator.provision", () => {
       { key: "hunt-branch", value: "feat/login" },
       { key: "hunt-title", value: "Fix login" },
     ]);
-    expect(steps).toEqual(["creatingVm", "waitingForVm", "installingRuntime"]);
-    expect(calls).toEqual(["wait until ready", "ensure release", PUT_SECRETS]);
+    expect(steps).toEqual(["creatingVm", "waitingForVm", "vmReady", "installingRuntime"]);
+    expect(calls).toEqual(["wait until ready", INSTALL_RELEASE, PUT_SECRETS]);
     expect(logs[0]).toBe(`creating ${VM} from tpl-hunt-session in ${ZONE}`);
   });
 
@@ -388,7 +394,7 @@ describe("Orchestrator.provision", () => {
     const result = await orchestrator.provision(REQUEST, reporter);
     expect(result.created).toBe(false);
     expect(fake.calls).toEqual([`start ${VM}`]);
-    expect(steps).toEqual(["startingVm"]);
+    expect(steps).toEqual(["startingVm", "vmReady"]);
   });
 
   it("records the session on a VM a failed attempt left without it, retrying when the metadata changed meanwhile", async () => {
@@ -432,7 +438,7 @@ describe("Orchestrator.provision", () => {
     expect(result).toMatchObject({ vm: { project: "medconomy-hunt", zone: ZONE_B, instance: VM }, created: true });
     expect(fake.insertedZones).toEqual([ZONE, ZONE_B]);
     expect(vmZones).toEqual([ZONE_B]);
-    expect(steps).toEqual(["creatingVm"]);
+    expect(steps).toEqual(["creatingVm", "vmReady"]);
     expect(logs.slice(0, 3)).toEqual([
       `creating ${VM} from tpl-hunt-session in ${ZONE}`,
       `c4d-standard-8 is unavailable in ${ZONE}; trying ${ZONE_B}`,
@@ -497,8 +503,8 @@ describe("Orchestrator.start", () => {
     const result = await createOrchestrator(fake.compute, vm).orchestrator.start(ID, reporter);
     expect(result).toEqual({ vm: { project: "medconomy-hunt", zone: ZONE, instance: VM }, wasRunning: true, release: RELEASE });
     expect(fake.calls).toEqual([]);
-    expect(steps).toEqual([]);
-    expect(calls).toEqual(["wait until ready", "ensure release", PUT_SECRETS]);
+    expect(steps).toEqual(["vmReady"]);
+    expect(calls).toEqual(["wait until ready", KEEP_RELEASE, PUT_SECRETS]);
   });
 
   it("resumes a suspended VM", async () => {
@@ -508,7 +514,7 @@ describe("Orchestrator.start", () => {
     const result = await createOrchestrator(fake.compute).orchestrator.start(ID, reporter);
     expect(result.wasRunning).toBe(false);
     expect(fake.calls).toEqual([`resume ${VM}`]);
-    expect(steps).toEqual(["startingVm"]);
+    expect(steps).toEqual(["startingVm", "vmReady"]);
     expect(logs[0]).toBe(`resuming ${VM}`);
   });
 
@@ -519,7 +525,7 @@ describe("Orchestrator.start", () => {
 
     await createOrchestrator(fake.compute).orchestrator.start(ID, reporter);
     expect(fake.calls).toEqual([`start ${VM}`]);
-    expect(steps).toEqual(["startingVm"]);
+    expect(steps).toEqual(["startingVm", "vmReady"]);
     expect(logs.slice(0, 2)).toEqual([`waiting for ${VM} to finish shutting down`, `starting ${VM}`]);
   });
 
@@ -559,7 +565,7 @@ describe("Orchestrator.start", () => {
     const waitUntilReady = vm.waitUntilReady;
     vm.waitUntilReady = async (timeoutMs, onWaiting) => {
       await isReady;
-      await waitUntilReady(timeoutMs, onWaiting);
+      return waitUntilReady(timeoutMs, onWaiting);
     };
     const { orchestrator } = createOrchestrator(fake.compute, vm);
     const first = recorder();
@@ -574,9 +580,9 @@ describe("Orchestrator.start", () => {
     expect(a).toEqual(b);
     expect(a.wasRunning).toBe(false);
     expect(fake.calls).toEqual([`start ${VM}`]);
-    expect(calls).toEqual(["wait until ready", "ensure release", PUT_SECRETS]);
-    expect(first.steps).toEqual(["startingVm", "installingRuntime"]);
-    expect(second.steps).toEqual(["startingVm", "installingRuntime"]);
+    expect(calls).toEqual(["wait until ready", INSTALL_RELEASE, PUT_SECRETS]);
+    expect(first.steps).toEqual(["startingVm", "vmReady", "installingRuntime"]);
+    expect(second.steps).toEqual(["startingVm", "vmReady", "installingRuntime"]);
   });
 
   it("runs a different operation for the same session after the first one ended", async () => {
@@ -591,7 +597,7 @@ describe("Orchestrator.start", () => {
 
     expect(order).toEqual(["start", "provision"]);
     expect(fake.calls).toEqual([`start ${VM}`, `setMetadata ${VM} fp0`]);
-    expect(calls).toEqual(["wait until ready", "ensure release", PUT_SECRETS, "wait until ready", "ensure release", PUT_SECRETS]);
+    expect(calls).toEqual(["wait until ready", KEEP_RELEASE, PUT_SECRETS, "wait until ready", KEEP_RELEASE, PUT_SECRETS]);
   });
 });
 
@@ -639,7 +645,7 @@ describe("Orchestrator.start moving the VM", () => {
     expect([...fake.disks.keys()]).toEqual([`${ZONE_B}/${VM}`]);
     expect(fake.disks.get(`${ZONE_B}/${VM}`)).toEqual(BOOT_DISK);
     expect(fake.snapshots.size).toBe(0);
-    expect(steps).toEqual(["startingVm", "movingVm"]);
+    expect(steps).toEqual(["startingVm", "movingVm", "vmReady"]);
     expect(vmZones).toEqual([ZONE_B]);
     expect(logs).toEqual([
       `starting ${VM}`,

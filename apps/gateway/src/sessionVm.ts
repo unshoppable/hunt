@@ -18,6 +18,11 @@ import { ApiError } from "./apiProtocol.ts";
 export const STAGED_SESSION_RELEASE = "/srv/hunt/session-current";
 const INSTALLED_HASH = "/var/lib/hunt/installed-hash";
 const READY_STAMP = "/var/lib/hunt/session-ready";
+/**
+ * Prints `ready` and, on the next line, the hash of the installed session release once the startup script wrote the
+ * ready stamp; nothing before that. Exits 0 either way, so that only an SSH failure fails the check.
+ */
+export const READY_COMMAND = `test -e ${READY_STAMP} && { echo ready; cat ${INSTALLED_HASH} 2>/dev/null; } || true`;
 const RELAY_COMMAND = "sudo -n -u agent socat - UNIX-CONNECT:/run/hunt/relay.sock";
 const STDERR_TAIL_LINES = 15;
 
@@ -71,6 +76,15 @@ export function installScript(hash: string, incoming = `/srv/hunt/incoming/${ran
     `set -e; mkdir -p -m 0700 ${incoming}; trap 'rm -rf ${incoming}' EXIT; tar -xzf - -C ${incoming}; printf %s ${hash} > ${incoming}/.hash; ` +
     `find ${incoming}/vm -maxdepth 1 -type f -name 'hunt-*' -exec chmod +x {} +; ${install}`
   );
+}
+
+/**
+ * The installed release hash in the output of `READY_COMMAND`, empty when the VM has no release; null while the VM is
+ * not ready.
+ */
+export function parseReadyAnswer(output: string): string | null {
+  const [first = "", second = ""] = output.trim().split("\n");
+  return first.trim() === "ready" ? second.trim() : null;
 }
 
 export interface StagedRelease {
@@ -172,12 +186,16 @@ export interface SessionVm {
   /** Runs `hunt-ctl` with `args` as root and returns its JSON result. */
   huntCtl(args: string[], input?: Buffer | string, timeoutMs?: number): Promise<Record<string, unknown>>;
   /**
-   * Waits until the VM answers over SSH and its startup script wrote the ready stamp. `onWaiting` hears the first miss,
-   * `onFailure` why the VM does not answer: the first failed check and then one at most every minute.
+   * Waits until the VM answers over SSH and its startup script wrote the ready stamp, and returns the hash of the session
+   * release installed on it, empty without one. `onWaiting` hears the first miss, `onFailure` why the VM does not answer:
+   * the first failed check and then one at most every minute.
    */
-  waitUntilReady(timeoutMs: number, onWaiting?: () => void, onFailure?: (reason: string) => void): Promise<void>;
-  /** Installs the staged session release unless the VM runs it already; `onInstall` hears when it does. */
-  ensureRelease(onInstall?: () => void): Promise<ReleaseInfo>;
+  waitUntilReady(timeoutMs: number, onWaiting?: () => void, onFailure?: (reason: string) => void): Promise<string>;
+  /**
+   * Installs the staged session release unless `installedHash`, the hash `waitUntilReady` returned, is its hash;
+   * `onInstall` hears when it does.
+   */
+  ensureRelease(installedHash: string, onInstall?: () => void): Promise<ReleaseInfo>;
   /** Unpacks `files` (name → text, mode 0600) into the agent's ~/.claude through `hunt-ctl put-files <id> --claude`. */
   putClaudeFiles(id: string, files: Record<string, string>): Promise<void>;
   /** A connection to the session's relay socket. */
@@ -185,7 +203,7 @@ export interface SessionVm {
 }
 
 const HOUR_MS = 60 * 60_000;
-const READY_POLL_MS = 10_000;
+const READY_POLL_MS = 2_000;
 const READY_FAILURE_REPORT_MS = 60_000;
 
 /** The session VM `vm` at `location`; `log` hears every command run there, with its outcome and duration. */
@@ -213,8 +231,8 @@ export function sessionVm(vm: string, location: VmLocation, log: Log = () => {})
       let reportedAt = -Infinity;
       while (Date.now() < deadline) {
         try {
-          const answer = await gcloud(`test -e ${READY_STAMP} && echo ready || true`, "", 2 * 60_000, `check the ready stamp of ${vm}`);
-          if (answer.toString("utf8").trim() === "ready") return;
+          const answer = parseReadyAnswer((await gcloud(READY_COMMAND, "", 2 * 60_000, `check the ready stamp of ${vm}`)).toString("utf8"));
+          if (answer !== null) return answer;
         } catch (error) {
           reason = (error as Error).message;
           if (Date.now() - reportedAt >= READY_FAILURE_REPORT_MS) {
@@ -231,10 +249,9 @@ export function sessionVm(vm: string, location: VmLocation, log: Log = () => {})
       const minutes = Math.round(timeoutMs / 60_000);
       throw new ApiError("unavailable", `failed to set up ${vm}: its startup script did not finish within ${minutes} minutes: ${tail(reason)}`);
     },
-    async ensureRelease(onInstall) {
+    async ensureRelease(installedHash, onInstall) {
       const staged = readStagedRelease();
-      const installed = (await gcloud(`cat ${INSTALLED_HASH} 2>/dev/null || true`, "", 2 * 60_000, `read the installed release of ${vm}`)).toString("utf8").trim();
-      if (installed === staged.hash) return staged.info;
+      if (installedHash === staged.hash) return staged.info;
       onInstall?.();
       const archive = await run("tar", ["-czf", "-", "-C", staged.dir, "."], "", 5 * 60_000, "pack the session release", log);
       const what = `install the session release ${staged.info.version ?? staged.hash} on ${vm}`;

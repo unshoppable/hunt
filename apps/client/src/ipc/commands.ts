@@ -1,38 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type {
-  ChangedFileView,
-  ChangeStat,
-  ClaudeAccounts,
-  DirEntry,
-  FileDiff,
-  FileVersion,
-  GithubTokenStatus,
-  GithubViewer,
-  GraphStatus,
-  PlanUsage,
-  PreviewStatus,
-  PullRequest,
-  PullRequestDetails,
-  PullRequestRef,
-  PullRequestState,
-  RemoteLink,
-  RemoteSecretSummary,
-  ReplyTarget,
-  ReviewComment,
-  ReviewEvent,
-  ReviewThread,
-  Screenshot,
-  SelectionContext,
-  SessionEnding,
-  SessionNotification,
-  SessionView,
-  SessionVm,
-  Shelf,
-  TerminalTarget,
-  TmuxWindow,
-  VmSettings,
-  Workspace,
-} from "./types";
+import type { ChangedFileView, ChangeStat, ClaudeAccounts, DiagramType, DirEntry, FileDiff, FileVersion, GithubTokenStatus, GithubViewer, GraphStatus, PlanUsage, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RemoteLink, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TmuxWindow, VmSettings, Workspace } from "./types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
 export function assetUrl(path: string): string {
@@ -217,12 +184,18 @@ export const commands = {
   openFileInWebstorm: (id: string, path: string, line: number, column: number) =>
     invoke<void>("open_file_in_webstorm", { id, path, line, column }),
   openChangedFilesDiffInWebstorm: (id: string) => invoke<void>("open_changed_files_diff_in_webstorm", { id }),
-  /** Raw content of the session's `.hunt/graph.json`, `null` while there is none; validate with `parseGraph`. */
-  readGraph: (id: string) => invoke<unknown>("read_graph", { id }),
-  /** When the diagram was generated and whether the worktree's sessions changed files since. */
-  graphStatus: (id: string) => invoke<GraphStatus>("graph_status", { id }),
-  /** Sends the standard diagram prompt as a hidden turn and resolves with the stop reason once the agent finished. */
-  refreshGraph: (id: string, model: string, effort: string) => invoke<string>("refresh_graph", { id, model, effort }),
+  /** Raw content of the session's diagram file of `diagramType`, `null` while there is none; validate with `parseGraph` or `parseShapeDiagram`. */
+  readGraph: (id: string, diagramType: DiagramType) => invoke<unknown>("read_graph", { id, diagramType }),
+  /** Writes the whole diagram file of `diagramType` after an edit in the Architecture tab; `content` comes from `serializeShapeDiagram`. */
+  writeGraph: (id: string, diagramType: DiagramType, content: string) => invoke<void>("write_graph", { id, diagramType, content }),
+  /** When the diagram of `diagramType` was generated and whether the worktree's sessions changed files since. */
+  graphStatus: (id: string, diagramType: DiagramType) => invoke<GraphStatus>("graph_status", { id, diagramType }),
+  /**
+   * Sends the standard prompt of `diagramType` as a hidden turn, with `instructions` appended for this run, and resolves
+   * with the stop reason once the agent finished.
+   */
+  refreshGraph: (id: string, diagramType: DiagramType, instructions: string, model: string, effort: string) =>
+    invoke<string>("refresh_graph", { id, diagramType, instructions, model, effort }),
   /** Entries of a worktree directory (`path` relative, empty for the root): folders first, then files. */
   listDir: (id: string, path: string) => invoke<DirEntry[]>("list_dir", { id, path }),
   /** Every project file of the worktree (tracked and untracked, ignored excluded), sorted, for the file search. */

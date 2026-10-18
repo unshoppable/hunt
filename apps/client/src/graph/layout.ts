@@ -40,56 +40,95 @@ function elk(): Promise<ElkEngine> {
   return elkPromise;
 }
 
-/** The last requested layout; ELK lays out one diagram at a time, in the order they were requested. */
+/** The last requested layout; ELK lays out one graph at a time, in the order they were requested. */
 let lastLayout: Promise<unknown> = Promise.resolve();
 
+/** A fixed connection point on a node's border; `x`/`y` are relative to the node's top-left corner. */
+export type LayoutPort = { id: string; x: number; y: number };
+/** A sized box to place; `groupId` nests it in a compound group, `ports` pins where its edges attach. */
+export type LayoutNode = { id: string; width: number; height: number; groupId?: string; ports?: LayoutPort[] };
+/** A connection between two nodes or ports; `source`/`target` are node ids or port ids. */
+export type LayoutEdge = { id: string; source: string; target: string; label?: string };
+/** Room between two nodes of one layer and between two layers; the layout's defaults when left out. */
+export type LayoutSpacing = { nodeNode: number; betweenLayers: number };
 /**
- * Lays the diagram out top-down (dependents above their dependencies) with ELK's layered algorithm, folder groups
- * as compound nodes, and returns React Flow nodes (groups before their files) and edges. Edges leaving the same
- * file share one trunk and split near their targets, and the layers are compacted towards short edges, so a
- * dependency chain reads as a stack with few parallel lines.
- * A layout waits for the one requested before it; when `signal` aborts in the meantime it rejects without running,
- * so a burst of requests (unchecking files one after another) lays out only the newest diagram.
+ * `maxNodesPerLayer` bounds how many nodes ELK stacks in one layer: a diagram whose edges mostly point one way would
+ * otherwise become one long stack beside a short one, far taller than wide.
  */
-export function layoutDiagram(diagram: Diagram, signal?: AbortSignal): Promise<{ nodes: DiagramFlowNode[]; edges: DependencyEdge[] }> {
+export type LayoutInput = { nodes: LayoutNode[]; groups: { id: string }[]; edges: LayoutEdge[]; direction: "DOWN" | "RIGHT"; mergeEdges: boolean; spacing?: LayoutSpacing; maxNodesPerLayer?: number };
+const DEFAULT_SPACING: LayoutSpacing = { nodeNode: 40, betweenLayers: 72 };
+/**
+ * `points` is ELK's orthogonal route from source to target, `labelCenter` the middle of the label box ELK reserved
+ * on that route; both in absolute coordinates.
+ */
+export type LayoutRoute = { points: XYPosition[]; labelCenter: XYPosition | null };
+/** Node positions relative to their group (top-level nodes and groups relative to the canvas), the size ELK gave each group, and the edge routes. */
+export type LayoutResult = { positions: Map<string, XYPosition>; groupSizes: Map<string, { width: number; height: number }>; routes: Map<string, LayoutRoute> };
+
+/**
+ * Lays the graph out with ELK's layered algorithm in `direction`, groups as compound nodes. With `mergeEdges` the
+ * edges leaving the same node share one trunk and split near their targets; the layers are compacted towards short
+ * edges, so a chain reads as a stack with few parallel lines. Ports pin an edge to a fixed point on its node's border.
+ * A layout waits for the one requested before it; when `signal` aborts in the meantime it rejects without running,
+ * so a burst of requests lays out only the newest graph.
+ */
+export function layoutGraph(input: LayoutInput, signal?: AbortSignal): Promise<LayoutResult> {
   const start = () => {
     signal?.throwIfAborted();
-    return runLayout(diagram);
+    return runLayout(input);
   };
   const layout = lastLayout.then(start, start);
   lastLayout = layout;
   return layout;
 }
 
-/** One ELK run of `layoutDiagram`. */
-async function runLayout(diagram: Diagram): Promise<{ nodes: DiagramFlowNode[]; edges: DependencyEdge[] }> {
-  const toElkNode = (node: DiagramNode): ElkNode => ({ id: node.path, width: node.width, height: node.height });
+/** One ELK run of `layoutGraph`. */
+async function runLayout(input: LayoutInput): Promise<LayoutResult> {
+  const spacing = input.spacing ?? DEFAULT_SPACING;
+  const toElkNode = (node: LayoutNode): ElkNode => ({
+    id: node.id,
+    width: node.width,
+    height: node.height,
+    ...(node.ports
+      ? {
+          layoutOptions: { "elk.portConstraints": "FIXED_POS" },
+          ports: node.ports.map((port) => ({ id: port.id, x: port.x, y: port.y, width: 0, height: 0 })),
+        }
+      : {}),
+  });
   const elkGraph: ElkNode = {
     id: "root",
     layoutOptions: {
       "elk.algorithm": "layered",
-      "elk.direction": "DOWN",
+      "elk.direction": input.direction,
       "elk.hierarchyHandling": "INCLUDE_CHILDREN",
-      "elk.spacing.nodeNode": "40",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "72",
+      "elk.spacing.nodeNode": String(spacing.nodeNode),
+      "elk.layered.spacing.nodeNodeBetweenLayers": String(spacing.betweenLayers),
       "elk.spacing.edgeNode": "24",
       "elk.layered.spacing.edgeNodeBetweenLayers": "24",
       "elk.layered.spacing.edgeEdgeBetweenLayers": "14",
       "elk.edgeRouting": "ORTHOGONAL",
-      "elk.layered.mergeEdges": "true",
+      "elk.layered.mergeEdges": String(input.mergeEdges),
       "elk.layered.compaction.postCompaction.strategy": "EDGE_LENGTH",
       "elk.layered.thoroughness": "100",
+      ...(input.maxNodesPerLayer
+        ? {
+            "elk.layered.layering.strategy": "MIN_WIDTH",
+            "elk.layered.layering.minWidth.upperBoundOnWidth": String(input.maxNodesPerLayer),
+            "elk.layered.layering.minWidth.upperLayerEstimationScalingFactor": "2",
+          }
+        : {}),
     },
     children: [
-      ...diagram.groups.map((group) => ({
+      ...input.groups.map((group) => ({
         id: group.id,
         layoutOptions: { "elk.padding": GROUP_PADDING },
-        children: diagram.nodes.filter((node) => node.groupId === group.id).map(toElkNode),
+        children: input.nodes.filter((node) => node.groupId === group.id).map(toElkNode),
       })),
-      ...diagram.nodes.filter((node) => !node.groupId).map(toElkNode),
+      ...input.nodes.filter((node) => !node.groupId).map(toElkNode),
     ],
     // ELK keeps room for each label on its edge, widening the gap between two layers when a label needs it.
-    edges: diagram.edges.map((edge) => ({
+    edges: input.edges.map((edge) => ({
       id: edge.id,
       sources: [edge.source],
       targets: [edge.target],
@@ -98,20 +137,23 @@ async function runLayout(diagram: Diagram): Promise<{ nodes: DiagramFlowNode[]; 
   };
 
   const engine = await elk();
-  const result: ElkNode = diagram.nodes.length ? await engine.layout(elkGraph) : elkGraph;
+  const result: ElkNode = input.nodes.length ? await engine.layout(elkGraph) : elkGraph;
   // ELK positions children relative to their parent and edge routes relative to the edge's container node.
-  const groupBoxes = new Map((result.children ?? []).filter((child) => child.children?.length).map((child) => [child.id, child]));
-  const relativePositions = new Map<string, XYPosition>();
+  const groupSizes = new Map<string, { width: number; height: number }>();
+  const positions = new Map<string, XYPosition>();
   const absoluteOrigins = new Map<string, XYPosition>([["root", { x: 0, y: 0 }]]);
   for (const child of result.children ?? []) {
     const position = { x: child.x ?? 0, y: child.y ?? 0 };
-    relativePositions.set(child.id, position);
+    positions.set(child.id, position);
     absoluteOrigins.set(child.id, position);
+    if (child.children?.length) {
+      groupSizes.set(child.id, { width: child.width ?? 0, height: child.height ?? 0 });
+    }
     for (const grandchild of child.children ?? []) {
-      relativePositions.set(grandchild.id, { x: grandchild.x ?? 0, y: grandchild.y ?? 0 });
+      positions.set(grandchild.id, { x: grandchild.x ?? 0, y: grandchild.y ?? 0 });
     }
   }
-  const routes = new Map(
+  const routes = new Map<string, LayoutRoute>(
     (result.edges ?? []).map((edge) => {
       // Routes and label boxes are relative to the edge's container node.
       const origin = absoluteOrigins.get(edge.container ?? "root") ?? { x: 0, y: 0 };
@@ -122,13 +164,29 @@ async function runLayout(diagram: Diagram): Promise<{ nodes: DiagramFlowNode[]; 
       return [edge.id, { points, labelCenter }];
     }),
   );
+  return { positions, groupSizes, routes };
+}
+
+/**
+ * Lays the dependency diagram out top-down (dependents above their dependencies), folder groups as compound nodes,
+ * and returns React Flow nodes (groups before their files) and edges. Waits and aborts like `layoutGraph`.
+ */
+export async function layoutDiagram(diagram: Diagram, signal?: AbortSignal): Promise<{ nodes: DiagramFlowNode[]; edges: DependencyEdge[] }> {
+  const input: LayoutInput = {
+    nodes: diagram.nodes.map((node) => ({ id: node.path, width: node.width, height: node.height, groupId: node.groupId })),
+    groups: diagram.groups,
+    edges: diagram.edges,
+    direction: "DOWN",
+    mergeEdges: true,
+  };
+  const { positions, groupSizes, routes } = await layoutGraph(input, signal);
 
   const groupNodes: FolderGroupNode[] = diagram.groups.map((group) => {
-    const box = groupBoxes.get(group.id);
+    const box = groupSizes.get(group.id);
     return {
       id: group.id,
       type: "folder",
-      position: relativePositions.get(group.id) ?? { x: 0, y: 0 },
+      position: positions.get(group.id) ?? { x: 0, y: 0 },
       data: group,
       width: box?.width ?? 0,
       height: box?.height ?? 0,
@@ -143,7 +201,7 @@ async function runLayout(diagram: Diagram): Promise<{ nodes: DiagramFlowNode[]; 
   const fileNodes: FileNode[] = diagram.nodes.map((node) => ({
     id: node.path,
     type: "file",
-    position: relativePositions.get(node.path) ?? { x: 0, y: 0 },
+    position: positions.get(node.path) ?? { x: 0, y: 0 },
     parentId: node.groupId,
     data: node,
     width: node.width,
@@ -217,6 +275,19 @@ export function orthogonalPath(points: XYPosition[]): string {
   }
   const last = points[points.length - 1];
   return `${path} L ${last.x} ${last.y}`;
+}
+
+/** The point halfway along the polyline through `points`, where a hover card of an unlabeled edge anchors. */
+export function pathMidpoint(points: XYPosition[]): XYPosition {
+  if (!points.length) return { x: 0, y: 0 };
+  const total = points.reduce((sum, point, index) => (index ? sum + distance(points[index - 1], point) : 0), 0);
+  let remaining = total / 2;
+  for (let index = 1; index < points.length; index++) {
+    const length = distance(points[index - 1], points[index]);
+    if (remaining <= length) return towards(points[index - 1], points[index], remaining);
+    remaining -= length;
+  }
+  return points[points.length - 1];
 }
 
 function distance(a: XYPosition, b: XYPosition): number {

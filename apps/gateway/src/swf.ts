@@ -13,20 +13,26 @@
  * repository's private files (the ignored files a handoff copies, such as `.env.private`) from the secret
  * `HUNT_SWF_FILES_<owner>_<repo>` through `put-files`, `session-config`, `hunt-session.json` through `put-files
  * --claude`, `deps`, `start` with the tokens on stdin and `wait`. The session's system prompt holds the steps of the
- * workflow (`prompts/swf.system-prompt.md`: read the
- * issue, ask open questions, comment a plan, implement and check, open the pull request, clean up); then the issue
+ * workflow (`prompts/swf.system-prompt.md`: read the issue and the repository's guardrails, ask open questions,
+ * comment a plan, then loop over implement, check and self-review until a pass finds nothing, open the pull request
+ * and watch its checks, clean up); then the issue
  * goes to the agent as its first prompt through the relay. The agent opens the pull request and sets `swf:done` or
- * `swf:failed` itself, or asks a question on the issue and sets `swf:question` until the answer arrives. When the setup fails, the poller sets `swf:failed` with the error and leaves the VM for inspection; Hunt
- * desktops adopt the VM either way.
+ * `swf:failed` itself, or asks a question on the issue and sets `swf:question` until the answer arrives. When the setup
+ * fails, the poller sets `swf:failed` with the error and leaves the VM for inspection; Hunt desktops adopt the VM either
+ * way.
  *
  * Every poll also follows the agent of each running session VM: the issue's labels give the agent's state (`running`,
  * `question`, `done`, `failed`; `swfPlan.ts`), which the VM's metadata `hunt-agent` records for Hunt's lists. While
  * the issue is still labelled `swf:running`, the relay's status (`hunt-ctl status`) tells whether the agent ended its
  * turn without finishing: then the poller reminds it once (`nudgePrompt`) and, when the next turn ends the same way,
- * marks the issue as failed. No reminder goes to a session a Hunt desktop is connected to, since a person is working
- * with the agent there. The reminders are remembered only in memory: after a restart of the poller a session may be
- * reminded once more. Between polls, the reaper (`reaper.ts`) deletes session VMs that have been stopped for more than
- * a week.
+ * marks the issue as failed. While it is labelled `swf:question`, the poller watches the issue for the answer: a comment
+ * by someone other than the app's bot user after the agent's question (`newAnswers`) goes to the agent as a prompt
+ * (`answerPrompt`), which tells it to take the label back to running; a VM that stopped meanwhile is started first
+ * through the orchestrator, and the next poll delivers the answer. An answer given in a Hunt desktop needs none of this:
+ * the agent takes the label back itself. No reminder and no answer goes to a session a Hunt desktop is connected to,
+ * since a person is working with the agent there. Reminders and delivered answers are remembered only in memory: after
+ * a restart of the poller a session may be reminded once more or get an answer a second time. Between polls, the
+ * reaper (`reaper.ts`) deletes session VMs that have been stopped for more than a week.
  *
  * On GitHub the poller and its sessions act as a GitHub App (`githubApp.ts`): the app's id and private key
  * (`HUNT_SWF_GITHUB_APP_ID`, `HUNT_SWF_GITHUB_APP_KEY`), the Claude Code OAuth token (`HUNT_SWF_CLAUDE_TOKEN`) and the
@@ -46,6 +52,7 @@ import { fileURLToPath } from "node:url";
 import gitPushPrompt from "../../../libs/domain/prompts/git-push.system-prompt.md?raw";
 import questionPrompt from "../../../libs/domain/prompts/question.system-prompt.md?raw";
 import remotePrompt from "../../../libs/domain/prompts/remote.system-prompt.md?raw";
+import swfAnswerPrompt from "../prompts/swf-answer.user-prompt.md?raw";
 import swfFirstPrompt from "../prompts/swf-first.user-prompt.md?raw";
 import swfNudgePrompt from "../prompts/swf-nudge.user-prompt.md?raw";
 import swfSystemPromptFile from "../prompts/swf.system-prompt.md?raw";
@@ -56,7 +63,16 @@ import { createCompute, createMetadata, metadataValue, readOptionalSecretBytes, 
 import { writeLog } from "./journal.ts";
 import { createGitHub, type GitHub, type Issue, type IssueComment } from "./github.ts";
 import { createGitHubApp, type AppCredentials, type GitHubApp } from "./githubApp.ts";
-import { AGENT_METADATA, DEFAULT_TEMPLATE, ORIGIN_LABEL, Orchestrator, sessionSummary, type Origin, type Reporter } from "./orchestrator.ts";
+import {
+  AGENT_METADATA,
+  DEFAULT_TEMPLATE,
+  ORIGIN_LABEL,
+  Orchestrator,
+  SILENT,
+  sessionSummary,
+  type Origin,
+  type Reporter,
+} from "./orchestrator.ts";
 import { readDomain } from "./previewDomain.ts";
 import { remoteSecretStore } from "./remoteSecretStore.ts";
 import { Reaper } from "./reaper.ts";
@@ -66,6 +82,7 @@ import { readSwfConfig, REPOS_ATTRIBUTE, SWF_LABEL, type SwfConfig } from "./swf
 import {
   activeSessionVms,
   agentStateOf,
+  answerPrompt,
   branchName,
   checkPrivateFilesArchive,
   claimComment,
@@ -74,6 +91,7 @@ import {
   huntSessionFile,
   issuesToStart,
   labelSpecs,
+  newAnswers,
   nudgePrompt,
   privateFilesSecret,
   redact,
@@ -134,15 +152,22 @@ interface Setup {
   done: Promise<void>;
 }
 
-/** What the poller remembers about the agent of a running session between polls. */
+/** What the poller remembers about the agent of a session between polls. */
 interface Watched {
-  /** The relay's `lastTurnEndedAt` the reminder answered; null while no reminder was sent. */
+  /** The relay's `lastTurnEndedAt` the reminder answered; null while no reminder was sent or since the VM stopped. */
   remindedAt: number | null;
   /** The last error of following the session, so that a lasting one is logged once. */
   error: string;
-  /** The GitHub token the poller last gave the VM; empty until it gave one. */
+  /** The GitHub token the poller last gave the VM; empty until it gave one or since the VM stopped. */
   token: string;
+  /** `createdAt` of the last answer comment delivered to the agent; empty until one was. */
+  answeredAt: string;
+  /** The last error of starting the VM for an answer, so that a lasting one is logged once. */
+  startError: string;
 }
+
+/** The VM statuses from which the poller starts the VM of an agent whose question got its answer. */
+const OFF_STATUSES = new Set(["TERMINATED", "STOPPED", "SUSPENDED"]);
 
 /** The fields of `hunt-ctl status` the poller reads: the relay's status and the session's worktree. */
 interface RelayStatus {
@@ -176,8 +201,10 @@ export class Poller {
   private readonly deps: PollerDeps;
   /** Setups in progress by VM name; they count towards the limit until Compute Engine lists their VM. */
   private readonly setups = new Map<string, Setup>();
-  /** The running sessions the poller follows, by VM name. */
+  /** The sessions the poller follows, by VM name. */
   private readonly watched = new Map<string, Watched>();
+  /** The VMs the poller is starting for an answer, by VM name. */
+  private readonly starts = new Set<string>();
   /** Repositories whose labels exist, by `<repo> <label>`. */
   private readonly labelledRepos = new Set<string>();
   private lastNote = "";
@@ -257,18 +284,27 @@ export class Poller {
 
   /**
    * Hands every running session VM that is not being set up the current GitHub token of its repository when it
-   * changed, and follows its agent; a failure with one VM is logged once.
+   * changed, and follows its agent; a stopped VM whose agent waits for an answer is started once the answer arrived.
+   * A failure with one VM is logged once.
    */
   private async watchSessions(github: GitHub, labels: SwfLabels, vms: Instance[]): Promise<void> {
-    const running = new Set<string>();
+    const listed = new Set<string>();
     for (const instance of vms) {
       const session = sessionSummary(instance, instance.zone);
-      if (!session || session.issue === null || instance.status !== "RUNNING" || this.setups.has(instance.name)) continue;
-      running.add(instance.name);
-      const watched = this.watched.get(instance.name) ?? { remindedAt: null, error: "", token: "" };
+      if (!session || session.issue === null || this.setups.has(instance.name)) continue;
+      listed.add(instance.name);
+      const watched = this.watched.get(instance.name) ?? { remindedAt: null, error: "", token: "", answeredAt: "", startError: "" };
       this.watched.set(instance.name, watched);
       try {
-        await this.watchSession(github, labels, instance, session.id, session.repo, session.issue, watched);
+        if (instance.status === "RUNNING") {
+          await this.watchSession(github, labels, instance, session.id, session.repo, session.issue, watched);
+        } else {
+          watched.remindedAt = null;
+          watched.token = "";
+          if (OFF_STATUSES.has(instance.status) && metadataValue(instance, AGENT_METADATA) === "question" && !this.starts.has(instance.name)) {
+            await this.startForAnswer(github, labels, instance, session.id, session.repo, session.issue, watched);
+          }
+        }
         watched.error = "";
       } catch (error) {
         const message = this.redacted(error);
@@ -279,7 +315,7 @@ export class Poller {
       }
     }
     for (const vm of this.watched.keys()) {
-      if (!running.has(vm)) {
+      if (!listed.has(vm)) {
         this.watched.delete(vm);
       }
     }
@@ -288,7 +324,8 @@ export class Poller {
   /**
    * Gives the VM the repository's GitHub token unless it has it, records the agent's state in the VM and, while the issue
    * is still labelled running, reminds an agent that ended its turn, or marks the issue as failed when the reminded turn
-   * ended the same way; see the module comment.
+   * ended the same way; while it is labelled question, delivers an answer that arrived on the issue. See the module
+   * comment.
    */
   private async watchSession(github: GitHub, labels: SwfLabels, instance: Instance, id: string, repo: string, issue: number, watched: Watched): Promise<void> {
     const key = `${repo}#${issue}`;
@@ -302,6 +339,10 @@ export class Poller {
     if (metadataValue(instance, AGENT_METADATA) !== state) {
       await this.deps.orchestrator.recordSession(instance.zone, instance.name, id, { [AGENT_METADATA]: state });
       this.deps.log(`${key}: the agent is ${state}`);
+    }
+    if (state === "question") {
+      await this.deliverAnswer(github, labels, instance, id, repo, issue, watched);
+      return;
     }
     if (state !== "running") return;
     const vm = this.deps.vm(instance.name, instance.zone);
@@ -317,6 +358,68 @@ export class Poller {
       this.deps.log(`${key}: the agent ended its turn again with the issue still labelled ${labels.running}; marking the issue as failed`, "warn");
       await this.failIssue(key, github, repo, issue, labels, stoppedComment(instance.name));
     }
+  }
+
+  /**
+   * Sends the answers that arrived on the issue since the agent's question to the agent, unless its relay is busy or a
+   * desktop is connected; the prompt tells the agent to take the label back to running.
+   */
+  private async deliverAnswer(github: GitHub, labels: SwfLabels, instance: Instance, id: string, repo: string, issue: number, watched: Watched): Promise<void> {
+    const answers = await this.answers(github, repo, issue, watched);
+    if (answers.length === 0) return;
+    const vm = this.deps.vm(instance.name, instance.zone);
+    const status = relayStatus(await vm.huntCtl(["status", id]));
+    if (!status || status.turn !== "idle" || status.clientConnected) return;
+    watched.answeredAt = answers[answers.length - 1].createdAt;
+    const text = answerPrompt(this.deps.prompts().swfAnswer, repo, issue, answers, labels);
+    const outcome = await this.deps.sendPrompt(vm.openRelay(), { sessionId: status.acpSessionId, cwd: status.worktree, text });
+    const what = answers.length === 1 ? "an answer arrived on the issue; sent it" : `${answers.length} answers arrived on the issue; sent them`;
+    this.deps.log(`${repo}#${issue}: ${what} to the agent (prompt ${outcome})`);
+  }
+
+  /**
+   * Starts the stopped VM of an agent whose question got its answer on the issue, in the background; the next poll
+   * that lists the VM running delivers the answer. An issue whose labels moved on gets its state recorded instead.
+   */
+  private async startForAnswer(
+    github: GitHub,
+    labels: SwfLabels,
+    instance: Instance,
+    id: string,
+    repo: string,
+    issue: number,
+    watched: Watched,
+  ): Promise<void> {
+    const key = `${repo}#${issue}`;
+    const state = agentStateOf(await github.issue(repo, issue), labels);
+    if (state !== "question") {
+      await this.deps.orchestrator.recordSession(instance.zone, instance.name, id, { [AGENT_METADATA]: state });
+      this.deps.log(`${key}: the agent is ${state}`);
+      return;
+    }
+    const answers = await this.answers(github, repo, issue, watched);
+    if (answers.length === 0) return;
+    this.deps.log(`${key}: an answer arrived on the issue while ${instance.name} is ${instance.status.toLowerCase()}; starting it`);
+    this.starts.add(instance.name);
+    void this.deps.orchestrator.start(id, SILENT).then(
+      () => {
+        watched.startError = "";
+        this.deps.log(`${key}: ${instance.name} runs again`);
+      },
+      (error: unknown) => {
+        const message = this.redacted(error);
+        if (watched.startError !== message) {
+          this.deps.log(`${key}: failed to start ${instance.name} for the answer: ${message}`, "error");
+        }
+        watched.startError = message;
+      },
+    ).finally(() => this.starts.delete(instance.name));
+  }
+
+  /** The comments that answer the agent's question and were not delivered yet; see `newAnswers`. */
+  private async answers(github: GitHub, repo: string, issue: number, watched: Watched): Promise<IssueComment[]> {
+    const bot = (await this.deps.githubApp.identity()).name;
+    return newAnswers(await github.comments(repo, issue), bot, watched.answeredAt);
   }
 
   /** Claims the issue and starts its setup in the background; an issue that cannot be claimed stays for the next poll. */
@@ -485,6 +588,7 @@ function readPrompts(): PromptFiles {
     swfSystem: swfSystemPromptFile,
     swfFirst: swfFirstPrompt,
     swfNudge: swfNudgePrompt,
+    swfAnswer: swfAnswerPrompt,
   };
 }
 

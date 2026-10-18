@@ -485,8 +485,64 @@ export type GraphEdge = { source: string; target: string; label?: string; descri
 /** The validated content of `.hunt/graph.json` (see src-tauri/src/graph.schema.json). */
 export type ArchitectureGraph = { nodes: GraphNode[]; edges: GraphEdge[] };
 
-/** Age of the diagram: when `.hunt/graph.json` was last written, and whether session files changed since. */
+/** Age of a diagram: when its file was last written, and whether session files changed since. */
 export type GraphStatus = { generatedAt: string | null; isOutdated: boolean };
+
+/**
+ * The diagrams the Architecture tab offers. `dependencies` is the file-level component diagram in `.hunt/graph.json`;
+ * every other type is a shape diagram the agent writes to `.hunt/diagram.<type>.json` (see src-tauri/src/diagram.schema.json).
+ */
+export type DiagramType = "dependencies" | "c4-context" | "c4-container" | "states" | "erd" | "process";
+export type ShapeDiagramType = Exclude<DiagramType, "dependencies">;
+
+/** Element kinds of the shape diagrams; which ones a diagram type allows is listed in `KINDS_BY_TYPE` (graph/diagramTypes.ts). */
+export type ShapeKind = "person" | "system" | "externalSystem" | "container" | "database" | "queue" | "start" | "end" | "state" | "action" | "decision" | "table";
+
+/** One row of an ERD table. */
+export type TableColumn = { name: string; type: string; isPrimaryKey?: boolean; isForeignKey?: boolean };
+
+/** What the session did to an element: Hunt highlights added and changed elements, everything else is the unchanged context. */
+export type ShapeChange = "added" | "changed";
+
+/**
+ * One element of a shape diagram. `id` is a stable kebab-case id derived from the name, so the same element has the same
+ * id on every branch; `description` is the second line under the label (a container's technology, a system's purpose);
+ * `parent` names the group the element sits in; `actor` is who performs an action; `columns` are the rows of a table.
+ */
+export type ShapeNode = {
+  id: string;
+  kind: ShapeKind;
+  label: string;
+  description?: string;
+  parent?: string;
+  actor?: string;
+  columns?: TableColumn[];
+  change?: ShapeChange;
+};
+
+/** A boundary that encloses the nodes naming it as `parent`, e.g. the system under review in a C4 container diagram. */
+export type ShapeGroup = { id: string; label: string; change?: ShapeChange };
+
+export type Cardinality = "one" | "many";
+
+/**
+ * A connection between two nodes. `label` is the event (states), the yes/no answer of a decision (process) or the
+ * relationship (C4); ERD edges join `sourceColumn` of `source` with `targetColumn` of `target` and carry the
+ * `cardinality` of both ends.
+ */
+export type ShapeEdge = {
+  source: string;
+  target: string;
+  label?: string;
+  description?: string;
+  sourceColumn?: string;
+  targetColumn?: string;
+  cardinality?: { source: Cardinality; target: Cardinality };
+  change?: ShapeChange;
+};
+
+/** The validated content of `.hunt/diagram.<type>.json`. */
+export type ShapeDiagram = { type: ShapeDiagramType; title?: string; nodes: ShapeNode[]; groups?: ShapeGroup[]; edges: ShapeEdge[] };
 
 /** `_meta` Hunt attaches to the chunks of a user turn it sent itself; the chat shows `label` instead of the text. `harness` is the key older transcripts used. */
 export type HuntChunkMeta = { hunt?: HiddenChunk; harness?: HiddenChunk };
@@ -540,8 +596,8 @@ export type LspExitedEvent = { worktreePath: string };
 
 /**
  * A file to show in an editor window, with an optional 1-based caret position. With `definitionOf` (the name
- * ⌘clicked at the position, e.g. in a diff) the window shows that name's declaration instead, or nothing when the
- * language server knows none inside the worktree.
+ * ⌘clicked at the position, e.g. in a diff) the window shows that name's declaration instead when the language
+ * server knows one elsewhere inside the worktree, otherwise the position itself.
  */
 export type EditorOpenRequest = { path: string; line?: number; column?: number; inRightSplit?: boolean; definitionOf?: string };
 

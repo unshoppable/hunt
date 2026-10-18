@@ -311,7 +311,7 @@ function AgentSection() {
           onChange={setAiLanguage}
           presets={AI_LANGUAGE_PRESETS.map((language) => ({ value: language }))}
         />
-        <p className="text-[13px] leading-snug text-neutral-500">Applies to the labels and descriptions of the architecture diagram and to session summaries and titles. Your own prompts are answered in the language you write in.</p>
+        <p className="text-[13px] leading-snug text-neutral-500">Applies to the labels and descriptions of the diagrams of the Architecture tab and to session summaries and titles. Your own prompts are answered in the language you write in.</p>
       </div>
       <div className="mt-5 flex flex-col gap-2">
         <div className="text-sm text-neutral-100">System prompt</div>
@@ -321,7 +321,7 @@ function AgentSection() {
       <div className="mt-5 flex flex-col gap-2">
         <TextRow
           label="Diagram model"
-          ariaLabel="Model the agent writes the architecture diagram with"
+          ariaLabel="Model the agent writes the diagrams of the Architecture tab with"
           value={graphAgent.model}
           onChange={(value) => setGraphAgent("model", value)}
           presets={modelPresets}
@@ -329,13 +329,13 @@ function AgentSection() {
         />
         <TextRow
           label="Diagram effort"
-          ariaLabel="Effort the agent writes the architecture diagram with"
+          ariaLabel="Effort the agent writes the diagrams of the Architecture tab with"
           value={graphAgent.effort}
           onChange={(value) => setGraphAgent("effort", value)}
           presets={choicesOf("effort")}
           isMonospace
         />
-        <p className="text-[13px] leading-snug text-neutral-500">The session's agent switches to this model and effort while it updates the architecture diagram and goes back to the chat's choice afterwards. A model option such as <code>opus</code> follows Claude Code to newer versions; a full model ID such as <code>claude-opus-5-5</code> stays on that version.</p>
+        <p className="text-[13px] leading-snug text-neutral-500">The session's agent switches to this model and effort while it updates the diagrams of the Architecture tab and goes back to the chat's choice afterwards. A model option such as <code>opus</code> follows Claude Code to newer versions; a full model ID such as <code>claude-opus-5-5</code> stays on that version.</p>
       </div>
     </section>
   );

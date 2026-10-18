@@ -5,6 +5,7 @@ import type {
   AvailableCommand,
   ChatItem,
   ClosedEvent,
+  DiagramType,
   HuntChunkMeta,
   PendingPermission,
   PermissionEvent,
@@ -28,7 +29,6 @@ import type {
 } from "../ipc/types";
 import { imageDataUrl, imagePlaceholder } from "../chat/imageData";
 import { hasQuestionMarker } from "../chat/questionMarker";
-import { remoteOf } from "../chat/remoteSession";
 import { repoName } from "../ui/path";
 import { titleFromPrompt } from "../sessions/sessionLabels";
 import { HANDOFF_START_PROMPT, hasRunningService } from "../preview/services";
@@ -60,7 +60,7 @@ export type RemoteSync = { isRunning: boolean; error: string | null };
 /** Text and screenshots of a prompt before it is sent. */
 export type PromptDraft = { text: string; images: Screenshot[] };
 
-/** A prompt sent while the agent was busy; it waits in the chat's queue and is sent once the running turn ends. */
+/** A prompt sent while the agent was busy or starting; it waits in the chat's queue and is sent once the agent is idle. */
 export type QueuedPrompt = PromptDraft & { id: string };
 
 /** Agent settings a new session starts with: the value of every select option by option id, and the mode. */
@@ -151,8 +151,9 @@ export type SessionChat = {
   contextUsage: ContextUsage | null;
   isBusy: boolean;
   /**
-   * Prompts sent while a turn was running, in sending order; each one starts the next turn as soon as the previous
-   * turn ends. A stopped or failed turn leaves them here for the composer to take back.
+   * Prompts sent while a turn was running or the agent was starting, in sending order; each one starts the next turn as
+   * soon as the previous turn ends or the agent runs. A stopped or failed turn, or a failed start, leaves them here for
+   * the composer to take back.
    */
   queue: QueuedPrompt[];
   /** Whether a turn finished while the session was not the active one and the user has not opened it since. */
@@ -181,7 +182,10 @@ export type SessionChat = {
   remoteDetail: string | null;
   /** The steps and run time of the remote operation, or of the move, that runs; `null` while none runs. */
   remoteRun: RemoteRun | null;
-  /** The items show the conversation from before a restart of the agent; its first update replaces them (see `restartChat`). */
+  /**
+   * The items show the conversation from before a restart of the agent; its first update replaces them, or the backend's
+   * history does once the start ended without one (see `restartChat`).
+   */
   isStale: boolean;
   /** The move to or from the VM the user asked for, from the click until it ended; `null` while none is asked for. */
   move: SessionMove | null;
@@ -303,7 +307,7 @@ type HuntState = {
   /** Remembers what the prompt box of `id` holds (see `promptDrafts`); an empty draft forgets it. */
   setPromptDraft: (id: string, draft: PromptDraft) => void;
   /** Asks the agent for a fresh component diagram as a hidden turn (see `SessionChat.isHiddenTurn`). */
-  refreshGraph: (id: string) => Promise<void>;
+  refreshGraph: (id: string, diagramType: DiagramType, instructions?: string) => Promise<void>;
   cancelPrompt: (id: string) => Promise<void>;
   setMode: (id: string, modeId: string) => Promise<void>;
   setConfigOption: (id: string, configId: string, value: string) => Promise<void>;
@@ -629,10 +633,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     try {
       const stopReason = await request();
       const sendsQueue = stopReason !== CANCELLED_STOP_REASON || interruptedToSendIds.has(id);
-      updateChat(id, (chat) => {
-        next = sendsQueue && !chat.move ? (chat.queue[0] ?? null) : null;
-        return { ...chat, isBusy: Boolean(next), queue: next ? chat.queue.slice(1) : chat.queue, editVersion: chat.editVersion + 1 };
-      });
+      next = updateChatTakingQueue(id, (chat) => ({ ...chat, isBusy: false, editVersion: chat.editVersion + 1 }), sendsQueue);
     } catch (error) {
       updateChat(id, (chat) => ({ ...chat, isBusy: false, error: String(error) }));
     } finally {
@@ -648,32 +649,65 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     }
   }
 
-  /** Runs `prompt` as the next turn; `/clear` starts the conversation over instead of being sent. */
+  /**
+   * Applies `updater` to the chat of `id` and, with `sendsQueue`, takes the first queued prompt out when the updated chat
+   * runs no turn and no move, marking the chat busy for it in the same step so that the composer never sees the chat idle
+   * with a queue (it would take the queue back then). Returns the taken prompt, which the caller runs with `runPrompt`.
+   */
+  function updateChatTakingQueue(id: string, updater: (chat: SessionChat) => SessionChat, sendsQueue: boolean): QueuedPrompt | null {
+    let next: QueuedPrompt | null = null;
+    updateChat(id, (chat) => {
+      const updated = updater(chat);
+      next = sendsQueue && !updated.isBusy && !updated.move ? (updated.queue[0] ?? null) : null;
+      return next ? { ...updated, isBusy: true, queue: updated.queue.slice(1) } : updated;
+    });
+    return next;
+  }
+
+  /**
+   * Runs `prompt` as the next turn; `/clear` starts the conversation over instead of being sent. The first prompt of an
+   * untitled session names it.
+   */
   async function runPrompt(id: string, prompt: PromptDraft) {
     if (isClearPrompt(prompt.text)) {
       await get().clearSession(id);
-    } else {
-      await runPromptTurn(id, prompt);
+      return;
     }
+    if (get().untitledIds.includes(id)) {
+      void nameAfterPrompt(id, prompt.text);
+    }
+    await runPromptTurn(id, prompt);
   }
 
   /**
    * Starts the agent of `id` through `start` with an empty chat, which is complete as soon as the agent runs: the
    * agent's conversation starts fresh. With `keepsItems` the chat goes on showing its conversation until the first
    * update of the started agent, which replays the conversation it loads, replaces it; a start that sends nothing
-   * leaves the chat empty. A failed start leaves its error in the chat, next to the conversation it kept. Resolves with
-   * whether the agent started.
+   * leaves the chat empty. With `mayAttach` the start may have found the agent running already (an open while another
+   * open of the session runs, or of a session the list did not show as live yet) and attached to it without an update:
+   * the chat is then rebuilt from the backend's history, which holds what that agent replayed. A failed start leaves
+   * its error in the chat, next to the conversation it kept. Prompts queued while the agent started go to it once it
+   * runs, unless the session is moving (the move sends them). Resolves with whether the agent started.
    */
-  async function restartChat(id: string, start: () => Promise<SessionView>, keepsItems = false): Promise<boolean> {
+  async function restartChat(id: string, start: () => Promise<SessionView>, keepsItems = false, mayAttach = false): Promise<boolean> {
     updateChat(id, (chat) =>
       keepsItems && chat.items.length
         ? { ...chat, isLoading: true, isStale: true, isBusy: false, isHiddenTurn: false, permission: null, error: null }
-        : { ...replacedChat(chat), isLoading: true, remoteStep: null, remoteDetail: null },
+        : { ...replacedChat(chat), isLoading: true, isStale: true, remoteStep: null, remoteDetail: null },
     );
     try {
       await start();
-      updateChat(id, (chat) => ({ ...(chat.isStale ? replacedChat(chat) : chat), isLoading: false }));
+      if (mayAttach && get().chats[id]?.isStale) {
+        const history = await commands.sessionHistory(id);
+        updateChat(id, (chat) => history.reduce(reduceChat, replacedChat(chat)));
+        rememberCommandsOf(id);
+      }
       await get().refreshSessions();
+      const isLive = Boolean(get().sessions.find((candidate) => candidate.id === id)?.isLive);
+      const next = updateChatTakingQueue(id, (chat) => ({ ...(chat.isStale ? replacedChat(chat) : chat), isLoading: false }), isLive);
+      if (next) {
+        void runPrompt(id, next);
+      }
       return true;
     } catch (error) {
       updateChat(id, (chat) => ({ ...chat, isLoading: false, isStale: false, error: String(error) }));
@@ -724,11 +758,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       updateChat(id, (chat) => ({ ...chat, error: String(error) }));
     }
     const isLive = Boolean(get().sessions.find((candidate) => candidate.id === id)?.isLive);
-    let next: QueuedPrompt | null = null;
-    updateChat(id, (chat) => {
-      next = isMoved && isLive && !chat.isBusy ? (chat.queue[0] ?? null) : null;
-      return { ...chat, move: null, remoteRun: null, isBusy: chat.isBusy || Boolean(next), queue: next ? chat.queue.slice(1) : chat.queue };
-    });
+    const next = updateChatTakingQueue(id, (chat) => ({ ...chat, move: null, remoteRun: null }), isMoved && isLive);
     if (next) {
       await runPrompt(id, next);
     } else if (isMoved && isLive && hasTask) {
@@ -807,7 +837,10 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     return id;
   }
 
-  /** Applies the setup to the freshly created session and sends its first prompt; a failure lands in the chat's error. */
+  /**
+   * Applies the setup to the freshly created session and sends its first prompt, or without one the first prompt queued
+   * while the session was created (the turn of the first prompt sends the queue on); a failure lands in the chat's error.
+   */
   async function applyStart(id: string, { setup, prompt }: SessionStart) {
     try {
       for (const [configId, value] of Object.entries(setup.configValues)) {
@@ -819,9 +852,16 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     } catch (error) {
       updateChat(id, (chat) => ({ ...chat, error: String(error) }));
     }
-    if (!prompt) return;
-    const images = prompt.images.map((image) => image.path);
-    await runTurn(id, null, () => commands.sendPrompt(id, prompt.text, images));
+    if (prompt) {
+      const images = prompt.images.map((image) => image.path);
+      await runTurn(id, null, () => commands.sendPrompt(id, prompt.text, images));
+      return;
+    }
+    const isLive = Boolean(get().sessions.find((candidate) => candidate.id === id)?.isLive);
+    const next = updateChatTakingQueue(id, (chat) => chat, isLive);
+    if (next) {
+      await runPrompt(id, next);
+    }
   }
 
   /** The title a session is created with: `title`, or for an untitled session (`null`) the name of its repository. */
@@ -948,7 +988,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     },
 
     resumeSession: async (id) => {
-      await restartChat(id, () => commands.openSession(id), true);
+      await restartChat(id, () => commands.openSession(id), true, true);
     },
 
     clearSession: async (id) => {
@@ -980,8 +1020,11 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       updateChat(id, (chat) => ({ ...chat, isLoading: true }));
       try {
         const history = await commands.sessionHistory(id);
-        updateChat(id, () => ({ ...history.reduce(reduceChat, createEmptyChat()), isLoading: false, hasHistory: true }));
+        const next = updateChatTakingQueue(id, (chat) => ({ ...history.reduce(reduceChat, createEmptyChat()), queue: chat.queue, isLoading: false, hasHistory: true }), true);
         rememberCommandsOf(id);
+        if (next) {
+          void runPrompt(id, next);
+        }
       } catch (error) {
         updateChat(id, (chat) => ({ ...chat, isLoading: false, error: String(error) }));
       }
@@ -1047,22 +1090,21 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     },
 
     sendPrompt: async (id, text, images = []) => {
-      if (get().chats[id]?.isBusy || get().chats[id]?.move) {
-        updateChat(id, (chat) => ({ ...chat, queue: [...chat.queue, { id: nextItemId(), text, images }] }));
+      const chat = get().chats[id];
+      const queued = { id: nextItemId(), text, images };
+      // A running turn, a move or a starting agent (the session is loading or being created) gets the prompt once it ended.
+      if (chat?.isBusy || chat?.move || chat?.isLoading || get().creatingIds.includes(id)) {
+        updateChat(id, (current) => ({ ...current, queue: [...current.queue, queued] }));
         return;
       }
       const session = get().sessions.find((candidate) => candidate.id === id);
-      if (session && remoteOf(session, get().sessions) && !session.isLive) {
-        // The VM shuts down when idle; a prompt starts it and the connection again. A failed start keeps the prompt
-        // in the queue, so the composer can take it back.
+      if (session && !session.isLive) {
+        // The agent is not running (a VM shuts down when idle, a local agent is gone after the app restarted): the prompt
+        // waits in the queue while the session starts again, which sends it. A failed start keeps it in the queue, so the
+        // composer can take it back.
+        updateChat(id, (current) => ({ ...current, queue: [...current.queue, queued] }));
         await get().resumeSession(id);
-        if (!get().sessions.find((candidate) => candidate.id === id)?.isLive) {
-          updateChat(id, (chat) => ({ ...chat, queue: [...chat.queue, { id: nextItemId(), text, images }] }));
-          return;
-        }
-      }
-      if (get().untitledIds.includes(id) && !isClearPrompt(text)) {
-        void nameAfterPrompt(id, text);
+        return;
       }
       await runPrompt(id, { text, images });
     },
@@ -1104,11 +1146,11 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       });
     },
 
-    refreshGraph: async (id) => {
+    refreshGraph: async (id, diagramType, instructions = "") => {
       if (get().chats[id]?.move) return;
       updateChat(id, (chat) => ({ ...chat, isGeneratingGraph: true, isHiddenTurn: true }));
       const { model, effort } = useSettingsStore.getState().graphAgent;
-      const request = () => commands.refreshGraph(id, model, effort).finally(() => updateChat(id, (chat) => ({ ...chat, isGeneratingGraph: false })));
+      const request = () => commands.refreshGraph(id, diagramType, instructions, model, effort).finally(() => updateChat(id, (chat) => ({ ...chat, isGeneratingGraph: false })));
       await runTurn(id, null, request);
     },
 

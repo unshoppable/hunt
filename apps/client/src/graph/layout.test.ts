@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ArchitectureGraph } from "../ipc/types";
 import { buildDiagram } from "./diagram";
-import { LABEL_HEIGHT, labelWidth, layoutDiagram, orthogonalPath } from "./layout";
+import { LABEL_HEIGHT, labelWidth, layoutDiagram, layoutGraph, orthogonalPath, pathMidpoint } from "./layout";
 
 // Node has no Web Worker; ELK's in-thread stand-in runs the layouts instead.
 const elkWorker = (await import("elkjs/lib/elk-worker.js")) as unknown as { Worker: typeof Worker };
@@ -118,5 +118,35 @@ describe("layoutDiagram", () => {
     const { nodes, edges } = await layoutDiagram({ nodes: [], groups: [], edges: [], legend: [], hiddenCount: 0 });
     expect(nodes).toEqual([]);
     expect(edges).toEqual([]);
+  });
+});
+
+describe("layoutGraph", () => {
+  it("lays out to the right and routes an edge from a fixed port", async () => {
+    const { positions, groupSizes, routes } = await layoutGraph(
+      {
+        nodes: [{ id: "a", width: 100, height: 50, ports: [{ id: "a:out", x: 100, y: 10 }] }, { id: "b", width: 80, height: 40 }],
+        groups: [],
+        edges: [{ id: "a->b", source: "a:out", target: "b" }],
+        direction: "RIGHT",
+        mergeEdges: false,
+      },
+    );
+    const a = positions.get("a")!;
+    expect(positions.get("b")!.x).toBeGreaterThanOrEqual(a.x + 100);
+    expect(groupSizes.size).toBe(0);
+    const route = routes.get("a->b")!;
+    expect(route.points[0]).toEqual({ x: a.x + 100, y: a.y + 10 });
+    expect(route.labelCenter).toBeNull();
+  });
+});
+
+describe("pathMidpoint", () => {
+  it("returns the point halfway along the polyline", () => {
+    expect(pathMidpoint([{ x: 0, y: 0 }, { x: 10, y: 0 }])).toEqual({ x: 5, y: 0 });
+    expect(pathMidpoint([{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }])).toEqual({ x: 10, y: 0 });
+    expect(pathMidpoint([{ x: 0, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 6 }])).toEqual({ x: 4, y: 1 });
+    expect(pathMidpoint([{ x: 3, y: 4 }])).toEqual({ x: 3, y: 4 });
+    expect(pathMidpoint([])).toEqual({ x: 0, y: 0 });
   });
 });

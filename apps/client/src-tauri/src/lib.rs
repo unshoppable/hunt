@@ -111,6 +111,7 @@ pub fn run() {
             session::commands::open_file_in_webstorm,
             session::commands::open_changed_files_diff_in_webstorm,
             session::commands::read_graph,
+            session::commands::write_graph,
             session::commands::graph_status,
             session::commands::refresh_graph,
             session::commands::list_dir,

@@ -21,14 +21,14 @@ import { SaveGuardrailButton } from "./SaveGuardrailButton";
 import { ContextMeter } from "./ContextMeter";
 import { HEADER_BAR } from "../ui/bars";
 import { AGENT_CHIP, Chip } from "../ui/Chip";
-import { PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../ui/buttons";
+import { SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { ShieldIcon } from "../ui/icons";
 import { OpenInWebstormButton } from "./OpenInWebstormButton";
 import { RemoteToggle } from "./RemoteToggle";
 import { remoteDeleteQuestion } from "../sessions/remoteOrigin";
 import { confirmDestructive } from "../ui/confirm";
 import { continueLocallyQuestion, moveStatus, remoteOf } from "./remoteSession";
-import { RemoteRunStatus, RemoteStepProgress } from "./RemoteProgress";
+import { RemoteStepProgress } from "./RemoteProgress";
 import { useVmConnect } from "./useVmConnect";
 
 /** Order in which shift+tab cycles the session mode, as in the terminal; modes the agent does not offer are skipped. */
@@ -154,8 +154,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   }
 
   if (!session) return null;
-  /** A session whose agent runs on a VM takes prompts while not connected: the first one starts its VM and connects. */
-  const canPromptRemote = Boolean(remote) && !session.isLive && !isCreating && !chat?.isLoading;
+  /** The agent is being created or started: prompts sent meanwhile queue until it runs. */
+  const isStarting = isCreating || Boolean(chat?.isLoading);
 
   /** Shows the lines the sub chat is about, selected, in the "Editor" tab. */
   /**
@@ -250,7 +250,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
               <button
                 type="button"
                 onClick={() => void (lock === "vmRunning" ? resumeSession(ownerId) : continueOwnerLocally())}
-                disabled={isCreating || Boolean(chat?.isLoading) || Boolean(chat?.move)}
+                disabled={isStarting || Boolean(chat?.move)}
                 className={SECONDARY_BUTTON_XS}
               >
                 {lock === "vmRunning" ? "Connect" : "Continue locally"}
@@ -275,14 +275,23 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
             <SaveGuardrailButton isSuggested={!!guardrailSuggestion} isDisabled={hasPermission} onOpen={(bounds) => void openGuardrailChat(bounds)} />
           </div>
         </div>
-      ) : canPromptRemote ? (
+      ) : isStarting ? null : remote ? (
         <div className="px-9 pt-2">
           <p className="chat-column text-[13px] text-neutral-500">
-            Runs on the VM {remote?.vm.instance}. Your next prompt starts the VM and connects again; files you change here meanwhile
+            Runs on the VM {remote.vm.instance}. Your next prompt starts the VM and connects again; files you change here meanwhile
             go to the VM then and win over the agent's changes to the same files.
           </p>
         </div>
-      ) : null}
+      ) : (
+        <div className="px-9 pt-2">
+          <div className="chat-column flex items-center justify-between gap-3 text-[13px] text-neutral-500">
+            <span>Agent is not running. Your next prompt starts it again.</span>
+            <button type="button" onClick={() => void selectSession(sessionId)} className={SECONDARY_BUTTON_XS}>
+              Resume
+            </button>
+          </div>
+        </div>
+      )}
       {session.selection ? (
         <div className="px-9 pt-2">
           <div className="chat-column flex items-center gap-3 rounded-xl border border-(--line) bg-(--surface-inset) px-4 py-2 text-[13px]">
@@ -296,60 +305,40 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           </div>
         </div>
       ) : null}
-      {session.isLive || canPromptRemote ? (
-        // Keyed by the session so that a switch shows the other session's own draft instead of carrying this one over.
-        <PromptInput
-          key={sessionId}
-          initialDraft={promptDraft}
-          onDraftChange={(draft) => setPromptDraft(sessionId, draft)}
-          isBusy={isBusy || Boolean(chat?.move)}
-          isBlocked={hasPermission}
-          queue={chat?.queue ?? []}
-          onTakeQueue={() => takeQueue(sessionId)}
-          onUnqueue={(promptId) => unqueuePrompt(sessionId, promptId)}
-          modeId={remote ? null : modeId}
-          modes={modes}
-          configSelects={configSelects}
-          commands={[CLEAR_COMMAND, ...(chat?.commands ?? [])]}
-          onSend={(text, images) => {
-            followEnd();
-            void sendPrompt(sessionId, text, images);
-          }}
-          onSendNow={(text, images) => {
-            followEnd();
-            void sendPromptNow(sessionId, text, images);
-          }}
-          onClear={() => {
-            followEnd();
-            void sendPrompt(sessionId, "/clear");
-          }}
-          onDelete={session.remote && !session.parentId ? () => void deleteRemoteSession() : undefined}
-          onCycleMode={cycleMode}
-          onModeChange={(nextModeId) => void setMode(sessionId, nextModeId)}
-          onConfigChange={(configId, value) => void setConfigOption(sessionId, configId, value)}
-          pullRequest={session.pullRequest}
-          dropZoneRef={panelRef}
-        />
-      ) : isCreating || chat?.isLoading ? (
-        <div className="px-5 pb-4 pt-2">
-          <div className="chat-column rounded-xl border border-(--line) bg-(--surface-inset) px-4 py-3 text-sm text-neutral-400">
-            {chat?.remoteStep
-              ? <RemoteRunStatus chat={chat} />
-              : isCreating && !session.parentId
-                ? "Creating the worktree and starting the agent…"
-                : "Starting the agent…"}
-          </div>
-        </div>
-      ) : (
-        <div className="px-5 pb-4 pt-2">
-          <div className="chat-column flex items-center justify-between rounded-xl border border-(--line) bg-(--surface-inset) px-4 py-3 text-sm text-neutral-400">
-            <span>Agent is not running.</span>
-            <button type="button" onClick={() => void selectSession(sessionId)} className={PRIMARY_BUTTON_MD}>
-              Resume
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Keyed by the session so that a switch shows the other session's own draft instead of carrying this one over. */}
+      <PromptInput
+        key={sessionId}
+        initialDraft={promptDraft}
+        onDraftChange={(draft) => setPromptDraft(sessionId, draft)}
+        isBusy={isBusy || Boolean(chat?.move) || isStarting}
+        isStarting={isStarting}
+        isBlocked={hasPermission}
+        queue={chat?.queue ?? []}
+        onTakeQueue={() => takeQueue(sessionId)}
+        onUnqueue={(promptId) => unqueuePrompt(sessionId, promptId)}
+        modeId={remote ? null : modeId}
+        modes={modes}
+        configSelects={configSelects}
+        commands={[CLEAR_COMMAND, ...(chat?.commands ?? [])]}
+        onSend={(text, images) => {
+          followEnd();
+          void sendPrompt(sessionId, text, images);
+        }}
+        onSendNow={(text, images) => {
+          followEnd();
+          void sendPromptNow(sessionId, text, images);
+        }}
+        onClear={() => {
+          followEnd();
+          void sendPrompt(sessionId, "/clear");
+        }}
+        onDelete={session.remote && !session.parentId ? () => void deleteRemoteSession() : undefined}
+        onCycleMode={cycleMode}
+        onModeChange={(nextModeId) => void setMode(sessionId, nextModeId)}
+        onConfigChange={(configId, value) => void setConfigOption(sessionId, configId, value)}
+        pullRequest={session.pullRequest}
+        dropZoneRef={panelRef}
+      />
       {guardrailChat.shown ? (
         <SubChatPopover
           key={guardrailChat.shown.key}

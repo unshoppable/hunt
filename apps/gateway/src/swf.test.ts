@@ -12,6 +12,7 @@ import { readSwfConfig, type SwfConfig } from "./swfConfig.ts";
 
 const SWF_FIRST = readFileSync(new URL("../prompts/swf-first.user-prompt.md", import.meta.url), "utf8");
 const SWF_NUDGE = readFileSync(new URL("../prompts/swf-nudge.user-prompt.md", import.meta.url), "utf8");
+const SWF_ANSWER = readFileSync(new URL("../prompts/swf-answer.user-prompt.md", import.meta.url), "utf8");
 const GITHUB_TOKEN = "ghs_abcdefghijklmnopqrstuvwxyz0123456789";
 const BOT_NAME = "hunt-claude[bot]";
 const BOT_EMAIL = "4242+hunt-claude[bot]@users.noreply.github.com";
@@ -225,7 +226,7 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
     secretBytes: async () => ({ absent: "has no version" }),
     compute,
     orchestrator,
-    prompts: () => ({ remote: "## Remote session\n", gitPush: "### Git\n", question: "## Questions\n", swfSystem: "## Issue #{{number}} on {{branch}}\n", swfFirst: SWF_FIRST, swfNudge: SWF_NUDGE }),
+    prompts: () => ({ remote: "## Remote session\n", gitPush: "### Git\n", question: "## Questions\n", swfSystem: "## Issue #{{number}} on {{branch}}\n", swfFirst: SWF_FIRST, swfNudge: SWF_NUDGE, swfAnswer: SWF_ANSWER }),
     sendPrompt: async (_transport, request) => {
       prompts.push(request);
       return "started";
@@ -599,6 +600,130 @@ describe("Poller.cycle follows running sessions", () => {
     expect(calls).toEqual([`hunt-ctl github-token ${SESSION_ID} <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`, `hunt-ctl status ${SESSION_ID}`]);
     expect(prompts).toEqual([]);
     expect(github.calls.filter((call) => call.startsWith("issue "))).toEqual([`issue ${key}`]);
+  });
+
+  /** The thread of acme/app#12 up to the agent's question, then the answers `answers`. */
+  function threadWith(...answers: { author: string; createdAt: string; body: string }[]) {
+    return [
+      { author: BOT_NAME, createdAt: "2026-10-13T08:05:00Z", body: "Hunt started a session for this issue." },
+      { author: "alice", createdAt: "2026-10-13T08:30:00Z", body: "Also the logout." },
+      { author: BOT_NAME, createdAt: "2026-10-13T10:00:00Z", body: "@alice Postgres or SQLite?" },
+      ...answers,
+    ];
+  }
+
+  it("delivers the answers that arrive on the issue to the waiting agent once each, not while the relay is busy or a desktop is connected", async () => {
+    let status = statusOf("idle", 1_000);
+    let thread = threadWith();
+    const github = fakeGitHub({}, { lookup: { [key]: issue(12, "Issue 12", ["swf:question"]) } });
+    github.comments = async () => thread;
+    const compute = fakeCompute([sessionVmOf("question")]);
+    const { vm, calls } = fakeVm(undefined, () => status);
+    const { poller, logs, prompts } = createPoller({ github, compute, vm });
+
+    await poller.cycle();
+    expect(prompts).toEqual([]);
+    expect(calls).toEqual([`hunt-ctl github-token ${SESSION_ID} <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`]);
+
+    thread = threadWith({ author: "bob", createdAt: "2026-10-13T10:05:00Z", body: "Postgres, please." });
+    await poller.cycle();
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatchObject({ sessionId: "acp-9", cwd: "/home/agent/app" });
+    expect(prompts[0].text.startsWith("An answer to your question arrived as a comment on issue #12 of acme/app:\n\n**@bob** on 2026-10-13 10:05 UTC:\n\nPostgres, please.\n\n")).toBe(true);
+    expect(prompts[0].text).toContain("Replace `swf:question` with `swf:running` (`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:running`)");
+    expect(prompts[0].text).not.toContain("logout");
+    expect(logs).toContain(`${key}: an answer arrived on the issue; sent it to the agent (prompt started)`);
+
+    status = statusOf("running", 1_000);
+    await poller.cycle();
+    status = statusOf("idle", 2_000);
+    await poller.cycle();
+    expect(prompts).toHaveLength(1);
+
+    thread = threadWith(
+      { author: "bob", createdAt: "2026-10-13T10:05:00Z", body: "Postgres, please." },
+      { author: "carol", createdAt: "2026-10-13T10:10:00Z", body: "With pgvector." },
+      { author: "dave", createdAt: "2026-10-13T10:11:00Z", body: "Agreed." },
+    );
+    status = statusOf("idle", 2_000, true);
+    await poller.cycle();
+    expect(prompts).toHaveLength(1);
+    status = statusOf("idle", 2_000);
+    await poller.cycle();
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1].text).toContain("**@carol** on 2026-10-13 10:10 UTC:\n\nWith pgvector.\n\n---\n\n**@dave** on 2026-10-13 10:11 UTC:\n\nAgreed.");
+    expect(prompts[1].text).not.toContain("Postgres, please.");
+    expect(logs).toContain(`${key}: 2 answers arrived on the issue; sent them to the agent (prompt started)`);
+  });
+
+  it("starts the stopped VM of a waiting agent once its answer arrived and delivers the answer when the VM runs", async () => {
+    const listed = [{ ...sessionVmOf("question"), status: "TERMINATED" }];
+    let thread = threadWith();
+    const github = fakeGitHub({}, { lookup: { [key]: issue(12, "Issue 12", ["swf:question"]) } });
+    github.comments = async () => thread;
+    const compute = fakeCompute(listed);
+    compute.locate = async (name) => listed.find((instance) => instance.name === name) ?? null;
+    compute.start = async (zone, name) => {
+      compute.calls.push(`start ${name}`);
+      listed[0].status = "RUNNING";
+      return { name: "operation-2", zone };
+    };
+    const { vm, calls } = fakeVm(undefined, () => statusOf("idle", 1_000));
+    const { poller, logs, prompts } = createPoller({ github, compute, vm });
+
+    await poller.cycle();
+    expect(compute.calls).toEqual(["list hunt-origin=swf"]);
+    expect(calls).toEqual([]);
+
+    thread = threadWith({ author: "bob", createdAt: "2026-10-13T10:05:00Z", body: "Postgres, please." });
+    await poller.cycle();
+    expect(logs).toContain(`${key}: an answer arrived on the issue while ${VM} is terminated; starting it`);
+    for (let i = 0; i < 10 && !logs.includes(`${key}: ${VM} runs again`); i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(compute.calls).toEqual(["list hunt-origin=swf", "list hunt-origin=swf", `start ${VM}`]);
+    expect(calls).toEqual(["wait until ready", "ensure release", `hunt-ctl put-remote-secrets <<< ${JSON.stringify("{}")}`]);
+    expect(logs).toContain(`${key}: ${VM} runs again`);
+    expect(prompts).toEqual([]);
+
+    await poller.cycle();
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0].text).toContain("**@bob** on 2026-10-13 10:05 UTC:\n\nPostgres, please.");
+    expect(calls.slice(3)).toEqual([`hunt-ctl github-token ${SESSION_ID} <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`, `hunt-ctl status ${SESSION_ID}`]);
+  });
+
+  it("logs a start that keeps failing once and tries again at every poll", async () => {
+    const listed = [{ ...sessionVmOf("question"), status: "TERMINATED" }];
+    const github = fakeGitHub({}, { lookup: { [key]: issue(12, "Issue 12", ["swf:question"]) } });
+    github.comments = async () => threadWith({ author: "bob", createdAt: "2026-10-13T10:05:00Z", body: "Postgres, please." });
+    const compute = fakeCompute(listed);
+    compute.locate = async (name) => listed.find((instance) => instance.name === name) ?? null;
+    compute.start = async () => {
+      compute.calls.push(`start ${VM}`);
+      throw new Error(`failed to start ${VM}: ZONE_RESOURCE_POOL_EXHAUSTED`);
+    };
+    const { poller, logs } = createPoller({ github, compute });
+
+    for (let cycle = 0; cycle < 3; cycle++) {
+      await poller.cycle();
+      for (let i = 0; i < 10 && compute.calls.filter((call) => call.startsWith("start")).length <= cycle; i++) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+    expect(compute.calls.filter((call) => call.startsWith("start"))).toHaveLength(3);
+    expect(logs.filter((line) => line.includes("ZONE_RESOURCE_POOL_EXHAUSTED"))).toEqual([`${key}: failed to start ${VM} for the answer: failed to start ${VM}: ZONE_RESOURCE_POOL_EXHAUSTED`]);
+  });
+
+  it("records the state of a stopped VM whose issue moved on from the question instead of starting it", async () => {
+    const listed = [{ ...sessionVmOf("question"), status: "TERMINATED" }];
+    const github = fakeGitHub({}, { lookup: { [key]: issue(12, "Issue 12", ["swf:done"]) } });
+    const compute = fakeCompute(listed);
+    const { poller, logs } = createPoller({ github, compute });
+
+    await poller.cycle();
+    expect(compute.metadata[0]).toContainEqual({ key: "hunt-agent", value: "done" });
+    expect(logs).toContain(`${key}: the agent is done`);
+    expect(github.calls.filter((call) => call.startsWith("comments"))).toEqual([]);
   });
 
   it("logs a lasting failure to follow a session once and goes on with the other sessions", async () => {

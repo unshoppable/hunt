@@ -1,0 +1,18 @@
+# Shared prompt files
+
+System-prompt parts that both the desktop app and the gateway's poller append to Claude Code's system prompt of a
+remote session. The files are compiled in verbatim (`include_str!` in `apps/client/src-tauri/src/session/commands.rs` and
+`acp/connection.rs`, `?raw` imports in `apps/gateway/src/swf.ts`), so they hold nothing but the prompt text; this file
+says who sends which of them and when. They carry no `{{placeholders}}`.
+
+| File | Sent by | When | Where it lands |
+| --- | --- | --- | --- |
+| `remote.system-prompt.md` | app, poller | every session that runs on a session VM (handoff, reconnect, poller start) | system prompt, after the app's usual addition (`remote_system_prompt`), first part of the poller's (`remoteSystemPrompt` in `swfPlan.ts`); tells the agent it works on a VM, how to run the app's processes in tmux and that the user brings commits back |
+| `git-push.system-prompt.md` | app, poller | a remote session whose VM holds a GitHub token (the user's, or the poller's) | right after the remote part; the agent may push and open pull requests |
+| `git-local.system-prompt.md` | app | a remote session handed off without a GitHub token | in place of `git-push`; the agent commits locally and does not push |
+| `question.system-prompt.md` | app, poller | every session, local and remote | app: `system_prompt_append` in `acp/connection.rs`; poller: after the Git part. Asks the agent to end a reply that waits for the user with `<!-- hunt:question -->`, which `src/chat/questionMarker.ts` and the poller's label handling detect |
+
+The app composes its remote system prompt as: its usual addition (`apps/client/prompts/`, see the README there), the
+remote part, the Git part, the services section `hunt-ctl session-config` writes and the repository's `hunt.agent.md`. The
+poller has no desktop settings and composes: remote part, `git-push`, question part, its swf workflow
+(`apps/gateway/prompts/`), services section, `hunt.agent.md`.

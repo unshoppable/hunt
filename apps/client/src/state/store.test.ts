@@ -286,6 +286,63 @@ describe("loadHistory", () => {
   });
 });
 
+describe("resumeSession", () => {
+  const replay = [
+    notification({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "first question" } }),
+    notification({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "latest answer" } }),
+  ];
+
+  beforeEach(() => {
+    useHuntStore.setState({ chats: {}, sessions: [{ ...storedSession(SESSION, "one"), isLive: false }], activeSessionId: SESSION });
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("keeps the conversation when a second open during the first attaches to the agent the first started", async () => {
+    const opens: Array<(view: SessionView) => void> = [];
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "open_session") return new Promise((resolve) => opens.push(resolve));
+      if (command === "session_history") return Promise.resolve(replay);
+      if (command === "list_sessions") return Promise.resolve([storedSession(SESSION, "one")]);
+      return Promise.resolve(undefined);
+    });
+    const { resumeSession, applyUpdate } = useHuntStore.getState();
+    const first = resumeSession(SESSION);
+    // The started agent replays its conversation while the open still runs.
+    for (const update of replay) {
+      applyUpdate(SESSION, update);
+    }
+    // The second open (a double click) marks the shown conversation as stale and waits for the first open.
+    const second = resumeSession(SESSION);
+    expect(opens).toHaveLength(2);
+    expect(useHuntStore.getState().chats[SESSION].isStale).toBe(true);
+
+    opens[0]({} as SessionView);
+    await first;
+    expect(useHuntStore.getState().chats[SESSION].items.map((item) => item.kind)).toEqual(["user", "agent"]);
+
+    opens[1]({} as SessionView);
+    await second;
+    const chat = useHuntStore.getState().chats[SESSION];
+    expect(chat.items.map((item) => item.kind)).toEqual(["user", "agent"]);
+    expect(chat).toMatchObject({ isLoading: false, isStale: false, hasHistory: true });
+  });
+
+  it("rebuilds the chat from the backend's history when the open attaches to an agent that already runs", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "session_history") return replay;
+      if (command === "list_sessions") return [storedSession(SESSION, "one")];
+      return undefined;
+    });
+
+    await useHuntStore.getState().resumeSession(SESSION);
+
+    const chat = useHuntStore.getState().chats[SESSION];
+    expect(chat.items.map((item) => item.kind)).toEqual(["user", "agent"]);
+    expect(chat).toMatchObject({ isLoading: false, isStale: false, hasHistory: true });
+    expect(useHuntStore.getState().sessions[0].isLive).toBe(true);
+  });
+});
+
 /** A stored top-level session as the backend lists it. */
 function storedSession(id: string, title: string): SessionView {
   return {
@@ -420,8 +477,8 @@ describe("prompt queue", () => {
       return "EndTurn";
     });
 
-    await useHuntStore.getState().refreshGraph(SESSION);
-    await useHuntStore.getState().refreshGraph(SESSION);
+    await useHuntStore.getState().refreshGraph(SESSION, "dependencies");
+    await useHuntStore.getState().refreshGraph(SESSION, "dependencies");
     expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ items: [], isHiddenTurn: true });
 
     await useHuntStore.getState().sendPrompt(SESSION, "next");
@@ -435,9 +492,9 @@ describe("prompt queue", () => {
     const promptTurn = deferredTurn();
     vi.mocked(invoke).mockReturnValueOnce(graphTurn.turn).mockReturnValueOnce(promptTurn.turn);
 
-    const refresh = useHuntStore.getState().refreshGraph(SESSION);
+    const refresh = useHuntStore.getState().refreshGraph(SESSION, "dependencies");
     expect(useHuntStore.getState().chats[SESSION].isGeneratingGraph).toBe(true);
-    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("refresh_graph", { id: SESSION, ...DEFAULT_GRAPH_AGENT });
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("refresh_graph", { id: SESSION, diagramType: "dependencies", instructions: "", ...DEFAULT_GRAPH_AGENT });
     await useHuntStore.getState().sendPrompt(SESSION, "next");
 
     graphTurn.finish("EndTurn");
@@ -516,6 +573,78 @@ describe("prompt queue", () => {
     expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "now", images: [] });
     expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ isBusy: false, queue: [] });
+  });
+
+  it("queues a prompt sent while the agent starts and sends it once the agent runs", async () => {
+    const stopped = { ...storedSession(SESSION, "Build it"), isLive: false };
+    useHuntStore.setState({ sessions: [stopped] });
+    let finishStart: (session: SessionView) => void = () => {};
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "open_session") {
+        return new Promise<SessionView>((resolve) => {
+          finishStart = resolve;
+        });
+      }
+      if (command === "list_sessions") return Promise.resolve([{ ...stopped, isLive: true }]);
+      if (command === "send_prompt") return Promise.resolve("end_turn");
+      return Promise.resolve(command === "session_history" ? [] : undefined);
+    });
+
+    const resume = useHuntStore.getState().resumeSession(SESSION);
+    expect(useHuntStore.getState().chats[SESSION].isLoading).toBe(true);
+    await useHuntStore.getState().sendPrompt(SESSION, "while starting");
+    expect(useHuntStore.getState().chats[SESSION].queue.map((prompt) => prompt.text)).toEqual(["while starting"]);
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("send_prompt", expect.anything());
+
+    finishStart({ ...stopped, isLive: true });
+    await resume;
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ isLoading: false, queue: [] });
+    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("send_prompt", { id: SESSION, text: "while starting", images: [] }));
+    expect(useHuntStore.getState().chats[SESSION].items.map((item) => item.kind)).toEqual(["user"]);
+  });
+
+  it("queues a prompt sent while the session is created and sends it once the agent runs", async () => {
+    let finishCreation: (session: SessionView) => void = () => {};
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "create_session") {
+        return new Promise<SessionView>((resolve) => {
+          finishCreation = resolve;
+        });
+      }
+      if (command === "send_prompt") return Promise.resolve("end_turn");
+      if (command === "list_sessions") return Promise.resolve(useHuntStore.getState().sessions);
+      return Promise.resolve(undefined);
+    });
+    const creation = useHuntStore.getState().createSession(TARGET, "Build it", { setup: { configValues: {}, modeId: "default" }, prompt: null });
+    const id = useHuntStore.getState().creatingIds[0];
+
+    await useHuntStore.getState().sendPrompt(id, "while creating");
+    expect(useHuntStore.getState().chats[id].queue.map((prompt) => prompt.text)).toEqual(["while creating"]);
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("send_prompt", expect.anything());
+
+    finishCreation(storedSession(id, "Build it"));
+    await creation;
+    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("send_prompt", { id, text: "while creating", images: [] }));
+    expect(useHuntStore.getState().chats[id].queue).toEqual([]);
+  });
+
+  it("starts a stopped local session before sending the prompt and names an untitled one after it", async () => {
+    const stopped = { ...storedSession(SESSION, "repo"), isLive: false };
+    useHuntStore.setState({ sessions: [stopped], untitledIds: [SESSION] });
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "open_session") return Promise.resolve({ ...stopped, isLive: true });
+      if (command === "list_sessions") return Promise.resolve([{ ...stopped, isLive: true }]);
+      if (command === "send_prompt") return Promise.resolve("end_turn");
+      if (command === "rename_session") return Promise.resolve({ ...stopped, isLive: true, title: "Fix the build" });
+      return Promise.resolve(command === "session_history" ? [] : undefined);
+    });
+
+    await useHuntStore.getState().sendPrompt(SESSION, "Fix the build");
+
+    const calls = vi.mocked(invoke).mock.calls.map(([command]) => command);
+    expect(calls.indexOf("send_prompt")).toBeGreaterThan(calls.indexOf("open_session"));
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("rename_session", expect.objectContaining({ id: SESSION }));
+    expect(useHuntStore.getState().untitledIds).toEqual([]);
   });
 
   it("hands the queue over and takes single prompts out", async () => {
@@ -874,7 +1003,7 @@ describe("remote sessions", () => {
       if (command === "open_session") return Promise.resolve({ ...stopped, isLive: true });
       if (command === "list_sessions") return Promise.resolve([{ ...stopped, isLive: true }]);
       if (command === "send_prompt") return Promise.resolve("EndTurn");
-      return Promise.resolve(undefined);
+      return Promise.resolve(command === "session_history" ? [] : undefined);
     });
 
     await useHuntStore.getState().sendPrompt(SESSION, "go on");
@@ -928,7 +1057,7 @@ describe("remote sessions", () => {
     expect(chat.isStale).toBe(false);
   });
 
-  it("keeps the conversation next to the error when the connect fails, and starts empty when nothing is replayed", async () => {
+  it("keeps the conversation next to the error when the connect fails, and starts from the backend's history when nothing is replayed", async () => {
     const stopped = { ...storedSession(SESSION, "Remote"), isLive: false, remote };
     useHuntStore.setState({ chats: {}, sessions: [stopped], creatingIds: [], activeSessionId: SESSION, draft: null, untitledIds: [] });
     useHuntStore.getState().applyUpdate(SESSION, notification({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "answer" } }));
@@ -938,7 +1067,7 @@ describe("remote sessions", () => {
     expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ error: "failed to start the VM vm-hunt", isStale: false, isLoading: false });
     expect(useHuntStore.getState().chats[SESSION].items).toHaveLength(1);
 
-    vi.mocked(invoke).mockImplementation((command) => Promise.resolve(command === "open_session" ? { ...stopped, isLive: true } : [stopped]));
+    vi.mocked(invoke).mockImplementation((command) => Promise.resolve(command === "open_session" ? { ...stopped, isLive: true } : command === "session_history" ? [] : [stopped]));
     await useHuntStore.getState().resumeSession(SESSION);
     expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ items: [], isStale: false, isLoading: false, error: null });
   });
@@ -951,7 +1080,7 @@ describe("remote sessions", () => {
       if (command === "open_session") return Promise.resolve({ ...sub, isLive: true });
       if (command === "list_sessions") return Promise.resolve([{ ...sub, isLive: true }, parent]);
       if (command === "send_prompt") return Promise.resolve("EndTurn");
-      return Promise.resolve(undefined);
+      return Promise.resolve(command === "session_history" ? [] : undefined);
     });
 
     await useHuntStore.getState().sendPrompt("sub", "and this?");

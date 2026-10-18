@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { commands } from "../ipc/commands";
-import type { ChangedFile, ChangedFileView, FileDiff, FileVersion } from "../ipc/types";
+import type { ChangedFile, ChangedFileView, FileDiff, FileVersion, GraphNode } from "../ipc/types";
 import { useHuntStore } from "../state/store";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
 import { useSettingsStore } from "../state/settings";
 import { isOwnChange, otherTouchers, type ChangeScope } from "./attribution";
 import { ownContent } from "./ownChanges";
-import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
 import { ChangeList } from "./ChangeList";
+import { matchesGlob, splitGlobs } from "./glob";
+import { parseGraph } from "../graph/schema";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { CodeDiffEditor, type CodeDiffEditorHandle } from "./CodeDiffEditor";
+import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
 import { BUTTON_XS, GHOST_BUTTON_XS, SECONDARY, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
 import { openInEditorWindow } from "../ide/editorWindows";
 import { selectionChatsFor } from "../ide/selectionChats";
@@ -36,6 +38,7 @@ function revertLabel(file: ChangedFile): string {
 
 export function DiffPanel({ sessionId }: { sessionId: string }) {
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
+  const graphVersion = useHuntStore((state) => state.chats[sessionId]?.graphVersion ?? 0);
   const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
   const pullRequest = useReviewedPullRequest(sessionId);
   const diffFontSize = useSettingsStore((state) => state.panes.diff.fontSize);
@@ -56,10 +59,19 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const scope = useSettingsStore((state) => state.changelistScopes[sessionId] ?? "own");
   const setChangelistScope = useSettingsStore((state) => state.setChangelistScope);
   const setScope = useCallback((next: ChangeScope) => setChangelistScope(sessionId, next), [setChangelistScope, sessionId]);
-  const visibleFiles = useMemo(() => {
+  const scopedFiles = useMemo(() => {
     if (!isSharedWorktree || scope === "all") return files;
     return files.filter((file) => isOwnChange(file, sessionId, session?.parentId ?? null, session?.workspace ?? "worktree"));
   }, [files, scope, isSharedWorktree, sessionId, session?.parentId, session?.workspace]);
+  /** The files in scope minus those matching one of the changelist's hidden globs. */
+  const hiddenGlobsText = useSettingsStore((state) => state.changelistHiddenGlobs);
+  const visibleFiles = useMemo(() => {
+    const hiddenGlobs = splitGlobs(hiddenGlobsText);
+    if (!hiddenGlobs.length) return scopedFiles;
+    return scopedFiles.filter((file) => !hiddenGlobs.some((glob) => matchesGlob(glob, file.path)));
+  }, [scopedFiles, hiddenGlobsText]);
+  /** The agent's review ratings from `.hunt/graph.json`, keyed by path; empty while there is no diagram. */
+  const [reviewRatings, setReviewRatings] = useState<Map<string, GraphNode>>(() => new Map());
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [diff, setDiff] = useState<FileDiff | null>(null);
   /** A newer version from disk that arrived while the editor had unsaved changes. */
@@ -117,7 +129,19 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     { delayMs: hasLoadedRef.current ? 300 : 0 },
   );
 
-  // The selection follows the visible list: a file that left it (reverted, shelved, or hidden by the scope) gives way to the first one.
+  useLoad(
+    () => commands.readGraph(sessionId, "dependencies"),
+    {
+      onValue: (raw) => {
+        const nodes = raw === null || raw === undefined ? [] : parseGraph(raw).graph.nodes;
+        setReviewRatings(new Map(nodes.filter((node) => node.review).map((node) => [node.path, node])));
+      },
+      onError: (reason) => setError(errorText(reason)),
+    },
+    [sessionId, graphVersion],
+  );
+
+  // The selection follows the visible list: a file that left it (reverted, shelved, or hidden by the scope or a glob) gives way to the first one.
   useEffect(() => {
     setSelectedPath((current) => (current && visibleFiles.some((file) => file.path === current) ? current : (visibleFiles[0]?.path ?? null)));
   }, [visibleFiles]);
@@ -255,7 +279,9 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
       <ChangeList
         sessionId={sessionId}
         files={visibleFiles}
-        scope={isSharedWorktree ? { value: scope, hiddenCount: files.length - visibleFiles.length, includesParent: !!session?.parentId, onChange: setScope } : null}
+        hiddenByGlobsCount={scopedFiles.length - visibleFiles.length}
+        reviewRatings={reviewRatings}
+        scope={isSharedWorktree ? { value: scope, hiddenCount: files.length - scopedFiles.length, includesParent: !!session?.parentId, onChange: setScope } : null}
         selectedPath={selectedPath}
         hasUnsavedChanges={isDirty}
         onSelect={selectFile}
@@ -391,11 +417,13 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
             <p className="p-3 text-[13px] text-neutral-500">
               {visibleFiles.length
                 ? "Select a file."
-                : files.length
-                  ? session?.parentId
-                    ? "No changes by this session or its parent."
-                    : "No changes by this session."
-                  : "No changes."}
+                : scopedFiles.length
+                  ? "Every change is hidden by the changelist's file filter."
+                  : files.length
+                    ? session?.parentId
+                      ? "No changes by this session or its parent."
+                      : "No changes by this session."
+                    : "No changes."}
             </p>
           )}
         </div>

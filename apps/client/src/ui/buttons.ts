@@ -56,7 +56,7 @@ export const CLEAR_BUTTON =
 export const DANGER_CLEAR_BUTTON =
   "flex size-9 shrink-0 items-center justify-center rounded-full border border-red-400/30 bg-red-400/10 text-red-300 transition-colors hover:border-red-400/50 hover:bg-red-400/20 hover:text-red-200 active:bg-red-400/25 disabled:pointer-events-none disabled:opacity-40";
 
-/** Segmented tab, e.g. Diff / Editor / Dependency Graph; add `TAB_ACTIVE` or `TAB_INACTIVE`. */
+/** Segmented tab, e.g. Diff / Editor / Architecture; add `TAB_ACTIVE` or `TAB_INACTIVE`. */
 export const TAB_BUTTON = "inline-flex h-8 shrink-0 select-none items-center rounded-md px-3 text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60";
 export const TAB_BUTTON_SM = "inline-flex h-7 shrink-0 select-none items-center rounded-md px-2.5 text-[13px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60";
 export const TAB_ACTIVE = "bg-(--row-active) text-white";

@@ -45,18 +45,22 @@ export async function navigationAt(model: monaco.editor.ITextModel, position: mo
   return null;
 }
 
+export type FilePosition = { path: string; line: number; column: number };
+
 /**
- * The declaration a ⌘click on `name` at `position` of the worktree file `path` jumps to, for clicks outside the
- * editor (diffs) whose text may differ from the file. Null when the file has another word there, the click sits on
- * the declaration itself, or the language server knows no declaration inside the worktree.
+ * Where a ⌘click on `name` at `position` of the worktree file `path` lands, for clicks outside the editor (diffs)
+ * whose text may differ from the file: the declaration when the language server knows one elsewhere inside the
+ * worktree, otherwise the clicked position itself (the click sits on the declaration, the file has another word
+ * there, or the server does not serve the file), so the click always opens the editor.
  */
-export async function resolveDefinition(workspace: Workspace, path: string, position: monaco.IPosition, name: string): Promise<{ path: string; line: number; column: number } | null> {
+export async function resolveDefinition(workspace: Workspace, path: string, position: monaco.IPosition, name: string): Promise<FilePosition> {
+  const clicked = { path, line: position.lineNumber, column: position.column };
   const { model } = await workspace.open(path);
-  if (model.getWordAtPosition(position)?.word !== name) return null;
-  const navigation = await navigationAt(model, position);
-  if (navigation?.type !== "definition") return null;
+  if (model.getWordAtPosition(position)?.word !== name) return clicked;
+  const navigation = await navigationAt(model, position).catch(() => null);
+  if (navigation?.type !== "definition") return clicked;
   const targetPath = workspace.pathOf(navigation.target.uri);
-  if (!targetPath) return null;
+  if (!targetPath) return clicked;
   return { path: targetPath, line: navigation.target.range.startLineNumber, column: navigation.target.range.startColumn };
 }
 

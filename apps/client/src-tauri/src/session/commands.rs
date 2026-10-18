@@ -441,7 +441,7 @@ pub async fn clear_session(
         let activated = async {
             // The chat shows the connect's steps, which take a while even on a running VM.
             let instance = target.vm.instance.clone();
-            let Some((ssh, target)) = start_remote_relay(&app, id, target, &BootProgress::new(&progress_reporter(&app, id))).await? else {
+            let Some((ssh, target)) = start_remote_relay(&app, id, target, &progress_reporter(&app, id)).await? else {
                 return Err(format!("failed to clear session: its VM {instance} no longer exists; send a prompt to continue the session here"));
             };
             let id_text = id.to_string();
@@ -1364,41 +1364,6 @@ fn progress_reporter(app: &AppHandle, id: Uuid) -> ProgressEmitter {
     ProgressEmitter { app: app.clone(), id, current: std::sync::Mutex::new(None) }
 }
 
-/// Passes the steps of a connect to `inner` only from the moment the VM has to boot: a connect to a running VM, such
-/// as a `/clear`, reports nothing, like a restart of a local agent, while one that starts the VM reports its boot and
-/// every step after it.
-struct BootProgress<'a> {
-    inner: &'a dyn Reporter,
-    is_booting: std::sync::atomic::AtomicBool,
-}
-
-impl<'a> BootProgress<'a> {
-    fn new(inner: &'a dyn Reporter) -> Self {
-        BootProgress { inner, is_booting: std::sync::atomic::AtomicBool::new(false) }
-    }
-
-    fn is_booting(&self) -> bool {
-        self.is_booting.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-impl Reporter for BootProgress<'_> {
-    fn step(&self, step: RemoteStep) {
-        if matches!(step, RemoteStep::StartingVm | RemoteStep::CreatingVm | RemoteStep::WaitingForVm) {
-            self.is_booting.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-        if self.is_booting() {
-            self.inner.step(step);
-        }
-    }
-
-    fn log(&self, message: &str) {
-        if self.is_booting() {
-            self.inner.log(message);
-        }
-    }
-}
-
 /// Tells the UI that the remote operation on session `id` ended, successful or not.
 fn finish_progress(app: &AppHandle, id: Uuid) {
     let _ = app.emit("remote:progress", RemoteProgressEvent { hunt_session_id: id, step: None, detail: None });
@@ -1851,17 +1816,20 @@ fn file_context_block(target: &Path, shown_as: &Path) -> Option<ContentBlock> {
     Some(ContentBlock::Resource(EmbeddedResource::new(EmbeddedResourceResource::TextResourceContents(TextResourceContents::new(text, uri)))))
 }
 
-/// Asks the agent to rewrite the component diagram with the standard prompt. The turn runs with the agent config
-/// values `model` and `effort` from the diagram settings; afterwards the agent gets back the model and effort the chat
-/// showed before. The turn is recorded as hidden, so the chat shows neither the prompt text nor the agent's output,
-/// and it leaves the session summary alone. The agent of a remote session diffs against the session's diff base as a
-/// commit, which its VM has too; the local edits and the schema go there before the turn and the diagram comes back
-/// after it.
+/// Asks the agent to rewrite the diagram of `diagram_type` with its standard prompt, extended by the user's free-text
+/// `instructions` for this one run. The turn runs with the agent config values `model` and `effort` from the diagram
+/// settings; afterwards the agent gets back the model and effort the chat showed before. The turn is recorded as
+/// hidden, so the chat shows neither the prompt text nor the agent's output, and it leaves the session summary alone.
+/// The agent of a remote session diffs against the session's diff base as a commit, which its VM has too; the local
+/// edits, the schema and the diagram as the user edited it go there before the turn and the diagram comes back after
+/// it.
 #[tauri::command]
 pub async fn refresh_graph(
     app: AppHandle,
     registry: State<'_, SessionRegistry>,
     id: Uuid,
+    diagram_type: graph::DiagramType,
+    instructions: String,
     model: String,
     effort: String,
 ) -> Result<String, String> {
@@ -1870,9 +1838,13 @@ pub async fn refresh_graph(
     let diff_base = if is_remote { git::rev_parse(&record.worktree_path, record.diff_base()).await? } else { record.diff_base().to_string() };
     if is_remote {
         sync::flush(&app, id).await;
-        sync::copy_files(&app, id, Direction::Push, &[graph::SCHEMA_PATH.to_string()]).await?;
+        let mut pushed = vec![diagram_type.schema_path().to_string()];
+        if graph::diagram_path(&record.worktree_path, diagram_type).exists() {
+            pushed.push(diagram_type.path());
+        }
+        sync::copy_files(&app, id, Direction::Push, &pushed).await?;
     }
-    let prompt = graph::refresh_prompt(&crate::preferences::ai_language(&app), &diff_base);
+    let prompt = graph::refresh_prompt(diagram_type, &crate::preferences::ai_language(&app), &diff_base, instructions.trim());
     let blocks = vec![ContentBlock::Text(TextContent::new(prompt))];
     let LiveHandles { connection, acp_session_id, history } = live_session(&registry, id).await?;
 
@@ -1899,7 +1871,7 @@ pub async fn refresh_graph(
     let stop_reason = outcome?;
     restored?;
     if is_remote {
-        sync::copy_files(&app, id, Direction::Pull, &[graph::GRAPH_PATH.to_string()]).await?;
+        sync::copy_files(&app, id, Direction::Pull, &[diagram_type.path()]).await?;
     }
     Ok(stop_reason)
 }
@@ -2399,18 +2371,27 @@ fn create_parent_dir(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The session's diagram file of `diagram_type`, or `None` while the agent has not written it.
 #[tauri::command]
-pub async fn read_graph(app: AppHandle, id: Uuid) -> Result<Option<serde_json::Value>, String> {
+pub async fn read_graph(app: AppHandle, id: Uuid, diagram_type: graph::DiagramType) -> Result<Option<serde_json::Value>, String> {
     let record = worktree_session(&app, id)?;
-    graph::read_graph(&record.worktree_path)
+    graph::read_graph(&record.worktree_path, diagram_type)
 }
 
-/// When the session's diagram was generated and whether files of its worktree changed since.
+/// Writes the diagram of `diagram_type` the user edited in the Architecture tab; `content` is the whole file. A remote
+/// session gets the file onto its VM with the next diagram refresh, which pushes it before the agent's turn.
 #[tauri::command]
-pub async fn graph_status(app: AppHandle, id: Uuid) -> Result<graph::GraphStatus, String> {
+pub async fn write_graph(app: AppHandle, id: Uuid, diagram_type: graph::DiagramType, content: String) -> Result<(), String> {
+    let record = worktree_session(&app, id)?;
+    graph::write_graph(&record.worktree_path, diagram_type, &content)
+}
+
+/// When the session's diagram of `diagram_type` was generated and whether files of its worktree changed since.
+#[tauri::command]
+pub async fn graph_status(app: AppHandle, id: Uuid, diagram_type: graph::DiagramType) -> Result<graph::GraphStatus, String> {
     let record = worktree_session(&app, id)?;
     let changed_at = store::worktree_changed_at(&app, &record.worktree_path)?;
-    graph::status(&record.worktree_path, changed_at)
+    graph::status(&record.worktree_path, diagram_type, changed_at)
 }
 
 fn drop_pending_permissions(permissions: &PermissionRegistry, hunt_session_id: Uuid) {
@@ -2475,47 +2456,6 @@ pub async fn resolve_imports(app: AppHandle, id: Uuid, from: String, specifiers:
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Records the steps and log lines it hears, in order.
-    #[derive(Default)]
-    struct Recorder(std::sync::Mutex<Vec<String>>);
-
-    impl Reporter for Recorder {
-        fn step(&self, step: RemoteStep) {
-            self.0.lock().unwrap().push(format!("{step:?}"));
-        }
-
-        fn log(&self, message: &str) {
-            self.0.lock().unwrap().push(format!("log: {message}"));
-        }
-    }
-
-    #[test]
-    fn a_connect_to_a_running_vm_reports_no_steps() {
-        let recorder = Recorder::default();
-        let progress = BootProgress::new(&recorder);
-        progress.step(RemoteStep::Connecting);
-        progress.step(RemoteStep::InstallingRuntime);
-        progress.log("installing the agent's tools");
-        progress.step(RemoteStep::StartingAgent);
-        assert!(recorder.0.into_inner().unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_connect_that_boots_the_vm_reports_its_boot_and_every_step_after_it() {
-        let recorder = Recorder::default();
-        let progress = BootProgress::new(&recorder);
-        progress.step(RemoteStep::Connecting);
-        progress.step(RemoteStep::StartingVm);
-        progress.log("starting vm-hunt-s-ab12cd34");
-        progress.step(RemoteStep::WaitingForVm);
-        progress.step(RemoteStep::InstallingRuntime);
-        progress.step(RemoteStep::StartingAgent);
-        assert_eq!(
-            recorder.0.into_inner().unwrap(),
-            ["StartingVm", "log: starting vm-hunt-s-ab12cd34", "WaitingForVm", "InstallingRuntime", "StartingAgent"]
-        );
-    }
 
     #[test]
     fn the_worktree_of_a_sub_chat_lives_on_the_vm_of_its_remote_parent() {
@@ -2601,7 +2541,7 @@ mod tests {
         let without_token = remote_system_prompt("BASE", false, "", None);
         assert_eq!(without_token, format!("BASE\n\n{REMOTE_PROMPT}\n{REMOTE_GIT_LOCAL_PROMPT}"));
         assert_eq!(remote_system_prompt("BASE", false, " \n", Some(" \n")), without_token);
-        assert!(REMOTE_PROMPT.contains("the section \"The repository's services\" below lists them"));
+        assert!(REMOTE_PROMPT.contains("the section \"The repository's services\" below"));
         assert!(REMOTE_PROMPT.contains("```sh\nsudo -n hunt-ctl service start <name>…\n```"));
         assert!(REMOTE_PROMPT.contains("$HUNT_PREVIEW_URL_TEMPLATE` with `{port}`"));
         assert!(REMOTE_PROMPT.contains("tmux pipe-pane -o -t app:<name> 'cat >> ~/logs/<name>.log'\n```"));

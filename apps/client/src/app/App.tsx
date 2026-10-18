@@ -5,7 +5,7 @@ import { SessionSidebar } from "../sessions/SessionSidebar";
 import { NewSessionView } from "../sessions/NewSessionView";
 import { ChatPanel } from "../chat/ChatPanel";
 import { DiffPanel } from "../diff/DiffPanel";
-import { GraphPanel } from "../graph/GraphPanel";
+import { ArchitecturePanel } from "../graph/ArchitecturePanel";
 import { IdePanel } from "../ide/IdePanel";
 import { PullRequestPanel } from "../review/PullRequestPanel";
 import { keepDiffWindowWarm } from "../graph/diffWindows";
@@ -108,7 +108,7 @@ export function App() {
             <nav data-tauri-drag-region="" className={`${HEADER_BAR} gap-1 border-b border-(--line) px-2`}>
               <TabButton isActive={rightTab === "diff"} onClick={() => setRightTab("diff")} label="Diff" />
               <TabButton isActive={rightTab === "editor"} onClick={() => setRightTab("editor")} label="Editor" />
-              <TabButton isActive={rightTab === "graph"} onClick={() => setRightTab("graph")} label="Dependency Graph" />
+              <TabButton isActive={rightTab === "graph"} onClick={() => setRightTab("graph")} label="Architecture" />
               <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} label="PR Description" />
               {activeRemoteInstance ? (
                 <>
@@ -130,7 +130,7 @@ export function App() {
                   ) : rightTab === "pullRequest" ? (
                     <PullRequestPanel key={`pullRequest:${activeSessionId}`} sessionId={activeSessionId} />
                   ) : (
-                    <GraphPanel key={`graph:${activeSessionId}`} sessionId={activeSessionId} />
+                    <ArchitecturePanel key={`graph:${activeSessionId}`} sessionId={activeSessionId} />
                   )}
                   {activeRemoteInstance && rightTab === "preview" ? <PreviewPanel key={`preview:${activeSessionId}`} sessionId={activeSessionId} /> : null}
                   {/* The terminal stays mounted while another tab shows, so switching tabs keeps its connection. */}

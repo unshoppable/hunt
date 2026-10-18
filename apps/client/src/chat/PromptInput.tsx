@@ -43,6 +43,7 @@ const MAX_PROMPT_HEIGHT_SHARE = 0.6;
  */
 export function PromptInput({
   isBusy,
+  isStarting = false,
   isBlocked,
   queue = [],
   onTakeQueue = () => [],
@@ -67,6 +68,8 @@ export function PromptInput({
   dropZoneRef,
 }: {
   isBusy: boolean;
+  /** The agent is starting (also `isBusy` then): prompts queue until it runs, and there is no turn to interrupt or stop. */
+  isStarting?: boolean;
   /** A pending permission request owns the keyboard; the prompt is disabled until it is answered. */
   isBlocked: boolean;
   /** Prompts sent while the agent was busy, waiting for the running turn to end. */
@@ -329,7 +332,7 @@ export function PromptInput({
             }}
             onKeyDown={onKeyDown}
             rows={2}
-            placeholder={isBusy ? "Enter queues the prompt for after this turn" : placeholder}
+            placeholder={isStarting ? "Enter queues the prompt until the agent runs" : isBusy ? "Enter queues the prompt for after this turn" : placeholder}
             className="block w-full resize-none bg-transparent px-4 py-3 outline-none placeholder:text-neutral-600 disabled:opacity-50"
           />
           {suggestions.length ? (
@@ -408,7 +411,7 @@ export function PromptInput({
               type="button"
               onClick={() => submit()}
               disabled={!canSend}
-              title={isBusy ? "Queue for after this turn (enter); ⌘↩ sends now, esc stops the turn" : "Send (enter)"}
+              title={isStarting ? "Queue until the agent runs (enter)" : isBusy ? "Queue for after this turn (enter); ⌘↩ sends now, esc stops the turn" : "Send (enter)"}
               className={SEND_BUTTON}
             >
               <SendIcon />

@@ -13,7 +13,9 @@
  * disk from the snapshot and the old VM's labels, machine type and metadata is created in the new zone, and the old VM
  * and the snapshot are deleted. Compute Engine creates the disk with the VM, so a creation a stockout refuses leaves no
  * disk behind. When every zone is out, the VM gets its name back. A move an earlier call left unfinished is finished or
- * rolled back before the VM is used again; only hunt-api starts existing VMs, so this needs no lock between processes.
+ * rolled back before the VM is used again. hunt-api starts existing VMs for the desktops and hunt-swf (`swf.ts`) the
+ * stopped VM of an agent whose question got its answer; the two processes share no lock, so a start of one VM from
+ * both at once is not guarded.
  *
  * Bringing a VM up starts a stopped one, resumes a suspended one and waits out a shutdown in progress, then waits until
  * it answers over SSH and its startup script finished, hands it the staged session release and puts the remote secrets

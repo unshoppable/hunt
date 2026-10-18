@@ -195,6 +195,7 @@ export interface PromptFiles {
   swfSystem: string;
   swfFirst: string;
   swfNudge: string;
+  swfAnswer: string;
 }
 
 /**
@@ -275,9 +276,6 @@ export function swfSystemPrompt(template: string, repo: string, issue: number, b
  * branch; it sends the agent to the steps of the system prompt.
  */
 export function firstPrompt(template: string, repo: string, issue: Issue, comments: IssueComment[], branch: string, labels: SwfLabels): string {
-  const thread = comments.length
-    ? comments.map((comment) => `**@${comment.author}** on ${formatDate(comment.createdAt)}:\n\n${comment.body.trim()}`).join("\n\n---\n\n")
-    : "(none)";
   return fillPrompt(template, {
     ...labelValues(repo, issue.number, labels),
     title: issue.title,
@@ -285,9 +283,40 @@ export function firstPrompt(template: string, repo: string, issue: Issue, commen
     author: issue.author,
     createdAt: formatDate(issue.createdAt),
     body: issue.body.trim() || "(no description)",
-    comments: thread,
+    comments: formatThread(comments),
     branch,
   });
+}
+
+/** The comments as a Markdown thread, each with its author and date; `(none)` without any. */
+function formatThread(comments: IssueComment[]): string {
+  if (comments.length === 0) return "(none)";
+  return comments.map((comment) => `**@${comment.author}** on ${formatDate(comment.createdAt)}:\n\n${comment.body.trim()}`).join("\n\n---\n\n");
+}
+
+/**
+ * The comments on the issue that answer the agent's question: those after the last comment of the GitHub App's bot user
+ * `botLogin` (the agent comments through the app's token, so its question is the bot's latest comment) and newer than
+ * `since`, the `createdAt` of the last answer delivered (empty: none yet). Without a bot comment nothing counts as an
+ * answer.
+ */
+export function newAnswers(comments: IssueComment[], botLogin: string, since: string): IssueComment[] {
+  let lastBot = -1;
+  for (let index = 0; index < comments.length; index++) {
+    if (comments[index].author === botLogin) {
+      lastBot = index;
+    }
+  }
+  if (lastBot < 0) return [];
+  return comments.slice(lastBot + 1).filter((comment) => comment.createdAt > since);
+}
+
+/**
+ * The prompt that brings the answers `answers` from the issue to an agent that waits with the question label:
+ * `swf-answer.user-prompt.md` filled with the comments and the command that takes the label back to running.
+ */
+export function answerPrompt(template: string, repo: string, issue: number, answers: IssueComment[], labels: SwfLabels): string {
+  return fillPrompt(template, { ...labelValues(repo, issue, labels), comments: formatThread(answers) });
 }
 
 /**

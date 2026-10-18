@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import responseStylePrompt from "../../prompts/response-style.system-prompt.md?raw";
 import { isSessionMachineType } from "../../../../libs/domain/src/sessionMachineTypes.ts";
-import type { ReviewLevel, VmSettings } from "../ipc/types";
+import type { DiagramType, ReviewLevel, VmSettings } from "../ipc/types";
 
 /** The four configurable panes of the window. */
 export type PaneKey = "sidebar" | "chat" | "changelist" | "diff";
@@ -286,11 +286,15 @@ export function isFolderIconRulesDefault(rules: readonly FolderIconRule[]): bool
 type SettingsState = {
   panes: Record<PaneKey, PaneSettings>;
   changelistView: ChangelistView;
+  /** Globs over the worktree-relative path as typed, separated by commas or whitespace; matching files leave the changelist. */
+  changelistHiddenGlobs: string;
   diffLineScope: DiffLineScope;
   /** Sessions whose changelist lists every change, keyed by session id; every other session lists only its own. */
   changelistScopes: Record<string, ChangelistScope>;
   /** Changed files unchecked in the dependency graph's file filter, keyed by session id; every other file is shown. */
   graphExcludedFiles: Record<string, string[]>;
+  /** Diagram type the Architecture tab shows, keyed by session id; a session without an entry shows the dependencies. */
+  diagramTypes: Record<string, DiagramType>;
   popupSizes: Record<PopupKey, PopupSize>;
   /** Height in px the user dragged the chat's prompt box to; null sizes the box to its text. */
   promptHeight: number | null;
@@ -313,9 +317,11 @@ type SettingsState = {
   resetPane: (pane: PaneKey) => void;
   resetPanes: () => void;
   setChangelistView: (view: ChangelistView) => void;
+  setChangelistHiddenGlobs: (globs: string) => void;
   setDiffLineScope: (scope: DiffLineScope) => void;
   setChangelistScope: (sessionId: string, scope: ChangelistScope) => void;
   setGraphExcludedFiles: (sessionId: string, paths: string[]) => void;
+  setDiagramType: (sessionId: string, diagramType: DiagramType) => void;
   setPopupSize: (key: PopupKey, size: PopupSize) => void;
   setPromptHeight: (height: number | null) => void;
   setGuardrailChatOffset: (offset: PopupOffset) => void;
@@ -354,9 +360,11 @@ const VERSION_7_CHAT_LINE_HEIGHT = 1.7;
 export type PersistedState = {
   panes?: Partial<Record<PaneKey, Partial<PaneSettings>>>;
   changelistView?: ChangelistView;
+  changelistHiddenGlobs?: string;
   diffLineScope?: DiffLineScope;
   changelistScopes?: Record<string, ChangelistScope>;
   graphExcludedFiles?: Record<string, string[]>;
+  diagramTypes?: Record<string, DiagramType>;
   popupSizes?: Partial<Record<PopupKey, PopupSize>>;
   promptHeight?: number | null;
   guardrailChatOffset?: PopupOffset;
@@ -548,9 +556,11 @@ export const useSettingsStore = create<SettingsState>()(
     (set) => ({
       panes: DEFAULT_PANES,
       changelistView: "tree",
+      changelistHiddenGlobs: "",
       diffLineScope: "all",
       changelistScopes: {},
       graphExcludedFiles: {},
+      diagramTypes: {},
       popupSizes: DEFAULT_POPUP_SIZES,
       promptHeight: null,
       guardrailChatOffset: { x: 0, y: 0 },
@@ -580,6 +590,7 @@ export const useSettingsStore = create<SettingsState>()(
       resetPane: (pane) => set((state) => ({ panes: { ...state.panes, [pane]: DEFAULT_PANES[pane] } })),
       resetPanes: () => set({ panes: DEFAULT_PANES }),
       setChangelistView: (changelistView) => set({ changelistView }),
+      setChangelistHiddenGlobs: (globs) => set({ changelistHiddenGlobs: globs.trim() }),
       setDiffLineScope: (diffLineScope) => set({ diffLineScope }),
       setChangelistScope: (sessionId, scope) =>
         set((state) => {
@@ -590,6 +601,11 @@ export const useSettingsStore = create<SettingsState>()(
         set((state) => {
           const { [sessionId]: _previous, ...rest } = state.graphExcludedFiles;
           return { graphExcludedFiles: paths.length ? { ...rest, [sessionId]: [...paths].sort() } : rest };
+        }),
+      setDiagramType: (sessionId, diagramType) =>
+        set((state) => {
+          const { [sessionId]: _previous, ...rest } = state.diagramTypes;
+          return { diagramTypes: diagramType === "dependencies" ? rest : { ...rest, [sessionId]: diagramType } };
         }),
       setPopupSize: (key, size) => set((state) => ({ popupSizes: { ...state.popupSizes, [key]: roundedSize(size) } })),
       setPromptHeight: (height) => set({ promptHeight: height === null ? null : Math.round(height) }),
@@ -622,9 +638,11 @@ export const useSettingsStore = create<SettingsState>()(
       partialize: (state) => ({
         panes: state.panes,
         changelistView: state.changelistView,
+        changelistHiddenGlobs: state.changelistHiddenGlobs,
         diffLineScope: state.diffLineScope,
         changelistScopes: state.changelistScopes,
         graphExcludedFiles: state.graphExcludedFiles,
+        diagramTypes: state.diagramTypes,
         popupSizes: state.popupSizes,
         promptHeight: state.promptHeight,
         guardrailChatOffset: state.guardrailChatOffset,

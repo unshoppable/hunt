@@ -66,12 +66,16 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
           open(request);
           return;
         }
+        // A declaration the session's worktree cannot resolve still opens the clicked position.
         const worktreePath = useHuntStore.getState().sessions.find((candidate) => candidate.id === sessionId)?.worktreePath;
-        if (!worktreePath) return;
+        if (!worktreePath) {
+          open(request);
+          return;
+        }
         const position = { lineNumber: request.line ?? 1, column: request.column ?? 1 };
         resolveDefinition(workspaceFor(sessionId, worktreePath), request.path, position, request.definitionOf)
-          .then((target) => target && open({ ...target, inRightSplit: request.inRightSplit }))
-          .catch(() => {});
+          .then((target) => open({ ...target, inRightSplit: request.inRightSplit }))
+          .catch(() => open(request));
       },
       { target: getCurrentWindow().label },
     );

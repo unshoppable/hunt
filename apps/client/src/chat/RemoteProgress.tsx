@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { remoteRunMs } from "../state/remoteRun";
 import type { SessionChat } from "../state/store";
 import { formatElapsed, REMOTE_STEP_LABELS, remoteOperation, remotePosition } from "./remoteSession";
 
@@ -56,17 +55,4 @@ function segmentColor(step: number, position: number): string {
   if (step < position) return "bg-neutral-500";
   if (step === position) return "animate-pulse bg-sky-400";
   return "bg-white/10";
-}
-
-/** `Step 3 of 7 · 1:52` with the run time of the whole operation or move; the step's label before it has a position. */
-export function RemoteRunStatus({ chat }: { chat: SessionChat }) {
-  const now = useNow();
-  if (!chat.remoteStep) return null;
-  const progress = progressOf(chat);
-  if (!progress || !chat.remoteRun) return REMOTE_STEP_LABELS[chat.remoteStep];
-  return (
-    <span className="tabular-nums">
-      Step {progress.position} of {progress.total} · {formatElapsed(remoteRunMs(chat.remoteRun, now))}
-    </span>
-  );
 }

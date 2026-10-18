@@ -5,12 +5,13 @@ import { STATUS_NAME_CLASS } from "../diff/styles";
 import { CommentIcon } from "../ui/icons";
 import { HoverTooltip } from "../ui/HoverTooltip";
 import { baseName } from "../ui/path";
-import type { ReviewLevel } from "../ipc/types";
 import type { DiagramNode, ShortPath } from "./diagram";
+import { ReviewBars } from "./ReviewBars";
 import type { DependencyEdge, FileNode, FolderGroupNode } from "./layout";
 import { EDGE_COLOR, EDGE_COLOR_HIGHLIGHTED, LABEL_HEIGHT, MAX_LABEL_WIDTH, orthogonalPath } from "./layout";
 
-const HANDLE_STYLE = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 };
+/** Invisible handle where the layout attaches an edge to a node; shared by every diagram node. */
+export const HANDLE_STYLE = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 };
 
 /** Review comments per file path (see `useReviewCommentCounts`), counted in the bottom-right corner of each file box. */
 export const CommentCountsContext = createContext<Map<string, number>>(new Map());
@@ -186,28 +187,6 @@ export function DirectoryLabel({ short, className = "" }: { short: ShortPath; cl
 /** A module name, styled the same in the directory labels and the legend. */
 export function AliasChip({ alias }: { alias: string }) {
   return <span className="rounded-sm bg-white/10 px-1 text-neutral-300">{alias}</span>;
-}
-
-/** Bar color per review level: red for files that need little review up to green for those that need a close look. */
-const REVIEW_COLORS: Record<ReviewLevel, string> = { 1: "#f87171", 2: "#fb923c", 3: "#facc15", 4: "#4ade80" };
-
-/** What each review level means, for tooltips and the legend. */
-export const REVIEW_LABELS: Record<ReviewLevel, string> = { 1: "little review needed", 2: "some review", 3: "review recommended", 4: "needs close review" };
-
-/**
- * The agent's review rating as a signal-strength icon: four bars rising from left to right, of which `level` are lit
- * in the level's color, red for 1 up to green for 4. The tooltip states the level and the agent's reason.
- */
-export function ReviewBars({ level, reason, className = "size-3.5" }: { level: ReviewLevel; reason?: string; className?: string }) {
-  const title = `Review ${level}/4: ${REVIEW_LABELS[level]}${reason ? ` — ${reason}` : ""}`;
-  return (
-    <svg viewBox="0 0 15 12" className={`${className} shrink-0`} role="img" aria-label={title}>
-      <title>{title}</title>
-      {[0, 1, 2, 3].map((bar) => (
-        <rect key={bar} x={bar * 4} y={9 - bar * 3} width="3" height={3 + bar * 3} rx="0.75" fill={bar < level ? REVIEW_COLORS[level] : "rgba(255,255,255,0.14)"} />
-      ))}
-    </svg>
-  );
 }
 
 /** `+added −removed` of a changed file; a side with no lines is left out. */

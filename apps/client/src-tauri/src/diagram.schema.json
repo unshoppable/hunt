@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hunt architecture diagram",
+  "description": "One of the shape diagrams the Hunt client renders from `.hunt/diagram.<type>.json`: a C4 context or container diagram, a UML state diagram, an entity-relationship diagram or a UML activity (process) diagram. The file holds content only (elements, their connections, labels and what the session changed); Hunt owns shapes, colors, sizes and layout, so the same diagram looks the same on every branch.",
+  "type": "object",
+  "required": ["type", "nodes", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "enum": ["c4-context", "c4-container", "states", "erd", "process"],
+      "description": "Which diagram the file holds; must match the file name `diagram.<type>.json`."
+    },
+    "title": { "type": "string", "maxLength": 80, "description": "What the diagram shows in a few words, e.g. the subsystem or the flow it covers." },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+    "groups": { "type": "array", "items": { "$ref": "#/$defs/group" }, "description": "Boundaries that enclose the nodes naming them as `parent`, e.g. the system under review in a C4 container diagram." },
+    "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "c4-context" } } },
+      "then": { "properties": { "nodes": { "items": { "properties": { "kind": { "enum": ["person", "system", "externalSystem"] } } } } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "c4-container" } } },
+      "then": { "properties": { "nodes": { "items": { "properties": { "kind": { "enum": ["person", "container", "database", "queue", "externalSystem"] } } } } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "states" } } },
+      "then": { "properties": { "nodes": { "items": { "properties": { "kind": { "enum": ["start", "end", "state"] } } } } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "erd" } } },
+      "then": {
+        "properties": {
+          "nodes": { "items": { "properties": { "kind": { "enum": ["table"] } } } },
+          "edges": { "items": { "required": ["source", "target", "sourceColumn", "targetColumn", "cardinality"] } }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "process" } } },
+      "then": { "properties": { "nodes": { "items": { "properties": { "kind": { "enum": ["start", "end", "action", "decision"] } } } } } }
+    }
+  ],
+  "$defs": {
+    "change": {
+      "enum": ["added", "changed"],
+      "description": "What the session did to this element: `added` when the session's changes introduce it, `changed` when they alter it. Leave it out for everything the session did not touch; Hunt highlights added and changed elements against the unchanged context."
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "kind", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "maxLength": 60,
+          "description": "Stable kebab-case id derived from the element's name (`order-service`, `session-vm`, `awaiting-payment`), so the same element has the same id on every branch; referenced by edges and never changed when the label is reworded."
+        },
+        "kind": {
+          "enum": ["person", "system", "externalSystem", "container", "database", "queue", "start", "end", "state", "action", "decision", "table"],
+          "description": "Which shape Hunt draws. c4-context: `person`, `system` (the system under review), `externalSystem`. c4-container: `person`, `container` (a deployable process: app, service, job), `database`, `queue`, `externalSystem`. states: `start`, `end`, `state`. erd: `table`. process: `start`, `end`, `action`, `decision`."
+        },
+        "label": { "type": "string", "minLength": 1, "maxLength": 60, "description": "The element's name as the team calls it; a `start` or `end` node may carry an empty-looking short label such as `Start`." },
+        "description": { "type": "string", "maxLength": 200, "description": "Second line under the label: a container's technology (`Node, Express`), a system's purpose, a person's role, a state's meaning, a table's purpose. Shown on the shape." },
+        "parent": { "type": "string", "description": "`id` of the group the element sits in; omitted for elements outside every boundary." },
+        "actor": { "type": "string", "maxLength": 40, "description": "process only: who or what performs an `action` (a role, a service, a job)." },
+        "columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/column" },
+          "description": "erd only, required for a `table`: its columns in the order they are declared."
+        },
+        "change": { "$ref": "#/$defs/change" }
+      },
+      "if": { "properties": { "kind": { "const": "table" } } },
+      "then": { "required": ["columns"] }
+    },
+    "column": {
+      "type": "object",
+      "required": ["name", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 60, "description": "Column name as declared; edges reference it in `sourceColumn` and `targetColumn`." },
+        "type": { "type": "string", "maxLength": 40, "description": "Column type as declared (`uuid`, `text`, `timestamptz`, an enum name)." },
+        "isPrimaryKey": { "type": "boolean" },
+        "isForeignKey": { "type": "boolean" }
+      }
+    },
+    "group": {
+      "type": "object",
+      "required": ["id", "label"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "maxLength": 60, "description": "Stable kebab-case id, referenced by the `parent` of its nodes." },
+        "label": { "type": "string", "minLength": 1, "maxLength": 60, "description": "Name of the boundary, e.g. the system under review." },
+        "change": { "$ref": "#/$defs/change" }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": ["source", "target"],
+      "additionalProperties": false,
+      "properties": {
+        "source": { "type": "string", "description": "`id` of the node the connection starts at: the caller, the state left, the step before, the table holding the foreign key." },
+        "target": { "type": "string", "description": "`id` of the node the connection ends at: the callee, the state entered, the next step, the table holding the referenced key." },
+        "label": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "One to four words on the connection. c4: how source uses target (`reads orders`, `sends events over HTTPS`). states: the event that triggers the transition (`payment received`). process: the answer on an edge leaving a `decision` (yes/no in the diagram's language), otherwise empty. erd: the relationship as a verb (`belongs to`)."
+        },
+        "description": { "type": "string", "maxLength": 400, "description": "One to three sentences on what the connection carries and why; shown when the edge is hovered." },
+        "sourceColumn": { "type": "string", "description": "erd only: the column of `source` that holds the foreign key." },
+        "targetColumn": { "type": "string", "description": "erd only: the column of `target` it references, usually the primary key." },
+        "cardinality": {
+          "type": "object",
+          "required": ["source", "target"],
+          "additionalProperties": false,
+          "properties": {
+            "source": { "enum": ["one", "many"], "description": "How many `source` rows take part: `many` for the foreign-key side of a one-to-many relationship." },
+            "target": { "enum": ["one", "many"], "description": "How many `target` rows take part: `one` for the referenced primary key." }
+          },
+          "description": "erd only: crow's-foot ends of the relationship."
+        },
+        "change": { "$ref": "#/$defs/change" }
+      }
+    }
+  }
+}

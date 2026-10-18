@@ -4,6 +4,7 @@ import type { Issue } from "./github.ts";
 import {
   activeSessionVms,
   agentStateOf,
+  answerPrompt,
   branchName,
   checkPrivateFilesArchive,
   claimComment,
@@ -12,6 +13,7 @@ import {
   firstPrompt,
   huntSessionFile,
   issuesToStart,
+  newAnswers,
   nudgePrompt,
   privateFilesSecret,
   redact,
@@ -152,6 +154,7 @@ const prompts = {
   swfSystem: readFileSync(new URL("../prompts/swf.system-prompt.md", import.meta.url), "utf8"),
   swfFirst: readFileSync(new URL("../prompts/swf-first.user-prompt.md", import.meta.url), "utf8"),
   swfNudge: readFileSync(new URL("../prompts/swf-nudge.user-prompt.md", import.meta.url), "utf8"),
+  swfAnswer: readFileSync(new URL("../prompts/swf-answer.user-prompt.md", import.meta.url), "utf8"),
 };
 
 describe("fillPrompt", () => {
@@ -160,6 +163,11 @@ describe("fillPrompt", () => {
     expect(() => fillPrompt("{{missing}}", {})).toThrow("failed to fill the prompt: no value for {{missing}}");
   });
 });
+
+/** Joins the lines of a wrapped paragraph: a line break followed by list indentation becomes one space. */
+function unwrap(text: string): string {
+  return text.replace(/(?<!\n)\n[ \t]*(?=\S)/g, " ");
+}
 
 describe("session files", () => {
 
@@ -179,25 +187,45 @@ describe("session files", () => {
 
   it("fills the swf system prompt with the issue, the branch, the labels and the commands that move the issue between them", () => {
     const prompt = swfSystemPrompt(prompts.swfSystem, "acme/app", 12, "feat/general/12-fix-login", swfLabels("swf"));
+    const unwrapped = unwrap(prompt);
     expect(prompt.startsWith("## Working on a GitHub issue\n\nHunt's poller started this session for issue #12 of acme/app, which carries the label `swf`;")).toBe(true);
     expect(prompt).toContain("1. **Read the task.**");
-    expect(prompt).toContain(
+    expect(unwrapped).toContain(
       "gather every open question into one comment on the issue (`gh issue comment 12 --repo acme/app --body \"…\"`) with the options you see and your " +
         "recommendation. Start the comment by mentioning everyone who is to answer, so that GitHub notifies them: every current assignee of the issue " +
         "(`gh issue view 12 --repo acme/app --json assignees -q '.assignees[].login'`) as `@login`, or the issue's author when it has no assignee. " +
+        "Say in the comment that they can answer with a comment on the issue or in Hunt. " +
         "Then replace `swf:running` with `swf:question` (`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:question`) " +
         "and end your turn with the questions as your last words and the marker `<!-- hunt:question -->`.",
     );
-    expect(prompt).toContain("then replace `swf:question` with `swf:running` (`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:running`)");
+    expect(unwrapped).toContain("then replace `swf:question` with `swf:running` (`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:running`)");
     expect(prompt).toContain("3. **Plan.** Comment a short implementation plan on the issue");
-    expect(prompt).toContain("5. **Pull request.** Commit to the current branch `feat/general/12-fix-login`, push it and open a pull request whose description contains `Closes #12`");
-    expect(prompt).toContain(
-      "6. **Clean up and finish.** Stop the services you started (`sudo -n hunt-ctl service stop <name>…`) and close the tmux windows you opened, delete the " +
+    expect(unwrapped).toContain("Steps 4 to 6 form a loop: every finding of step 5 or 6 sends you back to step 4, and you leave the loop only through a pass of steps 5 and 6 without a finding.");
+    expect(prompt).toContain("4. **Implement.** Carry out the plan, or on a later pass fix every finding of steps 5 and 6.");
+    expect(unwrapped).toContain("5. **Check.** Check your change as a developer would locally: build it and run the tests, linters and type checks");
+    expect(unwrapped).toContain("start the app and check the goal in the browser with the Playwright tools: open every affected page");
+    expect(unwrapped).toContain("6. **Review your own work.** Read the whole diff (`git diff`, `git diff --cached` and the untracked files) as a critical reviewer who did not write it");
+    expect(unwrapped).toContain("Does every line follow the guardrails (conventions, structure, naming, comments, error handling, tests)?");
+    expect(unwrapped).toContain("The loop runs at most three times; when a fourth pass would be needed, a person has to look at it instead.");
+    expect(unwrapped).toContain("Write every finding down. When there is none, go on to step 7. When there is at least one and this was the first or second pass, go back to step 4.");
+    expect(unwrapped).toContain(
+      "When there is at least one after the third pass, stop the loop: comment the findings you could not resolve and what you tried on the issue, as a question to " +
+        "the assignees as in step 2, replace `swf:running` with `swf:question` (`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:question`) " +
+        "and end your turn with the marker `<!-- hunt:question -->`",
+    );
+    expect(prompt).toContain("### Planning\n1. **Read the task.**");
+    expect(prompt).toContain("### Implementation loop\n4. **Implement.**");
+    expect(prompt).toContain("### Delivery\n7. **Pull request.**");
+    expect(unwrapped).toContain("7. **Pull request.** Commit to the current branch `feat/general/12-fix-login`, push it and open a pull request whose description contains `Closes #12`");
+    expect(unwrapped).toContain("Watch the pull request's checks (`gh pr checks --watch`); when one fails, go back to step 4");
+    expect(unwrapped).toContain(
+      "8. **Clean up and finish.** Stop the services you started (`sudo -n hunt-ctl service stop <name>…`) and close the tmux windows you opened, delete the " +
         "scratch files you created outside the repository and leave the working tree clean: `git status` shows nothing uncommitted. Then replace `swf:running` " +
         "with `swf:done`: `gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:done`.",
     );
-    expect(prompt).toContain("replace `swf:running` with `swf:failed` instead (`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:failed`)");
-    expect(prompt.endsWith("a turn that ends with the issue still labelled `swf:running` counts as an unfinished task.\n")).toBe(true);
+    expect(unwrapped).toContain("replace `swf:running` with `swf:failed` instead (`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:failed`)");
+    expect(unwrapped).toContain("Do not end your turn in any other way before step 8 is done: a turn that ends with the issue still labelled `swf:running` counts as an unfinished task.");
+    expect(unwrapped.endsWith("a check you skipped or a finding you left in place is not finished work.\n")).toBe(true);
     expect(prompt).not.toContain("{{");
   });
 
@@ -224,7 +252,7 @@ describe("firstPrompt", () => {
     expect(text.startsWith("Work on GitHub issue #12 of acme/app: Fix login\nhttps://github.com/acme/app/issues/12\n")).toBe(true);
     expect(text).toContain("## Issue, opened by @alice on 2026-10-13 08:04 UTC\n\nThe login fails.\n");
     expect(text).toContain("**@bob** on 2026-10-13 09:00 UTC:\n\nAlso the logout.\n\n---\n\n**@carol** on 2026-10-13 10:30 UTC:\n\nAgreed.");
-    expect(text.endsWith(
+    expect(unwrap(text).endsWith(
       "Hunt's poller started this session because the issue has the label `swf`. Begin with step 1 of \"Working on a GitHub issue\" in your instructions " +
         "and work through the steps on the branch `feat/general/12-fix-login`.\n",
     )).toBe(true);
@@ -235,6 +263,42 @@ describe("firstPrompt", () => {
     const text = firstPrompt(prompts.swfFirst, "acme/app", issue(3), [], "feat/general/3-issue-3", swfLabels("swf"));
     expect(text).toContain("(no description)");
     expect(text).toContain("## Comments\n\n(none)\n");
+  });
+});
+
+describe("newAnswers", () => {
+  const bot = "hunt-claude[bot]";
+  const thread = [
+    { author: bot, createdAt: "2026-10-13T08:05:00Z", body: "Hunt started a session for this issue." },
+    { author: "alice", createdAt: "2026-10-13T08:30:00Z", body: "Also the logout." },
+    { author: bot, createdAt: "2026-10-13T10:00:00Z", body: "@alice Postgres or SQLite?" },
+    { author: "bob", createdAt: "2026-10-13T10:05:00Z", body: "Postgres." },
+    { author: "carol", createdAt: "2026-10-13T10:10:00Z", body: "With pgvector." },
+  ];
+
+  it("takes the comments after the bot's last comment that are newer than the last delivered one", () => {
+    expect(newAnswers(thread, bot, "")).toEqual(thread.slice(3));
+    expect(newAnswers(thread, bot, "2026-10-13T10:05:00Z")).toEqual([thread[4]]);
+    expect(newAnswers(thread, bot, "2026-10-13T10:10:00Z")).toEqual([]);
+    expect(newAnswers(thread.slice(0, 3), bot, "")).toEqual([]);
+  });
+
+  it("counts nothing as an answer without a comment of the bot", () => {
+    expect(newAnswers([thread[1], thread[3]], bot, "")).toEqual([]);
+    expect(newAnswers([], bot, "")).toEqual([]);
+  });
+});
+
+describe("answerPrompt", () => {
+  it("brings the answers to the agent and names the command that takes the label back to running", () => {
+    const answers = [
+      { author: "bob", createdAt: "2026-10-13T10:05:00Z", body: "Postgres.\n" },
+      { author: "carol", createdAt: "2026-10-13T10:10:00Z", body: "With pgvector." },
+    ];
+    const text = answerPrompt(prompts.swfAnswer, "acme/app", 12, answers, swfLabels("swf"));
+    expect(text.startsWith("An answer to your question arrived as a comment on issue #12 of acme/app:\n\n**@bob** on 2026-10-13 10:05 UTC:\n\nPostgres.\n\n---\n\n**@carol** on 2026-10-13 10:10 UTC:\n\nWith pgvector.\n\n")).toBe(true);
+    expect(unwrap(text)).toContain("Replace `swf:question` with `swf:running` (`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:running`) and go on with the step of \"Working on a GitHub issue\" you stopped at.");
+    expect(text).not.toContain("{{");
   });
 });
 

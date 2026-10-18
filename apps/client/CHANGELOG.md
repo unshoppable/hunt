@@ -1,3 +1,9 @@
+## 0.41.0 (2026-10-18)
+
+### 🚀 Features
+
+- sub chats of a remote session run on this Mac, and connecting a remote session applies the Claude account selected now ([df1e413](https://github.com/unshoppable/hunt/commit/df1e413))
+
 ## 0.40.1 (2026-10-18)
 
 ### 🔥 Performance

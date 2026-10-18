@@ -39,6 +39,7 @@ use crate::remote::{self, claude_dir, Progress, RemoteStep, RemoteTarget, Report
 use crate::screenshots::{self, Screenshot};
 use crate::session::attribution::{self, FileVersion};
 use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus, Install};
+use crate::session::link::{self, Link};
 use crate::session::review;
 use crate::session::store::{self, announce_sessions_changed, SelectionContext, SessionRecord, Workspace};
 use crate::session::summary;
@@ -687,7 +688,7 @@ async fn continue_without_vm(
         return Err(format!("failed to connect the session: its VM {instance} no longer exists and nothing of it is on this Mac; delete the session"));
     }
     let retrieved = remote::retrieve::Retrieved { acp_session_id: None, branch: None };
-    finish_retrieval(app, registry, watchers, id, &target, retrieved).await?;
+    finish_retrieval(app, registry, watchers, id, &target, retrieved, VmEnd::Delete).await?;
     Err(format!(
         "the VM {instance} of the session no longer exists; the session continues here with the files of its local worktree and the \
          conversation as of the agent's last finished turn, and can be handed off again"
@@ -1254,7 +1255,7 @@ pub async fn retrieve_session(
             adopted_into,
         };
         let retrieved = remote::retrieve::retrieve(request, &progress_reporter(&app, id)).await?;
-        finish_retrieval(&app, &registry, &watchers, id, &target, retrieved).await
+        finish_retrieval(&app, &registry, &watchers, id, &target, retrieved, VmEnd::Delete).await
     }
     .await;
     registry.end_start(id).await;
@@ -1263,9 +1264,63 @@ pub async fn retrieve_session(
     activated
 }
 
+/// Continues the remote session `id` here while its VM cannot be reached (Settings → Remote VM unreachable, or offline):
+/// the session becomes local with the files of its local worktree as the last sync left them and the conversation as of
+/// the agent's last finished turn, and this Mac is the only side that writes. What the agent did on the VM since is
+/// saved as `refs/hunt/<id>/abandoned` once the VM can be reached, and the VM is deleted then.
+#[tauri::command]
+pub async fn continue_locally(
+    app: AppHandle,
+    registry: State<'_, SessionRegistry>,
+    watchers: State<'_, WatcherRegistry>,
+    permissions: State<'_, PermissionRegistry>,
+    id: Uuid,
+) -> Result<SessionView, String> {
+    let record = store::find_session(&app, id)?;
+    let target = record.remote.clone().ok_or("failed to continue the session here: it runs here already")?;
+    if record.parent_id.is_some() {
+        return Err("failed to continue the session here: continue its remote session instead".into());
+    }
+    if sync::has_channel(&app, id) {
+        return Err("failed to continue the session here: it is connected to its VM; bring it back instead".into());
+    }
+    if !record.worktree_path.is_dir() {
+        return Err("failed to continue the session here: nothing of it is on this Mac yet".into());
+    }
+    for child in store::load_sessions(&app)?.into_iter().filter(|session| session.parent_id == Some(id)) {
+        stop_agent_and_wait(&app, &registry, &watchers, &permissions, child.id).await;
+    }
+    stop_agent_and_wait(&app, &registry, &watchers, &permissions, id).await;
+    if !registry.claim_start(id).await {
+        return Err("failed to continue the session here: its agent was started again meanwhile".into());
+    }
+    remote::sync::clear_staging(&record.worktree_path);
+    let retrieved = remote::retrieve::Retrieved { acp_session_id: None, branch: None };
+    let continued = finish_retrieval(&app, &registry, &watchers, id, &target, retrieved, VmEnd::PreserveAndDelete).await;
+    registry.end_start(id).await;
+    announce_sessions_changed(&app);
+    continued
+}
+
+/// Whether the local worktree of the remote session `id`, or of the remote session whose sub chat `id` is, may change
+/// (`session::link`); `None` for a local session.
+#[tauri::command]
+pub async fn remote_link(app: AppHandle, id: Uuid) -> Result<Option<Link>, String> {
+    Ok(link::current(&app, id).await)
+}
+
+/// What becomes of a remote session's VM when the session runs here again.
+#[derive(Clone, Copy)]
+enum VmEnd {
+    Delete,
+    /// Saved into the local repository first, once it can be reached (`preserve_and_delete_vm`).
+    PreserveAndDelete,
+}
+
 /// Makes the session `id`, retrieved from `target` with `retrieved`, run locally: stores the conversation and branch
-/// the retrieval brought, ends the remote side (the VM is deleted), prepares the worktree's dependencies and starts the
-/// local agent in the permission mode the session had before the handoff. The caller holds the session's start claim.
+/// the retrieval brought, ends the remote side (the VM is deleted, as `vm_end` says), prepares the worktree's
+/// dependencies and starts the local agent in the permission mode the session had before the handoff. The caller holds
+/// the session's start claim.
 async fn finish_retrieval(
     app: &AppHandle,
     registry: &SessionRegistry,
@@ -1273,6 +1328,7 @@ async fn finish_retrieval(
     id: Uuid,
     target: &RemoteTarget,
     retrieved: remote::retrieve::Retrieved,
+    vm_end: VmEnd,
 ) -> Result<SessionView, String> {
     let record = store::update_session(app, id, |stored| {
         stored.remote = None;
@@ -1286,7 +1342,13 @@ async fn finish_retrieval(
     .ok_or_else(|| "failed to retrieve the session: it was closed meanwhile".to_string())?;
     announce_sessions_changed(app);
     sync::forget(app, id);
-    forget_remote(app, target, id, true).await;
+    match vm_end {
+        VmEnd::Delete => forget_remote(app, target, id, true).await,
+        VmEnd::PreserveAndDelete => {
+            forget_remote(app, target, id, false).await;
+            preserve_and_delete_vm(app, target, id, &record.worktree_path);
+        }
+    }
     restore_transcript_mode(app, &record, target)?;
     dependencies::ensure(app, record.repo_path.clone(), record.worktree_path.clone(), Install::Updating);
     let start = local_start(&record);
@@ -1470,7 +1532,7 @@ async fn gateway_vm(what: &str) -> Result<VmRef, String> {
 }
 
 /// The gateway API of the remote settings, for `what` (the action).
-async fn gateway_api(what: &str) -> Result<GatewayApi, String> {
+pub(crate) async fn gateway_api(what: &str) -> Result<GatewayApi, String> {
     GatewayApi::open(&gateway_vm(what).await?, &ssh_dir()?).await
 }
 
@@ -1487,7 +1549,22 @@ async fn gateway_of(settings: &VmSettings) -> Result<GatewayApi, String> {
 struct PendingCleanup {
     vm: VmRef,
     hunt_session_id: Uuid,
+    /// Set when the session continued here without reaching its VM: what the agent left there is saved first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preserve: Option<Preserve>,
 }
+
+/// Where the state a VM is deleted with goes first: the local worktree its snapshot is fetched into, from the session's
+/// worktree on the VM.
+#[derive(Clone, serde::Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct Preserve {
+    worktree: PathBuf,
+    remote_worktree: String,
+}
+
+/// How often a cleanup that saves the VM's state first is tried again while Hunt runs.
+const PRESERVE_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Serializes the changes to `remote-cleanups.json`.
 static PENDING_CLEANUPS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1520,9 +1597,58 @@ async fn forget_remote(app: &AppHandle, target: &RemoteTarget, id: Uuid, delete_
     if let Ok(path) = memory_base_path(app, id) {
         let _ = std::fs::remove_file(path);
     }
+    link::forget(app, id);
     if delete_vm {
         delete_session_vm(app, &target.vm, id).await;
     }
+}
+
+/// Deletes the VM of session `id` on `target` once it can be reached, after saving what its agent left there into the
+/// local `worktree` (`remote::retrieve::preserve`); until then it is tried every `PRESERVE_RETRY` and at each start of
+/// Hunt.
+fn preserve_and_delete_vm(app: &AppHandle, target: &RemoteTarget, id: Uuid, worktree: &Path) {
+    let preserve = Preserve { worktree: worktree.to_path_buf(), remote_worktree: target.worktree_path.display().to_string() };
+    let cleanup = PendingCleanup { vm: target.vm.clone(), hunt_session_id: id, preserve: Some(preserve) };
+    change_pending_cleanups(app, |cleanups| {
+        if !cleanups.contains(&cleanup) {
+            cleanups.push(cleanup.clone());
+        }
+    });
+    DELETED_SESSION_VMS.lock().unwrap().push(id);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match run_cleanup(&cleanup).await {
+                Ok(()) => {
+                    change_pending_cleanups(&app, |pending| pending.retain(|other| *other != cleanup));
+                    return;
+                }
+                Err(error) => eprintln!("saving and deleting the VM {} of session {id} failed, retrying: {error}", cleanup.vm.instance),
+            }
+            tokio::time::sleep(PRESERVE_RETRY).await;
+            let is_pending = pending_cleanups_path(&app).is_ok_and(|path| {
+                let _guard = PENDING_CLEANUPS_LOCK.lock().unwrap();
+                read_pending_cleanups(&path).contains(&cleanup)
+            });
+            if !is_pending {
+                return;
+            }
+        }
+    });
+}
+
+/// Deletes the VM of `cleanup` through the gateway, saving its state first when the cleanup asks for it; a VM that no
+/// longer exists counts as done.
+async fn run_cleanup(cleanup: &PendingCleanup) -> Result<(), String> {
+    let id = cleanup.hunt_session_id;
+    if let Some(preserve) = &cleanup.preserve {
+        let gateway = gateway_vm("save the session's VM").await?;
+        if let Some((ssh, _)) = remote::start_session_vm(&gateway, id, &cleanup.vm, &ssh_dir()?, &|_| {}).await? {
+            let saved = remote::retrieve::preserve(&ssh, id, &preserve.worktree, &preserve.remote_worktree).await?;
+            eprintln!("saved what session {id} left on its VM {} as {saved}", cleanup.vm.instance);
+        }
+    }
+    gateway_api("delete the session's VM").await?.delete_vm(id).await
 }
 
 /// Stops the relay of the deleted sub chat `id` on `target`, the VM of the remote session `owner`, and removes its
@@ -1567,7 +1693,7 @@ async fn delete_session_vm(app: &AppHandle, vm: &VmRef, id: Uuid) {
     let deleted = async { gateway_api("delete the session's VM").await?.delete_vm(id).await }.await;
     if let Err(error) = deleted {
         eprintln!("deleting the VM {} of session {id} failed, retrying at the next start: {error}", vm.instance);
-        let cleanup = PendingCleanup { vm: vm.clone(), hunt_session_id: id };
+        let cleanup = PendingCleanup { vm: vm.clone(), hunt_session_id: id, preserve: None };
         change_pending_cleanups(app, |cleanups| {
             if !cleanups.contains(&cleanup) {
                 cleanups.push(cleanup);
@@ -1601,6 +1727,14 @@ fn run_pending_cleanups(app: &AppHandle) {
             let is_done = if !remote::vm::is_session_vm(&cleanup.vm, id) {
                 eprintln!("dropping the cleanup of session {id} on the shared VM {}", cleanup.vm.instance);
                 true
+            } else if cleanup.preserve.is_some() {
+                match run_cleanup(&cleanup).await {
+                    Ok(()) => true,
+                    Err(error) => {
+                        eprintln!("saving and deleting the VM {} of session {id} failed again, retrying at the next start: {error}", cleanup.vm.instance);
+                        false
+                    }
+                }
             } else {
                 match gateway.delete_vm(id).await {
                     Ok(()) => true,
@@ -2154,6 +2288,7 @@ fn worktree_file(record: &SessionRecord, path: &str) -> Result<PathBuf, String> 
 /// The change counts as the session's own, like an edit by its agent.
 #[tauri::command]
 pub async fn write_file(app: AppHandle, id: Uuid, path: String, content: String) -> Result<(), String> {
+    link::ensure_writable(&app, id, &format!("save {path}"))?;
     let (record, target) = session_file(&app, id, &path)?;
     attribution::record_write(&app, &record.worktree_path, id, || {
         if let Some(parent) = target.parent() {
@@ -2172,6 +2307,7 @@ pub async fn write_file(app: AppHandle, id: Uuid, path: String, content: String)
 /// changes, like an edit by its agent.
 #[tauri::command]
 pub async fn move_path(app: AppHandle, id: Uuid, from: String, to: String) -> Result<(), String> {
+    link::ensure_writable(&app, id, &format!("move {from}"))?;
     let (record, source) = session_file(&app, id, &from)?;
     let target = worktree_file(&record, &to)?;
     if from.is_empty() || to.is_empty() {
@@ -2193,6 +2329,7 @@ pub async fn move_path(app: AppHandle, id: Uuid, from: String, to: String) -> Re
 /// must not leave the worktree. The deleted files count as the session's own changes, like an edit by its agent.
 #[tauri::command]
 pub async fn delete_path(app: AppHandle, id: Uuid, path: String) -> Result<(), String> {
+    link::ensure_writable(&app, id, &format!("delete {path}"))?;
     let (record, target) = session_file(&app, id, &path)?;
     if path.is_empty() {
         return Err("refusing to delete the worktree itself".to_string());
@@ -2228,6 +2365,7 @@ fn collect_files_below(dir: &Path, worktree: &Path, out: &mut Vec<String>) {
 
 #[tauri::command]
 pub async fn revert_file(app: AppHandle, id: Uuid, path: String) -> Result<(), String> {
+    link::ensure_writable(&app, id, &format!("revert {path}"))?;
     let (record, _) = session_file(&app, id, &path)?;
     git::revert_file(&record.worktree_path, record.diff_base(), &path).await?;
     store::forget_touched_files(&app, &record.worktree_path, std::slice::from_ref(&path))?;
@@ -2237,6 +2375,7 @@ pub async fn revert_file(app: AppHandle, id: Uuid, path: String) -> Result<(), S
 
 #[tauri::command]
 pub async fn shelve_files(app: AppHandle, id: Uuid, paths: Vec<String>, name: String) -> Result<(), String> {
+    link::ensure_writable(&app, id, "shelve the files")?;
     let record = worktree_session(&app, id)?;
     git::shelve_files(&record.worktree_path, &paths, &name).await?;
     store::forget_touched_files(&app, &record.worktree_path, &paths)?;
@@ -2253,6 +2392,7 @@ pub async fn list_shelves(app: AppHandle, id: Uuid) -> Result<Vec<Shelf>, String
 /// Restores a shelf into the worktree; `keep` leaves the shelf in place instead of dropping it.
 #[tauri::command]
 pub async fn unshelve(app: AppHandle, id: Uuid, reference: String, keep: bool) -> Result<(), String> {
+    link::ensure_writable(&app, id, "unshelve the files")?;
     let record = worktree_session(&app, id)?;
     git::unshelve(&record.worktree_path, &reference, keep).await?;
     sync::note_local_change(&app, id);
@@ -2269,6 +2409,7 @@ pub async fn drop_shelf(app: AppHandle, id: Uuid, reference: String) -> Result<(
 /// local branch then follows to the new commit.
 #[tauri::command]
 pub async fn commit_files(app: AppHandle, id: Uuid, paths: Vec<String>, message: String) -> Result<(), String> {
+    link::ensure_writable(&app, id, "commit")?;
     let record = worktree_session(&app, id)?;
     match remote_host(&app, &record) {
         None => git::commit_files(&record.worktree_path, &paths, &message).await?,

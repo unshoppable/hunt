@@ -16,6 +16,7 @@ import { ReviewCommentZones } from "../review/ReviewCommentZones";
 import { FILE_SPAN, isInsideHunk, useReviewedPullRequest } from "../review/reviewComments";
 import { useHuntStore } from "../state/store";
 import { SplitDiffView } from "./SplitDiffView";
+import { WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
 
 setupMonaco();
 
@@ -52,6 +53,11 @@ type CodeDiffEditorProps = {
    * selection agent or sub chats. Use together with `readOnly`.
    */
   isDetached?: boolean;
+  /**
+   * The worktree may not change right now (see `isWorktreeLocked`): the right side cannot be edited until it may again,
+   * and keeps its features and unsaved edits meanwhile.
+   */
+  isLocked?: boolean;
   /** Called with the current editor content on Cmd/Ctrl+S. */
   onSave: (content: string) => void;
   /** Reports whether the editor content differs from `diff.newContent`. */
@@ -97,6 +103,7 @@ export function CodeDiffEditor({
   fontFamily,
   readOnly = false,
   isDetached = false,
+  isLocked = false,
   onSave,
   onDirtyChange,
   onNavigate,
@@ -284,7 +291,7 @@ export function CodeDiffEditor({
       renderSideBySide: false,
       useInlineViewWhenSpaceIsLimited: false,
       originalEditable: false,
-      readOnly,
+      readOnly: readOnly || isLocked,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
       renderOverviewRuler: false,
@@ -297,8 +304,12 @@ export function CodeDiffEditor({
       links: false,
       dragAndDrop: false,
     }),
-    [fontSize, lineHeight, fontFamily, readOnly],
+    [fontSize, lineHeight, fontFamily, readOnly, isLocked],
   );
+
+  useEffect(() => {
+    modifiedEditor?.updateOptions({ readOnly: isLocked, readOnlyMessage: { value: WORKTREE_LOCKED_MESSAGE } });
+  }, [modifiedEditor, isLocked]);
 
   const diffEditorRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null);
   const collapseUnchangedRef = useRef(collapseUnchanged);

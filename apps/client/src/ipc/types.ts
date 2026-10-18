@@ -275,6 +275,17 @@ export type RemoteSyncEvent = {
   changedLocal: boolean;
 };
 
+/**
+ * Whether the local worktree of a remote session may change (mirror of `Link` in src-tauri/src/session/link.rs): `live`
+ * while it syncs with its VM, `vmStopped` while its VM is off, else `locked`: its VM runs without a sync (`vmRunning`)
+ * or neither it nor the gateway can be reached (`unreachable`), so the agent there may write and Hunt refuses its own
+ * writes to the worktree.
+ */
+export type RemoteLink = { state: "live" } | { state: "vmStopped" } | { state: "locked"; reason: "vmRunning" | "unreachable" };
+
+/** The link of a top-level remote session changed (mirror of `LinkEvent` in src-tauri/src/session/link.rs). */
+export type RemoteLinkEvent = { huntSessionId: string; link: RemoteLink };
+
 /** What a terminal shows on a session VM: the log of a hunt.json service, read-only, or a window of the tmux session `app`. */
 export type TerminalTarget = { kind: "service"; name: string } | { kind: "window"; id: string };
 

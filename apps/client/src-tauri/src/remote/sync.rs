@@ -18,7 +18,13 @@
 //! local file only while it is unchanged since the listing, never below a local link and never as a link that is
 //! absolute or climbs out of a folder it entered (`a/..`), which could lead outside the worktree through other links.
 //! Whatever completed is recorded even when a later step fails, and a file that cannot move (a folder on the other
-//! side) is reported without failing the rest. Knows nothing about Tauri.
+//! side) is reported without failing the rest.
+//!
+//! A live sync (`sync_live`) plans the same way, but from both listings as the last sync left them with only the paths
+//! the watchers reported since replaced, and moves small files through the channel of the sync helper on the VM
+//! (`remote::channel`), which sent the VM's changes with their content; it needs a manifest and falls back to a full
+//! sync (an error) for what it cannot tell from single paths, such as a folder that moved here. Knows nothing about
+//! Tauri.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -32,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+use super::channel::{self, Channel, Content, FileWrite, LinkWrite, RemoteChange};
 use super::shell_command;
 use super::ssh::Ssh;
 use crate::git;
@@ -195,6 +202,8 @@ pub struct Plan {
     pub delete_local: Vec<String>,
     /// Keys left alone because several names fall under them, and why.
     pub collisions: BTreeMap<String, String>,
+    /// Files both sides changed since the last sync, which the local version replaces on the VM.
+    pub overwritten: Vec<String>,
 }
 
 /// What a sync changed, and the files it could not sync.
@@ -308,6 +317,9 @@ pub fn plan(inputs: &Inputs<'_>) -> Plan {
             (None, Some(_)) => (here.is_some_and(|here| skipped.get(key) != Some(&here.state)), there.is_some()),
         };
         if changed_here {
+            if changed_there && last.is_some() && there.is_some() {
+                plan.overwritten.push(there.map(|there| there.path.clone()).unwrap_or_default());
+            }
             match (here, there) {
                 (Some(here), _) => {
                     let name = there.map(|there| &there.path).or(last.map(|(path, _)| *path)).unwrap_or(&here.path);
@@ -399,9 +411,23 @@ pub fn next_manifest(
     next
 }
 
+/// Both sides' listings as a sync left them, which a live sync starts from: the files Git lists on each side, and the
+/// paths that exist on the VM without being listed there.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Live {
+    pub local: Listing,
+    pub remote: Listing,
+    pub remote_unlisted: Listing,
+}
+
 /// Syncs the files of `target` over `ssh` (see the module comment) and records the new manifest, also when a step
 /// failed midway; the first such failure is returned after that.
 pub async fn sync(target: &SyncTarget<'_>, ssh: &Ssh) -> Result<Outcome, String> {
+    sync_full(target, ssh).await.map(|(outcome, _)| outcome)
+}
+
+/// `sync`, also returning both sides' listings afterwards for the live syncs that follow.
+pub async fn sync_full(target: &SyncTarget<'_>, ssh: &Ssh) -> Result<(Outcome, Live), String> {
     let keys = Keys { ignore_case: git::ignores_case(target.local).await };
     clear_staging(target.local);
     let manifest = read_manifest(target.manifest)?;
@@ -409,11 +435,109 @@ pub async fn sync(target: &SyncTarget<'_>, ssh: &Ssh) -> Result<Outcome, String>
     let synced_paths = manifest.iter().flat_map(|manifest| manifest.files.keys());
     let asked: BTreeSet<&str> = local.keys().chain(synced_paths).map(String::as_str).collect();
     let (remote, remote_unlisted) = list_remote(ssh, target.remote, &asked).await?;
-    let unlisted = unlisted_keys(target.local, &local, &remote, &remote_unlisted, manifest.as_ref(), keys);
     let edits = match manifest {
         Some(_) => None,
         None => Some(local_edits(target.local, target.base_ref, keys).await?),
     };
+    let live = Live { local, remote, remote_unlisted };
+    run_sync(target, keys, manifest, edits, live, Transport::Ssh(ssh)).await
+}
+
+/// Syncs the files of `target` from `live`, the listings the last sync left, after the local `changed` paths (which
+/// need not be files) and the VM's `changes`: plans as `sync` does and moves the files through `channel`, the ones it
+/// lacks the content of with rsync over `ssh`. With `rescan` the local side is listed anew instead (Hunt changed files
+/// without naming them). Returns the listings afterwards; fails before it changed anything when a full sync is due.
+pub async fn sync_live(
+    target: &SyncTarget<'_>,
+    ssh: &Ssh,
+    channel: &Channel,
+    live: Live,
+    changed: &BTreeSet<String>,
+    changes: Vec<RemoteChange>,
+    rescan: bool,
+) -> Result<(Outcome, Live), String> {
+    let keys = Keys { ignore_case: git::ignores_case(target.local).await };
+    let manifest = read_manifest(target.manifest)?.ok_or("a full sync is due: the session has not synced yet")?;
+    let mut live = live;
+    if rescan {
+        live.local = list_local(target.local).await?;
+    } else {
+        patch_local(target.local, &mut live.local, changed).await?;
+    }
+    let mut contents = BTreeMap::new();
+    for change in changes {
+        if !is_syncable(&change.path) {
+            continue;
+        }
+        live.remote.remove(&change.path);
+        live.remote_unlisted.remove(&change.path);
+        let Some(state) = change.state else { continue };
+        if !change.listed {
+            live.remote_unlisted.insert(change.path, state);
+            continue;
+        }
+        live.remote.insert(change.path.clone(), state);
+        if let Some(content) = change.content {
+            contents.insert(change.path, content);
+        }
+    }
+    clear_staging(target.local);
+    run_sync(target, keys, Some(manifest), None, live, Transport::Live { ssh, channel, contents: &contents }).await
+}
+
+/// Replaces the `changed` local paths of `listing` with what the worktree `local` has there now; a path Git ignores
+/// stays out. Fails when a changed path is a folder or was one, whose files changed without being named.
+async fn patch_local(local: &Path, listing: &mut Listing, changed: &BTreeSet<String>) -> Result<(), String> {
+    let mut unknown = Vec::new();
+    for path in changed.iter().filter(|path| is_syncable(path)) {
+        let prefix = format!("{path}/");
+        let was_folder = listing.range(prefix.clone()..).next().is_some_and(|(listed, _)| listed.starts_with(&prefix));
+        if was_folder || local.join(path).is_dir() {
+            return Err(format!("a full sync is due: the folder {path} changed"));
+        }
+        match local_state(local, path) {
+            None => {
+                listing.remove(path);
+            }
+            Some(state) if listing.contains_key(path) => {
+                listing.insert(path.clone(), state);
+            }
+            Some(_) => unknown.push(path.clone()),
+        }
+    }
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    let ignored = git::ignore_rules(local, &unknown).await?;
+    for path in unknown.into_iter().filter(|path| !ignored.contains_key(path)) {
+        if let Some(state) = local_state(local, &path) {
+            listing.insert(path, state);
+        }
+    }
+    Ok(())
+}
+
+/// How a sync moves files to and from the VM.
+#[derive(Clone, Copy)]
+enum Transport<'a> {
+    /// rsync and the scripts, each over its own command.
+    Ssh(&'a Ssh),
+    /// The sync helper's channel, with the content of the VM's changed files it sent; what it lacks goes through `ssh`.
+    Live { ssh: &'a Ssh, channel: &'a Channel, contents: &'a BTreeMap<String, Content> },
+}
+
+/// Plans the sync of `target` from both sides' listings in `live` and runs it, then records the new manifest; see
+/// `sync`.
+async fn run_sync(
+    target: &SyncTarget<'_>,
+    keys: Keys,
+    manifest: Option<Manifest>,
+    edits: Option<BTreeSet<String>>,
+    live: Live,
+    transport: Transport<'_>,
+) -> Result<(Outcome, Live), String> {
+    let Live { local, remote, remote_unlisted } = live;
+    let unlisted = unlisted_keys(target.local, &local, &remote, &remote_unlisted, manifest.as_ref(), keys);
     let same_content = match &manifest {
         Some(manifest) => unchanged_content(target.local, manifest, &local, keys).await,
         None => BTreeSet::new(),
@@ -440,10 +564,11 @@ pub async fn sync(target: &SyncTarget<'_>, ssh: &Ssh) -> Result<Outcome, String>
         failure: None,
     };
     run.outcome.conflicts.extend(plan.collisions.values().cloned());
+    run.outcome.conflicts.extend(plan.overwritten.iter().map(|path| format!("{path}: changed here and on the VM at once; the local version replaced the VM's")));
     run.applied.kept.extend(plan.collisions.keys().cloned());
-    run.push_and_delete_remote(ssh, &plan).await;
+    run.push_and_delete_remote(transport, &plan).await;
     run.delete_local(&plan.delete_local);
-    run.pull(ssh, &plan.pull).await;
+    run.pull(transport, &plan.pull).await;
     run.hash_moved_files().await;
 
     let Run { applied, outcome, failure, .. } = run;
@@ -451,10 +576,23 @@ pub async fn sync(target: &SyncTarget<'_>, ssh: &Ssh) -> Result<Outcome, String>
     if manifest.as_ref() != Some(&next) {
         write_manifest(target.manifest, &next)?;
     }
-    match failure {
-        Some(error) => Err(error),
-        None => Ok(outcome),
+    if let Some(error) = failure {
+        return Err(error);
     }
+    let after = Live { local: patched(local, keys, &applied.local), remote: patched(remote, keys, &applied.remote), remote_unlisted };
+    Ok((outcome, after))
+}
+
+/// `listing` with the files a sync changed on its side: each key of `changes` gets its new entry, or none once deleted.
+fn patched(mut listing: Listing, keys: Keys, changes: &BTreeMap<String, Option<Entry>>) -> Listing {
+    if changes.is_empty() {
+        return listing;
+    }
+    listing.retain(|path, _| !changes.contains_key(&keys.of(path)));
+    for entry in changes.values().flatten() {
+        listing.insert(entry.path.clone(), entry.state);
+    }
+    listing
 }
 
 /// The steps of one sync and what they completed.
@@ -486,7 +624,8 @@ impl Run<'_> {
 
     /// Sends `plan.push` and deletes `plan.delete_remote` on the VM, then records what the VM has afterwards. Regular
     /// files go with rsync, links as their text; a file that is gone or of another kind by now waits for the next sync.
-    async fn push_and_delete_remote(&mut self, ssh: &Ssh, plan: &Plan) {
+    /// A live sync sends files up to `channel::INLINE_LIMIT` through the helper's channel.
+    async fn push_and_delete_remote(&mut self, transport: Transport<'_>, plan: &Plan) {
         if plan.push.is_empty() && plan.delete_remote.is_empty() {
             return;
         }
@@ -506,11 +645,17 @@ impl Run<'_> {
                 None => continue,
             }
         }
-        let sent = transfer(ssh, Direction::Push, local, self.target.remote, &files, None).await;
+        let (sent, after) = match transport {
+            Transport::Ssh(ssh) => {
+                let sent = transfer(ssh, Direction::Push, local, self.target.remote, &files, None).await;
+                (sent, apply_remote(ssh, self.target.remote, &plan.delete_remote, &files, &links).await)
+            }
+            Transport::Live { ssh, channel, .. } => send_live(ssh, channel, local, self.target.remote, &files, &links, &plan.delete_remote).await,
+        };
         if let Err(error) = &sent {
             self.fail(error.clone());
         }
-        let after = match apply_remote(ssh, self.target.remote, &plan.delete_remote, &files, &links).await {
+        let after = match after {
             Ok(after) => after,
             Err(error) => {
                 self.fail(error);
@@ -579,14 +724,20 @@ impl Run<'_> {
 
     /// Brings `paths` from the VM into the staging folder and moves each into the worktree while the local file is
     /// unchanged since the listing and the staged one is what the VM listed.
-    async fn pull(&mut self, ssh: &Ssh, paths: &[String]) {
+    async fn pull(&mut self, transport: Transport<'_>, paths: &[String]) {
         if paths.is_empty() {
             return;
         }
         let (links, files): (Vec<String>, Vec<String>) =
             paths.iter().cloned().partition(|path| self.listed_there(&self.keys.of(path)).is_some_and(|state| state.link));
         let staging = self.target.local.join(STAGING_DIR);
-        let brought = stage(ssh, self.target.local, self.target.remote, &staging, &files, &links).await;
+        let brought = match transport {
+            Transport::Ssh(ssh) => stage(ssh, self.target.local, self.target.remote, &staging, &files, &links).await,
+            Transport::Live { ssh, contents, .. } => {
+                let expected: Listing = paths.iter().filter_map(|path| Some((path.clone(), self.listed_there(&self.keys.of(path))?))).collect();
+                stage_live(ssh, self.target.local, self.target.remote, &staging, &expected, contents).await
+            }
+        };
         if let Err(error) = &brought {
             self.fail(error.clone());
         }
@@ -701,6 +852,111 @@ async fn stage(ssh: &Ssh, local: &Path, remote: &str, staging: &Path, files: &[S
     let mut lines = transfer(ssh, Direction::Pull, local, remote, files, Some(staging)).await?;
     lines.extend(transfer(ssh, Direction::Pull, local, remote, links, Some(staging)).await?);
     Ok(lines)
+}
+
+/// Stages the `expected` files from the VM like `stage` does: from the content the helper sent where it matches the
+/// listed state, the rest with rsync over `ssh`.
+async fn stage_live(
+    ssh: &Ssh,
+    local: &Path,
+    remote: &str,
+    staging: &Path,
+    expected: &Listing,
+    contents: &BTreeMap<String, Content>,
+) -> Result<Vec<String>, String> {
+    std::fs::create_dir_all(staging).map_err(|error| format!("failed to create {}: {error}", staging.display()))?;
+    let (mut files, mut links) = (Vec::new(), Vec::new());
+    for (path, state) in expected {
+        let staged = contents.get(path).is_some_and(|content| write_staged(staging, path, state, content).is_ok());
+        if staged {
+            continue;
+        }
+        if state.link {
+            links.push(path.clone());
+        } else {
+            files.push(path.clone());
+        }
+    }
+    let mut lines = transfer(ssh, Direction::Pull, local, remote, &files, Some(staging)).await?;
+    lines.extend(transfer(ssh, Direction::Pull, local, remote, &links, Some(staging)).await?);
+    Ok(lines)
+}
+
+/// Writes `content` to `path` in `staging` with the execute bit and modification time of `state`.
+fn write_staged(staging: &Path, path: &str, state: &FileState, content: &Content) -> Result<(), String> {
+    let destination = staging.join(path);
+    let failed = |error: std::io::Error| format!("failed to stage {path}: {error}");
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(failed)?;
+    }
+    match content {
+        Content::File(data) if !state.link => {
+            std::fs::write(&destination, data).map_err(failed)?;
+            let mode = if state.executable { 0o755 } else { 0o644 };
+            std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(mode)).map_err(failed)?;
+        }
+        Content::Link(target) if state.link => std::os::unix::fs::symlink(target, &destination).map_err(failed)?,
+        _ => return Err(format!("failed to stage {path}: its content is of another kind than its state")),
+    }
+    set_modified(&destination, state.modified_ns).map_err(failed)
+}
+
+/// Sets the modification time of the file or link at `path` (not of what a link points to) to `modified_ns`.
+fn set_modified(path: &Path, modified_ns: i64) -> std::io::Result<()> {
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(std::io::Error::other)?;
+    let time = libc::timespec { tv_sec: modified_ns.div_euclid(NANOS_PER_SECOND), tv_nsec: modified_ns.rem_euclid(NANOS_PER_SECOND) as _ };
+    let times = [libc::timespec { tv_sec: 0, tv_nsec: libc::UTIME_OMIT }, time];
+    // SAFETY: `name` is a NUL-terminated path and `times` holds the two entries `utimensat` reads.
+    let result = unsafe { libc::utimensat(libc::AT_FDCWD, name.as_ptr(), times.as_ptr(), libc::AT_SYMLINK_NOFOLLOW) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Sends the local `files` and `links` of `local` to the VM and deletes `deletes` there: the files up to
+/// `channel::INLINE_LIMIT` and everything else through `channel`, larger files with rsync over `ssh` first. Returns
+/// rsync's result and the state afterwards of every path named.
+async fn send_live(
+    ssh: &Ssh,
+    channel: &Channel,
+    local: &Path,
+    remote: &str,
+    files: &[String],
+    links: &[LinkRecord],
+    deletes: &[String],
+) -> (Result<Vec<String>, String>, Result<Listing, String>) {
+    let mut writes = Vec::new();
+    let mut large = Vec::new();
+    for path in files {
+        let state = local_state(local, path);
+        let data = state.filter(|state| state.size <= channel::INLINE_LIMIT).and_then(|_| std::fs::read(local.join(path)).ok());
+        match (state, data) {
+            // Read while unchanged, so that the state sent is the content's.
+            (Some(state), Some(data)) if local_state(local, path) == Some(state) => writes.push(FileWrite { path: path.clone(), data, state }),
+            _ => large.push(path.clone()),
+        }
+    }
+    let links: Vec<LinkWrite> = links
+        .iter()
+        .map(|link| LinkWrite {
+            path: link.path.clone(),
+            target: link.target.to_string_lossy().into_owned(),
+            modified_ns: link.seconds * NANOS_PER_SECOND,
+        })
+        .collect();
+    let sent = transfer(ssh, Direction::Push, local, remote, &large, None).await;
+    let mut after = channel.apply(&writes, &links, deletes).await;
+    if !large.is_empty() {
+        if let Ok(after) = after.as_mut() {
+            match apply_remote(ssh, remote, &[], &large, &[]).await {
+                Ok(states) => after.extend(states),
+                Err(error) => return (sent, Err(error)),
+            }
+        }
+    }
+    (sent, after)
 }
 
 /// What `stage_fetch` brought into the staging folder, by what this Mac has at each path.
@@ -1222,7 +1478,7 @@ fn parse_modified(text: &str) -> Option<i64> {
 
 /// Whether the worktree-relative `path` can sync: it stays inside the worktree, fits on a line of rsync's file list and
 /// lies outside the diagram folder, which each side keeps for itself.
-fn is_syncable(path: &str) -> bool {
+pub fn is_syncable(path: &str) -> bool {
     !path.is_empty() && git::ensure_inside_worktree(path).is_ok() && !path.contains(['\n', '\r']) && !path.starts_with(".hunt/")
 }
 
@@ -1410,10 +1666,10 @@ mod tests {
         let remote = listing(&[("src/foo.ts", state(4, 25))]);
         let plan = plan_of(Some(&base), &[], &local, &remote, FOLDED, &[], &[]);
         assert_eq!(plan, Plan { pull: paths(&["src/foo.ts"]), ..Plan::default() });
-        // Edited here meanwhile: the content goes to the VM under the VM's name.
+        // Edited here meanwhile: the content goes to the VM under the VM's name, replacing the renamed file there.
         let edited = listing(&[("src/Foo.ts", state(6, 11))]);
         let plan = plan_of(Some(&base), &[], &edited, &remote, FOLDED, &[], &[]);
-        assert_eq!(plan, Plan { push: paths(&["src/foo.ts"]), ..Plan::default() });
+        assert_eq!(plan, Plan { push: paths(&["src/foo.ts"]), overwritten: paths(&["src/foo.ts"]), ..Plan::default() });
         // A case-sensitive Mac sees two files.
         let plan = plan_of(Some(&base), &[], &local, &remote, EXACT, &[], &[]);
         assert_eq!((plan.delete_local, plan.pull), (paths(&["src/Foo.ts"]), paths(&["src/foo.ts"])));
@@ -1922,5 +2178,69 @@ mod tests {
         assert!(run.applied.kept.contains("sent.txt"));
         assert!(run.applied.blobs.contains_key("steady.txt") && run.applied.blobs.contains_key("pulled.txt"));
         assert!(!run.applied.kept.contains("steady.txt"));
+    }
+    #[test]
+    fn files_both_sides_changed_are_reported_as_overwritten() {
+        let (old_local, old_remote) = (state(1, 10), state(1, 20));
+        let base = manifest(&[("both.txt", old_local, old_remote), ("here.txt", old_local, old_remote), ("there.txt", old_local, old_remote)]);
+        let local = listing(&[("both.txt", state(2, 11)), ("here.txt", state(2, 11)), ("there.txt", old_local)]);
+        let remote = listing(&[("both.txt", state(3, 21)), ("here.txt", old_remote), ("there.txt", state(3, 21))]);
+        let plan = plan_of(Some(&base), &[], &local, &remote, EXACT, &[], &[]);
+        assert_eq!(plan.push, paths(&["both.txt", "here.txt"]));
+        assert_eq!(plan.pull, paths(&["there.txt"]));
+        assert_eq!(plan.overwritten, paths(&["both.txt"]));
+        // Before the first sync every difference is one, and none counts as overwritten.
+        assert!(plan_of(None, &["both.txt"], &local, &remote, EXACT, &[], &[]).overwritten.is_empty());
+    }
+
+    #[test]
+    fn a_patched_listing_takes_the_new_entries_and_drops_deleted_ones() {
+        let listing = listing(&[("a.txt", state(1, 10)), ("B.txt", state(1, 10)), ("c.txt", state(1, 10))]);
+        let entry = |path: &str, size: u64| Some(Entry { path: path.into(), state: state(size, 20) });
+        let changes = BTreeMap::from([("a.txt".to_string(), entry("a.txt", 2)), ("b.txt".to_string(), entry("b.txt", 3)), ("c.txt".to_string(), None)]);
+        let patched = patched(listing, FOLDED, &changes);
+        assert_eq!(patched, super::Listing::from([("a.txt".to_string(), state(2, 20)), ("b.txt".to_string(), state(3, 20))]));
+    }
+
+    #[tokio::test]
+    async fn the_local_listing_is_patched_with_the_changed_paths_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path();
+        git::run_git(worktree, &["init", "-q"]).await.unwrap();
+        std::fs::write(worktree.join(".gitignore"), "ignored.txt\n").unwrap();
+        for name in ["kept.txt", "edited.txt", "deleted.txt"] {
+            std::fs::write(worktree.join(name), name).unwrap();
+        }
+        std::fs::create_dir(worktree.join("dir")).unwrap();
+        std::fs::write(worktree.join("dir/inner.txt"), "inner").unwrap();
+        let mut listing = list_local(worktree).await.unwrap();
+        let kept = listing["kept.txt"];
+        std::fs::write(worktree.join("edited.txt"), "edited, longer").unwrap();
+        std::fs::remove_file(worktree.join("deleted.txt")).unwrap();
+        std::fs::write(worktree.join("new.txt"), "new").unwrap();
+        std::fs::write(worktree.join("ignored.txt"), "ignored").unwrap();
+        std::fs::write(worktree.join("unnamed.txt"), "not reported").unwrap();
+        let changed = set(&["edited.txt", "deleted.txt", "new.txt", "ignored.txt", ".hunt/graph.json"]);
+        patch_local(worktree, &mut listing, &changed).await.unwrap();
+        assert_eq!(listing.keys().map(String::as_str).collect::<Vec<_>>(), [".gitignore", "dir/inner.txt", "edited.txt", "kept.txt", "new.txt"]);
+        assert_eq!(listing["kept.txt"], kept);
+        assert_eq!(listing["edited.txt"].size, 14);
+        // A folder that changed hides which of its files did.
+        assert!(patch_local(worktree, &mut listing, &set(&["dir"])).await.unwrap_err().contains("full sync"));
+        std::fs::remove_dir_all(worktree.join("dir")).unwrap();
+        assert!(patch_local(worktree, &mut listing, &set(&["dir"])).await.unwrap_err().contains("full sync"));
+    }
+
+    #[test]
+    fn staged_content_gets_the_state_the_vm_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path();
+        let file = FileState { size: 2, modified_ns: 1_792_345_678_123_456_789, executable: true, link: false };
+        write_staged(staging, "bin/run", &file, &Content::File(b"hi".to_vec())).unwrap();
+        assert_eq!(local_state(staging, "bin/run"), Some(file));
+        let link = FileState { size: 3, modified_ns: 1_792_345_678_000_000_000, executable: false, link: true };
+        write_staged(staging, "bin/link", &link, &Content::Link("run".into())).unwrap();
+        assert_eq!(local_state(staging, "bin/link"), Some(link));
+        assert!(write_staged(staging, "x", &file, &Content::Link("run".into())).is_err());
     }
 }

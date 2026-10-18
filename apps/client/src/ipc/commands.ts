@@ -15,6 +15,7 @@ import type {
   PullRequestDetails,
   PullRequestRef,
   PullRequestState,
+  RemoteLink,
   RemoteSecretSummary,
   ReplyTarget,
   ReviewComment,
@@ -103,6 +104,13 @@ export const commands = {
   prepareHandOff: (id: string, settings: VmSettings) => invoke<void>("prepare_hand_off", { id, settings }),
   handOffSession: (id: string, settings: VmSettings) => invoke<SessionView>("hand_off_session", { id, settings }),
   retrieveSession: (id: string) => invoke<SessionView>("retrieve_session", { id }),
+  /**
+   * Continues the remote session, which cannot reach its VM, on this Mac with the files as last synced; what its agent
+   * did on the VM since is saved as `refs/hunt/<id>/abandoned` once the VM can be reached, then the VM is deleted.
+   */
+  continueLocally: (id: string) => invoke<SessionView>("continue_locally", { id }),
+  /** Whether the local worktree of the remote session `id` (for a sub chat its parent's) may change; `null` for a local session. */
+  remoteLink: (id: string) => invoke<RemoteLink | null>("remote_link", { id }),
   /** Keeps the idle remote session for now; Hunt asks again whether to retrieve or delete it three days later. */
   snoozeRemoteCleanup: (id: string) => invoke<void>("snooze_remote_cleanup", { id }),
   /** What listens on the remote session's VM and whether its main port answers; a VM that is off reports nothing and stays off. */

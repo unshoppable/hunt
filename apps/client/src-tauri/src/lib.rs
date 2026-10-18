@@ -38,6 +38,7 @@ pub fn run() {
         .manage(WatcherRegistry::default())
         .manage(SummaryRegistry::default())
         .manage(SyncRegistry::default())
+        .manage(session::link::LinkRegistry::default())
         .manage(DependencyRegistry::default())
         .manage(preferences::Preferences::default())
         .menu(|app| menu::build(app))
@@ -67,6 +68,8 @@ pub fn run() {
             session::commands::prepare_hand_off,
             session::commands::hand_off_session,
             session::commands::retrieve_session,
+            session::commands::continue_locally,
+            session::commands::remote_link,
             session::commands::snooze_remote_cleanup,
             session::commands::preview_status,
             session::commands::adopt_session_vms,

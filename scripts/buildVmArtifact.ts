@@ -28,7 +28,11 @@ interface Artifact {
 
 const ARTIFACTS: Record<string, Artifact> = {
   session: {
-    entries: { "relay/main": "apps/session/src/relay/main.ts", "session/configCli": "apps/session/src/configCli.ts" },
+    entries: {
+      "relay/main": "apps/session/src/relay/main.ts",
+      "session/configCli": "apps/session/src/configCli.ts",
+      "session/syncHelper": "apps/session/src/sync/helper.ts",
+    },
     files: [
       ["libs/vm/hunt-ctl", "vm/hunt-ctl"],
       ["apps/session/vm/hunt-idle-check", "vm/hunt-idle-check"],

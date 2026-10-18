@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { RemoteStep, SessionView } from "../ipc/types";
 import { createEmptyChat } from "../state/store";
-import { fileSyncLabel, formatElapsed, handOffBlocker, hasBusySubChat, moveStatus, remoteOf, remotePosition, retrieveBlocker } from "./remoteSession";
+import {
+  fileSyncLabel,
+  formatElapsed,
+  handOffBlocker,
+  hasBusySubChat,
+  isWorktreeLocked,
+  moveStatus,
+  remoteOf,
+  remotePosition,
+  retrieveBlocker,
+  worktreeLock,
+} from "./remoteSession";
 
 function session(id: string, patch: Partial<SessionView> = {}): SessionView {
   return {
@@ -188,5 +199,31 @@ describe("fileSyncLabel", () => {
     expect(fileSyncLabel({ ...idle, syncedAt: "2026-10-14T10:05:00Z" }, false, time)).toBe("Synced 10:05");
     expect(fileSyncLabel({ ...idle, syncedAt: "2026-10-14T10:05:00Z", conflicts: ["src: a folder here"] }, false, time)).toBe("1 file not synced");
     expect(fileSyncLabel(idle, false, time)).toBeNull();
+  });
+});
+
+describe("worktreeLock", () => {
+  const top = session("top", { remote });
+  const sub = session("sub", { parentId: "top" });
+  const local = session("local");
+  const sessions = [top, sub, local];
+  const locked = { top: { state: "locked", reason: "unreachable" } } as const;
+
+  it("locks a remote session and its sub chats while the session's link is locked", () => {
+    expect(worktreeLock(sessions, locked, "top")).toBe("unreachable");
+    expect(worktreeLock(sessions, locked, "sub")).toBe("unreachable");
+    expect(isWorktreeLocked(sessions, { top: { state: "locked", reason: "vmRunning" } }, "sub")).toBe(true);
+  });
+
+  it("lets the worktree change while the session syncs, its VM is off or its link is not known yet", () => {
+    expect(isWorktreeLocked(sessions, { top: { state: "live" } }, "top")).toBe(false);
+    expect(isWorktreeLocked(sessions, { top: { state: "vmStopped" } }, "sub")).toBe(false);
+    expect(isWorktreeLocked(sessions, {}, "top")).toBe(false);
+  });
+
+  it("never locks a local session, one that came back from its VM or one that is not listed", () => {
+    expect(isWorktreeLocked(sessions, { local: { state: "locked", reason: "vmRunning" } }, "local")).toBe(false);
+    expect(isWorktreeLocked([session("top"), sub], locked, "sub")).toBe(false);
+    expect(isWorktreeLocked(sessions, locked, "missing")).toBe(false);
   });
 });

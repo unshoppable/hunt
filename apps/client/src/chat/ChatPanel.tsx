@@ -27,7 +27,7 @@ import { OpenInWebstormButton } from "./OpenInWebstormButton";
 import { RemoteToggle } from "./RemoteToggle";
 import { remoteDeleteQuestion } from "../sessions/remoteOrigin";
 import { confirmDestructive } from "../ui/confirm";
-import { moveStatus, remoteOf } from "./remoteSession";
+import { continueLocallyQuestion, moveStatus, remoteOf, worktreeLock } from "./remoteSession";
 import { RemoteRunStatus, RemoteStepProgress } from "./RemoteProgress";
 
 /** Order in which shift+tab cycles the session mode, as in the terminal; modes the agent does not offer are skipped. */
@@ -56,6 +56,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     const current = state.sessions.find((candidate) => candidate.id === sessionId);
     return current ? remoteOf(current, state.sessions) : null;
   });
+  /** Why the local worktree is read-only while this Mac cannot sync with the VM; `null` while it may change. */
+  const lock = useHuntStore((state) => worktreeLock(state.sessions, state.remoteLinks, sessionId));
   const chat = useHuntStore((state) => state.chats[sessionId]);
   const isCreating = useHuntStore((state) => state.creatingIds.includes(sessionId));
   const sendPrompt = useHuntStore((state) => state.sendPrompt);
@@ -66,6 +68,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const setPromptDraft = useHuntStore((state) => state.setPromptDraft);
   const cancelPrompt = useHuntStore((state) => state.cancelPrompt);
   const closeSession = useHuntStore((state) => state.closeSession);
+  const resumeSession = useHuntStore((state) => state.resumeSession);
+  const continueLocally = useHuntStore((state) => state.continueLocally);
   const setMode = useHuntStore((state) => state.setMode);
   const setConfigOption = useHuntStore((state) => state.setConfigOption);
   const answerPermission = useHuntStore((state) => state.answerPermission);
@@ -138,6 +142,15 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     const current = useHuntStore.getState().sessions.find((candidate) => candidate.id === sessionId);
     if (!current?.remote || !(await confirmDestructive(remoteDeleteQuestion(current), "Delete"))) return;
     await closeSession(sessionId, "delete");
+  }
+
+  /** The remote session that owns the VM: this one, or the parent of a sub chat. */
+  const ownerId = session?.parentId ?? sessionId;
+
+  /** Continues the remote session, whose VM cannot be reached, on this Mac after confirmation. */
+  async function continueOwnerLocally() {
+    if (!(await confirmDestructive(continueLocallyQuestion(ownerId), "Continue locally"))) return;
+    await continueLocally(ownerId);
   }
 
   if (!session) return null;
@@ -222,6 +235,23 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
                   <li key={conflict}>{conflict}</li>
                 ))}
               </ul>
+            </div>
+          ) : null}
+          {lock ? (
+            <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-amber-200">
+              <span className="min-w-0 break-words">
+                {lock === "vmRunning"
+                  ? "Not connected to the VM. Local files are read-only while the agent may be working there."
+                  : "The VM cannot be reached. Local files are read-only so that this Mac and the VM cannot diverge."}
+              </span>
+              <button
+                type="button"
+                onClick={() => void (lock === "vmRunning" ? resumeSession(ownerId) : continueOwnerLocally())}
+                disabled={isCreating || Boolean(chat?.isLoading) || Boolean(chat?.move)}
+                className={SECONDARY_BUTTON_XS}
+              >
+                {lock === "vmRunning" ? "Connect" : "Continue locally"}
+              </button>
             </div>
           ) : null}
         </div>

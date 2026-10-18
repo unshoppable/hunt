@@ -6,6 +6,7 @@ import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes"
 import { useSettingsStore } from "../state/settings";
 import { isOwnChange, otherTouchers, type ChangeScope } from "./attribution";
 import { ownContent } from "./ownChanges";
+import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
 import { ChangeList } from "./ChangeList";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { CodeDiffEditor, type CodeDiffEditorHandle } from "./CodeDiffEditor";
@@ -41,6 +42,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const diffLineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
   const diffFontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
+  const isLocked = useHuntStore((state) => isWorktreeLocked(state.sessions, state.remoteLinks, sessionId));
   /**
    * The changelist can be scoped to the session's own changes: another session (parent or sub session) works in the
    * same worktree, or the session works in the repository's own checkout, which also holds the user's other work.
@@ -374,6 +376,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
               lineHeight={diffLineHeight}
               fontFamily={diffFontFamily}
               readOnly={isOwnView}
+              isLocked={isLocked}
               onSave={saveFile}
               onDirtyChange={markDirty}
               onNavigate={(line, column, name) => void openInEditorWindow(sessionId, { path: shownDiff.path, line, column, definitionOf: name })}
@@ -411,7 +414,14 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
           <div className="mb-1 truncate border-b border-(--line) px-2 pb-1 font-mono text-[12px] text-neutral-500" title={contextMenu.file.path}>
             {baseName(contextMenu.file.path)}
           </div>
-          <button type="button" role="menuitem" onClick={() => revertFile(contextMenu.file)} className="block w-full rounded px-2 py-1 text-left text-red-300 hover:bg-(--row-hover)">
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => (isLocked ? undefined : void revertFile(contextMenu.file))}
+            aria-disabled={isLocked}
+            title={isLocked ? WORKTREE_LOCKED_MESSAGE : undefined}
+            className={`block w-full rounded px-2 py-1 text-left text-red-300 hover:bg-(--row-hover) ${isLocked ? "opacity-40" : ""}`}
+          >
             {revertLabel(contextMenu.file)}
           </button>
         </div>

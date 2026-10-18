@@ -88,6 +88,18 @@ pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> R
     Ok(Retrieved { acp_session_id, branch: None })
 }
 
+/// Saves what session `id` left on its VM before the VM goes: stops the session there, snapshots its worktree at
+/// `remote_worktree` on top of the agent's commits and fetches the snapshot into the local `worktree` as
+/// `refs/hunt/<id>/abandoned`, which it returns.
+pub async fn preserve(ssh: &Ssh, id: Uuid, worktree: &Path, remote_worktree: &str) -> Result<String, String> {
+    let id = id.to_string();
+    hunt_ctl(ssh, &["stop", &id]).await?;
+    hunt_ctl(ssh, &["snapshot", &id]).await?;
+    let saved = format!("refs/hunt/{id}/abandoned");
+    fetch_into(worktree, ssh, remote_worktree, &format!("refs/hunt/{id}/retrieve"), &saved).await?;
+    Ok(saved)
+}
+
 /// Refuses a retrieval after which the local worktree would not hold the files of the VM's snapshot `retrieve_ref`:
 /// `local_tree` (the local worktree after the last sync, with this Mac's ignore rules) is compared with it. The files
 /// only the VM has that this Mac ignores (its global excludes, files the agent added with `-f`) are brought here once

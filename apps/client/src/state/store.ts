@@ -13,6 +13,8 @@ import type {
   PreviewStatus,
   PullRequestRef,
   PullRequestState,
+  RemoteLink,
+  RemoteLinkEvent,
   RemoteProgressEvent,
   RemoteStep,
   RemoteSyncEvent,
@@ -209,6 +211,11 @@ type HuntState = {
   /** Ids of sessions created without a prompt, titled after their repository until their first prompt names them. */
   untitledIds: string[];
   remoteSync: RemoteSync;
+  /**
+   * Whether the local worktree of each top-level remote session may change, by session id; a session whose link is not
+   * known yet has none (see `isWorktreeLocked` in chat/remoteSession.ts).
+   */
+  remoteLinks: Record<string, RemoteLink>;
   /** State of the pull request each reviewing session works on, by session id, as last fetched from GitHub. */
   pullRequestStates: Record<string, PullRequestState>;
 
@@ -251,6 +258,11 @@ type HuntState = {
    * and fills again from the local agent.
    */
   retrieveSession: (id: string) => Promise<void>;
+  /**
+   * Continues the remote session, whose VM cannot be reached, in its local worktree with the files as last synced, once
+   * its agent finished the running turn; the chat starts over and fills again from the local agent.
+   */
+  continueLocally: (id: string) => Promise<void>;
   /** Opens the start view in which the first prompt or the choice of a repository creates the session, or a sub session of `parentId`. */
   startDraft: (parentId?: string) => void;
   /**
@@ -313,6 +325,7 @@ type HuntState = {
   applyRemoteProgress: (event: RemoteProgressEvent) => void;
   /** Records the state of a remote session's file sync; a sync that changed local files reloads the views. */
   applyRemoteSync: (event: RemoteSyncEvent) => void;
+  applyRemoteLink: (event: RemoteLinkEvent) => void;
   applyGraphChanged: (huntSessionId: string) => void;
   applySummary: (event: SummaryEvent) => void;
   /** Reloads the changes of every open session that works in the worktree a tool call just changed. */
@@ -849,6 +862,36 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     }
   }
 
+  /** Ids of the sessions whose link `loadRemoteLinks` is asking the backend for. */
+  const loadingLinkIds = new Set<string>();
+
+  /**
+   * Asks the backend for the link of every listed top-level remote session whose link is not known yet and forgets the
+   * links of sessions that no longer run on a VM. A failed load leaves the link unknown until a `remote:link` event
+   * brings it.
+   */
+  function loadRemoteLinks() {
+    const remoteIds = new Set(get().sessions.filter((session) => session.remote && !session.parentId).map((session) => session.id));
+    if (Object.keys(get().remoteLinks).some((id) => !remoteIds.has(id))) {
+      set((state) => ({ remoteLinks: Object.fromEntries(Object.entries(state.remoteLinks).filter(([id]) => remoteIds.has(id))) }));
+    }
+    for (const id of remoteIds) {
+      if (get().remoteLinks[id] || loadingLinkIds.has(id)) continue;
+      loadingLinkIds.add(id);
+      void commands
+        .remoteLink(id)
+        .then(
+          (link) => {
+            // A `remote:link` event that arrived meanwhile is newer.
+            if (!link || get().remoteLinks[id]) return;
+            set((state) => ({ remoteLinks: { ...state.remoteLinks, [id]: link } }));
+          },
+          (error: unknown) => console.warn(`failed to load the link of session ${id}: ${String(error)}`),
+        )
+        .finally(() => loadingLinkIds.delete(id));
+    }
+  }
+
   return {
     sessions: [],
     creatingIds: [],
@@ -860,6 +903,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     draft: null,
     untitledIds: [],
     remoteSync: { isRunning: false, error: null },
+    remoteLinks: {},
     pullRequestStates: {},
 
     refreshSessions: async () => {
@@ -868,6 +912,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
         const creating = state.sessions.filter((session) => state.creatingIds.includes(session.id) && !listed.some((candidate) => candidate.id === session.id));
         return { sessions: [...listed.filter((session) => !state.removingIds.includes(session.id)), ...creating] };
       });
+      loadRemoteLinks();
     },
 
     syncRemoteSessions: async (ids = []) => {
@@ -948,6 +993,8 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     },
 
     retrieveSession: (id) => moveSession(id, "retrieve", null, () => commands.retrieveSession(id)),
+
+    continueLocally: (id) => moveSession(id, "retrieve", null, () => commands.continueLocally(id)),
 
     loadHistory: async (id) => {
       // The agent survives a webview reload but this store does not: rebuild the chat from the backend's history.
@@ -1199,6 +1246,10 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
         }
         return { chats };
       });
+    },
+
+    applyRemoteLink: (event) => {
+      set((state) => ({ remoteLinks: { ...state.remoteLinks, [event.huntSessionId]: event.link } }));
     },
 
     applyGraphChanged: (huntSessionId) => {

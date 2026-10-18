@@ -589,10 +589,13 @@ climbs after a name (`a/../b`), is not brought here: the chat names it on every 
 refuses until it is gone. Replace it in the terminal of the VM with a relative link that climbs only at its start
 (`../shared/config.json`), with a copy of the file, or delete it. What completed is recorded even when a later step fails, and a file that cannot move (a folder on the
 other side) is reported in the chat without stopping the rest. The listing and the deletions on the VM run as `agent`
-through `sudo`, so they do not keep the VM awake. A sync runs when the session connects, after every tool call and
-turn the relay reports, every 10 seconds while a turn runs, after the watcher saw a local change and after a save,
-move, delete, revert or shelve in Hunt; a prompt and a diagram refresh wait until local changes reached the VM. After
-every sync the local branch points at the commit the VM's worktree has checked out (fetched as `refs/hunt/<id>/head`,
+through `sudo`, so they do not keep the VM awake. The sync is live (below): a change on either side reaches the other
+within about 0.1 s. A full sync, which lists both sides, runs when the session connects, when the live channel
+(re)opens or asks for one, after every turn that ends, and whenever a live sync cannot tell a change file by file (a
+folder moved here); a save, move, delete, revert or shelve in Hunt has the local side listed anew, and a prompt and a
+diagram refresh wait until local changes reached the VM. Without the channel (a VM on an older release, or while it
+reconnects) a full sync also runs after every tool call and every 10 seconds while a turn runs. After every sync that
+may have moved it, the local branch points at the commit the VM's worktree has checked out (fetched as `refs/hunt/<id>/head`,
 `apps/client/src-tauri/src/remote/commit.rs`), so the diff shows what is uncommitted on the VM, as for a local session,
 also after the agent committed; a local branch that holds a commit the VM lacks stays put, and the chat says so. After
 every turn that ends, the sync also copies the Claude Code transcripts of the session and its sub chats from the VM into
@@ -607,6 +610,30 @@ shows when the last sync succeeded, and the chat shows a failure. A diagram refr
 against the session's diff base, and Hunt copies `.hunt/graph.json` back afterwards. Known limits: an edit that keeps
 a file's size within the same second it was last synced in goes unnoticed until the next change, and line-ending
 conversion (`core.autocrlf`) makes the two sides' contents differ, so it should stay off for remote sessions.
+
+The live sync runs over a channel to a helper on the VM that the client starts over the session's shared SSH
+connection and keeps open (`sudo -n -u agent /opt/hunt/node/bin/node /srv/hunt/current/session/syncHelper.mjs
+<worktree>`, `apps/session/src/sync/`; client side `apps/client/src-tauri/src/remote/channel.rs`). The helper watches
+every folder of the worktree that Git does not ignore and speaks NDJSON on stdin and stdout
+(`apps/session/src/sync/protocol.ts`): it reports changed files with their state and, up to 1 MiB, their content,
+applies the writes, links and deletions the client sends and acknowledges them without echoing them back, says when
+`HEAD` may have moved and asks for a full sync after a change of the ignore rules or a failed watch. The local watcher
+reports paths after 50 ms. A live sync plans like a full one, from both listings as the last sync left them with only
+the reported paths replaced, and moves small files through the channel and larger ones with rsync; measured with
+7,373 files at the round trip of IAP, a change takes about 80 ms from the VM here and 50 ms the other way. When both
+sides change the same file within that time, the local version wins and the chat names the file. The channel opens
+again after it ended, waiting 1 to 30 seconds after each failure in a row, and the full sync after it brings what
+changed meanwhile.
+
+Only one side writes while the two cannot sync (`apps/client/src-tauri/src/session/link.rs`). The local worktree may
+change while the channel is open or the agent of the VM is connected, and while the gateway says the VM is off (the
+next sync sends the changes). Otherwise it is locked: the VM runs without a connection here, or neither it nor the
+gateway can be reached. Hunt then refuses its own writes (saves, moves, deletions, revert, shelve, unshelve, commit),
+its editors turn read-only, and the chat offers *Connect* or, while nothing can be reached, *Continue locally*; editors
+outside Hunt are not held back. A locked session is checked again every 15 seconds. *Continue locally*
+(`continue_locally`) makes the session local with the files as last synced and the conversation as of the agent's last
+finished turn; once the VM can be reached (tried every minute and at each start of Hunt), Hunt stops the session
+there, fetches a snapshot of what the agent left as `refs/hunt/<id>/abandoned` and deletes the VM.
 
 Bringing it back (`retrieve_session`) stops the relay, syncs once more, snapshots the VM's worktree on top of the
 agent's commits (`refs/hunt/<id>/retrieve`) and fetches it. Files only the VM has that this Mac ignores (global

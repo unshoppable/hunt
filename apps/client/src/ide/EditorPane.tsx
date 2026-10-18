@@ -7,6 +7,7 @@ import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, setupMon
 import { anchorBelowLine, type SelectionRequest } from "../diff/selectionContext";
 import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
+import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
 import { ChangeMarkers, type Marker } from "./changeMarkers";
 import { ChangePopover } from "./ChangePopover";
 import type { Workspace } from "./documents";
@@ -81,6 +82,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
   const closeTab = useIdeStore((state) => state.closeTab);
   const clearPendingPosition = useIdeStore((state) => state.clearPendingPosition);
   const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
+  const isLocked = useHuntStore((state) => isWorktreeLocked(state.sessions, state.remoteLinks, sessionId));
 
   const hostRef = useRef<HTMLDivElement>(null);
   const tabListRef = useRef<HTMLDivElement>(null);
@@ -277,6 +279,10 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
   useEffect(() => {
     editorRef.current?.updateOptions({ fontSize, lineHeight, fontFamily });
   }, [fontSize, lineHeight, fontFamily]);
+
+  useEffect(() => {
+    editorRef.current?.updateOptions({ readOnly: isLocked, readOnlyMessage: { value: WORKTREE_LOCKED_MESSAGE } });
+  }, [isLocked]);
 
   useEffect(() => {
     chatMarkersRef.current?.set(pane.activePath, selectionChats, busyChatIds);

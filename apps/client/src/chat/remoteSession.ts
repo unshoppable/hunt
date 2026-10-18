@@ -1,4 +1,4 @@
-import type { RemoteStep, RemoteTarget, SessionView } from "../ipc/types";
+import type { RemoteLink, RemoteStep, RemoteTarget, SessionView } from "../ipc/types";
 import { missingCheckoutBlocker } from "../sessions/remoteOrigin";
 import type { FileSync, SessionChat } from "../state/store";
 
@@ -138,4 +138,36 @@ export function fileSyncLabel(fileSync: FileSync, isSlow: boolean, formatTime: (
   if (fileSync.conflicts.length) return `${fileSync.conflicts.length} ${fileSync.conflicts.length === 1 ? "file" : "files"} not synced`;
   if (fileSync.syncedAt) return `Synced ${formatTime(fileSync.syncedAt)}`;
   return null;
+}
+
+/**
+ * The reason the local worktree of `sessionId` may not change right now, or `null` when it may: a remote session, and
+ * each of its sub chats through it, is locked while its link (`remoteLinks`, by top-level session id) says so. A local
+ * session, a session not listed and one whose link is not known yet are not locked; the backend still refuses a write
+ * to a locked worktree.
+ */
+export function worktreeLock(sessions: SessionView[], remoteLinks: Record<string, RemoteLink>, sessionId: string): "vmRunning" | "unreachable" | null {
+  const session = sessions.find((candidate) => candidate.id === sessionId);
+  if (!session) return null;
+  const ownerId = session.parentId ?? session.id;
+  const owner = sessions.find((candidate) => candidate.id === ownerId);
+  const link = remoteLinks[ownerId];
+  if (!owner?.remote || link?.state !== "locked") return null;
+  return link.reason;
+}
+
+/** What an editor of a locked worktree says when someone types into it (Monaco's `readOnlyMessage`). */
+export const WORKTREE_LOCKED_MESSAGE = "Local files are read-only while this Mac cannot sync with the VM.";
+
+/** Whether the local worktree of `sessionId` may not change right now (see `worktreeLock`). */
+export function isWorktreeLocked(sessions: SessionView[], remoteLinks: Record<string, RemoteLink>, sessionId: string): boolean {
+  return worktreeLock(sessions, remoteLinks, sessionId) !== null;
+}
+
+/** The question that confirms continuing the remote session `ownerId`, whose VM cannot be reached, on this Mac. */
+export function continueLocallyQuestion(ownerId: string): string {
+  return (
+    "Continue this session on this Mac?\n\nIt continues with the files as last synced and the conversation as of the agent's last finished turn. " +
+    `What the agent did on the VM since is saved as the Git ref refs/hunt/${ownerId}/abandoned once the VM can be reached, then the VM is deleted.`
+  );
 }

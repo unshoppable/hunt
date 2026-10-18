@@ -18,7 +18,7 @@ import { ShelveDialog } from "./ShelveDialog";
 import { baseName, dirName } from "../ui/path";
 import { STATUS_NAME_CLASS } from "./styles";
 import { AgentButton } from "../ui/AgentButton";
-import { remoteOf } from "../chat/remoteSession";
+import { isWorktreeLocked, remoteOf, WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
 import { ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { SwapIcon } from "../ui/icons";
@@ -76,6 +76,7 @@ export function ChangeList({
   const pullRequest = session?.pullRequest ?? null;
   /** The worktree and Git history of a remote session and its sub chats live on its VM, which commits and pushes for them. */
   const isRemote = Boolean(session && remoteOf(session, sessions));
+  const isLocked = useHuntStore((state) => isWorktreeLocked(state.sessions, state.remoteLinks, sessionId));
   const draftCount = useReviewDraftCount(sessionId);
   const [tab, setTab] = useState<Tab>("changes");
   /** Files are checked by default; only unchecked paths are stored so new files start checked. */
@@ -328,13 +329,27 @@ export function ChangeList({
                 <button
                   type="button"
                   disabled={!checkedPaths.length}
-                  onClick={() => void openFilesDialog("commit")}
-                  className={PRIMARY_BUTTON_XS}
-                  title={isRemote ? "Commit the checked files on the session's branch on its VM" : "Commit the checked files on the session's branch"}
+                  onClick={() => (isLocked ? undefined : void openFilesDialog("commit"))}
+                  aria-disabled={isLocked}
+                  className={`${PRIMARY_BUTTON_XS} ${isLocked ? "opacity-40" : ""}`}
+                  title={
+                    isLocked
+                      ? WORKTREE_LOCKED_MESSAGE
+                      : isRemote
+                        ? "Commit the checked files on the session's branch on its VM"
+                        : "Commit the checked files on the session's branch"
+                  }
                 >
                   Commit…
                 </button>
-                <button type="button" disabled={!checkedPaths.length} onClick={() => void openFilesDialog("shelve")} className={SECONDARY_BUTTON_XS} title="Move the checked files to the shelf">
+                <button
+                  type="button"
+                  disabled={!checkedPaths.length}
+                  onClick={() => (isLocked ? undefined : void openFilesDialog("shelve"))}
+                  aria-disabled={isLocked}
+                  className={`${SECONDARY_BUTTON_XS} ${isLocked ? "opacity-40" : ""}`}
+                  title={isLocked ? WORKTREE_LOCKED_MESSAGE : "Move the checked files to the shelf"}
+                >
                   Shelve…
                 </button>
               </>

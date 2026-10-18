@@ -10,6 +10,7 @@ import type {
   LspExitedEvent,
   PermissionEvent,
   PermissionWithdrawnEvent,
+  RemoteLinkEvent,
   RemoteProgressEvent,
   RemoteSyncEvent,
   SummaryEvent,
@@ -27,6 +28,8 @@ type EventPayloads = {
   "remote:progress": RemoteProgressEvent;
   /** A sync of a remote session's files with its VM started or ended. */
   "remote:sync": RemoteSyncEvent;
+  /** Whether the local worktree of a remote session may change changed (see `RemoteLink`). */
+  "remote:link": RemoteLinkEvent;
   "graph:changed": GraphChangedEvent;
   "session:summary": SummaryEvent;
   "attribution:changed": AttributionEvent;

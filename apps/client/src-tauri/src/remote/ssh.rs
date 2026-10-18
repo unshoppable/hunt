@@ -10,7 +10,7 @@ use std::process::Stdio;
 use std::sync::Mutex;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 
 use super::{gcloud, shell_quote, VmRef};
 
@@ -122,6 +122,21 @@ impl Ssh {
         args.push(self.vm.instance.clone());
         args.push(command.to_string());
         args
+    }
+
+    /// Starts `command` on the VM over the shared connection with piped standard streams, for a long-lived process of
+    /// Hunt's own that is killed when the returned child is dropped.
+    pub fn spawn(&self, command: &str) -> Result<Child, String> {
+        Command::new("ssh")
+            .args(self.options(Connection::Shared))
+            .arg(&self.vm.instance)
+            .arg(command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| format!("failed to run ssh: {error}"))
     }
 
     /// Runs `command` on the VM and returns its standard output as text.

@@ -1,3 +1,9 @@
+## 0.45.0 (2026-10-18)
+
+### 🚀 Features
+
+- **client:** push lands on the branch the session was created from, rebased onto it when it moved on; the worktree branch never reaches origin ([938e2c2](https://github.com/unshoppable/hunt/commit/938e2c2))
+
 ## 0.44.0 (2026-10-18)
 
 ### 🚀 Features

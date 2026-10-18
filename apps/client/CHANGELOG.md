@@ -1,3 +1,9 @@
+## 0.42.0 (2026-10-18)
+
+### 🚀 Features
+
+- **client:** a chat of a locked worktree connects its session's VM on its own instead of asking ([a70a399](https://github.com/unshoppable/hunt/commit/a70a399))
+
 ## 0.41.0 (2026-10-18)
 
 ### 🚀 Features

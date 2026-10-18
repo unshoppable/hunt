@@ -1,8 +1,9 @@
-//! Commits and pushes of a remote session for the changelist, and the local branch following the VM's. The session's
-//! branch lives on its VM: `hunt-ctl commit` commits the picked files there under the local Git identity, after the sync
-//! sent the local edits, and `hunt-ctl push` pushes the branch from the VM with the local GitHub token. Whenever the
-//! VM's `HEAD` moved (a commit of Hunt's or of the agent's), the local branch points at it too (`follow_vm_head`), so
-//! the changelist shows what is uncommitted on the VM, as in a local session. Knows nothing about Tauri.
+//! Commits of a remote session for the changelist, the push of a poller session's branch, and the local branch following
+//! the VM's. The session's branch lives on its VM: `hunt-ctl commit` commits the picked files there under the local Git
+//! identity, after the sync sent the local edits. Whenever the VM's `HEAD` moved (a commit of Hunt's or of the agent's),
+//! the local branch points at it too (`follow_vm_head`), so the changelist shows what is uncommitted on the VM, as in a
+//! local session, and a push from this Mac pushes the VM's commits. Only a poller session's branch is pushed from the VM
+//! (`hunt-ctl push --stored`), with the poller's stored token. Knows nothing about Tauri.
 
 use std::path::Path;
 
@@ -10,7 +11,7 @@ use uuid::Uuid;
 
 use super::retrieve;
 use super::ssh::Ssh;
-use super::{hunt_ctl_with_input, shell_command, RemoteTarget};
+use super::{hunt_ctl, hunt_ctl_with_input, shell_command, RemoteTarget};
 use crate::git;
 
 /// Commits `paths` of the remote session `id` with `message` on its VM behind `ssh`, under the identity of the local
@@ -40,9 +41,9 @@ pub async fn follow_vm_head(ssh: &Ssh, id: Uuid, target: &RemoteTarget, worktree
 }
 
 /// Pushes the branch the VM's worktree of the remote session `id` has checked out to its origin with the GitHub token
-/// `token`, and makes that the branch's upstream.
-pub async fn push(ssh: &Ssh, id: Uuid, token: &str) -> Result<(), String> {
-    hunt_ctl_with_input(ssh, &["push", &id.to_string()], format!("{token}\n").as_bytes()).await?;
+/// its VM stores, the poller's for a poller session, and makes that the branch's upstream.
+pub async fn push_stored(ssh: &Ssh, id: Uuid) -> Result<(), String> {
+    hunt_ctl(ssh, &["push", &id.to_string(), "--stored"]).await?;
     Ok(())
 }
 

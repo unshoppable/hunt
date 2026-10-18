@@ -2300,17 +2300,34 @@ async fn commit_on_vm(app: &AppHandle, id: Uuid, worktree: &Path, paths: &[Strin
     .await
 }
 
-/// Pushes the session's current branch to `origin` and makes the pushed branch its upstream; a remote session's from its
-/// VM, with the GitHub token of Settings → Remote VM.
+/// Pushes the session's current branch to `origin` from here, with this Mac's Git credentials, and makes the pushed
+/// branch its upstream. A remote session's local branch first catches up with the commit its VM has checked out
+/// (`push_followed`). Only a poller session's branch is pushed from its VM with the poller's stored token, so that the
+/// push shows the poller's GitHub App like the rest of what its agent does on GitHub.
 #[tauri::command]
 pub async fn push_branch(app: AppHandle, id: Uuid) -> Result<(), String> {
     let record = worktree_session(&app, id)?;
     let Some((owner, target)) = remote_host(&app, &record) else {
         return git::push_branch(&record.worktree_path).await;
     };
-    let token = github_token::read().await?.ok_or("failed to push from the VM: no GitHub token is stored; add one in Settings → Remote VM")?;
-    let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
-    remote::commit::push(&ssh, owner, &token).await
+    if target.origin.keeps_vm_tokens() {
+        let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
+        return remote::commit::push_stored(&ssh, owner).await;
+    }
+    push_followed(&app, owner, &record.worktree_path).await
+}
+
+/// Pushes the local branch of the remote session `id`, checked out in its local worktree `worktree`, from here after it
+/// caught up with the VM's commit (`sync::follow_head`), while no sync of the session runs; a local branch that holds a
+/// commit the VM lacks fails the push with the message of the follow.
+async fn push_followed(app: &AppHandle, id: Uuid, worktree: &Path) -> Result<(), String> {
+    sync::exclusive(app, id, |_| async move {
+        let target = store::find_session(app, id)?.remote.ok_or("failed to push: the session runs locally now")?;
+        let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
+        sync::follow_head(app, id, &ssh, &target, worktree).await?;
+        git::push_branch(worktree).await
+    })
+    .await
 }
 
 #[tauri::command]

@@ -217,8 +217,8 @@ pub enum RemoteOrigin {
 impl RemoteOrigin {
     /// Whether the session's relay keeps the tokens stored on its VM over this Mac's: a poller session runs with the
     /// poller's tokens from Secret Manager, so that everything its agent does on GitHub happens as the poller, and takes
-    /// this Mac's only where its VM stores none. This Mac's GitHub token otherwise serves only what the user does from
-    /// Hunt, such as `hunt-ctl push`.
+    /// this Mac's only where its VM stores none. Hunt's push of such a session runs on the VM with the stored token too
+    /// (`hunt-ctl push --stored`); any other session's branch is pushed from this Mac.
     pub fn keeps_vm_tokens(self) -> bool {
         self == RemoteOrigin::Swf
     }

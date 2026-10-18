@@ -220,8 +220,8 @@ Session VM:
                          environment and the identity on stdin (name, email, message, then the paths, each ending
                          with NUL); paths the branch has committed already are skipped; records the branch's commit as
                          refs/hunt/<id>/commit
-  push <id>              push the branch the worktree has checked out to its origin and make that its upstream, with the
-                         GitHub token on stdin
+  push <id> [--stored]   push the branch the worktree has checked out to its origin and make that its upstream, with the
+                         GitHub token on stdin, or with --stored the one stored on this VM (a poller session's)
   github-token <id>      replace the GitHub token the session's git, Git LFS and gh act with by the one on stdin; the
                          relay keeps running
   status <id>            relay state, relay status and session metadata
@@ -1471,23 +1471,34 @@ cmd_commit() {
 }
 
 # Pushes the branch the worktree of session $1 has checked out to its origin and makes that its upstream, as the agent
-# with the agent's environment; the GitHub token on stdin reaches git and Git LFS through TOKEN_CREDENTIAL_HELPER.
+# with the agent's environment. The GitHub token on stdin, or with --stored the one of GITHUB_TOKEN_FILE (the poller's
+# for a poller session), reaches git and Git LFS through TOKEN_CREDENTIAL_HELPER.
 cmd_push() {
-  (( $# == 1 )) || usage
-  local id=$1 worktree token token_dir
+  local id=${1-} worktree token token_dir='' token_file
+  case "$#:${2-}" in
+    1:) ;;
+    2:--stored) ;;
+    *) usage ;;
+  esac
   require_id "$id"
   require_prepared "$id"
   worktree=$(worktree_of "$id")
-  read_github_token token
-  write_agent_token token_dir "$token"
+  if [[ ${2-} == --stored ]]; then
+    [[ -s $GITHUB_TOKEN_FILE ]] || die "no GitHub token is stored on this VM"
+    token_file=$GITHUB_TOKEN_FILE
+  else
+    read_github_token token
+    write_agent_token token_dir "$token"
+    token_file=$token_dir/token
+  fi
   log info "pushing the branch"
-  agent_run "$CURRENT/vm/agent.env" "$worktree" "HUNT_TOKEN_FILE=$token_dir/token" "HUNT_CREDENTIAL_HELPER=$TOKEN_CREDENTIAL_HELPER" \
+  agent_run "$CURRENT/vm/agent.env" "$worktree" "HUNT_TOKEN_FILE=$token_file" "HUNT_CREDENTIAL_HELPER=$TOKEN_CREDENTIAL_HELPER" \
     bash -c '
       set -euo pipefail
       git symbolic-ref -q HEAD >/dev/null || { echo "the worktree on the VM has no branch checked out" >&2; exit 1; }
       git -c credential.helper= -c "credential.helper=$HUNT_CREDENTIAL_HELPER" push -q -u -- origin HEAD' </dev/null ||
     die "failed to push the branch from the VM"
-  rm -rf -- "$token_dir"
+  [[ -z $token_dir ]] || rm -rf -- "$token_dir"
   emit '{}'
 }
 

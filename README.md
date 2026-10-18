@@ -417,9 +417,9 @@ push. Everyone with root on the VM can read the token, so it should be a fine-gr
 repositories handed off. A session the gateway's poller started for a `swf` issue keeps the poller's tokens
 (`RemoteOrigin::keeps_vm_tokens`): connecting to or clearing it runs `hunt-ctl start` and `clear` with `--keep-stored`,
 which keeps the tokens stored on the VM and takes the ones Hunt sends only where the VM stores none, so everything its
-agent does on GitHub happens as the poller's GitHub App; only what the user does from Hunt, such as *Commit and push*,
-uses the keychain's token. Connecting while the poller still sets the session up fails until its relay runs, since
-nothing is stored yet.
+agent does on GitHub happens as the poller's GitHub App, and so does a push from Hunt's changelist (`hunt-ctl push
+--stored`). Connecting while the poller still sets the session up fails until its relay runs, since nothing is stored
+yet.
 
 Values a service needs that the repository does not hold, such as an API key, are remote secrets
 (`libs/domain/src/remoteSecrets.ts`): *Settings → Remote VM* lists them by name with the last four characters of
@@ -617,7 +617,9 @@ folder, with its paths moved here, as a backup for a VM that gets lost (`back_up
 again, and the memory stays on the VM for the merge below. The
 changelist's *Commit* runs `hunt-ctl commit` on the VM after a sync that sent the local edits, while no other sync
 runs: the checked files are committed under the local Git identity, and the repository's hooks run with the agent's
-environment; *Commit and push* then pushes from the VM (`hunt-ctl push`) with the GitHub token of Settings → Remote VM.
+environment. *Push* pushes the branch from this Mac with its Git credentials, as for a local session, after the local
+branch caught up with the VM's commit; only a poller session's branch is pushed from its VM with the poller's stored
+token (`hunt-ctl push --stored`), so that the push shows the GitHub App like its agent's commits.
 *WebStorm* is switched off for a remote session and its sub chats. Its `node_modules` install leaves the lockfile alone (`npm ci`, `--frozen-lockfile`). The chat header
 shows when the last sync succeeded, and the chat shows a failure. A diagram refresh runs on the agent on the VM,
 against the session's diff base, and Hunt copies `.hunt/graph.json` back afterwards. Known limits: an edit that keeps

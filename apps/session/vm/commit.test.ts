@@ -5,7 +5,8 @@
  * GitHub is faked inside the container: git reaches https://github.com/ through `url.<…>.insteadOf` at a busybox httpd
  * whose CGI script /cgi-bin/git runs `git http-backend` on the bare repositories below /srv/git, behind Basic
  * authentication with the token. Unlike the dumb HTTP protocol of clone.test.ts, this smart HTTP protocol receives
- * pushes. A system-wide credential helper with a wrong password proves that the push uses only the token from stdin. A
+ * pushes. A system-wide credential helper with a wrong password proves that the push uses only the token from stdin, or
+ * with `--stored` only the one in /etc/hunt/github-token. A
  * tool in /opt/volta/bin, the first folder of vm/agent.env's PATH, shows that the repository's hooks run with the agent's
  * environment. The container runs the built session artifact (`nx build session`).
  */
@@ -170,13 +171,24 @@ describe.skipIf(!hasDocker())("hunt-ctl commit and push in a Debian container", 
   }
 
   /** Runs `hunt-ctl <command> <id>` as root with `input` on stdin and `variables` (NAME=value) in its environment. */
-  function huntCtl(command: "commit" | "push", id: string, input: string, variables: string[] = [], timeout = DOCKER_TIMEOUT_MS) {
+  function huntCtl(command: "commit" | "push", id: string, input: string, variables: string[] = [], timeout = DOCKER_TIMEOUT_MS, flags: string[] = []) {
     const environment = variables.flatMap((variable) => ["--env", variable]);
-    return docker(["exec", "-i", ...environment, container, "/srv/hunt/current/vm/hunt-ctl", command, id], input, timeout);
+    return docker(["exec", "-i", ...environment, container, "/srv/hunt/current/vm/hunt-ctl", command, id, ...flags], input, timeout);
   }
 
   function push(token: string) {
     return huntCtl("push", ID, `${token}\n`);
+  }
+
+  /** `hunt-ctl push <id> --stored`, which takes the token of /etc/hunt/github-token instead of stdin. */
+  function pushStored() {
+    return huntCtl("push", ID, "", [], DOCKER_TIMEOUT_MS, ["--stored"]);
+  }
+
+  /** Writes `token` to /etc/hunt/github-token as `hunt-ctl start` does (root writes, the agent reads), or removes it. */
+  function storeToken(token: string | null) {
+    const script = token === null ? "rm -f /etc/hunt/github-token" : 'printf "%s\\n" "$1" >/etc/hunt/github-token && chown root:agent /etc/hunt/github-token && chmod 0640 /etc/hunt/github-token';
+    expect(sh(script, token === null ? [] : [token]).status).toBe(0);
   }
 
   function installHook(name: string, content: string) {
@@ -377,6 +389,35 @@ describe.skipIf(!hasDocker())("hunt-ctl commit and push in a Debian container", 
     const withoutToken = docker(["exec", "-u", "agent", container, "git", "-C", WORKTREE, "ls-remote", "origin"]);
     expect(withoutToken.status).toBe(128);
     expect(withoutToken.stderr).toContain("Authentication failed");
+  }, DOCKER_TIMEOUT_MS);
+
+  it("pushes with the token stored on the VM instead of stdin with --stored, and refuses without one", () => {
+    // The push above left the branch on the fake GitHub ahead of the reset worktree.
+    expect(originGit("update-ref", "-d", `refs/heads/${BRANCH}`).status).toBe(0);
+    storeToken(null);
+    agentSh("echo stored >stored.txt");
+    expect(huntCtl("commit", ID, commitInput("Add a stored file", ["stored.txt"])).status).toBe(0);
+    const head = agentGit("rev-parse", "HEAD");
+
+    const missing = pushStored();
+    expect(missing).toEqual({ status: 3, stdout: "", stderr: "hunt-ctl: no GitHub token is stored on this VM\n" });
+    expect(huntCtl("push", ID, `${TOKEN}\n`, [], QUICK_TIMEOUT_MS, ["--other"]).status).toBe(2);
+
+    storeToken(WRONG_TOKEN);
+    const wrong = pushStored();
+    expect(wrong.status).toBe(3);
+    expect(wrong.stderr).toContain("hunt-ctl: failed to push the branch from the VM");
+
+    storeToken(TOKEN);
+    const result = pushStored();
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({});
+    expect(originGit("rev-parse", `refs/heads/${BRANCH}`).stdout.trim()).toBe(head);
+    expect(agentGit("rev-parse", "@{upstream}")).toBe(head);
+    expect(sh("find /var/tmp -mindepth 1").stdout).toBe("");
+    expect(filesHolding(TOKEN)).toBe("");
+    storeToken(null);
   }, DOCKER_TIMEOUT_MS);
 
   // Last, so that a hunt-ctl that hangs here leaves no scratch folder in /var/tmp for the tests above.

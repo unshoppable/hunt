@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import * as monaco from "monaco-editor";
 import { commands } from "../ipc/commands";
 import type { TextMatch, TextQuery, TextRange, TextSearchResult } from "../ipc/types";
@@ -56,8 +56,8 @@ export function useFindInFilesShortcut(onTrigger: (selected: string | null) => v
  * WebStorm-style "Find in Files": searches the text of every project file (see find_in_files.rs) as you type and
  * lists the matching lines; the selected match is previewed below the list. `initialText` (the editor's selection)
  * replaces the last query. ⌥C, ⌥W and ⌥X toggle Match Case, Words and Regex; the file mask takes comma-separated
- * masks such as `*.ts, !*.spec.ts`. ↑/↓ move the selection, Enter opens the match, ⇧Enter opens it in a right
- * split, Esc or a click on the backdrop closes. The size is remembered across sessions.
+ * masks such as `*.ts, !*.spec.ts`. ↑/↓ or a click select a match (hovering only highlights the row), Enter or a
+ * double click opens it, ⇧Enter opens it in a right split, Esc or a click on the backdrop closes. The size is remembered across sessions.
  */
 export function FindInFilesDialog({
   sessionId,
@@ -80,8 +80,6 @@ export function FindInFilesDialog({
   const listRef = useRef<HTMLUListElement>(null);
   const viewport = useViewportSize();
   const { size, grips } = usePopupSize("findInFiles", { min: MIN_SIZE, max: { width: viewport.width * MAX_WIDTH_SHARE, height: viewport.height * MAX_HEIGHT_SHARE } });
-  /** Where the mouse was last seen over the list; the rows scrolling under a resting mouse must not change the selection. */
-  const mouseRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     lastQuery = query;
@@ -122,13 +120,6 @@ export function FindInFilesDialog({
     if (!match) return;
     onOpen(match.path, match.line, match.column, inRightSplit);
     onClose();
-  };
-
-  const selectUnderMouse = (event: ReactMouseEvent, index: number) => {
-    const last = mouseRef.current;
-    mouseRef.current = { x: event.clientX, y: event.clientY };
-    if (last && last.x === event.clientX && last.y === event.clientY) return;
-    setSelectedIndex(index);
   };
 
   /** ↑ / ↓, Enter and the ⌥ toggles act from anywhere in the dialog (the preview keeps the keys it handled). */
@@ -206,9 +197,11 @@ export function FindInFilesDialog({
             return (
               <li
                 key={`${match.path}:${match.line}`}
-                onMouseMove={(event) => selectUnderMouse(event, index)}
-                onClick={() => open(match)}
-                className={`flex cursor-pointer items-center gap-4 px-3 py-1 ${index === selected ? "bg-(--row-active)" : ""}`}
+                // Keeps the focus in the query field, so the keys still reach the dialog after a click.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => setSelectedIndex(index)}
+                onDoubleClick={() => open(match)}
+                className={`flex cursor-pointer items-center gap-4 px-3 py-1 ${index === selected ? "bg-(--row-active)" : "hover:bg-(--row-hover)"}`}
               >
                 <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-pre text-neutral-200">
                   <MatchedText text={match.preview} ranges={match.ranges} />

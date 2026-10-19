@@ -1,3 +1,13 @@
+## 0.34.0 (2026-10-19)
+
+### 🚀 Features
+
+- **gateway:** the swf agent asks its questions in the issue's language and marks them with the word for a question back (RÜCKFRAGE in German) in front of the issue's title, which GitHub's notification mail carries in its subject, and as the first line of its comment; it takes the word off the title when the answer arrives ([1e24f08](https://github.com/unshoppable/hunt/commit/1e24f08))
+
+### 🩹 Fixes
+
+- **gateway:** the swf poller no longer comments on an issue when it starts a session for it ([cb6c147](https://github.com/unshoppable/hunt/commit/cb6c147))
+
 ## 0.33.0 (2026-10-19)
 
 ### 🚀 Features

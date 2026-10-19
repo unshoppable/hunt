@@ -894,6 +894,17 @@ pub async fn fetch_branch(worktree: &Path, branch: &str) -> Result<bool, String>
     }
 }
 
+/// Creates the branch `branch` on `origin` at the commit `origin/<from>`, as fetched last, and fetches it, so that a
+/// push landing on it publishes what a push to `from` would; fails when `origin` has the branch already.
+pub async fn create_origin_branch(worktree: &Path, branch: &str, from: &str) -> Result<(), String> {
+    ensure_branch_name(worktree, branch).await?;
+    ensure_branch_name(worktree, from).await?;
+    let lease = format!("--force-with-lease=refs/heads/{branch}:");
+    run_git(worktree, &["push", "-q", &lease, "--", "origin", &format!("refs/remotes/origin/{from}:refs/heads/{branch}")]).await?;
+    fetch_branch(worktree, branch).await?;
+    Ok(())
+}
+
 /// Rejects `branch` unless git accepts it as a branch name, which rules out options and refspecs.
 async fn ensure_branch_name(repo: &Path, branch: &str) -> Result<(), String> {
     if branch.starts_with('-') || run_git(repo, &["check-ref-format", "--branch", branch]).await.is_err() {
@@ -1617,6 +1628,26 @@ mod tests {
         assert!(!is_behind_origin(&repo, "develop").await);
         assert!(fetch_branch(&repo, "develop").await.unwrap());
         assert!(is_behind_origin(&repo, "develop").await);
+    }
+
+    #[tokio::test]
+    async fn create_origin_branch_starts_at_the_fetched_origin_branch_and_refuses_an_existing_one() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+        let base = run_git(&repo, &["rev-parse", "origin/develop"]).await.unwrap();
+
+        create_origin_branch(&repo, "feature/new", "develop").await.unwrap();
+
+        assert_eq!(run_git(origin.path(), &["rev-parse", "feature/new"]).await.unwrap(), base);
+        assert_eq!(run_git(&repo, &["rev-parse", "origin/feature/new"]).await.unwrap(), base);
+
+        // `old` stays behind `develop` even though moving it there would be a fast-forward.
+        git(origin.path(), &["branch", "old", "main"]).await;
+        commit_on_origin_develop(origin.path(), "two\n").await;
+        fetch_branch(&repo, "develop").await.unwrap();
+        assert!(create_origin_branch(&repo, "old", "develop").await.is_err());
+        assert_eq!(run_git(origin.path(), &["rev-parse", "old"]).await.unwrap(), base);
     }
 
     async fn head_branch(worktree: &Path) -> String {

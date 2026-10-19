@@ -5,6 +5,7 @@ import { reloadReviewThreads } from "../review/reviewComments";
 import { INPUT } from "./styles";
 import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
 import { Modal } from "../ui/Modal";
+import { useDialogSize } from "../ui/useDialogSize";
 
 /** GitHub's three review verdicts, in the order its own review dialog lists them. */
 const EVENTS: { id: ReviewEvent; label: string; hint: string }[] = [
@@ -16,7 +17,7 @@ const EVENTS: { id: ReviewEvent; label: string; hint: string }[] = [
 /**
  * Submits a review of pull request `pullRequestNumber`: a summary comment with one of GitHub's verdicts, plus the
  * `draftCount` comments drafted on lines or whole files. Without drafts only an approval may go without a comment,
- * as on GitHub.
+ * as on GitHub. Dragging an edge resizes the dialog; the comment field takes the extra height.
  */
 export function ReviewDialog({
   sessionId,
@@ -33,6 +34,7 @@ export function ReviewDialog({
   /** Called once GitHub accepted the review, right before the dialog closes. */
   onSubmitted: () => void;
 }) {
+  const dialog = useDialogSize("review");
   const [body, setBody] = useState("");
   const [event, setEvent] = useState<ReviewEvent>("comment");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -57,7 +59,7 @@ export function ReviewDialog({
   }
 
   return (
-    <Modal label="Submit review" onClose={onClose} isCloseable={!isSubmitting} className="w-[520px] bg-(--surface-chat) p-4">
+    <Modal label="Submit review" onClose={onClose} isCloseable={!isSubmitting} className="bg-(--surface-chat) p-4" style={dialog.style} resize={dialog.resize}>
       <h2 className="mb-1 text-base font-semibold">Submit review</h2>
       <p className="mb-3 text-[13px] text-neutral-400">
         Pull request #{pullRequestNumber}
@@ -76,9 +78,9 @@ export function ReviewDialog({
         placeholder={draftCount ? "Summarize your review (optional)" : "Leave a comment"}
         autoFocus
         rows={5}
-        className={`${INPUT} mb-3 resize-y`}
+        className={`${INPUT} mb-3 min-h-0 flex-1 resize-none`}
       />
-      <fieldset className="mb-3 flex flex-col gap-1.5">
+      <fieldset className="mb-3 flex shrink-0 flex-col gap-1.5">
         {EVENTS.map((option) => (
           <label key={option.id} className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-(--row-hover)">
             <input type="radio" name="review-event" value={option.id} checked={event === option.id} onChange={() => setEvent(option.id)} className="mt-1 accent-blue-500" />
@@ -90,7 +92,7 @@ export function ReviewDialog({
         ))}
       </fieldset>
       {error ? <p className="mb-3 whitespace-pre-wrap text-[13px] text-red-400">{error}</p> : null}
-      <div className="flex justify-end gap-2">
+      <div className="mt-auto flex justify-end gap-2">
         <button type="button" onClick={onClose} disabled={isSubmitting} className={GHOST_BUTTON_MD}>
           Cancel
         </button>

@@ -2275,9 +2275,10 @@ pub async fn git_rename_branch(app: AppHandle, id: Uuid, branch: String, new_nam
 
 /// Makes the branch `target` on `origin` the one a push of the session lands on: the session's branch tracks it here
 /// and, for a remote session, on its VM, where a Hunt taking the session over reads it (`sync::take_over_vm_push_target`);
-/// the records of the session and its sub chats follow. A poller session pushes its own branch from its VM.
+/// the records of the session and its sub chats follow. With `create`, a branch `origin` lacks is created there first,
+/// at the commit of the branch pushed to so far. A poller session pushes its own branch from its VM.
 #[tauri::command]
-pub async fn set_push_target(app: AppHandle, id: Uuid, target: String) -> Result<(), String> {
+pub async fn set_push_target(app: AppHandle, id: Uuid, target: String, create: bool) -> Result<(), String> {
     link::ensure_writable(&app, id, "change the push target")?;
     let record = worktree_session(&app, id)?;
     let remote = remote_host(&app, &record);
@@ -2285,7 +2286,14 @@ pub async fn set_push_target(app: AppHandle, id: Uuid, target: String) -> Result
         return Err("failed to change the push target: a poller session pushes its own branch".into());
     }
     if !git::fetch_branch(&record.worktree_path, &target).await? {
-        return Err(format!("failed to change the push target: origin has no branch {target}"));
+        if !create {
+            return Err(format!("failed to change the push target: origin has no branch {target}"));
+        }
+        let from = push_target(&record, remote.as_ref().map(|(_, target)| target));
+        if !git::fetch_branch(&record.worktree_path, &from).await? {
+            return Err(format!("failed to create the branch {target} on origin: origin has no branch {from} to start it from"));
+        }
+        git::create_origin_branch(&record.worktree_path, &target, &from).await?;
     }
     git::set_origin_upstream(&record.worktree_path, &record.branch, &target).await?;
     if let Some((_, remote)) = &remote {

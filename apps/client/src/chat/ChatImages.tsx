@@ -1,13 +1,15 @@
 import { useState } from "react";
 import { Modal } from "../ui/Modal";
+import { useDialogSize } from "../ui/useDialogSize";
 
 /**
- * Images of a chat message or tool result as a row of thumbnails; a click on one shows it full size in a dialog,
- * fitted into the window. `urls` are asset URLs of screenshots the user attached or `data:` URLs that `imageDataUrl`
+ * Images of a chat message or tool result as a row of thumbnails; a click on one shows it in a dialog, fitted into
+ * the dialog, which the user resizes by dragging its edges. `urls` are asset URLs of screenshots the user attached or `data:` URLs that `imageDataUrl`
  * (chat/imageData.ts) accepted; they are only ever loaded by an `<img>`.
  */
 export function ChatImages({ urls, className = "" }: { urls: string[]; className?: string }) {
   const [shownUrl, setShownUrl] = useState<string | null>(null);
+  const dialog = useDialogSize("image", { fillsHeight: true });
   if (!urls.length) return null;
 
   return (
@@ -26,8 +28,8 @@ export function ChatImages({ urls, className = "" }: { urls: string[]; className
         ))}
       </div>
       {shownUrl ? (
-        <Modal label="Image" onClose={() => setShownUrl(null)} className="bg-(--surface-inset)">
-          <img src={shownUrl} alt="" className="block max-h-[90vh] max-w-[90vw] object-contain" />
+        <Modal label="Image" onClose={() => setShownUrl(null)} className="bg-(--surface-inset)" style={dialog.style} resize={dialog.resize}>
+          <img src={shownUrl} alt="" className="block h-full w-full object-contain" />
         </Modal>
       ) : null}
     </>

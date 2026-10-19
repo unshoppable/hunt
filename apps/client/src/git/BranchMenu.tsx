@@ -5,7 +5,11 @@ import { INPUT } from "../diff/styles";
 import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
 import { Modal } from "../ui/Modal";
 import { useDismiss } from "../ui/useDismiss";
+import { useDialogSize } from "../ui/useDialogSize";
 import type { BranchAction } from "./branchActions";
+
+/** Smallest size the push target dialog shrinks to: the list keeps a few rows. */
+const PUSH_TARGET_MIN_SIZE = { width: 360, height: 300 };
 
 /** Where a right click opened the menu of which branch. */
 export type BranchMenuState = { ref: GitRef; x: number; y: number };
@@ -50,7 +54,9 @@ export function BranchMenu({ menu, actions, onPick, onClose }: { menu: BranchMen
 
 /**
  * Lets the user pick, among the branches of `origin` (`candidates`, without the `origin/` prefix), the one a push of
- * the session lands on; the text field filters the list and takes a name the list does not know.
+ * the session lands on; the text field filters the list. A name the list does not know is offered as a new branch,
+ * created on `origin` at the commit of the current target when applied (or merely fetched when `origin` has it
+ * already). Dragging an edge resizes the dialog; the size is remembered across sessions.
  */
 export function PushTargetDialog({
   sessionId,
@@ -68,20 +74,23 @@ export function PushTargetDialog({
   const [text, setText] = useState(current);
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const dialog = useDialogSize("pushTarget", { min: PUSH_TARGET_MIN_SIZE, fillsHeight: true });
   const target = text.trim();
   // The list shows every branch until the user edits the field, then those containing the text.
   const matches = useMemo(() => {
     const needle = target === current ? "" : target.toLowerCase();
-    return candidates.filter((candidate) => candidate.toLowerCase().includes(needle)).slice(0, 12);
+    return candidates.filter((candidate) => candidate.toLowerCase().includes(needle));
   }, [candidates, target, current]);
+  /** The typed name is none of the fetched branches: applying it creates the branch on origin unless origin has it. */
+  const isNew = !!target && target !== current && !candidates.includes(target);
   const canSubmit = !!target && target !== current && !isBusy;
 
-  async function submit(choice = target) {
+  async function submit(choice = target, create = isNew) {
     if (!choice || choice === current || isBusy) return;
     setIsBusy(true);
     setError(null);
     try {
-      await commands.setPushTarget(sessionId, choice);
+      await commands.setPushTarget(sessionId, choice, create);
       onChanged(choice);
       onClose();
     } catch (reason) {
@@ -91,7 +100,7 @@ export function PushTargetDialog({
   }
 
   return (
-    <Modal label="Change push target" onClose={onClose} isCloseable={!isBusy} className="w-[460px] bg-(--surface-chat) p-4">
+    <Modal label="Change push target" onClose={onClose} isCloseable={!isBusy} className="bg-(--surface-chat) p-4" style={dialog.style} resize={dialog.resize}>
       <h2 className="mb-1 text-base font-semibold">Change push target</h2>
       <p className="mb-3 text-[13px] text-neutral-400">
         A push lands on this branch of origin, after a rebase onto it; the session's own branch never reaches origin. Currently{" "}
@@ -110,7 +119,14 @@ export function PushTargetDialog({
         spellCheck={false}
         className={`${INPUT} font-mono`}
       />
-      <ul role="listbox" className="mt-1 mb-3 max-h-56 overflow-auto rounded border border-(--line) py-1 font-mono text-[13px]">
+      <ul role="listbox" className="mt-1 mb-3 min-h-0 flex-1 overflow-auto rounded border border-(--line) py-1 font-mono text-[13px]">
+        {isNew ? (
+          <li role="option" aria-selected={false} onClick={() => void submit(target, true)} className="cursor-default truncate px-2 py-0.5 text-neutral-300 hover:bg-(--row-hover)" title={`Creates origin/${target} at the commit of origin/${current}`}>
+            <span className="text-neutral-500">Create </span>
+            {target}
+            <span className="text-neutral-500"> from {current}</span>
+          </li>
+        ) : null}
         {matches.map((candidate) => (
           <li
             key={candidate}
@@ -122,23 +138,24 @@ export function PushTargetDialog({
             {candidate}
           </li>
         ))}
-        {matches.length === 0 ? <li className="px-2 py-0.5 text-neutral-500">No fetched branch of origin matches; the name is fetched when you apply it.</li> : null}
+        {matches.length === 0 && !isNew ? <li className="px-2 py-0.5 text-neutral-500">No fetched branch of origin matches.</li> : null}
       </ul>
       {error ? <p className="mb-3 text-[13px] text-red-400">{error}</p> : null}
-      <div className="flex justify-end gap-2">
+      <div className="mt-auto flex justify-end gap-2">
         <button type="button" onClick={onClose} disabled={isBusy} className={GHOST_BUTTON_MD}>
           Cancel
         </button>
         <button type="button" onClick={() => void submit()} disabled={!canSubmit} className={PRIMARY_BUTTON_MD}>
-          {isBusy ? "Changing…" : "Change"}
+          {isBusy ? (isNew ? "Creating…" : "Changing…") : isNew ? "Create & change" : "Change"}
         </button>
       </div>
     </Modal>
   );
 }
 
-/** Asks for the new name of the branch `branch` and renames it. */
+/** Asks for the new name of the branch `branch` and renames it. Dragging an edge resizes the dialog. */
 export function RenameBranchDialog({ sessionId, branch, onClose, onRenamed }: { sessionId: string; branch: string; onClose: () => void; onRenamed: (newName: string) => void }) {
+  const dialog = useDialogSize("renameBranch");
   const [name, setName] = useState(branch);
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
@@ -160,7 +177,7 @@ export function RenameBranchDialog({ sessionId, branch, onClose, onRenamed }: { 
   }
 
   return (
-    <Modal label="Rename branch" onClose={onClose} isCloseable={!isBusy} className="w-[460px] bg-(--surface-chat) p-4">
+    <Modal label="Rename branch" onClose={onClose} isCloseable={!isBusy} className="bg-(--surface-chat) p-4" style={dialog.style} resize={dialog.resize}>
       <h2 className="mb-1 text-base font-semibold">Rename branch</h2>
       <p className="mb-3 truncate font-mono text-[13px] text-neutral-400" title={branch}>
         {branch}
@@ -179,7 +196,7 @@ export function RenameBranchDialog({ sessionId, branch, onClose, onRenamed }: { 
         className={`${INPUT} mb-3 font-mono`}
       />
       {error ? <p className="mb-3 text-[13px] text-red-400">{error}</p> : null}
-      <div className="flex justify-end gap-2">
+      <div className="mt-auto flex justify-end gap-2">
         <button type="button" onClick={onClose} disabled={isBusy} className={GHOST_BUTTON_MD}>
           Cancel
         </button>

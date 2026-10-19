@@ -3,8 +3,9 @@ import { commands } from "../ipc/commands";
 import { INPUT } from "./styles";
 import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
 import { Modal } from "../ui/Modal";
+import { useDialogSize } from "../ui/useDialogSize";
 
-/** Asks for a shelf name and parks the given files on the shelf. */
+/** Asks for a shelf name and parks the given files on the shelf. Dragging an edge resizes the dialog. */
 export function ShelveDialog({
   sessionId,
   paths,
@@ -16,6 +17,7 @@ export function ShelveDialog({
   onClose: () => void;
   onShelved: () => void;
 }) {
+  const dialog = useDialogSize("shelve");
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
@@ -35,7 +37,7 @@ export function ShelveDialog({
   }
 
   return (
-    <Modal label="Shelve changes" onClose={onClose} isCloseable={!isBusy} className="w-[420px] bg-(--surface-chat) p-4">
+    <Modal label="Shelve changes" onClose={onClose} isCloseable={!isBusy} className="bg-(--surface-chat) p-4" style={dialog.style} resize={dialog.resize}>
       <h2 className="mb-1 text-base font-semibold">Shelve changes</h2>
       <p className="mb-3 text-[13px] text-neutral-400">
         {paths.length} {paths.length === 1 ? "file is" : "files are"} removed from the worktree and kept on the shelf until you unshelve them.
@@ -54,7 +56,7 @@ export function ShelveDialog({
         className={`${INPUT} mb-3`}
       />
       {error ? <p className="mb-3 text-[13px] text-red-400">{error}</p> : null}
-      <div className="flex justify-end gap-2">
+      <div className="mt-auto flex justify-end gap-2">
         <button type="button" onClick={onClose} disabled={isBusy} className={GHOST_BUTTON_MD}>
           Cancel
         </button>

@@ -1,3 +1,17 @@
+## 0.33.0 (2026-10-19)
+
+### 🚀 Features
+
+- **gateway:** the swf section of a repository's hunt.json sets the Claude model of the sessions the poller starts for its issues ("swf": {"model": "opus"}); without it Claude Code's default model applies ([33caaa4](https://github.com/unshoppable/hunt/commit/33caaa4))
+
+### 🩹 Fixes
+
+- **gateway:** swf.model in a repository's hunt.json takes only the full ID of a Claude model such as claude-opus-5-5; an alias such as opus is rejected, since its model changes with Claude Code's releases ([bcd7a09](https://github.com/unshoppable/hunt/commit/bcd7a09))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.23.1
+
 ## 0.32.0 (2026-10-19)
 
 ### 🚀 Features

@@ -55,10 +55,11 @@ export function BranchMenu({ menu, actions, onPick, onClose }: { menu: BranchMen
 
 /**
  * Lets the user pick, among the branches of `origin` (`candidates`, without the `origin/` prefix), the one a push of
- * the session lands on; the text field filters the list. A typed name the list does not know is offered as a new
- * branch and, applied, is created on `origin` at the commit of the current target (or merely fetched when `origin`
- * has it already). "New branch" does the same in one click for the session's own branch `branch`: it is created on
- * `origin` and becomes the target at once. Dragging an edge resizes the dialog; the size is remembered across sessions.
+ * the session lands on: the text field filters the list, a click selects a row, a double click, Enter or "Change"
+ * applies the selection. "New branch…" swaps the list for a name field, prefilled with the session's own branch
+ * `branch`: "Create & change" creates that branch on `origin` at the commit of the current target (or merely fetches
+ * it when `origin` has it already) and makes it the target. Dragging an edge resizes the dialog; the size is
+ * remembered across sessions.
  */
 export function PushTargetDialog({
   sessionId,
@@ -75,37 +76,42 @@ export function PushTargetDialog({
   onClose: () => void;
   onChanged: (target: string) => void;
 }) {
-  const [text, setText] = useState(current);
+  const [filter, setFilter] = useState("");
+  const [choice, setChoice] = useState(current);
+  /** The name of the branch to create while "New branch…" is open; `null` while the list is shown. */
+  const [newName, setNewName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  /** The branch being applied while the command runs; `null` while none runs. */
-  const [busyChoice, setBusyChoice] = useState<string | null>(null);
-  const isBusy = busyChoice !== null;
+  const [isBusy, setIsBusy] = useState(false);
   const dialog = useDialogSize("pushTarget", { min: PUSH_TARGET_MIN_SIZE, fillsHeight: true });
-  const target = text.trim();
-  // The list shows every branch until the user edits the field, then those containing the text.
   const matches = useMemo(() => {
-    const needle = target === current ? "" : target.toLowerCase();
+    const needle = filter.trim().toLowerCase();
     return candidates.filter((candidate) => candidate.toLowerCase().includes(needle));
-  }, [candidates, target, current]);
-  /** The typed name is none of the fetched branches: applying it creates the branch on origin unless origin has it. */
-  const isNew = !!target && target !== current && !candidates.includes(target);
+  }, [candidates, filter]);
+  // A filter that hides the selected row moves the selection to the first match.
+  const selected = matches.includes(choice) ? choice : (matches[0] ?? null);
+  const isCreating = newName !== null;
+  const target = isCreating ? newName.trim() : selected;
   const canSubmit = !!target && target !== current && !isBusy;
 
-  /** The session's own branch is the target already: there is no new branch to create. */
-  const ownIsCurrent = branch === current;
-
-  async function submit(choice = target, create = isNew) {
+  async function submit(choice = target) {
     if (!choice || choice === current || isBusy) return;
-    setBusyChoice(choice);
+    setIsBusy(true);
     setError(null);
     try {
-      await commands.setPushTarget(sessionId, choice, create);
+      await commands.setPushTarget(sessionId, choice, isCreating);
       onChanged(choice);
       onClose();
     } catch (reason) {
       setError(String(reason));
-      setBusyChoice(null);
+      setIsBusy(false);
     }
+  }
+
+  /** Arrow keys on the filter field move the selection through the visible rows. */
+  function moveSelection(step: number) {
+    if (matches.length === 0) return;
+    const index = selected ? matches.indexOf(selected) : -1;
+    setChoice(matches[Math.max(0, Math.min(matches.length - 1, index + step))]);
   }
 
   return (
@@ -115,69 +121,79 @@ export function PushTargetDialog({
         A push lands on this branch of origin, after a rebase onto it; the session's own branch never reaches origin. Currently{" "}
         <span className="font-mono text-neutral-300">origin/{current}</span>.
       </p>
-      <label className="mb-1 block text-[13px] text-neutral-400">Branch on origin</label>
-      <input
-        value={text}
-        onChange={(event) => setText(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            void submit();
-          }
-        }}
-        autoFocus
-        spellCheck={false}
-        placeholder="Name of a branch of origin, or of a new one"
-        className={`${INPUT} font-mono`}
-      />
-      <ul role="listbox" className="mt-1 mb-3 min-h-0 flex-1 overflow-auto rounded border border-(--line) py-1 font-mono text-[13px]">
-        {isNew ? (
-          <li
-            role="option"
-            aria-selected={false}
-            onClick={() => void submit(target, true)}
-            title={`Creates origin/${target} at the commit of origin/${current}`}
-            className="flex cursor-default items-center gap-1.5 px-2 py-0.5 text-neutral-300 hover:bg-(--row-hover)"
-          >
-            <PlusIcon className="size-3.5 shrink-0 text-neutral-500" />
-            <span className="truncate">
-              <span className="text-neutral-500">Create </span>
-              {target}
-              <span className="text-neutral-500"> from {current}</span>
-            </span>
-          </li>
-        ) : null}
-        {matches.map((candidate) => (
-          <li
-            key={candidate}
-            role="option"
-            aria-selected={candidate === target}
-            onClick={() => void submit(candidate)}
-            className={`cursor-default truncate px-2 py-0.5 ${candidate === target ? "bg-(--tree-selection) text-blue-100" : "text-neutral-200 hover:bg-(--row-hover)"}`}
-          >
-            {candidate}
-          </li>
-        ))}
-        {matches.length === 0 && !isNew ? <li className="px-2 py-0.5 text-neutral-500">No fetched branch of origin matches.</li> : null}
-      </ul>
-      {error ? <p className="mb-3 text-[13px] text-red-400">{error}</p> : null}
-      <div className="mt-auto flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={() => void submit(branch, true)}
-          disabled={isBusy || ownIsCurrent}
-          title={ownIsCurrent ? `origin/${branch} is the push target already` : `Creates origin/${branch} at the commit of origin/${current} and makes it the push target`}
-          className={`${SECONDARY_BUTTON_MD} mr-auto min-w-0`}
-        >
-          <PlusIcon className="size-3.5 shrink-0" />
-          <span className="truncate">
-            {busyChoice === branch ? "Creating" : "New branch"} <span className="font-mono">{branch}</span>
-          </span>
-        </button>
+      {isCreating ? (
+        <>
+          <label className="mb-1 block text-[13px] text-neutral-400">New branch on origin</label>
+          <input
+            value={newName}
+            onChange={(event) => setNewName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                void submit();
+              }
+            }}
+            autoFocus
+            spellCheck={false}
+            placeholder="Name of the branch to create"
+            className={`${INPUT} font-mono`}
+          />
+          <p className="mt-2 text-[13px] text-neutral-500">
+            Created at the commit of <span className="font-mono">origin/{current}</span>, or fetched when origin has it already; then the push target.
+          </p>
+        </>
+      ) : (
+        <>
+          <label className="mb-1 block text-[13px] text-neutral-400">Branch on origin</label>
+          <input
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                void submit();
+              } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                moveSelection(event.key === "ArrowDown" ? 1 : -1);
+              }
+            }}
+            autoFocus
+            spellCheck={false}
+            placeholder="Filter"
+            className={`${INPUT} font-mono`}
+          />
+          <ul role="listbox" className="mt-1 min-h-0 flex-1 overflow-auto rounded border border-(--line) py-1 font-mono text-[13px]">
+            {matches.map((candidate) => (
+              <li
+                key={candidate}
+                role="option"
+                aria-selected={candidate === selected}
+                onClick={() => setChoice(candidate)}
+                onDoubleClick={() => void submit(candidate)}
+                className={`cursor-default truncate px-2 py-0.5 ${candidate === selected ? "bg-(--tree-selection) text-blue-100" : "text-neutral-200 hover:bg-(--row-hover)"}`}
+              >
+                {candidate}
+              </li>
+            ))}
+            {matches.length === 0 ? <li className="px-2 py-0.5 text-neutral-500">No fetched branch of origin matches.</li> : null}
+          </ul>
+        </>
+      )}
+      {error ? <p className="mt-3 text-[13px] text-red-400">{error}</p> : null}
+      <div className="mt-auto flex justify-end gap-2 pt-3">
+        {isCreating ? (
+          <button type="button" onClick={() => setNewName(null)} disabled={isBusy} className={`${GHOST_BUTTON_MD} mr-auto`}>
+            Back
+          </button>
+        ) : (
+          <button type="button" onClick={() => setNewName(branch === current ? "" : branch)} disabled={isBusy} className={`${SECONDARY_BUTTON_MD} mr-auto`}>
+            <PlusIcon className="size-3.5 shrink-0" />
+            New branch…
+          </button>
+        )}
         <button type="button" onClick={onClose} disabled={isBusy} className={GHOST_BUTTON_MD}>
           Cancel
         </button>
         <button type="button" onClick={() => void submit()} disabled={!canSubmit} className={PRIMARY_BUTTON_MD}>
-          {isBusy && busyChoice !== branch ? (isNew ? "Creating…" : "Changing…") : isNew ? "Create & change" : "Change"}
+          {isBusy ? (isCreating ? "Creating…" : "Changing…") : isCreating ? "Create & change" : "Change"}
         </button>
       </div>
     </Modal>

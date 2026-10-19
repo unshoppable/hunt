@@ -1,3 +1,9 @@
+## 0.31.1 (2026-10-19)
+
+### 🔥 Performance
+
+- **gateway:** bring a VM up faster: the ready check puts the remote secrets in the same SSH command, and a finished start or resume operation reads the status without a pause ([dc54506](https://github.com/unshoppable/hunt/commit/dc54506))
+
 ## 0.31.0 (2026-10-18)
 
 ### 🚀 Features

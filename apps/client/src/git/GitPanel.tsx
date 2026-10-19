@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { commands } from "../ipc/commands";
 import type { Commit, CommitDetails, CommitFile, FileDiff, RefList } from "../ipc/types";
 import { useHuntStore } from "../state/store";
+import { pushTarget, remoteOf } from "../chat/remoteSession";
 import { useSettingsStore } from "../state/settings";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
 import { CodeDiffEditor } from "../diff/CodeDiffEditor";
@@ -20,16 +21,21 @@ export type LogFilter = { reference: string; text: string };
 
 /**
  * The Git tab: the branch tree, the commit log of the session's worktree with its graph, and the selected commit's
- * files, details and the diff of the selected file. The log reloads after every turn of the agent and every local
- * write (`editVersion`), since both may commit.
+ * files, details and the diff of the selected file. The log starts on the session's own branch, so its commits show
+ * on top of the branch they will be pushed to, and reloads after every turn of the agent and every local write
+ * (`editVersion`), since both may commit.
  */
 export function GitPanel({ sessionId }: { sessionId: string }) {
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
+  const sessions = useHuntStore((state) => state.sessions);
+  const session = sessions.find((candidate) => candidate.id === sessionId) ?? null;
+  /** The session's own branch and the branch on `origin` a push of it lands on (`pushTarget`); `null` without a session. */
+  const pushes = useMemo(() => (session ? { branch: session.branch, target: pushTarget(session, remoteOf(session, sessions)) } : null), [session, sessions]);
   const diffFontSize = useSettingsStore((state) => state.panes.diff.fontSize);
   const diffLineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
   const diffFontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
   const [refs, setRefs] = useState<RefList | null>(null);
-  const [filter, setFilter] = useState<LogFilter>({ reference: "", text: "" });
+  const [filter, setFilter] = useState<LogFilter>(() => ({ reference: session?.branch ?? "", text: "" }));
   const [commits, setCommits] = useState<Commit[]>([]);
   /** Whether the last page was full, so there may be more commits to load. */
   const [hasMore, setHasMore] = useState(false);
@@ -120,7 +126,7 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
   return (
     <PersistentGroup id="hunt-git" className="h-full min-h-0">
       <Panel id="refs" defaultSize="18%" minSize={160} maxSize={520} className="flex">
-        <RefTree refs={refs} filter={filter.reference} onFilter={(reference) => setFilter((current) => ({ ...current, reference }))} />
+        <RefTree refs={refs} pushes={pushes} filter={filter.reference} onFilter={(reference) => setFilter((current) => ({ ...current, reference }))} />
       </Panel>
       <PaneSeparator />
       <Panel id="log" minSize={320} className="flex">

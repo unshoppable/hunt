@@ -9,12 +9,16 @@ const collapsedGroups = new Set<string>(["tags"]);
 
 type Row = { node: RefTreeNode; depth: number };
 
+/** The session's own local branch and the branch on `origin` a push of it lands on. */
+export type PushRoute = { branch: string; target: string };
+
 /**
  * The branch tree beside the log: Local, Remote and Tags, nested by the slashes in their names. A click on a branch
  * or tag shows only its history, a second click shows every branch again; the checked-out branch shows how far it is
- * ahead of or behind its upstream.
+ * ahead of or behind its upstream, and the session's branch where a push lands (`pushes`), since Hunt pushes it onto
+ * the branch the session was created from, never under its own name.
  */
-export function RefTree({ refs, filter, onFilter }: { refs: RefList | null; filter: string; onFilter: (reference: string) => void }) {
+export function RefTree({ refs, pushes, filter, onFilter }: { refs: RefList | null; pushes: PushRoute | null; filter: string; onFilter: (reference: string) => void }) {
   const folderIconUrl = useFolderIconUrl();
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(collapsedGroups));
   const tree = useMemo(() => (refs ? buildRefTree(refs.refs, refs.head) : []), [refs]);
@@ -80,6 +84,11 @@ export function RefTree({ refs, filter, onFilter }: { refs: RefList | null; filt
             >
               <BranchIcon className={`size-3.5 shrink-0 ${node.ref.name === refs?.head ? "text-blue-300" : "text-neutral-500"}`} />
               <span className={`truncate ${node.ref.name === refs?.head ? "font-medium text-blue-100" : "text-neutral-200"}`}>{node.name}</span>
+              {pushes && node.ref.kind === "local" && node.ref.name === pushes.branch ? (
+                <span className="truncate pl-1 text-[0.85em] text-neutral-500" title={`A push lands on origin/${pushes.target}`}>
+                  → {pushes.target === pushes.branch ? "origin" : pushes.target}
+                </span>
+              ) : null}
               {node.ref.ahead ? <span className="pl-1 text-[0.85em] text-amber-300 tabular-nums" title={`${node.ref.ahead} ahead of ${node.ref.upstream}`}>↑{node.ref.ahead}</span> : null}
               {node.ref.behind ? <span className="pl-1 text-[0.85em] text-sky-300 tabular-nums" title={`${node.ref.behind} behind ${node.ref.upstream}`}>↓{node.ref.behind}</span> : null}
             </li>

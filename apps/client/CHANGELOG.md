@@ -1,3 +1,9 @@
+## 0.49.2 (2026-10-19)
+
+### 🩹 Fixes
+
+- **client:** Hunt removes the variables npm run and Volta leave in its environment, so agents, terminals and git hooks it starts run the node version a project pins ([5d16d7b](https://github.com/unshoppable/hunt/commit/5d16d7b))
+
 ## 0.49.1 (2026-10-19)
 
 ### 🔥 Performance

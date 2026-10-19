@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { ChangedFileView, ChangeStat, ClaudeAccounts, DiagramType, DirEntry, FileDiff, FileVersion, GithubTokenStatus, GithubViewer, GraphStatus, PlanUsage, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RemoteLink, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TmuxWindow, VmSettings, Workspace } from "./types";
+import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, FileDiff, FileVersion, GithubTokenStatus, GithubViewer, GraphStatus, LogQuery, PlanUsage, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TmuxWindow, VmSettings, Workspace } from "./types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
 export function assetUrl(path: string): string {
@@ -8,6 +8,15 @@ export function assetUrl(path: string): string {
 
 export const commands = {
   listSessions: () => invoke<SessionView[]>("list_sessions"),
+  /** A page of the commit log of the session's worktree, newest first in date order. */
+  gitLog: (sessionId: string, query: LogQuery) => invoke<Commit[]>("git_log", { id: sessionId, query }),
+  /** Every branch and tag of the session's worktree, its checked-out branch and the commits no remote has. */
+  gitRefs: (sessionId: string) => invoke<RefList>("git_refs", { id: sessionId }),
+  /** Message, committer, changed files and containing branches of the commit. */
+  gitCommit: (sessionId: string, commit: string) => invoke<CommitDetails>("git_commit", { id: sessionId, commit }),
+  /** The change of `path` in the commit against its first parent; `oldPath` is where a renamed file was before. */
+  gitCommitFileDiff: (sessionId: string, commit: string, path: string, oldPath: string | null) =>
+    invoke<FileDiff>("git_commit_file_diff", { id: sessionId, commit, path, oldPath }),
   listBranches: (repoPath: string) => invoke<string[]>("list_branches", { repoPath }),
   /** The branch the repository's checkout is on; `HEAD` when it is detached. */
   currentBranch: (repoPath: string) => invoke<string>("current_branch", { repoPath }),

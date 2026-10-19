@@ -6,7 +6,7 @@ use std::ffi::OsStr;
 use std::ops::RangeInclusive;
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 #[derive(Clone, Serialize)]
@@ -806,11 +806,357 @@ pub async fn files_containing_word(worktree: &Path, word: &str) -> Result<Vec<St
     Ok(output.lines().filter(|line| !line.is_empty()).map(str::to_string).collect())
 }
 
+/// One commit of the log.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Commit {
+    pub id: String,
+    pub parents: Vec<String>,
+    pub author: String,
+    pub author_email: String,
+    pub authored_at: chrono::DateTime<chrono::Utc>,
+    pub subject: String,
+    /// Branches and tags at the commit as `git log --decorate` names them (`HEAD -> master`, `origin/master`, `tag: v1.0`), without `<remote>/HEAD`.
+    pub refs: Vec<String>,
+}
+
+/// A page of the log: the commits reachable from `reference` (every branch, remote branch and tag when empty) whose
+/// message contains `text`, or the one commit `text` names; `skip` and `limit` page through them, newest first.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogQuery {
+    pub reference: String,
+    pub text: String,
+    pub skip: u32,
+    pub limit: u32,
+}
+
+/// A branch or tag of the repository.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRef {
+    /// Short name: `master`, `origin/master`, `v1.0`.
+    pub name: String,
+    pub kind: RefKind,
+    /// The commit the ref points at; for an annotated tag the tagged commit.
+    pub target: String,
+    /// The short name of the local branch's upstream, when it has one.
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RefKind {
+    Local,
+    Remote,
+    Tag,
+}
+
+/// Every branch and tag plus what the log needs to mark commits: the checked-out branch and the commits no remote has.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefList {
+    /// The checked-out branch, or `HEAD` when it is detached.
+    pub head: String,
+    pub refs: Vec<GitRef>,
+    /// Commits on a local branch that no remote-tracking branch has yet, i.e. a push would publish them.
+    pub unpushed: Vec<String>,
+}
+
+/// A file a commit changed; `old_path` is set for a rename.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitFile {
+    pub path: String,
+    /// Single-letter git status: A, M, D or R.
+    pub status: String,
+    pub old_path: Option<String>,
+}
+
+/// What the log shows for a selected commit.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDetails {
+    pub id: String,
+    /// The full message, subject included.
+    pub message: String,
+    pub committer: String,
+    pub committed_at: chrono::DateTime<chrono::Utc>,
+    /// The files changed against the first parent, sorted by path.
+    pub files: Vec<CommitFile>,
+    /// Local and remote branches that contain the commit.
+    pub branches: Vec<String>,
+}
+
+const RECORD_SEPARATOR: char = '\u{1e}';
+const FIELD_SEPARATOR: char = '\u{1f}';
+const LOG_FORMAT: &str = "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%D%x1f%s%x1e";
+
+/// Whether `id` can only be a commit hash (or a prefix of one), so it is safe as a git argument.
+pub fn is_commit_id(id: &str) -> bool {
+    (4..=40).contains(&id.len()) && id.chars().all(|character| character.is_ascii_hexdigit())
+}
+
+/// Rejects a user-typed revision that git would read as an option.
+fn ensure_revision(reference: &str) -> Result<(), String> {
+    if reference.starts_with('-') || reference.contains('\0') {
+        return Err(format!("invalid revision: {reference:?}"));
+    }
+    Ok(())
+}
+
+/// The commits of `query`, newest first in date order (every parent comes after its children).
+pub async fn log(repo: &Path, query: &LogQuery) -> Result<Vec<Commit>, String> {
+    let skip = format!("--skip={}", query.skip);
+    let limit = format!("--max-count={}", query.limit.clamp(1, 5000));
+    let mut args = vec!["log", "--date-order", LOG_FORMAT];
+
+    let text = query.text.trim();
+    let named_commit = if is_commit_id(text) { rev_parse(repo, &format!("{text}^{{commit}}")).await.ok() } else { None };
+    let grep = format!("--grep={text}");
+    let reference = query.reference.trim();
+    if let Some(id) = named_commit.as_deref() {
+        args.extend(["--max-count=1", id]);
+    } else {
+        args.extend([skip.as_str(), limit.as_str()]);
+        if !text.is_empty() {
+            args.extend([grep.as_str(), "--regexp-ignore-case", "--fixed-strings"]);
+        }
+        if reference.is_empty() {
+            args.extend(["--branches", "--remotes", "--tags"]);
+        } else {
+            ensure_revision(reference)?;
+            rev_parse(repo, &format!("{reference}^{{commit}}")).await.map_err(|_| format!("unknown branch or tag: {reference}"))?;
+            args.push(reference);
+        }
+    }
+    args.push("--");
+    let output = run_git(repo, &args).await?;
+    Ok(parse_log(&output))
+}
+
+/// Parses the records of `LOG_FORMAT`; a record that does not parse is skipped.
+fn parse_log(output: &str) -> Vec<Commit> {
+    output
+        .split(RECORD_SEPARATOR)
+        .filter_map(|record| {
+            let fields: Vec<&str> = record.trim_start_matches('\n').splitn(7, FIELD_SEPARATOR).collect();
+            let [id, parents, author, author_email, authored_at, refs, subject] = fields[..] else { return None };
+            let authored_at = chrono::DateTime::parse_from_rfc3339(authored_at).ok()?.with_timezone(&chrono::Utc);
+            Some(Commit {
+                id: id.to_string(),
+                parents: parents.split_whitespace().map(str::to_string).collect(),
+                author: author.to_string(),
+                author_email: author_email.to_string(),
+                authored_at,
+                subject: subject.to_string(),
+                refs: refs.split(", ").filter(|name| !name.is_empty() && !name.ends_with("/HEAD")).map(str::to_string).collect(),
+            })
+        })
+        .collect()
+}
+
+/// Every branch and tag with its upstream state, the checked-out branch and the commits no remote has.
+pub async fn refs(repo: &Path) -> Result<RefList, String> {
+    let output = run_git(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(upstream:short)%1f%(upstream:track)",
+            "refs/heads",
+            "refs/remotes",
+            "refs/tags",
+        ],
+    )
+    .await?;
+    let refs = parse_refs(&output);
+    let head = current_branch(repo).await?;
+    let unpushed = run_git(repo, &["rev-list", "--max-count=5000", "--branches", "--not", "--remotes", "--"]).await?;
+    let unpushed = unpushed.split_whitespace().map(str::to_string).collect();
+    Ok(RefList { head, refs, unpushed })
+}
+
+/// Parses the `for-each-ref` records of `refs`; the symbolic `<remote>/HEAD` is left out.
+fn parse_refs(output: &str) -> Vec<GitRef> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.splitn(5, FIELD_SEPARATOR).collect();
+            let [refname, object, peeled, upstream, track] = fields[..] else { return None };
+            let (kind, name) = if let Some(name) = refname.strip_prefix("refs/heads/") {
+                (RefKind::Local, name)
+            } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
+                if name.ends_with("/HEAD") {
+                    return None;
+                }
+                (RefKind::Remote, name)
+            } else {
+                (RefKind::Tag, refname.strip_prefix("refs/tags/")?)
+            };
+            let (ahead, behind) = parse_track(track);
+            Some(GitRef {
+                name: name.to_string(),
+                kind,
+                target: if peeled.is_empty() { object.to_string() } else { peeled.to_string() },
+                upstream: if upstream.is_empty() { None } else { Some(upstream.to_string()) },
+                ahead,
+                behind,
+            })
+        })
+        .collect()
+}
+
+/// Reads `[ahead 2, behind 1]`, `[ahead 2]`, `[behind 1]`, `[gone]` or an empty string.
+fn parse_track(track: &str) -> (u32, u32) {
+    let mut ahead = 0;
+    let mut behind = 0;
+    for part in track.trim_matches(|character| character == '[' || character == ']').split(", ") {
+        if let Some(count) = part.strip_prefix("ahead ") {
+            ahead = count.trim().parse().unwrap_or(0);
+        } else if let Some(count) = part.strip_prefix("behind ") {
+            behind = count.trim().parse().unwrap_or(0);
+        }
+    }
+    (ahead, behind)
+}
+
+/// The first parent of the commit `id`, or `None` for a root commit.
+async fn first_parent(repo: &Path, id: &str) -> Option<String> {
+    rev_parse(repo, &format!("{id}^1")).await.ok()
+}
+
+/// Message, committer, changed files and containing branches of the commit `id`.
+pub async fn commit_details(repo: &Path, id: &str) -> Result<CommitDetails, String> {
+    if !is_commit_id(id) {
+        return Err(format!("invalid commit id: {id:?}"));
+    }
+    let output = run_git(repo, &["show", "--no-patch", "--format=%B%x1f%cn%x1f%cI", id, "--"]).await?;
+    let fields: Vec<&str> = output.splitn(3, FIELD_SEPARATOR).collect();
+    let [message, committer, committed_at] = fields[..] else { return Err(format!("failed to read commit {id}: unexpected output")) };
+    let committed_at = chrono::DateTime::parse_from_rfc3339(committed_at.trim())
+        .map_err(|error| format!("failed to read the date of commit {id}: {error}"))?
+        .with_timezone(&chrono::Utc);
+
+    let names = match first_parent(repo, id).await {
+        Some(parent) => run_git(repo, &["diff-tree", "-r", "-M", "--name-status", "-z", &parent, id, "--"]).await?,
+        None => run_git(repo, &["diff-tree", "-r", "-M", "--root", "--no-commit-id", "--name-status", "-z", id, "--"]).await?,
+    };
+    let mut files = parse_name_status(&names);
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let branches = run_git(repo, &["for-each-ref", "--format=%(refname)", "--contains", id, "refs/heads", "refs/remotes"]).await?;
+    let branches = branches
+        .lines()
+        .filter(|name| !name.ends_with("/HEAD"))
+        .filter_map(|name| name.strip_prefix("refs/heads/").or_else(|| name.strip_prefix("refs/remotes/")))
+        .map(str::to_string)
+        .collect();
+
+    Ok(CommitDetails { id: id.to_string(), message: message.trim_end().to_string(), committer: committer.to_string(), committed_at, files, branches })
+}
+
+/// Parses `--name-status -z` output: `<status>\0<path>\0`, renames and copies as `<status><score>\0<old>\0<new>\0`.
+fn parse_name_status(output: &str) -> Vec<CommitFile> {
+    let mut files = Vec::new();
+    let mut fields = output.split('\0').filter(|field| !field.is_empty());
+    while let Some(status) = fields.next() {
+        let Some(letter) = status.chars().next() else { break };
+        match letter {
+            'R' | 'C' => {
+                let (Some(old_path), Some(path)) = (fields.next(), fields.next()) else { break };
+                files.push(CommitFile { path: path.to_string(), status: "R".to_string(), old_path: Some(old_path.to_string()) });
+            }
+            _ => {
+                let Some(path) = fields.next() else { break };
+                files.push(CommitFile { path: path.to_string(), status: letter.to_string(), old_path: None });
+            }
+        }
+    }
+    files
+}
+
+/// The change of `path` in the commit `id` against its first parent, where the file was at `old_path` when the commit
+/// renamed it: both contents and the unified diff.
+pub async fn commit_file_diff(repo: &Path, id: &str, path: &str, old_path: Option<&str>) -> Result<FileDiff, String> {
+    if !is_commit_id(id) {
+        return Err(format!("invalid commit id: {id:?}"));
+    }
+    let new_content = show(repo, id, path).await;
+    let Some(parent) = first_parent(repo, id).await else {
+        let unified = run_git(repo, &["diff-tree", "-p", "--root", "--no-commit-id", id, "--", path]).await?;
+        return Ok(FileDiff { path: path.to_string(), old_content: None, new_content, unified });
+    };
+    let old_content = show(repo, &parent, old_path.unwrap_or(path)).await;
+    let mut args = vec!["diff", "-M", parent.as_str(), id, "--", path];
+    if let Some(old_path) = old_path {
+        args.push(old_path);
+    }
+    let unified = run_git(repo, &args).await?;
+    Ok(FileDiff { path: path.to_string(), old_content, new_content, unified })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn parse_log_reads_records_with_parents_and_decorations() {
+        let output = "aaaa\u{1f}bbbb cccc\u{1f}Jane\u{1f}jane@example.com\u{1f}2026-10-10T00:38:00+02:00\u{1f}HEAD -> master, origin/master, origin/HEAD, tag: v1\u{1f}feat: x\u{1e}\ndddd\u{1f}\u{1f}Jo\u{1f}jo@example.com\u{1f}2026-10-09T11:15:00+02:00\u{1f}\u{1f}init\u{1e}\n";
+        let commits = parse_log(output);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].id, "aaaa");
+        assert_eq!(commits[0].parents, vec!["bbbb", "cccc"]);
+        assert_eq!(commits[0].refs, vec!["HEAD -> master", "origin/master", "tag: v1"]);
+        assert_eq!(commits[0].subject, "feat: x");
+        assert_eq!(commits[0].authored_at.to_rfc3339(), "2026-10-09T22:38:00+00:00");
+        assert!(commits[1].parents.is_empty());
+        assert!(commits[1].refs.is_empty());
+    }
+
+    #[test]
+    fn parse_refs_classifies_refs_and_reads_the_upstream_state() {
+        let output = "refs/heads/master\u{1f}1111\u{1f}\u{1f}origin/master\u{1f}[ahead 1, behind 2]\nrefs/remotes/origin/HEAD\u{1f}1111\u{1f}\u{1f}\u{1f}\nrefs/remotes/origin/master\u{1f}2222\u{1f}\u{1f}\u{1f}\nrefs/tags/v1\u{1f}3333\u{1f}4444\u{1f}\u{1f}\n";
+        let refs = parse_refs(output);
+        assert_eq!(refs.len(), 3);
+        assert_eq!((refs[0].kind, refs[0].name.as_str(), refs[0].ahead, refs[0].behind), (RefKind::Local, "master", 1, 2));
+        assert_eq!(refs[0].upstream.as_deref(), Some("origin/master"));
+        assert_eq!((refs[1].kind, refs[1].name.as_str()), (RefKind::Remote, "origin/master"));
+        assert_eq!((refs[2].kind, refs[2].target.as_str()), (RefKind::Tag, "4444"));
+    }
+
+    #[test]
+    fn parse_track_reads_every_form() {
+        assert_eq!(parse_track(""), (0, 0));
+        assert_eq!(parse_track("[gone]"), (0, 0));
+        assert_eq!(parse_track("[ahead 3]"), (3, 0));
+        assert_eq!(parse_track("[behind 4]"), (0, 4));
+        assert_eq!(parse_track("[ahead 1, behind 2]"), (1, 2));
+    }
+
+    #[test]
+    fn parse_name_status_reads_renames_with_both_paths() {
+        let files = parse_name_status("M\0src/a.ts\0R087\0old.ts\0new.ts\0D\0gone.ts\0");
+        assert_eq!(
+            files,
+            vec![
+                CommitFile { path: "src/a.ts".into(), status: "M".into(), old_path: None },
+                CommitFile { path: "new.ts".into(), status: "R".into(), old_path: Some("old.ts".into()) },
+                CommitFile { path: "gone.ts".into(), status: "D".into(), old_path: None },
+            ]
+        );
+    }
+
+    #[test]
+    fn is_commit_id_accepts_hex_prefixes_only() {
+        assert!(is_commit_id("1a820c75"));
+        assert!(!is_commit_id("abc"));
+        assert!(!is_commit_id("master"));
+        assert!(!is_commit_id("-n"));
+    }
 
     #[test]
     fn changed_entries_pairs_case_only_renames_with_the_same_content() {

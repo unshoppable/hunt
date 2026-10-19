@@ -5,6 +5,7 @@ import { SessionSidebar } from "../sessions/SessionSidebar";
 import { NewSessionView } from "../sessions/NewSessionView";
 import { ChatPanel } from "../chat/ChatPanel";
 import { DiffPanel } from "../diff/DiffPanel";
+import { GitPanel } from "../git/GitPanel";
 import { ArchitecturePanel } from "../graph/ArchitecturePanel";
 import { IdePanel } from "../ide/IdePanel";
 import { PullRequestPanel } from "../review/PullRequestPanel";
@@ -107,6 +108,7 @@ export function App() {
           <aside className="flex min-w-0 flex-1 flex-col bg-(--surface-inspector)">
             <nav data-tauri-drag-region="" className={`${HEADER_BAR} gap-1 border-b border-(--line) px-2`}>
               <TabButton isActive={rightTab === "diff"} onClick={() => setRightTab("diff")} label="Diff" />
+              <TabButton isActive={rightTab === "git"} onClick={() => setRightTab("git")} label="Git" />
               <TabButton isActive={rightTab === "editor"} onClick={() => setRightTab("editor")} label="Editor" />
               <TabButton isActive={rightTab === "graph"} onClick={() => setRightTab("graph")} label="Architecture" />
               <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} label="PR Description" />
@@ -125,6 +127,8 @@ export function App() {
                     <NoLocalWorktree sessionId={activeSessionId} />
                   ) : rightTab === "diff" ? (
                     <DiffPanel key={`diff:${activeSessionId}`} sessionId={activeSessionId} />
+                  ) : rightTab === "git" ? (
+                    <GitPanel key={`git:${activeSessionId}`} sessionId={activeSessionId} />
                   ) : rightTab === "editor" ? (
                     <IdePanel sessionId={activeSessionId} />
                   ) : rightTab === "pullRequest" ? (

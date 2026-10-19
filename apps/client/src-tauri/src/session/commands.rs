@@ -2099,6 +2099,37 @@ pub async fn list_changed_files(app: AppHandle, id: Uuid) -> Result<Vec<ChangedF
         .collect())
 }
 
+/// A page of the commit log of the session's worktree, see `git::LogQuery`.
+#[tauri::command]
+pub async fn git_log(app: AppHandle, id: Uuid, query: git::LogQuery) -> Result<Vec<git::Commit>, String> {
+    let record = worktree_session(&app, id)?;
+    git::log(&record.worktree_path, &query).await
+}
+
+/// Every branch and tag of the session's worktree, its checked-out branch and the commits no remote has.
+#[tauri::command]
+pub async fn git_refs(app: AppHandle, id: Uuid) -> Result<git::RefList, String> {
+    let record = worktree_session(&app, id)?;
+    git::refs(&record.worktree_path).await
+}
+
+/// Message, committer, changed files and containing branches of the commit `commit` of the session's worktree.
+#[tauri::command]
+pub async fn git_commit(app: AppHandle, id: Uuid, commit: String) -> Result<git::CommitDetails, String> {
+    let record = worktree_session(&app, id)?;
+    git::commit_details(&record.worktree_path, &commit).await
+}
+
+/// The change of `path` (moved from `old_path` when the commit renamed it) in the commit `commit` of the session's worktree.
+#[tauri::command]
+pub async fn git_commit_file_diff(app: AppHandle, id: Uuid, commit: String, path: String, old_path: Option<String>) -> Result<FileDiff, String> {
+    let (record, _) = session_file(&app, id, &path)?;
+    if let Some(old_path) = &old_path {
+        git::ensure_inside_worktree(old_path)?;
+    }
+    git::commit_file_diff(&record.worktree_path, &commit, &path, old_path.as_deref()).await
+}
+
 /// Added and removed lines of every changed file of the session (untracked files count as all added).
 #[tauri::command]
 pub async fn change_stats(app: AppHandle, id: Uuid) -> Result<Vec<git::ChangeStat>, String> {

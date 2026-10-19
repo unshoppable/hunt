@@ -240,6 +240,18 @@ the last session of the worktree. For a file other sessions changed too, the dif
 session": the latter replays the file's versions from the log (`apps/client/src/diff/ownChanges.ts`) and shows,
 read-only, only the lines the session and its parent changed.
 
+#### Git log
+
+The Git tab after Diff is the worktree's history, laid out like IntelliJ's log: the branch tree on the left (Local,
+Remote and Tags, nested by the slashes in their names; a click shows one ref's history, a second click every ref
+again), the commits in the middle with the graph, the branch and tag chips, author and date, and on the right the
+files of the selected commit as a folder tree, its message, author, committer, refs and containing branches, and the
+read-only diff of the selected file against the commit's first parent. The log pages through `git log --date-order`
+500 commits at a time (`git_log`, `apps/client/src-tauri/src/git.rs`), the text field matches the message or names a
+commit by its hash, and commits no remote has yet carry an arrow. `apps/client/src/git/commitGraph.ts` lays the
+lanes out from the parent lists, `CommitLog.tsx` renders only the visible rows, and the log reloads after every turn
+of the agent and every local write.
+
 #### Pull request reviews
 
 `apps/client/src-tauri/src/github.rs` lists the open pull requests of a repository and reads one with its conversation
@@ -851,7 +863,7 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 | --- | --- |
 | `apps/client/` | Nx project `client`: the desktop app, with the Rust shell in `src-tauri/`, the React UI in `src/`, one HTML page per window and the system-prompt parts and prompts in `prompts/` |
 | `apps/client/src-tauri/src/acp/` | Agent process per session, ACP event forwarding |
-| `apps/client/src-tauri/src/git.rs` | Worktrees, changelists, shelve, revert, commit and push |
+| `apps/client/src-tauri/src/git.rs` | Worktrees, changelists, shelve, revert, commit, push and the commit log |
 | `apps/client/src-tauri/src/github.rs` | Pull requests through `gh` |
 | `apps/client/src-tauri/src/session/` | Session commands, store, attribution, summaries, reviews |
 | `apps/client/src-tauri/src/lsp.rs` | One `tsgo --lsp` process per worktree |
@@ -860,7 +872,7 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 | `apps/client/src-tauri/src/remote/` | Session VMs, SSH to them, handoff and retrieval of remote sessions, previews, terminals |
 | `apps/client/src/ipc/` | Every Tauri command, event and shared type |
 | `apps/client/src/state/` | Zustand stores and chat reducers |
-| `apps/client/src/` `chat/`, `diff/`, `ide/`, `graph/`, `guardrails/`, `preview/`, `review/`, `sessions/`, `settings/`, `terminal/` | One folder per tab or window |
+| `apps/client/src/` `chat/`, `diff/`, `git/`, `ide/`, `graph/`, `guardrails/`, `preview/`, `review/`, `sessions/`, `settings/`, `terminal/` | One folder per tab or window |
 | `apps/client/src/ui/` | Primitives shared by every feature |
 | `apps/gateway/` | Nx project `gateway`: the gateway VM's API (`src/api.ts`, `src/orchestrator.ts`, `vm/hunt-api`), issue poller (`src/swf.ts`, its prompts in `prompts/`), wake service (`src/wake.ts`) and systemd units (`vm/systemd/`) |
 | `apps/session/` | Nx project `session`: the relay (`src/relay/`), the `hunt.json` services contract (`src/config.ts`), the versions of the agent's tools and the session VM's files and systemd units (`vm/`) |

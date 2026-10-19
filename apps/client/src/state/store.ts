@@ -46,7 +46,7 @@ export type ContextUsage = { used: number; size: number };
  * Views of the inspector pane: the changelist diff, the built-in editor, the component diagram or the reviewed pull
  * request, and for a remote session also its preview and a terminal on its VM.
  */
-export type RightTab = "diff" | "editor" | "graph" | "pullRequest" | "preview" | "terminal";
+export type RightTab = "diff" | "git" | "editor" | "graph" | "pullRequest" | "preview" | "terminal";
 
 /**
  * The sync of a remote session's files with its VM: whether one runs, when the last one succeeded, what the last one

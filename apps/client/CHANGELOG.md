@@ -1,3 +1,9 @@
+## 0.47.1 (2026-10-19)
+
+### 🩹 Fixes
+
+- **client:** the branch and push target lines under a session in the sidebar are a step larger and lighter so that they read as easily as the title ([b00fe31](https://github.com/unshoppable/hunt/commit/b00fe31))
+
 ## 0.47.0 (2026-10-19)
 
 ### 🚀 Features

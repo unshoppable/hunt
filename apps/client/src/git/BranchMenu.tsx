@@ -55,19 +55,21 @@ export function BranchMenu({ menu, actions, onPick, onClose }: { menu: BranchMen
 
 /**
  * Lets the user pick, among the branches of `origin` (`candidates`, without the `origin/` prefix), the one a push of
- * the session lands on; the text field filters the list. "New branch…" empties the field for a name the list does not
- * know, which the list offers as a new branch and, applied, is created on `origin` at the commit of the current target
- * (or merely fetched when `origin` has it already). Dragging an edge resizes the dialog; the size is remembered across
- * sessions.
+ * the session lands on; the text field filters the list. A typed name the list does not know is offered as a new
+ * branch and, applied, is created on `origin` at the commit of the current target (or merely fetched when `origin`
+ * has it already). "New branch" does the same in one click for the session's own branch `branch`: it is created on
+ * `origin` and becomes the target at once. Dragging an edge resizes the dialog; the size is remembered across sessions.
  */
 export function PushTargetDialog({
   sessionId,
+  branch,
   current,
   candidates,
   onClose,
   onChanged,
 }: {
   sessionId: string;
+  branch: string;
   current: string;
   candidates: string[];
   onClose: () => void;
@@ -75,9 +77,10 @@ export function PushTargetDialog({
 }) {
   const [text, setText] = useState(current);
   const [error, setError] = useState<string | null>(null);
-  const [isBusy, setIsBusy] = useState(false);
+  /** The branch being applied while the command runs; `null` while none runs. */
+  const [busyChoice, setBusyChoice] = useState<string | null>(null);
+  const isBusy = busyChoice !== null;
   const dialog = useDialogSize("pushTarget", { min: PUSH_TARGET_MIN_SIZE, fillsHeight: true });
-  const inputRef = useRef<HTMLInputElement>(null);
   const target = text.trim();
   // The list shows every branch until the user edits the field, then those containing the text.
   const matches = useMemo(() => {
@@ -88,15 +91,12 @@ export function PushTargetDialog({
   const isNew = !!target && target !== current && !candidates.includes(target);
   const canSubmit = !!target && target !== current && !isBusy;
 
-  /** Empties the field for the name of a new branch. */
-  function startNaming() {
-    setText("");
-    inputRef.current?.focus();
-  }
+  /** The session's own branch is the target already: there is no new branch to create. */
+  const ownIsCurrent = branch === current;
 
   async function submit(choice = target, create = isNew) {
     if (!choice || choice === current || isBusy) return;
-    setIsBusy(true);
+    setBusyChoice(choice);
     setError(null);
     try {
       await commands.setPushTarget(sessionId, choice, create);
@@ -104,7 +104,7 @@ export function PushTargetDialog({
       onClose();
     } catch (reason) {
       setError(String(reason));
-      setIsBusy(false);
+      setBusyChoice(null);
     }
   }
 
@@ -117,7 +117,6 @@ export function PushTargetDialog({
       </p>
       <label className="mb-1 block text-[13px] text-neutral-400">Branch on origin</label>
       <input
-        ref={inputRef}
         value={text}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={(event) => {
@@ -162,15 +161,23 @@ export function PushTargetDialog({
       </ul>
       {error ? <p className="mb-3 text-[13px] text-red-400">{error}</p> : null}
       <div className="mt-auto flex justify-end gap-2">
-        <button type="button" onClick={startNaming} disabled={isBusy} title={`Names a new branch of origin, created at the commit of origin/${current}`} className={`${SECONDARY_BUTTON_MD} mr-auto`}>
+        <button
+          type="button"
+          onClick={() => void submit(branch, true)}
+          disabled={isBusy || ownIsCurrent}
+          title={ownIsCurrent ? `origin/${branch} is the push target already` : `Creates origin/${branch} at the commit of origin/${current} and makes it the push target`}
+          className={`${SECONDARY_BUTTON_MD} mr-auto min-w-0`}
+        >
           <PlusIcon className="size-3.5 shrink-0" />
-          New branch…
+          <span className="truncate">
+            {busyChoice === branch ? "Creating" : "New branch"} <span className="font-mono">{branch}</span>
+          </span>
         </button>
         <button type="button" onClick={onClose} disabled={isBusy} className={GHOST_BUTTON_MD}>
           Cancel
         </button>
         <button type="button" onClick={() => void submit()} disabled={!canSubmit} className={PRIMARY_BUTTON_MD}>
-          {isBusy ? (isNew ? "Creating…" : "Changing…") : isNew ? "Create & change" : "Change"}
+          {isBusy && busyChoice !== branch ? (isNew ? "Creating…" : "Changing…") : isNew ? "Create & change" : "Change"}
         </button>
       </div>
     </Modal>

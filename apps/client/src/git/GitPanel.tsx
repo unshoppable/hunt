@@ -259,7 +259,7 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
       ) : null}
       {renaming ? <RenameBranchDialog sessionId={sessionId} branch={renaming} onClose={() => setRenaming(null)} onRenamed={(newName) => onRenamed(renaming, newName)} /> : null}
       {isRetargeting && pushes ? (
-        <PushTargetDialog sessionId={sessionId} current={pushes.target} candidates={originBranches} onClose={() => setIsRetargeting(false)} onChanged={() => noteWorktreeChanged(sessionId)} />
+        <PushTargetDialog sessionId={sessionId} branch={pushes.branch} current={pushes.target} candidates={originBranches} onClose={() => setIsRetargeting(false)} onChanged={() => noteWorktreeChanged(sessionId)} />
       ) : null}
     </PersistentGroup>
   );

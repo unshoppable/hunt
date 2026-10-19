@@ -202,7 +202,7 @@ export function SessionSidebar() {
               >
                 <span className="relative flex w-full items-center gap-2">
                   <SessionMark sessionId={session.id} mark={marks.get(session.id) ?? ""} />
-                  <span className={`min-w-0 flex-1 truncate text-[0.875em] ${isSubChat ? "text-neutral-300" : "font-medium text-neutral-100"}`}>{sidebarTitle(session)}</span>
+                  <span className="min-w-0 flex-1 truncate text-[0.875em] font-medium text-neutral-100">{sidebarTitle(session)}</span>
                   {isCreating ? <span className="shrink-0 text-[0.75em] text-neutral-500">Starting</span> : null}
                   {remoteOriginLabel(session) ? (
                     <span
@@ -247,7 +247,7 @@ export function SessionSidebar() {
                     </span>
                   ) : null}
                 </span>
-                <span className={`mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500 ${isSubChat ? "font-mono tracking-tighter" : ""}`} title={isSubChat ? session.selection?.path : undefined}>
+                <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500" title={isSubChat ? session.selection?.path : undefined}>
                   {isSubChat && session.selection ? (
                     <img src={fileIconUrl(session.selection.path)} alt="" className="size-4 shrink-0" />
                   ) : null}

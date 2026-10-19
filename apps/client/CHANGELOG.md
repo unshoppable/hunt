@@ -1,3 +1,9 @@
+## 0.51.0 (2026-10-19)
+
+### 🚀 Features
+
+- **client:** the base branch dropdown of a new session gets a search field that filters the branches, sits next to the button and takes the typing, so a branch is found without scrolling a list of every branch ([840b69f](https://github.com/unshoppable/hunt/commit/840b69f))
+
 ## 0.50.0 (2026-10-19)
 
 ### 🚀 Features

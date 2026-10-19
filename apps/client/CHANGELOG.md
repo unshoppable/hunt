@@ -1,3 +1,13 @@
+## 0.49.0 (2026-10-19)
+
+### 🚀 Features
+
+- **client:** Settings → Keymap lists every keyboard shortcut Hunt handles itself (sessions, chat, changelist, Save, Go to File, Find in Files and the editor's tab and navigation keys) and binds each command to other or additional keys; a change applies at once in every window, a key that types text needs ⌘, ⌃ or ⌥, and two commands that listen in the same place are flagged when they share a key ([5186c73](https://github.com/unshoppable/hunt/commit/5186c73))
+
+### 🩹 Fixes
+
+- **client:** in Find in Files hovering a match only highlights its row; a click selects it for the preview and a double click opens it ([ece7341](https://github.com/unshoppable/hunt/commit/ece7341))
+
 ## 0.48.0 (2026-10-19)
 
 ### 🚀 Features

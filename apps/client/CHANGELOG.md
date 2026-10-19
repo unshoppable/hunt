@@ -1,3 +1,9 @@
+## 0.45.1 (2026-10-19)
+
+### 🩹 Fixes
+
+- **client:** rebase a remote session's branch on this Mac before the push, and let the VM follow the rebased commit ([8bc04c9](https://github.com/unshoppable/hunt/commit/8bc04c9))
+
 ## 0.45.0 (2026-10-18)
 
 ### 🚀 Features

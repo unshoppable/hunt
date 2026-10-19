@@ -3,6 +3,7 @@ import { commands } from "../ipc/commands";
 import type { GitRef } from "../ipc/types";
 import { INPUT } from "../diff/styles";
 import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
+import { PlusIcon } from "../ui/icons";
 import { Modal } from "../ui/Modal";
 import { useDismiss } from "../ui/useDismiss";
 import { useDialogSize } from "../ui/useDialogSize";
@@ -54,9 +55,10 @@ export function BranchMenu({ menu, actions, onPick, onClose }: { menu: BranchMen
 
 /**
  * Lets the user pick, among the branches of `origin` (`candidates`, without the `origin/` prefix), the one a push of
- * the session lands on; the text field filters the list. A name the list does not know is offered as a new branch,
- * created on `origin` at the commit of the current target when applied (or merely fetched when `origin` has it
- * already). Dragging an edge resizes the dialog; the size is remembered across sessions.
+ * the session lands on; the text field filters the list. The list's first row, "New branch…", empties the field for a
+ * name the list does not know, which is offered as a new branch and, applied, created on `origin` at the commit of the
+ * current target (or merely fetched when `origin` has it already). Dragging an edge resizes the dialog; the size is
+ * remembered across sessions.
  */
 export function PushTargetDialog({
   sessionId,
@@ -75,6 +77,7 @@ export function PushTargetDialog({
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const dialog = useDialogSize("pushTarget", { min: PUSH_TARGET_MIN_SIZE, fillsHeight: true });
+  const inputRef = useRef<HTMLInputElement>(null);
   const target = text.trim();
   // The list shows every branch until the user edits the field, then those containing the text.
   const matches = useMemo(() => {
@@ -84,6 +87,12 @@ export function PushTargetDialog({
   /** The typed name is none of the fetched branches: applying it creates the branch on origin unless origin has it. */
   const isNew = !!target && target !== current && !candidates.includes(target);
   const canSubmit = !!target && target !== current && !isBusy;
+
+  /** Empties the field for the name of a new branch. */
+  function startNaming() {
+    setText("");
+    inputRef.current?.focus();
+  }
 
   async function submit(choice = target, create = isNew) {
     if (!choice || choice === current || isBusy) return;
@@ -108,6 +117,7 @@ export function PushTargetDialog({
       </p>
       <label className="mb-1 block text-[13px] text-neutral-400">Branch on origin</label>
       <input
+        ref={inputRef}
         value={text}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={(event) => {
@@ -117,16 +127,31 @@ export function PushTargetDialog({
         }}
         autoFocus
         spellCheck={false}
+        placeholder="Name of a branch of origin, or of a new one"
         className={`${INPUT} font-mono`}
       />
       <ul role="listbox" className="mt-1 mb-3 min-h-0 flex-1 overflow-auto rounded border border-(--line) py-1 font-mono text-[13px]">
-        {isNew ? (
-          <li role="option" aria-selected={false} onClick={() => void submit(target, true)} className="cursor-default truncate px-2 py-0.5 text-neutral-300 hover:bg-(--row-hover)" title={`Creates origin/${target} at the commit of origin/${current}`}>
-            <span className="text-neutral-500">Create </span>
-            {target}
-            <span className="text-neutral-500"> from {current}</span>
-          </li>
-        ) : null}
+        {/* The new-branch row stays on top: it creates the typed name once it is none of origin's, else it empties the field. */}
+        <li
+          role="option"
+          aria-selected={false}
+          onClick={isNew ? () => void submit(target, true) : startNaming}
+          title={isNew ? `Creates origin/${target} at the commit of origin/${current}` : `A new branch of origin, created at the commit of origin/${current}`}
+          className="mb-1 flex cursor-default items-center gap-1.5 border-b border-(--line) px-2 pb-1.5 pt-0.5 text-neutral-300 hover:bg-(--row-hover)"
+        >
+          <PlusIcon className="size-3.5 shrink-0 text-neutral-500" />
+          {isNew ? (
+            <span className="truncate">
+              <span className="text-neutral-500">Create </span>
+              {target}
+              <span className="text-neutral-500"> from {current}</span>
+            </span>
+          ) : (
+            <span className="truncate">
+              New branch…<span className="text-neutral-500"> type a name none of these has; it is created off {current}</span>
+            </span>
+          )}
+        </li>
         {matches.map((candidate) => (
           <li
             key={candidate}

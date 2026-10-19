@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
-import type { RefList } from "../ipc/types";
+import { useMemo, useState, type MouseEvent } from "react";
+import type { GitRef, RefList } from "../ipc/types";
 import { useFolderIconUrl } from "../diff/fileIcons";
 import { BranchIcon, ChevronIcon } from "../ui/icons";
+import type { PushRoute } from "./branchActions";
 import { buildRefTree, type RefTreeNode } from "./refGroups";
 
 /** Collapsed groups, kept across session switches for the window's lifetime; tags start collapsed. */
@@ -9,16 +10,30 @@ const collapsedGroups = new Set<string>(["tags"]);
 
 type Row = { node: RefTreeNode; depth: number };
 
-/** The session's own local branch and the branch on `origin` a push of it lands on. */
-export type PushRoute = { branch: string; target: string };
-
 /**
  * The branch tree beside the log: Local, Remote and Tags, nested by the slashes in their names. A click on a branch
- * or tag shows only its history, a second click shows every branch again; the checked-out branch shows how far it is
+ * or tag shows only its history, a second click shows every branch again; a right click on a branch opens its menu
+ * (`onContextMenu`, the branch stays highlighted while `menuFor` names it). The checked-out branch shows how far it is
  * ahead of or behind its upstream, and the session's branch where a push lands (`pushes`), since Hunt pushes it onto
- * the branch the session was created from, never under its own name.
+ * the branch the session was created from, never under its own name. The header shows `busyLabel` while an action runs.
  */
-export function RefTree({ refs, pushes, filter, onFilter }: { refs: RefList | null; pushes: PushRoute | null; filter: string; onFilter: (reference: string) => void }) {
+export function RefTree({
+  refs,
+  pushes,
+  filter,
+  menuFor,
+  busyLabel,
+  onFilter,
+  onContextMenu,
+}: {
+  refs: RefList | null;
+  pushes: PushRoute | null;
+  filter: string;
+  menuFor: string | null;
+  busyLabel: string | null;
+  onFilter: (reference: string) => void;
+  onContextMenu: (ref: GitRef, x: number, y: number) => void;
+}) {
   const folderIconUrl = useFolderIconUrl();
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(collapsedGroups));
   const tree = useMemo(() => (refs ? buildRefTree(refs.refs, refs.head) : []), [refs]);
@@ -37,6 +52,11 @@ export function RefTree({ refs, pushes, filter, onFilter }: { refs: RefList | nu
     return result;
   }, [tree, collapsed]);
 
+  const openMenu = (event: MouseEvent, ref: GitRef) => {
+    event.preventDefault();
+    onContextMenu(ref, event.clientX, event.clientY);
+  };
+
   const toggle = (path: string) => {
     if (collapsedGroups.has(path)) {
       collapsedGroups.delete(path);
@@ -50,7 +70,7 @@ export function RefTree({ refs, pushes, filter, onFilter }: { refs: RefList | nu
     <div className="flex min-w-0 flex-1 flex-col bg-(--changelist-bg)">
       <div className="flex items-center gap-1 border-b border-(--line) px-3 py-2.5 text-[13px] text-neutral-400">
         <span className="flex-1">Branches</span>
-        {refs ? <span className="text-neutral-500">{refs.head === "HEAD" ? "detached HEAD" : refs.head}</span> : null}
+        {busyLabel ? <span className="text-neutral-300">{busyLabel}</span> : refs ? <span className="text-neutral-500">{refs.head === "HEAD" ? "detached HEAD" : refs.head}</span> : null}
       </div>
       <ul className="min-h-0 flex-1 overflow-auto py-1 font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)">
         <li
@@ -78,7 +98,8 @@ export function RefTree({ refs, pushes, filter, onFilter }: { refs: RefList | nu
             <li
               key={node.path}
               onClick={() => onFilter(filter === node.ref.name ? "" : node.ref.name)}
-              className={`flex cursor-default items-center gap-[5px] pr-2 select-none ${filter === node.ref.name ? "bg-(--tree-selection)" : "hover:bg-(--row-hover)"}`}
+              onContextMenu={node.ref.kind === "tag" ? undefined : (event: MouseEvent) => openMenu(event, node.ref)}
+              className={`flex cursor-default items-center gap-[5px] pr-2 select-none ${filter === node.ref.name ? "bg-(--tree-selection)" : menuFor === node.ref.name ? "bg-(--row-active)" : "hover:bg-(--row-hover)"}`}
               style={{ paddingLeft: `calc(26px + ${depth} * var(--changelist-indent))` }}
               title={node.ref.upstream ? `${node.ref.name} → ${node.ref.upstream}` : node.ref.name}
             >

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { commands } from "../ipc/commands";
-import type { Commit, CommitDetails, CommitFile, FileDiff, RefList } from "../ipc/types";
+import type { Commit, CommitDetails, CommitFile, FileDiff, GitRef, RefList } from "../ipc/types";
 import { useHuntStore } from "../state/store";
 import { pushTarget, remoteOf } from "../chat/remoteSession";
 import { useSettingsStore } from "../state/settings";
@@ -8,7 +8,10 @@ import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes"
 import { CodeDiffEditor } from "../diff/CodeDiffEditor";
 import { openInEditorWindow } from "../ide/editorWindows";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
+import { confirmDestructive } from "../ui/confirm";
 import { errorText, useLoad } from "../ui/useLoad";
+import { BUSY_LABELS, branchActions, originBranchName, type BranchAction } from "./branchActions";
+import { BranchMenu, RenameBranchDialog, type BranchMenuState } from "./BranchMenu";
 import { CommitFiles } from "./CommitFiles";
 import { CommitLog } from "./CommitLog";
 import { RefTree } from "./RefTree";
@@ -27,10 +30,16 @@ export type LogFilter = { reference: string; text: string };
  */
 export function GitPanel({ sessionId }: { sessionId: string }) {
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
+  const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
   const sessions = useHuntStore((state) => state.sessions);
   const session = sessions.find((candidate) => candidate.id === sessionId) ?? null;
+  const remote = session ? remoteOf(session, sessions) : null;
   /** The session's own branch and the branch on `origin` a push of it lands on (`pushTarget`); `null` without a session. */
-  const pushes = useMemo(() => (session ? { branch: session.branch, target: pushTarget(session, remoteOf(session, sessions)) } : null), [session, sessions]);
+  const pushes = useMemo(() => (session ? { branch: session.branch, target: pushTarget(session, remote) } : null), [session, remote]);
+  const [menu, setMenu] = useState<BranchMenuState | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  /** What the running branch action is, shown in the branch tree's header; `null` while none runs. */
+  const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const diffFontSize = useSettingsStore((state) => state.panes.diff.fontSize);
   const diffLineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
   const diffFontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
@@ -122,11 +131,47 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
 
   const selectedCommit = useMemo(() => commits.find((commit) => commit.id === selectedId) ?? null, [commits, selectedId]);
   const unpushed = useMemo(() => new Set(refs?.unpushed ?? []), [refs]);
+  const menuActions = useMemo(() => (menu ? branchActions(menu.ref, { head: refs?.head ?? "HEAD", pushes, isRemoteSession: !!remote }) : []), [menu, refs, pushes, remote]);
+
+  /** Runs the Git command of `action` on the branch `ref`; a success reloads every view of the worktree through `editVersion`. */
+  const runAction = async (ref: GitRef, action: BranchAction) => {
+    if (action.kind === "rename") {
+      setRenaming(ref.name);
+      return;
+    }
+    setBusyLabel(BUSY_LABELS[action.kind]);
+    try {
+      const didRun = await performAction(sessionId, ref, action);
+      if (didRun) {
+        setError(null);
+        noteWorktreeChanged(sessionId);
+      }
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setBusyLabel(null);
+    }
+  };
+
+  const onRenamed = (branch: string, newName: string) => {
+    if (filter.reference === branch) {
+      setFilter((current) => ({ ...current, reference: newName }));
+    }
+    noteWorktreeChanged(sessionId);
+  };
 
   return (
     <PersistentGroup id="hunt-git" className="h-full min-h-0">
       <Panel id="refs" defaultSize="18%" minSize={160} maxSize={520} className="flex">
-        <RefTree refs={refs} pushes={pushes} filter={filter.reference} onFilter={(reference) => setFilter((current) => ({ ...current, reference }))} />
+        <RefTree
+          refs={refs}
+          pushes={pushes}
+          filter={filter.reference}
+          menuFor={menu?.ref.name ?? null}
+          busyLabel={busyLabel}
+          onFilter={(reference) => setFilter((current) => ({ ...current, reference }))}
+          onContextMenu={(ref, x, y) => setMenu({ ref, x, y })}
+        />
       </Panel>
       <PaneSeparator />
       <Panel id="log" minSize={320} className="flex">
@@ -194,6 +239,66 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
           </Panel>
         </PersistentGroup>
       </Panel>
+      {menu ? (
+        <BranchMenu
+          menu={menu}
+          actions={menuActions}
+          onClose={() => setMenu(null)}
+          onPick={(action) => {
+            setMenu(null);
+            void runAction(menu.ref, action);
+          }}
+        />
+      ) : null}
+      {renaming ? <RenameBranchDialog sessionId={sessionId} branch={renaming} onClose={() => setRenaming(null)} onRenamed={(newName) => onRenamed(renaming, newName)} /> : null}
     </PersistentGroup>
   );
+}
+
+/**
+ * Runs the Git command behind `action` for the branch `ref` of the session; returns whether it ran (a delete the
+ * user did not confirm did not). A local branch whose commits no other branch has is deleted only after a confirmation.
+ */
+async function performAction(sessionId: string, ref: GitRef, action: BranchAction): Promise<boolean> {
+  switch (action.kind) {
+    case "rebase":
+      await commands.gitRebase(sessionId, ref.name);
+      return true;
+    case "merge":
+      await commands.gitMerge(sessionId, ref.name);
+      return true;
+    case "update":
+      await commands.gitUpdateBranch(sessionId, ref.name);
+      return true;
+    case "fetch":
+      await commands.gitFetchBranch(sessionId, originBranchName(ref.name) ?? "");
+      return true;
+    case "push":
+      await commands.pushBranch(sessionId);
+      return true;
+    case "pushBranch":
+      await commands.gitPushLocalBranch(sessionId, ref.name);
+      return true;
+    case "delete":
+      return deleteLocalBranch(sessionId, ref.name);
+    case "deleteRemote": {
+      if (!(await confirmDestructive(`Delete ${ref.name} on origin?\n\nEveryone who fetched it keeps a copy, but the branch is gone for the team.`))) return false;
+      await commands.gitDeleteRemoteBranch(sessionId, originBranchName(ref.name) ?? "");
+      return true;
+    }
+    case "rename":
+      return false;
+  }
+}
+
+async function deleteLocalBranch(sessionId: string, branch: string): Promise<boolean> {
+  try {
+    await commands.gitDeleteBranch(sessionId, branch, false);
+    return true;
+  } catch (reason) {
+    if (!String(reason).includes("not fully merged")) throw reason;
+  }
+  if (!(await confirmDestructive(`Delete branch ${branch}?\n\nIt has commits no other branch has; they are lost with it.`))) return false;
+  await commands.gitDeleteBranch(sessionId, branch, true);
+  return true;
 }

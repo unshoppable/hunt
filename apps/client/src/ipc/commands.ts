@@ -17,6 +17,22 @@ export const commands = {
   /** The change of `path` in the commit against its first parent; `oldPath` is where a renamed file was before. */
   gitCommitFileDiff: (sessionId: string, commit: string, path: string, oldPath: string | null) =>
     invoke<FileDiff>("git_commit_file_diff", { id: sessionId, commit, path, oldPath }),
+  /** Rebases the session's branch onto the branch or remote branch `onto`; a conflict aborts and names the files. */
+  gitRebase: (sessionId: string, onto: string) => invoke<void>("git_rebase", { id: sessionId, onto }),
+  /** Merges the branch or remote branch `from` into the session's branch; a conflict aborts and names the files. */
+  gitMerge: (sessionId: string, from: string) => invoke<void>("git_merge", { id: sessionId, from }),
+  /** Rebases the session's branch onto the branch its push lands on, fetched first; fast-forwards another local branch to its upstream. */
+  gitUpdateBranch: (sessionId: string, branch: string) => invoke<void>("git_update_branch", { id: sessionId, branch }),
+  /** Pushes a local branch other than the session's to the branch of the same name on `origin`. */
+  gitPushLocalBranch: (sessionId: string, branch: string) => invoke<void>("git_push_local_branch", { id: sessionId, branch }),
+  /** Renames a local branch; the session follows a rename of its own branch, which a remote session refuses. */
+  gitRenameBranch: (sessionId: string, branch: string, newName: string) => invoke<void>("git_rename_branch", { id: sessionId, branch, newName }),
+  /** Deletes a local branch; without `force`, git refuses one whose commits its upstream (or HEAD) lacks with "not fully merged". */
+  gitDeleteBranch: (sessionId: string, branch: string, force: boolean) => invoke<void>("git_delete_branch", { id: sessionId, branch, force }),
+  /** Deletes the branch `branch` on `origin`. */
+  gitDeleteRemoteBranch: (sessionId: string, branch: string) => invoke<void>("git_delete_remote_branch", { id: sessionId, branch }),
+  /** Fetches the branch `branch` of `origin`; `false` when `origin` has no such branch. */
+  gitFetchBranch: (sessionId: string, branch: string) => invoke<boolean>("git_fetch_branch", { id: sessionId, branch }),
   listBranches: (repoPath: string) => invoke<string[]>("list_branches", { repoPath }),
   /** The branch the repository's checkout is on; `HEAD` when it is detached. */
   currentBranch: (repoPath: string) => invoke<string>("current_branch", { repoPath }),

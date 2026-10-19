@@ -250,7 +250,13 @@ read-only diff of the selected file against the commit's first parent. The log p
 500 commits at a time (`git_log`, `apps/client/src-tauri/src/git.rs`), the text field matches the message or names a
 commit by its hash, and commits no remote has yet carry an arrow. `apps/client/src/git/commitGraph.ts` lays the
 lanes out from the parent lists, `CommitLog.tsx` renders only the visible rows, and the log reloads after every turn
-of the agent and every local write.
+of the agent and every local write. The log opens on the session's branch, which the tree marks with the branch its
+push lands on (`→ master`). A right click on a branch opens its menu (`src/git/branchActions.ts`): rebase the
+checked-out branch onto it or merge it in (a conflict aborts and names the files), update it (the session's branch is
+rebased onto the branch its push lands on, as the push does first; another local branch is fast-forwarded from its
+upstream), push, rename and delete it (a branch with commits no other branch has only after a confirmation), and for
+a remote branch fetch it or delete it on `origin`. A rebase, merge or update of a remote session's branch moves the
+branch on its VM to the new commit, as the rebase before a push does.
 
 #### Pull request reviews
 

@@ -2130,6 +2130,148 @@ pub async fn git_commit_file_diff(app: AppHandle, id: Uuid, commit: String, path
     git::commit_file_diff(&record.worktree_path, &commit, &path, old_path.as_deref()).await
 }
 
+/// A move of the session's branch to another commit, made in its local worktree from the Git tab.
+enum HeadMove {
+    /// `git rebase` onto a branch or remote branch.
+    RebaseOnto(String),
+    /// `git merge` of a branch or remote branch.
+    Merge(String),
+    /// A fetch of the branch on `origin` the push lands on and a rebase onto it, as the push does first.
+    UpdateFrom(String),
+}
+
+impl HeadMove {
+    fn verb(&self) -> &'static str {
+        match self {
+            HeadMove::RebaseOnto(_) => "rebase",
+            HeadMove::Merge(_) => "merge",
+            HeadMove::UpdateFrom(_) => "update",
+        }
+    }
+
+    async fn apply(&self, worktree: &Path) -> Result<(), String> {
+        match self {
+            HeadMove::RebaseOnto(onto) => git::rebase_onto(worktree, onto, onto).await,
+            HeadMove::Merge(from) => git::merge_into_head(worktree, from).await,
+            HeadMove::UpdateFrom(target) => {
+                git::fetch_branch(worktree, target).await?;
+                if git::is_behind_origin(worktree, target).await {
+                    git::rebase_onto_origin(worktree, target).await?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Applies `change` to the branch of the session `record` in its local worktree. For a remote session it runs while no
+/// sync of the session does, after its branch was brought to the same commit here and on its VM (`sync::follow_head`),
+/// and the VM's branch moves to the new commit afterwards (`remote::commit::move_vm_head`), as it does for the rebase
+/// before a push.
+async fn move_head(app: &AppHandle, record: &SessionRecord, change: HeadMove) -> Result<(), String> {
+    link::ensure_writable(app, record.id, change.verb())?;
+    let Some((owner, _)) = remote_host(app, record) else {
+        return change.apply(&record.worktree_path).await;
+    };
+    let worktree = record.worktree_path.as_path();
+    sync::exclusive(app, owner, |_| async move {
+        let remote = store::find_session(app, owner)?.remote.ok_or_else(|| format!("failed to {}: the session runs locally now", change.verb()))?;
+        let ssh = Ssh::open(&remote.vm, &ssh_dir()?).await?;
+        sync::follow_head(app, owner, &ssh, &remote, worktree).await?;
+        let before = git::rev_parse(worktree, "HEAD").await?;
+        change.apply(worktree).await?;
+        if git::rev_parse(worktree, "HEAD").await? == before {
+            return Ok(());
+        }
+        let head = remote::commit::move_vm_head(&ssh, owner, &remote, worktree).await?;
+        store::update_session(app, owner, |stored| {
+            if let Some(remote) = stored.remote.as_mut() {
+                remote.handoff_head = head;
+            }
+        })?;
+        Ok(())
+    })
+    .await
+}
+
+/// Rebases the session's branch onto the branch or remote branch `onto`; a conflict aborts and reports the files.
+#[tauri::command]
+pub async fn git_rebase(app: AppHandle, id: Uuid, onto: String) -> Result<(), String> {
+    let record = worktree_session(&app, id)?;
+    move_head(&app, &record, HeadMove::RebaseOnto(onto)).await
+}
+
+/// Merges the branch or remote branch `from` into the session's branch; a conflict aborts and reports the files.
+#[tauri::command]
+pub async fn git_merge(app: AppHandle, id: Uuid, from: String) -> Result<(), String> {
+    let record = worktree_session(&app, id)?;
+    move_head(&app, &record, HeadMove::Merge(from)).await
+}
+
+/// Updates the local branch `branch`: the session's own branch is rebased onto the branch on `origin` its push lands
+/// on, fetched first, as the push does; another local branch is fast-forwarded to its upstream.
+#[tauri::command]
+pub async fn git_update_branch(app: AppHandle, id: Uuid, branch: String) -> Result<(), String> {
+    let record = worktree_session(&app, id)?;
+    if branch != record.branch {
+        return git::fast_forward_branch(&record.worktree_path, &branch).await;
+    }
+    let remote = remote_host(&app, &record).map(|(_, target)| target);
+    let target = push_target(&record, remote.as_ref());
+    move_head(&app, &record, HeadMove::UpdateFrom(target)).await
+}
+
+/// Pushes the local branch `branch`, another one than the session's (see `push_branch`), to the branch of the same
+/// name on `origin`.
+#[tauri::command]
+pub async fn git_push_local_branch(app: AppHandle, id: Uuid, branch: String) -> Result<(), String> {
+    let record = worktree_session(&app, id)?;
+    git::push_local_branch(&record.worktree_path, &branch).await
+}
+
+/// Renames the local branch `branch` to `new_name`. The records of the session and its sub chats follow a rename of the
+/// session's own branch, which a remote session refuses, since its VM has the branch under that name.
+#[tauri::command]
+pub async fn git_rename_branch(app: AppHandle, id: Uuid, branch: String, new_name: String) -> Result<(), String> {
+    let record = worktree_session(&app, id)?;
+    let is_own = branch == record.branch;
+    if is_own && remote_host(&app, &record).is_some() {
+        return Err("failed to rename the branch: the session's VM has it under this name; retrieve the session first".into());
+    }
+    git::rename_branch(&record.worktree_path, &branch, &new_name).await?;
+    if !is_own {
+        return Ok(());
+    }
+    for stored in store::load_sessions(&app)? {
+        if stored.worktree_path == record.worktree_path && stored.branch == branch {
+            store::update_session(&app, stored.id, |stored| stored.branch = new_name.clone())?;
+        }
+    }
+    announce_sessions_changed(&app);
+    Ok(())
+}
+
+/// Deletes the local branch `branch`; without `force`, git refuses one whose commits its upstream (or HEAD) lacks.
+#[tauri::command]
+pub async fn git_delete_branch(app: AppHandle, id: Uuid, branch: String, force: bool) -> Result<(), String> {
+    let record = worktree_session(&app, id)?;
+    git::delete_local_branch(&record.worktree_path, &branch, force).await
+}
+
+/// Deletes the branch `branch` on `origin`.
+#[tauri::command]
+pub async fn git_delete_remote_branch(app: AppHandle, id: Uuid, branch: String) -> Result<(), String> {
+    let record = worktree_session(&app, id)?;
+    git::delete_remote_branch(&record.worktree_path, &branch).await
+}
+
+/// Fetches the branch `branch` of `origin`; `false` when `origin` has no such branch.
+#[tauri::command]
+pub async fn git_fetch_branch(app: AppHandle, id: Uuid, branch: String) -> Result<bool, String> {
+    let record = worktree_session(&app, id)?;
+    git::fetch_branch(&record.worktree_path, &branch).await
+}
+
 /// Added and removed lines of every changed file of the session (untracked files count as all added).
 #[tauri::command]
 pub async fn change_stats(app: AppHandle, id: Uuid) -> Result<Vec<git::ChangeStat>, String> {

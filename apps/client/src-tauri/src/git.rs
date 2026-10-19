@@ -318,8 +318,31 @@ pub async fn worktree_remove(repo: &Path, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Deletes the local branch `branch` whatever it contains.
 pub async fn delete_branch(repo: &Path, branch: &str) -> Result<(), String> {
-    run_git(repo, &["branch", "-D", branch]).await?;
+    delete_local_branch(repo, branch, true).await
+}
+
+/// Deletes the local branch `branch`; without `force`, git refuses a branch whose commits its upstream (or HEAD) lacks
+/// with "not fully merged". A branch checked out in a worktree is refused either way.
+pub async fn delete_local_branch(repo: &Path, branch: &str, force: bool) -> Result<(), String> {
+    ensure_branch_name(repo, branch).await?;
+    run_git(repo, &["branch", if force { "-D" } else { "-d" }, "--", branch]).await?;
+    Ok(())
+}
+
+/// Deletes the branch `branch` on `origin`.
+pub async fn delete_remote_branch(worktree: &Path, branch: &str) -> Result<(), String> {
+    ensure_branch_name(worktree, branch).await?;
+    run_git(worktree, &["push", "-q", "--delete", "--", "origin", branch]).await?;
+    Ok(())
+}
+
+/// Renames the local branch `branch` to `new_name`, in whichever worktree it is checked out.
+pub async fn rename_branch(repo: &Path, branch: &str, new_name: &str) -> Result<(), String> {
+    ensure_branch_name(repo, branch).await?;
+    ensure_branch_name(repo, new_name).await?;
+    run_git(repo, &["branch", "-m", "--", branch, new_name]).await?;
     Ok(())
 }
 
@@ -738,27 +761,71 @@ pub async fn is_behind_origin(worktree: &Path, branch: &str) -> bool {
     rev_parse(worktree, &remote_ref).await.is_ok() && !is_ancestor(worktree, &remote_ref, "HEAD").await
 }
 
-/// Rebases the worktree's branch onto `origin/<branch>` as fetched last, with the uncommitted changes stashed
-/// meanwhile; a conflict aborts the rebase, which leaves branch and files as they were, and fails with git's report.
+/// Rebases the worktree's branch onto `origin/<branch>` as fetched last, see `rebase_onto`.
 pub async fn rebase_onto_origin(worktree: &Path, branch: &str) -> Result<(), String> {
     ensure_branch_name(worktree, branch).await?;
-    let remote_ref = format!("refs/remotes/origin/{branch}");
-    if let Err(error) = run_git(worktree, &["rebase", "-q", "--autostash", &remote_ref]).await {
-        let conflicts = run_git(worktree, &["diff", "--name-only", "--diff-filter=U", "--"]).await.unwrap_or_default();
+    rebase_onto(worktree, &format!("refs/remotes/origin/{branch}"), &format!("origin/{branch}")).await
+}
+
+/// Rebases the worktree's branch onto `reference` (a branch or remote branch, called `display` in messages), with the
+/// uncommitted changes stashed meanwhile; a conflict aborts the rebase, which leaves branch and files as they were,
+/// and fails with git's report.
+pub async fn rebase_onto(worktree: &Path, reference: &str, display: &str) -> Result<(), String> {
+    ensure_branch_name(worktree, reference).await?;
+    if let Err(error) = run_git(worktree, &["rebase", "-q", "--autostash", "--", reference]).await {
+        let conflicts = conflicting_files(worktree).await;
         let _ = run_git(worktree, &["rebase", "--abort"]).await;
-        return Err(rebase_error(branch, &conflicts, &error));
+        return Err(conflict_error(&format!("rebase onto {display}"), &conflicts, &error));
     }
     Ok(())
 }
 
-/// The message of a failed rebase onto `origin/<branch>`: the files `conflicts` (one per line) the rebase stopped at,
-/// else git's own `error`.
-pub fn rebase_error(branch: &str, conflicts: &str, error: &str) -> String {
+/// Merges `reference` (a branch or remote branch) into the worktree's branch with git's default message, the
+/// uncommitted changes stashed meanwhile; a conflict aborts the merge, which leaves branch and files as they were,
+/// and fails with git's report.
+pub async fn merge_into_head(worktree: &Path, reference: &str) -> Result<(), String> {
+    ensure_branch_name(worktree, reference).await?;
+    if let Err(error) = run_git(worktree, &["merge", "-q", "--no-edit", "--autostash", "--", reference]).await {
+        let conflicts = conflicting_files(worktree).await;
+        let _ = run_git(worktree, &["merge", "--abort"]).await;
+        return Err(conflict_error(&format!("merge {reference}"), &conflicts, &error));
+    }
+    Ok(())
+}
+
+/// The files a stopped rebase or merge left with conflict markers, one per line.
+async fn conflicting_files(worktree: &Path) -> String {
+    run_git(worktree, &["diff", "--name-only", "--diff-filter=U", "--"]).await.unwrap_or_default()
+}
+
+/// The message of a failed `action` (e.g. `rebase onto origin/main`): the files `conflicts` (one per line) it
+/// stopped at, else git's own `error`.
+fn conflict_error(action: &str, conflicts: &str, error: &str) -> String {
     let files: Vec<&str> = conflicts.lines().filter(|line| !line.is_empty()).collect();
     if files.is_empty() {
-        return format!("failed to rebase onto origin/{branch}: {error}");
+        return format!("failed to {action}: {error}");
     }
-    format!("failed to rebase onto origin/{branch}: conflicts in {}; resolve them in the chat or by hand, then push again", files.join(", "))
+    format!("failed to {action}: conflicts in {}; resolve them in the chat or by hand", files.join(", "))
+}
+
+/// Fast-forwards the local branch `branch`, which is not checked out here, to its upstream as fetched now; fails
+/// without an upstream, when the branch has commits its upstream lacks, or when a worktree has it checked out.
+pub async fn fast_forward_branch(repo: &Path, branch: &str) -> Result<(), String> {
+    ensure_branch_name(repo, branch).await?;
+    let upstream = run_git(repo, &["for-each-ref", "--format=%(upstream:short)", &format!("refs/heads/{branch}")]).await?;
+    let Some((remote, remote_branch)) = upstream.trim().split_once('/') else {
+        return Err(format!("failed to update {branch}: it has no upstream"));
+    };
+    run_git(repo, &["fetch", "-q", "--", remote, &format!("refs/heads/{remote_branch}:refs/heads/{branch}")]).await?;
+    Ok(())
+}
+
+/// Pushes the local branch `branch` to the branch of the same name on `origin` and makes that its upstream; `origin`
+/// rejects the push when its branch has commits `branch` lacks.
+pub async fn push_local_branch(worktree: &Path, branch: &str) -> Result<(), String> {
+    ensure_branch_name(worktree, branch).await?;
+    run_git(worktree, &["push", "-q", "-u", "--", "origin", &format!("refs/heads/{branch}:refs/heads/{branch}")]).await?;
+    Ok(())
 }
 
 /// Number of commits a push to the branch `target` on `origin` would publish: those `origin/<target>`, as fetched last,
@@ -1331,11 +1398,101 @@ mod tests {
 
         let error = push_branch(&repo, "develop").await.unwrap_err();
 
-        assert_eq!(error, "failed to rebase onto origin/develop: conflicts in tracked.txt; resolve them in the chat or by hand, then push again");
+        assert_eq!(error, "failed to rebase onto origin/develop: conflicts in tracked.txt; resolve them in the chat or by hand");
         assert_eq!(run_git(&repo, &["rev-parse", "HEAD"]).await.unwrap(), before);
         assert_eq!(run_git(origin.path(), &["rev-parse", "develop"]).await.unwrap(), elsewhere);
         assert_eq!(run_git(&repo, &["status", "--porcelain"]).await.unwrap().trim(), "");
         assert_eq!(std::fs::read_to_string(repo.join("tracked.txt")).unwrap(), "mine\n");
+    }
+
+    #[tokio::test]
+    async fn rebase_onto_rebases_the_branch_and_keeps_the_uncommitted_changes() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+        std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+        commit_files(&repo, &["new.txt".into()], "session commit").await.unwrap();
+        let elsewhere = commit_on_origin_develop(origin.path(), "two\n").await;
+        git(&repo, &["fetch", "-q", "origin"]).await;
+        std::fs::write(repo.join("other.txt"), "edited\n").unwrap();
+
+        rebase_onto(&repo, "origin/develop", "origin/develop").await.unwrap();
+
+        assert_eq!(run_git(&repo, &["rev-parse", "HEAD^"]).await.unwrap(), elsewhere);
+        assert_eq!(run_git(&repo, &["log", "-1", "--format=%s"]).await.unwrap().trim(), "session commit");
+        assert_eq!(std::fs::read_to_string(repo.join("other.txt")).unwrap(), "edited\n");
+        assert_eq!(rebase_onto(&repo, "--root", "--root").await.unwrap_err(), "invalid branch name: \"--root\"");
+    }
+
+    #[tokio::test]
+    async fn merge_into_head_merges_the_branch_and_aborts_a_conflict() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+        std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+        commit_files(&repo, &["new.txt".into()], "session commit").await.unwrap();
+        let elsewhere = commit_on_origin_develop(origin.path(), "two\n").await;
+        git(&repo, &["fetch", "-q", "origin"]).await;
+
+        merge_into_head(&repo, "origin/develop").await.unwrap();
+
+        assert_eq!(run_git(&repo, &["rev-parse", "HEAD^2"]).await.unwrap(), elsewhere);
+        assert_eq!(std::fs::read_to_string(repo.join("tracked.txt")).unwrap(), "two\n");
+
+        std::fs::write(repo.join("tracked.txt"), "mine\n").unwrap();
+        commit_files(&repo, &["tracked.txt".into()], "mine").await.unwrap();
+        let before = run_git(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        commit_on_origin_develop(origin.path(), "theirs\n").await;
+        git(&repo, &["fetch", "-q", "origin"]).await;
+
+        let error = merge_into_head(&repo, "origin/develop").await.unwrap_err();
+
+        assert_eq!(error, "failed to merge origin/develop: conflicts in tracked.txt; resolve them in the chat or by hand");
+        assert_eq!(run_git(&repo, &["rev-parse", "HEAD"]).await.unwrap(), before);
+        assert_eq!(run_git(&repo, &["status", "--porcelain"]).await.unwrap().trim(), "");
+    }
+
+    #[tokio::test]
+    async fn fast_forward_branch_updates_a_branch_that_is_not_checked_out() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+        git(&repo, &["branch", "--track", "develop", "origin/develop"]).await;
+        git(&repo, &["branch", "loose"]).await;
+        let elsewhere = commit_on_origin_develop(origin.path(), "two\n").await;
+
+        fast_forward_branch(&repo, "develop").await.unwrap();
+
+        assert_eq!(run_git(&repo, &["rev-parse", "develop"]).await.unwrap(), elsewhere);
+        assert_eq!(fast_forward_branch(&repo, "loose").await.unwrap_err(), "failed to update loose: it has no upstream");
+    }
+
+    #[tokio::test]
+    async fn branches_are_renamed_pushed_and_deleted_by_name() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+        git(&repo, &["branch", "work", "origin/develop"]).await;
+        std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+        commit_files(&repo, &["new.txt".into()], "session commit").await.unwrap();
+
+        rename_branch(&repo, "work", "fix/general/work").await.unwrap();
+        push_local_branch(&repo, "fix/general/work").await.unwrap();
+
+        assert!(local_branch_exists(&repo, "fix/general/work").await && !local_branch_exists(&repo, "work").await);
+        assert_eq!(run_git(origin.path(), &["rev-parse", "fix/general/work"]).await.unwrap(), run_git(&repo, &["rev-parse", "fix/general/work"]).await.unwrap());
+        assert_eq!(run_git(&repo, &["for-each-ref", "--format=%(upstream:short)", "refs/heads/fix/general/work"]).await.unwrap().trim(), "origin/fix/general/work");
+
+        // The session branch has a commit no other branch has: only a forced delete removes it, once it is not checked out.
+        git(&repo, &["checkout", "-q", "fix/general/work"]).await;
+        let error = delete_local_branch(&repo, "feat/general/x", false).await.unwrap_err();
+        assert!(error.contains("not fully merged"), "{error}");
+        delete_local_branch(&repo, "feat/general/x", true).await.unwrap();
+        assert!(!local_branch_exists(&repo, "feat/general/x").await);
+
+        delete_remote_branch(&repo, "fix/general/work").await.unwrap();
+        assert_eq!(run_git(origin.path(), &["branch", "--list", "fix/*"]).await.unwrap().trim(), "");
+        assert_eq!(delete_remote_branch(&repo, "-f").await.unwrap_err(), "invalid branch name: \"-f\"");
     }
 
     #[tokio::test]

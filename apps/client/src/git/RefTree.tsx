@@ -99,19 +99,27 @@ export function RefTree({
               key={node.path}
               onClick={() => onFilter(filter === node.ref.name ? "" : node.ref.name)}
               onContextMenu={node.ref.kind === "tag" ? undefined : (event: MouseEvent) => openMenu(event, node.ref)}
-              className={`flex cursor-default items-center gap-[5px] pr-2 select-none ${filter === node.ref.name ? "bg-(--tree-selection)" : menuFor === node.ref.name ? "bg-(--row-active)" : "hover:bg-(--row-hover)"}`}
+              className={`flex cursor-default items-start gap-[5px] pr-2 select-none ${filter === node.ref.name ? "bg-(--tree-selection)" : menuFor === node.ref.name ? "bg-(--row-active)" : "hover:bg-(--row-hover)"}`}
               style={{ paddingLeft: `calc(26px + ${depth} * var(--changelist-indent))` }}
               title={node.ref.upstream ? `${node.ref.name} → ${node.ref.upstream}` : node.ref.name}
             >
-              <BranchIcon className={`size-3.5 shrink-0 ${node.ref.name === refs?.head ? "text-blue-300" : "text-neutral-500"}`} />
-              <span className={`truncate ${node.ref.name === refs?.head ? "font-medium text-blue-100" : "text-neutral-200"}`}>{node.name}</span>
-              {pushes && node.ref.kind === "local" && node.ref.name === pushes.branch ? (
-                <span className="truncate pl-1 text-[0.85em] text-neutral-500" title={`A push lands on origin/${pushes.target}`}>
-                  → {pushes.target === pushes.branch ? "origin" : pushes.target}
+              {/* The icon sits on the first line, centred in it like the single-line rows. */}
+              <span className="flex h-[calc(var(--changelist-line-height)*1em)] shrink-0 items-center">
+                <BranchIcon className={`size-3.5 ${node.ref.name === refs?.head ? "text-blue-300" : "text-neutral-500"}`} />
+              </span>
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="flex min-w-0 items-center gap-1">
+                  <span className={`truncate ${node.ref.name === refs?.head ? "font-medium text-blue-100" : "text-neutral-200"}`}>{node.name}</span>
+                  {node.ref.ahead ? <span className="text-[0.85em] text-amber-300 tabular-nums" title={`${node.ref.ahead} ahead of ${node.ref.upstream}`}>↑{node.ref.ahead}</span> : null}
+                  {node.ref.behind ? <span className="text-[0.85em] text-sky-300 tabular-nums" title={`${node.ref.behind} behind ${node.ref.upstream}`}>↓{node.ref.behind}</span> : null}
                 </span>
-              ) : null}
-              {node.ref.ahead ? <span className="pl-1 text-[0.85em] text-amber-300 tabular-nums" title={`${node.ref.ahead} ahead of ${node.ref.upstream}`}>↑{node.ref.ahead}</span> : null}
-              {node.ref.behind ? <span className="pl-1 text-[0.85em] text-sky-300 tabular-nums" title={`${node.ref.behind} behind ${node.ref.upstream}`}>↓{node.ref.behind}</span> : null}
+                {/* The session's branch shows where its push lands on a second line, since Hunt pushes it onto the branch it was created from. */}
+                {pushes && node.ref.kind === "local" && node.ref.name === pushes.branch ? (
+                  <span className="truncate text-[0.85em] text-neutral-500" title={`A push lands on origin/${pushes.target}`}>
+                    → {pushes.target === pushes.branch ? "origin" : pushes.target}
+                  </span>
+                ) : null}
+              </span>
             </li>
           ),
         )}

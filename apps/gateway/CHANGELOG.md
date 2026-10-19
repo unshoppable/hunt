@@ -1,3 +1,9 @@
+## 0.35.0 (2026-10-19)
+
+### 🚀 Features
+
+- **gateway:** the swf agent puts a red question mark before RÜCKFRAGE in the issue's title and in the first line of its question comment ([88c3d9e](https://github.com/unshoppable/hunt/commit/88c3d9e))
+
 ## 0.34.0 (2026-10-19)
 
 ### 🚀 Features

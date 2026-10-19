@@ -223,10 +223,11 @@ async fn link_paths(worktree: &Path, tree: &str) -> Result<BTreeSet<String>, Str
 }
 
 /// Refuses to move the session's branch when it moved here since the session went to the VM (`handoff_head`) to a
-/// commit the VM's `remote_head` does not build on: the VM does not have those local commits.
+/// commit the VM's `remote_head` does not build on: the VM does not have those local commits. A VM whose branch stayed
+/// at `handoff_head` has nothing the local branch lacks, so the local branch keeps its commit (`move_branch`).
 pub(crate) async fn ensure_branch_unmoved(worktree: &Path, branch: &str, handoff_head: &str, remote_head: &str) -> Result<(), String> {
     let local_head = git::rev_parse(worktree, "HEAD").await?;
-    if vm_has(worktree, &local_head, handoff_head, remote_head).await {
+    if remote_head == handoff_head || vm_has(worktree, &local_head, handoff_head, remote_head).await {
         return Ok(());
     }
     Err(branch_moved_error(branch, handoff_head, &local_head))
@@ -483,7 +484,8 @@ pub(crate) async fn apply_tree_change(worktree: &Path, from_ref: &str, retrieve_
 }
 
 /// Points the session's branch at the commit the agent left on the VM (the parent of the retrieval snapshot). The
-/// commit the branch had before stays reachable as `refs/hunt/<id>/pre-retrieve`.
+/// commit the branch had before stays reachable as `refs/hunt/<id>/pre-retrieve`. A branch that moved here while the
+/// VM's stayed at `handoff_head` keeps its commit, since the VM has nothing it lacks.
 pub(crate) async fn move_branch(worktree: &Path, id: &str, branch: &str, handoff_head: &str, retrieve_ref: &str) -> Result<(), String> {
     let remote_head = git::rev_parse(worktree, &format!("{retrieve_ref}^")).await?;
     let local_head = git::rev_parse(worktree, "HEAD").await?;
@@ -491,6 +493,9 @@ pub(crate) async fn move_branch(worktree: &Path, id: &str, branch: &str, handoff
         return Ok(());
     }
     if !vm_has(worktree, &local_head, handoff_head, &remote_head).await {
+        if remote_head == handoff_head {
+            return Ok(());
+        }
         return Err(branch_moved_error(branch, handoff_head, &local_head));
     }
     git::run_git(worktree, &["update-ref", &format!("refs/hunt/{id}/pre-retrieve"), &local_head]).await?;
@@ -918,9 +923,17 @@ mod tests {
         git(local, &["add", "."]).await;
         git(local, &["commit", "-q", "-m", "init"]).await;
         let handoff_head = git(local, &["rev-parse", "HEAD"]).await;
+        let snapshot = git::snapshot_commit(local, "Hunt retrieve snapshot").await.unwrap();
+        git(local, &["update-ref", "refs/hunt/x/retrieve", &snapshot]).await;
         git(local, &["commit", "-q", "--allow-empty", "-m", "local"]).await;
+        let local_head = git(local, &["rev-parse", "HEAD"]).await;
         let refused = ensure_branch_unmoved(local, "main", &handoff_head, "0000000000000000000000000000000000000000").await.unwrap_err();
         assert!(refused.contains(&format!("git reset --keep {handoff_head}")) && refused.contains("Nothing was moved"), "{refused}");
+
+        // A VM whose branch stayed at the handoff commit has nothing the local branch lacks: the branch keeps its commit.
+        ensure_branch_unmoved(local, "main", &handoff_head, &handoff_head).await.unwrap();
+        move_branch(local, "x", "main", &handoff_head, "refs/hunt/x/retrieve").await.unwrap();
+        assert_eq!(git(local, &["rev-parse", "HEAD"]).await, local_head);
     }
 
     #[tokio::test]

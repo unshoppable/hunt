@@ -414,6 +414,11 @@ fn active(app: &AppHandle, id: Uuid) -> Option<Arc<SessionSync>> {
     app.state::<SyncRegistry>().active.lock().unwrap().get(&id).cloned()
 }
 
+/// Whether the remote session `id` is connected to its VM, so that its syncs run and `exclusive` can run work on it.
+pub fn is_connected(app: &AppHandle, id: Uuid) -> bool {
+    active(app, id).is_some_and(|state| !state.is_stopped.load(Ordering::SeqCst))
+}
+
 /// The session whose sync covers the worktree of `id`: its parent for a sub chat, which works in the parent's worktree,
 /// else `id` itself.
 fn owner_of(app: &AppHandle, id: Uuid) -> Uuid {

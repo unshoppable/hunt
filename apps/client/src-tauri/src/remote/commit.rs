@@ -62,7 +62,9 @@ pub async fn align_heads(ssh: &Ssh, id: Uuid, target: &RemoteTarget, worktree: &
 
 /// Who follows whom when the local branch points at `local_head` and the VM's at `remote_head`, both known to the
 /// local repository: the local branch follows whenever the VM has its commit (`retrieve::vm_has`), also back to an
-/// older one; else the VM follows when its commit is an ancestor of the local one, i.e. the commits were made here.
+/// older one; else the VM follows when its branch stayed at the commit both shared last (`handoff_head`), whatever
+/// happened here meanwhile, a rebase included, or when its commit is an ancestor of the local one, i.e. the commits
+/// were made here.
 pub async fn direction(worktree: &Path, local_head: &str, handoff_head: &str, remote_head: &str) -> Direction {
     if local_head == remote_head {
         return Direction::Same;
@@ -70,7 +72,7 @@ pub async fn direction(worktree: &Path, local_head: &str, handoff_head: &str, re
     if retrieve::vm_has(worktree, local_head, handoff_head, remote_head).await {
         return Direction::LocalFollows;
     }
-    if git::is_ancestor(worktree, remote_head, local_head).await {
+    if remote_head == handoff_head || git::is_ancestor(worktree, remote_head, local_head).await {
         return Direction::VmFollows;
     }
     Direction::Diverged
@@ -253,6 +255,18 @@ mod tests {
         let reported = diverged_error("main", &handoff_head, &local_head, &remote_head);
         assert!(reported.contains("the branch main moved here to") && reported.contains("git reset --keep"), "{reported}");
         assert_eq!(git(&local, &["rev-parse", "HEAD"]).await, local_head);
+    }
+
+    /// A branch rewritten here (a rebase before a push while the session was not connected) while the VM's branch
+    /// stayed at the commit both shared is the VM's to follow, although the VM's commit is no ancestor any more.
+    #[tokio::test]
+    async fn a_branch_rewritten_here_while_the_vms_stayed_put_moves_the_vm() {
+        let (vm_dir, local_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (local, handoff_head) = repos(vm_dir.path(), local_dir.path()).await;
+        git(&local, &["commit", "-q", "--amend", "--allow-empty", "-m", "rewritten here"]).await;
+        let local_head = git(&local, &["rev-parse", "HEAD"]).await;
+        assert!(!git::is_ancestor(&local, &handoff_head, &local_head).await);
+        assert_eq!(direction(&local, &local_head, &handoff_head, &handoff_head).await, Direction::VmFollows);
     }
 
     #[test]

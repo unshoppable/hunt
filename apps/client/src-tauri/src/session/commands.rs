@@ -2186,14 +2186,16 @@ impl HeadMove {
     }
 }
 
-/// Applies `change` to the branch of the session `record` in its local worktree. For a remote session it runs while no
-/// sync of the session does, after its branch was brought to the same commit here and on its VM (`sync::follow_head`),
-/// and the VM's branch moves to the new commit afterwards (`remote::commit::move_vm_head`), as it does for the rebase
-/// before a push.
+/// Applies `change` to the branch of the session `record` in its local worktree. For a remote session connected to its
+/// VM it runs while no sync of the session does, after its branch was brought to the same commit here and on its VM
+/// (`sync::follow_head`), and the VM's branch moves to the new commit afterwards (`remote::commit::move_vm_head`), as
+/// it does for the rebase before a push. One not connected changes the local branch alone; the VM's branch follows it
+/// at the next connect (`remote::commit::direction`).
 async fn move_head(app: &AppHandle, record: &SessionRecord, change: HeadMove) -> Result<(), String> {
     link::ensure_writable(app, record.id, change.verb())?;
-    let Some((owner, _)) = remote_host(app, record) else {
-        return change.apply(&record.worktree_path).await;
+    let owner = match remote_host(app, record) {
+        Some((owner, _)) if sync::is_connected(app, owner) => owner,
+        _ => return change.apply(&record.worktree_path).await,
     };
     let worktree = record.worktree_path.as_path();
     sync::exclusive(app, owner, |_| async move {
@@ -2538,14 +2540,15 @@ pub async fn drop_shelf(app: AppHandle, id: Uuid, reference: String) -> Result<(
 }
 
 /// Commits exactly `paths` with `message` on the session's current branch in its local worktree, with this Mac's Git,
-/// hooks and identity; the branch on the VM of a remote session then follows the new commit.
+/// hooks and identity; the branch on the VM of a remote session then follows the new commit, at the next connect when
+/// the session is not connected.
 #[tauri::command]
 pub async fn commit_files(app: AppHandle, id: Uuid, paths: Vec<String>, message: String) -> Result<(), String> {
     link::ensure_writable(&app, id, "commit")?;
     let record = worktree_session(&app, id)?;
     match remote_host(&app, &record) {
-        None => git::commit_files(&record.worktree_path, &paths, &message).await?,
-        Some((owner, _)) => commit_followed(&app, owner, &record.worktree_path, &paths, &message).await?,
+        Some((owner, _)) if sync::is_connected(&app, owner) => commit_followed(&app, owner, &record.worktree_path, &paths, &message).await?,
+        _ => git::commit_files(&record.worktree_path, &paths, &message).await?,
     }
     store::forget_touched_files(&app, &record.worktree_path, &paths)
 }
@@ -2575,16 +2578,20 @@ async fn commit_followed(app: &AppHandle, id: Uuid, worktree: &Path, paths: &[St
 
 /// Pushes the session's commits from here, with this Mac's Git credentials, to the branch on `origin` the session was
 /// created from (`push_target`), after a rebase onto that branch when it moved on; the session's own branch never
-/// reaches `origin`. A remote session's branch is first brought to the same commit here and on its VM, and the VM's
-/// branch follows the rebase (`push_followed`). Only a poller session's branch is pushed from its VM under its own name with
-/// the poller's stored token, so that the push shows the poller's GitHub App like the rest of what its agent does on
-/// GitHub.
+/// reaches `origin`. The branch of a remote session connected to its VM is first brought to the same commit here and on
+/// its VM, and the VM's branch follows the rebase (`push_followed`); one not connected pushes from its local worktree
+/// alone, and the VM's branch follows at the next connect (`remote::commit::direction`). Only a poller session's branch
+/// is pushed from its VM under its own name with the poller's stored token, so that the push shows the poller's GitHub
+/// App like the rest of what its agent does on GitHub.
 #[tauri::command]
 pub async fn push_branch(app: AppHandle, id: Uuid) -> Result<(), String> {
     let record = worktree_session(&app, id)?;
     let Some((owner, target)) = remote_host(&app, &record) else {
         return git::push_branch(&record.worktree_path, &push_target(&record, None)).await;
     };
+    if !target.origin.keeps_vm_tokens() && !sync::is_connected(&app, owner) {
+        return git::push_branch(&record.worktree_path, &push_target(&record, Some(&target))).await;
+    }
     if target.origin.keeps_vm_tokens() {
         let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
         remote::commit::push_stored(&ssh, owner).await?;

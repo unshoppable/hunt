@@ -661,8 +661,9 @@ may have moved either, the session's branch points at the same commit here and o
 fetched as `refs/hunt/<id>/head`), and when a commit was made here, with Hunt's changelist or any tool in the local
 worktree (seen through the worktree's `logs/HEAD`), the VM's branch follows (the commit goes there as
 `refs/hunt/<id>/local`); the following side keeps its files, which the sync made equal already, so the diff shows what
-is uncommitted on both sides, as for a local session. When both sides committed since they last agreed, neither
-follows, and the chat says so with the reset to make.
+is uncommitted on both sides, as for a local session. The VM's branch also follows a local branch rewritten meanwhile
+(a rebase before a push while the session was not connected) as long as it still points at the commit both last agreed
+on. When both sides committed since they last agreed, neither follows, and the chat says so with the reset to make.
 
 The Claude Code transcripts move beside the files, live and both ways (`apps/client/src-tauri/src/session/transcripts.rs`,
 `remote/transcript_sync.rs`): the transcript helper on the VM (`apps/session/src/sync/transcripts.ts`, started over the
@@ -688,7 +689,9 @@ that branch on `origin` moved on, the local branch is rebased onto it here, with
 branch moves to the rebased commit (`remote::commit::move_vm_head`: the commit goes to the VM, whose worktree is reset
 to it with its uncommitted changes stashed meanwhile). Only a poller session's branch is pushed from its VM
 under its own name with the poller's stored token (`hunt-ctl push --stored`), so that the push shows the GitHub App
-like its agent's commits.
+like its agent's commits. While the session is not connected to its VM, *Commit*, *Push* and the branch menu's rebase,
+merge and update work on the local worktree alone, as for a local session, and the VM's branch follows at the next
+connect.
 *WebStorm* is switched off for a remote session and its sub chats. Its `node_modules` install leaves the lockfile alone (`npm ci`, `--frozen-lockfile`). The chat header
 shows when the last sync succeeded, and the chat shows a failure. A diagram refresh runs on the agent on the VM,
 against the session's diff base, and Hunt copies `.hunt/graph.json` back afterwards. Known limits: an edit that keeps

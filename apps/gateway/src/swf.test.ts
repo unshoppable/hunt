@@ -655,7 +655,7 @@ describe("Poller.cycle follows running sessions", () => {
     expect(prompts).toHaveLength(1);
     expect(prompts[0]).toMatchObject({ sessionId: "acp-9", cwd: "/home/agent/app" });
     expect(prompts[0].text.startsWith("An answer to your question arrived as a comment on issue #12 of acme/app:\n\n**@bob** on 2026-10-13 10:05 UTC:\n\nPostgres, please.\n\n")).toBe(true);
-    expect(prompts[0].text).toContain("Replace `swf:question` with `swf:running` (`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:running`)");
+    expect(prompts[0].text).toContain("(`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:running --title \"<title>\"`)");
     expect(prompts[0].text).not.toContain("logout");
     expect(logs).toContain(`${key}: an answer arrived on the issue; sent it to the agent (prompt started)`);
 

@@ -788,9 +788,11 @@ its `hunt.agent.md`; the parts Hunt takes from its user's settings (response sty
 do not exist on the gateway. The poller then sends the issue with all its comments as the first prompt through the
 relay and disconnects; the relay runs the turn without a client. The workflow has eight steps: read the issue and the
 repository's guardrails (README, CLAUDE.md, rules, skills, ADRs, `hunt.agent.md`); ask every question only a person can
-answer in one comment on the issue, replace `swf:running` with `swf:question` and end the turn with the questions and
-the marker `<!-- hunt:question -->` (the answer reaches the agent as its next prompt, from a Hunt desktop that opened
-the session, and it takes the label back to `swf:running`); comment a short implementation plan on the issue and carry
+answer, in the issue's language: put the word for a question back (`RÜCKFRAGE: ` in German) in front of the issue's
+title and replace `swf:running` with `swf:question`, so that GitHub's notification mail carries it in its subject, then
+comment every question at once, starting with that word in bold and a mention of the assignees, and end the turn with
+the questions and the marker `<!-- hunt:question -->` (the answer reaches the agent as its next prompt, from a Hunt
+desktop that opened the session, and it takes the label back to `swf:running` and the word off the title); comment a short implementation plan on the issue and carry
 it out without waiting for approval; then a loop of three steps until a pass finds nothing: implement the plan or the
 last findings, check the change as a developer would locally (build, tests, linters, and for anything the user sees the
 goal in the browser with the Playwright tools) and review the whole diff as a critical reviewer against the issue and

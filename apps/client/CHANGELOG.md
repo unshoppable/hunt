@@ -1,3 +1,9 @@
+## 0.52.0 (2026-10-19)
+
+### 🚀 Features
+
+- **client:** the branch of a new worktree session is named after its base branch with a running number, such as feat/general/master-1, instead of a slug of the prompt and the session id ([0d7c8c5](https://github.com/unshoppable/hunt/commit/0d7c8c5))
+
 ## 0.51.0 (2026-10-19)
 
 ### 🚀 Features

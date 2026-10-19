@@ -115,7 +115,7 @@ export function RefTree({
                 </span>
                 {/* The session's branch shows where its push lands on a second line, since Hunt pushes it onto the branch it was created from. */}
                 {pushes && node.ref.kind === "local" && node.ref.name === pushes.branch ? (
-                  <span className="truncate text-[0.85em] text-neutral-500" title={`A push lands on origin/${pushes.target}`}>
+                  <span className="-mt-[0.3em] truncate pb-[0.2em] leading-[1.2] text-neutral-500" title={`A push lands on origin/${pushes.target}`}>
                     → {pushes.target === pushes.branch ? "origin" : pushes.target}
                   </span>
                 ) : null}

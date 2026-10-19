@@ -106,7 +106,6 @@ export function CommitLog({
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-(--changelist-bg)">
       <div className="flex items-center gap-2 border-b border-(--line) px-3 py-2.5 text-[13px] text-neutral-400">
-        <FilterInput value={filter.reference} onApply={(reference) => onFilterChange({ ...filter, reference })} placeholder="Branch or tag" title="Show only the history of this branch or tag; empty shows every branch and tag" className="w-44 shrink-0" />
         <FilterInput value={filter.text} onApply={(text) => onFilterChange({ ...filter, text })} placeholder="Text or hash" title="Show only commits whose message contains this text, or the commit with this hash" className="min-w-0 flex-1" />
         <span className="shrink-0 tabular-nums">
           {commits.length}

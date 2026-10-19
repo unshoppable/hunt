@@ -97,7 +97,8 @@ export function NewSessionView({
   const [currentBranch, setCurrentBranch] = useState("");
   /** Name of the branch the session creates and works on, when the user asked for one instead of the generated branch. */
   const [newBranch, setNewBranch] = useState<string | null>(null);
-  const [isNamingBranch, setIsNamingBranch] = useState(false);
+  /** Initial text of the open "New branch" popover; `null` while it is closed. */
+  const [branchDraft, setBranchDraft] = useState<string | null>(null);
   const workspace: Workspace = preferred.workspace === "checkout" ? "checkout" : DEFAULT_WORKSPACE;
   const isCheckout = workspace === "checkout";
   const [error, setError] = useState<string | null>(initialError);
@@ -123,7 +124,7 @@ export function NewSessionView({
   // A branch name belongs to the repository it was typed for.
   useEffect(() => {
     setNewBranch(null);
-    setIsNamingBranch(false);
+    setBranchDraft(null);
   }, [repoPath]);
   useLoad(
     () => Promise.all([commands.listBranches(repoPath), commands.currentBranch(repoPath)]),
@@ -252,10 +253,10 @@ export function NewSessionView({
 
   /** Where the new branch starts: off the chosen base in a worktree, at the checkout's own branch in the checkout. */
   const newBranchOrigin = isCheckout ? `off ${currentBranch || "the checkout's branch"} in the checkout` : `off ${baseRef || "the base branch"}`;
-  const branchOptions: DropdownOption[] = [
-    { id: NEW_BRANCH_ID, name: "New branch…", description: `Created ${newBranchOrigin} when the session starts` },
-    ...(isCheckout ? [] : branches.map((name) => ({ id: name, name }))),
-  ];
+  // The checkout lists only "New branch…"; a worktree lists the branches and offers a new one beside the search field.
+  const branchOptions: DropdownOption[] = isCheckout
+    ? [{ id: NEW_BRANCH_ID, name: "New branch…", description: `Created ${newBranchOrigin} when the session starts` }]
+    : branches.map((name) => ({ id: name, name }));
   const branchTitle = isCheckout
     ? "Branch the checkout is on; the session works on it as it is, or on a new branch off it"
     : newBranch
@@ -315,7 +316,7 @@ export function NewSessionView({
             options={branchOptions}
             onChange={(id) => {
               if (id === NEW_BRANCH_ID) {
-                setIsNamingBranch(true);
+                setBranchDraft(newBranch ?? "");
               } else {
                 setBaseRef(id);
               }
@@ -324,6 +325,11 @@ export function NewSessionView({
             placeholder={isCheckout ? "Current branch" : repoPath ? "No branches" : "Base branch"}
             isSearchable={!isCheckout}
             searchPlaceholder="Search branches"
+            searchAction={{
+              label: "New branch",
+              title: `New branch, named after the search, created ${newBranchOrigin} when the session starts; Enter runs it while no branch matches`,
+              onRun: (query) => setBranchDraft(query.trim() || newBranch || ""),
+            }}
             icon={<BranchIcon className="size-4 shrink-0" />}
             className={`${BAR_DROPDOWN} max-w-72 ${newBranch ? "shrink-0" : ""}`}
           />
@@ -331,7 +337,7 @@ export function NewSessionView({
             <span className="flex h-8 min-w-0 max-w-64 items-center rounded-md bg-(--row-active) pr-1 text-neutral-200">
               <button
                 type="button"
-                onClick={() => setIsNamingBranch(true)}
+                onClick={() => setBranchDraft(newBranch)}
                 title={`New branch ${newBranch}, created ${newBranchOrigin} when the session starts; click to rename it`}
                 className="flex h-full min-w-0 items-center gap-1.5 rounded-l-md pl-2 pr-1 transition-colors hover:bg-(--row-hover)"
               >
@@ -349,16 +355,16 @@ export function NewSessionView({
               </button>
             </span>
           ) : null}
-          {isNamingBranch ? (
+          {branchDraft !== null ? (
             <NewBranchPopover
-              initialName={newBranch ?? ""}
+              initialName={branchDraft}
               branches={branches}
               origin={newBranchOrigin}
               onSubmit={(name) => {
                 setNewBranch(name);
-                setIsNamingBranch(false);
+                setBranchDraft(null);
               }}
-              onClose={() => setIsNamingBranch(false)}
+              onClose={() => setBranchDraft(null)}
             />
           ) : null}
         </div>

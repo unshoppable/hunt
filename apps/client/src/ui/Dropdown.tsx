@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { filterOptions, findTypeahead, placeMenu, stepEnabled, type DropdownOption } from "./floatingMenu";
-import { CheckIcon, ChevronDownIcon, SearchIcon } from "./icons";
+import { SECONDARY_BUTTON_XS } from "./buttons";
+import { CheckIcon, ChevronDownIcon, PlusIcon, SearchIcon } from "./icons";
 import { useDismiss } from "./useDismiss";
 
 /** How long after the last key press typing starts a new typeahead search. */
@@ -13,12 +14,16 @@ export function optionId(listId: string, index: number): string {
   return `${listId}-option-${index}`;
 }
 
+/** A button beside the search field of a dropdown, e.g. "New branch"; `onRun` gets the text typed into the field. */
+export type SearchAction = { label: string; title: string; onRun: (query: string) => void };
+
 /** The search field at the top of an `OptionMenu`, next to its anchor when the menu opens above it. */
 export type MenuSearch = {
   query: string;
   placeholder: string;
   onChange: (query: string) => void;
   onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
+  action?: { label: string; title: string; onRun: () => void };
 };
 
 /**
@@ -26,7 +31,8 @@ export type MenuSearch = {
  * focus stays on the trigger while the list is open, as in a select-only combobox: arrows, Home/End and typing move the
  * highlight, Enter or Space picks it, Escape, Tab or a click outside closes the list. With `isSearchable` the list gets
  * a search field instead, which takes the focus and filters the options by name or ID: typing on the closed trigger
- * opens the list with that text, arrows move the highlight, Enter picks it. `className` styles the trigger; a value
+ * opens the list with that text, arrows move the highlight, Enter picks it. `searchAction` puts a button beside the
+ * field, which Enter runs too while nothing matches. `className` styles the trigger; a value
  * missing from `options` shows as is, or as `placeholder` when it is empty.
  */
 export function Dropdown({
@@ -38,6 +44,7 @@ export function Dropdown({
   placeholder = "",
   isSearchable = false,
   searchPlaceholder = "Search",
+  searchAction,
   icon,
   className,
 }: {
@@ -50,6 +57,7 @@ export function Dropdown({
   placeholder?: string;
   isSearchable?: boolean;
   searchPlaceholder?: string;
+  searchAction?: SearchAction;
   /** Shown before the label, e.g. a branch icon. */
   icon?: ReactNode;
   className: string;
@@ -98,6 +106,12 @@ export function Dropdown({
     if (option.id !== value) {
       onChange(option.id);
     }
+  }
+
+  function runSearchAction() {
+    if (!searchAction) return;
+    close();
+    searchAction.onRun(query);
   }
 
   function search(text: string) {
@@ -165,7 +179,11 @@ export function Dropdown({
     }
     if (event.key === "Enter") {
       event.preventDefault();
-      pick(activeIndex);
+      if (shownOptions.length === 0) {
+        runSearchAction();
+      } else {
+        pick(activeIndex);
+      }
       return;
     }
     const next = stepFor(event.key);
@@ -214,7 +232,17 @@ export function Dropdown({
           onPick={pick}
           onClose={close}
           anchorRef={triggerRef}
-          search={isSearchable ? { query, placeholder: searchPlaceholder, onChange: search, onKeyDown: onSearchKeyDown } : undefined}
+          search={
+            isSearchable
+              ? {
+                  query,
+                  placeholder: searchPlaceholder,
+                  onChange: search,
+                  onKeyDown: onSearchKeyDown,
+                  action: searchAction ? { label: searchAction.label, title: searchAction.title, onRun: runSearchAction } : undefined,
+                }
+              : undefined
+          }
         />
       ) : null}
     </>
@@ -285,8 +313,8 @@ export function OptionMenu({
       className={`fixed z-[70] flex overflow-hidden rounded-xl border border-neutral-600 bg-(--surface-chat) text-sm shadow-2xl shadow-black/50 ${isAbove ? "flex-col-reverse" : "flex-col"} ${search ? "w-[min(26rem,calc(100vw-16px))]" : "w-max max-w-[min(26rem,calc(100vw-16px))]"}`}
     >
       {search ? (
-        <label className={`flex shrink-0 items-center gap-2 border-(--line) px-3.5 ${isAbove ? "border-t" : "border-b"}`}>
-          <SearchIcon className="size-3.5 shrink-0 text-neutral-500" />
+        <div className={`flex shrink-0 items-center gap-2 border-(--line) pr-1.5 pl-3.5 ${isAbove ? "border-t" : "border-b"}`}>
+          <SearchIcon className="size-4 shrink-0 text-neutral-500" />
           <input
             ref={searchRef}
             type="text"
@@ -301,9 +329,15 @@ export function OptionMenu({
             onKeyDown={search.onKeyDown}
             placeholder={search.placeholder}
             spellCheck={false}
-            className="h-9 min-w-0 flex-1 bg-transparent text-neutral-200 outline-none placeholder:text-neutral-500"
+            className="h-11 min-w-0 flex-1 bg-transparent text-[15px] text-neutral-200 outline-none placeholder:text-neutral-500"
           />
-        </label>
+          {search.action ? (
+            <button type="button" onClick={search.action.onRun} title={search.action.title} className={SECONDARY_BUTTON_XS}>
+              <PlusIcon className="size-3.5 shrink-0" />
+              {search.action.label}
+            </button>
+          ) : null}
+        </div>
       ) : null}
       <ul ref={listRef} id={id} role="listbox" aria-label={label} onMouseDown={(event) => event.preventDefault()} className="min-h-0 overflow-y-auto p-1 empty:hidden">
         {options.map((option, index) => {

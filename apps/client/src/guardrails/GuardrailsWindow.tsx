@@ -4,7 +4,7 @@ import * as monaco from "monaco-editor";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useBackendEvents, usePaneStyles, useSettingsSync } from "../app/bootstrap";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
-import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, setupMonaco } from "../diff/monaco";
+import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, onShortcut, setupMonaco } from "../diff/monaco";
 import { workspaceFor, type Workspace } from "../ide/documents";
 import { selectionChatsFor, useSelectionChats, type SelectionChat } from "../ide/selectionChats";
 import { commands } from "../ipc/commands";
@@ -12,6 +12,7 @@ import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { AgentButton } from "../ui/AgentButton";
 import { HEADER_BAR } from "../ui/bars";
+import { useShortcutLabel } from "../ui/shortcuts";
 import { AGENT_GLOW, BUTTON_XS, DANGER_BUTTON_XS, PRIMARY_BUTTON_LG, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { useHoverAnchor, type HoverAnchor } from "../ui/hoverAnchor";
@@ -48,6 +49,7 @@ const KINDS: GuardrailKind[] = ["instruction", "rule", "skill", "agent", "adr"];
  * about unsaved edits). It closes itself once its session was removed.
  */
 export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isWarm: boolean }) {
+  const saveShortcut = useShortcutLabel("editor.save");
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId) ?? null);
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
   const worktreePath = session?.worktreePath ?? "";
@@ -514,7 +516,7 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
                   <TrashIcon />
                   Delete
                 </button>
-                <button type="button" onClick={() => void save(selected.path)} disabled={!dirtyPaths.includes(selected.path)} className={PRIMARY_BUTTON_XS} title="⌘S">
+                <button type="button" onClick={() => void save(selected.path)} disabled={!dirtyPaths.includes(selected.path)} className={PRIMARY_BUTTON_XS} title={saveShortcut ?? undefined}>
                   Save
                 </button>
               </div>
@@ -719,12 +721,7 @@ function useMarkdownMonaco(onSave: (editor: monaco.editor.IStandaloneCodeEditor)
       dragAndDrop: false,
       padding: { top: 12, bottom: 12 },
     });
-    editor.addAction({
-      id: "hunt.guardrails.save",
-      label: "Save file",
-      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
-      run: () => latestOnSave.current(editor),
-    });
+    onShortcut(editor, "editor.save", () => latestOnSave.current(editor));
     editorRef.current = editor;
     return () => {
       editorRef.current = null;

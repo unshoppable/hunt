@@ -3,7 +3,7 @@ import * as monaco from "monaco-editor";
 import { commands } from "../ipc/commands";
 import { attachIdeLink } from "../diff/ideLink";
 import { useFileIconUrl } from "../diff/fileIcons";
-import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, setupMonaco } from "../diff/monaco";
+import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, onShortcut, setupMonaco } from "../diff/monaco";
 import { anchorBelowLine, type SelectionRequest } from "../diff/selectionContext";
 import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
@@ -135,22 +135,17 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
     });
     editorRef.current = editor;
 
-    editor.addAction({
-      id: "hunt.ide.save",
-      label: "Save file",
-      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
-      run: () => {
-        const { workspace: current, sessionId: id, noteWorktreeChanged: note } = latest.current;
-        const path = current.pathOf(editor.getModel()?.uri ?? monaco.Uri.parse("inmemory://none"));
-        if (!path) return;
-        current
-          .save(path)
-          .then(() => {
-            setError(null);
-            note(id);
-          })
-          .catch((reason) => setError(String(reason)));
-      },
+    onShortcut(editor, "editor.save", () => {
+      const { workspace: current, sessionId: id, noteWorktreeChanged: note } = latest.current;
+      const path = current.pathOf(editor.getModel()?.uri ?? monaco.Uri.parse("inmemory://none"));
+      if (!path) return;
+      current
+        .save(path)
+        .then(() => {
+          setError(null);
+          note(id);
+        })
+        .catch((reason) => setError(String(reason)));
     });
 
     const agent = latest.current.onOpenSubChat

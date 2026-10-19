@@ -20,6 +20,7 @@ import { SubChatPopover, useSubChatPopover } from "./SubChatPopover";
 import { SaveGuardrailButton } from "./SaveGuardrailButton";
 import { ContextMeter } from "./ContextMeter";
 import { HEADER_BAR } from "../ui/bars";
+import { isShortcut } from "../ui/shortcuts";
 import { AGENT_CHIP, Chip } from "../ui/Chip";
 import { SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { ShieldIcon } from "../ui/icons";
@@ -111,16 +112,16 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     void setMode(sessionId, cycle[(index + 1) % cycle.length]);
   }
 
-  // Terminal shortcuts: esc interrupts the turn, ctrl+o toggles verbose tool output, shift+tab cycles the mode.
+  // Terminal shortcuts (keymap defaults): esc interrupts the turn, ctrl+o toggles verbose tool output, shift+tab cycles the mode.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape" && isBusy && !hasPermission) {
+      if (isShortcut(event, "chat.interrupt") && isBusy && !hasPermission) {
         event.preventDefault();
         void cancelPrompt(sessionId);
-      } else if (event.key.toLowerCase() === "o" && event.ctrlKey && !event.metaKey && !event.altKey) {
+      } else if (isShortcut(event, "chat.toggleVerbose")) {
         event.preventDefault();
         setIsVerbose((current) => !current);
-      } else if (event.key === "Tab" && event.shiftKey && !hasPermission) {
+      } else if (isShortcut(event, "chat.cycleMode") && !hasPermission) {
         event.preventDefault();
         cycleMode();
       }

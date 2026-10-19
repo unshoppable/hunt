@@ -9,6 +9,7 @@ import { STATUS_BAR } from "../ui/bars";
 import { SearchIcon } from "../ui/icons";
 import { Modal } from "../ui/Modal";
 import { splitPath } from "../ui/path";
+import { isShortcut } from "../ui/shortcuts";
 import { errorText, useLoad } from "../ui/useLoad";
 import { usePopupSize } from "../ui/usePopupSize";
 import { useViewportSize } from "../ui/useViewportSize";
@@ -23,7 +24,7 @@ const MAX_WIDTH_SHARE = 0.94;
 const MAX_HEIGHT_SHARE = 0.84;
 
 /**
- * Calls `onTrigger` for ⌘P and for double shift (two plain Shift presses within 400 ms with nothing in between),
+ * Calls `onTrigger` for the keymap's "Go to file" (⌘P by default) and for double shift (two plain Shift presses within 400 ms with nothing in between),
  * like WebStorm's "Go to File" and "Search Everywhere".
  */
 export function useFileSearchShortcut(onTrigger: () => void) {
@@ -45,7 +46,7 @@ export function useFileSearchShortcut(onTrigger: () => void) {
         return;
       }
       lastShiftAt = 0;
-      if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "p") {
+      if (isShortcut(event, "editor.goToFile")) {
         event.preventDefault();
         event.stopPropagation();
         triggerRef.current();

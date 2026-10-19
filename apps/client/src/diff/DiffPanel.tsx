@@ -18,6 +18,7 @@ import { selectionChatsFor } from "../ide/selectionChats";
 import { useReviewedPullRequest } from "../review/reviewComments";
 import { confirmDestructive } from "../ui/confirm";
 import { baseName } from "../ui/path";
+import { useShortcutLabel } from "../ui/shortcuts";
 import { useDismiss } from "../ui/useDismiss";
 import { errorText, useLoad } from "../ui/useLoad";
 
@@ -37,6 +38,7 @@ function revertLabel(file: ChangedFile): string {
 }
 
 export function DiffPanel({ sessionId }: { sessionId: string }) {
+  const saveShortcut = useShortcutLabel("editor.save");
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
   const graphVersion = useHuntStore((state) => state.chats[sessionId]?.graphVersion ?? 0);
   const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
@@ -317,7 +319,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
               disabled={!isDirty}
               onClick={() => editorRef.current?.save()}
               className={`${BUTTON_XS} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
-              title="Save (⌘S inside the editor)"
+              title={saveShortcut ? `Save (${saveShortcut} inside the editor)` : "Save"}
             >
               Save
             </button>

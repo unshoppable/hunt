@@ -9,6 +9,8 @@ import { registerSemanticTokens } from "./semanticTokens";
 import { registerLspProviders } from "../ide/lsp/providers";
 import { WEBSTORM, WEBSTORM_TOKEN_RULES, typescriptLanguage } from "./webstormScheme";
 import { CODE_FONT_FAMILY, UI_FONT_FAMILY } from "../state/settings";
+import type { CommandId } from "../state/keymap";
+import { isShortcut } from "../ui/shortcuts";
 
 /** Monaco theme name: WebStorm's syntax colors (see webstormScheme.ts) on the diff pane's background. */
 export const MONACO_THEME = "hunt-dark";
@@ -79,6 +81,19 @@ export function changeMark(startLine: number, endLine: number): monaco.editor.IM
     range: { startLineNumber: startLine, startColumn: 1, endLineNumber: endLine, endColumn: 1 },
     options: { overviewRuler: { color: "#2ea043", position: monaco.editor.OverviewRulerLane.Left } },
   };
+}
+
+/**
+ * Runs `run` when a binding of the keymap command `id` is pressed while `editor` has the focus. The binding is read at
+ * press time, so a keymap change reaches open editors at once, and the press does not reach Monaco's own bindings.
+ */
+export function onShortcut(editor: monaco.editor.ICodeEditor, id: CommandId, run: () => void): monaco.IDisposable {
+  return editor.onKeyDown((event) => {
+    if (!isShortcut(event.browserEvent, id)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    run();
+  });
 }
 
 let isSetUp = false;

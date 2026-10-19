@@ -3,7 +3,7 @@ import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import type { FileDiff } from "../ipc/types";
 import { attachIdeLink } from "./ideLink";
-import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, changeMark, monacoLanguage, setupMonaco } from "./monaco";
+import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, changeMark, monacoLanguage, onShortcut, setupMonaco } from "./monaco";
 import { mirrorDiagnostics } from "./diagnostics";
 import { anchorBelowLine, type SelectionRequest } from "./selectionContext";
 import { workspaceFor } from "../ide/documents";
@@ -274,12 +274,7 @@ export function CodeDiffEditor({
     modifiedEditor.onDidChangeModelContent(() => {
       onDirtyChangeRef.current(modifiedEditor.getValue() !== savedContentRef.current);
     });
-    modifiedEditor.addAction({
-      id: "hunt.save",
-      label: "Save file",
-      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
-      run: () => onSaveRef.current(modifiedEditor.getValue()),
-    });
+    onShortcut(modifiedEditor, "editor.save", () => onSaveRef.current(modifiedEditor.getValue()));
   };
 
   const unifiedOptions = useMemo<monaco.editor.IDiffEditorConstructionOptions>(

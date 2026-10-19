@@ -7,6 +7,7 @@ import { STATUS_BAR } from "../ui/bars";
 import { SearchIcon } from "../ui/icons";
 import { Modal } from "../ui/Modal";
 import { splitPath } from "../ui/path";
+import { isShortcut } from "../ui/shortcuts";
 import { errorText, useLoad } from "../ui/useLoad";
 import { usePopupSize } from "../ui/usePopupSize";
 import { useViewportSize } from "../ui/useViewportSize";
@@ -33,7 +34,7 @@ function focusedEditorSelection(): string | null {
 }
 
 /**
- * Calls `onTrigger` for ⇧⌘F (WebStorm's "Find in Files") with the text selected in the focused editor, if any.
+ * Calls `onTrigger` for the keymap's "Find in files" (⇧⌘F by default, like WebStorm) with the text selected in the focused editor, if any.
  */
 export function useFindInFilesShortcut(onTrigger: (selected: string | null) => void) {
   const triggerRef = useRef(onTrigger);
@@ -41,7 +42,7 @@ export function useFindInFilesShortcut(onTrigger: (selected: string | null) => v
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (!event.metaKey || !event.shiftKey || event.ctrlKey || event.altKey || event.code !== "KeyF") return;
+      if (!isShortcut(event, "editor.findInFiles")) return;
       event.preventDefault();
       event.stopPropagation();
       triggerRef.current(focusedEditorSelection());

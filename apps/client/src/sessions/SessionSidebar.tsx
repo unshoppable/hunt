@@ -19,6 +19,10 @@ import { SearchField } from "../ui/SearchField";
 import { BranchIcon, CloseIcon, CloudSyncIcon, GitHubIcon, PlusIcon, PullRequestIcon, PushIcon, RepoIcon, Spinner, TicketIcon } from "../ui/icons";
 import { pushTarget, remoteOf } from "../chat/remoteSession";
 import { useLoad } from "../ui/useLoad";
+import { isShortcut, shortcutCommand, useShortcutLabel, withShortcut } from "../ui/shortcuts";
+
+/** The keymap commands that step through the visible sessions. */
+const SESSION_CYCLE_COMMANDS = ["session.next", "session.previous"] as const;
 
 export function SessionSidebar() {
   const fileIconUrl = useFileIconUrl();
@@ -60,6 +64,7 @@ export function SessionSidebar() {
   const [pendingDelete, setPendingDelete] = useState<{ sessionId: string; question: string; ending: SessionEnding } | null>(null);
   /** Version of the newer Hunt the release feed offers; shown as a dot on the gear. */
   const [availableVersion, setAvailableVersion] = useState<string | null>(null);
+  const settingsShortcut = useShortcutLabel("app.openSettings");
 
   // One quiet check per launch; a failed check shows nothing here, the Updates settings page reports it. Dev builds
   // carry no release version, so they do not check.
@@ -95,10 +100,10 @@ export function SessionSidebar() {
   const removeSessionRef = useRef(removeSession);
   removeSessionRef.current = removeSession;
 
-  // Cmd+, (Ctrl+, elsewhere) opens the settings like a native macOS app.
+  // ⌘, (keymap default) opens the settings like a native macOS app.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== "," || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+      if (!isShortcut(event, "app.openSettings")) return;
       event.preventDefault();
       void openSettingsWindow();
     }
@@ -106,24 +111,25 @@ export function SessionSidebar() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // Ctrl+Tab selects the next session in the visible list, Ctrl+Shift+Tab the previous one, wrapping at both ends.
+  // ⌃⇥ (keymap default) selects the next session in the visible list, ⌃⇧⇥ the previous one, wrapping at both ends.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Tab" || !event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
+      const command = event.defaultPrevented ? null : shortcutCommand(event, SESSION_CYCLE_COMMANDS);
+      if (!command) return;
       event.preventDefault();
       const { activeSessionId, draft, selectSession } = useHuntStore.getState();
-      const id = cycleSessionId(rowsRef.current, draft ? null : activeSessionId, event.shiftKey ? -1 : 1);
+      const id = cycleSessionId(rowsRef.current, draft ? null : activeSessionId, command === "session.previous" ? -1 : 1);
       if (id) void selectSession(id);
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // ⌘W while the focus is inside the sidebar removes the selected session. Runs in the capture phase and stops the
-  // event so the editor's own ⌘W (close tab) does not fire for the same key press.
+  // ⌘W (keymap default) while the focus is inside the sidebar removes the selected session. Runs in the capture phase
+  // and stops the event so the editor's own binding of the same key (close tab) does not fire for the same key press.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key.toLowerCase() !== "w" || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      if (!isShortcut(event, "session.remove")) return;
       const active = document.activeElement;
       if (!active || !rootRef.current?.contains(active)) return;
       const { activeSessionId, sessions, draft } = useHuntStore.getState();
@@ -163,7 +169,7 @@ export function SessionSidebar() {
             type="button"
             onClick={() => void openSettingsWindow(availableVersion ? "updates" : undefined)}
             className={`${ICON_BUTTON} relative`}
-            title={availableVersion ? `Settings · Hunt ${availableVersion} is available (⌘,)` : "Settings (⌘,)"}
+            title={withShortcut(availableVersion ? `Settings · Hunt ${availableVersion} is available` : "Settings", settingsShortcut)}
             aria-label={availableVersion ? `Settings, Hunt ${availableVersion} is available` : "Settings"}
           >
             <GearIcon />

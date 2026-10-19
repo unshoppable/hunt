@@ -12,6 +12,7 @@ import { CloseIcon, EraserIcon, GitHubIcon, SendIcon, TrashIcon } from "../ui/ic
 import { ResizeGrips } from "../ui/ResizeGrips";
 import { rowsHeight, useAutoGrow } from "../ui/useAutoGrow";
 import { useDismiss } from "../ui/useDismiss";
+import { useShortcutLabel } from "../ui/shortcuts";
 import { matchCommands, slashQueryOf } from "./slashCommands";
 import { insertImageReference, removeImageReference, shiftImageReferences } from "./imageReferences";
 import { useImageDrop } from "./useImageDrop";
@@ -107,6 +108,7 @@ export function PromptInput({
   /** Element whose area takes dropped image files as attachments; the box itself without it. */
   dropZoneRef?: RefObject<HTMLElement | null>;
 }) {
+  const interruptShortcut = useShortcutLabel("chat.interrupt");
   const [text, setText] = useState(initialDraft?.text ?? "");
   const [attachments, setAttachments] = useState<Screenshot[]>(initialDraft?.images ?? []);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
@@ -411,7 +413,7 @@ export function PromptInput({
               type="button"
               onClick={() => submit()}
               disabled={!canSend}
-              title={isStarting ? "Queue until the agent runs (enter)" : isBusy ? "Queue for after this turn (enter); ⌘↩ sends now, esc stops the turn" : "Send (enter)"}
+              title={isStarting ? "Queue until the agent runs (enter)" : isBusy ? `Queue for after this turn (enter); ⌘↩ sends now${interruptShortcut ? `, ${interruptShortcut} stops the turn` : ""}` : "Send (enter)"}
               className={SEND_BUTTON}
             >
               <SendIcon />

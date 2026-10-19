@@ -25,6 +25,7 @@ import { ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB
 import { confirmDestructive } from "../ui/confirm";
 import { GlobFilterInput } from "../ui/GlobFilterInput";
 import { SwapIcon } from "../ui/icons";
+import { isShortcut } from "../ui/shortcuts";
 
 type Tab = "changes" | "shelf";
 
@@ -210,13 +211,13 @@ export function ChangeList({
 
   const toggleGroup = (targets: ChangedFile[]) => setChecked(targets, stateOf(targets) !== "checked");
 
-  // ⌘Space toggles the checkbox of the selected file; bubble phase, so a focused editor or dialog keeps its own binding.
+  // ⌘Space (keymap default) toggles the checkbox of the selected file; bubble phase, so a focused editor or dialog keeps its own binding.
   useEffect(() => {
     if (tab !== "changes" || dialog) return;
     const selected = selectedPath ? filesByPath.get(selectedPath) : undefined;
     if (!selected) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.code !== "Space" || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      if (event.defaultPrevented || !isShortcut(event, "changes.toggleChecked")) return;
       event.preventDefault();
       setChecked([selected], !checked.has(selected.path));
     };

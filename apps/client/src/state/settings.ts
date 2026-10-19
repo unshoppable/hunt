@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import responseStylePrompt from "../../prompts/response-style.system-prompt.md?raw";
 import { isSessionMachineType } from "../../../../libs/domain/src/sessionMachineTypes.ts";
 import type { DiagramType, ReviewLevel, VmSettings } from "../ipc/types";
+import { normalizeKeymap, withBindings, type CommandId, type Keymap } from "./keymap";
 
 /** The four configurable panes of the window. */
 export type PaneKey = "sidebar" | "chat" | "changelist" | "diff";
@@ -328,6 +329,8 @@ type SettingsState = {
   /** Whether deleting a session asks for confirmation first; the dialog's "Don't ask again" turns it off. */
   confirmSessionDelete: boolean;
   remote: RemoteSettings;
+  /** Keyboard shortcuts the user changed, per command (see keymap.ts); every other command keeps its defaults. */
+  keymap: Keymap;
   setPaneSetting: <K extends keyof PaneSettings>(pane: PaneKey, key: K, value: PaneSettings[K]) => void;
   resetPane: (pane: PaneKey) => void;
   resetPanes: () => void;
@@ -354,6 +357,8 @@ type SettingsState = {
   toggleSummary: () => void;
   setConfirmSessionDelete: (confirm: boolean) => void;
   setRemote: (patch: Partial<RemoteSettings>) => void;
+  setKeyBindings: (id: CommandId, shortcuts: readonly string[]) => void;
+  resetKeymap: () => void;
 };
 
 /** Shape persisted by version 0, which only knew one font size per pane. */
@@ -395,6 +400,7 @@ export type PersistedState = {
   showSummary?: boolean;
   confirmSessionDelete?: boolean;
   remote?: Partial<RemoteSettings>;
+  keymap?: Keymap;
 };
 
 /** Rewrites backgrounds still set to a previous version's default so users who never picked a color follow the new one. */
@@ -565,6 +571,7 @@ export function mergeSettings<T extends Pick<SettingsState, "panes" | "graphAgen
     popupSizes: withDefaultPopupSizes(stored?.popupSizes),
     gitLogColumns: { ...DEFAULT_GIT_LOG_COLUMNS, ...stored?.gitLogColumns },
     remote: normalizeRemote({ ...DEFAULT_REMOTE, ...stored?.remote }),
+    keymap: normalizeKeymap(stored?.keymap),
   };
 }
 
@@ -593,6 +600,7 @@ export const useSettingsStore = create<SettingsState>()(
       showSummary: true,
       confirmSessionDelete: true,
       remote: DEFAULT_REMOTE,
+      keymap: {},
       setPaneSetting: (pane, key, value) =>
         set((state) => {
           if (key === "background") {
@@ -651,6 +659,8 @@ export const useSettingsStore = create<SettingsState>()(
       toggleSummary: () => set((state) => ({ showSummary: !state.showSummary })),
       setConfirmSessionDelete: (confirmSessionDelete) => set({ confirmSessionDelete }),
       setRemote: (patch) => set((state) => ({ remote: normalizeRemote({ ...state.remote, ...patch }) })),
+      setKeyBindings: (id, shortcuts) => set((state) => ({ keymap: withBindings(state.keymap, id, shortcuts) })),
+      resetKeymap: () => set({ keymap: {} }),
     }),
     {
       name: "hunt-settings",
@@ -677,6 +687,7 @@ export const useSettingsStore = create<SettingsState>()(
         showSummary: state.showSummary,
         confirmSessionDelete: state.confirmSessionDelete,
         remote: state.remote,
+        keymap: state.keymap,
       }),
       migrate: migrateSettings,
       merge: mergeSettings,

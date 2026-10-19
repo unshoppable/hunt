@@ -3,6 +3,7 @@ import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
 import { useHuntStore } from "../state/store";
 import { repoName } from "../ui/path";
+import { shortcutCommand } from "../ui/shortcuts";
 import { DependencyBanner } from "./DependencyBanner";
 import { workspaceFor } from "./documents";
 import { EditorGrid } from "./EditorGrid";
@@ -12,6 +13,19 @@ import { ProjectTree } from "./ProjectTree";
 
 /** Events of the mouse's extra buttons that the editor and the webview must not act on. */
 const MOUSE_BUTTON_EVENTS = ["mousedown", "mouseup", "auxclick"] as const;
+
+/** The keymap commands the editor handles; their default bindings are listed below. */
+const IDE_COMMANDS = [
+  "editor.back",
+  "editor.forward",
+  "editor.selectInTree",
+  "editor.closeTab",
+  "editor.closeAllTabs",
+  "editor.moveTabLeft",
+  "editor.moveTabRight",
+  "editor.moveTabUp",
+  "editor.moveTabDown",
+] as const;
 
 /** Text fields other than Monaco's own input (the chat prompt, a review comment box) keep their own ⌘ shortcuts. */
 function isForeignTextField(root: HTMLElement | null): boolean {
@@ -81,31 +95,21 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
   closeActions.current = { closeActiveTab, closeEverything };
 
   useEffect(() => {
+    const actions: Record<(typeof IDE_COMMANDS)[number], () => void> = {
+      "editor.back": () => navigateBack(sessionId),
+      "editor.forward": () => navigateForward(sessionId),
+      "editor.selectInTree": () => revealActiveFile(sessionId),
+      "editor.closeTab": () => void closeActions.current.closeActiveTab(),
+      "editor.closeAllTabs": () => void closeActions.current.closeEverything(),
+      "editor.moveTabLeft": () => moveActiveTab(sessionId, "left"),
+      "editor.moveTabRight": () => moveActiveTab(sessionId, "right"),
+      "editor.moveTabUp": () => moveActiveTab(sessionId, "up"),
+      "editor.moveTabDown": () => moveActiveTab(sessionId, "down"),
+    };
     function onKeyDown(event: KeyboardEvent) {
-      if (!event.metaKey || event.ctrlKey || isForeignTextField(rootRef.current)) return;
-      const key = event.key.toLowerCase();
-      const isBack = event.altKey ? key === "arrowleft" : key === "[";
-      const isForward = event.altKey ? key === "arrowright" : key === "]";
-      if (event.altKey && !isBack && !isForward) return;
-      if (isBack) {
-        navigateBack(sessionId);
-      } else if (isForward) {
-        navigateForward(sessionId);
-      } else if (event.code === "Digit2" && event.shiftKey) {
-        revealActiveFile(sessionId);
-      } else if (key === "w") {
-        if (event.shiftKey) {
-          void closeActions.current.closeEverything();
-        } else {
-          void closeActions.current.closeActiveTab();
-        }
-      } else if (key === "e") {
-        moveActiveTab(sessionId, event.shiftKey ? "up" : "left");
-      } else if (key === "r") {
-        moveActiveTab(sessionId, event.shiftKey ? "down" : "right");
-      } else {
-        return;
-      }
+      const command = shortcutCommand(event, IDE_COMMANDS);
+      if (!command || isForeignTextField(rootRef.current)) return;
+      actions[command]();
       event.preventDefault();
       event.stopPropagation();
     }

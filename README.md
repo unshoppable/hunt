@@ -320,6 +320,10 @@ interface, instance field, static method, parameter, global/local variable, …)
 (`apps/client/src/diff/webstormScheme.ts`); opening a file also loads its relative imports so imported names get their
 roles.
 
+The shortcuts below and those of the sidebar, chat and changelist are defaults: *Settings → Keymap* binds each command
+to other or additional keys, flags two commands that share one and keeps the changes in the settings store
+(`apps/client/src/state/keymap.ts` lists the commands, `apps/client/src/ui/shortcuts.ts` matches a key press).
+
 | Shortcut | Action |
 | --- | --- |
 | ⌘click | Go to declaration in the same pane (in the diff: in the editor window) |

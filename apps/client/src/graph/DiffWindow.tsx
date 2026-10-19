@@ -17,6 +17,7 @@ import { BUTTON_XS, SECONDARY, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { useSecondaryWindow } from "../ui/nativeWindow";
 import { baseName } from "../ui/path";
+import { useShortcutLabel } from "../ui/shortcuts";
 import { errorText, useLoad } from "../ui/useLoad";
 import { restoreWindowBounds } from "../ui/windowBounds";
 import { ChangeBadge } from "./nodes";
@@ -70,6 +71,7 @@ export function DiffWindowHost({ initialRequest }: { initialRequest: DiffOpenReq
  * edits). It closes itself once the file left the changelist (committed, reverted) or its session was removed.
  */
 export function DiffWindow({ sessionId, path }: { sessionId: string; path: string }) {
+  const saveShortcut = useShortcutLabel("editor.save");
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId) ?? null);
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
   const ensureChat = useHuntStore((state) => state.ensureChat);
@@ -208,7 +210,7 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
             disabled={!isDirty}
             onClick={() => editorRef.current?.save()}
             className={`${BUTTON_XS} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
-            title="Save (⌘S inside the editor)"
+            title={saveShortcut ? `Save (${saveShortcut} inside the editor)` : "Save"}
           >
             Save
           </button>

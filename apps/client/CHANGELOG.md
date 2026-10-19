@@ -1,3 +1,9 @@
+## 0.47.2 (2026-10-19)
+
+### 🩹 Fixes
+
+- **client:** a new worktree gets the ignored files of the repository's hooks folder (husky's generated .husky/_) from its checkout, and an existing one gets them when its session opens, so commits in a worktree no longer fail with .husky/_/husky.sh: No such file or directory ([69e1853](https://github.com/unshoppable/hunt/commit/69e1853))
+
 ## 0.47.1 (2026-10-19)
 
 ### 🩹 Fixes

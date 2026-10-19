@@ -70,7 +70,7 @@ export type ChangelistScope = "own" | "all";
 export type PopupSize = { width: number; height: number };
 
 /** The floating popups and dialogs whose size the user may drag; each remembers its last size (see ui/usePopupSize.ts). */
-export type PopupKey = "usages" | "fileSearch" | "subChat" | "screenshots" | "fileFilter" | "change" | "pushTarget" | "image" | "review" | "shelve" | "deleteSession" | "staleRemote" | "renameBranch";
+export type PopupKey = "usages" | "fileSearch" | "findInFiles" | "subChat" | "screenshots" | "fileFilter" | "change" | "pushTarget" | "image" | "review" | "shelve" | "deleteSession" | "staleRemote" | "renameBranch";
 
 /**
  * Size each popup opens with until the user resizes it. A popup that is as tall as its content treats the height as
@@ -85,6 +85,7 @@ export const DEFAULT_GIT_LOG_COLUMNS: GitLogColumns = { author: 150, date: 104 }
 export const DEFAULT_POPUP_SIZES: Record<PopupKey, PopupSize> = {
   usages: { width: 1040, height: 600 },
   fileSearch: { width: 960, height: 760 },
+  findInFiles: { width: 1100, height: 800 },
   subChat: { width: 640, height: 760 },
   screenshots: { width: 760, height: 640 },
   fileFilter: { width: 320, height: 384 },

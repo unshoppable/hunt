@@ -8,6 +8,7 @@ import { useHuntStore } from "../state/store";
 import { useSecondaryWindow } from "../ui/nativeWindow";
 import { workspaceFor } from "./documents";
 import { FileSearchDialog, useFileSearchShortcut } from "./FileSearchDialog";
+import { FindInFilesDialog, useFindInFilesShortcut } from "./FindInFilesDialog";
 import { IdePanel } from "./IdePanel";
 import { EMPTY_IDE_SESSION, useIdeSession, useIdeStore } from "./ideStore";
 import { resolveDefinition } from "./languageService";
@@ -31,6 +32,8 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
   const ide = useIdeSession(sessionId);
   const openPaths = useMemo(() => [...new Set(allPanes(ide.layout).flatMap((pane) => pane.tabs))], [ide.layout]);
   const [isFileSearchOpen, setIsFileSearchOpen] = useState(false);
+  /** Find in Files is open, starting with the text that was selected in the editor (`null`: the last query). */
+  const [findInFiles, setFindInFiles] = useState<{ initialText: string | null } | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isListening, setIsListening] = useState(false);
   /** Number of open requests so far; the window shows itself (again) with each one. */
@@ -40,6 +43,7 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
   useSettingsSync();
   useBackendEvents();
   useFileSearchShortcut(() => setIsFileSearchOpen(true));
+  useFindInFilesShortcut((initialText) => setFindInFiles({ initialText }));
 
   // A failed session list leaves `session` empty, which destroys the window below instead of keeping it hidden.
   useEffect(() => {
@@ -95,6 +99,7 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
     if (dirtyPaths.length && !(await workspaceFor(sessionId, session?.worktreePath ?? "").discardIfConfirmed(dirtyPaths))) return;
     closeAllTabs(sessionId);
     setIsFileSearchOpen(false);
+    setFindInFiles(null);
     await getCurrentWindow().hide();
   };
   const closeWindowRef = useRef(closeWindow);
@@ -135,6 +140,14 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
           openPaths={openPaths}
           onClose={() => setIsFileSearchOpen(false)}
           onOpen={(path, line, inRightSplit) => openFile(sessionId, path, { line: line ?? undefined, inRightSplit })}
+        />
+      ) : null}
+      {findInFiles ? (
+        <FindInFilesDialog
+          sessionId={sessionId}
+          initialText={findInFiles.initialText}
+          onClose={() => setFindInFiles(null)}
+          onOpen={(path, line, column, inRightSplit) => openFile(sessionId, path, { line, column, inRightSplit })}
         />
       ) : null}
     </div>

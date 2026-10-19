@@ -1,5 +1,6 @@
 mod accounts;
 mod acp;
+mod find_in_files;
 mod git;
 mod github;
 mod github_token;
@@ -135,6 +136,7 @@ pub fn run() {
             session::commands::read_file,
             session::commands::resolve_imports,
             session::commands::search_word,
+            session::commands::find_in_files,
             session::commands::list_screenshots,
             session::commands::image_files,
             lsp::lsp_request,

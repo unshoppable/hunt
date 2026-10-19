@@ -202,7 +202,7 @@ export function FileSearchDialog({
 }
 
 /** `/Users/name/Development/x` as `~/Development/x`, like WebStorm's footer. */
-function abbreviateHome(path: string): string {
+export function abbreviateHome(path: string): string {
   const match = /^\/(?:Users|home)\/[^/]+(?=\/|$)/.exec(path);
   return match ? `~${path.slice(match[0].length)}` : path;
 }
@@ -210,9 +210,22 @@ function abbreviateHome(path: string): string {
 /**
  * Read-only Monaco view of `path` below the search results, colored and sized like the editor panes. The file is
  * read once per dialog and kept in a throwaway `preview:` model, so previewing never opens it in the workspace;
- * `line` (from a `name:12` query) is placed in the middle of the view and highlighted.
+ * `line` (from a `name:12` query) is placed in the middle of the view and highlighted, and the 1-based columns
+ * `column..endColumn` of that line (a Find in Files match) are selected.
  */
-function FilePreview({ sessionId, path, line }: { sessionId: string; path: string; line: number | null }) {
+export function FilePreview({
+  sessionId,
+  path,
+  line,
+  column,
+  endColumn,
+}: {
+  sessionId: string;
+  path: string;
+  line: number | null;
+  column?: number;
+  endColumn?: number;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const textsRef = useRef(new Map<string, Promise<string>>());
@@ -275,13 +288,17 @@ function FilePreview({ sessionId, path, line }: { sessionId: string; path: strin
       previous.dispose();
     }
     const lineNumber = line ? Math.min(line, model.getLineCount()) : 1;
-    editor.setPosition({ lineNumber, column: 1 });
+    if (line && column) {
+      editor.setSelection({ startLineNumber: lineNumber, startColumn: column, endLineNumber: lineNumber, endColumn: endColumn ?? column });
+    } else {
+      editor.setPosition({ lineNumber, column: 1 });
+    }
     if (line) {
       editor.revealLineInCenter(lineNumber);
     } else {
       editor.setScrollTop(0);
     }
-  }, [loaded, line]);
+  }, [loaded, line, column, endColumn]);
 
   const isStale = loaded?.path !== path;
   return (

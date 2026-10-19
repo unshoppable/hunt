@@ -23,6 +23,7 @@ use crate::acp::{
     connect, publish_update, system_prompt_append, AgentTransport, LiveHandles, PermissionRegistry, SessionRegistry,
     SessionStart,
 };
+use crate::find_in_files::{self, TextQuery, TextSearchResult};
 use crate::git::{self, ChangedFile, FileDiff, Shelf};
 use crate::github::{self, GithubViewer, PullRequest, PullRequestDetails, PullRequestRef, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread};
 use crate::github_token;
@@ -2783,6 +2784,13 @@ pub async fn read_file(app: AppHandle, id: Uuid, path: String) -> Result<String,
 pub async fn search_word(app: AppHandle, id: Uuid, word: String) -> Result<Vec<String>, String> {
     let record = worktree_session(&app, id)?;
     git::files_containing_word(&record.worktree_path, &word).await
+}
+
+/// Lines of worktree files matching `query`, for the editor's Find in Files.
+#[tauri::command]
+pub async fn find_in_files(app: AppHandle, id: Uuid, query: TextQuery) -> Result<TextSearchResult, String> {
+    let record = worktree_session(&app, id)?;
+    find_in_files::search(&record.worktree_path, &query).await
 }
 
 /// Resolves the relative import specifiers of `from` to worktree paths (`None` where no file matches).

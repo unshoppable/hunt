@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, FileDiff, FileVersion, GithubTokenStatus, GithubViewer, GraphStatus, LogQuery, PlanUsage, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TmuxWindow, VmSettings, Workspace } from "./types";
+import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, FileDiff, FileVersion, GithubTokenStatus, GithubViewer, GraphStatus, LogQuery, PlanUsage, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
 export function assetUrl(path: string): string {
@@ -240,6 +240,8 @@ export const commands = {
   readFile: (id: string, path: string) => invoke<string>("read_file", { id, path }),
   /** Worktree files containing `word` as a whole word (tracked and untracked, never ignored). */
   searchWord: (id: string, word: string) => invoke<string[]>("search_word", { id, word }),
+  /** Lines of worktree files matching `query` (tracked and untracked, never ignored or binary). */
+  findInFiles: (id: string, query: TextQuery) => invoke<TextSearchResult>("find_in_files", { id, query }),
   /** Worktree paths the relative import specifiers of `from` point at; `null` where no file matches. */
   resolveImports: (id: string, from: string, specifiers: string[]) =>
     invoke<(string | null)[]>("resolve_imports", { id, from, specifiers }),

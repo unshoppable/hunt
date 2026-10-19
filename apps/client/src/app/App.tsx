@@ -14,6 +14,7 @@ import { keepGuardrailsWindowWarm } from "../guardrails/openGuardrailsWindow";
 import { keepSettingsWindowWarm } from "../settings/openSettingsWindow";
 import { keepEditorWindowWarm, openInEditorWindow } from "../ide/editorWindows";
 import { FileSearchDialog, useFileSearchShortcut } from "../ide/FileSearchDialog";
+import { FindInFilesDialog, useFindInFilesShortcut } from "../ide/FindInFilesDialog";
 import { EMPTY_IDE_SESSION, useIdeStore } from "../ide/ideStore";
 import { allPanes } from "../ide/paneGrid";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
@@ -41,6 +42,8 @@ export function App() {
   const ideLayout = useIdeStore((state) => (activeSessionId ? state.sessions[activeSessionId]?.layout : null) ?? EMPTY_IDE_SESSION.layout);
   const openPaths = useMemo(() => [...new Set(allPanes(ideLayout).flatMap((pane) => pane.tabs))], [ideLayout]);
   const [isFileSearchOpen, setIsFileSearchOpen] = useState(false);
+  /** Find in Files is open, starting with the text that was selected in the editor (`null`: the last query). */
+  const [findInFiles, setFindInFiles] = useState<{ initialText: string | null } | null>(null);
   const hasLocalWorktree = !isCreatingActive && hasActiveWorktree;
   const canSearchFiles = Boolean(activeSessionId) && !draft && hasLocalWorktree;
   /** A local session has no preview or terminal; it shows the diff instead. */
@@ -50,6 +53,13 @@ export function App() {
   useFileSearchShortcut(() => {
     if (canSearchFiles) {
       setIsFileSearchOpen(true);
+    }
+  });
+
+  // ⇧⌘F: "Find in Files" for the active session's worktree.
+  useFindInFilesShortcut((initialText) => {
+    if (canSearchFiles) {
+      setFindInFiles({ initialText });
     }
   });
 
@@ -155,6 +165,20 @@ export function App() {
               openFile(activeSessionId, path, { line: line ?? undefined, inRightSplit });
             } else {
               void openInEditorWindow(activeSessionId, { path, line: line ?? undefined, inRightSplit });
+            }
+          }}
+        />
+      ) : null}
+      {findInFiles && canSearchFiles && activeSessionId ? (
+        <FindInFilesDialog
+          sessionId={activeSessionId}
+          initialText={findInFiles.initialText}
+          onClose={() => setFindInFiles(null)}
+          onOpen={(path, line, column, inRightSplit) => {
+            if (rightTab === "editor") {
+              openFile(activeSessionId, path, { line, column, inRightSplit });
+            } else {
+              void openInEditorWindow(activeSessionId, { path, line, column, inRightSplit });
             }
           }}
         />

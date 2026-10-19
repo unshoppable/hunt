@@ -1,3 +1,31 @@
+## 0.47.0 (2026-10-19)
+
+### 🚀 Features
+
+- **client:** the Git log's author and date columns resize by dragging their borders, and the branch tree has a button that deletes every local branch without a branch on origin after one confirmation ([f81919c](https://github.com/unshoppable/hunt/commit/f81919c))
+- **client:** "New branch" in the push target dialog creates the session's own branch on origin and makes it the push target in one click ([511f7f8](https://github.com/unshoppable/hunt/commit/511f7f8))
+- **client:** "Change push target…" lists "New branch…" first, which empties the field and creates the typed name on origin off the current target ([210f0fe](https://github.com/unshoppable/hunt/commit/210f0fe))
+- **client:** every dialog resizes by dragging its edges and remembers its size; "Change push target…" offers to create a branch origin lacks ([c8e980e](https://github.com/unshoppable/hunt/commit/c8e980e))
+- **client:** the sidebar groups the sessions by repository under a heading with its name; the repository line of a session is gone, its pull request or issue badge sits on the push-target line ([fd55ca4](https://github.com/unshoppable/hunt/commit/fd55ca4))
+- **client:** a parent session's row in the sidebar shows the branch on origin its push lands on, between its branch and its repository ([7095926](https://github.com/unshoppable/hunt/commit/7095926))
+- **client:** the push target is the session branch's upstream: set at creation, changed from the Git tab's branch menu, carried to the VM and taken over from it at every connect ([b68f42b](https://github.com/unshoppable/hunt/commit/b68f42b))
+- **client:** "New branch…" in the start view's branch menu names the branch a session creates, in a worktree or the checkout ([f16e412](https://github.com/unshoppable/hunt/commit/f16e412))
+- **client:** the session's branch in the Git tab shows where its push lands on a second line ([c4dabeb](https://github.com/unshoppable/hunt/commit/c4dabeb))
+- **client:** branch menu in the Git tab: rebase, merge, update, push, rename, delete and fetch, following a remote session's VM ([170dd37](https://github.com/unshoppable/hunt/commit/170dd37))
+- **client:** the Git tab opens on the session's branch and marks where its push lands ([4681e4f](https://github.com/unshoppable/hunt/commit/4681e4f))
+
+### 🩹 Fixes
+
+- **client:** a session's title keeps the whole first line of its prompt up to 200 characters instead of 48, so the chat header and the sidebar show as much of it as their width allows ([1a4cea5](https://github.com/unshoppable/hunt/commit/1a4cea5))
+- **client:** the Git log reads like IntelliJ's: subject, author and date in fixed columns, branch and tag labels compact at the right end of the subject instead of a chip per ref spilling into the other columns ([f794f8b](https://github.com/unshoppable/hunt/commit/f794f8b))
+- **client:** commit, push, rebase, merge and update of a remote session work on the local worktree when the session is not connected to its VM, as for a local session; the VM's branch follows at the next connect, a rebase included, and a retrieval keeps a local branch the VM's stayed behind ([3467c7d](https://github.com/unshoppable/hunt/commit/3467c7d))
+- **client:** changing the push target of a remote session no longer waits on its VM: the records change first, a VM that is off or unreachable gets the target at the next connect, and the branch created on origin is not fetched again ([da70154](https://github.com/unshoppable/hunt/commit/da70154))
+- **client:** the push target dialog's field only filters the branch list; "New branch…" opens a name field, prefilled with the session's own branch, that creates it on origin and makes it the target ([5eccf17](https://github.com/unshoppable/hunt/commit/5eccf17))
+- **client:** "New branch…" in the push target dialog is a secondary button in the footer, not a list row ([69f1945](https://github.com/unshoppable/hunt/commit/69f1945))
+- **client:** the Git tab's log has no branch field any more; the branch tree alone filters the log ([17cb7dd](https://github.com/unshoppable/hunt/commit/17cb7dd))
+- **client:** sub sessions in the sidebar read like their parent: same title weight and colour, subtitle in the sidebar font ([3d1990d](https://github.com/unshoppable/hunt/commit/3d1990d))
+- **client:** the push target under the session's branch sits close below the name, in the tree's font size ([5e9b0f9](https://github.com/unshoppable/hunt/commit/5e9b0f9))
+
 ## 0.46.0 (2026-10-19)
 
 ### 🚀 Features

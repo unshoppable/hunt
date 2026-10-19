@@ -1,3 +1,9 @@
+## 0.32.0 (2026-10-19)
+
+### 🚀 Features
+
+- **gateway:** a claimed swf issue moves to the "In Progress" column of every project it belongs to, next to its swf:running label; a project without that status or a missing app permission is only logged ([d67b371](https://github.com/unshoppable/hunt/commit/d67b371))
+
 ## 0.31.1 (2026-10-19)
 
 ### 🔥 Performance

@@ -1,6 +1,7 @@
 //! Full-text search over a worktree for the editor's "Find in Files" (⇧⌘F). Like an IDE's index, the text of every
-//! project file (`git::list_files`: tracked and untracked, never ignored) is kept in memory per worktree: a search
-//! re-reads only the files whose size or modification time changed and scans the texts on every core.
+//! project file (`git::list_files`: tracked and untracked, never ignored) is kept in memory per worktree, from its
+//! first search until its session is removed: a search re-reads only the files whose size or modification time
+//! changed and scans the texts on every core.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -26,8 +27,6 @@ const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const BINARY_PROBE_BYTES: usize = 8000;
 /// The file list is listed again in the background once it is older; new and deleted files show with the next search.
 const LIST_MAX_AGE: Duration = Duration::from_secs(2);
-/// Worktrees whose texts stay in memory, the most recently searched ones.
-const CACHED_WORKTREES: usize = 3;
 /// Files a search thread takes at a time; the chunks' results are merged in path order.
 const CHUNK_FILES: usize = 64;
 
@@ -74,10 +73,10 @@ pub struct TextSearchResult {
     pub is_truncated: bool,
 }
 
-/// The in-memory texts of the recently searched worktrees, most recent last.
+/// The in-memory texts of every searched worktree.
 #[derive(Default)]
 pub struct FindRegistry {
-    worktrees: Mutex<Vec<(PathBuf, Arc<WorktreeIndex>)>>,
+    worktrees: Mutex<HashMap<PathBuf, Arc<WorktreeIndex>>>,
 }
 
 #[derive(Default)]
@@ -104,17 +103,12 @@ struct CachedText {
 
 impl FindRegistry {
     fn index(&self, worktree: &Path) -> Arc<WorktreeIndex> {
-        let mut worktrees = self.worktrees.lock().unwrap();
-        let entry = match worktrees.iter().position(|(path, _)| path == worktree) {
-            Some(position) => worktrees.remove(position),
-            None => (worktree.to_path_buf(), Arc::default()),
-        };
-        let index = entry.1.clone();
-        worktrees.push(entry);
-        if worktrees.len() > CACHED_WORKTREES {
-            worktrees.remove(0);
-        }
-        index
+        self.worktrees.lock().unwrap().entry(worktree.to_path_buf()).or_default().clone()
+    }
+
+    /// Frees the texts of `worktree`, once no session works in it any more.
+    pub fn forget(&self, worktree: &Path) {
+        self.worktrees.lock().unwrap().remove(worktree);
     }
 }
 

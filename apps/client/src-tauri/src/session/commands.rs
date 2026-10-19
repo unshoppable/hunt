@@ -1726,7 +1726,7 @@ async fn end_session(
     }
     if record.workspace == Workspace::Checkout {
         store::remove_session(app, id)?;
-        forget_edit_log_if_unused(app, &record.worktree_path);
+        forget_worktree_if_unused(app, &record.worktree_path);
         return Ok(());
     }
 
@@ -1746,7 +1746,7 @@ async fn end_session(
         eprintln!("deleting the refs of session {id} failed: {error}");
     }
     store::remove_session(app, id)?;
-    forget_edit_log_if_unused(app, &record.worktree_path);
+    forget_worktree_if_unused(app, &record.worktree_path);
     removal
 }
 
@@ -1761,12 +1761,14 @@ async fn delete_created_branch(record: &SessionRecord) {
     }
 }
 
-/// Deletes the edit log of `worktree` when no stored session works in it any more; a failure is only logged.
-fn forget_edit_log_if_unused(app: &AppHandle, worktree: &Path) {
+/// Deletes the edit log and the search texts of `worktree` when no stored session works in it any more; a failure is
+/// only logged.
+fn forget_worktree_if_unused(app: &AppHandle, worktree: &Path) {
     let result = store::load_sessions(app).and_then(|sessions| {
         if sessions.iter().any(|session| session.worktree_path == worktree) {
             return Ok(());
         }
+        app.state::<FindRegistry>().forget(worktree);
         attribution::forget_worktree(app, worktree)
     });
     if let Err(error) = result {

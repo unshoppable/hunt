@@ -1,3 +1,9 @@
+## 0.48.0 (2026-10-19)
+
+### 🚀 Features
+
+- **client:** ⇧⌘F opens "Find in Files" like WebStorm's: a full-text search over the session's worktree through git grep (tracked and untracked files, never ignored or binary ones) with Match Case (⌥C), Words (⌥W), Regex (⌥X) and a file mask such as *.ts, !*.spec.ts; it lists the matching lines with their matches marked, previews the selected one and opens it at the match (⇧Enter in a right split), starting with the editor's selection or the last query ([0721dbd](https://github.com/unshoppable/hunt/commit/0721dbd))
+
 ## 0.47.2 (2026-10-19)
 
 ### 🩹 Fixes

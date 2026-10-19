@@ -1,3 +1,9 @@
+## 0.53.0 (2026-10-19)
+
+### 🚀 Features
+
+- **client:** the branch search of a new session is taller and holds a New branch button that prefills the typed name, which Enter also runs while no branch matches; New branch… no longer heads the branch list ([603c943](https://github.com/unshoppable/hunt/commit/603c943))
+
 ## 0.52.0 (2026-10-19)
 
 ### 🚀 Features

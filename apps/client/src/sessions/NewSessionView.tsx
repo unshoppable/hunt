@@ -10,11 +10,13 @@ import type { PullRequest, Screenshot, Workspace } from "../ipc/types";
 import { dirName, repoName } from "../ui/path";
 import { errorText, useLoad } from "../ui/useLoad";
 import { HEADER_BAR } from "../ui/bars";
-import { SECONDARY_BUTTON_XS } from "../ui/buttons";
+import { PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { Dropdown } from "../ui/Dropdown";
 import type { DropdownOption } from "../ui/floatingMenu";
-import { BranchIcon, CheckIcon, ChevronDownIcon, CloudIcon, GitHubIcon } from "../ui/icons";
+import { BranchIcon, CheckIcon, ChevronDownIcon, CloseIcon, CloudIcon, GitHubIcon, PlusIcon } from "../ui/icons";
 import { useDismiss } from "../ui/useDismiss";
+import { INPUT } from "../diff/styles";
+import { newBranchProblem } from "./newBranch";
 import { PullRequestList } from "./PullRequestList";
 import { findPullRequestBranch } from "./pullRequests";
 import { SessionVmList } from "./SessionVmList";
@@ -35,6 +37,9 @@ const TOOLBAR_CONFIG_IDS = ["model", "effort"];
 
 /** Base branches tried in order when the repository offers them. */
 const DEFAULT_BASE_REFS = ["master", "main"];
+
+/** Id of the branch menu's entry that asks for the name of a new branch; no branch name holds a NUL. */
+const NEW_BRANCH_ID = "\u0000new-branch";
 
 /** Mode a new session starts in unless the user picked another one; manual when the agent does not offer it. */
 const DEFAULT_MODE = "auto";
@@ -57,8 +62,9 @@ const LIST_TOGGLE = `${SECONDARY_BUTTON_XS} aria-pressed:border-white/15 aria-pr
  * repository until the first prompt names it, so the sidebar lists it and the diff, editor and graph panes work before
  * anything was asked. With the preselected repository the first prompt creates the session, which is listed and shown
  * at once, and is sent as soon as the agent runs with the chosen model, effort and mode. A top-level session gets a
- * worktree from the chosen base branch, or works in the repository's own checkout on its current branch; a sub session
- * (`parentId` set) runs in the parent's worktree. After a failed creation the view comes back with `initialError` and
+ * worktree from the chosen base branch, or works in the repository's own checkout on its current branch; the branch
+ * menu's "New branch…" names a branch the session creates instead, off the base in a worktree or at the checkout's own
+ * branch, and keeps as its own. A sub session (`parentId` set) runs in the parent's worktree. After a failed creation the view comes back with `initialError` and
  * the unsent `initialPrompt`. The header's "PR review" and "Remote sessions" buttons replace the view's body with the
  * repository's open pull requests or the session VMs the gateway lists; choosing one starts or opens that session.
  */
@@ -89,6 +95,9 @@ export function NewSessionView({
   const [baseRef, setBaseRef] = useState("");
   /** Branch the repository's checkout is on; a session in the checkout starts from it. */
   const [currentBranch, setCurrentBranch] = useState("");
+  /** Name of the branch the session creates and works on, when the user asked for one instead of the generated branch. */
+  const [newBranch, setNewBranch] = useState<string | null>(null);
+  const [isNamingBranch, setIsNamingBranch] = useState(false);
   const workspace: Workspace = preferred.workspace === "checkout" ? "checkout" : DEFAULT_WORKSPACE;
   const isCheckout = workspace === "checkout";
   const [error, setError] = useState<string | null>(initialError);
@@ -110,6 +119,11 @@ export function NewSessionView({
     setBranches([]);
     setBaseRef("");
     setCurrentBranch("");
+  }, [repoPath]);
+  // A branch name belongs to the repository it was typed for.
+  useEffect(() => {
+    setNewBranch(null);
+    setIsNamingBranch(false);
   }, [repoPath]);
   useLoad(
     () => Promise.all([commands.listBranches(repoPath), commands.currentBranch(repoPath)]),
@@ -144,9 +158,9 @@ export function NewSessionView({
   /** The branch the new session starts from: the chosen base branch, or the checkout's own for a session in the checkout. */
   const startRef = isCheckout ? currentBranch : baseRef;
 
-  /** Where a session that reviews no pull request works: in the chosen workspace of the repository, off `ref`. */
+  /** Where a session that reviews no pull request works: in the chosen workspace of the repository, off `ref`, on the new branch when one is named. */
   function plainTarget(ref: string): WorktreeTarget {
-    return { repoPath, baseRef: ref, workspace, pullRequest: null, diffBaseRef: null, pullRequestBranch: null };
+    return { repoPath, baseRef: ref, workspace, pullRequest: null, diffBaseRef: null, pullRequestBranch: null, newBranch };
   }
 
   /** Makes `path` the repository and starts a session in it as soon as its branch is known. */
@@ -191,6 +205,7 @@ export function NewSessionView({
       pullRequest: { number: selected.number, url: selected.url },
       diffBaseRef: targetBranch,
       pullRequestBranch: selected.headRefName,
+      newBranch: null,
     };
     startSession(selected.title, target, null);
     setRightTab("diff");
@@ -234,6 +249,18 @@ export function NewSessionView({
   }
 
   if (parentId && !parent) return null;
+
+  /** Where the new branch starts: off the chosen base in a worktree, at the checkout's own branch in the checkout. */
+  const newBranchOrigin = isCheckout ? `off ${currentBranch || "the checkout's branch"} in the checkout` : `off ${baseRef || "the base branch"}`;
+  const branchOptions: DropdownOption[] = [
+    { id: NEW_BRANCH_ID, name: "New branch…", description: `Created ${newBranchOrigin} when the session starts` },
+    ...(isCheckout ? [] : branches.map((name) => ({ id: name, name }))),
+  ];
+  const branchTitle = isCheckout
+    ? "Branch the checkout is on; the session works on it as it is, or on a new branch off it"
+    : newBranch
+      ? "Base branch the new branch is created from"
+      : "Base branch the worktree is created from";
 
   const targetBar = parent ? null : (
     <div className="mx-4 -mt-2 flex items-center justify-between gap-3 rounded-b-2xl border border-t-0 border-(--line) bg-(--surface-inset)/60 px-3 pb-2 pt-4 text-sm text-neutral-400">
@@ -281,16 +308,58 @@ export function NewSessionView({
           icon={<WorkspaceIcon />}
           className={`${BAR_DROPDOWN} shrink-0`}
         />
-        <Dropdown
-          title={isCheckout ? "Branch the checkout is on; the session works on it as it is" : "Base branch the worktree is created from"}
-          value={startRef}
-          options={isCheckout ? [] : branches.map((name) => ({ id: name, name }))}
-          onChange={setBaseRef}
-          disabled={isCheckout || !branches.length}
-          placeholder={isCheckout ? "Current branch" : repoPath ? "No branches" : "Base branch"}
-          icon={<BranchIcon className="size-4 shrink-0" />}
-          className={`${BAR_DROPDOWN} max-w-72`}
-        />
+        <div className="relative flex min-w-0 items-center gap-1.5">
+          <Dropdown
+            title={branchTitle}
+            value={startRef}
+            options={branchOptions}
+            onChange={(id) => {
+              if (id === NEW_BRANCH_ID) {
+                setIsNamingBranch(true);
+              } else {
+                setBaseRef(id);
+              }
+            }}
+            disabled={!startRef}
+            placeholder={isCheckout ? "Current branch" : repoPath ? "No branches" : "Base branch"}
+            icon={<BranchIcon className="size-4 shrink-0" />}
+            className={`${BAR_DROPDOWN} max-w-72 ${newBranch ? "shrink-0" : ""}`}
+          />
+          {newBranch ? (
+            <span className="flex h-8 min-w-0 max-w-64 items-center rounded-md bg-(--row-active) pr-1 text-neutral-200">
+              <button
+                type="button"
+                onClick={() => setIsNamingBranch(true)}
+                title={`New branch ${newBranch}, created ${newBranchOrigin} when the session starts; click to rename it`}
+                className="flex h-full min-w-0 items-center gap-1.5 rounded-l-md pl-2 pr-1 transition-colors hover:bg-(--row-hover)"
+              >
+                <PlusIcon className="size-3.5 shrink-0" />
+                <span className="truncate">{newBranch}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setNewBranch(null)}
+                title={isCheckout ? "Drop the new branch: the session works on the checkout's branch as it is" : "Drop the new branch: the worktree gets a generated one"}
+                aria-label="Drop the new branch"
+                className="flex size-6 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-(--row-hover) hover:text-white"
+              >
+                <CloseIcon className="size-3" />
+              </button>
+            </span>
+          ) : null}
+          {isNamingBranch ? (
+            <NewBranchPopover
+              initialName={newBranch ?? ""}
+              branches={branches}
+              origin={newBranchOrigin}
+              onSubmit={(name) => {
+                setNewBranch(name);
+                setIsNamingBranch(false);
+              }}
+              onClose={() => setIsNamingBranch(false)}
+            />
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -479,6 +548,70 @@ function RepositoryMenu({
         <FolderIcon />
         Choose another repository…
       </button>
+    </div>
+  );
+}
+
+/**
+ * Popover below the branch menu asking for the name of the branch the session creates, prefilled with `initialName`
+ * when renaming it; `origin` says where the branch starts. Enter or OK submit the name once it is valid and new to the
+ * repository, Escape or a click outside closes without a change.
+ */
+function NewBranchPopover({
+  initialName,
+  branches,
+  origin,
+  onSubmit,
+  onClose,
+}: {
+  initialName: string;
+  branches: string[];
+  origin: string;
+  onSubmit: (name: string) => void;
+  onClose: () => void;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  useDismiss(rootRef, onClose);
+  const [name, setName] = useState(initialName);
+  const trimmed = name.trim();
+  const problem = newBranchProblem(trimmed, branches);
+
+  function submit() {
+    if (problem !== null) return;
+    onSubmit(trimmed);
+  }
+
+  return (
+    <div
+      ref={rootRef}
+      role="dialog"
+      aria-label="New branch"
+      className="absolute top-full right-0 z-50 mt-1.5 w-80 max-w-[calc(100cqw-2rem)] rounded-xl border border-neutral-600 bg-(--surface-chat) p-3 text-sm text-neutral-400 shadow-2xl shadow-black/50"
+    >
+      <label htmlFor="new-branch-name" className="mb-1.5 block text-[13px] text-neutral-300">
+        New branch
+      </label>
+      <div className="flex items-center gap-2">
+        <input
+          id="new-branch-name"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              submit();
+            }
+          }}
+          autoFocus
+          spellCheck={false}
+          placeholder="feat/general/name"
+          className={`${INPUT} font-mono`}
+        />
+        <button type="button" onClick={submit} disabled={problem !== null} className={`${PRIMARY_BUTTON_XS} shrink-0`}>
+          OK
+        </button>
+      </div>
+      <p className={`mt-2 text-[12px] ${problem ? "text-red-400" : "text-neutral-500"}`}>{problem || `Created ${origin} when the session starts`}</p>
     </div>
   );
 }

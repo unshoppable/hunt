@@ -170,7 +170,11 @@ first prompt creates the session and titles it. The view's header has "PR review
 the view's body with a list in the chat pane (no popover), of the repository's open pull requests or of the session
 VMs the gateway lists; choosing a pull request starts a review session on its branch, choosing a remote session shows
 it, adopting it first when this Mac does not know it (`apps/client/src/sessions/PullRequestList.tsx`,
-`SessionVmList.tsx`, `list_session_vms`).
+`SessionVmList.tsx`, `list_session_vms`). The bar under the composer picks the workspace (a worktree or the
+repository's checkout) and the base branch; its branch menu's "New branch…" names a branch the session creates instead
+of the generated one (`newBranch` of `create_session`, checked by `sessions/newBranch.ts` and `git::ensure_new_branch`):
+off the base in a worktree, or at the checkout's own branch, which the checkout switches to. Such a branch is the
+session's base like a reviewed pull request's: a push lands on it under its own name and deleting the session keeps it.
 
 The mark of a session in the sidebar (`apps/client/src/sessions/SessionMark.tsx`) shows what its agent is up to: an arc
 runs around it while a turn runs; it turns amber with a `?` badge when the agent ended its turn with a question
@@ -205,7 +209,7 @@ via the ACP `systemPrompt` meta.
 
 `apps/client/src-tauri/src/git.rs` creates `feat/general/<slug>-<id>` worktrees under the app data directory (the
 `<type>/<scope>/<name>` form repositories check branch names against; a pull request review works on the pull
-request's own branch), lists their changes against the session's diff base (`HEAD`, or the merge base of a reviewed
+request's own branch, a session the user named a branch for on that one), lists their changes against the session's diff base (`HEAD`, or the merge base of a reviewed
 pull request) and supports shelving and reverting them. The worktree's branch is local only: the changelist's *Push*
 (`push_branch`) pushes `HEAD` to the branch the session was created from on `origin` (`push_target` in
 `session/commands.rs`: the base branch, a reviewed pull request's branch, the checkout's own), after a rebase onto it

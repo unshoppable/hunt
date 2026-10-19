@@ -346,6 +346,25 @@ pub async fn rename_branch(repo: &Path, branch: &str, new_name: &str) -> Result<
     Ok(())
 }
 
+/// Rejects `branch` as the name of a branch to create: an invalid name, or one `repo` has locally or on a remote already.
+pub async fn ensure_new_branch(repo: &Path, branch: &str) -> Result<(), String> {
+    ensure_branch_name(repo, branch).await?;
+    if local_branch_exists(repo, branch).await {
+        return Err(format!("branch {branch} exists already"));
+    }
+    if run_git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{branch}")]).await.is_ok() {
+        return Err(format!("branch {branch} exists on origin already"));
+    }
+    Ok(())
+}
+
+/// Creates the branch `branch` at `HEAD` of the checkout `repo` and switches it there, keeping its working changes.
+pub async fn switch_to_new_branch(repo: &Path, branch: &str) -> Result<(), String> {
+    ensure_new_branch(repo, branch).await?;
+    run_git(repo, &["switch", "-q", "-c", branch]).await?;
+    Ok(())
+}
+
 /// Deletes every ref below `prefix`, which ends with `/` (e.g. `refs/hunt/<id>/`).
 pub async fn delete_refs(repo: &Path, prefix: &str) -> Result<(), String> {
     let commands = run_git(repo, &["for-each-ref", "--format=delete %(refname)", prefix]).await?;
@@ -1260,6 +1279,36 @@ mod tests {
     fn unified_new_line_ranges_skips_hunks_without_new_lines() {
         assert_eq!(unified_new_line_ranges("@@ -3,2 +2,0 @@\n-a\n-b\n"), Vec::<RangeInclusive<u32>>::new());
         assert!(unified_new_line_ranges("").is_empty());
+    }
+
+    #[tokio::test]
+    async fn ensure_new_branch_rejects_invalid_and_existing_names() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        git(repo, &["branch", "feat/general/taken"]).await;
+        git(repo, &["update-ref", "refs/remotes/origin/feat/general/pushed", "HEAD"]).await;
+
+        ensure_new_branch(repo, "feat/general/fresh").await.unwrap();
+        assert!(ensure_new_branch(repo, "feat/general/taken").await.unwrap_err().contains("exists already"));
+        assert!(ensure_new_branch(repo, "feat/general/pushed").await.unwrap_err().contains("exists on origin already"));
+        assert!(ensure_new_branch(repo, "bad name").await.unwrap_err().contains("invalid branch name"));
+        assert!(ensure_new_branch(repo, "-x").await.unwrap_err().contains("invalid branch name"));
+    }
+
+    #[tokio::test]
+    async fn switch_to_new_branch_creates_the_branch_at_head_and_keeps_working_changes() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        std::fs::write(repo.join("tracked.txt"), "edited\n").unwrap();
+        let head = rev_parse(repo, "HEAD").await.unwrap();
+
+        switch_to_new_branch(repo, "feat/general/fresh").await.unwrap();
+
+        assert_eq!(current_branch(repo).await.unwrap(), "feat/general/fresh");
+        assert_eq!(rev_parse(repo, "feat/general/fresh").await.unwrap(), head);
+        assert!(local_branch_exists(repo, "main").await);
+        assert_eq!(std::fs::read_to_string(repo.join("tracked.txt")).unwrap(), "edited\n");
+        assert!(switch_to_new_branch(repo, "feat/general/fresh").await.unwrap_err().contains("exists already"));
     }
 
     async fn git(repo: &Path, args: &[&str]) {

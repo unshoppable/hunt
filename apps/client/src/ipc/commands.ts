@@ -80,9 +80,10 @@ export const commands = {
     pullRequest: PullRequestRef | null,
     diffBaseRef: string | null,
     pullRequestBranch: string | null,
+    newBranch: string | null,
     workspace: Workspace,
   ) =>
-    invoke<SessionView>("create_session", { id, repoPath, baseRef, title, pullRequest, diffBaseRef, pullRequestBranch, workspace }),
+    invoke<SessionView>("create_session", { id, repoPath, baseRef, title, pullRequest, diffBaseRef, pullRequestBranch, newBranch, workspace }),
   /** Starts the sub session `id` (a fresh UUID the caller picked) in the parent's worktree; a `selection` (sub chat from the diff) goes into the agent's context. */
   createSubSession: (id: string, parentId: string, title: string, selection: SelectionContext | null) =>
     invoke<SessionView>("create_sub_session", { id, parentId, title, selection }),

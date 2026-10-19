@@ -271,7 +271,10 @@ fn review_session_id(record: &SessionRecord) -> Uuid {
 /// the session before this returns. `pull_request` marks it as the review of that pull request; `diff_base_ref` is
 /// then the pull request's target branch, whose merge base with the base becomes the diff base, and the worktree works
 /// on the pull request's own branch `pull_request_branch` rather than a new one, with `base_ref` naming that branch
-/// locally or on a remote (`origin/<branch>`).
+/// locally or on a remote (`origin/<branch>`). `new_branch` names a branch the user asked for instead of the generated
+/// `feat/general/<slug>-<id>`: created off `base_ref` in a worktree, or at `HEAD` of the checkout, which switches to
+/// it; like a pull request's branch it is the session's base, so a push lands on it under its own name, and deleting
+/// the session keeps it.
 #[tauri::command]
 pub async fn create_session(
     app: AppHandle,
@@ -284,19 +287,17 @@ pub async fn create_session(
     pull_request: Option<PullRequestRef>,
     diff_base_ref: Option<String>,
     pull_request_branch: Option<String>,
+    new_branch: Option<String>,
     workspace: Workspace,
 ) -> Result<SessionView, String> {
     ensure_new_id(&app, id)?;
     let repo_path = PathBuf::from(repo_path);
-    let (worktree_path, branch, base_ref) = match workspace {
-        Workspace::Worktree => {
-            let branch = pull_request_branch.clone().unwrap_or_else(|| worktree_branch_name(&title, id));
-            (store::worktrees_dir(&app)?.join(id.to_string()), branch, base_ref)
-        }
-        Workspace::Checkout => {
-            let branch = git::current_branch(&repo_path).await?;
-            (repo_path.clone(), branch.clone(), branch)
-        }
+    if let Some(branch) = &new_branch {
+        git::ensure_new_branch(&repo_path, branch).await?;
+    }
+    let (worktree_path, base_ref) = match workspace {
+        Workspace::Worktree => (store::worktrees_dir(&app)?.join(id.to_string()), base_ref),
+        Workspace::Checkout => (repo_path.clone(), git::current_branch(&repo_path).await?),
     };
     let base_commit = git::rev_parse(&repo_path, &base_ref).await?;
     let diff_base = match &diff_base_ref {
@@ -305,15 +306,29 @@ pub async fn create_session(
     };
 
     let mut keeps_branch = false;
-    if workspace == Workspace::Worktree {
-        if pull_request_branch.is_some() {
-            keeps_branch = !git::worktree_add_on_branch(&repo_path, &branch, &worktree_path, &base_ref).await?;
-        } else {
-            git::worktree_add(&repo_path, &branch, &worktree_path, &base_commit).await?;
+    let branch = match workspace {
+        Workspace::Worktree => {
+            let branch = pull_request_branch.clone().or_else(|| new_branch.clone()).unwrap_or_else(|| worktree_branch_name(&title, id));
+            if pull_request_branch.is_some() {
+                keeps_branch = !git::worktree_add_on_branch(&repo_path, &branch, &worktree_path, &base_ref).await?;
+            } else {
+                git::worktree_add(&repo_path, &branch, &worktree_path, &base_commit).await?;
+                keeps_branch = new_branch.is_some();
+            }
+            private_files::copy_into_worktree(&repo_path, &worktree_path).await?;
+            dependencies::ensure(&app, repo_path.clone(), worktree_path.clone(), Install::Updating);
+            branch
         }
-        private_files::copy_into_worktree(&repo_path, &worktree_path).await?;
-        dependencies::ensure(&app, repo_path.clone(), worktree_path.clone(), Install::Updating);
-    }
+        Workspace::Checkout => match &new_branch {
+            Some(created) => {
+                git::switch_to_new_branch(&repo_path, created).await?;
+                created.clone()
+            }
+            None => base_ref.clone(),
+        },
+    };
+    // A branch the user named is the session's base: a push lands on it under its own name.
+    let base_ref = if new_branch.is_some() { branch.clone() } else { base_ref };
 
     let mut record = SessionRecord::new(id, title, repo_path, worktree_path.clone(), branch, base_ref, base_commit);
     record.pull_request = pull_request;

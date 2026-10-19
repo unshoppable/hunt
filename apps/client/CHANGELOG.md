@@ -1,3 +1,10 @@
+## 0.49.1 (2026-10-19)
+
+### 🔥 Performance
+
+- **client:** Find in Files keeps the texts of every session's worktree in memory from its first search until the session is removed, instead of only the last three searched worktrees, so switching between sessions never reloads them ([eb81ae8](https://github.com/unshoppable/hunt/commit/eb81ae8))
+- **client:** Find in Files keeps the project files' text in memory per worktree like an IDE's index and searches it on every core, re-reading only files whose size or modification time changed, and runs on every keystroke without a pause; a search now takes 5–30 ms instead of 200–450 ms (git grep walked the worktree for untracked files on every search), and opening the dialog loads the files once (~0.4 s). Regex mode uses Rust regex syntax (no look-around or backreferences) ([43e2dd3](https://github.com/unshoppable/hunt/commit/43e2dd3))
+
 ## 0.49.0 (2026-10-19)
 
 ### 🚀 Features

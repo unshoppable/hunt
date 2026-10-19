@@ -4,7 +4,10 @@
 //! agent of the VM connects, after the channel (re)opened, when the helper asks for one, after a turn ended and whenever a live sync cannot tell the change file by file. Without a channel (a VM whose
 //! release lacks the helper, or while it reconnects) full syncs also run after every finished tool call and every
 //! `TURN_POLL` while a turn runs. Hunt's own changes (`note_local_change`) have the local side listed anew; a prompt
-//! waits until the local changes reached the VM (`flush`), and a commit on the VM runs while no sync does (`exclusive`).
+//! waits until the local changes reached the VM (`flush`), and a commit runs while no sync does (`exclusive`). After
+//! every sync the branch points at the same commit on both sides (`follow_head`): a commit of the agent's on the VM moves
+//! the local branch, a commit made here (Hunt's changelist, or any tool in the local worktree, seen through the
+//! worktree's reflog) moves the VM's.
 //! The transcripts move apart from the files, live and both ways (`session::transcripts`), started and stopped with
 //! the sync; while that stream has no channel, the sync after a turn ended backs the VM's transcript up into the local
 //! project folder (`remote::retrieve::back_up_transcripts`), so a VM that gets lost costs at most the running turn. Syncs of one
@@ -31,7 +34,7 @@ use uuid::Uuid;
 use crate::git;
 use crate::graph::{self, WatcherRegistry};
 use crate::remote::channel::{Channel, Event, RemoteChange};
-use crate::remote::commit::follow_vm_head;
+use crate::remote::commit::align_heads;
 use crate::remote::retrieve;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::sync::{self as file_sync, Direction, Live, Outcome, SyncTarget};
@@ -79,7 +82,7 @@ struct SessionSync {
     wants_full: AtomicBool,
     /// Hunt changed local files without naming them, so the local side is to be listed anew.
     wants_rescan: AtomicBool,
-    /// The VM's `HEAD` may have moved, so the local branch is to follow it.
+    /// `HEAD` may have moved on either side, so the branch is to point at the same commit on both again.
     wants_head: AtomicBool,
     watcher: Mutex<Option<Debouncer<RecommendedWatcher, RecommendedCache>>>,
     /// Asks for a sync every `TURN_POLL` while a turn runs.
@@ -473,7 +476,7 @@ fn drive(app: &AppHandle, id: Uuid, state: Arc<SessionSync>) {
 
 /// What a sync is asked to do besides sending the local changes the watchers reported: bring the VM's changes (a full
 /// sync without a channel), send local changes the watcher saw without a channel, back up the VM's transcripts, list
-/// both sides, list the local side anew, follow the VM's `HEAD`.
+/// both sides, list the local side anew, bring both sides' `HEAD` to the same commit.
 #[derive(Clone, Copy, Default)]
 struct Wanted {
     remote: bool,
@@ -688,10 +691,10 @@ async fn connect_channel(app: &AppHandle, id: Uuid, state: &Arc<SessionSync>, cl
     .await
 }
 
-/// Points the local branch of the remote session `id` at the commit its VM's worktree has checked out when that moved
-/// (`remote::commit::follow_vm_head`), and records that commit as the one the branch follows; returns whether it moved.
+/// Brings the branch of the remote session `id` to the same commit here and on its VM when either side moved
+/// (`remote::commit::align_heads`), and records that commit as the one both sides share; returns whether one moved.
 pub async fn follow_head(app: &AppHandle, id: Uuid, ssh: &Ssh, target: &RemoteTarget, worktree: &Path) -> Result<bool, String> {
-    let Some(head) = follow_vm_head(ssh, id, target, worktree).await? else {
+    let Some(head) = align_heads(ssh, id, target, worktree).await? else {
         return Ok(false);
     };
     store::update_session(app, id, |stored| {
@@ -737,10 +740,13 @@ async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &
 }
 
 /// Watches the local `worktree` of `id` and asks for a sync of the paths that changed outside `.git`, `.hunt` and
-/// `node_modules`; a failure is only logged, the other triggers still sync.
+/// `node_modules`, and the reflog of its `HEAD` (`logs/HEAD` in its git directory, which every commit, reset or
+/// checkout here appends to) for the VM's branch to follow; a failure is only logged, the other triggers still sync.
 fn watch(app: &AppHandle, id: Uuid, state: &Arc<SessionSync>, worktree: &Path) {
     let handle = app.clone();
     let root = worktree.to_path_buf();
+    let reflogs = git_dir_of(worktree).map(|git_dir| git_dir.join("logs"));
+    let head_reflog = reflogs.as_ref().map(|reflogs| reflogs.join("HEAD"));
     let reports = Arc::downgrade(state);
     let debouncer = new_debouncer(LOCAL_DEBOUNCE, None, move |result: DebounceEventResult| {
         let Some(state) = reports.upgrade() else { return };
@@ -749,15 +755,22 @@ fn watch(app: &AppHandle, id: Uuid, state: &Arc<SessionSync>, worktree: &Path) {
             request(&handle, id, Side::Local);
             return;
         };
+        let moved_head = events.iter().flat_map(|event| &event.paths).any(|path| head_reflog.as_ref() == Some(path));
         let paths: BTreeSet<String> = events.iter().flat_map(|event| &event.paths).filter_map(|path| synced_path(&root, path)).collect();
-        if paths.is_empty() {
+        if paths.is_empty() && !moved_head {
             return;
+        }
+        if moved_head {
+            state.wants_head.store(true, Ordering::SeqCst);
         }
         state.local_paths.lock().unwrap().extend(paths);
         request(&handle, id, Side::Local);
     });
     let watched = debouncer.map_err(|error| error.to_string()).and_then(|mut debouncer| {
         debouncer.watch(worktree, RecursiveMode::Recursive).map_err(|error| error.to_string())?;
+        if let Some(reflogs) = reflogs.filter(|reflogs| reflogs.is_dir()) {
+            debouncer.watch(&reflogs, RecursiveMode::NonRecursive).map_err(|error| error.to_string())?;
+        }
         Ok(debouncer)
     });
     match watched {
@@ -766,6 +779,18 @@ fn watch(app: &AppHandle, id: Uuid, state: &Arc<SessionSync>, worktree: &Path) {
         }
         Err(error) => eprintln!("watching the worktree of session {id} for the sync failed: {error}"),
     }
+}
+
+/// The git directory of `worktree`, which holds its `HEAD` and reflog: `.git` itself in a main checkout, or the
+/// directory a linked worktree's `.git` file names (`gitdir: <path>`, relative to the worktree when not absolute).
+fn git_dir_of(worktree: &Path) -> Option<PathBuf> {
+    let dot_git = worktree.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let pointer = std::fs::read_to_string(&dot_git).ok()?;
+    let target = pointer.strip_prefix("gitdir:")?.trim();
+    Some(worktree.join(target))
 }
 
 /// The worktree-relative path of a change at `path` that may concern a synced file of `worktree`: one inside it,
@@ -809,6 +834,22 @@ mod tests {
         assert_eq!(synced_path(worktree, &worktree.join("apps/web/node_modules/react/index.js")), None);
         assert_eq!(synced_path(worktree, worktree), None);
         assert_eq!(synced_path(worktree, Path::new("/tmp/elsewhere.txt")), None);
+    }
+
+    #[test]
+    fn the_git_dir_is_the_folder_or_what_the_worktrees_git_file_names() {
+        let main = tempfile::tempdir().unwrap();
+        std::fs::create_dir(main.path().join(".git")).unwrap();
+        assert_eq!(git_dir_of(main.path()), Some(main.path().join(".git")));
+
+        let linked = tempfile::tempdir().unwrap();
+        std::fs::write(linked.path().join(".git"), "gitdir: /repo/.git/worktrees/x\n").unwrap();
+        assert_eq!(git_dir_of(linked.path()), Some(PathBuf::from("/repo/.git/worktrees/x")));
+        std::fs::write(linked.path().join(".git"), "gitdir: ../main/.git/worktrees/x\n").unwrap();
+        assert_eq!(git_dir_of(linked.path()), Some(linked.path().join("../main/.git/worktrees/x")));
+
+        let bare = tempfile::tempdir().unwrap();
+        assert_eq!(git_dir_of(bare.path()), None);
     }
 
     #[test]

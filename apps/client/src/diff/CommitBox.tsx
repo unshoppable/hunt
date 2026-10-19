@@ -147,7 +147,7 @@ export function CommitBox({
           title={
             isLocked
               ? WORKTREE_LOCKED_MESSAGE
-              : `${isRemote ? "Commit the checked files on the session's branch on its VM" : "Commit the checked files on the session's branch"} (⌘⏎, ⇧⌘⏎ also pushes)`
+              : `${isRemote ? "Commit the checked files on the session's branch here; the branch on its VM follows" : "Commit the checked files on the session's branch"} (⌘⏎, ⇧⌘⏎ also pushes)`
           }
         >
           {step === "commit" ? "Committing…" : "Commit"}
@@ -174,7 +174,7 @@ export function CommitBox({
               ? WORKTREE_LOCKED_MESSAGE
               : unpushedCount === 0
                 ? `Every commit of the session is on ${target} of origin`
-                : `${pushesFromVm ? `Push the session's branch ${target} from its VM with the token stored there` : isRemote ? `Push the session's commits to ${target} on origin from this Mac, once the branch caught up with the VM's commit and was rebased on the VM when ${target} moved on` : `Push the session's commits to ${target} on origin, rebased onto it when it moved on`}${unpushedCount ? ` (${unpushedCount} ${unpushedCount === 1 ? "commit" : "commits"})` : ""}`
+                : `${pushesFromVm ? `Push the session's branch ${target} from its VM with the token stored there` : isRemote ? `Push the session's commits to ${target} on origin from this Mac, once the branch points at the same commit here and on the VM, rebased onto ${target} when it moved on` : `Push the session's commits to ${target} on origin, rebased onto it when it moved on`}${unpushedCount ? ` (${unpushedCount} ${unpushedCount === 1 ? "commit" : "commits"})` : ""}`
           }
         >
           <PaperPlaneIcon className="size-3.5 shrink-0" />

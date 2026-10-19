@@ -2305,23 +2305,23 @@ pub async fn drop_shelf(app: AppHandle, id: Uuid, reference: String) -> Result<(
     git::drop_shelf(&record.worktree_path, &reference).await
 }
 
-/// Commits exactly `paths` with `message` on the session's current branch: here, or on the VM of a remote session, whose
-/// local branch then follows to the new commit.
+/// Commits exactly `paths` with `message` on the session's current branch in its local worktree, with this Mac's Git,
+/// hooks and identity; the branch on the VM of a remote session then follows the new commit.
 #[tauri::command]
 pub async fn commit_files(app: AppHandle, id: Uuid, paths: Vec<String>, message: String) -> Result<(), String> {
     link::ensure_writable(&app, id, "commit")?;
     let record = worktree_session(&app, id)?;
     match remote_host(&app, &record) {
         None => git::commit_files(&record.worktree_path, &paths, &message).await?,
-        Some((owner, _)) => commit_on_vm(&app, owner, &record.worktree_path, &paths, &message).await?,
+        Some((owner, _)) => commit_followed(&app, owner, &record.worktree_path, &paths, &message).await?,
     }
     store::forget_touched_files(&app, &record.worktree_path, &paths)
 }
 
-/// Commits `paths` of the remote session `id` on its VM (`remote::commit`) while no sync of it runs, after one sent the
-/// local edits there; refuses when one of the files could not reach the VM. The local branch then follows the VM's new
-/// commit (`sync::follow_head`).
-async fn commit_on_vm(app: &AppHandle, id: Uuid, worktree: &Path, paths: &[String], message: &str) -> Result<(), String> {
+/// Commits `paths` of the remote session `id` in its local worktree `worktree` while no sync of it runs, after one sent
+/// the local edits to the VM, so that the VM's branch can follow the commit without touching its files
+/// (`sync::follow_head`); refuses when one of the files could not reach the VM.
+async fn commit_followed(app: &AppHandle, id: Uuid, worktree: &Path, paths: &[String], message: &str) -> Result<(), String> {
     sync::exclusive(app, id, |outcome| async move {
         let unsynced: Vec<&String> = outcome
             .iter()
@@ -2330,11 +2330,11 @@ async fn commit_on_vm(app: &AppHandle, id: Uuid, worktree: &Path, paths: &[Strin
             .collect();
         if !unsynced.is_empty() {
             let lines = unsynced.iter().map(|line| line.as_str()).collect::<Vec<_>>().join("\n");
-            return Err(format!("failed to commit on the VM: these files did not reach it:\n{lines}"));
+            return Err(format!("failed to commit: these files did not reach the VM:\n{lines}"));
         }
-        let target = store::find_session(app, id)?.remote.ok_or("failed to commit on the VM: the session runs locally now")?;
+        let target = store::find_session(app, id)?.remote.ok_or("failed to commit: the session runs locally now")?;
+        git::commit_files(worktree, paths, message).await?;
         let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
-        remote::commit::commit(&ssh, id, worktree, paths, message).await?;
         sync::follow_head(app, id, &ssh, &target, worktree).await?;
         Ok(())
     })
@@ -2343,8 +2343,8 @@ async fn commit_on_vm(app: &AppHandle, id: Uuid, worktree: &Path, paths: &[Strin
 
 /// Pushes the session's commits from here, with this Mac's Git credentials, to the branch on `origin` the session was
 /// created from (`push_target`), after a rebase onto that branch when it moved on; the session's own branch never
-/// reaches `origin`. A remote session's local branch first catches up with the commit its VM has checked out, and the
-/// rebase runs on the VM (`push_followed`). Only a poller session's branch is pushed from its VM under its own name with
+/// reaches `origin`. A remote session's branch is first brought to the same commit here and on its VM, and the VM's
+/// branch follows the rebase (`push_followed`). Only a poller session's branch is pushed from its VM under its own name with
 /// the poller's stored token, so that the push shows the poller's GitHub App like the rest of what its agent does on
 /// GitHub.
 #[tauri::command]
@@ -2376,7 +2376,7 @@ fn push_target(record: &SessionRecord, remote: Option<&RemoteTarget>) -> String 
 }
 
 /// Number of commits `push_branch` would publish, counted in the session's local worktree against the branch the push
-/// lands on, as fetched last; a remote session's local branch follows its VM's commits.
+/// lands on, as fetched last; a remote session's local branch and its VM's point at the same commit.
 #[tauri::command]
 pub async fn unpushed_commit_count(app: AppHandle, id: Uuid) -> Result<u32, String> {
     let record = worktree_session(&app, id)?;
@@ -2385,11 +2385,11 @@ pub async fn unpushed_commit_count(app: AppHandle, id: Uuid) -> Result<u32, Stri
 }
 
 /// Pushes the commits of the remote session `id`, checked out in its local worktree `worktree`, to the branch `target`
-/// on `origin` from here, while no sync of the session runs: the local branch catches up with the VM's commit
-/// (`sync::follow_head`); when `origin/<target>` moved on, the branch is rebased onto it here, with the local Git
+/// on `origin` from here, while no sync of the session runs: the branch is brought to the same commit here and on the
+/// VM (`sync::follow_head`); when `origin/<target>` moved on, the branch is rebased onto it here, with the local Git
 /// identity, and the VM's branch moves to the rebased commit (`remote::commit::move_vm_head`), which the local branch
-/// follows from then on; then `HEAD` is pushed. A local branch that holds a commit the VM lacks fails the push with the
-/// message of the follow.
+/// follows from then on; then `HEAD` is pushed. A branch that moved on both sides fails the push with the message of
+/// the alignment.
 async fn push_followed(app: &AppHandle, id: Uuid, worktree: &Path, target: &str) -> Result<(), String> {
     sync::exclusive(app, id, |_| async move {
         let remote = store::find_session(app, id)?.remote.ok_or("failed to push: the session runs locally now")?;

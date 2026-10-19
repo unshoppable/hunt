@@ -636,9 +636,13 @@ within about 0.1 s. A full sync, which lists both sides, runs when the session c
 folder moved here); a save, move, delete, revert or shelve in Hunt has the local side listed anew, and a prompt and a
 diagram refresh wait until local changes reached the VM. Without the channel (a VM on an older release, or while it
 reconnects) a full sync also runs after every tool call and every 10 seconds while a turn runs. After every sync that
-may have moved it, the local branch points at the commit the VM's worktree has checked out (fetched as `refs/hunt/<id>/head`,
-`apps/client/src-tauri/src/remote/commit.rs`), so the diff shows what is uncommitted on the VM, as for a local session,
-also after the agent committed; a local branch that holds a commit the VM lacks stays put, and the chat says so.
+may have moved either, the session's branch points at the same commit here and on the VM
+(`apps/client/src-tauri/src/remote/commit.rs`): when the agent committed on the VM, the local branch follows (the commit is
+fetched as `refs/hunt/<id>/head`), and when a commit was made here, with Hunt's changelist or any tool in the local
+worktree (seen through the worktree's `logs/HEAD`), the VM's branch follows (the commit goes there as
+`refs/hunt/<id>/local`); the following side keeps its files, which the sync made equal already, so the diff shows what
+is uncommitted on both sides, as for a local session. When both sides committed since they last agreed, neither
+follows, and the chat says so with the reset to make.
 
 The Claude Code transcripts move beside the files, live and both ways (`apps/client/src-tauri/src/session/transcripts.rs`,
 `remote/transcript_sync.rs`): the transcript helper on the VM (`apps/session/src/sync/transcripts.ts`, started over the
@@ -656,13 +660,13 @@ the session's transcript from the VM into the local project folder instead, as a
 (`back_up_transcripts` in `apps/client/src-tauri/src/remote/retrieve.rs`); the backup and the retrieval leave the sub
 chats' transcripts alone, whose copies on the VM are the stream's. The records from the VM keep its permission mode
 until the session runs here again, and the memory stays on the VM for the merge below. The
-changelist's *Commit* runs `hunt-ctl commit` on the VM after a sync that sent the local edits, while no other sync
-runs: the checked files are committed under the local Git identity, and the repository's hooks run with the agent's
-environment. *Push* pushes the commits to the branch the session was created from on `origin` from this Mac with its
-Git credentials, as for a local session, after the local branch caught up with the VM's commit; when that branch moved
-on, the local branch is rebased onto it here, with the local Git identity, and the VM's branch moves to the rebased
-commit (`remote::commit::move_vm_head`: the commit goes to the VM, whose worktree is reset to it with its uncommitted
-changes stashed meanwhile). Only a poller session's branch is pushed from its VM
+changelist's *Commit* commits the checked files in the local worktree, with this Mac's Git, hooks and identity, as for
+a local session, after a sync that sent the local edits to the VM and while no other sync runs; the VM's branch then
+follows the commit. *Push* pushes the commits to the branch the session was created from on `origin` from this Mac
+with its Git credentials, as for a local session, once the branch points at the same commit here and on the VM; when
+that branch on `origin` moved on, the local branch is rebased onto it here, with the local Git identity, and the VM's
+branch moves to the rebased commit (`remote::commit::move_vm_head`: the commit goes to the VM, whose worktree is reset
+to it with its uncommitted changes stashed meanwhile). Only a poller session's branch is pushed from its VM
 under its own name with the poller's stored token (`hunt-ctl push --stored`), so that the push shows the GitHub App
 like its agent's commits.
 *WebStorm* is switched off for a remote session and its sub chats. Its `node_modules` install leaves the lockfile alone (`npm ci`, `--frozen-lockfile`). The chat header

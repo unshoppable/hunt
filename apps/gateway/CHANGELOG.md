@@ -1,3 +1,9 @@
+## 0.35.1 (2026-10-19)
+
+### 🩹 Fixes
+
+- **gateway:** the swf agent no longer repeats or summarizes an answer to its question on the issue, also not in its plan comment ([9600257](https://github.com/unshoppable/hunt/commit/9600257))
+
 ## 0.35.0 (2026-10-19)
 
 ### 🚀 Features

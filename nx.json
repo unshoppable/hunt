@@ -3,7 +3,9 @@
   "release": {
     "conventionalCommits": {
       "types": {
-        "perf": { "semverBump": "patch" }
+        "perf": {
+          "semverBump": "patch"
+        }
       }
     },
     "projects": [
@@ -100,5 +102,6 @@
       "analyzeSourceFiles": true,
       "analyzePackageJson": true
     }
-  }
+  },
+  "analytics": true
 }

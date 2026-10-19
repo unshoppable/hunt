@@ -1,3 +1,10 @@
+## 0.46.0 (2026-10-19)
+
+### 🚀 Features
+
+- **client:** commit a remote session's files here, with this Mac's Git, hooks and identity, and keep the branch at the same commit on both sides, whoever committed ([f6f8b2d](https://github.com/unshoppable/hunt/commit/f6f8b2d))
+- **client:** Git tab after Diff with the commit log and its graph, the branch tree, and the files, details and diff of a commit ([f432c89](https://github.com/unshoppable/hunt/commit/f432c89))
+
 ## 0.45.1 (2026-10-19)
 
 ### 🩹 Fixes

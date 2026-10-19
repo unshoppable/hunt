@@ -1,3 +1,9 @@
+## 0.50.0 (2026-10-19)
+
+### 🚀 Features
+
+- **client:** pushing from the changelist first opens a popover that names the branch on origin it lands on, the commit button gets a menu with Commit and Push, the session's repository and branch show below the prompt box, the delete button of a remote session moves beside its title, the editor window closes with its last tab, sub sessions of a VM session no longer show as on the VM, and the sync label stays hidden while the files are in sync ([77902b2](https://github.com/unshoppable/hunt/commit/77902b2))
+
 ## 0.49.2 (2026-10-19)
 
 ### 🩹 Fixes

@@ -103,5 +103,5 @@
       "analyzePackageJson": true
     }
   },
-  "analytics": true
+  "analytics": false
 }

@@ -222,6 +222,17 @@ export function BranchIcon({ className = "size-3.5" }: { className?: string }) {
 }
 
 /** A cloud, for sessions that run on a remote VM. */
+/** Arrow up out of a tray: a push to the remote. */
+export function PushIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 16V4" />
+      <path d="m7 9 5-5 5 5" />
+      <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+    </svg>
+  );
+}
+
 export function CloudIcon({ className = "size-3.5" }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

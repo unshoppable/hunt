@@ -16,7 +16,8 @@ import { HEADER_BAR } from "../ui/bars";
 import { ICON_BUTTON, PRIMARY_BUTTON_XS } from "../ui/buttons";
 import { Dropdown } from "../ui/Dropdown";
 import { SearchField } from "../ui/SearchField";
-import { BranchIcon, CloseIcon, CloudSyncIcon, GitHubIcon, PlusIcon, PullRequestIcon, RepoIcon, Spinner, TicketIcon } from "../ui/icons";
+import { BranchIcon, CloseIcon, CloudSyncIcon, GitHubIcon, PlusIcon, PullRequestIcon, PushIcon, RepoIcon, Spinner, TicketIcon } from "../ui/icons";
+import { pushTarget, remoteOf } from "../chat/remoteSession";
 import { useLoad } from "../ui/useLoad";
 
 export function SessionSidebar() {
@@ -254,6 +255,12 @@ export function SessionSidebar() {
                   {!isSubChat ? (session.pullRequest ? <GitHubIcon className="size-4 shrink-0" /> : <BranchIcon className="size-4 shrink-0" />) : null}
                   <span className="truncate">{isCreating && !isSubChat ? (session.workspace === "checkout" ? "Starting…" : "Creating worktree…") : sessionSubtitle(session)}</span>
                 </span>
+                {!isSubChat ? (
+                  <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500" title="Branch on origin a push of the session lands on">
+                    <PushIcon className="size-4 shrink-0" />
+                    <span className="truncate">origin/{pushTarget(session, remoteOf(session, sessions))}</span>
+                  </span>
+                ) : null}
                 {!isSubChat ? (
                   <span
                     className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500"

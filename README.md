@@ -564,7 +564,7 @@ moved the same way once it is off. The new VM is labelled `hunt-role=session`,
 `hunt-session=<short id>`, `hunt-origin=desktop` and `hunt-owner=<caller>`, records the session's ID, repository,
 branch and title in its metadata and refuses a VM that holds another session (`conflict`); it and `vms.start` start a
 stopped VM, resume a suspended one, wait out a shutdown in progress, wait until the VM answers over SSH and its startup
-script wrote `/var/lib/hunt/session-ready`, install the staged session release and put the remote secrets on it,
+script wrote `/var/lib/hunt/session-ready` (the same command puts the remote secrets on it), install the staged session release,
 streaming `creatingVm`,
 `startingVm`, `movingVm`, `waitingForVm` and `installingRuntime`. Concurrent calls of one method for one session share one
 operation; the second hears its progress from the start. `vms.delete` deletes the VM with all its disks and answers

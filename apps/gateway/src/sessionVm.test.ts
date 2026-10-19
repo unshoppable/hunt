@@ -42,11 +42,15 @@ describe("sshArgs", () => {
 
 describe("the ready check", () => {
   it("asks for the stamp and the installed hash in one command and reads both from the answer", () => {
-    expect(READY_COMMAND).toBe("test -e /var/lib/hunt/session-ready && { echo ready; cat /var/lib/hunt/installed-hash 2>/dev/null; } || true");
+    expect(READY_COMMAND).toBe(
+      'test -e /var/lib/hunt/session-ready && { echo ready; echo "$(cat /var/lib/hunt/installed-hash 2>/dev/null)"; sudo -n hunt-ctl put-remote-secrets >/dev/null 2>&1 && echo secrets; } || true',
+    );
     expect(parseReadyAnswer("")).toBeNull();
     expect(parseReadyAnswer("\n")).toBeNull();
-    expect(parseReadyAnswer("ready\n")).toBe("");
-    expect(parseReadyAnswer("ready\n0123456789abcdef\n")).toBe("0123456789abcdef");
+    expect(parseReadyAnswer("ready\n")).toEqual({ installedHash: "", hasSecrets: false });
+    expect(parseReadyAnswer("ready\n\nsecrets\n")).toEqual({ installedHash: "", hasSecrets: true });
+    expect(parseReadyAnswer("ready\n0123456789abcdef\n")).toEqual({ installedHash: "0123456789abcdef", hasSecrets: false });
+    expect(parseReadyAnswer("ready\n0123456789abcdef\nsecrets\n")).toEqual({ installedHash: "0123456789abcdef", hasSecrets: true });
   });
 });
 

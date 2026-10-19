@@ -19,8 +19,9 @@
  * discards its saved memory, and then moved like a stopped one.
  *
  * Bringing a VM up starts a stopped one, resumes a suspended one and waits out a shutdown in progress, then waits until
- * it answers over SSH and its startup script finished, hands it the staged session release and puts the remote secrets
- * on it (`hunt-ctl put-remote-secrets`), which `hunt-ctl session-config` gives the services. Calls that bring up the
+ * it answers over SSH and its startup script finished, which puts the remote secrets on it in the same command
+ * (`hunt-ctl put-remote-secrets`, which `hunt-ctl session-config` gives the services), and hands it the staged session
+ * release; a VM whose release is too old to take the secrets with the check gets them after. Calls that bring up the
  * VM of one session share one operation: a second identical call joins the first and hears its progress from the
  * start, a different one waits until the first ended.
  */
@@ -390,23 +391,23 @@ export class Orchestrator {
         reporter.log(`${verb === "start" ? "starting" : "resuming"} ${name}`);
         isStarting = true;
         const error = await this.waitForOperation(operation, Math.max(deadline - this.deps.now(), 0), `${verb} ${name}`);
-        if (error) {
-          const others = this.deps.zones().filter((candidate) => candidate !== zone);
-          if (isStockout(error.code) && others.length > 0) {
-            if (verb === "start") {
-              zone = await this.move(instance, names, error.machineType, others, reporter);
-              deadline = this.deps.now() + START_TIMEOUT_MS;
-              continue;
-            }
-            reporter.log(`${error.machineType ?? "its machine type"} is unavailable in ${zone}; stopping ${name} to move it`);
-            await this.stopForMove(zone, name, error);
-            isStarting = false;
-            isStopping = true;
-          } else {
-            const reason = (error.message || error.code).replace(/\.$/, "");
-            const stays = isStockout(error.code) ? `; its disk stays in ${zone}, try again later` : "";
-            throw new ApiError("unavailable", `failed to ${verb} ${name}: ${reason}${stays}`);
+        // A finished operation left the VM running, or about to be: read its status right away.
+        if (!error) continue;
+        const others = this.deps.zones().filter((candidate) => candidate !== zone);
+        if (isStockout(error.code) && others.length > 0) {
+          if (verb === "start") {
+            zone = await this.move(instance, names, error.machineType, others, reporter);
+            deadline = this.deps.now() + START_TIMEOUT_MS;
+            continue;
           }
+          reporter.log(`${error.machineType ?? "its machine type"} is unavailable in ${zone}; stopping ${name} to move it`);
+          await this.stopForMove(zone, name, error);
+          isStarting = false;
+          isStopping = true;
+        } else {
+          const reason = (error.message || error.code).replace(/\.$/, "");
+          const stays = isStockout(error.code) ? `; its disk stays in ${zone}, try again later` : "";
+          throw new ApiError("unavailable", `failed to ${verb} ${name}: ${reason}${stays}`);
         }
       } else if (SHUTDOWN_STATUSES.has(instance.status) || isStopping) {
         if (!isReported) {
@@ -423,19 +424,22 @@ export class Orchestrator {
     }
 
     const vm = this.deps.vm(name, zone);
-    const installedHash = await vm.waitUntilReady(
+    const secrets = await this.deps.remoteSecrets();
+    const ready = await vm.waitUntilReady(
       READY_TIMEOUT_MS,
+      secrets,
       () => reporter.progress("waitingForVm"),
       (reason) => reporter.log(`${name} does not answer yet: ${reason}`),
     );
     reporter.progress("vmReady");
     reporter.log(`${name} is ready; checking its release`);
-    const release = await vm.ensureRelease(installedHash, () => {
+    const release = await vm.ensureRelease(ready.installedHash, () => {
       reporter.progress("installingRuntime");
       reporter.log(`installing the staged session release on ${name}`);
     });
-    const secrets = await this.deps.remoteSecrets();
-    await vm.huntCtl(["put-remote-secrets"], JSON.stringify(secrets));
+    if (!ready.hasSecrets) {
+      await vm.huntCtl(["put-remote-secrets"], JSON.stringify(secrets));
+    }
     reporter.log(`put the remote secrets on ${name} (${Object.keys(secrets).length})`);
     return { zone, wasRunning, release };
   }

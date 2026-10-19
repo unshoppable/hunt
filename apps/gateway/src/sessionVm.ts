@@ -19,10 +19,14 @@ export const STAGED_SESSION_RELEASE = "/srv/hunt/session-current";
 const INSTALLED_HASH = "/var/lib/hunt/installed-hash";
 const READY_STAMP = "/var/lib/hunt/session-ready";
 /**
- * Prints `ready` and, on the next line, the hash of the installed session release once the startup script wrote the
- * ready stamp; nothing before that. Exits 0 either way, so that only an SSH failure fails the check.
+ * Prints `ready`, on the next line the hash of the installed session release (an empty line without one) and, once
+ * `hunt-ctl put-remote-secrets` took the remote secrets on stdin, `secrets` on a third line, all only once the startup
+ * script wrote the ready stamp; nothing before that. Exits 0 either way, so that only an SSH failure fails the check.
+ * Putting the secrets here spares the bring-up an SSH round trip; a release too old for the command prints no third
+ * line, and the secrets are put after the release is installed.
  */
-export const READY_COMMAND = `test -e ${READY_STAMP} && { echo ready; cat ${INSTALLED_HASH} 2>/dev/null; } || true`;
+export const READY_COMMAND =
+  `test -e ${READY_STAMP} && { echo ready; echo "$(cat ${INSTALLED_HASH} 2>/dev/null)"; sudo -n hunt-ctl put-remote-secrets >/dev/null 2>&1 && echo secrets; } || true`;
 const RELAY_COMMAND = "sudo -n -u agent socat - UNIX-CONNECT:/run/hunt/relay.sock";
 /** The idle check of the session release on the VM, which prints its decision and changes nothing. */
 const IDLE_CHECK_COMMAND = "sudo -n /srv/hunt/current/vm/hunt-idle-check --dry-run";
@@ -81,13 +85,19 @@ export function installScript(hash: string, incoming = `/srv/hunt/incoming/${ran
   );
 }
 
-/**
- * The installed release hash in the output of `READY_COMMAND`, empty when the VM has no release; null while the VM is
- * not ready.
- */
-export function parseReadyAnswer(output: string): string | null {
-  const [first = "", second = ""] = output.trim().split("\n");
-  return first.trim() === "ready" ? second.trim() : null;
+/** What `READY_COMMAND` reported of a ready VM. */
+export interface ReadyAnswer {
+  /** The hash of the installed session release, empty when the VM has none. */
+  installedHash: string;
+  /** Whether the VM took the remote secrets with the check. */
+  hasSecrets: boolean;
+}
+
+/** The answer in the output of `READY_COMMAND`; null while the VM is not ready. */
+export function parseReadyAnswer(output: string): ReadyAnswer | null {
+  const [first = "", second = "", third = ""] = output.trim().split("\n");
+  if (first.trim() !== "ready") return null;
+  return { installedHash: second.trim(), hasSecrets: third.trim() === "secrets" };
 }
 
 export interface StagedRelease {
@@ -189,11 +199,12 @@ export interface SessionVm {
   /** Runs `hunt-ctl` with `args` as root and returns its JSON result. */
   huntCtl(args: string[], input?: Buffer | string, timeoutMs?: number): Promise<Record<string, unknown>>;
   /**
-   * Waits until the VM answers over SSH and its startup script wrote the ready stamp, and returns the hash of the session
-   * release installed on it, empty without one. `onWaiting` hears the first miss, `onFailure` why the VM does not answer:
-   * the first failed check and then one at most every minute.
+   * Waits until the VM answers over SSH and its startup script wrote the ready stamp, hands it the remote secrets
+   * `secrets` (name → value) with the same command, and returns the hash of the session release installed on it, empty
+   * without one, and whether it took the secrets. `onWaiting` hears the first miss, `onFailure` why the VM does not
+   * answer: the first failed check and then one at most every minute.
    */
-  waitUntilReady(timeoutMs: number, onWaiting?: () => void, onFailure?: (reason: string) => void): Promise<string>;
+  waitUntilReady(timeoutMs: number, secrets: Record<string, string>, onWaiting?: () => void, onFailure?: (reason: string) => void): Promise<ReadyAnswer>;
   /**
    * Installs the staged session release unless `installedHash`, the hash `waitUntilReady` returned, is its hash;
    * `onInstall` hears when it does.
@@ -232,14 +243,15 @@ export function sessionVm(vm: string, location: VmLocation, log: Log = () => {})
         throw new Error(`failed to read the output of hunt-ctl ${args[0]} on ${vm}: ${output.slice(0, 300)}`);
       }
     },
-    async waitUntilReady(timeoutMs, onWaiting, onFailure) {
+    async waitUntilReady(timeoutMs, secrets, onWaiting, onFailure) {
       const deadline = Date.now() + timeoutMs;
+      const input = JSON.stringify(secrets);
       let reason = `${READY_STAMP} is still missing`;
       let isWaiting = false;
       let reportedAt = -Infinity;
       while (Date.now() < deadline) {
         try {
-          const answer = parseReadyAnswer((await gcloud(READY_COMMAND, "", 2 * 60_000, `check the ready stamp of ${vm}`)).toString("utf8"));
+          const answer = parseReadyAnswer((await gcloud(READY_COMMAND, input, 2 * 60_000, `check the ready stamp of ${vm}`)).toString("utf8"));
           if (answer !== null) return answer;
         } catch (error) {
           reason = (error as Error).message;

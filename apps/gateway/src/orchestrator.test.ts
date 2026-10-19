@@ -3,7 +3,17 @@ import type { ProgressStep } from "../../../libs/domain/src/gatewayApi.ts";
 import type { Transport } from "./acpClient.ts";
 import { ApiError } from "./apiProtocol.ts";
 import type { Compute, Disk, Instance, InstanceRequest, MetadataItem, OperationError, OperationState } from "./gcp.ts";
-import { CREATE_TIMEOUT_MS, labelValue, Orchestrator, SNAPSHOT_TIMEOUT_MS, START_TIMEOUT_MS, SUSPEND_TIMEOUT_MS, type ProvisionRequest, type Reporter } from "./orchestrator.ts";
+import {
+  CREATE_TIMEOUT_MS,
+  INSTANCE_POLL_MS,
+  labelValue,
+  Orchestrator,
+  SNAPSHOT_TIMEOUT_MS,
+  START_TIMEOUT_MS,
+  SUSPEND_TIMEOUT_MS,
+  type ProvisionRequest,
+  type Reporter,
+} from "./orchestrator.ts";
 import type { SessionVm } from "./sessionVm.ts";
 
 const ID = "ab12cd34-0000-4000-8000-000000000001";
@@ -258,7 +268,9 @@ function fakeCompute(vms: Instance[] = []) {
   };
 }
 
-/** The call that puts the remote secrets of `createOrchestrator` on a VM. */
+/** The ready check of a VM, which hands it the remote secrets of `createOrchestrator`. */
+const WAIT_READY = `wait until ready <<< {"MED_OPENAI_API_KEY":"sk-1"}`;
+/** The call that puts the remote secrets on a VM whose release was too old to take them with the ready check. */
 const PUT_SECRETS = `hunt-ctl put-remote-secrets <<< {"MED_OPENAI_API_KEY":"sk-1"}`;
 /** The release check of a VM that runs the staged release, and of one without any. */
 const KEEP_RELEASE = `ensure release over ${STAGED_HASH}`;
@@ -266,7 +278,8 @@ const INSTALL_RELEASE = "ensure release over none";
 
 /**
  * A session VM whose startup script finished unless `isBooting`, that fails a readiness check with `failure` while it
- * boots and reports no installed release when `isOutdated`, so that it needs the staged one.
+ * boots and reports no installed release when `isOutdated`, so that it needs the staged one and, its release being too
+ * old for the command, takes the remote secrets only after the install.
  */
 function fakeVm(options: { isBooting?: boolean; failure?: string; isOutdated?: boolean } = {}) {
   const calls: string[] = [];
@@ -276,15 +289,15 @@ function fakeVm(options: { isBooting?: boolean; failure?: string; isOutdated?: b
       calls.push(`hunt-ctl ${args.join(" ")} <<< ${String(input)}`);
       return {};
     },
-    waitUntilReady: async (_timeoutMs, onWaiting, onFailure) => {
-      calls.push("wait until ready");
+    waitUntilReady: async (_timeoutMs, secrets, onWaiting, onFailure) => {
+      calls.push(`wait until ready <<< ${JSON.stringify(secrets)}`);
       if (options.isBooting) {
         onWaiting?.();
         if (options.failure) {
           onFailure?.(options.failure);
         }
       }
-      return options.isOutdated ? "" : STAGED_HASH;
+      return options.isOutdated ? { installedHash: "", hasSecrets: false } : { installedHash: STAGED_HASH, hasSecrets: true };
     },
     ensureRelease: async (installedHash, onInstall) => {
       calls.push(`ensure release over ${installedHash || "none"}`);
@@ -365,7 +378,7 @@ describe("Orchestrator.provision", () => {
       { key: "hunt-title", value: "Fix login" },
     ]);
     expect(steps).toEqual(["creatingVm", "waitingForVm", "vmReady", "installingRuntime"]);
-    expect(calls).toEqual(["wait until ready", INSTALL_RELEASE, PUT_SECRETS]);
+    expect(calls).toEqual([WAIT_READY, INSTALL_RELEASE, PUT_SECRETS]);
     expect(logs[0]).toBe(`creating ${VM} from tpl-hunt-session in ${ZONE}`);
   });
 
@@ -523,15 +536,17 @@ describe("Orchestrator.start", () => {
     expect(result).toEqual({ vm: { project: "medconomy-hunt", zone: ZONE, instance: VM }, wasRunning: true, release: RELEASE });
     expect(fake.calls).toEqual([]);
     expect(steps).toEqual(["vmReady"]);
-    expect(calls).toEqual(["wait until ready", KEEP_RELEASE, PUT_SECRETS]);
+    expect(calls).toEqual([WAIT_READY, KEEP_RELEASE]);
   });
 
-  it("resumes a suspended VM", async () => {
+  it("resumes a suspended VM and reads its status right after the operation, without a pause", async () => {
     const fake = fakeCompute([instance({ sessionId: ID, status: "SUSPENDED" })]);
     const { reporter, steps, logs } = recorder();
+    const { orchestrator, elapsed } = createOrchestrator(fake.compute);
 
-    const result = await createOrchestrator(fake.compute).orchestrator.start(ID, reporter);
+    const result = await orchestrator.start(ID, reporter);
     expect(result.wasRunning).toBe(false);
+    expect(elapsed()).toBe(INSTANCE_POLL_MS);
     expect(fake.calls).toEqual([`resume ${VM}`]);
     expect(steps).toEqual(["startingVm", "vmReady"]);
     expect(logs[0]).toBe(`resuming ${VM}`);
@@ -582,9 +597,9 @@ describe("Orchestrator.start", () => {
       ready = resolve;
     });
     const waitUntilReady = vm.waitUntilReady;
-    vm.waitUntilReady = async (timeoutMs, onWaiting) => {
+    vm.waitUntilReady = async (timeoutMs, secrets, onWaiting) => {
       await isReady;
-      return waitUntilReady(timeoutMs, onWaiting);
+      return waitUntilReady(timeoutMs, secrets, onWaiting);
     };
     const { orchestrator } = createOrchestrator(fake.compute, vm);
     const first = recorder();
@@ -599,7 +614,7 @@ describe("Orchestrator.start", () => {
     expect(a).toEqual(b);
     expect(a.wasRunning).toBe(false);
     expect(fake.calls).toEqual([`start ${VM}`]);
-    expect(calls).toEqual(["wait until ready", INSTALL_RELEASE, PUT_SECRETS]);
+    expect(calls).toEqual([WAIT_READY, INSTALL_RELEASE, PUT_SECRETS]);
     expect(first.steps).toEqual(["startingVm", "vmReady", "installingRuntime"]);
     expect(second.steps).toEqual(["startingVm", "vmReady", "installingRuntime"]);
   });
@@ -616,7 +631,7 @@ describe("Orchestrator.start", () => {
 
     expect(order).toEqual(["start", "provision"]);
     expect(fake.calls).toEqual([`start ${VM}`, `setMetadata ${VM} fp0`]);
-    expect(calls).toEqual(["wait until ready", KEEP_RELEASE, PUT_SECRETS, "wait until ready", KEEP_RELEASE, PUT_SECRETS]);
+    expect(calls).toEqual([WAIT_READY, KEEP_RELEASE, WAIT_READY, KEEP_RELEASE]);
   });
 });
 

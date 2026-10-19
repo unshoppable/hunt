@@ -5,7 +5,7 @@ import type { Transport } from "./acpClient.ts";
 import type { Compute, Instance, InstanceRequest, Metadata, MetadataItem } from "./gcp.ts";
 import type { GitHub, Issue } from "./github.ts";
 import { Orchestrator } from "./orchestrator.ts";
-import type { SessionVm } from "./sessionVm.ts";
+import type { ReadyAnswer, SessionVm } from "./sessionVm.ts";
 import type { GitHubApp } from "./githubApp.ts";
 import { Poller, relayStatus, secretsReader, type PollerDeps } from "./swf.ts";
 import { readSwfConfig, type SwfConfig } from "./swfConfig.ts";
@@ -172,7 +172,7 @@ function fakeVm(failing?: { command: string; error: Error }, status: () => Recor
     },
     waitUntilReady: async () => {
       calls.push("wait until ready");
-      return "";
+      return { installedHash: "", hasSecrets: false };
     },
     ensureRelease: async () => {
       calls.push("ensure release");
@@ -405,8 +405,8 @@ describe("Poller.cycle", () => {
 
   it("counts a session being set up until Compute Engine lists its VM", async () => {
     let finishSetup = () => {};
-    const blocked = new Promise<string>((resolve) => {
-      finishSetup = () => resolve("");
+    const blocked = new Promise<ReadyAnswer>((resolve) => {
+      finishSetup = () => resolve({ installedHash: "", hasSecrets: false });
     });
     const { vm } = fakeVm();
     vm.waitUntilReady = () => blocked;

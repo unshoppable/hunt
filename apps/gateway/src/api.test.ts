@@ -105,9 +105,9 @@ function fakeVm() {
       huntCtlCalls.push(`${args.join(" ")} <<< ${String(input)}`);
       return {};
     },
-    waitUntilReady: async (_timeoutMs, onWaiting) => {
+    waitUntilReady: async (_timeoutMs, _secrets, onWaiting) => {
       onWaiting?.();
-      return "";
+      return { installedHash: "", hasSecrets: false };
     },
     ensureRelease: async (_installedHash, onInstall) => {
       onInstall?.();

@@ -30,7 +30,10 @@ function issue(number: number, title = `Issue ${number}`, labels = ["swf"]): Iss
  * A GitHub whose open issues with the label are `issues` by repository and whose single issues are `lookup` by
  * `<repo>#<number>` (null: deleted); every call is recorded as one line.
  */
-function fakeGitHub(issues: Record<string, Issue[]>, options: { labelGone?: number[]; lookup?: Record<string, Issue | null> } = {}): GitHub & { calls: string[] } {
+function fakeGitHub(
+  issues: Record<string, Issue[]>,
+  options: { labelGone?: number[]; lookup?: Record<string, Issue | null>; projects?: string[]; projectsFail?: boolean } = {},
+): GitHub & { calls: string[] } {
   const calls: string[] = [];
   return {
     calls,
@@ -58,6 +61,11 @@ function fakeGitHub(issues: Record<string, Issue[]>, options: { labelGone?: numb
     },
     ensureLabel: async (repo, label) => {
       calls.push(`ensure ${repo} ${label.name}`);
+    },
+    moveToStatus: async (repo, number, status) => {
+      calls.push(`move ${repo}#${number} ${status}`);
+      if (options.projectsFail) throw new Error("HTTP 403 Resource not accessible by integration");
+      return options.projects ?? [];
     },
   };
 }
@@ -272,6 +280,22 @@ describe("Poller.cycle", () => {
     expect(logs[0]).toBe("waiting: acme/app#9; 1 of 2 sessions are up");
   });
 
+  it("logs the projects the claimed issue moved to In Progress in, and a failed move without failing the setup", async () => {
+    const moved = fakeGitHub({ "acme/app": [issue(12, "Fix login", ["swf"])] }, { projects: ["Board", "Sprint"] });
+    const movedPoller = createPoller({ github: moved });
+    await movedPoller.poller.cycle();
+    await movedPoller.poller.drain();
+    expect(movedPoller.logs).toContain('acme/app#12: moved to In Progress in "Board", "Sprint"');
+
+    const failing = fakeGitHub({ "acme/app": [issue(12, "Fix login", ["swf"])] }, { projectsFail: true });
+    const failingPoller = createPoller({ github: failing });
+    await failingPoller.poller.cycle();
+    await failingPoller.poller.drain();
+    expect(failingPoller.logs).toContain("acme/app#12: failed to move the issue to In Progress in its projects: HTTP 403 Resource not accessible by integration");
+    expect(failing.calls.some((call) => call.startsWith("comment acme/app#12 Hunt started a session"))).toBe(true);
+    expect(failing.calls).not.toContain("label acme/app#12 swf:failed");
+  });
+
   it("claims the issue before anything else and then sets the session up like a handoff", async () => {
     const github = fakeGitHub({ "acme/app": [issue(12, "Fix login", ["swf", "bug"])] });
     const compute = fakeCompute();
@@ -290,6 +314,7 @@ describe("Poller.cycle", () => {
       "comments acme/app#12",
       "unlabel acme/app#12 swf",
       "label acme/app#12 swf:running",
+      "move acme/app#12 In Progress",
       `comment acme/app#12 Hunt started a session for this issue: previews at \`https://ab12cd34-<port>.hunt.example.com\` once the agent starts the services.\n\nSession \`${SESSION_ID}\` on the VM \`${VM}\`, branch \`fix/general/12-fix-login\`.`,
     ]);
     expect(compute.inserted).toEqual([

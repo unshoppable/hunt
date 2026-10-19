@@ -6,7 +6,8 @@
  *   node /srv/hunt/current/gateway/swf.mjs      (the bundle `nx build gateway` writes)
  *
  * Per issue, as long as fewer than `maxSessions` of its VMs (label `hunt-origin=swf`) are up: claim the issue first
- * (label `swf` → `swf:running` and a comment with the preview URLs), then do what a handoff of the desktop does
+ * (label `swf` → `swf:running`, the issue's status in every project it belongs to → IN_PROGRESS_STATUS, and a comment
+ * with the preview URLs), then do what a handoff of the desktop does
  * (`apps/client/src-tauri/src/remote/handoff.rs`), with a clone from GitHub in place of the push: the orchestrator
  * (`orchestrator.ts`) creates the session VM from the instance template, records the session in its metadata, waits for
  * its startup script and installs the session release staged on the gateway; then `install-tools`, `clone`, the
@@ -111,6 +112,8 @@ import {
 
 export const POLL_INTERVAL_MS = 30_000;
 export const ORIGIN: Origin = "swf";
+/** The `Status` option a claimed issue gets in every project (Projects v2) it is an item of; matched case-insensitively. */
+export const IN_PROGRESS_STATUS = "In Progress";
 const GITHUB_APP_ID_SECRET = "HUNT_SWF_GITHUB_APP_ID";
 const GITHUB_APP_KEY_SECRET = "HUNT_SWF_GITHUB_APP_KEY";
 const CLAUDE_SECRET = "HUNT_SWF_CLAUDE_TOKEN";
@@ -447,6 +450,7 @@ export class Poller {
     setup.done = (async () => {
       try {
         await github.addLabels(repo, issue.number, [labels.running]);
+        await this.moveToInProgress(github, key, repo, issue.number);
         await github.comment(repo, issue.number, claimComment(names, branch, domain));
         await this.setUp(setup, domain, claudeToken, branch, issue, comments);
       } catch (error) {
@@ -455,6 +459,18 @@ export class Poller {
         this.setups.delete(names.vm);
       }
     })();
+  }
+
+  /** Moves the issue to the IN_PROGRESS_STATUS column of its projects; a failure, such as a missing permission, is only logged. */
+  private async moveToInProgress(github: GitHub, key: string, repo: string, issue: number): Promise<void> {
+    try {
+      const moved = await github.moveToStatus(repo, issue, IN_PROGRESS_STATUS);
+      if (moved.length > 0) {
+        this.deps.log(`${key}: moved to ${IN_PROGRESS_STATUS} in ${moved.map((title) => `"${title}"`).join(", ")}`);
+      }
+    } catch (error) {
+      this.deps.log(`${key}: failed to move the issue to ${IN_PROGRESS_STATUS} in its projects: ${this.redacted(error)}`, "error");
+    }
   }
 
   private async ensureLabels(github: GitHub, repo: string, labels: SwfLabels): Promise<void> {

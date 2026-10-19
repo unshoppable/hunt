@@ -1,7 +1,7 @@
 /**
- * The GitHub REST calls of hunt-swf (`swf.ts`) with the installation token of the repository (`githubApp.ts`): open
- * issues with a label, their comments, labels and comments on an issue, and the repository labels the poller sets.
- * Plain `fetch`; no dependencies.
+ * The GitHub calls of hunt-swf (`swf.ts`) with the installation token of the repository (`githubApp.ts`): open issues
+ * with a label, their comments, labels and comments on an issue, the repository labels the poller sets (REST), and the
+ * status of an issue in the projects (Projects v2) it is an item of (GraphQL). Plain `fetch`; no dependencies.
  */
 
 const API = "https://api.github.com";
@@ -49,6 +49,59 @@ export interface GitHub {
   comment(repo: string, issue: number, body: string): Promise<void>;
   /** Creates the repository label unless it exists. */
   ensureLabel(repo: string, label: LabelSpec): Promise<void>;
+  /**
+   * Sets the `Status` field of the issue's item in every project it belongs to that has an option named `status`
+   * (case-insensitive) and gives their titles; a project without such an option, or without a `Status` field, is left
+   * as it is. The app's installation needs the organization permission "Projects: read and write".
+   */
+  moveToStatus(repo: string, issue: number, status: string): Promise<string[]>;
+}
+
+/** The issue's project items as the GraphQL query `PROJECT_ITEMS_QUERY` returns them. */
+interface RawProjectItem {
+  id?: unknown;
+  project?: {
+    id?: unknown;
+    title?: unknown;
+    field?: { id?: unknown; options?: { id?: unknown; name?: unknown }[] } | null;
+  } | null;
+}
+
+const PROJECT_ITEMS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      projectItems(first: 50) {
+        nodes {
+          id
+          project {
+            id
+            title
+            field(name: "Status") { ... on ProjectV2SingleSelectField { id options { id name } } }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+const SET_STATUS_MUTATION = `mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+  updateProjectV2ItemFieldValue(input: { projectId: $project, itemId: $item, fieldId: $field, value: { singleSelectOptionId: $option } }) {
+    projectV2Item { id }
+  }
+}`;
+
+/** The project items of an issue whose project has a `Status` option named `status`, with the IDs the mutation needs. */
+export function statusTargets(items: unknown, status: string): { item: string; project: string; title: string; field: string; option: string }[] {
+  if (!Array.isArray(items)) return [];
+  const targets: { item: string; project: string; title: string; field: string; option: string }[] = [];
+  for (const raw of items as RawProjectItem[]) {
+    const project = raw?.project;
+    if (typeof raw?.id !== "string" || typeof project?.id !== "string" || typeof project.field?.id !== "string") continue;
+    const option = (project.field.options ?? []).find((candidate) => typeof candidate?.name === "string" && candidate.name.toLowerCase() === status.toLowerCase());
+    if (typeof option?.id !== "string") continue;
+    targets.push({ item: raw.id, project: project.id, title: typeof project.title === "string" ? project.title : "", field: project.field.id, option: option.id });
+  }
+  return targets;
 }
 
 /** The URL of the `next` page in a `Link` header; null on the last page. */
@@ -132,6 +185,18 @@ export function createGitHub(tokenFor: (repo: string) => Promise<string>, fetchI
     return new Error(`failed to ${what}: HTTP ${response.status} ${text}`);
   }
 
+  /** The `data` of a GraphQL call; GraphQL reports errors with HTTP 200 in `errors`, which count as a failure too. */
+  async function graphql(repo: string, query: string, variables: Record<string, unknown>, what: string): Promise<Record<string, unknown>> {
+    const response = await call(repo, "POST", "/graphql", { query, variables });
+    if (!response.ok) throw await failure(response, what);
+    const result = (await response.json()) as { data?: Record<string, unknown>; errors?: { message?: unknown }[] };
+    if (result.errors?.length) {
+      const messages = result.errors.map((error) => (typeof error.message === "string" ? error.message : "unknown error")).join("; ");
+      throw new Error(`failed to ${what}: ${messages.slice(0, ERROR_TEXT_LIMIT)}`);
+    }
+    return result.data ?? {};
+  }
+
   /** Every item of a paginated list of `repo`. */
   async function list(repo: string, path: string, what: string): Promise<unknown[]> {
     const items: unknown[] = [];
@@ -180,6 +245,18 @@ export function createGitHub(tokenFor: (repo: string) => Promise<string>, fetchI
       const created = await call(repo, "POST", `/repos/${repoPath(repo)}/labels`, label);
       // 422: created meanwhile.
       if (!created.ok && created.status !== 422) throw await failure(created, `create the label ${label.name} in ${repo}`);
+    },
+    async moveToStatus(repo, issue, status) {
+      const [owner, name] = repo.split("/");
+      const data = await graphql(repo, PROJECT_ITEMS_QUERY, { owner, name, number: issue }, `read the projects of ${repo}#${issue}`);
+      const items = (data as { repository?: { issue?: { projectItems?: { nodes?: unknown } } } }).repository?.issue?.projectItems?.nodes;
+      const moved: string[] = [];
+      for (const target of statusTargets(items, status)) {
+        const variables = { project: target.project, item: target.item, field: target.field, option: target.option };
+        await graphql(repo, SET_STATUS_MUTATION, variables, `set the status of ${repo}#${issue} to ${status} in the project ${target.title}`);
+        moved.push(target.title);
+      }
+      return moved;
     },
   };
 }

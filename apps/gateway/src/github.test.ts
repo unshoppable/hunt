@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createGitHub, nextPageUrl, parseIssues } from "./github.ts";
+import { createGitHub, nextPageUrl, parseIssues, statusTargets } from "./github.ts";
 
 const API = "https://api.github.com";
 
@@ -151,5 +151,36 @@ describe("createGitHub", () => {
       "GET /repos/acme/app/labels/swf%3Afailed",
     ]);
     expect(requests[1].body).toEqual(label);
+  });
+
+  it("sets the status of the issue's item in every project with a matching option and names those projects", async () => {
+    const items = [
+      { id: "item1", project: { id: "p1", title: "Board", field: { id: "f1", options: [{ id: "todo", name: "Todo" }, { id: "wip", name: "In progress" }] } } },
+      { id: "item2", project: { id: "p2", title: "No status", field: null } },
+      { id: "item3", project: { id: "p3", title: "Other options", field: { id: "f3", options: [{ id: "x", name: "Doing" }] } } },
+    ];
+    const answers = [Response.json({ data: { repository: { issue: { projectItems: { nodes: items } } } } }), Response.json({ data: { updateProjectV2ItemFieldValue: {} } })];
+    const { fetchImpl, requests } = fakeFetch({ "POST /graphql": () => answers.shift() as Response });
+    const github = createGitHub(async () => "ghp_token", fetchImpl);
+
+    expect(await github.moveToStatus("acme/app", 12, "In Progress")).toEqual(["Board"]);
+    expect(requests).toHaveLength(2);
+    expect((requests[0].body as { variables: unknown }).variables).toEqual({ owner: "acme", name: "app", number: 12 });
+    expect((requests[1].body as { variables: unknown }).variables).toEqual({ project: "p1", item: "item1", field: "f1", option: "wip" });
+  });
+
+  it("reports GraphQL errors, which GitHub answers with HTTP 200", async () => {
+    const { fetchImpl } = fakeFetch({ "POST /graphql": () => Response.json({ errors: [{ message: "Resource not accessible by integration" }] }) });
+    const github = createGitHub(async () => "ghp_token", fetchImpl);
+
+    await expect(github.moveToStatus("acme/app", 12, "In Progress")).rejects.toThrow("failed to read the projects of acme/app#12: Resource not accessible by integration");
+  });
+});
+
+describe("statusTargets", () => {
+  it("skips malformed items and matches the option name case-insensitively", () => {
+    const items = [null, { id: 1 }, { id: "i", project: { id: "p", title: "T", field: { id: "f", options: [{ id: "o", name: "IN PROGRESS" }] } } }];
+    expect(statusTargets(items, "In Progress")).toEqual([{ item: "i", project: "p", title: "T", field: "f", option: "o" }]);
+    expect(statusTargets("nope", "In Progress")).toEqual([]);
   });
 });

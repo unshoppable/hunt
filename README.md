@@ -763,7 +763,7 @@ API and, while fewer of its VMs
 issue: `swf` becomes `swf:running` (the labels `swf:running`, `swf:question`, `swf:done` and `swf:failed` are created
 when missing), the issue moves to the `In Progress` column of every project (Projects v2) it is an item of (the
 `Status` option matched case-insensitively; a project without one is left alone, and a failure, such as the app lacking
-the organization permission "Projects: read and write", is only logged) and a comment names the session's preview hosts. Then it does what a handoff does, with the gateway's service account instead
+the organization permission "Projects: read and write", is only logged). Then it does what a handoff does, with the gateway's service account instead
 of a Mac: the orchestrator creates `vm-hunt-s-<short id>` from the configured instance template (labelled
 `hunt-origin=swf`, without an owner), records the session, repository,
 branch `feat/general/<issue>-<slug of the title>` (`fix/general/…` for an issue labelled `bug`), title and issue in the

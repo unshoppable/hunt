@@ -6,8 +6,8 @@
  *   node /srv/hunt/current/gateway/swf.mjs      (the bundle `nx build gateway` writes)
  *
  * Per issue, as long as fewer than `maxSessions` of its VMs (label `hunt-origin=swf`) are up: claim the issue first
- * (label `swf` → `swf:running`, the issue's status in every project it belongs to → IN_PROGRESS_STATUS, and a comment
- * with the preview URLs), then do what a handoff of the desktop does
+ * (label `swf` → `swf:running`, the issue's status in every project it belongs to → IN_PROGRESS_STATUS), then do what
+ * a handoff of the desktop does
  * (`apps/client/src-tauri/src/remote/handoff.rs`), with a clone from GitHub in place of the push: the orchestrator
  * (`orchestrator.ts`) creates the session VM from the instance template, records the session in its metadata, waits for
  * its startup script and installs the session release staged on the gateway; then `install-tools`, `clone`, the
@@ -90,7 +90,6 @@ import {
   answerPrompt,
   branchName,
   checkPrivateFilesArchive,
-  claimComment,
   failureComment,
   firstPrompt,
   huntSessionFile,
@@ -452,7 +451,6 @@ export class Poller {
       try {
         await github.addLabels(repo, issue.number, [labels.running]);
         await this.moveToInProgress(github, key, repo, issue.number);
-        await github.comment(repo, issue.number, claimComment(names, branch, domain));
         await this.setUp(setup, domain, claudeToken, branch, issue, comments);
       } catch (error) {
         await this.markFailed(setup, this.redacted(error));

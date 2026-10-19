@@ -292,7 +292,6 @@ describe("Poller.cycle", () => {
     await failingPoller.poller.cycle();
     await failingPoller.poller.drain();
     expect(failingPoller.logs).toContain("acme/app#12: failed to move the issue to In Progress in its projects: HTTP 403 Resource not accessible by integration");
-    expect(failing.calls.some((call) => call.startsWith("comment acme/app#12 Hunt started a session"))).toBe(true);
     expect(failing.calls).not.toContain("label acme/app#12 swf:failed");
   });
 
@@ -315,7 +314,6 @@ describe("Poller.cycle", () => {
       "unlabel acme/app#12 swf",
       "label acme/app#12 swf:running",
       "move acme/app#12 In Progress",
-      `comment acme/app#12 Hunt started a session for this issue: previews at \`https://ab12cd34-<port>.hunt.example.com\` once the agent starts the services.\n\nSession \`${SESSION_ID}\` on the VM \`${VM}\`, branch \`fix/general/12-fix-login\`.`,
     ]);
     expect(compute.inserted).toEqual([
       { name: VM, template: "tpl-hunt-session", machineType: null, labels: { "hunt-role": "session", "hunt-session": "ab12cd34", "hunt-origin": "swf" } },

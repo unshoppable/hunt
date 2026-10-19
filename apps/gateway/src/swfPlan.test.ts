@@ -7,7 +7,6 @@ import {
   answerPrompt,
   branchName,
   checkPrivateFilesArchive,
-  claimComment,
   failureComment,
   fillPrompt,
   firstPrompt,
@@ -123,14 +122,6 @@ describe("issue selection", () => {
 });
 
 describe("issue comments", () => {
-  it("claims with the preview URLs, the session, its VM and its branch", () => {
-    const names = sessionNames("ab12cd34-0000-4000-8000-000000000001");
-    expect(claimComment(names, "feat/general/12-fix-login", "hunt.example.com")).toBe(
-      "Hunt started a session for this issue: previews at `https://ab12cd34-<port>.hunt.example.com` once the agent starts the services.\n\n" +
-        "Session `ab12cd34-0000-4000-8000-000000000001` on the VM `vm-hunt-s-ab12cd34`, branch `feat/general/12-fix-login`.",
-    );
-  });
-
   it("reports a failure in a code block and names the VM that stays", () => {
     expect(failureComment("hunt-ctl: ``` broken", "vm-hunt-s-ab12cd34")).toBe(
       "Hunt could not start a session for this issue:\n\n```\nhunt-ctl: `` broken\n```\n\nThe VM `vm-hunt-s-ab12cd34` stays for inspection.",

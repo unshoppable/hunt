@@ -139,14 +139,6 @@ export function issuesToStart(issuesByRepo: { repo: string; issues: Issue[] }[],
   return { start: candidates.slice(0, count), waiting: candidates.slice(count) };
 }
 
-/** The comment that claims the issue. */
-export function claimComment(names: SessionNames, branch: string, domain: string): string {
-  return (
-    `Hunt started a session for this issue: previews at \`https://${names.short}-<port>.${domain}\` once the agent starts the services.\n\n` +
-    `Session \`${names.id}\` on the VM \`${names.vm}\`, branch \`${branch}\`.`
-  );
-}
-
 /** The comment that marks an issue as failed because its agent ended its turn twice without finishing, asking or giving up. */
 export function stoppedComment(vm: string): string {
   return (

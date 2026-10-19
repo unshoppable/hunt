@@ -25,10 +25,11 @@ pass would be needed, a person has to look at it instead.
    the issue or in Hunt. End your turn with the questions, in the language of the issue, as your last words and the
    marker `<!-- hunt:question -->`. The answer reaches you as your next prompt, whichever way it was given; then replace
    `{{question}}` with `{{running}}` and remove the mark from the title (`{{relabelResume}} --title "<title>"`) and go
-   on.
+   on. Never repeat, summarize or confirm the answer on the issue, also not when it was given in Hunt.
 3. **Plan.** Comment a short implementation plan on the issue: the approach, the files it touches and how you will
-   check it, including which pages or flows you will check in the browser when the change is visible to the user.
-   Then carry it out without waiting for approval; the comment lets the person follow your way and step in from Hunt.
+   check it, including which pages or flows you will check in the browser when the change is visible to the user. The
+   plan states only what you will do; it does not mention the questions or answers of step 2. Then carry it out
+   without waiting for approval; the comment lets the person follow your way and step in from Hunt.
 
 ### Implementation loop
 4. **Implement.** Carry out the plan, or on a later pass fix every finding of steps 5 and 6. Follow the guardrails

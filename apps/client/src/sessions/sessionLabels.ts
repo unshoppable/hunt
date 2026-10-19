@@ -172,7 +172,8 @@ export function cycleSessionId(rows: SessionRow[], activeId: string | null, step
   return rows[next].session.id;
 }
 
-const TITLE_LENGTH = 48;
+/** Longest stored title: the places that show it cut it to their width, this only guards against a pasted paragraph. */
+const TITLE_LENGTH = 200;
 
 /** A GitHub issue or pull request a prompt names by its URL. */
 export type IssueRef = { owner: string; name: string; number: number };
@@ -187,7 +188,7 @@ export function issueFromPrompt(text: string): IssueRef | null {
 }
 
 /**
- * Session title derived from the first prompt: its first line, trimmed to a sidebar-friendly length. A line starting
+ * Session title derived from the first prompt: its first line, cut to `TITLE_LENGTH` characters. A line starting
  * with the URL of a GitHub issue or pull request names it as `#<number>` plus the rest of the line; `issueFromPrompt`
  * tells which issue, so the title can get the issue's own title once it is looked up.
  */

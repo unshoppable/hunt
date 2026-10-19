@@ -114,13 +114,14 @@ describe("filterSessionRows", () => {
 describe("titleFromPrompt", () => {
   it("uses the first non-empty line and shortens it with an ellipsis", () => {
     expect(titleFromPrompt("\n  hello world \nsecond")).toBe("hello world");
-    expect(titleFromPrompt("x".repeat(60))).toBe(`${"x".repeat(47)}…`);
+    expect(titleFromPrompt("x".repeat(60))).toBe("x".repeat(60));
+    expect(titleFromPrompt("x".repeat(240))).toBe(`${"x".repeat(199)}…`);
   });
 
   it("names a GitHub issue or pull request URL by its number", () => {
     expect(titleFromPrompt("https://github.com/unshoppable/app-framework/issues/527")).toBe("#527");
     expect(titleFromPrompt("https://github.com/unshoppable/app-framework/pull/1468#issuecomment-1 please review\nmore")).toBe("#1468 please review");
-    expect(titleFromPrompt("see https://github.com/unshoppable/app-framework/issues/527")).toBe("see https://github.com/unshoppable/app-framewor…");
+    expect(titleFromPrompt("see https://github.com/unshoppable/app-framework/issues/527")).toBe("see https://github.com/unshoppable/app-framework/issues/527");
   });
 });
 

@@ -405,6 +405,7 @@ export function ChangeList({
               isLocked={isLocked}
               isRemote={isRemote}
               pushesFromVm={pushesFromVm}
+              branch={session?.branch ?? ""}
               target={target}
               unpushedCount={unpushedCount}
               notice={notice}

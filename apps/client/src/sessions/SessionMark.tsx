@@ -20,8 +20,8 @@ export type MarkTone = "question" | "remote" | "unseen" | "idle";
 /**
  * Circle with a session's mark (A, B, … for sessions, 1, 2, … for sub sessions), showing the state of its agent from
  * the store: while the agent works, an arc runs around the outline; an agent that ended its turn with a question
- * turns the mark amber with a `?` badge at the corner, a session on a VM is blue, a response the user has not looked
- * at yet turns a local one green.
+ * turns the mark amber with a `?` badge at the corner, a session on a VM is blue (its sub sessions run here and stay
+ * grey), a response the user has not looked at yet turns a local one green.
  */
 export function SessionMark({ sessionId, mark, title }: { sessionId: string; mark: string; title?: string }) {
   const isBusy = useHuntStore((state) => state.chats[sessionId]?.isBusy ?? false);

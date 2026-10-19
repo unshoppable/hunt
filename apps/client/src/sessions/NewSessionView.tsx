@@ -13,7 +13,7 @@ import { HEADER_BAR } from "../ui/bars";
 import { PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { Dropdown } from "../ui/Dropdown";
 import type { DropdownOption } from "../ui/floatingMenu";
-import { BranchIcon, CheckIcon, ChevronDownIcon, CloseIcon, CloudIcon, GitHubIcon, PlusIcon } from "../ui/icons";
+import { BranchIcon, CheckIcon, ChevronDownIcon, CloseIcon, CloudIcon, FolderIcon, GitHubIcon, PlusIcon } from "../ui/icons";
 import { useDismiss } from "../ui/useDismiss";
 import { INPUT } from "../diff/styles";
 import { newBranchProblem } from "./newBranch";
@@ -626,10 +626,3 @@ function WorkspaceIcon() {
   );
 }
 
-function FolderIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="size-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-    </svg>
-  );
-}

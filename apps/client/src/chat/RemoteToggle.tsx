@@ -52,7 +52,7 @@ export function RemoteToggle({ sessionId }: { sessionId: string }) {
   const context = { hasUnsavedEdits, hasClaudeAccount, hasBusySubChat: hasBusySubChat(session, sessions, busyChatIds) };
   const blocker = isRemote ? retrieveBlocker(session, context) : handOffBlocker(session, context);
   const instance = session.remote?.vm.instance ?? "";
-  const syncLabel = isRemote && chat ? fileSyncLabel(chat.fileSync, isSyncSlow, formatSyncTime) : null;
+  const syncLabel = isRemote && chat ? fileSyncLabel(chat.fileSync, isSyncSlow) : null;
 
   async function toggle() {
     if (!session) return;
@@ -96,9 +96,4 @@ export function RemoteToggle({ sessionId }: { sessionId: string }) {
       </button>
     </div>
   );
-}
-
-/** The time of day of the ISO timestamp `iso`, in hours and minutes. */
-function formatSyncTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }

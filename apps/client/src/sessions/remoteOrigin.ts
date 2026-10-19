@@ -7,14 +7,11 @@ export function isAdopted(session: SessionView): boolean {
 }
 
 /**
- * Whether the agent of the session `sessionId` runs on a VM: the session's own `remote`, or for a sub session its
- * parent's, since a sub session runs on the VM of the session that owns the worktree. `sessions` is the store's list.
+ * Whether the agent of the session `sessionId` runs on a VM: only its own `remote` counts, since a sub session always
+ * runs on this Mac, also when its parent runs on a VM. `sessions` is the store's list.
  */
 export function runsOnVm(sessionId: string, sessions: SessionView[]): boolean {
-  const session = sessions.find((candidate) => candidate.id === sessionId);
-  if (!session) return false;
-  if (session.remote) return true;
-  return Boolean(session.parentId && sessions.find((candidate) => candidate.id === session.parentId)?.remote);
+  return Boolean(sessions.find((candidate) => candidate.id === sessionId)?.remote);
 }
 
 /**

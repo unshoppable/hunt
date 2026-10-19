@@ -13,7 +13,7 @@ import { useReviewedPullRequest } from "../review/reviewComments";
 import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { HEADER_BAR } from "../ui/bars";
-import { BUTTON_XS, SECONDARY, SECONDARY_BUTTON_XS } from "../ui/buttons";
+import { SECONDARY, SECONDARY_BUTTON_XS, SURFACE_BUTTON_XS } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { useSecondaryWindow } from "../ui/nativeWindow";
 import { baseName } from "../ui/path";
@@ -209,7 +209,7 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
             type="button"
             disabled={!isDirty}
             onClick={() => editorRef.current?.save()}
-            className={`${BUTTON_XS} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
+            className={`${SURFACE_BUTTON_XS} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
             title={saveShortcut ? `Save (${saveShortcut} inside the editor)` : "Save"}
           >
             Save

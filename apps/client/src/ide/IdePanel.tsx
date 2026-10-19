@@ -38,9 +38,9 @@ function isForeignTextField(root: HTMLElement | null): boolean {
 /**
  * The built-in editor: project tree on the left, editor panes on the right. Shortcuts: ⌘E / ⌘R move the active
  * tab to the pane on the left / right, ⇧⌘E / ⇧⌘R to the pane above / below (creating one when needed),
- * ⌘W closes the active tab (and its pane when it was the last one) or calls `onCloseEmpty` when no tab is open,
- * ⇧⌘W closes every tab, ⇧⌘2 selects the active file in the project tree. The tree selection follows ⇧⌘2 only,
- * never the active pane. ⌘[ / ⌘] (also ⌥⌘← / ⌥⌘→) and the mouse's back / forward buttons step through the
+ * ⌘W closes the active tab (and its pane when it was the last one), ⇧⌘W closes every tab; both call `onCloseEmpty`
+ * once no tab is open, so the editor window closes with its last tab. ⇧⌘2 selects the active file in the project
+ * tree. The tree selection follows ⇧⌘2 only, never the active pane. ⌘[ / ⌘] (also ⌥⌘← / ⌥⌘→) and the mouse's back / forward buttons step through the
  * navigation history.
  */
 export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onCloseEmpty?: () => void }) {
@@ -73,6 +73,13 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
     void workspace.reloadFromDisk(openPathsRef.current);
   }, [workspace, editVersion]);
 
+  /** Calls `onCloseEmpty` when no tab is open any more, so the host (the editor window) can go with the last tab. */
+  const closeHostIfEmpty = () => {
+    const { layout } = useIdeStore.getState().sessions[sessionId] ?? EMPTY_IDE_SESSION;
+    if (allPanes(layout).some((pane) => pane.tabs.length)) return;
+    onCloseEmpty?.();
+  };
+
   const closeActiveTab = async () => {
     const { layout, activePaneId } = useIdeStore.getState().sessions[sessionId] ?? EMPTY_IDE_SESSION;
     const pane = activePaneId ? findPane(layout, activePaneId) : null;
@@ -83,13 +90,15 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
     const isLastView = panesShowing(layout, pane.activePath).length <= 1;
     if (isLastView && !(await workspace.discardIfConfirmed([pane.activePath]))) return;
     closeTab(sessionId, pane.id, pane.activePath);
+    closeHostIfEmpty();
   };
 
   const closeEverything = async () => {
     const { layout } = useIdeStore.getState().sessions[sessionId] ?? EMPTY_IDE_SESSION;
     const paths = [...new Set(allPanes(layout).flatMap((pane) => pane.tabs))];
-    if (!paths.length || !(await workspace.discardIfConfirmed(paths))) return;
+    if (paths.length && !(await workspace.discardIfConfirmed(paths))) return;
     closeAllTabs(sessionId);
+    closeHostIfEmpty();
   };
   const closeActions = useRef({ closeActiveTab, closeEverything });
   closeActions.current = { closeActiveTab, closeEverything };

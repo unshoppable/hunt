@@ -75,7 +75,7 @@ export function GenerateSplitButton({ label, isDisabled, onGenerate }: { label: 
         aria-expanded={isOpen}
         aria-label="Generate with additional instructions"
         title="Generate with additional instructions"
-        className={`${BUTTON_BASE} ${PRIMARY} h-9 rounded-l-none border-l border-white/20 px-2 text-sm`}
+        className={`${BUTTON_BASE} ${PRIMARY} h-[37px] rounded-l-none border-l border-white/20 px-2 text-sm`}
       >
         <ChevronDownIcon className="size-3.5" />
       </button>

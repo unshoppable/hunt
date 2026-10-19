@@ -195,21 +195,20 @@ describe("moveStatus", () => {
 });
 
 describe("fileSyncLabel", () => {
-  const time = (iso: string) => iso.slice(11, 16);
   const idle = { isRunning: false, syncedAt: null, error: null, conflicts: [] };
 
   it("shows a running sync only once it ran for a moment", () => {
     const running = { ...idle, isRunning: true, syncedAt: "2026-10-14T10:05:00Z" };
-    expect(fileSyncLabel(running, false, time)).toBe("Synced 10:05");
-    expect(fileSyncLabel(running, true, time)).toBe("Syncing…");
+    expect(fileSyncLabel(running, false)).toBeNull();
+    expect(fileSyncLabel(running, true)).toBe("Syncing…");
   });
 
-  it("names a failure before the last success and nothing before the first sync", () => {
+  it("names a failure and unsynced files, nothing when the files are in sync", () => {
     const failed = { ...idle, syncedAt: "2026-10-14T10:05:00Z", error: "failed to list the files on the VM" };
-    expect(fileSyncLabel(failed, false, time)).toBe("Sync failed");
-    expect(fileSyncLabel({ ...idle, syncedAt: "2026-10-14T10:05:00Z" }, false, time)).toBe("Synced 10:05");
-    expect(fileSyncLabel({ ...idle, syncedAt: "2026-10-14T10:05:00Z", conflicts: ["src: a folder here"] }, false, time)).toBe("1 file not synced");
-    expect(fileSyncLabel(idle, false, time)).toBeNull();
+    expect(fileSyncLabel(failed, false)).toBe("Sync failed");
+    expect(fileSyncLabel({ ...idle, syncedAt: "2026-10-14T10:05:00Z" }, false)).toBeNull();
+    expect(fileSyncLabel({ ...idle, syncedAt: "2026-10-14T10:05:00Z", conflicts: ["src: a folder here"] }, false)).toBe("1 file not synced");
+    expect(fileSyncLabel(idle, false)).toBeNull();
   });
 });
 

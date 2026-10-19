@@ -12,7 +12,7 @@ import { parseGraph } from "../graph/schema";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { CodeDiffEditor, type CodeDiffEditorHandle } from "./CodeDiffEditor";
 import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
-import { BUTTON_XS, GHOST_BUTTON_XS, SECONDARY, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
+import { GHOST_BUTTON_XS, SECONDARY, SECONDARY_BUTTON_XS, SURFACE_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
 import { openInEditorWindow } from "../ide/editorWindows";
 import { selectionChatsFor } from "../ide/selectionChats";
 import { useReviewedPullRequest } from "../review/reviewComments";
@@ -318,7 +318,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
               type="button"
               disabled={!isDirty}
               onClick={() => editorRef.current?.save()}
-              className={`${BUTTON_XS} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
+              className={`${SURFACE_BUTTON_XS} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
               title={saveShortcut ? `Save (${saveShortcut} inside the editor)` : "Save"}
             >
               Save

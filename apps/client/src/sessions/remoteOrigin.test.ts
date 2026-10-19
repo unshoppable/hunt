@@ -35,12 +35,12 @@ function session(remote: Partial<RemoteTarget> | null, patch: Partial<SessionVie
 }
 
 describe("runsOnVm", () => {
-  it("is set for a remote session and for a sub session of one, not for a local one or an unknown id", () => {
+  it("is set for a remote session only, not for a sub session of one, which runs on this Mac, a local one or an unknown id", () => {
     const owner = session({}, { id: "owner" });
     const local = session(null, { id: "local" });
     const sessions = [owner, local, session(null, { id: "sub", parentId: "owner" }), session(null, { id: "localSub", parentId: "local" })];
     expect(runsOnVm("owner", sessions)).toBe(true);
-    expect(runsOnVm("sub", sessions)).toBe(true);
+    expect(runsOnVm("sub", sessions)).toBe(false);
     expect(runsOnVm("local", sessions)).toBe(false);
     expect(runsOnVm("localSub", sessions)).toBe(false);
     expect(runsOnVm("missing", sessions)).toBe(false);

@@ -71,7 +71,7 @@ export type ChangelistScope = "own" | "all";
 export type PopupSize = { width: number; height: number };
 
 /** The floating popups and dialogs whose size the user may drag; each remembers its last size (see ui/usePopupSize.ts). */
-export type PopupKey = "usages" | "fileSearch" | "findInFiles" | "subChat" | "screenshots" | "fileFilter" | "change" | "pushTarget" | "image" | "review" | "shelve" | "deleteSession" | "staleRemote" | "renameBranch";
+export type PopupKey = "usages" | "fileSearch" | "findInFiles" | "subChat" | "screenshots" | "fileFilter" | "change" | "pushTarget" | "image" | "review" | "shelve" | "deleteSession" | "staleRemote" | "renameBranch" | "push";
 
 /**
  * Size each popup opens with until the user resizes it. A popup that is as tall as its content treats the height as
@@ -98,6 +98,7 @@ export const DEFAULT_POPUP_SIZES: Record<PopupKey, PopupSize> = {
   deleteSession: { width: 420, height: 400 },
   staleRemote: { width: 460, height: 480 },
   renameBranch: { width: 460, height: 400 },
+  push: { width: 380, height: 280 },
 };
 
 /** Distance in px between where a popup opened by default and where the user last left it. */

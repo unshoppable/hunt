@@ -140,13 +140,12 @@ export function hasBusySubChat(session: SessionView, sessions: SessionView[], bu
 /**
  * The state of a remote session's file sync next to its "On VM" button: "Syncing…" while a sync runs and `isSlow` (it
  * ran for a moment, so quick ones do not flicker), "Sync failed" after a failure, the number of files the last one could
- * not sync, else when the last one succeeded with `formatTime`; `null` before the first one.
+ * not sync; `null` when the files are in sync, which needs no label.
  */
-export function fileSyncLabel(fileSync: FileSync, isSlow: boolean, formatTime: (iso: string) => string): string | null {
+export function fileSyncLabel(fileSync: FileSync, isSlow: boolean): string | null {
   if (fileSync.isRunning && isSlow) return "Syncing…";
   if (fileSync.error) return "Sync failed";
   if (fileSync.conflicts.length) return `${fileSync.conflicts.length} ${fileSync.conflicts.length === 1 ? "file" : "files"} not synced`;
-  if (fileSync.syncedAt) return `Synced ${formatTime(fileSync.syncedAt)}`;
   return null;
 }
 

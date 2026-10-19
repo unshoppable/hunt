@@ -277,7 +277,7 @@ export function SessionSidebar() {
                     <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.9375em] text-neutral-400">
                       <PushIcon className="size-4 shrink-0" />
                       <span className="truncate" title="Branch on origin a push of the session lands on">
-                        origin/{pushTarget(session, remoteOf(session, sessions))}
+                        {pushTarget(session, remoteOf(session, sessions))}
                       </span>
                       {reference ? (
                         <span className={`ml-auto flex shrink-0 items-center gap-1 pl-2 ${REFERENCE_TONE[reference.tone]}`} title={reference.title || undefined}>

@@ -1,8 +1,9 @@
 /**
  * Shared button classes, shaped like T3 Code's: rounded rectangles (never pills), medium 13px text, quiet surfaces.
  * Pick a size (`BUTTON_XS` 28px for dense toolbars, `BUTTON_MD` 32px, `BUTTON_LG` 36px for a view's headline
- * action) and a variant, or use the ready-made combinations below. Variants never repeat a size's utilities, so they can be swapped
- * at runtime without conflicting classes.
+ * action) and a variant, or use the ready-made combinations below. `PRIMARY` and `SECONDARY` take the `SURFACE_BUTTON_*`
+ * sizes, of which XS and LG are 1px taller. Variants never repeat a size's utilities, so they can be swapped at runtime without
+ * conflicting classes.
  */
 export const BUTTON_BASE =
   "inline-flex shrink-0 select-none items-center justify-center whitespace-nowrap rounded-md font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 disabled:pointer-events-none disabled:opacity-40";
@@ -10,6 +11,10 @@ export const BUTTON_BASE =
 export const BUTTON_XS = `${BUTTON_BASE} h-7 gap-1.5 px-3 text-[13px]`;
 export const BUTTON_MD = `${BUTTON_BASE} h-8 gap-2 px-3.5 text-sm`;
 export const BUTTON_LG = `${BUTTON_BASE} h-9 gap-2 px-4 text-sm`;
+
+export const SURFACE_BUTTON_XS = `${BUTTON_BASE} h-[29px] gap-1.5 px-3 text-[13px]`;
+export const SURFACE_BUTTON_MD = `${BUTTON_BASE} h-8 gap-2 px-3.5 text-sm`;
+export const SURFACE_BUTTON_LG = `${BUTTON_BASE} h-[37px] gap-2 px-4 text-sm`;
 
 /** Filled accent button for the one main action of a view. */
 export const PRIMARY = "bg-blue-600 text-white hover:bg-blue-500 active:bg-blue-700";
@@ -20,17 +25,17 @@ export const GHOST = "text-neutral-300 hover:bg-(--row-hover) hover:text-white a
 /** Text-only button for destructive actions. */
 export const DANGER = "text-red-300 hover:bg-red-400/10 hover:text-red-200 active:bg-red-400/15";
 
-export const PRIMARY_BUTTON_XS = `${BUTTON_XS} ${PRIMARY}`;
-export const SECONDARY_BUTTON_XS = `${BUTTON_XS} ${SECONDARY}`;
+export const PRIMARY_BUTTON_XS = `${SURFACE_BUTTON_XS} ${PRIMARY}`;
+export const SECONDARY_BUTTON_XS = `${SURFACE_BUTTON_XS} ${SECONDARY}`;
 export const GHOST_BUTTON_XS = `${BUTTON_XS} ${GHOST}`;
 export const DANGER_BUTTON_XS = `${BUTTON_XS} ${DANGER}`;
 
-export const PRIMARY_BUTTON_MD = `${BUTTON_MD} ${PRIMARY}`;
-export const SECONDARY_BUTTON_MD = `${BUTTON_MD} ${SECONDARY}`;
+export const PRIMARY_BUTTON_MD = `${SURFACE_BUTTON_MD} ${PRIMARY}`;
+export const SECONDARY_BUTTON_MD = `${SURFACE_BUTTON_MD} ${SECONDARY}`;
 export const GHOST_BUTTON_MD = `${BUTTON_MD} ${GHOST}`;
 
-export const PRIMARY_BUTTON_LG = `${BUTTON_LG} ${PRIMARY}`;
-export const SECONDARY_BUTTON_LG = `${BUTTON_LG} ${SECONDARY}`;
+export const PRIMARY_BUTTON_LG = `${SURFACE_BUTTON_LG} ${PRIMARY}`;
+export const SECONDARY_BUTTON_LG = `${SURFACE_BUTTON_LG} ${SECONDARY}`;
 
 /** Violet agent glow (`.hunt-agent-glow` in index.css) for a button that hands work to the agent. */
 export const AGENT_GLOW = "hunt-agent-glow";

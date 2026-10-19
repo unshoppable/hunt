@@ -1,15 +1,15 @@
 import type { SessionView } from "../ipc/types";
 import { useSettingsStore } from "../state/settings";
-import { BUTTON_MD, SECONDARY } from "../ui/buttons";
+import { SECONDARY, SURFACE_BUTTON_MD } from "../ui/buttons";
 
 /** Box above the messages with the session's summary bullets; shown while the "Summary" setting is on. */
 export function SessionSummary({ session }: { session: SessionView }) {
   return (
-    <div className="border-b border-(--line) bg-white/8 px-5 pt-3 pb-4">
+    <div className="border-b border-(--line) bg-white/8 px-5 pt-4 pb-[18px]">
       <div className="chat-column">
-        <div className="mb-1.5 text-[12px] font-medium uppercase tracking-wide text-neutral-500">Summary</div>
+        <div className="mb-1.5 text-[13px] font-medium uppercase tracking-wide text-neutral-500">Summary</div>
         {session.summary.length ? (
-          <ul className="space-y-1 text-[13px] leading-snug text-neutral-300">
+          <ul className="space-y-1 text-[14px] leading-snug text-neutral-300">
             {session.summary.map((line, index) => (
               <li key={index} className="flex gap-2">
                 <span className="mt-[0.55em] size-1 shrink-0 select-none rounded-full bg-neutral-500" />
@@ -18,7 +18,7 @@ export function SessionSummary({ session }: { session: SessionView }) {
             ))}
           </ul>
         ) : (
-          <div className="text-[13px] text-neutral-500">No summary yet. It is written after the first finished prompt.</div>
+          <div className="text-[14px] text-neutral-500">No summary yet. It is written after the first finished prompt.</div>
         )}
       </div>
     </div>
@@ -35,7 +35,7 @@ export function SessionSummaryToggle() {
       aria-pressed={showSummary}
       title={showSummary ? "Hide the summary box" : "Show the summary box"}
       onClick={toggleSummary}
-      className={`${BUTTON_MD} ${showSummary ? "border border-white/15 bg-white/12 text-white hover:bg-white/15 active:bg-white/10" : SECONDARY}`}
+      className={`${SURFACE_BUTTON_MD} ${showSummary ? "border border-white/15 bg-white/12 text-white hover:bg-white/15 active:bg-white/10" : SECONDARY}`}
     >
       <InfoIcon />
       Summary

@@ -330,7 +330,7 @@ to other or additional keys, flags two commands that share one and keeps the cha
 | ⇧⌘click | Open the position in WebStorm |
 | ⌘E / ⌘R | Move the active tab to the pane on the left / right, creating it when needed |
 | ⇧⌘E / ⇧⌘R | Move the active tab to the pane above / below |
-| ⌘W / ⇧⌘W | Close the active tab / every tab |
+| ⌘W / ⇧⌘W | Close the active tab / every tab; the editor window closes with its last tab |
 | ⇧⌘2 | Select the file in the project tree |
 | ⌘S | Save |
 | ⌘P or double shift | "Go to File": fuzzy search over `git ls-files`; `name:12` jumps to line 12 |
@@ -790,9 +790,9 @@ relay and disconnects; the relay runs the turn without a client. The workflow ha
 repository's guardrails (README, CLAUDE.md, rules, skills, ADRs, `hunt.agent.md`); ask every question only a person can
 answer, in the issue's language: put a red question mark and the word for a question back (`❓ RÜCKFRAGE: ` in German) in front of the issue's
 title and replace `swf:running` with `swf:question`, so that GitHub's notification mail carries it in its subject, then
-comment every question at once, starting with that word in bold and a mention of the assignees, and end the turn with
+comment every question at once, starting with the same mark in bold and a mention of the assignees, and end the turn with
 the questions and the marker `<!-- hunt:question -->` (the answer reaches the agent as its next prompt, from a Hunt
-desktop that opened the session, and it takes the label back to `swf:running` and the word off the title); comment a short implementation plan on the issue and carry
+desktop that opened the session, and it takes the label back to `swf:running` and the mark off the title); comment a short implementation plan on the issue and carry
 it out without waiting for approval; then a loop of three steps until a pass finds nothing: implement the plan or the
 last findings, check the change as a developer would locally (build, tests, linters, and for anything the user sees the
 goal in the browser with the Playwright tools) and review the whole diff as a critical reviewer against the issue and

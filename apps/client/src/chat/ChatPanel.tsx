@@ -21,9 +21,10 @@ import { SaveGuardrailButton } from "./SaveGuardrailButton";
 import { ContextMeter } from "./ContextMeter";
 import { HEADER_BAR } from "../ui/bars";
 import { isShortcut } from "../ui/shortcuts";
+import { repoName } from "../ui/path";
 import { AGENT_CHIP, Chip } from "../ui/Chip";
-import { SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { ShieldIcon } from "../ui/icons";
+import { DANGER, ICON_BUTTON_BASE_SM, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../ui/buttons";
+import { BranchIcon, FolderIcon, ShieldIcon, TrashIcon } from "../ui/icons";
 import { OpenInWebstormButton } from "./OpenInWebstormButton";
 import { RemoteToggle } from "./RemoteToggle";
 import { remoteDeleteQuestion } from "../sessions/remoteOrigin";
@@ -141,7 +142,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
 
   const followEnd = useFollowScroll(scrollRef, columnRef, `${sessionId}:${hasSession}`);
 
-  /** Deletes the remote session with its VM after confirmation; the sidebar's × only takes it out of the sidebar. */
+  /** Deletes the remote session with its VM after confirmation (the trash button beside the title); the sidebar's × only takes it out of the sidebar. */
   async function deleteRemoteSession() {
     const current = useHuntStore.getState().sessions.find((candidate) => candidate.id === sessionId);
     if (!current?.remote || !(await confirmDestructive(remoteDeleteQuestion(current), "Delete"))) return;
@@ -183,8 +184,13 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   return (
     <div ref={panelRef} className="chat flex h-full min-h-0 flex-col bg-(--chat-bg)">
       <header data-tauri-drag-region="" className={`${HEADER_BAR} gap-3 border-b border-(--line) px-4`}>
-        <div data-tauri-drag-region="" className="min-w-0 flex-1">
-          <div data-tauri-drag-region="" className="truncate text-sm font-semibold">{session.title}</div>
+        <div data-tauri-drag-region="" className="flex min-w-0 flex-1 items-center gap-1">
+          <div data-tauri-drag-region="" className="truncate text-[14px] font-semibold">{session.title}</div>
+          {session.remote && !session.parentId ? (
+            <button type="button" onClick={() => void deleteRemoteSession()} title="Delete the session and its VM" aria-label="Delete the session and its VM" className={`${ICON_BUTTON_BASE_SM} ${DANGER}`}>
+              <TrashIcon className="size-4" />
+            </button>
+          ) : null}
         </div>
         {hasQuestion ? (
           <Chip className={AGENT_CHIP.question} title="The agent waits for your answer">
@@ -333,11 +339,11 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           followEnd();
           void sendPrompt(sessionId, "/clear");
         }}
-        onDelete={session.remote && !session.parentId ? () => void deleteRemoteSession() : undefined}
         onCycleMode={cycleMode}
         onModeChange={(nextModeId) => void setMode(sessionId, nextModeId)}
         onConfigChange={(configId, value) => void setConfigOption(sessionId, configId, value)}
         pullRequest={session.pullRequest}
+        extension={<SessionTargetBar repoPath={session.repoPath} branch={session.branch} />}
         dropZoneRef={panelRef}
       />
       {guardrailChat.shown ? (
@@ -356,6 +362,25 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           onClose={guardrailChat.close}
         />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Bar attached below the prompt box, shaped like the start view's repository and branch bar: the session's repository
+ * and the branch it works on, as plain text since neither changes once the session exists.
+ */
+function SessionTargetBar({ repoPath, branch }: { repoPath: string; branch: string }) {
+  return (
+    <div className="mx-4 -mt-2 flex items-center justify-between gap-3 rounded-b-2xl border border-t-0 border-(--line) bg-(--surface-inset)/60 px-3 pb-2 pt-4 text-sm text-neutral-400">
+      <span className="flex h-8 min-w-0 items-center gap-1.5 pl-2.5 pr-2" title={repoPath}>
+        <FolderIcon />
+        <span className="truncate">{repoName(repoPath)}</span>
+      </span>
+      <span className="flex h-8 min-w-0 max-w-72 items-center gap-1.5 pl-2.5 pr-2" title={branch}>
+        <BranchIcon className="size-4 shrink-0" />
+        <span className="truncate">{branch}</span>
+      </span>
     </div>
   );
 }

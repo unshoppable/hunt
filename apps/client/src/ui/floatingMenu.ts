@@ -2,7 +2,7 @@
 export type DropdownOption = { id: string; name: string; description?: string | null; isDisabled?: boolean };
 
 /** Fixed-position placement of a floating menu; `maxHeight` caps it to the room on its side of the anchor. */
-export type MenuPlacement = { left: number; top: number; maxHeight: number };
+export type MenuPlacement = { left: number; top: number; maxHeight: number; isAbove: boolean };
 
 type Rect = { left: number; top: number; bottom: number };
 type Size = { width: number; height: number };
@@ -14,16 +14,17 @@ const VIEWPORT_MARGIN = 8;
 
 /**
  * Places a menu of `size` next to `anchor`: below it and left-aligned, or above it when it does not fit below and there
- * is more room above. The menu shifts left to stay inside `viewport` and scrolls when it is taller than the room on its side.
+ * is more room above; `forceAbove` fixes the side instead. The menu shifts left to stay inside `viewport` and scrolls
+ * when it is taller than the room on its side.
  */
-export function placeMenu(anchor: Rect, size: Size, viewport: Size): MenuPlacement {
+export function placeMenu(anchor: Rect, size: Size, viewport: Size, forceAbove?: boolean): MenuPlacement {
   const roomBelow = viewport.height - anchor.bottom - ANCHOR_GAP - VIEWPORT_MARGIN;
   const roomAbove = anchor.top - ANCHOR_GAP - VIEWPORT_MARGIN;
-  const isAbove = size.height > roomBelow && roomAbove > roomBelow;
+  const isAbove = forceAbove ?? (size.height > roomBelow && roomAbove > roomBelow);
   const maxHeight = Math.max(0, isAbove ? roomAbove : roomBelow);
   const top = isAbove ? anchor.top - ANCHOR_GAP - Math.min(size.height, maxHeight) : anchor.bottom + ANCHOR_GAP;
   const left = Math.max(VIEWPORT_MARGIN, Math.min(anchor.left, viewport.width - size.width - VIEWPORT_MARGIN));
-  return { left, top, maxHeight };
+  return { left, top, maxHeight, isAbove };
 }
 
 /**

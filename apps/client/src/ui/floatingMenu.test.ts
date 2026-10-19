@@ -13,19 +13,23 @@ const options: DropdownOption[] = [
 
 describe("placeMenu", () => {
   it("opens below the anchor, left-aligned, when the menu fits there", () => {
-    expect(placeMenu({ left: 100, top: 100, bottom: 132 }, { width: 200, height: 300 }, VIEWPORT)).toEqual({ left: 100, top: 138, maxHeight: 654 });
+    expect(placeMenu({ left: 100, top: 100, bottom: 132 }, { width: 200, height: 300 }, VIEWPORT)).toEqual({ left: 100, top: 138, maxHeight: 654, isAbove: false });
   });
 
   it("opens above an anchor near the bottom edge", () => {
-    expect(placeMenu({ left: 100, top: 700, bottom: 732 }, { width: 200, height: 300 }, VIEWPORT)).toEqual({ left: 100, top: 394, maxHeight: 686 });
+    expect(placeMenu({ left: 100, top: 700, bottom: 732 }, { width: 200, height: 300 }, VIEWPORT)).toEqual({ left: 100, top: 394, maxHeight: 686, isAbove: true });
   });
 
   it("stays below when the room above is smaller and caps the height to the room below", () => {
-    expect(placeMenu({ left: 100, top: 300, bottom: 332 }, { width: 200, height: 600 }, VIEWPORT)).toEqual({ left: 100, top: 338, maxHeight: 454 });
+    expect(placeMenu({ left: 100, top: 300, bottom: 332 }, { width: 200, height: 600 }, VIEWPORT)).toEqual({ left: 100, top: 338, maxHeight: 454, isAbove: false });
   });
 
   it("caps an upward menu to the room above and puts it at the top margin", () => {
-    expect(placeMenu({ left: 100, top: 500, bottom: 532 }, { width: 200, height: 900 }, VIEWPORT)).toEqual({ left: 100, top: 8, maxHeight: 486 });
+    expect(placeMenu({ left: 100, top: 500, bottom: 532 }, { width: 200, height: 900 }, VIEWPORT)).toEqual({ left: 100, top: 8, maxHeight: 486, isAbove: true });
+  });
+
+  it("keeps a forced side even when the other one has more room", () => {
+    expect(placeMenu({ left: 100, top: 700, bottom: 732 }, { width: 200, height: 300 }, VIEWPORT, false)).toEqual({ left: 100, top: 738, maxHeight: 54, isAbove: false });
   });
 
   it("shifts left to stay inside the window", () => {

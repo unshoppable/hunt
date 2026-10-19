@@ -322,6 +322,8 @@ export function NewSessionView({
             }}
             disabled={!startRef}
             placeholder={isCheckout ? "Current branch" : repoPath ? "No branches" : "Base branch"}
+            isSearchable={!isCheckout}
+            searchPlaceholder="Search branches"
             icon={<BranchIcon className="size-4 shrink-0" />}
             className={`${BAR_DROPDOWN} max-w-72 ${newBranch ? "shrink-0" : ""}`}
           />

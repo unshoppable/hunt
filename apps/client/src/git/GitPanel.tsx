@@ -132,6 +132,7 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
 
   const selectedCommit = useMemo(() => commits.find((commit) => commit.id === selectedId) ?? null, [commits, selectedId]);
   const unpushed = useMemo(() => new Set(refs?.unpushed ?? []), [refs]);
+  const localBranches = useMemo(() => new Set((refs?.refs ?? []).filter((ref) => ref.kind === "local").map((ref) => ref.name)), [refs]);
   const menuActions = useMemo(() => (menu ? branchActions(menu.ref, { head: refs?.head ?? "HEAD", pushes, isRemoteSession: !!remote }) : []), [menu, refs, pushes, remote]);
   /** The branches of origin a push could land on, without the `origin/` prefix. */
   const originBranches = useMemo(() => (refs?.refs ?? []).map((ref) => (ref.kind === "remote" ? originBranchName(ref.name) : null)).filter((name): name is string => !!name), [refs]);
@@ -185,6 +186,7 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
         <CommitLog
           commits={commits}
           head={refs?.head ?? null}
+          localBranches={localBranches}
           unpushed={unpushed}
           filter={filter}
           onFilterChange={setFilter}
@@ -200,7 +202,7 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
       <Panel id="commit" defaultSize="34%" minSize={240} className="flex">
         <PersistentGroup id="hunt-git-commit" orientation="vertical" className="h-full min-h-0 flex-1">
           <Panel id="files" defaultSize="45%" minSize={120} className="flex">
-            <CommitFiles commit={selectedCommit} details={details} selectedPath={selectedFile?.path ?? null} onSelect={setSelectedFile} />
+            <CommitFiles commit={selectedCommit} details={details} localBranches={localBranches} selectedPath={selectedFile?.path ?? null} onSelect={setSelectedFile} />
           </Panel>
           <PaneSeparator orientation="vertical" />
           <Panel id="diff" minSize={120} className="flex">

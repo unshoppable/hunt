@@ -69,8 +69,14 @@ export function RefTree({
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-(--changelist-bg)">
       <div className="flex items-center gap-1 border-b border-(--line) px-3 py-2.5 text-[13px] text-neutral-400">
-        <span className="flex-1">Branches</span>
-        {busyLabel ? <span className="text-neutral-300">{busyLabel}</span> : refs ? <span className="text-neutral-500">{refs.head === "HEAD" ? "detached HEAD" : refs.head}</span> : null}
+        <span className="shrink-0">Branches</span>
+        {busyLabel ? (
+          <span className="min-w-0 flex-1 truncate text-right text-neutral-300">{busyLabel}</span>
+        ) : refs ? (
+          <span className="min-w-0 flex-1 truncate text-right text-neutral-500" title={refs.head === "HEAD" ? "No branch is checked out" : `Checked out: ${refs.head}`}>
+            {refs.head === "HEAD" ? "detached HEAD" : refs.head}
+          </span>
+        ) : null}
       </div>
       <ul className="min-h-0 flex-1 overflow-auto py-1 font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)">
         <li

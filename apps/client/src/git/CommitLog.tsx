@@ -3,7 +3,8 @@ import type { Commit } from "../ipc/types";
 import { useSettingsStore } from "../state/settings";
 import type { LogFilter } from "./GitPanel";
 import { layoutGraph, type GraphRow } from "./commitGraph";
-import { RefChip, parseDecoration } from "./RefChip";
+import { BranchIcon, TagIcon } from "../ui/icons";
+import { logLabels, type LogLabel } from "./logLabels";
 
 /** Horizontal distance between two lanes of the graph, in px. */
 const LANE_WIDTH = 14;
@@ -13,6 +14,10 @@ const GRAPH_PADDING = 10;
 const MAX_LANES = 12;
 /** Rows drawn above and below the visible ones, so a scroll never shows an empty strip. */
 const OVERSCAN = 8;
+/** Width of the author column in px. */
+const AUTHOR_WIDTH = 150;
+/** Width of the date column in px. */
+const DATE_WIDTH = 104;
 /** Line colors of the graph, one per lane in turn. */
 const LANE_COLORS = ["#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#fb923c", "#2dd4bf", "#f87171"];
 
@@ -20,12 +25,13 @@ const DATE_FORMAT = new Intl.DateTimeFormat(undefined, { day: "2-digit", month: 
 
 /**
  * The commit log: a filter row and the commits as windowed rows (only the visible ones are in the DOM), each with its
- * graph cell, its branch and tag chips, subject, author and date. Scrolling near the end asks for the next page;
- * ↑ and ↓ move the selection while the list has the focus.
+ * graph cell, subject, compact branch and tag labels, author and date in fixed columns. Scrolling near the end asks
+ * for the next page; ↑ and ↓ move the selection while the list has the focus.
  */
 export function CommitLog({
   commits,
   head,
+  localBranches,
   unpushed,
   filter,
   onFilterChange,
@@ -37,8 +43,10 @@ export function CommitLog({
   error,
 }: {
   commits: Commit[];
-  /** The checked-out branch; its tip's chip is marked. */
+  /** The checked-out branch; its tip's label is marked. */
   head: string | null;
+  /** Names of the local branches, so a slashed name in a commit's decorations is told from a remote branch. */
+  localBranches: ReadonlySet<string>;
   /** Commits a push would publish. */
   unpushed: Set<string>;
   filter: LogFilter;
@@ -135,6 +143,7 @@ export function CommitLog({
                 height={rowHeight}
                 graphWidth={graphWidth}
                 head={head}
+                localBranches={localBranches}
                 isUnpushed={unpushed.has(commit.id)}
                 isSelected={commit.id === selectedId}
                 onSelect={() => onSelect(commit.id)}
@@ -154,6 +163,7 @@ function LogRow({
   height,
   graphWidth,
   head,
+  localBranches,
   isUnpushed,
   isSelected,
   onSelect,
@@ -164,33 +174,61 @@ function LogRow({
   height: number;
   graphWidth: number;
   head: string | null;
+  localBranches: ReadonlySet<string>;
   isUnpushed: boolean;
   isSelected: boolean;
   onSelect: () => void;
 }) {
+  const labels = logLabels(commit.refs, head, localBranches);
   return (
     <div
       role="option"
       aria-selected={isSelected}
       onClick={onSelect}
-      title={isUnpushed ? "Not pushed yet" : undefined}
       style={{ top, height }}
-      className={`absolute right-0 left-0 flex cursor-default items-center gap-2 pr-3 select-none ${isSelected ? "bg-(--tree-selection)" : "hover:bg-(--row-hover)"}`}
+      className={`absolute right-0 left-0 flex cursor-default items-center select-none ${isSelected ? "bg-(--tree-selection)" : "hover:bg-(--row-hover)"}`}
     >
       <GraphCell row={row} width={graphWidth} height={height} />
-      <span className="flex min-w-0 flex-1 items-center gap-1.5">
-        {commit.refs.map((decoration) => {
-          const chip = parseDecoration(decoration);
-          return <RefChip key={decoration} chip={chip} isHead={chip.kind === "head" || chip.name === head} />;
-        })}
-        <span className={`truncate ${isUnpushed ? "text-neutral-100" : "text-neutral-300"}`}>{commit.subject}</span>
+      <span className="flex min-w-0 flex-1 items-center gap-2 pr-4">
+        <span className={`min-w-0 truncate ${isUnpushed ? "text-neutral-100" : "text-neutral-300"}`} title={commit.subject}>
+          {commit.subject}
+        </span>
+        {labels.length ? (
+          <span className="ml-auto flex max-w-[50%] shrink-0 items-center gap-1">
+            {labels.map((label) => (
+              <LogLabelChip key={`${label.kind}:${label.text}`} label={label} />
+            ))}
+          </span>
+        ) : null}
       </span>
-      <span className="w-36 shrink-0 truncate text-neutral-400" title={`${commit.author} <${commit.authorEmail}>`}>
+      <span className="shrink-0 truncate pr-4 text-neutral-400" style={{ width: AUTHOR_WIDTH }} title={`${commit.author} <${commit.authorEmail}>`}>
         {commit.author}
       </span>
-      <span className="w-28 shrink-0 text-right text-neutral-500 tabular-nums">{DATE_FORMAT.format(new Date(commit.authoredAt))}</span>
-      <span className="flex w-4 shrink-0 justify-center text-amber-300">{isUnpushed ? <UpArrowIcon /> : null}</span>
+      <span className="shrink-0 text-right text-neutral-500 tabular-nums" style={{ width: DATE_WIDTH }}>
+        {DATE_FORMAT.format(new Date(commit.authoredAt))}
+      </span>
+      <span className="flex w-8 shrink-0 justify-center text-amber-300" title={isUnpushed ? "Not pushed yet" : undefined}>
+        {isUnpushed ? <UpArrowIcon /> : null}
+      </span>
     </div>
+  );
+}
+
+const LABEL_CLASS: Record<LogLabel["kind"] | "head", string> = {
+  head: "bg-blue-400/20 text-blue-100",
+  branch: "bg-white/8 text-neutral-300",
+  more: "bg-white/8 text-neutral-400",
+  tags: "bg-amber-400/12 text-amber-200",
+};
+
+/** One compact label at the right end of a log row: a branch with its icon, the collapsed rest, or the tags. */
+function LogLabelChip({ label }: { label: LogLabel }) {
+  const kind = label.kind === "branch" && label.isHead ? "head" : label.kind;
+  return (
+    <span className={`flex min-w-0 items-center gap-1 rounded px-1.5 text-[0.85em] leading-[1.6] ${LABEL_CLASS[kind]}`} title={label.title}>
+      {label.kind === "branch" ? <BranchIcon className="size-3 shrink-0 opacity-70" /> : label.kind === "tags" ? <TagIcon className="size-3 shrink-0 opacity-70" /> : null}
+      <span className="truncate">{label.text}</span>
+    </span>
   );
 }
 

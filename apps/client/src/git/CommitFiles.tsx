@@ -4,7 +4,8 @@ import { buildChangeTree, type FolderNode, type TreeNode } from "../diff/changeT
 import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { STATUS_NAME_CLASS } from "../diff/styles";
 import { ChevronIcon } from "../ui/icons";
-import { RefChip, parseDecoration } from "./RefChip";
+import { parseDecoration } from "./logLabels";
+import { RefChip } from "./RefChip";
 
 type Row = { node: TreeNode; depth: number };
 
@@ -17,12 +18,15 @@ const DATE_FORMAT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", ti
 export function CommitFiles({
   commit,
   details,
+  localBranches,
   selectedPath,
   onSelect,
 }: {
   commit: Commit | null;
   /** The commit's details once loaded; `null` while loading or without a commit. */
   details: CommitDetails | null;
+  /** Names of the local branches, so a slashed name in the commit's decorations is told from a remote branch. */
+  localBranches: ReadonlySet<string>;
   selectedPath: string | null;
   onSelect: (file: CommitFile) => void;
 }) {
@@ -103,13 +107,13 @@ export function CommitFiles({
             ),
           )}
         </ul>
-        {commit ? <Details commit={commit} details={isLoaded ? details : null} /> : null}
+        {commit ? <Details commit={commit} details={isLoaded ? details : null} localBranches={localBranches} /> : null}
       </div>
     </div>
   );
 }
 
-function Details({ commit, details }: { commit: Commit; details: CommitDetails | null }) {
+function Details({ commit, details, localBranches }: { commit: Commit; details: CommitDetails | null; localBranches: ReadonlySet<string> }) {
   const message = details?.message ?? commit.subject;
   const [subject, ...bodyLines] = message.split("\n");
   const body = bodyLines.join("\n").trim();
@@ -130,7 +134,7 @@ function Details({ commit, details }: { commit: Commit; details: CommitDetails |
       {commit.refs.length ? (
         <p className="mt-2 flex flex-wrap items-center gap-1.5">
           {commit.refs.map((decoration) => (
-            <RefChip key={decoration} chip={parseDecoration(decoration)} />
+            <RefChip key={decoration} chip={parseDecoration(decoration, localBranches)} />
           ))}
         </p>
       ) : null}

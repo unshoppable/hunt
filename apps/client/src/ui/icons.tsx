@@ -209,6 +209,16 @@ export function EraserIcon({ className = "size-3.5" }: { className?: string }) {
   );
 }
 
+/** A tag on a string, for tag names. */
+export function TagIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8Z" />
+      <circle cx="7.5" cy="7.5" r="1.5" />
+    </svg>
+  );
+}
+
 /** A git branch forking off a line, for branch names. */
 export function BranchIcon({ className = "size-3.5" }: { className?: string }) {
   return (

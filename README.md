@@ -334,7 +334,7 @@ to other or additional keys, flags two commands that share one and keeps the cha
 | ⇧⌘2 | Select the file in the project tree |
 | ⌘S | Save |
 | ⌘P or double shift | "Go to File": fuzzy search over `git ls-files`; `name:12` jumps to line 12 |
-| ⇧⌘F | "Find in Files": full-text search via `git grep` (⌥C match case, ⌥W words, ⌥X regex, file mask); starts with the editor's selection |
+| ⇧⌘F | "Find in Files": full-text search over the project files held in memory (⌥C match case, ⌥W words, ⌥X regex, file mask); starts with the editor's selection |
 
 #### Guardrails
 

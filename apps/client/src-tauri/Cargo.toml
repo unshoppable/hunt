@@ -34,6 +34,8 @@ tauri-plugin-process = "2"
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 glob = "0.3"
+regex = "1"
+memchr = "2"
 sha2 = "0.10"
 libc = "0.2"
 fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs", version = "0.0.0" }
@@ -50,3 +52,13 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# The search engines of Find in Files stay fast in debug builds too.
+[profile.dev.package.regex]
+opt-level = 3
+[profile.dev.package.regex-automata]
+opt-level = 3
+[profile.dev.package.aho-corasick]
+opt-level = 3
+[profile.dev.package.memchr]
+opt-level = 3

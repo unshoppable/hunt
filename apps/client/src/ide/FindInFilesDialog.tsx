@@ -14,9 +14,6 @@ import { useViewportSize } from "../ui/useViewportSize";
 import { abbreviateHome, FilePreview } from "./FileSearchDialog";
 import { matchSummary, selectionQuery, splitByRanges } from "./findInFiles";
 
-/** Pause after the last keystroke before the search runs. */
-const SEARCH_DELAY_MS = 150;
-
 const MIN_SIZE = { width: 560, height: 280 };
 /** The largest share of the window's width and height the dialog may take. */
 const MAX_WIDTH_SHARE = 0.94;
@@ -54,7 +51,7 @@ export function useFindInFilesShortcut(onTrigger: (selected: string | null) => v
 
 /**
  * WebStorm-style "Find in Files": searches the text of every project file (see find_in_files.rs) as you type and
- * lists the matching lines; the selected match is previewed below the list. `initialText` (the editor's selection)
+ * lists the matching lines on every keystroke; the selected match is previewed below the list. `initialText` (the editor's selection)
  * replaces the last query. ⌥C, ⌥W and ⌥X toggle Match Case, Words and Regex; the file mask takes comma-separated
  * masks such as `*.ts, !*.spec.ts`. ↑/↓ or a click select a match (hovering only highlights the row), Enter or a
  * double click opens it, ⇧Enter opens it in a right split, Esc or a click on the backdrop closes. The size is remembered across sessions.
@@ -99,11 +96,9 @@ export function FindInFilesDialog({
       onError: (reason) => setError(errorText(reason)),
     },
     [sessionId, query.text, query.matchCase, query.wholeWords, query.isRegex, query.fileMask],
-    { delayMs: SEARCH_DELAY_MS },
   );
 
   const matches = useMemo(() => (query.text && !error ? (result?.value.matches ?? []) : []), [query.text, error, result]);
-  const isSearching = Boolean(query.text) && result?.query !== query && !error;
   const selected = Math.min(selectedIndex, Math.max(matches.length - 1, 0));
   const selectedMatch = matches[selected] as TextMatch | undefined;
 
@@ -147,7 +142,8 @@ export function FindInFilesDialog({
     event.preventDefault();
   };
 
-  const status = !query.text ? "" : isSearching ? "Searching…" : result ? matchSummary(result.value) : "";
+  // The last result stays on screen while the next search runs (an empty query's result only loaded the files).
+  const status = !query.text ? "" : result?.query.text ? matchSummary(result.value) : "Searching…";
   // Without a preview the dialog is as tall as its list, up to the remembered height.
   const style = { width: size.width, height: selectedMatch ? size.height : undefined, maxHeight: size.height };
   return (

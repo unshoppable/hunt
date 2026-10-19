@@ -45,6 +45,7 @@ pub fn run() {
         .manage(preferences::Preferences::default())
         .menu(|app| menu::build(app))
         .manage(AttributionRegistry::default())
+        .manage(find_in_files::FindRegistry::default())
         .manage(lsp::LspRegistry::default())
         .manage(TerminalRegistry::default())
         .invoke_handler(tauri::generate_handler![

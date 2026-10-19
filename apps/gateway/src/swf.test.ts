@@ -171,7 +171,7 @@ function fakeVm(failing?: { command: string; error: Error }, status: () => Recor
         case "clone":
           return { path: "/home/agent/app" };
         case "session-config":
-          return { services_prompt: "### The repository's services\n- `ui`: port 4200\n", agent_md: "# Services\nStart the UIs." };
+          return { services_prompt: "### The repository's services\n- `ui`: port 4200\n", agent_md: "# Services\nStart the UIs.", swf_model: "opus" };
         case "wait":
           return { state: "ready", acpSessionId: "acp-9" };
         default:
@@ -352,7 +352,7 @@ describe("Poller.cycle", () => {
         `\n\n## Remote session\n\n### Git\n\n## Questions\n\n## Sessions ${SESSION_ID}\n\n## Issue #12 on fix/general/12-fix-login\n\n### The repository's services\n- \`ui\`: port 4200\n\n` +
         "### The repository's hunt.agent.md\n# Services\nStart the UIs.\n",
       modeId: "bypassPermissions",
-      configOptions: {},
+      configOptions: { model: "opus" },
     });
     expect(prompts).toHaveLength(1);
     expect(prompts[0]).toMatchObject({ sessionId: "acp-9", cwd: "/home/agent/app" });

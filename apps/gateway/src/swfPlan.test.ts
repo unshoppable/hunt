@@ -234,8 +234,8 @@ describe("session files", () => {
     expect(prompt).not.toContain("{{");
   });
 
-  it("writes hunt-session.json in the desktop's shape: a new conversation without permission requests", () => {
-    expect(JSON.parse(huntSessionFile("ab12cd34-0000-4000-8000-000000000001", "/home/agent/app", "PROMPT"))).toEqual({
+  it("writes hunt-session.json in the desktop's shape: a new conversation without permission requests, with the model of hunt.json", () => {
+    expect(JSON.parse(huntSessionFile("ab12cd34-0000-4000-8000-000000000001", "/home/agent/app", "PROMPT", null))).toEqual({
       huntSessionId: "ab12cd34-0000-4000-8000-000000000001",
       acpSessionId: null,
       cwd: "/home/agent/app",
@@ -243,6 +243,7 @@ describe("session files", () => {
       modeId: "bypassPermissions",
       configOptions: {},
     });
+    expect(JSON.parse(huntSessionFile("ab12cd34-0000-4000-8000-000000000001", "/home/agent/app", "PROMPT", "opus")).configOptions).toEqual({ model: "opus" });
   });
 });
 

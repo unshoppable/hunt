@@ -197,8 +197,8 @@ Session VM:
                          its hunt.json (version 3), /etc/hunt/services/<name>.env with the remote secrets its
                          remoteSecrets name (each must exist), and the configuration of the VM's preview proxy,
                          /etc/hunt/caddy.json, and (re)start the proxy; stops and disables the services hunt.json no
-                         longer declares; prints the services' section of the agent's prompt and the text of the
-                         repository's hunt.agent.md
+                         longer declares; prints the services' section of the agent's prompt, the text of the
+                         repository's hunt.agent.md and the model hunt.json sets for swf sessions (swf.model)
   service <start|stop|restart|status> [<name>…]
                          start and enable (so that they come back when the VM boots), stop and disable, or restart the
                          named services of the hunt.json of the VM's session; prints the state of every service, for
@@ -1335,7 +1335,8 @@ cmd_session_config() {
   stop_undeclared_services "$id"
   systemctl enable --quiet "$PROXY_UNIT"
   systemctl reload-or-restart "$PROXY_UNIT"
-  emit --argjson result "$result" '{agent_md: ($result.agent_md // null), services_prompt: ($result.services_prompt // "")}'
+  emit --argjson result "$result" \
+    '{agent_md: ($result.agent_md // null), services_prompt: ($result.services_prompt // ""), swf_model: ($result.swf_model // null)}'
 }
 
 cmd_start() {

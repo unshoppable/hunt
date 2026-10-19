@@ -234,9 +234,14 @@ export function remoteSystemPrompt(
   return prompt;
 }
 
-/** `hunt-session.json` of a new poller session, in the shape the desktop's handoff writes. */
-export function huntSessionFile(huntSessionId: string, cwd: string, systemPromptAppend: string): string {
-  const session = { huntSessionId, acpSessionId: null, cwd, systemPromptAppend, modeId: REMOTE_MODE, configOptions: {} };
+/**
+ * `hunt-session.json` of a new poller session, in the shape the desktop's handoff writes; `model`, the `swf.model` of the
+ * repository's hunt.json as `hunt-ctl session-config` reports it (`swf_model`), becomes the config option `model`, and
+ * without one Claude Code's default model applies.
+ */
+export function huntSessionFile(huntSessionId: string, cwd: string, systemPromptAppend: string, model: string | null): string {
+  const configOptions = model ? { model } : {};
+  const session = { huntSessionId, acpSessionId: null, cwd, systemPromptAppend, modeId: REMOTE_MODE, configOptions };
   return `${JSON.stringify(session, null, 2)}\n`;
 }
 

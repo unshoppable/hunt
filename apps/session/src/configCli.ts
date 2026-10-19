@@ -14,9 +14,10 @@
  * temporary file and a rename, mode 0644; the services' files, which hold remote secrets and only systemd reads, get
  * 0600. It creates --services-dir (0755) when it is missing and deletes the `*.env` files there of services that
  * hunt.json no longer declares; other files stay. Prints one line of JSON:
- * `{"ok": true, "services": [{"name", "port", "tls", "guarded"}], "services_prompt": "…", "agent_md": "…"}` with the
- * services in the order of hunt.json, the section of the agent's prompt that lists them (or says there are none) and
- * the text of the repository's hunt.agent.md (instructions for the agent, at most 20 KiB) when it has one, or
+ * `{"ok": true, "services": [{"name", "port", "tls", "guarded"}], "services_prompt": "…", "agent_md": "…", "swf_model": "…"}`
+ * with the services in the order of hunt.json, the section of the agent's prompt that lists them (or says there are
+ * none), the text of the repository's hunt.agent.md (instructions for the agent, at most 20 KiB) when it has one and
+ * the `swf.model` of hunt.json when it sets one, or
  * `{"ok": false, "problems": […]}`, each problem starting with the path of the offending value; then it writes nothing
  * and exits with 1. The agent controls the worktree, so hunt.json and hunt.agent.md are read only as regular files,
  * never through a symlink.
@@ -59,6 +60,7 @@ interface Result {
   services?: ServiceSummary[];
   services_prompt?: string;
   agent_md?: string;
+  swf_model?: string;
 }
 
 function parseArguments(args: string[]): Options {
@@ -168,7 +170,7 @@ function run(args: string[]): Result {
     writeAtomic(options.caddyOut, `${JSON.stringify(config.proxy, null, 2)}\n`);
     writeServiceEnvs(options.servicesDir, config.serviceEnvs);
     const services = config.services.map(({ name, port, tls, guarded }) => ({ name, port, tls, guarded }));
-    result = { ok: true, services, services_prompt: config.servicesPrompt };
+    result = { ok: true, services, services_prompt: config.servicesPrompt, ...(config.swfModel ? { swf_model: config.swfModel } : {}) };
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;
     return { ok: false, problems: [...problems, ...error.problems] };

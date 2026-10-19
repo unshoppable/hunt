@@ -525,7 +525,9 @@ lists every service of the repository, a monorepo all of its apps, with its `com
 `tls` (the port speaks HTTPS), `guarded` (behind IAP, the default) and `env`, whose values may name a service's URL as
 `${services.<name>.publicUrl}`, `remoteSecrets`, variables whose values are remote secrets (`"$<NAME>"`, see "Remote
 sessions"), and `worktreeInclude`, the ignored files the service needs, as glob patterns, which every worktree and
-session VM gets from the checkout (see "Worktrees and changes") and the VM only validates.
+session VM gets from the checkout (see "Worktrees and changes") and the VM only validates. An optional `swf` section
+sets the model of the sessions the gateway's poller starts for the repository's issues (`"swf": {"model": "opus"}`, an
+alias or a model ID).
 `session-config` writes one environment file per service to
 `/etc/hunt/services/<name>.env` (mode 0600, read by systemd only), the session's environment `/etc/hunt/session.env`
 and the configuration of the VM's preview proxy, `hunt-proxy.service` (Caddy on port 8080), which serves `<short id>-<port>.<domain>` from that port on
@@ -770,7 +772,10 @@ tar archive of the ignored files a handoff copies from the Mac, such as `.env.pr
 repository's root and at most 64 KiB, which the infrastructure repository's README shows how to add. A secret without
 a version, or one the gateway may not read, means no private files and a warning in the journal; a version that is no
 such archive fails the setup. Then `session-config`,
-`put-files --claude` with `hunt-session.json`, `deps`, `start` and `wait` follow as in a handoff. The system prompt is
+`put-files --claude` with `hunt-session.json`, `deps`, `start` and `wait` follow as in a handoff; `hunt-session.json`
+sets the model of the repository's `hunt.json` (`swf.model`), which the relay applies as the session's `model` config
+option, and without one, or with a model Claude Code does not know (the relay's journal says so), Claude Code's
+default model applies. The system prompt is
 the remote, Git and question parts a handoff appends (`libs/domain/prompts/`, which the app and the poller compile in),
 the poller's own `apps/gateway/prompts/swf.system-prompt.md` with the issue's workflow, the repository's services and
 its `hunt.agent.md`; the parts Hunt takes from its user's settings (response style, guardrail offer, diagram language)

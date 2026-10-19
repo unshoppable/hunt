@@ -12,8 +12,9 @@
  * (`orchestrator.ts`) creates the session VM from the instance template, records the session in its metadata, waits for
  * its startup script and installs the session release staged on the gateway; then `install-tools`, `clone`, the
  * repository's private files (the ignored files a handoff copies, such as `.env.private`) from the secret
- * `HUNT_SWF_FILES_<owner>_<repo>` through `put-files`, `session-config`, `hunt-session.json` through `put-files
- * --claude`, `deps`, `start` with the tokens on stdin and `wait`. The session's system prompt holds the steps of the
+ * `HUNT_SWF_FILES_<owner>_<repo>` through `put-files`, `session-config`, `hunt-session.json` with the model the
+ * repository's hunt.json sets (`swf.model`) through `put-files --claude`, `deps`, `start` with the tokens on stdin and
+ * `wait`. The session's system prompt holds the steps of the
  * workflow (`prompts/swf.system-prompt.md`: read the issue and the repository's guardrails, ask open questions,
  * comment a plan, then loop over implement, check and self-review until a pass finds nothing, open the pull request
  * and watch its checks, clean up); then the issue
@@ -508,10 +509,11 @@ export class Poller {
     const sessionConfig = await vm.huntCtl(["session-config", names.id, "--domain", domain]);
     const servicesPrompt = typeof sessionConfig.services_prompt === "string" ? sessionConfig.services_prompt : null;
     const agentMd = typeof sessionConfig.agent_md === "string" ? sessionConfig.agent_md : null;
+    const model = typeof sessionConfig.swf_model === "string" ? sessionConfig.swf_model : null;
     const prompts = this.deps.prompts();
     const swfPrompt = swfSystemPrompt(prompts.swfSystem, repo, issue.number, branch, setup.labels);
     const systemPrompt = remoteSystemPrompt(prompts, names.id, swfPrompt, servicesPrompt, agentMd);
-    await vm.putClaudeFiles(names.id, { "hunt-session.json": huntSessionFile(names.id, cloned.path, systemPrompt) });
+    await vm.putClaudeFiles(names.id, { "hunt-session.json": huntSessionFile(names.id, cloned.path, systemPrompt, model) });
     log(`cloned ${repo} into ${cloned.path}; installing the dependencies`);
     await vm.huntCtl(["deps", names.id]);
     await vm.huntCtl(["start", names.id], `${claudeToken}\n${await this.deps.githubApp.tokenFor(repo)}\n`);

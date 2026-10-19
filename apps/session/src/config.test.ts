@@ -30,6 +30,7 @@ const CWD_RULE =
 const CONTRACT_2_PROBLEM = 'preview: the preview section of contract 2 is no longer read; hunt.json holds {"version": 3, "services": {…}} at its root';
 const IAP_HEADERS = ["X-Goog-Iap-Jwt-Assertion", "X-Goog-Authenticated-User-Email", "X-Goog-Authenticated-User-Id"];
 const REMOTE_SECRET_RULE = 'must be "$<NAME>", the name of a remote secret matching ^[A-Z][A-Z0-9_]{0,63}$';
+const MODEL_RULE = 'must be the alias or ID of a Claude model such as "opus" or "claude-opus-5-5": one line of at most 128 characters';
 const MISSING_SECRET = "services.web.remoteSecrets.OPENAI_API_KEY: no remote secret MED_OPENAI_API_KEY; set it in Hunt under Settings → Remote VM";
 
 /** A hunt.json with every field: a forward and a self reference, a folder, TLS and two services that are not guarded. */
@@ -134,6 +135,9 @@ describe("parseServices", () => {
       [{ preview: { version: 2, main: 4200 } }, [CONTRACT_2_PROBLEM, "version: must be 3", "services: must be an object"]],
       [{ ...web({}), preview: { version: 2 } }, [CONTRACT_2_PROBLEM]],
       [{ ...web({}), environment: {}, "two words": 1 }, ["environment: unknown field", '["two words"]: unknown field']],
+      [{ ...web({}), swf: "opus" }, ["swf: must be an object"]],
+      [{ ...web({}), swf: { model: "opus", effort: "high" } }, ["swf.effort: unknown field"]],
+      ...["", " ", "opus\nsonnet", "x".repeat(129), 5, null].map((model): [unknown, string[]] => [{ ...web({}), swf: { model } }, [`swf.model: ${MODEL_RULE}`]]),
       [{ version: 3, services: [] }, ["services: must be an object"]],
       [withServices({}), ["services: must hold 1 to 64 services"]],
       [withServices(numbered(65)), ["services: must hold 1 to 64 services"]],
@@ -321,6 +325,14 @@ describe("environments", () => {
     expect(config.proxy).toEqual(proxyConfig(COMPLETE_SERVICES, HOST));
     expect(config.servicesPrompt).toBe(servicesPrompt(COMPLETE_SERVICES, HOST));
     expect(buildSessionConfig(undefined, HOST, WORKTREE)).toMatchObject({ services: [], serviceEnvs: {}, servicesPrompt: servicesPrompt([], HOST) });
+  });
+
+  it("reads the model of swf sessions, none without the swf section or its model", () => {
+    expect(config.swfModel).toBeNull();
+    expect(buildSessionConfig(undefined, HOST, WORKTREE).swfModel).toBeNull();
+    expect(buildSessionConfig({ ...web({}), swf: {} }, HOST, WORKTREE).swfModel).toBeNull();
+    expect(buildSessionConfig({ ...web({}), swf: { model: "opus" } }, HOST, WORKTREE).swfModel).toBe("opus");
+    expect(buildSessionConfig({ ...web({}), swf: { model: "x".repeat(128) } }, HOST, WORKTREE).swfModel).toBe("x".repeat(128));
   });
 });
 
@@ -636,8 +648,9 @@ describe("configCli", () => {
     return text.slice(text.indexOf("\n") + 1);
   }
 
-  it("writes the environments and the proxy configuration and prints the services, their prompt and hunt.agent.md", () => {
-    const paths = setup({ "hunt.json": JSON.stringify(COMPLETE), "hunt.agent.md": "\n# Services\nStart backend with ui.\n\n", "HUNT.md": "Old notes." });
+  it("writes the environments and the proxy configuration and prints the services, their prompt, hunt.agent.md and the swf model", () => {
+    const huntJson = { ...COMPLETE, swf: { model: "claude-opus-5-5" } };
+    const paths = setup({ "hunt.json": JSON.stringify(huntJson), "hunt.agent.md": "\n# Services\nStart backend with ui.\n\n", "HUNT.md": "Old notes." });
     const result = runCli(paths);
     const expected = buildSessionConfig(COMPLETE, HOST, paths.worktree);
 
@@ -654,6 +667,7 @@ describe("configCli", () => {
         ],
         services_prompt: expected.servicesPrompt,
         agent_md: "# Services\nStart backend with ui.",
+        swf_model: "claude-opus-5-5",
       },
       lines: 2,
     });

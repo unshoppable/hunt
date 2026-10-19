@@ -1,9 +1,11 @@
 /**
  * A repository's `hunt.json` in contract version 3: the services of the repository, which Hunt runs on a session's VM
- * as systemd units that the agent starts when its task needs them, each with the ignored files it needs in a worktree.
+ * as systemd units that the agent starts when its task needs them, each with the ignored files it needs in a worktree,
+ * and the settings of the sessions the gateway's poller starts for the repository's `swf` issues.
  *
  *   {
  *     "version": 3,
+ *     "swf": { "model": "opus" },
  *     "services": {
  *       "backend": {
  *         "command": "npm run start:backend", "port": 3000, "tls": true, "guarded": false,
@@ -36,6 +38,10 @@
  *   each one line of at most 255 characters that is not absolute and has no `..` segment; none by default. Hunt copies
  *   the matching files of the repository's checkout into every worktree it creates and takes them along to the session
  *   VM; the VM only validates the list.
+ * - `swf`: optional, with the only field `model`, the model of Claude Code in a session of the poller: an alias such as
+ *   `opus` or a model ID such as `claude-opus-5-5`, one line of at most 128 characters. The poller sets it as the
+ *   session's `model` config option; without it, or when the agent knows no such model (the relay logs that), Claude
+ *   Code's default model applies. Sessions started from Hunt keep the model their user picks.
  *
  * `<short>` is the first 8 hex digits of the session ID. `configCli.ts` writes the session's environment, one
  * environment file per service and the configuration of the VM's preview proxy.
@@ -80,6 +86,8 @@ export interface SessionConfig {
   proxy: CaddyConfig;
   /** The section of the agent's prompt that lists the services; empty without services. */
   servicesPrompt: string;
+  /** `swf.model` of hunt.json; null without one. */
+  swfModel: string | null;
 }
 
 export interface CaddyRoute {
@@ -151,7 +159,10 @@ const ACCESS_LOG = "/var/log/hunt-proxy/access.log";
 /** Caddy names the access logger of a server `http.log.access.<default_logger_name>`. */
 const ACCESS_LOGGER = "preview";
 
-const ROOT_FIELDS = ["version", "services"];
+const ROOT_FIELDS = ["version", "swf", "services"];
+const SWF_FIELDS = ["model"];
+const MAX_MODEL_LENGTH = 128;
+const MODEL_RULE = `must be the alias or ID of a Claude model such as "opus" or "claude-opus-5-5": one line of at most ${MAX_MODEL_LENGTH} characters`;
 /** The rule a `worktreeInclude` entry must follow. */
 export const WORKTREE_INCLUDE_RULE = "must be a glob pattern relative to the worktree: one line of at most 255 characters, not absolute, without a .. segment";
 const MAX_WORKTREE_INCLUDE = 64;
@@ -228,7 +239,7 @@ export function buildSessionConfig(huntJson: unknown, host: SessionHost, worktre
   if (!isDomain(host.domain)) {
     problems.add("domain", "must be a lowercase host name with at least two labels, the last of letters only");
   }
-  const services = parseRoot(huntJson, problems);
+  const { services, swfModel } = parseRoot(huntJson, problems);
   for (const service of services) {
     for (const [key, name] of Object.entries(service.remoteSecrets)) {
       if (Object.hasOwn(secrets, name)) continue;
@@ -242,13 +253,14 @@ export function buildSessionConfig(huntJson: unknown, host: SessionHost, worktre
     serviceEnvs: serviceEnvs(services, host, worktree, secrets),
     proxy: proxyConfig(services, host),
     servicesPrompt: servicesPrompt(services, host),
+    swfModel,
   };
 }
 
 /** The services of `huntJson` (the parsed file, undefined without one) in the order of the file; throws a ConfigError. */
 export function parseServices(huntJson: unknown): ServiceConfig[] {
   const problems = new Problems();
-  const services = parseRoot(huntJson, problems);
+  const { services } = parseRoot(huntJson, problems);
   if (problems.messages.length > 0) throw new ConfigError(problems.messages);
   return services;
 }
@@ -448,10 +460,12 @@ function record(value: unknown, path: string, fields: readonly string[] | null, 
   return value;
 }
 
-function parseRoot(huntJson: unknown, problems: Problems): ServiceConfig[] {
-  if (huntJson === undefined) return [];
+/** The services of `huntJson` in the order of the file and its `swf.model`; nothing of either without the file. */
+function parseRoot(huntJson: unknown, problems: Problems): { services: ServiceConfig[]; swfModel: string | null } {
+  const empty = { services: [], swfModel: null };
+  if (huntJson === undefined) return empty;
   const root = record(huntJson, "hunt.json", null, problems);
-  if (!root) return [];
+  if (!root) return empty;
   for (const key of Object.keys(root)) {
     if (ROOT_FIELDS.includes(key)) continue;
     problems.add(at("", key), key === "preview" ? CONTRACT_2_PROBLEM : "unknown field");
@@ -459,6 +473,7 @@ function parseRoot(huntJson: unknown, problems: Problems): ServiceConfig[] {
   if (root.version !== 3) {
     problems.add("version", "must be 3");
   }
+  const swfModel = parseSwfModel(root.swf, problems);
   const declared = record(root.services, "services", null, problems);
   const entries = Object.entries(declared ?? {});
   if (declared && (entries.length === 0 || entries.length > MAX_SERVICES)) {
@@ -478,7 +493,19 @@ function parseRoot(huntJson: unknown, problems: Problems): ServiceConfig[] {
     }
     services.push(service);
   }
-  return services;
+  return { services, swfModel };
+}
+
+/** The `model` of the optional `swf` section; null without one. */
+function parseSwfModel(value: unknown, problems: Problems): string | null {
+  if (value === undefined) return null;
+  const fields = record(value, "swf", SWF_FIELDS, problems);
+  if (!fields || fields.model === undefined) return null;
+  const model = fields.model;
+  const isModel = typeof model === "string" && model.trim() !== "" && !LINE_BREAK.test(model) && model.length <= MAX_MODEL_LENGTH;
+  if (isModel) return model;
+  problems.add(at("swf", "model"), MODEL_RULE);
+  return null;
 }
 
 /** The optional `worktreeInclude` list of a service at `path`; see the module comment. Every problem is reported. */

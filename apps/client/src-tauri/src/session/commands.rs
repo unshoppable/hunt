@@ -273,9 +273,9 @@ fn review_session_id(record: &SessionRecord) -> Uuid {
 /// then the pull request's target branch, whose merge base with the base becomes the diff base, and the worktree works
 /// on the pull request's own branch `pull_request_branch` rather than a new one, with `base_ref` naming that branch
 /// locally or on a remote (`origin/<branch>`). `new_branch` names a branch the user asked for instead of the generated
-/// `feat/general/<slug>-<id>`: created off `base_ref` in a worktree, or at `HEAD` of the checkout, which switches to
-/// it; like a pull request's branch it is the session's base, so a push lands on it under its own name, and deleting
-/// the session keeps it.
+/// `<base>-<n>` (`git::next_session_branch`): created off `base_ref` in a worktree, or at `HEAD` of the checkout,
+/// which switches to it; like a pull request's branch it is the session's base, so a push lands on it under its own
+/// name, and deleting the session keeps it.
 #[tauri::command]
 pub async fn create_session(
     app: AppHandle,
@@ -309,7 +309,10 @@ pub async fn create_session(
     let mut keeps_branch = false;
     let branch = match workspace {
         Workspace::Worktree => {
-            let branch = pull_request_branch.clone().or_else(|| new_branch.clone()).unwrap_or_else(|| worktree_branch_name(&title, id));
+            let branch = match pull_request_branch.clone().or_else(|| new_branch.clone()) {
+                Some(branch) => branch,
+                None => git::next_session_branch(&repo_path, &base_ref).await?,
+            };
             if pull_request_branch.is_some() {
                 keeps_branch = !git::worktree_add_on_branch(&repo_path, &branch, &worktree_path, &base_ref).await?;
             } else {
@@ -2740,26 +2743,6 @@ fn drop_pending_permissions(permissions: &PermissionRegistry, hunt_session_id: U
     permissions.0.lock().unwrap().retain(|_, pending| pending.hunt_session_id != hunt_session_id);
 }
 
-/// The branch of a worktree session, `feat/general/<slug>-<short id>`: the title lowercased, non-alphanumerics
-/// collapsed to dashes and cut to 40 characters.
-fn worktree_branch_name(title: &str, id: Uuid) -> String {
-    let mut slug = String::new();
-    for character in title.to_lowercase().chars() {
-        if character.is_ascii_alphanumeric() {
-            slug.push(character);
-        } else if !slug.ends_with('-') && !slug.is_empty() {
-            slug.push('-');
-        }
-    }
-    let slug = slug.trim_matches('-');
-    let short_id = &id.to_string()[..8];
-
-    if slug.is_empty() {
-        return git::session_branch(short_id);
-    }
-    git::session_branch(&format!("{}-{short_id}", slug.chars().take(40).collect::<String>().trim_end_matches('-')))
-}
-
 /// Entries of a worktree directory for the project tree (`path` is relative; empty for the root).
 #[tauri::command]
 pub async fn list_dir(app: AppHandle, id: Uuid, path: String) -> Result<Vec<workspace::DirEntry>, String> {
@@ -2902,20 +2885,6 @@ mod tests {
             "The repository's hunt.agent.md, its instructions for Hunt sessions, follows at the end when it has one.\n\n\
              ### Git\nThere is no GitHub token for this session, so pushing fails: commit locally and do not push.\n"
         ));
-    }
-
-    #[test]
-    fn worktree_branch_name_is_a_feat_general_branch_with_a_lowercase_collapsed_slug() {
-        let id = Uuid::parse_str("0123abcd-1111-2222-3333-444455556666").unwrap();
-        assert_eq!(worktree_branch_name("Fix the Login  Bug!", id), "feat/general/fix-the-login-bug-0123abcd");
-        assert_eq!(worktree_branch_name("#527 Multilingual emails", id), "feat/general/527-multilingual-emails-0123abcd");
-        assert_eq!(worktree_branch_name("  ---  ", id), "feat/general/0123abcd");
-        assert_eq!(worktree_branch_name("", id), "feat/general/0123abcd");
-        assert_eq!(worktree_branch_name("Ärger mit Umlauten", id), "feat/general/rger-mit-umlauten-0123abcd");
-
-        let long = worktree_branch_name(&"word ".repeat(20), id);
-        assert_eq!(long, format!("feat/general/{}-0123abcd", "word-".repeat(8).trim_end_matches('-')));
-        assert!(!long.contains("--"));
     }
 
     #[tokio::test]

@@ -111,6 +111,35 @@ pub fn session_branch(name: &str) -> String {
     format!("{SESSION_BRANCH_PREFIX}{name}")
 }
 
+/// The branch of a new worktree session off `base_ref`: the base branch without `origin/` and the next number after
+/// the highest local `<base>-<n>`, so `master-1`, `master-2`, … A base outside the `<type>/<scope>/<name>` form gets
+/// the session prefix (`feat/general/master-1`), since pre-push hooks check the branch a push starts from.
+pub async fn next_session_branch(repo: &Path, base_ref: &str) -> Result<String, String> {
+    let stem = session_branch_stem(base_ref);
+    let existing = run_git(repo, &["for-each-ref", "--format=%(refname:short)", &format!("refs/heads/{stem}-*")]).await?;
+    Ok(numbered_branch(&stem, existing.lines()))
+}
+
+fn session_branch_stem(base_ref: &str) -> String {
+    let base = base_ref.strip_prefix("origin/").unwrap_or(base_ref);
+    let mut segments = base.splitn(3, '/');
+    let is_conventional = matches!(segments.next(), Some("feat" | "feature" | "fix" | "chore"))
+        && segments.next().is_some_and(|scope| !scope.is_empty())
+        && segments.next().is_some_and(|name| !name.is_empty());
+    if is_conventional { base.to_string() } else { session_branch(base) }
+}
+
+fn numbered_branch<'a>(stem: &str, existing: impl Iterator<Item = &'a str>) -> String {
+    let prefix = format!("{stem}-");
+    let highest = existing
+        .filter_map(|branch| branch.strip_prefix(&prefix))
+        .filter(|number| number.bytes().all(|byte| byte.is_ascii_digit()))
+        .filter_map(|number| number.parse::<u32>().ok())
+        .max()
+        .unwrap_or(0);
+    format!("{prefix}{}", highest + 1)
+}
+
 /// Full commit hash of `reference`. The ref follows `--end-of-options` and may not start with `-`, so a
 /// frontend-supplied value can never act as a git option.
 pub async fn rev_parse(repo: &Path, reference: &str) -> Result<String, String> {
@@ -1311,6 +1340,29 @@ mod tests {
     fn unified_new_line_ranges_skips_hunks_without_new_lines() {
         assert_eq!(unified_new_line_ranges("@@ -3,2 +2,0 @@\n-a\n-b\n"), Vec::<RangeInclusive<u32>>::new());
         assert!(unified_new_line_ranges("").is_empty());
+    }
+
+    #[test]
+    fn session_branch_stem_keeps_conventional_bases_and_prefixes_the_others() {
+        assert_eq!(session_branch_stem("master"), "feat/general/master");
+        assert_eq!(session_branch_stem("origin/master"), "feat/general/master");
+        assert_eq!(session_branch_stem("origin/fix/sentry/admin-ui-errors"), "fix/sentry/admin-ui-errors");
+        assert_eq!(session_branch_stem("release/2026"), "feat/general/release/2026");
+        assert_eq!(session_branch_stem("feat//x"), "feat/general/feat//x");
+    }
+
+    #[tokio::test]
+    async fn next_session_branch_counts_up_from_the_highest_numbered_branch() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        assert_eq!(next_session_branch(repo, "main").await.unwrap(), "feat/general/main-1");
+
+        for branch in ["feat/general/main-1", "feat/general/main-3", "feat/general/main-x", "feat/general/main-4-old", "fix/sentry/abc-2"] {
+            git(repo, &["branch", branch]).await;
+        }
+        assert_eq!(next_session_branch(repo, "main").await.unwrap(), "feat/general/main-4");
+        assert_eq!(next_session_branch(repo, "origin/main").await.unwrap(), "feat/general/main-4");
+        assert_eq!(next_session_branch(repo, "fix/sentry/abc").await.unwrap(), "fix/sentry/abc-3");
     }
 
     #[tokio::test]

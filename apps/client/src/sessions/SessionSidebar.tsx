@@ -260,7 +260,7 @@ export function SessionSidebar() {
                       </span>
                     ) : null}
                   </span>
-                  <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500" title={isSubChat ? session.selection?.path : undefined}>
+                  <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.9375em] text-neutral-400" title={isSubChat ? session.selection?.path : undefined}>
                     {isSubChat && session.selection ? (
                       <img src={fileIconUrl(session.selection.path)} alt="" className="size-4 shrink-0" />
                     ) : null}
@@ -268,7 +268,7 @@ export function SessionSidebar() {
                     <span className="truncate">{isCreating && !isSubChat ? (session.workspace === "checkout" ? "Starting…" : "Creating worktree…") : sessionSubtitle(session)}</span>
                   </span>
                   {!isSubChat ? (
-                    <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500">
+                    <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.9375em] text-neutral-400">
                       <PushIcon className="size-4 shrink-0" />
                       <span className="truncate" title="Branch on origin a push of the session lands on">
                         origin/{pushTarget(session, remoteOf(session, sessions))}

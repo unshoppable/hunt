@@ -30,7 +30,7 @@ const CWD_RULE =
 const CONTRACT_2_PROBLEM = 'preview: the preview section of contract 2 is no longer read; hunt.json holds {"version": 3, "services": {…}} at its root';
 const IAP_HEADERS = ["X-Goog-Iap-Jwt-Assertion", "X-Goog-Authenticated-User-Email", "X-Goog-Authenticated-User-Id"];
 const REMOTE_SECRET_RULE = 'must be "$<NAME>", the name of a remote secret matching ^[A-Z][A-Z0-9_]{0,63}$';
-const MODEL_RULE = 'must be the alias or ID of a Claude model such as "opus" or "claude-opus-5-5": one line of at most 128 characters';
+const MODEL_RULE = 'must be the full ID of a Claude model such as "claude-opus-5-5", at most 128 characters, not an alias such as "opus"';
 const MISSING_SECRET = "services.web.remoteSecrets.OPENAI_API_KEY: no remote secret MED_OPENAI_API_KEY; set it in Hunt under Settings → Remote VM";
 
 /** A hunt.json with every field: a forward and a self reference, a folder, TLS and two services that are not guarded. */
@@ -135,9 +135,11 @@ describe("parseServices", () => {
       [{ preview: { version: 2, main: 4200 } }, [CONTRACT_2_PROBLEM, "version: must be 3", "services: must be an object"]],
       [{ ...web({}), preview: { version: 2 } }, [CONTRACT_2_PROBLEM]],
       [{ ...web({}), environment: {}, "two words": 1 }, ["environment: unknown field", '["two words"]: unknown field']],
-      [{ ...web({}), swf: "opus" }, ["swf: must be an object"]],
-      [{ ...web({}), swf: { model: "opus", effort: "high" } }, ["swf.effort: unknown field"]],
-      ...["", " ", "opus\nsonnet", "x".repeat(129), 5, null].map((model): [unknown, string[]] => [{ ...web({}), swf: { model } }, [`swf.model: ${MODEL_RULE}`]]),
+      [{ ...web({}), swf: "claude-opus-5-5" }, ["swf: must be an object"]],
+      [{ ...web({}), swf: { model: "claude-opus-5-5", effort: "high" } }, ["swf.effort: unknown field"]],
+      ...["", "opus", "sonnet[1m]", "default", "Claude-Opus-5-5", "claude-", "claude-opus-5-5 ", "claude opus", "claude-opus-5-5\nx", `claude-${"x".repeat(122)}`, 5, null].map(
+        (model): [unknown, string[]] => [{ ...web({}), swf: { model } }, [`swf.model: ${MODEL_RULE}`]],
+      ),
       [{ version: 3, services: [] }, ["services: must be an object"]],
       [withServices({}), ["services: must hold 1 to 64 services"]],
       [withServices(numbered(65)), ["services: must hold 1 to 64 services"]],
@@ -331,8 +333,9 @@ describe("environments", () => {
     expect(config.swfModel).toBeNull();
     expect(buildSessionConfig(undefined, HOST, WORKTREE).swfModel).toBeNull();
     expect(buildSessionConfig({ ...web({}), swf: {} }, HOST, WORKTREE).swfModel).toBeNull();
-    expect(buildSessionConfig({ ...web({}), swf: { model: "opus" } }, HOST, WORKTREE).swfModel).toBe("opus");
-    expect(buildSessionConfig({ ...web({}), swf: { model: "x".repeat(128) } }, HOST, WORKTREE).swfModel).toBe("x".repeat(128));
+    for (const model of ["claude-opus-5-5", "claude-haiku-4-5-20251001", "claude-sonnet-5-5[1m]", "claude-3.7-sonnet", `claude-${"x".repeat(121)}`]) {
+      expect(buildSessionConfig({ ...web({}), swf: { model } }, HOST, WORKTREE).swfModel).toBe(model);
+    }
   });
 });
 

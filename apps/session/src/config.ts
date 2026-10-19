@@ -5,7 +5,7 @@
  *
  *   {
  *     "version": 3,
- *     "swf": { "model": "opus" },
+ *     "swf": { "model": "claude-opus-5-5" },
  *     "services": {
  *       "backend": {
  *         "command": "npm run start:backend", "port": 3000, "tls": true, "guarded": false,
@@ -38,9 +38,9 @@
  *   each one line of at most 255 characters that is not absolute and has no `..` segment; none by default. Hunt copies
  *   the matching files of the repository's checkout into every worktree it creates and takes them along to the session
  *   VM; the VM only validates the list.
- * - `swf`: optional, with the only field `model`, the model of Claude Code in a session of the poller: an alias such as
- *   `opus` or a model ID such as `claude-opus-5-5`, one line of at most 128 characters. The poller sets it as the
- *   session's `model` config option; without it, or when the agent knows no such model (the relay logs that), Claude
+ * - `swf`: optional, with the only field `model`, the model of Claude Code in a session of the poller: the full ID of a
+ *   Claude model such as `claude-opus-5-5` (MODEL_ID), at most 128 characters, never an alias such as `opus`, whose
+ *   model changes with Claude Code's releases. The poller sets it as the session's `model` config option; without it, or when the agent knows no such model (the relay logs that), Claude
  *   Code's default model applies. Sessions started from Hunt keep the model their user picks.
  *
  * `<short>` is the first 8 hex digits of the session ID. `configCli.ts` writes the session's environment, one
@@ -162,7 +162,9 @@ const ACCESS_LOGGER = "preview";
 const ROOT_FIELDS = ["version", "swf", "services"];
 const SWF_FIELDS = ["model"];
 const MAX_MODEL_LENGTH = 128;
-const MODEL_RULE = `must be the alias or ID of a Claude model such as "opus" or "claude-opus-5-5": one line of at most ${MAX_MODEL_LENGTH} characters`;
+/** The full ID of a Claude model, with an optional context hint: `claude-opus-5-5`, `claude-haiku-4-5-20251001`, `claude-sonnet-5-5[1m]`. */
+const MODEL_ID = /^claude-[a-z0-9]+(?:[.-][a-z0-9]+)*(?:\[\d+m\])?$/;
+const MODEL_RULE = `must be the full ID of a Claude model such as "claude-opus-5-5", at most ${MAX_MODEL_LENGTH} characters, not an alias such as "opus"`;
 /** The rule a `worktreeInclude` entry must follow. */
 export const WORKTREE_INCLUDE_RULE = "must be a glob pattern relative to the worktree: one line of at most 255 characters, not absolute, without a .. segment";
 const MAX_WORKTREE_INCLUDE = 64;
@@ -502,8 +504,7 @@ function parseSwfModel(value: unknown, problems: Problems): string | null {
   const fields = record(value, "swf", SWF_FIELDS, problems);
   if (!fields || fields.model === undefined) return null;
   const model = fields.model;
-  const isModel = typeof model === "string" && model.trim() !== "" && !LINE_BREAK.test(model) && model.length <= MAX_MODEL_LENGTH;
-  if (isModel) return model;
+  if (typeof model === "string" && model.length <= MAX_MODEL_LENGTH && MODEL_ID.test(model)) return model;
   problems.add(at("swf", "model"), MODEL_RULE);
   return null;
 }

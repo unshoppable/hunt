@@ -243,7 +243,7 @@ describe("session files", () => {
       modeId: "bypassPermissions",
       configOptions: {},
     });
-    expect(JSON.parse(huntSessionFile("ab12cd34-0000-4000-8000-000000000001", "/home/agent/app", "PROMPT", "opus")).configOptions).toEqual({ model: "opus" });
+    expect(JSON.parse(huntSessionFile("ab12cd34-0000-4000-8000-000000000001", "/home/agent/app", "PROMPT", "claude-opus-5-5")).configOptions).toEqual({ model: "claude-opus-5-5" });
   });
 });
 

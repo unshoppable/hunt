@@ -58,7 +58,7 @@ fi
 
 const HUNT_JSON = {
   version: 3,
-  swf: { model: "opus" },
+  swf: { model: "claude-opus-5-5" },
   services: {
     api: { command: "node server.js", port: 3000, guarded: false, env: { ADMIN_URL: "${services.admin.publicUrl}" } },
     admin: { command: "npm start", cwd: "admin", port: 4200, env: { API_URL: "${services.api.publicUrl}" } },
@@ -213,7 +213,7 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
   it("writes each service's environment, records the services and prints the prompt's services, hunt.agent.md and the swf model", () => {
     sh("mkdir -p /etc/hunt/services && touch /etc/hunt/services/gone.env");
     const result = sessionConfig();
-    expect(result).toEqual({ agent_md: AGENT_MD.trim(), services_prompt: expect.stringMatching(/^### The repository's services\n/), swf_model: "opus" });
+    expect(result).toEqual({ agent_md: AGENT_MD.trim(), services_prompt: expect.stringMatching(/^### The repository's services\n/), swf_model: "claude-opus-5-5" });
     expect(result.services_prompt).toContain("https://7c0c6f2e-3000-open.hunt.example.com");
 
     expect(sh("ls /etc/hunt/services").stdout).toBe("admin.env\napi.env\nui.env\n");

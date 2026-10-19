@@ -526,8 +526,9 @@ lists every service of the repository, a monorepo all of its apps, with its `com
 `${services.<name>.publicUrl}`, `remoteSecrets`, variables whose values are remote secrets (`"$<NAME>"`, see "Remote
 sessions"), and `worktreeInclude`, the ignored files the service needs, as glob patterns, which every worktree and
 session VM gets from the checkout (see "Worktrees and changes") and the VM only validates. An optional `swf` section
-sets the model of the sessions the gateway's poller starts for the repository's issues (`"swf": {"model": "opus"}`, an
-alias or a model ID).
+sets the model of the sessions the gateway's poller starts for the repository's issues as a full model ID
+(`"swf": {"model": "claude-opus-5-5"}`; an alias such as `opus` is rejected, since its model changes with Claude Code's
+releases).
 `session-config` writes one environment file per service to
 `/etc/hunt/services/<name>.env` (mode 0600, read by systemd only), the session's environment `/etc/hunt/session.env`
 and the configuration of the VM's preview proxy, `hunt-proxy.service` (Caddy on port 8080), which serves `<short id>-<port>.<domain>` from that port on

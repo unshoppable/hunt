@@ -10,7 +10,7 @@ import { openInEditorWindow } from "../ide/editorWindows";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { errorText, useLoad } from "../ui/useLoad";
-import { BUSY_LABELS, branchActions, originBranchName, type BranchAction } from "./branchActions";
+import { BUSY_LABELS, branchActions, localBranchesWithoutOrigin, originBranchName, type BranchAction } from "./branchActions";
 import { BranchMenu, PushTargetDialog, RenameBranchDialog, type BranchMenuState } from "./BranchMenu";
 import { CommitFiles } from "./CommitFiles";
 import { CommitLog } from "./CommitLog";
@@ -134,6 +134,12 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
   const unpushed = useMemo(() => new Set(refs?.unpushed ?? []), [refs]);
   const localBranches = useMemo(() => new Set((refs?.refs ?? []).filter((ref) => ref.kind === "local").map((ref) => ref.name)), [refs]);
   const menuActions = useMemo(() => (menu ? branchActions(menu.ref, { head: refs?.head ?? "HEAD", pushes, isRemoteSession: !!remote }) : []), [menu, refs, pushes, remote]);
+  /** Local branches origin lacks that no session of the repository has checked out, which the branch tree's button deletes. */
+  const prunable = useMemo(() => {
+    if (!refs || !session) return [];
+    const kept = new Set([refs.head, ...sessions.filter((candidate) => candidate.repoPath === session.repoPath).map((candidate) => candidate.branch)]);
+    return localBranchesWithoutOrigin(refs.refs, kept);
+  }, [refs, session, sessions]);
   /** The branches of origin a push could land on, without the `origin/` prefix. */
   const originBranches = useMemo(() => (refs?.refs ?? []).map((ref) => (ref.kind === "remote" ? originBranchName(ref.name) : null)).filter((name): name is string => !!name), [refs]);
 
@@ -161,6 +167,25 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
     }
   };
 
+  /** Deletes every prunable branch after one confirmation that lists them; branches git refuses to delete are reported. */
+  const pruneBranches = async () => {
+    const count = prunable.length;
+    const message = `Delete ${count} local ${count === 1 ? "branch" : "branches"} without a branch on origin?\n\n${prunable.join("\n")}\n\nCommits only these branches have are lost.`;
+    if (!(await confirmDestructive(message))) return;
+    setBusyLabel(BUSY_LABELS.delete);
+    const failures: string[] = [];
+    for (const branch of prunable) {
+      try {
+        await commands.gitDeleteBranch(sessionId, branch, true);
+      } catch (reason) {
+        failures.push(`${branch}: ${errorText(reason)}`);
+      }
+    }
+    setBusyLabel(null);
+    setError(failures.length ? failures.join("\n") : null);
+    noteWorktreeChanged(sessionId);
+  };
+
   const onRenamed = (branch: string, newName: string) => {
     if (filter.reference === branch) {
       setFilter((current) => ({ ...current, reference: newName }));
@@ -177,8 +202,10 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
           filter={filter.reference}
           menuFor={menu?.ref.name ?? null}
           busyLabel={busyLabel}
+          prunable={prunable}
           onFilter={(reference) => setFilter((current) => ({ ...current, reference }))}
           onContextMenu={(ref, x, y) => setMenu({ ref, x, y })}
+          onPrune={() => void pruneBranches()}
         />
       </Panel>
       <PaneSeparator />

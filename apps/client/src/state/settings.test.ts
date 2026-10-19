@@ -4,6 +4,7 @@ import {
   DEFAULT_GRAPH_AGENT,
   DEFAULT_GUARDRAIL_DIRS,
   DEFAULT_PANES,
+  DEFAULT_GIT_LOG_COLUMNS,
   DEFAULT_POPUP_SIZES,
   DEFAULT_REMOTE,
   SETTINGS_VERSION,
@@ -106,6 +107,7 @@ describe("mergeSettings", () => {
     graphAgent: DEFAULT_GRAPH_AGENT,
     guardrailDirs: DEFAULT_GUARDRAIL_DIRS,
     popupSizes: DEFAULT_POPUP_SIZES,
+    gitLogColumns: DEFAULT_GIT_LOG_COLUMNS,
     remote: DEFAULT_REMOTE,
     aiLanguage: "German",
     showSummary: true,
@@ -133,6 +135,7 @@ describe("mergeSettings", () => {
     expect(merged.panes.diff).toEqual(DEFAULT_PANES.diff);
     expect(merged.guardrailDirs).toEqual({ ...DEFAULT_GUARDRAIL_DIRS, adr: "decisions" });
     expect(merged.popupSizes).toEqual({ ...DEFAULT_POPUP_SIZES, usages: { width: 900, height: 500 } });
+    expect(mergeSettings({ gitLogColumns: { author: 200 } }, current).gitLogColumns).toEqual({ ...DEFAULT_GIT_LOG_COLUMNS, author: 200 });
   });
 
   it("falls back to the template's machine type for a stored one Hunt no longer offers", () => {

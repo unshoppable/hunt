@@ -1,7 +1,8 @@
 import { useMemo, useState, type MouseEvent } from "react";
 import type { GitRef, RefList } from "../ipc/types";
 import { useFolderIconUrl } from "../diff/fileIcons";
-import { BranchIcon, ChevronIcon } from "../ui/icons";
+import { ICON_BUTTON_XS } from "../ui/buttons";
+import { BranchIcon, ChevronIcon, TrashIcon } from "../ui/icons";
 import type { PushRoute } from "./branchActions";
 import { buildRefTree, type RefTreeNode } from "./refGroups";
 
@@ -15,7 +16,8 @@ type Row = { node: RefTreeNode; depth: number };
  * or tag shows only its history, a second click shows every branch again; a right click on a branch opens its menu
  * (`onContextMenu`, the branch stays highlighted while `menuFor` names it). The checked-out branch shows how far it is
  * ahead of or behind its upstream, and the session's branch where a push lands (`pushes`), since Hunt pushes it onto
- * the branch the session was created from, never under its own name. The header shows `busyLabel` while an action runs.
+ * the branch the session was created from, never under its own name. The header shows `busyLabel` while an action runs
+ * and a button that deletes the local branches origin lacks (`prunable`, `onPrune`).
  */
 export function RefTree({
   refs,
@@ -23,16 +25,21 @@ export function RefTree({
   filter,
   menuFor,
   busyLabel,
+  prunable,
   onFilter,
   onContextMenu,
+  onPrune,
 }: {
   refs: RefList | null;
   pushes: PushRoute | null;
   filter: string;
   menuFor: string | null;
   busyLabel: string | null;
+  /** The local branches that have no branch on origin and are not checked out anywhere, which `onPrune` deletes. */
+  prunable: string[];
   onFilter: (reference: string) => void;
   onContextMenu: (ref: GitRef, x: number, y: number) => void;
+  onPrune: () => void;
 }) {
   const folderIconUrl = useFolderIconUrl();
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(collapsedGroups));
@@ -68,7 +75,7 @@ export function RefTree({
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-(--changelist-bg)">
-      <div className="flex items-center gap-1 border-b border-(--line) px-3 py-2.5 text-[13px] text-neutral-400">
+      <div className="flex items-center gap-1 border-b border-(--line) py-2.5 pr-2 pl-3 text-[13px] text-neutral-400">
         <span className="shrink-0">Branches</span>
         {busyLabel ? (
           <span className="min-w-0 flex-1 truncate text-right text-neutral-300">{busyLabel}</span>
@@ -77,6 +84,15 @@ export function RefTree({
             {refs.head === "HEAD" ? "detached HEAD" : refs.head}
           </span>
         ) : null}
+        <button
+          type="button"
+          onClick={onPrune}
+          disabled={!prunable.length || !!busyLabel}
+          className={`${ICON_BUTTON_XS} -my-1.5`}
+          title={prunable.length ? `Delete the ${prunable.length} local ${prunable.length === 1 ? "branch" : "branches"} without a branch on origin…` : "Every local branch has a branch on origin"}
+        >
+          <TrashIcon className="size-4" />
+        </button>
       </div>
       <ul className="min-h-0 flex-1 overflow-auto py-1 font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)">
         <li

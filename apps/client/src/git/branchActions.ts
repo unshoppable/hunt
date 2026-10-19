@@ -83,3 +83,15 @@ export function branchActions(ref: GitRef, { head, pushes, isRemoteSession }: Br
   actions.push(entry("delete", "Delete", isHead ? "The branch is checked out" : null, { isDanger: true }));
   return actions;
 }
+
+/**
+ * The local branches that have no branch of the same name on `origin`, sorted by name; `kept` names the branches
+ * that stay regardless: the checked-out one and those of the sessions in the repository, which are bound to worktrees.
+ */
+export function localBranchesWithoutOrigin(refs: readonly GitRef[], kept: ReadonlySet<string>): string[] {
+  const onOrigin = new Set(refs.map((ref) => (ref.kind === "remote" ? originBranchName(ref.name) : null)));
+  return refs
+    .filter((ref) => ref.kind === "local" && !onOrigin.has(ref.name) && !kept.has(ref.name))
+    .map((ref) => ref.name)
+    .sort((left, right) => left.localeCompare(right));
+}

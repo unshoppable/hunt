@@ -77,6 +77,11 @@ export type PopupKey = "usages" | "fileSearch" | "subChat" | "screenshots" | "fi
  * the most it may take (sub chat, file filter, change, and the form dialogs; see ui/useDialogSize.ts); the window
  * caps every size.
  */
+/** Widths in px of the Git log's author and date columns; the subject takes the rest of the row. */
+export type GitLogColumns = { author: number; date: number };
+
+export const DEFAULT_GIT_LOG_COLUMNS: GitLogColumns = { author: 150, date: 104 };
+
 export const DEFAULT_POPUP_SIZES: Record<PopupKey, PopupSize> = {
   usages: { width: 1040, height: 600 },
   fileSearch: { width: 960, height: 760 },
@@ -304,6 +309,7 @@ type SettingsState = {
   /** Diagram type the Architecture tab shows, keyed by session id; a session without an entry shows the dependencies. */
   diagramTypes: Record<string, DiagramType>;
   popupSizes: Record<PopupKey, PopupSize>;
+  gitLogColumns: GitLogColumns;
   /** Height in px the user dragged the chat's prompt box to; null sizes the box to its text. */
   promptHeight: number | null;
   /** How far the guardrail chat's bottom right corner sits from its default place above the "Guardrail" button. */
@@ -331,6 +337,7 @@ type SettingsState = {
   setGraphExcludedFiles: (sessionId: string, paths: string[]) => void;
   setDiagramType: (sessionId: string, diagramType: DiagramType) => void;
   setPopupSize: (key: PopupKey, size: PopupSize) => void;
+  setGitLogColumns: (columns: GitLogColumns) => void;
   setPromptHeight: (height: number | null) => void;
   setGuardrailChatOffset: (offset: PopupOffset) => void;
   setGraphFilter: (patch: Partial<GraphFilter>) => void;
@@ -374,6 +381,7 @@ export type PersistedState = {
   graphExcludedFiles?: Record<string, string[]>;
   diagramTypes?: Record<string, DiagramType>;
   popupSizes?: Partial<Record<PopupKey, PopupSize>>;
+  gitLogColumns?: Partial<GitLogColumns>;
   promptHeight?: number | null;
   guardrailChatOffset?: PopupOffset;
   graphFilter?: GraphFilter;
@@ -545,7 +553,7 @@ function migrateToVersion8(persisted: unknown, version: number): PersistedState 
  * Layers the persisted state over `current` (the defaults with the actions). Panes, guardrail folders and popup sizes
  * gain entries over time, so stored ones are layered over the defaults per key instead of replacing them.
  */
-export function mergeSettings<T extends Pick<SettingsState, "panes" | "graphAgent" | "guardrailDirs" | "popupSizes" | "remote">>(persisted: unknown, current: T): T {
+export function mergeSettings<T extends Pick<SettingsState, "panes" | "graphAgent" | "guardrailDirs" | "popupSizes" | "gitLogColumns" | "remote">>(persisted: unknown, current: T): T {
   const stored = persisted as PersistedState | undefined;
   return {
     ...current,
@@ -554,6 +562,7 @@ export function mergeSettings<T extends Pick<SettingsState, "panes" | "graphAgen
     graphAgent: { ...DEFAULT_GRAPH_AGENT, ...stored?.graphAgent },
     guardrailDirs: { ...DEFAULT_GUARDRAIL_DIRS, ...stored?.guardrailDirs },
     popupSizes: withDefaultPopupSizes(stored?.popupSizes),
+    gitLogColumns: { ...DEFAULT_GIT_LOG_COLUMNS, ...stored?.gitLogColumns },
     remote: normalizeRemote({ ...DEFAULT_REMOTE, ...stored?.remote }),
   };
 }
@@ -570,6 +579,7 @@ export const useSettingsStore = create<SettingsState>()(
       graphExcludedFiles: {},
       diagramTypes: {},
       popupSizes: DEFAULT_POPUP_SIZES,
+      gitLogColumns: DEFAULT_GIT_LOG_COLUMNS,
       promptHeight: null,
       guardrailChatOffset: { x: 0, y: 0 },
       graphFilter: DEFAULT_GRAPH_FILTER,
@@ -616,6 +626,7 @@ export const useSettingsStore = create<SettingsState>()(
           return { diagramTypes: diagramType === "dependencies" ? rest : { ...rest, [sessionId]: diagramType } };
         }),
       setPopupSize: (key, size) => set((state) => ({ popupSizes: { ...state.popupSizes, [key]: roundedSize(size) } })),
+      setGitLogColumns: (columns) => set({ gitLogColumns: { author: Math.round(columns.author), date: Math.round(columns.date) } }),
       setPromptHeight: (height) => set({ promptHeight: height === null ? null : Math.round(height) }),
       setGuardrailChatOffset: (offset) => set({ guardrailChatOffset: { x: Math.round(offset.x), y: Math.round(offset.y) } }),
       setGraphFilter: (patch) =>
@@ -652,6 +663,7 @@ export const useSettingsStore = create<SettingsState>()(
         graphExcludedFiles: state.graphExcludedFiles,
         diagramTypes: state.diagramTypes,
         popupSizes: state.popupSizes,
+        gitLogColumns: state.gitLogColumns,
         promptHeight: state.promptHeight,
         guardrailChatOffset: state.guardrailChatOffset,
         graphFilter: state.graphFilter,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GitRef } from "../ipc/types";
-import { branchActions, originBranchName } from "./branchActions";
+import { branchActions, localBranchesWithoutOrigin, originBranchName } from "./branchActions";
 
 const ref = (name: string, kind: GitRef["kind"], upstream: string | null = null): GitRef => ({ name, kind, target: "0".repeat(40), upstream, ahead: 0, behind: 0 });
 const session = { head: "feat/general/x", pushes: { branch: "feat/general/x", target: "master" }, isRemoteSession: false };
@@ -78,5 +78,17 @@ describe("branchActions", () => {
   it("names the branch of origin a remote branch is", () => {
     expect(originBranchName("origin/feat/general/x")).toBe("feat/general/x");
     expect(originBranchName("fork/master")).toBeNull();
+  });
+});
+
+describe("localBranchesWithoutOrigin", () => {
+  it("lists the local branches origin lacks, without the kept ones, sorted", () => {
+    const refs = [ref("master", "local"), ref("zed", "local"), ref("feat/b", "local"), ref("feat/a", "local"), ref("origin/master", "remote"), ref("origin/feat/a", "remote"), ref("v1", "tag")];
+    expect(localBranchesWithoutOrigin(refs, new Set(["master"]))).toEqual(["feat/b", "zed"]);
+    expect(localBranchesWithoutOrigin(refs, new Set(["master", "zed"]))).toEqual(["feat/b"]);
+  });
+
+  it("ignores branches on other remotes", () => {
+    expect(localBranchesWithoutOrigin([ref("x", "local"), ref("upstream/x", "remote")], new Set())).toEqual(["x"]);
   });
 });

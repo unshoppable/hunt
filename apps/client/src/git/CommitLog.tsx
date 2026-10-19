@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import type { Commit } from "../ipc/types";
-import { useSettingsStore } from "../state/settings";
+import { useSettingsStore, type GitLogColumns } from "../state/settings";
+import { trackDrag } from "../ui/pointerDrag";
 import type { LogFilter } from "./GitPanel";
 import { layoutGraph, type GraphRow } from "./commitGraph";
 import { BranchIcon, TagIcon } from "../ui/icons";
@@ -14,10 +15,12 @@ const GRAPH_PADDING = 10;
 const MAX_LANES = 12;
 /** Rows drawn above and below the visible ones, so a scroll never shows an empty strip. */
 const OVERSCAN = 8;
-/** Width of the author column in px. */
-const AUTHOR_WIDTH = 150;
-/** Width of the date column in px. */
-const DATE_WIDTH = 104;
+/** Width of the push marker column at the right edge, in px. */
+const MARKER_WIDTH = 32;
+/** Narrowest the author and date columns can be dragged to, in px. */
+const MIN_COLUMN_WIDTH = 48;
+/** Widest the author and date columns can be dragged to, in px. */
+const MAX_COLUMN_WIDTH = { author: 480, date: 240 };
 /** Line colors of the graph, one per lane in turn. */
 const LANE_COLORS = ["#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#fb923c", "#2dd4bf", "#f87171"];
 
@@ -25,8 +28,9 @@ const DATE_FORMAT = new Intl.DateTimeFormat(undefined, { day: "2-digit", month: 
 
 /**
  * The commit log: a filter row and the commits as windowed rows (only the visible ones are in the DOM), each with its
- * graph cell, subject, compact branch and tag labels, author and date in fixed columns. Scrolling near the end asks
- * for the next page; ↑ and ↓ move the selection while the list has the focus.
+ * graph cell, subject, compact branch and tag labels, author and date in fixed columns whose borders drag to resize
+ * them (the widths persist in the settings). Scrolling near the end asks for the next page; ↑ and ↓ move the selection
+ * while the list has the focus.
  */
 export function CommitLog({
   commits,
@@ -61,6 +65,11 @@ export function CommitLog({
   const fontSize = useSettingsStore((state) => state.panes.changelist.fontSize);
   const lineHeight = useSettingsStore((state) => state.panes.changelist.lineHeight);
   const rowHeight = Math.round(fontSize * lineHeight);
+  const storedColumns = useSettingsStore((state) => state.gitLogColumns);
+  const setStoredColumns = useSettingsStore((state) => state.setGitLogColumns);
+  /** The column whose left border is being dragged and the widths meanwhile; the settings hold them otherwise. */
+  const [drag, setDrag] = useState<{ column: keyof GitLogColumns; columns: GitLogColumns } | null>(null);
+  const columns = drag?.columns ?? storedColumns;
   const rows = useMemo(() => layoutGraph(commits), [commits]);
   const laneCount = useMemo(() => Math.min(MAX_LANES, Math.max(1, ...rows.map((row) => row.laneCount))), [rows]);
   const graphWidth = GRAPH_PADDING * 2 + (laneCount - 1) * LANE_WIDTH;
@@ -111,6 +120,25 @@ export function CommitLog({
     scrollIntoView(next);
   };
 
+  /** Starts dragging the border left of `column`: the column keeps its right edge, so its width follows the pointer the other way. */
+  const dragBorder = (event: ReactPointerEvent<HTMLElement>, column: keyof GitLogColumns) => {
+    const start = storedColumns;
+    let next = start;
+    trackDrag(
+      event,
+      (dx) => {
+        const width = Math.min(MAX_COLUMN_WIDTH[column], Math.max(MIN_COLUMN_WIDTH, start[column] - dx));
+        // The author|date border moves the author column's right edge too, so the author keeps its left edge.
+        next = column === "date" ? { author: Math.max(MIN_COLUMN_WIDTH, start.author + start.date - width), date: width } : { ...start, author: width };
+        setDrag({ column, columns: next });
+      },
+      () => {
+        setDrag(null);
+        setStoredColumns(next);
+      },
+    );
+  };
+
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-(--changelist-bg)">
       <div className="flex items-center gap-2 border-b border-(--line) px-3 py-2.5 text-[13px] text-neutral-400">
@@ -120,7 +148,8 @@ export function CommitLog({
           {hasMore ? "+" : ""} {commits.length === 1 ? "commit" : "commits"}
         </span>
       </div>
-      {error ? <p className="border-b border-(--line) px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
+      {error ? <p className="border-b border-(--line) px-3 py-2 text-[13px] whitespace-pre-wrap text-red-400">{error}</p> : null}
+      <div className="relative flex min-h-0 flex-1">
       <div
         ref={listRef}
         tabIndex={0}
@@ -144,6 +173,7 @@ export function CommitLog({
                 graphWidth={graphWidth}
                 head={head}
                 localBranches={localBranches}
+                columns={columns}
                 isUnpushed={unpushed.has(commit.id)}
                 isSelected={commit.id === selectedId}
                 onSelect={() => onSelect(commit.id)}
@@ -152,6 +182,25 @@ export function CommitLog({
           })}
         </div>
       </div>
+      <ColumnBorder right={MARKER_WIDTH + columns.date + columns.author} isDragging={drag?.column === "author"} onPointerDown={(event) => dragBorder(event, "author")} />
+      <ColumnBorder right={MARKER_WIDTH + columns.date} isDragging={drag?.column === "date"} onPointerDown={(event) => dragBorder(event, "date")} />
+      </div>
+    </div>
+  );
+}
+
+/** The draggable border left of a column, `right` px from the list's right edge, spanning the list's height. */
+function ColumnBorder({ right, isDragging, onPointerDown }: { right: number; isDragging: boolean; onPointerDown: (event: ReactPointerEvent<HTMLElement>) => void }) {
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      onPointerDown={onPointerDown}
+      style={{ right: right - 3 }}
+      className={`group absolute inset-y-0 z-10 w-[7px] cursor-col-resize ${isDragging ? "" : "hover:bg-white/5"}`}
+      title="Drag to resize the column"
+    >
+      <div className={`absolute inset-y-0 left-[3px] w-px ${isDragging ? "bg-blue-400/60" : "bg-transparent group-hover:bg-white/15"}`} />
     </div>
   );
 }
@@ -164,6 +213,7 @@ function LogRow({
   graphWidth,
   head,
   localBranches,
+  columns,
   isUnpushed,
   isSelected,
   onSelect,
@@ -175,6 +225,7 @@ function LogRow({
   graphWidth: number;
   head: string | null;
   localBranches: ReadonlySet<string>;
+  columns: GitLogColumns;
   isUnpushed: boolean;
   isSelected: boolean;
   onSelect: () => void;
@@ -189,7 +240,7 @@ function LogRow({
       className={`absolute right-0 left-0 flex cursor-default items-center select-none ${isSelected ? "bg-(--tree-selection)" : "hover:bg-(--row-hover)"}`}
     >
       <GraphCell row={row} width={graphWidth} height={height} />
-      <span className="flex min-w-0 flex-1 items-center gap-2 pr-4">
+      <span className="flex min-w-0 flex-1 items-center gap-2 pr-2">
         <span className={`min-w-0 truncate ${isUnpushed ? "text-neutral-100" : "text-neutral-300"}`} title={commit.subject}>
           {commit.subject}
         </span>
@@ -201,13 +252,13 @@ function LogRow({
           </span>
         ) : null}
       </span>
-      <span className="shrink-0 truncate pr-4 text-neutral-400" style={{ width: AUTHOR_WIDTH }} title={`${commit.author} <${commit.authorEmail}>`}>
+      <span className="shrink-0 truncate px-2 text-neutral-400" style={{ width: columns.author }} title={`${commit.author} <${commit.authorEmail}>`}>
         {commit.author}
       </span>
-      <span className="shrink-0 text-right text-neutral-500 tabular-nums" style={{ width: DATE_WIDTH }}>
+      <span className="shrink-0 truncate px-2 text-right text-neutral-500 tabular-nums" style={{ width: columns.date }}>
         {DATE_FORMAT.format(new Date(commit.authoredAt))}
       </span>
-      <span className="flex w-8 shrink-0 justify-center text-amber-300" title={isUnpushed ? "Not pushed yet" : undefined}>
+      <span className="flex shrink-0 justify-center text-amber-300" style={{ width: MARKER_WIDTH }} title={isUnpushed ? "Not pushed yet" : undefined}>
         {isUnpushed ? <UpArrowIcon /> : null}
       </span>
     </div>

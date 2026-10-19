@@ -209,6 +209,8 @@ export type RemoteTarget = {
    * `failed`; empty when unknown.
    */
   agent: string;
+  /** The push target is not yet recorded on the VM, which Hunt could not reach when it changed; the next connect records it. */
+  pushTargetPending: boolean;
 };
 
 /** A step of a handoff, a retrieval or a connect to a remote session that takes long enough to show. */

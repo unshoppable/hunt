@@ -34,7 +34,7 @@ use uuid::Uuid;
 use crate::git;
 use crate::graph::{self, WatcherRegistry};
 use crate::remote::channel::{Channel, Event, RemoteChange};
-use crate::remote::commit::{align_heads, vm_origin_upstream};
+use crate::remote::commit::{align_heads, set_vm_origin_upstream, vm_origin_upstream};
 use crate::remote::retrieve;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::sync::{self as file_sync, Direction, Live, Outcome, SyncTarget};
@@ -743,20 +743,37 @@ async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &
 
 /// Takes the push target over that the VM's worktree of the remote session `id` behind `ssh` records as its branch's
 /// upstream, which another Hunt may have set while it had the session: the local branch tracks it too and the records
-/// of the session and its sub chats name it as `base_ref`, so a push from here lands there. Nothing changes when the
-/// VM's branch tracks nothing, when it already matches, or for a poller session, whose VM pushes its own branch; a
-/// failure is only logged, since the connect must not fail over it.
+/// of the session and its sub chats name it as `base_ref`, so a push from here lands there. The other way round when
+/// the record has `push_target_pending`: the target it names was changed while the VM was off, so the VM's worktree
+/// gets it now. Nothing changes when the VM's branch tracks nothing, when it already matches, or for a poller session,
+/// whose VM pushes its own branch; a failure is only logged, since the connect must not fail over it.
 pub async fn take_over_vm_push_target(app: &AppHandle, id: Uuid, ssh: &Ssh, target: &RemoteTarget) {
     if target.origin.keeps_vm_tokens() || target.branch.is_empty() || target.worktree_path.as_os_str().is_empty() {
+        return;
+    }
+    let Ok(record) = store::find_session(app, id) else {
+        return;
+    };
+    let own = record.base_ref.strip_prefix("origin/").unwrap_or(&record.base_ref).to_string();
+    if record.remote.as_ref().is_some_and(|remote| remote.push_target_pending) {
+        if let Err(error) = set_vm_origin_upstream(ssh, target, &target.branch, &own).await {
+            eprintln!("recording the push target {own} of session {id} on its VM failed: {error}");
+            return;
+        }
+        let update = store::update_session(app, id, |stored| {
+            if let Some(remote) = stored.remote.as_mut() {
+                remote.push_target_pending = false;
+            }
+        });
+        if let Err(error) = update {
+            eprintln!("clearing the pending push target of session {id} failed: {error}");
+        }
         return;
     }
     let Some(upstream) = vm_origin_upstream(ssh, target, &target.branch).await else {
         return;
     };
-    let Ok(record) = store::find_session(app, id) else {
-        return;
-    };
-    if record.base_ref.strip_prefix("origin/").unwrap_or(&record.base_ref) == upstream {
+    if own == upstream {
         return;
     }
     if record.worktree_path.is_dir() {

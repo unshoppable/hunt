@@ -939,6 +939,7 @@ describe("remote sessions", () => {
     origin: "handoff" as const,
     issue: null,
     agent: "",
+    pushTargetPending: false,
   };
 
   beforeEach(() => {
@@ -1144,6 +1145,7 @@ describe("moving a session to and from the VM", () => {
     origin: "handoff" as const,
     issue: null,
     agent: "",
+    pushTargetPending: false,
   };
   const local = storedSession(SESSION, "Build it");
   const handedOff = { ...local, remote };

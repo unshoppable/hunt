@@ -894,14 +894,14 @@ pub async fn fetch_branch(worktree: &Path, branch: &str) -> Result<bool, String>
     }
 }
 
-/// Creates the branch `branch` on `origin` at the commit `origin/<from>`, as fetched last, and fetches it, so that a
-/// push landing on it publishes what a push to `from` would; fails when `origin` has the branch already.
+/// Creates the branch `branch` on `origin` at the commit `origin/<from>`, as fetched last, so that a push landing on
+/// it publishes what a push to `from` would; the push updates the remote-tracking ref of `branch` too. Fails when
+/// `origin` has the branch already.
 pub async fn create_origin_branch(worktree: &Path, branch: &str, from: &str) -> Result<(), String> {
     ensure_branch_name(worktree, branch).await?;
     ensure_branch_name(worktree, from).await?;
     let lease = format!("--force-with-lease=refs/heads/{branch}:");
     run_git(worktree, &["push", "-q", &lease, "--", "origin", &format!("refs/remotes/origin/{from}:refs/heads/{branch}")]).await?;
-    fetch_branch(worktree, branch).await?;
     Ok(())
 }
 

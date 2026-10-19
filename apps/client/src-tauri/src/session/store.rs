@@ -145,6 +145,7 @@ impl SessionRecord {
             origin: session.origin,
             issue: session.issue,
             agent: session.agent.clone(),
+            push_target_pending: false,
         };
         let branch = session.branch.clone();
         let mut record = Self::new(session.id, session.title.clone(), repo_path, worktree_path, branch.clone(), branch, String::new());
@@ -500,6 +501,7 @@ mod tests {
             origin: crate::remote::RemoteOrigin::Handoff,
             issue: None,
             agent: String::new(),
+            push_target_pending: false,
         };
         let (old, new) = (vm("europe-west1-c", "vm-hunt-s-ab12cd34"), vm("europe-west1-b", "vm-hunt-s-ab12cd34"));
         let mut owner = record("owner");

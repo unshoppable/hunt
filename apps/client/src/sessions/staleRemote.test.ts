@@ -20,6 +20,7 @@ function session(remote: Partial<RemoteTarget> | null): SessionView {
     origin: "handoff",
     issue: null,
     agent: "",
+    pushTargetPending: false,
   };
   return { id: "s1", remote: remote ? { ...target, ...remote } : null } as SessionView;
 }

@@ -2273,12 +2273,13 @@ pub async fn git_rename_branch(app: AppHandle, id: Uuid, branch: String, new_nam
     Ok(())
 }
 
-/// Makes the branch `target` on `origin` the one a push of the session lands on: the session's branch tracks it here
-/// and, for a remote session, on its VM, where a Hunt taking the session over reads it (`sync::take_over_vm_push_target`);
-/// the records of the session and its sub chats follow. With `create`, a branch `origin` lacks is created there first,
-/// at the commit of the branch pushed to so far. A poller session pushes its own branch from its VM.
+/// Makes the branch `target` on `origin` the one a push of the session lands on: the session's branch tracks it here,
+/// the records of the session and its sub chats name it, and a remote session records it in its VM's worktree too,
+/// where a Hunt taking the session over reads it (`sync::take_over_vm_push_target`); a VM that is off, or that Hunt
+/// cannot reach, gets it at the next connect. With `create`, a branch `origin` lacks is created there first, at the
+/// commit of the branch pushed to so far. A poller session pushes its own branch from its VM.
 #[tauri::command]
-pub async fn set_push_target(app: AppHandle, id: Uuid, target: String, create: bool) -> Result<(), String> {
+pub async fn set_push_target(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, target: String, create: bool) -> Result<(), String> {
     link::ensure_writable(&app, id, "change the push target")?;
     let record = worktree_session(&app, id)?;
     let remote = remote_host(&app, &record);
@@ -2296,17 +2297,48 @@ pub async fn set_push_target(app: AppHandle, id: Uuid, target: String, create: b
         git::create_origin_branch(&record.worktree_path, &target, &from).await?;
     }
     git::set_origin_upstream(&record.worktree_path, &record.branch, &target).await?;
-    if let Some((_, remote)) = &remote {
-        let ssh = Ssh::open(&remote.vm, &ssh_dir()?).await?;
-        remote::commit::set_vm_origin_upstream(&ssh, remote, &remote.branch, &target).await?;
-    }
     for stored in store::load_sessions(&app)? {
         if stored.worktree_path == record.worktree_path {
             store::update_session(&app, stored.id, |stored| stored.base_ref = target.clone())?;
         }
     }
+    if let Some((host_id, remote)) = &remote {
+        record_vm_push_target(&app, &registry, *host_id, remote, &target).await;
+    }
     announce_sessions_changed(&app);
     Ok(())
+}
+
+/// Records the push target `target` in the VM's worktree of the remote session `host_id` when its VM runs, which a
+/// connected session proves and an unconnected one asks the gateway; a VM that is off is not started. Otherwise, and
+/// when the VM cannot be reached, the record gets `push_target_pending`, so that the next connect records the target
+/// (`sync::take_over_vm_push_target`); a failure is only logged, since the records name the target already.
+async fn record_vm_push_target(app: &AppHandle, registry: &SessionRegistry, host_id: Uuid, remote: &RemoteTarget, target: &str) {
+    let recorded = async {
+        let (_, is_running) = remote_vm_state(app, registry, host_id, "record the push target on the VM").await?;
+        if !is_running {
+            return Ok(false);
+        }
+        let ssh = Ssh::open(&remote.vm, &ssh_dir()?).await?;
+        remote::commit::set_vm_origin_upstream(&ssh, remote, &remote.branch, target).await?;
+        Ok::<bool, String>(true)
+    }
+    .await;
+    let is_pending = match recorded {
+        Ok(is_recorded) => !is_recorded,
+        Err(error) => {
+            eprintln!("recording the push target {target} of session {host_id} on its VM failed: {error}");
+            true
+        }
+    };
+    let update = store::update_session(app, host_id, |stored| {
+        if let Some(remote) = stored.remote.as_mut() {
+            remote.push_target_pending = is_pending;
+        }
+    });
+    if let Err(error) = update {
+        eprintln!("marking the push target of session {host_id} as pending on its VM failed: {error}");
+    }
 }
 
 /// Deletes the local branch `branch`; without `force`, git refuses one whose commits its upstream (or HEAD) lacks.
@@ -2774,6 +2806,7 @@ mod tests {
             origin: Default::default(),
             issue: None,
             agent: String::new(),
+            push_target_pending: false,
         };
         let mut parent = local("parent");
         let sub_chat = SessionRecord::sub_session(Uuid::new_v4(), "sub".into(), &parent, None);

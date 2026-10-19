@@ -263,6 +263,7 @@ mod tests {
             origin: RemoteOrigin::Swf,
             issue: Some(123),
             agent: agent.into(),
+            push_target_pending: false,
         };
 
         let running = target("running", "vm-hunt-s-ab12cd34");
@@ -299,6 +300,7 @@ mod tests {
             origin: RemoteOrigin::Swf,
             issue: Some(123),
             agent: "question".into(),
+            push_target_pending: false,
         };
 
         let moved = target("europe-west1-b", "vm-hunt-s-ab12cd34");

@@ -87,6 +87,7 @@ const remote = {
   origin: "handoff" as const,
   issue: null,
   agent: "",
+  pushTargetPending: false,
 };
 
 describe("pushTarget", () => {

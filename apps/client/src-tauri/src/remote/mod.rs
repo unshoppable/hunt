@@ -178,6 +178,10 @@ pub struct RemoteTarget {
     /// or `failed`; empty when unknown.
     #[serde(default)]
     pub agent: String,
+    /// The push target the records name is not yet recorded in the VM's worktree, which Hunt could not reach when the
+    /// target changed; the next connect writes it there instead of taking the VM's over.
+    #[serde(default)]
+    pub push_target_pending: bool,
 }
 
 impl RemoteTarget {

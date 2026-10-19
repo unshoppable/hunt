@@ -2,7 +2,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { commands } from "../ipc/commands";
 import type { GitRef } from "../ipc/types";
 import { INPUT } from "../diff/styles";
-import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
+import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD } from "../ui/buttons";
 import { PlusIcon } from "../ui/icons";
 import { Modal } from "../ui/Modal";
 import { useDismiss } from "../ui/useDismiss";
@@ -55,10 +55,10 @@ export function BranchMenu({ menu, actions, onPick, onClose }: { menu: BranchMen
 
 /**
  * Lets the user pick, among the branches of `origin` (`candidates`, without the `origin/` prefix), the one a push of
- * the session lands on; the text field filters the list. The list's first row, "New branch…", empties the field for a
- * name the list does not know, which is offered as a new branch and, applied, created on `origin` at the commit of the
- * current target (or merely fetched when `origin` has it already). Dragging an edge resizes the dialog; the size is
- * remembered across sessions.
+ * the session lands on; the text field filters the list. "New branch…" empties the field for a name the list does not
+ * know, which the list offers as a new branch and, applied, is created on `origin` at the commit of the current target
+ * (or merely fetched when `origin` has it already). Dragging an edge resizes the dialog; the size is remembered across
+ * sessions.
  */
 export function PushTargetDialog({
   sessionId,
@@ -131,27 +131,22 @@ export function PushTargetDialog({
         className={`${INPUT} font-mono`}
       />
       <ul role="listbox" className="mt-1 mb-3 min-h-0 flex-1 overflow-auto rounded border border-(--line) py-1 font-mono text-[13px]">
-        {/* The new-branch row stays on top: it creates the typed name once it is none of origin's, else it empties the field. */}
-        <li
-          role="option"
-          aria-selected={false}
-          onClick={isNew ? () => void submit(target, true) : startNaming}
-          title={isNew ? `Creates origin/${target} at the commit of origin/${current}` : `A new branch of origin, created at the commit of origin/${current}`}
-          className="mb-1 flex cursor-default items-center gap-1.5 border-b border-(--line) px-2 pb-1.5 pt-0.5 text-neutral-300 hover:bg-(--row-hover)"
-        >
-          <PlusIcon className="size-3.5 shrink-0 text-neutral-500" />
-          {isNew ? (
+        {isNew ? (
+          <li
+            role="option"
+            aria-selected={false}
+            onClick={() => void submit(target, true)}
+            title={`Creates origin/${target} at the commit of origin/${current}`}
+            className="flex cursor-default items-center gap-1.5 px-2 py-0.5 text-neutral-300 hover:bg-(--row-hover)"
+          >
+            <PlusIcon className="size-3.5 shrink-0 text-neutral-500" />
             <span className="truncate">
               <span className="text-neutral-500">Create </span>
               {target}
               <span className="text-neutral-500"> from {current}</span>
             </span>
-          ) : (
-            <span className="truncate">
-              New branch…<span className="text-neutral-500"> type a name none of these has; it is created off {current}</span>
-            </span>
-          )}
-        </li>
+          </li>
+        ) : null}
         {matches.map((candidate) => (
           <li
             key={candidate}
@@ -167,6 +162,10 @@ export function PushTargetDialog({
       </ul>
       {error ? <p className="mb-3 text-[13px] text-red-400">{error}</p> : null}
       <div className="mt-auto flex justify-end gap-2">
+        <button type="button" onClick={startNaming} disabled={isBusy} title={`Names a new branch of origin, created at the commit of origin/${current}`} className={`${SECONDARY_BUTTON_MD} mr-auto`}>
+          <PlusIcon className="size-3.5 shrink-0" />
+          New branch…
+        </button>
         <button type="button" onClick={onClose} disabled={isBusy} className={GHOST_BUTTON_MD}>
           Cancel
         </button>

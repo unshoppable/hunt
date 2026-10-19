@@ -2,8 +2,9 @@
 //! the VM's. The session's branch lives on its VM: `hunt-ctl commit` commits the picked files there under the local Git
 //! identity, after the sync sent the local edits. Whenever the VM's `HEAD` moved (a commit of Hunt's or of the agent's),
 //! the local branch points at it too (`follow_vm_head`), so the changelist shows what is uncommitted on the VM, as in a
-//! local session, and a push from this Mac pushes the VM's commits. Only a poller session's branch is pushed from the VM
-//! (`hunt-ctl push --stored`), with the poller's stored token. Knows nothing about Tauri.
+//! local session, and a push from this Mac pushes the VM's commits, rebased here when the target branch moved on, after
+//! which the VM's branch follows the rebased commit (`move_vm_head`). Only a poller session's branch is pushed from the
+//! VM (`hunt-ctl push --stored`), with the poller's stored token. Knows nothing about Tauri.
 
 use std::path::Path;
 
@@ -40,29 +41,36 @@ pub async fn follow_vm_head(ssh: &Ssh, id: Uuid, target: &RemoteTarget, worktree
     Ok(Some(commit))
 }
 
-/// Rebases the branch the VM's worktree of the remote session `target` has checked out onto `origin/<base>` as the
-/// local worktree `worktree` fetched it last, when that has commits the local branch, which follows the VM's, lacks: the
-/// local remote-tracking ref goes to the VM first, so the VM needs no access to GitHub, and the rebase runs there as the
-/// agent's user with the uncommitted work stashed meanwhile. A conflict aborts the rebase and fails with git's report.
-/// Returns whether the branch was rebased; the local branch follows the VM's new commit with the next `follow_vm_head`.
-pub async fn rebase_onto_origin(ssh: &Ssh, target: &RemoteTarget, worktree: &Path, base: &str) -> Result<bool, String> {
-    if !git::is_behind_origin(worktree, base).await {
-        return Ok(false);
-    }
-    let remote_ref = format!("refs/remotes/origin/{base}");
+/// Points the branch the VM's worktree of the remote session `id` has checked out at the commit the local worktree
+/// `worktree` has checked out, after a rebase here: the commit goes to the VM as `refs/hunt/<id>/rebased`, and the
+/// worktree there is reset to it as the agent's user, with its uncommitted tracked changes stashed meanwhile under the
+/// local Git identity, which the stash needs. A stash that does not apply again stays on the VM's stash list and fails
+/// the move. Returns the commit; the caller records it as the one the local branch follows.
+pub async fn move_vm_head(ssh: &Ssh, id: Uuid, target: &RemoteTarget, worktree: &Path) -> Result<String, String> {
+    let fail = |error: String| format!("failed to move the branch on the VM to the rebased commit: {error}");
+    let (name, email) = git::identity(worktree).await.map_err(fail)?;
+    let head = git::rev_parse(worktree, "HEAD").await?;
     let remote_worktree = target.worktree_path.display().to_string();
-    retrieve::push_into(worktree, ssh, &remote_worktree, &remote_ref, &remote_ref).await?;
+    let rebased_ref = format!("refs/hunt/{id}/rebased");
+    retrieve::push_into(worktree, ssh, &remote_worktree, "HEAD", &rebased_ref).await?;
+    let (name, email) = (format!("user.name={name}"), format!("user.email={email}"));
     let git = |args: &[&str]| {
-        let mut all = vec!["-n", "-u", "agent", "git", "-C", remote_worktree.as_str()];
+        let mut all = vec!["-n", "-u", "agent", "git", "-C", remote_worktree.as_str(), "-c", name.as_str(), "-c", email.as_str()];
         all.extend_from_slice(args);
         shell_command("sudo", &all)
     };
-    if let Err(error) = ssh.run(&git(&["rebase", "-q", "--autostash", &remote_ref])).await {
-        let conflicts = ssh.run(&git(&["diff", "--name-only", "--diff-filter=U", "--"])).await.unwrap_or_default();
-        let _ = ssh.run(&git(&["rebase", "--abort"])).await;
-        return Err(format!("on the VM: {}", git::rebase_error(base, &conflicts, &error)));
+    let is_dirty = !ssh.run(&git(&["status", "--porcelain", "--untracked-files=no"])).await.map_err(fail)?.trim().is_empty();
+    if is_dirty {
+        ssh.run(&git(&["stash", "push", "-q"])).await.map_err(fail)?;
     }
-    Ok(true)
+    ssh.run(&git(&["reset", "-q", "--hard", &rebased_ref])).await.map_err(fail)?;
+    let _ = ssh.run(&git(&["update-ref", "-d", &rebased_ref])).await;
+    if is_dirty {
+        ssh.run(&git(&["stash", "pop", "-q"]))
+            .await
+            .map_err(|error| format!("the branch on the VM moved to the rebased commit, but its uncommitted changes did not apply again and stay on its stash list: {error}"))?;
+    }
+    Ok(head)
 }
 
 /// Pushes the branch the VM's worktree of the remote session `id` has checked out to its origin with the GitHub token

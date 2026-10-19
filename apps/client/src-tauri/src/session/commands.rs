@@ -2355,19 +2355,24 @@ pub async fn unpushed_commit_count(app: AppHandle, id: Uuid) -> Result<u32, Stri
 
 /// Pushes the commits of the remote session `id`, checked out in its local worktree `worktree`, to the branch `target`
 /// on `origin` from here, while no sync of the session runs: the local branch catches up with the VM's commit
-/// (`sync::follow_head`), the VM's branch is rebased onto `origin/<target>` when that moved on
-/// (`remote::commit::rebase_onto_origin`) and the local branch follows the rebased commit, then `HEAD` is pushed. A
-/// local branch that holds a commit the VM lacks fails the push with the message of the follow.
+/// (`sync::follow_head`); when `origin/<target>` moved on, the branch is rebased onto it here, with the local Git
+/// identity, and the VM's branch moves to the rebased commit (`remote::commit::move_vm_head`), which the local branch
+/// follows from then on; then `HEAD` is pushed. A local branch that holds a commit the VM lacks fails the push with the
+/// message of the follow.
 async fn push_followed(app: &AppHandle, id: Uuid, worktree: &Path, target: &str) -> Result<(), String> {
     sync::exclusive(app, id, |_| async move {
-        let vm_target = || store::find_session(app, id)?.remote.ok_or_else(|| "failed to push: the session runs locally now".to_string());
-        let remote = vm_target()?;
+        let remote = store::find_session(app, id)?.remote.ok_or("failed to push: the session runs locally now")?;
         let ssh = Ssh::open(&remote.vm, &ssh_dir()?).await?;
         sync::follow_head(app, id, &ssh, &remote, worktree).await?;
         git::fetch_branch(worktree, target).await?;
-        if remote::commit::rebase_onto_origin(&ssh, &remote, worktree, target).await? {
-            // The follow above recorded the commit the local branch follows; the rebased one is checked against that.
-            sync::follow_head(app, id, &ssh, &vm_target()?, worktree).await?;
+        if git::is_behind_origin(worktree, target).await {
+            git::rebase_onto_origin(worktree, target).await?;
+            let head = remote::commit::move_vm_head(&ssh, id, &remote, worktree).await?;
+            store::update_session(app, id, |stored| {
+                if let Some(remote) = stored.remote.as_mut() {
+                    remote.handoff_head = head;
+                }
+            })?;
         }
         git::push_head(worktree, target).await
     })

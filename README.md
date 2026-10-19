@@ -648,8 +648,9 @@ changelist's *Commit* runs `hunt-ctl commit` on the VM after a sync that sent th
 runs: the checked files are committed under the local Git identity, and the repository's hooks run with the agent's
 environment. *Push* pushes the commits to the branch the session was created from on `origin` from this Mac with its
 Git credentials, as for a local session, after the local branch caught up with the VM's commit; when that branch moved
-on, the VM's branch is rebased onto it first (`remote::commit::rebase_onto_origin`: this Mac fetches the branch and
-pushes the ref to the VM, so the VM needs no access to GitHub). Only a poller session's branch is pushed from its VM
+on, the local branch is rebased onto it here, with the local Git identity, and the VM's branch moves to the rebased
+commit (`remote::commit::move_vm_head`: the commit goes to the VM, whose worktree is reset to it with its uncommitted
+changes stashed meanwhile). Only a poller session's branch is pushed from its VM
 under its own name with the poller's stored token (`hunt-ctl push --stored`), so that the push shows the GitHub App
 like its agent's commits.
 *WebStorm* is switched off for a remote session and its sub chats. Its `node_modules` install leaves the lockfile alone (`npm ci`, `--frozen-lockfile`). The chat header

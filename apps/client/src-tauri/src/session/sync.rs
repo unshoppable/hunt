@@ -329,7 +329,14 @@ where
         let outcome = run_locked(app, id, &state, Wanted { rescan: true, ..Wanted::default() })
             .await
             .map_err(|error| format!("failed to bring the local changes to the VM: {error}"))?;
-        work(outcome).await
+        let result = work(outcome).await;
+        // What the helper reported while `work` changed the VM's files (a rebase checks files out and may restore them)
+        // can carry intermediate states; a full sync lists both sides afresh instead.
+        if state.has_reported_changes() {
+            state.remote_changes.lock().unwrap().clear();
+            state.wants_full.store(true, Ordering::SeqCst);
+        }
+        result
     };
     request(app, id, Side::Remote);
     result

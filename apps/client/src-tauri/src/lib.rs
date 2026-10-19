@@ -105,6 +105,7 @@ pub fn run() {
             session::commands::git_update_branch,
             session::commands::git_push_local_branch,
             session::commands::git_rename_branch,
+            session::commands::set_push_target,
             session::commands::git_delete_branch,
             session::commands::git_delete_remote_branch,
             session::commands::git_fetch_branch,

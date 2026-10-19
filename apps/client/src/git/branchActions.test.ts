@@ -14,9 +14,16 @@ describe("branchActions", () => {
       "Merge 'feat/general/x' into 'feat/general/x' (The branch is checked out)",
       "Update from 'origin/master'",
       "Push to 'origin/master'",
+      "Change push target…",
       "Rename…",
       "Delete (The branch is checked out)",
     ]);
+  });
+
+  it("lets only a session that pushes from this Mac change its push target", () => {
+    const poller = { head: "fix/general/123-x", pushes: { branch: "fix/general/123-x", target: "fix/general/123-x" }, isRemoteSession: true };
+    expect(labels(branchActions(ref("fix/general/123-x", "local"), poller))).toContain("Change push target… (A poller session pushes its own branch)");
+    expect(labels(branchActions(ref("master", "local"), session))).not.toContain("Change push target…");
   });
 
   it("rebases onto, merges, fast-forwards, pushes, renames and deletes another local branch", () => {

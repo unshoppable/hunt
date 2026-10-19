@@ -114,7 +114,7 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     let repo = repository_key(worktree).await;
     let (git_name, git_email) = git::identity(worktree).await.map_err(|error| format!("failed to hand off the session: {error}"))?;
     let origin = git::run_git(worktree, &["remote", "get-url", "origin"]).await.ok().and_then(|url| github_https_url(url.trim()));
-    let upstream = origin_upstream(worktree, &branch).await;
+    let upstream = git::origin_upstream(worktree, &branch).await;
     let hooks_path = hooks_path(worktree).await;
 
     let ReadyVm { vm: session_vm, ssh, preview_domain } = bring_up(&request.vm(), &repo, &branch, progress).await?;
@@ -295,16 +295,6 @@ fn github_https_url(url: &str) -> Option<String> {
         return None;
     }
     Some(format!("https://github.com/{owner}/{repo}.git"))
-}
-
-/// The branch on `origin` that `branch` tracks; `None` without an upstream there.
-async fn origin_upstream(worktree: &Path, branch: &str) -> Option<String> {
-    let remote = git::run_git(worktree, &["config", &format!("branch.{branch}.remote")]).await.ok()?;
-    if remote.trim() != "origin" {
-        return None;
-    }
-    let merge = git::run_git(worktree, &["config", &format!("branch.{branch}.merge")]).await.ok()?;
-    merge.trim().strip_prefix("refs/heads/").map(str::to_string)
 }
 
 /// The repository's `core.hooksPath` when it is a folder inside the worktree (husky's `.husky`); the session's

@@ -260,7 +260,12 @@ checked-out branch onto it or merge it in (a conflict aborts and names the files
 rebased onto the branch its push lands on, as the push does first; another local branch is fast-forwarded from its
 upstream), push, rename and delete it (a branch with commits no other branch has only after a confirmation), and for
 a remote branch fetch it or delete it on `origin`. A rebase, merge or update of a remote session's branch moves the
-branch on its VM to the new commit, as the rebase before a push does.
+branch on its VM to the new commit, as the rebase before a push does. The push target is the upstream of the session's
+branch (`branch.<name>.merge`, set to the base branch when the session is created and changed with "Change push
+target…"), so it travels with the branch: the handoff copies it to the VM (`hunt-ctl prepare --upstream`), a change
+is written on both sides, and every connect takes over what the VM records (`sync::take_over_vm_push_target`), so a
+Hunt that continues a session another one handed off pushes where that one meant to; the session record mirrors it
+as `baseRef`.
 
 #### Pull request reviews
 

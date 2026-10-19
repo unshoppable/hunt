@@ -34,7 +34,7 @@ use uuid::Uuid;
 use crate::git;
 use crate::graph::{self, WatcherRegistry};
 use crate::remote::channel::{Channel, Event, RemoteChange};
-use crate::remote::commit::align_heads;
+use crate::remote::commit::{align_heads, vm_origin_upstream};
 use crate::remote::retrieve;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::sync::{self as file_sync, Direction, Live, Outcome, SyncTarget};
@@ -717,7 +717,7 @@ async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &
     let id = record.id;
     let remote = target.worktree_path.display().to_string();
     let checked_out = retrieve::check_out_adopted(ssh, id, &remote, &target.branch, &record.repo_path, &record.worktree_path).await?;
-    let record = store::update_session(app, id, |stored| {
+    store::update_session(app, id, |stored| {
         stored.branch = checked_out.branch.clone();
         if let Some(remote) = stored.remote.as_mut() {
             remote.handoff_head = checked_out.head.clone();
@@ -725,6 +725,8 @@ async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &
     })?
     .ok_or_else(|| "failed to sync the session's files: the session was closed meanwhile".to_string())?;
     announce_sessions_changed(app);
+    take_over_vm_push_target(app, id, ssh, target).await;
+    let record = store::find_session(app, id)?;
     dependencies::ensure(app, record.repo_path.clone(), record.worktree_path.clone(), Install::Frozen);
     if let Err(error) = git::exclude_hunt_dir(&record.worktree_path).await {
         eprintln!("excluding the diagram folder in the worktree of session {id} failed: {error}");
@@ -737,6 +739,38 @@ async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &
         stream_transcripts(app, id, &state);
     }
     Ok(record)
+}
+
+/// Takes the push target over that the VM's worktree of the remote session `id` behind `ssh` records as its branch's
+/// upstream, which another Hunt may have set while it had the session: the local branch tracks it too and the records
+/// of the session and its sub chats name it as `base_ref`, so a push from here lands there. Nothing changes when the
+/// VM's branch tracks nothing, when it already matches, or for a poller session, whose VM pushes its own branch; a
+/// failure is only logged, since the connect must not fail over it.
+pub async fn take_over_vm_push_target(app: &AppHandle, id: Uuid, ssh: &Ssh, target: &RemoteTarget) {
+    if target.origin.keeps_vm_tokens() || target.branch.is_empty() || target.worktree_path.as_os_str().is_empty() {
+        return;
+    }
+    let Some(upstream) = vm_origin_upstream(ssh, target, &target.branch).await else {
+        return;
+    };
+    let Ok(record) = store::find_session(app, id) else {
+        return;
+    };
+    if record.base_ref.strip_prefix("origin/").unwrap_or(&record.base_ref) == upstream {
+        return;
+    }
+    if record.worktree_path.is_dir() {
+        if let Err(error) = git::set_origin_upstream(&record.worktree_path, &record.branch, &upstream).await {
+            eprintln!("recording the push target {upstream} of session {id} on its local branch failed: {error}");
+        }
+    }
+    let family = store::load_sessions(app).unwrap_or_default();
+    for stored in family.iter().filter(|stored| stored.worktree_path == record.worktree_path) {
+        if let Err(error) = store::update_session(app, stored.id, |stored| stored.base_ref = upstream.clone()) {
+            eprintln!("recording the push target {upstream} of session {id} failed: {error}");
+        }
+    }
+    announce_sessions_changed(app);
 }
 
 /// Watches the local `worktree` of `id` and asks for a sync of the paths that changed outside `.git`, `.hunt` and

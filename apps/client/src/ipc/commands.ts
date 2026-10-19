@@ -27,6 +27,8 @@ export const commands = {
   gitPushLocalBranch: (sessionId: string, branch: string) => invoke<void>("git_push_local_branch", { id: sessionId, branch }),
   /** Renames a local branch; the session follows a rename of its own branch, which a remote session refuses. */
   gitRenameBranch: (sessionId: string, branch: string, newName: string) => invoke<void>("git_rename_branch", { id: sessionId, branch, newName }),
+  /** Makes `target` on `origin` the branch a push of the session lands on, here and on the session's VM; a poller session refuses. */
+  setPushTarget: (sessionId: string, target: string) => invoke<void>("set_push_target", { id: sessionId, target }),
   /** Deletes a local branch; without `force`, git refuses one whose commits its upstream (or HEAD) lacks with "not fully merged". */
   gitDeleteBranch: (sessionId: string, branch: string, force: boolean) => invoke<void>("git_delete_branch", { id: sessionId, branch, force }),
   /** Deletes the branch `branch` on `origin`. */

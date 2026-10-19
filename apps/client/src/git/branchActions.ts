@@ -3,7 +3,7 @@ import type { GitRef } from "../ipc/types";
 /** The session's own local branch and the branch on `origin` a push of it lands on. */
 export type PushRoute = { branch: string; target: string };
 
-export type BranchActionKind = "rebase" | "merge" | "update" | "fetch" | "push" | "pushBranch" | "rename" | "delete" | "deleteRemote";
+export type BranchActionKind = "rebase" | "merge" | "update" | "fetch" | "push" | "pushBranch" | "retarget" | "rename" | "delete" | "deleteRemote";
 
 /** One entry of a branch's context menu. */
 export type BranchAction = {
@@ -34,6 +34,7 @@ export const BUSY_LABELS: Record<BranchActionKind, string> = {
   fetch: "Fetching…",
   push: "Pushing…",
   pushBranch: "Pushing…",
+  retarget: "Changing the push target…",
   rename: "Renaming…",
   delete: "Deleting…",
   deleteRemote: "Deleting…",
@@ -47,8 +48,8 @@ export function originBranchName(remoteBranch: string): string | null {
 /**
  * The context menu of the branch `ref`: rebase the checked-out branch onto it or merge it in, update or fetch it, push,
  * rename and delete it. Hunt pushes the session's branch onto the branch it was created from, so its Push and Update
- * name that branch; another local branch is pushed under its own name and fast-forwarded from its upstream. A tag has
- * no menu.
+ * name that branch and it alone can change the target; another local branch is pushed under its own name and
+ * fast-forwarded from its upstream. A tag has no menu.
  */
 export function branchActions(ref: GitRef, { head, pushes, isRemoteSession }: BranchContext): BranchAction[] {
   if (ref.kind === "tag") return [];
@@ -73,6 +74,7 @@ export function branchActions(ref: GitRef, { head, pushes, isRemoteSession }: Br
   if (isSessionBranch && pushes) {
     actions.push(entry("update", `Update from 'origin/${pushes.target}'`, null, { startsGroup: true }));
     actions.push(entry("push", `Push to 'origin/${pushes.target}'`));
+    actions.push(entry("retarget", "Change push target…", isRemoteSession && pushes.target === pushes.branch ? "A poller session pushes its own branch" : null));
   } else {
     actions.push(entry("update", ref.upstream ? `Update from '${ref.upstream}'` : "Update", ref.upstream ? null : "The branch has no upstream", { startsGroup: true }));
     actions.push(entry("pushBranch", `Push to 'origin/${ref.name}'`));

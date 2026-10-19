@@ -124,6 +124,30 @@ pub async fn move_vm_head(ssh: &Ssh, id: Uuid, target: &RemoteTarget, worktree: 
     Ok(head)
 }
 
+/// The branch on `origin` the branch `branch` of the VM's worktree of `target` tracks; `None` when it tracks none, or
+/// one on another remote.
+pub async fn vm_origin_upstream(ssh: &Ssh, target: &RemoteTarget, branch: &str) -> Option<String> {
+    let worktree = target.worktree_path.display().to_string();
+    let config = |key: &str| shell_command("sudo", &["-n", "-u", "agent", "git", "-C", &worktree, "config", "--get", key]);
+    let remote = ssh.run(&config(&format!("branch.{branch}.remote"))).await.ok()?;
+    if remote.trim() != "origin" {
+        return None;
+    }
+    let merge = ssh.run(&config(&format!("branch.{branch}.merge"))).await.ok()?;
+    merge.trim().strip_prefix("refs/heads/").map(str::to_string)
+}
+
+/// Makes the branch `push_target` on `origin` the upstream of `branch` in the VM's worktree of `target`, as `hunt-ctl
+/// prepare` does at the handoff, so that a Hunt taking the session over reads where its push lands.
+pub async fn set_vm_origin_upstream(ssh: &Ssh, target: &RemoteTarget, branch: &str, push_target: &str) -> Result<(), String> {
+    let worktree = target.worktree_path.display().to_string();
+    let config = |key: &str, value: &str| shell_command("sudo", &["-n", "-u", "agent", "git", "-C", &worktree, "config", key, value]);
+    let fail = |error: String| format!("failed to record the push target on the VM: {error}");
+    ssh.run(&config(&format!("branch.{branch}.remote"), "origin")).await.map_err(fail)?;
+    ssh.run(&config(&format!("branch.{branch}.merge"), &format!("refs/heads/{push_target}"))).await.map_err(fail)?;
+    Ok(())
+}
+
 /// Pushes the branch the VM's worktree of the remote session `id` has checked out to its origin with the GitHub token
 /// its VM stores, the poller's for a poller session, and makes that the branch's upstream.
 pub async fn push_stored(ssh: &Ssh, id: Uuid) -> Result<(), String> {

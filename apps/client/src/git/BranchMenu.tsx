@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { commands } from "../ipc/commands";
 import type { GitRef } from "../ipc/types";
 import { INPUT } from "../diff/styles";
@@ -45,6 +45,95 @@ export function BranchMenu({ menu, actions, onPick, onClose }: { menu: BranchMen
         </button>
       ))}
     </div>
+  );
+}
+
+/**
+ * Lets the user pick, among the branches of `origin` (`candidates`, without the `origin/` prefix), the one a push of
+ * the session lands on; the text field filters the list and takes a name the list does not know.
+ */
+export function PushTargetDialog({
+  sessionId,
+  current,
+  candidates,
+  onClose,
+  onChanged,
+}: {
+  sessionId: string;
+  current: string;
+  candidates: string[];
+  onClose: () => void;
+  onChanged: (target: string) => void;
+}) {
+  const [text, setText] = useState(current);
+  const [error, setError] = useState<string | null>(null);
+  const [isBusy, setIsBusy] = useState(false);
+  const target = text.trim();
+  // The list shows every branch until the user edits the field, then those containing the text.
+  const matches = useMemo(() => {
+    const needle = target === current ? "" : target.toLowerCase();
+    return candidates.filter((candidate) => candidate.toLowerCase().includes(needle)).slice(0, 12);
+  }, [candidates, target, current]);
+  const canSubmit = !!target && target !== current && !isBusy;
+
+  async function submit(choice = target) {
+    if (!choice || choice === current || isBusy) return;
+    setIsBusy(true);
+    setError(null);
+    try {
+      await commands.setPushTarget(sessionId, choice);
+      onChanged(choice);
+      onClose();
+    } catch (reason) {
+      setError(String(reason));
+      setIsBusy(false);
+    }
+  }
+
+  return (
+    <Modal label="Change push target" onClose={onClose} isCloseable={!isBusy} className="w-[460px] bg-(--surface-chat) p-4">
+      <h2 className="mb-1 text-base font-semibold">Change push target</h2>
+      <p className="mb-3 text-[13px] text-neutral-400">
+        A push lands on this branch of origin, after a rebase onto it; the session's own branch never reaches origin. Currently{" "}
+        <span className="font-mono text-neutral-300">origin/{current}</span>.
+      </p>
+      <label className="mb-1 block text-[13px] text-neutral-400">Branch on origin</label>
+      <input
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            void submit();
+          }
+        }}
+        autoFocus
+        spellCheck={false}
+        className={`${INPUT} font-mono`}
+      />
+      <ul role="listbox" className="mt-1 mb-3 max-h-56 overflow-auto rounded border border-(--line) py-1 font-mono text-[13px]">
+        {matches.map((candidate) => (
+          <li
+            key={candidate}
+            role="option"
+            aria-selected={candidate === target}
+            onClick={() => void submit(candidate)}
+            className={`cursor-default truncate px-2 py-0.5 ${candidate === target ? "bg-(--tree-selection) text-blue-100" : "text-neutral-200 hover:bg-(--row-hover)"}`}
+          >
+            {candidate}
+          </li>
+        ))}
+        {matches.length === 0 ? <li className="px-2 py-0.5 text-neutral-500">No fetched branch of origin matches; the name is fetched when you apply it.</li> : null}
+      </ul>
+      {error ? <p className="mb-3 text-[13px] text-red-400">{error}</p> : null}
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={onClose} disabled={isBusy} className={GHOST_BUTTON_MD}>
+          Cancel
+        </button>
+        <button type="button" onClick={() => void submit()} disabled={!canSubmit} className={PRIMARY_BUTTON_MD}>
+          {isBusy ? "Changing…" : "Change"}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

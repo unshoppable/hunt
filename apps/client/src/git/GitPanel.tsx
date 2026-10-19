@@ -11,7 +11,7 @@ import { SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { errorText, useLoad } from "../ui/useLoad";
 import { BUSY_LABELS, branchActions, originBranchName, type BranchAction } from "./branchActions";
-import { BranchMenu, RenameBranchDialog, type BranchMenuState } from "./BranchMenu";
+import { BranchMenu, PushTargetDialog, RenameBranchDialog, type BranchMenuState } from "./BranchMenu";
 import { CommitFiles } from "./CommitFiles";
 import { CommitLog } from "./CommitLog";
 import { RefTree } from "./RefTree";
@@ -38,6 +38,7 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
   const pushes = useMemo(() => (session ? { branch: session.branch, target: pushTarget(session, remote) } : null), [session, remote]);
   const [menu, setMenu] = useState<BranchMenuState | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [isRetargeting, setIsRetargeting] = useState(false);
   /** What the running branch action is, shown in the branch tree's header; `null` while none runs. */
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const diffFontSize = useSettingsStore((state) => state.panes.diff.fontSize);
@@ -132,11 +133,17 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
   const selectedCommit = useMemo(() => commits.find((commit) => commit.id === selectedId) ?? null, [commits, selectedId]);
   const unpushed = useMemo(() => new Set(refs?.unpushed ?? []), [refs]);
   const menuActions = useMemo(() => (menu ? branchActions(menu.ref, { head: refs?.head ?? "HEAD", pushes, isRemoteSession: !!remote }) : []), [menu, refs, pushes, remote]);
+  /** The branches of origin a push could land on, without the `origin/` prefix. */
+  const originBranches = useMemo(() => (refs?.refs ?? []).map((ref) => (ref.kind === "remote" ? originBranchName(ref.name) : null)).filter((name): name is string => !!name), [refs]);
 
   /** Runs the Git command of `action` on the branch `ref`; a success reloads every view of the worktree through `editVersion`. */
   const runAction = async (ref: GitRef, action: BranchAction) => {
     if (action.kind === "rename") {
       setRenaming(ref.name);
+      return;
+    }
+    if (action.kind === "retarget") {
+      setIsRetargeting(true);
       return;
     }
     setBusyLabel(BUSY_LABELS[action.kind]);
@@ -251,6 +258,9 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
         />
       ) : null}
       {renaming ? <RenameBranchDialog sessionId={sessionId} branch={renaming} onClose={() => setRenaming(null)} onRenamed={(newName) => onRenamed(renaming, newName)} /> : null}
+      {isRetargeting && pushes ? (
+        <PushTargetDialog sessionId={sessionId} current={pushes.target} candidates={originBranches} onClose={() => setIsRetargeting(false)} onChanged={() => noteWorktreeChanged(sessionId)} />
+      ) : null}
     </PersistentGroup>
   );
 }
@@ -287,6 +297,7 @@ async function performAction(sessionId: string, ref: GitRef, action: BranchActio
       return true;
     }
     case "rename":
+    case "retarget":
       return false;
   }
 }

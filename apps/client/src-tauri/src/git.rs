@@ -272,6 +272,27 @@ pub async fn worktree_add(repo: &Path, branch: &str, path: &Path, base: &str) ->
     Ok(())
 }
 
+/// The branch on `origin` the local branch `branch` tracks (`branch.<name>.merge`); `None` when it tracks none, or
+/// one on another remote.
+pub async fn origin_upstream(repo: &Path, branch: &str) -> Option<String> {
+    let remote = run_git(repo, &["config", "--get", &format!("branch.{branch}.remote")]).await.ok()?;
+    if remote.trim() != "origin" {
+        return None;
+    }
+    let merge = run_git(repo, &["config", "--get", &format!("branch.{branch}.merge")]).await.ok()?;
+    merge.trim().strip_prefix("refs/heads/").map(str::to_string)
+}
+
+/// Makes the branch `target` on `origin` the upstream of the local branch `branch`, whether or not `origin/<target>`
+/// was fetched yet: the branch's push lands there, and the upstream travels with the branch to a session's VM.
+pub async fn set_origin_upstream(repo: &Path, branch: &str, target: &str) -> Result<(), String> {
+    ensure_branch_name(repo, branch).await?;
+    ensure_branch_name(repo, target).await?;
+    run_git(repo, &["config", &format!("branch.{branch}.remote"), "origin"]).await?;
+    run_git(repo, &["config", &format!("branch.{branch}.merge"), &format!("refs/heads/{target}")]).await?;
+    Ok(())
+}
+
 /// Adds the worktree `path` of `repo` on the existing branch `branch` rather than a new one: on the local branch of
 /// that name, else on a new local branch of that name that tracks `remote_ref`, the branch on a remote (e.g.
 /// `origin/<branch>`). Returns whether it created the local branch. Fails when a worktree of `repo`, its own checkout
@@ -1542,6 +1563,22 @@ mod tests {
         delete_remote_branch(&repo, "fix/general/work").await.unwrap();
         assert_eq!(run_git(origin.path(), &["branch", "--list", "fix/*"]).await.unwrap().trim(), "");
         assert_eq!(delete_remote_branch(&repo, "-f").await.unwrap_err(), "invalid branch name: \"-f\"");
+    }
+
+    #[tokio::test]
+    async fn set_origin_upstream_makes_the_branch_track_origin_before_it_was_fetched() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+        git(&repo, &["branch", "loose"]).await;
+        assert_eq!(origin_upstream(&repo, "feat/general/x").await.as_deref(), Some("develop"));
+        assert_eq!(origin_upstream(&repo, "loose").await, None);
+
+        set_origin_upstream(&repo, "feat/general/x", "release/next").await.unwrap();
+
+        assert_eq!(origin_upstream(&repo, "feat/general/x").await.as_deref(), Some("release/next"));
+        assert_eq!(run_git(&repo, &["config", "--get", "branch.feat/general/x.remote"]).await.unwrap().trim(), "origin");
+        assert_eq!(set_origin_upstream(&repo, "feat/general/x", "--all").await.unwrap_err(), "invalid branch name: \"--all\"");
     }
 
     #[tokio::test]

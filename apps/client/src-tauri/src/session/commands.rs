@@ -314,6 +314,12 @@ pub async fn create_session(
             } else {
                 git::worktree_add(&repo_path, &branch, &worktree_path, &base_commit).await?;
                 keeps_branch = new_branch.is_some();
+                // The branch tracks the base branch on origin, where its push lands, so the target travels with the
+                // branch: the handoff copies the upstream to the VM, and a Hunt taking the session over reads it there.
+                let push_target = base_ref.strip_prefix("origin/").unwrap_or(&base_ref);
+                if new_branch.is_none() && git::rev_parse(&repo_path, &format!("refs/remotes/origin/{push_target}")).await.is_ok() {
+                    git::set_origin_upstream(&repo_path, &branch, push_target).await?;
+                }
             }
             private_files::copy_into_worktree(&repo_path, &worktree_path).await?;
             dependencies::ensure(&app, repo_path.clone(), worktree_path.clone(), Install::Updating);
@@ -623,6 +629,7 @@ async fn start_remote_relay(app: &AppHandle, id: Uuid, target: RemoteTarget, pro
     let mut args = vec!["start", &id_text];
     args.extend(target.origin.relay_token_args());
     remote::hunt_ctl_with_input(&ssh, &args, token_input.as_bytes()).await?;
+    sync::take_over_vm_push_target(app, id, &ssh, &target).await;
     Ok(Some((ssh, target)))
 }
 
@@ -2260,6 +2267,34 @@ pub async fn git_rename_branch(app: AppHandle, id: Uuid, branch: String, new_nam
     for stored in store::load_sessions(&app)? {
         if stored.worktree_path == record.worktree_path && stored.branch == branch {
             store::update_session(&app, stored.id, |stored| stored.branch = new_name.clone())?;
+        }
+    }
+    announce_sessions_changed(&app);
+    Ok(())
+}
+
+/// Makes the branch `target` on `origin` the one a push of the session lands on: the session's branch tracks it here
+/// and, for a remote session, on its VM, where a Hunt taking the session over reads it (`sync::take_over_vm_push_target`);
+/// the records of the session and its sub chats follow. A poller session pushes its own branch from its VM.
+#[tauri::command]
+pub async fn set_push_target(app: AppHandle, id: Uuid, target: String) -> Result<(), String> {
+    link::ensure_writable(&app, id, "change the push target")?;
+    let record = worktree_session(&app, id)?;
+    let remote = remote_host(&app, &record);
+    if remote.as_ref().is_some_and(|(_, remote)| remote.origin.keeps_vm_tokens()) {
+        return Err("failed to change the push target: a poller session pushes its own branch".into());
+    }
+    if !git::fetch_branch(&record.worktree_path, &target).await? {
+        return Err(format!("failed to change the push target: origin has no branch {target}"));
+    }
+    git::set_origin_upstream(&record.worktree_path, &record.branch, &target).await?;
+    if let Some((_, remote)) = &remote {
+        let ssh = Ssh::open(&remote.vm, &ssh_dir()?).await?;
+        remote::commit::set_vm_origin_upstream(&ssh, remote, &remote.branch, &target).await?;
+    }
+    for stored in store::load_sessions(&app)? {
+        if stored.worktree_path == record.worktree_path {
+            store::update_session(&app, stored.id, |stored| stored.base_ref = target.clone())?;
         }
     }
     announce_sessions_changed(&app);

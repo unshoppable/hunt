@@ -409,6 +409,9 @@ pub async fn open_session(
     }
     if record.worktree_path.is_dir() {
         dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone(), install_for(&app, &record));
+        if let Err(error) = private_files::copy_hooks_into_worktree(&record.repo_path, &record.worktree_path).await {
+            eprintln!("copying the hook files into {} failed: {error}", record.worktree_path.display());
+        }
     }
     if record.remote.is_some() {
         let activated = activate_remote(&app, &registry, &watchers, record).await;

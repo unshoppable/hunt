@@ -115,7 +115,8 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
     let (git_name, git_email) = git::identity(worktree).await.map_err(|error| format!("failed to hand off the session: {error}"))?;
     let origin = git::run_git(worktree, &["remote", "get-url", "origin"]).await.ok().and_then(|url| github_https_url(url.trim()));
     let upstream = git::origin_upstream(worktree, &branch).await;
-    let hooks_path = hooks_path(worktree).await;
+    // The session's VM runs the same hooks, so commits there pass the same checks and `git push` uploads Git LFS files.
+    let hooks_path = private_files::hooks_path(worktree).await;
 
     let ReadyVm { vm: session_vm, ssh, preview_domain } = bring_up(&request.vm(), &repo, &branch, progress).await?;
 
@@ -298,17 +299,6 @@ fn github_https_url(url: &str) -> Option<String> {
     Some(format!("https://github.com/{owner}/{repo}.git"))
 }
 
-/// The repository's `core.hooksPath` when it is a folder inside the worktree (husky's `.husky`); the session's
-/// VM runs the same hooks, so commits there pass the same checks and `git push` uploads Git LFS files.
-async fn hooks_path(worktree: &Path) -> Option<String> {
-    let path = git::run_git(worktree, &["config", "core.hooksPath"]).await.ok()?;
-    let path = path.trim().trim_start_matches("./").trim_end_matches('/');
-    if path.is_empty() || path.starts_with(['/', '-', '~']) || path.split('/').any(|segment| segment == "..") {
-        return None;
-    }
-    Some(path.to_string())
-}
-
 /// Pushes the branch, the snapshot and the origin's default branch into the session's own repository on the VM, through
 /// `hunt-ctl receive-pack`, which runs git there as the agent's user. The repository's own pre-push hooks are skipped: they
 /// guard pushes to the team's remote, not this transfer.
@@ -390,8 +380,7 @@ async fn upload_lfs_objects(worktree: &Path, ssh: &Ssh, id: &str, references: &[
 async fn upload_ignored_files(worktree: &Path, ssh: &Ssh, id: &str, patterns: &[Pattern], hooks_path: Option<&str>) -> Result<(), String> {
     let mut files = list_ignored(worktree, patterns).await?;
     if let Some(hooks_path) = hooks_path {
-        let output = git::run_git(worktree, &["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", hooks_path]).await?;
-        files.extend(output.split('\0').filter(|path| !path.is_empty()).map(str::to_string));
+        files.extend(private_files::list_ignored_hooks(worktree, hooks_path).await?);
         files.sort();
         files.dedup();
     }

@@ -1,7 +1,8 @@
 //! The private files of a repository: the ignored files its services need in a worktree, which `hunt.json` names per
 //! service under `worktreeInclude` as glob patterns (such as `apps/med/.env.private`). A new worktree gets them from
 //! the repository's own checkout (`copy_into_worktree`), since git does not carry ignored files into a worktree, and a
-//! handoff takes them to the VM (`list_ignored`).
+//! handoff takes them to the VM (`list_ignored`). The ignored files of the repository's hooks folder (husky's generated
+//! `.husky/_`) travel the same way, since the hooks of a worktree's commits need them.
 use std::path::Path;
 
 use glob::{MatchOptions, Pattern};
@@ -70,14 +71,52 @@ pub async fn list_ignored(worktree: &Path, patterns: &[Pattern]) -> Result<Vec<S
     Ok(output.split('\0').filter(|path| !path.is_empty() && matches_any(patterns, path)).map(str::to_string).collect())
 }
 
+/// The repository's `core.hooksPath` when it is a folder inside the checkout (husky's `.husky`), checkout-relative.
+pub async fn hooks_path(checkout: &Path) -> Option<String> {
+    let path = git::run_git(checkout, &["config", "core.hooksPath"]).await.ok()?;
+    let path = path.trim().trim_start_matches("./").trim_end_matches('/');
+    if path.is_empty() || path.starts_with(['/', '-', '~']) || path.split('/').any(|segment| segment == "..") {
+        return None;
+    }
+    Some(path.to_string())
+}
+
+/// The ignored files of `checkout` inside its hooks folder `hooks_path` (husky's generated `.husky/_`), checkout-relative.
+pub async fn list_ignored_hooks(checkout: &Path, hooks_path: &str) -> Result<Vec<String>, String> {
+    let output = git::run_git(checkout, &["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", hooks_path]).await?;
+    Ok(output.split('\0').filter(|path| !path.is_empty()).map(str::to_string).collect())
+}
+
 /// Copies the private files of the repository's checkout `repo`, those matching the `worktreeInclude` patterns of the
-/// services in the worktree's `hunt.json`, to the same paths in `worktree`; a file the worktree has already stays as it is, and symlinks
-/// stay behind. Returns the copied paths.
+/// services in the worktree's `hunt.json` and the ignored files of its hooks folder, to the same paths in `worktree`; a
+/// file the worktree has already stays as it is, and symlinks stay behind. Returns the copied paths.
 pub async fn copy_into_worktree(repo: &Path, worktree: &Path) -> Result<Vec<String>, String> {
     let patterns = compile_patterns(&patterns_of(worktree)?)?;
+    let mut paths = list_ignored(repo, &patterns).await?;
+    paths.extend(ignored_hooks(repo).await?);
+    paths.sort();
+    paths.dedup();
+    copy_files(repo, worktree, &paths)
+}
+
+/// Copies the ignored files of the repository's hooks folder from its checkout `repo` into `worktree`, as
+/// `copy_into_worktree` does, for a worktree created before Hunt copied them. Returns the copied paths.
+pub async fn copy_hooks_into_worktree(repo: &Path, worktree: &Path) -> Result<Vec<String>, String> {
+    copy_files(repo, worktree, &ignored_hooks(repo).await?)
+}
+
+async fn ignored_hooks(repo: &Path) -> Result<Vec<String>, String> {
+    match hooks_path(repo).await {
+        Some(hooks_path) => list_ignored_hooks(repo, &hooks_path).await,
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Copies the files `paths` of `repo` to the same paths in `worktree`, skipping symlinks and files the worktree has.
+fn copy_files(repo: &Path, worktree: &Path, paths: &[String]) -> Result<Vec<String>, String> {
     let mut copied = Vec::new();
-    for path in list_ignored(repo, &patterns).await? {
-        let (source, target) = (repo.join(&path), worktree.join(&path));
+    for path in paths {
+        let (source, target) = (repo.join(path), worktree.join(path));
         let Ok(metadata) = std::fs::symlink_metadata(&source) else { continue };
         if !metadata.is_file() || target.symlink_metadata().is_ok() {
             continue;
@@ -86,7 +125,7 @@ pub async fn copy_into_worktree(repo: &Path, worktree: &Path) -> Result<Vec<Stri
             std::fs::create_dir_all(parent).map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
         }
         std::fs::copy(&source, &target).map_err(|error| format!("failed to copy {} into the worktree: {error}", source.display()))?;
-        copied.push(path);
+        copied.push(path.clone());
     }
     Ok(copied)
 }
@@ -136,6 +175,24 @@ mod tests {
         assert!(!worktree.join("apps/med/.env").exists(), "a file no pattern matches stays behind");
         assert!(!worktree.join("node_modules").exists());
         assert!(worktree.join(".env.private").symlink_metadata().is_err(), "symlinks stay behind");
+    }
+
+    #[tokio::test]
+    async fn copies_the_ignored_files_of_the_hooks_folder_into_the_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let (repo, worktree) = (dir.path().join("repo"), dir.path().join("worktree"));
+        std::fs::create_dir_all(repo.join(".husky/_")).unwrap();
+        git::run_git(&repo, &["init", "-q", "-b", "main"]).await.unwrap();
+        git::run_git(&repo, &["config", "core.hooksPath", ".husky"]).await.unwrap();
+        std::fs::write(repo.join(".husky/pre-commit"), ". \"$(dirname -- \"$0\")/_/husky.sh\"\n").unwrap();
+        std::fs::write(repo.join(".husky/_/.gitignore"), "*\n").unwrap();
+        std::fs::write(repo.join(".husky/_/husky.sh"), "#!/usr/bin/env sh\n").unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        assert_eq!(copy_hooks_into_worktree(&repo, &worktree).await.unwrap(), [".husky/_/.gitignore", ".husky/_/husky.sh"]);
+        assert_eq!(std::fs::read_to_string(worktree.join(".husky/_/husky.sh")).unwrap(), "#!/usr/bin/env sh\n");
+        assert!(!worktree.join(".husky/pre-commit").exists(), "tracked hooks come with the checkout");
+        assert!(copy_into_worktree(&repo, &worktree).await.unwrap().is_empty(), "files the worktree has stay");
     }
 
     #[test]

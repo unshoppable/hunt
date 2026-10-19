@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionEnding, SessionView } from "../ipc/types";
 import { checkForUpdate } from "../ipc/updater";
 import { useHuntStore } from "../state/store";
@@ -10,7 +10,7 @@ import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, session
 import { SessionMark } from "./SessionMark";
 import { DeleteSessionDialog } from "./DeleteSessionDialog";
 import { StaleRemoteDialog } from "./StaleRemoteDialog";
-import { remoteOriginLabel, remoteOriginTitle, removeFromSidebarQuestion, repositoryLabel } from "./remoteOrigin";
+import { remoteOriginLabel, remoteOriginTitle, removeFromSidebarQuestion } from "./remoteOrigin";
 import { PlanUsageBar } from "./PlanUsageBar";
 import { HEADER_BAR } from "../ui/bars";
 import { ICON_BUTTON, PRIMARY_BUTTON_XS } from "../ui/buttons";
@@ -187,111 +187,117 @@ export function SessionSidebar() {
       ) : null}
       <ul ref={listRef} className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-2 font-(family-name:--sidebar-font-family) text-(length:--sidebar-font-size) leading-(--sidebar-line-height)">
         {query && rows.length === 0 ? <li className="px-2.5 py-1.5 text-[0.875em] text-neutral-500">No sessions match “{query}”</li> : null}
-        {rows.map(({ session, isSubChat }) => {
+        {rows.map(({ session, isSubChat, repository }, index) => {
           const isActive = session.id === activeSessionId;
           const isBusy = chats[session.id]?.isBusy ?? false;
           // A session the backend still creates has no worktree or agent yet: nothing can be started in or done to it.
           const isCreating = creatingIds.includes(session.id);
           const reference = sessionReference(session, pullRequestStates[session.id] ?? null);
+          // The repository heads its group of sessions: a heading before the first row of every repository.
+          const startsGroup = !isSubChat && (index === 0 || rows[index - 1].repository !== repository);
           return (
-            <li key={session.id} data-active={isActive || undefined}>
-              <button
-                type="button"
-                onClick={() => void selectSession(session.id)}
-                className={`group flex w-full flex-col items-start rounded-lg py-1.5 pr-2 text-left transition-colors ${isActive ? "bg-(--row-active)" : "hover:bg-(--row-hover)"}`}
-                style={{ paddingLeft: isSubChat ? "calc(10px + var(--sidebar-indent))" : 10 }}
-              >
-                <span className="relative flex w-full items-center gap-2">
-                  <SessionMark sessionId={session.id} mark={marks.get(session.id) ?? ""} />
-                  <span className="min-w-0 flex-1 truncate text-[0.875em] font-medium text-neutral-100">{sidebarTitle(session)}</span>
-                  {isCreating ? <span className="shrink-0 text-[0.75em] text-neutral-500">Starting</span> : null}
-                  {remoteOriginLabel(session) ? (
-                    <span
-                      className="shrink-0 rounded-md bg-sky-400/10 px-1.5 text-[length:max(13px,0.875em)] leading-5 font-medium text-sky-300"
-                      title={remoteOriginTitle(session) ?? undefined}
-                    >
-                      {remoteOriginLabel(session)}
-                    </span>
-                  ) : null}
-                  {!isSubChat && !isCreating ? (
-                    <span
-                      role="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        startDraft(session.id);
-                      }}
-                      className="-my-1 -mr-1 flex size-7 shrink-0 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
-                      title="Start another agent session in this worktree"
-                      aria-label="New sub session"
-                    >
-                      <PlusIcon className="size-4" />
-                    </span>
-                  ) : null}
-                  {!isCreating ? (
-                    // Opaque backdrop so the button covers a long title; the row tint is layered over the sidebar colour.
-                    <span
-                      className={`absolute top-1/2 hidden -translate-y-1/2 rounded-md group-hover:flex ${isSubChat ? "-right-1" : "right-6"}`}
-                      style={{ background: `linear-gradient(var(${isActive ? "--row-active" : "--row-hover"}), var(${isActive ? "--row-active" : "--row-hover"})), var(--sidebar-bg)` }}
-                    >
+            <Fragment key={session.id}>
+              {startsGroup ? (
+                <li
+                  className={`flex min-w-0 items-center gap-1.5 px-2.5 pb-1 text-[0.8125em] font-medium text-neutral-400 ${index === 0 ? "pt-1" : "pt-3"}`}
+                  title={session.repoPath || (session.remote ? `No local checkout of ${session.remote.repo} is known yet` : undefined)}
+                >
+                  <RepoIcon className="size-4 shrink-0" />
+                  <span className="truncate">{repository || "No repository"}</span>
+                </li>
+              ) : null}
+              <li data-active={isActive || undefined}>
+                <button
+                  type="button"
+                  onClick={() => void selectSession(session.id)}
+                  className={`group flex w-full flex-col items-start rounded-lg py-1.5 pr-2 text-left transition-colors ${isActive ? "bg-(--row-active)" : "hover:bg-(--row-hover)"}`}
+                  style={{ paddingLeft: isSubChat ? "calc(10px + var(--sidebar-indent))" : 10 }}
+                >
+                  <span className="relative flex w-full items-center gap-2">
+                    <SessionMark sessionId={session.id} mark={marks.get(session.id) ?? ""} />
+                    <span className="min-w-0 flex-1 truncate text-[0.875em] font-medium text-neutral-100">{sidebarTitle(session)}</span>
+                    {isCreating ? <span className="shrink-0 text-[0.75em] text-neutral-500">Starting</span> : null}
+                    {remoteOriginLabel(session) ? (
+                      <span
+                        className="shrink-0 rounded-md bg-sky-400/10 px-1.5 text-[length:max(13px,0.875em)] leading-5 font-medium text-sky-300"
+                        title={remoteOriginTitle(session) ?? undefined}
+                      >
+                        {remoteOriginLabel(session)}
+                      </span>
+                    ) : null}
+                    {!isSubChat && !isCreating ? (
                       <span
                         role="button"
                         onClick={(event) => {
                           event.stopPropagation();
-                          removeSession(session, isSubChat);
+                          startDraft(session.id);
                         }}
-                        className={`flex size-7 items-center justify-center rounded-md text-neutral-400 transition-colors ${session.remote && !isSubChat ? "hover:bg-white/10 hover:text-white" : "hover:bg-red-400/10 hover:text-red-400"}`}
-                        title={session.remote && !isSubChat ? "Remove from the sidebar; the VM keeps running" : "Delete session"}
-                        aria-label={session.remote && !isSubChat ? "Remove from sidebar" : "Delete session"}
+                        className="-my-1 -mr-1 flex size-7 shrink-0 items-center justify-center rounded-md text-neutral-400 transition-colors hover:bg-white/10 hover:text-white"
+                        title="Start another agent session in this worktree"
+                        aria-label="New sub session"
                       >
-                        <CloseIcon className="size-3.5" />
+                        <PlusIcon className="size-4" />
                       </span>
-                    </span>
-                  ) : null}
-                </span>
-                <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500" title={isSubChat ? session.selection?.path : undefined}>
-                  {isSubChat && session.selection ? (
-                    <img src={fileIconUrl(session.selection.path)} alt="" className="size-4 shrink-0" />
-                  ) : null}
-                  {!isSubChat ? (session.pullRequest ? <GitHubIcon className="size-4 shrink-0" /> : <BranchIcon className="size-4 shrink-0" />) : null}
-                  <span className="truncate">{isCreating && !isSubChat ? (session.workspace === "checkout" ? "Starting…" : "Creating worktree…") : sessionSubtitle(session)}</span>
-                </span>
-                {!isSubChat ? (
-                  <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500" title="Branch on origin a push of the session lands on">
-                    <PushIcon className="size-4 shrink-0" />
-                    <span className="truncate">origin/{pushTarget(session, remoteOf(session, sessions))}</span>
-                  </span>
-                ) : null}
-                {!isSubChat ? (
-                  <span
-                    className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500"
-                    title={session.repoPath || (session.remote ? `No local checkout of ${session.remote.repo} is known yet` : undefined)}
-                  >
-                    <RepoIcon className="size-4 shrink-0" />
-                    <span className="truncate">{repositoryLabel(session)}</span>
-                    {reference ? (
-                      <span className={`ml-auto flex shrink-0 items-center gap-1 pl-2 ${REFERENCE_TONE[reference.tone]}`} title={reference.title || undefined}>
-                        {reference.kind === "pullRequest" ? <PullRequestIcon className="size-4" /> : <TicketIcon className="size-4" />}
-                        {reference.label}
+                    ) : null}
+                    {!isCreating ? (
+                      // Opaque backdrop so the button covers a long title; the row tint is layered over the sidebar colour.
+                      <span
+                        className={`absolute top-1/2 hidden -translate-y-1/2 rounded-md group-hover:flex ${isSubChat ? "-right-1" : "right-6"}`}
+                        style={{ background: `linear-gradient(var(${isActive ? "--row-active" : "--row-hover"}), var(${isActive ? "--row-active" : "--row-hover"})), var(--sidebar-bg)` }}
+                      >
+                        <span
+                          role="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removeSession(session, isSubChat);
+                          }}
+                          className={`flex size-7 items-center justify-center rounded-md text-neutral-400 transition-colors ${session.remote && !isSubChat ? "hover:bg-white/10 hover:text-white" : "hover:bg-red-400/10 hover:text-red-400"}`}
+                          title={session.remote && !isSubChat ? "Remove from the sidebar; the VM keeps running" : "Delete session"}
+                          aria-label={session.remote && !isSubChat ? "Remove from sidebar" : "Delete session"}
+                        >
+                          <CloseIcon className="size-3.5" />
+                        </span>
                       </span>
                     ) : null}
                   </span>
-                ) : null}
-                {!isCreating && isBusy ? (
-                  <span className="mt-0.5 flex w-full items-center gap-1 pl-2.5 text-[0.8125em]">
-                    <span
-                      role="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void cancelPrompt(session.id);
-                      }}
-                      className="rounded-md px-1.5 py-0.5 text-neutral-500 transition-colors hover:bg-white/10 hover:text-white"
-                    >
-                      stop
-                    </span>
+                  <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500" title={isSubChat ? session.selection?.path : undefined}>
+                    {isSubChat && session.selection ? (
+                      <img src={fileIconUrl(session.selection.path)} alt="" className="size-4 shrink-0" />
+                    ) : null}
+                    {!isSubChat ? (session.pullRequest ? <GitHubIcon className="size-4 shrink-0" /> : <BranchIcon className="size-4 shrink-0" />) : null}
+                    <span className="truncate">{isCreating && !isSubChat ? (session.workspace === "checkout" ? "Starting…" : "Creating worktree…") : sessionSubtitle(session)}</span>
                   </span>
-                ) : null}
-              </button>
-            </li>
+                  {!isSubChat ? (
+                    <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.875em] text-neutral-500">
+                      <PushIcon className="size-4 shrink-0" />
+                      <span className="truncate" title="Branch on origin a push of the session lands on">
+                        origin/{pushTarget(session, remoteOf(session, sessions))}
+                      </span>
+                      {reference ? (
+                        <span className={`ml-auto flex shrink-0 items-center gap-1 pl-2 ${REFERENCE_TONE[reference.tone]}`} title={reference.title || undefined}>
+                          {reference.kind === "pullRequest" ? <PullRequestIcon className="size-4" /> : <TicketIcon className="size-4" />}
+                          {reference.label}
+                        </span>
+                      ) : null}
+                    </span>
+                  ) : null}
+                  {!isCreating && isBusy ? (
+                    <span className="mt-0.5 flex w-full items-center gap-1 pl-2.5 text-[0.8125em]">
+                      <span
+                        role="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void cancelPrompt(session.id);
+                        }}
+                        className="rounded-md px-1.5 py-0.5 text-neutral-500 transition-colors hover:bg-white/10 hover:text-white"
+                      >
+                        stop
+                      </span>
+                    </span>
+                  ) : null}
+                </button>
+              </li>
+            </Fragment>
           );
         })}
       </ul>
@@ -339,7 +345,7 @@ function AccountSwitcher() {
   );
 }
 
-/** Text colour of the pull request or issue badge on the repository line, by `SessionReference.tone`. */
+/** Text colour of the pull request or issue badge on the push-target line, by `SessionReference.tone`. */
 const REFERENCE_TONE: Record<ReferenceTone, string> = {
   amber: "text-amber-300",
   green: "text-emerald-300",

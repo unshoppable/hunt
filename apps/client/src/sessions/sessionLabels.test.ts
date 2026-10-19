@@ -72,6 +72,17 @@ describe("sidebarTitle", () => {
 describe("groupSessions", () => {
   it("lists each top-level session followed by its sub chats and orphans on top level", () => {
     expect(ids(groupSessions(sessions))).toEqual(["a", "  a1", "  a2", "b", "orphan"]);
+    expect(groupSessions(sessions).map(({ repository }) => repository)).toEqual(["repo", "repo", "repo", "repo", "repo"]);
+  });
+
+  it("groups the sessions by repository, names in alphabetical order, creation order inside a group, no repository last", () => {
+    const inZebra = { ...session("z", "Zebra", "main"), repoPath: "/work/zebra" };
+    const inApple = { ...session("p", "Apple", "main"), repoPath: "/work/Apple" };
+    const remoteOnly = { ...session("r", "Remote", "main"), repoPath: "", remote: { origin: "swf", issue: 1, repo: "o/beta", vm: null } as unknown as SessionView["remote"] };
+    const unknown = { ...session("u", "Unknown", "main"), repoPath: "" };
+    const rows = groupSessions([inZebra, unknown, ...sessions, inApple, remoteOnly]);
+    expect(ids(rows)).toEqual(["p", "r", "a", "  a1", "  a2", "b", "orphan", "z", "u"]);
+    expect(rows.map(({ repository }) => repository)).toEqual(["Apple", "o/beta", "repo", "repo", "repo", "repo", "repo", "zebra", ""]);
   });
 });
 

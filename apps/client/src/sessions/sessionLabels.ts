@@ -1,6 +1,6 @@
 import type { PullRequestState, SelectionContext, SessionView } from "../ipc/types";
 import { baseName } from "../ui/path";
-import { issueLabel, remoteOriginTitle } from "./remoteOrigin";
+import { issueLabel, remoteOriginTitle, repositoryLabel } from "./remoteOrigin";
 
 /**
  * The pull request or issue a session works on, shown as `#123` with its own icon on the sidebar's repository line.
@@ -54,22 +54,36 @@ export function sessionSubtitle(session: SessionView): string {
   return session.selection ? describeSubChatSource(session.selection) : "sub session";
 }
 
-export type SessionRow = { session: SessionView; isSubChat: boolean };
+/** A row of the sidebar: `repository` is the name of the group the row belongs to (`repositoryLabel` of its top-level session). */
+export type SessionRow = { session: SessionView; isSubChat: boolean; repository: string };
 
-/** Top-level sessions in store order (oldest first), each followed by its sub chats; a sub chat whose parent is gone is listed on top level. */
+/**
+ * Sidebar rows grouped by repository: groups in alphabetical order of their name (a session without a known
+ * repository last), inside a group the top-level sessions in store order (oldest first), each followed by its sub
+ * chats. A sub chat whose parent is gone is listed on top level.
+ */
 export function groupSessions(sessions: SessionView[]): SessionRow[] {
   const ids = new Set(sessions.map((session) => session.id));
+  const topLevel = sessions
+    .filter((session) => !(session.parentId && ids.has(session.parentId)))
+    .map((session) => ({ session, repository: repositoryLabel(session) }))
+    .sort((a, b) => compareRepositories(a.repository, b.repository));
   const rows: SessionRow[] = [];
-  for (const session of sessions) {
-    if (session.parentId && ids.has(session.parentId)) continue;
-    rows.push({ session, isSubChat: false });
+  for (const { session, repository } of topLevel) {
+    rows.push({ session, isSubChat: false, repository });
     for (const child of sessions) {
       if (child.parentId === session.id) {
-        rows.push({ session: child, isSubChat: true });
+        rows.push({ session: child, isSubChat: true, repository });
       }
     }
   }
   return rows;
+}
+
+/** Group order of the sidebar: repository names case-insensitively, an empty name (no repository known) after all of them. */
+function compareRepositories(a: string, b: string): number {
+  if (!a || !b) return Number(!a) - Number(!b);
+  return a.localeCompare(b, undefined, { sensitivity: "base" });
 }
 
 /** The most recently created top-level session: the last one of the list, which is in creation order. */
@@ -92,7 +106,8 @@ function letterFor(index: number): string {
 /**
  * Short marks that identify sessions in the sidebar and wherever a session is referenced: top-level sessions get
  * letters (A, B, …) in sidebar order, sub sessions get numbers (1, 2, …) counted per parent. Marks are derived from
- * the current list, which is in creation order, so they shift only when a session is deleted.
+ * the current list in its sidebar order (by repository, inside a repository by creation), so they shift only when a
+ * session is deleted or one joins a repository group that is not the last.
  */
 export function sessionMarks(sessions: SessionView[]): Map<string, string> {
   const marks = new Map<string, string>();

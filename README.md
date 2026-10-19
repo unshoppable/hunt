@@ -176,6 +176,11 @@ of the generated one (`newBranch` of `create_session`, checked by `sessions/newB
 off the base in a worktree, or at the checkout's own branch, which the checkout switches to. Such a branch is the
 session's base like a reviewed pull request's: a push lands on it under its own name and deleting the session keeps it.
 
+The sidebar groups the sessions by repository, each group under a heading with the repository's name
+(`groupSessions` in `apps/client/src/sessions/sessionLabels.ts`): groups in alphabetical order, inside a group the
+sessions in creation order, each followed by its sub sessions. A session's row shows its title, its branch and the
+branch on origin a push lands on, with the pull request or issue it works on as a badge.
+
 The mark of a session in the sidebar (`apps/client/src/sessions/SessionMark.tsx`) shows what its agent is up to: an arc
 runs around it while a turn runs; it turns amber with a `?` badge when the agent ended its turn with a question
 (`hasPendingQuestion` in `src/state/store.ts`: the chat is idle and its last item is an agent message that asks one,

@@ -6,7 +6,7 @@ in verbatim (`?raw` imports), so they hold nothing but the prompt text; this fil
 The label placeholders (`requested`, `running`, `question`, `done`, `failed`) are the labels of the repository's swf
 workflow; `relabelDone`, `relabelFailed`, `relabelQuestion` and `relabelResume` are the `gh issue edit` commands that
 move the issue from one label to the next (`labelValues`); the prompts append `--title` to the question and resume
-commands, which put the word for a question back in front of the issue's title and take it off again.
+commands, which put a red question mark and the word for a question back in front of the issue's title and take it off again.
 
 | File | When | Where it lands |
 | --- | --- | --- |

@@ -188,18 +188,19 @@ describe("session files", () => {
     expect(prompt).toContain("1. **Read the task.**");
     expect(unwrapped).toContain(
       "2. **Clarify questions.** When a question remains that only a person can answer, ask it before you plan, in the language of the issue. " +
-        "First mark the issue as waiting for an answer, so that GitHub's notification mail carries it in its subject: put the word for a question back " +
-        "in that language in capitals and a colon in front of the issue's title (`RÜCKFRAGE: ` for a German issue, `QUESTION: ` for an English one) and " +
+        "First mark the issue as waiting for an answer, so that GitHub's notification mail carries it in its subject: put a red question mark, the word for " +
+        "a question back in that language in capitals and a colon in front of the issue's title (`❓ RÜCKFRAGE: ` for a German issue, `❓ QUESTION: ` for an " +
+        "English one) and " +
         "replace `swf:running` with `swf:question` in one command " +
-        "(`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:question --title \"RÜCKFRAGE: <title>\"`). " +
+        "(`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:question --title \"❓ RÜCKFRAGE: <title>\"`). " +
         "Then gather every open question into one comment on the issue (`gh issue comment 12 --repo acme/app --body \"…\"`) with the options you see " +
-        "and your recommendation. The comment starts with that word in bold on a line of its own, followed by a mention of everyone who is to answer, " +
+        "and your recommendation. The comment starts with the question mark and that word in bold on a line of its own (`**❓ RÜCKFRAGE**`), followed by a mention of everyone who is to answer, " +
         "so that GitHub notifies them: every current assignee of the issue (`gh issue view 12 --repo acme/app --json assignees -q '.assignees[].login'`) " +
         "as `@login`, or the issue's author when it has no assignee. Say in the comment that they can answer with a comment on the issue or in Hunt. " +
         "End your turn with the questions, in the language of the issue, as your last words and the marker `<!-- hunt:question -->`.",
     );
     expect(unwrapped).toContain(
-      "then replace `swf:question` with `swf:running` and remove the word from the title " +
+      "then replace `swf:question` with `swf:running` and remove the mark from the title " +
         "(`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:running --title \"<title>\"`) and go on.",
     );
     expect(prompt).toContain("3. **Plan.** Comment a short implementation plan on the issue");
@@ -301,7 +302,7 @@ describe("answerPrompt", () => {
     const text = answerPrompt(prompts.swfAnswer, "acme/app", 12, answers, swfLabels("swf"));
     expect(text.startsWith("An answer to your question arrived as a comment on issue #12 of acme/app:\n\n**@bob** on 2026-10-13 10:05 UTC:\n\nPostgres.\n\n---\n\n**@carol** on 2026-10-13 10:10 UTC:\n\nWith pgvector.\n\n")).toBe(true);
     expect(unwrap(text)).toContain(
-      "Replace `swf:question` with `swf:running` and remove the word for a question back from the title " +
+      "Replace `swf:question` with `swf:running` and remove the red question mark and the word for a question back from the title " +
         "(`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:running --title \"<title>\"`), " +
         "then go on with the step of \"Working on a GitHub issue\" you stopped at.",
     );
@@ -315,7 +316,7 @@ describe("nudgePrompt", () => {
     expect(text.startsWith("Your last turn ended, but issue #12 of acme/app still has the label `swf:running`")).toBe(true);
     expect(text).toContain("`Closes #12`");
     expect(text).toContain("(`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:done`)");
-    expect(unwrap(text)).toContain("(`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:question --title \"RÜCKFRAGE: <title>\"`)");
+    expect(unwrap(text)).toContain("(`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:question --title \"❓ RÜCKFRAGE: <title>\"`)");
     expect(text).toContain("(`gh issue edit 12 --repo acme/app --remove-label swf:running --add-label swf:failed`)");
     expect(text).toContain("When this turn ends with the issue still labelled running, Hunt marks the issue as failed.");
   });

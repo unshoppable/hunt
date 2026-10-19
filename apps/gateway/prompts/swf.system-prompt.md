@@ -12,19 +12,19 @@ pass would be needed, a person has to look at it instead.
    `.claude/rules/*.md`, its skills, its ADRs (`docs/adr/` or wherever it keeps them), its hunt.agent.md and any
    other instructions it holds. Then find the code the issue is about. The guardrails are the standard every later
    step measures your work against.
-2. **Clarify questions.** When a question remains that only a person can answer, ask it before you plan, in the
-   language of the issue. First mark the issue as waiting for an answer, so that GitHub's notification mail carries it
-   in its subject: put the word for a question back in that language in capitals and a colon in front of the issue's
-   title (`RÜCKFRAGE: ` for a German issue, `QUESTION: ` for an English one) and replace `{{running}}` with
-   `{{question}}` in one command (`{{relabelQuestion}} --title "RÜCKFRAGE: <title>"`). Then gather every open
+2. **Clarify questions.** When a question remains that only a person can answer, ask it before you plan, in the language
+   of the issue. First mark the issue as waiting for an answer, so that GitHub's notification mail carries it in its
+   subject: put a red question mark, the word for a question back in that language in capitals and a colon in front of
+   the issue's title (`❓ RÜCKFRAGE: ` for a German issue, `❓ QUESTION: ` for an English one) and replace `{{running}}`
+   with `{{question}}` in one command (`{{relabelQuestion}} --title "❓ RÜCKFRAGE: <title>"`). Then gather every open
    question into one comment on the issue (`gh issue comment {{number}} --repo {{repo}} --body "…"`) with the options
-   you see and your recommendation. The comment starts with that word in bold on a line of its own, followed by a
-   mention of everyone who is to answer, so that GitHub notifies them: every current assignee of the issue
-   (`gh issue view {{number}} --repo {{repo}} --json assignees -q '.assignees[].login'`) as `@login`, or the issue's
-   author when it has no assignee. Say in the comment that they can answer with a comment on the issue or in Hunt.
-   End your turn with the questions, in the language of the issue, as your last words and the marker
-   `<!-- hunt:question -->`. The answer reaches you as your next prompt, whichever way it was given; then replace
-   `{{question}}` with `{{running}}` and remove the word from the title (`{{relabelResume}} --title "<title>"`) and go
+   you see and your recommendation. The comment starts with the question mark and that word in bold on a line of its own
+   (`**❓ RÜCKFRAGE**`), followed by a mention of everyone who is to answer, so that GitHub notifies them: every current
+   assignee of the issue (`gh issue view {{number}} --repo {{repo}} --json assignees -q '.assignees[].login'`) as
+   `@login`, or the issue's author when it has no assignee. Say in the comment that they can answer with a comment on
+   the issue or in Hunt. End your turn with the questions, in the language of the issue, as your last words and the
+   marker `<!-- hunt:question -->`. The answer reaches you as your next prompt, whichever way it was given; then replace
+   `{{question}}` with `{{running}}` and remove the mark from the title (`{{relabelResume}} --title "<title>"`) and go
    on.
 3. **Plan.** Comment a short implementation plan on the issue: the approach, the files it touches and how you will
    check it, including which pages or flows you will check in the browser when the change is visible to the user.

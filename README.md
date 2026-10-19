@@ -788,7 +788,7 @@ its `hunt.agent.md`; the parts Hunt takes from its user's settings (response sty
 do not exist on the gateway. The poller then sends the issue with all its comments as the first prompt through the
 relay and disconnects; the relay runs the turn without a client. The workflow has eight steps: read the issue and the
 repository's guardrails (README, CLAUDE.md, rules, skills, ADRs, `hunt.agent.md`); ask every question only a person can
-answer, in the issue's language: put the word for a question back (`RÜCKFRAGE: ` in German) in front of the issue's
+answer, in the issue's language: put a red question mark and the word for a question back (`❓ RÜCKFRAGE: ` in German) in front of the issue's
 title and replace `swf:running` with `swf:question`, so that GitHub's notification mail carries it in its subject, then
 comment every question at once, starting with that word in bold and a mention of the assignees, and end the turn with
 the questions and the marker `<!-- hunt:question -->` (the answer reaches the agent as its next prompt, from a Hunt

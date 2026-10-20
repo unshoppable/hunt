@@ -96,7 +96,7 @@ export function MarkGlyph({
         {mark}
       </text>
       {badge === "question" ? (
-        <QuestionBadge cx={width - 1.5} cy={1.5} />
+        <QuestionBadge cx={width - 1.5} cy={1.5} weight="font-bold" />
       ) : badge === "unseen" ? (
         <circle cx={width - 1.5} cy={1.5} r={DOT_RADIUS} className="fill-emerald-400" aria-hidden="true" />
       ) : null}
@@ -111,12 +111,15 @@ const OUTLINE = {
 };
 const SPINNER = { remote: "stroke-sky-300", idle: "stroke-neutral-200" };
 
-/** The amber `?` badge of an agent that waits for an answer, centred on (`cx`, `cy`) inside an SVG. */
-function QuestionBadge({ cx, cy }: { cx: number; cy: number }) {
+/**
+ * The amber `?` badge of an agent that waits for an answer, centred on (`cx`, `cy`) inside an SVG; `weight` is the
+ * font weight class of the `?`.
+ */
+function QuestionBadge({ cx, cy, weight }: { cx: number; cy: number; weight: string }) {
   return (
     <g aria-hidden="true">
       <circle cx={cx} cy={cy} r={BADGE_RADIUS} className="fill-amber-400" />
-      <text x={cx} y={cy + 3.3} textAnchor="middle" className="fill-neutral-950 text-[9.5px] font-semibold">
+      <text x={cx} y={cy + 3.3} textAnchor="middle" className={`fill-neutral-950 text-[9.5px] ${weight}`}>
         ?
       </text>
     </g>
@@ -131,7 +134,7 @@ export function QuestionIcon({ size }: { size: number }) {
   const diameter = 2 * BADGE_RADIUS;
   return (
     <svg width={size} height={size} viewBox={`0 0 ${diameter} ${diameter}`} className="shrink-0" aria-hidden="true">
-      <QuestionBadge cx={BADGE_RADIUS} cy={BADGE_RADIUS} />
+      <QuestionBadge cx={BADGE_RADIUS} cy={BADGE_RADIUS} weight="font-semibold" />
     </svg>
   );
 }

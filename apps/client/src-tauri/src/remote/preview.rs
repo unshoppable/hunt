@@ -84,7 +84,7 @@ pub struct PreviewService {
     /// Whether its unit is enabled, so it starts again with the VM.
     pub enabled: bool,
     pub state: PreviewServiceState,
-    /// Whether its port answers HTTP requests.
+    /// Whether its port listens on the VM.
     pub responds: bool,
 }
 

@@ -73,7 +73,7 @@ export function isTerminalActive(status: PreviewStatus | null, windows: readonly
   return isPreviewActive(status) || Boolean(windows?.length);
 }
 
-/** Whether a service of hunt.json answers HTTP on the VM. */
+/** Whether the port of a service of hunt.json listens on the VM. */
 export function hasRespondingService(status: PreviewStatus): boolean {
   return status.services.some((service) => service.responds);
 }

@@ -251,7 +251,7 @@ export type PreviewServiceState = "running" | "starting" | "failed" | "stopped";
  * A service the repository's hunt.json declares (mirror of `PreviewService` in src-tauri/src/remote/preview.rs). `url`
  * is `https://<short>-<port>.<domain>` behind the Google login, or `https://<short>-<port>-open.<domain>` without it for
  * a service with `"guarded": false`. An `enabled` service comes back after a VM boot; `responds` says whether its port
- * answers HTTP on the VM.
+ * listens on the VM.
  */
 export type PreviewService = {
   name: string;

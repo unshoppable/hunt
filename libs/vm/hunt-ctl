@@ -225,8 +225,8 @@ Session VM:
   github-token <id>      replace the GitHub token the session's git, Git LFS and gh act with by the one on stdin; the
                          relay keeps running
   status <id>            relay state, relay status and session metadata
-  preview-status [<id>]  the services of hunt.json with their state and whether their port answers, and the ports that
-                         listen
+  preview-status [<id>]  the services of hunt.json with their state and whether their port listens, and the ports
+                         that listen
   destroy <id>           stop the session's relay, services and proxy and remove its worktree, ~/.claude and files
 
 Gateway:
@@ -1529,23 +1529,28 @@ cmd_status() {
   emit --arg relay "$relay" --argjson status "$status" --argjson meta "$meta_json" '{relay: $relay, status: $status, meta: $meta}'
 }
 
-# Prints the ports TCP servers listen on for the preview proxy, which connects to localhost, as a JSON array: those
-# bound to every address or to a loopback address, from 1024 on, except the reserved ports and the ephemeral range
-# outgoing connections take their local ports from.
-listening_ports() {
-  local low high
-  read -r low high </proc/sys/net/ipv4/ip_local_port_range
-  ss -Htln | awk -v low="$low" -v high="$high" -v reserved=" $RESERVED_PORTS " '
+# Prints the ports TCP servers listen on where the preview proxy, which connects to localhost, reaches them, one per
+# line in ascending order: those bound to every address or to a loopback address.
+local_ports() {
+  ss -Htln | awk '
     {
       port = $4
       sub(/.*:/, "", port)
       address = substr($4, 1, length($4) - length(port) - 1)
       sub(/%.*/, "", address)
-      port += 0
       if (address !~ /^(\*|0\.0\.0\.0|\[::\]|127\.[0-9.]+|\[::1\]|\[::ffff:127\.[0-9.]+\])$/) next
-      if (port < 1024 || (port >= low && port <= high) || index(reserved, " " port " ")) next
-      print port
-    }' | sort -nu | jq -cs .
+      print port + 0
+    }' | sort -nu
+}
+
+# Prints the local_ports from 1024 on as a JSON array, except the reserved ports and the ephemeral range outgoing
+# connections take their local ports from.
+listening_ports() {
+  local low high
+  read -r low high </proc/sys/net/ipv4/ip_local_port_range
+  local_ports | awk -v low="$low" -v high="$high" -v reserved=" $RESERVED_PORTS " '
+    $1 < 1024 || ($1 >= low && $1 <= high) || index(reserved, " " $1 " ") { next }
+    { print }' | jq -cs .
 }
 
 cmd_preview_status() {
@@ -1625,11 +1630,10 @@ stop_undeclared_services() {
 # Prints the services of meta.json $1 as a JSON array of {name, port, tls, guarded, enabled, state, responds}, with
 # their url after guarded when $2, the session's short id, is given. state is running, starting (also while systemd
 # waits to restart the service), failed or stopped, from one `systemctl show` for all services. responds tells whether
-# the port answers on localhost, which, as for the preview proxy, reaches servers bound to 127.0.0.1 as well as ::1; any
-# HTTP answer counts, also an error page. The probes run in parallel, each for at most 2 seconds.
+# the port is among the local_ports; no request is sent, so the service's log never shows these checks.
 service_report() {
-  local file=$1 short=${2-} services url states pid responses
-  local -a units=() probes=() pids=() answers=()
+  local file=$1 short=${2-} services states listening
+  local -a units=()
   services=$(jq -c --arg short "$short" '.preview.domain as $domain | [.preview.services[]? | {name, port, tls, guarded}
     + (if $short == "" then {} else {url: "https://\($short)-\(.port)\(if .guarded then "" else "-open" end).\($domain)"} end)]' "$file")
   if [[ $services == '[]' ]]; then
@@ -1637,31 +1641,19 @@ service_report() {
     return
   fi
   mapfile -t units < <(jq -r --arg prefix "$SERVICE_UNIT_PREFIX" '.[] | "\($prefix)\(.name).service"' <<<"$services")
-  mapfile -t probes < <(jq -r '.[] | "\(if .tls then "https" else "http" end)://localhost:\(.port)/"' <<<"$services")
-  for url in "${probes[@]}"; do
-    curl --silent --insecure --output /dev/null --max-time 2 "$url" >/dev/null 2>&1 &
-    pids+=("$!")
-  done
   states=$(systemctl show --property Id,ActiveState,SubState,UnitFileState "${units[@]}" | jq -Rsc '
     split("\n\n") | map(split("\n") | map(capture("^(?<key>[A-Za-z]+)=(?<value>.*)$")) | from_entries | select(.Id)
       | {key: .Id, value: .}) | from_entries')
-  for pid in "${pids[@]}"; do
-    if wait "$pid"; then
-      answers+=(true)
-    else
-      answers+=(false)
-    fi
-  done
-  responses=$(printf '%s\n' "${answers[@]}" | jq -cs .)
-  jq -c --argjson states "$states" --argjson responses "$responses" --arg prefix "$SERVICE_UNIT_PREFIX" '
-    to_entries | map(.key as $index | .value | ($states["\($prefix)\(.name).service"] // {}) as $unit | . + {
+  listening=$(local_ports | jq -cs .)
+  jq -c --argjson states "$states" --argjson listening "$listening" --arg prefix "$SERVICE_UNIT_PREFIX" '
+    map(($states["\($prefix)\(.name).service"] // {}) as $unit | . + {
       enabled: ($unit.UnitFileState == "enabled"),
       state: (
         if $unit.ActiveState == "active" or $unit.ActiveState == "reloading" then "running"
         elif $unit.ActiveState == "activating" then "starting"
         elif $unit.ActiveState == "failed" then "failed"
         else "stopped" end),
-      responds: $responses[$index]})' <<<"$services"
+      responds: (.port | IN($listening[]))})' <<<"$services"
 }
 
 # Starts, stops, restarts or reports the services named of the VM's only session; see the usage. Prints the state of

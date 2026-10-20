@@ -1,3 +1,9 @@
+## 0.60.1 (2026-10-20)
+
+### 🩹 Fixes
+
+- **session:** checking whether a service answers no longer sends it requests, so its log no longer fills with 404 errors every few seconds ([1a12509](https://github.com/unshoppable/hunt/commit/1a12509))
+
 ## 0.60.0 (2026-10-20)
 
 ### 🚀 Features

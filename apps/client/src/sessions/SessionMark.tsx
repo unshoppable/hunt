@@ -123,11 +123,14 @@ function QuestionBadge({ cx, cy }: { cx: number; cy: number }) {
   );
 }
 
-/** The question badge of a session mark as a standalone icon, for text that says the agent waits for an answer. */
-export function QuestionIcon() {
-  const size = 2 * BADGE_RADIUS;
+/**
+ * The question badge of a session mark as a standalone icon, for text that says the agent waits for an answer; `size`
+ * scales it to that many pixels.
+ */
+export function QuestionIcon({ size }: { size: number }) {
+  const diameter = 2 * BADGE_RADIUS;
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0" aria-hidden="true">
+    <svg width={size} height={size} viewBox={`0 0 ${diameter} ${diameter}`} className="shrink-0" aria-hidden="true">
       <QuestionBadge cx={BADGE_RADIUS} cy={BADGE_RADIUS} />
     </svg>
   );

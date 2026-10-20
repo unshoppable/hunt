@@ -228,7 +228,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           ) : null}
           {hasQuestion ? (
             <div className="mt-4 flex items-center gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-amber-200 break-words">
-              <QuestionIcon />
+              <QuestionIcon size={16} />
               The agent waits for your answer.
             </div>
           ) : null}

@@ -9,9 +9,9 @@ const BASELINE = HEIGHT / 2 + 3.85;
 /** Share of the outline the spinner arc covers. */
 const SPINNER_ARC = 0.3;
 /** Radius of the question badge at the top right corner. */
-const BADGE_RADIUS = 4.5;
+const BADGE_RADIUS = 5.5;
 /** Radius of the unseen-response dot at the top right corner. */
-const DOT_RADIUS = 3;
+const DOT_RADIUS = 4;
 
 /** The colour of a mark: blue for a session that runs on a VM, grey for one that runs here. */
 export type MarkTone = "remote" | "idle";
@@ -98,7 +98,7 @@ export function MarkGlyph({
       {badge === "question" ? (
         <g aria-hidden="true">
           <circle cx={width - 1.5} cy={1.5} r={BADGE_RADIUS} className="fill-amber-400" />
-          <text x={width - 1.5} y={1.5 + 2.6} textAnchor="middle" className="fill-neutral-950 text-[7.5px] font-bold">
+          <text x={width - 1.5} y={1.5 + 3} textAnchor="middle" className="fill-neutral-950 text-[8.5px] font-bold">
             ?
           </text>
         </g>

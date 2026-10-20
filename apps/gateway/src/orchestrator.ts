@@ -372,7 +372,12 @@ export class Orchestrator {
     let wasRunning: boolean | null = null;
     let isStarting = false;
     let isStopping = false;
-    let isReported = false;
+    let reported: ProgressStep | null = null;
+    const report = (step: ProgressStep) => {
+      if (reported === step) return;
+      reporter.progress(step);
+      reported = step;
+    };
     for (;;) {
       const instance = await this.deps.compute.get(zone, name);
       if (!instance) throw new ApiError("notFound", `${name} does not exist`);
@@ -383,10 +388,7 @@ export class Orchestrator {
       }
       if (OFF_STATUSES.has(instance.status) && !isStarting && !isStopping) {
         const verb = instance.status === "SUSPENDED" ? "resume" : "start";
-        if (!isReported) {
-          reporter.progress("startingVm");
-          isReported = true;
-        }
+        report(verb === "resume" ? "resumingVm" : "startingVm");
         const operation = await this.deps.compute[verb](zone, name);
         reporter.log(`${verb === "start" ? "starting" : "resuming"} ${name}`);
         isStarting = true;
@@ -410,10 +412,9 @@ export class Orchestrator {
           throw new ApiError("unavailable", `failed to ${verb} ${name}: ${reason}${stays}`);
         }
       } else if (SHUTDOWN_STATUSES.has(instance.status) || isStopping) {
-        if (!isReported) {
-          reporter.progress("startingVm");
+        if (!reported) {
+          report("startingVm");
           reporter.log(`waiting for ${name} to finish shutting down`);
-          isReported = true;
         }
         isStarting = false;
       }

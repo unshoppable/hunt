@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { installScript, parseReadyAnswer, READY_COMMAND, readStagedRelease, shellCommand, shellQuote, sshArgs } from "./sessionVm.ts";
+import { installScript, parseDryRun, parseReadyAnswer, READY_COMMAND, readStagedRelease, shellCommand, shellQuote, sshArgs } from "./sessionVm.ts";
 
 describe("shell quoting", () => {
   it("quotes like shell_quote of the desktop", () => {
@@ -37,6 +37,34 @@ describe("sshArgs", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+});
+
+describe("parseDryRun", () => {
+  it("takes the ssh command line gcloud prints without its remote command", () => {
+    const output =
+      "/usr/bin/ssh -T -i /var/lib/hunt-api/.ssh/google_compute_engine -o HostKeyAlias=compute.3783771989286237897 -o StrictHostKeyChecking=no " +
+      "-oControlPath=/var/lib/hunt-api/.ssh/hunt-%C sa_110904933408497884651@10.30.16.59 -- true\n";
+    expect(parseDryRun(output)).toEqual([
+      "/usr/bin/ssh",
+      "-T",
+      "-i",
+      "/var/lib/hunt-api/.ssh/google_compute_engine",
+      "-o",
+      "HostKeyAlias=compute.3783771989286237897",
+      "-o",
+      "StrictHostKeyChecking=no",
+      "-oControlPath=/var/lib/hunt-api/.ssh/hunt-%C",
+      "sa_110904933408497884651@10.30.16.59",
+      "--",
+    ]);
+  });
+
+  it("rejects output that is no ssh command for true or would need quoting", () => {
+    expect(parseDryRun("")).toBeNull();
+    expect(parseDryRun("/usr/bin/ssh -T sa@10.0.0.1 -- uptime")).toBeNull();
+    expect(parseDryRun("/usr/bin/scp -T sa@10.0.0.1 -- true")).toBeNull();
+    expect(parseDryRun("/usr/bin/ssh -i '/home/a b/key' sa@10.0.0.1 -- true")).toBeNull();
   });
 });
 

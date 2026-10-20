@@ -4,7 +4,8 @@ import type { FileSync, SessionChat } from "../state/store";
 
 /** What the chat shows while a step of a handoff, a retrieval or a connect to the VM runs. */
 export const REMOTE_STEP_LABELS: Record<RemoteStep, string> = {
-  startingVm: "Starting the VM…",
+  startingVm: "Starting the stopped VM…",
+  resumingVm: "Waking the suspended VM…",
   movingVm: "Moving the VM to a zone with capacity…",
   creatingVm: "Creating the session's VM…",
   waitingForVm: "Waiting for the VM to finish its setup, the first boot takes a few minutes…",
@@ -27,15 +28,15 @@ export type RemoteOperation = "handOff" | "retrieve" | "connect";
 const REMOTE_PLANS: Record<RemoteOperation, RemoteStep[][]> = {
   handOff: [
     ["connecting"],
-    ["creatingVm", "startingVm", "movingVm"],
+    ["creatingVm", "startingVm", "resumingVm", "movingVm"],
     ["waitingForVm"],
     ["installingRuntime"],
     ["transferringCode"],
     ["installingDependencies"],
     ["startingAgent"],
   ],
-  retrieve: [["connecting"], ["startingVm", "movingVm"], ["waitingForVm"], ["installingRuntime"], ["stoppingAgent"], ["retrievingCode"]],
-  connect: [["connecting"], ["startingVm", "movingVm"], ["waitingForVm"], ["installingRuntime"], ["startingAgent"]],
+  retrieve: [["connecting"], ["startingVm", "resumingVm", "movingVm"], ["waitingForVm"], ["installingRuntime"], ["stoppingAgent"], ["retrievingCode"]],
+  connect: [["connecting"], ["startingVm", "resumingVm", "movingVm"], ["waitingForVm"], ["installingRuntime"], ["startingAgent"]],
 };
 
 /** The operation the remote steps of `chat` belong to. */

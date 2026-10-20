@@ -256,7 +256,10 @@ pub fn relay_activity(status: &serde_json::Value, now: chrono::DateTime<chrono::
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum RemoteStep {
+    /// The gateway boots the stopped VM.
     StartingVm,
+    /// The gateway wakes the suspended VM.
+    ResumingVm,
     /// The gateway recreates the stopped VM in another zone, since its own has no capacity for its start.
     MovingVm,
     CreatingVm,
@@ -581,11 +584,11 @@ mod tests {
 
     #[test]
     fn remote_step_reads_the_gateways_steps_and_takes_unknown_ones_as_unknown() {
-        let gateway_steps = r#"["creatingVm","startingVm","movingVm","waitingForVm","vmReady","installingRuntime","resizingDisk"]"#;
+        let gateway_steps = r#"["creatingVm","startingVm","resumingVm","movingVm","waitingForVm","vmReady","installingRuntime","resizingDisk"]"#;
         let steps: Vec<RemoteStep> = serde_json::from_str(gateway_steps).unwrap();
-        let known = [RemoteStep::CreatingVm, RemoteStep::StartingVm, RemoteStep::MovingVm, RemoteStep::WaitingForVm];
-        assert_eq!(steps[..4], known);
-        assert_eq!(steps[4..], [RemoteStep::VmReady, RemoteStep::InstallingRuntime, RemoteStep::Unknown]);
+        let known = [RemoteStep::CreatingVm, RemoteStep::StartingVm, RemoteStep::ResumingVm, RemoteStep::MovingVm, RemoteStep::WaitingForVm];
+        assert_eq!(steps[..5], known);
+        assert_eq!(steps[5..], [RemoteStep::VmReady, RemoteStep::InstallingRuntime, RemoteStep::Unknown]);
     }
 
     /// Records the steps and log lines it hears, in order.

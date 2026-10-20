@@ -8,12 +8,12 @@
 import type { RemoteSecretSummary } from "./remoteSecrets.ts";
 
 /**
- * The progress steps the server reports; the desktop's `RemoteStep` serde names, unknown ones are ignored. `movingVm`
- * follows `startingVm` when the VM's zone has no capacity for it and the gateway moves it to another zone. `vmReady`
- * comes once the VM answers over SSH and its startup script finished, before the release check and the secrets, so a
- * desktop can connect to the VM while those run.
+ * The progress steps the server reports; the desktop's `RemoteStep` serde names, unknown ones are ignored. `resumingVm`
+ * wakes a suspended VM, `startingVm` boots a stopped one; `movingVm` follows `startingVm` when the VM's zone has no
+ * capacity for it and the gateway moves it to another zone. `vmReady` comes once the VM answers over SSH and its
+ * startup script finished, before the release check and the secrets, so a desktop can connect to the VM while those run.
  */
-export type ProgressStep = "creatingVm" | "startingVm" | "movingVm" | "waitingForVm" | "vmReady" | "installingRuntime";
+export type ProgressStep = "creatingVm" | "startingVm" | "resumingVm" | "movingVm" | "waitingForVm" | "vmReady" | "installingRuntime";
 
 export type ErrorCode = "invalidParams" | "notFound" | "conflict" | "forbidden" | "unavailable" | "internal";
 

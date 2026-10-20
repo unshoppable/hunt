@@ -169,6 +169,11 @@ describe("remotePosition", () => {
     expect(remotePosition("handOff", ["connecting", "startingVm", "movingVm", "waitingForVm"])).toEqual({ position: 3, total: 7 });
   });
 
+  it("counts a resume that stops and moves the VM as one step", () => {
+    expect(remotePosition("connect", ["connecting", "resumingVm"])).toEqual({ position: 2, total: 5 });
+    expect(remotePosition("connect", ["connecting", "resumingVm", "startingVm", "movingVm", "waitingForVm"])).toEqual({ position: 3, total: 5 });
+  });
+
   it("ignores steps outside the operation's plan", () => {
     expect(remotePosition("connect", ["retrievingCode"])).toBeNull();
   });

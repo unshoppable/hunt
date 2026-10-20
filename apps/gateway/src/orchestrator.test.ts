@@ -548,7 +548,7 @@ describe("Orchestrator.start", () => {
     expect(result.wasRunning).toBe(false);
     expect(elapsed()).toBe(INSTANCE_POLL_MS);
     expect(fake.calls).toEqual([`resume ${VM}`]);
-    expect(steps).toEqual(["startingVm", "vmReady"]);
+    expect(steps).toEqual(["resumingVm", "vmReady"]);
     expect(logs[0]).toBe(`resuming ${VM}`);
   });
 
@@ -796,7 +796,7 @@ describe("Orchestrator.start moving the VM", () => {
     expect(result.vm.zone).toBe(ZONE_B);
     expect(fake.calls.slice(0, 4)).toEqual([`resume ${VM}`, `stop ${VM}`, `start ${VM}`, `deleteSnapshot ${SNAPSHOT}`]);
     expect(fake.calls.slice(-3)).toEqual([`insert ${VM} in ${ZONE_B}`, `delete ${MOVING}`, `deleteSnapshot ${SNAPSHOT}`]);
-    expect(steps).toEqual(["startingVm", "movingVm", "vmReady"]);
+    expect(steps).toEqual(["resumingVm", "startingVm", "movingVm", "vmReady"]);
     expect(logs.slice(0, 4)).toEqual([
       `resuming ${VM}`,
       `c4d-standard-8 is unavailable in ${ZONE}; stopping ${VM} to move it`,

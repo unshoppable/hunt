@@ -1,8 +1,9 @@
 /**
  * The gateway's access to a session VM: `gcloud compute ssh <vm> --internal-ip` with the gateway's service account,
- * which logs in through OS Login as an admin and runs `hunt-ctl` with sudo. Connections to one VM share one SSH
- * connection (ControlMaster), so a setup's many commands pay for one handshake. The gateway hands the session VMs the
- * session release CI staged on it (`hunt-ctl stage-session`, `/srv/hunt/session-current`).
+ * which logs in through OS Login as an admin and runs `hunt-ctl` with sudo, and then the ssh command gcloud runs for it
+ * (`sshCommands`). Connections to one VM share one SSH connection (ControlMaster), so a setup's many commands pay for
+ * one handshake. The gateway hands the session VMs the session release CI staged on it (`hunt-ctl stage-session`,
+ * `/srv/hunt/session-current`).
  */
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -32,6 +33,18 @@ const RELAY_COMMAND = "sudo -n -u agent socat - UNIX-CONNECT:/run/hunt/relay.soc
 const IDLE_CHECK_COMMAND = "sudo -n /srv/hunt/current/vm/hunt-idle-check --dry-run";
 const IDLE_CHECK_TIMEOUT_MS = 60_000;
 const STDERR_TAIL_LINES = 15;
+/** ssh's exit status when it could not connect or lost the connection. */
+const SSH_FAILED = 255;
+const DRY_RUN_COMMAND = "true";
+
+/**
+ * The ssh command line gcloud runs for a VM, by `project/zone/vm`, learned with `--dry-run` after gcloud reached the
+ * VM. Later commands run through plain ssh and skip gcloud's start and API lookups (1.5–2.5 s each); a failed
+ * connection drops the entry and that command goes through gcloud again.
+ */
+const sshCommands = new Map<string, string[]>();
+/** The keys of `sshCommands` whose `--dry-run` runs. */
+const learningSshCommands = new Set<string>();
 
 /** Where a VM lives: its project and its own zone. */
 export interface VmLocation {
@@ -83,6 +96,18 @@ export function installScript(hash: string, incoming = `/srv/hunt/incoming/${ran
     `set -e; mkdir -p -m 0700 ${incoming}; trap 'rm -rf ${incoming}' EXIT; tar -xzf - -C ${incoming}; printf %s ${hash} > ${incoming}/.hash; ` +
     `find ${incoming}/vm -maxdepth 1 -type f -name 'hunt-*' -exec chmod +x {} +; ${install}`
   );
+}
+
+/**
+ * The ssh command line, without the remote command, in the output of `gcloud compute ssh --dry-run` for
+ * `DRY_RUN_COMMAND`; null when the output is not one that splits safely at spaces.
+ */
+export function parseDryRun(output: string): string[] | null {
+  const words = output.trim().split(/\s+/);
+  if (words.length < 4 || !/(^|\/)ssh$/.test(words[0])) return null;
+  if (words.at(-2) !== "--" || words.at(-1) !== DRY_RUN_COMMAND) return null;
+  if (words.some((word) => /['"\\$`]/.test(word))) return null;
+  return words.slice(0, -1);
 }
 
 /** What `READY_COMMAND` reported of a ready VM. */
@@ -153,9 +178,19 @@ function tail(text: string): string {
   return text.trim().split("\n").slice(-STDERR_TAIL_LINES).join("\n");
 }
 
+/** A failed command; `exitStatus` is null when it did not exit on its own. */
+class CommandError extends Error {
+  readonly exitStatus: number | null;
+
+  constructor(message: string, exitStatus: number | null) {
+    super(message);
+    this.exitStatus = exitStatus;
+  }
+}
+
 /**
- * Runs `program` with `args`, `input` on stdin; resolves with stdout, rejects with the end of stderr. `log` hears the
- * outcome and the duration.
+ * Runs `program` with `args`, `input` on stdin; resolves with stdout, rejects with a `CommandError` that carries the
+ * end of stderr. `log` hears the outcome and the duration.
  */
 function run(program: string, args: string[], input: Buffer | string, timeoutMs: number, what: string, log: Log): Promise<Buffer> {
   const startedAt = Date.now();
@@ -164,12 +199,12 @@ function run(program: string, args: string[], input: Buffer | string, timeoutMs:
     const stdout: Buffer[] = [];
     let stderr = "";
     let isSettled = false;
-    const fail = (reason: string) => {
+    const fail = (reason: string, exitStatus: number | null = null) => {
       clearTimeout(timer);
       if (isSettled) return;
       isSettled = true;
       log(`${what}: failed after ${Date.now() - startedAt} ms: ${reason}`, "error");
-      reject(new Error(`failed to ${what}: ${reason}`));
+      reject(new CommandError(`failed to ${what}: ${reason}`, exitStatus));
     };
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
@@ -181,7 +216,7 @@ function run(program: string, args: string[], input: Buffer | string, timeoutMs:
     });
     child.on("error", (error) => fail(error.message));
     child.on("close", (code) => {
-      if (code !== 0) return fail(`exit status ${code}${stderr.trim() ? `\n${tail(stderr)}` : ""}`);
+      if (code !== 0) return fail(`exit status ${code}${stderr.trim() ? `\n${tail(stderr)}` : ""}`, code);
       clearTimeout(timer);
       if (isSettled) return;
       isSettled = true;
@@ -227,15 +262,46 @@ const READY_FAILURE_REPORT_MS = 60_000;
 
 /** The session VM `vm` at `location`; `log` hears every command run there, with its outcome and duration. */
 export function sessionVm(vm: string, location: VmLocation, log: Log = () => {}): SessionVm {
-  const gcloud = (command: string, input: Buffer | string, timeoutMs: number, what: string) =>
-    run("gcloud", sshArgs(vm, location, command), input, timeoutMs, what, log);
+  const key = `${location.project}/${location.zone}/${vm}`;
+  const learnSshCommand = () => {
+    if (learningSshCommands.has(key) || sshCommands.has(key)) return;
+    learningSshCommands.add(key);
+    const args = [...sshArgs(vm, location, DRY_RUN_COMMAND), "--dry-run"];
+    void run("gcloud", args, "", 60_000, `look up the ssh command of ${vm}`, log)
+      .then((output) => {
+        const command = parseDryRun(output.toString("utf8"));
+        if (command) {
+          sshCommands.set(key, command);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        learningSshCommands.delete(key);
+      });
+  };
+  const onVm = async (command: string, input: Buffer | string, timeoutMs: number, what: string) => {
+    const ssh = sshCommands.get(key);
+    if (ssh) {
+      try {
+        return await run(ssh[0], [...ssh.slice(1), command], input, timeoutMs, what, log);
+      } catch (error) {
+        if (!(error instanceof CommandError) || error.exitStatus !== SSH_FAILED) throw error;
+        if (sshCommands.get(key) === ssh) {
+          sshCommands.delete(key);
+        }
+      }
+    }
+    const output = await run("gcloud", sshArgs(vm, location, command), input, timeoutMs, what, log);
+    learnSshCommand();
+    return output;
+  };
 
   const self: SessionVm = {
     async run(command, input = "", timeoutMs = 10 * 60_000) {
-      return (await gcloud(command, input, timeoutMs, `run a command on ${vm}`)).toString("utf8");
+      return (await onVm(command, input, timeoutMs, `run a command on ${vm}`)).toString("utf8");
     },
     async huntCtl(args, input = "", timeoutMs = HOUR_MS) {
-      const output = (await gcloud(shellCommand("sudo", ["-n", "hunt-ctl", ...args]), input, timeoutMs, `run hunt-ctl ${args[0]} on ${vm}`)).toString("utf8").trim();
+      const output = (await onVm(shellCommand("sudo", ["-n", "hunt-ctl", ...args]), input, timeoutMs, `run hunt-ctl ${args[0]} on ${vm}`)).toString("utf8").trim();
       if (!output) return {};
       try {
         return JSON.parse(output) as Record<string, unknown>;
@@ -251,7 +317,7 @@ export function sessionVm(vm: string, location: VmLocation, log: Log = () => {})
       let reportedAt = -Infinity;
       while (Date.now() < deadline) {
         try {
-          const answer = parseReadyAnswer((await gcloud(READY_COMMAND, input, 2 * 60_000, `check the ready stamp of ${vm}`)).toString("utf8"));
+          const answer = parseReadyAnswer((await onVm(READY_COMMAND, input, 2 * 60_000, `check the ready stamp of ${vm}`)).toString("utf8"));
           if (answer !== null) return answer;
         } catch (error) {
           reason = (error as Error).message;
@@ -275,7 +341,7 @@ export function sessionVm(vm: string, location: VmLocation, log: Log = () => {})
       onInstall?.();
       const archive = await run("tar", ["-czf", "-", "-C", staged.dir, "."], "", 5 * 60_000, "pack the session release", log);
       const what = `install the session release ${staged.info.version ?? staged.hash} on ${vm}`;
-      const output = (await gcloud(shellCommand("sudo", ["-n", "sh", "-c", installScript(staged.hash)]), archive, HOUR_MS, what)).toString("utf8").trim();
+      const output = (await onVm(shellCommand("sudo", ["-n", "sh", "-c", installScript(staged.hash)]), archive, HOUR_MS, what)).toString("utf8").trim();
       let result: { hash?: unknown } | null = null;
       try {
         result = JSON.parse(output) as { hash?: unknown };
@@ -298,13 +364,18 @@ export function sessionVm(vm: string, location: VmLocation, log: Log = () => {})
       }
     },
     async idleDecision() {
-      return (await gcloud(IDLE_CHECK_COMMAND, "", IDLE_CHECK_TIMEOUT_MS, `run the idle check of ${vm}`)).toString("utf8").trim();
+      return (await onVm(IDLE_CHECK_COMMAND, "", IDLE_CHECK_TIMEOUT_MS, `run the idle check of ${vm}`)).toString("utf8").trim();
     },
     openRelay() {
       const startedAt = Date.now();
-      const child = spawn("gcloud", sshArgs(vm, location, RELAY_COMMAND), { stdio: ["pipe", "pipe", "pipe"] });
+      const ssh = sshCommands.get(key);
+      const [program, args] = ssh ? [ssh[0], [...ssh.slice(1), RELAY_COMMAND]] : ["gcloud", sshArgs(vm, location, RELAY_COMMAND)];
+      const child = spawn(program, args, { stdio: ["pipe", "pipe", "pipe"] });
       child.on("error", (error) => log(`connect to the relay of ${vm}: failed: ${error.message}`, "error"));
       child.on("close", (code) => {
+        if (code === SSH_FAILED && ssh && sshCommands.get(key) === ssh) {
+          sshCommands.delete(key);
+        }
         const outcome = code ? `ended with exit status ${code}${stderr.trim() ? `\n${tail(stderr)}` : ""}` : "ended";
         log(`connection to the relay of ${vm}: ${outcome} after ${Date.now() - startedAt} ms`, code ? "warn" : "info");
       });

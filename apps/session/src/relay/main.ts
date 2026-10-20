@@ -25,6 +25,12 @@ import { Relay, type ClientConnection } from "./relay.ts";
 import { HEARTBEAT_INTERVAL_MS, writeStatusFile } from "./status.ts";
 
 const STOP_TIMEOUT_MS = 10_000;
+/**
+ * How often the heartbeat compares the wall clock with the last write. Timers stand still while the VM is suspended and
+ * the wall clock does not, so a resumed relay rewrites its stale heartbeat within this time instead of after the rest
+ * of `HEARTBEAT_INTERVAL_MS`, which `hunt-ctl wait` would wait for.
+ */
+const HEARTBEAT_CHECK_MS = 1_000;
 const SOCKET_MODE = 0o660;
 
 /** Writes to stderr, which systemd hands to the journal under the unit's SyslogIdentifier; `level` becomes its priority. */
@@ -104,7 +110,9 @@ function main(): void {
     log,
   });
 
+  let statusWrittenAt = 0;
   function writeStatus(): void {
+    statusWrittenAt = Date.now();
     try {
       writeStatusFile(statusPath, relay.status());
     } catch (error) {
@@ -152,7 +160,11 @@ function main(): void {
     log(`listening on ${socketPath}`);
   });
 
-  const heartbeat = setInterval(writeStatus, HEARTBEAT_INTERVAL_MS);
+  const heartbeat = setInterval(() => {
+    if (Date.now() - statusWrittenAt >= HEARTBEAT_INTERVAL_MS) {
+      writeStatus();
+    }
+  }, HEARTBEAT_CHECK_MS);
   void relay.start();
 
   function stop(): void {

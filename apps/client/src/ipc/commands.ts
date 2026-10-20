@@ -148,7 +148,8 @@ export const commands = {
   /** Prepares the worktree's `node_modules` again after a failed attempt; progress arrives through `sessions:changed`. */
   prepareDependencies: (id: string) => invoke<void>("prepare_dependencies", { id }),
   /** Sends the text plus the image files at `images` (absolute paths) as one user turn. */
-  sendPrompt: (id: string, text: string, images: string[]) => invoke<string>("send_prompt", { id, text, images }),
+  /** Sends one user turn; `messageId` is the id of the chat item showing it, which `acp:message-times` names its time by. */
+  sendPrompt: (id: string, text: string, images: string[], messageId: string) => invoke<string>("send_prompt", { id, text, images, messageId }),
   sessionHistory: (id: string) => invoke<SessionNotification[]>("session_history", { id }),
   cancelPrompt: (id: string) => invoke<void>("cancel_prompt", { id }),
   setSessionMode: (id: string, modeId: string) => invoke<void>("set_session_mode", { id, modeId }),

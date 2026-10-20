@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use agent_client_protocol::schema::v1::{
     CancelNotification, ConfigOptionUpdate, ContentBlock, ContentChunk, EmbeddedResource, EmbeddedResourceResource, ImageContent, Meta,
-    PromptRequest, SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigSelectOption, SessionConfigSelectOptions,
+    MessageId, PromptRequest, SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigSelectOption, SessionConfigSelectOptions,
     SessionId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest, TextContent,
     TextResourceContents,
 };
@@ -1819,6 +1819,7 @@ async fn stop_agent(app: &AppHandle, registry: &SessionRegistry, watchers: &Watc
 /// agent finished. A sub chat about writing a file (a selection with a task) gets the file's current content
 /// ahead of the text, so the agent always sees the version on disk; a remote session's local edits reach its VM
 /// first. The finished turn is handed to the background summarizer, which refreshes the session's summary and title.
+/// `message_id` is the id the chat shows the prompt under (see `run_turn`).
 #[tauri::command]
 pub async fn send_prompt(
     app: AppHandle,
@@ -1826,6 +1827,7 @@ pub async fn send_prompt(
     id: Uuid,
     text: String,
     images: Vec<String>,
+    message_id: String,
 ) -> Result<String, String> {
     let mut blocks = prompt_blocks(&text, &images)?;
     if blocks.is_empty() {
@@ -1846,7 +1848,7 @@ pub async fn send_prompt(
     }
     // The agent on a VM sees the files saved here before it reads the prompt.
     sync::flush(&app, id).await;
-    run_turn(&app, &registry, id, blocks, None).await
+    run_turn(&app, &registry, id, blocks, None, Some(message_id)).await
 }
 
 /// The current text of the file at `target` as an embedded resource block, which the agent receives as a context
@@ -1897,7 +1899,7 @@ pub async fn refresh_graph(
         for (config_id, value) in graph_config {
             set_config_option(&connection, &acp_session_id, config_id, value).await?;
         }
-        run_turn(&app, &registry, id, blocks, Some(graph::hidden_turn_meta())).await
+        run_turn(&app, &registry, id, blocks, Some(graph::hidden_turn_meta()), None).await
     }
     .await;
     let restored = async {
@@ -1959,14 +1961,16 @@ fn latest_config_options(history: &[SessionNotification]) -> Option<&[SessionCon
 }
 
 /// Records `blocks` as a user turn, sends them and resolves with the stop reason once the agent finished.
-/// `hidden_meta` marks the recorded chunks as a hidden turn; a visible turn is summarized afterwards. The chunks carry
-/// the time the turn was sent (`acp::message_time`).
+/// `hidden_meta` marks the recorded chunks as a hidden turn; a visible turn is summarized afterwards. `message_id` is
+/// the id the UI shows the prompt under, which the time of the prompt is announced for once the turn ended
+/// (`acp::message_time::resolve`).
 async fn run_turn(
     app: &AppHandle,
     registry: &SessionRegistry,
     id: Uuid,
     blocks: Vec<ContentBlock>,
     hidden_meta: Option<Meta>,
+    message_id: Option<String>,
 ) -> Result<String, String> {
     let LiveHandles { connection, acp_session_id, history } = live_session(registry, id).await?;
     note_remote_activity(app, id, chrono::Utc::now());
@@ -1975,17 +1979,18 @@ async fn run_turn(
     let turn_start = {
         let mut history = history.lock().unwrap();
         let turn_start = history.len();
-        let at = message_time::now();
         for block in &blocks {
-            let chunk = ContentChunk::new(block.clone()).meta(Some(message_time::with_time(hidden_meta.clone(), &at)));
+            let mut chunk = ContentChunk::new(block.clone()).meta(hidden_meta.clone());
+            chunk.message_id = message_id.clone().map(MessageId::new);
             history.push(SessionNotification::new(acp_session_id.clone(), SessionUpdate::UserMessageChunk(chunk)));
         }
         turn_start
     };
 
     related::set_turn(app, id, true);
-    let response = connection.send_request(PromptRequest::new(acp_session_id, blocks)).block_task().await;
+    let response = connection.send_request(PromptRequest::new(acp_session_id.clone(), blocks)).block_task().await;
     related::set_turn(app, id, false);
+    message_time::resolve(app.clone(), id, acp_session_id.to_string(), history.clone(), turn_start);
     let response = response.map_err(|error| format!("failed to send the prompt: {error}"))?;
 
     note_remote_activity(app, id, chrono::Utc::now());

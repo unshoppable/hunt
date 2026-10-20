@@ -8,6 +8,7 @@ import type {
   GraphChangedEvent,
   LspDiagnosticsEvent,
   LspExitedEvent,
+  MessageTimesEvent,
   PermissionEvent,
   PermissionWithdrawnEvent,
   RemoteLinkEvent,
@@ -24,6 +25,7 @@ type EventPayloads = {
   "acp:permission": PermissionEvent;
   "acp:permission-withdrawn": PermissionWithdrawnEvent;
   "acp:closed": ClosedEvent;
+  "acp:message-times": MessageTimesEvent;
   /** A handoff, retrieval or connect of a remote session moved on to another step, or ended. */
   "remote:progress": RemoteProgressEvent;
   /** A sync of a remote session's files with its VM started or ended. */

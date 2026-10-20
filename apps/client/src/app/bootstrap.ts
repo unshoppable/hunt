@@ -101,6 +101,7 @@ export function useBackendEvents(): void {
   const applyPermission = useHuntStore((state) => state.applyPermission);
   const applyPermissionWithdrawn = useHuntStore((state) => state.applyPermissionWithdrawn);
   const applyClosed = useHuntStore((state) => state.applyClosed);
+  const applyMessageTimes = useHuntStore((state) => state.applyMessageTimes);
   const applyGraphChanged = useHuntStore((state) => state.applyGraphChanged);
   const applySummary = useHuntStore((state) => state.applySummary);
   const applyRemoteProgress = useHuntStore((state) => state.applyRemoteProgress);
@@ -113,6 +114,7 @@ export function useBackendEvents(): void {
       listenTo("acp:permission", applyPermission),
       listenTo("acp:permission-withdrawn", applyPermissionWithdrawn),
       listenTo("acp:closed", applyClosed),
+      listenTo("acp:message-times", applyMessageTimes),
       listenTo("remote:progress", applyRemoteProgress),
       listenTo("remote:sync", applyRemoteSync),
       listenTo("remote:link", applyRemoteLink),
@@ -132,6 +134,7 @@ export function useBackendEvents(): void {
     applyPermission,
     applyPermissionWithdrawn,
     applyClosed,
+    applyMessageTimes,
     applyRemoteProgress,
     applyRemoteSync,
     applyRemoteLink,

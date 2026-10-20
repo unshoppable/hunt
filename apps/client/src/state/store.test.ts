@@ -104,6 +104,17 @@ describe("acp update reducer", () => {
     expect(items[0]).toMatchObject({ kind: "agent", text: "Listing the src directory now." });
   });
 
+  it("takes a message's transcript time from its chunk or, for a live message, from the times its turn's end announces", () => {
+    const { applyUpdate, applyMessageTimes } = useHuntStore.getState();
+    const replayed = { messageId: "u1", _meta: { hunt: { at: "2026-10-20T06:22:44.000Z" } } };
+    applyUpdate(SESSION, notification({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "Fix it" }, ...replayed }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Fixed." }, messageId: "msg_1" }));
+    expect(useHuntStore.getState().chats[SESSION].items).toMatchObject([{ at: "2026-10-20T06:22:44.000Z" }, { messageId: "msg_1", at: undefined }]);
+
+    applyMessageTimes({ huntSessionId: SESSION, times: { msg_1: "2026-10-20T06:23:01.000Z", other: "2026-10-20T06:24:00.000Z" } });
+    expect(useHuntStore.getState().chats[SESSION].items).toMatchObject([{ at: "2026-10-20T06:22:44.000Z" }, { at: "2026-10-20T06:23:01.000Z" }]);
+  });
+
   it("collects the text and images of one user turn into one item, leaving an attached file resource out", () => {
     const { applyUpdate } = useHuntStore.getState();
     applyUpdate(SESSION, notification({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "Look at this" } }));
@@ -464,7 +475,7 @@ describe("prompt queue", () => {
     expect(chat.queue).toEqual([]);
     expect(chat.isBusy).toBe(true);
     expect(chat.items.filter((item) => item.kind === "user").map((item) => item.kind === "user" && item.text)).toEqual(["one", "two"]);
-    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "two", images: [] });
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "two", images: [], messageId: expect.any(String) });
 
     second.finish("EndTurn");
     await firstSend;
@@ -534,7 +545,7 @@ describe("prompt queue", () => {
 
     first.finish("EndTurn");
     await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledTimes(2));
-    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "two", images: [] });
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "two", images: [], messageId: expect.any(String) });
     expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ isBusy: true, queue: [], editVersion: 1 });
 
     second.finish("EndTurn");
@@ -557,21 +568,21 @@ describe("prompt queue", () => {
     const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
     await useHuntStore.getState().sendPrompt(SESSION, "two");
     await useHuntStore.getState().sendPromptNow(SESSION, "now");
-    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "now", images: [] }));
+    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "now", images: [], messageId: expect.any(String) }));
     expect(vi.mocked(invoke)).toHaveBeenCalledWith("cancel_prompt", { id: SESSION });
     expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(true);
     expect(useHuntStore.getState().chats[SESSION].queue.map((prompt) => prompt.text)).toEqual(["two"]);
 
     second.finish("EndTurn");
     await firstSend;
-    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "two", images: [] });
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "two", images: [], messageId: expect.any(String) });
   });
 
   it("sends a prompt at once like any other while no turn runs", async () => {
     vi.mocked(invoke).mockResolvedValue("EndTurn");
     await useHuntStore.getState().sendPromptNow(SESSION, "now");
     expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "now", images: [] });
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "now", images: [], messageId: expect.any(String) });
     expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ isBusy: false, queue: [] });
   });
 
@@ -599,7 +610,7 @@ describe("prompt queue", () => {
     finishStart({ ...stopped, isLive: true });
     await resume;
     expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ isLoading: false, queue: [] });
-    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("send_prompt", { id: SESSION, text: "while starting", images: [] }));
+    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("send_prompt", { id: SESSION, text: "while starting", images: [], messageId: expect.any(String) }));
     expect(useHuntStore.getState().chats[SESSION].items.map((item) => item.kind)).toEqual(["user"]);
   });
 
@@ -624,7 +635,7 @@ describe("prompt queue", () => {
 
     finishCreation(storedSession(id, "Build it"));
     await creation;
-    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("send_prompt", { id, text: "while creating", images: [] }));
+    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("send_prompt", { id, text: "while creating", images: [], messageId: expect.any(String) }));
     expect(useHuntStore.getState().chats[id].queue).toEqual([]);
   });
 
@@ -692,7 +703,7 @@ describe("createSession", () => {
     expect(pending.activeSessionId).toBe(pending.sessions[0].id);
     expect(pending.draft).toBeNull();
     expect(useAgentDefaultsStore.getState().recentRepoPaths).toEqual(["/repo"]);
-    expect(pending.chats[pending.sessions[0].id].items).toEqual([{ kind: "user", id: expect.any(String), text: "build it", images: [], at: expect.any(String) }]);
+    expect(pending.chats[pending.sessions[0].id].items).toEqual([{ kind: "user", id: expect.any(String), text: "build it", images: [], messageId: expect.any(String) }]);
     expect(vi.mocked(invoke).mock.calls).toEqual([["create_session", { id: pending.sessions[0].id, repoPath: "/repo", baseRef: "main", title: "Build it", pullRequest: null, diffBaseRef: null, pullRequestBranch: null, newBranch: null, workspace: "worktree" }]]);
 
     finish();
@@ -703,11 +714,12 @@ describe("createSession", () => {
     expect(id).toBe(pending.sessions[0].id);
     expect(done.sessions[0]).toEqual(storedSession(id, "Build it"));
     expect(done.creatingIds).toEqual([]);
+    const [shown] = done.chats[id].items;
     expect(vi.mocked(invoke).mock.calls.slice(1)).toEqual([
       ["set_session_config_option", { id, configId: "model", value: "fable" }],
       ["set_session_config_option", { id, configId: "effort", value: "high" }],
       ["set_session_mode", { id, modeId: "plan" }],
-      ["send_prompt", { id, text: "build it", images: [] }],
+      ["send_prompt", { id, text: "build it", images: [], messageId: shown.kind === "user" ? shown.messageId : "" }],
     ]);
     expect(done.chats[id].items).toHaveLength(1);
   });

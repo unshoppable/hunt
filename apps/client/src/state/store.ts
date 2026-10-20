@@ -7,6 +7,7 @@ import type {
   ClosedEvent,
   DiagramType,
   HuntChunkMeta,
+  MessageTimesEvent,
   PendingPermission,
   PermissionEvent,
   PermissionWithdrawnEvent,
@@ -329,6 +330,8 @@ type HuntState = {
   /** Drops the chat's permission request when it is the withdrawn one. */
   applyPermissionWithdrawn: (event: PermissionWithdrawnEvent) => void;
   applyClosed: (event: ClosedEvent) => void;
+  /** Gives the chat items of the event's messages their transcript times. */
+  applyMessageTimes: (event: MessageTimesEvent) => void;
   applyRemoteProgress: (event: RemoteProgressEvent) => void;
   /** Records the state of a remote session's file sync; a sync that changed local files reloads the views. */
   applyRemoteSync: (event: RemoteSyncEvent) => void;
@@ -455,18 +458,21 @@ function withBlock(message: MessageItem, block: ContentBlock): MessageItem {
   return url ? { ...message, images: [...message.images, url] } : { ...message, text: message.text + imagePlaceholder(block) };
 }
 
-/** Adds one block to the last item when it is a message of `kind`, or starts a new message of `kind` written `at` with it. */
-function appendMessageBlock(items: ChatItem[], kind: MessageItem["kind"], block: ContentBlock, at: string | undefined): ChatItem[] {
+/** The message a chunk belongs to and when it was written, as far as the backend knows them. */
+type ChunkOrigin = Pick<MessageItem, "messageId" | "at">;
+
+/** Adds one block to the last item when it is a message of `kind`, or starts a new message of `kind` from `origin` with it. */
+function appendMessageBlock(items: ChatItem[], kind: MessageItem["kind"], block: ContentBlock, origin: ChunkOrigin): ChatItem[] {
   const last = items[items.length - 1];
   if (last?.kind === kind) return [...items.slice(0, -1), withBlock(last, block)];
-  return [...items, withBlock({ kind, id: nextItemId(), text: "", images: [], at }, block)];
+  return [...items, withBlock({ kind, id: nextItemId(), text: "", images: [], ...origin }, block)];
 }
 
 /** Adds one block of a user turn to the last user item; an image block becomes a data URL the bubble can show. */
-function appendUserBlock(items: ChatItem[], block: ContentBlock, at: string | undefined): ChatItem[] {
+function appendUserBlock(items: ChatItem[], block: ContentBlock, origin: ChunkOrigin): ChatItem[] {
   // A resource block is the file content Hunt attaches to a prompt (see the backend's `send_prompt`), not something the user typed.
   if (block.type === "resource") return items;
-  return appendMessageBlock(items, "user", block, at);
+  return appendMessageBlock(items, "user", block, origin);
 }
 
 /** Updates that carry the agent's output for the running turn; the chat leaves them out of a turn Hunt sent itself. */
@@ -480,9 +486,9 @@ function isHiddenChunk(meta: unknown): boolean {
   return Boolean(hunt?.hidden);
 }
 
-/** When the message of a chunk was written, as the backend stamped it. */
-function chunkTime(meta: unknown): string | undefined {
-  return (meta as HuntChunkMeta | null | undefined)?.hunt?.at;
+/** The message of a chunk and the transcript time the backend stamped it with. */
+function chunkOrigin({ messageId, _meta }: { messageId?: string | null; _meta?: unknown }): ChunkOrigin {
+  return { messageId: messageId ?? undefined, at: (_meta as HuntChunkMeta | null | undefined)?.hunt?.at };
 }
 
 function toToolCallView(toolCall: ToolCall): ToolCallView {
@@ -563,9 +569,9 @@ function reduceChat(chat: SessionChat, notification: SessionNotification): Sessi
   switch (update.sessionUpdate) {
     case "user_message_chunk":
       if (isHiddenChunk(update._meta)) return { ...chat, isHiddenTurn: true };
-      return { ...chat, items: appendUserBlock(chat.items, update.content, chunkTime(update._meta)), isHiddenTurn: false };
+      return { ...chat, items: appendUserBlock(chat.items, update.content, chunkOrigin(update)), isHiddenTurn: false };
     case "agent_message_chunk":
-      return { ...chat, items: appendMessageBlock(chat.items, "agent", update.content, chunkTime(update._meta)) };
+      return { ...chat, items: appendMessageBlock(chat.items, "agent", update.content, chunkOrigin(update)) };
     case "agent_thought_chunk":
       return { ...chat, items: appendThought(chat.items, describeContentBlock(update.content)) };
     case "tool_call":
@@ -798,8 +804,9 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
 
   /** Runs the turn of `prompt`, shown as the user's message in the chat. */
   async function runPromptTurn(id: string, { text, images }: PromptDraft) {
-    const item: ChatItem = { kind: "user", id: nextItemId(), text, images: images.map((image) => assetUrl(image.path)), at: new Date().toISOString() };
-    await runTurn(id, item, () => commands.sendPrompt(id, text, images.map((image) => image.path)));
+    const messageId = crypto.randomUUID();
+    const item: ChatItem = { kind: "user", id: nextItemId(), text, images: images.map((image) => assetUrl(image.path)), messageId };
+    await runTurn(id, item, () => commands.sendPrompt(id, text, images.map((image) => image.path), messageId));
   }
 
   /**
@@ -808,7 +815,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
    */
   function listPlaceholder(placeholder: SessionView, prompt: PromptDraft | null, isActivated: boolean) {
     const items: ChatItem[] = prompt
-      ? [{ kind: "user", id: nextItemId(), text: prompt.text, images: prompt.images.map((image) => assetUrl(image.path)), at: new Date().toISOString() }]
+      ? [{ kind: "user", id: nextItemId(), text: prompt.text, images: prompt.images.map((image) => assetUrl(image.path)), messageId: crypto.randomUUID() }]
       : [];
     set((state) => ({
       sessions: [...state.sessions, placeholder],
@@ -887,7 +894,10 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     }
     if (prompt) {
       const images = prompt.images.map((image) => image.path);
-      await runTurn(id, null, () => commands.sendPrompt(id, prompt.text, images));
+      // The prompt shows since `listPlaceholder` listed the session, under the message id it got there.
+      const shown = get().chats[id]?.items.find((item) => item.kind === "user");
+      const messageId = (shown?.kind === "user" && shown.messageId) || crypto.randomUUID();
+      await runTurn(id, null, () => commands.sendPrompt(id, prompt.text, images, messageId));
       return;
     }
     const isLive = Boolean(get().sessions.find((candidate) => candidate.id === id)?.isLive);
@@ -1250,6 +1260,14 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     applyPermissionWithdrawn: (event) => {
       if (get().chats[event.huntSessionId]?.permission?.requestId !== event.requestId) return;
       updateChat(event.huntSessionId, (chat) => ({ ...chat, permission: null }));
+    },
+
+    applyMessageTimes: ({ huntSessionId, times }) => {
+      if (!get().chats[huntSessionId]) return;
+      updateChat(huntSessionId, (chat) => ({
+        ...chat,
+        items: chat.items.map((item) => ((item.kind === "user" || item.kind === "agent") && item.messageId && times[item.messageId] ? { ...item, at: times[item.messageId] } : item)),
+      }));
     },
 
     applyClosed: (event) => {

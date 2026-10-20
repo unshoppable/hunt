@@ -19,11 +19,13 @@ import { DANGER_CLEAR_BUTTON, GHOST_BUTTON_XS, ICON_BUTTON_SM, PRIMARY_BUTTON_XS
 import { CloseIcon, SendIcon, TrashIcon } from "../ui/icons";
 import { trackDrag } from "../ui/pointerDrag";
 import { ResizeGrips } from "../ui/ResizeGrips";
-import { useAutoGrow } from "../ui/useAutoGrow";
+import { useAutoGrow, useTextareaDrag } from "../ui/useAutoGrow";
 import { usePopupSize } from "../ui/usePopupSize";
 import { useViewportSize } from "../ui/useViewportSize";
 
 const MIN_SIZE = { width: 420, height: 240 };
+/** Height the conversation keeps when the text area is dragged taller. */
+const MIN_MESSAGES_HEIGHT = 80;
 /** Space the popover keeps from the window's edges. */
 const MARGIN = 12;
 /**
@@ -94,8 +96,10 @@ type SubChatPopoverProps = {
  * under its parent in the sidebar and can be opened there in full. Escape and a mouse press outside every floating
  * surface close the popover; closing keeps the session, and the glyph on the selection's first line reopens it with
  * the whole conversation. The model pill in the footer picks the model of a new sub chat or switches the model of the
- * existing one. The popover is resized by dragging its right or bottom edge (the size is remembered across sessions);
- * until it is dragged taller, it is as tall as its content, up to the remembered height. A question sent while a turn runs is queued for the end of that turn.
+ * existing one. The popover is resized by dragging its edges (the size is remembered across sessions); until it is
+ * dragged taller, it is as tall as its content, up to the remembered height. Dragging the top edge of the input area
+ * makes the text area taller at the expense of the conversation, remembered until it is dragged back to one line. A
+ * question sent while a turn runs is queued for the end of that turn.
  */
 export function SubChatPopover({ parentSessionId, request, subSessionId: initialSubSessionId, title, placeholder, context, initialText = "", hasSidebar = true, onPlaced, onClose }: SubChatPopoverProps) {
   const [subSessionId, setSubSessionId] = useState<string | null>(initialSubSessionId ?? null);
@@ -261,7 +265,17 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   }, [hasPermission]);
 
   const followEnd = useFollowScroll(scrollRef, contentRef, subSessionId);
-  useAutoGrow(textareaRef, text, 5);
+  const subChatPromptHeight = useSettingsStore((state) => state.subChatPromptHeight);
+  const setSubChatPromptHeight = useSettingsStore((state) => state.setSubChatPromptHeight);
+  // The text area may take the popover's height but for its header, the input area's own chrome and a strip of the conversation.
+  const heightDrag = useTextareaDrag(textareaRef, subChatPromptHeight, setSubChatPromptHeight, () => {
+    const root = rootRef.current;
+    const textarea = textareaRef.current;
+    if (!root || !textarea) return 0;
+    const chrome = root.offsetHeight - (scrollRef.current?.offsetHeight ?? 0) - textarea.offsetHeight;
+    return size.height - chrome - MIN_MESSAGES_HEIGHT;
+  });
+  useAutoGrow(textareaRef, text, 5, heightDrag.minHeight);
   useReturnedPrompts(
     chat?.isBusy ?? false,
     queue,
@@ -440,7 +454,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
       </div>
 
       {isLive ? (
-        <div className="border-t border-(--line) bg-(--surface-input) px-12 py-3">
+        <div className="relative border-t border-(--line) bg-(--surface-input) px-12 py-3">
           <QueuedPrompts queue={queue} onSendNow={sendQueuedNow} onTakeBack={(prompt) => takeBack(prompt.id, prompt.text)} />
           <div className="flex items-end gap-2">
             <textarea
@@ -477,6 +491,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
               <SendIcon />
             </button>
           </div>
+          <ResizeGrips edges={{ top: true }} {...heightDrag.grips} />
         </div>
       ) : (
         <div className="flex items-center justify-between gap-2 border-t border-(--line) px-12 py-2 text-[13px] text-neutral-400">

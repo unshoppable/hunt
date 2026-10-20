@@ -10,7 +10,7 @@ import { CLEAR_BUTTON, SEND_BUTTON } from "../ui/buttons";
 import type { DropdownOption } from "../ui/floatingMenu";
 import { CloseIcon, EraserIcon, GitHubIcon, SendIcon } from "../ui/icons";
 import { ResizeGrips } from "../ui/ResizeGrips";
-import { rowsHeight, useAutoGrow } from "../ui/useAutoGrow";
+import { useAutoGrow, useTextareaDrag } from "../ui/useAutoGrow";
 import { useDismiss } from "../ui/useDismiss";
 import { useShortcutLabel } from "../ui/shortcuts";
 import { matchCommands, slashQueryOf } from "./slashCommands";
@@ -120,10 +120,7 @@ export function PromptInput({
   const pendingCaretRef = useRef<number | null>(null);
   const promptHeight = useSettingsStore((state) => state.promptHeight);
   const setPromptHeight = useSettingsStore((state) => state.setPromptHeight);
-  /** Text area height while its top edge is dragged; null outside a drag. */
-  const [dragHeight, setDragHeight] = useState<number | null>(null);
-  /** Height the text area had when the drag started and the one it has now; read when the drag ends. */
-  const dragRef = useRef({ start: 0, height: 0 });
+  const heightDrag = useTextareaDrag(textareaRef, promptHeight, setPromptHeight, () => window.innerHeight * MAX_PROMPT_HEIGHT_SHARE);
 
   const slashQuery = isSuggestionsDismissed ? null : slashQueryOf(text);
   const suggestions = slashQuery === null ? [] : matchCommands(commands, slashQuery);
@@ -131,7 +128,7 @@ export function PromptInput({
   const canSend = Boolean(text.trim() || attachments.length) && !isBlocked;
 
   useDismiss(suggestionsRef, () => setIsSuggestionsDismissed(true), { anchorRefs: [textareaRef], isEnabled: suggestions.length > 0 });
-  useAutoGrow(textareaRef, text, 8, dragHeight ?? promptHeight ?? 0);
+  useAutoGrow(textareaRef, text, 8, heightDrag.minHeight);
 
   useEffect(() => {
     if (!isBlocked) {
@@ -223,25 +220,6 @@ export function PromptInput({
   function removeAttachment(index: number) {
     setAttachments(attachments.filter((_, other) => other !== index));
     setText(removeImageReference(text, index + 1));
-  }
-
-  function startHeightDrag() {
-    const height = textareaRef.current?.offsetHeight ?? 0;
-    dragRef.current = { start: height, height };
-  }
-
-  function dragHeightBy(dy: number) {
-    const height = Math.max(0, Math.min(dragRef.current.start + dy, window.innerHeight * MAX_PROMPT_HEIGHT_SHARE));
-    dragRef.current.height = height;
-    setDragHeight(height);
-  }
-
-  /** Remembers the dragged height; dragged down to the box's own two lines, the box follows its text again. */
-  function endHeightDrag() {
-    const element = textareaRef.current;
-    const { height } = dragRef.current;
-    setPromptHeight(element && height > rowsHeight(element, element.rows) ? height : null);
-    setDragHeight(null);
   }
 
   function completeSuggestion() {
@@ -411,7 +389,7 @@ export function PromptInput({
               <SendIcon />
             </button>
           </div>
-          <ResizeGrips edges={{ top: true }} onStart={startHeightDrag} onDrag={({ dy }) => dragHeightBy(dy)} onEnd={endHeightDrag} />
+          <ResizeGrips edges={{ top: true }} {...heightDrag.grips} />
         </div>
         {extension}
         {dropError ? <div className="px-1 pt-4 text-[13px] text-red-300">{dropError}</div> : null}

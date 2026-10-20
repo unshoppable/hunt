@@ -326,6 +326,8 @@ type SettingsState = {
   gitLogColumns: GitLogColumns;
   /** Height in px the user dragged the chat's prompt box to; null sizes the box to its text. */
   promptHeight: number | null;
+  /** Height in px the user dragged the sub chat popover's text area to; null sizes it to its text. */
+  subChatPromptHeight: number | null;
   /** How far the guardrail chat's bottom right corner sits from its default place above the "Guardrail" button. */
   guardrailChatOffset: PopupOffset;
   graphFilter: GraphFilter;
@@ -355,6 +357,7 @@ type SettingsState = {
   setPopupSize: (key: PopupKey, size: PopupSize) => void;
   setGitLogColumns: (columns: GitLogColumns) => void;
   setPromptHeight: (height: number | null) => void;
+  setSubChatPromptHeight: (height: number | null) => void;
   setGuardrailChatOffset: (offset: PopupOffset) => void;
   setGraphFilter: (patch: Partial<GraphFilter>) => void;
   setAiLanguage: (language: string) => void;
@@ -401,6 +404,7 @@ export type PersistedState = {
   popupSizes?: Partial<Record<PopupKey, PopupSize>>;
   gitLogColumns?: Partial<GitLogColumns>;
   promptHeight?: number | null;
+  subChatPromptHeight?: number | null;
   guardrailChatOffset?: PopupOffset;
   graphFilter?: GraphFilter;
   aiLanguage?: string;
@@ -616,6 +620,7 @@ export const useSettingsStore = create<SettingsState>()(
       popupSizes: DEFAULT_POPUP_SIZES,
       gitLogColumns: DEFAULT_GIT_LOG_COLUMNS,
       promptHeight: null,
+      subChatPromptHeight: null,
       guardrailChatOffset: { x: 0, y: 0 },
       graphFilter: DEFAULT_GRAPH_FILTER,
       aiLanguage: DEFAULT_AI_LANGUAGE,
@@ -664,6 +669,7 @@ export const useSettingsStore = create<SettingsState>()(
       setPopupSize: (key, size) => set((state) => ({ popupSizes: { ...state.popupSizes, [key]: roundedSize(size) } })),
       setGitLogColumns: (columns) => set({ gitLogColumns: { author: Math.round(columns.author), date: Math.round(columns.date) } }),
       setPromptHeight: (height) => set({ promptHeight: height === null ? null : Math.round(height) }),
+      setSubChatPromptHeight: (height) => set({ subChatPromptHeight: height === null ? null : Math.round(height) }),
       setGuardrailChatOffset: (offset) => set({ guardrailChatOffset: { x: Math.round(offset.x), y: Math.round(offset.y) } }),
       setGraphFilter: (patch) =>
         set((state) => {
@@ -703,6 +709,7 @@ export const useSettingsStore = create<SettingsState>()(
         popupSizes: state.popupSizes,
         gitLogColumns: state.gitLogColumns,
         promptHeight: state.promptHeight,
+        subChatPromptHeight: state.subChatPromptHeight,
         guardrailChatOffset: state.guardrailChatOffset,
         graphFilter: state.graphFilter,
         aiLanguage: state.aiLanguage,

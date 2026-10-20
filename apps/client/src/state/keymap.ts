@@ -29,7 +29,7 @@ export const KEYMAP_COMMANDS = [
   { id: "chat.interrupt", label: "Interrupt the agent's turn", group: "Chat", scope: "app", defaults: ["Escape"] },
   { id: "chat.toggleVerbose", label: "Toggle verbose tool output", group: "Chat", scope: "app", defaults: ["Ctrl+o"] },
   { id: "chat.cycleMode", label: "Cycle the permission mode", group: "Chat", scope: "app", defaults: ["Shift+Tab"] },
-  { id: "changes.toggleChecked", label: "Check or uncheck the selected file", group: "Changes", scope: "app", defaults: ["Meta+Space"] },
+  { id: "changes.toggleChecked", label: "Check or uncheck the selected file", group: "Changes", scope: "app", defaults: ["Meta+Space"], note: "also Space in the change list" },
   { id: "editor.save", label: "Save file", group: "Editor", scope: "app", defaults: ["Meta+s"] },
   { id: "editor.goToFile", label: "Go to file", group: "Editor", scope: "app", defaults: ["Meta+p"], note: "also ⇧⇧" },
   { id: "editor.findInFiles", label: "Find in files", group: "Editor", scope: "app", defaults: ["Shift+Meta+f"] },

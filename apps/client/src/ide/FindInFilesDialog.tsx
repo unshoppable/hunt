@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import * as monaco from "monaco-editor";
+import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { commands } from "../ipc/commands";
 import type { TextMatch, TextQuery, TextRange, TextSearchResult } from "../ipc/types";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
@@ -59,6 +60,7 @@ export function useFindInFilesShortcut(onTrigger: (selected: string | null) => v
  * replaces the last query. ⌥C, ⌥W and ⌥X toggle Match Case, Words and Regex; the file mask takes comma-separated
  * masks such as `*.ts, !*.spec.ts`. ↑/↓ or a click select a match (hovering only highlights the row), Enter or a
  * double click opens it, ⇧Enter opens it in a right split, Esc or a click on the backdrop closes. The size is remembered across sessions.
+ * Text selected in the preview opens a sub chat about it over the dialog; while that is open, Esc closes only the sub chat.
  */
 export function FindInFilesDialog({
   sessionId,
@@ -81,6 +83,7 @@ export function FindInFilesDialog({
   const listRef = useRef<HTMLUListElement>(null);
   const viewport = useViewportSize();
   const { size, grips } = usePopupSize("findInFiles", { min: MIN_SIZE, max: { width: viewport.width * MAX_WIDTH_SHARE, height: viewport.height * MAX_HEIGHT_SHARE } });
+  const subChat = useSubChatPopover();
 
   useEffect(() => {
     lastQuery = query;
@@ -186,7 +189,7 @@ export function FindInFilesDialog({
     </ul>
   );
   return (
-    <Modal label="Find in files" onClose={onClose} align="top" className="bg-(--surface-inspector)" style={style} resize={grips}>
+    <Modal label="Find in files" onClose={onClose} isCloseable={!subChat.shown} align="top" className="bg-(--surface-inspector)" style={style} resize={grips}>
       {/* `contents` keeps the rows in the dialog's own column layout; the keys bubble up through it. */}
       <div className="contents" onKeyDown={onKeyDown} onPointerUp={onPointerUp}>
         <div className="flex h-10 shrink-0 items-center gap-3 px-3 text-[13px]">
@@ -234,7 +237,15 @@ export function FindInFilesDialog({
               </Panel>
               <PaneSeparator orientation="vertical" />
               <Panel id="preview" defaultSize="60" minSize={MIN_PREVIEW_HEIGHT} className="flex min-h-0 flex-col">
-                <FilePreview sessionId={sessionId} path={selectedMatch.path} line={selectedMatch.line} column={selectedMatch.column} endColumn={selectedMatch.endColumn} />
+                <FilePreview
+                  sessionId={sessionId}
+                  path={selectedMatch.path}
+                  line={selectedMatch.line}
+                  column={selectedMatch.column}
+                  endColumn={selectedMatch.endColumn}
+                  onOpenSubChat={subChat.open}
+                  onToggleSubChat={subChat.toggle}
+                />
               </Panel>
             </PersistentGroup>
             <div className={`${STATUS_BAR} gap-3`}>
@@ -255,6 +266,10 @@ export function FindInFilesDialog({
           list
         )}
       </div>
+      {/* Inside the dialog, so that the popover floats above it; its keys do not reach the list. */}
+      {subChat.shown ? (
+        <SubChatPopover key={subChat.shown.key} parentSessionId={sessionId} request={subChat.shown.request} subSessionId={subChat.shown.subSessionId} onClose={subChat.close} />
+      ) : null}
     </Modal>
   );
 }

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import * as monaco from "monaco-editor";
+import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { useFileIconUrl } from "../diff/fileIcons";
 import { PREVIEW_EDITOR_OPTIONS, monacoLanguage, setupMonaco } from "../diff/monaco";
+import type { SelectionRequest } from "../diff/selectionContext";
 import { commands } from "../ipc/commands";
 import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
@@ -14,9 +16,13 @@ import { errorText, useLoad } from "../ui/useLoad";
 import { usePopupSize } from "../ui/usePopupSize";
 import { useViewportSize } from "../ui/useViewportSize";
 import { searchFiles, parseQuery, type FileMatch } from "./fileSearch";
+import { attachSelectionAgent } from "./selectionAgent";
+import { MARKING_SELECTION_SOURCE } from "./selectionAskButton";
 
 /** Timeout for the second Shift press of "double shift", and the interval of a second press when Shift stays down. */
 const DOUBLE_SHIFT_MS = 400;
+/** URI scheme of the preview's models; their path is the worktree path with a leading slash. */
+const PREVIEW_SCHEME = "preview";
 
 const MIN_SIZE = { width: 520, height: 240 };
 /** The largest share of the window's width and height the dialog may take. */
@@ -63,6 +69,7 @@ export function useFileSearchShortcut(onTrigger: () => void) {
  * "Search Everywhere", with its path and an "Open In Right Split" action in the footer. ↑/↓ move the selection,
  * Enter opens (`name:12` places the caret on line 12), ⇧Enter opens in a right split, Esc or a click on the
  * backdrop closes. Dragging a side or the bottom edge resizes the dialog; the size is remembered across sessions.
+ * Text selected in the preview opens a sub chat about it over the dialog; while that is open, Esc closes only the sub chat.
  */
 export function FileSearchDialog({
   sessionId,
@@ -88,6 +95,7 @@ export function FileSearchDialog({
   const { size, grips } = usePopupSize("fileSearch", { min: MIN_SIZE, max: { width: viewport.width * MAX_WIDTH_SHARE, height: viewport.height * MAX_HEIGHT_SHARE } });
   /** Where the mouse was last seen over the list; the rows scrolling under a resting mouse must not change the selection. */
   const mouseRef = useRef<{ x: number; y: number } | null>(null);
+  const subChat = useSubChatPopover();
 
   useLoad(() => commands.listFiles(sessionId), { onValue: setFiles, onError: (reason) => setError(errorText(reason)) }, [sessionId]);
 
@@ -136,7 +144,7 @@ export function FileSearchDialog({
   // Without a preview the dialog is as tall as its list, up to the remembered height.
   const style = { width: size.width, height: selectedMatch ? size.height : undefined, maxHeight: size.height };
   return (
-    <Modal label="Go to file" onClose={onClose} align="top" className="bg-(--surface-inspector)" style={style} resize={grips}>
+    <Modal label="Go to file" onClose={onClose} isCloseable={!subChat.shown} align="top" className="bg-(--surface-inspector)" style={style} resize={grips}>
       {/* `contents` keeps the rows in the dialog's own column layout; the keys bubble up through it. */}
       <div className="contents" onKeyDown={onKeyDown}>
         <div className="flex shrink-0 items-center gap-2 border-b border-(--line) px-3">
@@ -182,7 +190,7 @@ export function FileSearchDialog({
         </ul>
         {selectedMatch ? (
           <>
-            <FilePreview sessionId={sessionId} path={selectedMatch.path} line={parsed.line} />
+            <FilePreview sessionId={sessionId} path={selectedMatch.path} line={parsed.line} onOpenSubChat={subChat.open} onToggleSubChat={subChat.toggle} />
             <div className={`${STATUS_BAR} gap-3`}>
               <span className="min-w-0 flex-1 truncate text-neutral-400" title={`${worktreePath}/${selectedMatch.path}`}>
                 {abbreviateHome(worktreePath)}/{selectedMatch.path}
@@ -199,6 +207,10 @@ export function FileSearchDialog({
           </>
         ) : null}
       </div>
+      {/* Inside the dialog, so that the popover floats above it; its keys do not reach the list. */}
+      {subChat.shown ? (
+        <SubChatPopover key={subChat.shown.key} parentSessionId={sessionId} request={subChat.shown.request} subSessionId={subChat.shown.subSessionId} onClose={subChat.close} />
+      ) : null}
     </Modal>
   );
 }
@@ -213,7 +225,8 @@ export function abbreviateHome(path: string): string {
  * Read-only Monaco view of `path` below the search results, colored and sized like the editor panes. The file is
  * read once per dialog and kept in a throwaway `preview:` model, so previewing never opens it in the workspace;
  * `line` (from a `name:12` query) is placed in the middle of the view and highlighted, and the 1-based columns
- * `column..endColumn` of that line (a Find in Files match) are selected.
+ * `column..endColumn` of that line (a Find in Files match) are selected. Selecting text shows the floating button
+ * that toggles the sub chat popover for the selected lines (see selectionAskButton.ts); the selected match does not.
  */
 export function FilePreview({
   sessionId,
@@ -221,15 +234,23 @@ export function FilePreview({
   line,
   column,
   endColumn,
+  onOpenSubChat,
+  onToggleSubChat,
 }: {
   sessionId: string;
   path: string;
   line: number | null;
   column?: number;
   endColumn?: number;
+  /** Opens the sub chat popover for the selected lines; without it the preview has no agent features. */
+  onOpenSubChat?: (request: SelectionRequest) => void;
+  /** Toggles the sub chat popover from the floating button at the end of a selection. */
+  onToggleSubChat?: (request: SelectionRequest) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const latest = useRef({ onOpenSubChat, onToggleSubChat });
+  latest.current = { onOpenSubChat, onToggleSubChat };
   const textsRef = useRef(new Map<string, Promise<string>>());
   const fontSize = useSettingsStore((state) => state.panes.diff.fontSize);
   const lineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
@@ -243,7 +264,15 @@ export function FilePreview({
     setupMonaco();
     const editor = monaco.editor.create(host, { ...PREVIEW_EDITOR_OPTIONS, model: null, fontSize, lineHeight, fontFamily });
     editorRef.current = editor;
+    const agent = latest.current.onOpenSubChat
+      ? attachSelectionAgent(editor, {
+          pathOf: (model) => (model.uri.scheme === PREVIEW_SCHEME ? model.uri.path.slice(1) : null),
+          onOpen: (request) => latest.current.onOpenSubChat?.(request),
+          onToggle: (request) => latest.current.onToggleSubChat?.(request),
+        })
+      : null;
     return () => {
+      agent?.dispose();
       editorRef.current = null;
       const model = editor.getModel();
       editor.dispose();
@@ -282,7 +311,7 @@ export function FilePreview({
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor || !loaded) return;
-    const uri = monaco.Uri.from({ scheme: "preview", path: `/${loaded.path}` });
+    const uri = monaco.Uri.from({ scheme: PREVIEW_SCHEME, path: `/${loaded.path}` });
     const model = monaco.editor.getModel(uri) ?? monaco.editor.createModel(loaded.text, monacoLanguage(loaded.path), uri);
     const previous = editor.getModel();
     editor.setModel(model);
@@ -291,7 +320,10 @@ export function FilePreview({
     }
     const lineNumber = line ? Math.min(line, model.getLineCount()) : 1;
     if (line && column) {
-      editor.setSelection({ startLineNumber: lineNumber, startColumn: column, endLineNumber: lineNumber, endColumn: endColumn ?? column });
+      editor.setSelection(
+        { startLineNumber: lineNumber, startColumn: column, endLineNumber: lineNumber, endColumn: endColumn ?? column },
+        MARKING_SELECTION_SOURCE,
+      );
     } else {
       editor.setPosition({ lineNumber, column: 1 });
     }

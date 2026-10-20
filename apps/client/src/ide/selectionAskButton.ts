@@ -4,6 +4,9 @@ import { askButtonPlacement } from "./askButtonPlacement";
 
 const WIDGET_ID = "hunt.selectionAskButton";
 
+/** `source` of `setSelection` for a selection that only marks something, e.g. a search match; it shows no button. */
+export const MARKING_SELECTION_SOURCE = "hunt.marking";
+
 /**
  * Floating "Ask Claude" button next to the active end of the selection, i.e. where the mouse was released or the
  * keyboard selection stopped. It appears once the mouse button is up and the selection holds text, stays while the
@@ -18,6 +21,8 @@ export class SelectionAskButton implements monaco.editor.IContentWidget {
   private readonly clickListeners = new Set<(request: SelectionRequest) => void>();
   private position: monaco.editor.IContentWidgetPosition | null = null;
   private isPointerDown = false;
+  /** Whether the current selection was set with `MARKING_SELECTION_SOURCE`. */
+  private isMarking = false;
 
   constructor(
     private readonly editor: monaco.editor.ICodeEditor,
@@ -51,7 +56,10 @@ export class SelectionAskButton implements monaco.editor.IContentWidget {
         this.isPointerDown = true;
         this.hide();
       }),
-      editor.onDidChangeCursorSelection(() => this.update()),
+      editor.onDidChangeCursorSelection((event) => {
+        this.isMarking = event.source === MARKING_SELECTION_SOURCE;
+        this.update();
+      }),
       editor.onDidChangeModel(() => this.update()),
       editor.onDidChangeModelContent(() => this.update()),
     );
@@ -93,7 +101,7 @@ export class SelectionAskButton implements monaco.editor.IContentWidget {
     const selection = this.editor.getSelection();
     const model = this.editor.getModel();
     const hasText = !!selection && !!model && !selection.isEmpty() && !!model.getValueInRange(selection).trim();
-    if (!selection || !model || !hasText || this.isPointerDown || !this.pathOf(model)) {
+    if (!selection || !model || !hasText || this.isPointerDown || this.isMarking || !this.pathOf(model)) {
       this.hide();
       return;
     }

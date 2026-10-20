@@ -28,6 +28,7 @@ import { BranchIcon, FolderIcon, ShieldIcon, TrashIcon } from "../ui/icons";
 import { OpenInWebstormButton } from "./OpenInWebstormButton";
 import { RemoteToggle } from "./RemoteToggle";
 import { remoteDeleteQuestion } from "../sessions/remoteOrigin";
+import { QuestionIcon } from "../sessions/SessionMark";
 import { confirmDestructive } from "../ui/confirm";
 import { continueLocallyQuestion, moveStatus, remoteOf } from "./remoteSession";
 import { RemoteStepProgress } from "./RemoteProgress";
@@ -226,7 +227,10 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
             />
           ) : null}
           {hasQuestion ? (
-            <div className="mt-4 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-amber-200 break-words">The agent waits for your answer.</div>
+            <div className="mt-4 flex items-center gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-amber-200 break-words">
+              <QuestionIcon />
+              The agent waits for your answer.
+            </div>
           ) : null}
           {chat?.error ? <div className="mt-4 rounded-lg border border-red-400/40 bg-red-400/10 px-3 py-2 text-red-300 break-words">{chat.error}</div> : null}
           {session.remote && chat?.fileSync.error ? (

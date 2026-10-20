@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { commands } from "../ipc/commands";
 import { INPUT } from "../diff/styles";
 import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD } from "../ui/buttons";
-import { PlusIcon } from "../ui/icons";
+import { PlusIcon, Spinner } from "../ui/icons";
 import { Modal } from "../ui/Modal";
 import { useDialogSize } from "../ui/useDialogSize";
 
@@ -157,6 +157,7 @@ export function PushTargetDialog({
           Cancel
         </button>
         <button type="button" onClick={() => void submit()} disabled={!canSubmit} className={PRIMARY_BUTTON_MD}>
+          {isBusy ? <Spinner className="size-3.5 shrink-0" /> : null}
           {isBusy ? (isCreating ? "Creating…" : "Changing…") : isCreating ? "Create & change" : "Change"}
         </button>
       </div>

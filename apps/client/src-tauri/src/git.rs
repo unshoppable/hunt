@@ -937,15 +937,45 @@ pub async fn fetch_branch(worktree: &Path, branch: &str) -> Result<bool, String>
     }
 }
 
-/// Creates the branch `branch` on `origin` at the commit `origin/<from>`, as fetched last, so that a push landing on
-/// it publishes what a push to `from` would; the push updates the remote-tracking ref of `branch` too. Fails when
-/// `origin` has the branch already.
-pub async fn create_origin_branch(worktree: &Path, branch: &str, from: &str) -> Result<(), String> {
-    ensure_branch_name(worktree, branch).await?;
-    ensure_branch_name(worktree, from).await?;
+/// Makes sure `origin` has the branch `branch` and the worktree its remote-tracking ref. A branch `origin` has is fetched;
+/// one it lacks is created there at the commit `origin`'s branch `from` points at, so that a push landing on it publishes
+/// what a push to `from` would. One round trip asks `origin` for both branches, `from` is fetched only when this
+/// repository lacks its commit, and the push that creates `branch` updates its remote-tracking ref too; it fails when
+/// `origin` got the branch meanwhile.
+pub async fn ensure_origin_branch(worktree: &Path, branch: &str, from: &str) -> Result<(), String> {
+    let commits = origin_branch_commits(worktree, &[branch, from]).await?;
+    if commits.contains_key(branch) {
+        fetch_branch(worktree, branch).await?;
+        return Ok(());
+    }
+    let Some(commit) = commits.get(from) else {
+        return Err(format!("failed to create the branch {branch} on origin: origin has no branch {from} to start it from"));
+    };
+    if rev_parse(worktree, &format!("{commit}^{{commit}}")).await.is_err() {
+        fetch_branch(worktree, from).await?;
+    }
     let lease = format!("--force-with-lease=refs/heads/{branch}:");
-    run_git(worktree, &["push", "-q", &lease, "--", "origin", &format!("refs/remotes/origin/{from}:refs/heads/{branch}")]).await?;
+    run_git(worktree, &["push", "-q", &lease, "--", "origin", &format!("{commit}:refs/heads/{branch}")]).await?;
     Ok(())
+}
+
+/// The commit each of `branches` points at on `origin`, keyed by branch name and asked in one round trip; a branch
+/// `origin` lacks has no entry.
+async fn origin_branch_commits(worktree: &Path, branches: &[&str]) -> Result<HashMap<String, String>, String> {
+    let mut patterns = Vec::new();
+    for branch in branches {
+        ensure_branch_name(worktree, branch).await?;
+        patterns.push(format!("refs/heads/{branch}"));
+    }
+    let mut args = vec!["ls-remote", "--heads", "origin"];
+    args.extend(patterns.iter().map(String::as_str));
+    let output = run_git(worktree, &args).await?;
+    let commits = output
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .filter_map(|(commit, name)| Some((name.strip_prefix("refs/heads/")?.to_string(), commit.to_string())))
+        .collect();
+    Ok(commits)
 }
 
 /// Rejects `branch` unless git accepts it as a branch name, which rules out options and refspecs.
@@ -1888,23 +1918,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_origin_branch_starts_at_the_fetched_origin_branch_and_refuses_an_existing_one() {
+    async fn ensure_origin_branch_creates_a_missing_branch_at_origins_from_and_only_fetches_an_existing_one() {
         let origin = fixture().await;
         let clone_dir = tempfile::tempdir().unwrap();
         let repo = session_clone(origin.path(), clone_dir.path()).await;
-        let base = run_git(&repo, &["rev-parse", "origin/develop"]).await.unwrap();
+        // `develop` moves on `origin` after the clone, so the clone lacks the commit the new branch starts at.
+        let moved = commit_on_origin_develop(origin.path(), "two\n").await;
 
-        create_origin_branch(&repo, "feature/new", "develop").await.unwrap();
+        ensure_origin_branch(&repo, "feature/new", "develop").await.unwrap();
 
-        assert_eq!(run_git(origin.path(), &["rev-parse", "feature/new"]).await.unwrap(), base);
-        assert_eq!(run_git(&repo, &["rev-parse", "origin/feature/new"]).await.unwrap(), base);
+        assert_eq!(run_git(origin.path(), &["rev-parse", "feature/new"]).await.unwrap(), moved);
+        assert_eq!(run_git(&repo, &["rev-parse", "origin/feature/new"]).await.unwrap(), moved);
 
         // `old` stays behind `develop` even though moving it there would be a fast-forward.
         git(origin.path(), &["branch", "old", "main"]).await;
-        commit_on_origin_develop(origin.path(), "two\n").await;
-        fetch_branch(&repo, "develop").await.unwrap();
-        assert!(create_origin_branch(&repo, "old", "develop").await.is_err());
-        assert_eq!(run_git(origin.path(), &["rev-parse", "old"]).await.unwrap(), base);
+        let old = run_git(origin.path(), &["rev-parse", "old"]).await.unwrap();
+        ensure_origin_branch(&repo, "old", "develop").await.unwrap();
+        assert_eq!(run_git(origin.path(), &["rev-parse", "old"]).await.unwrap(), old);
+        assert_eq!(run_git(&repo, &["rev-parse", "origin/old"]).await.unwrap(), old);
+
+        assert!(ensure_origin_branch(&repo, "feature/other", "missing").await.is_err());
+        assert!(run_git(origin.path(), &["rev-parse", "--verify", "feature/other"]).await.is_err());
     }
 
     async fn head_branch(worktree: &Path) -> String {

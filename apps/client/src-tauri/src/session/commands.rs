@@ -2328,65 +2328,82 @@ pub async fn git_rename_branch(app: AppHandle, id: Uuid, branch: String, new_nam
 }
 
 /// Makes the branch `target` on `origin` the one a push of the session lands on: the session's branch tracks it here,
-/// for its sub chats too, which share the branch, and a remote session records it in its VM's worktree too,
-/// where a Hunt taking the session over reads it (`sync::take_over_vm_push_target`); a VM that is off, or that Hunt
-/// cannot reach, gets it at the next connect. With `create`, a branch `origin` lacks is created there first, at the
-/// commit of the branch pushed to so far. A poller session pushes its own branch from its VM.
+/// for its sub chats too, which share the branch, and a remote session records it in its VM's worktree too, in the
+/// background (`schedule_vm_push_target`), where a Hunt taking the session over reads it
+/// (`sync::take_over_vm_push_target`). With `create`, a branch `origin` lacks is created there first, at the commit of
+/// the branch pushed to so far. A poller session pushes its own branch from its VM.
 #[tauri::command]
-pub async fn set_push_target(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, target: String, create: bool) -> Result<(), String> {
+pub async fn set_push_target(app: AppHandle, id: Uuid, target: String, create: bool) -> Result<(), String> {
     link::ensure_writable(&app, id, "change the push target")?;
     let record = worktree_session(&app, id)?;
     let remote = remote_host(&app, &record);
     if remote.as_ref().is_some_and(|(_, remote)| remote.origin.keeps_vm_tokens()) {
         return Err("failed to change the push target: a poller session pushes its own branch".into());
     }
-    if !git::fetch_branch(&record.worktree_path, &target).await? {
-        if !create {
-            return Err(format!("failed to change the push target: origin has no branch {target}"));
-        }
+    if create {
         let from = push_target(&record, remote.as_ref().map(|(_, target)| target)).await;
-        if !git::fetch_branch(&record.worktree_path, &from).await? {
-            return Err(format!("failed to create the branch {target} on origin: origin has no branch {from} to start it from"));
-        }
-        git::create_origin_branch(&record.worktree_path, &target, &from).await?;
+        git::ensure_origin_branch(&record.worktree_path, &target, &from).await?;
+    } else if !git::fetch_branch(&record.worktree_path, &target).await? {
+        return Err(format!("failed to change the push target: origin has no branch {target}"));
     }
     git::set_origin_upstream(&record.worktree_path, &record.branch, &target).await?;
-    if let Some((host_id, remote)) = &remote {
-        record_vm_push_target(&app, &registry, *host_id, remote, &target).await;
+    if let Some((host_id, _)) = remote {
+        schedule_vm_push_target(&app, host_id);
     }
     announce_sessions_changed(&app);
     Ok(())
 }
 
-/// Records the push target `target` in the VM's worktree of the remote session `host_id` when its VM runs, which a
-/// connected session proves and an unconnected one asks the gateway; a VM that is off is not started. Otherwise, and
-/// when the VM cannot be reached, the record gets `push_target_pending`, so that the next connect records the target
-/// (`sync::take_over_vm_push_target`); a failure is only logged, since the records name the target already.
-async fn record_vm_push_target(app: &AppHandle, registry: &SessionRegistry, host_id: Uuid, remote: &RemoteTarget, target: &str) {
+/// Per remote session, the lock that lets one recording of its push target on the VM run at a time.
+static VM_PUSH_TARGET_LOCKS: std::sync::Mutex<Option<HashMap<Uuid, std::sync::Arc<tokio::sync::Mutex<()>>>>> = std::sync::Mutex::new(None);
+
+/// Records the push target of the remote session `host_id` in its VM's worktree in the background, one recording per
+/// session at a time, so that the last one records the latest target. The record gets `push_target_pending` first and
+/// keeps it until a recording succeeds, so that the next connect records the target (`sync::take_over_vm_push_target`)
+/// when the VM is off, cannot be reached, or Hunt quits before the recording ran.
+fn schedule_vm_push_target(app: &AppHandle, host_id: Uuid) {
+    set_push_target_pending(app, host_id, true);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let lock = VM_PUSH_TARGET_LOCKS.lock().unwrap().get_or_insert_with(HashMap::new).entry(host_id).or_default().clone();
+        let _guard = lock.lock().await;
+        record_vm_push_target(&app, host_id).await;
+    });
+}
+
+/// Records the push target of the remote session `host_id`, the upstream of its local branch, in its VM's worktree when
+/// its VM runs, which a connected session proves and an unconnected one asks the gateway; a VM that is off is not
+/// started. Clears `push_target_pending` once recorded; a failure is only logged, since the records name the target
+/// already.
+async fn record_vm_push_target(app: &AppHandle, host_id: Uuid) {
     let recorded = async {
-        let (_, is_running) = remote_vm_state(app, registry, host_id, "record the push target on the VM").await?;
+        let registry = app.state::<SessionRegistry>();
+        let (remote, is_running) = remote_vm_state(app, &registry, host_id, "record the push target on the VM").await?;
         if !is_running {
             return Ok(false);
         }
+        let target = push_target(&store::find_session(app, host_id)?, Some(&remote)).await;
         let ssh = Ssh::open(&remote.vm, &ssh_dir()?).await?;
-        remote::commit::set_vm_origin_upstream(&ssh, remote, &remote.branch, target).await?;
+        remote::commit::set_vm_origin_upstream(&ssh, &remote, &remote.branch, &target).await?;
         Ok::<bool, String>(true)
     }
     .await;
-    let is_pending = match recorded {
-        Ok(is_recorded) => !is_recorded,
-        Err(error) => {
-            eprintln!("recording the push target {target} of session {host_id} on its VM failed: {error}");
-            true
-        }
-    };
+    match recorded {
+        Ok(true) => set_push_target_pending(app, host_id, false),
+        Ok(false) => {}
+        Err(error) => eprintln!("recording the push target of session {host_id} on its VM failed: {error}"),
+    }
+}
+
+/// Sets `push_target_pending` of the remote session `host_id`; a failure is only logged.
+fn set_push_target_pending(app: &AppHandle, host_id: Uuid, is_pending: bool) {
     let update = store::update_session(app, host_id, |stored| {
         if let Some(remote) = stored.remote.as_mut() {
             remote.push_target_pending = is_pending;
         }
     });
     if let Err(error) = update {
-        eprintln!("marking the push target of session {host_id} as pending on its VM failed: {error}");
+        eprintln!("setting the pending push target of session {host_id} on its VM failed: {error}");
     }
 }
 

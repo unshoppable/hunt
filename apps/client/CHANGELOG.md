@@ -1,3 +1,9 @@
+## 0.64.0 (2026-10-20)
+
+### 🚀 Features
+
+- **client:** the commit message stays in the changelist's box after a commit ([f376912](https://github.com/unshoppable/hunt/commit/f376912))
+
 ## 0.63.0 (2026-10-20)
 
 ### 🚀 Features

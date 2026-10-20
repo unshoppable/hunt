@@ -1,3 +1,9 @@
+## 0.65.1 (2026-10-20)
+
+### 🩹 Fixes
+
+- **client:** the language server sees files created, changed or deleted on disk, so usages include files the agent created ([d6406d4](https://github.com/unshoppable/hunt/commit/d6406d4))
+
 ## 0.65.0 (2026-10-20)
 
 ### 🚀 Features

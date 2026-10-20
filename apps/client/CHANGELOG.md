@@ -1,3 +1,9 @@
+## 0.60.2 (2026-10-20)
+
+### 🩹 Fixes
+
+- **client:** Find in Files splits list and preview at a draggable line that it remembers, and a search opened with the editor's selection shows its matches right away instead of only after the next keystroke ([78f81b8](https://github.com/unshoppable/hunt/commit/78f81b8))
+
 ## 0.60.1 (2026-10-20)
 
 ### 🩹 Fixes

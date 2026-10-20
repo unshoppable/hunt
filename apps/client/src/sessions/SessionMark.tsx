@@ -98,7 +98,7 @@ export function MarkGlyph({
       {badge === "question" ? (
         <g aria-hidden="true">
           <circle cx={width - 1.5} cy={1.5} r={BADGE_RADIUS} className="fill-amber-400" />
-          <text x={width - 1.5} y={1.5 + 3} textAnchor="middle" className="fill-neutral-950 text-[8.5px] font-bold">
+          <text x={width - 1.5} y={1.5 + 3.3} textAnchor="middle" className="fill-neutral-950 text-[9.5px] font-bold">
             ?
           </text>
         </g>

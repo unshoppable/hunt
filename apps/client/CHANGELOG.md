@@ -1,3 +1,10 @@
+## 0.55.0 (2026-10-20)
+
+### 🚀 Features
+
+- **client:** chat messages show when they were written, the time alone for today and the date before it for an earlier day, also for messages a loaded session replays from its transcript ([b69acc4](https://github.com/unshoppable/hunt/commit/b69acc4))
+- **client:** the prompt Hunt sends after a session moved to its VM shows as a one-line notice instead of a user bubble ([2aaa6bc](https://github.com/unshoppable/hunt/commit/2aaa6bc))
+
 ## 0.54.0 (2026-10-20)
 
 ### 🚀 Features

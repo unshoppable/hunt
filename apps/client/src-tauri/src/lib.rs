@@ -178,7 +178,6 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            // `run` ends in process::exit, which skips Drop; stop the agent and language server processes explicitly first.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 if let Some(main) = app.get_webview_window("main") {
@@ -186,6 +185,7 @@ pub fn run() {
                     let _ = main.set_focus();
                 }
             }
+            // `run` ends in process::exit, which skips Drop; stop the agent and language server processes explicitly first.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 app.state::<TerminalRegistry>().close_all();
                 let registry = app.state::<SessionRegistry>();

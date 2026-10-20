@@ -25,7 +25,7 @@ describe("filterSessionVms", () => {
   const older = sessionVm({ id: "2", title: "Sitemaps", branch: "feat/general/45-sitemaps", issue: 45, createdAt: "2026-10-15T06:00:00Z" });
   const stopped = sessionVm({ id: "3", title: "Jane's handoff", branch: "chore/general/cleanup", origin: "desktop", owner: "jane", issue: null, status: "TERMINATED", isRunning: false, createdAt: "2026-10-17T06:00:00Z" });
 
-  it("lists running VMs only unless stopped ones are asked for, newest first", () => {
+  it("lists running VMs and waiting ones only unless stopped ones are asked for, newest first", () => {
     expect(filterSessionVms([older, stopped, running], "", false).map((vm) => vm.id)).toEqual([running.id, older.id]);
     expect(filterSessionVms([older, stopped, running], "", true).map((vm) => vm.id)).toEqual([running.id, older.id, stopped.id]);
   });
@@ -42,6 +42,7 @@ describe("filterSessionVms", () => {
   it("puts a session whose agent waits for an answer first, even a stopped one", () => {
     const asking = sessionVm({ id: "5", agent: "question", status: "TERMINATED", isRunning: false, createdAt: "2026-10-14T06:00:00Z" });
     expect(filterSessionVms([older, asking, running], "", true).map((vm) => vm.id)).toEqual([asking.id, running.id, older.id]);
+    expect(filterSessionVms([older, asking, stopped, running], "", false).map((vm) => vm.id)).toEqual([asking.id, running.id, older.id]);
   });
 
   it("treats a missing creation time as the oldest", () => {

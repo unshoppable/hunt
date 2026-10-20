@@ -14,12 +14,12 @@ import { MarkGlyph, SessionMark } from "./SessionMark";
 import { filterSessionVms, sessionVmAgentLabel, sessionVmMarkState, sessionVmMeta, sessionVmOriginLabel, sessionVmStatusLabel, sessionVmUrl } from "./sessionVms";
 
 /**
- * The session VMs the gateway lists, filling the chat pane in place of the start view: the running ones, or every one
- * with "Show stopped", filtered by a search box. A row starts with the session's mark as the sidebar shows it (its
- * letter and live state for a session the sidebar lists, else a `+` with the state the gateway recorded), names the
- * session and its origin (`swf #123` for the poller's, `remote` for another person's handoff); clicking it shows the
- * session, adopting it into the sidebar first when this Mac does not know it, and the arrow at its end opens the issue
- * or repository on GitHub. Loads once when shown and again with the reload button.
+ * The session VMs the gateway lists, filling the chat pane in place of the start view: the running ones and those whose
+ * agent waits for an answer, or every one with "Show stopped", filtered by a search box. A row starts with the session's
+ * mark as the sidebar shows it (its letter and live state for a session the sidebar lists, else a `+` with the state
+ * the gateway recorded), names the session and its origin (`swf #123` for the poller's, `remote` for another person's
+ * handoff); clicking it shows the session, adopting it into the sidebar first when this Mac does not know it, and the
+ * arrow at its end opens the issue or repository on GitHub. Loads once when shown and again with the reload button.
  */
 export function SessionVmList({ onClose }: { onClose: () => void }) {
   const sessions = useHuntStore((state) => state.sessions);
@@ -90,7 +90,7 @@ export function SessionVmList({ onClose }: { onClose: () => void }) {
       error={error}
       isLoading={!vms}
       emptyText="The gateway lists no session VMs"
-      noMatchText={query ? `No remote sessions match “${query}”` : "No session VM is running; “Show stopped” lists the others"}
+      noMatchText={query ? `No remote sessions match “${query}”` : "No session VM is running or waits for an answer; “Show stopped” lists the others"}
       rowCount={rows.length}
       hasItems={Boolean(vms?.length)}
       onClose={onClose}

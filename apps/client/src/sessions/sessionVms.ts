@@ -2,14 +2,15 @@ import type { SessionVm } from "../ipc/types";
 import { formatRelativeTime } from "../chat/ScreenshotPicker";
 
 /**
- * The session VMs of the start view's list: only the running ones unless `showsStopped`, filtered by `query` (every
- * word must occur in the title, repository, branch, `#issue`, owner or VM name, case-insensitively), sessions whose
- * agent waits for an answer first, then running VMs, and within that the newest first.
+ * The session VMs of the start view's list: only the running ones and those whose agent waits for an answer (the
+ * gateway suspends the VM of an idle agent) unless `showsStopped`, filtered by `query` (every word must occur in the
+ * title, repository, branch, `#issue`, owner or VM name, case-insensitively), sessions whose agent waits for an answer
+ * first, then running VMs, and within that the newest first.
  */
 export function filterSessionVms(vms: SessionVm[], query: string, showsStopped: boolean): SessionVm[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   return vms
-    .filter((vm) => showsStopped || vm.isRunning)
+    .filter((vm) => showsStopped || vm.isRunning || hasQuestion(vm))
     .filter((vm) => {
       if (words.length === 0) return true;
       const haystack = `${vm.title} ${vm.repo} ${vm.branch} ${vm.issue ? `#${vm.issue}` : ""} ${vm.owner} ${vm.vm.instance}`.toLowerCase();

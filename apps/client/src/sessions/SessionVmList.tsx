@@ -114,7 +114,7 @@ export function SessionVmList({ onClose }: { onClose: () => void }) {
                   {isKnown ? (
                     <SessionMark sessionId={vm.id} mark={mark} />
                   ) : (
-                    <MarkGlyph mark="+" isBusy={markState.isBusy} hasQuestion={markState.hasQuestion} tone="remote" label="Not in the sidebar" />
+                    <MarkGlyph mark="+" isBusy={markState.isBusy} badge={markState.hasQuestion ? "question" : null} tone="remote" label="Not in the sidebar" />
                   )}
                   <span className="min-w-0 flex-1 truncate font-medium text-neutral-100">{vm.title}</span>
                   <span className="flex shrink-0 items-center gap-1 text-sky-300" title={`Runs on the VM ${vm.vm.instance} in ${vm.vm.zone}`}>

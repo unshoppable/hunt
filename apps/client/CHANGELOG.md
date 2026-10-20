@@ -1,3 +1,9 @@
+## 0.56.1 (2026-10-20)
+
+### 🩹 Fixes
+
+- **client:** links open in the default browser instead of inside Hunt's window, and the red traffic light of the main window quits Hunt instead of leaving it running with hidden windows ([f9efda8](https://github.com/unshoppable/hunt/commit/f9efda8))
+
 ## 0.56.0 (2026-10-20)
 
 ### 🚀 Features

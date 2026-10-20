@@ -12,13 +12,12 @@ import { parseGraph } from "../graph/schema";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { CodeDiffEditor, type CodeDiffEditorHandle } from "./CodeDiffEditor";
 import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
-import { GHOST_BUTTON_XS, SECONDARY, SECONDARY_BUTTON_XS, SURFACE_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
+import { GHOST_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
 import { openInEditorWindow } from "../ide/editorWindows";
 import { selectionChatsFor } from "../ide/selectionChats";
 import { useReviewedPullRequest } from "../review/reviewComments";
 import { confirmDestructive } from "../ui/confirm";
 import { baseName } from "../ui/path";
-import { useShortcutLabel } from "../ui/shortcuts";
 import { useDismiss } from "../ui/useDismiss";
 import { errorText, useLoad } from "../ui/useLoad";
 
@@ -38,7 +37,6 @@ function revertLabel(file: ChangedFile): string {
 }
 
 export function DiffPanel({ sessionId }: { sessionId: string }) {
-  const saveShortcut = useShortcutLabel("editor.save");
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
   const graphVersion = useHuntStore((state) => state.chats[sessionId]?.graphVersion ?? 0);
   const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
@@ -304,11 +302,11 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
         {/* In split mode the file comment button starts where the right side's line numbers do. */}
         <div ref={headerRef} className="flex items-center border-b border-(--line) py-2.5 pr-3 text-[13px]">
           <span
-            className="min-w-0 truncate pr-2 pl-3 font-mono text-neutral-300"
+            className="flex min-w-0 items-center pr-2 pl-3 font-mono text-neutral-300"
             style={commentButtonLeft === null ? { flex: "1 1 0%" } : { width: commentButtonLeft, flexShrink: 0 }}
           >
-            {selectedPath ?? "No file selected"}
-            {isDirty ? <span className="ml-1 text-amber-300" title="Unsaved changes">●</span> : null}
+            <span className="truncate">{selectedPath ?? "No file selected"}</span>
+            {isDirty ? <span className="ml-1.5 size-2 shrink-0 rounded-full bg-blue-400" title="Unsaved changes" /> : null}
           </span>
           <div className={`flex items-center gap-2 ${commentButtonLeft === null ? "" : "flex-1"}`}>
             {canCommentOnFile ? (
@@ -317,15 +315,6 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
               </button>
             ) : null}
             {commentButtonLeft === null ? null : <span className="flex-1" />}
-            <button
-              type="button"
-              disabled={!isDirty}
-              onClick={() => editorRef.current?.save()}
-              className={`${SURFACE_BUTTON_XS} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
-              title={saveShortcut ? `Save (${saveShortcut} inside the editor)` : "Save"}
-            >
-              Save
-            </button>
             <button type="button" onClick={() => setMode(mode === "split" ? "unified" : "split")} className={SECONDARY_BUTTON_XS}>
               {mode === "split" ? "Split" : "Unified"}
             </button>

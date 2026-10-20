@@ -13,11 +13,10 @@ import { useReviewedPullRequest } from "../review/reviewComments";
 import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { HEADER_BAR } from "../ui/bars";
-import { SECONDARY, SECONDARY_BUTTON_XS, SURFACE_BUTTON_XS } from "../ui/buttons";
+import { SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { useSecondaryWindow } from "../ui/nativeWindow";
 import { baseName } from "../ui/path";
-import { useShortcutLabel } from "../ui/shortcuts";
 import { errorText, useLoad } from "../ui/useLoad";
 import { restoreWindowBounds } from "../ui/windowBounds";
 import { ChangeBadge } from "./nodes";
@@ -66,12 +65,11 @@ export function DiffWindowHost({ initialRequest }: { initialRequest: DiffOpenReq
 
 /**
  * The diff of one changed file as a window of its own (see diffWindows.ts), opened from a diagram node. The window
- * stays hidden until the diff is in, so it appears rendered. The right side is editable and saves with ⌘S or the
- * Save button; the traffic light, Escape and ⌘W close the window (after a confirmation while there are unsaved
- * edits). It closes itself once the file left the changelist (committed, reverted) or its session was removed.
+ * stays hidden until the diff is in, so it appears rendered. The right side is editable and saves with ⌘S; a blue
+ * dot after the path marks unsaved edits. The traffic light, Escape and ⌘W close the window (after a confirmation
+ * while there are unsaved edits). It closes itself once the file left the changelist (committed, reverted) or its session was removed.
  */
 export function DiffWindow({ sessionId, path }: { sessionId: string; path: string }) {
-  const saveShortcut = useShortcutLabel("editor.save");
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId) ?? null);
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
   const ensureChat = useHuntStore((state) => state.ensureChat);
@@ -190,12 +188,12 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
       <div ref={headerRef} data-tauri-drag-region="" className={`${HEADER_BAR} border-b border-(--line) pr-3 text-xs`}>
         <span
           data-tauri-drag-region=""
-          className="min-w-0 truncate pr-2 pl-23 font-mono text-neutral-300"
+          className="flex min-w-0 items-center pr-2 pl-23 font-mono text-neutral-300"
           style={lineNumbersLeft === null ? { flex: "1 1 0%" } : { width: lineNumbersLeft, flexShrink: 0 }}
           title={path}
         >
-          {path}
-          {isDirty ? <span className="ml-1 text-amber-300" title="Unsaved changes">●</span> : null}
+          <span data-tauri-drag-region="" className="truncate">{path}</span>
+          {isDirty ? <span data-tauri-drag-region="" className="ml-1.5 size-2 shrink-0 rounded-full bg-blue-400" title="Unsaved changes" /> : null}
         </span>
         <div data-tauri-drag-region="" className={`flex items-center gap-2 self-stretch ${lineNumbersLeft === null ? "" : "flex-1"}`}>
           {pullRequest ? (
@@ -205,15 +203,6 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
           ) : null}
           {stat ? <ChangeBadge added={stat.added} removed={stat.removed} /> : null}
           {lineNumbersLeft === null ? null : <span data-tauri-drag-region="" className="flex-1 self-stretch" />}
-          <button
-            type="button"
-            disabled={!isDirty}
-            onClick={() => editorRef.current?.save()}
-            className={`${SURFACE_BUTTON_XS} ${isDirty ? "border border-amber-400/60 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20" : SECONDARY}`}
-            title={saveShortcut ? `Save (${saveShortcut} inside the editor)` : "Save"}
-          >
-            Save
-          </button>
           <button type="button" onClick={() => setMode(mode === "split" ? "unified" : "split")} className={SECONDARY_BUTTON_XS}>
             {mode === "split" ? "Split" : "Unified"}
           </button>

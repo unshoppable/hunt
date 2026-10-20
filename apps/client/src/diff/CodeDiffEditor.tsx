@@ -20,8 +20,6 @@ import { WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
 setupMonaco();
 
 export type CodeDiffEditorHandle = {
-  /** Saves the current editor content, same as Cmd/Ctrl+S inside the editor. */
-  save: () => void;
   /** Scrolls to the top and opens the box for a review comment on the whole file there; only in a pull request review. */
   commentOnFile: () => void;
   /** Throws away unsaved edits; call it when the host drops them (another file is shown), since the document outlives the editor. */
@@ -177,13 +175,6 @@ export function CodeDiffEditor({
   }
 
   useImperativeHandle(ref, () => ({
-    save: () => {
-      if (readOnly) return;
-      const content = modifiedEditorRef.current?.getValue();
-      if (content !== undefined) {
-        onSaveRef.current(content);
-      }
-    },
     commentOnFile: () => {
       const editor = modifiedEditorRef.current;
       if (readOnly || !isReviewRef.current || !editor) return;

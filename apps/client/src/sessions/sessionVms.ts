@@ -67,10 +67,10 @@ export function sessionVmStatusLabel(vm: SessionVm): string {
 
 /**
  * The state the mark of a listed VM shows, like the sidebar's for a session this Mac knows: busy while the agent works
- * on its running VM, amber while it waits for an answer on the issue, blue otherwise since it runs on a VM.
+ * on its running VM, with a `?` badge while it waits for an answer on the issue.
  */
-export function sessionVmMarkState(vm: SessionVm): { isBusy: boolean; tone: "question" | "remote" } {
-  return { isBusy: vm.isRunning && vm.agent === "running", tone: vm.agent === "question" ? "question" : "remote" };
+export function sessionVmMarkState(vm: SessionVm): { isBusy: boolean; hasQuestion: boolean } {
+  return { isBusy: vm.isRunning && vm.agent === "running", hasQuestion: vm.agent === "question" };
 }
 
 /** The chip and its colour for the state of a poller session's agent; null while it runs or is unknown. */

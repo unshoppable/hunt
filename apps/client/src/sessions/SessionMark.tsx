@@ -11,17 +11,14 @@ const SPINNER_ARC = 0.3;
 /** Radius of the question badge at the top right corner. */
 const BADGE_RADIUS = 4.5;
 
-/**
- * The colour of a mark: amber while the agent waits for an answer, blue for a session that runs on a VM, green for a
- * response the user has not looked at yet.
- */
-export type MarkTone = "question" | "remote" | "unseen" | "idle";
+/** The colour of a mark: blue for a session that runs on a VM, green for a response the user has not looked at yet. */
+export type MarkTone = "remote" | "unseen" | "idle";
 
 /**
  * Circle with a session's mark (A, B, … for sessions, 1, 2, … for sub sessions), showing the state of its agent from
  * the store: while the agent works, an arc runs around the outline; an agent that ended its turn with a question
- * turns the mark amber with a `?` badge at the corner, a session on a VM is blue (its sub sessions run here and stay
- * grey), a response the user has not looked at yet turns a local one green.
+ * adds a `?` badge at the corner, a session on a VM is blue (its sub sessions run here and stay grey), a response the
+ * user has not looked at yet turns a local one green unless it asks a question.
  */
 export function SessionMark({ sessionId, mark, title }: { sessionId: string; mark: string; title?: string }) {
   const isBusy = useHuntStore((state) => state.chats[sessionId]?.isBusy ?? false);
@@ -33,8 +30,8 @@ export function SessionMark({ sessionId, mark, title }: { sessionId: string; mar
   });
   const isRemote = useHuntStore((state) => runsOnVm(sessionId, state.sessions));
   const hasUnseenActivity = useHuntStore((state) => state.activeSessionId !== sessionId && (state.chats[sessionId]?.hasUnseenActivity ?? false));
-  const tone = hasQuestion ? "question" : isRemote ? "remote" : hasUnseenActivity ? "unseen" : "idle";
-  return <MarkGlyph mark={mark} isBusy={isBusy} tone={tone} label={title ?? mark} title={title} />;
+  const tone = isRemote ? "remote" : hasUnseenActivity && !hasQuestion ? "unseen" : "idle";
+  return <MarkGlyph mark={mark} isBusy={isBusy} hasQuestion={hasQuestion} tone={tone} label={title ?? mark} title={title} />;
 }
 
 /**
@@ -43,12 +40,26 @@ export function SessionMark({ sessionId, mark, title }: { sessionId: string; mar
  * stretches into a pill. Drawn as one SVG so outline and text share the same sub-pixel offset; HTML text snaps its
  * baseline to whole pixels and drifts. `label` names the session for assistive technology.
  */
-export function MarkGlyph({ mark, isBusy, tone, label, title }: { mark: string; isBusy: boolean; tone: MarkTone; label: string; title?: string }) {
+export function MarkGlyph({
+  mark,
+  isBusy,
+  hasQuestion,
+  tone,
+  label,
+  title,
+}: {
+  mark: string;
+  isBusy: boolean;
+  hasQuestion: boolean;
+  tone: MarkTone;
+  label: string;
+  title?: string;
+}) {
   const width = HEIGHT + Math.max(0, mark.length - 1) * CHARACTER_WIDTH;
   const diameter = HEIGHT - 1;
   // Outline length of the rounded rect: two straight edges plus one full circle from the two caps.
   const perimeter = 2 * (width - HEIGHT) + Math.PI * diameter;
-  const state = isBusy ? "agent is working" : tone === "question" ? "waiting for an answer" : tone === "unseen" ? "unseen response" : tone === "remote" ? "on a VM" : null;
+  const state = isBusy ? "agent is working" : hasQuestion ? "waiting for an answer" : tone === "unseen" ? "unseen response" : tone === "remote" ? "on a VM" : null;
   return (
     <svg
       width={width}
@@ -79,7 +90,7 @@ export function MarkGlyph({ mark, isBusy, tone, label, title }: { mark: string; 
       <text x={width / 2} y={BASELINE} textAnchor="middle" fill="currentColor" className="text-[11px] font-normal">
         {mark}
       </text>
-      {tone === "question" ? (
+      {hasQuestion ? (
         <g aria-hidden="true">
           <circle cx={width - 1.5} cy={1.5} r={BADGE_RADIUS} className="fill-amber-400" />
           <text x={width - 1.5} y={1.5 + 2.6} textAnchor="middle" className="fill-neutral-950 text-[7.5px] font-bold">
@@ -91,11 +102,10 @@ export function MarkGlyph({ mark, isBusy, tone, label, title }: { mark: string; 
   );
 }
 
-const TEXT = { question: "text-amber-300", remote: "text-sky-300", unseen: "text-emerald-300", idle: "text-neutral-300" };
+const TEXT = { remote: "text-sky-300", unseen: "text-emerald-300", idle: "text-neutral-300" };
 const OUTLINE = {
-  question: "fill-amber-400/15 stroke-amber-400/60",
   remote: "fill-sky-400/15 stroke-sky-400/60",
   unseen: "fill-emerald-400/15 stroke-emerald-400/60",
   idle: "",
 };
-const SPINNER = { question: "stroke-amber-300", remote: "stroke-sky-300", unseen: "stroke-emerald-300", idle: "stroke-neutral-200" };
+const SPINNER = { remote: "stroke-sky-300", unseen: "stroke-emerald-300", idle: "stroke-neutral-200" };

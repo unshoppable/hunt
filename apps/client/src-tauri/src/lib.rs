@@ -167,13 +167,11 @@ pub fn run() {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window.app_handle().state::<TerminalRegistry>().close_owned_by(window.label());
             }
-            // The other windows (editor, diff, guardrails, settings) belong to the main window: closing it destroys them too, which
-            // ends the app. `close` would only hide them, since each one's close request hides it.
-            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
-                for (label, other) in window.app_handle().webview_windows() {
-                    if label != "main" {
-                        let _ = other.destroy();
-                    }
+            // The main window's traffic light hides it like a Mac app's: the agents keep running and the Dock icon shows it again.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
                 }
             }
         })
@@ -181,6 +179,13 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             // `run` ends in process::exit, which skips Drop; stop the agent and language server processes explicitly first.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(main) = app.get_webview_window("main") {
+                    let _ = main.show();
+                    let _ = main.set_focus();
+                }
+            }
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 app.state::<TerminalRegistry>().close_all();
                 let registry = app.state::<SessionRegistry>();

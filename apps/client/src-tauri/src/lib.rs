@@ -1,5 +1,6 @@
 mod accounts;
 mod acp;
+mod external_links;
 mod find_in_files;
 mod git;
 mod github;
@@ -31,6 +32,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(external_links::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -165,11 +167,12 @@ pub fn run() {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window.app_handle().state::<TerminalRegistry>().close_owned_by(window.label());
             }
-            // The other windows (editor, diff, guardrails, settings) belong to the main window: closing it closes them too, which ends the app.
+            // The other windows (editor, diff, guardrails, settings) belong to the main window: closing it destroys them too, which
+            // ends the app. `close` would only hide them, since each one's close request hides it.
             if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
                 for (label, other) in window.app_handle().webview_windows() {
                     if label != "main" {
-                        let _ = other.close();
+                        let _ = other.destroy();
                     }
                 }
             }

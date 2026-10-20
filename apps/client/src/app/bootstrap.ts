@@ -97,6 +97,7 @@ export function useAccountsSync(): void {
 export function useBackendEvents(): void {
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
   const applyUpdate = useHuntStore((state) => state.applyUpdate);
+  const applyReplay = useHuntStore((state) => state.applyReplay);
   const applyAttributionChanged = useHuntStore((state) => state.applyAttributionChanged);
   const applyPermission = useHuntStore((state) => state.applyPermission);
   const applyPermissionWithdrawn = useHuntStore((state) => state.applyPermissionWithdrawn);
@@ -112,6 +113,7 @@ export function useBackendEvents(): void {
   useEffect(() => {
     const subscriptions = [
       listenTo("acp:update", (event) => applyUpdate(event.huntSessionId, event.notification)),
+      listenTo("acp:replay", (event) => applyReplay(event.huntSessionId, event.notifications)),
       listenTo("acp:permission", applyPermission),
       listenTo("acp:permission-withdrawn", applyPermissionWithdrawn),
       listenTo("acp:closed", applyClosed),
@@ -133,6 +135,7 @@ export function useBackendEvents(): void {
   }, [
     refreshSessions,
     applyUpdate,
+    applyReplay,
     applyPermission,
     applyPermissionWithdrawn,
     applyClosed,

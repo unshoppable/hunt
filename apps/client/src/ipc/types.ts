@@ -622,6 +622,8 @@ export type HuntChunkMeta = { hunt?: HuntChunk; harness?: HuntChunk };
 type HuntChunk = { hidden?: boolean; at?: string };
 
 export type UpdateEvent = { huntSessionId: string; notification: SessionNotification };
+/** The updates a load of the conversation replayed, in order, sent at once when the load completes. */
+export type ReplayEvent = { huntSessionId: string; notifications: SessionNotification[] };
 export type PermissionEvent = { huntSessionId: string; requestId: string; request: RequestPermissionRequest };
 /** The agent withdrew the permission request `requestId`; a remote session's relay does so when another client answered it. */
 export type PermissionWithdrawnEvent = { huntSessionId: string; requestId: string };

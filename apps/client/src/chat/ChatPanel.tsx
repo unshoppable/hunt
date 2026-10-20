@@ -248,7 +248,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
               </ul>
             </div>
           ) : null}
-          {isConnecting ? (
+          {isConnecting && !(ownerId === sessionId && chat?.isLoading) ? (
             <p className="mt-4 text-[13px] text-neutral-500">{stepLabel ?? "Connecting to the VM…"}</p>
           ) : null}
           {lock === "unreachable" || hasConnectFailed ? (

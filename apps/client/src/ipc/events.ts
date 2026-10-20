@@ -17,6 +17,7 @@ import type {
   RemoteLinkEvent,
   RemoteProgressEvent,
   RemoteSyncEvent,
+  ReplayEvent,
   SummaryEvent,
   TerminalExitEvent,
   TerminalOutputEvent,
@@ -25,6 +26,7 @@ import type {
 
 type EventPayloads = {
   "acp:update": UpdateEvent;
+  "acp:replay": ReplayEvent;
   "acp:permission": PermissionEvent;
   "acp:permission-withdrawn": PermissionWithdrawnEvent;
   "acp:closed": ClosedEvent;

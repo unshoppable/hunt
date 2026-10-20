@@ -338,6 +338,8 @@ export type HuntState = {
   ensureChat: (id: string) => void;
 
   applyUpdate: (huntSessionId: string, notification: SessionNotification) => void;
+  /** Applies the updates a load replayed in one step, as `applyUpdate` would one by one. */
+  applyReplay: (huntSessionId: string, notifications: SessionNotification[]) => void;
   applyPermission: (event: PermissionEvent) => void;
   /** Drops the chat's permission request when it is the withdrawn one. */
   applyPermissionWithdrawn: (event: PermissionWithdrawnEvent) => void;
@@ -407,7 +409,7 @@ export function hasPendingQuestion(chat: SessionChat): boolean {
   return last?.kind === "agent" && asksQuestion(last.text);
 }
 
-/** The turn state the relay of a remote session reports in `_meta.hunt.turn` of a `session_info_update`, if any. */
+/** The turn state the backend or the relay of a remote session reports in `_meta.hunt.turn` of a `session_info_update`, if any. */
 function huntTurnOf(meta: unknown): "running" | "idle" | null {
   const turn = (meta as { hunt?: { turn?: unknown } } | null | undefined)?.hunt?.turn;
   return turn === "running" || turn === "idle" ? turn : null;
@@ -617,12 +619,35 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
   const runningTurnIds = new Set<string>();
   /** Sessions whose running turn `sendPromptNow` interrupted; the queue goes on after the interrupted turn. */
   const interruptedToSendIds = new Set<string>();
+  /** Message ids of the prompts this window shows itself; the backend's echo of them goes to the other windows. */
+  const ownMessageIds = new Set<string>();
 
   function updateChat(id: string, updater: (chat: SessionChat) => SessionChat) {
     set((state) => {
       const current = state.chats[id] ?? createEmptyChat();
       return { chats: { ...state.chats, [id]: updater(current) } };
     });
+  }
+
+  /** Applies the agent's `notifications` to the chat of `id` in one store update, which renders the chat once. */
+  function applyUpdates(id: string, notifications: SessionNotification[]) {
+    // The backend and the relay report a turn as idle before the prompt call of this window returns; that return ends
+    // the turn and sends the next queued prompt, so the reported turn state counts only for turns this window did not start.
+    const applied = notifications.filter((notification) => {
+      const update = notification.update;
+      if (update.sessionUpdate === "session_info_update") return !(huntTurnOf(update._meta) && runningTurnIds.has(id));
+      return !(update.sessionUpdate === "user_message_chunk" && update.messageId && ownMessageIds.has(update.messageId));
+    });
+    for (const notification of applied) {
+      if (notification.update.sessionUpdate === "config_option_update") {
+        useAgentDefaultsStore.getState().rememberOptions(notification.update.configOptions);
+      }
+    }
+    if (!applied.length) return;
+    updateChat(id, (chat) => applied.reduce((current, notification) => reduceChat(current.isStale ? replacedChat(current) : current, notification), chat));
+    if (applied.some((notification) => notification.update.sessionUpdate === "available_commands_update")) {
+      rememberCommandsOf(id);
+    }
   }
 
   /** Keeps the slash commands of the session's chat for the start view of its repository. */
@@ -807,10 +832,16 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
   }
 
   /** Runs the turn of `prompt`, shown as the user's message in the chat. */
-  async function runPromptTurn(id: string, { text, images }: PromptDraft) {
+  async function runPromptTurn(id: string, prompt: PromptDraft) {
+    const item = ownPromptItem(prompt);
+    await runTurn(id, item, () => commands.sendPrompt(id, prompt.text, prompt.images.map((image) => image.path), item.messageId));
+  }
+
+  /** The chat item of a prompt this window sends, under a fresh message id that tells the backend's echo of it apart. */
+  function ownPromptItem({ text, images }: PromptDraft): MessageItem & { messageId: string } {
     const messageId = crypto.randomUUID();
-    const item: ChatItem = { kind: "user", id: nextItemId(), text, images: images.map((image) => assetUrl(image.path)), messageId };
-    await runTurn(id, item, () => commands.sendPrompt(id, text, images.map((image) => image.path), messageId));
+    ownMessageIds.add(messageId);
+    return { kind: "user", id: nextItemId(), text, images: images.map((image) => assetUrl(image.path)), messageId };
   }
 
   /**
@@ -818,9 +849,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
    * With `isActivated` it becomes the active session and replaces the start view.
    */
   function listPlaceholder(placeholder: SessionView, { prompt, draft }: SessionStart, isActivated: boolean) {
-    const items: ChatItem[] = prompt
-      ? [{ kind: "user", id: nextItemId(), text: prompt.text, images: prompt.images.map((image) => assetUrl(image.path)), messageId: crypto.randomUUID() }]
-      : [];
+    const items: ChatItem[] = prompt ? [ownPromptItem(prompt)] : [];
     set((state) => ({
       sessions: [...state.sessions, placeholder],
       creatingIds: [...state.creatingIds, placeholder.id],
@@ -1254,18 +1283,9 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       updateChat(id, (chat) => chat);
     },
 
-    applyUpdate: (huntSessionId, notification) => {
-      if (notification.update.sessionUpdate === "config_option_update") {
-        useAgentDefaultsStore.getState().rememberOptions(notification.update.configOptions);
-      }
-      // The relay reports a turn as idle before the prompt call of this client returns; that return ends the turn and
-      // sends the next queued prompt, so the relay's turn state counts only for turns this client did not start.
-      if (notification.update.sessionUpdate === "session_info_update" && huntTurnOf(notification.update._meta) && runningTurnIds.has(huntSessionId)) return;
-      updateChat(huntSessionId, (chat) => reduceChat(chat.isStale ? replacedChat(chat) : chat, notification));
-      if (notification.update.sessionUpdate === "available_commands_update") {
-        rememberCommandsOf(huntSessionId);
-      }
-    },
+    applyUpdate: (huntSessionId, notification) => applyUpdates(huntSessionId, [notification]),
+
+    applyReplay: (huntSessionId, notifications) => applyUpdates(huntSessionId, notifications),
 
     applyPermission: (event) => {
       updateChat(event.huntSessionId, (chat) => ({

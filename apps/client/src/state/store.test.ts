@@ -477,6 +477,51 @@ describe("unseen activity", () => {
   });
 });
 
+describe("turns of every window", () => {
+  /** The `session_info_update` the backend sends to every window when a turn starts or ends. */
+  function turn(state: "running" | "idle") {
+    return notification({ sessionUpdate: "session_info_update", _meta: { hunt: { turn: state } } });
+  }
+
+  beforeEach(() => {
+    useHuntStore.setState({ chats: {}, sessions: [storedSession(SESSION, "Build it")], creatingIds: [], activeSessionId: SESSION, draft: null });
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("shows the prompt and the running turn another window sent", () => {
+    const { applyUpdate } = useHuntStore.getState();
+    applyUpdate(SESSION, notification({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "mache es analog" }, messageId: "m1" }));
+    applyUpdate(SESSION, turn("running"));
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ isBusy: true, items: [{ kind: "user", text: "mache es analog", messageId: "m1" }] });
+
+    applyUpdate(SESSION, turn("idle"));
+    expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(false);
+  });
+
+  it("shows a prompt it sent once and keeps its turn busy until the prompt call returns", async () => {
+    let finish: (stopReason: string) => void = () => {};
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      if (command !== "send_prompt") return Promise.resolve(undefined);
+      const { messageId } = args as { messageId: string };
+      const { applyUpdate } = useHuntStore.getState();
+      applyUpdate(SESSION, notification({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "go" }, messageId }));
+      applyUpdate(SESSION, turn("running"));
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
+
+    const send = useHuntStore.getState().sendPrompt(SESSION, "go");
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("send_prompt", expect.anything()));
+    useHuntStore.getState().applyUpdate(SESSION, turn("idle"));
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ isBusy: true, items: [{ kind: "user", text: "go" }] });
+
+    finish("EndTurn");
+    await send;
+    expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(false);
+  });
+});
+
 describe("prompt queue", () => {
   const SESSION = "11111111-1111-1111-1111-111111111111";
 

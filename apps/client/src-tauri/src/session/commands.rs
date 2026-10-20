@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use agent_client_protocol::schema::v1::{
     CancelNotification, ConfigOptionUpdate, ContentBlock, ContentChunk, EmbeddedResource, EmbeddedResourceResource, ImageContent, Meta,
     MessageId, PromptRequest, SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigSelectOption, SessionConfigSelectOptions,
-    SessionId, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest, TextContent,
+    SessionId, SessionInfoUpdate, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest, TextContent,
     TextResourceContents,
 };
 use agent_client_protocol::{Agent, ConnectionTo};
@@ -1990,22 +1990,21 @@ async fn run_turn(
     let LiveHandles { connection, acp_session_id, history } = live_session(registry, id).await?;
     note_remote_activity(app, id, chrono::Utc::now());
 
-    // The agent never echoes the prompt back, so the history records it here.
-    let turn_start = {
-        let mut history = history.lock().unwrap();
-        let turn_start = history.len();
-        for block in &blocks {
-            let mut chunk = ContentChunk::new(block.clone()).meta(hidden_meta.clone());
-            chunk.message_id = message_id.clone().map(MessageId::new);
-            history.push(SessionNotification::new(acp_session_id.clone(), SessionUpdate::UserMessageChunk(chunk)));
-        }
-        turn_start
-    };
+    // The agent never echoes the prompt back, so the prompt and the turn's state go into the history and to every window
+    // from here: a window that did not send the prompt shows it and the running turn as well.
+    let turn_start = history.lock().unwrap().len();
+    for block in &blocks {
+        let mut chunk = ContentChunk::new(block.clone()).meta(hidden_meta.clone());
+        chunk.message_id = message_id.clone().map(MessageId::new);
+        publish_update(app, id, &history, SessionNotification::new(acp_session_id.clone(), SessionUpdate::UserMessageChunk(chunk)));
+    }
+    publish_update(app, id, &history, turn_update(&acp_session_id, "running"));
 
     related::set_turn(app, id, true);
     let request = PromptRequest::new(acp_session_id.clone(), blocks).meta(hidden_meta.clone());
     let response = connection.send_request(request).block_task().await;
     related::set_turn(app, id, false);
+    publish_update(app, id, &history, turn_update(&acp_session_id, "idle"));
     message_time::resolve(app.clone(), id, acp_session_id.to_string(), history.clone(), turn_start);
     let response = response.map_err(|error| format!("failed to send the prompt: {error}"))?;
 
@@ -2016,6 +2015,14 @@ async fn run_turn(
     }
 
     Ok(format!("{:?}", response.stop_reason))
+}
+
+/// The `session_info_update` saying whether the session runs a turn (`turn` is `running` or `idle`), in the
+/// `_meta.hunt.turn` shape the relay of a remote session reports it in.
+fn turn_update(acp_session_id: &SessionId, turn: &str) -> SessionNotification {
+    let mut meta = Meta::new();
+    meta.insert("hunt".into(), serde_json::json!({ "turn": turn }));
+    SessionNotification::new(acp_session_id.clone(), SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().meta(meta)))
 }
 
 /// The content blocks of one prompt: the text (left out when blank) followed by one image block per file.

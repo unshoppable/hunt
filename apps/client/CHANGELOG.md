@@ -1,3 +1,13 @@
+## 0.65.0 (2026-10-20)
+
+### 🚀 Features
+
+- **client:** every tree navigates with the arrow keys like WebStorm: ↑/↓ move the selection, → opens a folder or steps into it, ← closes it or goes to its parent, Home/End jump to the ends, Enter toggles a folder or opens the file, Space checks the row ([9b1ea51](https://github.com/unshoppable/hunt/commit/9b1ea51))
+
+### 🩹 Fixes
+
+- **client:** usages find calls the agent added to a file that is loaded without a tab, e.g. as an import, since every loaded document reloads from disk after an agent edit ([6992b02](https://github.com/unshoppable/hunt/commit/6992b02))
+
 ## 0.64.0 (2026-10-20)
 
 ### 🚀 Features

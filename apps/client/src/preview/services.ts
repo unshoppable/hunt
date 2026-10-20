@@ -1,4 +1,4 @@
-import type { PreviewService, PreviewServiceState, PreviewStatus } from "../ipc/types";
+import type { PreviewService, PreviewServiceState, PreviewStatus, TmuxWindow } from "../ipc/types";
 import handoffStartPrompt from "../../prompts/handoff-start.user-prompt.md?raw";
 
 /** How a state reads in the Preview tab: answering, on its way, needing a look, broken, or at rest. */
@@ -61,6 +61,16 @@ export const HANDOFF_START_PROMPT = handoffStartPrompt.trim();
 /** Whether a service of hunt.json runs or is starting. */
 export function hasRunningService(status: PreviewStatus): boolean {
   return status.services.some((service) => service.state === "running" || service.state === "starting");
+}
+
+/** Whether the Preview tab carries a green dot: a service of hunt.json runs or starts on the running VM. */
+export function isPreviewActive(status: PreviewStatus | null): boolean {
+  return Boolean(status?.vmRunning && hasRunningService(status));
+}
+
+/** Whether the Terminal tab carries a green dot: a service of hunt.json runs or starts, or a tmux window exists. */
+export function isTerminalActive(status: PreviewStatus | null, windows: readonly TmuxWindow[] | null): boolean {
+  return isPreviewActive(status) || Boolean(windows?.length);
 }
 
 /** Whether a service of hunt.json answers HTTP on the VM. */

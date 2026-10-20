@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { commands } from "../ipc/commands";
-import type { PreviewStatus } from "../ipc/types";
+import type { PreviewStatus, TmuxWindow } from "../ipc/types";
 import { hasRespondingService, withLastKnown } from "../preview/services";
 import { errorText } from "../ui/useLoad";
 import { useHuntStore } from "./store";
@@ -17,9 +17,11 @@ export type SessionPreview = {
   isRefreshing: boolean;
   /** The agent was asked to start the services: the Preview tab polls often until one of them answers. */
   awaitingStart: boolean;
+  /** The windows of the VM's tmux session `app` in tmux's order; null until the Terminal tab first read them. */
+  windows: TmuxWindow[] | null;
 };
 
-export const EMPTY_PREVIEW: SessionPreview = { status: null, error: null, isRefreshing: false, awaitingStart: false };
+export const EMPTY_PREVIEW: SessionPreview = { status: null, error: null, isRefreshing: false, awaitingStart: false, windows: null };
 
 type PreviewState = {
   previews: Record<string, SessionPreview>;
@@ -28,13 +30,21 @@ type PreviewState = {
    * `awaitingStart` once a service answers.
    */
   refresh: (id: string) => Promise<void>;
+  /** Reads the windows of the tmux session `app` on the session's VM; only the latest read lands. Rejects on failure. */
+  refreshWindows: (id: string) => Promise<void>;
   /** Sends the agent `START_APP_PROMPT` and shows the Preview tab, which polls often until a service answers. */
   startApp: (id: string) => void;
   /** Ends `awaitingStart` before a service answers. */
   stopWaiting: (id: string) => void;
 };
 
-/** The previews of remote sessions; the panel polls them while it shows one (see preview/PreviewPanel.tsx). */
+/** Bumped per session by every read of its tmux windows, so that only the latest one lands. */
+const windowReads = new Map<string, number>();
+
+/**
+ * The previews of remote sessions; the Preview and Terminal tabs poll them (see preview/PreviewPanel.tsx and
+ * terminal/TerminalPanel.tsx).
+ */
 export const usePreviewStore = create<PreviewState>((set) => {
   function update(id: string, change: (preview: SessionPreview) => SessionPreview) {
     set((state) => ({ previews: { ...state.previews, [id]: change(state.previews[id] ?? EMPTY_PREVIEW) } }));
@@ -57,6 +67,19 @@ export const usePreviewStore = create<PreviewState>((set) => {
         update(id, (current) => ({ ...current, error: errorText(reason) }));
       } finally {
         update(id, (current) => ({ ...current, isRefreshing: false }));
+      }
+    },
+
+    refreshWindows: async (id) => {
+      const generation = (windowReads.get(id) ?? 0) + 1;
+      windowReads.set(id, generation);
+      try {
+        const windows = await commands.terminalWindows(id);
+        if (windowReads.get(id) !== generation) return;
+        update(id, (current) => ({ ...current, windows }));
+      } catch (reason) {
+        if (windowReads.get(id) !== generation) return;
+        throw reason;
       }
     },
 

@@ -11,10 +11,11 @@ import { errorText } from "../ui/useLoad";
 import { nextActiveKey, terminalTabs, windowTabKey, type TerminalTab } from "./terminalTabs";
 import { TerminalView } from "./TerminalView";
 
-/** How often the panel asks the VM which processes run, while it shows and the session is connected. */
+/** How often the panel asks the VM which processes run while the session is connected. */
 const POLL_MS = 5000;
 
 const NO_SERVICES: PreviewService[] = [];
+const NO_WINDOWS: TmuxWindow[] = [];
 
 const TONE_DOT: Record<Tone, string> = {
   ok: "bg-green-400",
@@ -33,46 +34,41 @@ type FocusRequest = { key: string | null; count: number };
  * session `app`, in which the agent runs its other processes, take input. "+" opens a shell in a new window, × ends a
  * window and its process.
  * The panel stays mounted while another tab shows, so its terminals keep their connections. It asks the VM for the
- * processes whenever it shows, then every few seconds while the session is connected, which proves a running VM.
+ * processes when it mounts and whenever it shows, then every few seconds while the session is connected, which proves
+ * a running VM, also while another tab shows.
  */
 export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isVisible: boolean }) {
   const isLive = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === sessionId)?.isLive));
   const hasPreviewDomain = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === sessionId)?.remote?.previewDomain));
   const services = usePreviewStore((state) => state.previews[sessionId]?.status?.services ?? NO_SERVICES);
   const isVmRunning = usePreviewStore((state) => state.previews[sessionId]?.status?.vmRunning ?? true);
+  const windows = usePreviewStore((state) => state.previews[sessionId]?.windows ?? null);
   const refreshServices = usePreviewStore((state) => state.refresh);
-  const [windows, setWindows] = useState<TmuxWindow[]>([]);
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const refreshWindows = usePreviewStore((state) => state.refreshWindows);
   const [error, setError] = useState<string | null>(null);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   /** The tabs shown at least once; each keeps its terminal while its process exists. */
   const [openedKeys, setOpenedKeys] = useState<string[]>([]);
   const [focusRequest, setFocusRequest] = useState<FocusRequest>({ key: null, count: 0 });
   const [isOpeningShell, setIsOpeningShell] = useState(false);
-  const tabs = useMemo(() => terminalTabs(services.filter((service) => isServiceInUse(service, isVmRunning)), windows), [services, isVmRunning, windows]);
+  const tabs = useMemo(
+    () => terminalTabs(services.filter((service) => isServiceInUse(service, isVmRunning)), windows ?? NO_WINDOWS),
+    [services, isVmRunning, windows],
+  );
   const previousTabsRef = useRef<TerminalTab[]>([]);
   const wasVisibleRef = useRef(isVisible);
-  /** Bumped by every load of the windows, so that only the latest one lands. */
-  const loadGenerationRef = useRef(0);
 
   const loadWindows = useCallback(async () => {
-    const generation = ++loadGenerationRef.current;
     try {
-      const next = await commands.terminalWindows(sessionId);
-      if (generation !== loadGenerationRef.current) return;
-      setWindows(next);
+      await refreshWindows(sessionId);
       setError(null);
     } catch (reason) {
-      if (generation === loadGenerationRef.current) {
-        setError(errorText(reason));
-      }
-    } finally {
-      setHasLoaded(true);
+      setError(errorText(reason));
     }
-  }, [sessionId]);
+  }, [sessionId, refreshWindows]);
 
+  // Reads at mount and whenever the tab shows; polls behind other tabs too, so the tab strip's green dot stays current.
   useEffect(() => {
-    if (!isVisible) return;
     const refresh = () => {
       void loadWindows();
       if (hasPreviewDomain) {
@@ -183,7 +179,7 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
               focusRequest={focusRequest.key === tab.key ? focusRequest.count : 0}
             />
           ))}
-        {hasLoaded && !tabs.length ? (
+        {windows && !tabs.length ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-[13px] text-neutral-500">
             <p>No process runs on the VM yet.</p>
             <button type="button" onClick={() => void openShell()} disabled={isOpeningShell} className={SECONDARY_BUTTON_XS}>

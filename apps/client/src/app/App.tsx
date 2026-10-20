@@ -19,6 +19,8 @@ import { EMPTY_IDE_SESSION, useIdeStore } from "../ide/ideStore";
 import { allPanes } from "../ide/paneGrid";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
 import { PreviewPanel } from "../preview/PreviewPanel";
+import { isPreviewActive, isTerminalActive } from "../preview/services";
+import { usePreviewStore } from "../state/preview";
 import { TerminalPanel } from "../terminal/TerminalPanel";
 import { HEADER_BAR } from "../ui/bars";
 import { TAB_ACTIVE, TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons";
@@ -36,6 +38,14 @@ export function App() {
   const activeRemoteInstance = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.remote?.vm.instance ?? null);
   /** Whether the active session's worktree exists here; a remote session adopted from its VM gets one with its first sync. */
   const hasActiveWorktree = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.hasLocalWorktree ?? false);
+  /** Whether the active session reviews a pull request; only then does the PR Description tab show. */
+  const isReviewingPullRequest = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === state.activeSessionId)?.pullRequest));
+  /** Something runs on the active session's VM: a green dot marks the Preview or the Terminal tab. */
+  const isPreviewBusy = usePreviewStore((state) => isPreviewActive((activeSessionId && state.previews[activeSessionId]?.status) || null));
+  const isTerminalBusy = usePreviewStore((state) => {
+    const preview = activeSessionId ? state.previews[activeSessionId] : undefined;
+    return isTerminalActive(preview?.status ?? null, preview?.windows ?? null);
+  });
   const storedTab = useHuntStore((state) => state.rightTab);
   const setRightTab = useHuntStore((state) => state.setRightTab);
   const openFile = useIdeStore((state) => state.openFile);
@@ -46,8 +56,11 @@ export function App() {
   const [findInFiles, setFindInFiles] = useState<{ initialText: string | null } | null>(null);
   const hasLocalWorktree = !isCreatingActive && hasActiveWorktree;
   const canSearchFiles = Boolean(activeSessionId) && !draft && hasLocalWorktree;
-  /** A local session has no preview or terminal; it shows the diff instead. */
-  const rightTab = !activeRemoteInstance && (storedTab === "preview" || storedTab === "terminal") ? "diff" : storedTab;
+  /** A local session has no preview or terminal, a session without a pull request no description; they show the diff instead. */
+  const rightTab =
+    (!activeRemoteInstance && (storedTab === "preview" || storedTab === "terminal")) || (!isReviewingPullRequest && storedTab === "pullRequest")
+      ? "diff"
+      : storedTab;
 
   // ⌘P / double shift: "Go to File" for the active session's worktree.
   useFileSearchShortcut(() => {
@@ -121,11 +134,13 @@ export function App() {
               <TabButton isActive={rightTab === "git"} onClick={() => setRightTab("git")} label="Git" />
               <TabButton isActive={rightTab === "editor"} onClick={() => setRightTab("editor")} label="Editor" />
               <TabButton isActive={rightTab === "graph"} onClick={() => setRightTab("graph")} label="Architecture" />
-              <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} label="PR Description" />
+              {isReviewingPullRequest ? (
+                <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} label="PR Description" />
+              ) : null}
               {activeRemoteInstance ? (
                 <>
-                  <TabButton isActive={rightTab === "preview"} onClick={() => setRightTab("preview")} label="Preview" />
-                  <TabButton isActive={rightTab === "terminal"} onClick={() => setRightTab("terminal")} label="Terminal" />
+                  <TabButton isActive={rightTab === "preview"} onClick={() => setRightTab("preview")} label="Preview" hasActivity={isPreviewBusy} />
+                  <TabButton isActive={rightTab === "terminal"} onClick={() => setRightTab("terminal")} label="Terminal" hasActivity={isTerminalBusy} />
                 </>
               ) : null}
             </nav>
@@ -198,14 +213,16 @@ function NoLocalWorktree({ sessionId }: { sessionId: string }) {
   return <div className="flex h-full items-center justify-center px-8 text-center text-[14px] text-neutral-500">{message}</div>;
 }
 
-function TabButton({ isActive, onClick, label }: { isActive: boolean; onClick: () => void; label: string }) {
+/** A tab of the inspector; `hasActivity` adds a small green dot after the label. */
+function TabButton({ isActive, onClick, label, hasActivity = false }: { isActive: boolean; onClick: () => void; label: string; hasActivity?: boolean }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`${TAB_BUTTON} ${isActive ? TAB_ACTIVE : TAB_INACTIVE}`}
+      className={`${TAB_BUTTON} gap-1.5 ${isActive ? TAB_ACTIVE : TAB_INACTIVE}`}
     >
       {label}
+      {hasActivity ? <span className="size-1.5 shrink-0 rounded-full bg-green-400" title="Something runs on the VM" /> : null}
     </button>
   );
 }

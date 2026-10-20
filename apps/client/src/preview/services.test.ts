@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PreviewService, PreviewStatus } from "../ipc/types";
-import { describePreview, describeService, hasRespondingService, hasRunningService, isServiceInUse, offersStart, shouldPollFast, withLastKnown } from "./services";
+import { describePreview, describeService, hasRespondingService, hasRunningService, isPreviewActive, isServiceInUse, isTerminalActive, offersStart, shouldPollFast, withLastKnown } from "./services";
 
 function service(name: string, patch: Partial<PreviewService> = {}): PreviewService {
   return {
@@ -78,6 +78,22 @@ describe("hasRunningService and hasRespondingService", () => {
     expect(hasRespondingService(starting)).toBe(false);
     expect(hasRespondingService(status([service("api", { state: "running", responds: true })]))).toBe(true);
     expect(hasRunningService(status([service("api", { state: "failed" })]))).toBe(false);
+  });
+});
+
+describe("isPreviewActive and isTerminalActive", () => {
+  it("marks the Preview tab while a service runs or starts on a running VM", () => {
+    expect(isPreviewActive(null)).toBe(false);
+    expect(isPreviewActive(status([service("api", { state: "starting" })]))).toBe(true);
+    expect(isPreviewActive(status([service("api", { state: "failed" })]))).toBe(false);
+    expect(isPreviewActive(status([service("api", { state: "running" })], { vmRunning: false }))).toBe(false);
+  });
+
+  it("marks the Terminal tab while a service runs or a tmux window exists", () => {
+    expect(isTerminalActive(status([service("api", { state: "running" })]), null)).toBe(true);
+    expect(isTerminalActive(status([service("api")]), [{ id: "@1", name: "shell" }])).toBe(true);
+    expect(isTerminalActive(status([service("api")]), [])).toBe(false);
+    expect(isTerminalActive(null, null)).toBe(false);
   });
 });
 

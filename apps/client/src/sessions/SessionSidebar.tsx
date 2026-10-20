@@ -75,6 +75,8 @@ export function SessionSidebar() {
   const [menu, setMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null);
   /** The session the push target dialog is open for. */
   const [retargetingId, setRetargetingId] = useState<string | null>(null);
+  /** Why the last context menu action failed; shown above the list until dismissed. */
+  const [menuError, setMenuError] = useState<string | null>(null);
   const menuSession = menu ? (sessions.find((session) => session.id === menu.sessionId) ?? null) : null;
   const retargeting = retargetingId ? (sessions.find((session) => session.id === retargetingId) ?? null) : null;
 
@@ -204,6 +206,14 @@ export function SessionSidebar() {
       {remoteSync.error ? (
         <p className="mx-2 mb-2 rounded-md bg-red-400/10 px-2.5 py-1.5 text-[13px] break-words text-red-300">
           Refreshing the remote sessions failed: {remoteSync.error}
+        </p>
+      ) : null}
+      {menuError ? (
+        <p className="mx-2 mb-2 flex items-start gap-2 rounded-md bg-red-400/10 px-2.5 py-1.5 text-[13px] break-words text-red-300">
+          <span className="min-w-0 flex-1">{menuError}</span>
+          <button type="button" onClick={() => setMenuError(null)} aria-label="Dismiss" className="shrink-0 rounded p-0.5 hover:bg-white/10 hover:text-white">
+            <CloseIcon className="size-3" />
+          </button>
         </p>
       ) : null}
       <ul ref={listRef} className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-2 font-(family-name:--sidebar-font-family) text-(length:--sidebar-font-size) leading-(--sidebar-line-height)">
@@ -342,9 +352,14 @@ export function SessionSidebar() {
           y={menu.y}
           entries={sessionMenuEntries(menuSession, sessions)}
           onClose={() => setMenu(null)}
-          onPick={() => {
+          onPick={(entry) => {
             setMenu(null);
-            setRetargetingId(menuSession.id);
+            setMenuError(null);
+            if (entry.kind === "retarget") {
+              setRetargetingId(menuSession.id);
+              return;
+            }
+            void commands.openWorktreeInTerminal(menuSession.id).catch((reason) => setMenuError(String(reason)));
           }}
         />
       ) : null}
@@ -355,9 +370,14 @@ export function SessionSidebar() {
 }
 
 /** The context menu of the top-level session `session` in the sidebar. */
-function sessionMenuEntries(session: SessionView, sessions: SessionView[]): GitMenuEntry<"retarget">[] {
-  const disabledReason = remoteOf(session, sessions)?.origin === "swf" ? "A poller session pushes its own branch" : !session.pushTarget ? "The session has no local worktree yet; connect it first" : null;
-  return [{ kind: "retarget", label: "Change Push Target…", disabledReason, isDanger: false, startsGroup: false }];
+function sessionMenuEntries(session: SessionView, sessions: SessionView[]): GitMenuEntry<"terminal" | "retarget">[] {
+  const noWorktree = !session.hasLocalWorktree ? "The session has no local worktree yet; connect it first" : null;
+  const retargetDisabledReason =
+    remoteOf(session, sessions)?.origin === "swf" ? "A poller session pushes its own branch" : !session.pushTarget ? "The session has no local worktree yet; connect it first" : null;
+  return [
+    { kind: "terminal", label: "Open in Terminal", disabledReason: noWorktree, isDanger: false, startsGroup: false },
+    { kind: "retarget", label: "Change Push Target…", disabledReason: retargetDisabledReason, isDanger: false, startsGroup: true },
+  ];
 }
 
 /** The push target dialog for `session`, whose pushes land on `target` now, with the fetched branches of origin as choices. */

@@ -223,6 +223,8 @@ export const commands = {
   openFileInWebstorm: (id: string, path: string, line: number, column: number) =>
     invoke<void>("open_file_in_webstorm", { id, path, line, column }),
   openChangedFilesDiffInWebstorm: (id: string) => invoke<void>("open_changed_files_diff_in_webstorm", { id }),
+  /** Opens a shell in the session's worktree: a new WezTerm tab when WezTerm is installed, else a Terminal.app window. */
+  openWorktreeInTerminal: (id: string) => invoke<void>("open_worktree_in_terminal", { id }),
   /** Raw content of the session's diagram file of `diagramType`, `null` while there is none; validate with `parseGraph` or `parseShapeDiagram`. */
   readGraph: (id: string, diagramType: DiagramType) => invoke<unknown>("read_graph", { id, diagramType }),
   /** Writes the whole diagram file of `diagramType` after an edit in the Architecture tab; `content` comes from `serializeShapeDiagram`. */

@@ -30,6 +30,7 @@ use crate::github_token;
 use crate::private_files;
 use crate::graph::{self, WatcherRegistry};
 use crate::ide;
+use crate::terminal;
 use crate::lsp::{self, LspRegistry};
 use crate::remote::api::{validate_remote_secret_name, validate_remote_secret_value, GatewayApi, RemoteSecretSummary};
 use crate::remote::preview::PreviewStatus;
@@ -2698,6 +2699,13 @@ async fn push_followed(app: &AppHandle, id: Uuid, worktree: &Path, target: &str)
 pub async fn open_worktree_in_webstorm(app: AppHandle, id: Uuid) -> Result<(), String> {
     let record = worktree_session(&app, id)?;
     ide::open_path(&record.worktree_path).await
+}
+
+/// Opens a shell in the session's worktree in the user's terminal.
+#[tauri::command]
+pub async fn open_worktree_in_terminal(app: AppHandle, id: Uuid) -> Result<(), String> {
+    let record = worktree_session(&app, id)?;
+    terminal::open_directory(&record.worktree_path).await
 }
 
 /// Opens a worktree file in WebStorm with the caret on `line`:`column` (1-based).

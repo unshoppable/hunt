@@ -17,6 +17,7 @@ mod remote;
 mod screenshots;
 mod workspace;
 mod session;
+mod terminal;
 
 use acp::{PermissionRegistry, SessionRegistry};
 use graph::WatcherRegistry;
@@ -132,6 +133,7 @@ pub fn run() {
             session::commands::open_worktree_in_webstorm,
             session::commands::open_file_in_webstorm,
             session::commands::open_changed_files_diff_in_webstorm,
+            session::commands::open_worktree_in_terminal,
             session::commands::read_graph,
             session::commands::write_graph,
             session::commands::graph_status,

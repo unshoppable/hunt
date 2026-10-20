@@ -1,3 +1,9 @@
+## 0.59.0 (2026-10-20)
+
+### 🚀 Features
+
+- **client:** green dots mark the Preview and Terminal tabs while something runs on the VM; the PR Description tab shows only for pull request reviews ([deeda04](https://github.com/unshoppable/hunt/commit/deeda04))
+
 ## 0.58.0 (2026-10-20)
 
 ### 🚀 Features

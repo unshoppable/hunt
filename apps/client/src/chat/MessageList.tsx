@@ -7,6 +7,7 @@ import { monacoLanguageForFence } from "../diff/monaco";
 import type { ChatItem, PlanEntry } from "../ipc/types";
 import { ChatImages } from "./ChatImages";
 import { huntPromptNotice } from "./huntPromptNotice";
+import { formatMessageTime } from "./messageTime";
 import { ToolCallCard } from "./ToolCallCard";
 import { WorkingIndicator } from "./WorkingIndicator";
 
@@ -68,6 +69,7 @@ export function MessageList({
               <div key={item.id} title={item.text} className="flex items-center gap-3 text-[13px] text-neutral-500">
                 <span className="h-px flex-1 bg-(--line)" />
                 {notice}
+                {item.at ? <MessageTime at={item.at} /> : null}
                 <span className="h-px flex-1 bg-(--line)" />
               </div>
             );
@@ -76,10 +78,11 @@ export function MessageList({
             <div key={item.id} className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-(--row-active) px-4 py-2.5 whitespace-pre-wrap break-words text-neutral-100">
               <ChatImages urls={item.images} className={item.text ? "mb-2" : ""} />
               {item.text}
+              {item.at ? <MessageTime at={item.at} className="-mb-1 mt-0.5 block text-right text-neutral-400" /> : null}
             </div>
           );
         }
-        return item.kind === "agent" ? <AgentMessage key={item.id} text={item.text} images={item.images} /> : null;
+        return item.kind === "agent" ? <AgentMessage key={item.id} text={item.text} images={item.images} at={item.at} /> : null;
       })}
       {plan.length ? <PlanCard entries={plan} /> : null}
       {isBusy ? <WorkingIndicator /> : null}
@@ -87,8 +90,17 @@ export function MessageList({
   );
 }
 
-/** Markdown-rendered agent turn with its images below and a copy button for the text that appears on hover. */
-function AgentMessage({ text: reply, images }: { text: string; images: string[] }) {
+/** When a message was written, with the full date and time on hover. */
+function MessageTime({ at, className = "" }: { at: string; className?: string }) {
+  return (
+    <time dateTime={at} title={new Date(at).toLocaleString()} className={`text-[12px] tabular-nums ${className}`}>
+      {formatMessageTime(at, new Date())}
+    </time>
+  );
+}
+
+/** Markdown-rendered agent turn with its images below, the time it was written and a copy button that appears on hover. */
+function AgentMessage({ text: reply, images, at }: { text: string; images: string[]; at?: string }) {
   const text = stripGuardrailMarker(reply);
   const [isCopied, setIsCopied] = useState(false);
 
@@ -103,16 +115,21 @@ function AgentMessage({ text: reply, images }: { text: string; images: string[] 
     <div className="group flex flex-col gap-1">
       {text ? <MarkdownText text={text} /> : null}
       <ChatImages urls={images} className={text ? "mt-1" : ""} />
-      {text ? (
-        <button
-          type="button"
-          onClick={copy}
-          className="-ml-2 inline-flex h-7 w-fit items-center gap-1 rounded-md px-2 text-[13px] font-medium text-neutral-500 opacity-0 transition-opacity hover:bg-(--row-hover) hover:text-neutral-300 group-hover:opacity-100"
-          title="Copy message"
-        >
-          <CopyIcon />
-          {isCopied ? "Copied" : "Copy"}
-        </button>
+      {text || at ? (
+        <div className="flex h-7 items-center gap-1">
+          {at ? <MessageTime at={at} className="text-neutral-500" /> : null}
+          {text ? (
+            <button
+              type="button"
+              onClick={copy}
+              className={`${at ? "" : "-ml-2 "}inline-flex h-7 w-fit items-center gap-1 rounded-md px-2 text-[13px] font-medium text-neutral-500 opacity-0 transition-opacity hover:bg-(--row-hover) hover:text-neutral-300 group-hover:opacity-100`}
+              title="Copy message"
+            >
+              <CopyIcon />
+              {isCopied ? "Copied" : "Copy"}
+            </button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

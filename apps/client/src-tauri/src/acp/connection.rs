@@ -22,8 +22,10 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use super::message_time::{self, TranscriptTimes};
 use crate::accounts;
 use crate::graph;
+use crate::remote::claude_dir;
 use crate::session::attribution;
 
 const ACP_SCRIPT: &str = "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
@@ -291,6 +293,12 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
     let notify_app = app.clone();
     let permission_app = app.clone();
     let session_ready = ready.clone();
+    // The message times of the transcript while a load replays it; `None` once the session is live.
+    let replay_times: Arc<Mutex<Option<TranscriptTimes>>> = Arc::new(Mutex::new(match &start {
+        SessionStart::Load { acp_session_id, .. } => Some(claude_dir().map(|dir| message_time::transcript_times(&dir, acp_session_id)).unwrap_or_default()),
+        SessionStart::New { .. } => None,
+    }));
+    let notify_replay_times = replay_times.clone();
 
     let result = Client
         .builder()
@@ -298,6 +306,7 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
         .on_receive_notification(
             async move |mut notification: SessionNotification, _connection| {
                 graph::hide_replayed_refresh(&mut notification);
+                message_time::stamp_notification(&mut notification, notify_replay_times.lock().unwrap().as_ref());
                 if let Some(worktree) = &worktree {
                     attribution::observe(&notify_app, hunt_session_id, worktree, &notification);
                 }
@@ -324,7 +333,7 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
             on_receive_request!(),
         )
         .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
-            run_session(connection, start, system_prompt, may_start_over, session_ready, shutdown).await
+            run_session(connection, start, system_prompt, may_start_over, session_ready, replay_times, shutdown).await
         })
         .await;
 
@@ -338,18 +347,20 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
     let _ = finished.send(());
 }
 
-/// Establishes the session on an open connection, hands it over through `ready` and then keeps the connection
-/// alive until `shutdown` fires or the agent closes its side.
+/// Establishes the session on an open connection, ends the replay of its transcript (`replay_times`), hands it over
+/// through `ready` and then keeps the connection alive until `shutdown` fires or the agent closes its side.
 async fn run_session(
     connection: ConnectionTo<Agent>,
     start: SessionStart,
     system_prompt: String,
     may_start_over: bool,
     ready: ReadyHandoff,
+    replay_times: Arc<Mutex<Option<TranscriptTimes>>>,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<(), Error> {
     // A failed setup is not fired here: it surfaces as the connection's result, which fires the handoff with it.
     let (acp_session_id, config_options) = establish(&connection, start, &system_prompt, may_start_over).await?;
+    *replay_times.lock().unwrap() = None;
     ready.fire(Ok((acp_session_id, config_options, connection.clone())));
 
     tokio::select! {

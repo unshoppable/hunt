@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use crate::accounts;
 use crate::acp::{
-    connect, publish_update, system_prompt_append, AgentTransport, LiveHandles, PermissionRegistry, SessionRegistry,
+    connect, message_time, publish_update, system_prompt_append, AgentTransport, LiveHandles, PermissionRegistry, SessionRegistry,
     SessionStart,
 };
 use crate::find_in_files::{self, FindRegistry, TextQuery, TextSearchResult};
@@ -1959,7 +1959,8 @@ fn latest_config_options(history: &[SessionNotification]) -> Option<&[SessionCon
 }
 
 /// Records `blocks` as a user turn, sends them and resolves with the stop reason once the agent finished.
-/// `hidden_meta` marks the recorded chunks as a hidden turn; a visible turn is summarized afterwards.
+/// `hidden_meta` marks the recorded chunks as a hidden turn; a visible turn is summarized afterwards. The chunks carry
+/// the time the turn was sent (`acp::message_time`).
 async fn run_turn(
     app: &AppHandle,
     registry: &SessionRegistry,
@@ -1974,8 +1975,9 @@ async fn run_turn(
     let turn_start = {
         let mut history = history.lock().unwrap();
         let turn_start = history.len();
+        let at = message_time::now();
         for block in &blocks {
-            let chunk = ContentChunk::new(block.clone()).meta(hidden_meta.clone());
+            let chunk = ContentChunk::new(block.clone()).meta(Some(message_time::with_time(hidden_meta.clone(), &at)));
             history.push(SessionNotification::new(acp_session_id.clone(), SessionUpdate::UserMessageChunk(chunk)));
         }
         turn_start

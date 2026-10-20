@@ -455,18 +455,18 @@ function withBlock(message: MessageItem, block: ContentBlock): MessageItem {
   return url ? { ...message, images: [...message.images, url] } : { ...message, text: message.text + imagePlaceholder(block) };
 }
 
-/** Adds one block to the last item when it is a message of `kind`, or starts a new message of `kind` with it. */
-function appendMessageBlock(items: ChatItem[], kind: MessageItem["kind"], block: ContentBlock): ChatItem[] {
+/** Adds one block to the last item when it is a message of `kind`, or starts a new message of `kind` written `at` with it. */
+function appendMessageBlock(items: ChatItem[], kind: MessageItem["kind"], block: ContentBlock, at: string | undefined): ChatItem[] {
   const last = items[items.length - 1];
   if (last?.kind === kind) return [...items.slice(0, -1), withBlock(last, block)];
-  return [...items, withBlock({ kind, id: nextItemId(), text: "", images: [] }, block)];
+  return [...items, withBlock({ kind, id: nextItemId(), text: "", images: [], at }, block)];
 }
 
 /** Adds one block of a user turn to the last user item; an image block becomes a data URL the bubble can show. */
-function appendUserBlock(items: ChatItem[], block: ContentBlock): ChatItem[] {
+function appendUserBlock(items: ChatItem[], block: ContentBlock, at: string | undefined): ChatItem[] {
   // A resource block is the file content Hunt attaches to a prompt (see the backend's `send_prompt`), not something the user typed.
   if (block.type === "resource") return items;
-  return appendMessageBlock(items, "user", block);
+  return appendMessageBlock(items, "user", block, at);
 }
 
 /** Updates that carry the agent's output for the running turn; the chat leaves them out of a turn Hunt sent itself. */
@@ -478,6 +478,11 @@ function isHiddenChunk(meta: unknown): boolean {
   // Turns replayed from a transcript older than the name Hunt still carry the meta under `harness`.
   const hunt = chunkMeta?.hunt ?? chunkMeta?.harness;
   return Boolean(hunt?.hidden);
+}
+
+/** When the message of a chunk was written, as the backend stamped it. */
+function chunkTime(meta: unknown): string | undefined {
+  return (meta as HuntChunkMeta | null | undefined)?.hunt?.at;
 }
 
 function toToolCallView(toolCall: ToolCall): ToolCallView {
@@ -558,9 +563,9 @@ function reduceChat(chat: SessionChat, notification: SessionNotification): Sessi
   switch (update.sessionUpdate) {
     case "user_message_chunk":
       if (isHiddenChunk(update._meta)) return { ...chat, isHiddenTurn: true };
-      return { ...chat, items: appendUserBlock(chat.items, update.content), isHiddenTurn: false };
+      return { ...chat, items: appendUserBlock(chat.items, update.content, chunkTime(update._meta)), isHiddenTurn: false };
     case "agent_message_chunk":
-      return { ...chat, items: appendMessageBlock(chat.items, "agent", update.content) };
+      return { ...chat, items: appendMessageBlock(chat.items, "agent", update.content, chunkTime(update._meta)) };
     case "agent_thought_chunk":
       return { ...chat, items: appendThought(chat.items, describeContentBlock(update.content)) };
     case "tool_call":
@@ -793,7 +798,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
 
   /** Runs the turn of `prompt`, shown as the user's message in the chat. */
   async function runPromptTurn(id: string, { text, images }: PromptDraft) {
-    const item: ChatItem = { kind: "user", id: nextItemId(), text, images: images.map((image) => assetUrl(image.path)) };
+    const item: ChatItem = { kind: "user", id: nextItemId(), text, images: images.map((image) => assetUrl(image.path)), at: new Date().toISOString() };
     await runTurn(id, item, () => commands.sendPrompt(id, text, images.map((image) => image.path)));
   }
 
@@ -802,7 +807,9 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
    * With `isActivated` it becomes the active session and replaces the start view.
    */
   function listPlaceholder(placeholder: SessionView, prompt: PromptDraft | null, isActivated: boolean) {
-    const items: ChatItem[] = prompt ? [{ kind: "user", id: nextItemId(), text: prompt.text, images: prompt.images.map((image) => assetUrl(image.path)) }] : [];
+    const items: ChatItem[] = prompt
+      ? [{ kind: "user", id: nextItemId(), text: prompt.text, images: prompt.images.map((image) => assetUrl(image.path)), at: new Date().toISOString() }]
+      : [];
     set((state) => ({
       sessions: [...state.sessions, placeholder],
       creatingIds: [...state.creatingIds, placeholder.id],

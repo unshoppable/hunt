@@ -692,7 +692,7 @@ describe("createSession", () => {
     expect(pending.activeSessionId).toBe(pending.sessions[0].id);
     expect(pending.draft).toBeNull();
     expect(useAgentDefaultsStore.getState().recentRepoPaths).toEqual(["/repo"]);
-    expect(pending.chats[pending.sessions[0].id].items).toEqual([{ kind: "user", id: expect.any(String), text: "build it", images: [] }]);
+    expect(pending.chats[pending.sessions[0].id].items).toEqual([{ kind: "user", id: expect.any(String), text: "build it", images: [], at: expect.any(String) }]);
     expect(vi.mocked(invoke).mock.calls).toEqual([["create_session", { id: pending.sessions[0].id, repoPath: "/repo", baseRef: "main", title: "Build it", pullRequest: null, diffBaseRef: null, pullRequestBranch: null, newBranch: null, workspace: "worktree" }]]);
 
     finish();

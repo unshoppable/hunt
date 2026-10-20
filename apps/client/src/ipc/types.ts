@@ -590,9 +590,12 @@ export type ShapeEdge = {
 /** The validated content of `.hunt/diagram.<type>.json`. */
 export type ShapeDiagram = { type: ShapeDiagramType; title?: string; nodes: ShapeNode[]; groups?: ShapeGroup[]; edges: ShapeEdge[] };
 
-/** `_meta` Hunt attaches to the chunks of a user turn it sent itself; the chat shows `label` instead of the text. `harness` is the key older transcripts used. */
-export type HuntChunkMeta = { hunt?: HiddenChunk; harness?: HiddenChunk };
-type HiddenChunk = { hidden?: boolean };
+/**
+ * `_meta` Hunt attaches to message chunks: `hidden` marks the chunks of a user turn it sent itself, `at` (RFC 3339) is
+ * when the message was written (`acp/message_time.rs`). `harness` is the key older transcripts used.
+ */
+export type HuntChunkMeta = { hunt?: HuntChunk; harness?: HuntChunk };
+type HuntChunk = { hidden?: boolean; at?: string };
 
 export type UpdateEvent = { huntSessionId: string; notification: SessionNotification };
 export type PermissionEvent = { huntSessionId: string; requestId: string; request: RequestPermissionRequest };
@@ -619,11 +622,12 @@ export type ToolCallView = {
 
 /**
  * An entry of the chat. The `images` of a message are URLs it shows: asset URLs of screenshots the user attached, or
- * `data:` URLs of image blocks that `imageDataUrl` (chat/imageData.ts) accepted.
+ * `data:` URLs of image blocks that `imageDataUrl` (chat/imageData.ts) accepted. `at` (RFC 3339) is when the message
+ * was written; a message replayed from a transcript that lacks it has none.
  */
 export type ChatItem =
-  | { kind: "user"; id: string; text: string; images: string[] }
-  | { kind: "agent"; id: string; text: string; images: string[] }
+  | { kind: "user"; id: string; text: string; images: string[]; at?: string }
+  | { kind: "agent"; id: string; text: string; images: string[]; at?: string }
   | { kind: "thought"; id: string; text: string }
   | { kind: "tool"; id: string; toolCall: ToolCallView };
 

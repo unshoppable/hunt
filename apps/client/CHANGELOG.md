@@ -1,3 +1,9 @@
+## 0.57.0 (2026-10-20)
+
+### 🚀 Features
+
+- **client:** the red traffic light hides the main window instead of quitting Hunt, so the agents keep running; a click on the Dock icon shows it again ([1e6938c](https://github.com/unshoppable/hunt/commit/1e6938c))
+
 ## 0.56.1 (2026-10-20)
 
 ### 🩹 Fixes

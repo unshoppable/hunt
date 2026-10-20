@@ -66,11 +66,8 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
 
   useEffect(() => workspace.onDirtyChange((path, isDirty) => setDirty(sessionId, path, isDirty)).dispose, [workspace, sessionId, setDirty]);
 
-  const openPaths = useMemo(() => [...new Set(allPanes(ide.layout).flatMap((pane) => pane.tabs))], [ide.layout]);
-  const openPathsRef = useRef(openPaths);
-  openPathsRef.current = openPaths;
   useEffect(() => {
-    void workspace.reloadFromDisk(openPathsRef.current);
+    void workspace.reloadFromDisk();
   }, [workspace, editVersion]);
 
   const closeActiveTab = async () => {

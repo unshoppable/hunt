@@ -235,10 +235,12 @@ export class Workspace {
   }
 
   /**
-   * Re-reads the given documents from disk after the worktree changed (agent edits, reverts, unshelving). Documents
-   * with unsaved edits keep them; a file that vanished keeps its model until its tabs close.
+   * Re-reads the given documents, by default every loaded one, from disk after the worktree changed (agent edits,
+   * reverts, unshelving). Loaded documents include imports and usage previews without a tab; the language server
+   * reads them from their model, not from disk. Documents with unsaved edits keep them; a file that vanished keeps
+   * its model until its tabs close.
    */
-  async reloadFromDisk(paths: string[]): Promise<void> {
+  async reloadFromDisk(paths: string[] = [...this.documents.keys()]): Promise<void> {
     this.headTexts.clear();
     for (const listener of this.headListeners) {
       listener();

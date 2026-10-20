@@ -1,3 +1,20 @@
+## 0.67.0 (2026-10-20)
+
+### 🚀 Features
+
+- **client:** the diff views drop their Save button, ⌘S saves, and a blue dot after the path marks unsaved edits ([01c4746](https://github.com/unshoppable/hunt/commit/01c4746))
+- **client:** a prompt sent in one window shows in every window together with its running turn, and loading a conversation renders the chat once instead of once per replayed update ([6c87274](https://github.com/unshoppable/hunt/commit/6c87274))
+
+### 🩹 Fixes
+
+- **client:** Settings → Keymap notes that Space in the change list checks or unchecks the selected file too ([8c15e83](https://github.com/unshoppable/hunt/commit/8c15e83))
+- **client:** a click on a sub chat button in the editor gutter opens the chat instead of folding the line, the fold chevrons move right of the buttons, and a sub chat shows its selection expanded ([5c7ce68](https://github.com/unshoppable/hunt/commit/5c7ce68))
+- **client:** changing the push target answers sooner: one round trip asks origin for the target and its start branch, a remote session records the target on its VM in the background, and the button shows a spinner while it works ([f5a36b9](https://github.com/unshoppable/hunt/commit/f5a36b9))
+
+### 🔥 Performance
+
+- **client:** the local file watch of a remote session starts at once instead of first reading every file of the worktree, node_modules included ([6090aba](https://github.com/unshoppable/hunt/commit/6090aba))
+
 ## 0.66.1 (2026-10-20)
 
 ### 🩹 Fixes

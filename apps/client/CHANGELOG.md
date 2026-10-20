@@ -1,3 +1,9 @@
+## 0.58.0 (2026-10-20)
+
+### 🚀 Features
+
+- **client:** the Preview and Terminal tabs hide stopped services ([048c128](https://github.com/unshoppable/hunt/commit/048c128))
+
 ## 0.57.1 (2026-10-20)
 
 ### 🔥 Performance

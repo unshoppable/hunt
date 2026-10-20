@@ -1,3 +1,9 @@
+## 0.36.0 (2026-10-20)
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.24.0
+
 ## 0.35.2 (2026-10-20)
 
 ### 🔥 Performance

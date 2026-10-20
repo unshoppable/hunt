@@ -1,3 +1,9 @@
+## 0.60.0 (2026-10-20)
+
+### 🚀 Features
+
+- the push target is the git upstream of the session's branch, which a plain git push in the worktree uses too, and a right click on a session changes it; the sidebar shows a running turn or a question of a remote session before it is opened; the Git tab resets the branch to a commit ([7fa8987](https://github.com/unshoppable/hunt/commit/7fa8987))
+
 ## 0.59.1 (2026-10-20)
 
 ### 🔥 Performance

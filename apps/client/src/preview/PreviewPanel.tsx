@@ -5,10 +5,9 @@ import { EMPTY_PREVIEW, usePreviewStore } from "../state/preview";
 import { useHuntStore } from "../state/store";
 import { HEADER_BAR } from "../ui/bars";
 import { GHOST_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { HoverTooltip } from "../ui/HoverTooltip";
 import { Spinner } from "../ui/icons";
 import { errorText } from "../ui/useLoad";
-import { describePreview, describeService, hasRespondingService, offersStart, shouldPollFast, type Tone } from "./services";
+import { describePreview, describeService, hasRespondingService, isServiceInUse, offersStart, shouldPollFast, type Tone } from "./services";
 
 /** How often the panel asks the VM about its services: often while it waits for one to start, rarely otherwise. */
 const WAITING_POLL_MS = 3000;
@@ -27,10 +26,10 @@ const TONE_COLOR: Record<Tone, string> = {
 };
 
 /**
- * The Preview tab of a remote session: every service of the repository's hunt.json with its state, whether it answers
- * and its URL, and the other ports something listens on. The agent starts the services itself; "Start the app" asks it
- * to. The panel polls while the session is connected (a connected session proves a running VM), while it waits for a
- * service to answer or while one starts, and only while the window is visible.
+ * The Preview tab of a remote session: the services of the repository's hunt.json that are in use with their state,
+ * whether they answer and their URL, and the other ports something listens on. The agent starts the services itself;
+ * "Start the app" asks it to. The panel polls while the session is connected (a connected session proves a running
+ * VM), while it waits for a service to answer or while one starts, and only while the window is visible.
  */
 export function PreviewPanel({ sessionId }: { sessionId: string }) {
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
@@ -72,6 +71,7 @@ export function PreviewPanel({ sessionId }: { sessionId: string }) {
 
   const summary = describePreview(status);
   const isWaiting = awaitingStart && !(status && hasRespondingService(status));
+  const shownServices = status ? status.services.filter((service) => isServiceInUse(service, status.vmRunning)) : [];
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -98,10 +98,10 @@ export function PreviewPanel({ sessionId }: { sessionId: string }) {
           </p>
         ) : null}
 
-        {status?.services.length ? (
+        {status && shownServices.length ? (
           <section className="flex flex-col gap-3">
             <div className={SECTION_LABEL}>Services</div>
-            {status.services.map((service) => (
+            {shownServices.map((service) => (
               <ServiceRow key={service.name} service={service} isVmRunning={status.vmRunning} onOpen={open} />
             ))}
           </section>
@@ -158,11 +158,6 @@ function ServiceRow({ service, isVmRunning, onOpen }: { service: PreviewService;
         />
         <span className="min-w-0 truncate font-mono text-[13px] text-neutral-100">{service.name}</span>
         <span className="shrink-0 font-mono text-[12px] text-neutral-500">{service.port}</span>
-        {service.guarded ? null : (
-          <HoverTooltip text="No Google login; only the app's own login protects it" className="flex shrink-0">
-            <span className="rounded-md border border-amber-400/30 bg-amber-400/10 px-1.5 text-[12px] font-medium text-amber-300">public</span>
-          </HoverTooltip>
-        )}
         <span className="flex-1" />
         <span
           className={`shrink-0 text-[13px] ${TONE_COLOR[state.tone]}`}

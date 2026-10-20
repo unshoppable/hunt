@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PreviewService, PreviewStatus } from "../ipc/types";
-import { describePreview, describeService, hasRespondingService, hasRunningService, offersStart, shouldPollFast, withLastKnown } from "./services";
+import { describePreview, describeService, hasRespondingService, hasRunningService, isServiceInUse, offersStart, shouldPollFast, withLastKnown } from "./services";
 
 function service(name: string, patch: Partial<PreviewService> = {}): PreviewService {
   return {
@@ -34,6 +34,20 @@ describe("describeService", () => {
   it("says which services come back with a VM that is off", () => {
     expect(describeService(service("api", { enabled: true }), false)).toEqual({ text: "Starts with the VM", tone: "idle" });
     expect(describeService(service("api"), false)).toEqual({ text: "Stopped", tone: "idle" });
+  });
+});
+
+describe("isServiceInUse", () => {
+  it("lists running, starting and failed services but not stopped ones", () => {
+    expect(isServiceInUse(service("api", { state: "running" }), true)).toBe(true);
+    expect(isServiceInUse(service("api", { state: "starting" }), true)).toBe(true);
+    expect(isServiceInUse(service("api", { state: "failed" }), true)).toBe(true);
+    expect(isServiceInUse(service("api", { enabled: true }), true)).toBe(false);
+  });
+
+  it("lists the services that start with a VM that is off", () => {
+    expect(isServiceInUse(service("api", { enabled: true }), false)).toBe(true);
+    expect(isServiceInUse(service("api"), false)).toBe(false);
   });
 });
 

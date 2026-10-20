@@ -21,6 +21,14 @@ export function describeService(service: PreviewService, isVmRunning: boolean): 
   }
 }
 
+/**
+ * Whether the Preview and Terminal tabs list a service: it runs, starts or failed; while the VM is off, it starts with
+ * the VM. Stopped services stay hidden.
+ */
+export function isServiceInUse(service: PreviewService, isVmRunning: boolean): boolean {
+  return isVmRunning ? service.state !== "stopped" : service.enabled;
+}
+
 /** The preview as the Preview tab's header sums it up: whether the VM runs and how many services run, start or failed. */
 export function describePreview(status: PreviewStatus | null): Description {
   if (!status) return { text: "…", tone: "idle" };

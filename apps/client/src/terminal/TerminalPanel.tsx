@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { commands } from "../ipc/commands";
 import type { PreviewService, TmuxWindow } from "../ipc/types";
-import { describeService, type Tone } from "../preview/services";
+import { describeService, isServiceInUse, type Tone } from "../preview/services";
 import { usePreviewStore } from "../state/preview";
 import { useHuntStore } from "../state/store";
 import { ICON_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
@@ -29,8 +29,9 @@ type FocusRequest = { key: string | null; count: number };
 
 /**
  * The Terminal tab of a remote session: one tab per process of the app on its VM, like the tabs of a local terminal.
- * The services of the repository's hunt.json show their logs, read-only; the windows of the tmux session `app`, in which
- * the agent runs its other processes, take input. "+" opens a shell in a new window, × ends a window and its process.
+ * The services of the repository's hunt.json that are in use show their logs, read-only; the windows of the tmux
+ * session `app`, in which the agent runs its other processes, take input. "+" opens a shell in a new window, × ends a
+ * window and its process.
  * The panel stays mounted while another tab shows, so its terminals keep their connections. It asks the VM for the
  * processes whenever it shows, then every few seconds while the session is connected, which proves a running VM.
  */
@@ -48,7 +49,7 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
   const [openedKeys, setOpenedKeys] = useState<string[]>([]);
   const [focusRequest, setFocusRequest] = useState<FocusRequest>({ key: null, count: 0 });
   const [isOpeningShell, setIsOpeningShell] = useState(false);
-  const tabs = useMemo(() => terminalTabs(services, windows), [services, windows]);
+  const tabs = useMemo(() => terminalTabs(services.filter((service) => isServiceInUse(service, isVmRunning)), windows), [services, isVmRunning, windows]);
   const previousTabsRef = useRef<TerminalTab[]>([]);
   const wasVisibleRef = useRef(isVisible);
   /** Bumped by every load of the windows, so that only the latest one lands. */

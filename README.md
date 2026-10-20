@@ -331,7 +331,10 @@ WebStorm's file colors; marks are kept per repository in `apps/client/src/ide/fo
 
 Hover, inlay hints, diagnostics, the breadcrumb, go-to-declaration and usages come from the TypeScript 7 language
 server (`tsgo --lsp`, from the worktree's `node_modules/.bin` or the PATH), one process per worktree managed by
-`apps/client/src-tauri/src/lsp.rs` and bridged through `apps/client/src/ide/lsp/`. Monaco's bundled TypeScript worker
+`apps/client/src-tauri/src/lsp.rs` and bridged through `apps/client/src/ide/lsp/`. The server reads loaded files from
+their models, which reload from disk after every agent edit, and every other file from disk; a watcher on the worktree
+reports the changes matching the globs the server registers (`workspace/didChangeWatchedFiles`), so usages include
+files the agent created. Monaco's bundled TypeScript worker
 only colors code: `apps/client/src/diff/webstormClassifier.ts` assigns every identifier the role WebStorm would (class,
 interface, instance field, static method, parameter, global/local variable, …), colored by the user's WebStorm scheme
 (`apps/client/src/diff/webstormScheme.ts`); opening a file also loads its relative imports so imported names get their

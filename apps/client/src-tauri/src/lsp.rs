@@ -2,22 +2,31 @@
 //! every session of its worktree and is bridged to the webview through generic JSON-RPC commands (`lsp_request`,
 //! `lsp_notify`, `lsp_cancel`) plus the `lsp:diagnostics` and `lsp:exited` events.
 //!
-//! `LspServer` is the Tauri-free core (spawn, handshake, request, notify); `LspRegistry` and the commands add the
-//! per-worktree sharing and the event emission.
+//! `LspServer` is the Tauri-free core (spawn, handshake, request, notify, file watching); `LspRegistry` and the commands
+//! add the per-worktree sharing and the event emission.
+//!
+//! The server watches files through the client (`workspace/didChangeWatchedFiles` with dynamic registration): it
+//! registers globs, and one recursive watcher on the worktree reports the changes that match them, so the server sees
+//! files the agent creates, edits or deletes without an open document.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::Duration;
 
+use glob::{MatchOptions, Pattern};
+use notify_debouncer_full::notify::event::ModifyKind;
+use notify_debouncer_full::notify::{self, EventKind, RecommendedWatcher, RecursiveMode};
+use notify_debouncer_full::{new_debouncer_opt, DebounceEventResult, Debouncer, NoCache};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{oneshot, watch, OnceCell};
 use tokio::task::JoinSet;
 use uuid::Uuid;
@@ -46,6 +55,10 @@ const NOT_FOUND: &str = "tsgo not found (install @typescript/native-preview)";
 const READ_CHUNK: usize = 64 * 1024;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+const WATCH_DEBOUNCE: Duration = Duration::from_millis(100);
+/// Watcher globs match like VS Code's on macOS: case-insensitive, `*` stays inside one path component.
+const GLOB_OPTIONS: MatchOptions =
+    MatchOptions { case_sensitive: false, require_literal_separator: true, require_literal_leading_dot: false };
 
 /// Receives what a server reports on its own: diagnostics pushes and the end of its process.
 pub trait LspEvents: Send + Sync + 'static {
@@ -71,6 +84,10 @@ pub struct LspServer {
     ready: OnceCell<()>,
     /// Flips to `true` after the process was reaped.
     exited: watch::Sender<bool>,
+    /// The worktree watcher; dropped when the process ends, which stops the forwarding of changes.
+    watcher: Mutex<Option<Debouncer<RecommendedWatcher, NoCache>>>,
+    /// The file watchers the server registered, keyed by registration id.
+    file_watchers: Mutex<HashMap<String, Vec<FileWatcher>>>,
 }
 
 impl LspServer {
@@ -101,7 +118,17 @@ impl LspServer {
             tokens: Mutex::default(),
             ready: OnceCell::new(),
             exited: watch::channel(false).0,
+            watcher: Mutex::default(),
+            file_watchers: Mutex::default(),
         });
+        let (sender, receiver) = unbounded_channel();
+        match watch_worktree(&server.worktree, sender) {
+            Ok(debouncer) => {
+                *server.watcher.lock().unwrap() = Some(debouncer);
+            }
+            Err(error) => eprintln!("{error}"),
+        }
+        tokio::spawn(forward_file_changes(Arc::downgrade(&server), receiver));
         tokio::spawn(read_loop(server.clone(), stdout, events));
         let handshake = server.clone();
         tokio::spawn(async move {
@@ -169,7 +196,11 @@ impl LspServer {
             "rootUri": root_uri,
             "workspaceFolders": [{ "uri": root_uri, "name": name }],
             "capabilities": {
-                "workspace": { "configuration": true, "didChangeConfiguration": {} },
+                "workspace": {
+                    "configuration": true,
+                    "didChangeConfiguration": {},
+                    "didChangeWatchedFiles": { "dynamicRegistration": true, "relativePatternSupport": true }
+                },
                 "textDocument": {
                     "completion": {
                         "completionItem": {
@@ -264,6 +295,7 @@ impl LspServer {
         let params = message.remove("params").unwrap_or(Value::Null);
         match (method, id) {
             (Some(Value::String(method)), Some(id)) => {
+                self.update_file_watchers(&method, &params);
                 let result = answer_server_request(&method, &params);
                 let _ = self.write(&json!({ "jsonrpc": "2.0", "id": id, "result": result })).await;
             }
@@ -298,8 +330,32 @@ impl LspServer {
         }
     }
 
+    /// Keeps the file watchers of a `client/registerCapability` request and drops those `client/unregisterCapability`
+    /// names; other requests are ignored.
+    fn update_file_watchers(&self, method: &str, params: &Value) {
+        let mut file_watchers = self.file_watchers.lock().unwrap();
+        if method == "client/registerCapability" {
+            for registration in params["registrations"].as_array().into_iter().flatten() {
+                if registration["method"] != "workspace/didChangeWatchedFiles" {
+                    continue;
+                }
+                let Some(id) = registration["id"].as_str() else { continue };
+                let watchers = registration["registerOptions"]["watchers"].as_array().into_iter().flatten().filter_map(FileWatcher::parse);
+                file_watchers.insert(id.to_owned(), watchers.collect());
+            }
+        } else if method == "client/unregisterCapability" {
+            // The LSP spec spells the field `unregisterations`.
+            for registration in params["unregisterations"].as_array().into_iter().flatten() {
+                if let Some(id) = registration["id"].as_str() {
+                    file_watchers.remove(id);
+                }
+            }
+        }
+    }
+
     /// Fails every pending request, reaps the process and announces the end.
     async fn finish(self: &Arc<Self>, events: &dyn LspEvents) {
+        self.watcher.lock().unwrap().take();
         let pending = self.pending.lock().unwrap().take();
         for (_, sender) in pending.into_iter().flatten() {
             let _ = sender.send(Err(EXITED.into()));
@@ -342,6 +398,175 @@ async fn read_loop(server: Arc<LspServer>, mut stdout: ChildStdout, events: Arc<
         }
     }
     server.finish(events.as_ref()).await;
+}
+
+/// A glob the server registered with `workspace/didChangeWatchedFiles`: the changes below `base` (lowercased) whose
+/// relative path matches one of `patterns` (the glob with its `{a,b}` groups expanded), of the change types in `kind`
+/// (bit 1 created, 2 changed, 4 deleted).
+#[derive(Debug)]
+struct FileWatcher {
+    base: String,
+    patterns: Vec<Pattern>,
+    kind: u64,
+}
+
+impl FileWatcher {
+    /// Reads a `FileSystemWatcher`: an absolute glob (`/repo/**/*`) or a relative pattern (`{ baseUri, pattern }`).
+    fn parse(watcher: &Value) -> Option<Self> {
+        let (base, pattern) = match &watcher["globPattern"] {
+            Value::String(glob) => split_glob(glob),
+            Value::Object(relative) => {
+                let base_uri = &relative.get("baseUri")?;
+                let base_uri = base_uri.as_str().or_else(|| base_uri["uri"].as_str())?;
+                (path_of_file_uri(base_uri)?, relative.get("pattern")?.as_str()?.to_owned())
+            }
+            _ => return None,
+        };
+        let patterns: Vec<Pattern> = expand_braces(&pattern).iter().filter_map(|pattern| Pattern::new(pattern).ok()).collect();
+        if patterns.is_empty() {
+            return None;
+        }
+        let base = base.trim_end_matches('/').to_lowercase();
+        Some(Self { base, patterns, kind: watcher["kind"].as_u64().unwrap_or(7) })
+    }
+
+    /// Whether a change of `change` type (1 created, 2 changed, 3 deleted) at the lowercased `path` concerns the watcher.
+    fn matches(&self, path: &str, change: u8) -> bool {
+        if self.kind & (1 << (change - 1)) == 0 {
+            return false;
+        }
+        let Some(relative) = path.strip_prefix(self.base.as_str()).and_then(|rest| rest.strip_prefix('/')) else { return false };
+        self.patterns.iter().any(|pattern| pattern.matches_with(relative, GLOB_OPTIONS))
+    }
+}
+
+/// Splits an absolute glob into the literal directory before its first wildcard component and the pattern after it;
+/// a glob without wildcards names one file, so its parent is the base and the escaped file name the pattern.
+fn split_glob(glob: &str) -> (String, String) {
+    let components: Vec<&str> = glob.split('/').collect();
+    let wildcard = components.iter().position(|component| component.contains(['*', '?', '[', '{']));
+    match wildcard {
+        Some(index) => (components[..index].join("/"), components[index..].join("/")),
+        None => {
+            let last = components.len() - 1;
+            (components[..last].join("/"), Pattern::escape(components[last]))
+        }
+    }
+}
+
+/// The patterns a glob's `{a,b}` groups stand for (`*.{ts,js}` → `*.ts`, `*.js`), nested groups included.
+fn expand_braces(pattern: &str) -> Vec<String> {
+    let Some(open) = pattern.find('{') else { return vec![pattern.to_owned()] };
+    let mut depth = 0;
+    let mut bounds = vec![open];
+    let mut close = None;
+    for (offset, char) in pattern[open..].char_indices() {
+        match char {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(open + offset);
+                    break;
+                }
+            }
+            ',' if depth == 1 => bounds.push(open + offset),
+            _ => {}
+        }
+    }
+    let Some(close) = close else { return vec![pattern.to_owned()] };
+    bounds.push(close);
+    let (prefix, suffix) = (&pattern[..open], &pattern[close + 1..]);
+    bounds.windows(2).flat_map(|bound| expand_braces(&format!("{prefix}{}{suffix}", &pattern[bound[0] + 1..bound[1]]))).collect()
+}
+
+/// The LSP `FileChangeType` of a path the watcher reported: deleted when it is gone, created when the batch created
+/// or renamed it into place, changed otherwise.
+fn change_type(created: bool, exists: bool) -> u8 {
+    if !exists {
+        3
+    } else if created {
+        1
+    } else {
+        2
+    }
+}
+
+/// The `FileEvent`s of `changes` (path and change type) that match one of the registered `file_watchers`.
+fn watched_changes(file_watchers: &HashMap<String, Vec<FileWatcher>>, changes: impl IntoIterator<Item = (PathBuf, u8)>) -> Vec<Value> {
+    let watchers: Vec<&FileWatcher> = file_watchers.values().flatten().collect();
+    changes
+        .into_iter()
+        .filter(|(path, change)| {
+            let path = path.to_string_lossy().to_lowercase();
+            watchers.iter().any(|watcher| watcher.matches(&path, *change))
+        })
+        .map(|(path, change)| json!({ "uri": file_uri(&path), "type": change }))
+        .collect()
+}
+
+/// Watches `worktree` recursively and sends each debounced batch of changed paths outside `.git`, each with whether
+/// the batch created it. Without a file ID cache, so the watch starts without reading the worktree.
+fn watch_worktree(
+    worktree: &Path,
+    sender: UnboundedSender<Vec<(PathBuf, bool)>>,
+) -> Result<Debouncer<RecommendedWatcher, NoCache>, String> {
+    let root = worktree.to_path_buf();
+    let on_events = move |result: DebounceEventResult| {
+        let events = match result {
+            Ok(events) => events,
+            Err(errors) => {
+                eprintln!("failed to watch {} for the language server: {errors:?}", root.display());
+                return;
+            }
+        };
+        let mut paths = BTreeMap::<PathBuf, bool>::new();
+        for event in &events {
+            if matches!(event.kind, EventKind::Access(_)) {
+                continue;
+            }
+            let created = matches!(event.kind, EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_)));
+            for path in &event.paths {
+                let relative = path.strip_prefix(&root).unwrap_or(path);
+                if relative.components().any(|component| component.as_os_str() == ".git") {
+                    continue;
+                }
+                *paths.entry(path.clone()).or_default() |= created;
+            }
+        }
+        if !paths.is_empty() {
+            let _ = sender.send(paths.into_iter().collect());
+        }
+    };
+    let watch = || {
+        let config = notify::Config::default();
+        let mut debouncer = new_debouncer_opt::<_, RecommendedWatcher, _>(WATCH_DEBOUNCE, None, on_events, NoCache, config)?;
+        debouncer.watch(worktree, RecursiveMode::Recursive)?;
+        Ok::<_, notify::Error>(debouncer)
+    };
+    watch().map_err(|error| format!("failed to watch {} for the language server: {error}", worktree.display()))
+}
+
+/// Reports the batches of `watch_worktree` that match a registered watcher with `workspace/didChangeWatchedFiles`;
+/// ends when the watcher is dropped or the server is gone.
+async fn forward_file_changes(server: Weak<LspServer>, mut receiver: UnboundedReceiver<Vec<(PathBuf, bool)>>) {
+    while let Some(paths) = receiver.recv().await {
+        let Some(server) = server.upgrade() else { return };
+        let changes: Vec<(PathBuf, u8)> = paths
+            .into_iter()
+            .map(|(path, created)| {
+                let change = change_type(created, path.exists());
+                (path, change)
+            })
+            .collect();
+        let changes = watched_changes(&server.file_watchers.lock().unwrap(), changes);
+        if changes.is_empty() {
+            continue;
+        }
+        if let Err(error) = server.notify("workspace/didChangeWatchedFiles", json!({ "changes": changes })).await {
+            eprintln!("failed to report file changes to the language server: {error}");
+        }
+    }
 }
 
 /// Sends SIGKILL to the process group led by `child` (every shim layer plus the native server). `child` is not
@@ -455,6 +680,24 @@ pub fn file_uri(path: &Path) -> String {
         }
     }
     uri
+}
+
+/// The path of a `file://` URI, percent-decoded; None for other schemes and malformed escapes.
+fn path_of_file_uri(uri: &str) -> Option<String> {
+    let encoded = uri.strip_prefix("file://")?.as_bytes();
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let mut index = 0;
+    while index < encoded.len() {
+        if encoded[index] == b'%' {
+            let hex = std::str::from_utf8(encoded.get(index + 1..index + 3)?).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            bytes.push(encoded[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(bytes).ok()
 }
 
 /// Running servers keyed by worktree, plus the worktree of every session that used the LSP so a request needs no
@@ -620,6 +863,45 @@ mod tests {
         assert_eq!(file_uri(Path::new("/tmp/x-y_z.~/ü")), "file:///tmp/x-y_z.~/%C3%BC");
     }
 
+    #[test]
+    fn file_watchers_match_absolute_globs_relative_patterns_and_kinds() {
+        let watchers = [
+            json!({ "globPattern": "/Repo/My Project/**/*", "kind": 7 }),
+            json!({ "globPattern": "/repo/my project/tsconfig.base.json" }),
+            json!({ "globPattern": { "baseUri": "file:///Repo/My%20Project/node_modules", "pattern": "**/*.{ts,json}" }, "kind": 4 }),
+        ];
+        let [all, config, deleted] = watchers.map(|watcher| FileWatcher::parse(&watcher).expect("valid watcher"));
+        assert!(all.matches("/repo/my project/src/a.ts", 1));
+        assert!(all.matches("/repo/my project/a.ts", 2));
+        assert!(!all.matches("/repo/other/a.ts", 1));
+        assert!(config.matches("/repo/my project/tsconfig.base.json", 2));
+        assert!(!config.matches("/repo/my project/tsconfig.json", 2));
+        assert!(deleted.matches("/repo/my project/node_modules/x/index.json", 3));
+        assert!(!deleted.matches("/repo/my project/node_modules/x/index.json", 2));
+        assert!(!deleted.matches("/repo/my project/node_modules/x/index.js", 3));
+    }
+
+    #[test]
+    fn braces_expand_into_every_alternative() {
+        assert_eq!(expand_braces("**/*.{ts,tsx}"), ["**/*.ts", "**/*.tsx"]);
+        assert_eq!(expand_braces("{a,b{c,d}}/x"), ["a/x", "bc/x", "bd/x"]);
+        assert_eq!(expand_braces("plain/*"), ["plain/*"]);
+        assert_eq!(expand_braces("open{a,b"), ["open{a,b"]);
+    }
+
+    #[test]
+    fn watched_changes_keep_matching_paths_and_report_their_type() {
+        let mut file_watchers = HashMap::new();
+        file_watchers.insert("root".to_owned(), vec![FileWatcher::parse(&json!({ "globPattern": "/repo/src/**/*" })).unwrap()]);
+        let changes = [
+            (PathBuf::from("/repo/src/a.ts"), change_type(true, true)),
+            (PathBuf::from("/repo/b.ts"), change_type(false, false)),
+        ];
+        assert_eq!(watched_changes(&file_watchers, changes), [json!({ "uri": "file:///repo/src/a.ts", "type": 1 })]);
+        assert_eq!((change_type(false, true), change_type(true, false)), (2, 3));
+        assert_eq!(path_of_file_uri("file:///a%20b/%C3%BC").as_deref(), Some("/a b/ü"));
+    }
+
     struct Silent;
 
     impl LspEvents for Silent {
@@ -665,6 +947,47 @@ mod tests {
         assert!(!process_exists(pid), "tsgo {pid} is still running");
         assert!(server.pending.lock().unwrap().is_none());
         assert_eq!(server.request("textDocument/hover", Value::Null, None).await, Err(EXITED.to_string()));
+    }
+
+    #[tokio::test]
+    async fn references_include_a_file_created_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        if resolve_tsgo(dir.path()).is_none() {
+            println!("tsgo not installed, skipping");
+            return;
+        }
+        // FSEvents reports real paths, and the temporary directory sits behind the `/var` → `/private/var` link.
+        let root = dir.path().canonicalize().unwrap();
+        let source = "export function answer(): number {\n  return 42;\n}\n";
+        std::fs::write(root.join("a.ts"), source).unwrap();
+        std::fs::write(root.join("tsconfig.json"), r#"{ "compilerOptions": { "strict": true } }"#).unwrap();
+
+        let server = LspServer::start(root.clone(), Arc::new(Silent)).unwrap();
+        let uri = file_uri(&root.join("a.ts"));
+        let open = json!({ "textDocument": { "uri": uri, "languageId": "typescript", "version": 1, "text": source } });
+        let references = json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 16 },
+            "context": { "includeDeclaration": false }
+        });
+        let found = tokio::time::timeout(Duration::from_secs(30), async {
+            server.notify("textDocument/didOpen", open).await.unwrap();
+            assert_eq!(server.request("textDocument/references", references.clone(), None).await.unwrap(), json!([]));
+            std::fs::write(root.join("b.ts"), "import { answer } from \"./a\";\nanswer();\n").unwrap();
+            loop {
+                let result = server.request("textDocument/references", references.clone(), None).await.unwrap();
+                if result.to_string().contains("b.ts") {
+                    return result;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("tsgo sees the new file within 30s");
+
+        assert_eq!(found[0]["range"]["start"]["line"], 1);
+        server.stop().await;
+        assert!(server.watcher.lock().unwrap().is_none(), "the watcher ends with the process");
     }
 
     #[tokio::test]

@@ -1,3 +1,9 @@
+## 0.66.1 (2026-10-20)
+
+### 🩹 Fixes
+
+- **client:** every window shares one document per file like WebStorm: an edit, the unsaved mark and a save show in all windows at once, and the language server no longer reports false "Cannot redeclare" errors after an agent edit ([0f0c622](https://github.com/unshoppable/hunt/commit/0f0c622))
+
 ## 0.66.0 (2026-10-20)
 
 ### 🚀 Features

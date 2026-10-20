@@ -1,3 +1,9 @@
+## 0.63.0 (2026-10-20)
+
+### 🚀 Features
+
+- **client:** text selected in the preview of Go to File and Find in Files shows the sparkle button, which opens a sub chat about it over the dialog ([5052854](https://github.com/unshoppable/hunt/commit/5052854))
+
 ## 0.62.0 (2026-10-20)
 
 ### 🚀 Features

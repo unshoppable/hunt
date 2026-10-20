@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, FileDiff, FileVersion, GithubTokenStatus, GithubViewer, GraphStatus, LogQuery, PlanUsage, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
+import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GithubTokenStatus, GithubViewer, GraphStatus, LogQuery, PlanUsage, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
 export function assetUrl(path: string): string {
@@ -260,8 +260,27 @@ export const commands = {
    */
   lspRequest: (id: string, method: string, params: unknown, token?: string) =>
     invoke<unknown>("lsp_request", { id, method, params, token: token ?? null }),
-  /** JSON-RPC notification to the worktree's language server; resolves once it is written. */
-  lspNotify: (id: string, method: string, params: unknown) => invoke<void>("lsp_notify", { id, method, params }),
   /** Cancels the pending language server request sent with `token`; unknown tokens are ignored. */
   lspCancel: (id: string, token: string) => invoke<void>("lsp_cancel", { id, token }),
+  /**
+   * Loads `path` into this window: the shared document with the unsaved edits of other windows, read from disk when no
+   * window holds it yet. Calling it again re-reads the shared state.
+   */
+  documentOpen: (id: string, path: string, languageId: string) => invoke<DocumentState>("document_open", { id, path, languageId }),
+  /** Applies this window's `changes` made against `baseVersion`; null when the document moved on since. */
+  documentEdit: (id: string, path: string, baseVersion: number, changes: DocumentContentChange[]) =>
+    invoke<DocumentEditAck | null>("document_edit", { id, path, baseVersion, changes }),
+  /** Writes the shared text to disk; resolves with whether edits made meanwhile keep it dirty. */
+  documentSave: (id: string, path: string) => invoke<boolean>("document_save", { id, path }),
+  /** Takes the content on disk over for every one of `paths` without unsaved edits. */
+  documentReload: (id: string, paths: string[]) => invoke<void>("document_reload", { id, paths }),
+  documentRevert: (id: string, path: string) => invoke<void>("document_revert", { id, path }),
+  /** Records that the file on disk holds `text` now; resolves with whether the document is still dirty. */
+  documentMarkSaved: (id: string, path: string, text: string) => invoke<boolean>("document_mark_saved", { id, path, text }),
+  /** Drops this window's hold on `path`; the last window closes the document. */
+  documentClose: (id: string, path: string) => invoke<void>("document_close", { id, path }),
+  /** Replaces the paths this window shows in a tab or an editor. */
+  documentViews: (id: string, paths: string[]) => invoke<void>("document_views", { id, paths }),
+  /** Those of `paths` that another window shows. */
+  documentsShownElsewhere: (id: string, paths: string[]) => invoke<string[]>("documents_shown_elsewhere", { id, paths }),
 };

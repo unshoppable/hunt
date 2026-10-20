@@ -66,6 +66,13 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
 
   useEffect(() => workspace.onDirtyChange((path, isDirty) => setDirty(sessionId, path, isDirty)).dispose, [workspace, sessionId, setDirty]);
 
+  // The backend keeps unsaved edits without asking when another window still shows the file (see discardIfConfirmed).
+  const tabPathsKey = useMemo(() => [...new Set(allPanes(ide.layout).flatMap((pane) => pane.tabs))].join("\n"), [ide.layout]);
+  useEffect(() => {
+    workspace.setTabPaths(sessionId, tabPathsKey ? tabPathsKey.split("\n") : []);
+    return () => workspace.setTabPaths(sessionId, []);
+  }, [workspace, sessionId, tabPathsKey]);
+
   useEffect(() => {
     void workspace.reloadFromDisk();
   }, [workspace, editVersion]);

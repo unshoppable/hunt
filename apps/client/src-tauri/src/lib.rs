@@ -1,5 +1,6 @@
 mod accounts;
 mod acp;
+mod documents;
 mod external_links;
 mod find_in_files;
 mod git;
@@ -51,6 +52,7 @@ pub fn run() {
         .manage(AttributionRegistry::default())
         .manage(find_in_files::FindRegistry::default())
         .manage(lsp::LspRegistry::default())
+        .manage(documents::DocumentRegistry::default())
         .manage(TerminalRegistry::default())
         .invoke_handler(tauri::generate_handler![
             session::commands::list_sessions,
@@ -147,8 +149,16 @@ pub fn run() {
             session::commands::list_screenshots,
             session::commands::image_files,
             lsp::lsp_request,
-            lsp::lsp_notify,
             lsp::lsp_cancel,
+            documents::document_open,
+            documents::document_edit,
+            documents::document_save,
+            documents::document_reload,
+            documents::document_revert,
+            documents::document_mark_saved,
+            documents::document_close,
+            documents::document_views,
+            documents::documents_shown_elsewhere,
             preferences::set_ai_language,
             preferences::set_system_prompt,
             plan_usage::get_plan_usage,
@@ -161,15 +171,17 @@ pub fn run() {
             github_token::set_github_token,
             github_token::remove_github_token,
         ])
-        // A page that loads again (a reload) has lost its terminals, so they end with the old page.
+        // A page that loads again (a reload) has lost its terminals and its document replicas, so they end with the old page.
         .on_page_load(|webview, payload| {
             if payload.event() == PageLoadEvent::Started {
                 webview.app_handle().state::<TerminalRegistry>().close_owned_by(webview.label());
+                documents::release_owner(webview.app_handle(), webview.label());
             }
         })
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window.app_handle().state::<TerminalRegistry>().close_owned_by(window.label());
+                documents::release_owner(window.app_handle(), window.label());
             }
             // The main window's traffic light hides it like a Mac app's: the agents keep running and the Dock icon shows it again.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

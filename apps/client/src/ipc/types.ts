@@ -671,6 +671,24 @@ export type LspDiagnosticsEvent = { worktreePath: string; uri: string; diagnosti
 /** The language server process of `worktreePath` ended; the next request starts a new one. */
 export type LspExitedEvent = { worktreePath: string };
 
+/** The one text of a worktree file that every window edits (`documents.rs`); `version` grows with every change. */
+export type DocumentState = { text: string; version: number; isDirty: boolean };
+/** The answer to an accepted `documentEdit`. */
+export type DocumentEditAck = { version: number; isDirty: boolean };
+/** An LSP content change: `text` replaces `range` (zero-based lines, UTF-16 columns). */
+export type DocumentContentChange = { range: { start: { line: number; character: number }; end: { line: number; character: number } }; text: string };
+/** The document `path` of `worktreePath` reached `version`, through `changes` against `version - 1` or as a whole `text`. */
+export type DocumentChangedEvent = {
+  worktreePath: string;
+  path: string;
+  version: number;
+  changes: DocumentContentChange[] | null;
+  text: string | null;
+  isDirty: boolean;
+};
+/** Whether the document `path` has unsaved edits changed without a text change, e.g. through a save. */
+export type DocumentDirtyEvent = { worktreePath: string; path: string; isDirty: boolean };
+
 /**
  * A file to show in an editor window, with an optional 1-based caret position. With `definitionOf` (the name
  * ⌘clicked at the position, e.g. in a diff) the window shows that name's declaration instead when the language

@@ -93,10 +93,15 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
     void emit("editor:ready", { label: getCurrentWindow().label });
   }, [isLoaded, isListening]);
 
-  /** Hides the window and drops its tabs and dialogs; unsaved edits are discarded after confirmation or keep the window open. */
+  /**
+   * Hides the window and drops its tabs and dialogs; unsaved edits in its tabs are discarded after confirmation or keep
+   * the window open.
+   */
   const closeWindow = async () => {
-    const { dirtyPaths } = useIdeStore.getState().sessions[sessionId] ?? EMPTY_IDE_SESSION;
-    if (dirtyPaths.length && !(await workspaceFor(sessionId, session?.worktreePath ?? "").discardIfConfirmed(dirtyPaths))) return;
+    const { layout, dirtyPaths } = useIdeStore.getState().sessions[sessionId] ?? EMPTY_IDE_SESSION;
+    const tabPaths = new Set(allPanes(layout).flatMap((pane) => pane.tabs));
+    const shownDirtyPaths = dirtyPaths.filter((path) => tabPaths.has(path));
+    if (shownDirtyPaths.length && !(await workspaceFor(sessionId, session?.worktreePath ?? "").discardIfConfirmed(shownDirtyPaths))) return;
     closeAllTabs(sessionId);
     setIsFileSearchOpen(false);
     setFindInFiles(null);

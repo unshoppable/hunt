@@ -4,6 +4,8 @@ import type {
   AttributionEvent,
   ClosedEvent,
   DiffOpenRequest,
+  DocumentChangedEvent,
+  DocumentDirtyEvent,
   EditorOpenRequest,
   GraphChangedEvent,
   LspDiagnosticsEvent,
@@ -56,6 +58,8 @@ type EventPayloads = {
   "settings:show-page": { page: "updates" };
   "lsp:diagnostics": LspDiagnosticsEvent;
   "lsp:exited": LspExitedEvent;
+  "document:changed": DocumentChangedEvent;
+  "document:dirty": DocumentDirtyEvent;
   /** Output of a terminal, sent only to the window that opened it (see terminal/TerminalPanel.tsx). */
   "terminal:output": TerminalOutputEvent;
   /** The end of a terminal's program, sent only to the window that opened it. */

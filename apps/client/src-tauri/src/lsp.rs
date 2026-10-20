@@ -1,6 +1,7 @@
 //! One TypeScript language server (`tsgo --lsp --stdio`) per worktree. A server starts on first use, is shared by
 //! every session of its worktree and is bridged to the webview through generic JSON-RPC commands (`lsp_request`,
-//! `lsp_notify`, `lsp_cancel`) plus the `lsp:diagnostics` and `lsp:exited` events.
+//! `lsp_cancel`) plus the `lsp:diagnostics` and `lsp:exited` events. The open documents reach it only through
+//! `documents.rs`, which holds the one text of each file that every window edits.
 //!
 //! `LspServer` is the Tauri-free core (spawn, handshake, request, notify, file watching); `LspRegistry` and the commands
 //! add the per-worktree sharing and the event emission.
@@ -31,6 +32,7 @@ use tokio::sync::{oneshot, watch, OnceCell};
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
+use crate::documents;
 use crate::session::store;
 
 /// Client settings: pushed with `workspace/didChangeConfiguration` after the handshake and returned for every
@@ -709,15 +711,15 @@ pub struct LspRegistry {
 }
 
 impl LspRegistry {
-    /// The running server of `worktree`, started with `events` when there is none.
-    pub fn get_or_start(&self, worktree: &Path, events: impl FnOnce() -> Arc<dyn LspEvents>) -> Result<Arc<LspServer>, String> {
+    /// The running server of `worktree`, started with `events` when there is none; `true` for a server started now.
+    pub fn get_or_start(&self, worktree: &Path, events: impl FnOnce() -> Arc<dyn LspEvents>) -> Result<(Arc<LspServer>, bool), String> {
         let mut servers = self.servers.lock().unwrap();
         if let Some(server) = servers.get(worktree) {
-            return Ok(server.clone());
+            return Ok((server.clone(), false));
         }
         let server = LspServer::start(worktree.to_path_buf(), events())?;
         servers.insert(worktree.to_path_buf(), server.clone());
-        Ok(server)
+        Ok((server, true))
     }
 
     /// Drops `server` when it is still the registered server of its worktree.
@@ -792,7 +794,21 @@ fn server_for(app: &AppHandle, registry: &LspRegistry, id: Uuid) -> Result<Arc<L
             record.worktree_path
         }
     };
-    registry.get_or_start(&worktree, || Arc::new(TauriEvents(app.clone())))
+    server_for_worktree(app, &worktree)
+}
+
+/// The server of `worktree`, started on demand; a server started now gets the open documents of the worktree.
+pub fn server_for_worktree(app: &AppHandle, worktree: &Path) -> Result<Arc<LspServer>, String> {
+    let (server, is_new) = app.state::<LspRegistry>().get_or_start(worktree, || Arc::new(TauriEvents(app.clone())))?;
+    if is_new {
+        tauri::async_runtime::spawn(documents::open_in(app.clone(), worktree.to_path_buf(), server.clone()));
+    }
+    Ok(server)
+}
+
+/// The running server of `worktree`, if any.
+pub fn running_server(app: &AppHandle, worktree: &Path) -> Option<Arc<LspServer>> {
+    app.state::<LspRegistry>().servers.lock().unwrap().get(worktree).cloned()
 }
 
 #[tauri::command]
@@ -805,17 +821,6 @@ pub async fn lsp_request(
     token: Option<String>,
 ) -> Result<Value, String> {
     server_for(&app, &registry, id)?.request(&method, params, token).await
-}
-
-#[tauri::command]
-pub async fn lsp_notify(
-    app: AppHandle,
-    registry: State<'_, LspRegistry>,
-    id: Uuid,
-    method: String,
-    params: Value,
-) -> Result<(), String> {
-    server_for(&app, &registry, id)?.notify(&method, params).await
 }
 
 #[tauri::command]

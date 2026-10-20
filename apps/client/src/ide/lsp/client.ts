@@ -2,7 +2,6 @@ import * as monaco from "monaco-editor";
 import { commands } from "../../ipc/commands";
 import { listenTo } from "../../ipc/events";
 import type { Diagnostic, DocumentSymbol } from "./protocol";
-import { toContentChanges } from "./protocol";
 
 /** Language ids whose models the language server receives. */
 const SERVED_LANGUAGES = new Set(["typescript", "javascript"]);
@@ -14,17 +13,14 @@ let eventsSubscribed = false;
 const diagnosticsListeners = new Set<(model: monaco.editor.ITextModel, diagnostics: Diagnostic[]) => void>();
 
 /**
- * The TypeScript language server (`tsgo --lsp`) of one worktree, run by the backend and shared by every session
- * of the worktree. The client keeps the server's view of the open documents in sync with the Monaco models
- * (full text on open, incremental edits afterwards), forwards requests and re-opens every document after the
- * server process was replaced.
+ * The TypeScript language server (`tsgo --lsp`) of one worktree, run by the backend and shared by every session and
+ * window of the worktree. The documents reach the server through the backend's shared documents (see documents.ts);
+ * the client forwards requests and knows which models the server serves.
  */
 export class LspClient {
-  /** Documents the server should know, by URI. */
-  private readonly tracked = new Map<string, monaco.editor.ITextModel>();
-  /** Documents the current server process has received `didOpen` for. */
-  private readonly synced = new Set<string>();
-  /** Notifications in flight; a request waits for them so the server sees the edits it refers to. */
+  /** Models the server receives, by URI. */
+  private readonly served = new Map<string, monaco.editor.ITextModel>();
+  /** Document updates of this window in flight; a request waits for them so the server sees the edits it refers to. */
   private queue: Promise<void> = Promise.resolve();
   private nextToken = 1;
   private reportedMissing = false;
@@ -39,35 +35,31 @@ export class LspClient {
 
   /** Whether `model` is a worktree document of a language the server handles. */
   serves(model: monaco.editor.ITextModel): boolean {
-    return this.tracked.has(model.uri.toString());
+    return this.served.has(model.uri.toString());
+  }
+
+  /** Counts a worktree model as served until it is disposed; models of other languages are ignored. */
+  serve(model: monaco.editor.ITextModel): void {
+    const uri = model.uri.toString();
+    if (!SERVED_LANGUAGES.has(model.getLanguageId()) || this.served.has(uri)) return;
+    this.served.set(uri, model);
+    model.onWillDispose(() => {
+      this.served.delete(uri);
+      this.symbols.delete(uri);
+    });
   }
 
   /**
-   * Registers a worktree model with the server: it is opened now and every edit is forwarded until the model is
-   * disposed. Models of other languages are ignored.
+   * Runs the document update `send` after the ones queued before it and resolves with its result. Requests wait for
+   * the queue; a failed update does not hold up the next one.
    */
-  track(model: monaco.editor.ITextModel): void {
-    const uri = model.uri.toString();
-    if (!SERVED_LANGUAGES.has(model.getLanguageId()) || this.tracked.has(uri)) return;
-    this.tracked.set(uri, model);
-    this.enqueue(() => this.open(model));
-    const subscriptions = [
-      model.onDidChangeContent((event) => {
-        if (!this.synced.has(uri)) return;
-        const params = { textDocument: { uri, version: model.getVersionId() }, contentChanges: toContentChanges(event) };
-        this.enqueue(() => commands.lspNotify(this.sessionId, "textDocument/didChange", params));
-      }),
-      model.onWillDispose(() => {
-        this.tracked.delete(uri);
-        this.symbols.delete(uri);
-        for (const subscription of subscriptions) {
-          subscription.dispose();
-        }
-        if (!this.synced.has(uri)) return;
-        this.synced.delete(uri);
-        this.enqueue(() => commands.lspNotify(this.sessionId, "textDocument/didClose", { textDocument: { uri } }));
-      }),
-    ];
+  enqueue<Result>(send: () => Promise<Result>): Promise<Result> {
+    const result = this.queue.then(send);
+    this.queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   /**
@@ -105,13 +97,9 @@ export class LspClient {
     return result;
   }
 
-  /** Forgets the sync state after the server process ended; every tracked document is reopened before the next request. */
+  /** Forgets cached results after the server process ended; the backend opens the documents in the next one. */
   handleExit(): void {
-    this.synced.clear();
     this.symbols.clear();
-    for (const model of this.tracked.values()) {
-      this.enqueue(() => this.open(model));
-    }
   }
 
   /** A missing server binary is reported once per worktree; every feature stays quiet otherwise. */
@@ -119,19 +107,6 @@ export class LspClient {
     if (this.reportedMissing || !String(error).includes("tsgo not found")) return;
     this.reportedMissing = true;
     console.warn(`language features are off for ${this.worktreePath}: ${String(error)}`);
-  }
-
-  private open(model: monaco.editor.ITextModel): Promise<void> {
-    const uri = model.uri.toString();
-    if (model.isDisposed() || !this.tracked.has(uri) || this.synced.has(uri)) return Promise.resolve();
-    this.synced.add(uri);
-    const textDocument = { uri, languageId: model.getLanguageId(), version: model.getVersionId(), text: model.getValue() };
-    return commands.lspNotify(this.sessionId, "textDocument/didOpen", { textDocument });
-  }
-
-  /** Notifications go out one after another; a failed one (server missing) does not block the next. */
-  private enqueue(send: () => Promise<void>): void {
-    this.queue = this.queue.then(send).catch((error) => console.warn("language server notification failed:", error));
   }
 }
 

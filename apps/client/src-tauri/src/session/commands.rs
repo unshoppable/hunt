@@ -2433,7 +2433,7 @@ pub async fn read_file_history(app: AppHandle, id: Uuid, path: String) -> Result
 
 /// The stored record of `id` and the absolute location of the worktree-relative `path` in its worktree. Every
 /// command that takes a path from the UI resolves it here: absolute paths and `..` segments are rejected.
-fn session_file(app: &AppHandle, id: Uuid, path: &str) -> Result<(SessionRecord, PathBuf), String> {
+pub(crate) fn session_file(app: &AppHandle, id: Uuid, path: &str) -> Result<(SessionRecord, PathBuf), String> {
     let record = worktree_session(app, id)?;
     let target = worktree_file(&record, path)?;
     Ok((record, target))
@@ -2450,7 +2450,7 @@ fn local_session(app: &AppHandle, id: Uuid) -> Result<SessionRecord, String> {
 
 /// The stored record of `id` for a command that works on the local worktree: a local session's, or a remote session's,
 /// which `session::sync` keeps in sync with its VM; a session adopted from its VM gets one with its first sync.
-fn worktree_session(app: &AppHandle, id: Uuid) -> Result<SessionRecord, String> {
+pub(crate) fn worktree_session(app: &AppHandle, id: Uuid) -> Result<SessionRecord, String> {
     let record = store::find_session(app, id)?;
     if record.remote.is_some() && !record.worktree_path.is_dir() {
         return Err(format!("failed to use the worktree of session {id}: it has no local worktree yet; it gets one once Hunt reached its VM"));

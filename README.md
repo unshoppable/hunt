@@ -327,14 +327,16 @@ The "Editor" tab is a small built-in IDE for the worktree: a lazily listed proje
 (`apps/client/src-tauri/src/workspace.rs`) and Monaco editor panes with tabs and a symbol breadcrumb
 (`apps/client/src/ide/`). A folder's context menu marks it with a color that tints it and everything below it, like
 WebStorm's file colors; marks are kept per repository in `apps/client/src/ide/folderColors.ts`. Files live as
-`file://<worktree>/…` models.
+`file://<worktree>/…` models. Like an IDE's editors, every window shares one document per file: the backend holds its
+text and saved state (`apps/client/src-tauri/src/documents.rs`), each window's model is a replica
+(`apps/client/src/ide/documents.ts`), so an edit, the unsaved mark and a save show in every window at once.
 
 Hover, inlay hints, diagnostics, the breadcrumb, go-to-declaration and usages come from the TypeScript 7 language
 server (`tsgo --lsp`, from the worktree's `node_modules/.bin` or the PATH), one process per worktree managed by
 `apps/client/src-tauri/src/lsp.rs` and bridged through `apps/client/src/ide/lsp/`. The server reads loaded files from
-their models, which reload from disk after every agent edit, and every other file from disk; a watcher on the worktree
-reports the changes matching the globs the server registers (`workspace/didChangeWatchedFiles`), so usages include
-files the agent created. Monaco's bundled TypeScript worker
+the shared documents, which reload from disk after every agent edit, and every other file from disk; a watcher on the
+worktree reports the changes matching the globs the server registers (`workspace/didChangeWatchedFiles`), so usages
+include files the agent created. Monaco's bundled TypeScript worker
 only colors code: `apps/client/src/diff/webstormClassifier.ts` assigns every identifier the role WebStorm would (class,
 interface, instance field, static method, parameter, global/local variable, …), colored by the user's WebStorm scheme
 (`apps/client/src/diff/webstormScheme.ts`); opening a file also loads its relative imports so imported names get their
@@ -946,6 +948,7 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 | `apps/client/src-tauri/src/github.rs` | Pull requests through `gh` |
 | `apps/client/src-tauri/src/session/` | Session commands, store, attribution, summaries, reviews |
 | `apps/client/src-tauri/src/lsp.rs` | One `tsgo --lsp` process per worktree |
+| `apps/client/src-tauri/src/documents.rs` | The one shared text of every loaded worktree file, for all windows and the language server |
 | `apps/client/src-tauri/src/workspace.rs` | Project tree and file access |
 | `apps/client/src-tauri/src/graph.rs` | Architecture diagram prompts, files and status |
 | `apps/client/src-tauri/src/remote/` | Session VMs, SSH to them, handoff and retrieval of remote sessions, previews, terminals |

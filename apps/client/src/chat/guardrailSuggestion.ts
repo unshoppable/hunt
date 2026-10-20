@@ -7,8 +7,11 @@ const KINDS: GuardrailKind[] = ["instruction", "rule", "skill", "agent", "adr"];
 /** A guardrail the agent proposed at the end of a reply: its kind and what it should say. */
 export type GuardrailSuggestion = { kind: GuardrailKind; summary: string };
 
-/** `<!-- hunt:guardrail adr: Summary -->`, which the agent ends a reply with when it holds a guardrail (see `prompts/guardrail-offer.system-prompt.md`). */
-const MARKER = /<!--\s*hunt:guardrail\s+(\w+)\s*:?\s*([\s\S]*?)\s*-->/;
+/**
+ * `<!-- hunt:guardrail adr: Summary -->` on a line of its own, which the agent ends a reply with when it holds a guardrail,
+ * before the question marker if the reply has one (see `prompts/guardrail-offer.system-prompt.md`).
+ */
+const MARKER = /^[ \t]*<!--\s*hunt:guardrail\s+(\w+)\s*:?\s*([\s\S]*?)\s*-->[ \t]*$/m;
 /** A comment at the end of a reply (its text may hold `>`), also any prefix of one while the marker is still streaming in. */
 const TRAILING_MARKER = /\s*<(?:!(?:-(?:-(?:(?!-->)[\s\S])*(?:-->)?)?)?)?\s*$/;
 /** The first line of every guardrail request the "Guardrail" button prefills. */
@@ -29,9 +32,9 @@ export function findGuardrailSuggestion(items: ChatItem[]): GuardrailSuggestion 
   return null;
 }
 
-/** The reply without the suggestion marker, as it is shown and copied. */
+/** The reply without the suggestion marker and a trailing comment such as the question marker, as it is shown and copied. */
 export function stripGuardrailMarker(text: string): string {
-  return text.replace(TRAILING_MARKER, "");
+  return text.replace(MARKER, "").replace(TRAILING_MARKER, "").trimEnd();
 }
 
 /** The prompt the "Guardrail" button prefills: the suggested guardrail, or the bare request for the user to complete. */

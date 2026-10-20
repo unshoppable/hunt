@@ -283,7 +283,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         <div className="px-9 pt-2">
           <div className="chat-column flex items-center gap-3">
             {chat?.contextUsage ? <ContextMeter usage={chat.contextUsage} /> : null}
-            <SaveGuardrailButton isSuggested={!!guardrailSuggestion} isDisabled={hasPermission} onOpen={(bounds) => void openGuardrailChat(bounds)} />
+            <SaveGuardrailButton suggestion={guardrailSuggestion}isDisabled={hasPermission} onOpen={(bounds) => void openGuardrailChat(bounds)} />
           </div>
         </div>
       ) : isStarting ? null : remote ? (

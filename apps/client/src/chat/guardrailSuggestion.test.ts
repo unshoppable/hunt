@@ -13,6 +13,13 @@ describe("findGuardrailSuggestion", () => {
     });
   });
 
+  it("finds the marker before the question marker", () => {
+    expect(findGuardrailSuggestion([user("q"), agent("Shall I go on?\n\n<!-- hunt:guardrail rule: Exclude new types. -->\n<!-- hunt:question -->")])).toEqual({
+      kind: "rule",
+      summary: "Exclude new types.",
+    });
+  });
+
   it("ignores a marker of a reply before the last prompt and unknown kinds", () => {
     expect(findGuardrailSuggestion([agent("a <!-- hunt:guardrail rule: x -->"), user("next")])).toBeNull();
     expect(findGuardrailSuggestion([user("q"), agent("a <!-- hunt:guardrail memo: x -->")])).toBeNull();
@@ -29,6 +36,11 @@ describe("stripGuardrailMarker", () => {
     expect(stripGuardrailMarker("Done.\n<!-- hunt:guardrail rule: Extend `Base<TText>` and mark fields. -->")).toBe("Done.");
     expect(stripGuardrailMarker("Done.\n<!-- hunt:guardrail rule: Extend `Base<TText>` and")).toBe("Done.");
     expect(stripGuardrailMarker("<!-- note --> Done.")).toBe("<!-- note --> Done.");
+  });
+
+  it("strips a marker before the question marker and keeps one quoted inside a line", () => {
+    expect(stripGuardrailMarker("Found it.\n\nShall I go on?\n\n<!-- hunt:guardrail rule: x -->\n<!-- hunt:question -->\n")).toBe("Found it.\n\nShall I go on?");
+    expect(stripGuardrailMarker("End with `<!-- hunt:guardrail rule: x -->` there.")).toBe("End with `<!-- hunt:guardrail rule: x -->` there.");
   });
 });
 

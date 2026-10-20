@@ -178,7 +178,7 @@ export function guardrailTask(listing: GuardrailListing, today = new Date()): st
     "The user describes a guardrail for this repository. Turn the description into exactly one guardrail of the kind that fits and write it where it belongs:",
     ...kinds,
     "Decide the kind from the user's message and from the repository. When the message leaves open which kind fits, what the guardrail should say or which part of the code it applies to, write nothing yet: ask one short question, naming the kinds in question with one sentence on how they differ, and continue once the user answered.",
-    "Before writing, read the existing files of that kind and follow their naming and structure. Extend an existing file when the request belongs there instead of adding a duplicate, and never overwrite or delete other content. Choose <name> as a short kebab-case name that says what the file is about, so that an agent finds the file by its name alone.",
+    "Before writing, read the existing files of that kind and follow their naming and structure. Extend an existing file when the request belongs there instead of adding a duplicate, and never overwrite or delete other content. When a guardrail of any kind already says what the user asks for, write nothing and name that file instead. Choose <name> as a short kebab-case name that says what the file is about, so that an agent finds the file by its name alone.",
     `Write the file with your file-editing tools and answer with the kind you chose, the path and a short summary of what you wrote. ${CONTEXT_RULE}`,
   ].join("\n");
 }

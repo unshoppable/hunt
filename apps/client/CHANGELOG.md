@@ -1,3 +1,21 @@
+## 0.56.0 (2026-10-20)
+
+### 🚀 Features
+
+- **client:** message times come only from the agent's transcript; a live message shows its time once its turn ended, a prompt Hunt sent found through the parent chain of the turn's first reply or tool call ([07c7594](https://github.com/unshoppable/hunt/commit/07c7594))
+- **client:** the chat's notice that the agent waits for an answer starts with the session mark's ? icon ([1236618](https://github.com/unshoppable/hunt/commit/1236618))
+
+### 🩹 Fixes
+
+- **client:** the ? of a session mark's question badge is bold again, the chat notice's stays semibold ([e158fc8](https://github.com/unshoppable/hunt/commit/e158fc8))
+- **client:** restore the ? icon of the chat's notice that the agent waits for an answer, which the message times commit reverted ([dafc290](https://github.com/unshoppable/hunt/commit/dafc290))
+- **client:** the ? of the question badge is semibold ([f90f628](https://github.com/unshoppable/hunt/commit/f90f628))
+- **client:** the ? icon of the chat's notice that the agent waits for an answer is 16px ([136fb9b](https://github.com/unshoppable/hunt/commit/136fb9b))
+- **client:** the ? in a session mark's question badge is 1px larger ([09bee8f](https://github.com/unshoppable/hunt/commit/09bee8f))
+- **client:** the question badge and unseen dot of a session mark are 2px larger and the ? inside 1px larger ([d0485b3](https://github.com/unshoppable/hunt/commit/d0485b3))
+- **client:** an unseen response shows as a green dot at the session mark's corner instead of a green mark, so the mark stays grey for local and blue for remote sessions ([7c03564](https://github.com/unshoppable/hunt/commit/7c03564))
+- **client:** a session mark keeps its grey or blue colour while the agent waits for an answer; only the ? badge marks the question ([506412a](https://github.com/unshoppable/hunt/commit/506412a))
+
 ## 0.55.0 (2026-10-20)
 
 ### 🚀 Features

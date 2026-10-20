@@ -111,10 +111,32 @@ export class Workspace {
 
     const request = commands
       .readFile(this.sessionId, path)
-      .then((text) => this.adopt(path, text))
+      .then((text) => this.documents.get(path) ?? this.adopt(path, text))
       .finally(() => this.loading.delete(path));
     this.loading.set(path, request);
     return request;
+  }
+
+  /**
+   * The document of `path` at once, for a view that has just read the file itself (a diff's editable side): a document
+   * not loaded yet is created from `text`, a loaded one without unsaved edits takes `text` over, and unsaved edits stay.
+   */
+  documentFor(path: string, text: string): Document {
+    const document = this.documents.get(path);
+    if (!document) return this.adopt(path, text);
+    if (!this.isDirty(path) && document.model.getValue() !== text) {
+      this.replaceText(document, text);
+    }
+    return document;
+  }
+
+  /** Treats the content of `path` as saved, provided the model holds exactly `text` (written to disk by someone else, e.g. a diff). */
+  markSaved(path: string, text: string): void {
+    const document = this.documents.get(path);
+    if (!document || document.model.getValue() !== text) return;
+    document.savedText = text;
+    document.savedVersionId = document.model.getAlternativeVersionId();
+    this.reportDirty(document);
   }
 
   private adopt(path: string, text: string): Document {

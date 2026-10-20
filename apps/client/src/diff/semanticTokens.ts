@@ -1,8 +1,11 @@
 import * as monaco from "monaco-editor";
 import { WEBSTORM_ROLES } from "./webstormRoles";
 
-/** Monaco's TypeScript worker plus the classification method added in semantic.worker.ts. */
-export type SemanticWorker = monaco.typescript.TypeScriptWorker & { getSemanticClassifications(fileName: string): Promise<number[]> };
+/** Monaco's TypeScript worker plus the methods added in semantic.worker.ts. */
+export type SemanticWorker = monaco.typescript.TypeScriptWorker & {
+  getSemanticClassifications(fileName: string): Promise<number[]>;
+  isObjectMemberPosition(fileName: string, offset: number): Promise<boolean>;
+};
 
 /**
  * The TypeScript worker for `model` (null for other languages), with the models in `alsoSync` visible to it as

@@ -1,4 +1,5 @@
 import type * as monaco from "monaco-editor";
+import { completionName, parseCompletionDetail } from "./completionItems";
 
 /** The subset of the Language Server Protocol the editor uses; positions are 0-based, UTF-16 code units. */
 export type Position = { line: number; character: number };
@@ -202,15 +203,15 @@ function toMonacoCompletionRange(edit: TextEdit | InsertReplaceEdit | Completion
 
 /**
  * A Monaco completion item for an LSP one: the server's edit (or the list's default edit range, or the word before
- * `position`) decides what the item replaces, snippets keep their placeholders, and the LSP item travels along in
- * `lsp` so `completionItem/resolve` can be asked for documentation and auto-import edits.
+ * `position`) decides what the item replaces, snippets keep their placeholders, the label and docs follow
+ * `resolvedFields`, and the LSP item travels along in `lsp` so `completionItem/resolve` can be asked for the type,
+ * documentation and auto-import edits.
  */
 export function toMonacoCompletion(item: CompletionItem, defaults: CompletionItemDefaults | undefined, wordRange: monaco.IRange): monaco.languages.CompletionItem & { lsp: CompletionItem } {
   const format = item.insertTextFormat ?? defaults?.insertTextFormat;
   const deprecated = item.deprecated || item.tags?.includes(1);
   const resolved = resolvedFields(item);
   return {
-    label: item.labelDetails ? { label: item.label, detail: item.labelDetails.detail, description: item.labelDetails.description } : item.label,
     kind: toMonacoCompletionKind(item.kind),
     tags: deprecated ? [DEPRECATED] : undefined,
     preselect: item.preselect,
@@ -225,11 +226,21 @@ export function toMonacoCompletion(item: CompletionItem, defaults: CompletionIte
   };
 }
 
-/** The fields `completionItem/resolve` fills in later: documentation, detail and the edits an auto-import adds. */
-export function resolvedFields(item: CompletionItem): Pick<monaco.languages.CompletionItem, "detail" | "documentation" | "additionalTextEdits"> {
+/**
+ * The fields `completionItem/resolve` fills in, as the suggest widget shows them: the row's label with a callable's
+ * parameters after the name and the type (or an auto-import's module) at the right edge, the declaring type as the
+ * heading of the docs column, the docs starting with the declaration as a TypeScript block, and the edits an
+ * auto-import adds. An item that was not resolved yet has only its name and module.
+ */
+export function resolvedFields(item: CompletionItem): Pick<monaco.languages.CompletionItem, "label" | "detail" | "documentation" | "additionalTextEdits"> {
+  const name = completionName(item);
+  const parsed = item.detail ? parseCompletionDetail(item.detail, name) : null;
+  const declaration = parsed ? "```typescript\n" + parsed.signature + "\n```" : "";
+  const documentation = [declaration, toMarkdown(item.documentation)?.value ?? ""].filter(Boolean).join("\n\n");
   return {
-    detail: item.detail,
-    documentation: toMarkdown(item.documentation),
+    label: { label: name, detail: parsed?.parameters ?? item.labelDetails?.detail, description: item.labelDetails?.description ?? parsed?.type },
+    detail: parsed ? parsed.owner : item.detail === name ? undefined : item.detail,
+    documentation: documentation ? { value: documentation } : undefined,
     additionalTextEdits: item.additionalTextEdits?.map((edit) => ({ range: toMonacoRange(edit.range), text: edit.newText })),
   };
 }

@@ -3,7 +3,7 @@ import * as monaco from "monaco-editor";
 import { commands } from "../ipc/commands";
 import { attachIdeLink } from "../diff/ideLink";
 import { useFileIconUrl } from "../diff/fileIcons";
-import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, onShortcut, setupMonaco } from "../diff/monaco";
+import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, onShortcut, setupMonaco } from "../diff/monaco";
 import { anchorBelowLine, type SelectionRequest } from "../diff/selectionContext";
 import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
@@ -58,19 +58,6 @@ type EditorPaneProps = {
  * first line number; a click on it reopens the sub chat in its popover. Releasing a selection shows a floating
  * button at its active end that toggles the popover for the selected lines.
  */
-/**
- * Completion like WebStorm's: the popup opens while typing in code and in strings (import paths), word-based
- * guesses never mix into the language server's list, and the focused item shows its documentation at once.
- */
-const COMPLETION_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = {
-  quickSuggestions: { other: "on", comments: "off", strings: "on" },
-  wordBasedSuggestions: "off",
-  suggest: { showStatusBar: false, showInlineDetails: true, preview: false },
-  suggestOnTriggerCharacters: true,
-  acceptSuggestionOnCommitCharacter: true,
-  parameterHints: { enabled: true, cycle: true },
-};
-
 export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, pendingPosition, onOpenSubChat, onToggleSubChat }: EditorPaneProps) {
   const fileIconUrl = useFileIconUrl();
   const fontSize = useSettingsStore((state) => state.panes.editor.fontSize);

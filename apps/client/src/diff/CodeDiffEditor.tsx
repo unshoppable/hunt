@@ -3,8 +3,7 @@ import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import type { FileDiff } from "../ipc/types";
 import { attachIdeLink } from "./ideLink";
-import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, changeMark, monacoLanguage, onShortcut, setupMonaco } from "./monaco";
-import { mirrorDiagnostics } from "./diagnostics";
+import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, changeMark, monacoLanguage, onShortcut, setupMonaco } from "./monaco";
 import { anchorBelowLine, type SelectionRequest } from "./selectionContext";
 import { workspaceFor } from "../ide/documents";
 import { attachSelectionAgent } from "../ide/selectionAgent";
@@ -25,6 +24,8 @@ export type CodeDiffEditorHandle = {
   save: () => void;
   /** Scrolls to the top and opens the box for a review comment on the whole file there; only in a pull request review. */
   commentOnFile: () => void;
+  /** Throws away unsaved edits; call it when the host drops them (another file is shown), since the document outlives the editor. */
+  discard: () => void;
 };
 
 type CodeDiffEditorProps = {
@@ -87,8 +88,11 @@ type CodeDiffEditorProps = {
 
 /**
  * Side-by-side (WebStorm-style, see SplitDiffView) or inline diff whose right side is editable; the left side
- * is the committed version and read-only. `diff.newContent` is the saved state: changing it (after a save or an
- * external reload) resets the dirty flag. Switching the mode keeps unsaved edits. Sub chats opened from lines of
+ * is the committed version and read-only. The editable side shows the worktree document of the file (see
+ * ide/documents.ts), shared with the editor tab and served by the language server: completion, hover, signature help
+ * and diagnostics while typing, and unsaved edits that show in both. `diff.newContent` is the saved state: changing it
+ * (after a save or an external reload) replaces the text and resets the dirty flag. Switching the mode keeps unsaved
+ * edits. Sub chats opened from lines of
  * the file get a glyph on their first line in the right side's gutter; a click on it reopens the chat. Both sides
  * offer the agent features of the editor panes: the context menu entry and the floating button on a selection (a
  * selection on the left side hands over the committed lines).
@@ -149,8 +153,19 @@ export function CodeDiffEditor({
   const busyChatIdsRef = useRef(busyChatIds);
   busyChatIdsRef.current = busyChatIds;
 
+  /**
+   * The worktree document the editable side shows. Read-only and detached diffs, whose right side need not be the file,
+   * and deleted files keep a model of their own.
+   */
+  const [shared] = useState(() => {
+    if (readOnly || isDetached || !worktreePath || diff.newContent === null) return null;
+    const workspace = workspaceFor(sessionId, worktreePath);
+    return { workspace, document: workspace.documentFor(diff.path, diff.newContent) };
+  });
   /** Text the editable editor starts with; carried over when the mode switches so unsaved edits survive. */
-  const [modifiedValue, setModifiedValue] = useState(diff.newContent ?? "");
+  const [modifiedValue, setModifiedValue] = useState(shared?.document.model.getValue() ?? diff.newContent ?? "");
+  /** The saved content last handed to the editor; the first one is in it already, along with a document's unsaved edits. */
+  const appliedContentRef = useRef(diff.newContent);
   const [previousMode, setPreviousMode] = useState(mode);
   if (previousMode !== mode) {
     setPreviousMode(mode);
@@ -175,6 +190,7 @@ export function CodeDiffEditor({
       editor.setScrollTop(0);
       setComposer({ span: FILE_SPAN, underLine: 0 });
     },
+    discard: () => shared?.workspace.revert(diff.path),
   }));
 
   useEffect(() => {
@@ -200,21 +216,23 @@ export function CodeDiffEditor({
 
   useEffect(() => {
     savedContentRef.current = diff.newContent ?? "";
-    setModifiedValue(diff.newContent ?? "");
+    if (appliedContentRef.current !== diff.newContent) {
+      appliedContentRef.current = diff.newContent;
+      setModifiedValue(diff.newContent ?? "");
+    }
     const current = modifiedEditorRef.current?.getValue();
     if (current !== undefined) {
       onDirtyChangeRef.current(current !== savedContentRef.current);
     }
   }, [diff.newContent]);
 
-  // The editable side shows the diagnostics of the file as saved, which the workspace document holds (see diagnostics.ts).
+  // The shared document counts as saved once it holds the saved content. The editors take a new `modifiedValue` in
+  // their own effects, which run before this one, so it runs again after that.
   useEffect(() => {
-    if (!modifiedEditor || !worktreePath) return;
-    const diagnostics = mirrorDiagnostics(modifiedEditor, workspaceFor(sessionId, worktreePath), diff.path);
-    return () => diagnostics.dispose();
-  }, [modifiedEditor, sessionId, worktreePath, diff.path]);
+    shared?.workspace.markSaved(diff.path, diff.newContent ?? "");
+  }, [shared, diff.path, diff.newContent, modifiedValue]);
 
-  // Keeps that document at the saved content after saves here and changes by agents.
+  // Keeps the worktree document at the saved content after saves here and changes by agents.
   useEffect(() => {
     if (readOnly || !worktreePath) return;
     void workspaceFor(sessionId, worktreePath).reloadFromDisk([diff.path]);
@@ -271,9 +289,10 @@ export function CodeDiffEditor({
       addCommentGlyph?.dispose();
       setModifiedEditor((current) => (current === modifiedEditor ? null : current));
     });
-    modifiedEditor.onDidChangeModelContent(() => {
-      onDirtyChangeRef.current(modifiedEditor.getValue() !== savedContentRef.current);
-    });
+    const reportDirty = () => onDirtyChangeRef.current(modifiedEditor.getValue() !== savedContentRef.current);
+    modifiedEditor.onDidChangeModelContent(reportDirty);
+    // A shared document may come with unsaved edits from the editor tab.
+    reportDirty();
     onShortcut(modifiedEditor, "editor.save", () => onSaveRef.current(modifiedEditor.getValue()));
   };
 
@@ -281,6 +300,7 @@ export function CodeDiffEditor({
     () => ({
       ...EDITOR_APPEARANCE_OPTIONS,
       ...SCROLL_TRACK_OPTIONS,
+      ...COMPLETION_OPTIONS,
       fontSize,
       lineHeight,
       fontFamily,
@@ -342,6 +362,7 @@ export function CodeDiffEditor({
         <SplitDiffView
           original={diff.oldContent ?? ""}
           modified={modifiedValue}
+          modifiedModel={shared?.document.model}
           language={language}
           fontSize={fontSize}
           lineHeight={lineHeight}
@@ -356,10 +377,11 @@ export function CodeDiffEditor({
   }
 
   return (
-    <UnifiedDiffView diffEditorRef={diffEditorRef}>
+    <UnifiedDiffView diffEditorRef={diffEditorRef} keepsModifiedModel={!!shared}>
       <DiffEditor
         original={diff.oldContent ?? ""}
         modified={modifiedValue}
+        modifiedModelPath={shared?.document.model.uri.toString()}
         language={language}
         theme={MONACO_THEME}
         options={unifiedOptions}
@@ -398,8 +420,17 @@ function setUnchangedRegionsCollapsed(diffEditor: monaco.editor.IStandaloneDiffE
 /**
  * Detaches and disposes the diff models before `DiffEditor` disposes the widget on unmount. The library would
  * dispose the models first, which Monaco rejects ("TextModel got disposed before DiffEditorWidget model got reset").
+ * With `keepsModifiedModel` the right side's model is a worktree document that outlives the view.
  */
-function UnifiedDiffView({ diffEditorRef, children }: { diffEditorRef: RefObject<monaco.editor.IStandaloneDiffEditor | null>; children: ReactNode }) {
+function UnifiedDiffView({
+  diffEditorRef,
+  keepsModifiedModel,
+  children,
+}: {
+  diffEditorRef: RefObject<monaco.editor.IStandaloneDiffEditor | null>;
+  keepsModifiedModel: boolean;
+  children: ReactNode;
+}) {
   useEffect(
     () => () => {
       const diffEditor = diffEditorRef.current;
@@ -408,9 +439,11 @@ function UnifiedDiffView({ diffEditorRef, children }: { diffEditorRef: RefObject
       if (!diffEditor || !model) return;
       diffEditor.setModel(null);
       model.original.dispose();
-      model.modified.dispose();
+      if (!keepsModifiedModel) {
+        model.modified.dispose();
+      }
     },
-    [diffEditorRef],
+    [diffEditorRef, keepsModifiedModel],
   );
   return children;
 }

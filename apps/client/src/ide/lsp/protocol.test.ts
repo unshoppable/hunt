@@ -104,7 +104,7 @@ describe("completion", () => {
   it("uses the item's insert/replace edit, filter text and the list's commit characters", () => {
     const item = { label: "offset?", kind: 5, sortText: "12", filterText: "offset", textEdit: { newText: "offset", insert: range(5, 4, 5, 7), replace: range(5, 4, 5, 9) }, data: { name: "offset" } };
     const suggestion = toMonacoCompletion(item, { commitCharacters: [".", ",", ";"] }, wordRange);
-    expect(suggestion.label).toBe("offset?");
+    expect(suggestion.label).toEqual({ label: "offset", detail: undefined, description: undefined });
     expect(suggestion.filterText).toBe("offset");
     expect(suggestion.insertText).toBe("offset");
     expect(suggestion.range).toEqual({ insert: toMonacoRange(range(5, 4, 5, 7)), replace: toMonacoRange(range(5, 4, 5, 9)) });
@@ -135,6 +135,24 @@ describe("completion", () => {
     expect(fields.documentation).toEqual({ value: "Does things." });
     expect(fields.additionalTextEdits).toEqual([{ range: toMonacoRange(range(0, 21, 0, 21)), text: ",Helper" }]);
     expect(resolvedFields({ label: "x", documentation: { kind: "plaintext", value: "raw" } }).documentation).toEqual({ value: "```\nraw\n```" });
+  });
+
+  it("shows a resolved member's type in its row and its declaration above the docs", () => {
+    const fields = resolvedFields({
+      label: "nullable?",
+      kind: 5,
+      detail: "(property) PropertyOptions<Owner>.nullable?: boolean | undefined",
+      documentation: { kind: "markdown", value: "Set column as nullable." },
+    });
+    expect(fields.label).toEqual({ label: "nullable", detail: undefined, description: "boolean | undefined" });
+    expect(fields.detail).toBe("PropertyOptions<Owner>");
+    expect(fields.documentation).toEqual({ value: "```typescript\nnullable?: boolean | undefined\n```\n\nSet column as nullable." });
+  });
+
+  it("puts a resolved callable's parameters after its name and leaves a keyword's detail out", () => {
+    const fields = resolvedFields({ label: "find", kind: 2, detail: "(method) Repo.find(id: string): Promise<Entity>" });
+    expect(fields.label).toEqual({ label: "find", detail: "(id: string)", description: "Promise<Entity>" });
+    expect(resolvedFields({ label: "if", kind: 14, detail: "if" }).detail).toBeUndefined();
   });
 });
 

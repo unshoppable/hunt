@@ -9,6 +9,7 @@ import { SplitDiffController } from "./splitDiff";
 export function SplitDiffView({
   original,
   modified,
+  modifiedModel,
   language,
   fontSize,
   lineHeight,
@@ -19,6 +20,8 @@ export function SplitDiffView({
 }: {
   original: string;
   modified: string;
+  /** A worktree document the modified side shows instead of a model of its own; it outlives the view. */
+  modifiedModel?: editor.ITextModel;
   language: string;
   fontSize: number;
   /** Line height as a multiple of the font size. */
@@ -34,7 +37,7 @@ export function SplitDiffView({
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<SplitDiffController | null>(null);
-  const initialRef = useRef({ original, modified, language, fontSize, lineHeight, fontFamily, readOnly, collapseUnchanged, onEditorsCreated });
+  const initialRef = useRef({ original, modified, modifiedModel, language, fontSize, lineHeight, fontFamily, readOnly, collapseUnchanged, onEditorsCreated });
 
   useEffect(() => {
     if (!rootRef.current) return;

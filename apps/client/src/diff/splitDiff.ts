@@ -13,7 +13,7 @@ import {
   type Side,
   type UnchangedRegion,
 } from "./lineDiff";
-import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, changeMark } from "./monaco";
+import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, changeMark } from "./monaco";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const GRADIENT_ID = "hunt-diff-change";
@@ -31,11 +31,14 @@ type EditorWithHiddenAreas = monaco.editor.IStandaloneCodeEditor & { setHiddenAr
 
 /**
  * With `readOnly`, the modified side cannot be edited and the gutter has no revert arrows. With `collapseUnchanged`,
- * unchanged stretches start collapsed instead of expanded.
+ * unchanged stretches start collapsed instead of expanded. With `modifiedModel` (a worktree document shared with other
+ * editors), the modified side shows that model instead of one made from `modified`; it is never disposed here, and new
+ * texts replace its content as an undoable edit.
  */
 export type SplitDiffOptions = {
   original: string;
   modified: string;
+  modifiedModel?: monaco.editor.ITextModel;
   language: string;
   fontSize: number;
   lineHeight: number;
@@ -101,9 +104,11 @@ export class SplitDiffController {
   private rediffTimer: ReturnType<typeof setTimeout> | null = null;
   private isSyncingScroll = false;
   private readonly isReadOnly: boolean;
+  private readonly ownsModifiedModel: boolean;
 
   constructor(root: HTMLElement, options: SplitDiffOptions) {
     this.isReadOnly = !!options.readOnly;
+    this.ownsModifiedModel = !options.modifiedModel;
     this.isCollapsingUnchanged = !!options.collapseUnchanged;
     const originalElement = createElement("div", "split-diff__editor");
     this.numbersElement = createElement("div", "split-diff__numbers");
@@ -113,7 +118,7 @@ export class SplitDiffController {
     root.append(...this.elements);
 
     this.originalModel = monaco.editor.createModel(options.original, options.language);
-    this.modifiedModel = monaco.editor.createModel(options.modified, options.language);
+    this.modifiedModel = options.modifiedModel ?? monaco.editor.createModel(options.modified, options.language);
     this.original = monaco.editor.create(originalElement, {
       ...SHARED_EDITOR_OPTIONS,
       model: this.originalModel,
@@ -136,6 +141,7 @@ export class SplitDiffController {
       fontSize: options.fontSize,
       lineHeight: options.lineHeight,
       fontFamily: options.fontFamily,
+      ...COMPLETION_OPTIONS,
       readOnly: this.isReadOnly,
       domReadOnly: this.isReadOnly,
       lineDecorationsWidth: 10,
@@ -195,7 +201,11 @@ export class SplitDiffController {
       hasChanged = true;
     }
     if (this.modifiedModel.getValue() !== modified) {
-      this.modifiedModel.setValue(modified);
+      if (this.ownsModifiedModel) {
+        this.modifiedModel.setValue(modified);
+      } else {
+        this.modifiedModel.pushEditOperations([], [{ range: this.modifiedModel.getFullModelRange(), text: modified }], () => null);
+      }
       hasChanged = true;
     }
     if (hasChanged) {
@@ -231,7 +241,9 @@ export class SplitDiffController {
     this.original.dispose();
     this.modified.dispose();
     this.originalModel.dispose();
-    this.modifiedModel.dispose();
+    if (this.ownsModifiedModel) {
+      this.modifiedModel.dispose();
+    }
     for (const element of this.elements) {
       element.remove();
     }

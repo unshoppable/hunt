@@ -11,6 +11,9 @@ import { WEBSTORM, WEBSTORM_TOKEN_RULES, typescriptLanguage } from "./webstormSc
 import { CODE_FONT_FAMILY, UI_FONT_FAMILY } from "../state/settings";
 import type { CommandId } from "../state/keymap";
 import { isShortcut } from "../ui/shortcuts";
+import { kindBadgeSvg } from "../ide/KindIcon";
+import { StandaloneServices } from "monaco-editor/editor/standalone/browser/standaloneServices.js";
+import { IStorageService } from "monaco-editor/platform/storage/common/storage.js";
 
 /** Monaco theme name: WebStorm's syntax colors (see webstormScheme.ts) on the diff pane's background. */
 export const MONACO_THEME = "hunt-dark";
@@ -64,6 +67,77 @@ export const PREVIEW_EDITOR_OPTIONS: monaco.editor.IStandaloneEditorConstruction
   links: false,
   wordWrap: "off",
 };
+
+/**
+ * Completion like WebStorm's for every editable code editor (the IDE editor, a diff's right side): the list opens while
+ * typing in code and in strings (import paths), word-based guesses never mix into the language server's list, and it
+ * grows wide enough for the types at the right of its rows. See ide/lsp/providers.ts for what opens it and what its
+ * rows show, and `setUpCompletionList` for keys, row height and the docs column.
+ */
+export const COMPLETION_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = {
+  quickSuggestions: { other: "on", comments: "off", strings: "on" },
+  wordBasedSuggestions: "off",
+  // Monaco validates `fitWidthToDetails` but leaves it out of its typings.
+  suggest: { showStatusBar: false, showInlineDetails: true, preview: false, fitWidthToDetails: true } as monaco.editor.ISuggestOptions,
+  suggestOnTriggerCharacters: true,
+  acceptSuggestionOnCommitCharacter: true,
+  parameterHints: { enabled: true, cycle: true },
+};
+
+/** Height of a completion row as a multiple of the editor's font size. */
+const COMPLETION_ROW_HEIGHT = 1.7;
+
+/** Monaco's storage key for whether the completion list shows the docs column, and the scope and target it uses. */
+const COMPLETION_DOCS_KEY = "expandSuggestionDocs";
+const PROFILE_SCOPE = 0;
+const USER_TARGET = 0;
+
+/** Monaco's codicon of a completion kind and the KindIcon badge drawn in its place, like WebStorm's lookup icons. */
+const COMPLETION_KIND_BADGES: Record<string, string> = {
+  "symbol-method": "method",
+  "symbol-function": "function",
+  "symbol-constructor": "constructor",
+  "symbol-field": "property",
+  "symbol-property": "property",
+  "symbol-variable": "var",
+  "symbol-constant": "const",
+  "symbol-class": "class",
+  "symbol-interface": "interface",
+  "symbol-struct": "type",
+  "symbol-type-parameter": "type",
+  "symbol-module": "module",
+  "symbol-enum": "enum",
+  "symbol-enum-member": "enum member",
+};
+
+/**
+ * Sets up the completion list of every code editor: the keymap's `editor.completion` (⌃Space, ⌥Space) opens it in
+ * place of Monaco's own ⌃Space binding, its rows are `COMPLETION_ROW_HEIGHT` times the font size high and carry
+ * WebStorm's kind badges, and the docs column always shows beside it. Monaco keeps that column's state in its storage;
+ * its close button is hidden (index.css), so nothing turns it off again.
+ */
+function setUpCompletionList(): void {
+  StandaloneServices.get(IStorageService).store(COMPLETION_DOCS_KEY, true, PROFILE_SCOPE, USER_TARGET);
+  monaco.editor.addKeybindingRules([{ keybinding: monaco.KeyMod.WinCtrl | monaco.KeyCode.Space, command: "-editor.action.triggerSuggest" }]);
+
+  const style = document.createElement("style");
+  style.textContent = Object.entries(COMPLETION_KIND_BADGES)
+    .map(([icon, kind]) => `.monaco-editor .suggest-widget .suggest-icon.codicon-${icon}::before { content: ""; background-image: url("data:image/svg+xml,${encodeURIComponent(kindBadgeSvg(kind))}"); }`)
+    .join("\n");
+  document.head.append(style);
+
+  monaco.editor.onDidCreateEditor((editor) => {
+    onShortcut(editor, "editor.completion", () => editor.trigger("keyboard", "editor.action.triggerSuggest", {}));
+    const fitRows = () => editor.updateOptions({ suggestLineHeight: Math.round(editor.getOption(monaco.editor.EditorOption.fontSize) * COMPLETION_ROW_HEIGHT) });
+    editor.onDidChangeConfiguration((event) => {
+      if (event.hasChanged(monaco.editor.EditorOption.fontSize)) {
+        fitRows();
+      }
+    });
+    // The event fires while the editor is still being constructed; options can change once that is done.
+    queueMicrotask(fitRows);
+  });
+}
 
 /**
  * Scroll track of an editable code editor (a diff's right side, the IDE editor), split into two lanes: change marks
@@ -151,6 +225,7 @@ export function setupMonaco(): void {
   monaco.languages.setMonarchTokensProvider("javascript", typescriptLanguage(".js"));
   registerSemanticTokens();
   registerLspProviders();
+  setUpCompletionList();
 
   applyMonacoBackground(editorBackground);
 
@@ -184,6 +259,14 @@ export function applyMonacoBackground(background: string): void {
       "diffEditor.unchangedRegionBackground": "#2d323c",
       "diffEditor.diagonalFill": "#00000000",
       "scrollbarSlider.background": "#ffffff1a",
+      // The completion list's look (shape, rows, docs column) lives in index.css; these are the colors Monaco applies itself.
+      "editorSuggestWidget.background": "#21252d",
+      "editorSuggestWidget.border": "#4a4f59",
+      "editorSuggestWidget.foreground": "#dfe1e5",
+      "editorSuggestWidget.selectedForeground": "#ffffff",
+      "editorSuggestWidget.selectedBackground": "#00000000",
+      "editorSuggestWidget.highlightForeground": "#5c95ff",
+      "editorSuggestWidget.focusHighlightForeground": "#a9c7ff",
     },
   });
 }

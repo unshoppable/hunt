@@ -1,12 +1,24 @@
 import * as monaco from "monaco-editor";
+import { typeScriptWorkerFor } from "../../diff/semanticTokens";
 import { lspClientForModel, onPushedDiagnostics, type LspClient } from "./client";
+import { isMemberList, likelyVisibleOrder } from "./completionItems";
 import { hoverMarkdown, resolvedFields, toLspPosition, toLspRange, toMonacoCompletion, toMonacoPosition, toMonacoRange, toMonacoSignatureHelp, type CompletionItem, type CompletionList, type Diagnostic, type DocumentDiagnosticReport, type DocumentHighlight, type Hover, type InlayHint, type SignatureHelp } from "./protocol";
 
 const LANGUAGES = ["typescript", "javascript"];
 /** Owner of the markers made from the language server's diagnostics. */
 export const MARKER_OWNER = "lsp";
-/** Characters after which the server is asked for completions on its own: member access, string and path starts, decorators, JSX, private names, `import ` keyword lists, JSDoc tags. */
-const COMPLETION_TRIGGERS = [".", '"', "'", "`", "/", "@", "<", "#", " ", "*"];
+/** The server's completion trigger characters: member access, string and path starts, decorators, JSX, private names, `import ` keyword lists, JSDoc tags. */
+const SERVER_TRIGGERS = [".", '"', "'", "`", "/", "@", "<", "#", " ", "*"];
+/** Characters after which an object member starts; the list opens there only when the syntax says so (see `completionRequest`). */
+const MEMBER_TRIGGERS = ["{", ","];
+/** A line ending in a member separator and whitespace, where a typed space may also open the member list. */
+const AFTER_MEMBER_SEPARATOR = /[{,]\s*$/;
+/** Rows the suggest widget shows at once; their types are resolved before the list opens. */
+const VISIBLE_ROWS = 12;
+/** Longest wait for those types; a row resolved later gets its type when it is drawn again. */
+const VISIBLE_ROWS_BUDGET_MS = 80;
+/** Rows of a member list whose types are resolved in the background after it opened. */
+const MEMBER_ROWS_LIMIT = 150;
 const SIGNATURE_TRIGGERS = ["(", ",", "<"];
 const SIGNATURE_RETRIGGERS = [")"];
 /** Pause after the last edit before the diagnostics of a document are pulled again. */
@@ -14,15 +26,39 @@ const DIAGNOSTICS_DELAY_MS = 300;
 
 let isRegistered = false;
 
-/** A suggestion as the widget holds it: the server's item and its client travel along for `completionItem/resolve`. */
-type LspCompletion = monaco.languages.CompletionItem & { lsp: CompletionItem; client: LspClient };
+/**
+ * A suggestion as the widget holds it: the server's item and its client travel along for `completionItem/resolve`,
+ * whose answer is written into the suggestion once (`resolution`).
+ */
+type LspCompletion = monaco.languages.CompletionItem & { lsp: CompletionItem; client: LspClient; resolution?: Promise<void> };
+/** How to ask the server for a list, and how the list opens. */
+type CompletionRequest = {
+  context: { triggerKind: 1 | 2 | 3; triggerCharacter?: string };
+  /** The answer counts only when it is a member list. */
+  isMembersOnly: boolean;
+  /** The list opens with its first item focused, so Enter accepts it. */
+  focusesFirst: boolean;
+};
+/**
+ * Monaco's suggest controller keeps its widget internal. Its list draws a row only when the row scrolls in or its item
+ * is spliced in again; the widget ignores the focus events of such a splice while `_ignoreFocusEvents` is set.
+ */
+type SuggestControllerInternals = {
+  widget?: {
+    value?: {
+      _ignoreFocusEvents: boolean;
+      _list?: { length: number; element(index: number): unknown; getFocus(): number[]; setFocus(indexes: number[]): void; splice(start: number, deleteCount: number, elements: unknown[]): void };
+    };
+  };
+};
 /** Signature help as shown, with the server's version for the retrigger context. */
 type LspSignatureHelp = monaco.languages.SignatureHelp & { lsp: SignatureHelp };
 
 /**
  * Registers the editor features served by the language server for TypeScript and JavaScript models of a worktree:
- * completion (with auto-import and documentation on resolve), signature help, hover, inlay hints, occurrence
- * highlights and diagnostics (pulled after edits, pushed ones applied as they come).
+ * completion (with each row's type, documentation and auto-import on resolve; opening on its own at object members),
+ * signature help, hover, inlay hints, occurrence highlights and diagnostics (pulled after edits, pushed ones applied as
+ * they come).
  * Models the server does not know (diff models, previews) get nothing from these providers; runs once.
  */
 export function registerLspProviders(): void {
@@ -30,16 +66,22 @@ export function registerLspProviders(): void {
   isRegistered = true;
 
   monaco.languages.registerCompletionItemProvider(LANGUAGES, {
-    triggerCharacters: COMPLETION_TRIGGERS,
+    triggerCharacters: [...SERVER_TRIGGERS, ...MEMBER_TRIGGERS],
     provideCompletionItems: (model, position, context, token) =>
       withClient(model, async (client) => {
-        const params = { ...documentPosition(model, position), context: { triggerKind: toLspCompletionTrigger(context.triggerKind), triggerCharacter: context.triggerCharacter } };
+        const request = await completionRequest(model, position, context);
+        if (!request || token.isCancellationRequested) return null;
+        focusFirstSuggestion(model, request.focusesFirst);
+        const params = { ...documentPosition(model, position), context: request.context };
         const result = await client.request<CompletionList | CompletionItem[] | null>("textDocument/completion", params, token);
         if (!result) return null;
         const list: CompletionList = Array.isArray(result) ? { isIncomplete: false, items: result } : result;
+        const isMembers = isMemberList(list.items);
+        if (request.isMembersOnly && !isMembers) return null;
         const word = model.getWordUntilPosition(position);
         const wordRange = { startLineNumber: position.lineNumber, startColumn: word.startColumn, endLineNumber: position.lineNumber, endColumn: word.endColumn };
         const suggestions: LspCompletion[] = list.items.map((item) => ({ ...toMonacoCompletion(item, list.itemDefaults, wordRange), client }));
+        await resolveRowTypes(model, suggestions, word.word, isMembers, token);
         return { incomplete: list.isIncomplete, suggestions };
       }),
     resolveCompletionItem: (item, token) => resolveCompletion(item as LspCompletion, token),
@@ -121,17 +163,110 @@ function toLspCompletionTrigger(kind: monaco.languages.CompletionTriggerKind): 1
 }
 
 /**
- * Asks the server for the documentation, detail and additional edits (auto-imports) of a completion item when
- * the suggest widget focuses it. Items that did not come from the server, and failed resolves, stay as they are.
+ * How to ask the server for the list Monaco wants at `position`, or null when there is nothing to ask for. `{` and `,`
+ * (and a space after them) open the list only where an object member starts, which the TypeScript worker tells from
+ * the syntax without a round trip to the server. The server does not know these characters (it answers `{` and `,`
+ * with an error and a space with nothing), so the request is a plain invocation, and only a member list counts. A list
+ * that opens on its own after anything but `.` has no item focused, so Enter still breaks the line until ↓ or a typed
+ * letter picks one.
  */
-async function resolveCompletion(item: LspCompletion, token: monaco.CancellationToken): Promise<LspCompletion> {
-  if (!item.lsp || !item.client) return item;
+async function completionRequest(model: monaco.editor.ITextModel, position: monaco.Position, context: monaco.languages.CompletionContext): Promise<CompletionRequest | null> {
+  const character = context.triggerCharacter;
+  if (context.triggerKind !== monaco.languages.CompletionTriggerKind.TriggerCharacter || !character) {
+    return { context: { triggerKind: toLspCompletionTrigger(context.triggerKind) }, isMembersOnly: false, focusesFirst: true };
+  }
+  const linePrefix = model.getLineContent(position.lineNumber).slice(0, position.column - 1);
+  const followsSeparator = MEMBER_TRIGGERS.includes(character) || (character === " " && AFTER_MEMBER_SEPARATOR.test(linePrefix));
+  if (followsSeparator && (await startsObjectMember(model, position))) {
+    return { context: { triggerKind: 1 }, isMembersOnly: true, focusesFirst: false };
+  }
+  if (!SERVER_TRIGGERS.includes(character)) return null;
+  return { context: { triggerKind: 2, triggerCharacter: character }, isMembersOnly: false, focusesFirst: character === "." };
+}
+
+/** Whether a member of an object literal or destructuring pattern starts at `position`; false while the worker is unavailable. */
+async function startsObjectMember(model: monaco.editor.ITextModel, position: monaco.Position): Promise<boolean> {
   try {
-    const resolved = await item.client.request<CompletionItem | null>("completionItem/resolve", item.lsp, token);
-    if (!resolved) return item;
-    return { ...item, ...resolvedFields(resolved), lsp: resolved };
+    const worker = await typeScriptWorkerFor(model);
+    return !!worker && (await worker.isObjectMemberPosition(model.uri.toString(), model.getOffsetAt(position)));
   } catch {
-    return item;
+    return false;
+  }
+}
+
+/**
+ * Monaco decides per editor, not per request, whether a list opens with its first item focused; the editor typing into
+ * `model` gets the mode for the list about to open. `whenQuickSuggestion` leaves only lists opened by a trigger
+ * character unfocused, and focuses them too once a letter is typed.
+ */
+function focusFirstSuggestion(model: monaco.editor.ITextModel, focusesFirst: boolean): void {
+  const selectionMode = focusesFirst ? "always" : "whenQuickSuggestion";
+  for (const editor of monaco.editor.getEditors()) {
+    if (editor.getModel() !== model || !editor.hasTextFocus()) continue;
+    if (editor.getOption(monaco.editor.EditorOption.suggest).selectionMode === selectionMode) continue;
+    editor.updateOptions({ suggest: { selectionMode } });
+  }
+}
+
+/**
+ * Resolves the types of the rows the widget shows first (waiting at most `VISIBLE_ROWS_BUDGET_MS`), then those of the
+ * rest of a member list in the background, and redraws the open list once they are in. The server answers resolves one
+ * after another, about 2 ms each after the first, so a global list with thousands of rows only gets its first ones.
+ */
+async function resolveRowTypes(model: monaco.editor.ITextModel, suggestions: LspCompletion[], word: string, isMembers: boolean, token: monaco.CancellationToken): Promise<void> {
+  const order = likelyVisibleOrder(suggestions.map((suggestion) => suggestion.lsp), word);
+  const visible = Promise.all(order.slice(0, VISIBLE_ROWS).map((index) => resolveInto(suggestions[index], token)));
+  const rest = isMembers ? order.slice(VISIBLE_ROWS, MEMBER_ROWS_LIMIT) : [];
+  void Promise.all([visible, ...rest.map((index) => resolveInto(suggestions[index], token))]).then(() => redrawSuggestions(model));
+  await Promise.race([visible, new Promise((resolve) => setTimeout(resolve, VISIBLE_ROWS_BUDGET_MS))]);
+}
+
+/**
+ * Asks the server once for the type, documentation and auto-import edits of `item` and writes them into it; a cancelled
+ * or failed request is asked again next time. Items that did not come from the server stay as they are.
+ */
+function resolveInto(item: LspCompletion, token: monaco.CancellationToken): Promise<void> {
+  // The server looks the item up by its `data`; without it the server process dies.
+  if (!item.lsp?.data || !item.client) return Promise.resolve();
+  item.resolution ??= item.client.request<CompletionItem | null>("completionItem/resolve", item.lsp, token).then(
+    (resolved) => {
+      if (resolved) {
+        Object.assign(item, resolvedFields(resolved));
+      }
+    },
+    () => {
+      item.resolution = undefined;
+    },
+  );
+  return item.resolution;
+}
+
+/** Resolves `item` when the suggest widget focuses it; usually its rows' types were resolved already. */
+async function resolveCompletion(item: LspCompletion, token: monaco.CancellationToken): Promise<LspCompletion> {
+  await resolveInto(item, token);
+  return item;
+}
+
+/**
+ * Redraws the open list of the editor typing into `model`, so types resolved after the list opened show in its rows:
+ * the shown items are spliced in again and the focus restored, as Monaco does after resolving the focused item.
+ */
+function redrawSuggestions(model: monaco.editor.ITextModel): void {
+  for (const editor of monaco.editor.getEditors()) {
+    if (editor.getModel() !== model || !editor.hasTextFocus()) continue;
+    const controller = editor.getContribution("editor.contrib.suggestController") as SuggestControllerInternals | null;
+    const widget = controller?.widget?.value;
+    const list = widget?._list;
+    if (!widget || !list?.length) continue;
+    const items = Array.from({ length: list.length }, (_, index) => list.element(index));
+    const focus = list.getFocus();
+    widget._ignoreFocusEvents = true;
+    try {
+      list.splice(0, list.length, items);
+      list.setFocus(focus);
+    } finally {
+      widget._ignoreFocusEvents = false;
+    }
   }
 }
 

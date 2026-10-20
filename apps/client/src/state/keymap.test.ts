@@ -33,6 +33,7 @@ describe("shortcutFromEvent", () => {
   it("keeps the layout's letter without ⌥ and names the space bar", () => {
     expect(shortcutFromEvent(press("z", "KeyY", { metaKey: true }))).toBe("Meta+z");
     expect(shortcutFromEvent(press(" ", "Space", { metaKey: true }))).toBe("Meta+Space");
+    expect(shortcutFromEvent(press("\u00a0", "Space", { altKey: true }))).toBe("Alt+Space");
   });
 
   it("is null while only modifiers or a dead key are pressed", () => {

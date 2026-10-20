@@ -33,6 +33,7 @@ export const KEYMAP_COMMANDS = [
   { id: "editor.save", label: "Save file", group: "Editor", scope: "app", defaults: ["Meta+s"] },
   { id: "editor.goToFile", label: "Go to file", group: "Editor", scope: "app", defaults: ["Meta+p"], note: "also ⇧⇧" },
   { id: "editor.findInFiles", label: "Find in files", group: "Editor", scope: "app", defaults: ["Shift+Meta+f"] },
+  { id: "editor.completion", label: "Show completions", group: "Editor", scope: "app", defaults: ["Ctrl+Space", "Alt+Space"] },
   { id: "editor.back", label: "Navigate back", group: "Editor", scope: "app", defaults: ["Meta+[", "Alt+Meta+ArrowLeft"] },
   { id: "editor.forward", label: "Navigate forward", group: "Editor", scope: "app", defaults: ["Meta+]", "Alt+Meta+ArrowRight"] },
   { id: "editor.selectInTree", label: "Select the file in the project tree", group: "Editor", scope: "app", defaults: ["Shift+Meta+2"] },

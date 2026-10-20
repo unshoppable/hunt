@@ -35,3 +35,18 @@ declare module "monaco-editor/editor/standalone/common/themes.js" {
 
   export const vs_dark: editor.IStandaloneThemeData;
 }
+
+/** Monaco's service registry has no typings on its module path; only what diff/monaco.ts needs is declared. */
+declare module "monaco-editor/editor/standalone/browser/standaloneServices.js" {
+  import type { ServiceIdentifier } from "monaco-editor/platform/storage/common/storage.js";
+
+  export const StandaloneServices: { get<T>(id: ServiceIdentifier<T>): T };
+}
+
+/** Monaco's storage service, where its widgets keep UI state such as the completion list's docs column. */
+declare module "monaco-editor/platform/storage/common/storage.js" {
+  /** A service's key for `StandaloneServices.get`; `T` is the service it yields. */
+  export type ServiceIdentifier<T> = ((...args: never[]) => void) & { readonly service?: T };
+
+  export const IStorageService: ServiceIdentifier<{ store(key: string, value: boolean, scope: number, target: number): void }>;
+}

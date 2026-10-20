@@ -496,6 +496,145 @@ body,
   border-radius: 2px;
 }
 
+/* Completion list and its docs column (see setUpCompletionList in diff/monaco.ts, ide/lsp/providers.ts): floating cards
+   like ui/Dropdown.tsx. A row shows the kind badge, the name with a callable's parameters in grey and the type at the
+   right; the active row is the blue rounded row of every list, inset 4px. The docs column shows the declaring type,
+   the signature as a colored code block and the docs; it cannot be closed. Paddings sit on the rows and on the
+   column's two parts, never on the cards, since Monaco sizes both from their content. Every selector starts at :root
+   to outrank Monaco's rules of the same shape, whose stylesheet loads after this one. */
+:root .monaco-editor .suggest-widget,
+:root .monaco-editor .suggest-details {
+  border-color: #525252;
+  border-radius: 10px;
+  background-color: var(--surface-chat);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+}
+:root .monaco-editor .suggest-widget .monaco-list {
+  border-radius: 10px;
+}
+:root .monaco-editor .suggest-widget .monaco-list .monaco-list-row {
+  isolation: isolate;
+  padding-left: 10px;
+  padding-right: 12px;
+  background-color: transparent !important;
+  outline: none !important;
+}
+/* Tailwind's `contents` utility (display: contents) would hit Monaco's element of that name and keep the row from
+   spanning the list, so the types would not line up at the right. */
+:root .monaco-editor .suggest-widget .monaco-list .monaco-list-row > .contents {
+  display: block;
+}
+:root .monaco-editor .suggest-widget .monaco-list .monaco-list-row::before {
+  content: "";
+  position: absolute;
+  inset: 0 4px;
+  z-index: -1;
+  border-radius: 0.25rem;
+  pointer-events: none;
+}
+:root .monaco-editor .suggest-widget .monaco-list .monaco-list-row:hover::before {
+  background-color: var(--row-hover);
+}
+:root .monaco-editor .suggest-widget .monaco-list .monaco-list-row.focused::before {
+  background-color: var(--row-selected);
+}
+:root .monaco-editor .suggest-widget .monaco-list .monaco-list-row .suggest-icon {
+  margin-right: 8px;
+}
+:root .monaco-editor .suggest-widget .monaco-list .monaco-list-row .suggest-icon::before {
+  width: 16px;
+  height: 16px;
+  background-size: contain;
+  background-repeat: no-repeat;
+}
+:root .monaco-editor .suggest-widget .monaco-list .monaco-list-row .suggest-icon.codicon-symbol-keyword::before {
+  visibility: hidden;
+}
+:root .monaco-editor .suggest-widget .monaco-list .monaco-list-row .monaco-highlighted-label .highlight {
+  font-weight: 600;
+}
+:root .monaco-editor .suggest-widget .monaco-list .monaco-list-row > .contents > .main > .left > .signature-label {
+  color: #8b9099;
+  opacity: 1;
+}
+:root .monaco-editor .suggest-widget .monaco-list .monaco-list-row > .contents > .main > .right > .details-label {
+  margin-left: 2em;
+  color: #8b9099;
+  font-size: 90%;
+}
+:root .monaco-editor .suggest-widget .monaco-list .monaco-list-row.focused > .contents > .main > .right > .details-label {
+  color: #b4bcc8;
+}
+:root .monaco-editor .suggest-details > .monaco-scrollable-element > .body > .header > .codicon-close {
+  display: none;
+}
+:root .monaco-editor .suggest-details > .monaco-scrollable-element > .body > .header > .type {
+  margin: 0;
+  padding: 10px 14px 0;
+  color: #8ab4f8;
+  font-size: 90%;
+  opacity: 1;
+}
+:root .monaco-editor .suggest-details > .monaco-scrollable-element > .body > .header > .type.auto-wrap {
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+:root .monaco-editor .suggest-details.detail-and-doc > .monaco-scrollable-element > .body > .header > .type {
+  padding-bottom: 0;
+}
+:root .monaco-editor .suggest-details > .monaco-scrollable-element > .body > .docs {
+  padding: 8px 14px 12px;
+  line-height: 1.5;
+}
+:root .monaco-editor .suggest-details > .monaco-scrollable-element > .body > .docs.markdown-docs {
+  padding: 0;
+}
+:root .monaco-editor .suggest-details > .monaco-scrollable-element > .body > .docs.markdown-docs > div {
+  padding: 8px 14px 12px;
+}
+/* Code blocks: the sanitizer strips their `code` class, the placeholder's data-code attribute stays. */
+:root .monaco-editor .suggest-details .docs [data-code] {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-inset);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+:root .monaco-editor .suggest-details > .monaco-scrollable-element > .body > .docs.markdown-docs [data-code] .monaco-tokenized-source {
+  white-space: pre-wrap;
+}
+:root .monaco-editor .suggest-details .docs [data-code]:last-child {
+  margin-bottom: 0;
+}
+:root .monaco-editor .suggest-details .docs p {
+  margin: 0 0 8px;
+}
+:root .monaco-editor .suggest-details .docs p:last-child {
+  margin-bottom: 0;
+}
+:root .monaco-editor .suggest-details .docs code {
+  padding: 0.1em 0.35em;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.07);
+  color: #e8eaed;
+}
+:root .monaco-editor .suggest-details .docs blockquote {
+  margin: 0 0 8px;
+  padding-left: 0.8rem;
+  border-left: 2px solid var(--line);
+  color: #a3a3a3;
+}
+:root .monaco-editor .suggest-details .docs a {
+  color: #8ab4f8;
+}
+:root .monaco-editor .suggest-widget .monaco-scrollable-element > .scrollbar > .slider,
+:root .monaco-editor .suggest-details .monaco-scrollable-element > .scrollbar > .slider {
+  border-radius: 999px;
+}
+
 /* Editor and terminal tab bars (see ide/EditorPane.tsx, terminal/TerminalPanel.tsx) scroll sideways without showing a
    scrollbar. */
 .ide-tabs,

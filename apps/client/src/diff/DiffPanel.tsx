@@ -208,7 +208,10 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
 
   const selectFile = async (path: string) => {
     if (path === selectedPath) return;
-    if (isDirtyRef.current && !(await confirmDestructive("Discard unsaved changes in the current file?", "Discard"))) return;
+    if (isDirtyRef.current) {
+      if (!(await confirmDestructive("Discard unsaved changes in the current file?", "Discard"))) return;
+      editorRef.current?.discard();
+    }
     markDirty(false);
     setExternalDiff(null);
     setSelectedPath(path);

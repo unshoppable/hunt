@@ -1,3 +1,9 @@
+## 0.60.3 (2026-10-20)
+
+### 🩹 Fixes
+
+- **client:** a hide glob with a trailing slash such as admin-ui/ hides that folder at any depth with everything in it, as in .gitignore ([3c98010](https://github.com/unshoppable/hunt/commit/3c98010))
+
 ## 0.60.2 (2026-10-20)
 
 ### 🩹 Fixes

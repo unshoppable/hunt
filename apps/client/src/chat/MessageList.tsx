@@ -6,6 +6,7 @@ import { CodeBlock } from "../code/CodeBlock";
 import { monacoLanguageForFence } from "../diff/monaco";
 import type { ChatItem, PlanEntry } from "../ipc/types";
 import { ChatImages } from "./ChatImages";
+import { huntPromptNotice } from "./huntPromptNotice";
 import { ToolCallCard } from "./ToolCallCard";
 import { WorkingIndicator } from "./WorkingIndicator";
 
@@ -61,6 +62,16 @@ export function MessageList({
         }
         const item = block.item;
         if (item.kind === "user") {
+          const notice = huntPromptNotice(item.text);
+          if (notice) {
+            return (
+              <div key={item.id} title={item.text} className="flex items-center gap-3 text-[13px] text-neutral-500">
+                <span className="h-px flex-1 bg-(--line)" />
+                {notice}
+                <span className="h-px flex-1 bg-(--line)" />
+              </div>
+            );
+          }
           return (
             <div key={item.id} className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-(--row-active) px-4 py-2.5 whitespace-pre-wrap break-words text-neutral-100">
               <ChatImages urls={item.images} className={item.text ? "mb-2" : ""} />

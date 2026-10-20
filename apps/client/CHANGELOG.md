@@ -1,3 +1,9 @@
+## 0.60.4 (2026-10-20)
+
+### 🩹 Fixes
+
+- **client:** ⌘W on the editor's last tab leaves an empty editor area, and only the next ⌘W closes the editor window ([aeedc50](https://github.com/unshoppable/hunt/commit/aeedc50))
+
 ## 0.60.3 (2026-10-20)
 
 ### 🩹 Fixes

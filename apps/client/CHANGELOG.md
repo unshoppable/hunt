@@ -1,3 +1,9 @@
+## 0.57.1 (2026-10-20)
+
+### 🔥 Performance
+
+- **client:** connecting to a session with a long chat no longer freezes the window while the agent replays the history; unchanged messages and tool rows skip re-rendering ([5e354d7](https://github.com/unshoppable/hunt/commit/5e354d7))
+
 ## 0.57.0 (2026-10-20)
 
 ### 🚀 Features

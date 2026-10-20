@@ -1,3 +1,9 @@
+## 0.62.0 (2026-10-20)
+
+### 🚀 Features
+
+- **client:** the context menu of a session in the sidebar opens its worktree in the terminal, as a new WezTerm tab or else a Terminal.app window ([9e13323](https://github.com/unshoppable/hunt/commit/9e13323))
+
 ## 0.61.0 (2026-10-20)
 
 ### 🚀 Features

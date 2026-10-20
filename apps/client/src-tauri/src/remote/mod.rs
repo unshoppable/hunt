@@ -2,8 +2,9 @@
 //! provisions, starts and deletes the session VMs (`api.rs`),
 //! the names of the session VMs (`vm.rs`), the release check and tool install on them (`release.rs`), moving a session's
 //! git state and Claude Code transcript there and back (`handoff.rs`, `retrieve.rs`, `transcript.rs`), streaming the
-//! transcripts both ways while the session is connected (`transcript_channel.rs`, `transcript_sync.rs`), adopting session
-//! VMs no local session knows (`adoption.rs`), keeping the files of the VM and the local worktree in sync (`sync.rs`),
+//! transcripts both ways while the session is connected (`transcript_channel.rs`, `transcript_sync.rs`), reading what a
+//! session's relay does while its VM runs (`status_channel.rs`), adopting session VMs no local session knows
+//! (`adoption.rs`), keeping the files of the VM and the local worktree in sync (`sync.rs`),
 //! committing and pushing on the VM for the changelist (`commit.rs`),
 //! previews (`preview.rs`) and terminals attached to the VM's tmux session (`terminal.rs`). Knows nothing about Tauri;
 //! `session/commands.rs` owns the commands.
@@ -18,6 +19,7 @@ pub mod preview;
 pub mod release;
 pub mod retrieve;
 pub mod ssh;
+pub mod status_channel;
 pub mod sync;
 pub mod terminal;
 pub mod transcript;
@@ -178,10 +180,14 @@ pub struct RemoteTarget {
     /// or `failed`; empty when unknown.
     #[serde(default)]
     pub agent: String,
-    /// The push target the records name is not yet recorded in the VM's worktree, which Hunt could not reach when the
-    /// target changed; the next connect writes it there instead of taking the VM's over.
+    /// The push target the local branch tracks is not yet recorded in the VM's worktree, which Hunt could not reach when
+    /// the target changed; the next connect writes it there instead of taking the VM's over.
     #[serde(default)]
     pub push_target_pending: bool,
+    /// What the session's relay last reported through the status channel while its VM ran (`session::relay_watch`);
+    /// `None` before the first report.
+    #[serde(default)]
+    pub relay_activity: Option<RelayActivity>,
 }
 
 impl RemoteTarget {
@@ -206,6 +212,16 @@ impl RemoteTarget {
             format!("refs/hunt/{id}/handoff")
         }
     }
+}
+
+/// What the relay of a remote session last reported through the status channel (`status_channel.rs`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayActivity {
+    /// Whether the agent runs a turn.
+    pub is_turn_running: bool,
+    /// Whether the agent waits for the user's answer to a question; `None` for an older relay that does not say.
+    pub is_question: Option<bool>,
 }
 
 /// Who started a remote session on its VM.
@@ -272,6 +288,8 @@ pub enum RemoteStep {
     TransferringCode,
     InstallingDependencies,
     StartingAgent,
+    /// A connect attaches to the session's relay, which keeps an agent that runs as it is.
+    ConnectingAgent,
     StoppingAgent,
     RetrievingCode,
     /// A step of a newer gateway, which the UI is never told.

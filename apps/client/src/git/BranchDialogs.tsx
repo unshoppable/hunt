@@ -1,61 +1,17 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { commands } from "../ipc/commands";
-import type { GitRef } from "../ipc/types";
 import { INPUT } from "../diff/styles";
 import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD } from "../ui/buttons";
 import { PlusIcon } from "../ui/icons";
 import { Modal } from "../ui/Modal";
-import { useDismiss } from "../ui/useDismiss";
 import { useDialogSize } from "../ui/useDialogSize";
-import type { BranchAction } from "./branchActions";
 
 /** Smallest size the push target dialog shrinks to: the list keeps a few rows. */
 const PUSH_TARGET_MIN_SIZE = { width: 360, height: 300 };
 
-/** Where a right click opened the menu of which branch. */
-export type BranchMenuState = { ref: GitRef; x: number; y: number };
-
 /**
- * The context menu of a branch in the branch tree, opened at the click position and kept inside the window; entries
- * that cannot run stay visible, greyed out, with the reason as tooltip.
- */
-export function BranchMenu({ menu, actions, onPick, onClose }: { menu: BranchMenuState; actions: BranchAction[]; onPick: (action: BranchAction) => void; onClose: () => void }) {
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState({ left: menu.x, top: menu.y });
-  useDismiss(menuRef, onClose, { closeOnWindowBlur: true });
-
-  // The menu is wider than the tree pane: it moves left or up as far as the window needs.
-  useLayoutEffect(() => {
-    const rect = menuRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    setPosition({ left: Math.max(0, Math.min(menu.x, window.innerWidth - rect.width - 8)), top: Math.max(0, Math.min(menu.y, window.innerHeight - rect.height - 8)) });
-  }, [menu]);
-
-  return (
-    <div ref={menuRef} role="menu" style={position} className="fixed z-50 min-w-44 rounded border border-neutral-600 bg-(--surface-inset) p-1 text-[13px] shadow-lg">
-      <div className="mb-1 truncate border-b border-(--line) px-2 pb-1 font-mono text-[12px] text-neutral-500" title={menu.ref.name}>
-        {menu.ref.name}
-      </div>
-      {actions.map((action) => (
-        <button
-          key={action.kind}
-          type="button"
-          role="menuitem"
-          aria-disabled={!!action.disabledReason}
-          title={action.disabledReason ?? undefined}
-          onClick={() => (action.disabledReason ? undefined : onPick(action))}
-          className={`block w-full truncate rounded px-2 py-1 text-left hover:bg-(--row-hover) ${action.isDanger ? "text-red-300" : "text-neutral-200"} ${action.startsGroup ? "mt-1 border-t border-(--line) pt-1.5" : ""} ${action.disabledReason ? "opacity-40" : ""}`}
-        >
-          {action.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/**
- * Lets the user pick, among the branches of `origin` (`candidates`, without the `origin/` prefix), the one a push of
- * the session lands on: the text field filters the list, a click selects a row, a double click, Enter or "Change"
+ * Lets the user pick, among the branches of `origin` (`candidates`, without the `origin/` prefix; `null` while they
+ * load, `candidatesError` when that failed), the one a push of the session lands on: the text field filters the list, a click selects a row, a double click, Enter or "Change"
  * applies the selection. "New branch…" swaps the list for a name field, prefilled with the session's own branch
  * `branch`: "Create & change" creates that branch on `origin` at the commit of the current target (or merely fetches
  * it when `origin` has it already) and makes it the target. Dragging an edge resizes the dialog; the size is
@@ -66,13 +22,15 @@ export function PushTargetDialog({
   branch,
   current,
   candidates,
+  candidatesError = null,
   onClose,
   onChanged,
 }: {
   sessionId: string;
   branch: string;
   current: string;
-  candidates: string[];
+  candidates: string[] | null;
+  candidatesError?: string | null;
   onClose: () => void;
   onChanged: (target: string) => void;
 }) {
@@ -85,7 +43,7 @@ export function PushTargetDialog({
   const dialog = useDialogSize("pushTarget", { min: PUSH_TARGET_MIN_SIZE, fillsHeight: true });
   const matches = useMemo(() => {
     const needle = filter.trim().toLowerCase();
-    return candidates.filter((candidate) => candidate.toLowerCase().includes(needle));
+    return (candidates ?? []).filter((candidate) => candidate.toLowerCase().includes(needle));
   }, [candidates, filter]);
   // A filter that hides the selected row moves the selection to the first match.
   const selected = matches.includes(choice) ? choice : (matches[0] ?? null);
@@ -160,7 +118,7 @@ export function PushTargetDialog({
             placeholder="Filter"
             className={`${INPUT} font-mono`}
           />
-          <ul role="listbox" className="mt-1 min-h-0 flex-1 overflow-auto rounded border border-(--line) py-1 font-mono text-[13px]">
+          <ul role="listbox" className="mt-1 min-h-0 flex-1 overflow-auto rounded border border-(--line) p-1 font-mono text-[13px]">
             {matches.map((candidate) => (
               <li
                 key={candidate}
@@ -168,12 +126,18 @@ export function PushTargetDialog({
                 aria-selected={candidate === selected}
                 onClick={() => setChoice(candidate)}
                 onDoubleClick={() => void submit(candidate)}
-                className={`cursor-default truncate px-2 py-0.5 ${candidate === selected ? "bg-(--tree-selection) text-blue-100" : "text-neutral-200 hover:bg-(--row-hover)"}`}
+                className={`cursor-default truncate rounded px-2 py-0.5 ${candidate === selected ? "bg-(--row-selected) text-blue-100" : "text-neutral-200 hover:bg-(--row-hover)"}`}
               >
                 {candidate}
               </li>
             ))}
-            {matches.length === 0 ? <li className="px-2 py-0.5 text-neutral-500">No fetched branch of origin matches.</li> : null}
+            {candidatesError ? (
+              <li className="px-2 py-0.5 break-words whitespace-normal text-red-400">Loading the branches of origin failed: {candidatesError}</li>
+            ) : !candidates ? (
+              <li className="px-2 py-0.5 text-neutral-500">Loading the branches of origin…</li>
+            ) : matches.length === 0 ? (
+              <li className="px-2 py-0.5 text-neutral-500">No fetched branch of origin matches.</li>
+            ) : null}
           </ul>
         </>
       )}

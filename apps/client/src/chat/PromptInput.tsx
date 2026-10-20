@@ -351,7 +351,7 @@ export function PromptInput({
                       setText(`/${command.name} `);
                       textareaRef.current?.focus();
                     }}
-                    className={`flex w-full items-baseline gap-3 rounded-md px-2.5 py-1.5 text-left ${index === suggestionIndex ? "bg-(--row-active) text-neutral-100" : "text-neutral-200"}`}
+                    className={`flex w-full items-baseline gap-3 rounded px-2.5 py-1.5 text-left ${index === suggestionIndex ? "bg-(--row-selected) text-neutral-100" : "text-neutral-200"}`}
                   >
                     <span className="shrink-0 font-medium">/{command.name}</span>
                     <span className="min-w-0 flex-1 truncate text-neutral-500">{command.description}</span>

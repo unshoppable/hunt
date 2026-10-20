@@ -2,6 +2,7 @@
 //! worktree against `HEAD`, and committing, pushing or shelving them. Everything shells out to
 //! the `git` CLI so hooks, config and credential behavior match the terminal.
 
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::ops::RangeInclusive;
 use std::path::Path;
@@ -319,6 +320,19 @@ pub async fn set_origin_upstream(repo: &Path, branch: &str, target: &str) -> Res
     ensure_branch_name(repo, target).await?;
     run_git(repo, &["config", &format!("branch.{branch}.remote"), "origin"]).await?;
     run_git(repo, &["config", &format!("branch.{branch}.merge"), &format!("refs/heads/{target}")]).await?;
+    Ok(())
+}
+
+/// Makes a plain `git push` in `worktree` push like Hunt does: to the branch on `origin` the checked-out branch tracks,
+/// or, without an upstream, to a branch of its own name, which then becomes its upstream. The settings go into the
+/// worktree's own config (`extensions.worktreeConfig`), so the repository's other worktrees and its checkout keep theirs.
+pub async fn configure_push(worktree: &Path) -> Result<(), String> {
+    if run_git(worktree, &["config", "--get", "core.worktree"]).await.is_ok() {
+        return Err("failed to configure git push: the repository sets core.worktree, which per-worktree config would hide".into());
+    }
+    run_git(worktree, &["config", "extensions.worktreeConfig", "true"]).await?;
+    run_git(worktree, &["config", "--worktree", "push.default", "upstream"]).await?;
+    run_git(worktree, &["config", "--worktree", "push.autoSetupRemote", "true"]).await?;
     Ok(())
 }
 
@@ -800,9 +814,9 @@ pub async fn commit_files(worktree: &Path, paths: &[String], message: &str) -> R
     Ok(())
 }
 
-/// Pushes the worktree's `HEAD` to the branch `target` on `origin`, the branch the session was created from, so a
-/// session's own branch never reaches `origin`, and makes `origin/<target>` the upstream of the worktree's branch. When
-/// `origin/<target>` has commits `HEAD` lacks, the worktree's branch is rebased onto it first (`rebase_onto_origin`).
+/// Pushes the worktree's `HEAD` to the branch `target` on `origin` and makes `origin/<target>` the upstream of the
+/// worktree's branch. When `origin/<target>` has commits `HEAD` lacks, the worktree's branch is rebased onto it first
+/// (`rebase_onto_origin`).
 pub async fn push_branch(worktree: &Path, target: &str) -> Result<(), String> {
     ensure_branch_name(worktree, target).await?;
     if current_branch(worktree).await? == "HEAD" {
@@ -968,7 +982,8 @@ pub struct Commit {
 }
 
 /// A page of the log: the commits reachable from `reference` (every branch, remote branch and tag when empty) whose
-/// message contains `text`, or the one commit `text` names; `skip` and `limit` page through them, newest first.
+/// message contains `text`, ignoring case, or whose hash starts with it; `skip` and `limit` page through them, newest
+/// first.
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogQuery {
@@ -1056,32 +1071,99 @@ fn ensure_revision(reference: &str) -> Result<(), String> {
 
 /// The commits of `query`, newest first in date order (every parent comes after its children).
 pub async fn log(repo: &Path, query: &LogQuery) -> Result<Vec<Commit>, String> {
+    let range = log_range(repo, query.reference.trim()).await?;
+    let text = query.text.trim();
+    if !text.is_empty() {
+        return filtered_log(repo, &range, text, query.skip, query.limit).await;
+    }
+
     let skip = format!("--skip={}", query.skip);
     let limit = format!("--max-count={}", query.limit.clamp(1, 5000));
-    let mut args = vec!["log", "--date-order", LOG_FORMAT];
-
-    let text = query.text.trim();
-    let named_commit = if is_commit_id(text) { rev_parse(repo, &format!("{text}^{{commit}}")).await.ok() } else { None };
-    let grep = format!("--grep={text}");
-    let reference = query.reference.trim();
-    if let Some(id) = named_commit.as_deref() {
-        args.extend(["--max-count=1", id]);
-    } else {
-        args.extend([skip.as_str(), limit.as_str()]);
-        if !text.is_empty() {
-            args.extend([grep.as_str(), "--regexp-ignore-case", "--fixed-strings"]);
-        }
-        if reference.is_empty() {
-            args.extend(["--branches", "--remotes", "--tags"]);
-        } else {
-            ensure_revision(reference)?;
-            rev_parse(repo, &format!("{reference}^{{commit}}")).await.map_err(|_| format!("unknown branch or tag: {reference}"))?;
-            args.push(reference);
-        }
-    }
+    let mut args = vec!["log", "--date-order", LOG_FORMAT, skip.as_str(), limit.as_str()];
+    args.extend(range);
     args.push("--");
     let output = run_git(repo, &args).await?;
     Ok(parse_log(&output))
+}
+
+/// The revisions of the log of `reference`: every branch, remote branch and tag when it is empty, else the branch or tag.
+async fn log_range<'a>(repo: &Path, reference: &'a str) -> Result<Vec<&'a str>, String> {
+    if reference.is_empty() {
+        return Ok(vec!["--branches", "--remotes", "--tags"]);
+    }
+    ensure_revision(reference)?;
+    rev_parse(repo, &format!("{reference}^{{commit}}")).await.map_err(|_| format!("unknown branch or tag: {reference}"))?;
+    Ok(vec![reference])
+}
+
+/// The page `skip`..`skip + limit` of the commits of `range` whose message contains `text`, ignoring case, or whose hash
+/// starts with it, newest first in date order; each parent is rewritten to its nearest match (`rewrite_parents`), so
+/// the graph joins the matches.
+async fn filtered_log(repo: &Path, range: &[&str], text: &str, skip: u32, limit: u32) -> Result<Vec<Commit>, String> {
+    let graph = run_git(repo, &[&["rev-list", "--date-order", "--parents"], range, &["--"]].concat()).await?;
+    let graph = parse_rev_list(&graph);
+    let grep = format!("--grep={text}");
+    let by_message = run_git(repo, &[&["rev-list", "--regexp-ignore-case", "--fixed-strings", grep.as_str()], range, &["--"]].concat()).await?;
+    let mut matches: HashSet<&str> = by_message.split_whitespace().collect();
+    let prefix = text.to_ascii_lowercase();
+    if is_commit_id(&prefix) {
+        matches.extend(graph.iter().map(|(id, _)| id.as_str()).filter(|id| id.starts_with(&prefix)));
+    }
+
+    let rows = rewrite_parents(&graph, &matches);
+    let start = (skip as usize).min(rows.len());
+    let page = &rows[start..(start + limit.clamp(1, 5000) as usize).min(rows.len())];
+    if page.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let ids = page.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>().join("\n");
+    let output = run_git_with_input(repo, &["log", "--no-walk=unsorted", "--stdin", LOG_FORMAT, "--"], &[], &ids).await?;
+    let parents: HashMap<&str, &Vec<String>> = page.iter().map(|(id, parents)| (id.as_str(), parents)).collect();
+    let mut commits = parse_log(&output);
+    for commit in &mut commits {
+        if let Some(rewritten) = parents.get(commit.id.as_str()) {
+            commit.parents = (*rewritten).clone();
+        }
+    }
+    Ok(commits)
+}
+
+/// Reads `rev-list --parents` output: per line a commit followed by its parents.
+fn parse_rev_list(output: &str) -> Vec<(String, Vec<String>)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut ids = line.split_whitespace().map(str::to_string);
+            Some((ids.next()?, ids.collect()))
+        })
+        .collect()
+}
+
+/// The commits of `graph` (every parent after its children) that are in `matches`, in its order, each parent replaced by
+/// the nearest match on that parent's first-parent line; a parent with no match below it is dropped.
+fn rewrite_parents(graph: &[(String, Vec<String>)], matches: &HashSet<&str>) -> Vec<(String, Vec<String>)> {
+    let mut nearest: HashMap<&str, Option<&str>> = HashMap::new();
+    // Backwards, every commit's parents are resolved before the commit itself.
+    for (id, parents) in graph.iter().rev() {
+        let found = if matches.contains(id.as_str()) { Some(id.as_str()) } else { parents.first().and_then(|parent| nearest.get(parent.as_str()).copied().flatten()) };
+        nearest.insert(id.as_str(), found);
+    }
+
+    graph
+        .iter()
+        .filter(|(id, _)| matches.contains(id.as_str()))
+        .map(|(id, parents)| {
+            let mut rewritten: Vec<String> = Vec::new();
+            for parent in parents {
+                let Some(Some(found)) = nearest.get(parent.as_str()) else { continue };
+                if !rewritten.iter().any(|known| known == found) {
+                    rewritten.push(found.to_string());
+                }
+            }
+            (id.clone(), rewritten)
+        })
+        .collect()
 }
 
 /// Parses the records of `LOG_FORMAT`; a record that does not parse is skipped.
@@ -1103,6 +1185,38 @@ fn parse_log(output: &str) -> Vec<Commit> {
             })
         })
         .collect()
+}
+
+/// How `reset` moves the checked-out branch: `Soft` keeps index and files, `Mixed` keeps the files, `Hard` drops every
+/// uncommitted change, `Keep` resets the files but keeps the uncommitted changes and fails when one is in the way.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ResetMode {
+    Soft,
+    Mixed,
+    Hard,
+    Keep,
+}
+
+impl ResetMode {
+    /// The option of `git reset` for the mode.
+    pub fn flag(self) -> &'static str {
+        match self {
+            ResetMode::Soft => "--soft",
+            ResetMode::Mixed => "--mixed",
+            ResetMode::Hard => "--hard",
+            ResetMode::Keep => "--keep",
+        }
+    }
+}
+
+/// Points the worktree's checked-out branch at the commit `id` with `git reset` in `mode`.
+pub async fn reset(worktree: &Path, id: &str, mode: ResetMode) -> Result<(), String> {
+    if !is_commit_id(id) {
+        return Err(format!("invalid commit id: {id:?}"));
+    }
+    run_git(worktree, &["reset", "-q", mode.flag(), id, "--"]).await.map_err(|error| format!("failed to reset to {id}: {error}"))?;
+    Ok(())
 }
 
 /// Every branch and tag with its upstream state, the checked-out branch and the commits no remote has.
@@ -1295,6 +1409,77 @@ mod tests {
                 CommitFile { path: "gone.ts".into(), status: "D".into(), old_path: None },
             ]
         );
+    }
+
+    #[test]
+    fn rewrite_parents_joins_matches_along_first_parents() {
+        let commit = |id: &str, parents: &[&str]| (id.to_string(), parents.iter().map(|parent| parent.to_string()).collect::<Vec<_>>());
+        // e merges d into c; b and d are hidden, so e joins a over c and drops d's line, which has no match below it.
+        let graph = vec![commit("e", &["c", "d"]), commit("d", &[]), commit("c", &["b"]), commit("b", &["a"]), commit("a", &[])];
+        let matches = HashSet::from(["e", "c", "a"]);
+
+        let rows = rewrite_parents(&graph, &matches);
+
+        assert_eq!(rows, vec![commit("e", &["c"]), commit("c", &["a"]), commit("a", &[])]);
+    }
+
+    #[tokio::test]
+    async fn log_filters_by_message_or_hash_prefix() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        for subject in ["fix: Nachtdienst (#1464)", "chore: unrelated", "feat: nachtdienst windows"] {
+            git(repo, &["commit", "-q", "--allow-empty", "-m", subject]).await;
+        }
+        let query = |text: &str| LogQuery { reference: String::new(), text: text.to_string(), skip: 0, limit: 50 };
+        let subjects = |commits: &[Commit]| commits.iter().map(|commit| commit.subject.clone()).collect::<Vec<_>>();
+
+        let commits = log(repo, &query("NACHTDIENST")).await.unwrap();
+        assert_eq!(subjects(&commits), ["feat: nachtdienst windows", "fix: Nachtdienst (#1464)"]);
+        assert_eq!(commits[0].parents, vec![commits[1].id.clone()]);
+        assert!(commits[1].parents.is_empty());
+
+        assert_eq!(subjects(&log(repo, &query("1464")).await.unwrap()), ["fix: Nachtdienst (#1464)"]);
+
+        let init = run_git(repo, &["rev-parse", "HEAD~3"]).await.unwrap();
+        let commits = log(repo, &query(&init[..7].to_uppercase())).await.unwrap();
+        assert_eq!(subjects(&commits), ["init"]);
+
+        let second_page = log(repo, &LogQuery { skip: 1, limit: 1, ..query("nachtdienst") }).await.unwrap();
+        assert_eq!(subjects(&second_page), ["fix: Nachtdienst (#1464)"]);
+    }
+
+    #[tokio::test]
+    async fn reset_moves_the_branch_in_each_mode() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        let base = run_git(repo, &["rev-parse", "HEAD"]).await.unwrap().trim().to_string();
+        let commit_edit = |content: &'static str| async move {
+            std::fs::write(repo.join("tracked.txt"), content).unwrap();
+            git(repo, &["commit", "-q", "-am", content]).await;
+        };
+        let status = || async { run_git(repo, &["status", "--porcelain"]).await.unwrap() };
+
+        commit_edit("two\n").await;
+        reset(repo, &base, ResetMode::Soft).await.unwrap();
+        assert_eq!(status().await, "M  tracked.txt\n");
+
+        reset(repo, &base, ResetMode::Mixed).await.unwrap();
+        assert_eq!(status().await, " M tracked.txt\n");
+
+        reset(repo, &base, ResetMode::Hard).await.unwrap();
+        assert_eq!(status().await, "");
+        assert_eq!(std::fs::read_to_string(repo.join("tracked.txt")).unwrap(), "one\n");
+
+        commit_edit("three\n").await;
+        std::fs::write(repo.join("tracked.txt"), "mine\n").unwrap();
+        assert!(reset(repo, &base, ResetMode::Keep).await.unwrap_err().starts_with("failed to reset to"));
+        std::fs::write(repo.join("other.txt"), "edited\n").unwrap();
+        git(repo, &["checkout", "-q", "--", "tracked.txt"]).await;
+        reset(repo, &base, ResetMode::Keep).await.unwrap();
+        assert_eq!(status().await, " M other.txt\n");
+        assert_eq!(run_git(repo, &["rev-parse", "HEAD"]).await.unwrap().trim(), base);
+
+        assert_eq!(reset(repo, "HEAD", ResetMode::Hard).await.unwrap_err(), "invalid commit id: \"HEAD\"");
     }
 
     #[test]
@@ -1642,6 +1827,26 @@ mod tests {
         assert_eq!(origin_upstream(&repo, "feat/general/x").await.as_deref(), Some("release/next"));
         assert_eq!(run_git(&repo, &["config", "--get", "branch.feat/general/x.remote"]).await.unwrap().trim(), "origin");
         assert_eq!(set_origin_upstream(&repo, "feat/general/x", "--all").await.unwrap_err(), "invalid branch name: \"--all\"");
+    }
+
+    #[tokio::test]
+    async fn configure_push_makes_git_push_land_on_the_upstream_or_the_own_branch() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+        configure_push(&repo).await.unwrap();
+
+        std::fs::write(repo.join("tracked.txt"), "two\n").unwrap();
+        commit_files(&repo, &["tracked.txt".into()], "two").await.unwrap();
+        git(&repo, &["push", "-q"]).await;
+        let head = run_git(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        assert_eq!(run_git(origin.path(), &["rev-parse", "develop"]).await.unwrap(), head);
+
+        git(&repo, &["branch", "--unset-upstream"]).await;
+        git(&repo, &["push", "-q"]).await;
+        assert_eq!(run_git(origin.path(), &["rev-parse", "feat/general/x"]).await.unwrap(), head);
+        assert_eq!(origin_upstream(&repo, "feat/general/x").await.as_deref(), Some("feat/general/x"));
+        assert!(run_git(&repo, &["config", "--file", ".git/config", "--get", "push.default"]).await.is_err());
     }
 
     #[tokio::test]

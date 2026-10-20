@@ -5,15 +5,15 @@ import { isSessionMachineType } from "../../../../libs/domain/src/sessionMachine
 import type { DiagramType, ReviewLevel, VmSettings } from "../ipc/types";
 import { normalizeKeymap, withBindings, type CommandId, type Keymap } from "./keymap";
 
-/** The four configurable panes of the window. */
-export type PaneKey = "sidebar" | "chat" | "changelist" | "diff";
+/** The configurable panes of the window; every tab of the inspector has one. */
+export type PaneKey = "sidebar" | "chat" | "changelist" | "diff" | "git" | "editor" | "architecture" | "pullRequest" | "preview" | "terminal";
 
 export type PaneSettings = {
   /** Text size in px. */
   fontSize: number;
   /** Line height as a multiple of the font size. */
   lineHeight: number;
-  /** Indentation per nesting level in px (sub chats in the sidebar, folders in the changelist). */
+  /** Indentation per nesting level in px (sub chats in the sidebar, folders in the changelist and the Git tab). */
   indent: number;
   /** Background color as a six-digit hex color. */
   background: string;
@@ -48,7 +48,17 @@ export const DEFAULT_PANES: Record<PaneKey, PaneSettings> = {
   chat: { fontSize: 14, lineHeight: 1.8, indent: 0, background: "#21252d", fontFamily: UI_FONT_FAMILY },
   changelist: { fontSize: 12, lineHeight: 2, indent: 14, background: "#191a1c", fontFamily: UI_FONT_FAMILY },
   diff: { fontSize: 16, lineHeight: 2, indent: 0, background: "#33373f", fontFamily: CODE_FONT_FAMILY },
+  git: { fontSize: 14, lineHeight: 1.8, indent: 14, background: "#191a1c", fontFamily: UI_FONT_FAMILY },
+  editor: { fontSize: 16, lineHeight: 2, indent: 0, background: "#33373f", fontFamily: CODE_FONT_FAMILY },
+  architecture: { fontSize: 12, lineHeight: 1.5, indent: 0, background: "#272c35", fontFamily: UI_FONT_FAMILY },
+  pullRequest: { fontSize: 14, lineHeight: 1.6, indent: 0, background: "#272c35", fontFamily: UI_FONT_FAMILY },
+  preview: { fontSize: 13, lineHeight: 1.5, indent: 0, background: "#272c35", fontFamily: UI_FONT_FAMILY },
+  // Full-screen programs (tmux's borders and status line) need terminal rows close to the font size.
+  terminal: { fontSize: 16, lineHeight: 1.2, indent: 0, background: "#33373f", fontFamily: CODE_FONT_FAMILY },
 };
+
+/** Text size of the Architecture tab's nodes at 100 % zoom; its diagrams open zoomed by the set font size over this one. */
+export const DIAGRAM_FONT_SIZE = DEFAULT_PANES.architecture.fontSize;
 
 export const PANE_RANGES: Record<NumericPaneSetting, { min: number; max: number; step: number }> = {
   fontSize: { min: 9, max: 32, step: 1 },
@@ -71,7 +81,7 @@ export type ChangelistScope = "own" | "all";
 export type PopupSize = { width: number; height: number };
 
 /** The floating popups and dialogs whose size the user may drag; each remembers its last size (see ui/usePopupSize.ts). */
-export type PopupKey = "usages" | "fileSearch" | "findInFiles" | "subChat" | "screenshots" | "fileFilter" | "change" | "pushTarget" | "image" | "review" | "shelve" | "deleteSession" | "staleRemote" | "renameBranch" | "push";
+export type PopupKey = "usages" | "fileSearch" | "findInFiles" | "subChat" | "screenshots" | "fileFilter" | "change" | "pushTarget" | "image" | "review" | "shelve" | "deleteSession" | "staleRemote" | "renameBranch" | "push" | "reset";
 
 /**
  * Size each popup opens with until the user resizes it. A popup that is as tall as its content treats the height as
@@ -98,6 +108,7 @@ export const DEFAULT_POPUP_SIZES: Record<PopupKey, PopupSize> = {
   deleteSession: { width: 420, height: 400 },
   staleRemote: { width: 460, height: 480 },
   renameBranch: { width: 460, height: 400 },
+  reset: { width: 500, height: 520 },
   push: { width: 380, height: 280 },
 };
 
@@ -449,7 +460,7 @@ function withDefaults(panes: Partial<Record<PaneKey, Partial<PaneSettings>>> | u
 }
 
 /** Current version of the persisted shape; `migrateSettings` brings older ones up to date. */
-export const SETTINGS_VERSION = 14;
+export const SETTINGS_VERSION = 15;
 
 /** Shape persisted up to version 6, which kept one field per resizable popup. */
 type Version6State = PersistedState & { usagesPopupSize?: PopupSize; fileSearchDialogSize?: PopupSize; subChatPopoverSize?: PopupSize };
@@ -513,16 +524,31 @@ function withoutInfrastructureFields(stored: PersistedState): PersistedState {
   return { ...stored, remote: Object.fromEntries(Object.entries(stored.remote).filter(([key]) => REMOTE_KEYS.includes(key))) };
 }
 
+/** The editor and the terminal followed the diff pane's font up to version 14; they start from its stored values. */
+function seedFromDiffPane(stored: PersistedState): PersistedState {
+  const diff = stored.panes?.diff;
+  if (!diff) return stored;
+  const { fontSize, lineHeight, fontFamily, background } = diff;
+  const editor = Object.fromEntries(Object.entries({ fontSize, lineHeight, fontFamily }).filter(([, value]) => value !== undefined));
+  const terminal = Object.fromEntries(Object.entries({ fontSize, fontFamily, background }).filter(([, value]) => value !== undefined));
+  return { ...stored, panes: { ...stored.panes, editor: { ...editor, ...stored.panes?.editor }, terminal: { ...terminal, ...stored.panes?.terminal } } };
+}
+
 /**
  * Brings a persisted state of an earlier `version` to the current shape: version 0 only knew one font size per pane,
  * versions 1 to 4 and 7 had defaults that are lifted to the current ones where the user never changed them, versions
  * 5 and 6 kept the size of each resizable popup in its own field, versions up to 8 named Catppuccin icons in their icon
- * rules, and versions up to 13 kept remote settings that the infrastructure repository or the repository's hunt.json
- * configures now. Fields a version did not have (`guardrailDirs`, `showSummary`, `iconRules`, `folderIconRules`,
+ * rules, versions up to 13 kept remote settings that the infrastructure repository or the repository's hunt.json
+ * configures now, and up to version 14 the editor and the terminal used the diff pane's font. Fields a version did not have (`guardrailDirs`, `showSummary`, `iconRules`, `folderIconRules`,
  * `confirmSessionDelete`, `diffLineScope`, `changelistScopes`, `graphExcludedFiles`, …) are filled in from the defaults
  * by `mergeSettings`.
  */
 export function migrateSettings(persisted: unknown, version: number): PersistedState {
+  if (version >= 15) return persisted as PersistedState;
+  return seedFromDiffPane(migrateToVersion14(persisted, version));
+}
+
+function migrateToVersion14(persisted: unknown, version: number): PersistedState {
   if (version >= 14) return persisted as PersistedState;
   if (version >= 9) return withoutInfrastructureFields(persisted as PersistedState);
   return withoutInfrastructureFields(renameCatppuccinIcons(migrateToVersion8(persisted, version)));

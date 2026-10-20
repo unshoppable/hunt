@@ -107,6 +107,7 @@ export function useBackendEvents(): void {
   const applyRemoteProgress = useHuntStore((state) => state.applyRemoteProgress);
   const applyRemoteSync = useHuntStore((state) => state.applyRemoteSync);
   const applyRemoteLink = useHuntStore((state) => state.applyRemoteLink);
+  const applyRelayActivity = useHuntStore((state) => state.applyRelayActivity);
 
   useEffect(() => {
     const subscriptions = [
@@ -118,6 +119,7 @@ export function useBackendEvents(): void {
       listenTo("remote:progress", applyRemoteProgress),
       listenTo("remote:sync", applyRemoteSync),
       listenTo("remote:link", applyRemoteLink),
+      listenTo("remote:relay", applyRelayActivity),
       listenTo("graph:changed", (event) => applyGraphChanged(event.huntSessionId)),
       listenTo("session:summary", applySummary),
       listenTo("sessions:changed", () => void refreshSessions()),
@@ -138,6 +140,7 @@ export function useBackendEvents(): void {
     applyRemoteProgress,
     applyRemoteSync,
     applyRemoteLink,
+    applyRelayActivity,
     applyGraphChanged,
     applySummary,
     applyAttributionChanged,

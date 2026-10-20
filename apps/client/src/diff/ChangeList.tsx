@@ -20,7 +20,7 @@ import { ShelveDialog } from "./ShelveDialog";
 import { baseName, dirName } from "../ui/path";
 import { STATUS_NAME_CLASS } from "./styles";
 import { AgentButton } from "../ui/AgentButton";
-import { isWorktreeLocked, pushTarget, remoteOf } from "../chat/remoteSession";
+import { isWorktreeLocked, remoteOf } from "../chat/remoteSession";
 import { ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { GlobFilterInput } from "../ui/GlobFilterInput";
@@ -100,8 +100,8 @@ export function ChangeList({
   const isRemote = Boolean(remote);
   /** A poller session's branch is pushed from its VM with the poller's token; every other session's from this Mac. */
   const pushesFromVm = remote?.origin === "swf";
-  /** The branch on `origin` a push lands on: the one the session was created from. */
-  const target = session ? pushTarget(session, remote) : "";
+  /** The branch on `origin` a push lands on: the one the session's branch tracks. */
+  const target = session?.pushTarget ?? "";
   const isLocked = useHuntStore((state) => isWorktreeLocked(state.sessions, state.remoteLinks, sessionId));
   const draftCount = useReviewDraftCount(sessionId);
   const [tab, setTab] = useState<Tab>("changes");
@@ -275,7 +275,8 @@ export function ChangeList({
     return (
       <li
         key={file.path}
-        className={`group flex items-center gap-1.5 pr-1 hover:bg-(--row-hover) ${selectedPath === file.path ? "bg-(--row-active)" : ""}`}
+        data-selected={selectedPath === file.path}
+        className="tree-row group flex items-center gap-1.5 pr-2.5"
         style={{ paddingLeft: `calc(12px + ${depth} * var(--changelist-indent))` }}
       >
         <Checkbox state={checked.has(file.path) ? "checked" : "unchecked"} onChange={() => setChecked([file], !checked.has(file.path))} />
@@ -310,7 +311,7 @@ export function ChangeList({
   const renderFolder = (folder: FolderNode, depth: number) => {
     const isCollapsed = collapsed.has(folder.path);
     return (
-      <li key={`dir:${folder.path}`} className="flex items-center gap-1.5 pr-2 hover:bg-(--row-hover)" style={{ paddingLeft: `calc(12px + ${depth} * var(--changelist-indent))` }}>
+      <li key={`dir:${folder.path}`} className="tree-row flex items-center gap-1.5 pr-2.5" style={{ paddingLeft: `calc(12px + ${depth} * var(--changelist-indent))` }}>
         <Checkbox state={stateOf(folder.files)} onChange={() => toggleGroup(folder.files)} />
         <button type="button" onClick={() => toggleCollapsed(folder.path)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" title={folder.path}>
           <ChevronIcon expanded={!isCollapsed} />

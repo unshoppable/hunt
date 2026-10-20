@@ -49,7 +49,8 @@ decision records that steer the agent.
 ### ✨ Features
 
 - **Isolated sessions.** Each session gets a `feat/general/<slug>-<id>` worktree; shelve, revert and commit per file.
-  *Push* lands the commits on the branch the session was created from; the worktree's branch never reaches `origin`.
+  *Push* lands the commits on the branch the session's branch tracks, the base branch unless changed; a plain
+  `git push` in the worktree lands there too.
 - **Sub sessions.** Start a background agent in an existing worktree, or ask Claude about a selected diff range.
 - **Change attribution.** Sessions sharing a worktree see only their own files; shared files carry a badge.
 - **Built-in IDE.** Project tree, Monaco panes with tabs, breadcrumbs, go-to-declaration, usages, inlay hints and
@@ -171,7 +172,9 @@ the view's body with a list in the chat pane (no popover), of the repository's o
 VMs the gateway lists; choosing a pull request starts a review session on its branch, choosing a remote session shows
 it, adopting it first when this Mac does not know it (`apps/client/src/sessions/PullRequestList.tsx`,
 `SessionVmList.tsx`, `list_session_vms`). The bar under the composer picks the workspace (a worktree or the
-repository's checkout) and the base branch; its branch menu's "New branch…" names a branch the session creates instead
+repository's checkout) and the base branch; choosing a base branch starts the worktree session off it right away,
+without a prompt, titled after the repository like one started by choosing a repository; text typed into the prompt
+box but not sent stays unsent in the new session's box, whichever pick started it. The branch menu's "New branch…" names a branch the session creates instead
 of the generated one (`newBranch` of `create_session`, checked by `sessions/newBranch.ts` and `git::ensure_new_branch`):
 off the base in a worktree, or at the checkout's own branch, which the checkout switches to. Such a branch is the
 session's base like a reviewed pull request's: a push lands on it under its own name and deleting the session keeps it.
@@ -179,7 +182,8 @@ session's base like a reviewed pull request's: a push lands on it under its own 
 The sidebar groups the sessions by repository, each group under a heading with the repository's name
 (`groupSessions` in `apps/client/src/sessions/sessionLabels.ts`): groups in alphabetical order, inside a group the
 sessions in creation order, each followed by its sub sessions. A session's row shows its title, its branch and the
-branch on origin a push lands on, with the pull request or issue it works on as a badge.
+branch on origin a push lands on, with the pull request or issue it works on as a badge. A right click on a session
+offers "Change Push Target…", the Git tab's dialog.
 
 The mark of a session in the sidebar (`apps/client/src/sessions/SessionMark.tsx`) shows what its agent is up to: an arc
 runs around it while a turn runs; it turns amber with a `?` badge when the agent ended its turn with a question
@@ -187,12 +191,18 @@ runs around it while a turn runs; it turns amber with a `?` badge when the agent
 so the state ends by itself once the user's answer follows and holds for a remote session's replayed conversation
 too); it turns green when a turn finished while another session was active and the user has not opened the session
 since. The agent marks a question explicitly by ending its reply with `<!-- hunt:question -->` (`hasQuestionMarker`
-in `src/chat/questionMarker.ts`); `libs/domain/prompts/question.system-prompt.md` tells it so and is part of every
+in `libs/domain/src/question.ts`, which the relay uses as well); `libs/domain/prompts/question.system-prompt.md` tells it so and is part of every
 session's system prompt, local and remote. A last paragraph ending with a question mark remains the fallback
 (`endsWithQuestion`). The marker is hidden in the chat like the guardrail marker and dropped from the transcript the
 guardrail agent gets. The chat pane shows the state as well: a "Question" chip in its header and a note under the
-messages (`ChatPanel.tsx`). A remote session whose conversation was never loaded takes the agent state the gateway
-recorded for its VM (`remote.agent`, see "Remote sessions").
+messages (`ChatPanel.tsx`). At its start Hunt loads the chat of every session (`loadAllChats` in `src/state/store.ts`),
+so every mark shows its state before the session is opened: it starts the agent of every local session, sub sessions
+included, and rebuilds the chat of an agent that already runs. A remote session is connected only when it is opened,
+since a connect would wake its VM and keep it awake; until then its mark shows what the relay on its VM reports through
+the status channel (see "Remote sessions"), live while the VM runs and as last reported while it is suspended, and the
+agent state the gateway recorded (`remote.agent`) where no relay reported yet (`src/sessions/sessionMarkState.ts`). Opening it
+attaches to its relay, whose agent kept running while Hunt was closed ("Connecting to the agent on the VM…"); only a
+relay that does not run, or one that runs with another Claude account than the one picked now and no turn, starts anew.
 
 A sub session is a fresh agent session in the worktree of an existing session. "sub session" on a session in the
 sidebar starts one with a title; selecting text on the right side of a diff and choosing "Ask Claude about
@@ -215,10 +225,11 @@ via the ACP `systemPrompt` meta.
 `apps/client/src-tauri/src/git.rs` creates `feat/general/<slug>-<id>` worktrees under the app data directory (the
 `<type>/<scope>/<name>` form repositories check branch names against; a pull request review works on the pull
 request's own branch, a session the user named a branch for on that one), lists their changes against the session's diff base (`HEAD`, or the merge base of a reviewed
-pull request) and supports shelving and reverting them. The worktree's branch is local only: the changelist's *Push*
-(`push_branch`) pushes `HEAD` to the branch the session was created from on `origin` (`push_target` in
-`session/commands.rs`: the base branch, a reviewed pull request's branch, the checkout's own), after a rebase onto it
-when it moved on; a conflict aborts the rebase and names the files. A first prompt that starts with the URL of a GitHub
+pull request) and supports shelving and reverting them. The changelist's *Push* (`push_branch`) pushes `HEAD` to the
+branch on `origin` the worktree's branch tracks, else to one of its own name (`push_target` in `session/commands.rs`:
+the base branch, a reviewed pull request's branch, the checkout's upstream), after a rebase onto it when it moved on;
+a plain `git push` in a session's worktree goes to the same branch (`git::configure_push`: `push.default=upstream`
+and `push.autoSetupRemote` in the worktree's own config); a conflict aborts the rebase and names the files. A first prompt that starts with the URL of a GitHub
 issue or pull request titles the session `#<number> <title>` (`issueFromPrompt`, `issue_title` via `gh`).
 
 A new worktree has none of the repository's ignored files either, which is where a service's `.env.private` lives. Each
@@ -252,25 +263,31 @@ read-only, only the lines the session and its parent changed.
 #### Git log
 
 The Git tab after Diff is the worktree's history, laid out like IntelliJ's log: the branch tree on the left (Local,
-Remote and Tags, nested by the slashes in their names; a click shows one ref's history, a second click every ref
-again), the commits in the middle with the graph, the branch and tag chips, author and date, and on the right the
+Remote and Tags, nested by the slashes in their names; a click shows one ref's history from the top with its head
+selected, a second click every ref again), the commits in the middle with the graph, the branch and tag chips, author and date, and on the right the
 files of the selected commit as a folder tree, its message, author, committer, refs and containing branches, and the
 read-only diff of the selected file against the commit's first parent. The log pages through `git log --date-order`
-500 commits at a time (`git_log`, `apps/client/src-tauri/src/git.rs`), the text field matches the message or names a
-commit by its hash, and commits no remote has yet carry an arrow. `apps/client/src/git/commitGraph.ts` lays the
+500 commits at a time (`git_log`, `apps/client/src-tauri/src/git.rs`). The text field filters while typing: it keeps
+the commits whose message contains the text, ignoring case, or whose hash starts with it, and rewrites each parent to
+the nearest match on its first-parent line, so the graph still joins the matches. Commits no remote has yet carry an
+arrow. `apps/client/src/git/commitGraph.ts` lays the
 lanes out from the parent lists, `CommitLog.tsx` renders only the visible rows, and the log reloads after every turn
 of the agent and every local write. The log opens on the session's branch, which the tree marks with the branch its
 push lands on (`→ master`). A right click on a branch opens its menu (`src/git/branchActions.ts`): rebase the
 checked-out branch onto it or merge it in (a conflict aborts and names the files), update it (the session's branch is
 rebased onto the branch its push lands on, as the push does first; another local branch is fast-forwarded from its
 upstream), push, rename and delete it (a branch with commits no other branch has only after a confirmation), and for
-a remote branch fetch it or delete it on `origin`. A rebase, merge or update of a remote session's branch moves the
-branch on its VM to the new commit, as the rebase before a push does. The push target is the upstream of the session's
+a remote branch fetch it or delete it on `origin`. A right click on a commit offers "Reset Current Branch to Here…", WebStorm's dialog
+with Soft, Mixed, Hard and Keep (`git_reset`). A rebase, merge or update of a remote session's branch moves the
+branch on its VM to the new commit, as the rebase before a push does; a reset repeats there in its mode
+(`remote::commit::reset_vm_head`), so index and files on the VM change as they did here. The push target is the upstream of the session's
 branch (`branch.<name>.merge`, set to the base branch when the session is created and changed with "Change push
 target…", which also creates a branch `origin` lacks at the commit of the branch pushed to so far), so it travels
 with the branch: the handoff copies it to the VM (`hunt-ctl prepare --upstream`), a change is written on both sides,
 and every connect takes over what the VM records (`sync::take_over_vm_push_target`), so a Hunt that continues a
-session another one handed off pushes where that one meant to; the session record mirrors it as `baseRef`.
+session another one handed off pushes where that one meant to. The upstream is the only place that names it: the
+session list reads it into `pushTarget` (the window reads it again when it comes back to the front), and `baseRef`
+only names what the session was created from.
 
 #### Pull request reviews
 
@@ -485,7 +502,11 @@ the others. The guardrails stay local and wait until the session comes back; dif
 on the local worktree, which Hunt keeps in sync with the VM (below). For every tool call the agent finishes, the relay
 writes one line to the journal, which the Ops Agent ships to Cloud Logging (`toolCalls.ts`): tool, status, duration,
 for a command its exit code and number of output lines, and the title, for Bash the whole command. The output stays
-out.
+out. Its status file `/run/hunt/status.json`, which `hunt-ctl wait`, the idle check and the status channel read, also
+tells whether the agent waits for an answer (`question`: no turn runs, no permission request is open and the
+conversation ends with a reply that asks a question, laid out in items as the chat does, `trailingReply.ts`). A prompt's
+`_meta` goes on the chunks the relay records for it, so a turn Hunt sent itself (`hunt.hidden`, a diagram refresh) is
+left out of it as the chat leaves it out.
 
 A sub chat of a remote session (sub session) runs on this Mac, in the session's local worktree, wherever its session
 runs: its agent is a local one, what it changes reaches the VM through the session's file sync like an edit in the
@@ -853,10 +874,23 @@ VM is in the gateway's region, whose zones the gateway creates session VMs in (`
 gateway's poller started for `swf` issues (`hunt-origin=swf`, `hunt-issue`) and other people's handoffs. An adopted
 session gets a record with origin `swf` or
 `desktop`, its title, branch, repository and agent state from the metadata and the local checkout among the recently
-used repositories whose `origin` is that repository; the sidebar labels it `swf #<issue>` or `remote`. At its start
-and from the sidebar's *Refresh remote sessions* button Hunt runs the same listing without adopting anything, which
-brings the agent state of the remote sessions this Mac has up to date (`remote.agent`), so the sidebar
-marks a session whose agent asked on the issue before its conversation is loaded. Its worktree path on
+used repositories whose `origin` is that repository; the sidebar labels it `swf #<issue>` or `remote`. At its start,
+every 30 seconds while the sidebar lists a remote session (as often as the poller updates the agent states) and from
+the sidebar's *Refresh remote sessions* button Hunt runs the same listing without adopting anything, which brings the
+agent state of the remote sessions this Mac has up to date (`remote.agent`), so the sidebar marks a session whose agent
+works or asked on the issue before its conversation is loaded. Only the button shows the refresh running.
+
+The same listing keeps a status channel open to the VM of every remote session it reports running
+(`apps/client/src-tauri/src/session/relay_watch.rs`, `remote/status_channel.rs`): over the VM's shared SSH connection
+Hunt runs the status helper (`apps/session/src/relay/statusHelper.ts`, `sudo -n -u agent … statusHelper.mjs`), which
+reads the relay's `status.json` every second and reports whether a turn runs and whether the agent waits for an answer
+whenever that changes (`statusReport.ts`). Hunt stores the report with the session (`remote.relayActivity`), so the
+sidebar shows it before the session is opened, and for a suspended VM as last reported, also after a restart of Hunt.
+The helper is neither `hunt-ctl` nor a client of the relay and has no terminal, so it does not count as activity: the
+VM still suspends when idle, which ends the channel, and nothing here starts a VM. A channel that ends is opened again
+by the next listing that reports the VM running; one that cannot be opened (a VM on an older release lacks the helper)
+is tried again at the next listing, then after 2 and after 10 minutes. A VM the listing reports not running has no
+running turn any more. Its worktree path on
 the VM comes from `/srv/hunt/sessions/<id>/meta.json` once Hunt reaches the VM, and the relay replays its conversation
 on `session/load`. Its first sync creates a new worktree in the local checkout on the branch the VM has checked out (a
 numbered name when the checkout has that branch already), from a snapshot of the VM's worktree; until a checkout is

@@ -120,6 +120,32 @@ pub fn vm_updates(listed: &[AdoptableSession], remote: &HashMap<Uuid, &RemoteTar
         .collect()
 }
 
+/// The sessions whose turn ended with their VM: `id` of every session of `listed` whose VM is not running and that
+/// `remote` holds on a VM of the listed VM's name with a running turn recorded from its relay, in the order listed. A VM
+/// can stop, crash or power off mid-turn, and its relay then reports no end of the turn.
+pub fn stopped_turns(listed: &[AdoptableSession], remote: &HashMap<Uuid, &RemoteTarget>) -> Vec<Uuid> {
+    listed
+        .iter()
+        .filter(|session| !session.is_running)
+        .filter(|session| {
+            remote.get(&session.id).is_some_and(|target| {
+                target.vm.instance == session.vm.instance && target.relay_activity.is_some_and(|activity| activity.is_turn_running)
+            })
+        })
+        .map(|session| session.id)
+        .collect()
+}
+
+/// The VMs whose relay status to watch: `(id, vm)` of every session of `listed` whose VM runs and that `remote` holds on
+/// a VM of the listed VM's name, with the VM as listed, which names the zone it runs in, in the order listed.
+pub fn running_session_vms(listed: &[AdoptableSession], remote: &HashMap<Uuid, &RemoteTarget>) -> Vec<(Uuid, VmRef)> {
+    listed
+        .iter()
+        .filter(|session| session.is_running && remote.get(&session.id).is_some_and(|target| target.vm.instance == session.vm.instance))
+        .map(|session| (session.id, session.vm.clone()))
+        .collect()
+}
+
 /// Whether `value` is an `<owner>/<repo>` as `hunt-ctl` accepts it: two parts of letters, digits, `-`, `_` and `.`,
 /// neither starting with a dot.
 pub fn is_repository_key(value: &str) -> bool {
@@ -188,6 +214,7 @@ pub async fn read_session_meta(ssh: &Ssh, id: Uuid) -> Result<SessionMeta, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remote::RelayActivity;
 
     const ID: &str = "ab12cd34-0000-4000-8000-000000000001";
     const ZONE: &str = "europe-west1-c";
@@ -264,6 +291,7 @@ mod tests {
             issue: Some(123),
             agent: agent.into(),
             push_target_pending: false,
+            relay_activity: None,
         };
 
         let running = target("running", "vm-hunt-s-ab12cd34");
@@ -301,6 +329,7 @@ mod tests {
             issue: Some(123),
             agent: "question".into(),
             push_target_pending: false,
+            relay_activity: None,
         };
 
         let moved = target("europe-west1-b", "vm-hunt-s-ab12cd34");
@@ -312,6 +341,64 @@ mod tests {
         let elsewhere = target("europe-west1-b", "vm-hunt-medc");
         assert!(vm_updates(&listed, &HashMap::from([(id, &elsewhere)])).is_empty());
         assert!(vm_updates(&listed, &HashMap::new()).is_empty());
+    }
+
+    /// A remote session of `swf_session` on the VM `instance` in `zone`, whose relay reported `relay_activity`.
+    fn known_target(zone: &str, instance: &str, relay_activity: Option<RelayActivity>) -> RemoteTarget {
+        RemoteTarget {
+            vm: VmRef { project: "acme-hunt".into(), zone: zone.into(), instance: instance.into() },
+            worktree_path: PathBuf::new(),
+            repo: "acme/app".into(),
+            branch: "fix/general/123-fix-login".into(),
+            handoff_head: String::new(),
+            handed_off_at: chrono::Utc::now(),
+            local_mode: None,
+            last_active_at: None,
+            cleanup_asked_at: None,
+            preview_domain: None,
+            origin: RemoteOrigin::Swf,
+            issue: Some(123),
+            agent: "running".into(),
+            push_target_pending: false,
+            relay_activity,
+        }
+    }
+
+    #[test]
+    fn stopped_turns_names_the_known_sessions_whose_vm_stopped_mid_turn() {
+        let id = Uuid::parse_str(ID).unwrap();
+        let stopped = list_session_vms(&[swf_session()], "acme-hunt", ZONE);
+        let running = list_session_vms(&[SessionSummary { status: "RUNNING".into(), ..swf_session() }], "acme-hunt", ZONE);
+        let activity = |is_turn_running: bool| Some(RelayActivity { is_turn_running, is_question: None });
+
+        let in_turn = known_target("europe-west1-b", "vm-hunt-s-ab12cd34", activity(true));
+        assert_eq!(stopped_turns(&stopped, &HashMap::from([(id, &in_turn)])), vec![id]);
+        assert!(stopped_turns(&running, &HashMap::from([(id, &in_turn)])).is_empty());
+
+        let idle = known_target(ZONE, "vm-hunt-s-ab12cd34", activity(false));
+        assert!(stopped_turns(&stopped, &HashMap::from([(id, &idle)])).is_empty());
+        let unreported = known_target(ZONE, "vm-hunt-s-ab12cd34", None);
+        assert!(stopped_turns(&stopped, &HashMap::from([(id, &unreported)])).is_empty());
+        let elsewhere = known_target(ZONE, "vm-hunt-medc", activity(true));
+        assert!(stopped_turns(&stopped, &HashMap::from([(id, &elsewhere)])).is_empty());
+        assert!(stopped_turns(&stopped, &HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn running_session_vms_names_the_running_vms_of_known_sessions_in_the_zone_they_run_in() {
+        let id = Uuid::parse_str(ID).unwrap();
+        let moved = SessionSummary { status: "RUNNING".into(), zone: "europe-west1-b".into(), ..swf_session() };
+        let running = list_session_vms(&[moved], "acme-hunt", ZONE);
+        let stopped = list_session_vms(&[swf_session()], "acme-hunt", ZONE);
+
+        let known = known_target(ZONE, "vm-hunt-s-ab12cd34", None);
+        assert_eq!(running_session_vms(&running, &HashMap::from([(id, &known)])), vec![(id, running[0].vm.clone())]);
+        assert_eq!(running[0].vm.zone, "europe-west1-b");
+        assert!(running_session_vms(&stopped, &HashMap::from([(id, &known)])).is_empty());
+
+        let elsewhere = known_target(ZONE, "vm-hunt-medc", None);
+        assert!(running_session_vms(&running, &HashMap::from([(id, &elsewhere)])).is_empty());
+        assert!(running_session_vms(&running, &HashMap::new()).is_empty());
     }
 
     #[test]

@@ -787,6 +787,7 @@ describe("status", () => {
       lastClientActivityAt: null,
       lastTurnEndedAt: null,
       pendingPermissionSince: null,
+      question: false,
     });
     await harness.relay.start();
     expect(harness.relay.status()).toMatchObject({ state: "ready", acpSessionId: SESSION_ID });
@@ -819,6 +820,45 @@ describe("status", () => {
     expect(harness.relay.status()).toMatchObject({ clientConnected: true, lastClientActivityAt: 4_000 });
     harness.relay.disconnectClient(second);
     expect(harness.relay.status()).toMatchObject({ clientConnected: false, lastClientActivityAt: 4_000 });
+  });
+
+  it("reports a question while the idle conversation ends with the agent's question, the loaded history included", async () => {
+    const harness = await startedHarness();
+    harness.update(chunk("Shall I push?"));
+    expect(harness.relay.status().question).toBe(true);
+
+    const client = harness.loadedClient();
+    harness.relay.handleClientMessage(client, promptRequest(1, "yes"));
+    expect(harness.relay.status().question).toBe(false);
+    harness.update(chunk("Pushed. Anything else?"));
+    expect(harness.relay.status().question).toBe(false);
+    harness.respond(harness.requestsTo("session/prompt")[0], END_TURN);
+    expect(harness.relay.status()).toMatchObject({ turn: "idle", question: true });
+
+    harness.update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "checking" } });
+    expect(harness.relay.status().question).toBe(false);
+  });
+
+  it("reports no question while a permission request is open", async () => {
+    const harness = await startedHarness();
+    harness.update(chunk("Shall I push?"));
+    harness.relay.handleAgentMessage(requestMessage(5, "session/request_permission", PERMISSION_PARAMS));
+    expect(harness.relay.status()).toMatchObject({ turn: "idle", question: false, pendingPermissionSince: 1_000 });
+  });
+
+  it("records a prompt's meta on its chunks and leaves a turn Hunt sent itself out of the question", async () => {
+    const harness = await startedHarness();
+    const client = harness.loadedClient();
+    const other = harness.loadedClient();
+    harness.update(chunk("Shall I push?"));
+    const hidden = { hunt: { hidden: true } };
+    harness.relay.handleClientMessage(client, requestMessage(1, "session/prompt", { sessionId: SESSION_ID, prompt: [{ type: "text", text: "draw" }], _meta: hidden }));
+    expect(other.sent.map(updateOf).find((update) => update?.sessionUpdate === "user_message_chunk")).toMatchObject({ _meta: hidden });
+    expect(harness.requestsTo("session/prompt")[0].params).toMatchObject({ _meta: hidden });
+
+    harness.update(chunk("Diagram written."));
+    harness.respond(harness.requestsTo("session/prompt")[0], END_TURN);
+    expect(harness.relay.status()).toMatchObject({ turn: "idle", question: true });
   });
 
   it("reports a change only when a field other than the heartbeat changed", async () => {

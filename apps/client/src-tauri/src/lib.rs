@@ -43,6 +43,7 @@ pub fn run() {
         .manage(SyncRegistry::default())
         .manage(session::link::LinkRegistry::default())
         .manage(session::related::RelatedRegistry::default())
+        .manage(session::relay_watch::RelayWatchRegistry::default())
         .manage(DependencyRegistry::default())
         .manage(preferences::Preferences::default())
         .menu(|app| menu::build(app))
@@ -106,6 +107,7 @@ pub fn run() {
             session::commands::git_commit_file_diff,
             session::commands::git_rebase,
             session::commands::git_merge,
+            session::commands::git_reset,
             session::commands::git_update_branch,
             session::commands::git_push_local_branch,
             session::commands::git_rename_branch,

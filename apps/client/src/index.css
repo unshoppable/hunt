@@ -35,6 +35,36 @@
   --diff-indent: 0px;
   --diff-bg: #33373f;
   --diff-font-family: "Code Monospace V2", "Code Monospace", ui-monospace, SFMono-Regular, Menlo, Monaco, "JetBrains Mono", monospace;
+  --git-font-size: 14px;
+  --git-line-height: 1.8;
+  --git-indent: 14px;
+  --git-bg: #191a1c;
+  --git-font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --editor-font-size: 16px;
+  --editor-line-height: 2;
+  --editor-indent: 0px;
+  --editor-bg: #33373f;
+  --editor-font-family: "Code Monospace V2", "Code Monospace", ui-monospace, SFMono-Regular, Menlo, Monaco, "JetBrains Mono", monospace;
+  --architecture-font-size: 12px;
+  --architecture-line-height: 1.5;
+  --architecture-indent: 0px;
+  --architecture-bg: #272c35;
+  --architecture-font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --pullRequest-font-size: 14px;
+  --pullRequest-line-height: 1.6;
+  --pullRequest-indent: 0px;
+  --pullRequest-bg: #272c35;
+  --pullRequest-font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --preview-font-size: 13px;
+  --preview-line-height: 1.5;
+  --preview-indent: 0px;
+  --preview-bg: #272c35;
+  --preview-font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --terminal-font-size: 16px;
+  --terminal-line-height: 1.2;
+  --terminal-indent: 0px;
+  --terminal-bg: #33373f;
+  --terminal-font-family: "Code Monospace V2", "Code Monospace", ui-monospace, SFMono-Regular, Menlo, Monaco, "JetBrains Mono", monospace;
 }
 
 /* Shared surfaces: chat tone for dialogs and the window, inspector for the right pane, input for every text field, inset for lists and cards. */
@@ -46,12 +76,39 @@
   --line: #363c47;
   --row-hover: rgba(255, 255, 255, 0.05);
   --row-active: rgba(255, 255, 255, 0.09);
-  /* The selected row of the project tree (WebStorm's selection blue), over any folder color. */
-  --tree-selection: #2e436e;
+  /* The active row of every tree, list and popover (WebStorm's selection blue). */
+  --row-selected: #2e436e;
   /* A four-pointed sparkle with a small companion star (the agent button of ui/AgentButton.tsx); the symbol for the agent. */
   --sparkle-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.5c.4 2.9 2.6 5.1 5.5 5.5-2.9.4-5.1 2.6-5.5 5.5-.4-2.9-2.6-5.1-5.5-5.5 2.9-.4 5.1-2.6 5.5-5.5Z'/%3E%3Cpath d='M12.5 10.5c.2 1.1 1 1.9 2 2-1 .2-1.8 1-2 2-.2-1-1-1.8-2-2 1-.2 1.8-1 2-2Z'/%3E%3C/svg%3E");
   /* Blue to violet, for the agent symbol. */
   --agent-gradient: linear-gradient(135deg, #38bdf8 0%, #6366f1 50%, #a855f7 100%);
+}
+
+/* A row that spans its tree or list (project tree, changelist, Git tab, file search): hover and selection fill a rounded rectangle 6px
+   inside the pane edges, behind the content, so a folder color still spans the row. data-selected="true" marks the active row,
+   data-menu-open="true" the row whose context menu is open. Layered as a component, so an `absolute` utility keeps the row positioned. */
+@layer components {
+  .tree-row {
+    position: relative;
+    isolation: isolate;
+  }
+  .tree-row::before {
+    content: "";
+    position: absolute;
+    inset: 0 6px;
+    z-index: -1;
+    border-radius: 0.25rem;
+    pointer-events: none;
+  }
+  .tree-row:hover::before {
+    background-color: var(--row-hover);
+  }
+  .tree-row[data-menu-open="true"]::before {
+    background-color: var(--row-active);
+  }
+  .tree-row[data-selected="true"]::before {
+    background-color: var(--row-selected);
+  }
 }
 
 /* Fade-in with a small slide, for popovers and cards that appear on hover (`animate-fade-in`). */

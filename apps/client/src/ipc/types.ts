@@ -16,6 +16,7 @@ export type SessionView = {
   repoPath: string;
   worktreePath: string;
   branch: string;
+  /** The ref the session was created from; where its push lands is `pushTarget`. */
   baseRef: string;
   baseCommit: string;
   acpSessionId: string | null;
@@ -58,6 +59,11 @@ export type SessionView = {
   dependencies: DependencyStatus | null;
   /** Whether the session's worktree exists here; a remote session adopted from its VM gets one with its first sync. */
   hasLocalWorktree: boolean;
+  /**
+   * The branch on `origin` a push of the session lands on: the one its branch tracks, else a branch of its own name, as a
+   * plain `git push` in the worktree does; a poller session's own branch. `null` without a local worktree.
+   */
+  pushTarget: string | null;
 };
 
 /** What the preparation of a worktree's `node_modules` (clone from the repository, else install) is doing or ended with. */
@@ -177,6 +183,13 @@ export type SessionVm = {
   agent: string;
 };
 
+/**
+ * What the relay of a remote session last reported through the status channel (mirror of `RelayActivity` in
+ * src-tauri/src/remote/mod.rs): whether its agent runs a turn and whether it waits for the user's answer to a question;
+ * `isQuestion` is null for an older relay that does not say.
+ */
+export type RelayActivity = { isTurnRunning: boolean; isQuestion: boolean | null };
+
 /** Where a session handed off to a VM runs (mirror of `RemoteTarget` in src-tauri/src/remote/mod.rs). */
 export type RemoteTarget = {
   /** The session's own VM, `vm-hunt-s-<short>`. */
@@ -211,6 +224,8 @@ export type RemoteTarget = {
   agent: string;
   /** The push target is not yet recorded on the VM, which Hunt could not reach when it changed; the next connect records it. */
   pushTargetPending: boolean;
+  /** What the session's relay last reported through the status channel while its VM ran; null before the first report. */
+  relayActivity: RelayActivity | null;
 };
 
 /** A step of a handoff, a retrieval or a connect to a remote session that takes long enough to show. */
@@ -225,6 +240,7 @@ export type RemoteStep =
   | "transferringCode"
   | "installingDependencies"
   | "startingAgent"
+  | "connectingAgent"
   | "stoppingAgent"
   | "retrievingCode";
 
@@ -288,6 +304,9 @@ export type RemoteLink = { state: "live" } | { state: "vmStopped" } | { state: "
 
 /** The link of a top-level remote session changed (mirror of `LinkEvent` in src-tauri/src/session/link.rs). */
 export type RemoteLinkEvent = { huntSessionId: string; link: RemoteLink };
+
+/** What the relay of a top-level remote session reports changed (mirror of `RelayActivityEvent` in src-tauri/src/session/relay_watch.rs). */
+export type RelayActivityEvent = { huntSessionId: string; relayActivity: RelayActivity };
 
 /** What a terminal shows on a session VM: the log of a hunt.json service, read-only, or a window of the tmux session `app`. */
 export type TerminalTarget = { kind: "service"; name: string } | { kind: "window"; id: string };
@@ -467,6 +486,9 @@ export type Commit = {
  * message contains `text`, or the one commit `text` names; `skip` and `limit` page through them, newest first.
  */
 export type LogQuery = { reference: string; text: string; skip: number; limit: number };
+
+/** How a reset moves the branch: `soft` keeps index and files, `mixed` the files, `hard` drops every uncommitted change, `keep` keeps them and fails when one is in the way. */
+export type ResetMode = "soft" | "mixed" | "hard" | "keep";
 
 export type RefKind = "local" | "remote" | "tag";
 

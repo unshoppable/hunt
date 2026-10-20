@@ -1,6 +1,6 @@
 import type { ChatItem } from "../ipc/types";
 import type { GuardrailKind } from "../state/settings";
-import { QUESTION_MARKER } from "./questionMarker";
+import { QUESTION_MARKER } from "../../../../libs/domain/src/question.ts";
 
 const KINDS: GuardrailKind[] = ["instruction", "rule", "skill", "agent", "adr"];
 

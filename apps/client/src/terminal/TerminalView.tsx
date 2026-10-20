@@ -16,16 +16,13 @@ import { createResizeSync, decodeBase64, describeExit, encodeBinaryInput, encode
 /** Waits this long after the last size change before the remote programs learn the new size and redraw. */
 const RESIZE_DELAY_MS = 80;
 
-/** Line height for terminals: full-screen programs (tmux's borders and status line) need rows close to the font size. */
-const LINE_HEIGHT = 1.2;
-
 /** Hides the cursor of a service's log: it takes no input, so a cursor would suggest that it does. */
 const HIDE_CURSOR = "\u001b[?25l";
 
 /** OSC 52, the escape sequence with which tmux puts a mouse selection on the clipboard. */
 const CLIPBOARD_OSC = 52;
 
-/** ANSI colors of VS Code's dark terminal theme, legible on the code pane's dark background. */
+/** ANSI colors of VS Code's dark terminal theme, legible on the terminal's dark background. */
 const ANSI_COLORS: ITheme = {
   black: "#000000",
   red: "#cd3131",
@@ -65,21 +62,22 @@ function fitToHost(view: XtermView, host: HTMLElement): void {
 /**
  * One terminal on the VM of the remote session `sessionId`, showing `target`: a service's log, read-only, or a tmux
  * window, which takes input. It connects the first time it is shown and stays connected while hidden, so switching
- * tabs keeps it; it ends when it unmounts. Each new value of `focusRequest` focuses it once while it is visible. Font
- * family and size follow the code pane's settings. While it has the focus, it takes every key it understands (Escape
+ * tabs keeps it; it ends when it unmounts. Each new value of `focusRequest` focuses it once while it is visible. Font,
+ * line height and background follow the Terminal pane's settings. While it has the focus, it takes every key it understands (Escape
  * included) and stops the event, so the window's shortcuts do not see them; ⌘C copies its selection, a mouse selection
  * in a tmux window reaches the clipboard too, ⌘V pastes through the Edit menu, ⌘click opens a link.
  */
 export function TerminalView({ sessionId, target, isVisible, focusRequest }: { sessionId: string; target: TerminalTarget; isVisible: boolean; focusRequest: number }) {
-  const fontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
-  const fontSize = useSettingsStore((state) => state.panes.diff.fontSize);
-  const background = useSettingsStore((state) => state.panes.diff.background);
+  const fontFamily = useSettingsStore((state) => state.panes.terminal.fontFamily);
+  const fontSize = useSettingsStore((state) => state.panes.terminal.fontSize);
+  const lineHeight = useSettingsStore((state) => state.panes.terminal.lineHeight);
+  const background = useSettingsStore((state) => state.panes.terminal.background);
   const hostRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<XtermView | null>(null);
   /** Set once the view was first shown; its terminal exists from then on until the view unmounts. */
   const [isStarted, setIsStarted] = useState(isVisible);
   /** The appearance a new terminal starts with; an effect below keeps a running one in line with the settings. */
-  const appearanceRef = useRef({ fontFamily, fontSize, background });
+  const appearanceRef = useRef({ fontFamily, fontSize, lineHeight, background });
   const [status, setStatus] = useState<TerminalStatus>(CONNECTING);
   /** Bumped by "Reconnect"; every value opens a new connection. */
   const [attempt, setAttempt] = useState(0);
@@ -96,8 +94,8 @@ export function TerminalView({ sessionId, target, isVisible, focusRequest }: { s
   }, [isVisible]);
 
   useEffect(() => {
-    appearanceRef.current = { fontFamily, fontSize, background };
-  }, [fontFamily, fontSize, background]);
+    appearanceRef.current = { fontFamily, fontSize, lineHeight, background };
+  }, [fontFamily, fontSize, lineHeight, background]);
 
   // The effect that creates the terminal also disposes it, so that a second run (React's development mode) leaves no
   // orphan terminal in the host.
@@ -108,7 +106,7 @@ export function TerminalView({ sessionId, target, isVisible, focusRequest }: { s
     const terminal = new Terminal({
       fontFamily: appearance.fontFamily,
       fontSize: appearance.fontSize,
-      lineHeight: LINE_HEIGHT,
+      lineHeight: appearance.lineHeight,
       theme: terminalTheme(appearance.background),
       cursorBlink: !isReadOnly,
       disableStdin: isReadOnly,
@@ -153,9 +151,10 @@ export function TerminalView({ sessionId, target, isVisible, focusRequest }: { s
     if (!view || !host) return;
     view.terminal.options.fontFamily = fontFamily;
     view.terminal.options.fontSize = fontSize;
+    view.terminal.options.lineHeight = lineHeight;
     view.terminal.options.theme = terminalTheme(background);
     fitToHost(view, host);
-  }, [view, fontFamily, fontSize, background]);
+  }, [view, fontFamily, fontSize, lineHeight, background]);
 
   useEffect(() => {
     const host = hostRef.current;

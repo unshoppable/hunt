@@ -21,6 +21,8 @@ pub struct SessionRecord {
     pub repo_path: PathBuf,
     pub worktree_path: PathBuf,
     pub branch: String,
+    /// The ref the session was created from. Where its push lands is the upstream of `branch` (`push_target` in
+    /// `session/commands.rs`), not this.
     pub base_ref: String,
     pub base_commit: String,
     pub acp_session_id: Option<String>,
@@ -146,6 +148,7 @@ impl SessionRecord {
             issue: session.issue,
             agent: session.agent.clone(),
             push_target_pending: false,
+            relay_activity: None,
         };
         let branch = session.branch.clone();
         let mut record = Self::new(session.id, session.title.clone(), repo_path, worktree_path, branch.clone(), branch, String::new());
@@ -502,6 +505,7 @@ mod tests {
             issue: None,
             agent: String::new(),
             push_target_pending: false,
+            relay_activity: None,
         };
         let (old, new) = (vm("europe-west1-c", "vm-hunt-s-ab12cd34"), vm("europe-west1-b", "vm-hunt-s-ab12cd34"));
         let mut owner = record("owner");

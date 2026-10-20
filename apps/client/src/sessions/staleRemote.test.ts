@@ -21,6 +21,7 @@ function session(remote: Partial<RemoteTarget> | null): SessionView {
     issue: null,
     agent: "",
     pushTargetPending: false,
+    relayActivity: null,
   };
   return { id: "s1", remote: remote ? { ...target, ...remote } : null } as SessionView;
 }

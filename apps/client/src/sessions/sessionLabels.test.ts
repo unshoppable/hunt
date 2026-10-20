@@ -28,6 +28,7 @@ function session(id: string, title: string, branch: string, parentId: string | n
     leftoverVm: null,
     dependencies: null,
     hasLocalWorktree: true,
+    pushTarget: "main",
   };
 }
 

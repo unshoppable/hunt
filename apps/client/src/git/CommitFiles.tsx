@@ -66,20 +66,20 @@ export function CommitFiles({
   const isLoaded = !!commit && details?.id === commit.id;
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-(--changelist-bg)">
+    <div className="flex min-w-0 flex-1 flex-col bg-(--git-bg)">
       <div className="flex items-center gap-2 border-b border-(--line) px-3 py-2.5 text-[13px] text-neutral-400">
         <span className="flex-1 truncate">{commit ? (isLoaded ? `${files.length} ${files.length === 1 ? "file" : "files"}` : "Loading…") : "No commit selected"}</span>
         {commit ? <span className="font-mono text-neutral-500">{commit.id.slice(0, 8)}</span> : null}
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
-        <ul className="py-1 font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)">
+        <ul className="py-1 font-(family-name:--git-font-family) text-(length:--git-font-size) leading-(--git-line-height)">
           {rows.map(({ node, depth }) =>
             node.kind === "folder" ? (
               <li
                 key={`dir:${node.path}`}
                 onClick={() => toggleCollapsed(node.path)}
-                className="flex cursor-default items-center gap-[5px] pr-2 select-none hover:bg-(--row-hover)"
-                style={{ paddingLeft: `calc(6px + ${depth} * var(--changelist-indent))` }}
+                className="tree-row flex cursor-default items-center gap-[5px] pr-2.5 select-none"
+                style={{ paddingLeft: `calc(10px + ${depth} * var(--git-indent))` }}
                 title={node.path}
               >
                 <ChevronIcon expanded={!collapsed.has(node.path)} className="size-4 shrink-0 text-neutral-500" />
@@ -96,8 +96,9 @@ export function CommitFiles({
                     onSelect(file);
                   }
                 }}
-                className={`flex cursor-default items-center gap-[5px] pr-2 select-none ${selectedPath === node.file.path ? "bg-(--tree-selection)" : "hover:bg-(--row-hover)"}`}
-                style={{ paddingLeft: `calc(26px + ${depth} * var(--changelist-indent))` }}
+                data-selected={selectedPath === node.file.path}
+                className="tree-row flex cursor-default items-center gap-[5px] pr-2.5 select-none"
+                style={{ paddingLeft: `calc(30px + ${depth} * var(--git-indent))` }}
                 title={`${node.file.path} (${node.file.status})`}
               >
                 <img src={fileIconUrl(node.file.path)} alt="" className="size-[17px] shrink-0" />

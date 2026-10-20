@@ -20,6 +20,11 @@ export interface RelayStatus {
   lastTurnEndedAt: number | null;
   /** When the oldest unanswered permission request arrived; null when none is open. */
   pendingPermissionSince: number | null;
+  /**
+   * Whether the agent waits for the user's answer: the relay serves the session, no turn runs, no permission request
+   * is open and the conversation ends with a reply that asks a question (`trailingReply.ts`).
+   */
+  question: boolean;
 }
 
 export const HEARTBEAT_INTERVAL_MS = 30_000;

@@ -14,6 +14,7 @@ export const REMOTE_STEP_LABELS: Record<RemoteStep, string> = {
   transferringCode: "Transferring the code to the VM…",
   installingDependencies: "Installing dependencies on the VM…",
   startingAgent: "Starting the agent on the VM…",
+  connectingAgent: "Connecting to the agent on the VM…",
   stoppingAgent: "Stopping the agent on the VM…",
   retrievingCode: "Bringing the code back…",
 };
@@ -36,7 +37,7 @@ const REMOTE_PLANS: Record<RemoteOperation, RemoteStep[][]> = {
     ["startingAgent"],
   ],
   retrieve: [["connecting"], ["startingVm", "resumingVm", "movingVm"], ["waitingForVm"], ["installingRuntime"], ["stoppingAgent"], ["retrievingCode"]],
-  connect: [["connecting"], ["startingVm", "resumingVm", "movingVm"], ["waitingForVm"], ["installingRuntime"], ["startingAgent"]],
+  connect: [["connecting"], ["startingVm", "resumingVm", "movingVm"], ["waitingForVm"], ["installingRuntime"], ["connectingAgent"]],
 };
 
 /** The operation the remote steps of `chat` belong to. */
@@ -80,16 +81,6 @@ export function remoteOf(session: SessionView, sessions: SessionView[]): RemoteT
   if (session.remote) return session.remote;
   if (!session.parentId) return null;
   return sessions.find((candidate) => candidate.id === session.parentId)?.remote ?? null;
-}
-
-/**
- * The branch on `origin` a push of `session`, whose worktree lives on `remote` when any, lands on (`push_target` in
- * `session/commands.rs`): the branch the session was created from, named without its remote, except for a poller
- * session, whose VM pushes its branch under its own name. A session's own worktree branch never reaches `origin`.
- */
-export function pushTarget(session: SessionView, remote: RemoteTarget | null): string {
-  if (remote?.origin === "swf") return session.branch;
-  return session.baseRef.replace(/^origin\//, "");
 }
 
 /**

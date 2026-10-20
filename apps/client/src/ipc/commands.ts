@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, FileDiff, FileVersion, GithubTokenStatus, GithubViewer, GraphStatus, LogQuery, PlanUsage, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
+import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, FileDiff, FileVersion, GithubTokenStatus, GithubViewer, GraphStatus, LogQuery, PlanUsage, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
 export function assetUrl(path: string): string {
@@ -21,6 +21,8 @@ export const commands = {
   gitRebase: (sessionId: string, onto: string) => invoke<void>("git_rebase", { id: sessionId, onto }),
   /** Merges the branch or remote branch `from` into the session's branch; a conflict aborts and names the files. */
   gitMerge: (sessionId: string, from: string) => invoke<void>("git_merge", { id: sessionId, from }),
+  /** Resets the session's branch to the commit in `mode`, on its VM too; `keep` fails when an uncommitted change is in the way. */
+  gitReset: (sessionId: string, commit: string, mode: ResetMode) => invoke<void>("git_reset", { id: sessionId, commit, mode }),
   /** Rebases the session's branch onto the branch its push lands on, fetched first; fast-forwards another local branch to its upstream. */
   gitUpdateBranch: (sessionId: string, branch: string) => invoke<void>("git_update_branch", { id: sessionId, branch }),
   /** Pushes a local branch other than the session's to the branch of the same name on `origin`. */

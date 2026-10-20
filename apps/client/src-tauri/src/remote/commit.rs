@@ -14,7 +14,7 @@ use uuid::Uuid;
 use super::retrieve;
 use super::ssh::Ssh;
 use super::{hunt_ctl, shell_command, RemoteTarget};
-use crate::git;
+use crate::git::{self, ResetMode};
 
 /// Which side's branch moved since both pointed at the same commit, and who follows whom.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +123,22 @@ pub async fn move_vm_head(ssh: &Ssh, id: Uuid, target: &RemoteTarget, worktree: 
             .await
             .map_err(|error| format!("the branch on the VM moved to the rebased commit, but its uncommitted changes did not apply again and stay on its stash list: {error}"))?;
     }
+    Ok(head)
+}
+
+/// Resets the branch the VM's worktree of the remote session `id` has checked out to the commit the local worktree
+/// `worktree` was reset to, in the same `mode`, so that index and files there change as they did here: the commit goes
+/// to the VM as `refs/hunt/<id>/reset` and the reset runs as the agent's user. Returns the commit; the caller records it
+/// as the one the local branch follows.
+pub async fn reset_vm_head(ssh: &Ssh, id: Uuid, target: &RemoteTarget, worktree: &Path, mode: ResetMode) -> Result<String, String> {
+    let fail = |error: String| format!("failed to reset the branch on the VM: {error}");
+    let (name, email) = git::identity(worktree).await.map_err(fail)?;
+    let head = git::rev_parse(worktree, "HEAD").await?;
+    let remote_worktree = target.worktree_path.display().to_string();
+    let reset_ref = format!("refs/hunt/{id}/reset");
+    retrieve::push_into(worktree, ssh, &remote_worktree, "HEAD", &reset_ref).await?;
+    ssh.run(&agent_git(&remote_worktree, &name, &email, &["reset", "-q", mode.flag(), &reset_ref])).await.map_err(fail)?;
+    let _ = ssh.run(&agent_git(&remote_worktree, &name, &email, &["update-ref", "-d", &reset_ref])).await;
     Ok(head)
 }
 

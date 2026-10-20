@@ -4,7 +4,7 @@ import { useSettingsStore, type GitLogColumns } from "../state/settings";
 import { trackDrag } from "../ui/pointerDrag";
 import type { LogFilter } from "./GitPanel";
 import { layoutGraph, type GraphRow } from "./commitGraph";
-import { BranchIcon, TagIcon } from "../ui/icons";
+import { BranchIcon, CloseIcon, TagIcon } from "../ui/icons";
 import { logLabels, type LogLabel } from "./logLabels";
 
 /** Horizontal distance between two lanes of the graph, in px. */
@@ -21,6 +21,8 @@ const MARKER_WIDTH = 32;
 const MIN_COLUMN_WIDTH = 48;
 /** Widest the author and date columns can be dragged to, in px. */
 const MAX_COLUMN_WIDTH = { author: 480, date: 240 };
+/** How long typing in the filter field pauses before the log filters, in ms. */
+const FILTER_DELAY_MS = 250;
 /** Line colors of the graph, one per lane in turn. */
 const LANE_COLORS = ["#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa", "#fb923c", "#2dd4bf", "#f87171"];
 
@@ -30,7 +32,8 @@ const DATE_FORMAT = new Intl.DateTimeFormat(undefined, { day: "2-digit", month: 
  * The commit log: a filter row and the commits as windowed rows (only the visible ones are in the DOM), each with its
  * graph cell, subject, compact branch and tag labels, author and date in fixed columns whose borders drag to resize
  * them (the widths persist in the settings). Scrolling near the end asks for the next page; ↑ and ↓ move the selection
- * while the list has the focus.
+ * while the list has the focus. A new filter shows the list from the top; a right click on a commit selects it and opens
+ * its menu (`onContextMenu`).
  */
 export function CommitLog({
   commits,
@@ -41,6 +44,7 @@ export function CommitLog({
   onFilterChange,
   selectedId,
   onSelect,
+  onContextMenu,
   hasMore,
   isLoading,
   onLoadMore,
@@ -57,13 +61,14 @@ export function CommitLog({
   onFilterChange: (filter: LogFilter) => void;
   selectedId: string | null;
   onSelect: (id: string) => void;
+  onContextMenu: (commit: Commit, x: number, y: number) => void;
   hasMore: boolean;
   isLoading: boolean;
   onLoadMore: () => void;
   error: string | null;
 }) {
-  const fontSize = useSettingsStore((state) => state.panes.changelist.fontSize);
-  const lineHeight = useSettingsStore((state) => state.panes.changelist.lineHeight);
+  const fontSize = useSettingsStore((state) => state.panes.git.fontSize);
+  const lineHeight = useSettingsStore((state) => state.panes.git.lineHeight);
   const rowHeight = Math.round(fontSize * lineHeight);
   const storedColumns = useSettingsStore((state) => state.gitLogColumns);
   const setStoredColumns = useSettingsStore((state) => state.setGitLogColumns);
@@ -85,6 +90,12 @@ export function CommitLog({
     observer.observe(list);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (listRef.current) {
+      listRef.current.scrollTop = 0;
+    }
+  }, [filter.reference, filter.text]);
 
   const firstIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
   const lastIndex = Math.min(commits.length, Math.ceil((scrollTop + viewportHeight) / rowHeight) + OVERSCAN);
@@ -140,9 +151,9 @@ export function CommitLog({
   };
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-(--changelist-bg)">
+    <div className="flex min-w-0 flex-1 flex-col bg-(--git-bg)">
       <div className="flex items-center gap-2 border-b border-(--line) px-3 py-2.5 text-[13px] text-neutral-400">
-        <FilterInput value={filter.text} onApply={(text) => onFilterChange({ ...filter, text })} placeholder="Text or hash" title="Show only commits whose message contains this text, or the commit with this hash" className="min-w-0 flex-1" />
+        <FilterInput value={filter.text} onApply={(text) => onFilterChange({ ...filter, text })} placeholder="Text or hash" title="Show only the commits whose message contains this text or whose hash starts with it" className="min-w-0 flex-1" />
         <span className="shrink-0 tabular-nums">
           {commits.length}
           {hasMore ? "+" : ""} {commits.length === 1 ? "commit" : "commits"}
@@ -157,7 +168,7 @@ export function CommitLog({
         aria-label="Commits"
         onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
         onKeyDown={onKeyDown}
-        className="relative min-h-0 flex-1 overflow-auto outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-blue-400/60"
+        className="relative min-h-0 flex-1 overflow-auto outline-none font-(family-name:--git-font-family) text-(length:--git-font-size) focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-blue-400/60"
       >
         {commits.length === 0 && !isLoading ? <p className="p-3 text-[13px] text-neutral-500">{filter.text || filter.reference ? "No commits match the filter." : "No commits."}</p> : null}
         <div style={{ height: commits.length * rowHeight }}>
@@ -177,6 +188,7 @@ export function CommitLog({
                 isUnpushed={unpushed.has(commit.id)}
                 isSelected={commit.id === selectedId}
                 onSelect={() => onSelect(commit.id)}
+                onContextMenu={(x, y) => onContextMenu(commit, x, y)}
               />
             );
           })}
@@ -217,6 +229,7 @@ function LogRow({
   isUnpushed,
   isSelected,
   onSelect,
+  onContextMenu,
 }: {
   commit: Commit;
   row: GraphRow;
@@ -229,6 +242,7 @@ function LogRow({
   isUnpushed: boolean;
   isSelected: boolean;
   onSelect: () => void;
+  onContextMenu: (x: number, y: number) => void;
 }) {
   const labels = logLabels(commit.refs, head, localBranches);
   return (
@@ -236,11 +250,17 @@ function LogRow({
       role="option"
       aria-selected={isSelected}
       onClick={onSelect}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onSelect();
+        onContextMenu(event.clientX, event.clientY);
+      }}
       style={{ top, height }}
-      className={`absolute right-0 left-0 flex cursor-default items-center select-none ${isSelected ? "bg-(--tree-selection)" : "hover:bg-(--row-hover)"}`}
+      data-selected={isSelected}
+      className="tree-row absolute right-0 left-0 flex cursor-default items-center select-none"
     >
       <GraphCell row={row} width={graphWidth} height={height} />
-      <span className="flex min-w-0 flex-1 items-center gap-2 pr-2">
+      <span className="flex min-w-0 flex-1 items-center gap-2 pr-3">
         <span className={`min-w-0 truncate ${isUnpushed ? "text-neutral-100" : "text-neutral-300"}`} title={commit.subject}>
           {commit.subject}
         </span>
@@ -304,45 +324,68 @@ function GraphCell({ row, width, height }: { row: GraphRow; width: number; heigh
         const d = to === nodeX ? `M${nodeX} ${middle}V${height}` : `M${nodeX} ${middle}C${nodeX} ${height} ${to} ${middle} ${to} ${height}`;
         return <path key={index} d={d} stroke={color} strokeWidth={2} fill="none" />;
       })}
-      <circle cx={nodeX} cy={middle} r={4} fill={LANE_COLORS[row.color % LANE_COLORS.length]} stroke="var(--changelist-bg)" strokeWidth={1.5} />
+      <circle cx={nodeX} cy={middle} r={4} fill={LANE_COLORS[row.color % LANE_COLORS.length]} stroke="var(--git-bg)" strokeWidth={1.5} />
     </svg>
   );
 }
 
-/** A text filter that applies on Enter or when the field is left; Escape restores the applied value, a second Escape leaves the field. */
+/**
+ * A text filter that applies a short pause after typing, or at once on Enter; Escape or the clear button empties it,
+ * Escape in an empty field leaves it.
+ */
 function FilterInput({ value, onApply, placeholder, title, className }: { value: string; onApply: (value: string) => void; placeholder: string; title: string; className: string }) {
   const [draft, setDraft] = useState(value);
 
-  useEffect(() => setDraft(value), [value]);
+  // The field keeps what is typed, a trailing space included, unless the filter changed elsewhere.
+  useEffect(() => setDraft((current) => (current.trim() === value ? current : value)), [value]);
+
+  useEffect(() => {
+    if (draft.trim() === value) return;
+    const timer = globalThis.setTimeout(() => onApply(draft.trim()), FILTER_DELAY_MS);
+    return () => globalThis.clearTimeout(timer);
+    // Only typing restarts the pause; `value` catching up with the draft ends it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft]);
+
+  const clear = () => {
+    setDraft("");
+    if (value) {
+      onApply("");
+    }
+  };
 
   return (
-    <input
-      type="text"
-      value={draft}
-      spellCheck={false}
-      placeholder={placeholder}
-      title={title}
-      onChange={(event) => setDraft(event.target.value)}
-      onBlur={() => {
-        if (draft.trim() !== value) {
-          onApply(draft.trim());
-        }
-      }}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.currentTarget.blur();
-        } else if (event.key === "Escape") {
-          event.preventDefault();
-          event.stopPropagation();
-          if (draft !== value) {
-            setDraft(value);
-          } else {
-            event.currentTarget.blur();
+    <span className={`relative flex items-center ${className}`}>
+      <input
+        type="text"
+        value={draft}
+        spellCheck={false}
+        placeholder={placeholder}
+        title={title}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            if (draft.trim() !== value) {
+              onApply(draft.trim());
+            }
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            if (draft) {
+              clear();
+            } else {
+              event.currentTarget.blur();
+            }
           }
-        }
-      }}
-      className={`h-7 rounded-md border border-white/10 bg-(--surface-input) px-2 text-[13px] text-neutral-200 outline-none placeholder:text-neutral-500 focus:border-white/20 ${className}`}
-    />
+        }}
+        className="h-7 w-full rounded-md border border-white/10 bg-(--surface-input) pr-7 pl-2 text-[13px] text-neutral-200 outline-none placeholder:text-neutral-500 focus:border-white/20"
+      />
+      {draft ? (
+        <button type="button" onClick={clear} className="absolute right-1.5 rounded p-0.5 text-neutral-500 hover:bg-white/10 hover:text-neutral-200" title="Clear the filter">
+          <CloseIcon className="size-3" />
+        </button>
+      ) : null}
+    </span>
   );
 }
 

@@ -180,6 +180,7 @@ pub async fn hand_off(request: HandoffRequest<'_>, progress: Progress<'_>) -> Re
         issue: None,
         agent: String::new(),
         push_target_pending: false,
+        relay_activity: None,
     };
     let acp_session_id = status["acpSessionId"].as_str().map(str::to_string);
     Ok(HandedOff { target, acp_session_id })

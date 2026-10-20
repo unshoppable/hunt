@@ -11,6 +11,9 @@ import { errorText, useLoad } from "../ui/useLoad";
 import { Avatar } from "./Avatar";
 import { REVIEW_STATE_LABELS, buildTimeline, type TimelineEntry } from "./timeline";
 
+/** Font, size and line height of the tab's text from the PR Description pane settings; other sizes are relative to it. */
+const PANE_TEXT = "font-(family-name:--pullRequest-font-family) text-(length:--pullRequest-font-size) leading-(--pullRequest-line-height)";
+
 /** Badge colors of a pull request state as GitHub shows them: green open, purple merged, red closed, grey draft. */
 const STATE_BADGES: Record<string, { label: string; className: string }> = {
   OPEN: { label: "Open", className: "bg-emerald-600 text-white" },
@@ -53,8 +56,8 @@ export function PullRequestPanel({ sessionId }: { sessionId: string }) {
   }
   if (error) {
     return (
-      <div className="p-6">
-        <p className="rounded-lg border border-red-400/40 bg-red-400/10 px-3 py-2 text-[14px] text-red-300 break-words">{error}</p>
+      <div className={`p-6 ${PANE_TEXT}`}>
+        <p className="rounded-lg border border-red-400/40 bg-red-400/10 px-3 py-2 text-red-300 break-words">{error}</p>
       </div>
     );
   }
@@ -66,11 +69,11 @@ export function PullRequestPanel({ sessionId }: { sessionId: string }) {
   const timeline = buildTimeline(details);
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex max-w-[860px] flex-col gap-4 px-6 py-5 text-[14px] leading-[1.6]">
+    <div className={`h-full overflow-y-auto ${PANE_TEXT}`}>
+      <div className="mx-auto flex max-w-[860px] flex-col gap-4 px-6 py-5">
         <header className="flex flex-col gap-2 border-b border-(--line) pb-4">
           <div className="flex items-start gap-3">
-            <h2 className="min-w-0 flex-1 text-[26px] leading-tight font-semibold text-neutral-100 break-words">
+            <h2 className="min-w-0 flex-1 text-[1.86em] leading-tight font-semibold text-neutral-100 break-words">
               {details.title} <span className="font-normal text-neutral-500">#{details.number}</span>
             </h2>
             <button type="button" onClick={() => void openUrl(details.url)} className={`${SECONDARY_BUTTON_XS} shrink-0`} title="Open on GitHub">
@@ -79,12 +82,12 @@ export function PullRequestPanel({ sessionId }: { sessionId: string }) {
               <ExternalIcon className="size-3" />
             </button>
           </div>
-          <div className="flex flex-wrap items-center gap-2 text-[14px] text-neutral-400">
-            <span className={`rounded-full px-2.5 py-0.5 text-[12px] font-medium ${badge.className}`}>{badge.label}</span>
+          <div className="flex flex-wrap items-center gap-2 text-neutral-400">
+            <span className={`rounded-full px-2.5 py-0.5 text-[0.86em] font-medium ${badge.className}`}>{badge.label}</span>
             <span>
               <span className="font-medium text-neutral-200">{details.author}</span> wants to merge into{" "}
-              <code className="rounded bg-white/8 px-1.5 py-0.5 font-mono text-[12px] text-sky-300">{details.baseRefName}</code> from{" "}
-              <code className="rounded bg-white/8 px-1.5 py-0.5 font-mono text-[12px] text-sky-300">{details.headRefName}</code>
+              <code className="rounded bg-white/8 px-1.5 py-0.5 font-mono text-[0.86em] text-sky-300">{details.baseRefName}</code> from{" "}
+              <code className="rounded bg-white/8 px-1.5 py-0.5 font-mono text-[0.86em] text-sky-300">{details.headRefName}</code>
             </span>
           </div>
         </header>
@@ -100,7 +103,7 @@ export function PullRequestPanel({ sessionId }: { sessionId: string }) {
 }
 
 function EmptyState({ children }: { children: React.ReactNode }) {
-  return <div className="flex h-full items-center justify-center px-8 text-center text-[14px] text-neutral-500">{children}</div>;
+  return <div className={`flex h-full items-center justify-center px-8 text-center text-neutral-500 ${PANE_TEXT}`}>{children}</div>;
 }
 
 /** One conversation entry: a comment card, or a review's state line with its summary card when it has text. */
@@ -122,9 +125,9 @@ function TimelineRow({ entry, pullRequestAuthor }: { entry: TimelineEntry; pullR
   const label = REVIEW_STATE_LABELS[review.state] ?? review.state.toLowerCase().replace(/_/g, " ");
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-2 pl-1 text-[14px] text-neutral-400">
+      <div className="flex items-center gap-2 pl-1 text-neutral-400">
         {mark ? (
-          <span className={`flex size-5 shrink-0 items-center justify-center rounded-full text-[12px] font-bold ${mark.className}`}>{mark.mark}</span>
+          <span className={`flex size-5 shrink-0 items-center justify-center rounded-full text-[0.86em] font-bold ${mark.className}`}>{mark.mark}</span>
         ) : (
           <Avatar login={review.author} size="size-5" />
         )}
@@ -167,12 +170,12 @@ function CommentCard({
     <div className="flex items-start gap-3">
       <Avatar login={author} size="size-8" />
       <div className="min-w-0 flex-1 overflow-hidden rounded-lg border border-(--line) bg-(--surface-inset)">
-        <div className="flex items-center gap-2 border-b border-(--line) bg-white/4 px-3 py-2 text-[14px] text-neutral-400">
+        <div className="flex items-center gap-2 border-b border-(--line) bg-white/4 px-3 py-2 text-neutral-400">
           <span className="min-w-0 truncate">
             <span className="font-medium text-neutral-200">{author}</span> {verb}
             {time ? <span title={at}> {time}</span> : null}
           </span>
-          {isAuthor ? <span className="shrink-0 rounded-full border border-white/15 px-2 text-[11px] text-neutral-400">Author</span> : null}
+          {isAuthor ? <span className="shrink-0 rounded-full border border-white/15 px-2 text-[0.79em] text-neutral-400">Author</span> : null}
           <span className="flex-1" />
           {url ? (
             <button type="button" onClick={() => void openUrl(url)} className="shrink-0 text-neutral-500 hover:text-white" title="Open comment on GitHub" aria-label="Open comment on GitHub">

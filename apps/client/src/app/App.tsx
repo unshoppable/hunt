@@ -27,9 +27,14 @@ import { TAB_ACTIVE, TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons";
 import { restoreWindowBounds, useRememberWindowBounds } from "../ui/windowBounds";
 import { useAccountsSync, useAgentPreferencesSync, useBackendEvents, usePaneStyles, useRemoteSettingsSync, useSettingsSync } from "./bootstrap";
 
+/** How often the sidebar re-reads the gateway's listing, as often as the gateway's poller updates the agent states in it. */
+const REMOTE_AGENT_POLL_MS = 30_000;
+
 export function App() {
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
   const syncRemoteSessions = useHuntStore((state) => state.syncRemoteSessions);
+  const loadAllChats = useHuntStore((state) => state.loadAllChats);
+  const hasRemoteSessions = useHuntStore((state) => state.sessions.some((session) => session.remote));
   const activeSessionId = useHuntStore((state) => state.activeSessionId);
   const draft = useHuntStore((state) => state.draft);
   /** The active session is still being created: it has no worktree yet, so the inspector and the file search wait. */
@@ -90,11 +95,27 @@ export function App() {
     void restoreWindowBounds("main", { fillScreenByDefault: true }).finally(() => getCurrentWindow().show());
   }, []);
 
-  // The remote sessions take the agent state the gateway recorded; the start view's list adopts further session VMs.
+  // Every session's chat loads at start, so the sidebar shows what each agent is up to before a session is opened; the
+  // remote sessions take the agent state the gateway recorded; the start view's list adopts further session VMs.
   useEffect(() => {
-    void refreshSessions();
+    void refreshSessions().then(loadAllChats);
     void syncRemoteSessions();
-  }, [refreshSessions, syncRemoteSessions]);
+  }, [refreshSessions, syncRemoteSessions, loadAllChats]);
+
+  // The agent states the gateway records change while Hunt runs; the marks of the remote sessions follow them.
+  useEffect(() => {
+    if (!hasRemoteSessions) return;
+    const timer = window.setInterval(() => void syncRemoteSessions(), REMOTE_AGENT_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [hasRemoteSessions, syncRemoteSessions]);
+
+  // The push targets are the upstreams of the sessions' branches, which git in a terminal may change; they are read
+  // again whenever the window comes back to the front.
+  useEffect(() => {
+    const refresh = () => void refreshSessions();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [refreshSessions]);
 
   // The active session's editor window boots hidden, so ⌘click in the diff only has to show it (see ide/editorWindows.ts).
   useEffect(() => keepEditorWindowWarm(hasLocalWorktree ? activeSessionId : null), [activeSessionId, hasLocalWorktree]);

@@ -357,7 +357,7 @@ export function OptionMenu({
                 onActivate(index);
               }}
               onClick={() => onPick(index)}
-              className={`flex items-center gap-3 rounded-lg px-2.5 py-1.5 ${option.isDisabled ? "text-neutral-600" : isActive ? "bg-(--row-active) text-neutral-100" : "text-neutral-200"}`}
+              className={`flex items-center gap-3 rounded px-2.5 py-1.5 ${option.isDisabled ? "text-neutral-600" : isActive ? "bg-(--row-selected) text-neutral-100" : "text-neutral-200"}`}
             >
               <span className="min-w-0 flex-1">
                 <span className="block truncate">{option.name}</span>

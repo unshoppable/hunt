@@ -3,7 +3,7 @@ import type { GitRef } from "../ipc/types";
 import { branchActions, localBranchesWithoutOrigin, originBranchName } from "./branchActions";
 
 const ref = (name: string, kind: GitRef["kind"], upstream: string | null = null): GitRef => ({ name, kind, target: "0".repeat(40), upstream, ahead: 0, behind: 0 });
-const session = { head: "feat/general/x", pushes: { branch: "feat/general/x", target: "master" }, isRemoteSession: false };
+const session = { head: "feat/general/x", pushes: { branch: "feat/general/x", target: "master" }, isRemoteSession: false, isPollerSession: false };
 
 const labels = (actions: ReturnType<typeof branchActions>) => actions.map((action) => `${action.label}${action.disabledReason ? ` (${action.disabledReason})` : ""}`);
 
@@ -21,9 +21,11 @@ describe("branchActions", () => {
   });
 
   it("lets only a session that pushes from this Mac change its push target", () => {
-    const poller = { head: "fix/general/123-x", pushes: { branch: "fix/general/123-x", target: "fix/general/123-x" }, isRemoteSession: true };
+    const poller = { head: "fix/general/123-x", pushes: { branch: "fix/general/123-x", target: "fix/general/123-x" }, isRemoteSession: true, isPollerSession: true };
     expect(labels(branchActions(ref("fix/general/123-x", "local"), poller))).toContain("Change push target… (A poller session pushes its own branch)");
     expect(labels(branchActions(ref("master", "local"), session))).not.toContain("Change push target…");
+    const ownBranch = { ...session, pushes: { branch: "feat/general/x", target: "feat/general/x" }, isRemoteSession: true };
+    expect(labels(branchActions(ref("feat/general/x", "local"), ownBranch))).toContain("Change push target…");
   });
 
   it("rebases onto, merges, fast-forwards, pushes, renames and deletes another local branch", () => {

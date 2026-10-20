@@ -11,6 +11,7 @@ import type {
   MessageTimesEvent,
   PermissionEvent,
   PermissionWithdrawnEvent,
+  RelayActivityEvent,
   RemoteLinkEvent,
   RemoteProgressEvent,
   RemoteSyncEvent,
@@ -32,6 +33,8 @@ type EventPayloads = {
   "remote:sync": RemoteSyncEvent;
   /** Whether the local worktree of a remote session may change changed (see `RemoteLink`). */
   "remote:link": RemoteLinkEvent;
+  /** The relay of a remote session reported another activity through its status channel, or its VM stopped mid-turn. */
+  "remote:relay": RelayActivityEvent;
   "graph:changed": GraphChangedEvent;
   "session:summary": SummaryEvent;
   "attribution:changed": AttributionEvent;

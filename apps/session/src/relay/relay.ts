@@ -27,6 +27,7 @@ import {
 } from "../../../../libs/domain/src/jsonRpc.ts";
 import type { RelayState, RelayStatus, TurnState } from "./status.ts";
 import { ToolCallLog } from "./toolCalls.ts";
+import { TrailingReply } from "./trailingReply.ts";
 
 const CLIENT_INFO = { name: "hunt-relay", version: "1" };
 /** Session capabilities the relay does not serve; they are removed from the adapter's `initialize` result. */
@@ -91,6 +92,8 @@ export class Relay {
   /** Counts `current_mode_update`s, so an accepted `session/set_mode` does not override a mode announced meanwhile. */
   private modeUpdates = 0;
   private readonly history: JsonRpcNotification[] = [];
+  /** The reply the history ends with, for the status's `question`. */
+  private readonly trailingReply = new TrailingReply();
   private latestCommands: JsonRpcNotification | null = null;
   private latestUsage: JsonRpcNotification | null = null;
   /** Updates that arrive while `session/new` runs, before the session ID is known. */
@@ -215,7 +218,13 @@ export class Relay {
       lastClientActivityAt: this.lastClientActivityAt,
       lastTurnEndedAt: this.lastTurnEndedAt,
       pendingPermissionSince: oldestPermission?.receivedAt ?? null,
+      question: this.state === "ready" && this.turn === "idle" && !oldestPermission && this.endsWithQuestion(),
     };
+  }
+
+  private endsWithQuestion(): boolean {
+    this.trailingReply.follow(this.history);
+    return this.trailingReply.asksQuestion();
   }
 
   /** Calls `onStatusChange` when the status differs from the last published one; the heartbeat does not count. */
@@ -424,13 +433,16 @@ export class Relay {
   }
 
   /**
-   * Adds the prompt's content blocks to the history as `user_message_chunk`s, since the adapter does not echo prompts.
-   * The loaded clients other than the sender get them live; the sender shows its prompt itself.
+   * Adds the prompt's content blocks to the history as `user_message_chunk`s, since the adapter does not echo prompts;
+   * the prompt's `_meta` (`hunt.hidden` for a turn Hunt sent itself) goes on every chunk. The loaded clients other than
+   * the sender get them live; the sender shows its prompt itself.
    */
   private recordPrompt(prompt: ClientRequest): void {
     const blocks = isRecord(prompt.params) && Array.isArray(prompt.params.prompt) ? prompt.params.prompt : [];
+    const meta = isRecord(prompt.params) && isRecord(prompt.params._meta) ? { _meta: prompt.params._meta } : {};
     for (const content of blocks) {
-      const chunk = notificationMessage("session/update", { sessionId: this.sessionId, update: { sessionUpdate: "user_message_chunk", content } });
+      const update = { sessionUpdate: "user_message_chunk", content, ...meta };
+      const chunk = notificationMessage("session/update", { sessionId: this.sessionId, update });
       this.history.push(chunk);
       this.broadcast(chunk, prompt.client);
     }

@@ -197,7 +197,8 @@ export function FindInFilesDialog({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => setSelectedIndex(index)}
                 onDoubleClick={() => open(match)}
-                className={`flex cursor-pointer items-center gap-4 px-3 py-1 ${index === selected ? "bg-(--row-active)" : "hover:bg-(--row-hover)"}`}
+                data-selected={index === selected}
+                className="tree-row flex cursor-pointer items-center gap-4 px-3 py-1"
               >
                 <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-pre text-neutral-200">
                   <MatchedText text={match.preview} ranges={match.ranges} />

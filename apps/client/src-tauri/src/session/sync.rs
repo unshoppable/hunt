@@ -736,6 +736,9 @@ async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &
     if let Err(error) = git::exclude_hunt_dir(&record.worktree_path).await {
         eprintln!("excluding the diagram folder in the worktree of session {id} failed: {error}");
     }
+    if let Err(error) = git::configure_push(&record.worktree_path).await {
+        eprintln!("configuring git push in the worktree of session {id} failed: {error}");
+    }
     if let Err(error) = graph::watch(app, &app.state::<WatcherRegistry>(), id, &record.worktree_path) {
         eprintln!("watching the graph of session {id} failed: {error}");
     }
@@ -747,11 +750,11 @@ async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &
 }
 
 /// Takes the push target over that the VM's worktree of the remote session `id` behind `ssh` records as its branch's
-/// upstream, which another Hunt may have set while it had the session: the local branch tracks it too and the records
-/// of the session and its sub chats name it as `base_ref`, so a push from here lands there. The other way round when
-/// the record has `push_target_pending`: the target it names was changed while the VM was off, so the VM's worktree
-/// gets it now. Nothing changes when the VM's branch tracks nothing, when it already matches, or for a poller session,
-/// whose VM pushes its own branch; a failure is only logged, since the connect must not fail over it.
+/// upstream, which another Hunt may have set while it had the session: the local branch tracks it too, so a push from
+/// here lands there. The other way round when the record has `push_target_pending`: the local branch's upstream was
+/// changed while the VM was off, so the VM's worktree gets it now. Nothing changes without a local worktree, when the
+/// VM's branch tracks nothing, when it already matches, or for a poller session, whose VM pushes its own branch; a
+/// failure is only logged, since the connect must not fail over it.
 pub async fn take_over_vm_push_target(app: &AppHandle, id: Uuid, ssh: &Ssh, target: &RemoteTarget) {
     if target.origin.keeps_vm_tokens() || target.branch.is_empty() || target.worktree_path.as_os_str().is_empty() {
         return;
@@ -759,8 +762,12 @@ pub async fn take_over_vm_push_target(app: &AppHandle, id: Uuid, ssh: &Ssh, targ
     let Ok(record) = store::find_session(app, id) else {
         return;
     };
-    let own = record.base_ref.strip_prefix("origin/").unwrap_or(&record.base_ref).to_string();
+    if !record.worktree_path.is_dir() {
+        return;
+    }
+    let own = git::origin_upstream(&record.worktree_path, &record.branch).await;
     if record.remote.as_ref().is_some_and(|remote| remote.push_target_pending) {
+        let own = own.unwrap_or_else(|| record.branch.clone());
         if let Err(error) = set_vm_origin_upstream(ssh, target, &target.branch, &own).await {
             eprintln!("recording the push target {own} of session {id} on its VM failed: {error}");
             return;
@@ -778,19 +785,12 @@ pub async fn take_over_vm_push_target(app: &AppHandle, id: Uuid, ssh: &Ssh, targ
     let Some(upstream) = vm_origin_upstream(ssh, target, &target.branch).await else {
         return;
     };
-    if own == upstream {
+    if own.as_deref() == Some(upstream.as_str()) {
         return;
     }
-    if record.worktree_path.is_dir() {
-        if let Err(error) = git::set_origin_upstream(&record.worktree_path, &record.branch, &upstream).await {
-            eprintln!("recording the push target {upstream} of session {id} on its local branch failed: {error}");
-        }
-    }
-    let family = store::load_sessions(app).unwrap_or_default();
-    for stored in family.iter().filter(|stored| stored.worktree_path == record.worktree_path) {
-        if let Err(error) = store::update_session(app, stored.id, |stored| stored.base_ref = upstream.clone()) {
-            eprintln!("recording the push target {upstream} of session {id} failed: {error}");
-        }
+    if let Err(error) = git::set_origin_upstream(&record.worktree_path, &record.branch, &upstream).await {
+        eprintln!("recording the push target {upstream} of session {id} on its local branch failed: {error}");
+        return;
     }
     announce_sessions_changed(app);
 }

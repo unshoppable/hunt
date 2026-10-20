@@ -115,7 +115,7 @@ export function IconPicker({
                   role="option"
                   aria-selected={icon === value}
                   onClick={() => pick(icon)}
-                  className={`flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-(--row-hover) ${icon === value ? "bg-(--row-active) text-neutral-100" : "text-neutral-300"}`}
+                  className={`flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-(--row-hover) ${icon === value ? "bg-(--row-selected) text-neutral-100" : "text-neutral-300"}`}
                 >
                   <img src={iconUrl(icon) ?? undefined} alt="" loading="lazy" className="size-4 shrink-0" />
                   <span className="truncate font-mono">{icon}</span>

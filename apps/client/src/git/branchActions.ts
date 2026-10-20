@@ -1,4 +1,5 @@
 import type { GitRef } from "../ipc/types";
+import type { GitMenuEntry } from "./GitMenu";
 
 /** The session's own local branch and the branch on `origin` a push of it lands on. */
 export type PushRoute = { branch: string; target: string };
@@ -6,16 +7,7 @@ export type PushRoute = { branch: string; target: string };
 export type BranchActionKind = "rebase" | "merge" | "update" | "fetch" | "push" | "pushBranch" | "retarget" | "rename" | "delete" | "deleteRemote";
 
 /** One entry of a branch's context menu. */
-export type BranchAction = {
-  kind: BranchActionKind;
-  label: string;
-  /** Why the entry cannot run, shown as its tooltip; `null` when it can. */
-  disabledReason: string | null;
-  /** Shown in red: the entry removes something. */
-  isDanger: boolean;
-  /** Opens a new group of the menu, separated from the entries before. */
-  startsGroup: boolean;
-};
+export type BranchAction = GitMenuEntry<BranchActionKind>;
 
 export type BranchContext = {
   /** The checked-out branch of the worktree, `HEAD` when detached. */
@@ -24,6 +16,8 @@ export type BranchContext = {
   pushes: PushRoute | null;
   /** Whether the session's worktree lives on a VM, which has the session's branch under its name. */
   isRemoteSession: boolean;
+  /** Whether the session is a poller session, whose VM pushes its branch under its own name. */
+  isPollerSession: boolean;
 };
 
 /** What the busy state of the branch tree says while an action runs. */
@@ -47,11 +41,11 @@ export function originBranchName(remoteBranch: string): string | null {
 
 /**
  * The context menu of the branch `ref`: rebase the checked-out branch onto it or merge it in, update or fetch it, push,
- * rename and delete it. Hunt pushes the session's branch onto the branch it was created from, so its Push and Update
+ * rename and delete it. Hunt pushes the session's branch onto the branch it tracks on origin, so its Push and Update
  * name that branch and it alone can change the target; another local branch is pushed under its own name and
  * fast-forwarded from its upstream. A tag has no menu.
  */
-export function branchActions(ref: GitRef, { head, pushes, isRemoteSession }: BranchContext): BranchAction[] {
+export function branchActions(ref: GitRef, { head, pushes, isRemoteSession, isPollerSession }: BranchContext): BranchAction[] {
   if (ref.kind === "tag") return [];
   const isHead = ref.name === head;
   const isSessionBranch = ref.name === pushes?.branch;
@@ -74,7 +68,7 @@ export function branchActions(ref: GitRef, { head, pushes, isRemoteSession }: Br
   if (isSessionBranch && pushes) {
     actions.push(entry("update", `Update from 'origin/${pushes.target}'`, null, { startsGroup: true }));
     actions.push(entry("push", `Push to 'origin/${pushes.target}'`));
-    actions.push(entry("retarget", "Change push target…", isRemoteSession && pushes.target === pushes.branch ? "A poller session pushes its own branch" : null));
+    actions.push(entry("retarget", "Change push target…", isPollerSession ? "A poller session pushes its own branch" : null));
   } else {
     actions.push(entry("update", ref.upstream ? `Update from '${ref.upstream}'` : "Update", ref.upstream ? null : "The branch has no upstream", { startsGroup: true }));
     actions.push(entry("pushBranch", `Push to 'origin/${ref.name}'`));

@@ -92,7 +92,7 @@ export function PermissionPrompt({
               type="button"
               onMouseEnter={() => setSelectedIndex(index)}
               onClick={() => onAnswer(option.optionId)}
-              className={`flex gap-2 rounded px-1 text-left ${isSelected ? "bg-(--row-active) text-(--chat-orange)" : "text-neutral-300 hover:bg-(--row-hover)"}`}
+              className={`flex gap-2 rounded px-1 text-left ${isSelected ? "bg-(--row-selected) text-(--chat-orange)" : "text-neutral-300 hover:bg-(--row-hover)"}`}
             >
               <span className="w-[1ch] shrink-0 select-none">{isSelected ? "❯" : ""}</span>
               <span className="select-none">{index + 1}.</span>

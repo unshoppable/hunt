@@ -55,6 +55,12 @@ const SECTIONS: Section[] = [
   { pane: "chat", title: "Chat", hint: "Messages, tool calls and the prompt", fields: ["fontFamily", "fontSize", "lineHeight", "background"] },
   { pane: "changelist", title: "Changelist", hint: "Changed files and shelves", fields: ["fontFamily", "fontSize", "lineHeight", "indent", "background"] },
   { pane: "diff", title: "Diff pane", hint: "Diff viewer and inline diffs in the chat", fields: ["fontFamily", "fontSize", "lineHeight", "background"] },
+  { pane: "git", title: "Git", hint: "Branch tree, commit log and the files of a commit", fields: ["fontFamily", "fontSize", "lineHeight", "indent", "background"] },
+  { pane: "editor", title: "Editor", hint: "Code editors of the Editor tab and the editor windows", fields: ["fontFamily", "fontSize", "lineHeight"] },
+  { pane: "architecture", title: "Architecture", hint: "Text size the diagrams open with; zooming changes it further", fields: ["fontSize"] },
+  { pane: "pullRequest", title: "PR Description", hint: "Description and conversation of the reviewed pull request", fields: ["fontFamily", "fontSize", "lineHeight"] },
+  { pane: "preview", title: "Preview", hint: "Services, their state and URLs of a remote session", fields: ["fontSize"] },
+  { pane: "terminal", title: "Terminal", hint: "Service logs and shells on the VM of a remote session", fields: ["fontFamily", "fontSize", "lineHeight", "background"] },
 ];
 
 /**
@@ -224,8 +230,8 @@ function NavItem({ title, active, onSelect }: { title: string; active: boolean; 
       type="button"
       aria-current={active ? "page" : undefined}
       onClick={onSelect}
-      className={`truncate rounded-md px-2 py-1.5 text-left text-sm ${
-        active ? "bg-(--row-active) text-neutral-100" : "text-neutral-400 hover:bg-(--row-hover) hover:text-neutral-200"
+      className={`truncate rounded px-2 py-1.5 text-left text-sm ${
+        active ? "bg-(--row-selected) text-neutral-100" : "text-neutral-400 hover:bg-(--row-hover) hover:text-neutral-200"
       }`}
     >
       {title}

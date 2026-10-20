@@ -42,6 +42,7 @@ use crate::session::attribution::{self, FileVersion};
 use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus, Install};
 use crate::session::link::{self, Link};
 use crate::session::related;
+use crate::session::relay_watch;
 use crate::session::review;
 use crate::session::store::{self, announce_sessions_changed, SelectionContext, SessionRecord, Workspace};
 use crate::session::summary;
@@ -58,26 +59,27 @@ pub struct SessionView {
     pub dependencies: Option<DependencyStatus>,
     /// Whether the session's worktree exists here; a remote session adopted from its VM gets one with its first sync.
     pub has_local_worktree: bool,
+    /// The branch on `origin` a push of the session lands on (`push_target`); `None` without a local worktree.
+    pub push_target: Option<String>,
 }
 
 impl SessionView {
-    fn new(app: &AppHandle, record: SessionRecord, is_live: bool) -> Self {
+    async fn new(app: &AppHandle, record: SessionRecord, is_live: bool) -> Self {
         let dependencies = app.state::<DependencyRegistry>().status(&record.worktree_path);
         let has_local_worktree = record.worktree_path.is_dir();
-        SessionView { record, is_live, dependencies, has_local_worktree }
+        let push_target = if has_local_worktree { Some(push_target(&record, remote_host(app, &record).as_ref().map(|(_, target)| target)).await) } else { None };
+        SessionView { record, is_live, dependencies, has_local_worktree, push_target }
     }
 }
 
 #[tauri::command]
 pub async fn list_sessions(app: AppHandle, registry: State<'_, SessionRegistry>) -> Result<Vec<SessionView>, String> {
-    let live = registry.live.lock().await;
-    let mut sessions: Vec<SessionView> = store::load_sessions(&app)?
-        .into_iter()
-        .map(|record| {
-            let is_live = live.contains_key(&record.id);
-            SessionView::new(&app, record, is_live)
-        })
-        .collect();
+    let live: HashSet<Uuid> = registry.live.lock().await.keys().copied().collect();
+    let mut sessions = Vec::new();
+    for record in store::load_sessions(&app)? {
+        let is_live = live.contains(&record.id);
+        sessions.push(SessionView::new(&app, record, is_live).await);
+    }
     // Oldest first, so that a new session joins the end of the sidebar and the marks of the existing ones stay put.
     sessions.sort_by(|left, right| left.record.created_at.cmp(&right.record.created_at));
     Ok(sessions)
@@ -318,11 +320,11 @@ pub async fn create_session(
             } else {
                 git::worktree_add(&repo_path, &branch, &worktree_path, &base_commit).await?;
                 keeps_branch = new_branch.is_some();
-                // The branch tracks the base branch on origin, where its push lands, so the target travels with the
-                // branch: the handoff copies the upstream to the VM, and a Hunt taking the session over reads it there.
-                let push_target = base_ref.strip_prefix("origin/").unwrap_or(&base_ref);
-                if new_branch.is_none() && git::rev_parse(&repo_path, &format!("refs/remotes/origin/{push_target}")).await.is_ok() {
-                    git::set_origin_upstream(&repo_path, &branch, push_target).await?;
+                // The branch tracks the base branch on origin, where its push lands (`push_target`), so the target
+                // travels with the branch: the handoff copies the upstream to the VM, and a Hunt taking the session
+                // over reads it there. A branch of the user's name has none and is pushed under that name.
+                if new_branch.is_none() {
+                    git::set_origin_upstream(&repo_path, &branch, base_ref.strip_prefix("origin/").unwrap_or(&base_ref)).await?;
                 }
             }
             private_files::copy_into_worktree(&repo_path, &worktree_path).await?;
@@ -387,7 +389,7 @@ pub async fn rename_session(app: AppHandle, registry: State<'_, SessionRegistry>
     let record = store::update_session(&app, id, |stored| stored.title = title)?.ok_or_else(|| format!("failed to rename session: the session {id} is not stored"))?;
     announce_sessions_changed(&app);
     let is_live = registry.live.lock().await.contains_key(&id);
-    Ok(SessionView::new(&app, record, is_live))
+    Ok(SessionView::new(&app, record, is_live).await)
 }
 
 /// Rejects a session id the UI picked when a stored session carries it already.
@@ -409,7 +411,7 @@ pub async fn open_session(
     let record = store::find_session(&app, id)?;
     // An open while another one runs (the sidebar and a sub chat popover, or a double click) waits for that one.
     if !registry.claim_start(id).await {
-        return Ok(SessionView::new(&app, store::find_session(&app, id)?, true));
+        return Ok(SessionView::new(&app, store::find_session(&app, id)?, true).await);
     }
     if record.worktree_path.is_dir() {
         dependencies::ensure(&app, record.repo_path.clone(), record.worktree_path.clone(), install_for(&app, &record));
@@ -550,17 +552,22 @@ async fn activate(
     }
     related::agent_started(app, id);
     if !record.worktree_path.is_dir() {
-        return Ok(SessionView::new(app, record, true));
+        return Ok(SessionView::new(app, record, true).await);
     }
 
     // Every start renews the exclude entry, so repositories of older sessions learn the diagram folder's current name.
     if let Err(error) = git::exclude_hunt_dir(&record.worktree_path).await {
         eprintln!("excluding the diagram folder in the worktree of session {id} failed: {error}");
     }
+    if record.workspace == Workspace::Worktree {
+        if let Err(error) = git::configure_push(&record.worktree_path).await {
+            eprintln!("configuring git push in the worktree of session {id} failed: {error}");
+        }
+    }
     if let Err(error) = graph::watch(app, watchers, id, &record.worktree_path) {
         eprintln!("watching the graph of session {id} failed: {error}");
     }
-    Ok(SessionView::new(app, record, true))
+    Ok(SessionView::new(app, record, true).await)
 }
 
 /// Connects to the relay of the remote session `record` (see `start_remote_relay`) and opens the ACP stream over SSH.
@@ -629,7 +636,7 @@ async fn start_remote_relay(app: &AppHandle, id: Uuid, target: RemoteTarget, pro
     } else {
         target
     };
-    progress.step(RemoteStep::StartingAgent);
+    progress.step(RemoteStep::ConnectingAgent);
     // A running relay keeps its tokens, so it stays reachable with the local login selected.
     let token_input = local_token_input(app).await?;
     let id_text = id.to_string();
@@ -752,7 +759,8 @@ pub async fn delete_remote_secret(settings: VmSettings, name: String) -> Result<
 /// each becomes a remote session of this Mac in the local checkout of its repository, found among `repo_paths` and the
 /// repositories of the stored sessions, or without one when none matches. With or without `ids`, adopted sessions still
 /// without a checkout get another chance to find one, and the remote sessions this Mac already has take the agent state
-/// the listing reports for them. VMs this Mac deletes or deleted are left out. Returns the IDs of the new sessions.
+/// the listing reports for them and have the relays on their running VMs watched (`relay_watch`). VMs this Mac deletes
+/// or deleted are left out. Returns the IDs of the new sessions.
 #[tauri::command]
 pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths: Vec<String>, ids: Vec<Uuid>) -> Result<Vec<Uuid>, String> {
     settings.validate()?;
@@ -782,6 +790,11 @@ pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths:
             }
         })?;
     }
+    // A VM that stopped mid-turn reports no end of the turn; the turn ends with it.
+    for id in remote::adoption::stopped_turns(&listed_vms, &remote_targets) {
+        relay_watch::end_turn(&app, id)?;
+    }
+    relay_watch::reconcile(&app, remote::adoption::running_session_vms(&listed_vms, &remote_targets));
     let mut has_changed = !agent_updates.is_empty() || !vm_updates.is_empty();
     let adoptable: Vec<_> = remote::adoption::sessions_to_adopt(&listed, &hello.project, &hello.zone, &known)
         .into_iter()
@@ -1511,6 +1524,7 @@ async fn forget_remote(app: &AppHandle, target: &RemoteTarget, id: Uuid, delete_
         let _ = std::fs::remove_file(path);
     }
     link::forget(app, id);
+    relay_watch::stop(app, id);
     if delete_vm {
         delete_session_vm(app, &target.vm, id).await;
     }
@@ -1961,9 +1975,9 @@ fn latest_config_options(history: &[SessionNotification]) -> Option<&[SessionCon
 }
 
 /// Records `blocks` as a user turn, sends them and resolves with the stop reason once the agent finished.
-/// `hidden_meta` marks the recorded chunks as a hidden turn; a visible turn is summarized afterwards. `message_id` is
-/// the id the UI shows the prompt under, which the time of the prompt is announced for once the turn ended
-/// (`acp::message_time::resolve`).
+/// `hidden_meta` marks the recorded chunks and the request as a hidden turn; a visible turn is summarized afterwards.
+/// `message_id` is the id the UI shows the prompt under, which the time of the prompt is announced for once the turn
+/// ended (`acp::message_time::resolve`).
 async fn run_turn(
     app: &AppHandle,
     registry: &SessionRegistry,
@@ -1988,7 +2002,8 @@ async fn run_turn(
     };
 
     related::set_turn(app, id, true);
-    let response = connection.send_request(PromptRequest::new(acp_session_id.clone(), blocks)).block_task().await;
+    let request = PromptRequest::new(acp_session_id.clone(), blocks).meta(hidden_meta.clone());
+    let response = connection.send_request(request).block_task().await;
     related::set_turn(app, id, false);
     message_time::resolve(app.clone(), id, acp_session_id.to_string(), history.clone(), turn_start);
     let response = response.map_err(|error| format!("failed to send the prompt: {error}"))?;
@@ -2176,6 +2191,8 @@ enum HeadMove {
     Merge(String),
     /// A fetch of the branch on `origin` the push lands on and a rebase onto it, as the push does first.
     UpdateFrom(String),
+    /// `git reset` to a commit of the log in the given mode.
+    Reset(String, git::ResetMode),
 }
 
 impl HeadMove {
@@ -2184,6 +2201,7 @@ impl HeadMove {
             HeadMove::RebaseOnto(_) => "rebase",
             HeadMove::Merge(_) => "merge",
             HeadMove::UpdateFrom(_) => "update",
+            HeadMove::Reset(..) => "reset",
         }
     }
 
@@ -2198,6 +2216,16 @@ impl HeadMove {
                 }
                 Ok(())
             }
+            HeadMove::Reset(commit, mode) => git::reset(worktree, commit, *mode).await,
+        }
+    }
+
+    /// Moves the VM's branch of the remote session `id` to the commit the local worktree moved to: a reset repeats there
+    /// in its mode, any other move rebuilds the VM's files on the new commit.
+    async fn follow_on_vm(&self, ssh: &Ssh, id: Uuid, remote: &RemoteTarget, worktree: &Path) -> Result<String, String> {
+        match self {
+            HeadMove::Reset(_, mode) => remote::commit::reset_vm_head(ssh, id, remote, worktree, *mode).await,
+            _ => remote::commit::move_vm_head(ssh, id, remote, worktree).await,
         }
     }
 }
@@ -2223,7 +2251,7 @@ async fn move_head(app: &AppHandle, record: &SessionRecord, change: HeadMove) ->
         if git::rev_parse(worktree, "HEAD").await? == before {
             return Ok(());
         }
-        let head = remote::commit::move_vm_head(&ssh, owner, &remote, worktree).await?;
+        let head = change.follow_on_vm(&ssh, owner, &remote, worktree).await?;
         store::update_session(app, owner, |stored| {
             if let Some(remote) = stored.remote.as_mut() {
                 remote.handoff_head = head;
@@ -2248,6 +2276,13 @@ pub async fn git_merge(app: AppHandle, id: Uuid, from: String) -> Result<(), Str
     move_head(&app, &record, HeadMove::Merge(from)).await
 }
 
+/// Resets the session's branch to the commit `commit` in `mode`, WebStorm's "Reset Current Branch to Here".
+#[tauri::command]
+pub async fn git_reset(app: AppHandle, id: Uuid, commit: String, mode: git::ResetMode) -> Result<(), String> {
+    let record = worktree_session(&app, id)?;
+    move_head(&app, &record, HeadMove::Reset(commit, mode)).await
+}
+
 /// Updates the local branch `branch`: the session's own branch is rebased onto the branch on `origin` its push lands
 /// on, fetched first, as the push does; another local branch is fast-forwarded to its upstream.
 #[tauri::command]
@@ -2257,7 +2292,7 @@ pub async fn git_update_branch(app: AppHandle, id: Uuid, branch: String) -> Resu
         return git::fast_forward_branch(&record.worktree_path, &branch).await;
     }
     let remote = remote_host(&app, &record).map(|(_, target)| target);
-    let target = push_target(&record, remote.as_ref());
+    let target = push_target(&record, remote.as_ref()).await;
     move_head(&app, &record, HeadMove::UpdateFrom(target)).await
 }
 
@@ -2292,7 +2327,7 @@ pub async fn git_rename_branch(app: AppHandle, id: Uuid, branch: String, new_nam
 }
 
 /// Makes the branch `target` on `origin` the one a push of the session lands on: the session's branch tracks it here,
-/// the records of the session and its sub chats name it, and a remote session records it in its VM's worktree too,
+/// for its sub chats too, which share the branch, and a remote session records it in its VM's worktree too,
 /// where a Hunt taking the session over reads it (`sync::take_over_vm_push_target`); a VM that is off, or that Hunt
 /// cannot reach, gets it at the next connect. With `create`, a branch `origin` lacks is created there first, at the
 /// commit of the branch pushed to so far. A poller session pushes its own branch from its VM.
@@ -2308,18 +2343,13 @@ pub async fn set_push_target(app: AppHandle, registry: State<'_, SessionRegistry
         if !create {
             return Err(format!("failed to change the push target: origin has no branch {target}"));
         }
-        let from = push_target(&record, remote.as_ref().map(|(_, target)| target));
+        let from = push_target(&record, remote.as_ref().map(|(_, target)| target)).await;
         if !git::fetch_branch(&record.worktree_path, &from).await? {
             return Err(format!("failed to create the branch {target} on origin: origin has no branch {from} to start it from"));
         }
         git::create_origin_branch(&record.worktree_path, &target, &from).await?;
     }
     git::set_origin_upstream(&record.worktree_path, &record.branch, &target).await?;
-    for stored in store::load_sessions(&app)? {
-        if stored.worktree_path == record.worktree_path {
-            store::update_session(&app, stored.id, |stored| stored.base_ref = target.clone())?;
-        }
-    }
     if let Some((host_id, remote)) = &remote {
         record_vm_push_target(&app, &registry, *host_id, remote, &target).await;
     }
@@ -2592,9 +2622,8 @@ async fn commit_followed(app: &AppHandle, id: Uuid, worktree: &Path, paths: &[St
     .await
 }
 
-/// Pushes the session's commits from here, with this Mac's Git credentials, to the branch on `origin` the session was
-/// created from (`push_target`), after a rebase onto that branch when it moved on; the session's own branch never
-/// reaches `origin`. The branch of a remote session connected to its VM is first brought to the same commit here and on
+/// Pushes the session's commits from here, with this Mac's Git credentials, to the branch on `origin` its branch tracks
+/// (`push_target`), after a rebase onto that branch when it moved on. The branch of a remote session connected to its VM is first brought to the same commit here and on
 /// its VM, and the VM's branch follows the rebase (`push_followed`); one not connected pushes from its local worktree
 /// alone, and the VM's branch follows at the next connect (`remote::commit::direction`). Only a poller session's branch
 /// is pushed from its VM under its own name with the poller's stored token, so that the push shows the poller's GitHub
@@ -2603,10 +2632,10 @@ async fn commit_followed(app: &AppHandle, id: Uuid, worktree: &Path, paths: &[St
 pub async fn push_branch(app: AppHandle, id: Uuid) -> Result<(), String> {
     let record = worktree_session(&app, id)?;
     let Some((owner, target)) = remote_host(&app, &record) else {
-        return git::push_branch(&record.worktree_path, &push_target(&record, None)).await;
+        return git::push_branch(&record.worktree_path, &push_target(&record, None).await).await;
     };
     if !target.origin.keeps_vm_tokens() && !sync::is_connected(&app, owner) {
-        return git::push_branch(&record.worktree_path, &push_target(&record, Some(&target))).await;
+        return git::push_branch(&record.worktree_path, &push_target(&record, Some(&target)).await).await;
     }
     if target.origin.keeps_vm_tokens() {
         let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
@@ -2617,17 +2646,17 @@ pub async fn push_branch(app: AppHandle, id: Uuid) -> Result<(), String> {
         }
         return Ok(());
     }
-    push_followed(&app, owner, &record.worktree_path, &push_target(&record, Some(&target))).await
+    push_followed(&app, owner, &record.worktree_path, &push_target(&record, Some(&target)).await).await
 }
 
-/// The branch on `origin` a push of the session `record`, which runs on the VM `remote` when any, lands on: the branch
-/// the session was created from, named without its remote when the base was `origin/<branch>`, except for a poller
-/// session, whose VM pushes its branch under its own name.
-fn push_target(record: &SessionRecord, remote: Option<&RemoteTarget>) -> String {
+/// The branch on `origin` a push of the session `record`, which runs on the VM `remote` when any, lands on: the one its
+/// local branch tracks, else a branch of its own name, as a plain `git push` in the worktree does (`git::configure_push`).
+/// A poller session's VM pushes its branch under its own name.
+async fn push_target(record: &SessionRecord, remote: Option<&RemoteTarget>) -> String {
     if remote.is_some_and(|target| target.origin.keeps_vm_tokens()) {
         return record.branch.clone();
     }
-    record.base_ref.strip_prefix("origin/").unwrap_or(&record.base_ref).to_string()
+    git::origin_upstream(&record.worktree_path, &record.branch).await.unwrap_or_else(|| record.branch.clone())
 }
 
 /// Number of commits `push_branch` would publish, counted in the session's local worktree against the branch the push
@@ -2636,7 +2665,7 @@ fn push_target(record: &SessionRecord, remote: Option<&RemoteTarget>) -> String 
 pub async fn unpushed_commit_count(app: AppHandle, id: Uuid) -> Result<u32, String> {
     let record = worktree_session(&app, id)?;
     let remote = remote_host(&app, &record).map(|(_, target)| target);
-    git::unpushed_commit_count(&record.worktree_path, &push_target(&record, remote.as_ref())).await
+    git::unpushed_commit_count(&record.worktree_path, &push_target(&record, remote.as_ref()).await).await
 }
 
 /// Pushes the commits of the remote session `id`, checked out in its local worktree `worktree`, to the branch `target`
@@ -2817,6 +2846,7 @@ mod tests {
             issue: None,
             agent: String::new(),
             push_target_pending: false,
+            relay_activity: None,
         };
         let mut parent = local("parent");
         let sub_chat = SessionRecord::sub_session(Uuid::new_v4(), "sub".into(), &parent, None);

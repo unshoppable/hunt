@@ -16,6 +16,7 @@ import type {
   PullRequestRef,
   PullRequestState,
   RemoteLink,
+  RelayActivityEvent,
   RemoteLinkEvent,
   RemoteProgressEvent,
   RemoteStep,
@@ -29,7 +30,7 @@ import type {
   ToolCallView,
 } from "../ipc/types";
 import { imageDataUrl, imagePlaceholder } from "../chat/imageData";
-import { hasQuestionMarker } from "../chat/questionMarker";
+import { asksQuestion } from "../../../../libs/domain/src/question.ts";
 import { repoName } from "../ui/path";
 import { issueFromPrompt, titleFromPrompt } from "../sessions/sessionLabels";
 import { HANDOFF_START_PROMPT, hasRunningService } from "../preview/services";
@@ -67,8 +68,11 @@ export type QueuedPrompt = PromptDraft & { id: string };
 /** Agent settings a new session starts with: the value of every select option by option id, and the mode. */
 export type AgentSetup = { configValues: Record<string, string>; modeId: string };
 
-/** What a new session starts with: the agent setup, applied first, and the prompt shown in its chat at once and sent as soon as the agent runs. */
-export type SessionStart = { setup: AgentSetup; prompt: PromptDraft | null };
+/**
+ * What a new session starts with: the agent setup, applied first, and the prompt shown in its chat at once and sent as
+ * soon as the agent runs; `draft` is text left unsent in the start view's prompt box, which the session's box starts with.
+ */
+export type SessionStart = { setup: AgentSetup; prompt: PromptDraft | null; draft?: PromptDraft | null };
 
 /**
  * Where a new top-level session works: a worktree off `baseRef` of the repository (for a pull request review on the
@@ -116,6 +120,7 @@ function placeholderSession(id: string, title: string, target: WorktreeTarget, p
     worktreePath: parent?.worktreePath ?? (target.workspace === "checkout" ? target.repoPath : ""),
     branch: parent?.branch ?? target.pullRequestBranch ?? target.newBranch ?? "",
     baseRef: target.newBranch ?? target.baseRef,
+    pushTarget: parent?.pushTarget ?? null,
     baseCommit: parent?.baseCommit ?? "",
     acpSessionId: null,
     createdAt: new Date().toISOString(),
@@ -203,7 +208,7 @@ export type SessionChat = {
 /** Where a session moves: to a VM of its own (`handOff`) or back into its local worktree (`retrieve`). */
 export type SessionMove = "handOff" | "retrieve";
 
-type HuntState = {
+export type HuntState = {
   sessions: SessionView[];
   /** Ids of listed sessions whose creation (worktree, agent) still runs in the backend; they have no worktree or agent yet. */
   creatingIds: string[];
@@ -252,6 +257,13 @@ type HuntState = {
    */
   openSessionVm: (id: string) => Promise<void>;
   selectSession: (id: string) => Promise<void>;
+  /**
+   * Loads the chat of every listed session, so that every mark shows the state of its agent before the session is opened:
+   * a running agent's chat from the backend's history, a stopped local session's (sub sessions included) by starting its
+   * agent. A stopped remote session stays as it is, since connecting would wake its VM; its mark takes the agent state
+   * the gateway recorded (`syncRemoteSessions`).
+   */
+  loadAllChats: () => Promise<void>;
   /** Starts the agent of a stopped session again; its chat starts empty because the agent's conversation is gone. */
   resumeSession: (id: string) => Promise<void>;
   /** Starts the conversation over (`/clear`): the agent is restarted with a new, empty conversation. */
@@ -336,6 +348,8 @@ type HuntState = {
   /** Records the state of a remote session's file sync; a sync that changed local files reloads the views. */
   applyRemoteSync: (event: RemoteSyncEvent) => void;
   applyRemoteLink: (event: RemoteLinkEvent) => void;
+  /** Takes over what the relay of a remote session reported through its status channel (see `RemoteTarget.relayActivity`). */
+  applyRelayActivity: (event: RelayActivityEvent) => void;
   applyGraphChanged: (huntSessionId: string) => void;
   applySummary: (event: SummaryEvent) => void;
   /** Reloads the changes of every open session that works in the worktree a tool call just changed. */
@@ -381,16 +395,6 @@ function withoutSessions(state: HuntState, ids: string[]): Pick<HuntState, "chat
   return { chats, promptDrafts };
 }
 
-/** Markdown and quote characters a question mark may be wrapped in at the end of a paragraph. */
-const TRAILING_MARKUP = /[\s*_`~)\]"'»”’]+$/u;
-
-/** Whether the last non-empty paragraph of `text` ends with a question mark, markdown emphasis and quotes aside. */
-export function endsWithQuestion(text: string): boolean {
-  const paragraphs = text.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
-  const last = paragraphs[paragraphs.length - 1] ?? "";
-  return last.replace(TRAILING_MARKUP, "").endsWith("?");
-}
-
 /**
  * Whether the agent of `chat` waits for the user's answer: its last turn ended (nothing running, queued or asked for
  * permission) with a message the agent marked as a question (`<!-- hunt:question -->`) or whose last paragraph ends
@@ -400,7 +404,7 @@ export function endsWithQuestion(text: string): boolean {
 export function hasPendingQuestion(chat: SessionChat): boolean {
   if (chat.isBusy || chat.queue.length > 0 || chat.permission) return false;
   const last = chat.items[chat.items.length - 1];
-  return last?.kind === "agent" && (hasQuestionMarker(last.text) || endsWithQuestion(last.text));
+  return last?.kind === "agent" && asksQuestion(last.text);
 }
 
 /** The turn state the relay of a remote session reports in `_meta.hunt.turn` of a `session_info_update`, if any. */
@@ -813,7 +817,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
    * Lists the placeholder of a session the backend is creating, with the chat its first prompt is already shown in.
    * With `isActivated` it becomes the active session and replaces the start view.
    */
-  function listPlaceholder(placeholder: SessionView, prompt: PromptDraft | null, isActivated: boolean) {
+  function listPlaceholder(placeholder: SessionView, { prompt, draft }: SessionStart, isActivated: boolean) {
     const items: ChatItem[] = prompt
       ? [{ kind: "user", id: nextItemId(), text: prompt.text, images: prompt.images.map((image) => assetUrl(image.path)), messageId: crypto.randomUUID() }]
       : [];
@@ -821,6 +825,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       sessions: [...state.sessions, placeholder],
       creatingIds: [...state.creatingIds, placeholder.id],
       chats: { ...state.chats, [placeholder.id]: { ...createEmptyChat(), items, hasHistory: true } },
+      promptDrafts: draft ? { ...state.promptDrafts, [placeholder.id]: draft } : state.promptDrafts,
       ...(isActivated ? { activeSessionId: placeholder.id, draft: null } : {}),
     }));
   }
@@ -842,7 +847,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
           creatingIds: state.creatingIds.filter((candidate) => candidate !== id),
           untitledIds: state.untitledIds.filter((candidate) => candidate !== id),
           ...withoutSessions(state, [id]),
-          ...(isActive ? { activeSessionId: null, draft: { parentId: draftParentId, error: String(error), prompt: start.prompt } } : {}),
+          ...(isActive ? { activeSessionId: null, draft: { parentId: draftParentId, error: String(error), prompt: start.prompt ?? start.draft ?? null } } : {}),
         };
       });
       // A record stored before the agent failed to start is a stopped session now; the reload lists it.
@@ -984,7 +989,8 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     syncRemoteSessions: async (ids = []) => {
       const settings = configuredVmSettings(useSettingsStore.getState().remote);
       if (!settings || get().remoteSync.isRunning) return;
-      set({ remoteSync: { isRunning: true, error: null } });
+      // The last failure stays shown until this sync ended, so a periodic sync does not hide it meanwhile.
+      set((state) => ({ remoteSync: { isRunning: true, error: state.remoteSync.error } }));
       try {
         await commands.adoptSessionVms(settings, useAgentDefaultsStore.getState().recentRepoPaths, ids);
         set({ remoteSync: { isRunning: false, error: null } });
@@ -1031,6 +1037,17 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       } else {
         await get().resumeSession(id);
       }
+    },
+
+    loadAllChats: async () => {
+      const { sessions, creatingIds } = get();
+      const loads = sessions.map((session) => {
+        if (creatingIds.includes(session.id)) return null;
+        if (session.isLive) return get().loadHistory(session.id);
+        if (session.remote || !session.hasLocalWorktree) return null;
+        return get().resumeSession(session.id);
+      });
+      await Promise.all(loads);
     },
 
     resumeSession: async (id) => {
@@ -1081,7 +1098,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       const { repoPath, baseRef, pullRequest, diffBaseRef, pullRequestBranch, newBranch, workspace } = target;
       const listedTitle = placeholderTitle(id, title, repoPath);
       useAgentDefaultsStore.getState().rememberRepoPath(repoPath);
-      listPlaceholder(placeholderSession(id, listedTitle, target, null, null), start.prompt, true);
+      listPlaceholder(placeholderSession(id, listedTitle, target, null, null), start, true);
       const create = () => commands.createSession(id, repoPath, baseRef, listedTitle, pullRequest, diffBaseRef, pullRequestBranch, newBranch, workspace);
       return completeCreation(id, create, start, null);
     },
@@ -1100,7 +1117,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
         newBranch: null,
       };
       const listedTitle = placeholderTitle(id, title, parent.repoPath);
-      listPlaceholder(placeholderSession(id, listedTitle, target, parent, selection), start.prompt, isActivated);
+      listPlaceholder(placeholderSession(id, listedTitle, target, parent, selection), start, isActivated);
       return completeCreation(id, () => commands.createSubSession(id, parentId, listedTitle, selection), start, parentId);
     },
 
@@ -1324,6 +1341,14 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
 
     applyRemoteLink: (event) => {
       set((state) => ({ remoteLinks: { ...state.remoteLinks, [event.huntSessionId]: event.link } }));
+    },
+
+    applyRelayActivity: ({ huntSessionId, relayActivity }) => {
+      set((state) => ({
+        sessions: state.sessions.map((session) =>
+          session.id === huntSessionId && session.remote ? { ...session, remote: { ...session.remote, relayActivity } } : session,
+        ),
+      }));
     },
 
     applyGraphChanged: (huntSessionId) => {

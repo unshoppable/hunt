@@ -162,7 +162,8 @@ export function FileSearchDialog({
               key={match.path}
               onMouseMove={(event) => selectUnderMouse(event, index)}
               onClick={() => open(match)}
-              className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 ${index === selected ? "bg-(--row-active)" : ""}`}
+              data-selected={index === selected}
+              className="tree-row flex cursor-pointer items-center gap-2 px-3 py-1.5"
             >
               <img src={fileIconUrl(match.path)} alt="" className="size-4 shrink-0" />
               <span className="shrink-0 text-neutral-100">

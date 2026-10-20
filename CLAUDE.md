@@ -73,7 +73,7 @@ owns it; this file says how code here is written and verified.
 - **Paths**: `baseName`, `dirName`, `splitPath` from `src/ui/path.ts`; no inline `split("/")`.
 - **Monaco**: previews start from `PREVIEW_EDITOR_OPTIONS`, editors from `EDITOR_APPEARANCE_OPTIONS`
   (`src/diff/monaco.ts`). Every Monaco host reads font size, family and line height from the pane settings
-  (`useSettingsStore((state) => state.panes.diff.…)`); a new setting must reach every host: `diff/DiffPanel`,
+  (`useSettingsStore((state) => state.panes.diff.…)`, `panes.editor` in `ide/EditorPane`); a new setting must reach every host: `diff/DiffPanel`,
   `diff/CodeDiffEditor` and `SplitDiffView`/`splitDiff.ts`, `graph/DiffWindow`,
   `ide/EditorPane`, `ide/FileSearchDialog`, `ide/UsagesPopover`, `guardrails/GuardrailsWindow`.
 - **Settings**: a new field goes into the state type, `DEFAULT_*`, the action, `partialize` and, when the shape

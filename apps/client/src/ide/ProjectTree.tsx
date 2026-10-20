@@ -217,7 +217,7 @@ export function ProjectTree({
               role="menuitemradio"
               aria-checked={marks[contextMenu.path] === color}
               onClick={() => markFolder(color)}
-              className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-neutral-200 hover:bg-(--row-hover) aria-checked:bg-(--row-active)"
+              className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-neutral-200 hover:bg-(--row-hover) aria-checked:bg-(--row-selected)"
             >
               <span className="size-3 shrink-0 rounded-sm" style={{ backgroundColor: FOLDER_COLORS[color].swatch }} />
               {FOLDER_COLORS[color].label}
@@ -266,8 +266,9 @@ function TreeRow({
       onClick={onClick}
       onContextMenu={onContextMenu}
       title={path || name}
-      className={`flex cursor-pointer items-center gap-[5px] pr-2 outline-none select-none ${isSelected ? "bg-(--tree-selection)" : "hover:bg-[linear-gradient(var(--row-hover),var(--row-hover))]"}`}
-      style={{ paddingLeft: `calc(6px + ${depth} * var(--changelist-indent))`, backgroundColor: !isSelected && color ? FOLDER_COLORS[color].background : undefined }}
+      data-selected={isSelected}
+      className="tree-row flex cursor-pointer items-center gap-[5px] pr-2.5 outline-none select-none"
+      style={{ paddingLeft: `calc(10px + ${depth} * var(--changelist-indent))`, backgroundColor: color ? FOLDER_COLORS[color].background : undefined }}
     >
       {isDir ? <ChevronIcon expanded={isExpanded} /> : <span className="size-4 shrink-0" />}
       <img src={!isDir ? fileIconUrl(path) : path ? folderIconUrl(path, isExpanded) : rootFolderIconUrl(isExpanded)} alt="" className="size-[17px] shrink-0" />

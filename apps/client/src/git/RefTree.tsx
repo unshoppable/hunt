@@ -74,7 +74,7 @@ export function RefTree({
   };
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-(--changelist-bg)">
+    <div className="flex min-w-0 flex-1 flex-col bg-(--git-bg)">
       <div className="flex items-center gap-1 border-b border-(--line) py-2.5 pr-2 pl-3 text-[13px] text-neutral-400">
         <span className="shrink-0">Branches</span>
         {busyLabel ? (
@@ -94,10 +94,11 @@ export function RefTree({
           <TrashIcon className="size-4" />
         </button>
       </div>
-      <ul className="min-h-0 flex-1 overflow-auto py-1 font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)">
+      <ul className="min-h-0 flex-1 overflow-auto py-1 font-(family-name:--git-font-family) text-(length:--git-font-size) leading-(--git-line-height)">
         <li
           onClick={() => onFilter("")}
-          className={`flex cursor-default items-center gap-[5px] pr-2 pl-[26px] select-none ${filter === "" ? "bg-(--tree-selection)" : "hover:bg-(--row-hover)"}`}
+          data-selected={filter === ""}
+          className="tree-row flex cursor-default items-center gap-[5px] pr-2.5 pl-[30px] select-none"
           title="Show every branch and tag"
         >
           <span className="truncate text-neutral-200">All branches</span>
@@ -107,8 +108,8 @@ export function RefTree({
             <li
               key={node.path}
               onClick={() => toggle(node.path)}
-              className="flex cursor-default items-center gap-[5px] pr-2 select-none hover:bg-(--row-hover)"
-              style={{ paddingLeft: `calc(6px + ${depth} * var(--changelist-indent))` }}
+              className="tree-row flex cursor-default items-center gap-[5px] pr-2.5 select-none"
+              style={{ paddingLeft: `calc(10px + ${depth} * var(--git-indent))` }}
               title={node.path}
             >
               <ChevronIcon expanded={!collapsed.has(node.path)} className="size-4 shrink-0 text-neutral-500" />
@@ -121,12 +122,14 @@ export function RefTree({
               key={node.path}
               onClick={() => onFilter(filter === node.ref.name ? "" : node.ref.name)}
               onContextMenu={node.ref.kind === "tag" ? undefined : (event: MouseEvent) => openMenu(event, node.ref)}
-              className={`flex cursor-default items-start gap-[5px] pr-2 select-none ${filter === node.ref.name ? "bg-(--tree-selection)" : menuFor === node.ref.name ? "bg-(--row-active)" : "hover:bg-(--row-hover)"}`}
-              style={{ paddingLeft: `calc(26px + ${depth} * var(--changelist-indent))` }}
+              data-selected={filter === node.ref.name}
+              data-menu-open={menuFor === node.ref.name}
+              className="tree-row flex cursor-default items-start gap-[5px] pr-2.5 select-none"
+              style={{ paddingLeft: `calc(30px + ${depth} * var(--git-indent))` }}
               title={node.ref.upstream ? `${node.ref.name} → ${node.ref.upstream}` : node.ref.name}
             >
               {/* The icon sits on the first line, centred in it like the single-line rows. */}
-              <span className="flex h-[calc(var(--changelist-line-height)*1em)] shrink-0 items-center">
+              <span className="flex h-[calc(var(--git-line-height)*1em)] shrink-0 items-center">
                 <BranchIcon className={`size-3.5 ${node.ref.name === refs?.head ? "text-blue-300" : "text-neutral-500"}`} />
               </span>
               <span className="flex min-w-0 flex-1 flex-col">

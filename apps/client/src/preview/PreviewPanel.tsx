@@ -13,9 +13,11 @@ import { describePreview, describeService, hasRespondingService, isServiceInUse,
 const WAITING_POLL_MS = 3000;
 const LIVE_POLL_MS = 10000;
 
-const LINK = "min-w-0 truncate text-left font-mono text-[13px] text-sky-300 hover:underline";
-const SECTION_LABEL = "text-[13px] text-neutral-500";
-const HINT = "text-[13px] leading-snug text-neutral-500";
+/** Size of the tab's text below the header bar from the Preview pane settings; other sizes are relative to it. */
+const PANE_TEXT = "text-(length:--preview-font-size)";
+const LINK = "min-w-0 truncate text-left font-mono text-sky-300 hover:underline";
+const SECTION_LABEL = "text-neutral-500";
+const HINT = "leading-snug text-neutral-500";
 
 const TONE_COLOR: Record<Tone, string> = {
   ok: "text-green-300",
@@ -58,7 +60,7 @@ export function PreviewPanel({ sessionId }: { sessionId: string }) {
 
   if (!hasDomain) {
     return (
-      <div className="flex h-full items-center justify-center px-8 text-center text-sm text-neutral-500">
+      <div className={`flex h-full items-center justify-center px-8 text-center text-neutral-500 ${PANE_TEXT}`}>
         This session was handed off without a preview domain. Bring it back and hand it off again to open what it builds in the browser.
       </div>
     );
@@ -82,9 +84,9 @@ export function PreviewPanel({ sessionId }: { sessionId: string }) {
         {preview.isRefreshing ? <Spinner /> : null}
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4 text-sm text-neutral-300">
-        {preview.error ? <p className="text-[13px] leading-snug break-words text-red-300">{preview.error}</p> : null}
-        {openError ? <p className="text-[13px] leading-snug break-words text-red-300">{openError}</p> : null}
+      <div className={`flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4 text-neutral-300 ${PANE_TEXT}`}>
+        {preview.error ? <p className="leading-snug break-words text-red-300">{preview.error}</p> : null}
+        {openError ? <p className="leading-snug break-words text-red-300">{openError}</p> : null}
 
         {status && !status.vmRunning ? (
           <p className={HINT}>The VM is off. The next prompt or opening a preview URL that is not public starts it.</p>
@@ -108,7 +110,7 @@ export function PreviewPanel({ sessionId }: { sessionId: string }) {
         ) : null}
 
         {isWaiting ? (
-          <div className="flex items-center gap-2 text-[13px] text-neutral-400">
+          <div className="flex items-center gap-2 text-neutral-400">
             <Spinner />
             <span className="min-w-0 flex-1">Waiting for a service to answer…</span>
             <button type="button" onClick={() => stopWaiting(sessionId)} className={GHOST_BUTTON_XS}>
@@ -131,7 +133,7 @@ export function PreviewPanel({ sessionId }: { sessionId: string }) {
             <div className={SECTION_LABEL}>{status.services.length ? "Other ports" : "Listening ports"}</div>
             {status.listening.map((port) => (
               <div key={port.port} className="flex min-w-0 items-center gap-3">
-                <span className="w-14 shrink-0 font-mono text-[13px] text-neutral-200">{port.port}</span>
+                <span className="w-[4.3em] shrink-0 font-mono text-neutral-200">{port.port}</span>
                 <button type="button" onClick={() => open(port.url)} className={LINK}>
                   {port.url}
                 </button>
@@ -156,11 +158,11 @@ function ServiceRow({ service, isVmRunning, onOpen }: { service: PreviewService;
           className={`size-2 shrink-0 rounded-full ${service.responds ? "bg-green-400" : "bg-neutral-600"}`}
           title={service.responds ? "Answers" : "Does not answer"}
         />
-        <span className="min-w-0 truncate font-mono text-[13px] text-neutral-100">{service.name}</span>
-        <span className="shrink-0 font-mono text-[12px] text-neutral-500">{service.port}</span>
+        <span className="min-w-0 truncate font-mono text-neutral-100">{service.name}</span>
+        <span className="shrink-0 font-mono text-[0.92em] text-neutral-500">{service.port}</span>
         <span className="flex-1" />
         <span
-          className={`shrink-0 text-[13px] ${TONE_COLOR[state.tone]}`}
+          className={`shrink-0 ${TONE_COLOR[state.tone]}`}
           title={service.state === "failed" ? `Its log is /home/agent/logs/${service.name}.log on the VM` : undefined}
         >
           {state.text}

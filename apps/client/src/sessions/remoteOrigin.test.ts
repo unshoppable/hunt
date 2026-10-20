@@ -30,6 +30,7 @@ function session(remote: Partial<RemoteTarget> | null, patch: Partial<SessionVie
     issue: null,
     agent: "",
     pushTargetPending: false,
+    relayActivity: null,
   };
   return { id: "s1", title: "Fix login", repoPath: "/src/app-framework", remote: remote ? { ...target, ...remote } : null, ...patch } as SessionView;
 }

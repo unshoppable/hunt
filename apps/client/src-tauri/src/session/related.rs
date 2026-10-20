@@ -250,6 +250,7 @@ mod tests {
             issue: None,
             agent: String::new(),
             push_target_pending: false,
+            relay_activity: None,
         });
         let selection = SelectionContext { path: "src/auth.ts".into(), start_line: 3, end_line: 9, text: "x".into(), task: None };
         let mut sub = SessionRecord::sub_session(sub_id, "Why this check?".into(), &owner, Some(selection));

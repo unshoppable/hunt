@@ -3,6 +3,7 @@ pub mod commands;
 pub mod dependencies;
 pub mod link;
 pub mod related;
+pub mod relay_watch;
 pub mod review;
 pub mod store;
 pub mod summary;

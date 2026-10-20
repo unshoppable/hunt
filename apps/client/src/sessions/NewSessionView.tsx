@@ -62,8 +62,9 @@ const LIST_TOGGLE = `${SECONDARY_BUTTON_XS} aria-pressed:border-white/15 aria-pr
  * repository until the first prompt names it, so the sidebar lists it and the diff, editor and graph panes work before
  * anything was asked. With the preselected repository the first prompt creates the session, which is listed and shown
  * at once, and is sent as soon as the agent runs with the chosen model, effort and mode. A top-level session gets a
- * worktree from the chosen base branch, or works in the repository's own checkout on its current branch; the branch
- * menu's "New branch…" names a branch the session creates instead, off the base in a worktree or at the checkout's own
+ * worktree from the chosen base branch, or works in the repository's own checkout on its current branch; choosing a base
+ * branch starts the worktree session off it right away, without a prompt. The branch menu's "New branch…" names a
+ * branch the session creates instead, off the base in a worktree or at the checkout's own
  * branch, and keeps as its own. A sub session (`parentId` set) runs in the parent's worktree. After a failed creation the view comes back with `initialError` and
  * the unsent `initialPrompt`. The header's "PR review" and "Remote sessions" buttons replace the view's body with the
  * repository's open pull requests or the session VMs the gateway lists; choosing one starts or opens that session.
@@ -108,6 +109,8 @@ export function NewSessionView({
   /** Which repository menu is open: the one under the heading's repository name or the one in the target bar. */
   const [repoMenu, setRepoMenu] = useState<"heading" | "bar" | null>(null);
   const headingRepoButtonRef = useRef<HTMLButtonElement>(null);
+  /** What the prompt box holds; a session started without sending it (repository, branch or pull request picked) keeps it unsent in its own box. */
+  const draftRef = useRef<PromptDraft | null>(initialPrompt);
   const recentReposButtonRef = useRef<HTMLButtonElement>(null);
 
   // At launch the view is up before the stored sessions are listed: the newest session's repository is preselected once they are.
@@ -235,11 +238,13 @@ export function NewSessionView({
   /**
    * Creates the session with the picked agent settings and `prompt`: a sub session under `parent`, else a top-level
    * one in the workspace of `target`. A `null` title names the session after its repository until its first prompt
-   * names it. The store lists and shows the session at once and, should the creation fail, brings this view back
-   * with the error and the prompt.
+   * names it. Without `prompt`, what the prompt box holds goes unsent into the session's own box. The store lists and
+   * shows the session at once and, should the creation fail, brings this view back with the error and the prompt.
    */
   function startSession(title: string | null, target: WorktreeTarget, prompt: PromptDraft | null) {
-    const start: SessionStart = { setup, prompt };
+    const unsent = draftRef.current;
+    const draft = !prompt && unsent && (unsent.text.trim() || unsent.images.length) ? unsent : null;
+    const start: SessionStart = { setup, prompt, draft };
     const created = parent ? createSubSession(parent.id, title, null, start, true) : createSession(target, title, start);
     created.catch(() => undefined);
   }
@@ -260,8 +265,8 @@ export function NewSessionView({
   const branchTitle = isCheckout
     ? "Branch the checkout is on; the session works on it as it is, or on a new branch off it"
     : newBranch
-      ? "Base branch the new branch is created from"
-      : "Base branch the worktree is created from";
+      ? "Base branch the new branch is created from; choosing one starts the session"
+      : "Base branch the worktree is created from; choosing one starts the session";
 
   const targetBar = parent ? null : (
     <div className="mx-4 -mt-2 flex items-center justify-between gap-3 rounded-b-2xl border border-t-0 border-(--line) bg-(--surface-inset)/60 px-3 pb-2 pt-4 text-sm text-neutral-400">
@@ -319,6 +324,7 @@ export function NewSessionView({
                 setBranchDraft(newBranch ?? "");
               } else {
                 setBaseRef(id);
+                startSession(null, plainTarget(id), null);
               }
             }}
             disabled={!startRef}
@@ -478,12 +484,15 @@ export function NewSessionView({
               extension={targetBar}
               placeholder="Describe what to build or change"
               initialDraft={initialPrompt}
+              onDraftChange={(draft) => {
+                draftRef.current = draft;
+              }}
               hint={
                 startsWhenLoaded
                   ? "Starting the session…"
                   : !hasTarget
                     ? "Choose a repository to start the session right away"
-                    : "enter starts the session · shift+enter adds a line · choosing a repository starts one there right away"
+                    : "enter starts the session · shift+enter adds a line · choosing a repository or a base branch starts one right away"
               }
             />
             {error ? (

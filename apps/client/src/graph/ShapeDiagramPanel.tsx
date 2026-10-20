@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Background, Controls, MiniMap, ReactFlow, ReactFlowProvider, useEdgesState, useNodesState, useReactFlow } from "@xyflow/react";
 import { commands } from "../ipc/commands";
 import type { GraphStatus, ShapeDiagram, ShapeDiagramType } from "../ipc/types";
+import { DIAGRAM_FONT_SIZE, useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { STATUS_BAR } from "../ui/bars";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
@@ -55,6 +56,9 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
   const [showProblems, setShowProblems] = useState(false);
   /** Bumped when a layout with other elements lands, so React Flow remounts and fits the diagram into view. */
   const [layoutVersion, setLayoutVersion] = useState(0);
+  /** The node text is `DIAGRAM_FONT_SIZE` px at 100 % zoom; the diagram opens zoomed so it shows at the Architecture pane's font size. */
+  const zoomScale = useSettingsStore((state) => state.panes.architecture.fontSize) / DIAGRAM_FONT_SIZE;
+  const fitViewOptions = { padding: 0.1, minZoom: 0.3 * zoomScale, maxZoom: 1.2 * zoomScale };
   const elementIdsRef = useRef("");
   const [nodes, setNodes, onNodesChange] = useNodesState<ShapeDiagramFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<ShapeFlowEdge>([]);
@@ -191,7 +195,7 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
         <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
           <DiagramStatusBadge status={status} hasDiagram={Boolean(diagram)} />
           {error ? <p className="absolute inset-x-3 top-3 z-10 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-[13px] text-red-300">{error}</p> : null}
-          <ReactFlowProvider key={layoutVersion}>
+          <ReactFlowProvider key={`${layoutVersion}:${zoomScale}`}>
             {diagram?.nodes.length ? (
               <ReactFlow
                 nodes={nodes}
@@ -213,8 +217,9 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
                 }}
                 onPaneClick={() => setFocus((current) => ({ ...current, selectedNodeId: null }))}
                 fitView
-                fitViewOptions={{ padding: 0.1, minZoom: 0.3, maxZoom: 1.2 }}
+                fitViewOptions={fitViewOptions}
                 minZoom={0.2}
+                maxZoom={2 * Math.max(1, zoomScale)}
                 colorMode="dark"
                 nodesDraggable={false}
                 nodesConnectable={false}
@@ -224,7 +229,7 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
               >
                 {isErd ? <CrowFootDefs /> : null}
                 <Background gap={24} color="#2f343d" />
-                <Controls showInteractive={false} />
+                <Controls showInteractive={false} fitViewOptions={fitViewOptions} />
                 <ShapeMiniMap />
               </ReactFlow>
             ) : diagram === undefined ? null : (

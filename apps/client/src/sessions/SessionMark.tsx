@@ -1,5 +1,6 @@
-import { hasPendingQuestion, useHuntStore } from "../state/store";
+import { useHuntStore, type HuntState } from "../state/store";
 import { runsOnVm } from "./remoteOrigin";
+import { sessionMarkState, type MarkState } from "./sessionMarkState";
 
 const HEIGHT = 18;
 /** Extra width per character beyond the first, so `B2` stretches the circle into a pill. */
@@ -23,20 +24,23 @@ export type MarkBadge = "question" | "unseen" | null;
  * Circle with a session's mark (A, B, … for sessions, 1, 2, … for sub sessions), showing the state of its agent from
  * the store: while the agent works, an arc runs around the outline; a session on a VM is blue (its sub sessions run
  * here and stay grey); an agent that ended its turn with a question adds an amber `?` badge at the corner, otherwise a
- * response the user has not looked at yet adds a green dot there.
+ * response the user has not looked at yet adds a green dot there. A remote session that is not connected shows what its
+ * relay last reported, or else what the gateway recorded (see `sessionMarkState`).
  */
 export function SessionMark({ sessionId, mark, title }: { sessionId: string; mark: string; title?: string }) {
-  const isBusy = useHuntStore((state) => state.chats[sessionId]?.isBusy ?? false);
-  const hasQuestion = useHuntStore((state) => {
-    const chat = state.chats[sessionId];
-    // A chat that was never loaded shows what the gateway recorded about the session's agent.
-    if (!chat || chat.items.length === 0) return state.sessions.find((session) => session.id === sessionId)?.remote?.agent === "question";
-    return hasPendingQuestion(chat);
-  });
+  const isBusy = useHuntStore((state) => markStateOf(state, sessionId).isBusy);
+  const hasQuestion = useHuntStore((state) => markStateOf(state, sessionId).hasQuestion);
   const isRemote = useHuntStore((state) => runsOnVm(sessionId, state.sessions));
   const hasUnseenActivity = useHuntStore((state) => state.activeSessionId !== sessionId && (state.chats[sessionId]?.hasUnseenActivity ?? false));
   const badge = hasQuestion ? "question" : hasUnseenActivity ? "unseen" : null;
   return <MarkGlyph mark={mark} isBusy={isBusy} badge={badge} tone={isRemote ? "remote" : "idle"} label={title ?? mark} title={title} />;
+}
+
+function markStateOf(state: HuntState, sessionId: string): MarkState {
+  return sessionMarkState(
+    state.sessions.find((session) => session.id === sessionId),
+    state.chats[sessionId],
+  );
 }
 
 /**

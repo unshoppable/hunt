@@ -73,9 +73,9 @@ const COMPLETION_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = {
 
 export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, pendingPosition, onOpenSubChat, onToggleSubChat }: EditorPaneProps) {
   const fileIconUrl = useFileIconUrl();
-  const fontSize = useSettingsStore((state) => state.panes.diff.fontSize);
-  const lineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
-  const fontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
+  const fontSize = useSettingsStore((state) => state.panes.editor.fontSize);
+  const lineHeight = useSettingsStore((state) => state.panes.editor.lineHeight);
+  const fontFamily = useSettingsStore((state) => state.panes.editor.fontFamily);
   const openFile = useIdeStore((state) => state.openFile);
   const activatePane = useIdeStore((state) => state.activatePane);
   const activateTab = useIdeStore((state) => state.activateTab);

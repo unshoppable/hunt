@@ -8,7 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { HANDOFF_START_PROMPT } from "../preview/services";
 import { useAgentDefaultsStore } from "./agentDefaults";
 import { DEFAULT_GRAPH_AGENT, DEFAULT_REMOTE, useSettingsStore } from "./settings";
-import { agentSetupOf, createEmptyChat, endsWithQuestion, hasPendingQuestion, useHuntStore } from "./store";
+import { agentSetupOf, createEmptyChat, hasPendingQuestion, useHuntStore } from "./store";
 
 const SESSION = "11111111-1111-1111-1111-111111111111";
 
@@ -354,6 +354,50 @@ describe("resumeSession", () => {
   });
 });
 
+describe("loadAllChats", () => {
+  const LIVE = "22222222-2222-2222-2222-222222222222";
+  const REMOTE = "33333333-3333-3333-3333-333333333333";
+  const WITHOUT_WORKTREE = "44444444-4444-4444-4444-444444444444";
+  const answer = notification({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Shall I push?" } });
+
+  beforeEach(() => {
+    useHuntStore.setState({
+      chats: {},
+      creatingIds: [],
+      activeSessionId: null,
+      sessions: [
+        { ...storedSession(SESSION, "stopped"), isLive: false },
+        storedSession(LIVE, "live"),
+        { ...storedSession(REMOTE, "remote"), isLive: false, remote: { agent: "running" } as SessionView["remote"] },
+        { ...storedSession(WITHOUT_WORKTREE, "gone"), isLive: false, hasLocalWorktree: false },
+      ],
+    });
+    vi.mocked(invoke).mockReset();
+  });
+
+  it("starts every stopped local agent and rebuilds every running one's chat, but connects no remote session", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "session_history") return [answer];
+      if (command === "list_sessions") return useHuntStore.getState().sessions;
+      return undefined;
+    });
+
+    await useHuntStore.getState().loadAllChats();
+
+    const calls = vi.mocked(invoke).mock.calls.filter(([command]) => command === "open_session" || command === "session_history");
+    expect(calls).toEqual([
+      ["open_session", { id: SESSION }],
+      ["session_history", { id: LIVE }],
+      ["session_history", { id: SESSION }],
+    ]);
+    const { chats } = useHuntStore.getState();
+    expect(hasPendingQuestion(chats[SESSION])).toBe(true);
+    expect(hasPendingQuestion(chats[LIVE])).toBe(true);
+    expect(chats[REMOTE]).toBeUndefined();
+    expect(chats[WITHOUT_WORKTREE]).toBeUndefined();
+  });
+});
+
 /** A stored top-level session as the backend lists it. */
 function storedSession(id: string, title: string): SessionView {
   return {
@@ -381,6 +425,7 @@ function storedSession(id: string, title: string): SessionView {
     leftoverVm: null,
     dependencies: null,
     hasLocalWorktree: true,
+    pushTarget: "main",
   };
 }
 
@@ -389,16 +434,6 @@ const START = { setup: { configValues: { model: "fable", effort: "high" }, modeI
 
 describe("pending question", () => {
   const agent = (text: string) => ({ kind: "agent" as const, id: "a1", text, images: [] });
-
-  it("ends with a question when the last paragraph does, markdown emphasis and quotes aside", () => {
-    expect(endsWithQuestion("Shall I also rename the column?")).toBe(true);
-    expect(endsWithQuestion("Done.\n\n**Shall I push the branch?**\n")).toBe(true);
-    expect(endsWithQuestion("Which one do you prefer (A or B)?")).toBe(true);
-    expect(endsWithQuestion("Should I keep `legacy`?")).toBe(true);
-    expect(endsWithQuestion("Shall I push? I committed the change meanwhile.")).toBe(false);
-    expect(endsWithQuestion("I pushed the branch.")).toBe(false);
-    expect(endsWithQuestion("")).toBe(false);
-  });
 
   it("is pending only while the turn ended with the agent's question as the last item", () => {
     const chat = { ...createEmptyChat(), items: [agent("Shall I push?")] };
@@ -952,6 +987,7 @@ describe("remote sessions", () => {
     issue: null,
     agent: "",
     pushTargetPending: false,
+    relayActivity: null,
   };
 
   beforeEach(() => {
@@ -1158,6 +1194,7 @@ describe("moving a session to and from the VM", () => {
     issue: null,
     agent: "",
     pushTargetPending: false,
+    relayActivity: null,
   };
   const local = storedSession(SESSION, "Build it");
   const handedOff = { ...local, remote };

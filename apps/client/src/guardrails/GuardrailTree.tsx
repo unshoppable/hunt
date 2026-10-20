@@ -311,7 +311,7 @@ function FileRow({
         }}
         title={entry.path}
         style={{ paddingLeft: 8 + depth * ROW_INDENT }}
-        className={`flex w-full touch-none items-center gap-1.5 rounded-md py-1 pr-8 text-left ${isSelected ? "bg-(--row-active) text-white" : "text-neutral-200 hover:bg-(--row-hover) hover:text-white"} ${isDragged ? "opacity-40" : ""}`}
+        className={`flex w-full touch-none items-center gap-1.5 rounded py-1 pr-8 text-left ${isSelected ? "bg-(--row-selected) text-white" : "text-neutral-200 hover:bg-(--row-hover) hover:text-white"} ${isDragged ? "opacity-40" : ""}`}
       >
         <img src={fileIconUrl(entry.path)} alt="" className="size-4 shrink-0" />
         <span className="min-w-0 flex-1 truncate">{entry.name}</span>

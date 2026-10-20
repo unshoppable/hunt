@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { commands } from "../ipc/commands";
 import type { SessionEnding, SessionView } from "../ipc/types";
 import { checkForUpdate } from "../ipc/updater";
 import { useHuntStore } from "../state/store";
@@ -17,7 +18,10 @@ import { ICON_BUTTON, PRIMARY_BUTTON_XS } from "../ui/buttons";
 import { Dropdown } from "../ui/Dropdown";
 import { SearchField } from "../ui/SearchField";
 import { BranchIcon, CloseIcon, CloudSyncIcon, GitHubIcon, PlusIcon, PullRequestIcon, PushIcon, RepoIcon, Spinner, TicketIcon } from "../ui/icons";
-import { pushTarget, remoteOf } from "../chat/remoteSession";
+import { remoteOf } from "../chat/remoteSession";
+import { GitMenu, type GitMenuEntry } from "../git/GitMenu";
+import { PushTargetDialog } from "../git/BranchDialogs";
+import { originBranchName } from "../git/branchActions";
 import { useLoad } from "../ui/useLoad";
 import { isShortcut, shortcutCommand, useShortcutLabel, withShortcut } from "../ui/shortcuts";
 
@@ -35,6 +39,8 @@ export function SessionSidebar() {
   const chats = useHuntStore((state) => state.chats);
   const creatingIds = useHuntStore((state) => state.creatingIds);
   const remoteSync = useHuntStore((state) => state.remoteSync);
+  /** Set while a refresh the user asked for runs; the periodic refresh of the remote sessions shows nothing. */
+  const [isRefreshingRemote, setIsRefreshingRemote] = useState(false);
   const syncRemoteSessions = useHuntStore((state) => state.syncRemoteSessions);
   const canSyncRemote = useSettingsStore((state) => configuredVmSettings(state.remote) !== null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -65,6 +71,12 @@ export function SessionSidebar() {
   /** Version of the newer Hunt the release feed offers; shown as a dot on the gear. */
   const [availableVersion, setAvailableVersion] = useState<string | null>(null);
   const settingsShortcut = useShortcutLabel("app.openSettings");
+  /** The session whose context menu is open, at the click position. */
+  const [menu, setMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null);
+  /** The session the push target dialog is open for. */
+  const [retargetingId, setRetargetingId] = useState<string | null>(null);
+  const menuSession = menu ? (sessions.find((session) => session.id === menu.sessionId) ?? null) : null;
+  const retargeting = retargetingId ? (sessions.find((session) => session.id === retargetingId) ?? null) : null;
 
   // One quiet check per launch; a failed check shows nothing here, the Updates settings page reports it. Dev builds
   // carry no release version, so they do not check.
@@ -152,8 +164,11 @@ export function SessionSidebar() {
           {canSyncRemote ? (
             <button
               type="button"
-              onClick={() => void syncRemoteSessions()}
-              disabled={remoteSync.isRunning}
+              onClick={() => {
+                setIsRefreshingRemote(true);
+                void syncRemoteSessions().finally(() => setIsRefreshingRemote(false));
+              }}
+              disabled={isRefreshingRemote}
               className={`${ICON_BUTTON} ${remoteSync.error ? "text-red-300" : ""}`}
               title={
                 remoteSync.error
@@ -162,7 +177,7 @@ export function SessionSidebar() {
               }
               aria-label="Refresh remote sessions"
             >
-              {remoteSync.isRunning ? <Spinner className="size-4" /> : <CloudSyncIcon />}
+              {isRefreshingRemote ? <Spinner className="size-4" /> : <CloudSyncIcon />}
             </button>
           ) : null}
           <button
@@ -216,7 +231,11 @@ export function SessionSidebar() {
                 <button
                   type="button"
                   onClick={() => void selectSession(session.id)}
-                  className={`group flex w-full flex-col items-start rounded-lg py-1.5 pr-2 text-left transition-colors ${isActive ? "bg-(--row-active)" : "hover:bg-(--row-hover)"}`}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    if (!isSubChat && !isCreating) setMenu({ sessionId: session.id, x: event.clientX, y: event.clientY });
+                  }}
+                  className={`group flex w-full flex-col items-start rounded py-1.5 pr-2 text-left transition-colors ${isActive ? "bg-(--row-selected)" : "hover:bg-(--row-hover)"}`}
                   style={{ paddingLeft: isSubChat ? "calc(10px + var(--sidebar-indent))" : 10 }}
                 >
                   <span className="relative flex w-full items-center gap-2">
@@ -249,7 +268,7 @@ export function SessionSidebar() {
                       // Opaque backdrop so the button covers a long title; the row tint is layered over the sidebar colour.
                       <span
                         className={`absolute top-1/2 hidden -translate-y-1/2 rounded-md group-hover:flex ${isSubChat ? "-right-1" : "right-6"}`}
-                        style={{ background: `linear-gradient(var(${isActive ? "--row-active" : "--row-hover"}), var(${isActive ? "--row-active" : "--row-hover"})), var(--sidebar-bg)` }}
+                        style={{ background: `linear-gradient(var(${isActive ? "--row-selected" : "--row-hover"}), var(${isActive ? "--row-selected" : "--row-hover"})), var(--sidebar-bg)` }}
                       >
                         <span
                           role="button"
@@ -277,7 +296,7 @@ export function SessionSidebar() {
                     <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.9375em] text-neutral-400">
                       <PushIcon className="size-4 shrink-0" />
                       <span className="truncate" title="Branch on origin a push of the session lands on">
-                        {pushTarget(session, remoteOf(session, sessions))}
+                        {session.pushTarget}
                       </span>
                       {reference ? (
                         <span className={`ml-auto flex shrink-0 items-center gap-1 pl-2 ${REFERENCE_TONE[reference.tone]}`} title={reference.title || undefined}>
@@ -316,8 +335,54 @@ export function SessionSidebar() {
           onClose={() => setPendingDelete(null)}
         />
       ) : null}
+      {menu && menuSession ? (
+        <GitMenu
+          title={sidebarTitle(menuSession)}
+          x={menu.x}
+          y={menu.y}
+          entries={sessionMenuEntries(menuSession, sessions)}
+          onClose={() => setMenu(null)}
+          onPick={() => {
+            setMenu(null);
+            setRetargetingId(menuSession.id);
+          }}
+        />
+      ) : null}
+      {retargeting?.pushTarget ? <SessionPushTargetDialog session={retargeting} target={retargeting.pushTarget} onClose={() => setRetargetingId(null)} /> : null}
       <StaleRemoteDialog />
     </div>
+  );
+}
+
+/** The context menu of the top-level session `session` in the sidebar. */
+function sessionMenuEntries(session: SessionView, sessions: SessionView[]): GitMenuEntry<"retarget">[] {
+  const disabledReason = remoteOf(session, sessions)?.origin === "swf" ? "A poller session pushes its own branch" : !session.pushTarget ? "The session has no local worktree yet; connect it first" : null;
+  return [{ kind: "retarget", label: "Change Push Target…", disabledReason, isDanger: false, startsGroup: false }];
+}
+
+/** The push target dialog for `session`, whose pushes land on `target` now, with the fetched branches of origin as choices. */
+function SessionPushTargetDialog({ session, target, onClose }: { session: SessionView; target: string; onClose: () => void }) {
+  const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
+  const [candidates, setCandidates] = useState<string[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useLoad(
+    () => commands.gitRefs(session.id),
+    {
+      onValue: (refs) => setCandidates(refs.refs.map((ref) => (ref.kind === "remote" ? originBranchName(ref.name) : null)).filter((name): name is string => !!name)),
+      onError: (reason) => setError(String(reason)),
+    },
+    [session.id],
+  );
+  return (
+    <PushTargetDialog
+      sessionId={session.id}
+      branch={session.branch}
+      current={target}
+      candidates={candidates}
+      candidatesError={error}
+      onClose={onClose}
+      onChanged={() => noteWorktreeChanged(session.id)}
+    />
   );
 }
 

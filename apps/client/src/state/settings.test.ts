@@ -95,6 +95,14 @@ describe("migrateSettings", () => {
     expect(migrateSettings({ aiLanguage: "English" }, 12)).toEqual({ aiLanguage: "English" });
   });
 
+  it("starts the editor and the terminal of version 14 from the diff pane's font and keeps their own values", () => {
+    const stored = { panes: { diff: { fontSize: 13, lineHeight: 1.5, fontFamily: "Menlo", background: "#000000" }, terminal: { fontSize: 11 } } };
+    const migrated = migrateSettings(stored, 14);
+    expect(migrated.panes?.editor).toEqual({ fontSize: 13, lineHeight: 1.5, fontFamily: "Menlo" });
+    expect(migrated.panes?.terminal).toEqual({ fontSize: 11, fontFamily: "Menlo", background: "#000000" });
+    expect(migrateSettings({ aiLanguage: "English" }, 14)).toEqual({ aiLanguage: "English" });
+  });
+
   it("passes the current version through untouched", () => {
     const stored = { panes: { chat: { fontSize: 18 } }, aiLanguage: "English", later: true };
     expect(migrateSettings(stored, SETTINGS_VERSION)).toBe(stored);

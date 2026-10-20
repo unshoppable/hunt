@@ -213,7 +213,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         <div ref={columnRef} className="chat-column">
           {session.selection ? (
             <div className="mb-5">
-              <SelectionCard selection={session.selection} />
+              <SelectionCard selection={session.selection} isOpen />
             </div>
           ) : null}
           <MessageList items={chat?.items ?? []} plan={chat?.plan ?? []} isBusy={(isBusy && !chat?.isHiddenTurn) || isCreating} isVerbose={isVerbose} basePath={remote?.worktreePath ?? session.worktreePath} />

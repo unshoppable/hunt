@@ -348,11 +348,19 @@ body,
 /* Sub chat button right of the line numbers (see ide/selectionChatMarkers.ts): a small icon button with the agent
    sparkle in the blue-violet agent gradient on the first line of a selection a sub chat was opened from; a click
    reopens the chat in its popover. Monaco stretches the node over the whole line decorations column; the button
-   takes 22px of it after the change stripe zone (the column's plain 10px) so the two never overlap. */
+   takes 22px of it after the change stripe zone (the column's plain 10px) so the two never overlap, and lies above
+   the fold chevron's node, which spans the column too. While the column holds buttons the chevrons centre in the
+   space right of them. */
 .monaco-editor .margin-view-overlays .hunt-chat-glyph {
   width: 22px !important;
   margin-left: 10px;
+  z-index: 1;
   cursor: pointer;
+}
+.hunt-has-chat-glyphs .monaco-editor .margin-view-overlays .cldr[class*="codicon-folding-"] {
+  box-sizing: border-box;
+  margin-left: 0;
+  padding-left: 32px;
 }
 .monaco-editor .margin-view-overlays .hunt-chat-glyph::before {
   content: "";

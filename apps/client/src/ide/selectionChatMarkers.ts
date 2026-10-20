@@ -5,8 +5,10 @@ import type { SelectionChat } from "./selectionChats";
 const GLYPH_CLASS = "hunt-chat-glyph";
 /** Added to the button while the chat's agent is running a turn; the glow pulses. */
 const BUSY_CLASS = "hunt-chat-glyph-busy";
+/** Set on the editor's container while the line decorations column holds chat buttons; moves the fold chevrons right of them. */
+const HAS_GLYPHS_CLASS = "hunt-has-chat-glyphs";
 /** Width of the line decorations column while it holds the chat buttons: the change stripe zone, the button, a gap. */
-const DECORATIONS_WIDTH_WITH_GLYPHS = 36;
+const DECORATIONS_WIDTH_WITH_GLYPHS = 40;
 
 function toDecoration(chat: SelectionChat, isBusy: boolean): monaco.editor.IModelDeltaDecoration {
   const line = chat.selection.startLine;
@@ -24,10 +26,12 @@ function toDecoration(chat: SelectionChat, isBusy: boolean): monaco.editor.IMode
  * Sub chat buttons in the gutter right of the line numbers: one on the first line of every selection of the shown
  * file a sub chat was opened from (see selectionChats.ts). The line decorations column widens to hold them while
  * the shown file has any and returns to the editor's own width otherwise. A button pulses while its chat's agent
- * is working. A click on a button reports its chat.
+ * is working. A click on a button reports its chat and never reaches Monaco, whose folding takes every click in the
+ * column as one on the fold chevron.
  */
 export class SelectionChatMarkers {
   private readonly decorations: monaco.editor.IEditorDecorationsCollection;
+  private readonly domNode: HTMLElement;
   private readonly disposables: monaco.IDisposable[] = [];
   private readonly clickListeners = new Set<(chat: SelectionChat) => void>();
   private readonly plainDecorationsWidth: number;
@@ -43,10 +47,9 @@ export class SelectionChatMarkers {
   ) {
     this.decorations = editor.createDecorationsCollection();
     this.plainDecorationsWidth = editor.getOption(monaco.editor.EditorOption.lineDecorationsWidth);
-    this.disposables.push(
-      editor.onDidChangeModel(() => this.apply()),
-      editor.onMouseDown((event) => this.onMouseDown(event)),
-    );
+    this.domNode = editor.getContainerDomNode();
+    this.domNode.addEventListener("mousedown", this.onDomMouseDown, true);
+    this.disposables.push(editor.onDidChangeModel(() => this.apply()));
   }
 
   /**
@@ -69,6 +72,8 @@ export class SelectionChatMarkers {
   }
 
   dispose(): void {
+    this.domNode.removeEventListener("mousedown", this.onDomMouseDown, true);
+    this.domNode.classList.remove(HAS_GLYPHS_CLASS);
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
@@ -82,21 +87,22 @@ export class SelectionChatMarkers {
     const isShown = model !== null && this.path !== null && this.pathOf(model) === this.path;
     const shown = isShown ? this.chats : [];
     this.decorations.set(shown.map((chat) => toDecoration(chat, this.busyChatIds.has(chat.sessionId))));
+    this.domNode.classList.toggle(HAS_GLYPHS_CLASS, shown.length > 0);
     const width = shown.length ? DECORATIONS_WIDTH_WITH_GLYPHS : this.plainDecorationsWidth;
     if (this.editor.getOption(monaco.editor.EditorOption.lineDecorationsWidth) !== width) {
       this.editor.updateOptions({ lineDecorationsWidth: width });
     }
   }
 
-  private onMouseDown(event: monaco.editor.IEditorMouseEvent): void {
-    const { target } = event;
-    if (target.type !== monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS || !target.position) return;
-    if (!target.element?.classList.contains(GLYPH_CLASS)) return;
-    const line = target.position.lineNumber;
+  private readonly onDomMouseDown = (event: MouseEvent): void => {
+    if (event.button !== 0 || !(event.target instanceof Element) || !event.target.closest(`.${GLYPH_CLASS}`)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const line = this.editor.getTargetAtClientPoint(event.clientX, event.clientY)?.position?.lineNumber;
     const chat = this.chats.find((candidate) => candidate.selection.startLine === line);
     if (!chat) return;
     for (const listener of this.clickListeners) {
       listener(chat);
     }
-  }
+  };
 }

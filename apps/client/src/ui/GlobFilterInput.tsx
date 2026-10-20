@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 export const GLOB_FILTER_HELP =
-  "Hides files whose path relative to the repository root matches one of these globs, separated by commas or spaces. A glob without a slash matches the file name in any folder, ** spans folders. Enter applies, Escape restores.";
+  "Hides files whose path relative to the repository root matches one of these globs, separated by commas or spaces. A glob without a slash matches the file name in any folder, a trailing slash (admin-ui/) a folder with everything in it, ** spans folders. Enter applies, Escape restores.";
 
 /**
  * Text field for a list of globs that hide files. It applies its text through `onApply` on Enter or when it is left;

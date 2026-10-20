@@ -26,6 +26,15 @@ describe("matchesGlob", () => {
     expect(matchesGlob("src/**", "lib/src/index.ts")).toBe(false);
   });
 
+  it("treats a trailing slash as the folder and everything in it, at any depth unless the glob has another slash", () => {
+    expect(matchesGlob("admin-ui/", "apps/med/admin-ui/src/app/form.service.ts")).toBe(true);
+    expect(matchesGlob("admin-ui/", "admin-ui/main.ts")).toBe(true);
+    expect(matchesGlob("admin-ui/", "apps/med/admin-ui")).toBe(true);
+    expect(matchesGlob("admin-ui/", "apps/med/backend/admin-ui.ts")).toBe(false);
+    expect(matchesGlob("apps/med/", "apps/med/backend/main.ts")).toBe(true);
+    expect(matchesGlob("med/backend/", "apps/med/backend/main.ts")).toBe(false);
+  });
+
   it("lists alternatives in braces, slashes and wildcards included", () => {
     const glob = "**/{backend,*-api,apps/api}/**";
     expect(matchesGlob(glob, "backend/main.ts")).toBe(true);

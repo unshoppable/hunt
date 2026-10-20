@@ -7,13 +7,19 @@ const REGEXP_SPECIALS = /[.+^$(){}|[\]\\]/;
 /**
  * Compiles a glob into a case-insensitive RegExp over a worktree-relative path with "/" separators: `**` spans
  * folders, `*` and `?` stay within one name, `{a,b}` lists alternatives (nesting allowed). A glob without a "/"
- * (`*.spec.ts`) matches the file name in any folder; a trailing `/**` also matches the folder itself. Unbalanced
- * braces are taken literally.
+ * (`*.spec.ts`) matches the file name in any folder; a trailing `/**` also matches the folder itself. A trailing "/"
+ * stands for `/**`, so `admin-ui/` matches a folder of that name at any depth and everything in it, as in .gitignore.
+ * Unbalanced braces are taken literally.
  */
 export function globToRegExp(glob: string): RegExp {
   let pattern = glob.trim().replace(/^(\.\/|\/)+/, "");
+  const isFolder = pattern.endsWith("/");
+  pattern = pattern.replace(/\/+$/, "");
   if (!pattern.includes("/")) {
     pattern = `**/${pattern}`;
+  }
+  if (isFolder) {
+    pattern += "/**";
   }
   const hasBraces = hasBalancedBraces(pattern);
   let source = "";

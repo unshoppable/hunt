@@ -1,3 +1,9 @@
+## 0.68.0 (2026-10-20)
+
+### 🚀 Features
+
+- **client:** the agent suggests a guardrail for non-obvious findings too and in a reply that asks a question, never for what an existing guardrail says, and the Guardrail button turns violet with the suggested kind ([38079b5](https://github.com/unshoppable/hunt/commit/38079b5))
+
 ## 0.67.0 (2026-10-20)
 
 ### 🚀 Features

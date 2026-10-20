@@ -23,8 +23,9 @@ let draggedHeight: number | null = null;
  * Footer of the changelist: a small, vertically resizable commit message box with the commit and shelve actions for
  * the checked files below it and a push button on the right, enabled while the branch has commits `origin`'s `target`
  * lacks. The commit button's chevron also offers "Commit and Push". ⌘⏎ commits in place; the push button, "Commit and
- * Push" and ⇧⌘⏎ first open a `PushPopover` that names `origin/<target>` and pushes on confirm.
- * `onCommit` and `onShelve` return false when the owner declined the action, e.g. after a warning about unsaved edits.
+ * Push" and ⇧⌘⏎ first open a `PushPopover` that names `origin/<target>` and pushes on confirm. The message stays in the
+ * box after a commit. `onCommit` and `onShelve` return false when the owner declined the action, e.g. after a warning
+ * about unsaved edits.
  */
 export function CommitBox({
   sessionId,
@@ -108,7 +109,6 @@ export function CommitBox({
       setStep(null);
       return;
     }
-    setMessage("");
     onCommitted(committedPaths);
     if (shouldPush) {
       await push("The commit was created, but the push failed");

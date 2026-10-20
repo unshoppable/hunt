@@ -1,3 +1,9 @@
+## 0.66.0 (2026-10-20)
+
+### 🚀 Features
+
+- **client:** drag the top edge of the sub chat's input area to make its text area taller, remembered like the prompt box's height ([7a73db1](https://github.com/unshoppable/hunt/commit/7a73db1))
+
 ## 0.65.1 (2026-10-20)
 
 ### 🩹 Fixes

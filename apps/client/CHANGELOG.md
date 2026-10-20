@@ -1,3 +1,9 @@
+## 0.54.0 (2026-10-20)
+
+### 🚀 Features
+
+- **client:** the remote sessions list shows the sessions whose agent waits for an answer without "Show stopped", since the gateway suspends their idle VMs ([02e5114](https://github.com/unshoppable/hunt/commit/02e5114))
+
 ## 0.53.0 (2026-10-19)
 
 ### 🚀 Features

@@ -3,6 +3,8 @@ import type { GitRef, RefList } from "../ipc/types";
 import { useFolderIconUrl } from "../diff/fileIcons";
 import { ICON_BUTTON_XS } from "../ui/buttons";
 import { BranchIcon, ChevronIcon, TrashIcon } from "../ui/icons";
+import type { TreeNavRow } from "../ui/treeNavigation";
+import { useTreeNavigation } from "../ui/useTreeNavigation";
 import type { PushRoute } from "./branchActions";
 import { buildRefTree, type RefTreeNode } from "./refGroups";
 
@@ -11,10 +13,14 @@ const collapsedGroups = new Set<string>(["tags"]);
 
 type Row = { node: RefTreeNode; depth: number };
 
+/** Row key of "All branches"; every other row is keyed by its node's path. */
+const ALL_KEY = "";
+
 /**
  * The branch tree beside the log: Local, Remote and Tags, nested by the slashes in their names. A click on a branch
  * or tag shows only its history, a second click shows every branch again; a right click on a branch opens its menu
- * (`onContextMenu`, the branch stays highlighted while `menuFor` names it). The checked-out branch shows how far it is
+ * (`onContextMenu`, the branch stays highlighted while `menuFor` names it); the arrow keys move the filter from branch to
+ * branch and open or close the groups. The checked-out branch shows how far it is
  * ahead of or behind its upstream, and the session's branch where a push lands (`pushes`), since Hunt pushes it onto
  * the branch the session was created from, never under its own name. The header shows `busyLabel` while an action runs
  * and a button that deletes the local branches origin lacks (`prunable`, `onPrune`).
@@ -59,6 +65,22 @@ export function RefTree({
     return result;
   }, [tree, collapsed]);
 
+  /** Every branch and tag by its node's path, including those in closed groups. */
+  const refsByPath = useMemo(() => {
+    const result = new Map<string, GitRef>();
+    const visit = (nodes: RefTreeNode[]) => {
+      for (const node of nodes) {
+        if (node.kind === "group") {
+          visit(node.children);
+        } else {
+          result.set(node.path, node.ref);
+        }
+      }
+    };
+    visit(tree);
+    return result;
+  }, [tree]);
+
   const openMenu = (event: MouseEvent, ref: GitRef) => {
     event.preventDefault();
     onContextMenu(ref, event.clientX, event.clientY);
@@ -72,6 +94,23 @@ export function RefTree({
     }
     setCollapsed(new Set(collapsedGroups));
   };
+
+  const navRows = useMemo<TreeNavRow[]>(
+    () => [
+      { key: ALL_KEY, depth: 0 },
+      ...rows.map(({ node, depth }) => (node.kind === "group" ? { key: node.path, depth, isExpanded: !collapsed.has(node.path) } : { key: node.path, depth })),
+    ],
+    [rows, collapsed],
+  );
+  const filteredKey = filter ? ([...refsByPath].find(([, ref]) => ref.name === filter)?.[0] ?? null) : ALL_KEY;
+
+  const nav = useTreeNavigation({
+    rows: navRows,
+    selectedKey: filteredKey,
+    onSelect: (key) => onFilter(refsByPath.get(key)?.name ?? ""),
+    isSelectable: (key) => key === ALL_KEY || refsByPath.has(key),
+    onToggle: toggle,
+  });
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-(--git-bg)">
@@ -94,10 +133,11 @@ export function RefTree({
           <TrashIcon className="size-4" />
         </button>
       </div>
-      <ul className="min-h-0 flex-1 overflow-auto py-1 font-(family-name:--git-font-family) text-(length:--git-font-size) leading-(--git-line-height)">
+      <ul {...nav.listProps} className="min-h-0 flex-1 overflow-auto py-1 outline-none font-(family-name:--git-font-family) text-(length:--git-font-size) leading-(--git-line-height)">
         <li
-          onClick={() => onFilter("")}
-          data-selected={filter === ""}
+          onClick={() => nav.select(ALL_KEY)}
+          data-tree-key={ALL_KEY}
+          data-selected={nav.cursor === ALL_KEY}
           className="tree-row flex cursor-default items-center gap-[5px] pr-2.5 pl-[30px] select-none"
           title="Show every branch and tag"
         >
@@ -107,7 +147,12 @@ export function RefTree({
           node.kind === "group" ? (
             <li
               key={node.path}
-              onClick={() => toggle(node.path)}
+              onClick={() => {
+                toggle(node.path);
+                nav.select(node.path);
+              }}
+              data-tree-key={node.path}
+              data-selected={nav.cursor === node.path}
               className="tree-row flex cursor-default items-center gap-[5px] pr-2.5 select-none"
               style={{ paddingLeft: `calc(10px + ${depth} * var(--git-indent))` }}
               title={node.path}
@@ -120,9 +165,10 @@ export function RefTree({
           ) : (
             <li
               key={node.path}
-              onClick={() => onFilter(filter === node.ref.name ? "" : node.ref.name)}
+              onClick={() => (nav.cursor === node.path ? onFilter("") : nav.select(node.path))}
               onContextMenu={node.ref.kind === "tag" ? undefined : (event: MouseEvent) => openMenu(event, node.ref)}
-              data-selected={filter === node.ref.name}
+              data-tree-key={node.path}
+              data-selected={nav.cursor === node.path}
               data-menu-open={menuFor === node.ref.name}
               className="tree-row flex cursor-default items-start gap-[5px] pr-2.5 select-none"
               style={{ paddingLeft: `calc(30px + ${depth} * var(--git-indent))` }}

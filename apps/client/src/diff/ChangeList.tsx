@@ -26,6 +26,8 @@ import { confirmDestructive } from "../ui/confirm";
 import { GlobFilterInput } from "../ui/GlobFilterInput";
 import { SwapIcon } from "../ui/icons";
 import { isShortcut } from "../ui/shortcuts";
+import type { TreeNavRow } from "../ui/treeNavigation";
+import { useTreeNavigation } from "../ui/useTreeNavigation";
 
 type Tab = "changes" | "shelf";
 
@@ -246,6 +248,35 @@ export function ChangeList({
     setCollapsedState(next);
   };
 
+  /** The rows as keyboard navigation sees them; a folder's key is its path with a trailing slash, a file's its path. */
+  const navRows = useMemo<TreeNavRow[]>(
+    () =>
+      view === "flat"
+        ? files.map((file) => ({ key: file.path, depth: 0 }))
+        : rows.map(({ node, depth }) => (node.kind === "folder" ? { key: `${node.path}/`, depth, isExpanded: !collapsed.has(node.path) } : { key: node.file.path, depth })),
+    [view, files, rows, collapsed],
+  );
+
+  // Arrow keys move through the rows and open a file's diff; Space toggles the checkbox of the row (a focused checkbox toggles itself).
+  const nav = useTreeNavigation({
+    rows: navRows,
+    selectedKey: selectedPath,
+    onSelect,
+    isSelectable: (key) => !key.endsWith("/"),
+    onToggle: (key) => toggleCollapsed(key.slice(0, -1)),
+    onCheck: (key) => {
+      const file = filesByPath.get(key);
+      if (file) {
+        setChecked([file], !checked.has(file.path));
+        return;
+      }
+      const folder = rows.find(({ node }) => node.kind === "folder" && `${node.path}/` === key)?.node;
+      if (folder?.kind === "folder") {
+        toggleGroup(folder.files);
+      }
+    },
+  });
+
   /** Warns when the diff editor holds unsaved edits; resolves to whether a commit or shelve of the checked files may go on. */
   const confirmSavedContent = async () => {
     if (!checkedPaths.length) return false;
@@ -275,14 +306,15 @@ export function ChangeList({
     return (
       <li
         key={file.path}
-        data-selected={selectedPath === file.path}
+        data-tree-key={file.path}
+        data-selected={nav.cursor === file.path}
         className="tree-row group flex items-center gap-1.5 pr-2.5"
         style={{ paddingLeft: `calc(12px + ${depth} * var(--changelist-indent))` }}
       >
         <Checkbox state={checked.has(file.path) ? "checked" : "unchecked"} onChange={() => setChecked([file], !checked.has(file.path))} />
         <button
           type="button"
-          onClick={() => onSelect(file.path)}
+          onClick={() => nav.select(file.path)}
           onContextMenu={(event) => onContextMenu(event, file)}
           className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
           title={`${file.path} (${file.status})`}
@@ -310,10 +342,25 @@ export function ChangeList({
 
   const renderFolder = (folder: FolderNode, depth: number) => {
     const isCollapsed = collapsed.has(folder.path);
+    const key = `${folder.path}/`;
     return (
-      <li key={`dir:${folder.path}`} className="tree-row flex items-center gap-1.5 pr-2.5" style={{ paddingLeft: `calc(12px + ${depth} * var(--changelist-indent))` }}>
+      <li
+        key={`dir:${folder.path}`}
+        data-tree-key={key}
+        data-selected={nav.cursor === key}
+        className="tree-row flex items-center gap-1.5 pr-2.5"
+        style={{ paddingLeft: `calc(12px + ${depth} * var(--changelist-indent))` }}
+      >
         <Checkbox state={stateOf(folder.files)} onChange={() => toggleGroup(folder.files)} />
-        <button type="button" onClick={() => toggleCollapsed(folder.path)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" title={folder.path}>
+        <button
+          type="button"
+          onClick={() => {
+            toggleCollapsed(folder.path);
+            nav.select(key);
+          }}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          title={folder.path}
+        >
           <ChevronIcon expanded={!isCollapsed} />
           <img src={folderIconUrl(folder.path, !isCollapsed)} alt="" className="size-[17px] shrink-0" />
           <span className="truncate text-neutral-300">{folder.name}</span>
@@ -387,7 +434,10 @@ export function ChangeList({
               </button>
             ) : null}
           </div>
-          <ul className="min-h-0 flex-1 overflow-y-auto font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)">
+          <ul
+            {...nav.listProps}
+            className="min-h-0 flex-1 overflow-y-auto outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)"
+          >
             {view === "flat"
               ? files.map((file) => renderFile(file, baseName(file.path), 0, true))
               : rows.map(({ node, depth }) => (node.kind === "folder" ? renderFolder(node, depth) : renderFile(node.file, node.name, depth, false)))}

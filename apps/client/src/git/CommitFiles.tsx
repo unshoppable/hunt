@@ -4,6 +4,8 @@ import { buildChangeTree, type FolderNode, type TreeNode } from "../diff/changeT
 import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { STATUS_NAME_CLASS } from "../diff/styles";
 import { ChevronIcon } from "../ui/icons";
+import type { TreeNavRow } from "../ui/treeNavigation";
+import { useTreeNavigation } from "../ui/useTreeNavigation";
 import { parseDecoration } from "./logLabels";
 import { RefChip } from "./RefChip";
 
@@ -13,7 +15,7 @@ const DATE_FORMAT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", ti
 
 /**
  * The selected commit's files as a folder tree, followed by its details: message, author, committer, date, refs and
- * the branches containing it. A click on a file shows its change in the diff below.
+ * the branches containing it. A click on a file, or moving onto it with the arrow keys, shows its change in the diff below.
  */
 export function CommitFiles({
   commit,
@@ -63,6 +65,25 @@ export function CommitFiles({
     });
   };
 
+  /** A folder's key is its path with a trailing slash, a file's its path. */
+  const navRows = useMemo<TreeNavRow[]>(
+    () => rows.map(({ node, depth }) => (node.kind === "folder" ? { key: `${node.path}/`, depth, isExpanded: !collapsed.has(node.path) } : { key: node.file.path, depth })),
+    [rows, collapsed],
+  );
+
+  const nav = useTreeNavigation({
+    rows: navRows,
+    selectedKey: selectedPath,
+    onSelect: (key) => {
+      const file = filesByPath.get(key);
+      if (file) {
+        onSelect(file);
+      }
+    },
+    isSelectable: (key) => !key.endsWith("/"),
+    onToggle: (key) => toggleCollapsed(key.slice(0, -1)),
+  });
+
   const isLoaded = !!commit && details?.id === commit.id;
 
   return (
@@ -72,12 +93,17 @@ export function CommitFiles({
         {commit ? <span className="font-mono text-neutral-500">{commit.id.slice(0, 8)}</span> : null}
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
-        <ul className="py-1 font-(family-name:--git-font-family) text-(length:--git-font-size) leading-(--git-line-height)">
+        <ul {...nav.listProps} className="py-1 outline-none font-(family-name:--git-font-family) text-(length:--git-font-size) leading-(--git-line-height)">
           {rows.map(({ node, depth }) =>
             node.kind === "folder" ? (
               <li
                 key={`dir:${node.path}`}
-                onClick={() => toggleCollapsed(node.path)}
+                onClick={() => {
+                  toggleCollapsed(node.path);
+                  nav.select(`${node.path}/`);
+                }}
+                data-tree-key={`${node.path}/`}
+                data-selected={nav.cursor === `${node.path}/`}
                 className="tree-row flex cursor-default items-center gap-[5px] pr-2.5 select-none"
                 style={{ paddingLeft: `calc(10px + ${depth} * var(--git-indent))` }}
                 title={node.path}
@@ -90,13 +116,9 @@ export function CommitFiles({
             ) : (
               <li
                 key={node.file.path}
-                onClick={() => {
-                  const file = filesByPath.get(node.file.path);
-                  if (file) {
-                    onSelect(file);
-                  }
-                }}
-                data-selected={selectedPath === node.file.path}
+                onClick={() => nav.select(node.file.path)}
+                data-tree-key={node.file.path}
+                data-selected={nav.cursor === node.file.path}
                 className="tree-row flex cursor-default items-center gap-[5px] pr-2.5 select-none"
                 style={{ paddingLeft: `calc(30px + ${depth} * var(--git-indent))` }}
                 title={`${node.file.path} (${node.file.status})`}

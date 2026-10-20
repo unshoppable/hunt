@@ -1,10 +1,12 @@
-import { useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { buildChangeTree, type FolderNode, type TreeNode } from "../diff/changeTree";
 import { Checkbox, type CheckState } from "../diff/Checkbox";
 import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { STATUS_NAME_CLASS } from "../diff/styles";
 import type { ChangedFile } from "../ipc/types";
 import { ResizeGrips } from "../ui/ResizeGrips";
+import type { TreeNavRow } from "../ui/treeNavigation";
+import { useTreeNavigation } from "../ui/useTreeNavigation";
 import { useDismiss } from "../ui/useDismiss";
 import { usePopupSize } from "../ui/usePopupSize";
 import { useViewportSize } from "../ui/useViewportSize";
@@ -20,7 +22,9 @@ const MAX_SHARE = 0.8;
  * Popover below the "Files" button: the changelist as a folder tree with a checkbox per file and folder. Every file
  * starts checked; unchecking hides the file from the diagram, a folder checkbox toggles everything below it. The
  * relevance and glob filters play no part here: the count and the checkboxes reflect only the checked files.
- * Closes on Escape or a click outside; a press on the button that opened it (`anchorRef`) closes without reopening.
+ * The list takes the focus: the arrow keys move through the rows and open or close the folders, Space (Enter on a file)
+ * toggles the row's checkbox. Closes on Escape or a click outside; a press on the button that opened it (`anchorRef`)
+ * closes without reopening.
  * It is as tall as its rows up to the remembered height; dragging its right or bottom edge resizes it.
  */
 export function FileFilterPopover({
@@ -94,6 +98,30 @@ export function FileFilterPopover({
     });
   };
 
+  /** A folder's key is its path with a trailing slash, a file's its path. */
+  const navRows = useMemo<TreeNavRow[]>(
+    () => rows.map(({ node, depth }) => (node.kind === "folder" ? { key: `${node.path}/`, depth, isExpanded: !collapsed.has(node.path) } : { key: node.file.path, depth })),
+    [rows, collapsed],
+  );
+
+  /** Toggles the checkbox of the row with `key`. */
+  const toggleRow = (key: string) => {
+    const node = rows.find((row) => (row.node.kind === "folder" ? `${row.node.path}/` : row.node.file.path) === key)?.node;
+    if (!node) return;
+    if (node.kind === "folder") {
+      toggleGroup(node.files);
+    } else {
+      setChecked([node.file], excluded.has(node.file.path));
+    }
+  };
+
+  const nav = useTreeNavigation({ rows: navRows, onToggle: (key) => toggleCollapsed(key.slice(0, -1)), onActivate: toggleRow, onCheck: toggleRow });
+  const { listRef } = nav;
+
+  useEffect(() => {
+    listRef.current?.focus({ preventScroll: true });
+  }, [listRef]);
+
   const checkedCount = files.filter((file) => !excluded.has(file.path)).length;
   const indent = (depth: number) => ({ paddingLeft: `calc(8px + ${depth} * 14px)` });
 
@@ -109,12 +137,25 @@ export function FileFilterPopover({
           {checkedCount} of {files.length} shown
         </span>
       </div>
-      <ul className="min-h-0 flex-1 overflow-y-auto py-1 leading-6">
+      <ul {...nav.listProps} className="min-h-0 flex-1 overflow-y-auto p-1 leading-6 outline-none">
         {rows.map(({ node, depth }) =>
           node.kind === "folder" ? (
-            <li key={`dir:${node.path}`} className="flex items-center gap-1.5 pr-2 hover:bg-(--row-hover)" style={indent(depth)}>
+            <li
+              key={`dir:${node.path}`}
+              data-tree-key={`${node.path}/`}
+              className={`flex items-center gap-1.5 rounded pr-2 ${nav.cursor === `${node.path}/` ? "bg-(--row-selected)" : "hover:bg-(--row-hover)"}`}
+              style={indent(depth)}
+            >
               <Checkbox state={stateOf(node.files)} onChange={() => toggleGroup(node.files)} />
-              <button type="button" onClick={() => toggleCollapsed(node.path)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" title={node.path}>
+              <button
+                type="button"
+                onClick={() => {
+                  toggleCollapsed(node.path);
+                  nav.select(`${node.path}/`);
+                }}
+                className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                title={node.path}
+              >
                 <ChevronIcon expanded={!collapsed.has(node.path)} />
                 <img src={folderIconUrl(node.path)} alt="" className="size-4 shrink-0" />
                 <span className="truncate text-neutral-300">{node.name}</span>
@@ -122,12 +163,20 @@ export function FileFilterPopover({
               </button>
             </li>
           ) : (
-            <li key={node.file.path} className="flex items-center gap-1.5 pr-2 hover:bg-(--row-hover)" style={indent(depth)}>
+            <li
+              key={node.file.path}
+              data-tree-key={node.file.path}
+              className={`flex items-center gap-1.5 rounded pr-2 ${nav.cursor === node.file.path ? "bg-(--row-selected)" : "hover:bg-(--row-hover)"}`}
+              style={indent(depth)}
+            >
               <Checkbox state={excluded.has(node.file.path) ? "unchecked" : "checked"} onChange={() => setChecked([node.file], excluded.has(node.file.path))} />
               <label
                 className="flex min-w-0 flex-1 items-center gap-1.5"
                 title={`${node.file.path} (${node.file.status})`}
-                onClick={() => setChecked([node.file], excluded.has(node.file.path))}
+                onClick={() => {
+                  setChecked([node.file], excluded.has(node.file.path));
+                  nav.select(node.file.path);
+                }}
               >
                 <img src={fileIconUrl(node.file.path)} alt="" className="size-4 shrink-0" />
                 <span className={`truncate ${STATUS_NAME_CLASS[node.file.status] ?? "text-neutral-200"}`}>{node.name}</span>

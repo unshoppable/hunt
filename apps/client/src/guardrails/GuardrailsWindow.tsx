@@ -19,6 +19,7 @@ import { useHoverAnchor, type HoverAnchor } from "../ui/hoverAnchor";
 import { ChevronIcon, PlusIcon, SparkleIcon, TrashIcon } from "../ui/icons";
 import { useSecondaryWindow } from "../ui/nativeWindow";
 import { baseName } from "../ui/path";
+import { useTreeNavigation } from "../ui/useTreeNavigation";
 import { errorText, useLoad } from "../ui/useLoad";
 import { creationTask, generationTask, GUARDRAIL_CHAT_PATH, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailTask, guardrailTemplate, isInsideFolder, KIND_LABELS, kindHelp, listGuardrails, newGuardrailLocation, ownerFolderOf, treeFolders, type Guardrail, type GuardrailKind, type GuardrailListing, type GuardrailLocation } from "./guardrails";
 import { GuardrailTree } from "./GuardrailTree";
@@ -221,6 +222,15 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
       return next;
     });
   };
+
+  /** Arrow keys in the list; a folder's key is its path with a trailing slash, a guardrail's its path. */
+  const listNav = useTreeNavigation({
+    rows: rows.map((row) => (row.type === "folder" ? { key: `${row.folder}/`, depth: row.depth, isExpanded: !collapsedFolders.has(row.folder) } : { key: row.entry.path, depth: row.depth })),
+    selectedKey: selectedPath,
+    onSelect: select,
+    isSelectable: (key) => !key.endsWith("/"),
+    onToggle: (key) => toggleFolder(key.slice(0, -1)),
+  });
 
   const selectKind = (next: GuardrailKind) => {
     setKind(next);
@@ -473,18 +483,29 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
             )
           ) : (
             <>
-              <ul className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 text-[13px]">
+              <ul {...listNav.listProps} className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 text-[13px] outline-none">
                 {rows.map((row) =>
                   row.type === "folder" ? (
-                    <FolderRow key={`folder:${row.folder}`} name={row.name} depth={row.depth} isExpanded={!collapsedFolders.has(row.folder)} onToggle={() => toggleFolder(row.folder)} />
+                    <FolderRow
+                      key={`folder:${row.folder}`}
+                      folder={row.folder}
+                      name={row.name}
+                      depth={row.depth}
+                      isExpanded={!collapsedFolders.has(row.folder)}
+                      isSelected={listNav.cursor === `${row.folder}/`}
+                      onToggle={() => {
+                        toggleFolder(row.folder);
+                        listNav.select(`${row.folder}/`);
+                      }}
+                    />
                   ) : (
                     <GuardrailRow
                       key={row.entry.path}
                       entry={row.entry}
                       depth={row.depth}
-                      isSelected={row.entry.path === selectedPath}
+                      isSelected={listNav.cursor === row.entry.path}
                       isDirty={dirtyPaths.includes(row.entry.path)}
-                      onSelect={() => select(row.entry.path)}
+                      onSelect={() => listNav.select(row.entry.path)}
                       onDelete={() => void remove(row.entry)}
                     />
                   ),
@@ -608,15 +629,15 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
 const ROW_INDENT = 14;
 
 /** Collapsible folder of the list; the rows below it are indented one level further. */
-function FolderRow({ name, depth, isExpanded, onToggle }: { name: string; depth: number; isExpanded: boolean; onToggle: () => void }) {
+function FolderRow({ folder, name, depth, isExpanded, isSelected, onToggle }: { folder: string; name: string; depth: number; isExpanded: boolean; isSelected: boolean; onToggle: () => void }) {
   return (
-    <li>
+    <li data-tree-key={`${folder}/`}>
       <button
         type="button"
         onClick={onToggle}
         aria-expanded={isExpanded}
         style={{ paddingLeft: 4 + depth * ROW_INDENT }}
-        className="flex w-full items-center gap-1 rounded-md py-1.5 pr-2 text-left text-neutral-400 hover:bg-(--row-hover) hover:text-white"
+        className={`flex w-full items-center gap-1 rounded py-1.5 pr-2 text-left ${isSelected ? "bg-(--row-selected) text-white" : "text-neutral-400 hover:bg-(--row-hover) hover:text-white"}`}
       >
         <ChevronIcon expanded={isExpanded} className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate">{name}</span>
@@ -628,7 +649,7 @@ function FolderRow({ name, depth, isExpanded, onToggle }: { name: string; depth:
 /** One guardrail of the list; its delete button shows up while the row is hovered or focused. */
 function GuardrailRow({ entry, depth, isSelected, isDirty, onSelect, onDelete }: { entry: Guardrail; depth: number; isSelected: boolean; isDirty: boolean; onSelect: () => void; onDelete: () => void }) {
   return (
-    <li className="group relative">
+    <li className="group relative" data-tree-key={entry.path}>
       <button
         type="button"
         onClick={onSelect}

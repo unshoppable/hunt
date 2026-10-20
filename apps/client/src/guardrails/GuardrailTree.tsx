@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { ChevronIcon, PlusIcon, TrashIcon } from "../ui/icons";
 import { useEscapeToClose } from "../ui/useEscapeToClose";
+import { useTreeNavigation } from "../ui/useTreeNavigation";
 import { expandedForTree, folderOf, guardrailTreeRows, isInsideFolder, KIND_LABELS, treeParentOf, type Guardrail, type GuardrailKind } from "./guardrails";
 
 /** Indentation of a tree row per folder level, in pixels. */
@@ -25,7 +26,8 @@ type Drag = {
  * start out open, every other one closed; the chevron toggles. While hovered, a folder shows "+" to create an entry
  * there (a CLAUDE.md only where there is none yet) and, when it may be deleted (any but the root for instructions,
  * the kind's directories and their subfolders otherwise), a trash button that deletes it with everything in it. An entry row opens the file, shows its trash button while hovered,
- * and, when `onMove` is set, can be dragged onto a folder `canDropInto` accepts to move it there.
+ * and, when `onMove` is set, can be dragged onto a folder `canDropInto` accepts to move it there. The arrow keys move
+ * through the rows, open the entries and open or close the folders.
  */
 export function GuardrailTree({
   kind,
@@ -90,6 +92,14 @@ export function GuardrailTree({
   };
 
   const rows = guardrailTreeRows(folders, entries, expanded, projectName);
+  /** A folder's key is its path with a trailing slash (`/` for the root), an entry's its path. */
+  const nav = useTreeNavigation({
+    rows: rows.map((row) => (row.type === "folder" ? { key: `${row.path}/`, depth: row.depth, isExpanded: expanded.has(row.path) } : { key: row.entry.path, depth: row.depth })),
+    selectedKey: selectedPath,
+    onSelect,
+    isSelectable: (key) => !key.endsWith("/"),
+    onToggle: (key) => toggle(key.slice(0, -1)),
+  });
   /** Whether `folder` is one of the kind's directories or lies below one. */
   const isKindFolder = (folder: string) => kindDirs.some((dir) => folder === dir || isInsideFolder(folder, dir));
 
@@ -111,7 +121,7 @@ export function GuardrailTree({
 
   return (
     <>
-      <ul className="min-h-0 flex-1 overflow-y-auto px-2 py-2 text-[13px]" aria-label="Folders">
+      <ul {...nav.listProps} className="min-h-0 flex-1 overflow-y-auto px-2 py-2 text-[13px] outline-none" aria-label="Folders">
         {rows.map((row) =>
           row.type === "folder" ? (
             <FolderRow
@@ -120,11 +130,15 @@ export function GuardrailTree({
               name={row.name}
               depth={row.depth}
               isExpanded={expanded.has(row.path)}
+              isSelected={nav.cursor === `${row.path}/`}
               isKindDir={kindDirs.includes(row.path)}
               isEmpty={!row.holdsEntries}
               isDropTarget={drag?.over === row.path}
               entryLabel={labels.item}
-              onToggle={() => toggle(row.path)}
+              onToggle={() => {
+                toggle(row.path);
+                nav.select(`${row.path}/`);
+              }}
               actions={actionsOf(row)}
             />
           ) : (
@@ -132,10 +146,10 @@ export function GuardrailTree({
               key={row.entry.path}
               entry={row.entry}
               depth={row.depth}
-              isSelected={row.entry.path === selectedPath}
+              isSelected={nav.cursor === row.entry.path}
               isDirty={dirtyPaths.includes(row.entry.path)}
               isDragged={drag?.path === row.entry.path}
-              onSelect={() => onSelect(row.entry.path)}
+              onSelect={() => nav.select(row.entry.path)}
               onDelete={() => onDelete(row.entry)}
               onDragStart={onMove ? (x, y) => setDrag({ path: row.entry.path, x, y, over: null }) : null}
               onDragMove={(x, y) => setDrag((current) => (current ? { ...current, x, y, over: dropTargetAt(x, y, current.path) } : current))}
@@ -170,6 +184,7 @@ function FolderRow({
   name,
   depth,
   isExpanded,
+  isSelected,
   isKindDir,
   isEmpty,
   isDropTarget,
@@ -181,6 +196,7 @@ function FolderRow({
   name: string;
   depth: number;
   isExpanded: boolean;
+  isSelected: boolean;
   isKindDir: boolean;
   /** No entry lies anywhere below the folder; it is dimmed so that the branches worth opening stand out. */
   isEmpty: boolean;
@@ -194,14 +210,14 @@ function FolderRow({
   const buttonCount = [actions.onCreate, actions.onDelete].filter(Boolean).length;
   const place = path || name;
   return (
-    <li className="group relative" data-folder={path}>
+    <li className="group relative" data-folder={path} data-tree-key={`${path}/`}>
       <button
         type="button"
         onClick={onToggle}
         aria-expanded={isExpanded}
         title={place}
         style={{ paddingLeft: 4 + depth * ROW_INDENT, paddingRight: 4 + buttonCount * 28 }}
-        className={`flex w-full items-center gap-1 rounded-md py-1 text-left ${isDropTarget ? "bg-blue-500/25 text-white ring-1 ring-blue-400/60 ring-inset" : `${isKindDir ? "text-blue-200" : isEmpty ? "text-neutral-500" : "text-neutral-300"} hover:bg-(--row-hover) hover:text-white`}`}
+        className={`flex w-full items-center gap-1 rounded py-1 text-left ${isDropTarget ? "bg-blue-500/25 text-white ring-1 ring-blue-400/60 ring-inset" : isSelected ? "bg-(--row-selected) text-white" : `${isKindDir ? "text-blue-200" : isEmpty ? "text-neutral-500" : "text-neutral-300"} hover:bg-(--row-hover) hover:text-white`}`}
       >
         <ChevronIcon expanded={isExpanded} className="size-3.5 shrink-0 text-neutral-500" />
         <img src={folderIconUrl(place)} alt="" className={`size-4 shrink-0 ${isEmpty ? "opacity-50" : ""}`} />
@@ -296,7 +312,7 @@ function FileRow({
   };
 
   return (
-    <li className="group relative">
+    <li className="group relative" data-tree-key={entry.path}>
       <button
         type="button"
         onPointerDown={onPointerDown}

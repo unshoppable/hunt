@@ -8,8 +8,12 @@ import { ChevronIcon, CloseIcon } from "../ui/icons";
 import { confirmDestructive } from "../ui/confirm";
 import { baseName, dirName } from "../ui/path";
 import { errorText, useLoad } from "../ui/useLoad";
+import { useTreeNavigation } from "../ui/useTreeNavigation";
 
-/** Shelves of the session with unshelve and delete actions; reloads whenever `version` changes. */
+/**
+ * Shelves of the session with unshelve and delete actions; a shelf opens to list its files. The arrow keys move through
+ * the shelves and files and open or close a shelf. Reloads whenever `version` changes.
+ */
 export function ShelfList({ sessionId, version, onChanged }: { sessionId: string; version: number; onChanged: () => void }) {
   const fileIconUrl = useFileIconUrl();
   const [shelves, setShelves] = useState<Shelf[] | null>(null);
@@ -50,6 +54,16 @@ export function ShelfList({ sessionId, version, onChanged }: { sessionId: string
     });
   };
 
+  /** A shelf's key is its reference, a file's the reference and its path. */
+  const fileKey = (shelf: Shelf, path: string) => `${shelf.reference}:${path}`;
+  const nav = useTreeNavigation({
+    rows: (shelves ?? []).flatMap((shelf) => {
+      const isExpanded = expanded.has(shelf.reference);
+      return [{ key: shelf.reference, depth: 0, isExpanded }, ...(isExpanded ? shelf.files.map((file) => ({ key: fileKey(shelf, file.path), depth: 1 })) : [])];
+    }),
+    onToggle: toggleExpanded,
+  });
+
   const deleteShelf = async (shelf: Shelf) => {
     if (!(await confirmDestructive(`Delete shelf "${shelf.name}"? Its ${shelf.files.length} changed files are lost.`))) return;
     run(shelf.reference, () => commands.dropShelf(sessionId, shelf.reference));
@@ -58,14 +72,14 @@ export function ShelfList({ sessionId, version, onChanged }: { sessionId: string
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {error ? <p className="border-b border-(--line) px-2 py-1.5 text-[13px] text-red-400">{error}</p> : null}
-      <ul className="min-h-0 flex-1 overflow-y-auto font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)">
+      <ul {...nav.listProps} className="min-h-0 flex-1 overflow-y-auto outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)">
         {shelves?.length === 0 ? <li className="p-3 text-[13px] text-neutral-500">Nothing on the shelf.</li> : null}
         {shelves?.map((shelf) => {
           const isExpanded = expanded.has(shelf.reference);
           const isBusy = busyReference === shelf.reference;
           return (
             <li key={shelf.reference} className="border-b border-(--line)">
-              <div className="flex items-center gap-2 px-2 py-2.5">
+              <div data-tree-key={shelf.reference} data-selected={nav.cursor === shelf.reference} onClick={() => nav.select(shelf.reference)} className="tree-row flex items-center gap-2 px-3 py-2.5">
                 <button type="button" onClick={() => toggleExpanded(shelf.reference)} className={`${ICON_BUTTON_BASE_SM} -my-0.5 text-neutral-500 hover:bg-(--row-hover) hover:text-neutral-200`} aria-label={isExpanded ? "Collapse" : "Expand"}>
                   <ChevronIcon expanded={isExpanded} />
                 </button>
@@ -102,7 +116,14 @@ export function ShelfList({ sessionId, version, onChanged }: { sessionId: string
               {isExpanded ? (
                 <ul className="pb-1">
                   {shelf.files.map((file) => (
-                    <li key={file.path} className="flex items-center gap-2 py-1 pl-7 pr-2" title={file.path}>
+                    <li
+                      key={file.path}
+                      data-tree-key={fileKey(shelf, file.path)}
+                      data-selected={nav.cursor === fileKey(shelf, file.path)}
+                      onClick={() => nav.select(fileKey(shelf, file.path))}
+                      className="tree-row flex items-center gap-2 py-1 pr-3 pl-8"
+                      title={file.path}
+                    >
                       <img src={fileIconUrl(file.path)} alt="" className="size-4 shrink-0" />
                       <span className={`truncate ${STATUS_NAME_CLASS[file.status] ?? "text-neutral-200"}`}>{baseName(file.path)}</span>
                       <span className="ml-auto truncate pl-1 text-[0.85em] text-neutral-600">{dirName(file.path)}</span>

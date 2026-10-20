@@ -5,6 +5,8 @@ import { rootFolderIconUrl, useFileIconUrl, useFolderIconUrl } from "../diff/fil
 import { STATUS_NAME_CLASS } from "../diff/styles";
 import { useDismiss } from "../ui/useDismiss";
 import { errorText, useLoad } from "../ui/useLoad";
+import type { TreeNavRow } from "../ui/treeNavigation";
+import { useTreeNavigation } from "../ui/useTreeNavigation";
 import { EMPTY_MARKS, FOLDER_COLORS, FOLDER_COLOR_NAMES, markedColor, useFolderColorStore, type FolderColor } from "./folderColors";
 
 type Row = { path: string; name: string; isDir: boolean; depth: number };
@@ -27,8 +29,9 @@ function parentPaths(path: string): string[] {
 /**
  * The project view: a lazily listed tree of the worktree with WebStorm's file icons, changelist colors and
  * file colors (a folder marked through its context menu tints itself and everything below it; the marks are
- * kept per repository, see folderColors.ts). The selection changes on click and on `revealRequest` (⇧⌘2),
- * never when the editor's active tab changes; `refreshVersion` relists every open directory.
+ * kept per repository, see folderColors.ts). The selection changes on click, with the arrow keys and on `revealRequest`
+ * (⇧⌘2), never when the editor's active tab changes; Enter opens the selected file. `refreshVersion` relists every
+ * open directory.
  */
 export function ProjectTree({
   sessionId,
@@ -52,7 +55,6 @@ export function ProjectTree({
   const [error, setError] = useState<string | null>(null);
   const [scrollTarget, setScrollTarget] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const listRef = useRef<HTMLUListElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const marks = useFolderColorStore((state) => state.marksByRepo[repoPath] ?? EMPTY_MARKS);
   const setFolderColor = useFolderColorStore((state) => state.setFolderColor);
@@ -116,6 +118,18 @@ export function ProjectTree({
     }
   };
 
+  /** The project row (`""`) and every visible row, as keyboard navigation sees them. */
+  const navRows = useMemo<TreeNavRow[]>(
+    () => [
+      { key: "", depth: 0, isExpanded: expanded.has("") },
+      ...rows.map((row) => ({ key: row.path, depth: row.depth, isExpanded: row.isDir ? expanded.has(row.path) : undefined })),
+    ],
+    [rows, expanded],
+  );
+
+  const nav = useTreeNavigation({ rows: navRows, selectedKey: selectedPath, onSelect: setSelectedPath, onToggle: toggle, onActivate: onOpen });
+  const { listRef } = nav;
+
   // ⇧⌘2: list and expand every ancestor, then scroll the file into view.
   const revealPath = revealRequest?.path ?? "";
   useLoad(
@@ -152,20 +166,20 @@ export function ProjectTree({
 
   useEffect(() => {
     if (!scrollTarget) return;
-    const row = listRef.current?.querySelector<HTMLElement>(`[data-path="${CSS.escape(scrollTarget)}"]`);
+    const row = listRef.current?.querySelector<HTMLElement>(`[data-tree-key="${CSS.escape(scrollTarget)}"]`);
     if (!row) return;
     row.scrollIntoView({ block: "center" });
     row.focus();
     setScrollTarget(null);
-  }, [scrollTarget, rows]);
+  }, [scrollTarget, rows, listRef]);
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-(--changelist-bg)">
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-(--line) px-2 text-[13px] text-neutral-400">Project</div>
       {error ? <p className="border-b border-(--line) px-2 py-2 text-[13px] text-red-400">{error}</p> : null}
       <ul
-        ref={listRef}
-        className="min-h-0 flex-1 overflow-auto py-1 font-(family-name:--changelist-font-family) text-(length:--changelist-font-size)"
+        {...nav.listProps}
+        className="min-h-0 flex-1 overflow-auto py-1 outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size)"
         // The changelist's line height is a unitless factor of the font size.
         style={{ lineHeight: "calc(var(--changelist-line-height) * 1em)" }}
       >
@@ -175,21 +189,24 @@ export function ProjectTree({
           isDir
           depth={0}
           isExpanded={expanded.has("")}
-          isSelected={false}
+          isSelected={nav.cursor === ""}
           status={undefined}
           color={null}
-          onClick={() => toggle("")}
+          onClick={() => {
+            nav.select("");
+            toggle("");
+          }}
         />
         {rows.map((row) => (
           <TreeRow
             key={row.path}
             {...row}
             isExpanded={expanded.has(row.path)}
-            isSelected={row.path === selectedPath}
+            isSelected={nav.cursor === row.path}
             status={statusByPath[row.path]}
             color={markedColor(marks, row.path)}
             onClick={() => {
-              setSelectedPath(row.path);
+              nav.select(row.path);
               if (row.isDir) {
                 toggle(row.path);
               } else {
@@ -261,7 +278,7 @@ function TreeRow({
   const folderIconUrl = useFolderIconUrl();
   return (
     <li
-      data-path={path}
+      data-tree-key={path}
       tabIndex={-1}
       onClick={onClick}
       onContextMenu={onContextMenu}

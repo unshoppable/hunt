@@ -1,3 +1,13 @@
+## 0.35.2 (2026-10-20)
+
+### 🔥 Performance
+
+- **session:** a resumed session VM connects up to 30 s sooner, and the progress says whether the VM wakes up or boots ([1c13251](https://github.com/unshoppable/hunt/commit/1c13251))
+
+### 🧱 Updated Dependencies
+
+- Updated session to 0.23.2
+
 ## 0.35.1 (2026-10-19)
 
 ### 🩹 Fixes

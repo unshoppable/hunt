@@ -243,8 +243,12 @@ export const commands = {
   readFile: (id: string, path: string) => invoke<string>("read_file", { id, path }),
   /** Worktree files containing `word` as a whole word (tracked and untracked, never ignored). */
   searchWord: (id: string, word: string) => invoke<string[]>("search_word", { id, word }),
-  /** Lines of worktree files matching `query` (tracked and untracked, never ignored or binary). */
-  findInFiles: (id: string, query: TextQuery) => invoke<TextSearchResult>("find_in_files", { id, query }),
+  /**
+   * Lines of worktree files matching `query` (tracked and untracked, never ignored or binary); empty once a search of
+   * the same worktree issued after this one is in progress.
+   */
+  findInFiles: (id: string, query: TextQuery) =>
+    invoke<TextSearchResult>("find_in_files", { id, query, issuedAt: performance.timeOrigin + performance.now() }),
   /** Worktree paths the relative import specifiers of `from` point at; `null` where no file matches. */
   resolveImports: (id: string, from: string, specifiers: string[]) =>
     invoke<(string | null)[]>("resolve_imports", { id, from, specifiers }),

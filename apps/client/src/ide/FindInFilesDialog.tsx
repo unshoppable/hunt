@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboa
 import * as monaco from "monaco-editor";
 import { commands } from "../ipc/commands";
 import type { TextMatch, TextQuery, TextRange, TextSearchResult } from "../ipc/types";
+import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
 import { useHuntStore } from "../state/store";
 import { STATUS_BAR } from "../ui/bars";
 import { SearchIcon } from "../ui/icons";
@@ -18,6 +19,9 @@ const MIN_SIZE = { width: 560, height: 280 };
 /** The largest share of the window's width and height the dialog may take. */
 const MAX_WIDTH_SHARE = 0.94;
 const MAX_HEIGHT_SHARE = 0.84;
+/** Smallest heights in pixels the list and the preview can be dragged to: two rows and three lines. */
+const MIN_LIST_HEIGHT = 56;
+const MIN_PREVIEW_HEIGHT = 64;
 
 /** The last query of this window; the dialog reopens with it like WebStorm's. */
 let lastQuery: TextQuery = { text: "", matchCase: false, wholeWords: false, isRegex: false, fileMask: "" };
@@ -142,14 +146,49 @@ export function FindInFilesDialog({
     event.preventDefault();
   };
 
+  /** Returns the focus to the query field after a drag of the split, which leaves it on the split line or the body. */
+  const onPointerUp = () => {
+    const focused = document.activeElement;
+    if (focused === document.body || focused?.hasAttribute("data-separator")) {
+      inputRef.current?.focus();
+    }
+  };
+
   // The last result stays on screen while the next search runs (an empty query's result only loaded the files).
   const status = !query.text ? "" : result?.query.text ? matchSummary(result.value) : "Searching…";
   // Without a preview the dialog is as tall as its list, up to the remembered height.
   const style = { width: size.width, height: selectedMatch ? size.height : undefined, maxHeight: size.height };
+  const list = (
+    <ul ref={listRef} className={`min-h-0 overflow-auto py-1 text-[13px] ${selectedMatch ? "flex-1" : ""}`}>
+      {matches.map((match, index) => {
+        const { name, dir } = splitPath(match.path);
+        return (
+          <li
+            key={`${match.path}:${match.line}`}
+            // Keeps the focus in the query field, so the keys still reach the dialog after a click.
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => setSelectedIndex(index)}
+            onDoubleClick={() => open(match)}
+            data-selected={index === selected}
+            className="tree-row flex cursor-pointer items-center gap-4 px-3 py-1"
+          >
+            <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-pre text-neutral-200">
+              <MatchedText text={match.preview} ranges={match.ranges} />
+            </span>
+            <span className="flex max-w-[45%] min-w-0 shrink-0 text-neutral-500">
+              {dir ? <span className="truncate">{dir}/</span> : null}
+              <span className="shrink-0 text-neutral-400">{name}</span>
+              <span className="ml-2 shrink-0 tabular-nums">{match.line}</span>
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
   return (
     <Modal label="Find in files" onClose={onClose} align="top" className="bg-(--surface-inspector)" style={style} resize={grips}>
       {/* `contents` keeps the rows in the dialog's own column layout; the keys bubble up through it. */}
-      <div className="contents" onKeyDown={onKeyDown}>
+      <div className="contents" onKeyDown={onKeyDown} onPointerUp={onPointerUp}>
         <div className="flex h-10 shrink-0 items-center gap-3 px-3 text-[13px]">
           <span className="shrink-0 font-semibold text-neutral-200">Find in Files</span>
           <span className="min-w-0 flex-1 truncate text-neutral-500">{status}</span>
@@ -186,35 +225,18 @@ export function FindInFilesDialog({
           </OptionToggle>
         </div>
         {error ? <p className="shrink-0 px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
-        {/* With a preview the list leaves it at least half of the dialog; without one it takes the whole height. */}
-        <ul ref={listRef} className={`min-h-0 overflow-auto py-1 text-[13px] ${selectedMatch ? "max-h-[45%] shrink-0" : ""}`}>
-          {matches.map((match, index) => {
-            const { name, dir } = splitPath(match.path);
-            return (
-              <li
-                key={`${match.path}:${match.line}`}
-                // Keeps the focus in the query field, so the keys still reach the dialog after a click.
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => setSelectedIndex(index)}
-                onDoubleClick={() => open(match)}
-                data-selected={index === selected}
-                className="tree-row flex cursor-pointer items-center gap-4 px-3 py-1"
-              >
-                <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-pre text-neutral-200">
-                  <MatchedText text={match.preview} ranges={match.ranges} />
-                </span>
-                <span className="flex max-w-[45%] min-w-0 shrink-0 text-neutral-500">
-                  {dir ? <span className="truncate">{dir}/</span> : null}
-                  <span className="shrink-0 text-neutral-400">{name}</span>
-                  <span className="ml-2 shrink-0 tabular-nums">{match.line}</span>
-                </span>
-              </li>
-            );
-          })}
-        </ul>
+        {/* With a preview the list and the preview share the height at a draggable split; without one the list takes it all. */}
         {selectedMatch ? (
           <>
-            <FilePreview sessionId={sessionId} path={selectedMatch.path} line={selectedMatch.line} column={selectedMatch.column} endColumn={selectedMatch.endColumn} />
+            <PersistentGroup id="find-in-files" orientation="vertical" className="flex min-h-0 flex-1 flex-col">
+              <Panel id="list" defaultSize="40" minSize={MIN_LIST_HEIGHT} className="flex min-h-0 flex-col">
+                {list}
+              </Panel>
+              <PaneSeparator orientation="vertical" />
+              <Panel id="preview" defaultSize="60" minSize={MIN_PREVIEW_HEIGHT} className="flex min-h-0 flex-col">
+                <FilePreview sessionId={sessionId} path={selectedMatch.path} line={selectedMatch.line} column={selectedMatch.column} endColumn={selectedMatch.endColumn} />
+              </Panel>
+            </PersistentGroup>
             <div className={`${STATUS_BAR} gap-3`}>
               <span className="min-w-0 flex-1 truncate text-neutral-400" title={`${worktreePath}/${selectedMatch.path}`}>
                 {abbreviateHome(worktreePath)}/{selectedMatch.path}
@@ -229,7 +251,9 @@ export function FindInFilesDialog({
               </button>
             </div>
           </>
-        ) : null}
+        ) : (
+          list
+        )}
       </div>
     </Modal>
   );

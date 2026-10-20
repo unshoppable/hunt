@@ -156,7 +156,7 @@ export function FileSearchDialog({
         </div>
         {error ? <p className="shrink-0 px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
         {/* With a preview the list leaves it at least half of the dialog; without one it takes the whole height. */}
-        <ul ref={listRef} className={`min-h-0 overflow-auto py-1 text-[13px] ${selectedMatch ? "max-h-[45%] shrink-0" : ""}`}>
+        <ul ref={listRef} className={`min-h-0 overflow-auto py-1 text-[13px] ${selectedMatch ? "max-h-[45%] shrink-0 border-b border-(--line)" : ""}`}>
           {matches.map((match, index) => (
             <li
               key={match.path}
@@ -304,7 +304,7 @@ export function FilePreview({
 
   const isStale = loaded?.path !== path;
   return (
-    <div className="relative min-h-0 flex-1 border-t border-(--line)">
+    <div className="relative min-h-0 flex-1">
       <div ref={hostRef} className={`absolute inset-0 ${isStale ? "invisible" : ""}`} />
       {error ? <p className="absolute inset-x-0 top-0 px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
       {isStale && !error ? <p className="absolute inset-x-0 top-0 px-3 py-2 text-[13px] text-neutral-500">Loading…</p> : null}

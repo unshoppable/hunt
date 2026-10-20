@@ -2809,9 +2809,9 @@ pub async fn search_word(app: AppHandle, id: Uuid, word: String) -> Result<Vec<S
 
 /// Lines of worktree files matching `query`, for the editor's Find in Files.
 #[tauri::command]
-pub async fn find_in_files(app: AppHandle, registry: State<'_, FindRegistry>, id: Uuid, query: TextQuery) -> Result<TextSearchResult, String> {
+pub async fn find_in_files(app: AppHandle, registry: State<'_, FindRegistry>, id: Uuid, query: TextQuery, issued_at: f64) -> Result<TextSearchResult, String> {
     let record = worktree_session(&app, id)?;
-    find_in_files::search(&registry, &record.worktree_path, &query).await
+    find_in_files::search(&registry, &record.worktree_path, &query, issued_at).await
 }
 
 /// Resolves the relative import specifiers of `from` to worktree paths (`None` where no file matches).

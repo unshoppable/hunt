@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -81,9 +81,36 @@ pub struct FindRegistry {
 
 #[derive(Default)]
 struct WorktreeIndex {
-    /// Bumped by every search; a running search stops once a newer one started.
-    generation: AtomicU64,
+    /// When the searches in progress were issued (see `search`).
+    running: Mutex<Vec<f64>>,
     files: tokio::sync::Mutex<FileIndex>,
+}
+
+/// A search in progress: listed in `WorktreeIndex::running` until it is dropped.
+struct RunningSearch {
+    index: Arc<WorktreeIndex>,
+    issued_at: f64,
+}
+
+impl RunningSearch {
+    fn start(index: Arc<WorktreeIndex>, issued_at: f64) -> RunningSearch {
+        index.running.lock().unwrap().push(issued_at);
+        RunningSearch { index, issued_at }
+    }
+
+    /// False once a search issued after this one is in progress.
+    fn is_current(&self) -> bool {
+        !self.index.running.lock().unwrap().iter().any(|&other| other > self.issued_at)
+    }
+}
+
+impl Drop for RunningSearch {
+    fn drop(&mut self) {
+        let mut running = self.index.running.lock().unwrap();
+        if let Some(position) = running.iter().position(|&other| other == self.issued_at) {
+            running.swap_remove(position);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -113,14 +140,15 @@ impl FindRegistry {
 }
 
 /// Searches the worktree for `query`; at most `MATCH_LIMIT` lines, in path and line order. An empty query only
-/// brings the worktree's texts into memory, so the first real search is fast too. A search that a newer one of the
-/// same worktree overtook returns an empty result.
-pub async fn search(registry: &FindRegistry, worktree: &Path, query: &TextQuery) -> Result<TextSearchResult, String> {
+/// brings the worktree's texts into memory, so the first real search is fast too. `issued_at` is when the caller
+/// asked (milliseconds since the epoch): a search stops and returns an empty result once one of the same worktree
+/// issued after it is in progress, whatever order the two arrive in.
+pub async fn search(registry: &FindRegistry, worktree: &Path, query: &TextQuery, issued_at: f64) -> Result<TextSearchResult, String> {
     let matcher = Matcher::new(query)?;
     let index = registry.index(worktree);
-    let generation = index.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let running = RunningSearch::start(index.clone(), issued_at);
     let mut files = index.files.lock().await;
-    if index.generation.load(Ordering::SeqCst) != generation {
+    if !running.is_current() {
         return Ok(TextSearchResult::default());
     }
 
@@ -145,11 +173,7 @@ pub async fn search(registry: &FindRegistry, worktree: &Path, query: &TextQuery)
     let paths = files.paths.clone();
     let texts = std::mem::take(&mut files.texts);
     let root = worktree.to_path_buf();
-    let search_index = index.clone();
-    let (texts, result) = tokio::task::spawn_blocking(move || {
-        let is_current = || search_index.generation.load(Ordering::Relaxed) == generation;
-        search_files(&root, &paths, texts, matcher.as_ref(), &is_current)
-    })
+    let (texts, result) = tokio::task::spawn_blocking(move || search_files(&root, &paths, texts, matcher.as_ref(), &|| running.is_current()))
     .await
     .map_err(|error| format!("failed to search: {error}"))?;
     files.texts = texts;
@@ -433,23 +457,23 @@ mod tests {
         git(repo, &["add", "src/user.ts"]).await;
         let registry = FindRegistry::default();
 
-        let all = search(&registry, repo, &query("user")).await.unwrap();
+        let all = search(&registry, repo, &query("user"), 0.0).await.unwrap();
         assert_eq!(found(&all), vec![("notes.md", 1, "a user"), ("src/user.spec.ts", 1, "new User()"), ("src/user.ts", 1, "class User {}"), ("src/user.ts", 2, "const users = new User();")]);
         assert_eq!(all.matches[3].ranges.len(), 2);
 
         let exact = TextQuery { match_case: true, whole_words: true, file_mask: "*.ts, !*.spec.ts".to_string(), ..query("User") };
-        assert_eq!(found(&search(&registry, repo, &exact).await.unwrap()), vec![("src/user.ts", 1, "class User {}"), ("src/user.ts", 2, "const users = new User();")]);
+        assert_eq!(found(&search(&registry, repo, &exact, 0.0).await.unwrap()), vec![("src/user.ts", 1, "class User {}"), ("src/user.ts", 2, "const users = new User();")]);
 
         let regex = TextQuery { is_regex: true, ..query(r"^class \w+") };
-        assert_eq!(found(&search(&registry, repo, &regex).await.unwrap()), vec![("src/user.ts", 1, "class User {}")]);
+        assert_eq!(found(&search(&registry, repo, &regex, 0.0).await.unwrap()), vec![("src/user.ts", 1, "class User {}")]);
 
         std::fs::write(repo.join("notes.md"), "no match\nanother user here\n").unwrap();
         std::fs::remove_file(repo.join("src/user.spec.ts")).unwrap();
         let edited = TextQuery { file_mask: "*.md, *.spec.ts".to_string(), ..query("user") };
-        assert_eq!(found(&search(&registry, repo, &edited).await.unwrap()), vec![("notes.md", 2, "another user here")]);
+        assert_eq!(found(&search(&registry, repo, &edited, 0.0).await.unwrap()), vec![("notes.md", 2, "another user here")]);
 
-        assert_eq!(search(&registry, repo, &TextQuery { is_regex: true, ..query("(") }).await, Err("failed to search: unclosed group".to_string()));
-        assert!(search(&registry, repo, &query("")).await.unwrap().matches.is_empty());
+        assert_eq!(search(&registry, repo, &TextQuery { is_regex: true, ..query("(") }, 0.0).await, Err("failed to search: unclosed group".to_string()));
+        assert!(search(&registry, repo, &query(""), 0.0).await.unwrap().matches.is_empty());
     }
 
     #[tokio::test]
@@ -460,9 +484,25 @@ mod tests {
         for index in 0..200 {
             std::fs::write(repo.join(format!("f{index:03}.txt")), "hit\nhit\nhit\n").unwrap();
         }
-        let result = search(&FindRegistry::default(), repo, &query("hit")).await.unwrap();
+        let result = search(&FindRegistry::default(), repo, &query("hit"), 0.0).await.unwrap();
         assert!(result.is_truncated);
         assert_eq!(result.matches.len(), MATCH_LIMIT);
         assert_eq!((result.matches[0].path.as_str(), result.matches[499].path.as_str(), result.matches[499].line), ("f000.txt", "f166.txt", 2));
+    }
+
+    #[tokio::test]
+    async fn an_earlier_search_arriving_later_leaves_the_later_one_its_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        git(repo, &["init", "-q", "-b", "main"]).await;
+        std::fs::write(repo.join("a.txt"), "hit\n").unwrap();
+        let registry = FindRegistry::default();
+
+        let later = registry.index(repo);
+        let in_progress = RunningSearch::start(later, 2.0);
+        assert!(search(&registry, repo, &query("hit"), 1.0).await.unwrap().matches.is_empty());
+        drop(in_progress);
+        assert_eq!(found(&search(&registry, repo, &query("hit"), 2.0).await.unwrap()), vec![("a.txt", 1, "hit")]);
+        assert!(registry.index(repo).running.lock().unwrap().is_empty());
     }
 }

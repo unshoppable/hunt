@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import type { ToolCallContent } from "@agentclientprotocol/sdk";
 import type { ToolCallView } from "../ipc/types";
 import { InlineDiff } from "../diff/InlineDiff";
@@ -18,7 +18,7 @@ const STATUS_DOT: Record<string, string> = {
  * returned as thumbnails below it, folded or not. Clicking the row unfolds the output or diff; `isVerbose` (ctrl+o)
  * unfolds every row at once. `basePath` is stripped from arguments so worktree paths read as repo-relative paths.
  */
-export function ToolCallCard({ toolCall, isVerbose, basePath }: { toolCall: ToolCallView; isVerbose: boolean; basePath: string }) {
+export const ToolCallCard = memo(function ToolCallCard({ toolCall, isVerbose, basePath }: { toolCall: ToolCallView; isVerbose: boolean; basePath: string }) {
   const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
   const title = formatToolTitle(toolCall);
   // Checking image data takes time in proportion to its size, so the result is kept until the tool call changes.
@@ -54,7 +54,7 @@ export function ToolCallCard({ toolCall, isVerbose, basePath }: { toolCall: Tool
       ) : null}
     </div>
   );
-}
+});
 
 /** Replaces the session's worktree prefix in a tool argument with a repo-relative path. */
 function stripBasePath(argument: string, basePath: string): string {

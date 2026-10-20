@@ -1,4 +1,4 @@
-import { isValidElement, useState, type ReactNode } from "react";
+import { isValidElement, memo, useState, type ReactNode } from "react";
 import { stripGuardrailMarker } from "./guardrailSuggestion";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -100,7 +100,7 @@ function MessageTime({ at, className = "" }: { at: string; className?: string })
 }
 
 /** Markdown-rendered agent turn with its images below, the time it was written and a copy button that appears on hover. */
-function AgentMessage({ text: reply, images, at }: { text: string; images: string[]; at?: string }) {
+const AgentMessage = memo(function AgentMessage({ text: reply, images, at }: { text: string; images: string[]; at?: string }) {
   const text = stripGuardrailMarker(reply);
   const [isCopied, setIsCopied] = useState(false);
 
@@ -133,7 +133,7 @@ function AgentMessage({ text: reply, images, at }: { text: string; images: strin
       ) : null}
     </div>
   );
-}
+});
 
 /** Agent markdown rendered as a document with the chat's code blocks. */
 export function MarkdownText({ text, className = "" }: { text: string; className?: string }) {
@@ -157,7 +157,7 @@ function MarkdownCodeBlock({ children }: { children?: ReactNode }) {
 const MARKDOWN_COMPONENTS: Components = { pre: MarkdownCodeBlock };
 
 /** Collapsed thinking row inside the activity card; open while streaming or in verbose mode. */
-function ThoughtRow({ text, isStreaming, isVerbose }: { text: string; isStreaming: boolean; isVerbose: boolean }) {
+const ThoughtRow = memo(function ThoughtRow({ text, isStreaming, isVerbose }: { text: string; isStreaming: boolean; isVerbose: boolean }) {
   return (
     <details open={isStreaming || isVerbose} className="chat-mono">
       <summary className="flex select-none items-center gap-2.5 px-3 py-1.5 text-neutral-400 marker:content-none hover:bg-(--row-hover)">
@@ -167,7 +167,7 @@ function ThoughtRow({ text, isStreaming, isVerbose }: { text: string; isStreamin
       <div className="whitespace-pre-wrap break-words border-t border-(--line) px-3 py-2 italic text-neutral-500">{text}</div>
     </details>
   );
-}
+});
 
 /** The agent's todo list; the in-progress entry is highlighted. */
 function PlanCard({ entries }: { entries: PlanEntry[] }) {

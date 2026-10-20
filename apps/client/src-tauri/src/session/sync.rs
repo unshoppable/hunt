@@ -25,8 +25,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{Meta, SessionNotification, SessionUpdate, ToolCallStatus};
-use notify_debouncer_full::notify::{RecommendedWatcher, RecursiveMode};
-use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
+use notify_debouncer_full::notify::{self, RecommendedWatcher, RecursiveMode};
+use notify_debouncer_full::{new_debouncer_opt, DebounceEventResult, Debouncer, NoCache};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
@@ -84,7 +84,7 @@ struct SessionSync {
     wants_rescan: AtomicBool,
     /// `HEAD` may have moved on either side, so the branch is to point at the same commit on both again.
     wants_head: AtomicBool,
-    watcher: Mutex<Option<Debouncer<RecommendedWatcher, RecommendedCache>>>,
+    watcher: Mutex<Option<Debouncer<RecommendedWatcher, NoCache>>>,
     /// Asks for a sync every `TURN_POLL` while a turn runs.
     poller: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     /// The channel to the sync helper on the VM while it is open, and the task that opens it again.
@@ -804,7 +804,7 @@ fn watch(app: &AppHandle, id: Uuid, state: &Arc<SessionSync>, worktree: &Path) {
     let reflogs = git_dir_of(worktree).map(|git_dir| git_dir.join("logs"));
     let head_reflog = reflogs.as_ref().map(|reflogs| reflogs.join("HEAD"));
     let reports = Arc::downgrade(state);
-    let debouncer = new_debouncer(LOCAL_DEBOUNCE, None, move |result: DebounceEventResult| {
+    let on_events = move |result: DebounceEventResult| {
         let Some(state) = reports.upgrade() else { return };
         let Ok(events) = result else {
             state.wants_rescan.store(true, Ordering::SeqCst);
@@ -821,7 +821,10 @@ fn watch(app: &AppHandle, id: Uuid, state: &Arc<SessionSync>, worktree: &Path) {
         }
         state.local_paths.lock().unwrap().extend(paths);
         request(&handle, id, Side::Local);
-    });
+    };
+    // Without a file ID cache: the sync needs only the changed paths, and filling the cache reads every file of the
+    // worktree, `node_modules` included, before the watch starts.
+    let debouncer = new_debouncer_opt::<_, RecommendedWatcher, _>(LOCAL_DEBOUNCE, None, on_events, NoCache, notify::Config::default());
     let watched = debouncer.map_err(|error| error.to_string()).and_then(|mut debouncer| {
         debouncer.watch(worktree, RecursiveMode::Recursive).map_err(|error| error.to_string())?;
         if let Some(reflogs) = reflogs.filter(|reflogs| reflogs.is_dir()) {

@@ -1,3 +1,9 @@
+## 0.61.0 (2026-10-20)
+
+### 🚀 Features
+
+- **client:** completion works like WebStorm's: it opens by itself at an object's members, ⌥Space or ⌃Space opens it, every row shows its type and a docs column the declaring type, signature and docs, also on a diff's editable side, which now shares the editor tab's document ([56bf528](https://github.com/unshoppable/hunt/commit/56bf528))
+
 ## 0.60.4 (2026-10-20)
 
 ### 🩹 Fixes

@@ -1,3 +1,9 @@
+## 0.69.0 (2026-10-21)
+
+### 🚀 Features
+
+- **client:** the diff keeps unsaved edits when another file is shown, and files with unsaved edits get a blue dot in the changelist and the project tree ([d27d019](https://github.com/unshoppable/hunt/commit/d27d019))
+
 ## 0.68.2 (2026-10-21)
 
 ### 🩹 Fixes

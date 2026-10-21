@@ -8,7 +8,7 @@ import { STATUS_BAR } from "../ui/bars";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { PlusIcon, Spinner } from "../ui/icons";
 import { errorText, useLoad } from "../ui/useLoad";
-import { DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton } from "./DiagramToolbar";
+import { AGENT_BUSY_HINT, DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton } from "./DiagramToolbar";
 import { DIAGRAM_TYPES } from "./diagramTypes";
 import { addTable, emptyErd, serializeShapeDiagram } from "./erdEdit";
 import { decorateShapeFlow, layoutShapeDiagram, type ShapeDiagramFlowNode, type ShapeFlowEdge, type ShapeFocus } from "./shapeDiagram";
@@ -155,13 +155,15 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
   const generatedAt = status?.generatedAt ? new Date(status.generatedAt).toLocaleString() : null;
   const hint = isGeneratingGraph
     ? "Generating…"
-    : diagram === null
-      ? `No ${typeName} diagram yet`
-      : problems.length
-        ? "Parts of the agent's diagram do not match the schema and are left out; update the diagram to get them."
-        : isOutdated
-          ? "Files changed since the diagram was generated"
-          : null;
+    : isBusy
+      ? AGENT_BUSY_HINT
+      : diagram === null
+        ? `No ${typeName} diagram yet`
+        : problems.length
+          ? "Parts of the agent's diagram do not match the schema and are left out; update the diagram to get them."
+          : isOutdated
+            ? "Files changed since the diagram was generated"
+            : null;
   const emptyText = diagram
     ? "The diagram has no elements; update it to fill it."
     : isErd
@@ -173,7 +175,7 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
       <div className="flex items-center gap-3 border-b border-(--line) px-3 py-2.5 text-[13px]">
         <DiagramTypeDropdown sessionId={sessionId} />
         <GenerateSplitButton
-          label={isGeneratingGraph ? "Generating…" : isBusy ? "Working…" : diagram ? "Update diagram" : "Generate diagram"}
+          label={isGeneratingGraph ? "Generating…" : diagram ? "Update diagram" : "Generate diagram"}
           isDisabled={!isLive || isBusy}
           onGenerate={(instructions) => void refreshGraph(sessionId, diagramType, instructions)}
         />
@@ -183,7 +185,7 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
           </button>
         ) : null}
         <span
-          className={`flex min-w-0 flex-1 items-center gap-2 ${isGeneratingGraph ? "text-neutral-400" : problems.length || isOutdated ? "text-amber-300/90" : "text-neutral-500"}`}
+          className={`flex min-w-0 flex-1 items-center gap-2 ${isGeneratingGraph || isBusy ? "text-neutral-400" : problems.length || isOutdated ? "text-amber-300/90" : "text-neutral-500"}`}
           title={generatedAt ? `Diagram generated ${generatedAt}` : undefined}
         >
           {isGeneratingGraph ? <Spinner className="size-5 shrink-0" /> : null}

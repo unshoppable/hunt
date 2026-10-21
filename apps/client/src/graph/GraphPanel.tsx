@@ -14,7 +14,7 @@ import { useReviewCommentCounts } from "../review/reviewComments";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { DependencyCard, type OutgoingDependency } from "./DependencyCard";
 import { buildDiagram, litByHover, type DiagramNode } from "./diagram";
-import { DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton } from "./DiagramToolbar";
+import { AGENT_BUSY_HINT, DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton } from "./DiagramToolbar";
 import { openDiffWindow } from "./diffWindows";
 import { FileFilterPopover } from "./FileFilterPopover";
 import { GraphFilters } from "./GraphFilters";
@@ -27,8 +27,6 @@ import { parseGraph } from "./schema";
 const NODE_TYPES: NodeTypes = { file: FileNodeView, folder: FolderGroupView };
 const EDGE_TYPES: EdgeTypes = { dependency: DependencyEdgeView };
 const EMPTY_GRAPH: ArchitectureGraph = { nodes: [], edges: [] };
-/** Sessions whose dependency diagram was generated automatically on the tab's first opening; kept for the window's lifetime. */
-const AUTO_GENERATED_SESSIONS = new Set<string>();
 /** How long the mouse rests on a file before it counts as hovered; crossing a file on the way to the card does not. */
 const FILE_HOVER_DELAY = 100;
 
@@ -39,7 +37,7 @@ const FILE_HOVER_DELAY = 100;
  * and lists them in a card. Unchanged files the agent added for context are dimmed, and files of the same folder
  * share a translucent group area. A click on a changed file opens its diff in a window of its own; the "Files" popover hides files
  * from the diagram, the relevance and glob filters beside it hide files by the agent's review rating and by path. Directories read as their module and a shortened folder path, the full path shows on hover; the
- * legend above the footer lists the modules' root folders.
+ * legend above the footer lists the modules' root folders. The agent generates the diagram only on a click on the generate button.
  */
 export function GraphPanel({ sessionId }: { sessionId: string }) {
   const graphVersion = useHuntStore((state) => state.chats[sessionId]?.graphVersion ?? 0);
@@ -135,14 +133,6 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
     [sessionId, files, graph],
   );
 
-  // The first opening of the tab for a session while there is no diagram yet generates one as soon as the agent is
-  // idle; every later generation, in this view or another diagram type, waits for the button.
-  useEffect(() => {
-    if (graph !== null || !files.length || !isLive || isBusy || AUTO_GENERATED_SESSIONS.has(sessionId)) return;
-    AUTO_GENERATED_SESSIONS.add(sessionId);
-    void refreshGraph(sessionId, "dependencies");
-  }, [graph, files, isLive, isBusy, refreshGraph, sessionId]);
-
   const diagramFilter = useMemo(() => ({ minReview: graphFilter.minReview, hiddenGlobs: splitGlobs(graphFilter.hiddenGlobs) }), [graphFilter]);
   const diagram = useMemo(
     () => buildDiagram(graph ?? EMPTY_GRAPH, importEdges, files, stats, excluded, diagramFilter, fileNodeMinWidth),
@@ -207,13 +197,15 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
   const generatedAt = status?.generatedAt ? new Date(status.generatedAt).toLocaleString() : null;
   const hint = isGeneratingGraph
     ? "The agent is generating the diagram; its labels, review ratings and context files appear when it is done."
-    : isGraphUnusable
-      ? "The agent's diagram does not match the schema and is left out; update the diagram to get its labels."
-      : isOutdated
-        ? "Files changed since the diagram was generated; update it to match the current changes."
-        : graph
-          ? null
-          : "Edges show the imports between the changed files; generate the diagram for the agent's labels, review ratings and context files.";
+    : isBusy
+      ? AGENT_BUSY_HINT
+      : isGraphUnusable
+        ? "The agent's diagram does not match the schema and is left out; update the diagram to get its labels."
+        : isOutdated
+          ? "Files changed since the diagram was generated; update it to match the current changes."
+          : graph
+            ? null
+            : "Edges show the imports between the changed files; generate the diagram for the agent's labels, review ratings and context files.";
 
   const changedShown = diagram.nodes.filter((node) => node.isChanged).length;
   const contextShown = diagram.nodes.length - changedShown;
@@ -225,7 +217,7 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
       <div className="flex items-center gap-3 border-b border-(--line) px-3 py-2.5 text-[13px]">
         <DiagramTypeDropdown sessionId={sessionId} />
         <GenerateSplitButton
-          label={isGeneratingGraph ? "Generating…" : isBusy ? "Working…" : graph ? "Update diagram" : "Generate diagram"}
+          label={isGeneratingGraph ? "Generating…" : graph ? "Update diagram" : "Generate diagram"}
           isDisabled={!isLive || isBusy}
           onGenerate={(instructions) => void refreshGraph(sessionId, "dependencies", instructions)}
         />
@@ -251,7 +243,7 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
         </div>
         <GraphFilters hasRatings={isRated} />
         <span
-          className={`flex min-w-0 flex-1 items-center gap-2 ${isGeneratingGraph ? "text-neutral-400" : isGraphUnusable || isOutdated ? "text-amber-300/90" : "text-neutral-500"}`}
+          className={`flex min-w-0 flex-1 items-center gap-2 ${isGeneratingGraph || isBusy ? "text-neutral-400" : isGraphUnusable || isOutdated ? "text-amber-300/90" : "text-neutral-500"}`}
           title={generatedAt ? `Diagram generated ${generatedAt}` : undefined}
         >
           {isGeneratingGraph ? <Spinner className="size-5 shrink-0" /> : null}

@@ -1,3 +1,9 @@
+## 0.68.2 (2026-10-21)
+
+### 🩹 Fixes
+
+- **client:** the Architecture tab generates a diagram only on a click, and while the agent runs a chat turn the generate button keeps its label and a hint says the diagram waits for the turn to end ([67fd68c](https://github.com/unshoppable/hunt/commit/67fd68c))
+
 ## 0.68.1 (2026-10-21)
 
 ### 🩹 Fixes

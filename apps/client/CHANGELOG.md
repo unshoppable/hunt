@@ -1,3 +1,9 @@
+## 0.68.1 (2026-10-21)
+
+### 🩹 Fixes
+
+- **client:** the context meter and Guardrail button sit right above the prompt box, below the queued prompts ([c21a571](https://github.com/unshoppable/hunt/commit/c21a571))
+
 ## 0.68.0 (2026-10-20)
 
 ### 🚀 Features

@@ -49,6 +49,7 @@ export function PromptInput({
   queue = [],
   onTakeQueue = () => [],
   onUnqueue = () => {},
+  header,
   modeId,
   modes,
   configSelects,
@@ -78,6 +79,8 @@ export function PromptInput({
   onTakeQueue?: () => QueuedPrompt[];
   /** Takes one prompt out of the queue, after the box took it back. */
   onUnqueue?: (promptId: string) => void;
+  /** Row between the queued prompts and the box, e.g. the context meter and the Guardrail button of a session. */
+  header?: ReactNode;
   /** Sends a prompt at once while the agent is busy, interrupting the running turn (⌘↩, or the queued row's button). */
   onSendNow?: (text: string, images: Screenshot[]) => void;
   /** The agent's permission mode; `null` hides the mode select, as for an agent on a VM, which always bypasses permissions. */
@@ -272,6 +275,7 @@ export function PromptInput({
             takeBack([prompt]);
           }}
         />
+        {header ? <div className="mb-2">{header}</div> : null}
         <div
           className={`relative z-10 rounded-2xl border bg-(--surface-input) shadow-lg shadow-black/20 ${isDropTarget ? "border-dashed border-neutral-400" : "border-(--line) focus-within:border-neutral-500"}`}
         >

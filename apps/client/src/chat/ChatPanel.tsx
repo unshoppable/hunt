@@ -279,14 +279,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           </div>
         </div>
       ) : null}
-      {session.isLive ? (
-        <div className="px-9 pt-2">
-          <div className="chat-column flex items-center gap-3">
-            {chat?.contextUsage ? <ContextMeter usage={chat.contextUsage} /> : null}
-            <SaveGuardrailButton suggestion={guardrailSuggestion}isDisabled={hasPermission} onOpen={(bounds) => void openGuardrailChat(bounds)} />
-          </div>
-        </div>
-      ) : isStarting ? null : remote ? (
+      {session.isLive || isStarting ? null : remote ? (
         <div className="px-9 pt-2">
           <p className="chat-column text-[13px] text-neutral-500">
             Runs on the VM {remote.vm.instance}. Your next prompt starts the VM and connects again; files you change here meanwhile
@@ -327,6 +320,14 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         queue={chat?.queue ?? []}
         onTakeQueue={() => takeQueue(sessionId)}
         onUnqueue={(promptId) => unqueuePrompt(sessionId, promptId)}
+        header={
+          session.isLive ? (
+            <div className="flex items-center gap-3">
+              {chat?.contextUsage ? <ContextMeter usage={chat.contextUsage} /> : null}
+              <SaveGuardrailButton suggestion={guardrailSuggestion} isDisabled={hasPermission} onOpen={(bounds) => void openGuardrailChat(bounds)} />
+            </div>
+          ) : null
+        }
         modeId={remote ? null : modeId}
         modes={modes}
         configSelects={configSelects}

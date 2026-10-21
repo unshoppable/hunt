@@ -1,3 +1,9 @@
+## 0.70.0 (2026-10-21)
+
+### 🚀 Features
+
+- **client:** queued prompts show a Send now button, and ⌃↩ (or ⌘↩, set in Settings → Keymap) sends the prompt box now or, while it is empty, the first queued prompt ([d86223e](https://github.com/unshoppable/hunt/commit/d86223e))
+
 ## 0.69.0 (2026-10-21)
 
 ### 🚀 Features

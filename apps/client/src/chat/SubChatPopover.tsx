@@ -20,6 +20,7 @@ import { CloseIcon, SendIcon, TrashIcon } from "../ui/icons";
 import { trackDrag } from "../ui/pointerDrag";
 import { ResizeGrips } from "../ui/ResizeGrips";
 import { useAutoGrow, useTextareaDrag } from "../ui/useAutoGrow";
+import { isShortcut, useShortcutLabel } from "../ui/shortcuts";
 import { usePopupSize } from "../ui/usePopupSize";
 import { useViewportSize } from "../ui/useViewportSize";
 
@@ -138,6 +139,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   const isLive = !subSessionId || (subSession?.isLive ?? false);
   const [isResuming, setIsResuming] = useState(false);
   const queue = chat?.queue ?? [];
+  const sendNowShortcut = useShortcutLabel("chat.sendNow");
 
   // The sub session's own options once it announced them, before that the parent's, in a secondary window without
   // the parent's chat the options the agent announced last.
@@ -390,9 +392,18 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   }, [isConfirmingDelete]);
 
   function onTextareaKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (isShortcut(event, "chat.sendNow")) {
+      event.preventDefault();
+      if (text.trim()) {
+        void submit(true);
+      } else if (queue[0]) {
+        sendQueuedNow(queue[0]);
+      }
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      void submit(event.metaKey);
+      void submit();
     }
   }
 
@@ -455,7 +466,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
 
       {isLive ? (
         <div className="relative border-t border-(--line) bg-(--surface-input) px-12 py-3">
-          <QueuedPrompts queue={queue} onSendNow={sendQueuedNow} onTakeBack={(prompt) => takeBack(prompt.id, prompt.text)} />
+          <QueuedPrompts queue={queue} shortcutLabel={text.trim() ? null : sendNowShortcut} onSendNow={sendQueuedNow} onTakeBack={(prompt) => takeBack(prompt.id, prompt.text)} />
           <div className="flex items-end gap-2">
             <textarea
               ref={textareaRef}

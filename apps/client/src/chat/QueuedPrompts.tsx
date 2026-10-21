@@ -3,6 +3,10 @@ import type { QueuedPrompt } from "../state/store";
 import { CloseIcon, SendIcon } from "../ui/icons";
 import { screenshotUrl } from "./ScreenshotPicker";
 
+/** The row's button that sends its prompt at once; always shown. */
+const SEND_NOW_BUTTON =
+  "flex h-6 shrink-0 items-center gap-1.5 rounded-md border border-white/10 bg-white/4 px-2 text-neutral-300 transition-colors hover:border-white/15 hover:bg-white/8 hover:text-white focus-visible:ring-2 focus-visible:ring-blue-400/60 outline-none";
+
 /** A row's button, shown while the row is hovered or the button focused. */
 const ROW_BUTTON =
   "flex size-5 shrink-0 items-center justify-center rounded text-neutral-500 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-(--row-hover) hover:text-white focus-visible:opacity-100";
@@ -14,18 +18,21 @@ const ROW_BUTTON =
  */
 export function QueuedPrompts({
   queue,
+  shortcutLabel = null,
   onSendNow,
   onTakeBack,
 }: {
   queue: QueuedPrompt[];
+  /** Shortcut that sends the first prompt now, shown on its button; null while the shortcut sends the composer's text instead. */
+  shortcutLabel?: string | null;
   onSendNow: (prompt: QueuedPrompt) => void;
   onTakeBack: (prompt: QueuedPrompt) => void;
 }) {
   if (!queue.length) return null;
   return (
     <ul aria-label="Queued prompts" className="mb-2 flex flex-col gap-1 px-1 text-[13px] text-neutral-500">
-      {queue.map((prompt) => (
-        <li key={prompt.id} className="group flex items-start gap-2">
+      {queue.map((prompt, index) => (
+        <li key={prompt.id} className="group flex items-center gap-2">
           <span aria-hidden="true" className="shrink-0 select-none">
             ↳
           </span>
@@ -35,8 +42,10 @@ export function QueuedPrompts({
           {prompt.images.map((image) => (
             <img key={image.path} src={screenshotUrl(image)} alt="" title={image.name} className="size-5 shrink-0 rounded border border-white/10 object-cover" />
           ))}
-          <button type="button" onClick={() => onSendNow(prompt)} title="Send now; stops the running turn" aria-label="Send the queued prompt now" className={ROW_BUTTON}>
+          <button type="button" onClick={() => onSendNow(prompt)} title="Send now; stops the running turn" aria-label="Send the queued prompt now" className={SEND_NOW_BUTTON}>
             <SendIcon className="size-3" />
+            Send now
+            {index === 0 && shortcutLabel ? <span className="text-neutral-500">{shortcutLabel}</span> : null}
           </button>
           <button type="button" onClick={() => onTakeBack(prompt)} title="Take back into the prompt box" aria-label="Take the queued prompt back into the prompt box" className={ROW_BUTTON}>
             <CloseIcon className="size-2.5" />

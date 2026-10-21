@@ -12,7 +12,7 @@ import { CloseIcon, EraserIcon, GitHubIcon, SendIcon } from "../ui/icons";
 import { ResizeGrips } from "../ui/ResizeGrips";
 import { useAutoGrow, useTextareaDrag } from "../ui/useAutoGrow";
 import { useDismiss } from "../ui/useDismiss";
-import { useShortcutLabel } from "../ui/shortcuts";
+import { isShortcut, useShortcutLabel } from "../ui/shortcuts";
 import { matchCommands, slashQueryOf } from "./slashCommands";
 import { insertImageReference, removeImageReference, shiftImageReferences } from "./imageReferences";
 import { useImageDrop } from "./useImageDrop";
@@ -40,7 +40,8 @@ const MAX_PROMPT_HEIGHT_SHARE = 0.6;
  * dragged back to the two lines the box starts with. Used inside a session and, with an `extension` bar for repository
  * and branch, as the start view's composer. The screenshot picker sits in the left margin of the box. While the agent
  * is busy, sending queues the prompt (shown above the box) for the end of the running turn; the send button therefore
- * never turns into a stop button, Escape stops the turn. ⌘↩ sends the prompt at once, stopping the running turn.
+ * never turns into a stop button, Escape stops the turn. The send-now shortcut (⌃↩, ⌘↩) sends the prompt at once, stopping
+ * the running turn; while the box is empty it sends the first queued prompt instead.
  */
 export function PromptInput({
   isBusy,
@@ -81,7 +82,7 @@ export function PromptInput({
   onUnqueue?: (promptId: string) => void;
   /** Row between the queued prompts and the box, e.g. the context meter and the Guardrail button of a session. */
   header?: ReactNode;
-  /** Sends a prompt at once while the agent is busy, interrupting the running turn (⌘↩, or the queued row's button). */
+  /** Sends a prompt at once while the agent is busy, interrupting the running turn (the send-now shortcut, or the queued row's button). */
   onSendNow?: (text: string, images: Screenshot[]) => void;
   /** The agent's permission mode; `null` hides the mode select, as for an agent on a VM, which always bypasses permissions. */
   modeId: string | null;
@@ -109,6 +110,7 @@ export function PromptInput({
   dropZoneRef?: RefObject<HTMLElement | null>;
 }) {
   const interruptShortcut = useShortcutLabel("chat.interrupt");
+  const sendNowShortcut = useShortcutLabel("chat.sendNow");
   const [text, setText] = useState(initialDraft?.text ?? "");
   const [attachments, setAttachments] = useState<Screenshot[]>(initialDraft?.images ?? []);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
@@ -179,6 +181,12 @@ export function PromptInput({
     }
     setText("");
     setAttachments([]);
+  }
+
+  /** Sends the queued `prompt` at once, interrupting the running turn. */
+  function sendQueuedNow(prompt: QueuedPrompt) {
+    onUnqueue(prompt.id);
+    onSendNow(prompt.text, prompt.images);
   }
 
   /** Puts `prompts` back into the box, after the text and attachments it holds; their image references follow. */
@@ -255,9 +263,19 @@ export function PromptInput({
         return;
       }
     }
-    if (event.key === "Enter" && !event.shiftKey && !event.defaultPrevented) {
+    if (event.defaultPrevented) return;
+    if (isShortcut(event, "chat.sendNow")) {
       event.preventDefault();
-      submit(event.metaKey);
+      if (canSend) {
+        submit(true);
+      } else if (queue[0] && !isBlocked) {
+        sendQueuedNow(queue[0]);
+      }
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      submit();
     }
   }
 
@@ -266,10 +284,8 @@ export function PromptInput({
       <div className="chat-column min-w-[400px]">
         <QueuedPrompts
           queue={queue}
-          onSendNow={(prompt) => {
-            onUnqueue(prompt.id);
-            onSendNow(prompt.text, prompt.images);
-          }}
+          shortcutLabel={canSend ? null : sendNowShortcut}
+          onSendNow={sendQueuedNow}
           onTakeBack={(prompt) => {
             onUnqueue(prompt.id);
             takeBack([prompt]);
@@ -387,7 +403,7 @@ export function PromptInput({
               type="button"
               onClick={() => submit()}
               disabled={!canSend}
-              title={isStarting ? "Queue until the agent runs (enter)" : isBusy ? `Queue for after this turn (enter); ⌘↩ sends now${interruptShortcut ? `, ${interruptShortcut} stops the turn` : ""}` : "Send (enter)"}
+              title={isStarting ? "Queue until the agent runs (enter)" : isBusy ? `Queue for after this turn (enter)${sendNowShortcut ? `; ${sendNowShortcut} sends now` : ""}${interruptShortcut ? `, ${interruptShortcut} stops the turn` : ""}` : "Send (enter)"}
               className={SEND_BUTTON}
             >
               <SendIcon />

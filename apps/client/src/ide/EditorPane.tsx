@@ -38,7 +38,7 @@ type EditorPaneProps = {
   pane: Pane;
   /** The pane keyboard shortcuts act on; its active tab is marked in the accent color. */
   isActive: boolean;
-  dirtyPaths: string[];
+  dirtyPaths: readonly string[];
   pendingPosition: PendingPosition | null;
   /**
    * Opens the sub chat popover: from the context menu ("Ask Claude about selection") with the selected lines, or

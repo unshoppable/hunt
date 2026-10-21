@@ -25,6 +25,7 @@ import { ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB
 import { confirmDestructive } from "../ui/confirm";
 import { GlobFilterInput } from "../ui/GlobFilterInput";
 import { SwapIcon } from "../ui/icons";
+import { UnsavedDot } from "../ui/UnsavedDot";
 import { isShortcut } from "../ui/shortcuts";
 import type { TreeNavRow } from "../ui/treeNavigation";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
@@ -63,7 +64,7 @@ export function ChangeList({
   reviewRatings,
   scope,
   selectedPath,
-  hasUnsavedChanges,
+  unsavedPaths,
   onSelect,
   onContextMenu,
   onAskAgent,
@@ -78,8 +79,8 @@ export function ChangeList({
   /** Set when other sessions share the worktree; `null` hides the toggle. */
   scope: ScopeControl | null;
   selectedPath: string | null;
-  /** The diff editor holds unsaved edits; shelving would use the content on disk. */
-  hasUnsavedChanges: boolean;
+  /** Files with unsaved edits; they get a blue dot, and committing or shelving them uses the content on disk. */
+  unsavedPaths: readonly string[];
   onSelect: (path: string) => void;
   onContextMenu: (event: MouseEvent, file: ChangedFile) => void;
   /** Opens the sub chat about the whole file next to its agent button; without it there is none. */
@@ -277,10 +278,16 @@ export function ChangeList({
     },
   });
 
-  /** Warns when the diff editor holds unsaved edits; resolves to whether a commit or shelve of the checked files may go on. */
+  /** Warns when checked files hold unsaved edits; resolves to whether a commit or shelve of the checked files may go on. */
   const confirmSavedContent = async () => {
     if (!checkedPaths.length) return false;
-    if (hasUnsavedChanges && !(await confirmDestructive("The diff editor has unsaved changes. Only the content saved on disk is used. Continue?", "Continue"))) return false;
+    const unsavedNames = checkedPaths.filter((path) => unsavedPaths.includes(path)).map((path) => `"${baseName(path)}"`);
+    if (
+      unsavedNames.length &&
+      !(await confirmDestructive(`${unsavedNames.join(", ")} ${unsavedNames.length === 1 ? "has" : "have"} unsaved changes. Only the content saved on disk is used. Continue?`, "Continue"))
+    ) {
+      return false;
+    }
     setNotice(null);
     return true;
   };
@@ -321,6 +328,7 @@ export function ChangeList({
         >
           <img src={fileIconUrl(file.path)} alt="" className="size-[17px] shrink-0" />
           <span className={`truncate ${STATUS_NAME_CLASS[file.status] ?? "text-neutral-200"}`}>{name}</span>
+          {unsavedPaths.includes(file.path) ? <UnsavedDot /> : null}
           {renderOwnerBadge(file.path)}
           {showDirectory ? <span className="ml-auto truncate pl-1 text-[0.85em] text-neutral-600">{dirName(file.path)}</span> : null}
           {rating?.review ? <ReviewBars level={rating.review} reason={rating.reviewReason} className={`size-3.5 ${showDirectory ? "" : "ml-auto"}`} /> : null}

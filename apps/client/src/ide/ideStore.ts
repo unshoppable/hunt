@@ -16,15 +16,13 @@ export type NavigationHistory = { back: Location[]; forward: Location[] };
 export type IdeSession = {
   layout: PaneLayout;
   activePaneId: string | null;
-  /** Files with unsaved edits. */
-  dirtyPaths: string[];
   pendingPosition: PendingPosition | null;
   /** The project tree expands to and selects this file (⇧⌘2). */
   revealRequest: { path: string; nonce: number } | null;
   history: NavigationHistory;
 };
 
-export const EMPTY_IDE_SESSION: IdeSession = { layout: EMPTY_LAYOUT, activePaneId: null, dirtyPaths: [], pendingPosition: null, revealRequest: null, history: { back: [], forward: [] } };
+export const EMPTY_IDE_SESSION: IdeSession = { layout: EMPTY_LAYOUT, activePaneId: null, pendingPosition: null, revealRequest: null, history: { back: [], forward: [] } };
 
 /** Oldest locations fall off the back stack beyond this many. */
 const HISTORY_LIMIT = 100;
@@ -94,7 +92,6 @@ type IdeState = {
   navigateForward: (sessionId: string) => void;
   /** Moves the active tab of the active pane like WebStorm's "Move Right/Left/Up/Down". */
   moveActiveTab: (sessionId: string, direction: Direction) => void;
-  setDirty: (sessionId: string, path: string, isDirty: boolean) => void;
   clearPendingPosition: (sessionId: string, nonce: number) => void;
   revealActiveFile: (sessionId: string) => void;
 };
@@ -154,14 +151,6 @@ export const useIdeStore = create<IdeState>((set, get) => {
       const moved = moveActiveTab(session.layout, session.activePaneId, direction);
       if (!moved) return;
       update(sessionId, (current) => ({ ...current, layout: moved.layout, activePaneId: moved.paneId }));
-    },
-
-    setDirty: (sessionId, path, isDirty) => {
-      update(sessionId, (session) => {
-        const has = session.dirtyPaths.includes(path);
-        if (has === isDirty) return session;
-        return { ...session, dirtyPaths: isDirty ? [...session.dirtyPaths, path] : session.dirtyPaths.filter((candidate) => candidate !== path) };
-      });
     },
 
     clearPendingPosition: (sessionId, nonce) => {

@@ -53,6 +53,8 @@ export class Workspace {
   private readonly dirtyListeners = new Set<DirtyListener>();
   /** Last reported dirty state per path, so listeners only hear changes. */
   private readonly reportedDirty = new Map<string, boolean>();
+  /** The paths reported dirty, sorted; a new array after every change. */
+  private reportedDirtyPaths: readonly string[] = [];
   /** Paths whose imports were resolved already; a document's imports are loaded once per content. */
   private readonly dependenciesLoadedFor = new Map<string, number>();
   /** HEAD content per path for the editor's change markers; dropped whenever the worktree changes. */
@@ -90,6 +92,11 @@ export class Workspace {
   /** Whether the shared document has edits that are not on disk, made in this window or another one. */
   isDirty(path: string): boolean {
     return !!this.replicas.get(path)?.isDirty;
+  }
+
+  /** Paths whose shared document has unsaved edits, as last reported to `onDirtyChange` listeners; stable until the next change. */
+  dirtyPaths(): readonly string[] {
+    return this.reportedDirtyPaths;
   }
 
   onDirtyChange(listener: DirtyListener): monaco.IDisposable {
@@ -327,9 +334,14 @@ export class Workspace {
   private reportDirty(document: Document) {
     const isDirty = this.isDirty(document.path);
     if (this.reportedDirty.get(document.path) === isDirty) return;
-    this.reportedDirty.set(document.path, isDirty);
+    this.reportDirtyChange(document.path, isDirty);
+  }
+
+  private reportDirtyChange(path: string, isDirty: boolean): void {
+    this.reportedDirty.set(path, isDirty);
+    this.reportedDirtyPaths = [...this.reportedDirty].filter(([, dirty]) => dirty).map(([dirtyPath]) => dirtyPath).sort();
     for (const listener of this.dirtyListeners) {
-      listener(document.path, isDirty);
+      listener(path, isDirty);
     }
   }
 
@@ -416,9 +428,7 @@ export class Workspace {
     this.replicas.delete(path);
     this.dependenciesLoadedFor.delete(path);
     if (this.reportedDirty.get(path)) {
-      for (const listener of this.dirtyListeners) {
-        listener(path, false);
-      }
+      this.reportDirtyChange(path, false);
     }
     this.reportedDirty.delete(path);
     document.model.dispose();

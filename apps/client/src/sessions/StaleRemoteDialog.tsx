@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { commands } from "../ipc/commands";
 import { hasBusySubChat, retrieveBlocker } from "../chat/remoteSession";
-import { useIdeStore } from "../ide/ideStore";
+import { workspaceFor } from "../ide/documents";
+import { useDirtyPaths } from "../ide/useDirtyPaths";
 import { useBusyChatIds } from "../ide/selectionChats";
 import { useHuntStore } from "../state/store";
 import { BUTTON_MD, DANGER, GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
@@ -24,7 +25,6 @@ export function StaleRemoteDialog() {
   const sessions = useHuntStore((state) => state.sessions);
   const retrieveSession = useHuntStore((state) => state.retrieveSession);
   const closeSession = useHuntStore((state) => state.closeSession);
-  const ideSessions = useIdeStore((state) => state.sessions);
   const busyChatIds = useBusyChatIds();
   const [now, setNow] = useState(() => Date.now());
   /** Sessions answered in this window, so none comes back before the refreshed session list reflects the answer. */
@@ -38,9 +38,12 @@ export function StaleRemoteDialog() {
   }, []);
 
   const session = sessions.find((candidate) => !answeredIds.has(candidate.id) && isStaleRemote(candidate, now));
+  const sessionId = session?.id;
+  const worktreePath = session?.worktreePath;
+  const dirtyPaths = useDirtyPaths(useMemo(() => (sessionId && worktreePath ? workspaceFor(sessionId, worktreePath) : null), [sessionId, worktreePath]));
   if (!session) return null;
   const blocker = retrieveBlocker(session, {
-    hasUnsavedEdits: (ideSessions[session.id]?.dirtyPaths.length ?? 0) > 0,
+    hasUnsavedEdits: dirtyPaths.length > 0,
     hasBusySubChat: hasBusySubChat(session, sessions, busyChatIds),
   });
   const days = idleDays(session, now);

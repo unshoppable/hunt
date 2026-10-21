@@ -3,6 +3,7 @@ import { commands } from "../ipc/commands";
 import type { DirEntry } from "../ipc/types";
 import { rootFolderIconUrl, useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { STATUS_NAME_CLASS } from "../diff/styles";
+import { UnsavedDot } from "../ui/UnsavedDot";
 import { useDismiss } from "../ui/useDismiss";
 import { errorText, useLoad } from "../ui/useLoad";
 import type { TreeNavRow } from "../ui/treeNavigation";
@@ -39,6 +40,7 @@ export function ProjectTree({
   projectName,
   revealRequest,
   refreshVersion,
+  unsavedPaths,
   onOpen,
 }: {
   sessionId: string;
@@ -46,6 +48,8 @@ export function ProjectTree({
   projectName: string;
   revealRequest: { path: string; nonce: number } | null;
   refreshVersion: number;
+  /** Files with unsaved edits; they get a blue dot. */
+  unsavedPaths: readonly string[];
   onOpen: (path: string) => void;
 }) {
   const [listings, setListings] = useState<Listings>({});
@@ -204,6 +208,7 @@ export function ProjectTree({
             isExpanded={expanded.has(row.path)}
             isSelected={nav.cursor === row.path}
             status={statusByPath[row.path]}
+            isUnsaved={!row.isDir && unsavedPaths.includes(row.path)}
             color={markedColor(marks, row.path)}
             onClick={() => {
               nav.select(row.path);
@@ -263,6 +268,7 @@ function TreeRow({
   isExpanded,
   isSelected,
   status,
+  isUnsaved = false,
   color,
   onClick,
   onContextMenu,
@@ -270,6 +276,7 @@ function TreeRow({
   isExpanded: boolean;
   isSelected: boolean;
   status: string | undefined;
+  isUnsaved?: boolean;
   color: FolderColor | null;
   onClick: () => void;
   onContextMenu?: (event: MouseEvent) => void;
@@ -290,6 +297,7 @@ function TreeRow({
       {isDir ? <ChevronIcon expanded={isExpanded} /> : <span className="size-4 shrink-0" />}
       <img src={!isDir ? fileIconUrl(path) : path ? folderIconUrl(path, isExpanded) : rootFolderIconUrl(isExpanded)} alt="" className="size-[17px] shrink-0" />
       <span className={`truncate ${isDir ? "text-neutral-300" : (STATUS_NAME_CLASS[status ?? ""] ?? "text-neutral-200")}`}>{name}</span>
+      {isUnsaved ? <UnsavedDot /> : null}
     </li>
   );
 }

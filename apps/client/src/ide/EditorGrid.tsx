@@ -10,6 +10,8 @@ type EditorGridProps = {
   sessionId: string;
   workspace: Workspace;
   ide: IdeSession;
+  /** Files with unsaved edits. */
+  dirtyPaths: readonly string[];
   /** Opens the sub chat popover for a selection or, with `subSessionId`, an existing sub chat (see EditorPane.tsx). */
   onOpenSubChat?: (request: SelectionRequest, subSessionId?: string) => void;
   /** Opens or closes the sub chat popover from the selection's floating button (see EditorPane.tsx). */
@@ -17,7 +19,7 @@ type EditorGridProps = {
 };
 
 /** The editor area: rows of panes, each resizable; empty until the first file is opened. */
-export function EditorGrid({ sessionId, workspace, ide, onOpenSubChat, onToggleSubChat }: EditorGridProps) {
+export function EditorGrid({ sessionId, workspace, ide, dirtyPaths, onOpenSubChat, onToggleSubChat }: EditorGridProps) {
   if (!ide.layout.rows.length) {
     return (
       <div className="flex flex-1 items-center justify-center bg-(--diff-bg) text-[13px] text-neutral-500">
@@ -42,7 +44,7 @@ export function EditorGrid({ sessionId, workspace, ide, onOpenSubChat, onToggleS
                       workspace={workspace}
                       pane={pane}
                       isActive={pane.id === ide.activePaneId}
-                      dirtyPaths={ide.dirtyPaths}
+                      dirtyPaths={dirtyPaths}
                       pendingPosition={ide.pendingPosition}
                       onOpenSubChat={onOpenSubChat}
                       onToggleSubChat={onToggleSubChat}

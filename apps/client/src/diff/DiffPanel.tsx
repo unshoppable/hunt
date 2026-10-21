@@ -13,11 +13,14 @@ import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { CodeDiffEditor, type CodeDiffEditorHandle } from "./CodeDiffEditor";
 import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
 import { GHOST_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
+import { workspaceFor } from "../ide/documents";
 import { openInEditorWindow } from "../ide/editorWindows";
+import { useDirtyPaths } from "../ide/useDirtyPaths";
 import { selectionChatsFor } from "../ide/selectionChats";
 import { useReviewedPullRequest } from "../review/reviewComments";
 import { confirmDestructive } from "../ui/confirm";
 import { baseName } from "../ui/path";
+import { UnsavedDot } from "../ui/UnsavedDot";
 import { useDismiss } from "../ui/useDismiss";
 import { errorText, useLoad } from "../ui/useLoad";
 
@@ -46,6 +49,9 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const diffFontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
   const isLocked = useHuntStore((state) => isWorktreeLocked(state.sessions, state.remoteLinks, sessionId));
+  const worktreePath = session?.worktreePath;
+  /** Files with unsaved edits; they keep them when another file is shown. */
+  const unsavedPaths = useDirtyPaths(useMemo(() => (worktreePath ? workspaceFor(sessionId, worktreePath) : null), [sessionId, worktreePath]));
   /**
    * The changelist can be scoped to the session's own changes: another session (parent or sub session) works in the
    * same worktree, or the session works in the repository's own checkout, which also holds the user's other work.
@@ -157,7 +163,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     () => commands.readFileDiff(sessionId, selectedPath ?? ""),
     {
       onValue: (result) => {
-        if (isDirtyRef.current && result.newContent !== diff?.newContent) {
+        if (isDirtyRef.current && result.path === diff?.path && result.newContent !== diff.newContent) {
           setExternalDiff(result);
           return;
         }
@@ -204,12 +210,8 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const canCommentOnFile = !!pullRequest && !!shownDiff && !isOwnView;
   const commentButtonLeft = canCommentOnFile ? lineNumbersLeft : null;
 
-  const selectFile = async (path: string) => {
+  const selectFile = (path: string) => {
     if (path === selectedPath) return;
-    if (isDirtyRef.current) {
-      if (!(await confirmDestructive("Discard unsaved changes in the current file?", "Discard"))) return;
-      editorRef.current?.discard();
-    }
     markDirty(false);
     setExternalDiff(null);
     setSelectedPath(path);
@@ -286,7 +288,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
         reviewRatings={reviewRatings}
         scope={isSharedWorktree ? { value: scope, hiddenCount: files.length - scopedFiles.length, includesParent: !!session?.parentId, onChange: setScope } : null}
         selectedPath={selectedPath}
-        hasUnsavedChanges={isDirty}
+        unsavedPaths={unsavedPaths}
         onSelect={selectFile}
         onContextMenu={openContextMenu}
         onAskAgent={askAgentAboutFile}
@@ -306,7 +308,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
             style={commentButtonLeft === null ? { flex: "1 1 0%" } : { width: commentButtonLeft, flexShrink: 0 }}
           >
             <span className="truncate">{selectedPath ?? "No file selected"}</span>
-            {isDirty ? <span className="ml-1.5 size-2 shrink-0 rounded-full bg-blue-400" title="Unsaved changes" /> : null}
+            {isDirty ? <UnsavedDot className="ml-1.5" /> : null}
           </span>
           <div className={`flex items-center gap-2 ${commentButtonLeft === null ? "" : "flex-1"}`}>
             {canCommentOnFile ? (

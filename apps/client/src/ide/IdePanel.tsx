@@ -10,6 +10,7 @@ import { EditorGrid } from "./EditorGrid";
 import { EMPTY_IDE_SESSION, useIdeSession, useIdeStore } from "./ideStore";
 import { allPanes, findPane, panesShowing } from "./paneGrid";
 import { ProjectTree } from "./ProjectTree";
+import { useDirtyPaths } from "./useDirtyPaths";
 
 /** Events of the mouse's extra buttons that the editor and the webview must not act on. */
 const MOUSE_BUTTON_EVENTS = ["mousedown", "mouseup", "auxclick"] as const;
@@ -48,7 +49,6 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
   const ide = useIdeSession(sessionId);
   const openFile = useIdeStore((state) => state.openFile);
-  const setDirty = useIdeStore((state) => state.setDirty);
   const moveActiveTab = useIdeStore((state) => state.moveActiveTab);
   const revealActiveFile = useIdeStore((state) => state.revealActiveFile);
   const closeTab = useIdeStore((state) => state.closeTab);
@@ -64,7 +64,7 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
   const worktreePath = session?.worktreePath ?? "";
   const workspace = useMemo(() => workspaceFor(sessionId, worktreePath), [sessionId, worktreePath]);
 
-  useEffect(() => workspace.onDirtyChange((path, isDirty) => setDirty(sessionId, path, isDirty)).dispose, [workspace, sessionId, setDirty]);
+  const dirtyPaths = useDirtyPaths(workspace);
 
   // The backend keeps unsaved edits without asking when another window still shows the file (see discardIfConfirmed).
   const tabPathsKey = useMemo(() => [...new Set(allPanes(ide.layout).flatMap((pane) => pane.tabs))].join("\n"), [ide.layout]);
@@ -163,13 +163,14 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
             projectName={projectName}
             revealRequest={ide.revealRequest}
             refreshVersion={editVersion}
+            unsavedPaths={dirtyPaths}
             onOpen={(path) => openFile(sessionId, path)}
           />
         </Panel>
         <PaneSeparator />
         <Panel id="editors" minSize={300} className="flex flex-col">
           <DependencyBanner sessionId={sessionId} status={session.dependencies} />
-          <EditorGrid sessionId={sessionId} workspace={workspace} ide={ide} onOpenSubChat={subChat.open} onToggleSubChat={subChat.toggle} />
+          <EditorGrid sessionId={sessionId} workspace={workspace} ide={ide} dirtyPaths={dirtyPaths} onOpenSubChat={subChat.open} onToggleSubChat={subChat.toggle} />
         </Panel>
       </PersistentGroup>
       {subChat.shown ? (

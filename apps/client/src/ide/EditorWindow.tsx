@@ -98,10 +98,9 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
    * the window open.
    */
   const closeWindow = async () => {
-    const { layout, dirtyPaths } = useIdeStore.getState().sessions[sessionId] ?? EMPTY_IDE_SESSION;
-    const tabPaths = new Set(allPanes(layout).flatMap((pane) => pane.tabs));
-    const shownDirtyPaths = dirtyPaths.filter((path) => tabPaths.has(path));
-    if (shownDirtyPaths.length && !(await workspaceFor(sessionId, session?.worktreePath ?? "").discardIfConfirmed(shownDirtyPaths))) return;
+    const { layout } = useIdeStore.getState().sessions[sessionId] ?? EMPTY_IDE_SESSION;
+    const tabPaths = [...new Set(allPanes(layout).flatMap((pane) => pane.tabs))];
+    if (!(await workspaceFor(sessionId, session?.worktreePath ?? "").discardIfConfirmed(tabPaths))) return;
     closeAllTabs(sessionId);
     setIsFileSearchOpen(false);
     setFindInFiles(null);

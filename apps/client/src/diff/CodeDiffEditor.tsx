@@ -22,8 +22,6 @@ setupMonaco();
 export type CodeDiffEditorHandle = {
   /** Scrolls to the top and opens the box for a review comment on the whole file there; only in a pull request review. */
   commentOnFile: () => void;
-  /** Throws away unsaved edits; call it when the host drops them (another file is shown), since the document outlives the editor. */
-  discard: () => void;
 };
 
 type CodeDiffEditorProps = {
@@ -181,7 +179,6 @@ export function CodeDiffEditor({
       editor.setScrollTop(0);
       setComposer({ span: FILE_SPAN, underLine: 0 });
     },
-    discard: () => shared?.workspace.revert(diff.path),
   }));
 
   useEffect(() => {

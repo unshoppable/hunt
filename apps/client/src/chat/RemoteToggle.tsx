@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { useIdeStore } from "../ide/ideStore";
+import { useEffect, useMemo, useState } from "react";
+import { workspaceFor } from "../ide/documents";
+import { useDirtyPaths } from "../ide/useDirtyPaths";
 import { useBusyChatIds } from "../ide/selectionChats";
 import { useAccountsStore } from "../state/accounts";
 import { configuredVmSettings, useSettingsStore } from "../state/settings";
@@ -29,7 +30,8 @@ export function RemoteToggle({ sessionId }: { sessionId: string }) {
   const handOffSession = useHuntStore((state) => state.handOffSession);
   const retrieveSession = useHuntStore((state) => state.retrieveSession);
   const remoteSettings = useSettingsStore((state) => state.remote);
-  const hasUnsavedEdits = useIdeStore((state) => (state.sessions[sessionId]?.dirtyPaths.length ?? 0) > 0);
+  const worktreePath = session?.worktreePath;
+  const hasUnsavedEdits = useDirtyPaths(useMemo(() => (worktreePath ? workspaceFor(sessionId, worktreePath) : null), [sessionId, worktreePath])).length > 0;
   const hasClaudeAccount = useAccountsStore((state) => Boolean(state.accounts?.activeId));
   const busyChatIds = useBusyChatIds();
   const [isSyncSlow, setIsSyncSlow] = useState(false);

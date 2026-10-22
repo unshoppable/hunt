@@ -226,6 +226,9 @@ export function setupMonaco(): void {
   registerSemanticTokens();
   registerLspProviders();
   setUpCompletionList();
+  monaco.editor.onDidCreateEditor((editor) => {
+    onShortcut(editor, "editor.selectAllOccurrences", () => editor.trigger("keyboard", "editor.action.selectHighlights", {}));
+  });
 
   applyMonacoBackground(editorBackground);
 

@@ -1,3 +1,10 @@
+## 0.81.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** opening a session offers to add a Guardrails section to CLAUDE.md, next to the ADR section, that tells agents which guardrails the repository keeps, where each kind lives and what belongs in a new one ([d0b8996](https://github.com/unshoppable/hunt/commit/d0b8996))
+- **client:** declining a suggested guardrail asks for the reason (too specific, already recorded, not wanted) and records it per repository; agents started there are told never to suggest those again nor anything as narrow ([1405be2](https://github.com/unshoppable/hunt/commit/1405be2))
+
 ## 0.80.1 (2026-10-22)
 
 ### 🩹 Fixes

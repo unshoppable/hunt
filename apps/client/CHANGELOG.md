@@ -1,3 +1,11 @@
+## 0.83.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** the change list's context menu copies the file's absolute path, and ⌃⇧C copies the selected change's path ([1255a15](https://github.com/unshoppable/hunt/commit/1255a15))
+- **client:** opening a change in the editor selects the file in the editor's project tree ([2e3e182](https://github.com/unshoppable/hunt/commit/2e3e182))
+- **client:** the change list's context menu opens the file in the editor, and ⇧⌘2 opens the selected change there ([03ba2a2](https://github.com/unshoppable/hunt/commit/03ba2a2))
+
 ## 0.82.0 (2026-10-22)
 
 ### 🚀 Features

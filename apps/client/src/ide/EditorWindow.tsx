@@ -28,6 +28,7 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
   const ensureChat = useHuntStore((state) => state.ensureChat);
   const openFile = useIdeStore((state) => state.openFile);
+  const revealActiveFile = useIdeStore((state) => state.revealActiveFile);
   const closeAllTabs = useIdeStore((state) => state.closeAllTabs);
   const ide = useIdeSession(sessionId);
   const openPaths = useMemo(() => [...new Set(allPanes(ide.layout).flatMap((pane) => pane.tabs))], [ide.layout]);
@@ -56,11 +57,17 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
   useEffect(() => ensureChat(sessionId), [ensureChat, sessionId]);
 
   useEffect(() => {
-    if (initialRequest) {
-      openFile(sessionId, initialRequest.path, { line: initialRequest.line, column: initialRequest.column, inRightSplit: initialRequest.inRightSplit });
-    }
-    const open = ({ path, line, column, inRightSplit }: EditorOpenRequest) => {
+    const show = ({ path, line, column, inRightSplit, revealInTree }: EditorOpenRequest) => {
       openFile(sessionId, path, { line, column, inRightSplit });
+      if (revealInTree) {
+        revealActiveFile(sessionId);
+      }
+    };
+    if (initialRequest) {
+      show(initialRequest);
+    }
+    const open = (request: EditorOpenRequest) => {
+      show(request);
       setRequestCount((count) => count + 1);
     };
     const subscription = listenTo(
@@ -85,7 +92,7 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
     );
     void subscription.then(() => setIsListening(true));
     return () => void subscription.then((unlisten) => unlisten());
-  }, [sessionId, initialRequest, openFile]);
+  }, [sessionId, initialRequest, openFile, revealActiveFile]);
 
   // The window that opened this one queues requests until the page listens and knows its sessions (see editorWindows.ts).
   useEffect(() => {

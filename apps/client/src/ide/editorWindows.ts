@@ -136,12 +136,15 @@ function editorWindowQuery(sessionId: string, request: EditorOpenRequest | null)
   if (request.inRightSplit) {
     params.set("split", "right");
   }
+  if (request.revealInTree) {
+    params.set("reveal", "1");
+  }
   return params.toString();
 }
 
 /**
  * The session and the file an editor window was opened for, from its URL query
- * (`?session=…&path=…&line=…&column=…&split=right`); a warmed window has no file and waits for `editor:open`.
+ * (`?session=…&path=…&line=…&column=…&split=right&reveal=1`); a warmed window has no file and waits for `editor:open`.
  */
 export function parseEditorWindowUrl(search: string): { sessionId: string; request: EditorOpenRequest | null } {
   const params = new URLSearchParams(search);
@@ -156,6 +159,7 @@ export function parseEditorWindowUrl(search: string): { sessionId: string; reque
       line: Number(params.get("line")) || undefined,
       column: Number(params.get("column")) || undefined,
       inRightSplit: params.get("split") === "right" || undefined,
+      revealInTree: params.get("reveal") === "1" || undefined,
     },
   };
 }

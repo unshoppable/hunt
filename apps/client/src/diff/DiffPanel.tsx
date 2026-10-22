@@ -142,13 +142,13 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [sessionId, worktreePath, noteWorktreeChanged]);
 
-  // ⇧⌘2 (keymap default, the editor's "select in tree") opens the selected file in the editor window.
+  // ⇧⌘2 (keymap default, the editor's "select in tree") opens the selected file in the editor window and selects it in its project tree.
   useEffect(() => {
     if (!selectedPath) return;
     function onKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented || !selectedPath || !isShortcut(event, "editor.selectInTree")) return;
       event.preventDefault();
-      void openInEditorWindow(sessionId, { path: selectedPath });
+      void openInEditorWindow(sessionId, { path: selectedPath, revealInTree: true });
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -509,7 +509,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
             role="menuitem"
             onClick={() => {
               setContextMenu(null);
-              void openInEditorWindow(sessionId, { path: contextMenu.file.path });
+              void openInEditorWindow(sessionId, { path: contextMenu.file.path, revealInTree: true });
             }}
             className="flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left hover:bg-(--row-hover)"
           >

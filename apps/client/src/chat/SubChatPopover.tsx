@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import type { SelectionRequest } from "../diff/selectionContext";
-import type { SelectionContext } from "../ipc/types";
+import type { GuardrailDeclineReason, SelectionContext } from "../ipc/types";
 import { useAgentDefaultsStore } from "../state/agentDefaults";
 import { useSettingsStore } from "../state/settings";
 import { agentSetupOf, useHuntStore } from "../state/store";
@@ -12,6 +12,7 @@ import { PillSelect } from "./PillSelect";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { appendPromptTexts, QueuedPrompts, useReturnedPrompts } from "./QueuedPrompts";
 import { ContextCard, describeLines, describeSelection, SelectionCard } from "./SelectionCard";
+import { DeclineReasonButton } from "./DeclineReasonButton";
 import { useFollowScroll } from "./useFollowScroll";
 import { useVmConnect } from "./useVmConnect";
 import { titleFromPrompt } from "../sessions/sessionLabels";
@@ -90,9 +91,9 @@ type SubChatPopoverProps = {
   onPlaced?: (offset: { x: number; y: number }) => void;
   /**
    * Declines what the popover was opened to take up (a suggested guardrail). Shows a "Decline" button above the send
-   * button until the first question is sent; clicking it calls `onDecline` and closes the popover.
+   * button until the first question is sent; it asks for the reason, then calls `onDecline` with it and closes the popover.
    */
-  onDecline?: () => void;
+  onDecline?: (reason: GuardrailDeclineReason) => void;
   onClose: () => void;
 };
 
@@ -485,18 +486,13 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
             />
             <div className="flex flex-col items-end gap-2">
               {onDecline && !subSessionId ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onDecline();
+                <DeclineReasonButton
+                  disabled={isCreating}
+                  onDecline={(reason) => {
+                    onDecline(reason);
                     onClose();
                   }}
-                  disabled={isCreating}
-                  title="Decline the suggestion and close"
-                  className={GHOST_BUTTON_XS}
-                >
-                  Decline
-                </button>
+                />
               ) : null}
               <div className="flex items-end gap-2">
                 {modelOption && model ? (

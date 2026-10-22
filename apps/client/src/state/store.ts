@@ -6,6 +6,7 @@ import type {
   ChatItem,
   ClosedEvent,
   DiagramType,
+  GuardrailDeclineReason,
   HuntChunkMeta,
   MessageTimesEvent,
   PendingPermission,
@@ -30,6 +31,7 @@ import type {
   ToolCallView,
 } from "../ipc/types";
 import { imageDataUrl, imagePlaceholder } from "../chat/imageData";
+import type { GuardrailSuggestion } from "../chat/guardrailSuggestion";
 import { asksQuestion } from "../../../../libs/domain/src/question.ts";
 import { repoName } from "../ui/path";
 import { issueFromPrompt, titleFromPrompt } from "../sessions/sessionLabels";
@@ -320,8 +322,11 @@ export type HuntState = {
   unqueuePrompt: (id: string, promptId: string) => void;
   /** Remembers what the prompt box of `id` holds (see `promptDrafts`); an empty draft forgets it. */
   setPromptDraft: (id: string, draft: PromptDraft) => void;
-  /** Declines the guardrail the reply `replyId` of `id` suggests (see `SessionChat.dismissedGuardrailId`). */
-  dismissGuardrail: (id: string, replyId: string) => void;
+  /**
+   * Declines the guardrail `suggestion` of `id` for `reason`: hides it (see `SessionChat.dismissedGuardrailId`) and records
+   * it, so agents started in the repository later are told about it.
+   */
+  declineGuardrail: (id: string, suggestion: GuardrailSuggestion, reason: GuardrailDeclineReason) => void;
   /** Asks the agent for a fresh component diagram as a hidden turn (see `SessionChat.isHiddenTurn`). */
   refreshGraph: (id: string, diagramType: DiagramType, instructions?: string) => Promise<void>;
   cancelPrompt: (id: string) => Promise<void>;
@@ -1220,8 +1225,9 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       updateChat(id, (chat) => ({ ...chat, queue: chat.queue.filter((prompt) => prompt.id !== promptId) }));
     },
 
-    dismissGuardrail: (id, replyId) => {
-      updateChat(id, (chat) => ({ ...chat, dismissedGuardrailId: replyId }));
+    declineGuardrail: (id, suggestion, reason) => {
+      updateChat(id, (chat) => ({ ...chat, dismissedGuardrailId: suggestion.replyId }));
+      commands.declineGuardrail(id, suggestion.kind, suggestion.summary, reason).catch((error) => updateChat(id, (chat) => ({ ...chat, error: String(error) })));
     },
 
     setPromptDraft: (id, draft) => {

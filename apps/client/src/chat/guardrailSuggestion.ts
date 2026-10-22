@@ -1,9 +1,16 @@
-import type { ChatItem } from "../ipc/types";
+import type { ChatItem, GuardrailDeclineReason } from "../ipc/types";
 import type { GuardrailKind } from "../state/settings";
 import { QUESTION_MARKER } from "../../../../libs/domain/src/question.ts";
 import { stripChangeMarker } from "./changeReferences";
 
 const KINDS: GuardrailKind[] = ["instruction", "rule", "skill", "agent", "adr"];
+
+/** The reasons the "Decline" button of the guardrail chat offers, in menu order. */
+export const DECLINE_REASONS: { id: GuardrailDeclineReason; name: string; description: string }[] = [
+  { id: "tooSpecific", name: "Too specific", description: "A one-off detail no later task needs" },
+  { id: "alreadyRecorded", name: "Already recorded", description: "A guardrail or the code already says it" },
+  { id: "notWanted", name: "Not wanted", description: "Wrong, or not worth recording" },
+];
 
 /** A guardrail the agent proposed at the end of a reply: its kind, what it should say and the id of the reply. */
 export type GuardrailSuggestion = { kind: GuardrailKind; summary: string; replyId: string };

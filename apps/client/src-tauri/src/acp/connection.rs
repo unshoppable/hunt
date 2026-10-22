@@ -505,9 +505,10 @@ const QUESTION_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "
 const SESSIONS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/prompts/sessions.system-prompt.md"));
 
 /// Everything Hunt appends to the system prompt of the agent of the Hunt session `hunt_session_id`: the user's
-/// response-style prompt from the settings (if not cleared), the guardrail offer, the change references, the code block
-/// places, the question marker, the sessions file, the diagram instructions in the user's AI language and the optional selection context, each section separated
-/// from the next by a blank line.
+/// response-style prompt from the settings (if not cleared), the guardrail offer, the guardrail suggestions declined in
+/// the session's repository, the change references, the code block places, the question marker, the sessions file, the
+/// diagram instructions in the user's AI language and the optional selection context, each section separated from the
+/// next by a blank line.
 pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prompt: Option<String>) -> String {
     let style = crate::preferences::system_prompt(app);
     let diagram = crate::graph::system_prompt(&crate::preferences::ai_language(app));
@@ -518,6 +519,11 @@ pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prom
     }
     append.push_str(GUARDRAIL_OFFER_PROMPT);
     append.push('\n');
+    let declined = crate::declined_guardrails::system_prompt(app, hunt_session_id);
+    if !declined.is_empty() {
+        append.push_str(&declined);
+        append.push('\n');
+    }
     append.push_str(CHANGE_REFERENCES_PROMPT);
     append.push('\n');
     append.push_str(CODE_LOCATIONS_PROMPT);

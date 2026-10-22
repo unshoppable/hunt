@@ -747,3 +747,6 @@ export type GithubTokenStatus = { saved: boolean; hint: string | null };
  * `hint` holds the last four characters of a value of at least 12 characters, else it is empty. Hunt never reads values back.
  */
 export type RemoteSecretSummary = { name: string; hint: string };
+
+/** Why the user declined a guardrail the agent suggested (`DeclineReason` in `declined_guardrails.rs`). */
+export type GuardrailDeclineReason = "tooSpecific" | "alreadyRecorded" | "notWanted";

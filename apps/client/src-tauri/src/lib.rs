@@ -1,5 +1,6 @@
 mod accounts;
 mod acp;
+mod declined_guardrails;
 mod documents;
 mod external_links;
 mod find_in_files;
@@ -162,6 +163,7 @@ pub fn run() {
             documents::dirty_documents,
             preferences::set_ai_language,
             preferences::set_system_prompt,
+            declined_guardrails::decline_guardrail,
             plan_usage::get_plan_usage,
             accounts::list_accounts,
             accounts::sign_in_account,

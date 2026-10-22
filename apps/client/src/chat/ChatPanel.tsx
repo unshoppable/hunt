@@ -16,7 +16,7 @@ import { useSettingsStore } from "../state/settings";
 import { openGuardrailsWindow } from "../guardrails/openGuardrailsWindow";
 import { ensureAdrInstruction } from "../guardrails/adrInstruction";
 import { GUARDRAIL_CHAT_PATH, guardrailTask, KIND_LABELS, listGuardrails } from "../guardrails/guardrails";
-import { buildGuardrailRequest, buildTranscript, findGuardrailSuggestion, transcriptTail } from "./guardrailSuggestion";
+import { buildGuardrailRequest, buildTranscript, findGuardrailSuggestion, transcriptTail, type GuardrailSuggestion } from "./guardrailSuggestion";
 import { SubChatPopover, useSubChatPopover } from "./SubChatPopover";
 import { SaveGuardrailButton } from "./SaveGuardrailButton";
 import { ContextMeter } from "./ContextMeter";
@@ -84,8 +84,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const openFile = useIdeStore((state) => state.openFile);
   const guardrailChat = useSubChatPopover();
   const [guardrailRequest, setGuardrailRequest] = useState("");
-  /** The reply whose suggested guardrail the open guardrail chat takes up; its "Decline" button declines that suggestion. */
-  const [guardrailReplyId, setGuardrailReplyId] = useState<string | null>(null);
+  /** The suggested guardrail the open guardrail chat takes up; its "Decline" button declines that suggestion. */
+  const [guardrailOffer, setGuardrailOffer] = useState<GuardrailSuggestion | null>(null);
   /** The end of this session's conversation, shown in the guardrail chat as the context its agent gets. */
   const [guardrailContext, setGuardrailContext] = useState("");
   const showSummary = useSettingsStore((state) => state.showSummary);
@@ -96,7 +96,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const [isVerbose, setIsVerbose] = useState(false);
   const hasSession = Boolean(session);
   const isBusy = chat?.isBusy ?? false;
-  const dismissGuardrail = useHuntStore((state) => state.dismissGuardrail);
+  const declineGuardrail = useHuntStore((state) => state.declineGuardrail);
   const foundSuggestion = isBusy ? null : findGuardrailSuggestion(chat?.items ?? []);
   const guardrailSuggestion = foundSuggestion?.replyId === chat?.dismissedGuardrailId ? null : foundSuggestion;
   const hasQuestion = !!chat && !isCreating && hasPendingQuestion(chat);
@@ -184,7 +184,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     const task = `${guardrailTask(listing)}\n\n## Conversation the guardrail comes from\nThe user opened this chat from the session below; use it as the context of the request.\n\n${transcript}`;
     setGuardrailContext(transcriptTail(transcript, CONTEXT_PREVIEW_LINES));
     setGuardrailRequest(buildGuardrailRequest(guardrailSuggestion, guardrailSuggestion ? KIND_LABELS[guardrailSuggestion.kind].singular : ""));
-    setGuardrailReplyId(guardrailSuggestion?.replyId ?? null);
+    setGuardrailOffer(guardrailSuggestion);
     guardrailChat.open({ selection: { path: GUARDRAIL_CHAT_PATH, startLine: 1, endLine: 1, text: "", task }, anchor: guardrailChatAnchor(bounds) });
   }
 
@@ -368,7 +368,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
             const { x, y } = useSettingsStore.getState().guardrailChatOffset;
             setGuardrailChatOffset({ x: x + offset.x, y: y + offset.y });
           }}
-          onDecline={guardrailReplyId ? () => dismissGuardrail(sessionId, guardrailReplyId) : undefined}
+          onDecline={guardrailOffer ? (reason) => declineGuardrail(sessionId, guardrailOffer, reason) : undefined}
           onClose={guardrailChat.close}
         />
       ) : null}

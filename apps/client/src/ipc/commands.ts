@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GithubTokenStatus, GithubViewer, GraphStatus, LogQuery, PlanUsage, PrettierOutput, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
+import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GithubTokenStatus, GuardrailDeclineReason, GithubViewer, GraphStatus, LogQuery, PlanUsage, PrettierOutput, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
 export function assetUrl(path: string): string {
@@ -188,6 +188,9 @@ export const commands = {
   setAiLanguage: (language: string) => invoke<void>("set_ai_language", { language }),
   /** System prompt addition for every agent session started afterwards; empty switches it off. */
   setSystemPrompt: (prompt: string) => invoke<void>("set_system_prompt", { prompt }),
+  /** Records the declined guardrail suggestion with its repository; agents started there from now on are told about it. */
+  declineGuardrail: (sessionId: string, kind: string, summary: string, reason: GuardrailDeclineReason) =>
+    invoke<void>("decline_guardrail", { id: sessionId, kind, summary, reason }),
   /** The claude.ai plan limits of the signed-in account; spawns a short-lived Claude Code process (~1 s). */
   getPlanUsage: () => invoke<PlanUsage>("get_plan_usage"),
   /** The Claude accounts and the one every Claude Code process starts with. */

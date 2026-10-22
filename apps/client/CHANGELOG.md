@@ -1,3 +1,9 @@
+## 0.89.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** file paths in inline code of a reply open the file in the editor, also in the sub chat popover ([b448dd7](https://github.com/unshoppable/hunt/commit/b448dd7))
+
 ## 0.88.2 (2026-10-22)
 
 ### 🩹 Fixes

@@ -1,3 +1,10 @@
+## 0.77.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** a code block that shows lines of a file gets a header row with the file and "Open in editor" ([436be39](https://github.com/unshoppable/hunt/commit/436be39))
+- **client:** the Own diff marks own lines another session overwrote on disk with that session's mark, whose hover shows the lines on disk now ([12c7805](https://github.com/unshoppable/hunt/commit/12c7805))
+
 ## 0.76.0 (2026-10-22)
 
 ### 🚀 Features

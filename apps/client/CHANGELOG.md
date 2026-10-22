@@ -1,3 +1,9 @@
+## 0.85.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** the editor's project tree selects several rows: ⇧-click selects every row up to the clicked one, ⌘-click adds or removes a row, and copy path and delete (also ⌘⌫) act on all selected rows ([0956f8c](https://github.com/unshoppable/hunt/commit/0956f8c))
+
 ## 0.84.0 (2026-10-22)
 
 ### 🚀 Features

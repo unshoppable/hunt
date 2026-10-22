@@ -1,11 +1,13 @@
 import { Fragment, isValidElement, memo, useState, type ReactNode } from "react";
 import { stripGuardrailMarker } from "./guardrailSuggestion";
+import { findChangeReferences, stripChangeMarker, type FileLocation } from "./changeReferences";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CodeBlock } from "../code/CodeBlock";
 import { monacoLanguageForFence } from "../diff/monaco";
 import type { ChatItem, PlanEntry } from "../ipc/types";
 import { ChatImages } from "./ChatImages";
+import { FileReferenceList } from "./FileReferenceList";
 import { splitFencedCode } from "./codePaste";
 import { huntPromptNotice } from "./huntPromptNotice";
 import { formatMessageTime } from "./messageTime";
@@ -37,13 +39,16 @@ export function MessageList({
   isBusy,
   isVerbose,
   basePath,
+  onOpenFile,
 }: {
   items: ChatItem[];
   plan: PlanEntry[];
   isBusy: boolean;
   isVerbose: boolean;
-  /** Worktree path of the session, stripped from tool arguments. */
+  /** Worktree path of the session, stripped from tool arguments and the places a reply changed. */
   basePath: string;
+  /** Shows a place a reply changed in the editor; without it the places are listed without a button. */
+  onOpenFile?: (location: FileLocation) => void;
 }) {
   const lastItem = items[items.length - 1];
   return (
@@ -83,7 +88,9 @@ export function MessageList({
             </div>
           );
         }
-        return item.kind === "agent" ? <AgentMessage key={item.id} text={item.text} images={item.images} at={item.at} /> : null;
+        return item.kind === "agent" ? (
+          <AgentMessage key={item.id} text={item.text} images={item.images} at={item.at} basePath={basePath} onOpenFile={onOpenFile} />
+        ) : null;
       })}
       {plan.length ? <PlanCard entries={plan} /> : null}
       {isBusy ? <WorkingIndicator /> : null}
@@ -116,9 +123,25 @@ function MessageTime({ at, className = "" }: { at: string; className?: string })
   );
 }
 
-/** Markdown-rendered agent turn with its images below, the time it was written and a copy button that appears on hover. */
-const AgentMessage = memo(function AgentMessage({ text: reply, images, at }: { text: string; images: string[]; at?: string }) {
-  const text = stripGuardrailMarker(reply);
+/**
+ * Markdown-rendered agent turn with its images and the places it changed below, the time it was written and a copy button
+ * that appears on hover.
+ */
+const AgentMessage = memo(function AgentMessage({
+  text: reply,
+  images,
+  at,
+  basePath,
+  onOpenFile,
+}: {
+  text: string;
+  images: string[];
+  at?: string;
+  basePath: string;
+  onOpenFile?: (location: FileLocation) => void;
+}) {
+  const text = stripGuardrailMarker(stripChangeMarker(reply));
+  const changes = findChangeReferences(reply, basePath);
   const [isCopied, setIsCopied] = useState(false);
 
   function copy() {
@@ -132,6 +155,7 @@ const AgentMessage = memo(function AgentMessage({ text: reply, images, at }: { t
     <div className="group flex flex-col gap-1">
       {text ? <MarkdownText text={text} /> : null}
       <ChatImages urls={images} className={text ? "mt-1" : ""} />
+      {changes.length ? <FileReferenceList locations={changes} onOpen={onOpenFile} className="mt-1" /> : null}
       {text || at ? (
         <div className="flex h-7 items-center gap-1">
           {at ? <MessageTime at={at} className="text-neutral-500" /> : null}

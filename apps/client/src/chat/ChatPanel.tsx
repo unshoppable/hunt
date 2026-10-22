@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useIdeStore } from "../ide/ideStore";
 import { hasPendingQuestion, useHuntStore } from "../state/store";
 import { findSelectOption, listChoiceOptions, listModes } from "./configOptions";
@@ -6,8 +6,8 @@ import { MessageList } from "./MessageList";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { PromptInput, type ConfigSelect } from "./PromptInput";
 import { CLEAR_COMMAND } from "./slashCommands";
-import { describeSelection, SelectionCard } from "./SelectionCard";
-import { useFileIconUrl } from "../diff/fileIcons";
+import { SelectionCard } from "./SelectionCard";
+import type { FileLocation } from "./changeReferences";
 import { useFollowScroll } from "./useFollowScroll";
 import { SessionSummary, SessionSummaryToggle } from "./SessionSummary";
 import type { SelectionRequest } from "../diff/selectionContext";
@@ -54,7 +54,6 @@ function guardrailChatAnchor(bounds: DOMRect): SelectionRequest["anchor"] {
 }
 
 export function ChatPanel({ sessionId }: { sessionId: string }) {
-  const fileIconUrl = useFileIconUrl();
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
   /** The VM the agent runs on; `null` for an agent on this Mac, which a sub chat's always is. */
   const remote = session?.remote ?? null;
@@ -144,6 +143,15 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
 
   const followEnd = useFollowScroll(scrollRef, columnRef, `${sessionId}:${hasSession}`);
 
+  /** Shows the lines of `location`, selected, in this session's "Editor" tab. */
+  const openInEditor = useCallback(
+    (location: FileLocation) => {
+      setTab(sessionId, "editor");
+      openFile(sessionId, location.path, { line: location.startLine, endLine: location.endLine });
+    },
+    [sessionId, setTab, openFile],
+  );
+
   /** Deletes the remote session with its VM after confirmation (the trash button beside the title); the sidebar's × only takes it out of the sidebar. */
   async function deleteRemoteSession() {
     const current = useHuntStore.getState().sessions.find((candidate) => candidate.id === sessionId);
@@ -161,7 +169,6 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   /** The agent is being created or started: prompts sent meanwhile queue until it runs. */
   const isStarting = isCreating || Boolean(chat?.isLoading);
 
-  /** Shows the lines the sub chat is about, selected, in the "Editor" tab. */
   /**
    * Opens the guardrail sub chat right above the "Guardrail" button, flush with its right edge: its first question is
    * prefilled with the guardrail the agent suggested (or the bare request), and its agent gets the whole conversation
@@ -174,13 +181,6 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     setGuardrailContext(transcriptTail(transcript, CONTEXT_PREVIEW_LINES));
     setGuardrailRequest(buildGuardrailRequest(guardrailSuggestion, guardrailSuggestion ? KIND_LABELS[guardrailSuggestion.kind].singular : ""));
     guardrailChat.open({ selection: { path: GUARDRAIL_CHAT_PATH, startLine: 1, endLine: 1, text: "", task }, anchor: guardrailChatAnchor(bounds) });
-  }
-
-  function openSelectionInEditor() {
-    if (!session?.selection) return;
-    const { path, startLine, endLine } = session.selection;
-    setTab(sessionId, "editor");
-    openFile(sessionId, path, { line: startLine, endLine });
   }
 
   return (
@@ -208,7 +208,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         <SessionSummaryToggle />
       </header>
 
-      {showSummary ? <SessionSummary session={session} /> : null}
+      {showSummary ? <SessionSummary session={session} onOpenFile={openInEditor} /> : null}
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
         <div ref={columnRef} className="chat-column">
@@ -217,7 +217,14 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
               <SelectionCard selection={session.selection} isOpen />
             </div>
           ) : null}
-          <MessageList items={chat?.items ?? []} plan={chat?.plan ?? []} isBusy={(isBusy && !chat?.isHiddenTurn) || isCreating} isVerbose={isVerbose} basePath={remote?.worktreePath ?? session.worktreePath} />
+          <MessageList
+            items={chat?.items ?? []}
+            plan={chat?.plan ?? []}
+            isBusy={(isBusy && !chat?.isHiddenTurn) || isCreating}
+            isVerbose={isVerbose}
+            basePath={remote?.worktreePath ?? session.worktreePath}
+            onOpenFile={openInEditor}
+          />
           {chat?.isLoading ? (
             <div className="text-neutral-500">{chat.remoteStep ? <RemoteStepProgress chat={chat} showsDetail /> : <p>Loading session…</p>}</div>
           ) : null}
@@ -297,19 +304,6 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           </div>
         </div>
       )}
-      {session.selection ? (
-        <div className="px-9 pt-2">
-          <div className="chat-column flex items-center gap-3 rounded-xl border border-(--line) bg-(--surface-inset) px-4 py-2 text-[13px]">
-            <img src={fileIconUrl(session.selection.path)} alt="" className="size-[18px] shrink-0" />
-            <span className="min-w-0 flex-1 truncate font-mono text-neutral-300" title={describeSelection(session.selection)}>
-              {describeSelection(session.selection)}
-            </span>
-            <button type="button" onClick={openSelectionInEditor} className={SECONDARY_BUTTON_XS} title="Show the selected lines in the Editor tab">
-              Open in editor
-            </button>
-          </div>
-        </div>
-      ) : null}
       {/* Keyed by the session so that a switch shows the other session's own draft instead of carrying this one over. */}
       <PromptInput
         key={sessionId}

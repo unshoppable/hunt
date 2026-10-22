@@ -24,6 +24,8 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_MESSAGE_CHARS: usize = 1_500;
 /// Longest transcript handed to the summarizer; the rest is cut from the middle.
 const MAX_TRANSCRIPT_CHARS: usize = 16_000;
+/// Most bullets a summary keeps; the summarizer is asked for the most important first.
+const MAX_BULLETS: usize = 3;
 
 /// System prompt of the summarizer; `language` is the one the bullets and the title are written in.
 fn system_prompt(language: &str) -> String {
@@ -92,7 +94,7 @@ async fn summarize(app: &AppHandle, hunt_session_id: Uuid, turn: &[SessionNotifi
     let prompt = build_prompt(&record.title, &record.summary, &transcript, &language);
     let output = run_claude(app, &prompt, &language).await?;
 
-    let summary: Vec<String> = output.summary.into_iter().map(|line| line.trim().to_string()).filter(|line| !line.is_empty()).collect();
+    let summary: Vec<String> = output.summary.into_iter().map(|line| line.trim().to_string()).filter(|line| !line.is_empty()).take(MAX_BULLETS).collect();
     let title = output.title.map(|title| title.trim().to_string()).filter(|title| !title.is_empty());
 
     // The session may have been deleted while the summarizer ran; then there is nothing to update.
@@ -120,7 +122,8 @@ fn build_prompt(title: &str, summary: &[String], transcript: &str, language: &st
     format!(
         "Current session title: \"{title}\"\n\nCurrent summary:\n{bullets}\n\nLatest turn:\n{transcript}\n\n\
 Update the summary so it states what the user wants from the whole session including the latest turn:\n\
-- 3 to 6 bullets, each a short line of at most 10 words, no trailing period\n\
+- 1 to {MAX_BULLETS} bullets, most important first, each a short line of at most 10 words, no trailing period; when \
+more would be needed, merge related ones and drop the least important\n\
 - every bullet is a goal, requirement or constraint the user has asked for, phrased as the desired outcome\n\
 - never list what the agent did: no files read, checks run, tests passed, notes saved or commits made\n\
 - keep earlier bullets that still hold, fold in refinements and corrections, replace bullets the latest turn supersedes\n\

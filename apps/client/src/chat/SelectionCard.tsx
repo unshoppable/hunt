@@ -1,14 +1,15 @@
 import type { SelectionContext } from "../ipc/types";
 import { CodeBlock } from "../code/CodeBlock";
 import { monacoLanguage } from "../diff/monaco";
+import type { FileLocation } from "./changeReferences";
 
 /** `L3-L9` label of a selection's lines. */
-export function describeLines(selection: SelectionContext): string {
+export function describeLines(selection: Pick<FileLocation, "startLine" | "endLine">): string {
   return selection.startLine === selection.endLine ? `L${selection.startLine}` : `L${selection.startLine}-L${selection.endLine}`;
 }
 
 /** `path:L3-L9` label of a selection. */
-export function describeSelection(selection: SelectionContext): string {
+export function describeSelection(selection: FileLocation): string {
   return `${selection.path}:${describeLines(selection)}`;
 }
 

@@ -1,13 +1,19 @@
 import type { SessionView } from "../ipc/types";
 import { useSettingsStore } from "../state/settings";
 import { SECONDARY, SURFACE_BUTTON_MD } from "../ui/buttons";
+import type { FileLocation } from "./changeReferences";
+import { FileReferenceList } from "./FileReferenceList";
 
-/** Box above the messages with the session's summary bullets; shown while the "Summary" setting is on. */
-export function SessionSummary({ session }: { session: SessionView }) {
+/**
+ * Box above the messages with the code a sub chat was opened from and the session's summary bullets; shown while the
+ * "Summary" setting is on.
+ */
+export function SessionSummary({ session, onOpenFile }: { session: SessionView; onOpenFile: (location: FileLocation) => void }) {
   return (
     <div className="border-b border-(--line) bg-white/8 px-5 pt-4 pb-[18px]">
       <div className="chat-column">
         <div className="mb-1.5 text-[13px] font-medium uppercase tracking-wide text-neutral-500">Summary</div>
+        {session.selection ? <FileReferenceList locations={[session.selection]} onOpen={onOpenFile} className="mb-2.5" /> : null}
         {session.summary.length ? (
           <ul className="space-y-1 text-[14px] leading-snug text-neutral-300">
             {session.summary.map((line, index) => (

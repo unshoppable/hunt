@@ -104,7 +104,7 @@ type EditorPaneProps = {
 /**
  * One editor group: a tab bar, a Monaco editor showing the active tab's model and a breadcrumb with the file path
  * and the declarations around the caret. ⌘click goes to the declaration (opened in this pane) or, on a declaration,
- * opens the usages popup; ⇧⌘click opens the position in WebStorm, ⌘S saves, ⌘G removes unused imports and formats
+ * opens the usages popup; ⇧⌘click opens the position in WebStorm, ⌘S saves every file with unsaved edits, ⌘G removes unused imports and formats
  * (see `reformat`), the context menu offers "Ask Claude about selection" like the diff view. Lines that differ from HEAD get a change stripe next to the line numbers; a
  * click on it opens the popup with the old lines. A selection a sub chat was opened from gets a glyph left of its
  * first line number; a click on it reopens the sub chat in its popover. Releasing a selection shows a floating
@@ -174,15 +174,11 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
 
     onShortcut(editor, "editor.save", () => {
       const { workspace: current, sessionId: id, noteWorktreeChanged: note } = latest.current;
-      const path = current.pathOf(editor.getModel()?.uri ?? monaco.Uri.parse("inmemory://none"));
-      if (!path) return;
       current
-        .save(path)
-        .then(() => {
-          setError(null);
-          note(id);
-        })
-        .catch((reason) => setError(String(reason)));
+        .saveAll()
+        .then(() => setError(null))
+        .catch((reason) => setError(String(reason)))
+        .finally(() => note(id));
     });
 
     onShortcut(editor, "editor.reformat", () => {

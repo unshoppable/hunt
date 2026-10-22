@@ -387,13 +387,26 @@ export class Workspace {
     }
   }
 
-  /** Writes the shared text to disk; every window sees the document as saved. */
+  /** Writes the shared text to disk, also of a document this window has not loaded; every window sees it as saved. */
   async save(path: string): Promise<void> {
-    const document = this.documents.get(path);
-    if (!document) return;
     const isDirty = await this.lsp.enqueue(() => commands.documentSave(this.sessionId, path));
     this.applyDirty(path, isDirty);
-    void this.loadDependencies(document);
+    const document = this.documents.get(path);
+    if (document) {
+      void this.loadDependencies(document);
+    }
+  }
+
+  /**
+   * Saves every document with unsaved edits but `exceptPath`: those of closed tabs and other windows too, and those
+   * whose edits made in this window are still on their way. Rejects with the first failure once every save has ended.
+   */
+  async saveAll(exceptPath?: string): Promise<void> {
+    const sendingPaths = [...this.replicas].filter(([, replica]) => replica.pendingEdits > 0).map(([path]) => path);
+    const paths = [...new Set([...this.reportedDirtyPaths, ...sendingPaths])].filter((path) => path !== exceptPath);
+    const results = await Promise.allSettled(paths.map((path) => this.save(path)));
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failure) throw failure.reason;
   }
 
   /**

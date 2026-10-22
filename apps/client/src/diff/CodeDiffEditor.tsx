@@ -61,7 +61,7 @@ type CodeDiffEditorProps = {
    * of that session in the glyph margin, whose hover shows the lines on disk.
    */
   overwrites?: OverwriteMark[];
-  /** Called with the current editor content on Cmd/Ctrl+S. */
+  /** Called with the current editor content on ⌘S; the host saves every other file with unsaved edits too (`Workspace.saveAll`). */
   onSave: (content: string) => void;
   /** Reports whether the editor content differs from `diff.newContent`. */
   onDirtyChange: (isDirty: boolean) => void;

@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useBackendEvents, usePaneStyles, useSettingsSync } from "../app/bootstrap";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { CodeDiffEditor, type CodeDiffEditorHandle } from "../diff/CodeDiffEditor";
+import { workspaceFor } from "../ide/documents";
 import { openInEditorWindow } from "../ide/editorWindows";
 import { commands } from "../ipc/commands";
 import { listenTo } from "../ipc/events";
@@ -64,12 +65,13 @@ export function DiffWindowHost({ initialRequest }: { initialRequest: DiffOpenReq
 
 /**
  * The diff of one changed file as a window of its own (see diffWindows.ts), opened from a diagram node. The window
- * stays hidden until the diff is in, so it appears rendered. The right side is editable and saves with ⌘S; a blue
- * dot after the path marks unsaved edits. The traffic light, Escape and ⌘W close the window (after a confirmation
+ * stays hidden until the diff is in, so it appears rendered. The right side is editable; ⌘S saves it and every other
+ * file with unsaved edits. A blue dot after the path marks unsaved edits. The traffic light, Escape and ⌘W close the window (after a confirmation
  * while there are unsaved edits). It closes itself once the file left the changelist (committed, reverted) or its session was removed.
  */
 export function DiffWindow({ sessionId, path }: { sessionId: string; path: string }) {
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId) ?? null);
+  const worktreePath = session?.worktreePath;
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
   const ensureChat = useHuntStore((state) => state.ensureChat);
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
@@ -168,14 +170,16 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
       commands
         .writeFile(sessionId, path, content)
         .then(() => {
-          setError(null);
           setDiff((current) => (current ? { ...current, newContent: content } : current));
           markDirty(false);
-          noteWorktreeChanged(sessionId);
+          // ⌘S saves the other files with unsaved edits too, as in the editor tab.
+          return worktreePath ? workspaceFor(sessionId, worktreePath).saveAll(path) : undefined;
         })
-        .catch((reason) => setError(String(reason)));
+        .then(() => setError(null))
+        .catch((reason) => setError(String(reason)))
+        .finally(() => noteWorktreeChanged(sessionId));
     },
-    [sessionId, path, markDirty, noteWorktreeChanged],
+    [sessionId, worktreePath, path, markDirty, noteWorktreeChanged],
   );
 
   return (

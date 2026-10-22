@@ -252,16 +252,18 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
       commands
         .writeFile(sessionId, selectedPath, content)
         .then(() => {
-          setError(null);
           setDiff((current) => (current ? { ...current, newContent: content } : current));
           setExternalDiff(null);
           markDirty(false);
           setLocalVersion((version) => version + 1);
-          noteWorktreeChanged(sessionId);
+          // ⌘S saves the other files with unsaved edits too, as in the editor tab.
+          return worktreePath ? workspaceFor(sessionId, worktreePath).saveAll(selectedPath) : undefined;
         })
-        .catch((reason) => setError(String(reason)));
+        .then(() => setError(null))
+        .catch((reason) => setError(String(reason)))
+        .finally(() => noteWorktreeChanged(sessionId));
     },
-    [sessionId, selectedPath, markDirty, noteWorktreeChanged],
+    [sessionId, worktreePath, selectedPath, markDirty, noteWorktreeChanged],
   );
 
   /**

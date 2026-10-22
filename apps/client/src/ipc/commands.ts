@@ -281,8 +281,6 @@ export const commands = {
   documentMarkSaved: (id: string, path: string, text: string) => invoke<boolean>("document_mark_saved", { id, path, text }),
   /** Drops this window's hold on `path`; the last window closes the document. */
   documentClose: (id: string, path: string) => invoke<void>("document_close", { id, path }),
-  /** Replaces the paths this window shows in a tab or an editor. */
-  documentViews: (id: string, paths: string[]) => invoke<void>("document_views", { id, paths }),
-  /** Those of `paths` that another window shows. */
-  documentsShownElsewhere: (id: string, paths: string[]) => invoke<string[]>("documents_shown_elsewhere", { id, paths }),
+  /** The paths of the session's worktree whose shared documents hold unsaved edits, sorted. */
+  dirtyDocuments: (id: string) => invoke<string[]>("dirty_documents", { id }),
 };

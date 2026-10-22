@@ -276,6 +276,10 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const revertFile = async (file: ChangedFile) => {
     setContextMenu(null);
     if (!(await confirmDestructive(`${revertLabel(file)}: "${file.path}"? This discards all changes to the file.`, revertLabel(file)))) return;
+    // Unsaved edits go too; queued ahead of the reloads that follow, the document then takes the reverted file over.
+    if (worktreePath) {
+      workspaceFor(sessionId, worktreePath).revert(file.path);
+    }
     commands
       .revertFile(sessionId, file.path)
       .then(() => {

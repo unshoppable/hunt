@@ -23,6 +23,7 @@ use crate::acp::{
     bundled_script_path, connect, message_time, publish_update, system_prompt_append, AgentTransport, LiveHandles, PermissionRegistry,
     SessionRegistry, SessionStart,
 };
+use crate::documents::DocumentRegistry;
 use crate::find_in_files::{self, FindRegistry, TextQuery, TextSearchResult};
 use crate::formatter::{self, PrettierOutput};
 use crate::git::{self, ChangedFile, FileDiff, Shelf};
@@ -1780,14 +1781,15 @@ async fn delete_created_branch(record: &SessionRecord) {
     }
 }
 
-/// Deletes the edit log and the search texts of `worktree` when no stored session works in it any more; a failure is
-/// only logged.
+/// Deletes the edit log, the search texts and the documents (unsaved edits included) of `worktree` when no stored session
+/// works in it any more; a failure is only logged.
 fn forget_worktree_if_unused(app: &AppHandle, worktree: &Path) {
     let result = store::load_sessions(app).and_then(|sessions| {
         if sessions.iter().any(|session| session.worktree_path == worktree) {
             return Ok(());
         }
         app.state::<FindRegistry>().forget(worktree);
+        app.state::<DocumentRegistry>().forget(worktree);
         attribution::forget_worktree(app, worktree)
     });
     if let Err(error) = result {

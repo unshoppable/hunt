@@ -238,14 +238,8 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
     setCollapsedFolders(new Set());
   };
 
-  const requestClose = async () => {
-    const dirty = dirtyPaths.filter((path) => KINDS.some((candidate) => listing?.[candidate].some((entry) => entry.path === path)));
-    if (!(await workspace.discardIfConfirmed(dirty))) return;
-    await getCurrentWindow().hide();
-  };
-
-  // A warm window stays hidden until the main window shows it (see openGuardrailsWindow.ts).
-  useSecondaryWindow("guardrails", requestClose, { isReady: !isWarm });
+  // A warm window stays hidden until the main window shows it (see openGuardrailsWindow.ts); hiding keeps unsaved edits.
+  useSecondaryWindow("guardrails", () => getCurrentWindow().hide(), { isReady: !isWarm });
 
   /** Writes a new file named after `title` at `location` with `content`, by default the kind's template, and opens it. */
   const create = async (title: string, content?: string, location: Partial<GuardrailLocation> = {}) => {

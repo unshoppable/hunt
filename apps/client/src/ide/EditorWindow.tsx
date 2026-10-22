@@ -10,7 +10,7 @@ import { workspaceFor } from "./documents";
 import { FileSearchDialog, useFileSearchShortcut } from "./FileSearchDialog";
 import { FindInFilesDialog, useFindInFilesShortcut } from "./FindInFilesDialog";
 import { IdePanel } from "./IdePanel";
-import { EMPTY_IDE_SESSION, useIdeSession, useIdeStore } from "./ideStore";
+import { useIdeSession, useIdeStore } from "./ideStore";
 import { resolveDefinition } from "./languageService";
 import { allPanes } from "./paneGrid";
 import { HEADER_BAR } from "../ui/bars";
@@ -19,8 +19,8 @@ import { HEADER_BAR } from "../ui/bars";
  * The built-in editor as a window of its own (see editorWindows.ts), opened by ⌘click on a name in the diff (it
  * shows the name's declaration) or "Go to File" while the inspector shows another tab. It boots hidden, usually
  * ahead of its first request, and appears with the first file; it keeps its own tabs, takes further files as the
- * `editor:open` event, asks before unsaved edits are lost and, closed on ⌘W, Escape or the traffic light, only hides
- * so the next request is instant.
+ * `editor:open` event and, closed on ⌘W, Escape or the traffic light, only hides so the next request is instant;
+ * unsaved edits stay in the shared documents.
  * It destroys itself once its session was removed.
  */
 export function EditorWindow({ sessionId, initialRequest }: { sessionId: string; initialRequest: EditorOpenRequest | null }) {
@@ -93,14 +93,8 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
     void emit("editor:ready", { label: getCurrentWindow().label });
   }, [isLoaded, isListening]);
 
-  /**
-   * Hides the window and drops its tabs and dialogs; unsaved edits in its tabs are discarded after confirmation or keep
-   * the window open.
-   */
+  /** Hides the window and drops its tabs and dialogs; unsaved edits in its tabs stay in the shared documents. */
   const closeWindow = async () => {
-    const { layout } = useIdeStore.getState().sessions[sessionId] ?? EMPTY_IDE_SESSION;
-    const tabPaths = [...new Set(allPanes(layout).flatMap((pane) => pane.tabs))];
-    if (!(await workspaceFor(sessionId, session?.worktreePath ?? "").discardIfConfirmed(tabPaths))) return;
     closeAllTabs(sessionId);
     setIsFileSearchOpen(false);
     setFindInFiles(null);

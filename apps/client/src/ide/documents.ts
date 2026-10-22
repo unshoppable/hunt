@@ -8,8 +8,6 @@ import { parseImportSpecifiers } from "./imports";
 import { lspClientFor, type LspClient } from "./lsp/client";
 import { toLspRange, toMonacoRange } from "./lsp/protocol";
 import { minimalChange, remoteChangeAction } from "./sharedDocument";
-import { confirmDestructive } from "../ui/confirm";
-import { baseName } from "../ui/path";
 
 /** A worktree file loaded into a Monaco model; the model is shared by every editor of this window showing the file. */
 export type Document = {
@@ -40,9 +38,11 @@ type DirtyListener = (path: string, isDirty: boolean) => void;
  * The documents of one worktree in this window. Each is a replica of the one text the backend holds for the file
  * (src-tauri/src/documents.rs), like the editors of an IDE sharing one document: edits made here go to the backend,
  * which forwards them to the language server and to the other windows, and changes made elsewhere arrive as
- * `document:changed`. So every window shows the same text and the same unsaved state. Models live under
- * `file://<worktree>/<path>`, the URIs the language server knows them by. Opening a file also loads the files it
- * imports (one level) and shows them to the coloring worker, so identifiers from those files get their semantic colors.
+ * `document:changed`. So every window shows the same text and the same unsaved state. Closing a tab or a window never
+ * loses unsaved edits: the backend keeps them until a window saves or reverts the file, and every window knows the
+ * unsaved paths of the worktree, including those it has not loaded. Models live under `file://<worktree>/<path>`, the
+ * URIs the language server knows them by. Opening a file also loads the files it imports (one level) and shows them to
+ * the coloring worker, so identifiers from those files get their semantic colors.
  */
 export class Workspace {
   /** The worktree's language server client; sessions sharing the worktree share it. */
@@ -55,15 +55,13 @@ export class Workspace {
   private readonly reportedDirty = new Map<string, boolean>();
   /** The paths reported dirty, sorted; a new array after every change. */
   private reportedDirtyPaths: readonly string[] = [];
+  /** Paths with unsaved edits that this window has no document of; the edits were made in another window. */
+  private readonly unloadedDirtyPaths = new Set<string>();
   /** Paths whose imports were resolved already; a document's imports are loaded once per content. */
   private readonly dependenciesLoadedFor = new Map<string, number>();
   /** HEAD content per path for the editor's change markers; dropped whenever the worktree changes. */
   private readonly headTexts = new Map<string, Promise<string | null>>();
   private readonly headListeners = new Set<() => void>();
-  /** Paths shown in tabs, per IDE panel. */
-  private readonly tabPaths = new Map<string, string[]>();
-  /** The shown paths last reported to the backend, joined by newlines. */
-  private reportedViews = "";
 
   constructor(
     /** Session used for the IPC calls; sub chats share the worktree and may pass their own id. */
@@ -72,6 +70,9 @@ export class Workspace {
   ) {
     this.lsp = lspClientFor(sessionId, worktreePath);
     subscribeToDocumentEvents();
+    if (worktreePath) {
+      void this.loadDirtyPaths();
+    }
   }
 
   uriOf(path: string): monaco.Uri {
@@ -91,7 +92,8 @@ export class Workspace {
 
   /** Whether the shared document has edits that are not on disk, made in this window or another one. */
   isDirty(path: string): boolean {
-    return !!this.replicas.get(path)?.isDirty;
+    const replica = this.replicas.get(path);
+    return replica ? replica.isDirty : this.unloadedDirtyPaths.has(path);
   }
 
   /** Paths whose shared document has unsaved edits, as last reported to `onDirtyChange` listeners; stable until the next change. */
@@ -164,7 +166,7 @@ export class Workspace {
       }
       return document;
     }
-    const created = this.adopt(path, { text, version: 0, isDirty: false });
+    const created = this.adopt(path, { text, version: 0, isDirty: this.isDirty(path) });
     this.resync(created);
     return created;
   }
@@ -178,21 +180,15 @@ export class Workspace {
       .catch((error) => console.warn(`failed to mark ${path} as saved:`, error));
   }
 
-  /** Sets the paths the IDE panel `owner` shows in tabs; with the models attached to an editor, they are what this window shows. */
-  setTabPaths(owner: string, paths: string[]): void {
-    if (paths.length) {
-      this.tabPaths.set(owner, paths);
-    } else {
-      this.tabPaths.delete(owner);
-    }
-    this.reportViews();
-  }
-
   /** Takes a change made in another window or by the backend over (for the `document:changed` subscription). */
   applyChange(event: DocumentChangedEvent): void {
     const document = this.documents.get(event.path);
     const replica = this.replicas.get(event.path);
-    if (!document || !replica || document.model.isDisposed()) return;
+    if (!document || !replica) {
+      this.applyDirty(event.path, event.isDirty);
+      return;
+    }
+    if (document.model.isDisposed()) return;
     replica.seenVersion = Math.max(replica.seenVersion, event.version);
     const action = remoteChangeAction(replica.version, replica.pendingEdits > 0 || replica.isResyncing, event.version);
     if (action === "ignore") return;
@@ -209,13 +205,33 @@ export class Workspace {
     this.applyDirty(event.path, event.isDirty);
   }
 
-  /** Takes the dirty state of the shared document over. */
+  /** Takes the dirty state of the shared document over, also of a path this window has not loaded. */
   applyDirty(path: string, isDirty: boolean): void {
-    const document = this.documents.get(path);
     const replica = this.replicas.get(path);
-    if (!document || !replica) return;
-    replica.isDirty = isDirty;
-    this.reportDirty(document);
+    if (replica) {
+      replica.isDirty = isDirty;
+    } else if (isDirty) {
+      this.unloadedDirtyPaths.add(path);
+    } else {
+      this.unloadedDirtyPaths.delete(path);
+    }
+    this.reportDirty(path);
+  }
+
+  /**
+   * Takes over the paths the backend held unsaved edits of before this window loaded the workspace; a state reported
+   * meanwhile is newer and stays.
+   */
+  private async loadDirtyPaths(): Promise<void> {
+    try {
+      const paths = await commands.dirtyDocuments(this.sessionId);
+      for (const path of paths) {
+        if (this.reportedDirty.has(path)) continue;
+        this.applyDirty(path, true);
+      }
+    } catch (error) {
+      console.warn("failed to read the documents with unsaved edits:", error);
+    }
   }
 
   private adopt(path: string, state: DocumentState): Document {
@@ -234,13 +250,13 @@ export class Workspace {
     };
     this.documents.set(path, document);
     this.replicas.set(path, replica);
+    this.unloadedDirtyPaths.delete(path);
     if (existing) {
       this.applyText(document, state.text);
     }
     this.lsp.serve(model);
     model.onDidChangeContent((event) => this.sendEdit(document, event));
-    model.onDidChangeAttached(() => this.reportViews());
-    this.reportDirty(document);
+    this.reportDirty(path);
     return document;
   }
 
@@ -331,10 +347,10 @@ export class Workspace {
     }
   }
 
-  private reportDirty(document: Document) {
-    const isDirty = this.isDirty(document.path);
-    if (this.reportedDirty.get(document.path) === isDirty) return;
-    this.reportDirtyChange(document.path, isDirty);
+  private reportDirty(path: string) {
+    const isDirty = this.isDirty(path);
+    if (this.reportedDirty.get(path) === isDirty) return;
+    this.reportDirtyChange(path, isDirty);
   }
 
   private reportDirtyChange(path: string, isDirty: boolean): void {
@@ -343,21 +359,6 @@ export class Workspace {
     for (const listener of this.dirtyListeners) {
       listener(path, isDirty);
     }
-  }
-
-  /** Tells the backend which paths this window shows: tab paths and documents attached to an editor. */
-  private reportViews(): void {
-    const shown = new Set([...this.tabPaths.values()].flat());
-    for (const document of this.documents.values()) {
-      if (!document.model.isDisposed() && document.model.isAttachedToEditor()) {
-        shown.add(document.path);
-      }
-    }
-    const paths = [...shown].sort();
-    const key = paths.join("\n");
-    if (key === this.reportedViews) return;
-    this.reportedViews = key;
-    void this.lsp.enqueue(() => commands.documentViews(this.sessionId, paths)).catch((error) => console.warn("failed to report the shown documents:", error));
   }
 
   /**
@@ -396,27 +397,10 @@ export class Workspace {
   }
 
   /**
-   * Asks before unsaved edits in `paths` are lost (closing their last tab) and reverts them on consent. Edits that
-   * another window shows stay without asking. Returns false when the user keeps the edits, in which case nothing
-   * should close.
+   * Throws away the unsaved edits of `path` in every window, also when this window has not loaded it; the document
+   * goes back to the content on disk. Queued before a reload, it lets the reload take the disk content over.
    */
-  async discardIfConfirmed(paths: string[]): Promise<boolean> {
-    const dirty = paths.filter((path) => this.isDirty(path));
-    if (!dirty.length) return true;
-    const shownElsewhere = new Set(await commands.documentsShownElsewhere(this.sessionId, dirty).catch(() => []));
-    const discarded = dirty.filter((path) => !shownElsewhere.has(path));
-    if (!discarded.length) return true;
-    const names = discarded.map((path) => `"${baseName(path)}"`).join(", ");
-    if (!(await confirmDestructive(`Discard unsaved changes in ${names}?`, "Discard"))) return false;
-    for (const path of discarded) {
-      this.revert(path);
-    }
-    return true;
-  }
-
-  /** Throws away the unsaved edits of `path` in every window; the document goes back to the content on disk. */
   revert(path: string): void {
-    if (!this.documents.has(path)) return;
     void this.lsp.enqueue(() => commands.documentRevert(this.sessionId, path)).catch((error) => console.warn(`failed to revert ${path}:`, error));
   }
 

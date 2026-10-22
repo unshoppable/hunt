@@ -14,7 +14,6 @@ import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { HEADER_BAR } from "../ui/bars";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { confirmDestructive } from "../ui/confirm";
 import { useSecondaryWindow } from "../ui/nativeWindow";
 import { baseName } from "../ui/path";
 import { errorText, useLoad } from "../ui/useLoad";
@@ -103,10 +102,8 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
     setIsDirty(value);
   }, []);
 
-  const close = useCallback(async () => {
-    if (isDirtyRef.current && !(await confirmDestructive("Discard unsaved changes in this file?", "Discard"))) return;
-    await getCurrentWindow().destroy();
-  }, []);
+  // Unsaved edits live in the shared worktree document and survive the window.
+  const close = useCallback(() => getCurrentWindow().destroy(), []);
 
   usePaneStyles();
   useSettingsSync();

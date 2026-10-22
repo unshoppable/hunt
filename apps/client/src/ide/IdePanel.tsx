@@ -8,7 +8,7 @@ import { DependencyBanner } from "./DependencyBanner";
 import { workspaceFor } from "./documents";
 import { EditorGrid } from "./EditorGrid";
 import { EMPTY_IDE_SESSION, useIdeSession, useIdeStore } from "./ideStore";
-import { allPanes, findPane, panesShowing } from "./paneGrid";
+import { findPane } from "./paneGrid";
 import { ProjectTree } from "./ProjectTree";
 import { useDirtyPaths } from "./useDirtyPaths";
 
@@ -64,37 +64,24 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
   const worktreePath = session?.worktreePath ?? "";
   const workspace = useMemo(() => workspaceFor(sessionId, worktreePath), [sessionId, worktreePath]);
 
+  // Closing tabs keeps their unsaved edits in the shared documents; the project tree and the change list mark them.
   const dirtyPaths = useDirtyPaths(workspace);
-
-  // The backend keeps unsaved edits without asking when another window still shows the file (see discardIfConfirmed).
-  const tabPathsKey = useMemo(() => [...new Set(allPanes(ide.layout).flatMap((pane) => pane.tabs))].join("\n"), [ide.layout]);
-  useEffect(() => {
-    workspace.setTabPaths(sessionId, tabPathsKey ? tabPathsKey.split("\n") : []);
-    return () => workspace.setTabPaths(sessionId, []);
-  }, [workspace, sessionId, tabPathsKey]);
 
   useEffect(() => {
     void workspace.reloadFromDisk();
   }, [workspace, editVersion]);
 
-  const closeActiveTab = async () => {
+  const closeActiveTab = () => {
     const { layout, activePaneId } = useIdeStore.getState().sessions[sessionId] ?? EMPTY_IDE_SESSION;
     const pane = activePaneId ? findPane(layout, activePaneId) : null;
     if (!pane?.activePath) {
       onCloseEmpty?.();
       return;
     }
-    const isLastView = panesShowing(layout, pane.activePath).length <= 1;
-    if (isLastView && !(await workspace.discardIfConfirmed([pane.activePath]))) return;
     closeTab(sessionId, pane.id, pane.activePath);
   };
 
-  const closeEverything = async () => {
-    const { layout } = useIdeStore.getState().sessions[sessionId] ?? EMPTY_IDE_SESSION;
-    const paths = [...new Set(allPanes(layout).flatMap((pane) => pane.tabs))];
-    if (paths.length && !(await workspace.discardIfConfirmed(paths))) return;
-    closeAllTabs(sessionId);
-  };
+  const closeEverything = () => closeAllTabs(sessionId);
   const closeActions = useRef({ closeActiveTab, closeEverything });
   closeActions.current = { closeActiveTab, closeEverything };
 
@@ -103,8 +90,8 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
       "editor.back": () => navigateBack(sessionId),
       "editor.forward": () => navigateForward(sessionId),
       "editor.selectInTree": () => revealActiveFile(sessionId),
-      "editor.closeTab": () => void closeActions.current.closeActiveTab(),
-      "editor.closeAllTabs": () => void closeActions.current.closeEverything(),
+      "editor.closeTab": () => closeActions.current.closeActiveTab(),
+      "editor.closeAllTabs": () => closeActions.current.closeEverything(),
       "editor.moveTabLeft": () => moveActiveTab(sessionId, "left"),
       "editor.moveTabRight": () => moveActiveTab(sessionId, "right"),
       "editor.moveTabUp": () => moveActiveTab(sessionId, "up"),

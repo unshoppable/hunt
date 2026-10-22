@@ -15,7 +15,7 @@ import { noteCaret, noteViewState, useIdeStore, viewStateOf, type PendingPositio
 import { findUsages, formattingEdits, navigationAt, symbolPathAt, unusedImportEdits, type SymbolCrumb } from "./languageService";
 import { toMonacoRange, type TextEdit } from "./lsp/protocol";
 import { editsToText } from "./reformat";
-import { panesShowing, type Pane } from "./paneGrid";
+import type { Pane } from "./paneGrid";
 import type { ChangeBlock } from "../diff/lineDiff";
 import { AddCommentGlyph, type CommentTarget } from "../review/addCommentGlyph";
 import { ReviewCommentZones } from "../review/ReviewCommentZones";
@@ -419,11 +419,8 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
     openFile(sessionId, usage.path, { paneId: pane.id, line: usage.line, column: usage.column });
   };
 
-  const requestClose = async (path: string, event?: MouseEvent) => {
+  const requestClose = (path: string, event?: MouseEvent) => {
     event?.stopPropagation();
-    const layout = useIdeStore.getState().sessions[sessionId]?.layout;
-    const isLastView = !layout || panesShowing(layout, path).length <= 1;
-    if (isLastView && !(await workspace.discardIfConfirmed([path]))) return;
     noteViewState(sessionId, pane.id, path, null);
     closeTab(sessionId, pane.id, path);
   };

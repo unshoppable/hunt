@@ -329,7 +329,9 @@ The "Editor" tab is a small built-in IDE for the worktree: a lazily listed proje
 WebStorm's file colors; marks are kept per repository in `apps/client/src/ide/folderColors.ts`. Files live as
 `file://<worktree>/…` models. Like an IDE's editors, every window shares one document per file: the backend holds its
 text and saved state (`apps/client/src-tauri/src/documents.rs`), each window's model is a replica
-(`apps/client/src/ide/documents.ts`), so an edit, the unsaved mark and a save show in every window at once.
+(`apps/client/src/ide/documents.ts`), so an edit, the unsaved mark and a save show in every window at once. Closing a
+tab or a window keeps unsaved edits: the backend holds them until a save or a rollback, and the project tree and the
+change list mark the file with a blue dot.
 
 Hover, inlay hints, diagnostics, the breadcrumb, go-to-declaration and usages come from the TypeScript 7 language
 server (`tsgo --lsp`, from the worktree's `node_modules/.bin` or the PATH), one process per worktree managed by

@@ -3,7 +3,8 @@
 //! applied here, forwarded to the worktree's language server in order and broadcast to the other windows
 //! (`document:changed`). An edit against a stale version is refused and the window reads the document again
 //! (`document_open`). Reloads from disk, reverts and saves go through here too, so every window and the server hold the
-//! same text and the same saved state.
+//! same text and the same saved state. A document with unsaved edits outlives the windows that held it, so closing a
+//! tab or a window never loses edits; it closes once it is saved or reverted and no window holds it.
 //!
 //! `WorktreeDocuments` is the Tauri-free core: every operation returns the server notifications and window events it
 //! causes. `DocumentRegistry`, `update` and the commands add the per-worktree lock, the server lookup and the emission.
@@ -123,17 +124,15 @@ impl Document {
     }
 }
 
-/// The documents of one worktree and the paths each window shows.
+/// The documents of one worktree.
 pub struct WorktreeDocuments {
     worktree: PathBuf,
     documents: HashMap<String, Document>,
-    /// Paths each window shows in a tab or an editor, by window label.
-    views: HashMap<String, HashSet<String>>,
 }
 
 impl WorktreeDocuments {
     pub fn new(worktree: PathBuf) -> Self {
-        Self { worktree, documents: HashMap::new(), views: HashMap::new() }
+        Self { worktree, documents: HashMap::new() }
     }
 
     /// Registers `owner` as a holder of `path` and returns the shared state; the first holder reads the file with `read`
@@ -215,7 +214,9 @@ impl WorktreeDocuments {
             return Effects::default();
         }
         let saved_text = document.saved_text.clone();
-        self.replace(path, saved_text, false)
+        let mut effects = self.replace(path, saved_text, false);
+        effects.extend(self.close_if_unused(path));
+        effects
     }
 
     /// Records that the file on disk holds `text` now and returns whether the document still has unsaved edits.
@@ -231,6 +232,7 @@ impl WorktreeDocuments {
         if is_dirty != was_dirty {
             effects.events.push(DocumentEvent::Dirty(DirtyEvent { worktree_path, path: path.to_string(), is_dirty }));
         }
+        effects.extend(self.close_if_unused(path));
         (is_dirty, effects)
     }
 
@@ -246,28 +248,19 @@ impl WorktreeDocuments {
         self.remove(path)
     }
 
-    /// Replaces the paths `owner` shows.
-    pub fn set_views(&mut self, owner: &str, paths: Vec<String>) {
-        if paths.is_empty() {
-            self.views.remove(owner);
-        } else {
-            self.views.insert(owner.to_string(), paths.into_iter().collect());
-        }
+    /// The paths whose documents have unsaved edits, sorted.
+    pub fn dirty_paths(&self) -> Vec<String> {
+        let mut paths: Vec<String> =
+            self.documents.iter().filter(|(_, document)| document.is_dirty()).map(|(path, _)| path.clone()).collect();
+        paths.sort();
+        paths
     }
 
-    /// Those of `paths` that a window other than `owner` shows.
-    pub fn shown_elsewhere(&self, owner: &str, paths: &[String]) -> Vec<String> {
-        let others = self.views.iter().filter(|(label, _)| label.as_str() != owner);
-        let shown: HashSet<&String> = others.flat_map(|(_, views)| views).collect();
-        paths.iter().filter(|path| shown.contains(path)).cloned().collect()
-    }
-
-    /// Forgets the holds and views of `owner`, whose window closed or loads a new page.
+    /// Forgets the holds of `owner`, whose window closed or loads a new page; documents with unsaved edits stay open.
     pub fn release_owner(&mut self, owner: &str) -> Effects {
-        self.views.remove(owner);
         let mut released = Vec::new();
         for (path, document) in &mut self.documents {
-            if document.holders.remove(owner) && document.holders.is_empty() {
+            if document.holders.remove(owner) && document.holders.is_empty() && !document.is_dirty() {
                 released.push(path.clone());
             }
         }
@@ -316,6 +309,16 @@ impl WorktreeDocuments {
         effects
     }
 
+    /// Closes `path` when no window holds it and it has no unsaved edits, the only reason a document lives without holders.
+    fn close_if_unused(&mut self, path: &str) -> Effects {
+        let is_unused = self.documents.get(path).is_some_and(|document| document.holders.is_empty() && !document.is_dirty());
+        if !is_unused {
+            return Effects::default();
+        }
+        self.remove(path)
+    }
+
+    /// Closes `path`; unsaved edits it still had are gone, which the windows hear as `document:dirty`.
     fn remove(&mut self, path: &str) -> Effects {
         let mut effects = Effects::default();
         let Some(document) = self.documents.remove(path) else {
@@ -323,6 +326,10 @@ impl WorktreeDocuments {
         };
         if document.language_id.is_some() {
             effects.notifications.push(("textDocument/didClose", json!({ "textDocument": { "uri": self.uri(path) } })));
+        }
+        if document.is_dirty() {
+            let event = DirtyEvent { worktree_path: self.worktree_path(), path: path.to_string(), is_dirty: false };
+            effects.events.push(DocumentEvent::Dirty(event));
         }
         effects
     }
@@ -403,6 +410,13 @@ impl DocumentRegistry {
             Arc::new(tokio::sync::Mutex::new(Entry { documents: WorktreeDocuments::new(worktree.to_path_buf()), server: Weak::new() }))
         });
         entry.clone()
+    }
+
+    /// Drops the documents of a worktree no session uses any more, unsaved edits included, so a later worktree at the
+    /// same path starts from its files.
+    pub fn forget(&self, worktree: &Path) {
+        self.worktrees.lock().unwrap().remove(worktree);
+        self.sessions.lock().unwrap().retain(|_, session_worktree| session_worktree != worktree);
     }
 }
 
@@ -571,22 +585,11 @@ pub async fn document_close(app: AppHandle, window: Window, id: Uuid, path: Stri
     update(&app, &worktree, |documents| Ok(((), documents.close(&path, window.label())))).await
 }
 
-/// Replaces the paths the calling window shows in a tab or an editor.
+/// The paths of the session's worktree whose documents have unsaved edits, for a window that starts following them.
 #[tauri::command]
-pub async fn document_views(app: AppHandle, window: Window, id: Uuid, paths: Vec<String>) -> Result<(), String> {
+pub async fn dirty_documents(app: AppHandle, id: Uuid) -> Result<Vec<String>, String> {
     let worktree = worktree_of(&app, id)?;
-    update(&app, &worktree, |documents| {
-        documents.set_views(window.label(), paths);
-        Ok(((), Effects::default()))
-    })
-    .await
-}
-
-/// Those of `paths` that another window shows.
-#[tauri::command]
-pub async fn documents_shown_elsewhere(app: AppHandle, window: Window, id: Uuid, paths: Vec<String>) -> Result<Vec<String>, String> {
-    let worktree = worktree_of(&app, id)?;
-    update(&app, &worktree, |documents| Ok((documents.shown_elsewhere(window.label(), &paths), Effects::default()))).await
+    update(&app, &worktree, |documents| Ok((documents.dirty_paths(), Effects::default()))).await
 }
 
 #[cfg(test)]
@@ -742,13 +745,11 @@ mod tests {
     }
 
     #[test]
-    fn releasing_a_window_drops_its_holds_and_views() {
+    fn releasing_a_window_drops_its_holds() {
         let mut documents = documents();
         documents.open("a.ts", "main", "typescript", read("a")).unwrap();
         documents.open("b.ts", "main", "typescript", read("b")).unwrap();
         documents.open("b.ts", "editor-1", "typescript", read("b")).unwrap();
-        documents.set_views("editor-1", vec!["b.ts".into()]);
-        assert_eq!(documents.shown_elsewhere("main", &["a.ts".into(), "b.ts".into()]), ["b.ts"]);
 
         let effects = documents.release_owner("main");
         assert_eq!(methods(&effects), ["textDocument/didClose"]);
@@ -756,8 +757,50 @@ mod tests {
         assert!(documents.text("b.ts").is_ok());
 
         documents.release_owner("editor-1");
-        assert!(documents.shown_elsewhere("main", &["b.ts".into()]).is_empty());
         assert!(documents.text("b.ts").is_err());
+    }
+
+    #[test]
+    fn unsaved_edits_outlive_every_window_until_they_are_reverted() {
+        let mut documents = documents();
+        documents.open("a.ts", "editor-1", "typescript", read("a")).unwrap();
+        documents.edit("a.ts", 1, vec![change((0, 1), (0, 1), "b")]).unwrap();
+
+        assert_eq!(documents.release_owner("editor-1"), Effects::default());
+        assert_eq!(documents.dirty_paths(), ["a.ts"]);
+        let (state, _) = documents.open("a.ts", "main", "typescript", || panic!("a kept document is not read again")).unwrap();
+        assert_eq!(state, DocumentState { text: "ab".into(), version: 2, is_dirty: true });
+        documents.release_owner("main");
+
+        let effects = documents.revert("a.ts");
+        assert_eq!(methods(&effects), ["textDocument/didChange", "textDocument/didClose"]);
+        assert!(documents.text("a.ts").is_err());
+        assert!(documents.dirty_paths().is_empty());
+    }
+
+    #[test]
+    fn a_kept_document_closes_once_saved() {
+        let mut documents = documents();
+        documents.open("a.ts", "editor-1", "typescript", read("a")).unwrap();
+        documents.edit("a.ts", 1, vec![change((0, 1), (0, 1), "b")]).unwrap();
+        documents.release_owner("editor-1");
+
+        let (is_dirty, effects) = documents.mark_saved("a.ts", "ab".into());
+        assert!(!is_dirty);
+        assert_eq!(methods(&effects), ["textDocument/didClose"]);
+        assert!(documents.text("a.ts").is_err());
+    }
+
+    #[test]
+    fn closing_a_dirty_document_reports_it_clean() {
+        let mut documents = documents();
+        documents.open("a.ts", "main", "typescript", read("a")).unwrap();
+        documents.edit("a.ts", 1, vec![change((0, 1), (0, 1), "b")]).unwrap();
+        let effects = documents.close("a.ts", "main");
+        assert_eq!(
+            effects.events,
+            [DocumentEvent::Dirty(DirtyEvent { worktree_path: "/work tree".into(), path: "a.ts".into(), is_dirty: false })]
+        );
     }
 
     struct Silent;

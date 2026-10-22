@@ -84,6 +84,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const openFile = useIdeStore((state) => state.openFile);
   const guardrailChat = useSubChatPopover();
   const [guardrailRequest, setGuardrailRequest] = useState("");
+  /** The reply whose suggested guardrail the open guardrail chat takes up; its "Decline" button declines that suggestion. */
+  const [guardrailReplyId, setGuardrailReplyId] = useState<string | null>(null);
   /** The end of this session's conversation, shown in the guardrail chat as the context its agent gets. */
   const [guardrailContext, setGuardrailContext] = useState("");
   const showSummary = useSettingsStore((state) => state.showSummary);
@@ -182,6 +184,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     const task = `${guardrailTask(listing)}\n\n## Conversation the guardrail comes from\nThe user opened this chat from the session below; use it as the context of the request.\n\n${transcript}`;
     setGuardrailContext(transcriptTail(transcript, CONTEXT_PREVIEW_LINES));
     setGuardrailRequest(buildGuardrailRequest(guardrailSuggestion, guardrailSuggestion ? KIND_LABELS[guardrailSuggestion.kind].singular : ""));
+    setGuardrailReplyId(guardrailSuggestion?.replyId ?? null);
     guardrailChat.open({ selection: { path: GUARDRAIL_CHAT_PATH, startLine: 1, endLine: 1, text: "", task }, anchor: guardrailChatAnchor(bounds) });
   }
 
@@ -325,7 +328,6 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
                 suggestion={guardrailSuggestion}
                 isDisabled={hasPermission}
                 onOpen={(bounds) => void openGuardrailChat(bounds)}
-                onDismiss={(replyId) => dismissGuardrail(sessionId, replyId)}
               />
             </div>
           ) : null
@@ -366,6 +368,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
             const { x, y } = useSettingsStore.getState().guardrailChatOffset;
             setGuardrailChatOffset({ x: x + offset.x, y: y + offset.y });
           }}
+          onDecline={guardrailReplyId ? () => dismissGuardrail(sessionId, guardrailReplyId) : undefined}
           onClose={guardrailChat.close}
         />
       ) : null}

@@ -88,6 +88,11 @@ type SubChatPopoverProps = {
   hasSidebar?: boolean;
   /** Called after the user moved or resized the popover, with how far its anchored corner now sits from the anchor. */
   onPlaced?: (offset: { x: number; y: number }) => void;
+  /**
+   * Declines what the popover was opened to take up (a suggested guardrail). Shows a "Decline" button above the send
+   * button until the first question is sent; clicking it calls `onDecline` and closes the popover.
+   */
+  onDecline?: () => void;
   onClose: () => void;
 };
 
@@ -102,7 +107,7 @@ type SubChatPopoverProps = {
  * makes the text area taller at the expense of the conversation, remembered until it is dragged back to one line. A
  * question sent while a turn runs is queued for the end of that turn.
  */
-export function SubChatPopover({ parentSessionId, request, subSessionId: initialSubSessionId, title, placeholder, context, initialText = "", hasSidebar = true, onPlaced, onClose }: SubChatPopoverProps) {
+export function SubChatPopover({ parentSessionId, request, subSessionId: initialSubSessionId, title, placeholder, context, initialText = "", hasSidebar = true, onPlaced, onDecline, onClose }: SubChatPopoverProps) {
   const [subSessionId, setSubSessionId] = useState<string | null>(initialSubSessionId ?? null);
   const [text, setText] = useState(initialText);
   const [isCreating, setIsCreating] = useState(false);
@@ -478,29 +483,47 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
               placeholder={chat?.isBusy ? "Enter queues the question for after this turn" : subSessionId ? "Follow up…" : (placeholder ?? "Ask about the selected code…")}
               className="block min-w-0 flex-1 resize-none bg-transparent py-[calc((36px-1lh)/2)] outline-none placeholder:text-neutral-600 disabled:opacity-50"
             />
-            {modelOption && model ? (
-              <PillSelect
-                title={modelOption.name}
-                value={model}
-                options={listChoiceOptions(modelOption)}
-                onChange={changeModel}
-                disabled={isCreating}
-              />
-            ) : null}
-            {subSessionId ? (
-              <button type="button" onClick={requestDelete} disabled={isCreating} title="Delete this sub chat" aria-label="Delete this sub chat" className={DANGER_CLEAR_BUTTON}>
-                <TrashIcon />
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => void submit()}
-              disabled={!text.trim() || isCreating || hasPermission}
-              title={chat?.isBusy ? "Queue for after this turn (enter); ⌘↩ sends now" : "Send (enter)"}
-              className={SEND_BUTTON}
-            >
-              <SendIcon />
-            </button>
+            <div className="flex flex-col items-end gap-2">
+              {onDecline && !subSessionId ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onDecline();
+                    onClose();
+                  }}
+                  disabled={isCreating}
+                  title="Decline the suggestion and close"
+                  className={GHOST_BUTTON_XS}
+                >
+                  Decline
+                </button>
+              ) : null}
+              <div className="flex items-end gap-2">
+                {modelOption && model ? (
+                  <PillSelect
+                    title={modelOption.name}
+                    value={model}
+                    options={listChoiceOptions(modelOption)}
+                    onChange={changeModel}
+                    disabled={isCreating}
+                  />
+                ) : null}
+                {subSessionId ? (
+                  <button type="button" onClick={requestDelete} disabled={isCreating} title="Delete this sub chat" aria-label="Delete this sub chat" className={DANGER_CLEAR_BUTTON}>
+                    <TrashIcon />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => void submit()}
+                  disabled={!text.trim() || isCreating || hasPermission}
+                  title={chat?.isBusy ? "Queue for after this turn (enter); ⌘↩ sends now" : "Send (enter)"}
+                  className={SEND_BUTTON}
+                >
+                  <SendIcon />
+                </button>
+              </div>
+            </div>
           </div>
           <ResizeGrips edges={{ top: true }} {...heightDrag.grips} />
         </div>

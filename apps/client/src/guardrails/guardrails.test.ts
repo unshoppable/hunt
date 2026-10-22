@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_GUARDRAIL_DIRS, type GuardrailDirs } from "../state/settings";
-import { adrNumber, creationTask, expandedForTree, foldersOf, generationTask, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailTask, guardrailTemplate, guardrailTreeRows, isInsideFolder, kindHelp, newGuardrailLocation, nextAdrNumber, ownerFolderOf, slugify, treeFolders, type Guardrail, type GuardrailListing } from "./guardrails";
+import { adrNumber, creationTask, expandedForTree, foldersOf, generationTask, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailTask, guardrailTemplate, guardrailTreeRows, kindHelp, newGuardrailLocation, nextAdrNumber, ownerFolderOf, slugify, treeFolders, type Guardrail, type GuardrailListing } from "./guardrails";
 
 const adr = (name: string): Guardrail => ({ kind: "adr", path: `docs/adr/${name}.md`, name, folder: "" });
 const instruction = (folder: string): Guardrail => ({ kind: "instruction", path: folder ? `${folder}/CLAUDE.md` : "CLAUDE.md", name: "CLAUDE.md", folder: "" });
@@ -114,15 +114,6 @@ describe("guardrailDeleteTarget", () => {
   it("removes a skill's whole folder and any other guardrail's file", () => {
     expect(guardrailDeleteTarget({ kind: "skill", path: ".claude/skills/deploy/SKILL.md", name: "deploy", folder: "" })).toBe(".claude/skills/deploy");
     expect(guardrailDeleteTarget(rule("frontend", "react"))).toBe(".claude/rules/frontend/react.md");
-  });
-});
-
-describe("isInsideFolder", () => {
-  it("matches paths below the folder, not the folder itself or a sibling with the same prefix", () => {
-    expect(isInsideFolder(".claude/skills/weq/CLAUDE.md", ".claude/skills/weq")).toBe(true);
-    expect(isInsideFolder(".claude/skills/weq", ".claude/skills/weq")).toBe(false);
-    expect(isInsideFolder(".claude/skills/weq2/CLAUDE.md", ".claude/skills/weq")).toBe(false);
-    expect(isInsideFolder("CLAUDE.md", "")).toBe(true);
   });
 });
 

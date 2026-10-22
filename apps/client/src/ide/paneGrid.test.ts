@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_LAYOUT, allPanes, closeTab, findPane, moveActiveTab, openInPane, openInRightSplit, withFreshIds, type PaneLayout } from "./paneGrid";
+import { EMPTY_LAYOUT, allPanes, closeTab, closeTabsWhere, findPane, moveActiveTab, openInPane, openInRightSplit, withFreshIds, type PaneLayout } from "./paneGrid";
 
 function shape(layout: PaneLayout): string[][][] {
   return layout.rows.map((row) => row.panes.map((pane) => pane.tabs));
@@ -49,6 +49,17 @@ describe("openInRightSplit", () => {
     const first = openInPane(EMPTY_LAYOUT, null, "a.ts");
     const split = openInRightSplit(first.layout, "pane-missing", "b.ts");
     expect(shape(split.layout)).toEqual([[["a.ts"], ["b.ts"]]]);
+  });
+});
+
+describe("closeTabsWhere", () => {
+  it("closes the matching tabs of every pane and removes the panes it empties", () => {
+    let { layout, paneId } = openInPane(EMPTY_LAYOUT, null, "src/a.ts");
+    ({ layout } = openInPane(layout, paneId, "b.ts"));
+    const right = openInRightSplit(layout, paneId, "src/c.ts");
+    layout = closeTabsWhere(right.layout, (path) => path.startsWith("src/"));
+    expect(shape(layout)).toEqual([[["b.ts"]]]);
+    expect(findPane(layout, paneId)?.activePath).toBe("b.ts");
   });
 });
 

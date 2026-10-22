@@ -125,6 +125,18 @@ export function closeTab(layout: PaneLayout, paneId: string, path: string): Pane
   return prune(replacePane(layout, withoutTab(pane, path)));
 }
 
+/** Closes every tab whose path `isClosed` accepts, in every pane, as `closeTab` closes one. */
+export function closeTabsWhere(layout: PaneLayout, isClosed: (path: string) => boolean): PaneLayout {
+  let result = layout;
+  for (const pane of allPanes(layout)) {
+    for (const tab of pane.tabs) {
+      if (!isClosed(tab)) continue;
+      result = closeTab(result, pane.id, tab);
+    }
+  }
+  return result;
+}
+
 /** Every pane whose tabs include `path`. */
 export function panesShowing(layout: PaneLayout, path: string): Pane[] {
   return allPanes(layout).filter((pane) => pane.tabs.includes(path));

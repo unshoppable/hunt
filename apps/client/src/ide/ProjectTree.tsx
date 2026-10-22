@@ -1,19 +1,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
 import { commands } from "../ipc/commands";
 import type { DirEntry } from "../ipc/types";
 import { rootFolderIconUrl, useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { STATUS_NAME_CLASS } from "../diff/styles";
+import { useHuntStore } from "../state/store";
+import { confirmDestructive } from "../ui/confirm";
+import { dirName, isInsideFolder } from "../ui/path";
+import { isShortcut, useShortcutLabel } from "../ui/shortcuts";
 import { UnsavedDot } from "../ui/UnsavedDot";
 import { useDismiss } from "../ui/useDismiss";
 import { errorText, useLoad } from "../ui/useLoad";
 import type { TreeNavRow } from "../ui/treeNavigation";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
+import type { Workspace } from "./documents";
 import { EMPTY_MARKS, FOLDER_COLORS, FOLDER_COLOR_NAMES, markedColor, useFolderColorStore, type FolderColor } from "./folderColors";
+import { useIdeStore } from "./ideStore";
 
 type Row = { path: string; name: string; isDir: boolean; depth: number };
 
-/** The folder a right click opened the context menu for, and where. */
-type ContextMenuState = { x: number; y: number; path: string; name: string };
+/** The row a right click opened the context menu for (`""` is the project row), and where. */
+type ContextMenuState = { x: number; y: number; path: string; name: string; isDir: boolean };
 
 /** Directories listed so far, keyed by worktree-relative path ("" is the root). */
 type Listings = Record<string, DirEntry[]>;
@@ -30,9 +37,10 @@ function parentPaths(path: string): string[] {
 /**
  * The project view: a lazily listed tree of the worktree with WebStorm's file icons, changelist colors and
  * file colors (a folder marked through its context menu tints itself and everything below it; the marks are
- * kept per repository, see folderColors.ts). The selection changes on click, with the arrow keys and on `revealRequest`
- * (⇧⌘2), never when the editor's active tab changes; Enter opens the selected file. `refreshVersion` relists every
- * open directory.
+ * kept per repository, see folderColors.ts). The context menu also copies a row's absolute path (⌃⇧C for the selected
+ * row) and deletes a file or a folder, closing its tabs. The selection changes on click, with the arrow keys and on
+ * `revealRequest` (⇧⌘2), never when the editor's active tab changes; Enter opens the selected file. `refreshVersion`
+ * relists every open directory.
  */
 export function ProjectTree({
   sessionId,
@@ -41,6 +49,7 @@ export function ProjectTree({
   revealRequest,
   refreshVersion,
   unsavedPaths,
+  workspace,
   onOpen,
 }: {
   sessionId: string;
@@ -50,6 +59,7 @@ export function ProjectTree({
   refreshVersion: number;
   /** Files with unsaved edits; they get a blue dot. */
   unsavedPaths: readonly string[];
+  workspace: Workspace;
   onOpen: (path: string) => void;
 }) {
   const [listings, setListings] = useState<Listings>({});
@@ -62,6 +72,10 @@ export function ProjectTree({
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const marks = useFolderColorStore((state) => state.marksByRepo[repoPath] ?? EMPTY_MARKS);
   const setFolderColor = useFolderColorStore((state) => state.setFolderColor);
+  const isLocked = useHuntStore((state) => isWorktreeLocked(state.sessions, state.remoteLinks, sessionId));
+  const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
+  const closeTabsOf = useIdeStore((state) => state.closeTabsOf);
+  const copyPathShortcut = useShortcutLabel("changes.copyPath");
 
   useDismiss(contextMenuRef, () => setContextMenu(null), { closeOnWindowBlur: true, isEnabled: !!contextMenu });
 
@@ -156,16 +170,42 @@ export function ProjectTree({
     { isEnabled: !!revealRequest },
   );
 
-  const openContextMenu = (event: MouseEvent, row: Row) => {
+  const openContextMenu = (event: MouseEvent, row: Pick<Row, "path" | "name" | "isDir">) => {
     event.preventDefault();
     setSelectedPath(row.path);
-    setContextMenu({ x: event.clientX, y: event.clientY, path: row.path, name: row.name });
+    setContextMenu({ x: event.clientX, y: event.clientY, path: row.path, name: row.name, isDir: row.isDir });
   };
 
   const markFolder = (color: FolderColor | null) => {
     if (!contextMenu) return;
     setFolderColor(repoPath, contextMenu.path, color);
     setContextMenu(null);
+  };
+
+  /** Puts the absolute path of the worktree-relative `path` on the clipboard; `""` is the worktree itself. */
+  const copyPath = (path: string) => {
+    const absolutePath = path ? `${workspace.worktreePath}/${path}` : workspace.worktreePath;
+    void navigator.clipboard.writeText(absolutePath).catch((reason) => setError(`failed to copy the path: ${errorText(reason)}`));
+  };
+
+  /** Deletes a file, or a folder with everything in it, after asking; its tabs close and its unsaved edits are dropped. */
+  const deleteEntry = async (entry: ContextMenuState) => {
+    setContextMenu(null);
+    const question = entry.isDir ? `Delete the folder ${entry.path} with everything in it?` : `Delete ${entry.path}?`;
+    if (!(await confirmDestructive(question))) return;
+    try {
+      await commands.deletePath(sessionId, entry.path);
+    } catch (reason) {
+      setError(errorText(reason));
+      return;
+    }
+    setError(null);
+    closeTabsOf(sessionId, entry.path);
+    workspace.discardDeleted(entry.path);
+    if (selectedPath && (selectedPath === entry.path || isInsideFolder(selectedPath, entry.path))) {
+      setSelectedPath(dirName(entry.path));
+    }
+    noteWorktreeChanged(sessionId);
   };
 
   useEffect(() => {
@@ -183,6 +223,14 @@ export function ProjectTree({
       {error ? <p className="border-b border-(--line) px-2 py-2 text-[13px] text-red-400">{error}</p> : null}
       <ul
         {...nav.listProps}
+        onKeyDown={(event) => {
+          if (nav.cursor === null || !isShortcut(event, "changes.copyPath")) {
+            nav.listProps.onKeyDown(event);
+            return;
+          }
+          event.preventDefault();
+          copyPath(nav.cursor);
+        }}
         className="min-h-0 flex-1 overflow-auto py-1 outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size)"
         // The changelist's line height is a unitless factor of the font size.
         style={{ lineHeight: "calc(var(--changelist-line-height) * 1em)" }}
@@ -200,6 +248,7 @@ export function ProjectTree({
             nav.select("");
             toggle("");
           }}
+          onContextMenu={(event) => openContextMenu(event, { path: "", name: projectName, isDir: true })}
         />
         {rows.map((row) => (
           <TreeRow
@@ -218,7 +267,7 @@ export function ProjectTree({
                 onOpen(row.path);
               }
             }}
-            onContextMenu={row.isDir ? (event) => openContextMenu(event, row) : undefined}
+            onContextMenu={(event) => openContextMenu(event, row)}
           />
         ))}
       </ul>
@@ -229,26 +278,58 @@ export function ProjectTree({
           style={{ left: contextMenu.x, top: contextMenu.y }}
           className="fixed z-50 min-w-36 rounded border border-neutral-600 bg-(--surface-inset) p-1 text-[13px] shadow-lg"
         >
-          <div className="mb-1 truncate border-b border-(--line) px-2 pb-1 font-mono text-[12px] text-neutral-500" title={contextMenu.path}>
+          <div className="mb-1 truncate border-b border-(--line) px-2 pb-1 font-mono text-[12px] text-neutral-500" title={contextMenu.path || contextMenu.name}>
             {contextMenu.name}
           </div>
-          {FOLDER_COLOR_NAMES.map((color) => (
-            <button
-              key={color}
-              type="button"
-              role="menuitemradio"
-              aria-checked={marks[contextMenu.path] === color}
-              onClick={() => markFolder(color)}
-              className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-neutral-200 hover:bg-(--row-hover) aria-checked:bg-(--row-selected)"
-            >
-              <span className="size-3 shrink-0 rounded-sm" style={{ backgroundColor: FOLDER_COLORS[color].swatch }} />
-              {FOLDER_COLORS[color].label}
-            </button>
-          ))}
-          {marks[contextMenu.path] ? (
-            <button type="button" role="menuitem" onClick={() => markFolder(null)} className="mt-1 block w-full rounded border-t border-(--line) px-2 pt-2 pb-1 text-left text-neutral-400 hover:bg-(--row-hover)">
-              Remove color
-            </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setContextMenu(null);
+              copyPath(contextMenu.path);
+            }}
+            className="flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left text-neutral-200 hover:bg-(--row-hover)"
+          >
+            Copy path
+            {copyPathShortcut ? <span className="text-neutral-500">{copyPathShortcut}</span> : null}
+          </button>
+          {contextMenu.isDir && contextMenu.path ? (
+            <>
+              <div role="separator" className="my-1 border-t border-(--line)" />
+              {FOLDER_COLOR_NAMES.map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={marks[contextMenu.path] === color}
+                  onClick={() => markFolder(color)}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-neutral-200 hover:bg-(--row-hover) aria-checked:bg-(--row-selected)"
+                >
+                  <span className="size-3 shrink-0 rounded-sm" style={{ backgroundColor: FOLDER_COLORS[color].swatch }} />
+                  {FOLDER_COLORS[color].label}
+                </button>
+              ))}
+              {marks[contextMenu.path] ? (
+                <button type="button" role="menuitem" onClick={() => markFolder(null)} className="mt-1 block w-full rounded border-t border-(--line) px-2 pt-2 pb-1 text-left text-neutral-400 hover:bg-(--row-hover)">
+                  Remove color
+                </button>
+              ) : null}
+            </>
+          ) : null}
+          {contextMenu.path ? (
+            <>
+              <div role="separator" className="my-1 border-t border-(--line)" />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => (isLocked ? undefined : void deleteEntry(contextMenu))}
+                aria-disabled={isLocked}
+                title={isLocked ? WORKTREE_LOCKED_MESSAGE : undefined}
+                className={`block w-full rounded px-2 py-1 text-left text-red-300 hover:bg-(--row-hover) ${isLocked ? "opacity-40" : ""}`}
+              >
+                {contextMenu.isDir ? "Delete folder" : "Delete file"}
+              </button>
+            </>
           ) : null}
         </div>
       ) : null}

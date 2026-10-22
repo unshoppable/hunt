@@ -4,6 +4,7 @@ import { listenTo } from "../ipc/events";
 import type { DocumentChangedEvent, DocumentContentChange, DocumentState } from "../ipc/types";
 import { monacoLanguage } from "../diff/monaco";
 import { refreshSemanticTokens, typeScriptWorkerFor } from "../diff/semanticTokens";
+import { isInsideFolder } from "../ui/path";
 import { parseImportSpecifiers } from "./imports";
 import { lspClientFor, type LspClient } from "./lsp/client";
 import { toLspRange, toMonacoRange } from "./lsp/protocol";
@@ -430,6 +431,22 @@ export class Workspace {
     this.reportedDirty.delete(path);
     document.model.dispose();
     void this.lsp.enqueue(() => commands.documentClose(this.sessionId, path)).catch((error) => console.warn(`failed to close ${path}:`, error));
+  }
+
+  /**
+   * Drops the unsaved edits (in every window) and the documents of a deleted file, or of every file below a deleted
+   * folder, so that no save writes them back.
+   */
+  discardDeleted(deletedPath: string): void {
+    const isDeleted = (path: string) => path === deletedPath || isInsideFolder(path, deletedPath);
+    for (const path of this.dirtyPaths()) {
+      if (!isDeleted(path)) continue;
+      this.revert(path);
+    }
+    for (const path of [...this.documents.keys()]) {
+      if (!isDeleted(path)) continue;
+      this.forget(path);
+    }
   }
 
   /**

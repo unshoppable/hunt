@@ -3,7 +3,8 @@ import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { ChevronIcon, PlusIcon, TrashIcon } from "../ui/icons";
 import { useEscapeToClose } from "../ui/useEscapeToClose";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
-import { expandedForTree, folderOf, guardrailTreeRows, isInsideFolder, KIND_LABELS, treeParentOf, type Guardrail, type GuardrailKind } from "./guardrails";
+import { isInsideFolder } from "../ui/path";
+import { expandedForTree, folderOf, guardrailTreeRows, KIND_LABELS, treeParentOf, type Guardrail, type GuardrailKind } from "./guardrails";
 
 /** Indentation of a tree row per folder level, in pixels. */
 const ROW_INDENT = 14;

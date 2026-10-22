@@ -1,10 +1,12 @@
 import { create } from "zustand";
 import type { editor } from "monaco-editor";
+import { isInsideFolder } from "../ui/path";
 import {
   EMPTY_LAYOUT,
   activateTab,
   allPanes,
   closeTab,
+  closeTabsWhere,
   findPane,
   firstPane,
   moveActiveTab,
@@ -114,6 +116,12 @@ function pushed(stack: Location[], location: Location): Location[] {
  * The layout with `path` shown: a pane already holding the file as a tab is reused (the preferred pane first),
  * otherwise the file opens as a new tab in the preferred pane, in the active pane, or in a first pane.
  */
+/** The session with tabs closed in `layout`; the first pane becomes active when the active one closed. */
+function withLayout(session: IdeSession, layout: PaneLayout): IdeSession {
+  const activePaneId = session.activePaneId && findPane(layout, session.activePaneId) ? session.activePaneId : (layout.rows[0]?.panes[0]?.id ?? null);
+  return { ...session, layout, activePaneId };
+}
+
 function show(session: IdeSession, path: string, preferredPaneId: string | null): { layout: PaneLayout; paneId: string } {
   const holders = panesShowing(session.layout, path);
   const holder = holders.find((pane) => pane.id === preferredPaneId) ?? holders.find((pane) => pane.id === session.activePaneId) ?? holders[0];
@@ -145,6 +153,8 @@ type IdeState = {
   activatePane: (sessionId: string, paneId: string) => void;
   activateTab: (sessionId: string, paneId: string, path: string) => void;
   closeTab: (sessionId: string, paneId: string, path: string) => void;
+  /** Closes every tab of a deleted file, or of every file below a deleted folder. */
+  closeTabsOf: (sessionId: string, deletedPath: string) => void;
   /** Closes every tab of every pane (⇧⌘W). */
   closeAllTabs: (sessionId: string) => void;
   /** Returns to where the last navigation came from (the mouse's back button, ⌘[); `navigateForward` undoes that. */
@@ -196,11 +206,11 @@ export const useIdeStore = create<IdeState>((set, get) => {
     },
 
     closeTab: (sessionId, paneId, path) => {
-      update(sessionId, (session) => {
-        const layout = closeTab(session.layout, paneId, path);
-        const activePaneId = session.activePaneId && findPane(layout, session.activePaneId) ? session.activePaneId : (layout.rows[0]?.panes[0]?.id ?? null);
-        return { ...session, layout, activePaneId };
-      });
+      update(sessionId, (session) => withLayout(session, closeTab(session.layout, paneId, path)));
+    },
+
+    closeTabsOf: (sessionId, deletedPath) => {
+      update(sessionId, (session) => withLayout(session, closeTabsWhere(session.layout, (path) => path === deletedPath || isInsideFolder(path, deletedPath))));
     },
 
     closeAllTabs: (sessionId) => {

@@ -18,10 +18,10 @@ import { confirmDestructive } from "../ui/confirm";
 import { useHoverAnchor, type HoverAnchor } from "../ui/hoverAnchor";
 import { ChevronIcon, PlusIcon, SparkleIcon, TrashIcon } from "../ui/icons";
 import { useSecondaryWindow } from "../ui/nativeWindow";
-import { baseName } from "../ui/path";
+import { baseName, isInsideFolder } from "../ui/path";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
 import { errorText, useLoad } from "../ui/useLoad";
-import { creationTask, generationTask, GUARDRAIL_CHAT_PATH, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailTask, guardrailTemplate, isInsideFolder, KIND_LABELS, kindHelp, listGuardrails, newGuardrailLocation, ownerFolderOf, treeFolders, type Guardrail, type GuardrailKind, type GuardrailListing, type GuardrailLocation } from "./guardrails";
+import { creationTask, generationTask, GUARDRAIL_CHAT_PATH, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailTask, guardrailTemplate, KIND_LABELS, kindHelp, listGuardrails, newGuardrailLocation, ownerFolderOf, treeFolders, type Guardrail, type GuardrailKind, type GuardrailListing, type GuardrailLocation } from "./guardrails";
 import { GuardrailTree } from "./GuardrailTree";
 
 const KINDS: GuardrailKind[] = ["instruction", "rule", "skill", "agent", "adr"];

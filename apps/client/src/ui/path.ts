@@ -18,6 +18,11 @@ export function repoName(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;
 }
 
+/** Whether `path` lies below `folder` (`""` is the root, which holds everything). */
+export function isInsideFolder(path: string, folder: string): boolean {
+  return !folder || path.startsWith(`${folder}/`);
+}
+
 /** The parent directory and the name of a path in one go. */
 export function splitPath(path: string): { dir: string; name: string } {
   return { dir: dirName(path), name: baseName(path) };

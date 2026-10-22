@@ -1,6 +1,6 @@
 import { commands } from "../ipc/commands";
 import { normalizeGuardrailDir, type GuardrailDirs, type GuardrailKind } from "../state/settings";
-import { dirName, splitPath } from "../ui/path";
+import { dirName, isInsideFolder, splitPath } from "../ui/path";
 
 export type { GuardrailDirs, GuardrailKind } from "../state/settings";
 
@@ -401,11 +401,6 @@ export function guardrailTemplate(kind: GuardrailKind, title: string, listing: G
     case "adr":
       return `# ${nextAdrNumber(listing.adr)}. ${heading}\n\nDate: ${today.toISOString().slice(0, 10)}\n\n## Context\n\n\n## Decision\n\n\n## Consequences\n\n`;
   }
-}
-
-/** Whether `path` lies below `folder` (`""` is the root, which holds everything). */
-export function isInsideFolder(path: string, folder: string): boolean {
-  return !folder || path.startsWith(`${folder}/`);
 }
 
 /** What deleting `entry` removes: a skill's whole folder, otherwise the file itself. */

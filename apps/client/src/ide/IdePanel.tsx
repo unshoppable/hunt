@@ -168,6 +168,7 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
             revealRequest={ide.revealRequest}
             refreshVersion={editVersion}
             unsavedPaths={dirtyPaths}
+            workspace={workspace}
             onOpen={(path) => openFile(sessionId, path)}
           />
         </Panel>

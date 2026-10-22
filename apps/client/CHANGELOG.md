@@ -1,3 +1,10 @@
+## 0.78.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** ⌘S saves every file with unsaved edits also with the focus in the project tree, the changelist or the chat ([3e38128](https://github.com/unshoppable/hunt/commit/3e38128))
+- **client:** ⌘S saves every file with unsaved edits, also those of closed tabs, other windows and the diff views ([a9ce6aa](https://github.com/unshoppable/hunt/commit/a9ce6aa))
+
 ## 0.77.1 (2026-10-22)
 
 ### 🩹 Fixes

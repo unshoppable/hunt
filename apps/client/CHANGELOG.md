@@ -1,3 +1,10 @@
+## 0.86.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** closing a folder in any tree also closes every folder below it, so reopening it shows its subfolders closed ([922bb7e](https://github.com/unshoppable/hunt/commit/922bb7e))
+- **client:** folder rows of the change list have a context menu that copies the folder's absolute path and reverts its listed files, and ⌃⇧C copies the path of the row under the cursor ([2ab5f6d](https://github.com/unshoppable/hunt/commit/2ab5f6d))
+
 ## 0.85.0 (2026-10-22)
 
 ### 🚀 Features

@@ -12,7 +12,9 @@ import { ChangeMarkers, type Marker } from "./changeMarkers";
 import { ChangePopover } from "./ChangePopover";
 import type { Workspace } from "./documents";
 import { noteCaret, useIdeStore, type PendingPosition } from "./ideStore";
-import { findUsages, navigationAt, symbolPathAt, type SymbolCrumb } from "./languageService";
+import { findUsages, formattingEdits, navigationAt, symbolPathAt, unusedImportEdits, type SymbolCrumb } from "./languageService";
+import { toMonacoRange, type TextEdit } from "./lsp/protocol";
+import { editsToText } from "./reformat";
 import { panesShowing, type Pane } from "./paneGrid";
 import type { ChangeBlock } from "../diff/lineDiff";
 import { AddCommentGlyph, type CommentTarget } from "../review/addCommentGlyph";
@@ -31,6 +33,54 @@ import { errorText, useLoad } from "../ui/useLoad";
 const SYMBOL_PATH_DELAY_MS = 150;
 /** Empty space the editor can scroll past the last line, instead of Monaco's default of a whole viewport. */
 const EDITOR_OVERSCROLL_PX = 400;
+
+/**
+ * Removes the unused imports of the editor's file `path` through the language server, then formats it with the
+ * Prettier the worktree installs (its config and plugins apply), or with the language server's formatter when it has
+ * none. A failed import cleanup goes to `onImportError` and the file is still formatted. Stops when the text or file
+ * changes meanwhile; the edits made until then undo as one step.
+ */
+async function reformat(editor: monaco.editor.ICodeEditor, sessionId: string, path: string, onImportError: (reason: unknown) => void): Promise<void> {
+  const model = editor.getModel();
+  if (!model || editor.getOption(monaco.editor.EditorOption.readOnly)) return;
+  let version = model.getVersionId();
+  const isCurrent = () => editor.getModel() === model && model.getVersionId() === version;
+  let hasEdited = false;
+  const apply = (edits: monaco.editor.IIdentifiedSingleEditOperation[]) => {
+    if (edits.length === 0) return;
+    if (!hasEdited) {
+      editor.pushUndoStop();
+    }
+    hasEdited = true;
+    editor.executeEdits("hunt-reformat", edits);
+    version = model.getVersionId();
+  };
+  const fromLsp = (edits: TextEdit[]) => edits.map((edit) => ({ range: toMonacoRange(edit.range), text: edit.newText }));
+
+  try {
+    const importEdits = await unusedImportEdits(model).catch((reason) => {
+      onImportError(reason);
+      return [];
+    });
+    if (!isCurrent()) return;
+    apply(fromLsp(importEdits));
+
+    const prettier = await commands.formatWithPrettier(sessionId, path, model.getValue());
+    if (!isCurrent()) return;
+    if (prettier.installed) {
+      const edits = prettier.formatted === null ? [] : editsToText(model.getLinesContent(), model.getEOL(), prettier.formatted);
+      apply(edits.map((edit) => ({ range: new monaco.Range(edit.startLine, edit.startColumn, edit.endLine, edit.endColumn), text: edit.text })));
+      return;
+    }
+    const edits = await formattingEdits(model);
+    if (!edits || !isCurrent()) return;
+    apply(fromLsp(edits));
+  } finally {
+    if (hasEdited) {
+      editor.pushUndoStop();
+    }
+  }
+}
 
 type EditorPaneProps = {
   sessionId: string;
@@ -52,8 +102,8 @@ type EditorPaneProps = {
 /**
  * One editor group: a tab bar, a Monaco editor showing the active tab's model and a breadcrumb with the file path
  * and the declarations around the caret. ⌘click goes to the declaration (opened in this pane) or, on a declaration,
- * opens the usages popup; ⇧⌘click opens the position in WebStorm, ⌘S saves, the context menu offers "Ask Claude
- * about selection" like the diff view. Lines that differ from HEAD get a change stripe next to the line numbers; a
+ * opens the usages popup; ⇧⌘click opens the position in WebStorm, ⌘S saves, ⌘G removes unused imports and formats
+ * (see `reformat`), the context menu offers "Ask Claude about selection" like the diff view. Lines that differ from HEAD get a change stripe next to the line numbers; a
  * click on it opens the popup with the old lines. A selection a sub chat was opened from gets a glyph left of its
  * first line number; a click on it reopens the sub chat in its popover. Releasing a selection shows a floating
  * button at its active end that toggles the popover for the selected lines.
@@ -133,6 +183,15 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
           note(id);
         })
         .catch((reason) => setError(String(reason)));
+    });
+
+    onShortcut(editor, "editor.reformat", () => {
+      const { workspace: current, sessionId: id } = latest.current;
+      const path = current.pathOf(editor.getModel()?.uri ?? monaco.Uri.parse("inmemory://none"));
+      if (!path) return;
+      const report = (reason: unknown) => setError(String(reason));
+      setError(null);
+      reformat(editor, id, path, report).catch(report);
     });
 
     const agent = latest.current.onOpenSubChat

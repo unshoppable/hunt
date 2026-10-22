@@ -230,6 +230,7 @@ impl LspServer {
                     "hover": { "contentFormat": ["markdown", "plaintext"] },
                     "definition": { "linkSupport": true },
                     "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
+                    "codeAction": { "codeActionLiteralSupport": { "codeActionKind": { "valueSet": ["source.removeUnusedImports"] } } },
                     "inlayHint": {},
                     "publishDiagnostics": {},
                     "diagnostic": {}

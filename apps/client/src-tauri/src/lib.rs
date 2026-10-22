@@ -3,6 +3,7 @@ mod acp;
 mod documents;
 mod external_links;
 mod find_in_files;
+mod formatter;
 mod git;
 mod github;
 mod github_token;
@@ -143,6 +144,7 @@ pub fn run() {
             session::commands::list_dir,
             session::commands::list_files,
             session::commands::read_file,
+            session::commands::format_with_prettier,
             session::commands::resolve_imports,
             session::commands::search_word,
             session::commands::find_in_files,

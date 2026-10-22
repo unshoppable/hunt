@@ -1,7 +1,8 @@
 import * as monaco from "monaco-editor";
 import type { Workspace } from "./documents";
 import { lspClientForModel, type LspClient } from "./lsp/client";
-import { asLocationLinks, elementKindOf, hoverSignature, rangeContains, symbolsAt, toLspPosition, toMonacoRange, type DocumentSymbol, type Hover, type Location, type LocationLink, type Position, type WorkspaceSymbol } from "./lsp/protocol";
+import { asLocationLinks, elementKindOf, hoverSignature, rangeContains, symbolsAt, toLspPosition, toLspRange, toMonacoRange, type CodeAction, type DocumentSymbol, type Hover, type Location, type LocationLink, type Position, type TextEdit, type WorkspaceSymbol } from "./lsp/protocol";
+import { documentEdits } from "./reformat";
 import { containerOf, FUNCTION_KINDS, isImportLine, isSourceFile, parameterTypesOf, sortUsages, usageOnLine, type Usage } from "./usages";
 
 export type DefinitionTarget = { uri: monaco.Uri; range: monaco.IRange };
@@ -173,4 +174,26 @@ export async function symbolPathAt(model: monaco.editor.ITextModel, position: mo
   if (!client) return [];
   const symbols = await client.documentSymbols(model);
   return symbolsAt(symbols, toLspPosition(position)).map((symbol) => ({ name: symbol.name, kind: elementKindOf(symbol.kind) }));
+}
+
+/** Code action kind of the language server's "Remove Unused Imports". */
+const REMOVE_UNUSED_IMPORTS = "source.removeUnusedImports";
+
+/** The language server's edits that remove the unused imports of `model`; none for models it does not serve. */
+export async function unusedImportEdits(model: monaco.editor.ITextModel): Promise<TextEdit[]> {
+  const client = lspClientForModel(model);
+  if (!client) return [];
+  const uri = model.uri.toString();
+  const context = { diagnostics: [], only: [REMOVE_UNUSED_IMPORTS], triggerKind: 1 };
+  const actions = await client.request<CodeAction[] | null>("textDocument/codeAction", { textDocument: { uri }, range: toLspRange(model.getFullModelRange()), context });
+  return documentEdits(actions?.find((action) => action.kind === REMOVE_UNUSED_IMPORTS)?.edit, uri);
+}
+
+/** The language server's formatting edits for `model` with its indentation options; null for models it does not serve. */
+export async function formattingEdits(model: monaco.editor.ITextModel): Promise<TextEdit[] | null> {
+  const client = lspClientForModel(model);
+  if (!client) return null;
+  const { tabSize, insertSpaces } = model.getOptions();
+  const edits = await client.request<TextEdit[] | null>("textDocument/formatting", { textDocument: { uri: model.uri.toString() }, options: { tabSize, insertSpaces } });
+  return edits ?? [];
 }

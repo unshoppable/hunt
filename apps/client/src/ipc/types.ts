@@ -517,6 +517,12 @@ export type FileDiff = {
  */
 export type FileVersion = { sessionId: string | null; content: string | null };
 
+/**
+ * What the Prettier a worktree installs made of a file: `installed` is false when no Prettier resolves from the file,
+ * `formatted` is null when Prettier ignores the file or has no parser for it.
+ */
+export type PrettierOutput = { installed: boolean; formatted: string | null };
+
 /** One entry of a worktree directory listing. */
 export type DirEntry = { name: string; isDir: boolean };
 

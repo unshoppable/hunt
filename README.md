@@ -355,6 +355,7 @@ to other or additional keys, flags two commands that share one and keeps the cha
 | ⌘W / ⇧⌘W | Close the active tab / every tab; the editor window closes with its last tab |
 | ⇧⌘2 | Select the file in the project tree |
 | ⌘S | Save |
+| ⌘G | Remove unused imports (tsgo), then format with the Prettier the worktree installs, its config and plugins included (`apps/client/scripts/prettier.mjs`); without Prettier with tsgo's formatter |
 | ⌘P or double shift | "Go to File": fuzzy search over `git ls-files`; `name:12` jumps to line 12 |
 | ⇧⌘F | "Find in Files": full-text search over the project files held in memory (⌥C match case, ⌥W words, ⌥X regex, file mask); starts with the editor's selection |
 

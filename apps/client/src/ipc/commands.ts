@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GithubTokenStatus, GithubViewer, GraphStatus, LogQuery, PlanUsage, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
+import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GithubTokenStatus, GithubViewer, GraphStatus, LogQuery, PlanUsage, PrettierOutput, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
 export function assetUrl(path: string): string {
@@ -243,6 +243,8 @@ export const commands = {
   listFiles: (id: string) => invoke<string[]>("list_files", { id }),
   /** Text content of a worktree file. */
   readFile: (id: string, path: string) => invoke<string>("read_file", { id, path }),
+  /** `text` as the Prettier the worktree installs (with its config and plugins) formats the worktree file `path`. */
+  formatWithPrettier: (id: string, path: string, text: string) => invoke<PrettierOutput>("format_with_prettier", { id, path, text }),
   /** Worktree files containing `word` as a whole word (tracked and untracked, never ignored). */
   searchWord: (id: string, word: string) => invoke<string[]>("search_word", { id, word }),
   /**

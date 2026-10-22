@@ -39,6 +39,7 @@ export const KEYMAP_COMMANDS = [
   },
   { id: "changes.toggleChecked", label: "Check or uncheck the selected file", group: "Changes", scope: "app", defaults: ["Meta+Space"], note: "also Space in the change list" },
   { id: "editor.save", label: "Save file", group: "Editor", scope: "app", defaults: ["Meta+s"] },
+  { id: "editor.reformat", label: "Reformat file and remove unused imports", group: "Editor", scope: "app", defaults: ["Meta+g"] },
   { id: "editor.goToFile", label: "Go to file", group: "Editor", scope: "app", defaults: ["Meta+p"], note: "also ⇧⇧" },
   { id: "editor.findInFiles", label: "Find in files", group: "Editor", scope: "app", defaults: ["Shift+Meta+f"] },
   { id: "editor.completion", label: "Show completions", group: "Editor", scope: "app", defaults: ["Ctrl+Space", "Alt+Space"] },

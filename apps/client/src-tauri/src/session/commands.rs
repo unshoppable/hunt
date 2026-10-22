@@ -20,10 +20,11 @@ use uuid::Uuid;
 
 use crate::accounts;
 use crate::acp::{
-    connect, message_time, publish_update, system_prompt_append, AgentTransport, LiveHandles, PermissionRegistry, SessionRegistry,
-    SessionStart,
+    bundled_script_path, connect, message_time, publish_update, system_prompt_append, AgentTransport, LiveHandles, PermissionRegistry,
+    SessionRegistry, SessionStart,
 };
 use crate::find_in_files::{self, FindRegistry, TextQuery, TextSearchResult};
+use crate::formatter::{self, PrettierOutput};
 use crate::git::{self, ChangedFile, FileDiff, Shelf};
 use crate::github::{self, GithubViewer, PullRequest, PullRequestDetails, PullRequestRef, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread};
 use crate::github_token;
@@ -2830,6 +2831,14 @@ pub async fn list_files(app: AppHandle, id: Uuid) -> Result<Vec<String>, String>
 pub async fn read_file(app: AppHandle, id: Uuid, path: String) -> Result<String, String> {
     let (record, _) = session_file(&app, id, &path)?;
     workspace::read_file(&record.worktree_path, &path)
+}
+
+/// `text` as the Prettier the worktree installs formats the file `path`; see `PrettierOutput` for files it leaves alone.
+#[tauri::command]
+pub async fn format_with_prettier(app: AppHandle, id: Uuid, path: String, text: String) -> Result<PrettierOutput, String> {
+    let (record, file) = session_file(&app, id, &path)?;
+    let script = bundled_script_path(&app, formatter::SCRIPT)?;
+    formatter::format_with_prettier(&script, &record.worktree_path, &file, &text).await
 }
 
 /// Worktree files containing `word` as a whole word; candidates for the editor's usage search.

@@ -17,6 +17,10 @@ export type Diagnostic = { range: Range; severity?: 1 | 2 | 3 | 4; code?: number
 export type DocumentDiagnosticReport = { kind: "full"; items: Diagnostic[] } | { kind: "unchanged" };
 export type TextDocumentContentChangeEvent = { range: Range; text: string } | { text: string };
 export type TextEdit = { range: Range; newText: string };
+export type TextDocumentEdit = { textDocument: { uri: string; version?: number | null }; edits: TextEdit[] };
+/** `documentChanges` may also hold file operations (`{ kind: "create" | "rename" | "delete" }`). */
+export type WorkspaceEdit = { changes?: Record<string, TextEdit[]>; documentChanges?: (TextDocumentEdit | { kind: string })[] };
+export type CodeAction = { title: string; kind?: string; edit?: WorkspaceEdit };
 export type InsertReplaceEdit = { newText: string; insert: Range; replace: Range };
 export type CompletionItemLabelDetails = { detail?: string; description?: string };
 export type CompletionItem = {

@@ -1,3 +1,9 @@
+## 0.72.1 (2026-10-22)
+
+### 🩹 Fixes
+
+- **client:** interfaces and type aliases are colored like classes ([a886dbf](https://github.com/unshoppable/hunt/commit/a886dbf))
+
 ## 0.72.0 (2026-10-22)
 
 ### 🚀 Features

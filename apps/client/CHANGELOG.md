@@ -1,3 +1,17 @@
+## 0.79.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** ⌘B selects every occurrence of the selected text in the code editors ([e80d6a5](https://github.com/unshoppable/hunt/commit/e80d6a5))
+- **client:** the selection card of a chat opens its lines in the editor on a click on the file name and folds via a chevron on the left ([f151da3](https://github.com/unshoppable/hunt/commit/f151da3))
+- **client:** a click on the file name of a file reference or code block header opens the editor too ([a76d966](https://github.com/unshoppable/hunt/commit/a76d966))
+- **client:** the guardrail chat declines a suggested guardrail with a "Decline" button above send, the × beside the Guardrail button is gone ([b79a4ec](https://github.com/unshoppable/hunt/commit/b79a4ec))
+
+### 🩹 Fixes
+
+- **client:** plan usage of a token account reads the usage endpoint directly, keeps the last limits while it refuses reads for too many requests and says when the next read starts ([9f4f459](https://github.com/unshoppable/hunt/commit/9f4f459))
+- **client:** usages also list references in tsconfig projects none of whose files is open ([8c303b9](https://github.com/unshoppable/hunt/commit/8c303b9))
+
 ## 0.78.0 (2026-10-22)
 
 ### 🚀 Features

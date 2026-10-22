@@ -110,6 +110,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const openInEditorShortcut = useShortcutLabel("editor.selectInTree");
+  const copyPathShortcut = useShortcutLabel("changes.copyPath");
   const subChat = useSubChatPopover();
   const closeSubChat = subChat.close;
   /** Bumped after local changes to the worktree (save, revert, shelve) so both effects below reload. */
@@ -153,6 +154,27 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [sessionId, selectedPath]);
+
+  /** Puts the absolute path of the worktree-relative `path` on the clipboard. */
+  const copyPath = useCallback(
+    (path: string) => {
+      if (!worktreePath) return;
+      void navigator.clipboard.writeText(`${worktreePath}/${path}`).catch((reason) => setError(`failed to copy the path: ${errorText(reason)}`));
+    },
+    [worktreePath],
+  );
+
+  // ⌃⇧C (keymap default) copies the selected file's absolute path.
+  useEffect(() => {
+    if (!selectedPath) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || !selectedPath || !isShortcut(event, "changes.copyPath")) return;
+      event.preventDefault();
+      copyPath(selectedPath);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedPath, copyPath]);
 
   // The first changelist loads at once; reloads after edits wait, so a burst of them loads once.
   const hasLoadedRef = useRef(false);
@@ -515,6 +537,18 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
           >
             Open in editor
             {openInEditorShortcut ? <span className="text-neutral-500">{openInEditorShortcut}</span> : null}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setContextMenu(null);
+              copyPath(contextMenu.file.path);
+            }}
+            className="flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left hover:bg-(--row-hover)"
+          >
+            Copy path
+            {copyPathShortcut ? <span className="text-neutral-500">{copyPathShortcut}</span> : null}
           </button>
           <button
             type="button"

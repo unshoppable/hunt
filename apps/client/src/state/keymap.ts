@@ -38,6 +38,7 @@ export const KEYMAP_COMMANDS = [
     note: "in the prompt box; sends the first queued prompt while the box is empty",
   },
   { id: "changes.toggleChecked", label: "Check or uncheck the selected file", group: "Changes", scope: "app", defaults: ["Meta+Space"], note: "also Space in the change list" },
+  { id: "changes.copyPath", label: "Copy the selected file's absolute path", group: "Changes", scope: "app", defaults: ["Ctrl+Shift+c"] },
   { id: "editor.save", label: "Save all files with unsaved edits", group: "Editor", scope: "app", defaults: ["Meta+s"] },
   { id: "editor.reformat", label: "Reformat file and remove unused imports", group: "Editor", scope: "app", defaults: ["Meta+g"] },
   { id: "editor.rename", label: "Rename the symbol and its usages", group: "Editor", scope: "app", defaults: ["Meta+ü"] },

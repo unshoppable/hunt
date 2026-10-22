@@ -462,7 +462,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
             changes of all sessions.
           </p>
         ) : null}
-        <div className="relative min-h-0 flex-1 bg-(--diff-bg)">
+        <div data-ide-root="" className="relative min-h-0 flex-1 bg-(--diff-bg)">
           {selectedFile && otherTouchers(selectedFile, sessionId, parentId).length ? (
             <div className="absolute top-2 right-6 z-10 flex gap-0.5 rounded-md border border-neutral-600 bg-(--surface-inset) p-0.5 text-[13px] shadow-lg shadow-black/40">
               <button
@@ -508,6 +508,8 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
               onOpenInIde={(line, column) =>
                 commands.openFileInWebstorm(sessionId, shownDiff.path, line, column).catch((reason) => setError(String(reason)))
               }
+              onOpenUsage={(usage) => void openInEditorWindow(sessionId, { path: usage.path, line: usage.line, column: usage.column })}
+              onError={setError}
               onOpenSubChat={subChat.open}
               onToggleSubChat={subChat.toggle}
               onLineNumbersLeftChange={alignWithLineNumbers}

@@ -6,6 +6,11 @@ import { attachIdeLink } from "./ideLink";
 import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, changeMark, monacoLanguage, onShortcut, setupMonaco } from "./monaco";
 import { anchorBelowLine, type SelectionRequest } from "./selectionContext";
 import { workspaceFor } from "../ide/documents";
+import { findUsages, navigationAt, type RenameTarget } from "../ide/languageService";
+import { attachRefactorings } from "../ide/refactorings";
+import { RenameDialog } from "../ide/RenameDialog";
+import { UsagesPopover, type UsagesQuery } from "../ide/UsagesPopover";
+import type { Usage } from "../ide/usages";
 import { attachSelectionAgent } from "../ide/selectionAgent";
 import { SelectionChatMarkers } from "../ide/selectionChatMarkers";
 import { useBusyChatIds, useSelectionChats } from "../ide/selectionChats";
@@ -17,6 +22,7 @@ import { useHuntStore } from "../state/store";
 import { SplitDiffView } from "./SplitDiffView";
 import { OverwriteMarkers, type OverwriteMark } from "./overwriteMarkers";
 import { WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
+import { errorText } from "../ui/useLoad";
 
 setupMonaco();
 
@@ -75,6 +81,10 @@ type CodeDiffEditorProps = {
   onNavigate: (line: number, column: number, name: string) => void;
   /** Called with the clicked 1-based position on ⇧⌘click in either side (open in WebStorm). */
   onOpenInIde: (line: number, column: number) => void;
+  /** Called with the usage picked in the usages popup of a declaration ⌘clicked in the editable right side. */
+  onOpenUsage: (usage: Usage) => void;
+  /** Called with the reason a rename, reformat or usages search of the right side failed, and with null when one starts. */
+  onError: (message: string | null) => void;
   /**
    * Opens the sub chat popover: from either side's context menu ("Ask Claude about selection") with the selected
    * lines, or from a click on a sub chat's gutter glyph with that sub session (`subSessionId`). Without it the editor
@@ -99,7 +109,9 @@ type CodeDiffEditorProps = {
  * edits. Sub chats opened from lines of
  * the file get a glyph on their first line in the right side's gutter; a click on it reopens the chat. Both sides
  * offer the agent features of the editor panes: the context menu entry and the floating button on a selection (a
- * selection on the left side hands over the committed lines).
+ * selection on the left side hands over the committed lines). The editable side also offers the language features of
+ * the editor panes: ⌘click on a declaration opens its usages popup, ⌘Ü or "Rename…" in the context menu the Rename
+ * dialog, ⌘G removes unused imports and formats the file.
  */
 export function CodeDiffEditor({
   ref,
@@ -118,6 +130,8 @@ export function CodeDiffEditor({
   onDirtyChange,
   onNavigate,
   onOpenInIde,
+  onOpenUsage,
+  onError,
   onOpenSubChat,
   onToggleSubChat,
   onLineNumbersLeftChange,
@@ -134,6 +148,10 @@ export function CodeDiffEditor({
   isReviewRef.current = !!pullRequest;
   /** Lines a review comment is being written for and the line its box sits under. */
   const [composer, setComposer] = useState<CommentTarget | null>(null);
+  /** Declaration whose usages popup is open, with the side editor it was ⌘clicked in. */
+  const [usagesQuery, setUsagesQuery] = useState<{ editor: monaco.editor.IStandaloneCodeEditor; query: UsagesQuery } | null>(null);
+  /** Symbol whose Rename dialog is open, with the model it was started in. */
+  const [renameQuery, setRenameQuery] = useState<{ model: monaco.editor.ITextModel; target: RenameTarget } | null>(null);
   /** Change blocks of the saved state, which decide whether a review comment on a line is posted inline. */
   const blocks = useMemo(() => computeChangeBlocks(diff.oldContent ?? "", diff.newContent ?? ""), [diff.oldContent, diff.newContent]);
   const blocksRef = useRef(blocks);
@@ -143,6 +161,8 @@ export function CodeDiffEditor({
   const onDirtyChangeRef = useRef(onDirtyChange);
   const onNavigateRef = useRef(onNavigate);
   const onOpenInIdeRef = useRef(onOpenInIde);
+  const onOpenUsageRef = useRef(onOpenUsage);
+  const onErrorRef = useRef(onError);
   const onOpenSubChatRef = useRef(onOpenSubChat);
   const onToggleSubChatRef = useRef(onToggleSubChat);
   const onLineNumbersLeftChangeRef = useRef(onLineNumbersLeftChange);
@@ -150,6 +170,8 @@ export function CodeDiffEditor({
   onDirtyChangeRef.current = onDirtyChange;
   onNavigateRef.current = onNavigate;
   onOpenInIdeRef.current = onOpenInIde;
+  onOpenUsageRef.current = onOpenUsage;
+  onErrorRef.current = onError;
   onOpenSubChatRef.current = onOpenSubChat;
   onToggleSubChatRef.current = onToggleSubChat;
   onLineNumbersLeftChangeRef.current = onLineNumbersLeftChange;
@@ -178,6 +200,7 @@ export function CodeDiffEditor({
   if (previousMode !== mode) {
     setPreviousMode(mode);
     setComposer(null);
+    setUsagesQuery(null);
     const liveContent = modifiedEditorRef.current?.getValue();
     if (liveContent !== undefined && liveContent !== modifiedValue) {
       setModifiedValue(liveContent);
@@ -249,19 +272,51 @@ export function CodeDiffEditor({
   }, [readOnly, sessionId, worktreePath, diff.path, diff.newContent]);
 
   /**
-   * ⌘click on a name reports it to `onNavigate`, ⇧⌘click opens the position in WebStorm (Monaco's own
-   * go-to-definition stays off); the context menu and the floating selection button hand a selection to the agent.
+   * ⌘click on a name reports it to `onNavigate`, on a declaration in the worktree document it opens the usages popup
+   * instead; ⇧⌘click opens the position in WebStorm (Monaco's own go-to-definition stays off). The context menu and
+   * the floating selection button hand a selection to the agent, and the worktree document gets the refactorings.
    */
   const attachSideFeatures = (sideEditor: monaco.editor.IStandaloneCodeEditor, side: Side) => {
     const link = attachIdeLink(sideEditor, {
       onNavigate: (line, column) => {
-        const name = sideEditor.getModel()?.getWordAtPosition({ lineNumber: line, column })?.word;
-        if (!name) return;
+        const model = sideEditor.getModel();
+        const position = { lineNumber: line, column };
+        const name = model?.getWordAtPosition(position)?.word;
+        if (!model || !name) return;
         const savedLine = side === "modified" ? line : Math.max(1, Math.round(mapLine(blocksRef.current, "original", line)));
-        onNavigateRef.current(savedLine, column, name);
+        const navigate = () => onNavigateRef.current(savedLine, column, name);
+        if (!shared || model !== shared.document.model) {
+          navigate();
+          return;
+        }
+        navigationAt(model, position)
+          .catch(() => null)
+          .then((navigation) => {
+            if (sideEditor.getModel() !== model) return;
+            if (navigation?.type !== "declaration") {
+              navigate();
+              return;
+            }
+            const query: UsagesQuery = { declaration: navigation.declaration, path: diff.path, anchor: position, usages: null };
+            setUsagesQuery({ editor: sideEditor, query });
+            findUsages(shared.workspace, model, position)
+              .then((usages) => setUsagesQuery((shown) => (shown?.query === query ? { ...shown, query: { ...query, usages } } : shown)))
+              .catch((reason) => {
+                setUsagesQuery((shown) => (shown?.query === query ? null : shown));
+                onErrorRef.current(errorText(reason));
+              });
+          });
       },
       onOpenInIde: (line, column) => onOpenInIdeRef.current(line, column),
     });
+    const refactorings =
+      shared && side === "modified"
+        ? attachRefactorings(sideEditor, {
+            fileOf: (model) => (model === shared.document.model ? { sessionId, path: diff.path } : null),
+            onRename: (model, target) => setRenameQuery({ model, target }),
+            onError: (message) => onErrorRef.current(message),
+          })
+        : null;
     const agent = onOpenSubChatRef.current
       ? attachSelectionAgent(sideEditor, {
           pathOf: () => diff.path,
@@ -271,6 +326,7 @@ export function CodeDiffEditor({
       : null;
     sideEditor.onDidDispose(() => {
       link.dispose();
+      refactorings?.dispose();
       agent?.dispose();
     });
   };
@@ -310,6 +366,7 @@ export function CodeDiffEditor({
     });
     const reportDirty = () => onDirtyChangeRef.current(modifiedEditor.getValue() !== savedContentRef.current);
     modifiedEditor.onDidChangeModelContent(reportDirty);
+    modifiedEditor.onDidChangeModelContent(() => setUsagesQuery(null));
     // A shared document may come with unsaved edits from the editor tab.
     reportDirty();
     onShortcut(modifiedEditor, "editor.save", () => onSaveRef.current(modifiedEditor.getValue()));
@@ -370,10 +427,36 @@ export function CodeDiffEditor({
   }, [collapseUnchanged]);
 
   const language = monacoLanguage(diff.path);
-  const reviewZones =
-    pullRequest && modifiedEditor ? (
-      <ReviewCommentZones editor={modifiedEditor} sessionId={sessionId} path={diff.path} blocks={blocks} composer={composer} onCloseComposer={() => setComposer(null)} />
-    ) : null;
+  const overlays = (
+    <>
+      {pullRequest && modifiedEditor ? (
+        <ReviewCommentZones editor={modifiedEditor} sessionId={sessionId} path={diff.path} blocks={blocks} composer={composer} onCloseComposer={() => setComposer(null)} />
+      ) : null}
+      {usagesQuery && shared ? (
+        <UsagesPopover
+          editor={usagesQuery.editor}
+          workspace={shared.workspace}
+          query={usagesQuery.query}
+          onOpen={(usage) => {
+            setUsagesQuery(null);
+            onOpenUsageRef.current(usage);
+          }}
+          onClose={() => setUsagesQuery(null)}
+        />
+      ) : null}
+      {renameQuery && shared ? (
+        <RenameDialog
+          workspace={shared.workspace}
+          model={renameQuery.model}
+          target={renameQuery.target}
+          onClose={() => {
+            setRenameQuery(null);
+            modifiedEditorRef.current?.focus();
+          }}
+        />
+      ) : null}
+    </>
+  );
 
   if (mode === "split") {
     return (
@@ -390,7 +473,7 @@ export function CodeDiffEditor({
           collapseUnchanged={collapseUnchanged}
           onEditorsCreated={setupEditors}
         />
-        {reviewZones}
+        {overlays}
       </>
     );
   }
@@ -410,7 +493,7 @@ export function CodeDiffEditor({
         loading={<span className="text-[13px] text-neutral-500">Loading editor…</span>}
         wrapperProps={{ className: "absolute inset-0" }}
       />
-      {reviewZones}
+      {overlays}
     </UnifiedDiffView>
   );
 }

@@ -216,7 +216,7 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
         </div>
       </div>
       {error ? <p className="border-b border-(--line) px-3 py-2 text-xs text-red-400">{error}</p> : null}
-      <div className="relative min-h-0 flex-1 bg-(--diff-bg)">
+      <div data-ide-root="" className="relative min-h-0 flex-1 bg-(--diff-bg)">
         {/* The editable side shares the worktree document, which needs the session's worktree path. */}
         {diff && session ? (
           <CodeDiffEditor
@@ -233,6 +233,8 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
             onDirtyChange={markDirty}
             onNavigate={(line, column, name) => void openInEditorWindow(sessionId, { path, line, column, definitionOf: name })}
             onOpenInIde={(line, column) => commands.openFileInWebstorm(sessionId, path, line, column).catch((reason) => setError(String(reason)))}
+            onOpenUsage={(usage) => void openInEditorWindow(sessionId, { path: usage.path, line: usage.line, column: usage.column })}
+            onError={setError}
             onOpenSubChat={subChat.open}
             onToggleSubChat={subChat.toggle}
             onLineNumbersLeftChange={alignWithLineNumbers}

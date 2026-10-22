@@ -3,7 +3,7 @@ import * as monaco from "monaco-editor";
 import { commands } from "../ipc/commands";
 import { attachIdeLink } from "../diff/ideLink";
 import { useFileIconUrl } from "../diff/fileIcons";
-import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, addKeymapAction, onShortcut, setupMonaco } from "../diff/monaco";
+import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, setupMonaco } from "../diff/monaco";
 import { anchorBelowLine, type SelectionRequest } from "../diff/selectionContext";
 import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
@@ -12,10 +12,9 @@ import { ChangeMarkers, type Marker } from "./changeMarkers";
 import { ChangePopover } from "./ChangePopover";
 import type { Workspace } from "./documents";
 import { noteCaret, noteViewState, useIdeStore, viewStateOf, type PendingPosition } from "./ideStore";
-import { findUsages, formattingEdits, navigationAt, renameTarget, symbolPathAt, unusedImportEdits, type RenameTarget, type SymbolCrumb } from "./languageService";
-import { toMonacoRange, type TextEdit } from "./lsp/protocol";
-import { editsToText } from "./reformat";
+import { findUsages, navigationAt, symbolPathAt, type RenameTarget, type SymbolCrumb } from "./languageService";
 import type { Pane } from "./paneGrid";
+import { attachRefactorings } from "./refactorings";
 import { RenameDialog } from "./RenameDialog";
 import type { ChangeBlock } from "../diff/lineDiff";
 import { AddCommentGlyph, type CommentTarget } from "../review/addCommentGlyph";
@@ -36,54 +35,6 @@ const SYMBOL_PATH_DELAY_MS = 150;
 const VIEW_STATE_DELAY_MS = 300;
 /** Empty space the editor can scroll past the last line, instead of Monaco's default of a whole viewport. */
 const EDITOR_OVERSCROLL_PX = 400;
-
-/**
- * Removes the unused imports of the editor's file `path` through the language server, then formats it with the
- * Prettier the worktree installs (its config and plugins apply), or with the language server's formatter when it has
- * none. A failed import cleanup goes to `onImportError` and the file is still formatted. Stops when the text or file
- * changes meanwhile; the edits made until then undo as one step.
- */
-async function reformat(editor: monaco.editor.ICodeEditor, sessionId: string, path: string, onImportError: (reason: unknown) => void): Promise<void> {
-  const model = editor.getModel();
-  if (!model || editor.getOption(monaco.editor.EditorOption.readOnly)) return;
-  let version = model.getVersionId();
-  const isCurrent = () => editor.getModel() === model && model.getVersionId() === version;
-  let hasEdited = false;
-  const apply = (edits: monaco.editor.IIdentifiedSingleEditOperation[]) => {
-    if (edits.length === 0) return;
-    if (!hasEdited) {
-      editor.pushUndoStop();
-    }
-    hasEdited = true;
-    editor.executeEdits("hunt-reformat", edits);
-    version = model.getVersionId();
-  };
-  const fromLsp = (edits: TextEdit[]) => edits.map((edit) => ({ range: toMonacoRange(edit.range), text: edit.newText }));
-
-  try {
-    const importEdits = await unusedImportEdits(model).catch((reason) => {
-      onImportError(reason);
-      return [];
-    });
-    if (!isCurrent()) return;
-    apply(fromLsp(importEdits));
-
-    const prettier = await commands.formatWithPrettier(sessionId, path, model.getValue());
-    if (!isCurrent()) return;
-    if (prettier.installed) {
-      const edits = prettier.formatted === null ? [] : editsToText(model.getLinesContent(), model.getEOL(), prettier.formatted);
-      apply(edits.map((edit) => ({ range: new monaco.Range(edit.startLine, edit.startColumn, edit.endLine, edit.endColumn), text: edit.text })));
-      return;
-    }
-    const edits = await formattingEdits(model);
-    if (!edits || !isCurrent()) return;
-    apply(fromLsp(edits));
-  } finally {
-    if (hasEdited) {
-      editor.pushUndoStop();
-    }
-  }
-}
 
 type EditorPaneProps = {
   sessionId: string;
@@ -175,30 +126,14 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
     });
     editorRef.current = editor;
 
-    onShortcut(editor, "editor.reformat", () => {
-      const { workspace: current, sessionId: id } = latest.current;
-      const path = current.pathOf(editor.getModel()?.uri ?? monaco.Uri.parse("inmemory://none"));
-      if (!path) return;
-      const report = (reason: unknown) => setError(String(reason));
-      setError(null);
-      reformat(editor, id, path, report).catch(report);
-    });
-
-    const rename = addKeymapAction(editor, "editor.rename", {
-      id: "hunt.rename",
-      label: "Rename…",
-      contextMenuGroupId: "1_modification",
-      contextMenuOrder: 0,
-      precondition: "!editorReadonly",
-      run: () => {
-        const model = editor.getModel();
-        const position = editor.getPosition();
-        if (!model || !position || editor.getOption(monaco.editor.EditorOption.readOnly)) return;
-        setError(null);
-        renameTarget(model, position)
-          .then((target) => editor.getModel() === model && setRenameQuery({ model, target }))
-          .catch((reason) => setError(errorText(reason)));
+    const refactorings = attachRefactorings(editor, {
+      fileOf: (model) => {
+        const { workspace: current, sessionId: id } = latest.current;
+        const path = current.pathOf(model.uri);
+        return path ? { sessionId: id, path } : null;
       },
+      onRename: (model, target) => setRenameQuery({ model, target }),
+      onError: setError,
     });
 
     const agent = latest.current.onOpenSubChat
@@ -334,7 +269,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
       chatMarkers.dispose();
       chatMarkersRef.current = null;
       addCommentGlyph.dispose();
-      rename.dispose();
+      refactorings.dispose();
       agent?.dispose();
       setEditor(null);
       editor.setModel(null);

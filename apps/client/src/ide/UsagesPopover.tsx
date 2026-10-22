@@ -60,8 +60,9 @@ function clamp(value: number, min: number, max: number): number {
  * read-only preview of the selected usage and the selected file's project-relative path in the footer. ↑ / ↓ move
  * the selection, Enter or a double click opens the usage in the pane, Esc or a click outside closes the popup.
  * The popup is moved by dragging its title bar, resized by dragging any edge or corner (the size is remembered
- * across sessions) and the split between list and preview by dragging the separator. It is rendered into the IDE
- * panel's root (the overlay), so it can be moved over the project tree and the other panes, not only the editor.
+ * across sessions) and the split between list and preview by dragging the separator. It is rendered into the closest
+ * `data-ide-root` element (the overlay: the IDE panel, the diff view), so it can be moved over the project tree and the
+ * other panes, not only the editor.
  */
 export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: UsagesPopoverProps) {
   const rootRef = useRef<HTMLDivElement>(null);

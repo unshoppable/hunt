@@ -283,6 +283,8 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
                     onDirtyChange={() => undefined}
                     onNavigate={() => undefined}
                     onOpenInIde={() => undefined}
+                    onOpenUsage={() => undefined}
+                    onError={() => undefined}
                   />
                 ) : (
                   <p className="p-3 text-[13px] text-neutral-500">{selectedFile ? "Loading the change…" : selectedCommit ? "Select a file of the commit." : "Select a commit."}</p>

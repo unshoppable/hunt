@@ -1,3 +1,9 @@
+## 0.80.1 (2026-10-22)
+
+### 🩹 Fixes
+
+- **client:** the agent offers a guardrail only for broadly reusable knowledge (a generic solution, a recurring problem and its fix, a reusable workflow), never for a one-off decision about one piece of code or task ([1d42b91](https://github.com/unshoppable/hunt/commit/1d42b91))
+
 ## 0.80.0 (2026-10-22)
 
 ### 🚀 Features

@@ -1,3 +1,9 @@
+## 0.87.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** the editable side of every diff view renames with ⌘Ü, reformats with ⌘G and opens the usages popup on ⌘click on a declaration, like the editor panes ([6a3eea6](https://github.com/unshoppable/hunt/commit/6a3eea6))
+
 ## 0.86.0 (2026-10-22)
 
 ### 🚀 Features

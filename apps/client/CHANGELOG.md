@@ -1,3 +1,9 @@
+## 0.84.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** the editor's project tree has a context menu that copies a row's absolute path (⌃⇧C for the selected row) and deletes a file or folder, closing its tabs ([556b746](https://github.com/unshoppable/hunt/commit/556b746))
+
 ## 0.83.0 (2026-10-22)
 
 ### 🚀 Features

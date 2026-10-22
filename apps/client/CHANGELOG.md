@@ -1,3 +1,9 @@
+## 0.88.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** the sub chat popover's header has a link button that jumps to the sub chat in the main window, also from the editor, diff and guardrails windows ([94659a9](https://github.com/unshoppable/hunt/commit/94659a9))
+
 ## 0.87.0 (2026-10-22)
 
 ### 🚀 Features

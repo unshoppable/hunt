@@ -14,7 +14,7 @@ import type { SelectionRequest } from "../diff/selectionContext";
 import { useSessionViewStore } from "../state/sessionViews";
 import { useSettingsStore } from "../state/settings";
 import { openGuardrailsWindow } from "../guardrails/openGuardrailsWindow";
-import { ensureAdrInstruction } from "../guardrails/adrInstruction";
+import { ensureInstructionSections } from "../guardrails/instructionSections";
 import { GUARDRAIL_CHAT_PATH, guardrailTask, KIND_LABELS, listGuardrails } from "../guardrails/guardrails";
 import { buildGuardrailRequest, buildTranscript, findGuardrailSuggestion, transcriptTail, type GuardrailSuggestion } from "./guardrailSuggestion";
 import { SubChatPopover, useSubChatPopover } from "./SubChatPopover";
@@ -136,13 +136,13 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   });
 
-  // Opening a session checks once that its CLAUDE.md points the agent at the ADR folder and offers to add the section.
-  // A session still being created has no record in the backend yet; an agent on a VM reads CLAUDE.md there only when it
-  // starts, so the offer waits until the session runs here again.
+  // Opening a session checks once that its CLAUDE.md explains the guardrails and points the agent at the ADR folder,
+  // and offers to add the missing sections. A session still being created has no record in the backend yet; an agent on
+  // a VM reads CLAUDE.md there only when it starts, so the offer waits until the session runs here again.
   const worktreePath = remote ? undefined : session?.worktreePath;
   useEffect(() => {
     if (!worktreePath || isCreating) return;
-    void ensureAdrInstruction(sessionId, worktreePath);
+    void ensureInstructionSections(sessionId, worktreePath);
   }, [sessionId, worktreePath, isCreating]);
 
   const followEnd = useFollowScroll(scrollRef, columnRef, `${sessionId}:${hasSession}`);

@@ -5,8 +5,8 @@ import { stripChangeMarker } from "./changeReferences";
 
 const KINDS: GuardrailKind[] = ["instruction", "rule", "skill", "agent", "adr"];
 
-/** A guardrail the agent proposed at the end of a reply: its kind and what it should say. */
-export type GuardrailSuggestion = { kind: GuardrailKind; summary: string };
+/** A guardrail the agent proposed at the end of a reply: its kind, what it should say and the id of the reply. */
+export type GuardrailSuggestion = { kind: GuardrailKind; summary: string; replyId: string };
 
 /**
  * `<!-- hunt:guardrail adr: Summary -->` on a line of its own, which the agent ends a reply with when it holds a guardrail,
@@ -28,7 +28,7 @@ export function findGuardrailSuggestion(items: ChatItem[]): GuardrailSuggestion 
     if (item.kind !== "agent") continue;
     const match = item.text.match(MARKER);
     const kind = KINDS.find((candidate) => candidate === match?.[1]);
-    return kind ? { kind, summary: match?.[2] ?? "" } : null;
+    return kind ? { kind, summary: match?.[2] ?? "", replyId: item.id } : null;
   }
   return null;
 }

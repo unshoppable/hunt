@@ -94,7 +94,9 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const [isVerbose, setIsVerbose] = useState(false);
   const hasSession = Boolean(session);
   const isBusy = chat?.isBusy ?? false;
-  const guardrailSuggestion = isBusy ? null : findGuardrailSuggestion(chat?.items ?? []);
+  const dismissGuardrail = useHuntStore((state) => state.dismissGuardrail);
+  const foundSuggestion = isBusy ? null : findGuardrailSuggestion(chat?.items ?? []);
+  const guardrailSuggestion = foundSuggestion?.replyId === chat?.dismissedGuardrailId ? null : foundSuggestion;
   const hasQuestion = !!chat && !isCreating && hasPendingQuestion(chat);
   const hasPermission = Boolean(chat?.permission);
   const moveText = chat ? moveStatus(chat) : null;
@@ -319,7 +321,12 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           session.isLive ? (
             <div className="flex items-center gap-3">
               {chat?.contextUsage ? <ContextMeter usage={chat.contextUsage} /> : null}
-              <SaveGuardrailButton suggestion={guardrailSuggestion} isDisabled={hasPermission} onOpen={(bounds) => void openGuardrailChat(bounds)} />
+              <SaveGuardrailButton
+                suggestion={guardrailSuggestion}
+                isDisabled={hasPermission}
+                onOpen={(bounds) => void openGuardrailChat(bounds)}
+                onDismiss={(replyId) => dismissGuardrail(sessionId, replyId)}
+              />
             </div>
           ) : null
         }

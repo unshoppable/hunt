@@ -10,6 +10,7 @@ describe("findGuardrailSuggestion", () => {
     expect(findGuardrailSuggestion([user("q"), agent("Use ports.\n<!-- hunt:guardrail adr: Adapters wrap every external API. -->")])).toEqual({
       kind: "adr",
       summary: "Adapters wrap every external API.",
+      replyId: "Use ports.\n<!-- hunt:guardrail adr: Adapters wrap every external API. -->",
     });
   });
 
@@ -17,6 +18,7 @@ describe("findGuardrailSuggestion", () => {
     expect(findGuardrailSuggestion([user("q"), agent("Shall I go on?\n\n<!-- hunt:guardrail rule: Exclude new types. -->\n<!-- hunt:question -->")])).toEqual({
       kind: "rule",
       summary: "Exclude new types.",
+      replyId: "Shall I go on?\n\n<!-- hunt:guardrail rule: Exclude new types. -->\n<!-- hunt:question -->",
     });
   });
 
@@ -46,7 +48,7 @@ describe("stripGuardrailMarker", () => {
 
 describe("buildGuardrailRequest", () => {
   it("prefills the suggestion or leaves the request open", () => {
-    expect(buildGuardrailRequest({ kind: "adr", summary: "Use ports." }, "ADR")).toBe("Erzeuge eine passende Guardrail für folgendes:\nADR: Use ports.");
+    expect(buildGuardrailRequest({ kind: "adr", summary: "Use ports.", replyId: "a1" }, "ADR")).toBe("Erzeuge eine passende Guardrail für folgendes:\nADR: Use ports.");
     expect(buildGuardrailRequest(null, "")).toBe("Erzeuge eine passende Guardrail für folgendes:\n");
   });
 });

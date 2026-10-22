@@ -197,6 +197,8 @@ export type SessionChat = {
   move: SessionMove | null;
   /** The file sync of a remote session; idle for a local one. */
   fileSync: FileSync;
+  /** The reply whose guardrail suggestion the user declined; the "Guardrail" button no longer offers it. */
+  dismissedGuardrailId: string | null;
 };
 
 /** Where a session moves: to a VM of its own (`handOff`) or back into its local worktree (`retrieve`). */
@@ -318,6 +320,8 @@ export type HuntState = {
   unqueuePrompt: (id: string, promptId: string) => void;
   /** Remembers what the prompt box of `id` holds (see `promptDrafts`); an empty draft forgets it. */
   setPromptDraft: (id: string, draft: PromptDraft) => void;
+  /** Declines the guardrail the reply `replyId` of `id` suggests (see `SessionChat.dismissedGuardrailId`). */
+  dismissGuardrail: (id: string, replyId: string) => void;
   /** Asks the agent for a fresh component diagram as a hidden turn (see `SessionChat.isHiddenTurn`). */
   refreshGraph: (id: string, diagramType: DiagramType, instructions?: string) => Promise<void>;
   cancelPrompt: (id: string) => Promise<void>;
@@ -375,6 +379,7 @@ export function createEmptyChat(): SessionChat {
     isStale: false,
     move: null,
     fileSync: { isRunning: false, syncedAt: null, error: null, conflicts: [] },
+    dismissedGuardrailId: null,
   };
 }
 
@@ -1213,6 +1218,10 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
 
     unqueuePrompt: (id, promptId) => {
       updateChat(id, (chat) => ({ ...chat, queue: chat.queue.filter((prompt) => prompt.id !== promptId) }));
+    },
+
+    dismissGuardrail: (id, replyId) => {
+      updateChat(id, (chat) => ({ ...chat, dismissedGuardrailId: replyId }));
     },
 
     setPromptDraft: (id, draft) => {

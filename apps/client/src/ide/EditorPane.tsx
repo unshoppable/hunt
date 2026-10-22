@@ -104,7 +104,7 @@ type EditorPaneProps = {
 /**
  * One editor group: a tab bar, a Monaco editor showing the active tab's model and a breadcrumb with the file path
  * and the declarations around the caret. ⌘click goes to the declaration (opened in this pane) or, on a declaration,
- * opens the usages popup; ⇧⌘click opens the position in WebStorm, ⌘S saves every file with unsaved edits, ⌘G removes unused imports and formats
+ * opens the usages popup; ⇧⌘click opens the position in WebStorm, ⌘G removes unused imports and formats
  * (see `reformat`), the context menu offers "Ask Claude about selection" like the diff view. Lines that differ from HEAD get a change stripe next to the line numbers; a
  * click on it opens the popup with the old lines. A selection a sub chat was opened from gets a glyph left of its
  * first line number; a click on it reopens the sub chat in its popover. Releasing a selection shows a floating
@@ -120,7 +120,6 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
   const activateTab = useIdeStore((state) => state.activateTab);
   const closeTab = useIdeStore((state) => state.closeTab);
   const clearPendingPosition = useIdeStore((state) => state.clearPendingPosition);
-  const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
   const isLocked = useHuntStore((state) => isWorktreeLocked(state.sessions, state.remoteLinks, sessionId));
 
   const hostRef = useRef<HTMLDivElement>(null);
@@ -146,8 +145,8 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
   const [composer, setComposer] = useState<CommentTarget | null>(null);
 
   const isReview = !!pullRequest;
-  const latest = useRef({ sessionId, workspace, pane, isReview, openFile, activatePane, noteWorktreeChanged, onOpenSubChat, onToggleSubChat });
-  latest.current = { sessionId, workspace, pane, isReview, openFile, activatePane, noteWorktreeChanged, onOpenSubChat, onToggleSubChat };
+  const latest = useRef({ sessionId, workspace, pane, isReview, openFile, activatePane, onOpenSubChat, onToggleSubChat });
+  latest.current = { sessionId, workspace, pane, isReview, openFile, activatePane, onOpenSubChat, onToggleSubChat };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -171,15 +170,6 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
       ...COMPLETION_OPTIONS,
     });
     editorRef.current = editor;
-
-    onShortcut(editor, "editor.save", () => {
-      const { workspace: current, sessionId: id, noteWorktreeChanged: note } = latest.current;
-      current
-        .saveAll()
-        .then(() => setError(null))
-        .catch((reason) => setError(String(reason)))
-        .finally(() => note(id));
-    });
 
     onShortcut(editor, "editor.reformat", () => {
       const { workspace: current, sessionId: id } = latest.current;

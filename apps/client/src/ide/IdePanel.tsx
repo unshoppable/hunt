@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
 import { useHuntStore } from "../state/store";
 import { repoName } from "../ui/path";
-import { shortcutCommand } from "../ui/shortcuts";
+import { isShortcut, shortcutCommand } from "../ui/shortcuts";
 import { DependencyBanner } from "./DependencyBanner";
 import { workspaceFor } from "./documents";
 import { EditorGrid } from "./EditorGrid";
@@ -41,12 +41,14 @@ function isForeignTextField(root: HTMLElement | null): boolean {
  * tab to the pane on the left / right, ⇧⌘E / ⇧⌘R to the pane above / below (creating one when needed),
  * ⌘W closes the active tab (and its pane when it was the last one), ⇧⌘W closes every tab; the empty editor area
  * stays until ⌘W is pressed once more, which calls `onCloseEmpty` (the editor window closes then). ⇧⌘2 selects the active file in the project
- * tree. The tree selection follows ⇧⌘2 only, never the active pane. ⌘[ / ⌘] (also ⌥⌘← / ⌥⌘→) and the mouse's back / forward buttons step through the
+ * tree. The tree selection follows ⇧⌘2 only, never the active pane. ⌘S saves every file with unsaved edits, also with the
+ * focus in the project tree (see `Workspace.saveAll`). ⌘[ / ⌘] (also ⌥⌘← / ⌥⌘→) and the mouse's back / forward buttons step through the
  * navigation history.
  */
 export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onCloseEmpty?: () => void }) {
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId) ?? null);
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
+  const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
   const ide = useIdeSession(sessionId);
   const openFile = useIdeStore((state) => state.openFile);
   const moveActiveTab = useIdeStore((state) => state.moveActiveTab);
@@ -66,6 +68,7 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
 
   // Closing tabs keeps their unsaved edits in the shared documents; the project tree and the change list mark them.
   const dirtyPaths = useDirtyPaths(workspace);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     void workspace.reloadFromDisk();
@@ -107,6 +110,20 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [sessionId, moveActiveTab, revealActiveFile, navigateBack, navigateForward]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || !isShortcut(event, "editor.save")) return;
+      event.preventDefault();
+      workspace
+        .saveAll()
+        .then(() => setSaveError(null))
+        .catch((reason) => setSaveError(String(reason)))
+        .finally(() => noteWorktreeChanged(sessionId));
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [workspace, sessionId, noteWorktreeChanged]);
 
   // The mouse's back (button 3) and forward (button 4) buttons navigate on release; neither press nor release
   // reaches the editor (no caret move) or the webview's own history.
@@ -157,6 +174,7 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
         <PaneSeparator />
         <Panel id="editors" minSize={300} className="flex flex-col">
           <DependencyBanner sessionId={sessionId} status={session.dependencies} />
+          {saveError ? <p className="border-b border-(--line) px-3 py-2 text-[13px] text-red-400">{saveError}</p> : null}
           <EditorGrid sessionId={sessionId} workspace={workspace} ide={ide} dirtyPaths={dirtyPaths} onOpenSubChat={subChat.open} onToggleSubChat={subChat.toggle} />
         </Panel>
       </PersistentGroup>

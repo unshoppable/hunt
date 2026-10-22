@@ -22,6 +22,7 @@ import { useDirtyPaths } from "../ide/useDirtyPaths";
 import { selectionChatsFor } from "../ide/selectionChats";
 import { useReviewedPullRequest } from "../review/reviewComments";
 import { confirmDestructive } from "../ui/confirm";
+import { isShortcut } from "../ui/shortcuts";
 import { baseName } from "../ui/path";
 import { UnsavedDot } from "../ui/UnsavedDot";
 import { useDismiss } from "../ui/useDismiss";
@@ -123,6 +124,22 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     closeSubChat();
   }, [sessionId, closeSubChat]);
+
+  // ⌘S outside the editable side (change list, header, left side) saves like ⌘S in it; without one every file with unsaved edits.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || !isShortcut(event, "editor.save")) return;
+      event.preventDefault();
+      if (editorRef.current?.save() || !worktreePath) return;
+      workspaceFor(sessionId, worktreePath)
+        .saveAll()
+        .then(() => setError(null))
+        .catch((reason) => setError(String(reason)))
+        .finally(() => noteWorktreeChanged(sessionId));
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [sessionId, worktreePath, noteWorktreeChanged]);
 
   // The first changelist loads at once; reloads after edits wait, so a burst of them loads once.
   const hasLoadedRef = useRef(false);

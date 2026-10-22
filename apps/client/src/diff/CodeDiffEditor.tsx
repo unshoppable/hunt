@@ -23,6 +23,8 @@ setupMonaco();
 export type CodeDiffEditorHandle = {
   /** Scrolls to the top and opens the box for a review comment on the whole file there; only in a pull request review. */
   commentOnFile: () => void;
+  /** Saves the editable side like ⌘S in it; returns false when the diff has none (read-only or detached). */
+  save: () => boolean;
 };
 
 type CodeDiffEditorProps = {
@@ -188,6 +190,12 @@ export function CodeDiffEditor({
       if (readOnly || !isReviewRef.current || !editor) return;
       editor.setScrollTop(0);
       setComposer({ span: FILE_SPAN, underLine: 0 });
+    },
+    save: () => {
+      const editor = modifiedEditorRef.current;
+      if (readOnly || isDetached || !editor) return false;
+      onSaveRef.current(editor.getValue());
+      return true;
     },
   }));
 

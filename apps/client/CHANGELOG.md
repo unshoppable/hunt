@@ -1,3 +1,9 @@
+## 0.88.2 (2026-10-22)
+
+### 🩹 Fixes
+
+- **client:** an agent's change to a file open in a diff view is no longer written back with the old text on the next save ([c0fb4da](https://github.com/unshoppable/hunt/commit/c0fb4da))
+
 ## 0.88.1 (2026-10-22)
 
 ### 🩹 Fixes

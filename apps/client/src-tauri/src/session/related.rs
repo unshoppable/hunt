@@ -4,9 +4,8 @@
 //! and points the agents at it from the system prompt (`libs/domain/prompts/sessions.system-prompt.md`). The file is
 //! written anew whenever the stored sessions change, a summary gave a session its title, an agent started or stopped
 //! or a turn started or ended, and reaches the VM of a connected remote session through its file sync's copy
-//! (`session::sync::copy_files`), a little later and once for every burst of changes. Beside it goes
-//! `declined_guardrails::WORKTREE_FILE` with the guardrail suggestions declined in the session's repository. The `.hunt`
-//! folder is excluded from Git and left out of the file sync, so neither file reaches the repository.
+//! (`session::sync::copy_files`), a little later and once for every burst of changes. The `.hunt` folder is excluded
+//! from Git and left out of the file sync, so the file never reaches the repository.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -17,7 +16,6 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
-use crate::declined_guardrails::WORKTREE_FILE;
 use crate::remote::sync::Direction;
 use crate::remote::transcript::{local_project, remote_project};
 use crate::remote::{claude_dir, RemoteTarget};
@@ -108,10 +106,6 @@ fn refresh(app: &AppHandle, owners: &[Uuid]) -> Result<(), String> {
     let sessions = store::load_sessions(app)?;
     let claude = claude_dir()?;
     let agents = app.state::<RelatedRegistry>().agents.lock().unwrap().clone();
-    let declined = crate::declined_guardrails::load_all(app).unwrap_or_else(|error| {
-        eprintln!("reading the declined guardrails failed: {error}");
-        Vec::new()
-    });
     let state_of = |record: &SessionRecord| match agents.get(&record.id) {
         Some(true) => AgentState::Working,
         Some(false) => AgentState::Idle,
@@ -125,7 +119,6 @@ fn refresh(app: &AppHandle, owners: &[Uuid]) -> Result<(), String> {
         let sub_chats: Vec<&SessionRecord> = sessions.iter().filter(|session| session.parent_id == Some(*owner)).collect();
         let text = render(record, &sub_chats, &claude, &state_of);
         write_atomic(&record.worktree_path.join(SESSIONS_FILE), &text)?;
-        write_atomic(&record.worktree_path.join(WORKTREE_FILE), &crate::declined_guardrails::worktree_text(&declined, &record.repo_path))?;
         if record.remote.is_some() && sync::is_syncing(app, *owner) {
             push_later(app, *owner);
         }
@@ -193,7 +186,7 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
         .map_err(|error| format!("failed to write {}: {error}", path.display()))
 }
 
-/// Has the files of the remote session `owner` copied to its VM after `PUSH_DELAY`, together with every other asked for
+/// Has the file of the remote session `owner` copied to its VM after `PUSH_DELAY`, together with every other asked for
 /// meanwhile.
 fn push_later(app: &AppHandle, owner: Uuid) {
     let registry = app.state::<RelatedRegistry>();
@@ -210,8 +203,8 @@ fn push_later(app: &AppHandle, owner: Uuid) {
                 if !sync::is_syncing(&app, owner) {
                     continue;
                 }
-                if let Err(error) = sync::copy_files(&app, owner, Direction::Push, &[SESSIONS_FILE.to_string(), WORKTREE_FILE.to_string()]).await {
-                    eprintln!("copying the sessions files of session {owner} to its VM failed: {error}");
+                if let Err(error) = sync::copy_files(&app, owner, Direction::Push, &[SESSIONS_FILE.to_string()]).await {
+                    eprintln!("copying the sessions file of session {owner} to its VM failed: {error}");
                 }
             }
             let registry = app.state::<RelatedRegistry>();

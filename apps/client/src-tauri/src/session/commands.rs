@@ -19,6 +19,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::accounts;
+use crate::declined_guardrails;
 use crate::acp::{
     bundled_script_path, connect, message_time, publish_update, system_prompt_append, AgentTransport, LiveHandles, PermissionRegistry,
     SessionRegistry, SessionStart,
@@ -2490,6 +2491,27 @@ pub(crate) fn worktree_session(app: &AppHandle, id: Uuid) -> Result<SessionRecor
 fn worktree_file(record: &SessionRecord, path: &str) -> Result<PathBuf, String> {
     git::ensure_inside_worktree(path)?;
     Ok(record.worktree_path.join(path))
+}
+
+/// Records in the session's worktree that the user declined the guardrail its agent suggested (`declined_guardrails`);
+/// the change counts as the session's own.
+#[tauri::command]
+pub async fn decline_guardrail(app: AppHandle, id: Uuid, kind: String, summary: String, reason: declined_guardrails::DeclineReason) -> Result<(), String> {
+    if !declined_guardrails::KINDS.contains(&kind.as_str()) {
+        return Err(format!("failed to record the declined guardrail: unknown kind {kind}"));
+    }
+    link::ensure_writable(&app, id, "record the declined guardrail")?;
+    let record = worktree_session(&app, id)?;
+    let entry = declined_guardrails::DeclinedGuardrail { kind, reason, summary, declined_at: chrono::Local::now().date_naive() };
+    let mut changed = Vec::new();
+    attribution::record_write(&app, &record.worktree_path, id, || {
+        changed = declined_guardrails::record(&record.worktree_path, &entry).map_err(|error| format!("failed to record the declined guardrail: {error}"))?;
+        Ok(())
+    })
+    .await?;
+    store::add_touched_files(&app, id, &changed)?;
+    sync::note_local_change(&app, id);
+    store::note_worktree_changed(&app, id)
 }
 
 /// Writes `content` to `path` inside the session's worktree; `path` must be relative and must not leave the worktree.

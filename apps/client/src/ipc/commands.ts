@@ -188,7 +188,7 @@ export const commands = {
   setAiLanguage: (language: string) => invoke<void>("set_ai_language", { language }),
   /** System prompt addition for every agent session started afterwards; empty switches it off. */
   setSystemPrompt: (prompt: string) => invoke<void>("set_system_prompt", { prompt }),
-  /** Records the declined guardrail suggestion with its repository and rewrites `.hunt/declined-guardrails.jsonl` of every worktree. */
+  /** Appends the declined guardrail suggestion to `.claude/declined-guardrails.jsonl` of the session's worktree, which its CLAUDE.md points agents at. */
   declineGuardrail: (sessionId: string, kind: string, summary: string, reason: GuardrailDeclineReason) =>
     invoke<void>("decline_guardrail", { id: sessionId, kind, summary, reason }),
   /** The claude.ai plan limits of the signed-in account; spawns a short-lived Claude Code process (~1 s). */

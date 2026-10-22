@@ -324,7 +324,7 @@ export type HuntState = {
   setPromptDraft: (id: string, draft: PromptDraft) => void;
   /**
    * Declines the guardrail `suggestion` of `id` for `reason`: hides it (see `SessionChat.dismissedGuardrailId`) and records
-   * it, so agents in the repository find it before they suggest a guardrail.
+   * it in the repository's `.claude/declined-guardrails.jsonl`, which agents search before they suggest a guardrail.
    */
   declineGuardrail: (id: string, suggestion: GuardrailSuggestion, reason: GuardrailDeclineReason) => void;
   /** Asks the agent for a fresh component diagram as a hidden turn (see `SessionChat.isHiddenTurn`). */

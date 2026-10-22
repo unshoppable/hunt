@@ -1,24 +1,20 @@
-//! Guardrail suggestions the user declined, kept with their repository in `declined-guardrails.json` in the app data
-//! directory. `session::related` mirrors the declines of a session's repository into `WORKTREE_FILE` of its worktree,
-//! which the agent searches before it suggests a guardrail (`prompts/guardrail-offer.system-prompt.md`).
+//! Guardrail suggestions the user declined, kept in the repository itself: `DECLINES_FILE` gets one JSON line per
+//! decline, and the repository's CLAUDE.md a section that tells agents to search it before they suggest a guardrail.
 
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
-use uuid::Uuid;
 
-use crate::session::store;
+/// The declines of the repository, worktree-relative; committed with the repository like every other guardrail.
+pub const DECLINES_FILE: &str = ".claude/declined-guardrails.jsonl";
 
-/// The declines of the worktree's repository, one JSON object per line, inside the worktree's `.hunt` folder.
-pub const WORKTREE_FILE: &str = ".hunt/declined-guardrails.jsonl";
+/// Points the agents at `DECLINES_FILE`; appended to the repository's CLAUDE.md unless it names the file already.
+const CLAUDE_MD_SECTION: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/declined-guardrails.claude-md.md"));
 
 /// The kinds `<!-- hunt:guardrail KIND: … -->` may name (`KINDS` in `src/chat/guardrailSuggestion.ts`).
-const KINDS: [&str; 5] = ["instruction", "rule", "skill", "agent", "adr"];
-
-/// Serializes every read and read-modify-write cycle on the file.
-static LOCK: Mutex<()> = Mutex::new(());
+pub const KINDS: [&str; 5] = ["instruction", "rule", "skill", "agent", "adr"];
 
 /// Why the user declined a suggestion, picked from the menu of the guardrail chat's "Decline" button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,126 +25,99 @@ pub enum DeclineReason {
     NotWanted,
 }
 
-/// One declined suggestion: the repository its session works on, what the agent suggested and why the user declined it.
+/// One line of `DECLINES_FILE`: what the agent suggested, why the user declined it and on which day.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeclinedGuardrail {
-    pub repo_path: PathBuf,
     pub kind: String,
-    pub summary: String,
     pub reason: DeclineReason,
-    pub session_id: Uuid,
-    pub declined_at: chrono::DateTime<chrono::Utc>,
+    pub summary: String,
+    pub declined_at: chrono::NaiveDate,
 }
 
-fn file_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(store::app_data_dir(app)?.join("declined-guardrails.json"))
-}
-
-/// Every stored decline, oldest first; an absent file counts as none. The caller holds `LOCK`.
-fn load(path: &Path) -> Result<Vec<DeclinedGuardrail>, String> {
-    if !path.exists() {
-        return Ok(Vec::new());
+/// Appends `entry` to `DECLINES_FILE` of `worktree` and adds the CLAUDE.md section if no CLAUDE.md names the file yet;
+/// returns the worktree-relative paths it changed.
+pub fn record(worktree: &Path, entry: &DeclinedGuardrail) -> Result<Vec<String>, String> {
+    let entry = DeclinedGuardrail { summary: entry.summary.split_whitespace().collect::<Vec<_>>().join(" "), ..entry.clone() };
+    let line = serde_json::to_string(&entry).map_err(|error| error.to_string())?;
+    let path = worktree.join(DECLINES_FILE);
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder).map_err(|error| format!("failed to create {}: {error}", folder.display()))?;
     }
-    let content = std::fs::read_to_string(path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    serde_json::from_str(&content).map_err(|error| format!("failed to parse {}: {error}", path.display()))
+    let mut file = OpenOptions::new().create(true).append(true).open(&path).map_err(|error| format!("failed to open {DECLINES_FILE}: {error}"))?;
+    writeln!(file, "{line}").map_err(|error| format!("failed to write {DECLINES_FILE}: {error}"))?;
+    let mut changed = vec![DECLINES_FILE.to_string()];
+    changed.extend(reference_in_claude_md(worktree)?);
+    Ok(changed)
 }
 
-/// Appends `entry` to the file at `path`, written to a sibling temp file and renamed over the target.
-fn append(path: &Path, entry: DeclinedGuardrail) -> Result<(), String> {
-    let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut entries = load(path)?;
-    entries.push(entry);
-    let content = serde_json::to_string_pretty(&entries).map_err(|error| error.to_string())?;
-    let temp_path = path.with_extension("json.tmp");
-    std::fs::write(&temp_path, content).map_err(|error| format!("failed to write {}: {error}", temp_path.display()))?;
-    std::fs::rename(&temp_path, path).map_err(|error| {
-        let _ = std::fs::remove_file(&temp_path);
-        format!("failed to replace {}: {error}", path.display())
-    })
-}
-
-/// Every stored decline, oldest first.
-pub fn load_all(app: &AppHandle) -> Result<Vec<DeclinedGuardrail>, String> {
-    let path = file_path(app)?;
-    let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    load(&path)
-}
-
-/// The content of `WORKTREE_FILE` for a worktree of `repo`: its declines, oldest first, each with kind, reason, summary
-/// and date on one line; empty when the repository has none.
-pub fn worktree_text(entries: &[DeclinedGuardrail], repo: &Path) -> String {
-    entries
-        .iter()
-        .filter(|entry| entry.repo_path == repo)
-        .map(|entry| {
-            let line = serde_json::json!({
-                "kind": entry.kind,
-                "reason": entry.reason,
-                "summary": entry.summary.split_whitespace().collect::<Vec<_>>().join(" "),
-                "declinedAt": entry.declined_at.date_naive().to_string(),
-            });
-            format!("{line}\n")
-        })
-        .collect()
-}
-
-/// Records that the user declined the guardrail the agent of session `id` suggested and rewrites `WORKTREE_FILE` of
-/// every worktree.
-#[tauri::command]
-pub fn decline_guardrail(app: AppHandle, id: Uuid, kind: String, summary: String, reason: DeclineReason) -> Result<(), String> {
-    if !KINDS.contains(&kind.as_str()) {
-        return Err(format!("failed to record the declined guardrail: unknown kind {kind}"));
+/// Appends `CLAUDE_MD_SECTION` to the root CLAUDE.md, else to `.claude/CLAUDE.md`, else creates the root one, unless
+/// one of them names `DECLINES_FILE` already; returns the path it changed.
+fn reference_in_claude_md(worktree: &Path) -> Result<Option<String>, String> {
+    let candidates = ["CLAUDE.md", ".claude/CLAUDE.md"];
+    let mut existing = Vec::new();
+    for candidate in candidates {
+        let Ok(text) = std::fs::read_to_string(worktree.join(candidate)) else { continue };
+        if text.contains(DECLINES_FILE) {
+            return Ok(None);
+        }
+        existing.push((candidate, text));
     }
-    let record = store::find_session(&app, id)?;
-    let entry = DeclinedGuardrail { repo_path: record.repo_path, kind, summary: summary.trim().to_string(), reason, session_id: id, declined_at: chrono::Utc::now() };
-    append(&file_path(&app)?, entry).map_err(|error| format!("failed to record the declined guardrail: {error}"))?;
-    crate::session::related::refresh_all(&app);
-    Ok(())
+    let (target, text) = existing.into_iter().next().unwrap_or((candidates[0], String::new()));
+    let separator = match text.as_str() {
+        "" => "",
+        text if text.ends_with("\n\n") => "",
+        text if text.ends_with('\n') => "\n",
+        _ => "\n\n",
+    };
+    std::fs::write(worktree.join(target), format!("{text}{separator}{CLAUDE_MD_SECTION}")).map_err(|error| format!("failed to write {target}: {error}"))?;
+    Ok(Some(target.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn entry(repo: &str, summary: &str, reason: DeclineReason) -> DeclinedGuardrail {
-        DeclinedGuardrail { repo_path: repo.into(), kind: "skill".into(), summary: summary.into(), reason, session_id: Uuid::nil(), declined_at: chrono::Utc::now() }
+    fn worktree() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("hunt-declined-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn entry(summary: &str) -> DeclinedGuardrail {
+        DeclinedGuardrail { kind: "skill".into(), reason: DeclineReason::TooSpecific, summary: summary.into(), declined_at: "2026-10-22".parse().unwrap() }
     }
 
     #[test]
-    fn append_keeps_every_decline_in_order() {
-        let dir = std::env::temp_dir().join(format!("hunt-declined-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("declined-guardrails.json");
-        for index in 0..12 {
-            append(&path, entry("/repo", &format!("summary {index}"), DeclineReason::TooSpecific)).unwrap();
-        }
-        let entries = load(&path).unwrap();
-        assert_eq!(entries.len(), 12);
-        assert_eq!(entries[0].summary, "summary 0");
-        assert_eq!(entries[11].summary, "summary 11");
+    fn every_decline_becomes_one_line_and_claude_md_names_the_file_once() {
+        let dir = worktree();
+        std::fs::write(dir.join("CLAUDE.md"), "# Repo\n").unwrap();
+        assert_eq!(record(&dir, &entry("Check the migration\nin a rollback transaction")).unwrap(), [DECLINES_FILE, "CLAUDE.md"]);
+        assert_eq!(record(&dir, &entry("Second")).unwrap(), [DECLINES_FILE]);
+        let lines = std::fs::read_to_string(dir.join(DECLINES_FILE)).unwrap();
+        assert_eq!(
+            lines,
+            "{\"kind\":\"skill\",\"reason\":\"tooSpecific\",\"summary\":\"Check the migration in a rollback transaction\",\"declinedAt\":\"2026-10-22\"}\n\
+             {\"kind\":\"skill\",\"reason\":\"tooSpecific\",\"summary\":\"Second\",\"declinedAt\":\"2026-10-22\"}\n"
+        );
+        let claude_md = std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap();
+        assert!(claude_md.starts_with("# Repo\n\n## Declined guardrail suggestions\n"));
+        assert_eq!(claude_md.matches(DECLINES_FILE).count(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn the_worktree_file_lists_only_the_declines_of_the_repository() {
-        let entries = [
-            entry("/repo", "Check the migration\nin a rollback transaction", DeclineReason::TooSpecific),
-            entry("/other", "Something else", DeclineReason::NotWanted),
-            entry("/repo", "Use useLoad", DeclineReason::AlreadyRecorded),
-        ];
-        let text = worktree_text(&entries, Path::new("/repo"));
-        let lines: Vec<serde_json::Value> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0]["reason"], "tooSpecific");
-        assert_eq!(lines[0]["summary"], "Check the migration in a rollback transaction");
-        assert_eq!(lines[1]["kind"], "skill");
-        assert!(!text.contains("Something else"));
-        assert_eq!(worktree_text(&entries, Path::new("/none")), "");
-    }
+    fn the_section_goes_into_the_claude_folder_or_a_new_root_file() {
+        let dir = worktree();
+        std::fs::create_dir_all(dir.join(".claude")).unwrap();
+        std::fs::write(dir.join(".claude/CLAUDE.md"), "# Rules").unwrap();
+        assert_eq!(record(&dir, &entry("A")).unwrap(), [DECLINES_FILE, ".claude/CLAUDE.md"]);
+        assert!(std::fs::read_to_string(dir.join(".claude/CLAUDE.md")).unwrap().starts_with("# Rules\n\n## Declined"));
+        std::fs::remove_dir_all(&dir).unwrap();
 
-    #[test]
-    fn reasons_serialize_as_camel_case() {
-        assert_eq!(serde_json::to_string(&DeclineReason::TooSpecific).unwrap(), "\"tooSpecific\"");
+        let dir = worktree();
+        assert_eq!(record(&dir, &entry("A")).unwrap(), [DECLINES_FILE, "CLAUDE.md"]);
+        assert!(std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap().starts_with("## Declined"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

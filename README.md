@@ -358,6 +358,7 @@ to other or additional keys, flags two commands that share one and keeps the cha
 | ⇧⌘2 | Select the file in the project tree |
 | ⌘S | Save every file with unsaved edits, also those of closed tabs and other windows; also with the focus in the project tree, the changelist or the chat |
 | ⌘G | Remove unused imports (tsgo), then format with the Prettier the worktree installs, its config and plugins included (`apps/client/scripts/prettier.mjs`); without Prettier with tsgo's formatter |
+| ⌘Ü | "Rename…" (also in the context menu): renames the symbol at the caret across the project through tsgo, asked at its declaration so imports follow; optionally also the name in comments and strings and in non-code files, which always opens the preview with a check box per occurrence; touched files without unsaved edits are saved (`apps/client/src/ide/RenameDialog.tsx`) |
 | ⌘P or double shift | "Go to File": fuzzy search over `git ls-files`; `name:12` jumps to line 12 |
 | ⇧⌘F | "Find in Files": full-text search over the project files held in memory (⌥C match case, ⌥W words, ⌥X regex, file mask); starts with the editor's selection |
 

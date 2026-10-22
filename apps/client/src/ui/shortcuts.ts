@@ -11,6 +11,12 @@ export function shortcutCommand<T extends CommandId>(event: KeyPress, ids: reado
   return commandOf(event, useSettingsStore.getState().keymap, ids);
 }
 
+/** The first binding of `id` as macOS shows it (`⌘S`), or null while it is unbound; reads the keymap now. */
+export function shortcutLabel(id: CommandId): string | null {
+  const shortcut = bindingsOf(useSettingsStore.getState().keymap, id)[0];
+  return shortcut ? formatShortcut(shortcut) : null;
+}
+
 /** The first binding of `id` as macOS shows it (`⌘S`), or null while it is unbound; follows keymap changes. */
 export function useShortcutLabel(id: CommandId): string | null {
   const shortcut = useSettingsStore((state) => bindingsOf(state.keymap, id)[0]);

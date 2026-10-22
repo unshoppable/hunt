@@ -2,8 +2,10 @@ import * as monaco from "monaco-editor";
 import { commands } from "../ipc/commands";
 import type { Workspace } from "./documents";
 import { lspClientForModel, type LspClient } from "./lsp/client";
-import { asLocationLinks, elementKindOf, hoverSignature, rangeContains, symbolsAt, toLspPosition, toLspRange, toMonacoRange, type CodeAction, type DocumentSymbol, type Hover, type Location, type LocationLink, type Position, type TextEdit, type WorkspaceSymbol } from "./lsp/protocol";
+import { monacoLanguage } from "../diff/monaco";
+import { asLocationLinks, elementKindOf, hoverSignature, rangeContains, symbolsAt, toLspPosition, toLspRange, toMonacoRange, type CodeAction, type DocumentSymbol, type Hover, type Location, type LocationLink, type Position, type Range, type TextEdit, type WorkspaceEdit, type WorkspaceSymbol } from "./lsp/protocol";
 import { documentEdits } from "./reformat";
+import { commentAndStringMatches, editsByUri, isPackagePath, mergeOccurrences, occurrenceAt, quickInfoKind, serverErrorMessage, wordMatches, wordOccurrence, type RenameOccurrence } from "./rename";
 import { containerOf, FUNCTION_KINDS, isImportLine, isSourceFile, parameterTypesOf, sortUsages, usageOnLine, type Usage } from "./usages";
 
 export type DefinitionTarget = { uri: monaco.Uri; range: monaco.IRange };
@@ -213,4 +215,163 @@ export async function formattingEdits(model: monaco.editor.ITextModel): Promise<
   const { tabSize, insertSpaces } = model.getOptions();
   const edits = await client.request<TextEdit[] | null>("textDocument/formatting", { textDocument: { uri: model.uri.toString() }, options: { tabSize, insertSpaces } });
   return edits ?? [];
+}
+
+/**
+ * The symbol a rename starts from: its name, TypeScript's element kind (`type`, `property`, …), whether the name is the
+ * value of a string literal type, and the place the language server is asked to rename it from.
+ */
+export type RenameTarget = { name: string; kind: string; isStringLiteral: boolean; uri: string; position: Position };
+
+/** Which matches of the old name a rename changes besides the references the language server resolves. */
+export type RenameOptions = { commentsAndStrings: boolean; textOccurrences: boolean };
+
+/** What a rename changes; `texts` holds the content of every file it edits as it was when the occurrences were found. */
+export type RenamePlan = { name: string; newName: string; occurrences: RenameOccurrence[]; texts: Map<string, string> };
+
+type PrepareRenameResult = Range | { range: Range; placeholder: string } | { defaultBehavior: boolean } | null;
+
+const CANNOT_RENAME = "This element cannot be renamed.";
+
+/**
+ * The symbol at `position` the language server can rename, its kind read from the hover text. Rejects with the
+ * server's reason when there is nothing to rename there (a keyword, a symbol of the standard library or a package).
+ */
+export async function renameTarget(model: monaco.editor.ITextModel, position: monaco.IPosition): Promise<RenameTarget> {
+  const client = lspClientForModel(model);
+  if (!client) throw new Error("Rename needs the TypeScript language server, which does not serve this file.");
+  const uri = model.uri.toString();
+  const at = toLspPosition(position);
+  const prepared = await prepareRename(client, uri, at).catch((reason) => {
+    throw new Error(serverErrorMessage(reason));
+  });
+  if (!prepared) throw new Error(CANNOT_RENAME);
+  const range = toMonacoRange(prepared.range);
+  const text = model.getValueInRange(range);
+  // The server offers `this` and `super` as the class name and would replace every `this` of the class.
+  if (text === "this" || text === "super") throw new Error(CANNOT_RENAME);
+  const name = prepared.placeholder ?? text;
+  const line = range.startLineNumber;
+  const before = model.getValueInRange({ startLineNumber: line, startColumn: Math.max(range.startColumn - 1, 1), endLineNumber: line, endColumn: range.startColumn });
+  const from = (await declarationToRename(client, model, at, name).catch(() => null)) ?? { uri, position: prepared.range.start };
+  // The kind of the renamed declaration: a destructured `const { name }` renames the property it reads.
+  const hover = await client.request<Hover | null>("textDocument/hover", { textDocument: { uri: from.uri }, position: from.position }).catch(() => null);
+  return { name, kind: hover ? quickInfoKind(hoverSignature(hover)) : "", isStringLiteral: ['"', "'", "`"].includes(before), ...from };
+}
+
+/** The range and name of the renameable symbol at `position` of the document `uri`; null when there is none. */
+async function prepareRename(client: LspClient, uri: string, position: Position): Promise<{ range: Range; placeholder?: string } | null> {
+  const prepared = await client.request<PrepareRenameResult>("textDocument/prepareRename", { textDocument: { uri }, position });
+  if (!prepared || "defaultBehavior" in prepared) return null;
+  return "range" in prepared ? prepared : { range: prepared };
+}
+
+/**
+ * Where the server renames the symbol `name` at `position` from: its declaration inside the worktree, so that a rename
+ * started at an import or a usage renames the declaration and every import, like WebStorm (asked there, the server
+ * renames only the local name and keeps the old one as an alias). Null when the declaration lies outside the worktree
+ * or in a package, or carries another name (the position is on an import alias).
+ */
+async function declarationToRename(client: LspClient, model: monaco.editor.ITextModel, position: Position, name: string): Promise<{ uri: string; position: Position } | null> {
+  const links = asLocationLinks(await client.request<LocationLink[] | Location[] | null>("textDocument/definition", documentPosition(model, position)));
+  for (const link of links) {
+    const uri = monaco.Uri.parse(link.targetUri);
+    if (!isInside(uri, client) || isPackagePath(uri.path)) continue;
+    const declared = await prepareRename(client, link.targetUri, link.targetSelectionRange.start).catch(() => null);
+    if (declared?.placeholder !== name) continue;
+    return { uri: link.targetUri, position: link.targetSelectionRange.start };
+  }
+  return null;
+}
+
+/**
+ * Everything renaming `target` to `newName` changes: the language server's edits across the project (whose projects
+ * are loaded first, see `loadProjectsMentioning`; `model` names the server) and, as `options` ask, the whole-word matches
+ * of the old name in comments and strings of source files and in every other file of the worktree. Rejects when the
+ * server would edit a file outside the worktree or in a package.
+ */
+export async function planRename(workspace: Workspace, model: monaco.editor.ITextModel, target: RenameTarget, newName: string, options: RenameOptions): Promise<RenamePlan> {
+  const client = lspClientForModel(model);
+  if (!client) throw new Error("Rename needs the TypeScript language server, which does not serve this file.");
+  const word = target.name.replace(/^#/, "");
+  await loadProjectsMentioning(workspace, client, word).catch(() => {});
+  const edit = await client.request<WorkspaceEdit | null>("textDocument/rename", { textDocument: { uri: target.uri }, position: target.position, newName }).catch((reason) => {
+    throw new Error(serverErrorMessage(reason));
+  });
+
+  const texts = new Map<string, string>();
+  const occurrences: RenameOccurrence[] = [];
+  for (const [uri, edits] of editsByUri(edit)) {
+    const path = workspace.pathOf(monaco.Uri.parse(uri));
+    if (!path) throw new Error(`The rename would change ${monaco.Uri.parse(uri).fsPath}, which lies outside the worktree.`);
+    if (isPackagePath(path)) throw new Error(`The rename would change ${path}, which belongs to an installed package.`);
+    const text = await fileText(workspace, path);
+    const lines = text.split(/\r?\n/);
+    texts.set(path, text);
+    for (const lspEdit of edits) {
+      const range = toMonacoRange(lspEdit.range);
+      const occurrenceRange = { line: range.startLineNumber, column: range.startColumn, endLine: range.endLineNumber, endColumn: range.endColumn };
+      occurrences.push(occurrenceAt("code", path, occurrenceRange, lspEdit.newText, lines[range.startLineNumber - 1] ?? ""));
+    }
+  }
+
+  if (options.commentsAndStrings || options.textOccurrences) {
+    for (const path of await filesMentioning(workspace, word)) {
+      const isSource = isSourceFile(path);
+      if (isSource ? !options.commentsAndStrings : !options.textOccurrences) continue;
+      const text = texts.get(path) ?? (await fileText(workspace, path).catch(() => null));
+      if (text === null) continue;
+      const lines = text.split(/\r?\n/);
+      const matches = isSource ? commentAndStringMatches(lines, monaco.editor.tokenize(text, monacoLanguage(path)), target.name) : wordMatches(lines, target.name);
+      if (!matches.length) continue;
+      texts.set(path, text);
+      for (const match of matches) {
+        occurrences.push(wordOccurrence(isSource ? "comment" : "text", path, lines, match, target.name, newName));
+      }
+    }
+  }
+  return { name: target.name, newName, occurrences: mergeOccurrences(occurrences), texts };
+}
+
+/**
+ * Applies the occurrences of `plan` whose keys are `included`: each file is loaded into the workspace and edited in one
+ * undo step, then the files that had no unsaved edits before are saved, as WebStorm and VS Code do after a refactoring.
+ * Rejects without changing anything when a file changed after the plan was made.
+ */
+export async function applyRename(workspace: Workspace, plan: RenamePlan, included: ReadonlySet<string>): Promise<void> {
+  const byPath = new Map<string, RenameOccurrence[]>();
+  for (const occurrence of plan.occurrences) {
+    if (!included.has(occurrence.key)) continue;
+    byPath.set(occurrence.path, [...(byPath.get(occurrence.path) ?? []), occurrence]);
+  }
+  const files = await Promise.all(
+    [...byPath].map(async ([path, occurrences]) => {
+      const wasDirty = workspace.isDirty(path);
+      return { path, occurrences, wasDirty, model: (await workspace.load(path)).model };
+    }),
+  );
+  const changed = files.find((file) => file.model.getLinesContent().join("\n") !== (plan.texts.get(file.path) ?? "").split(/\r?\n/).join("\n"));
+  if (changed) throw new Error(`${changed.path} changed while the rename was prepared. Start the rename again.`);
+
+  for (const file of files) {
+    const edits = file.occurrences.map((occurrence) => ({ range: new monaco.Range(occurrence.line, occurrence.column, occurrence.endLine, occurrence.endColumn), text: occurrence.newText }));
+    file.model.pushStackElement();
+    file.model.pushEditOperations([], edits, () => null);
+    file.model.pushStackElement();
+  }
+  await Promise.all(files.filter((file) => !file.wasDirty).map((file) => workspace.save(file.path)));
+}
+
+/** The shared text of `path` when it has unsaved edits or is loaded, otherwise the content on disk. */
+async function fileText(workspace: Workspace, path: string): Promise<string> {
+  const loaded = workspace.get(path);
+  if (loaded) return loaded.model.getValue();
+  if (workspace.isDirty(path)) return (await workspace.load(path)).model.getValue();
+  return commands.readFile(workspace.sessionId, path);
+}
+
+/** Worktree files containing `word` as a whole word on disk, plus the files with unsaved edits, which may contain it only there. */
+async function filesMentioning(workspace: Workspace, word: string): Promise<string[]> {
+  const onDisk = await commands.searchWord(workspace.sessionId, word).catch(() => [] as string[]);
+  return [...new Set([...onDisk, ...workspace.dirtyPaths()])].sort();
 }

@@ -50,3 +50,26 @@ declare module "monaco-editor/platform/storage/common/storage.js" {
 
   export const IStorageService: ServiceIdentifier<{ store(key: string, value: boolean, scope: number, target: number): void }>;
 }
+
+/** Monaco's keybinding service, which its context menu and command palette ask for the shortcut shown beside an action. */
+declare module "monaco-editor/platform/keybinding/common/keybinding.js" {
+  import type { ServiceIdentifier } from "monaco-editor/platform/storage/common/storage.js";
+
+  /** A key press as the command palette draws it: the modifiers and the key's label. */
+  export type ResolvedChord = { ctrlKey: boolean; shiftKey: boolean; altKey: boolean; metaKey: boolean; keyLabel: string | null; keyAriaLabel: string | null };
+
+  /** The parts of Monaco's resolved keybinding its menus and the command palette read. */
+  export type ResolvedKeybinding = {
+    getLabel(): string | null;
+    getAriaLabel(): string | null;
+    getElectronAccelerator(): string | null;
+    getUserSettingsLabel(): string | null;
+    isWYSIWYG(): boolean;
+    hasMultipleChords(): boolean;
+    getChords(): ResolvedChord[];
+    getDispatchChords(): (string | null)[];
+    getSingleModifierDispatchChords(): (string | null)[];
+  };
+
+  export const IKeybindingService: ServiceIdentifier<{ lookupKeybinding(commandId: string, ...rest: unknown[]): ResolvedKeybinding | undefined }>;
+}

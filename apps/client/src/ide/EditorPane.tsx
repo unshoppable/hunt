@@ -3,7 +3,7 @@ import * as monaco from "monaco-editor";
 import { commands } from "../ipc/commands";
 import { attachIdeLink } from "../diff/ideLink";
 import { useFileIconUrl } from "../diff/fileIcons";
-import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, onShortcut, setupMonaco } from "../diff/monaco";
+import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, addKeymapAction, onShortcut, setupMonaco } from "../diff/monaco";
 import { anchorBelowLine, type SelectionRequest } from "../diff/selectionContext";
 import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
@@ -12,10 +12,11 @@ import { ChangeMarkers, type Marker } from "./changeMarkers";
 import { ChangePopover } from "./ChangePopover";
 import type { Workspace } from "./documents";
 import { noteCaret, noteViewState, useIdeStore, viewStateOf, type PendingPosition } from "./ideStore";
-import { findUsages, formattingEdits, navigationAt, symbolPathAt, unusedImportEdits, type SymbolCrumb } from "./languageService";
+import { findUsages, formattingEdits, navigationAt, renameTarget, symbolPathAt, unusedImportEdits, type RenameTarget, type SymbolCrumb } from "./languageService";
 import { toMonacoRange, type TextEdit } from "./lsp/protocol";
 import { editsToText } from "./reformat";
 import type { Pane } from "./paneGrid";
+import { RenameDialog } from "./RenameDialog";
 import type { ChangeBlock } from "../diff/lineDiff";
 import { AddCommentGlyph, type CommentTarget } from "../review/addCommentGlyph";
 import { ReviewCommentZones } from "../review/ReviewCommentZones";
@@ -105,7 +106,8 @@ type EditorPaneProps = {
  * One editor group: a tab bar, a Monaco editor showing the active tab's model and a breadcrumb with the file path
  * and the declarations around the caret. ⌘click goes to the declaration (opened in this pane) or, on a declaration,
  * opens the usages popup; ⇧⌘click opens the position in WebStorm, ⌘G removes unused imports and formats
- * (see `reformat`), the context menu offers "Ask Claude about selection" like the diff view. Lines that differ from HEAD get a change stripe next to the line numbers; a
+ * (see `reformat`), ⌘Ü or "Rename…" in the context menu opens the Rename dialog for the symbol at the caret, the
+ * context menu offers "Ask Claude about selection" like the diff view. Lines that differ from HEAD get a change stripe next to the line numbers; a
  * click on it opens the popup with the old lines. A selection a sub chat was opened from gets a glyph left of its
  * first line number; a click on it reopens the sub chat in its popover. Releasing a selection shows a floating
  * button at its active end that toggles the popover for the selected lines.
@@ -136,6 +138,8 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
   const busyChatIds = useBusyChatIds();
   /** Declaration whose usages popup is open. */
   const [usagesQuery, setUsagesQuery] = useState<UsagesQuery | null>(null);
+  /** Symbol whose Rename dialog is open, with the model it was started in. */
+  const [renameQuery, setRenameQuery] = useState<{ model: monaco.editor.ITextModel; target: RenameTarget } | null>(null);
   const pullRequest = useReviewedPullRequest(sessionId);
   /** The editor once created, for the components that render into it. */
   const [editor, setEditor] = useState<monaco.editor.IStandaloneCodeEditor | null>(null);
@@ -178,6 +182,23 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
       const report = (reason: unknown) => setError(String(reason));
       setError(null);
       reformat(editor, id, path, report).catch(report);
+    });
+
+    const rename = addKeymapAction(editor, "editor.rename", {
+      id: "hunt.rename",
+      label: "Rename…",
+      contextMenuGroupId: "1_modification",
+      contextMenuOrder: 0,
+      precondition: "!editorReadonly",
+      run: () => {
+        const model = editor.getModel();
+        const position = editor.getPosition();
+        if (!model || !position || editor.getOption(monaco.editor.EditorOption.readOnly)) return;
+        setError(null);
+        renameTarget(model, position)
+          .then((target) => editor.getModel() === model && setRenameQuery({ model, target }))
+          .catch((reason) => setError(errorText(reason)));
+      },
     });
 
     const agent = latest.current.onOpenSubChat
@@ -313,6 +334,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
       chatMarkers.dispose();
       chatMarkersRef.current = null;
       addCommentGlyph.dispose();
+      rename.dispose();
       agent?.dispose();
       setEditor(null);
       editor.setModel(null);
@@ -453,6 +475,17 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
           <ChangePopover editor={editorRef.current} markers={markersRef.current} marker={shownMarker} onShowMarker={setShownMarker} onClose={() => setShownMarker(null)} />
         ) : null}
         {usagesQuery && editorRef.current ? <UsagesPopover editor={editorRef.current} workspace={workspace} query={usagesQuery} onOpen={openUsage} onClose={() => setUsagesQuery(null)} /> : null}
+        {renameQuery ? (
+          <RenameDialog
+            workspace={workspace}
+            model={renameQuery.model}
+            target={renameQuery.target}
+            onClose={() => {
+              setRenameQuery(null);
+              editorRef.current?.focus();
+            }}
+          />
+        ) : null}
         {pullRequest && editor && activePath ? (
           <ReviewCommentZones key={activePath} editor={editor} sessionId={sessionId} path={activePath} blocks={blocks} composer={composer} onCloseComposer={() => setComposer(null)} />
         ) : null}

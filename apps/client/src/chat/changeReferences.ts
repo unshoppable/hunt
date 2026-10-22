@@ -16,15 +16,21 @@ const REFERENCE = /^(.+?):L?(\d+)(?:\s*[-–]\s*L?(\d+))?$/;
 export function findChangeReferences(reply: string, basePath: string): FileLocation[] {
   const body = reply.match(MARKER)?.[1];
   if (!body) return [];
-  const references = body.split("\n").flatMap((line) => {
-    const match = line.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").match(REFERENCE);
-    if (!match) return [];
-    const path = worktreePath(match[1], basePath);
-    const startLine = Number(match[2]);
-    const endLine = Math.max(startLine, Number(match[3] ?? startLine));
-    return path && startLine > 0 ? [{ path, startLine, endLine }] : [];
-  });
+  const references = body.split("\n").flatMap((line) => parseFileLocation(line.trim().replace(/^[-*]\s+/, ""), basePath) ?? []);
   return references.slice(0, MAX_REFERENCES);
+}
+
+/**
+ * The place `text` names as `path:line` or `path:start-end` (each line with an optional `L`, backticks ignored); null
+ * when it names none or an absolute path outside the worktree at `basePath`. Absolute paths inside it become relative.
+ */
+export function parseFileLocation(text: string, basePath: string): FileLocation | null {
+  const match = text.trim().replace(/`/g, "").match(REFERENCE);
+  if (!match) return null;
+  const path = worktreePath(match[1], basePath);
+  const startLine = Number(match[2]);
+  const endLine = Math.max(startLine, Number(match[3] ?? startLine));
+  return path && startLine > 0 ? { path, startLine, endLine } : null;
 }
 
 /** The reply without the change marker. */

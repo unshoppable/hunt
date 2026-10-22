@@ -492,6 +492,10 @@ const GUARDRAIL_OFFER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_D
 /// places, which the chat shows below the reply.
 const CHANGE_REFERENCES_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/change-references.system-prompt.md"));
 
+/// Asks the agent to put the file place of a code block that shows a file's lines on its opening fence, which the chat
+/// shows as a header above the code.
+const CODE_LOCATIONS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/code-locations.system-prompt.md"));
+
 /// Asks the agent to end a reply that waits for the user's answer with the `<!-- hunt:question -->` marker; shared
 /// with the gateway's poller, so a remote session marks its questions the same way.
 const QUESTION_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/prompts/question.system-prompt.md"));
@@ -501,8 +505,8 @@ const QUESTION_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "
 const SESSIONS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/prompts/sessions.system-prompt.md"));
 
 /// Everything Hunt appends to the system prompt of the agent of the Hunt session `hunt_session_id`: the user's
-/// response-style prompt from the settings (if not cleared), the guardrail offer, the change references, the question
-/// marker, the sessions file, the diagram instructions in the user's AI language and the optional selection context, each section separated
+/// response-style prompt from the settings (if not cleared), the guardrail offer, the change references, the code block
+/// places, the question marker, the sessions file, the diagram instructions in the user's AI language and the optional selection context, each section separated
 /// from the next by a blank line.
 pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prompt: Option<String>) -> String {
     let style = crate::preferences::system_prompt(app);
@@ -515,6 +519,8 @@ pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prom
     append.push_str(GUARDRAIL_OFFER_PROMPT);
     append.push('\n');
     append.push_str(CHANGE_REFERENCES_PROMPT);
+    append.push('\n');
+    append.push_str(CODE_LOCATIONS_PROMPT);
     append.push('\n');
     append.push_str(QUESTION_PROMPT);
     append.push('\n');

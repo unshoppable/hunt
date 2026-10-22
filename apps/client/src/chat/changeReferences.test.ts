@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findChangeReferences, stripChangeMarker } from "./changeReferences";
+import { findChangeReferences, parseFileLocation, stripChangeMarker } from "./changeReferences";
 import { stripGuardrailMarker } from "./guardrailSuggestion";
 
 const BASE = "/Users/me/worktrees/hunt-1";
@@ -25,6 +25,15 @@ describe("findChangeReferences", () => {
     const reply = "<!-- hunt:changes\na.ts:1\nb.ts:2\nc.ts:3\nd.ts:4\ne.ts:5\n-->";
     expect(findChangeReferences(reply, BASE).map((reference) => reference.path)).toEqual(["a.ts", "b.ts", "c.ts", "d.ts"]);
     expect(findChangeReferences("Done.\n<!-- hunt:changes\nsrc/a.ts:1", BASE)).toEqual([]);
+  });
+});
+
+describe("parseFileLocation", () => {
+  it("reads the place on a code fence and nothing from other info strings", () => {
+    expect(parseFileLocation("src/a.ts:274-280", BASE)).toEqual({ path: "src/a.ts", startLine: 274, endLine: 280 });
+    expect(parseFileLocation(`${BASE}/src/a.ts:L12`, BASE)).toEqual({ path: "src/a.ts", startLine: 12, endLine: 12 });
+    expect(parseFileLocation('title="a.ts"', BASE)).toBeNull();
+    expect(parseFileLocation("src/a.ts:0", BASE)).toBeNull();
   });
 });
 

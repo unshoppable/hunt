@@ -1,13 +1,13 @@
-import { Fragment, isValidElement, memo, useState, type ReactNode } from "react";
+import { Fragment, isValidElement, memo, useMemo, useState, type ReactNode } from "react";
 import { stripGuardrailMarker } from "./guardrailSuggestion";
-import { findChangeReferences, stripChangeMarker, type FileLocation } from "./changeReferences";
-import Markdown, { type Components } from "react-markdown";
+import { findChangeReferences, parseFileLocation, stripChangeMarker, type FileLocation } from "./changeReferences";
+import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CodeBlock } from "../code/CodeBlock";
-import { monacoLanguageForFence } from "../diff/monaco";
+import { monacoLanguage, monacoLanguageForFence } from "../diff/monaco";
 import type { ChatItem, PlanEntry } from "../ipc/types";
 import { ChatImages } from "./ChatImages";
-import { FileReferenceList } from "./FileReferenceList";
+import { FileReferenceList, FileReferenceRow } from "./FileReferenceList";
 import { splitFencedCode } from "./codePaste";
 import { huntPromptNotice } from "./huntPromptNotice";
 import { formatMessageTime } from "./messageTime";
@@ -153,7 +153,7 @@ const AgentMessage = memo(function AgentMessage({
 
   return (
     <div className="group flex flex-col gap-1">
-      {text ? <MarkdownText text={text} /> : null}
+      {text ? <MarkdownText text={text} basePath={basePath} onOpenFile={onOpenFile} /> : null}
       <ChatImages urls={images} className={text ? "mt-1" : ""} />
       {changes.length ? <FileReferenceList locations={changes} onOpen={onOpenFile} className="mt-1" /> : null}
       {text || at ? (
@@ -177,25 +177,68 @@ const AgentMessage = memo(function AgentMessage({
 });
 
 /** Agent markdown rendered as a document with the chat's code blocks. */
-export function MarkdownText({ text, className = "" }: { text: string; className?: string }) {
+export function MarkdownText({
+  text,
+  className = "",
+  basePath = "",
+  onOpenFile,
+}: {
+  text: string;
+  className?: string;
+  /** Worktree path that absolute file places of code blocks are made relative to. */
+  basePath?: string;
+  /** Shows the file place of a code block in the editor; without it the header has no button. */
+  onOpenFile?: (location: FileLocation) => void;
+}) {
+  const components = useMemo<Components>(
+    () => ({
+      pre: ({ node, children }) => (
+        <MarkdownCodeBlock node={node} basePath={basePath} onOpenFile={onOpenFile}>
+          {children}
+        </MarkdownCodeBlock>
+      ),
+    }),
+    [basePath, onOpenFile],
+  );
   return (
     <div className={`markdown min-w-0 ${className}`}>
-      <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+      <Markdown remarkPlugins={[remarkGfm]} components={components}>
         {text}
       </Markdown>
     </div>
   );
 }
 
-/** Fenced code block colored like the editors; the fence's language comes in as the `language-*` class of the inner `code`. */
-function MarkdownCodeBlock({ children }: { children?: ReactNode }) {
+/**
+ * Fenced code block colored like the editors; the fence's language comes in as the `language-*` class of the inner
+ * `code`. A file place after the language (`ts src/a.ts:3-9`) shows as a header row above the code.
+ */
+function MarkdownCodeBlock({
+  node,
+  children,
+  basePath,
+  onOpenFile,
+}: {
+  node: ExtraProps["node"];
+  children?: ReactNode;
+  basePath: string;
+  onOpenFile?: (location: FileLocation) => void;
+}) {
   const code = isValidElement<{ className?: string; children?: ReactNode }>(children) ? children.props : null;
   if (typeof code?.children !== "string") return <pre>{children}</pre>;
   const language = monacoLanguageForFence(code.className?.match(/language-(\S+)/)?.[1]);
-  return <CodeBlock text={code.children.replace(/\n$/, "")} language={language} />;
+  const text = code.children.replace(/\n$/, "");
+  const codeNode = node?.children[0];
+  const meta = codeNode?.type === "element" ? codeNode.data?.meta : null;
+  const location = meta ? parseFileLocation(meta, basePath) : null;
+  if (!location) return <CodeBlock text={text} language={language} />;
+  return (
+    <div className="code-location">
+      <FileReferenceRow location={location} onOpen={onOpenFile} className="border-b border-(--line) text-[13px]" />
+      <CodeBlock text={text} language={language === "plaintext" ? monacoLanguage(location.path) : language} path={location.path} />
+    </div>
+  );
 }
-
-const MARKDOWN_COMPONENTS: Components = { pre: MarkdownCodeBlock };
 
 /** Collapsed thinking row inside the activity card; open while streaming or in verbose mode. */
 const ThoughtRow = memo(function ThoughtRow({ text, isStreaming, isVerbose }: { text: string; isStreaming: boolean; isVerbose: boolean }) {

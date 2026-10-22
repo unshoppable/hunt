@@ -1,3 +1,9 @@
+## 0.88.1 (2026-10-22)
+
+### 🩹 Fixes
+
+- **client:** editor tabs and the guardrails window mark unsaved files with the same blue dot as the diff, the changelist and the project tree ([876c0d3](https://github.com/unshoppable/hunt/commit/876c0d3))
+
 ## 0.88.0 (2026-10-22)
 
 ### 🚀 Features

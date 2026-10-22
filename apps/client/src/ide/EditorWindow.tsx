@@ -137,7 +137,7 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
           sessionId={sessionId}
           openPaths={openPaths}
           onClose={() => setIsFileSearchOpen(false)}
-          onOpen={(path, line, inRightSplit) => openFile(sessionId, path, { line: line ?? undefined, inRightSplit })}
+          onOpen={(path, line, column, inRightSplit) => openFile(sessionId, path, { line, column, inRightSplit })}
         />
       ) : null}
       {findInFiles ? (

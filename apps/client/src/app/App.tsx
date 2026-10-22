@@ -203,11 +203,11 @@ export function App() {
           sessionId={activeSessionId}
           openPaths={openPaths}
           onClose={() => setIsFileSearchOpen(false)}
-          onOpen={(path, line, inRightSplit) => {
+          onOpen={(path, line, column, inRightSplit) => {
             if (rightTab === "editor") {
-              openFile(activeSessionId, path, { line: line ?? undefined, inRightSplit });
+              openFile(activeSessionId, path, { line, column, inRightSplit });
             } else {
-              void openInEditorWindow(activeSessionId, { path, line: line ?? undefined, inRightSplit });
+              void openInEditorWindow(activeSessionId, { path, line, column, inRightSplit });
             }
           }}
         />

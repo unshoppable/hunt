@@ -36,7 +36,7 @@ function isBoundary(text: string, index: number): boolean {
 }
 
 /** Matches `query` (already lowercased) as a substring or, failing that, as a subsequence of `text`. */
-function matchText(text: string, query: string): TextMatch | null {
+export function matchText(text: string, query: string): TextMatch | null {
   const lower = text.toLowerCase();
   const substringIndex = lower.indexOf(query);
   if (substringIndex >= 0) {

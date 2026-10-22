@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import * as monaco from "monaco-editor";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { useFileIconUrl } from "../diff/fileIcons";
@@ -16,8 +16,12 @@ import { errorText, useLoad } from "../ui/useLoad";
 import { usePopupSize } from "../ui/usePopupSize";
 import { useViewportSize } from "../ui/useViewportSize";
 import { searchFiles, parseQuery, type FileMatch } from "./fileSearch";
+import { KindIcon } from "./KindIcon";
+import { lspClientFor } from "./lsp/client";
+import type { WorkspaceSymbol } from "./lsp/protocol";
 import { attachSelectionAgent } from "./selectionAgent";
 import { MARKING_SELECTION_SOURCE } from "./selectionAskButton";
+import { CLASS_KINDS, declarationQuery, declarationsOf, isSymbolQuery, rankSymbols, workspaceSymbolsIn, type SymbolCandidate, type SymbolMatch } from "./symbolSearch";
 
 /** Timeout for the second Shift press of "double shift", and the interval of a second press when Shift stays down. */
 const DOUBLE_SHIFT_MS = 400;
@@ -28,6 +32,31 @@ const MIN_SIZE = { width: 520, height: 240 };
 /** The largest share of the window's width and height the dialog may take. */
 const MAX_WIDTH_SHARE = 0.94;
 const MAX_HEIGHT_SHARE = 0.84;
+/** Pause after the last keystroke before symbols are searched. */
+const SYMBOL_SEARCH_DELAY_MS = 150;
+
+/** A result row: classes come first, then files, then the other symbols, like WebStorm's "Search Everywhere". */
+type Row = { type: "file"; match: FileMatch } | { type: "symbol"; match: SymbolMatch };
+
+function rowGroup(row: Row): string {
+  if (row.type === "file") return "Files";
+  return CLASS_KINDS.has(row.match.kind) ? "Classes" : "Symbols";
+}
+
+function rowKey(row: Row): string {
+  return row.type === "file" ? row.match.path : `symbol:${row.match.path}:${row.match.line}:${row.match.name}`;
+}
+
+/** The language server's workspace symbols and the declarations a text search finds for `text`; a failing source adds none. */
+async function findSymbols(sessionId: string, worktreePath: string, text: string, files: ReadonlySet<string>): Promise<SymbolCandidate[]> {
+  const [symbols, declarations] = await Promise.all([
+    lspClientFor(sessionId, worktreePath)
+      .request<WorkspaceSymbol[] | null>("workspace/symbol", { query: text })
+      .catch(() => null),
+    commands.findInFiles(sessionId, declarationQuery(text)).catch(() => null),
+  ]);
+  return [...workspaceSymbolsIn(symbols ?? [], worktreePath, files), ...declarationsOf(declarations?.matches ?? [])];
+}
 
 /**
  * Calls `onTrigger` for the keymap's "Go to file" (⌘P by default) and for double shift (two plain Shift presses within 400 ms with nothing in between),
@@ -64,10 +93,11 @@ export function useFileSearchShortcut(onTrigger: () => void) {
 }
 
 /**
- * WebStorm-style "Go to File": a search field over every project file with fuzzy ranking (see fileSearch.ts).
+ * WebStorm-style "Search Everywhere" for files and symbols: a search field over every project file with fuzzy ranking
+ * (see fileSearch.ts) and, for an identifier, over the declared classes and symbols (see symbolSearch.ts).
  * With an empty query the open files are listed. The selected file is previewed below the list like in WebStorm's
  * "Search Everywhere", with its path and an "Open In Right Split" action in the footer. ↑/↓ move the selection,
- * Enter opens (`name:12` places the caret on line 12), ⇧Enter opens in a right split, Esc or a click on the
+ * Enter opens (`name:12` places the caret on line 12, a symbol at its name), ⇧Enter opens in a right split, Esc or a click on the
  * backdrop closes. Dragging a side or the bottom edge resizes the dialog; the size is remembered across sessions.
  * Text selected in the preview opens a sub chat about it over the dialog; while that is open, Esc closes only the sub chat.
  */
@@ -80,14 +110,15 @@ export function FileSearchDialog({
   sessionId: string;
   /** Files currently open in the editor, most recently opened last; shown while the query is empty. */
   openPaths: string[];
-  /** `inRightSplit` asks for the file right of the current pane (WebStorm's "Open In Right Split"). */
-  onOpen: (path: string, line: number | null, inRightSplit: boolean) => void;
+  /** 1-based caret position, if any; `inRightSplit` asks for the file right of the current pane (WebStorm's "Open In Right Split"). */
+  onOpen: (path: string, line: number | undefined, column: number | undefined, inRightSplit: boolean) => void;
   onClose: () => void;
 }) {
   const fileIconUrl = useFileIconUrl();
   const worktreePath = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.worktreePath ?? "");
   const [query, setQuery] = useState("");
   const [files, setFiles] = useState<string[] | null>(null);
+  const [symbolCandidates, setSymbolCandidates] = useState<SymbolCandidate[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const listRef = useRef<HTMLUListElement>(null);
@@ -100,22 +131,41 @@ export function FileSearchDialog({
   useLoad(() => commands.listFiles(sessionId), { onValue: setFiles, onError: (reason) => setError(errorText(reason)) }, [sessionId]);
 
   const parsed = useMemo(() => parseQuery(query), [query]);
-  const matches = useMemo<FileMatch[]>(() => {
-    if (parsed.text) return searchFiles(files ?? [], parsed.text);
-    return [...openPaths].reverse().map((path) => ({ path, ...splitPath(path), score: 0, positions: [] }));
-  }, [files, parsed.text, openPaths]);
+  const fileSet = useMemo(() => new Set(files ?? []), [files]);
+  const isSymbolSearch = isSymbolQuery(parsed.text);
+  useLoad(
+    () => findSymbols(sessionId, worktreePath, parsed.text, fileSet),
+    { onValue: setSymbolCandidates, onError: () => setSymbolCandidates([]) },
+    [sessionId, worktreePath, parsed.text, fileSet],
+    { delayMs: SYMBOL_SEARCH_DELAY_MS, isEnabled: isSymbolSearch && !!files && !!worktreePath },
+  );
 
-  const selected = Math.min(selectedIndex, Math.max(matches.length - 1, 0));
+  const rows = useMemo<Row[]>(() => {
+    const fileMatches = parsed.text ? searchFiles(files ?? [], parsed.text) : [...openPaths].reverse().map((path) => ({ path, ...splitPath(path), score: 0, positions: [] }));
+    const fileRows = fileMatches.map((match): Row => ({ type: "file", match }));
+    if (!isSymbolSearch) return fileRows;
+    // Candidates of the previous query stay until the new ones arrive, ranked against the current text.
+    const symbolRows = rankSymbols(symbolCandidates, parsed.text).map((match): Row => ({ type: "symbol", match }));
+    return [...symbolRows.filter((row) => rowGroup(row) === "Classes"), ...fileRows, ...symbolRows.filter((row) => rowGroup(row) === "Symbols")];
+  }, [files, parsed.text, openPaths, isSymbolSearch, symbolCandidates]);
+  const hasSymbols = rows.some((row) => row.type === "symbol");
+
+  const selected = Math.min(selectedIndex, Math.max(rows.length - 1, 0));
 
   useEffect(() => {
-    listRef.current?.children[selected]?.scrollIntoView({ block: "nearest" });
-  }, [selected, matches]);
+    listRef.current?.querySelector(`[data-row="${selected}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [selected, rows]);
 
-  const selectedMatch = matches[selected] as FileMatch | undefined;
+  const selectedRow = rows[selected] as Row | undefined;
+  const selectedPath = selectedRow?.match.path;
 
-  const open = (match: FileMatch | undefined, inRightSplit = false) => {
-    if (!match) return;
-    onOpen(match.path, parsed.line, inRightSplit);
+  const open = (row: Row | undefined, inRightSplit = false) => {
+    if (!row) return;
+    if (row.type === "file") {
+      onOpen(row.match.path, parsed.line ?? undefined, undefined, inRightSplit);
+    } else {
+      onOpen(row.match.path, row.match.line, row.match.column, inRightSplit);
+    }
     onClose();
   };
 
@@ -130,11 +180,11 @@ export function FileSearchDialog({
   const onKeyDown = (event: ReactKeyboardEvent) => {
     if (event.defaultPrevented) return;
     if (event.key === "ArrowDown") {
-      setSelectedIndex(matches.length ? (selected + 1) % matches.length : 0);
+      setSelectedIndex(rows.length ? (selected + 1) % rows.length : 0);
     } else if (event.key === "ArrowUp") {
-      setSelectedIndex(matches.length ? (selected - 1 + matches.length) % matches.length : 0);
+      setSelectedIndex(rows.length ? (selected - 1 + rows.length) % rows.length : 0);
     } else if (event.key === "Enter") {
-      open(selectedMatch, event.shiftKey);
+      open(selectedRow, event.shiftKey);
     } else {
       return;
     }
@@ -142,9 +192,9 @@ export function FileSearchDialog({
   };
 
   // Without a preview the dialog is as tall as its list, up to the remembered height.
-  const style = { width: size.width, height: selectedMatch ? size.height : undefined, maxHeight: size.height };
+  const style = { width: size.width, height: selectedRow ? size.height : undefined, maxHeight: size.height };
   return (
-    <Modal label="Go to file" onClose={onClose} isCloseable={!subChat.shown} align="top" className="bg-(--surface-inspector)" style={style} resize={grips}>
+    <Modal label="Go to file or symbol" onClose={onClose} isCloseable={!subChat.shown} align="top" className="bg-(--surface-inspector)" style={style} resize={grips}>
       {/* `contents` keeps the rows in the dialog's own column layout; the keys bubble up through it. */}
       <div className="contents" onKeyDown={onKeyDown}>
         <div className="flex shrink-0 items-center gap-2 border-b border-(--line) px-3">
@@ -155,7 +205,7 @@ export function FileSearchDialog({
               setQuery(event.target.value);
               setSelectedIndex(0);
             }}
-            placeholder="Go to file (append :line to jump to a line)"
+            placeholder="Go to file or symbol (append :line to jump to a line)"
             autoFocus
             spellCheck={false}
             className="h-10 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-neutral-500"
@@ -164,41 +214,52 @@ export function FileSearchDialog({
         </div>
         {error ? <p className="shrink-0 px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
         {/* With a preview the list leaves it at least half of the dialog; without one it takes the whole height. */}
-        <ul ref={listRef} className={`min-h-0 overflow-auto py-1 text-[13px] ${selectedMatch ? "max-h-[45%] shrink-0 border-b border-(--line)" : ""}`}>
-          {matches.map((match, index) => (
-            <li
-              key={match.path}
-              onMouseMove={(event) => selectUnderMouse(event, index)}
-              onClick={() => open(match)}
-              data-selected={index === selected}
-              className="tree-row flex cursor-pointer items-center gap-2 px-3 py-1.5"
-            >
-              <img src={fileIconUrl(match.path)} alt="" className="size-4 shrink-0" />
-              <span className="shrink-0 text-neutral-100">
-                <Highlighted text={match.name} positions={match.positions} offset={match.path.length - match.name.length} />
-              </span>
-              {match.dir ? (
-                <span className="truncate text-neutral-500">
-                  <Highlighted text={match.dir} positions={match.positions} offset={0} />
-                </span>
+        <ul ref={listRef} className={`min-h-0 overflow-auto py-1 text-[13px] ${selectedRow ? "max-h-[45%] shrink-0 border-b border-(--line)" : ""}`}>
+          {rows.map((row, index) => (
+            <Fragment key={rowKey(row)}>
+              {hasSymbols && (index === 0 || rowGroup(rows[index - 1]) !== rowGroup(row)) ? (
+                <li className="px-3 pt-2 pb-1 text-[12px] text-neutral-500">{rowGroup(row)}</li>
               ) : null}
-            </li>
+              <li
+                onMouseMove={(event) => selectUnderMouse(event, index)}
+                onClick={() => open(row)}
+                data-row={index}
+                data-selected={index === selected}
+                className="tree-row flex cursor-pointer items-center gap-2 px-3 py-1.5"
+              >
+                {row.type === "file" ? <FileRow match={row.match} iconUrl={fileIconUrl(row.match.path)} /> : <SymbolRow match={row.match} />}
+              </li>
+            </Fragment>
           ))}
-          {!matches.length ? (
-            <li className="px-3 py-2 text-[13px] text-neutral-500">{parsed.text ? (files ? "No matching files" : "Loading…") : "No open files"}</li>
+          {!rows.length ? (
+            <li className="px-3 py-2 text-[13px] text-neutral-500">
+              {parsed.text ? (files ? (isSymbolSearch ? "No matching files or symbols" : "No matching files") : "Loading…") : "No open files"}
+            </li>
           ) : null}
         </ul>
-        {selectedMatch ? (
+        {selectedRow && selectedPath ? (
           <>
-            <FilePreview sessionId={sessionId} path={selectedMatch.path} line={parsed.line} onOpenSubChat={subChat.open} onToggleSubChat={subChat.toggle} />
+            {selectedRow.type === "file" ? (
+              <FilePreview sessionId={sessionId} path={selectedPath} line={parsed.line} onOpenSubChat={subChat.open} onToggleSubChat={subChat.toggle} />
+            ) : (
+              <FilePreview
+                sessionId={sessionId}
+                path={selectedPath}
+                line={selectedRow.match.line}
+                column={selectedRow.match.column}
+                endColumn={selectedRow.match.column + selectedRow.match.name.length}
+                onOpenSubChat={subChat.open}
+                onToggleSubChat={subChat.toggle}
+              />
+            )}
             <div className={`${STATUS_BAR} gap-3`}>
-              <span className="min-w-0 flex-1 truncate text-neutral-400" title={`${worktreePath}/${selectedMatch.path}`}>
-                {abbreviateHome(worktreePath)}/{selectedMatch.path}
+              <span className="min-w-0 flex-1 truncate text-neutral-400" title={`${worktreePath}/${selectedPath}`}>
+                {abbreviateHome(worktreePath)}/{selectedPath}
               </span>
               <button
                 type="button"
                 title="Open In Right Split (⇧Enter)"
-                onClick={() => open(selectedMatch, true)}
+                onClick={() => open(selectedRow, true)}
                 className="shrink-0 rounded-md px-2 py-1 text-[#548af7] hover:bg-white/10 hover:text-[#7ea6ff]"
               >
                 Open In Right Split
@@ -212,6 +273,39 @@ export function FileSearchDialog({
         <SubChatPopover key={subChat.shown.key} parentSessionId={sessionId} request={subChat.shown.request} subSessionId={subChat.shown.subSessionId} onClose={subChat.close} />
       ) : null}
     </Modal>
+  );
+}
+
+/** A file result: its icon, its name and its directory with the matched characters marked. */
+function FileRow({ match, iconUrl }: { match: FileMatch; iconUrl: string }) {
+  return (
+    <>
+      <img src={iconUrl} alt="" className="size-4 shrink-0" />
+      <span className="shrink-0 text-neutral-100">
+        <Highlighted text={match.name} positions={match.positions} offset={match.path.length - match.name.length} />
+      </span>
+      {match.dir ? (
+        <span className="truncate text-neutral-500">
+          <Highlighted text={match.dir} positions={match.positions} offset={0} />
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+/** A symbol result: its kind badge, its name with the matched characters marked, its container and its file. */
+function SymbolRow({ match }: { match: SymbolMatch }) {
+  return (
+    <>
+      <KindIcon kind={match.kind} />
+      <span className="shrink-0 text-neutral-100">
+        <Highlighted text={match.name} positions={match.positions} offset={0} />
+      </span>
+      <span className="truncate text-neutral-500">
+        {match.containerName ? `${match.containerName} · ` : ""}
+        {match.path}:{match.line}
+      </span>
+    </>
   );
 }
 

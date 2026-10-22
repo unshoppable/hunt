@@ -34,6 +34,9 @@ type Tab = "changes" | "shelf";
 
 type Dialog = { kind: "shelve"; paths: string[] } | { kind: "review" } | null;
 
+/** The file or folder row a context menu or a copy-path shortcut acts on; `files` are the changes it holds. */
+export type ChangeListTarget = { path: string; files: ChangedFile[]; isFolder: boolean };
+
 /** One visible row of the tree view; `depth` is the indentation level. */
 type Row = { node: TreeNode; depth: number };
 
@@ -56,6 +59,8 @@ export type ScopeControl = { value: ChangeScope; hiddenCount: number; includesPa
  * the header hides files from the list (the owner applies it to `files`, `hiddenByGlobsCount` says how many it left out);
  * a file the agent rated in the dependency graph (`reviewRatings`) shows its review relevance behind its name. Every
  * file row has an agent button that opens a sub chat about the whole file; it shows on hover, or always once such a chat exists.
+ * A right click on a file or folder row opens the owner's context menu; ⌃⇧C in the focused list copies the path of the row
+ * under the cursor.
  */
 export function ChangeList({
   sessionId,
@@ -67,6 +72,7 @@ export function ChangeList({
   unsavedPaths,
   onSelect,
   onContextMenu,
+  onCopyPath,
   onAskAgent,
   onWorktreeChanged,
 }: {
@@ -82,7 +88,9 @@ export function ChangeList({
   /** Files with unsaved edits; they get a blue dot, and committing or shelving them uses the content on disk. */
   unsavedPaths: readonly string[];
   onSelect: (path: string) => void;
-  onContextMenu: (event: MouseEvent, file: ChangedFile) => void;
+  onContextMenu: (event: MouseEvent, target: ChangeListTarget) => void;
+  /** Copies the absolute path of the worktree-relative `path`. */
+  onCopyPath: (path: string) => void;
   /** Opens the sub chat about the whole file next to its agent button; without it there is none. */
   onAskAgent?: (file: ChangedFile, button: HTMLElement) => void;
   /** Called after a shelve or unshelve so the owner reloads the worktree state. */
@@ -316,7 +324,7 @@ export function ChangeList({
         <button
           type="button"
           onClick={() => nav.select(file.path)}
-          onContextMenu={(event) => onContextMenu(event, file)}
+          onContextMenu={(event) => onContextMenu(event, { path: file.path, files: [file], isFolder: false })}
           className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
           title={`${file.path} (${file.status})`}
         >
@@ -360,6 +368,7 @@ export function ChangeList({
             toggleCollapsed(folder.path);
             nav.select(key);
           }}
+          onContextMenu={(event) => onContextMenu(event, { path: folder.path, files: folder.files, isFolder: true })}
           className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
           title={folder.path}
         >
@@ -438,6 +447,14 @@ export function ChangeList({
           </div>
           <ul
             {...nav.listProps}
+            onKeyDown={(event) => {
+              if (!nav.cursor || !isShortcut(event, "changes.copyPath")) {
+                nav.listProps.onKeyDown(event);
+                return;
+              }
+              event.preventDefault();
+              onCopyPath(nav.cursor.endsWith("/") ? nav.cursor.slice(0, -1) : nav.cursor);
+            }}
             className="min-h-0 flex-1 overflow-y-auto outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)"
           >
             {view === "flat"

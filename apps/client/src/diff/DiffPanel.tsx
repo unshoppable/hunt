@@ -9,7 +9,7 @@ import { isOwnChange, otherTouchers, ownerLabel, type ChangeScope } from "./attr
 import { ownView } from "./ownChanges";
 import type { OverwriteMark } from "./overwriteMarkers";
 import { sessionMarks } from "../sessions/sessionLabels";
-import { ChangeList } from "./ChangeList";
+import { ChangeList, type ChangeListTarget } from "./ChangeList";
 import { matchesGlob, splitGlobs } from "./glob";
 import { parseGraph } from "../graph/schema";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
@@ -28,7 +28,7 @@ import { UnsavedDot } from "../ui/UnsavedDot";
 import { useDismiss } from "../ui/useDismiss";
 import { errorText, useLoad } from "../ui/useLoad";
 
-type ContextMenuState = { x: number; y: number; file: ChangedFile };
+type ContextMenuState = { x: number; y: number; target: ChangeListTarget };
 
 type DiffMode = "split" | "unified";
 
@@ -38,9 +38,15 @@ function wholeFileTask(file: ChangedFile): string {
   return `The user opened this chat from the changelist about the whole file \`${file.path}\`; the current work ${change}. Answer questions about the file and its changes, and edit the file when asked to.`;
 }
 
-/** Files that do not exist at the base commit are removed instead of restored. */
-function revertLabel(file: ChangedFile): string {
-  return file.status === "?" || file.status === "A" ? "Delete file" : "Revert changes";
+/** Files that do not exist at the base commit are removed instead of restored; a folder reverts every listed file in it. */
+function revertLabel(target: ChangeListTarget): string {
+  if (target.isFolder) return target.files.length === 1 ? "Revert 1 file" : `Revert ${target.files.length} files`;
+  return target.files[0].status === "?" || target.files[0].status === "A" ? "Delete file" : "Revert changes";
+}
+
+function revertQuestion(target: ChangeListTarget): string {
+  if (!target.isFolder) return `${revertLabel(target)}: "${target.path}"? This discards all changes to the file.`;
+  return `${revertLabel(target)} in "${target.path}"? This discards all changes to the listed files and deletes the new ones.`;
 }
 
 export function DiffPanel({ sessionId }: { sessionId: string }) {
@@ -339,30 +345,38 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
       .catch((reason) => setError(errorText(reason)));
   };
 
-  const openContextMenu = (event: MouseEvent, file: ChangedFile) => {
+  const openContextMenu = (event: MouseEvent, target: ChangeListTarget) => {
     event.preventDefault();
-    setContextMenu({ x: event.clientX, y: event.clientY, file });
+    setContextMenu({ x: event.clientX, y: event.clientY, target });
   };
 
-  const revertFile = async (file: ChangedFile) => {
+  /** Reverts the target's files after asking once; the first failure stops the rest. */
+  const revertFiles = async (target: ChangeListTarget) => {
     setContextMenu(null);
-    if (!(await confirmDestructive(`${revertLabel(file)}: "${file.path}"? This discards all changes to the file.`, revertLabel(file)))) return;
-    // Unsaved edits go too; queued ahead of the reloads that follow, the document then takes the reverted file over.
-    if (worktreePath) {
-      workspaceFor(sessionId, worktreePath).revert(file.path);
+    if (!(await confirmDestructive(revertQuestion(target), revertLabel(target)))) return;
+    const reverted: string[] = [];
+    let failure: string | null = null;
+    for (const file of target.files) {
+      // Unsaved edits go too; queued ahead of the reloads that follow, the document then takes the reverted file over.
+      if (worktreePath) {
+        workspaceFor(sessionId, worktreePath).revert(file.path);
+      }
+      try {
+        await commands.revertFile(sessionId, file.path);
+      } catch (reason) {
+        failure = String(reason);
+        break;
+      }
+      reverted.push(file.path);
     }
-    commands
-      .revertFile(sessionId, file.path)
-      .then(() => {
-        setError(null);
-        if (file.path === selectedPath) {
-          markDirty(false);
-          setExternalDiff(null);
-        }
-        setLocalVersion((version) => version + 1);
-        noteWorktreeChanged(sessionId);
-      })
-      .catch((reason) => setError(String(reason)));
+    setError(failure);
+    if (!reverted.length) return;
+    if (selectedPath && reverted.includes(selectedPath)) {
+      markDirty(false);
+      setExternalDiff(null);
+    }
+    setLocalVersion((version) => version + 1);
+    noteWorktreeChanged(sessionId);
   };
 
   return (
@@ -378,6 +392,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
         unsavedPaths={unsavedPaths}
         onSelect={selectFile}
         onContextMenu={openContextMenu}
+        onCopyPath={copyPath}
         onAskAgent={askAgentAboutFile}
         onWorktreeChanged={() => {
           setLocalVersion((version) => version + 1);
@@ -523,27 +538,29 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
           style={{ left: contextMenu.x, top: contextMenu.y }}
           className="fixed z-50 min-w-36 rounded border border-neutral-600 bg-(--surface-inset) p-1 text-[13px] shadow-lg"
         >
-          <div className="mb-1 truncate border-b border-(--line) px-2 pb-1 font-mono text-[12px] text-neutral-500" title={contextMenu.file.path}>
-            {baseName(contextMenu.file.path)}
+          <div className="mb-1 truncate border-b border-(--line) px-2 pb-1 font-mono text-[12px] text-neutral-500" title={contextMenu.target.path}>
+            {baseName(contextMenu.target.path)}
           </div>
+          {contextMenu.target.isFolder ? null : (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setContextMenu(null);
+                void openInEditorWindow(sessionId, { path: contextMenu.target.path, revealInTree: true });
+              }}
+              className="flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left hover:bg-(--row-hover)"
+            >
+              Open in editor
+              {openInEditorShortcut ? <span className="text-neutral-500">{openInEditorShortcut}</span> : null}
+            </button>
+          )}
           <button
             type="button"
             role="menuitem"
             onClick={() => {
               setContextMenu(null);
-              void openInEditorWindow(sessionId, { path: contextMenu.file.path, revealInTree: true });
-            }}
-            className="flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left hover:bg-(--row-hover)"
-          >
-            Open in editor
-            {openInEditorShortcut ? <span className="text-neutral-500">{openInEditorShortcut}</span> : null}
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setContextMenu(null);
-              copyPath(contextMenu.file.path);
+              copyPath(contextMenu.target.path);
             }}
             className="flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left hover:bg-(--row-hover)"
           >
@@ -553,12 +570,12 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
           <button
             type="button"
             role="menuitem"
-            onClick={() => (isLocked ? undefined : void revertFile(contextMenu.file))}
+            onClick={() => (isLocked ? undefined : void revertFiles(contextMenu.target))}
             aria-disabled={isLocked}
             title={isLocked ? WORKTREE_LOCKED_MESSAGE : undefined}
             className={`block w-full rounded px-2 py-1 text-left text-red-300 hover:bg-(--row-hover) ${isLocked ? "opacity-40" : ""}`}
           >
-            {revertLabel(contextMenu.file)}
+            {revertLabel(contextMenu.target)}
           </button>
         </div>
       ) : null}

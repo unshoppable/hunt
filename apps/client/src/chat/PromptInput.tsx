@@ -14,6 +14,7 @@ import { useAutoGrow, useTextareaDrag } from "../ui/useAutoGrow";
 import { useDismiss } from "../ui/useDismiss";
 import { isShortcut, useShortcutLabel } from "../ui/shortcuts";
 import { matchCommands, slashQueryOf } from "./slashCommands";
+import { codePasteText, EDITOR_CLIPBOARD_TYPE, editorCopyLanguage } from "./codePaste";
 import { insertImageReference, removeImageReference, shiftImageReferences } from "./imageReferences";
 import { useImageDrop } from "./useImageDrop";
 
@@ -239,6 +240,22 @@ export function PromptInput({
     setSuggestionIndex(0);
   }
 
+  /** Pastes several lines copied from one of Hunt's editors as a Markdown fence; the browser's undo takes it back whole. */
+  function onPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const language = editorCopyLanguage(event.clipboardData.getData(EDITOR_CLIPBOARD_TYPE));
+    if (language === null) return;
+    const textarea = event.currentTarget;
+    const inserted = codePasteText(
+      event.clipboardData.getData("text/plain"),
+      language,
+      textarea.value.slice(0, textarea.selectionStart),
+      textarea.value.slice(textarea.selectionEnd),
+    );
+    if (!inserted) return;
+    event.preventDefault();
+    document.execCommand("insertText", false, inserted);
+  }
+
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Tab" && event.shiftKey) {
       event.preventDefault();
@@ -328,6 +345,7 @@ export function PromptInput({
               setIsSuggestionsDismissed(false);
             }}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             rows={2}
             placeholder={isStarting ? "Enter queues the prompt until the agent runs" : isBusy ? "Enter queues the prompt for after this turn" : placeholder}
             className="block w-full resize-none bg-transparent px-4 py-3 outline-none placeholder:text-neutral-600 disabled:opacity-50"

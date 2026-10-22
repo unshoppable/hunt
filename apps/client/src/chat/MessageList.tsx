@@ -1,4 +1,4 @@
-import { isValidElement, memo, useState, type ReactNode } from "react";
+import { Fragment, isValidElement, memo, useState, type ReactNode } from "react";
 import { stripGuardrailMarker } from "./guardrailSuggestion";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -6,6 +6,7 @@ import { CodeBlock } from "../code/CodeBlock";
 import { monacoLanguageForFence } from "../diff/monaco";
 import type { ChatItem, PlanEntry } from "../ipc/types";
 import { ChatImages } from "./ChatImages";
+import { splitFencedCode } from "./codePaste";
 import { huntPromptNotice } from "./huntPromptNotice";
 import { formatMessageTime } from "./messageTime";
 import { ToolCallCard } from "./ToolCallCard";
@@ -77,7 +78,7 @@ export function MessageList({
           return (
             <div key={item.id} className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-(--row-active) px-4 py-2.5 whitespace-pre-wrap break-words text-neutral-100">
               <ChatImages urls={item.images} className={item.text ? "mb-2" : ""} />
-              {item.text}
+              <UserText text={item.text} />
               {item.at ? <MessageTime at={item.at} className="-mb-1 mt-0.5 block text-right text-neutral-400" /> : null}
             </div>
           );
@@ -89,6 +90,22 @@ export function MessageList({
     </div>
   );
 }
+
+/** A prompt as written, with its fenced code shown as code blocks like the agent's. */
+const UserText = memo(function UserText({ text }: { text: string }) {
+  return splitFencedCode(text).map((segment, index) =>
+    segment.kind === "code" ? (
+      <CodeBlock
+        key={index}
+        text={segment.text}
+        language={monacoLanguageForFence(segment.language)}
+        className="my-1.5 overflow-x-auto whitespace-pre rounded-lg border border-(--line) bg-(--surface-inset) px-3 py-2 text-[0.85em] text-[#d4d4d4]"
+      />
+    ) : (
+      <Fragment key={index}>{segment.text}</Fragment>
+    ),
+  );
+});
 
 /** When a message was written, with the full date and time on hover. */
 function MessageTime({ at, className = "" }: { at: string; className?: string }) {

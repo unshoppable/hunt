@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { ChevronIcon, PlusIcon, TrashIcon } from "../ui/icons";
+import { UnsavedDot } from "../ui/UnsavedDot";
 import { toggleInExpanded } from "../ui/treeExpansion";
 import { useEscapeToClose } from "../ui/useEscapeToClose";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
@@ -325,7 +326,7 @@ function FileRow({
       >
         <img src={fileIconUrl(entry.path)} alt="" className="size-4 shrink-0" />
         <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-        {isDirty ? <span className="size-2 shrink-0 rounded-full bg-amber-300" title="Unsaved changes" /> : null}
+        {isDirty ? <UnsavedDot /> : null}
       </button>
       <button
         type="button"

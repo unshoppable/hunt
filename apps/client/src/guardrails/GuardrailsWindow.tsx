@@ -17,6 +17,7 @@ import { AGENT_GLOW, BUTTON_XS, DANGER_BUTTON_XS, PRIMARY_BUTTON_LG, PRIMARY_BUT
 import { confirmDestructive } from "../ui/confirm";
 import { useHoverAnchor, type HoverAnchor } from "../ui/hoverAnchor";
 import { ChevronIcon, PlusIcon, SparkleIcon, TrashIcon } from "../ui/icons";
+import { UnsavedDot } from "../ui/UnsavedDot";
 import { useSecondaryWindow } from "../ui/nativeWindow";
 import { baseName, isInsideFolder } from "../ui/path";
 import { toggleInCollapsed } from "../ui/treeExpansion";
@@ -645,7 +646,7 @@ function GuardrailRow({ entry, depth, isSelected, isDirty, onSelect, onDelete }:
         className={`flex w-full items-center gap-2 rounded py-1.5 pr-8 text-left ${isSelected ? "bg-(--row-selected) text-white" : "text-neutral-300 hover:bg-(--row-hover) hover:text-white"}`}
       >
         <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-        {isDirty ? <span className="size-2 shrink-0 rounded-full bg-amber-300" title="Unsaved changes" /> : null}
+        {isDirty ? <UnsavedDot /> : null}
       </button>
       <button
         type="button"

@@ -27,6 +27,7 @@ import { UsagesPopover, type UsagesQuery } from "./UsagesPopover";
 import type { Usage } from "./usages";
 import { STATUS_BAR } from "../ui/bars";
 import { CloseIcon } from "../ui/icons";
+import { UnsavedDot } from "../ui/UnsavedDot";
 import { baseName } from "../ui/path";
 import { errorText, useLoad } from "../ui/useLoad";
 
@@ -395,7 +396,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
                 className={`-my-1 ml-0.5 flex size-5 items-center justify-center rounded text-neutral-500 hover:bg-white/10 hover:text-white ${isDirty || isCurrentTab ? "" : "opacity-0 group-hover:opacity-100"}`}
                 title={isDirty ? "Unsaved changes · close" : "Close"}
               >
-                {isDirty ? <span className="size-2 rounded-full bg-amber-300 group-hover:hidden" /> : null}
+                {isDirty ? <UnsavedDot className="group-hover:hidden" /> : null}
                 <CloseIcon className={`size-3 ${isDirty ? "hidden group-hover:block" : ""}`} />
               </button>
             </div>

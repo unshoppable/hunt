@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GitRef } from "../ipc/types";
-import { buildRefTree } from "./refGroups";
+import { buildRefTree, groupPaths } from "./refGroups";
 
 const ref = (name: string, kind: GitRef["kind"] = "local"): GitRef => ({ name, kind, target: "0".repeat(40), upstream: null, ahead: 0, behind: 0 });
 
@@ -32,5 +32,12 @@ describe("buildRefTree", () => {
 
   it("leaves out empty groups", () => {
     expect(buildRefTree([ref("master")], "master").map((node) => node.name)).toEqual(["Local"]);
+  });
+});
+
+describe("groupPaths", () => {
+  it("lists every group at any depth", () => {
+    const tree = buildRefTree([ref("feat/general/a"), ref("master"), ref("origin/master", "remote")], "master");
+    expect(groupPaths(tree)).toEqual(["local", "local/feat", "local/feat/general", "remote", "remote/origin"]);
   });
 });

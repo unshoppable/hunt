@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { buildChangeTree, type FolderNode, type TreeNode } from "../diff/changeTree";
+import { buildChangeTree, folderPaths, type FolderNode, type TreeNode } from "../diff/changeTree";
 import { Checkbox, type CheckState } from "../diff/Checkbox";
 import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { STATUS_NAME_CLASS } from "../diff/styles";
 import type { ChangedFile } from "../ipc/types";
 import { ResizeGrips } from "../ui/ResizeGrips";
+import { toggleInCollapsed } from "../ui/treeExpansion";
 import type { TreeNavRow } from "../ui/treeNavigation";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
 import { useDismiss } from "../ui/useDismiss";
@@ -87,15 +88,7 @@ export function FileFilterPopover({
   const toggleGroup = (targets: ChangedFile[]) => setChecked(targets, stateOf(targets) !== "checked");
 
   const toggleCollapsed = (path: string) => {
-    setCollapsed((current) => {
-      const next = new Set(current);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
-      return next;
-    });
+    setCollapsed((current) => toggleInCollapsed(current, path, folderPaths(tree)));
   };
 
   /** A folder's key is its path with a trailing slash, a file's its path. */

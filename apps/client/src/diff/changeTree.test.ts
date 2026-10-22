@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildChangeTree } from "./changeTree";
+import { buildChangeTree, folderPaths } from "./changeTree";
 
 const file = (path: string, status = "M") => ({ path, status });
 
@@ -32,5 +32,12 @@ describe("buildChangeTree", () => {
     const tree = buildChangeTree([file("src/a.ts")]);
     expect(tree.path).toBe("");
     expect(tree.children[0].name).toBe("src");
+  });
+});
+
+describe("folderPaths", () => {
+  it("lists every folder node at any depth, compacted chains by their full path", () => {
+    const tree = buildChangeTree([file("apps/backend/src/main.ts"), file("apps/backend/src/user/user.ts"), file("docs/a.md"), file("root.ts")]);
+    expect(folderPaths(tree)).toEqual(["apps/backend/src", "apps/backend/src/user", "docs"]);
   });
 });

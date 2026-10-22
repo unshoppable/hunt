@@ -5,7 +5,7 @@ import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { selectionChatsFor, useBusyChatIds } from "../ide/selectionChats";
 import { otherTouchers, ownerLabel, type ChangeScope } from "./attribution";
-import { buildChangeTree, type FolderNode, type TreeNode } from "./changeTree";
+import { buildChangeTree, folderPaths, type FolderNode, type TreeNode } from "./changeTree";
 import { Checkbox, type CheckState } from "./Checkbox";
 import { CommitBox } from "./CommitBox";
 import { useFileIconUrl, useFolderIconUrl } from "./fileIcons";
@@ -27,6 +27,7 @@ import { GlobFilterInput } from "../ui/GlobFilterInput";
 import { SwapIcon } from "../ui/icons";
 import { UnsavedDot } from "../ui/UnsavedDot";
 import { isShortcut } from "../ui/shortcuts";
+import { toggleInCollapsed } from "../ui/treeExpansion";
 import type { TreeNavRow } from "../ui/treeNavigation";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
 
@@ -241,12 +242,7 @@ export function ChangeList({
   };
 
   const toggleCollapsed = (path: string) => {
-    const next = new Set(collapsed);
-    if (next.has(path)) {
-      next.delete(path);
-    } else {
-      next.add(path);
-    }
+    const next = toggleInCollapsed(collapsed, path, folderPaths(tree));
     collapsedBySession.set(sessionId, next);
     setCollapsedState(next);
   };

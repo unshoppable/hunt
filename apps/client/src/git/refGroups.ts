@@ -54,6 +54,11 @@ export function buildRefTree(refs: readonly GitRef[], head: string): RefGroupNod
   return result;
 }
 
+/** The paths of every group in `nodes`, at any depth. */
+export function groupPaths(nodes: readonly RefTreeNode[]): string[] {
+  return nodes.flatMap((node) => (node.kind === "group" ? [node.path, ...groupPaths(node.children)] : []));
+}
+
 function finalize(group: MutableGroup, path: string, head: string | null): RefGroupNode {
   const groups = [...group.groups.values()].sort((left, right) => left.name.localeCompare(right.name)).map((child) => finalize(child, `${path}/${child.name}`, head));
   const leaves: RefLeafNode[] = [...group.refs]

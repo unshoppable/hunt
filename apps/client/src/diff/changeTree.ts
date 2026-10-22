@@ -40,6 +40,11 @@ export function buildChangeTree(files: ChangedFile[]): FolderNode {
   return finalize(root, "");
 }
 
+/** The paths of every folder below `folder`, at any depth. */
+export function folderPaths(folder: FolderNode): string[] {
+  return folder.children.flatMap((child) => (child.kind === "folder" ? [child.path, ...folderPaths(child)] : []));
+}
+
 function finalize(folder: MutableFolder, path: string): FolderNode {
   let name = folder.name;
   let current = folder;

@@ -19,6 +19,7 @@ import { useHoverAnchor, type HoverAnchor } from "../ui/hoverAnchor";
 import { ChevronIcon, PlusIcon, SparkleIcon, TrashIcon } from "../ui/icons";
 import { useSecondaryWindow } from "../ui/nativeWindow";
 import { baseName, isInsideFolder } from "../ui/path";
+import { toggleInCollapsed } from "../ui/treeExpansion";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
 import { errorText, useLoad } from "../ui/useLoad";
 import { creationTask, generationTask, GUARDRAIL_CHAT_PATH, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailTask, guardrailTemplate, KIND_LABELS, kindHelp, listGuardrails, newGuardrailLocation, ownerFolderOf, treeFolders, type Guardrail, type GuardrailKind, type GuardrailListing, type GuardrailLocation } from "./guardrails";
@@ -212,15 +213,8 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
   const rows = guardrailListRows(entries, collapsedFolders);
 
   const toggleFolder = (folder: string) => {
-    setCollapsedFolders((current) => {
-      const next = new Set(current);
-      if (next.has(folder)) {
-        next.delete(folder);
-      } else {
-        next.add(folder);
-      }
-      return next;
-    });
+    const folders = guardrailListRows(entries).flatMap((row) => (row.type === "folder" ? [row.folder] : []));
+    setCollapsedFolders((current) => toggleInCollapsed(current, folder, folders));
   };
 
   /** Arrow keys in the list; a folder's key is its path with a trailing slash, a guardrail's its path. */

@@ -11,6 +11,7 @@ import { shortcutCommand, useShortcutLabel } from "../ui/shortcuts";
 import { UnsavedDot } from "../ui/UnsavedDot";
 import { useDismiss } from "../ui/useDismiss";
 import { errorText, useLoad } from "../ui/useLoad";
+import { toggleInExpanded } from "../ui/treeExpansion";
 import type { TreeNavRow } from "../ui/treeNavigation";
 import { extendSelection, singleSelection, toggleInSelection, visibleSelection, type TreeSelection } from "../ui/treeSelection";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
@@ -139,15 +140,7 @@ export function ProjectTree({
 
   const toggle = (path: string) => {
     const willExpand = !expanded.has(path);
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (willExpand) {
-        next.add(path);
-      } else {
-        next.delete(path);
-      }
-      return next;
-    });
+    setExpanded((current) => toggleInExpanded(current, path));
     if (willExpand && !listings[path]) {
       list(path).catch((reason) => setError(String(reason)));
     }

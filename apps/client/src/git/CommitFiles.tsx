@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import type { Commit, CommitDetails, CommitFile } from "../ipc/types";
-import { buildChangeTree, type FolderNode, type TreeNode } from "../diff/changeTree";
+import { buildChangeTree, folderPaths, type FolderNode, type TreeNode } from "../diff/changeTree";
 import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { STATUS_NAME_CLASS } from "../diff/styles";
 import { ChevronIcon } from "../ui/icons";
+import { toggleInCollapsed } from "../ui/treeExpansion";
 import type { TreeNavRow } from "../ui/treeNavigation";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
 import { parseDecoration } from "./logLabels";
@@ -54,15 +55,7 @@ export function CommitFiles({
   }, [tree, collapsed]);
 
   const toggleCollapsed = (path: string) => {
-    setCollapsed((current) => {
-      const next = new Set(current);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
-      return next;
-    });
+    setCollapsed((current) => toggleInCollapsed(current, path, folderPaths(tree)));
   };
 
   /** A folder's key is its path with a trailing slash, a file's its path. */

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { ChevronIcon, PlusIcon, TrashIcon } from "../ui/icons";
+import { toggleInExpanded } from "../ui/treeExpansion";
 import { useEscapeToClose } from "../ui/useEscapeToClose";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
 import { isInsideFolder } from "../ui/path";
@@ -81,15 +82,7 @@ export function GuardrailTree({
   useEscapeToClose(() => setDrag(null), !!drag);
 
   const toggle = (folder: string) => {
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (next.has(folder)) {
-        next.delete(folder);
-      } else {
-        next.add(folder);
-      }
-      return next;
-    });
+    setExpanded((current) => toggleInExpanded(current, folder));
   };
 
   const rows = guardrailTreeRows(folders, entries, expanded, projectName);

@@ -3,10 +3,11 @@ import type { GitRef, RefList } from "../ipc/types";
 import { useFolderIconUrl } from "../diff/fileIcons";
 import { ICON_BUTTON_XS } from "../ui/buttons";
 import { BranchIcon, ChevronIcon, TrashIcon } from "../ui/icons";
+import { toggleInCollapsed } from "../ui/treeExpansion";
 import type { TreeNavRow } from "../ui/treeNavigation";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
 import type { PushRoute } from "./branchActions";
-import { buildRefTree, type RefTreeNode } from "./refGroups";
+import { buildRefTree, groupPaths, type RefTreeNode } from "./refGroups";
 
 /** Collapsed groups, kept across session switches for the window's lifetime; tags start collapsed. */
 const collapsedGroups = new Set<string>(["tags"]);
@@ -87,12 +88,12 @@ export function RefTree({
   };
 
   const toggle = (path: string) => {
-    if (collapsedGroups.has(path)) {
-      collapsedGroups.delete(path);
-    } else {
-      collapsedGroups.add(path);
+    const next = toggleInCollapsed(collapsedGroups, path, groupPaths(tree));
+    collapsedGroups.clear();
+    for (const group of next) {
+      collapsedGroups.add(group);
     }
-    setCollapsed(new Set(collapsedGroups));
+    setCollapsed(next);
   };
 
   const navRows = useMemo<TreeNavRow[]>(

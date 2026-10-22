@@ -18,19 +18,32 @@ export function FileReferenceList({ locations, onOpen, className = "" }: { locat
   );
 }
 
-/** One row of `FileReferenceList`, also the header of a code block that shows `location`. */
+const LABEL_CLASS = "flex min-w-0 flex-1 items-baseline gap-2";
+
+/** One row of `FileReferenceList`, also the header of a code block that shows `location`; with `onOpen`, the label opens it too. */
 export function FileReferenceRow({ location, onOpen, className = "" }: { location: FileLocation; onOpen?: (location: FileLocation) => void; className?: string }) {
   const fileIconUrl = useFileIconUrl();
   const { dir, name } = splitPath(location.path);
+  const label = (
+    <>
+      <span className="max-w-full shrink-0 truncate font-mono text-neutral-200 group-hover/label:underline">
+        {name}:{describeLines(location)}
+      </span>
+      <span className="min-w-0 truncate text-neutral-500">{dir}</span>
+    </>
+  );
   return (
     <div className={`flex items-center gap-2.5 px-3 py-2 ${className}`}>
       <img src={fileIconUrl(location.path)} alt="" className="size-4 shrink-0" />
-      <span className="flex min-w-0 flex-1 items-baseline gap-2" title={describeSelection(location)}>
-        <span className="max-w-full shrink-0 truncate font-mono text-neutral-200">
-          {name}:{describeLines(location)}
+      {onOpen ? (
+        <button type="button" onClick={() => onOpen(location)} className={`${LABEL_CLASS} group/label text-left`} title={describeSelection(location)}>
+          {label}
+        </button>
+      ) : (
+        <span className={LABEL_CLASS} title={describeSelection(location)}>
+          {label}
         </span>
-        <span className="min-w-0 truncate text-neutral-500">{dir}</span>
-      </span>
+      )}
       {onOpen ? (
         <button type="button" onClick={() => onOpen(location)} className={SECONDARY_BUTTON_XS} title="Show the lines in the Editor tab">
           Open in editor

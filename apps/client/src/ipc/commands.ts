@@ -135,6 +135,12 @@ export const commands = {
    */
   openTerminal: (id: string, terminalId: string, process: TerminalTarget, cols: number, rows: number) =>
     invoke<void>("open_terminal", { id, terminalId, process, cols, rows }),
+  /**
+   * Opens a terminal with `cols` × `rows` cells in the worktree folder `directory` of the local session `id`: a login
+   * shell, or with `script` that package.json script, run by npm. Events as with `openTerminal`.
+   */
+  openLocalTerminal: (id: string, terminalId: string, directory: string, script: string | null, cols: number, rows: number) =>
+    invoke<void>("open_local_terminal", { id, terminalId, directory, script, cols, rows }),
   /** Types `data`, base64 of the input bytes, into the terminal. */
   writeTerminal: (terminalId: string, data: string) => invoke<void>("write_terminal", { terminalId, data }),
   resizeTerminal: (terminalId: string, cols: number, rows: number) => invoke<void>("resize_terminal", { terminalId, cols, rows }),
@@ -142,8 +148,11 @@ export const commands = {
   closeTerminal: (terminalId: string) => invoke<void>("close_terminal", { terminalId }),
   /** The windows of the tmux session `app` on the VM of the remote session `id`; none while the VM is off. */
   terminalWindows: (id: string) => invoke<TmuxWindow[]>("terminal_windows", { id }),
-  /** Starts a shell in a new tmux window on the VM of the remote session `id` and resolves to the window's ID. */
-  openShellWindow: (id: string) => invoke<string>("open_shell_window", { id }),
+  /**
+   * Starts a shell in a new tmux window on the VM of the remote session `id` and resolves to the window's ID; with
+   * `script` the window runs that package.json script of the worktree folder `directory`.
+   */
+  openShellWindow: (id: string, directory = "", script: string | null = null) => invoke<string>("open_shell_window", { id, directory, script }),
   /** Ends the tmux window `windowId` on the VM of the remote session `id` and the processes in it. */
   closeTerminalWindow: (id: string, windowId: string) => invoke<void>("close_terminal_window", { id, windowId }),
   closeSession: (id: string, ending: SessionEnding) => invoke<void>("close_session", { id, ending }),

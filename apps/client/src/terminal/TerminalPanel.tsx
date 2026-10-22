@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { commands } from "../ipc/commands";
-import type { PreviewService, TmuxWindow } from "../ipc/types";
-import { describeService, isServiceInUse, type Tone } from "../preview/services";
+import type { PreviewService, ScriptRunRequest, TmuxWindow } from "../ipc/types";
+import { describeService, isServiceInUse } from "../preview/services";
 import { usePreviewStore } from "../state/preview";
 import { useHuntStore } from "../state/store";
-import { ICON_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
+import { useTerminalStore } from "../state/terminals";
+import { ICON_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
-import { CloseIcon, PlusIcon, Spinner } from "../ui/icons";
+import { PlusIcon, Spinner } from "../ui/icons";
 import { errorText } from "../ui/useLoad";
 import { nextActiveKey, terminalTabs, windowTabKey, type TerminalTab } from "./terminalTabs";
+import { TerminalTabButton } from "./TerminalTabButton";
 import { TerminalView } from "./TerminalView";
 
 /** How often the panel asks the VM which processes run while the session is connected. */
@@ -17,14 +19,6 @@ const POLL_MS = 5000;
 const NO_SERVICES: PreviewService[] = [];
 const NO_WINDOWS: TmuxWindow[] = [];
 
-const TONE_DOT: Record<Tone, string> = {
-  ok: "bg-green-400",
-  pending: "bg-neutral-400",
-  warning: "bg-amber-300",
-  error: "bg-red-400",
-  idle: "bg-neutral-600",
-};
-
 /** The tab the next focus goes to (null: the active tab, once there is one) and a count that makes each request new. */
 type FocusRequest = { key: string | null; count: number };
 
@@ -32,7 +26,7 @@ type FocusRequest = { key: string | null; count: number };
  * The Terminal tab of a remote session: one tab per process of the app on its VM, like the tabs of a local terminal.
  * The services of the repository's hunt.json that are in use show their logs, read-only; the windows of the tmux
  * session `app`, in which the agent runs its other processes, take input. "+" opens a shell in a new window, × ends a
- * window and its process.
+ * window and its process; a package.json script run from the editor gets a window of its own.
  * The panel stays mounted while another tab shows, so its terminals keep their connections. It asks the VM for the
  * processes when it mounts and whenever it shows, then every few seconds while the session is connected, which proves
  * a running VM, also while another tab shows.
@@ -45,6 +39,7 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
   const windows = usePreviewStore((state) => state.previews[sessionId]?.windows ?? null);
   const refreshServices = usePreviewStore((state) => state.refresh);
   const refreshWindows = usePreviewStore((state) => state.refreshWindows);
+  const pendingRun = useTerminalStore((state) => state.remoteRuns[sessionId]);
   const [error, setError] = useState<string | null>(null);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   /** The tabs shown at least once; each keeps its terminal while its process exists. */
@@ -116,23 +111,36 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
     setFocusRequest({ key: activeKey, count: focusRequest.count });
   }, [activeKey, focusRequest]);
 
-  const activate = (key: string) => {
+  const activate = useCallback((key: string) => {
     setActiveKey(key);
     setFocusRequest((current) => ({ key, count: current.count + 1 }));
-  };
+  }, []);
 
-  const openShell = async () => {
-    setIsOpeningShell(true);
-    try {
-      const id = await commands.openShellWindow(sessionId);
-      await loadWindows();
-      activate(windowTabKey(id));
-    } catch (reason) {
-      setError(errorText(reason));
-    } finally {
-      setIsOpeningShell(false);
+  /** Opens a shell in a new tmux window and shows it; with `run`, the window runs that package.json script. */
+  const openShell = useCallback(
+    async (run: ScriptRunRequest | null = null) => {
+      setIsOpeningShell(true);
+      try {
+        const id = await commands.openShellWindow(sessionId, run?.directory, run?.script ?? null);
+        await loadWindows();
+        activate(windowTabKey(id));
+      } catch (reason) {
+        setError(errorText(reason));
+      } finally {
+        setIsOpeningShell(false);
+      }
+    },
+    [sessionId, loadWindows, activate],
+  );
+
+  // A script run from an editor's play button (see terminal/scriptRuns.ts) waits in the store until this panel takes it.
+  useEffect(() => {
+    if (!pendingRun) return;
+    const run = useTerminalStore.getState().takeRemoteRun(sessionId);
+    if (run) {
+      void openShell(run);
     }
-  };
+  }, [sessionId, pendingRun, openShell]);
 
   const closeWindow = async (tab: TerminalTab) => {
     if (tab.target.kind !== "window") return;
@@ -154,9 +162,10 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
           {tabs.map((tab) => (
             <TerminalTabButton
               key={tab.key}
-              tab={tab}
+              label={tab.label}
+              title={tab.service ? `The log of the service ${tab.service.name}, ~/logs/${tab.service.name}.log on the VM; read-only` : `tmux window ${tab.label}`}
+              state={tab.service ? describeService(tab.service, isVmRunning) : null}
               isActive={tab.key === activeKey}
-              isVmRunning={isVmRunning}
               onActivate={() => activate(tab.key)}
               onClose={tab.target.kind === "window" ? () => void closeWindow(tab) : null}
             />
@@ -188,54 +197,6 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
           </div>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-/** A tab of the strip: a service with its state dot, or a tmux window with × to end it (also by middle click). */
-function TerminalTabButton({
-  tab,
-  isActive,
-  isVmRunning,
-  onActivate,
-  onClose,
-}: {
-  tab: TerminalTab;
-  isActive: boolean;
-  isVmRunning: boolean;
-  onActivate: () => void;
-  onClose: (() => void) | null;
-}) {
-  const state = tab.service ? describeService(tab.service, isVmRunning) : null;
-  const title = tab.service ? `The log of the service ${tab.service.name}, ~/logs/${tab.service.name}.log on the VM; read-only` : `tmux window ${tab.label}`;
-  return (
-    <div
-      role="tab"
-      aria-selected={isActive}
-      title={title}
-      onClick={onActivate}
-      onAuxClick={(event) => {
-        if (event.button === 1) {
-          onClose?.();
-        }
-      }}
-      className={`${TAB_BUTTON_SM} group cursor-pointer gap-1.5 ${isActive ? TAB_ACTIVE : TAB_INACTIVE}`}
-    >
-      {state ? <span className={`size-2 shrink-0 rounded-full ${TONE_DOT[state.tone]}`} title={state.text} /> : null}
-      <span className="whitespace-nowrap">{tab.label}</span>
-      {onClose ? (
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onClose();
-          }}
-          title="End the process"
-          className={`-my-1 -mr-1 flex size-5 items-center justify-center rounded text-neutral-500 hover:bg-white/10 hover:text-white ${isActive ? "" : "opacity-0 group-hover:opacity-100"}`}
-        >
-          <CloseIcon className="size-3" />
-        </button>
-      ) : null}
     </div>
   );
 }

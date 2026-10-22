@@ -932,9 +932,38 @@ pub async fn open_terminal(
 ) -> Result<(), String> {
     let target = running_remote(&app, &registry, id, "open the terminal").await?;
     let args = remote::terminal::attach_args(&target, &process, terminal_id, &ssh_dir()?).await?;
-    let owner = window.label().to_string();
-    let (emitter, receiver) = (app.clone(), owner.clone());
-    let terminal = Terminal::spawn("ssh", &args, TerminalSize { cols, rows }, move |event| {
+    let terminal = Terminal::spawn("ssh", &args, None, &[], TerminalSize { cols, rows }, forward_terminal_events(&app, window.label(), terminal_id))?;
+    terminals.insert(terminal_id, window.label(), terminal)
+}
+
+/// Opens the terminal `terminal_id` with `cols` × `rows` cells in the folder `directory` of the worktree of the local
+/// session `id`: a login shell, or with `script` that package.json script, run by npm. Its output and end go to the
+/// calling window as with `open_terminal`.
+#[tauri::command]
+pub fn open_local_terminal(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    terminals: State<'_, TerminalRegistry>,
+    id: Uuid,
+    terminal_id: Uuid,
+    directory: String,
+    script: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let record = local_session(&app, id)?;
+    let folder = worktree_file(&record, &directory)?;
+    let (program, args) = terminal::local_shell(script.as_deref());
+    let size = TerminalSize { cols, rows };
+    let events = forward_terminal_events(&app, window.label(), terminal_id);
+    let terminal = Terminal::spawn(&program, &args, Some(&folder), &terminal::foreign_env(), size, events)?;
+    terminals.insert(terminal_id, window.label(), terminal)
+}
+
+/// Hands the output and the end of the terminal `terminal_id` to the window `owner`, as `terminal:output` and `terminal:exit`.
+fn forward_terminal_events(app: &AppHandle, owner: &str, terminal_id: Uuid) -> impl FnMut(TerminalEvent) + Send + 'static {
+    let (emitter, receiver) = (app.clone(), owner.to_string());
+    move |event| {
         let _ = match event {
             TerminalEvent::Output(bytes) => {
                 let data = base64::engine::general_purpose::STANDARD.encode(bytes);
@@ -942,8 +971,7 @@ pub async fn open_terminal(
             }
             TerminalEvent::Exit(code) => emitter.emit_to(receiver.as_str(), "terminal:exit", TerminalExitEvent { id: terminal_id, code }),
         };
-    })?;
-    terminals.insert(terminal_id, &owner, terminal)
+    }
 }
 
 /// The windows of the tmux session `app` on the VM of the remote session `id`, in their order. A VM that is off has
@@ -957,11 +985,18 @@ pub async fn terminal_windows(app: AppHandle, registry: State<'_, SessionRegistr
     remote::terminal::list_windows(&Ssh::open(&target.vm, &ssh_dir()?).await?).await
 }
 
-/// Starts a shell in a new tmux window on the VM of the remote session `id` and returns the window's ID.
+/// Starts a shell in a new tmux window on the VM of the remote session `id` and returns the window's ID; with `script`
+/// the window runs that package.json script of the worktree folder `directory`.
 #[tauri::command]
-pub async fn open_shell_window(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid) -> Result<String, String> {
+pub async fn open_shell_window(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, directory: String, script: Option<String>) -> Result<String, String> {
+    git::ensure_inside_worktree(&directory)?;
     let target = running_remote(&app, &registry, id, "open a shell").await?;
-    remote::terminal::open_shell_window(&Ssh::open(&target.vm, &ssh_dir()?).await?).await
+    let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
+    let Some(script) = script else {
+        return remote::terminal::open_shell_window(&ssh, None).await;
+    };
+    let folder = Path::new(&remote_worktree(&app, id, &target, &ssh).await?).join(&directory).display().to_string();
+    remote::terminal::open_shell_window(&ssh, Some(remote::terminal::ScriptRun { directory: &folder, script: &script })).await
 }
 
 /// Ends the tmux window `window_id` on the VM of the remote session `id` and the processes in it.

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::preview::is_service_name;
-use super::shell_command;
+use super::{shell_command, shell_quote};
 use super::ssh::Ssh;
 use super::RemoteTarget;
 
@@ -72,17 +72,36 @@ pub async fn list_windows(ssh: &Ssh) -> Result<Vec<TmuxWindow>, String> {
     Ok(parse_windows(&ssh.run(&as_agent(&["sh", "-c", &script])).await?))
 }
 
-/// Starts a shell in a new window `shell` of the tmux session `app`, created when it does not exist, and returns the
-/// window's ID.
-pub async fn open_shell_window(ssh: &Ssh) -> Result<String, String> {
-    let script = format!(
-        "if tmux has-session -t {APP_TARGET} 2>/dev/null; then exec tmux new-window -d -t {APP_TARGET}: -n shell -P -F '#{{window_id}}'; fi; \
-         exec tmux new-session -d -s {APP_SESSION} -n shell -P -F '#{{window_id}}'"
-    );
-    let output = ssh.run(&as_agent(&["sh", "-c", &script])).await?;
+/// A package.json script a new tmux window runs: `npm run <script>`, typed into its shell in the folder `directory`.
+pub struct ScriptRun<'a> {
+    pub directory: &'a str,
+    pub script: &'a str,
+}
+
+/// Starts a shell in a new window of the tmux session `app`, created when it does not exist, and returns the window's
+/// ID. Without `run` the window is called `shell`; with it, it is named after the script, starts in its folder and
+/// runs it, and its shell stays once the script ends, so its output does too.
+pub async fn open_shell_window(ssh: &Ssh, run: Option<ScriptRun<'_>>) -> Result<String, String> {
+    let output = ssh.run(&as_agent(&["sh", "-c", &shell_window_script(run)])).await?;
     let id = output.trim().lines().last().unwrap_or_default();
     ensure_window_id(id).map_err(|_| format!("failed to open a shell: tmux answered {output:?}"))?;
     Ok(id.to_string())
+}
+
+/// The `sh` script behind `open_shell_window`, which prints the new window's ID last.
+fn shell_window_script(run: Option<ScriptRun<'_>>) -> String {
+    let (name, folder, typed) = match run {
+        None => ("shell".to_string(), String::new(), String::new()),
+        Some(run) => {
+            let command = shell_command("npm", &["run", run.script]);
+            let typed = format!(r#"tmux send-keys -t "$id" -l {} && tmux send-keys -t "$id" Enter && "#, shell_quote(&command));
+            (shell_quote(run.script), format!(" -c {}", shell_quote(run.directory)), typed)
+        }
+    };
+    format!(
+        "id=$(if tmux has-session -t {APP_TARGET} 2>/dev/null; then tmux new-window -d -t {APP_TARGET}: -n {name}{folder} -P -F '#{{window_id}}'; \
+         else tmux new-session -d -s {APP_SESSION} -n {name}{folder} -P -F '#{{window_id}}'; fi) || exit 1; {typed}echo \"$id\""
+    )
 }
 
 /// Ends the window `id` of the tmux session `app` and the processes in it.
@@ -180,11 +199,14 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// Starts `program` with `args` in a pseudo terminal of `size`. A thread of its own hands what the program writes
-    /// and then its end to `on_event`.
+    /// Starts `program` with `args` in a pseudo terminal of `size`, in the folder `cwd` (else Hunt's own), without the
+    /// environment variables `removed_env`. A thread of its own hands what the program writes and then its end to
+    /// `on_event`.
     pub fn spawn(
         program: &str,
         args: &[String],
+        cwd: Option<&Path>,
+        removed_env: &[String],
         size: TerminalSize,
         on_event: impl FnMut(TerminalEvent) + Send + 'static,
     ) -> Result<Self, String> {
@@ -193,6 +215,12 @@ impl Terminal {
         let writer = pair.master.take_writer().map_err(|error| format!("failed to write to the pseudo terminal: {error}"))?;
         let mut command = CommandBuilder::new(program);
         command.args(args);
+        if let Some(cwd) = cwd {
+            command.cwd(cwd);
+        }
+        for name in removed_env {
+            command.env_remove(name);
+        }
         command.env("TERM", TERM);
         let child = pair.slave.spawn_command(command).map_err(|error| format!("failed to run {program} in a pseudo terminal: {error}"))?;
         // The program now holds the only other end, so reading ends once it and everything it started let go of it.
@@ -336,7 +364,7 @@ mod tests {
     fn shell(script: &str) -> (Terminal, Receiver<TerminalEvent>) {
         let (events, received) = mpsc::channel();
         let args = vec!["-c".to_string(), script.to_string()];
-        let terminal = Terminal::spawn("/bin/sh", &args, SIZE, move |event| {
+        let terminal = Terminal::spawn("/bin/sh", &args, None, &[], SIZE, move |event| {
             let _ = events.send(event);
         })
         .unwrap();
@@ -412,6 +440,22 @@ mod tests {
         assert_eq!(
             windows,
             [TmuxWindow { id: "@1".into(), name: "web".into() }, TmuxWindow { id: "@7".into(), name: "my shell".into() }]
+        );
+    }
+
+    #[test]
+    fn shell_window_script_types_a_script_into_a_window_in_its_folder() {
+        assert_eq!(
+            shell_window_script(None),
+            "id=$(if tmux has-session -t =app 2>/dev/null; then tmux new-window -d -t =app: -n shell -P -F '#{window_id}'; \
+             else tmux new-session -d -s app -n shell -P -F '#{window_id}'; fi) || exit 1; echo \"$id\""
+        );
+        let run = ScriptRun { directory: "/home/agent/work/app dir", script: "start:server" };
+        assert_eq!(
+            shell_window_script(Some(run)),
+            "id=$(if tmux has-session -t =app 2>/dev/null; then tmux new-window -d -t =app: -n start:server -c '/home/agent/work/app dir' -P -F '#{window_id}'; \
+             else tmux new-session -d -s app -n start:server -c '/home/agent/work/app dir' -P -F '#{window_id}'; fi) || exit 1; \
+             tmux send-keys -t \"$id\" -l 'npm run start:server' && tmux send-keys -t \"$id\" Enter && echo \"$id\""
         );
     }
 

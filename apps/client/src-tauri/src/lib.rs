@@ -91,6 +91,7 @@ pub fn run() {
             session::commands::delete_remote_secret,
             session::commands::set_remote_settings,
             session::commands::open_terminal,
+            session::commands::open_local_terminal,
             session::commands::write_terminal,
             session::commands::resize_terminal,
             session::commands::close_terminal,

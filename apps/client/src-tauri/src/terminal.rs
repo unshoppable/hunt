@@ -1,4 +1,5 @@
-//! Opens a directory in a terminal: a new tab of WezTerm when it is installed, else a new Terminal.app window.
+//! Opens a directory in a terminal: a new tab of WezTerm when it is installed, else a new Terminal.app window. Also
+//! names the program the embedded terminals of a local session run.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -39,6 +40,24 @@ pub async fn open_directory(directory: &Path) -> Result<(), String> {
     }
 }
 
+/// Program and arguments of an embedded terminal of a local session: the user's login shell, interactive; with `script`
+/// it runs the package.json script `script` through npm and ends with it. A login shell also reads the profile files
+/// that put Node and npm on the `PATH`, which an app started from the Finder lacks.
+pub fn local_shell(script: Option<&str>) -> (String, Vec<String>) {
+    let shell = std::env::var("SHELL").ok().filter(|shell| !shell.is_empty()).unwrap_or_else(|| "/bin/zsh".to_string());
+    let args = match script {
+        None => vec!["-l".to_string()],
+        Some(script) => vec!["-l".to_string(), "-i".to_string(), "-c".to_string(), crate::remote::shell_command("npm", &["run", script])],
+    };
+    (shell, args)
+}
+
+/// The environment variables of Hunt that an embedded terminal leaves out: the `npm_*` ones of the `npm run` that
+/// started Hunt in development, which would steer the npm of the terminal.
+pub fn foreign_env() -> Vec<String> {
+    std::env::vars_os().filter_map(|(name, _)| name.into_string().ok()).filter(|name| name.starts_with("npm_")).collect()
+}
+
 async fn run(command: &mut Command) -> Result<(), String> {
     let output = command
         .stdin(Stdio::null())
@@ -51,4 +70,19 @@ async fn run(command: &mut Command) -> Result<(), String> {
         return Ok(());
     }
     Err(format!("failed to open the terminal: {}", String::from_utf8_lossy(&output.stderr).trim()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_shell_runs_a_script_through_npm_in_a_login_shell() {
+        let (_, args) = local_shell(None);
+        assert_eq!(args, ["-l"]);
+        let (_, args) = local_shell(Some("start:server"));
+        assert_eq!(args, ["-l", "-i", "-c", "npm run start:server"]);
+        let (_, args) = local_shell(Some("a b; rm"));
+        assert_eq!(args[3], "npm run 'a b; rm'");
+    }
 }

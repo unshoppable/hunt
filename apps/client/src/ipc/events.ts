@@ -18,6 +18,7 @@ import type {
   RemoteProgressEvent,
   RemoteSyncEvent,
   ReplayEvent,
+  ScriptRunRequest,
   SummaryEvent,
   TerminalExitEvent,
   TerminalOutputEvent,
@@ -68,6 +69,8 @@ type EventPayloads = {
   "terminal:output": TerminalOutputEvent;
   /** The end of a terminal's program, sent only to the window that opened it. */
   "terminal:exit": TerminalExitEvent;
+  /** Sent by any window to the main window to run a package.json script in its Terminal tab (see terminal/scriptRuns.ts). */
+  "terminal:run-script": ScriptRunRequest;
 };
 
 /**

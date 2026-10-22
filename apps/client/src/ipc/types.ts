@@ -314,6 +314,12 @@ export type TerminalTarget = { kind: "service"; name: string } | { kind: "window
 /** A window of the tmux session `app` on a session VM; `id` is tmux's window ID such as `@3`, which never repeats. */
 export type TmuxWindow = { id: string; name: string };
 
+/** What a terminal of a local session shows: a login shell in the worktree folder `directory`, or the package.json script `script` npm runs there. */
+export type LocalTerminalTarget = { kind: "shell"; directory: string; script: string | null };
+
+/** Runs the package.json script `script` of the worktree folder `directory` (`""`: the worktree) in the Terminal tab of the session `sessionId`. */
+export type ScriptRunRequest = { sessionId: string; directory: string; script: string };
+
 /** A chunk of a terminal's output: base64 of its bytes, which may end inside a UTF-8 or an escape sequence. */
 export type TerminalOutputEvent = { id: string; data: string };
 

@@ -3,8 +3,8 @@ import { persist } from "zustand/middleware";
 import { onViewStateChange, snapshotOf, useIdeStore, type IdeSnapshot } from "../ide/ideStore";
 
 /**
- * Views of the inspector pane: the changelist diff, the built-in editor, the component diagram or the reviewed pull
- * request, and for a remote session also its preview and a terminal on its VM.
+ * Views of the inspector pane: the changelist diff, the built-in editor, the component diagram, the reviewed pull
+ * request or the terminals, and for a remote session also its preview.
  */
 export type RightTab = "diff" | "git" | "editor" | "graph" | "pullRequest" | "preview" | "terminal";
 

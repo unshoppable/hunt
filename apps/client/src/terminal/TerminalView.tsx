@@ -6,12 +6,12 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { commands } from "../ipc/commands";
 import { listenTo } from "../ipc/events";
-import type { TerminalTarget } from "../ipc/types";
+import type { LocalTerminalTarget, TerminalTarget } from "../ipc/types";
 import { useSettingsStore } from "../state/settings";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { Spinner } from "../ui/icons";
 import { errorText } from "../ui/useLoad";
-import { createResizeSync, decodeBase64, describeExit, encodeBinaryInput, encodeTextInput, parseClipboardWrite } from "./terminalStream";
+import { createResizeSync, decodeBase64, describeExit, describeLocalExit, encodeBinaryInput, encodeTextInput, parseClipboardWrite } from "./terminalStream";
 
 /** Waits this long after the last size change before the remote programs learn the new size and redraw. */
 const RESIZE_DELAY_MS = 80;
@@ -59,15 +59,36 @@ function fitToHost(view: XtermView, host: HTMLElement): void {
   view.fit.fit();
 }
 
+/** The command line a script's terminal starts with, dimmed, as the npm it runs would print it. */
+function scriptHeader(script: string): string {
+  return `\u001b[2m$ npm run ${script}\u001b[0m\r\n`;
+}
+
 /**
- * One terminal on the VM of the remote session `sessionId`, showing `target`: a service's log, read-only, or a tmux
- * window, which takes input. It connects the first time it is shown and stays connected while hidden, so switching
+ * One terminal of the session `sessionId`, showing `target`: on the VM of a remote session a service's log, read-only,
+ * or a tmux window, which takes input; in a local session a login shell or a package.json script run by npm. It connects the first time it is shown and stays connected while hidden, so switching
  * tabs keeps it; it ends when it unmounts. Each new value of `focusRequest` focuses it once while it is visible. Font,
  * line height and background follow the Terminal pane's settings. While it has the focus, it takes every key it understands (Escape
  * included) and stops the event, so the window's shortcuts do not see them; ⌘C copies its selection, a mouse selection
  * in a tmux window reaches the clipboard too, ⌘V pastes through the Edit menu, ⌘click opens a link.
  */
-export function TerminalView({ sessionId, target, isVisible, focusRequest }: { sessionId: string; target: TerminalTarget; isVisible: boolean; focusRequest: number }) {
+export function TerminalView({
+  sessionId,
+  target,
+  isVisible,
+  focusRequest,
+  onRunningChange,
+  onExit,
+}: {
+  sessionId: string;
+  target: TerminalTarget | LocalTerminalTarget;
+  isVisible: boolean;
+  focusRequest: number;
+  /** Told when the program starts and when it ends or the terminal fails. */
+  onRunningChange?: (isRunning: boolean) => void;
+  /** Told when the program ended by itself. */
+  onExit?: () => void;
+}) {
   const fontFamily = useSettingsStore((state) => state.panes.terminal.fontFamily);
   const fontSize = useSettingsStore((state) => state.panes.terminal.fontSize);
   const lineHeight = useSettingsStore((state) => state.panes.terminal.lineHeight);
@@ -83,9 +104,15 @@ export function TerminalView({ sessionId, target, isVisible, focusRequest }: { s
   const [attempt, setAttempt] = useState(0);
   const handledFocusRef = useRef(0);
   const kind = target.kind;
-  /** The service's name or the window's ID; with `kind` it names the process, whose target object changes every poll. */
-  const process = target.kind === "service" ? target.name : target.id;
+  /** The service's name, the window's ID or the shell's folder; with `kind` it names the process, whose target object changes every poll. */
+  const process = target.kind === "service" ? target.name : target.kind === "window" ? target.id : target.directory;
+  const script = target.kind === "shell" ? target.script : null;
   const isReadOnly = kind === "service";
+  const callbacksRef = useRef({ onRunningChange, onExit });
+
+  useEffect(() => {
+    callbacksRef.current = { onRunningChange, onExit };
+  }, [onRunningChange, onExit]);
 
   useEffect(() => {
     if (isVisible) {
@@ -175,12 +202,12 @@ export function TerminalView({ sessionId, target, isVisible, focusRequest }: { s
     const { terminal } = view;
     const terminalId = crypto.randomUUID();
     const windowLabel = getCurrentWindow().label;
-    const shown: TerminalTarget = kind === "service" ? { kind, name: process } : { kind, id: process };
     let isDisposed = false;
     let isOpen = false;
     const reportFailure = (reason: unknown) => {
       if (isDisposed) return;
       isOpen = false;
+      callbacksRef.current.onRunningChange?.(false);
       setStatus((current) => (current.state === "ended" ? current : { state: "ended", message: errorText(reason) }));
     };
     const resizes = createResizeSync((size) => void commands.resizeTerminal(terminalId, size.cols, size.rows).catch(reportFailure), RESIZE_DELAY_MS);
@@ -191,6 +218,9 @@ export function TerminalView({ sessionId, target, isVisible, focusRequest }: { s
     terminal.reset();
     if (kind === "service") {
       terminal.write(HIDE_CURSOR);
+    }
+    if (script) {
+      terminal.write(scriptHeader(script));
     }
     const listeners = [
       listenTo(
@@ -207,7 +237,9 @@ export function TerminalView({ sessionId, target, isVisible, focusRequest }: { s
         (event) => {
           if (event.id !== terminalId) return;
           isOpen = false;
-          setStatus({ state: "ended", message: describeExit(event.code) });
+          setStatus({ state: "ended", message: kind === "shell" ? describeLocalExit(event.code) : describeExit(event.code) });
+          callbacksRef.current.onRunningChange?.(false);
+          callbacksRef.current.onExit?.();
         },
         { target: windowLabel },
       ),
@@ -227,12 +259,17 @@ export function TerminalView({ sessionId, target, isVisible, focusRequest }: { s
         if (isDisposed) return;
         const size = { cols: terminal.cols, rows: terminal.rows };
         resizes.markSent(size);
-        await commands.openTerminal(sessionId, terminalId, shown, size.cols, size.rows);
+        if (kind === "shell") {
+          await commands.openLocalTerminal(sessionId, terminalId, process, script, size.cols, size.rows);
+        } else {
+          await commands.openTerminal(sessionId, terminalId, kind === "service" ? { kind, name: process } : { kind, id: process }, size.cols, size.rows);
+        }
         if (isDisposed) {
           void commands.closeTerminal(terminalId).catch((reason) => console.error("failed to close the terminal", reason));
           return;
         }
         isOpen = true;
+        callbacksRef.current.onRunningChange?.(true);
         resizes.push({ cols: terminal.cols, rows: terminal.rows });
         setStatus((current) => (current.state === "connecting" ? { state: "open" } : current));
       })
@@ -248,7 +285,7 @@ export function TerminalView({ sessionId, target, isVisible, focusRequest }: { s
       }
       void commands.closeTerminal(terminalId).catch((reason) => console.error("failed to close the terminal", reason));
     };
-  }, [view, sessionId, kind, process, attempt]);
+  }, [view, sessionId, kind, process, script, attempt]);
 
   const reconnect = () => {
     setStatus(CONNECTING);
@@ -263,7 +300,7 @@ export function TerminalView({ sessionId, target, isVisible, focusRequest }: { s
           {status.state === "connecting" ? (
             <>
               <Spinner />
-              <span className="text-neutral-400">Connecting…</span>
+              <span className="text-neutral-400">{kind === "shell" ? "Starting…" : "Connecting…"}</span>
             </>
           ) : (
             <>
@@ -272,7 +309,7 @@ export function TerminalView({ sessionId, target, isVisible, focusRequest }: { s
               </span>
               <span className="flex-1" />
               <button type="button" onClick={reconnect} className={SECONDARY_BUTTON_XS}>
-                Reconnect
+                {script ? "Run again" : kind === "shell" ? "Restart" : "Reconnect"}
               </button>
             </>
           )}

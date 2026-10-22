@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useShallow } from "zustand/react/shallow";
 import { useHuntStore } from "../state/store";
 import { SessionSidebar } from "../sessions/SessionSidebar";
 import { NewSessionView } from "../sessions/NewSessionView";
@@ -22,7 +23,10 @@ import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes"
 import { PreviewPanel } from "../preview/PreviewPanel";
 import { isPreviewActive, isTerminalActive } from "../preview/services";
 import { usePreviewStore } from "../state/preview";
+import { useTerminalStore } from "../state/terminals";
 import { rememberEditors, useRightTab, useSessionViewStore, type RightTab } from "../state/sessionViews";
+import { LocalTerminalPanel } from "../terminal/LocalTerminalPanel";
+import { useScriptRunRequests } from "../terminal/scriptRuns";
 import { TerminalPanel } from "../terminal/TerminalPanel";
 import { HEADER_BAR } from "../ui/bars";
 import { TAB_ACTIVE, TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons";
@@ -41,7 +45,7 @@ export function App() {
   const draft = useHuntStore((state) => state.draft);
   /** The active session is still being created: it has no worktree yet, so the inspector and the file search wait. */
   const isCreatingActive = useHuntStore((state) => Boolean(state.activeSessionId && state.creatingIds.includes(state.activeSessionId)));
-  /** The VM the active session runs on; it adds the Preview and Terminal tabs. */
+  /** The VM the active session runs on; it adds the Preview tab and puts the Terminal tab on the VM. */
   const activeRemoteInstance = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.remote?.vm.instance ?? null);
   /** Whether the active session's worktree exists here; a remote session adopted from its VM gets one with its first sync. */
   const hasActiveWorktree = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.hasLocalWorktree ?? false);
@@ -53,6 +57,17 @@ export function App() {
     const preview = activeSessionId ? state.previews[activeSessionId] : undefined;
     return isTerminalActive(preview?.status ?? null, preview?.windows ?? null);
   });
+  /** A script runs in the active local session's terminals: a green dot marks the Terminal tab. */
+  const isLocalScriptRunning = useTerminalStore((state) =>
+    Boolean(activeSessionId && state.local[activeSessionId]?.terminals.some((terminal) => terminal.script && terminal.isRunning)),
+  );
+  const localTerminals = useTerminalStore((state) => state.local);
+  const localSessionIds = useHuntStore(useShallow((state) => state.sessions.filter((session) => !session.remote).map((session) => session.id)));
+  /** The local sessions with terminals; their Terminal panels stay mounted, so switching sessions keeps the terminals running. */
+  const localTerminalSessionIds = useMemo(
+    () => localSessionIds.filter((sessionId) => localTerminals[sessionId]?.terminals.length),
+    [localSessionIds, localTerminals],
+  );
   /** The session whose tab the inspector shows and remembers; none while the start view shows. */
   const shownSessionId = draft ? null : activeSessionId;
   const storedTab = useRightTab(shownSessionId);
@@ -66,11 +81,11 @@ export function App() {
   const [findInFiles, setFindInFiles] = useState<{ initialText: string | null } | null>(null);
   const hasLocalWorktree = !isCreatingActive && hasActiveWorktree;
   const canSearchFiles = Boolean(activeSessionId) && !draft && hasLocalWorktree;
-  /** A local session has no preview or terminal, a session without a pull request no description; they show the diff instead. */
-  const rightTab =
-    (!activeRemoteInstance && (storedTab === "preview" || storedTab === "terminal")) || (!isReviewingPullRequest && storedTab === "pullRequest")
-      ? "diff"
-      : storedTab;
+  /** A local session has no preview, a session without a pull request no description; they show the diff instead. */
+  const rightTab = (!activeRemoteInstance && storedTab === "preview") || (!isReviewingPullRequest && storedTab === "pullRequest") ? "diff" : storedTab;
+  /** The local session whose Terminal panel shows; its panel mounts at the first show and stays while it has terminals. */
+  const shownLocalTerminalId = activeSessionId && !draft && !isCreatingActive && !activeRemoteInstance && rightTab === "terminal" ? activeSessionId : null;
+  const localTerminalPanelIds = shownLocalTerminalId && !localTerminalSessionIds.includes(shownLocalTerminalId) ? [...localTerminalSessionIds, shownLocalTerminalId] : localTerminalSessionIds;
 
   // ⌘P / double shift: "Go to File" for the active session's worktree.
   useFileSearchShortcut(() => {
@@ -93,6 +108,7 @@ export function App() {
   useAccountsSync();
   useBackendEvents();
   useShowSessionRequests();
+  useScriptRunRequests();
   useRememberWindowBounds("main");
 
   // Each session's editor shows the tabs, carets and scroll positions it was left with, also after a restart.
@@ -168,11 +184,14 @@ export function App() {
                 <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} label="PR Description" />
               ) : null}
               {activeRemoteInstance ? (
-                <>
-                  <TabButton isActive={rightTab === "preview"} onClick={() => setRightTab("preview")} label="Preview" hasActivity={isPreviewBusy} />
-                  <TabButton isActive={rightTab === "terminal"} onClick={() => setRightTab("terminal")} label="Terminal" hasActivity={isTerminalBusy} />
-                </>
+                <TabButton isActive={rightTab === "preview"} onClick={() => setRightTab("preview")} label="Preview" hasActivity={isPreviewBusy} />
               ) : null}
+              <TabButton
+                isActive={rightTab === "terminal"}
+                onClick={() => setRightTab("terminal")}
+                label="Terminal"
+                hasActivity={activeRemoteInstance ? isTerminalBusy : isLocalScriptRunning}
+              />
             </nav>
             <div className="min-h-0 flex-1">
               {!activeSessionId || draft || isCreatingActive ? null : (
@@ -196,6 +215,9 @@ export function App() {
                   {activeRemoteInstance ? <TerminalPanel key={`terminal:${activeSessionId}`} sessionId={activeSessionId} isVisible={rightTab === "terminal"} /> : null}
                 </>
               )}
+              {localTerminalPanelIds.map((sessionId) => (
+                <LocalTerminalPanel key={`local-terminal:${sessionId}`} sessionId={sessionId} isVisible={sessionId === shownLocalTerminalId} />
+              ))}
             </div>
           </aside>
         </Panel>

@@ -477,6 +477,26 @@ body,
 .monaco-editor .harness-review-add--note::before {
   background: #6e7681;
 }
+/* WebStorm's green run triangle on each script of a package.json (see ide/scriptRunMarkers.ts), centred in the glyph
+   margin cell; a click runs the script. */
+.monaco-editor .hunt-script-run {
+  cursor: pointer;
+}
+.monaco-editor .hunt-script-run::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 9px;
+  height: 11px;
+  margin: auto;
+  background: #499c54;
+  clip-path: polygon(0 0, 100% 50%, 0 100%);
+  transition: background-color 120ms ease, transform 120ms ease;
+}
+.monaco-editor .hunt-script-run:hover::before {
+  background: #5fb865;
+  transform: scale(1.15);
+}
 /* Lines a review comment is being dragged over or written for: GitHub's yellow tint over gutter and text and a
    bar at the text's left edge in the color of the "+" (blue inline, grey note), which the open comment box
    continues (see review/ReviewCommentZones.tsx). */

@@ -3,6 +3,7 @@ import {
   createResizeSync,
   decodeBase64,
   describeExit,
+  describeLocalExit,
   encodeBase64,
   encodeBinaryInput,
   encodeTextInput,
@@ -91,6 +92,13 @@ describe("describeExit", () => {
     expect(describeExit(255)).toMatch(/SSH/);
     expect(describeExit(null)).toMatch(/ended/);
     expect(describeExit(1)).toBe("The terminal ended with exit code 1.");
+  });
+});
+
+describe("describeLocalExit", () => {
+  it("names the exit code as WebStorm does", () => {
+    expect(describeLocalExit(0)).toBe("Process finished with exit code 0.");
+    expect(describeLocalExit(null)).toBe("Process was ended.");
   });
 });
 

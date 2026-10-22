@@ -96,6 +96,11 @@ export function createResizeSync(send: (size: TerminalSize) => void, delayMs: nu
   };
 }
 
+/** Why a local terminal ended, from its program's exit code (`null`: a signal), in WebStorm's words. */
+export function describeLocalExit(code: number | null): string {
+  return code === null ? "Process was ended." : `Process finished with exit code ${code}.`;
+}
+
 /** Why a terminal ended, from its program's exit code: ssh's own 255, or the remote command's code (`null`: a signal). */
 export function describeExit(code: number | null): string {
   if (code === 0) return "Detached from tmux, or its session ended.";

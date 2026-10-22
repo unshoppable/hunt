@@ -21,14 +21,16 @@ import { AddCommentGlyph, type CommentTarget } from "../review/addCommentGlyph";
 import { ReviewCommentZones } from "../review/ReviewCommentZones";
 import { isInsideHunk, useReviewedPullRequest } from "../review/reviewComments";
 import { attachSelectionAgent } from "./selectionAgent";
+import { ScriptRunMarkers } from "./scriptRunMarkers";
 import { SelectionChatMarkers } from "./selectionChatMarkers";
 import { useBusyChatIds, useSelectionChats } from "./selectionChats";
 import { UsagesPopover, type UsagesQuery } from "./UsagesPopover";
 import type { Usage } from "./usages";
+import { runPackageScript } from "../terminal/scriptRuns";
 import { STATUS_BAR } from "../ui/bars";
 import { CloseIcon } from "../ui/icons";
 import { UnsavedDot } from "../ui/UnsavedDot";
-import { baseName } from "../ui/path";
+import { baseName, dirName } from "../ui/path";
 import { errorText, useLoad } from "../ui/useLoad";
 
 const SYMBOL_PATH_DELAY_MS = 150;
@@ -62,7 +64,9 @@ type EditorPaneProps = {
  * context menu offers "Ask Claude about selection" like the diff view. Lines that differ from HEAD get a change stripe next to the line numbers; a
  * click on it opens the popup with the old lines. A selection a sub chat was opened from gets a glyph left of its
  * first line number; a click on it reopens the sub chat in its popover. Releasing a selection shows a floating
- * button at its active end that toggles the popover for the selected lines.
+ * button at its active end that toggles the popover for the selected lines. Outside a pull request review, every
+ * script of a package.json gets a green run triangle in the glyph margin; a click saves the file and runs the script in
+ * the Terminal tab.
  */
 export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, pendingPosition, onOpenSubChat, onToggleSubChat }: EditorPaneProps) {
   const fileIconUrl = useFileIconUrl();
@@ -82,6 +86,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
   const shownPathRef = useRef<string | null>(null);
   const markersRef = useRef<ChangeMarkers | null>(null);
   const chatMarkersRef = useRef<SelectionChatMarkers | null>(null);
+  const scriptRunMarkersRef = useRef<ScriptRunMarkers | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [crumbs, setCrumbs] = useState<SymbolCrumb[]>([]);
   /** Change marker whose popup is open. */
@@ -177,7 +182,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
         const { workspace: current, sessionId: id } = latest.current;
         const path = current.pathOf(editor.getModel()?.uri ?? monaco.Uri.parse("inmemory://none"));
         if (!path) return;
-        commands.openFileInWebstorm(id, path, line, column).catch((reason) => setError(String(reason)));
+        commands.openFileInWebstorm(id, path, line, column).catch((reason) => setError(errorText(reason)));
       },
     });
 
@@ -194,6 +199,12 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
       (model) => (latest.current.isReview ? latest.current.workspace.pathOf(model.uri) : null),
       (span) => isInsideHunk(markers.blocks, span.startLine, span.line),
     );
+    // The review's "+" takes the glyph margin of every hovered line, so a review shows no run triangles.
+    const scriptRunMarkers = new ScriptRunMarkers(editor, (model) => {
+      const path = latest.current.isReview ? null : latest.current.workspace.pathOf(model.uri);
+      return path && baseName(path) === "package.json" ? path : null;
+    });
+    scriptRunMarkersRef.current = scriptRunMarkers;
     setEditor(editor);
 
     let symbolTimer: ReturnType<typeof setTimeout> | null = null;
@@ -222,6 +233,11 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
         latest.current.onOpenSubChat?.({ selection: chat.selection, anchor: anchorBelowLine(editor, chat.selection.startLine) }, chat.sessionId),
       ),
       addCommentGlyph.onDidClick((target) => setComposer(target)),
+      scriptRunMarkers.onDidClickScript(({ path, script }) => {
+        const { workspace: current, sessionId: id } = latest.current;
+        const saved = current.isDirty(path) ? current.save(path) : Promise.resolve();
+        saved.then(() => runPackageScript({ sessionId: id, directory: dirName(path), script })).catch((reason) => setError(errorText(reason)));
+      }),
       editor.onDidChangeModelContent(() => {
         setShownMarker(null);
         setUsagesQuery(null);
@@ -270,6 +286,8 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
       chatMarkers.dispose();
       chatMarkersRef.current = null;
       addCommentGlyph.dispose();
+      scriptRunMarkers.dispose();
+      scriptRunMarkersRef.current = null;
       refactorings.dispose();
       agent?.dispose();
       setEditor(null);
@@ -289,6 +307,10 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
   useEffect(() => {
     editorRef.current?.updateOptions({ readOnly: isLocked, readOnlyMessage: { value: WORKTREE_LOCKED_MESSAGE } });
   }, [isLocked]);
+
+  useEffect(() => {
+    scriptRunMarkersRef.current?.refresh();
+  }, [isReview]);
 
   useEffect(() => {
     chatMarkersRef.current?.set(pane.activePath, selectionChats, busyChatIds);

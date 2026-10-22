@@ -6,12 +6,13 @@ import { rootFolderIconUrl, useFileIconUrl, useFolderIconUrl } from "../diff/fil
 import { STATUS_NAME_CLASS } from "../diff/styles";
 import { useHuntStore } from "../state/store";
 import { confirmDestructive } from "../ui/confirm";
-import { dirName, isInsideFolder } from "../ui/path";
-import { isShortcut, useShortcutLabel } from "../ui/shortcuts";
+import { dirName, outermostPaths } from "../ui/path";
+import { shortcutCommand, useShortcutLabel } from "../ui/shortcuts";
 import { UnsavedDot } from "../ui/UnsavedDot";
 import { useDismiss } from "../ui/useDismiss";
 import { errorText, useLoad } from "../ui/useLoad";
 import type { TreeNavRow } from "../ui/treeNavigation";
+import { extendSelection, singleSelection, toggleInSelection, visibleSelection, type TreeSelection } from "../ui/treeSelection";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
 import type { Workspace } from "./documents";
 import { EMPTY_MARKS, FOLDER_COLORS, FOLDER_COLOR_NAMES, markedColor, useFolderColorStore, type FolderColor } from "./folderColors";
@@ -19,8 +20,11 @@ import { useIdeStore } from "./ideStore";
 
 type Row = { path: string; name: string; isDir: boolean; depth: number };
 
-/** The row a right click opened the context menu for (`""` is the project row), and where. */
-type ContextMenuState = { x: number; y: number; path: string; name: string; isDir: boolean };
+/**
+ * The row a right click opened the context menu for (`""` is the project row), and where; `paths` are the rows copy
+ * and delete act on: the selection when the row is part of it, otherwise the row alone.
+ */
+type ContextMenuState = { x: number; y: number; path: string; name: string; isDir: boolean; paths: readonly string[] };
 
 /** Directories listed so far, keyed by worktree-relative path ("" is the root). */
 type Listings = Record<string, DirEntry[]>;
@@ -34,13 +38,25 @@ function parentPaths(path: string): string[] {
   return result;
 }
 
+/** The confirmation for deleting `entries`; a long list names the first ten. */
+function deleteQuestion(entries: readonly Pick<Row, "path" | "isDir">[]): string {
+  if (entries.length === 1) return entries[0].isDir ? `Delete the folder ${entries[0].path} with everything in it?` : `Delete ${entries[0].path}?`;
+  const names = entries.slice(0, 10).map((entry) => entry.path);
+  if (entries.length > names.length) {
+    names.push(`… and ${entries.length - names.length} more`);
+  }
+  const folderNote = entries.some((entry) => entry.isDir) ? ", folders with everything in them" : "";
+  return `Delete ${entries.length} items${folderNote}?\n\n${names.join("\n")}`;
+}
+
 /**
  * The project view: a lazily listed tree of the worktree with WebStorm's file icons, changelist colors and
  * file colors (a folder marked through its context menu tints itself and everything below it; the marks are
- * kept per repository, see folderColors.ts). The context menu also copies a row's absolute path (⌃⇧C for the selected
- * row) and deletes a file or a folder, closing its tabs. The selection changes on click, with the arrow keys and on
- * `revealRequest` (⇧⌘2), never when the editor's active tab changes; Enter opens the selected file. `refreshVersion`
- * relists every open directory.
+ * kept per repository, see folderColors.ts). A click selects a row, ⇧-click every row from the last clicked one to it,
+ * ⌘-click adds or removes a row. The context menu also copies the absolute paths of the selected rows (⌃⇧C) and
+ * deletes them (⌘⌫), closing their tabs. The selection changes on click, with the arrow keys and on `revealRequest`
+ * (⇧⌘2), never when the editor's active tab changes; Enter opens the selected file. `refreshVersion` relists every
+ * open directory.
  */
 export function ProjectTree({
   sessionId,
@@ -65,7 +81,7 @@ export function ProjectTree({
   const [listings, setListings] = useState<Listings>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
   const [statusByPath, setStatusByPath] = useState<Record<string, string>>({});
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [selection, setSelection] = useState<TreeSelection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [scrollTarget, setScrollTarget] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -76,6 +92,7 @@ export function ProjectTree({
   const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
   const closeTabsOf = useIdeStore((state) => state.closeTabsOf);
   const copyPathShortcut = useShortcutLabel("changes.copyPath");
+  const deleteShortcut = useShortcutLabel("editor.deleteInTree");
 
   useDismiss(contextMenuRef, () => setContextMenu(null), { closeOnWindowBlur: true, isEnabled: !!contextMenu });
 
@@ -145,7 +162,13 @@ export function ProjectTree({
     [rows, expanded],
   );
 
-  const nav = useTreeNavigation({ rows: navRows, selectedKey: selectedPath, onSelect: setSelectedPath, onToggle: toggle, onActivate: onOpen });
+  const rowKeys = useMemo(() => navRows.map((row) => row.key), [navRows]);
+  const selectedPaths = useMemo(() => visibleSelection(selection, rowKeys), [selection, rowKeys]);
+  const selectedPathSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
+
+  const selectOnly = (path: string) => setSelection(singleSelection(path));
+
+  const nav = useTreeNavigation({ rows: navRows, selectedKey: selection?.lead ?? null, onSelect: selectOnly, onToggle: toggle, onActivate: onOpen });
   const { listRef } = nav;
 
   // ⇧⌘2: list and expand every ancestor, then scroll the file into view.
@@ -161,7 +184,7 @@ export function ProjectTree({
     {
       onValue: (ancestors) => {
         setExpanded((current) => new Set([...current, ...ancestors]));
-        setSelectedPath(revealPath);
+        selectOnly(revealPath);
         setScrollTarget(revealPath);
       },
       onError: (reason) => setError(errorText(reason)),
@@ -170,10 +193,29 @@ export function ProjectTree({
     { isEnabled: !!revealRequest },
   );
 
+  /** A click selects the row and opens it (a folder toggles), ⇧-click selects the range up to it, ⌘-click adds or removes it. */
+  const clickRow = (event: MouseEvent, row: Pick<Row, "path" | "isDir">) => {
+    if (event.shiftKey) {
+      setSelection(extendSelection(selection, rowKeys, row.path));
+    } else if (event.metaKey) {
+      setSelection(toggleInSelection(selection, row.path));
+    } else {
+      selectOnly(row.path);
+      if (row.isDir) {
+        toggle(row.path);
+      } else {
+        onOpen(row.path);
+      }
+    }
+  };
+
   const openContextMenu = (event: MouseEvent, row: Pick<Row, "path" | "name" | "isDir">) => {
     event.preventDefault();
-    setSelectedPath(row.path);
-    setContextMenu({ x: event.clientX, y: event.clientY, path: row.path, name: row.name, isDir: row.isDir });
+    const paths = selectedPathSet.has(row.path) ? selectedPaths : [row.path];
+    if (paths.length === 1) {
+      selectOnly(row.path);
+    }
+    setContextMenu({ x: event.clientX, y: event.clientY, path: row.path, name: row.name, isDir: row.isDir, paths });
   };
 
   const markFolder = (color: FolderColor | null) => {
@@ -182,29 +224,41 @@ export function ProjectTree({
     setContextMenu(null);
   };
 
-  /** Puts the absolute path of the worktree-relative `path` on the clipboard; `""` is the worktree itself. */
-  const copyPath = (path: string) => {
-    const absolutePath = path ? `${workspace.worktreePath}/${path}` : workspace.worktreePath;
-    void navigator.clipboard.writeText(absolutePath).catch((reason) => setError(`failed to copy the path: ${errorText(reason)}`));
+  /** Puts the absolute paths of the worktree-relative `paths` on the clipboard, one per line; `""` is the worktree itself. */
+  const copyPaths = (paths: readonly string[]) => {
+    const absolutePaths = paths.map((path) => (path ? `${workspace.worktreePath}/${path}` : workspace.worktreePath));
+    void navigator.clipboard.writeText(absolutePaths.join("\n")).catch((reason) => setError(`failed to copy the path: ${errorText(reason)}`));
   };
 
-  /** Deletes a file, or a folder with everything in it, after asking; its tabs close and its unsaved edits are dropped. */
-  const deleteEntry = async (entry: ContextMenuState) => {
+  /**
+   * Deletes files, and folders with everything in them, after asking once; their tabs close and their unsaved edits
+   * are dropped. The project row cannot be deleted, so a selection holding it deletes nothing.
+   */
+  const deletePaths = async (paths: readonly string[]) => {
     setContextMenu(null);
-    const question = entry.isDir ? `Delete the folder ${entry.path} with everything in it?` : `Delete ${entry.path}?`;
-    if (!(await confirmDestructive(question))) return;
-    try {
-      await commands.deletePath(sessionId, entry.path);
-    } catch (reason) {
-      setError(errorText(reason));
+    if (!paths.length || paths.includes("")) return;
+    if (isLocked) {
+      setError(WORKTREE_LOCKED_MESSAGE);
       return;
     }
-    setError(null);
-    closeTabsOf(sessionId, entry.path);
-    workspace.discardDeleted(entry.path);
-    if (selectedPath && (selectedPath === entry.path || isInsideFolder(selectedPath, entry.path))) {
-      setSelectedPath(dirName(entry.path));
+    const entries = outermostPaths(paths).map((path) => ({ path, isDir: rows.find((row) => row.path === path)?.isDir ?? false }));
+    if (!(await confirmDestructive(deleteQuestion(entries)))) return;
+    const deleted: string[] = [];
+    let failure: string | null = null;
+    for (const entry of entries) {
+      try {
+        await commands.deletePath(sessionId, entry.path);
+      } catch (reason) {
+        failure = errorText(reason);
+        break;
+      }
+      deleted.push(entry.path);
+      closeTabsOf(sessionId, entry.path);
+      workspace.discardDeleted(entry.path);
     }
+    setError(failure);
+    if (!deleted.length) return;
+    selectOnly(dirName(deleted[0]));
     noteWorktreeChanged(sessionId);
   };
 
@@ -224,12 +278,17 @@ export function ProjectTree({
       <ul
         {...nav.listProps}
         onKeyDown={(event) => {
-          if (nav.cursor === null || !isShortcut(event, "changes.copyPath")) {
+          const command = selectedPaths.length ? shortcutCommand(event, ["changes.copyPath", "editor.deleteInTree"]) : null;
+          if (!command) {
             nav.listProps.onKeyDown(event);
             return;
           }
           event.preventDefault();
-          copyPath(nav.cursor);
+          if (command === "changes.copyPath") {
+            copyPaths(selectedPaths);
+          } else {
+            void deletePaths(selectedPaths);
+          }
         }}
         className="min-h-0 flex-1 overflow-auto py-1 outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size)"
         // The changelist's line height is a unitless factor of the font size.
@@ -241,13 +300,10 @@ export function ProjectTree({
           isDir
           depth={0}
           isExpanded={expanded.has("")}
-          isSelected={nav.cursor === ""}
+          isSelected={selectedPathSet.has("")}
           status={undefined}
           color={null}
-          onClick={() => {
-            nav.select("");
-            toggle("");
-          }}
+          onClick={(event) => clickRow(event, { path: "", isDir: true })}
           onContextMenu={(event) => openContextMenu(event, { path: "", name: projectName, isDir: true })}
         />
         {rows.map((row) => (
@@ -255,18 +311,11 @@ export function ProjectTree({
             key={row.path}
             {...row}
             isExpanded={expanded.has(row.path)}
-            isSelected={nav.cursor === row.path}
+            isSelected={selectedPathSet.has(row.path)}
             status={statusByPath[row.path]}
             isUnsaved={!row.isDir && unsavedPaths.includes(row.path)}
             color={markedColor(marks, row.path)}
-            onClick={() => {
-              nav.select(row.path);
-              if (row.isDir) {
-                toggle(row.path);
-              } else {
-                onOpen(row.path);
-              }
-            }}
+            onClick={(event) => clickRow(event, row)}
             onContextMenu={(event) => openContextMenu(event, row)}
           />
         ))}
@@ -278,22 +327,22 @@ export function ProjectTree({
           style={{ left: contextMenu.x, top: contextMenu.y }}
           className="fixed z-50 min-w-36 rounded border border-neutral-600 bg-(--surface-inset) p-1 text-[13px] shadow-lg"
         >
-          <div className="mb-1 truncate border-b border-(--line) px-2 pb-1 font-mono text-[12px] text-neutral-500" title={contextMenu.path || contextMenu.name}>
-            {contextMenu.name}
+          <div className="mb-1 truncate border-b border-(--line) px-2 pb-1 font-mono text-[12px] text-neutral-500" title={contextMenu.paths.join("\n") || contextMenu.name}>
+            {contextMenu.paths.length > 1 ? `${contextMenu.paths.length} items` : contextMenu.name}
           </div>
           <button
             type="button"
             role="menuitem"
             onClick={() => {
               setContextMenu(null);
-              copyPath(contextMenu.path);
+              copyPaths(contextMenu.paths);
             }}
             className="flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left text-neutral-200 hover:bg-(--row-hover)"
           >
-            Copy path
+            {contextMenu.paths.length > 1 ? "Copy paths" : "Copy path"}
             {copyPathShortcut ? <span className="text-neutral-500">{copyPathShortcut}</span> : null}
           </button>
-          {contextMenu.isDir && contextMenu.path ? (
+          {contextMenu.isDir && contextMenu.path && contextMenu.paths.length === 1 ? (
             <>
               <div role="separator" className="my-1 border-t border-(--line)" />
               {FOLDER_COLOR_NAMES.map((color) => (
@@ -316,18 +365,19 @@ export function ProjectTree({
               ) : null}
             </>
           ) : null}
-          {contextMenu.path ? (
+          {!contextMenu.paths.includes("") ? (
             <>
               <div role="separator" className="my-1 border-t border-(--line)" />
               <button
                 type="button"
                 role="menuitem"
-                onClick={() => (isLocked ? undefined : void deleteEntry(contextMenu))}
+                onClick={() => (isLocked ? undefined : void deletePaths(contextMenu.paths))}
                 aria-disabled={isLocked}
                 title={isLocked ? WORKTREE_LOCKED_MESSAGE : undefined}
-                className={`block w-full rounded px-2 py-1 text-left text-red-300 hover:bg-(--row-hover) ${isLocked ? "opacity-40" : ""}`}
+                className={`flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left text-red-300 hover:bg-(--row-hover) ${isLocked ? "opacity-40" : ""}`}
               >
-                {contextMenu.isDir ? "Delete folder" : "Delete file"}
+                {contextMenu.paths.length > 1 ? `Delete ${contextMenu.paths.length} items` : contextMenu.isDir ? "Delete folder" : "Delete file"}
+                {deleteShortcut ? <span className="text-neutral-500">{deleteShortcut}</span> : null}
               </button>
             </>
           ) : null}
@@ -359,7 +409,7 @@ function TreeRow({
   status: string | undefined;
   isUnsaved?: boolean;
   color: FolderColor | null;
-  onClick: () => void;
+  onClick: (event: MouseEvent) => void;
   onContextMenu?: (event: MouseEvent) => void;
 }) {
   const fileIconUrl = useFileIconUrl();

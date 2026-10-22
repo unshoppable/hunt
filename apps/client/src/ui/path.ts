@@ -23,6 +23,11 @@ export function isInsideFolder(path: string, folder: string): boolean {
   return !folder || path.startsWith(`${folder}/`);
 }
 
+/** The paths that lie inside none of the others, in their order; deleting these deletes all of `paths`. */
+export function outermostPaths(paths: readonly string[]): string[] {
+  return paths.filter((path) => !paths.some((other) => other !== path && isInsideFolder(path, other)));
+}
+
 /** The parent directory and the name of a path in one go. */
 export function splitPath(path: string): { dir: string; name: string } {
   return { dir: dirName(path), name: baseName(path) };

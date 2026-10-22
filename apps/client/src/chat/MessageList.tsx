@@ -1,6 +1,6 @@
 import { Fragment, isValidElement, memo, useMemo, useState, type ReactNode } from "react";
 import { stripGuardrailMarker } from "./guardrailSuggestion";
-import { findChangeReferences, parseFileLocation, stripChangeMarker, type FileLocation } from "./changeReferences";
+import { findChangeReferences, parseFileLocation, stripChangeMarker, type FileTarget } from "./changeReferences";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { CodeBlock } from "../code/CodeBlock";
@@ -8,6 +8,7 @@ import { monacoLanguage, monacoLanguageForFence } from "../diff/monaco";
 import type { ChatItem, PlanEntry } from "../ipc/types";
 import { ChatImages } from "./ChatImages";
 import { FileReferenceList, FileReferenceRow } from "./FileReferenceList";
+import { resolveFileReference, type FileIndex } from "./fileLinks";
 import { splitFencedCode } from "./codePaste";
 import { huntPromptNotice } from "./huntPromptNotice";
 import { formatMessageTime } from "./messageTime";
@@ -39,6 +40,7 @@ export function MessageList({
   isBusy,
   isVerbose,
   basePath,
+  fileIndex = null,
   onOpenFile,
 }: {
   items: ChatItem[];
@@ -47,8 +49,10 @@ export function MessageList({
   isVerbose: boolean;
   /** Worktree path of the session, stripped from tool arguments and the places a reply changed. */
   basePath: string;
-  /** Shows a place a reply changed in the editor; without it the places are listed without a button. */
-  onOpenFile?: (location: FileLocation) => void;
+  /** Files of the worktree; inline code in a reply that names one of them opens it. */
+  fileIndex?: FileIndex | null;
+  /** Shows a file a reply names in the editor; without it the places are listed without a button. */
+  onOpenFile?: (target: FileTarget) => void;
 }) {
   const lastItem = items[items.length - 1];
   return (
@@ -89,7 +93,7 @@ export function MessageList({
           );
         }
         return item.kind === "agent" ? (
-          <AgentMessage key={item.id} text={item.text} images={item.images} at={item.at} basePath={basePath} onOpenFile={onOpenFile} />
+          <AgentMessage key={item.id} text={item.text} images={item.images} at={item.at} basePath={basePath} fileIndex={fileIndex} onOpenFile={onOpenFile} />
         ) : null;
       })}
       {plan.length ? <PlanCard entries={plan} /> : null}
@@ -132,13 +136,15 @@ const AgentMessage = memo(function AgentMessage({
   images,
   at,
   basePath,
+  fileIndex,
   onOpenFile,
 }: {
   text: string;
   images: string[];
   at?: string;
   basePath: string;
-  onOpenFile?: (location: FileLocation) => void;
+  fileIndex: FileIndex | null;
+  onOpenFile?: (target: FileTarget) => void;
 }) {
   const text = stripGuardrailMarker(stripChangeMarker(reply));
   const changes = findChangeReferences(reply, basePath);
@@ -153,7 +159,7 @@ const AgentMessage = memo(function AgentMessage({
 
   return (
     <div className="group flex flex-col gap-1">
-      {text ? <MarkdownText text={text} basePath={basePath} onOpenFile={onOpenFile} /> : null}
+      {text ? <MarkdownText text={text} basePath={basePath} fileIndex={fileIndex} onOpenFile={onOpenFile} /> : null}
       <ChatImages urls={images} className={text ? "mt-1" : ""} />
       {changes.length ? <FileReferenceList locations={changes} onOpen={onOpenFile} className="mt-1" /> : null}
       {text || at ? (
@@ -181,14 +187,17 @@ export function MarkdownText({
   text,
   className = "",
   basePath = "",
+  fileIndex = null,
   onOpenFile,
 }: {
   text: string;
   className?: string;
-  /** Worktree path that absolute file places of code blocks are made relative to. */
+  /** Worktree path that absolute file places of code blocks and inline code are made relative to. */
   basePath?: string;
-  /** Shows the file place of a code block in the editor; without it the header has no button. */
-  onOpenFile?: (location: FileLocation) => void;
+  /** Files of the worktree; inline code naming one of them becomes a link when `onOpenFile` is given. */
+  fileIndex?: FileIndex | null;
+  /** Shows the file place of a code block, or the file inline code names, in the editor; without it nothing is a link. */
+  onOpenFile?: (target: FileTarget) => void;
 }) {
   const components = useMemo<Components>(
     () => ({
@@ -197,8 +206,14 @@ export function MarkdownText({
           {children}
         </MarkdownCodeBlock>
       ),
+      code: ({ className: codeClassName, children }) => {
+        const text = typeof children === "string" ? children : null;
+        const target = fileIndex && onOpenFile && text ? resolveFileReference(text, fileIndex, basePath) : null;
+        if (!target || !onOpenFile || !text) return <code className={codeClassName}>{children}</code>;
+        return <FileLink target={target} onOpen={onOpenFile} text={text} />;
+      },
     }),
-    [basePath, onOpenFile],
+    [basePath, fileIndex, onOpenFile],
   );
   return (
     <div className={`markdown min-w-0 ${className}`}>
@@ -222,7 +237,7 @@ function MarkdownCodeBlock({
   node: ExtraProps["node"];
   children?: ReactNode;
   basePath: string;
-  onOpenFile?: (location: FileLocation) => void;
+  onOpenFile?: (target: FileTarget) => void;
 }) {
   const code = isValidElement<{ className?: string; children?: ReactNode }>(children) ? children.props : null;
   if (typeof code?.children !== "string") return <pre>{children}</pre>;
@@ -237,6 +252,27 @@ function MarkdownCodeBlock({
       <FileReferenceRow location={location} onOpen={onOpenFile} className="border-b border-(--line) text-[13px]" />
       <CodeBlock text={text} language={language === "plaintext" ? monacoLanguage(location.path) : language} path={location.path} />
     </div>
+  );
+}
+
+/** Inline code naming a worktree file, shown as a link that opens it; keyboard users open it with Enter. */
+function FileLink({ target, onOpen, text }: { target: FileTarget; onOpen: (target: FileTarget) => void; text: string }) {
+  const lines = target.startLine ? `:${target.startLine}${target.endLine && target.endLine !== target.startLine ? `-${target.endLine}` : ""}` : "";
+  return (
+    <span
+      role="link"
+      tabIndex={0}
+      className="file-link"
+      title={`Open ${target.path}${lines} in the editor`}
+      onClick={() => onOpen(target)}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        onOpen(target);
+      }}
+    >
+      <code>{text}</code>
+    </span>
   );
 }
 

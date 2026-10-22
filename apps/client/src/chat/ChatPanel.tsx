@@ -7,7 +7,8 @@ import { PermissionPrompt } from "./PermissionPrompt";
 import { PromptInput, type ConfigSelect } from "./PromptInput";
 import { CLEAR_COMMAND } from "./slashCommands";
 import { SelectionCard } from "./SelectionCard";
-import type { FileLocation } from "./changeReferences";
+import type { FileTarget } from "./changeReferences";
+import { useFileIndex } from "./fileLinks";
 import { useFollowScroll } from "./useFollowScroll";
 import { SessionSummary, SessionSummaryToggle } from "./SessionSummary";
 import type { SelectionRequest } from "../diff/selectionContext";
@@ -147,14 +148,15 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
 
   const followEnd = useFollowScroll(scrollRef, columnRef, `${sessionId}:${hasSession}`);
 
-  /** Shows the lines of `location`, selected, in this session's "Editor" tab. */
+  /** Shows the file of `target` in this session's "Editor" tab, with its lines selected. */
   const openInEditor = useCallback(
-    (location: FileLocation) => {
+    (target: FileTarget) => {
       setTab(sessionId, "editor");
-      openFile(sessionId, location.path, { line: location.startLine, endLine: location.endLine });
+      openFile(sessionId, target.path, { line: target.startLine, endLine: target.endLine });
     },
     [sessionId, setTab, openFile],
   );
+  const fileIndex = useFileIndex(sessionId);
 
   /** Deletes the remote session with its VM after confirmation (the trash button beside the title); the sidebar's × only takes it out of the sidebar. */
   async function deleteRemoteSession() {
@@ -228,6 +230,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
             isBusy={(isBusy && !chat?.isHiddenTurn) || isCreating}
             isVerbose={isVerbose}
             basePath={remote?.worktreePath ?? session.worktreePath}
+            fileIndex={fileIndex}
             onOpenFile={openInEditor}
           />
           {chat?.isLoading ? (

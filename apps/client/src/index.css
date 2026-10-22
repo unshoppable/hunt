@@ -946,6 +946,17 @@ body,
   text-decoration: underline;
   text-underline-offset: 0.15em;
 }
+.markdown .file-link {
+  cursor: pointer;
+}
+.markdown .file-link > code {
+  color: #8ab4f8;
+}
+.markdown .file-link:hover > code,
+.markdown .file-link:focus-visible > code {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
 .markdown table {
   display: block;
   max-width: 100%;

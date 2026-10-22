@@ -1,6 +1,9 @@
 /** A place in a file: its worktree-relative path and the 1-based, inclusive lines. */
 export type FileLocation = { path: string; startLine: number; endLine: number };
 
+/** A file to open, optionally at the 1-based, inclusive lines. */
+export type FileTarget = { path: string; startLine?: number; endLine?: number };
+
 /** Places shown below a reply; the agent lists the most important first. */
 const MAX_REFERENCES = 4;
 

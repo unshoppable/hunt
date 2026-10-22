@@ -8,6 +8,9 @@ import type { QueuedPrompt } from "../state/store";
 import { DeleteSessionDialog } from "../sessions/DeleteSessionDialog";
 import { findSelectOption, listChoiceOptions } from "./configOptions";
 import { MessageList } from "./MessageList";
+import type { FileTarget } from "./changeReferences";
+import { useFileIndex } from "./fileLinks";
+import { openInEditorWindow } from "../ide/editorWindows";
 import { PillSelect } from "./PillSelect";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { appendPromptTexts, QueuedPrompts, useReturnedPrompts } from "./QueuedPrompts";
@@ -139,6 +142,12 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   const parent = useHuntStore((state) => state.sessions.find((session) => session.id === parentSessionId));
   // A remote session's worktree that is locked for want of a connection connects on its own while the popover is open.
   useVmConnect(parentSessionId);
+  // The sub chat works in its parent's worktree; the files its replies name open in the parent's editor window.
+  const fileIndex = useFileIndex(subSessionId);
+  const openFile = useCallback(
+    (target: FileTarget) => void openInEditorWindow(parentSessionId, { path: target.path, line: target.startLine }),
+    [parentSessionId],
+  );
   const isBusy = isCreating || (chat?.isBusy ?? false);
   const isLive = !subSessionId || (subSession?.isLive ?? false);
   const [isResuming, setIsResuming] = useState(false);
@@ -452,7 +461,17 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
           {showsSelection ? <SelectionCard selection={request.selection} isOpen label={lines} /> : null}
           {showsContext && context ? <ContextCard label={context.label} text={context.text} /> : null}
           {chat?.isLoading ? <p className="text-neutral-500">Loading session…</p> : null}
-          {chat ? <MessageList items={chat.items} plan={chat.plan} isBusy={chat.isBusy} isVerbose={false} basePath={parent?.worktreePath ?? ""} /> : null}
+          {chat ? (
+            <MessageList
+              items={chat.items}
+              plan={chat.plan}
+              isBusy={chat.isBusy}
+              isVerbose={false}
+              basePath={parent?.worktreePath ?? ""}
+              fileIndex={fileIndex}
+              onOpenFile={openFile}
+            />
+          ) : null}
           {subSessionId && chat?.permission ? (
             <PermissionPrompt
               permission={chat.permission}

@@ -1,3 +1,9 @@
+## 0.75.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** a reply lists up to four places it changed with "Open in editor", the summary holds at most three bullets and the code a sub chat came from ([a9b3250](https://github.com/unshoppable/hunt/commit/a9b3250))
+
 ## 0.74.0 (2026-10-22)
 
 ### 🚀 Features

@@ -14,6 +14,7 @@ export const WEBSTORM = {
   PRIMITIVE: "abb8ff",
   METADATA: "bef057",
   CLASS: "ff7ab3",
+  INTERFACE: "fea7ff",
   ENUM: "a0afff",
   GLOBAL_FUNCTION: "ffa9a9",
   LOCAL_FUNCTION: "ffb5ac",
@@ -57,6 +58,8 @@ export const WEBSTORM_TOKEN_RULES: monaco.editor.ITokenThemeRule[] = [
   { token: "keyword.primitive", foreground: WEBSTORM.PRIMITIVE, fontStyle: "italic" },
   { token: "annotation", foreground: WEBSTORM.METADATA, fontStyle: "italic" },
   { token: "type.identifier", foreground: WEBSTORM.CLASS },
+  { token: "type.identifier.interface", foreground: WEBSTORM.INTERFACE },
+  { token: "type.identifier.alias", foreground: WEBSTORM.INTERFACE },
   { token: "type.identifier.enum", foreground: WEBSTORM.ENUM },
   { token: "identifier", foreground: WEBSTORM.LOCAL_VARIABLE },
   { token: "identifier.function", foreground: WEBSTORM.GLOBAL_FUNCTION },
@@ -68,10 +71,10 @@ export const WEBSTORM_TOKEN_RULES: monaco.editor.ITokenThemeRule[] = [
 
   // WebStorm roles of the semantic tokens (webstormRoles.ts)
   { token: "class", foreground: WEBSTORM.CLASS },
-  // Interfaces and type aliases take the class color, not the scheme's TS.INTERFACE (fea7ff).
-  { token: "interface", foreground: WEBSTORM.CLASS },
+  { token: "interface", foreground: WEBSTORM.INTERFACE },
   { token: "enum", foreground: WEBSTORM.ENUM },
-  { token: "typeAlias", foreground: WEBSTORM.CLASS },
+  // WebStorm colors type aliases, its own and those of the libraries (`Omit`, `Partial`), with TS.INTERFACE.
+  { token: "typeAlias", foreground: WEBSTORM.INTERFACE },
   { token: "typeParameter", foreground: WEBSTORM.TYPE_PARAMETER },
   { token: "enumMember", foreground: WEBSTORM.STATIC_MEMBER_VARIABLE, fontStyle: "italic" },
   { token: "globalFunction", foreground: WEBSTORM.GLOBAL_FUNCTION },
@@ -210,8 +213,10 @@ export function typescriptLanguage(tokenPostfix: ".ts" | ".js"): monaco.language
       parens: [[/\)/, { token: "delimiter.parenthesis", next: "@pop" }], openParen, openBrace, [/\}/, "delimiter.bracket"], annotatedNameRule("identifier.parameter"), { include: "common" }],
       common: [
         [/@[a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*/, "annotation"],
+        [/(interface)(\s+)([A-Za-z_$][\w$]*)/, ["keyword", "", "type.identifier.interface"]],
         [/(enum)(\s+)([A-Za-z_$][\w$]*)/, ["keyword", "", "type.identifier.enum"]],
-        [/(class|interface|type)(\s+)([A-Za-z_$][\w$]*)/, ["keyword", "", "type.identifier"]],
+        [/(type)(\s+)([A-Za-z_$][\w$]*)/, ["keyword", "", "type.identifier.alias"]],
+        [/(class)(\s+)([A-Za-z_$][\w$]*)/, ["keyword", "", "type.identifier"]],
         [/(function)(\s*\*?\s*)([A-Za-z_$][\w$]*)/, ["keyword", "", "identifier.function"]],
         [/(const|let|var)(\s+)([A-Za-z_$][\w$]*)/, ["keyword", "", "variable"]],
         [/(\.)(\s*)(#?[a-zA-Z_$][\w$]*)(?=\s*\()/, ["delimiter.dot", "", "identifier.member.function"]],

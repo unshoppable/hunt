@@ -1,6 +1,7 @@
 """Builds the "Code Monospace V2" family from the v3.0 Medium and Medium Italic files.
 
-Medium: every glyph gets the 550-unit advance, re-centered.
+Medium: every glyph gets the 550-unit advance, re-centered; the asterisks sit on the height of `+` instead of the
+source's superscript height, where they touch the neighbouring slashes of `/*/`.
 Medium Italic: lowercase letters keep their cursive outlines (re-centered to 550); every other glyph is the
 Medium outline sheared by the font's italic angle, so skew, weight and position are uniform. The ligatures
 (`calt`/`liga`: components become the empty `LIG` glyph, the last one the `*.liga` drawing) were built on a 600-unit
@@ -35,14 +36,14 @@ def shear_glyph(glyph, glyf, tan):
     return g
 
 
-def shift_glyph(glyph, glyf, dx):
+def shift_glyph(glyph, glyf, dx, dy=0):
     g = copy.deepcopy(glyph)
-    if g.numberOfContours == 0 or dx == 0:
+    if g.numberOfContours == 0 or (dx == 0 and dy == 0):
         return g
     coords, _, _ = g.getCoordinates(glyf)
     coords = coords.copy()
     for i, (x, y) in enumerate(coords):
-        coords[i] = (x + dx, y)
+        coords[i] = (x + dx, y + dy)
     g.coordinates = coords
     g.program = ttProgram.Program()
     g.recalcBounds(glyf)
@@ -61,6 +62,20 @@ def scale_x(glyph, glyf, factor):
     g.program = ttProgram.Program()
     g.recalcBounds(glyf)
     return g
+
+
+def lower_asterisks(font, tan=0.0):
+    """Moves `asterisk` and `asterisk.alt` down until their vertical center matches the one of `plus`; a sheared
+    (italic) glyph also moves left by the shear so that it stays on the slant."""
+    glyf = font["glyf"]
+    plus = glyf["plus"]
+    plus_center = (plus.yMin + plus.yMax) / 2
+    for name in ("asterisk", "asterisk.alt"):
+        glyph = glyf[name]
+        dy = round(plus_center - (glyph.yMin + glyph.yMax) / 2)
+        glyph = shift_glyph(glyph, glyf, round(dy * tan), dy)
+        glyf[name] = glyph
+        font["hmtx"].metrics[name] = (font["hmtx"].metrics[name][0], glyph.xMin)
 
 
 def fit_ligatures(font):
@@ -130,11 +145,14 @@ def build():
         if reg["hmtx"].metrics[name][0] != ADVANCE:
             set_width(reg, name, ADVANCE)
             changed_reg.append(chr(cp))
+    lower_asterisks(reg)
     rename(reg, "Medium", italic=False)
 
     # --- Medium Italic
     tan = math.tan(math.radians(-ITALIC_ANGLE))
-    reg_src = TTFont(SRC_REG)  # untouched outlines as the shear source
+    reg_src = TTFont(SRC_REG)  # outlines before re-centering as the shear source
+    lower_asterisks(reg_src)
+    lower_asterisks(ita, tan)
     reg_cmap = reg_src.getBestCmap()
     ita_cmap = ita.getBestCmap()
     glyf_i = ita["glyf"]; glyf_r = reg_src["glyf"]

@@ -4,7 +4,7 @@ import type { ChangedFile, ChangedFileView, GraphNode } from "../ipc/types";
 import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { selectionChatsFor, useBusyChatIds } from "../ide/selectionChats";
-import { otherTouchers, type ChangeScope } from "./attribution";
+import { otherTouchers, ownerLabel, type ChangeScope } from "./attribution";
 import { buildChangeTree, type FolderNode, type TreeNode } from "./changeTree";
 import { Checkbox, type CheckState } from "./Checkbox";
 import { CommitBox } from "./CommitBox";
@@ -156,13 +156,7 @@ export function ChangeList({
   const renderOwnerBadge = (path: string) => {
     const file = filesByPath.get(path);
     if (!file) return null;
-    const owners = otherTouchers(file, sessionId, parentId).map((id) => {
-      const owner = sessions.find((candidate) => candidate.id === id);
-      if (!owner) return { id, mark: "?", title: "a deleted session" };
-      const isOtherFamily = !!owner.parentId && owner.parentId !== sessionId && owner.parentId !== parentId;
-      const parentMark = isOtherFamily && owner.parentId ? (marks.get(owner.parentId) ?? "") : "";
-      return { id, mark: `${parentMark}${marks.get(id) ?? "?"}`, title: owner.title };
-    });
+    const owners = otherTouchers(file, sessionId, parentId).map((id) => ({ id, ...ownerLabel(id, sessions, marks, sessionId, parentId) }));
     if (!owners.length) return null;
     const isShared = file.touchedBy.includes(sessionId) || (!!parentId && file.touchedBy.includes(parentId));
     const titles = owners.map((owner) => `${owner.mark} ${owner.title}`).join(", ");

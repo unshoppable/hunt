@@ -5,8 +5,10 @@ import { useHuntStore } from "../state/store";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
 import { useSessionViewStore } from "../state/sessionViews";
 import { useSettingsStore } from "../state/settings";
-import { isOwnChange, otherTouchers, type ChangeScope } from "./attribution";
-import { ownContent } from "./ownChanges";
+import { isOwnChange, otherTouchers, ownerLabel, type ChangeScope } from "./attribution";
+import { ownView } from "./ownChanges";
+import type { OverwriteMark } from "./overwriteMarkers";
+import { sessionMarks } from "../sessions/sessionLabels";
 import { ChangeList } from "./ChangeList";
 import { matchesGlob, splitGlobs } from "./glob";
 import { parseGraph } from "../graph/schema";
@@ -48,7 +50,8 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const diffFontSize = useSettingsStore((state) => state.panes.diff.fontSize);
   const diffLineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
   const diffFontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
-  const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
+  const sessions = useHuntStore((state) => state.sessions);
+  const session = sessions.find((candidate) => candidate.id === sessionId);
   const isLocked = useHuntStore((state) => isWorktreeLocked(state.sessions, state.remoteLinks, sessionId));
   const worktreePath = session?.worktreePath;
   /** Files with unsaved edits; they keep them when another file is shown. */
@@ -213,11 +216,25 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
    * The diff with only the lines this session and its parent changed, once the file's history is loaded. Without their
    * versions in the history the lines cannot be told apart, so it is the full diff.
    */
-  const ownDiff = useMemo(() => {
+  const own = useMemo(() => {
     if (!isOwnView || !diff || history?.path !== diff.path) return null;
-    if (isOwnHistoryMissing) return diff;
-    return { ...diff, newContent: ownContent(diff.oldContent, history.versions, diff.newContent, isOwn) };
+    if (isOwnHistoryMissing) return { diff, overwrites: [] };
+    const view = ownView(diff.oldContent, history.versions, diff.newContent, isOwn);
+    return { diff: { ...diff, newContent: view.content }, overwrites: view.overwrites };
   }, [isOwnView, isOwnHistoryMissing, diff, history, isOwn]);
+  const ownDiff = own?.diff ?? null;
+  const marks = useMemo(() => sessionMarks(sessions), [sessions]);
+  /** Own lines that are no longer on disk, with the marks of the sessions that changed them afterwards. */
+  const overwriteMarks = useMemo<OverwriteMark[]>(
+    () =>
+      (own?.overwrites ?? []).map(({ startLine, endLine, sessionIds, diskLines }) => ({
+        startLine,
+        endLine,
+        diskLines,
+        owners: sessionIds.map((id) => (id ? ownerLabel(id, sessions, marks, sessionId, parentId) : { mark: "?", title: "an edit outside the agents" })),
+      })),
+    [own, sessions, marks, sessionId, parentId],
+  );
   const shownDiff = isOwnView ? ownDiff : diff;
   const canCommentOnFile = !!pullRequest && !!shownDiff && !isOwnView;
   const commentButtonLeft = canCommentOnFile ? lineNumbersLeft : null;
@@ -415,6 +432,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
               fontFamily={diffFontFamily}
               readOnly={isOwnView}
               isLocked={isLocked}
+              overwrites={isOwnView ? overwriteMarks : undefined}
               onSave={saveFile}
               onDirtyChange={markDirty}
               onNavigate={(line, column, name) => void openInEditorWindow(sessionId, { path: shownDiff.path, line, column, definitionOf: name })}

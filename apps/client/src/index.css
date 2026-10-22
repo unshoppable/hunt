@@ -417,6 +417,31 @@ body,
   transform: scale(1.12);
 }
 
+/* Mark of the session that overwrote own lines on disk (see diff/overwriteMarkers.ts): an amber pill with the session's
+   mark in the glyph margin of the run's first line. The mouse passes through to the glyph cell, whose hover shows the
+   lines on disk. */
+.monaco-editor .hunt-overwrite-glyph {
+  overflow: visible;
+  pointer-events: none;
+}
+.monaco-editor .hunt-overwrite-glyph > span {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  box-sizing: border-box;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid rgba(251, 191, 36, 0.7);
+  border-radius: 8px;
+  background: rgba(251, 191, 36, 0.15);
+  color: #fde68a;
+  font: 10px/14px ui-sans-serif, system-ui, -apple-system, sans-serif;
+  text-align: center;
+  white-space: nowrap;
+}
+
 /* "+" of a pull request review (see review/addCommentGlyph.ts): GitHub's blue square on the hovered line, in the
    glyph margin left of the line numbers, centred on the cell; grey when the comment lands in the review summary as
    a note instead of inline. */
@@ -892,6 +917,19 @@ body,
   background: var(--surface-inset);
   overflow-x: auto;
   color: #d4d4d4;
+}
+/* Code block with the file place it shows as a header row above the code (MarkdownCodeBlock). */
+.markdown .code-location {
+  margin: 0.65rem 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-inset);
+  overflow: hidden;
+}
+.markdown .code-location pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
 }
 .markdown blockquote {
   padding-left: 0.8rem;

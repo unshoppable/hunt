@@ -15,6 +15,7 @@ import { ReviewCommentZones } from "../review/ReviewCommentZones";
 import { FILE_SPAN, isInsideHunk, useReviewedPullRequest } from "../review/reviewComments";
 import { useHuntStore } from "../state/store";
 import { SplitDiffView } from "./SplitDiffView";
+import { OverwriteMarkers, type OverwriteMark } from "./overwriteMarkers";
 import { WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
 
 setupMonaco();
@@ -55,6 +56,11 @@ type CodeDiffEditorProps = {
    * and keeps its features and unsaved edits meanwhile.
    */
   isLocked?: boolean;
+  /**
+   * Lines of a `readOnly` right side that another session overwrote on disk since (see `ownView`); each run gets the mark
+   * of that session in the glyph margin, whose hover shows the lines on disk.
+   */
+  overwrites?: OverwriteMark[];
   /** Called with the current editor content on Cmd/Ctrl+S. */
   onSave: (content: string) => void;
   /** Reports whether the editor content differs from `diff.newContent`. */
@@ -105,6 +111,7 @@ export function CodeDiffEditor({
   readOnly = false,
   isDetached = false,
   isLocked = false,
+  overwrites,
   onSave,
   onDirtyChange,
   onNavigate,
@@ -148,6 +155,9 @@ export function CodeDiffEditor({
   selectionChatsRef.current = selectionChats;
   const busyChatIdsRef = useRef(busyChatIds);
   busyChatIdsRef.current = busyChatIds;
+  const overwritesRef = useRef(overwrites);
+  overwritesRef.current = overwrites;
+  const overwriteMarkersRef = useRef<OverwriteMarkers | null>(null);
 
   /**
    * The worktree document the editable side shows. Read-only and detached diffs, whose right side need not be the file,
@@ -184,6 +194,10 @@ export function CodeDiffEditor({
   useEffect(() => {
     chatMarkersRef.current?.set(diff.path, selectionChats, busyChatIds);
   }, [diff.path, selectionChats, busyChatIds]);
+
+  useEffect(() => {
+    overwriteMarkersRef.current?.set(overwrites ?? []);
+  }, [overwrites]);
 
   // Reports where the right side's line numbers start. Right after a mode switch `modifiedEditor` may still be the
   // disposed editor of the other mode, whose node is detached.
@@ -255,6 +269,15 @@ export function CodeDiffEditor({
 
   const setupEditors = (originalEditor: monaco.editor.IStandaloneCodeEditor, modifiedEditor: monaco.editor.IStandaloneCodeEditor) => {
     modifiedEditorRef.current = modifiedEditor;
+    const overwriteMarkers = new OverwriteMarkers(modifiedEditor);
+    overwriteMarkers.set(overwritesRef.current ?? []);
+    overwriteMarkersRef.current = overwriteMarkers;
+    modifiedEditor.onDidDispose(() => {
+      overwriteMarkers.dispose();
+      if (overwriteMarkersRef.current === overwriteMarkers) {
+        overwriteMarkersRef.current = null;
+      }
+    });
     if (isDetached) return;
     attachSideFeatures(originalEditor, "original");
     if (readOnly) return;

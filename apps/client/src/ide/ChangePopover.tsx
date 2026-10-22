@@ -27,6 +27,8 @@ type ChangePopoverProps = {
  * the block had at HEAD, shown read-only on the deletion tint with the original line numbers. It sits over the
  * block's first line, follows the editor's scrolling and closes on Esc, a click outside or when the line leaves
  * the viewport. It is as tall as the lines up to the remembered height; dragging its right or bottom edge resizes it.
+ * A block of inserted lines has no original lines: its popup is just the toolbar, as wide as its buttons and placed
+ * above the block so that the inserted lines stay visible.
  */
 export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }: ChangePopoverProps) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -39,6 +41,7 @@ export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }
   const index = markers.markers.indexOf(marker);
   const count = markers.markers.length;
   const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
+  const isInsert = marker.kind === "insert";
 
   useEffect(() => {
     const update = () => {
@@ -58,13 +61,14 @@ export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }
     };
   }, [editor, marker, onClose]);
 
-  // Keeps the popup inside the editor when the block is near the bottom.
+  // Keeps the popup inside the editor when the block is near the bottom; a toolbar alone sits above the block.
   useLayoutEffect(() => {
     const root = rootRef.current;
     if (!root || !position) return;
     const height = editor.getLayoutInfo().height;
-    root.style.top = `${Math.max(0, Math.min(position.top, height - root.offsetHeight - 2))}px`;
-  }, [editor, position, originalLines.length, size.height, isHeightSet]);
+    const top = isInsert ? position.top - root.offsetHeight : position.top;
+    root.style.top = `${Math.max(0, Math.min(top, height - root.offsetHeight - 2))}px`;
+  }, [editor, position, isInsert, originalLines.length, size.height, isHeightSet]);
 
   useDismiss(rootRef, onClose);
 
@@ -123,7 +127,8 @@ export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }
   };
 
   const insertedCount = rangeLength(block.modified);
-  const summary = marker.kind === "insert" ? `${insertedCount} inserted ${insertedCount === 1 ? "line" : "lines"}` : null;
+  const summary = isInsert ? `${insertedCount} inserted ${insertedCount === 1 ? "line" : "lines"}` : null;
+  const sizeStyle = isInsert ? {} : { width: size.width, maxHeight: size.height, height: isHeightSet ? size.height : undefined };
 
   return (
     <div
@@ -131,10 +136,10 @@ export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }
       role="dialog"
       aria-label="Change"
       className="hunt-change-popover absolute z-20 flex flex-col overflow-hidden rounded-md border border-neutral-600 bg-(--surface-inspector) shadow-xl shadow-black/50"
-      style={{ top: position.top, left: position.left, width: size.width, maxHeight: size.height, height: isHeightSet ? size.height : undefined }}
+      style={{ top: position.top, left: position.left, ...sizeStyle }}
       onMouseDown={(event) => event.stopPropagation()}
     >
-      <div className="flex shrink-0 items-center gap-0.5 border-b border-(--line) px-2 py-2 text-neutral-300">
+      <div className={`flex shrink-0 items-center gap-0.5 px-2 py-2 text-neutral-300 ${isInsert ? "" : "border-b border-(--line)"}`}>
         <ToolbarButton title="Previous change" disabled={index <= 0} onClick={() => showNeighbour(-1)}>
           <ArrowIcon direction="up" />
         </ToolbarButton>
@@ -145,13 +150,15 @@ export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }
         <ToolbarButton title="Rollback" onClick={rollback}>
           <RollbackIcon />
         </ToolbarButton>
-        <ToolbarButton title="Copy original lines" disabled={!originalLines.length} onClick={copyOriginal}>
-          <CopyIcon className="size-[14px]" />
-        </ToolbarButton>
-        <span className="ml-auto pr-1 text-[12px] text-neutral-500">{summary ?? `${count ? index + 1 : 0} / ${count}`}</span>
+        {isInsert ? null : (
+          <ToolbarButton title="Copy original lines" disabled={!originalLines.length} onClick={copyOriginal}>
+            <CopyIcon className="size-[14px]" />
+          </ToolbarButton>
+        )}
+        <span className="ml-auto pr-1 pl-3 text-[12px] whitespace-nowrap text-neutral-500">{summary ?? `${count ? index + 1 : 0} / ${count}`}</span>
       </div>
       {originalLines.length ? <div ref={codeRef} className="min-h-0 shrink" style={{ height: originalLines.length * lineHeight }} /> : null}
-      <ResizeGrips edges={{ right: true, bottom: true }} {...grips} />
+      {isInsert ? null : <ResizeGrips edges={{ right: true, bottom: true }} {...grips} />}
     </div>
   );
 }

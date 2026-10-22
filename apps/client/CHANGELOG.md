@@ -1,3 +1,9 @@
+## 0.77.1 (2026-10-22)
+
+### 🩹 Fixes
+
+- **client:** interfaces and type aliases take WebStorm's light pink again, classes keep their darker pink ([5fc0fca](https://github.com/unshoppable/hunt/commit/5fc0fca))
+
 ## 0.77.0 (2026-10-22)
 
 ### 🚀 Features

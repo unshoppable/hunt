@@ -1,4 +1,5 @@
 import * as monaco from "monaco-editor";
+import { commands } from "../ipc/commands";
 import type { Workspace } from "./documents";
 import { lspClientForModel, type LspClient } from "./lsp/client";
 import { asLocationLinks, elementKindOf, hoverSignature, rangeContains, symbolsAt, toLspPosition, toLspRange, toMonacoRange, type CodeAction, type DocumentSymbol, type Hover, type Location, type LocationLink, type Position, type TextEdit, type WorkspaceSymbol } from "./lsp/protocol";
@@ -129,6 +130,10 @@ async function declarationAt(client: LspClient, model: monaco.editor.ITextModel,
 export async function findUsages(workspace: Workspace, model: monaco.editor.ITextModel, position: monaco.IPosition): Promise<Usage[]> {
   const client = lspClientForModel(model);
   if (!client) return [];
+  const name = model.getWordAtPosition(position)?.word;
+  if (name) {
+    await loadProjectsMentioning(workspace, client, name);
+  }
   const params = { ...documentPosition(model, toLspPosition(position)), context: { includeDeclaration: false } };
   const references = (await client.request<Location[] | null>("textDocument/references", params)) ?? [];
 
@@ -163,6 +168,18 @@ export async function findUsages(workspace: Workspace, model: monaco.editor.ITex
     }),
   );
   return sortUsages(perFile.flat());
+}
+
+/**
+ * Loads the TypeScript project of every worktree source file containing `name` as a whole word. tsgo searches
+ * references only in the projects it has loaded, which are those of the open files, so a library's usages in an app
+ * stay hidden until a file of the app is open; asked for a file's `custom/projectInfo`, it loads the file's project.
+ * A server without that method answers with an error, which leaves the search to the loaded projects.
+ */
+async function loadProjectsMentioning(workspace: Workspace, client: LspClient, name: string): Promise<void> {
+  const paths = await commands.searchWord(workspace.sessionId, name);
+  const requests = paths.filter(isSourceFile).map((path) => client.request("custom/projectInfo", { textDocument: { uri: workspace.uriOf(path).toString() } }).catch(() => null));
+  await Promise.all(requests);
 }
 
 /**

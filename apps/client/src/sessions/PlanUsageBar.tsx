@@ -7,15 +7,18 @@ import { UsageBar } from "../ui/UsageBar";
 /**
  * The claude.ai plan limits under the session list: `5h 8% · Week 48% · Fable 94%`, each above a fill bar colored
  * from green to red by the level and the time left until the window resets (`1d 5h`, updated every minute). Reads them at start and when the window regains focus after a while; a click or
- * a switch of the Claude account reads them again right away. Renders nothing without plan limits (API key, Bedrock, Vertex) or before the first read.
+ * a switch of the Claude account reads them again right away. While the usage endpoint refuses reads, the last limits stay with a note in the
+ * tooltip, or without any a row says when the next read can start. Renders nothing without plan limits (API key, Bedrock, Vertex) or before the first read.
  */
 export function PlanUsageBar() {
   const usage = usePlanUsageStore((state) => state.usage);
   const fetchedAt = usePlanUsageStore((state) => state.fetchedAt);
   const isLoading = usePlanUsageStore((state) => state.isLoading);
   const error = usePlanUsageStore((state) => state.error);
+  const blockedUntil = usePlanUsageStore((state) => state.blockedUntil);
   const refresh = usePlanUsageStore((state) => state.refresh);
   const refreshIfStale = usePlanUsageStore((state) => state.refreshIfStale);
+  const switchAccount = usePlanUsageStore((state) => state.switchAccount);
 
   const activeAccountId = useAccountsStore((state) => state.accounts?.activeId);
   const shownAccountIdRef = useRef(activeAccountId);
@@ -26,8 +29,8 @@ export function PlanUsageBar() {
     const shownAccountId = shownAccountIdRef.current;
     shownAccountIdRef.current = activeAccountId;
     if (shownAccountId === undefined || shownAccountId === activeAccountId) return;
-    refresh(true);
-  }, [activeAccountId, refresh]);
+    switchAccount();
+  }, [activeAccountId, switchAccount]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60_000);
@@ -40,13 +43,33 @@ export function PlanUsageBar() {
     return () => window.removeEventListener("focus", refreshIfStale);
   }, [refreshIfStale]);
 
-  if (!usage || usage.windows.length === 0) return null;
+  const blockedFor = blockedUntil && blockedUntil > now ? formatTimeUntil(new Date(blockedUntil).toISOString(), now) : null;
+  const status = [
+    ...(blockedFor ? [`Claude refuses usage reads for too many requests; next read in ${blockedFor}`] : []),
+    ...(error ? [`Last refresh failed: ${error}`] : []),
+  ];
+
+  if (!usage || usage.windows.length === 0) {
+    if (status.length === 0) return null;
+    return (
+      <button
+        type="button"
+        onClick={() => refresh(true)}
+        title={[...status, "", "Click to refresh"].join("\n")}
+        aria-label="Plan usage unavailable, click to refresh"
+        className={`flex w-full shrink-0 gap-1 overflow-hidden border-t border-(--line) px-3 py-2.5 text-left text-[13px] whitespace-nowrap text-neutral-500 hover:bg-white/5 ${isLoading ? "opacity-60" : ""}`}
+      >
+        <span className="min-w-0 truncate">Plan usage unavailable</span>
+        {blockedFor ? <span className="shrink-0 tabular-nums text-neutral-600">· retry in {blockedFor}</span> : null}
+      </button>
+    );
+  }
 
   const title = [
     ...usage.windows.map((window) => `${windowName(window)}: ${Math.round(window.utilization)}% used${resetText(window, now)}`),
     "",
     fetchedAt ? `Updated ${formatAge(now - fetchedAt)} · click to refresh` : "Click to refresh",
-    ...(error ? [`Last refresh failed: ${error}`] : []),
+    ...status,
   ].join("\n");
 
   return (

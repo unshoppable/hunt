@@ -15,12 +15,15 @@ use crate::session::store;
 const SCRIPT: &str = "apps/client/scripts/planUsage.mjs";
 const TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The plan limits in display order; empty when no plan limits apply (API key, Bedrock, Vertex).
+/// The plan limits in display order; empty when no plan limits apply (API key, Bedrock, Vertex) or the read was
+/// refused for too many requests.
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanUsage {
     pub subscription_type: Option<String>,
     pub windows: Vec<UsageWindow>,
+    /// Set when the usage endpoint refused the read for too many requests: seconds until it answers again.
+    pub retry_after_seconds: Option<u64>,
 }
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -37,8 +40,10 @@ pub struct UsageWindow {
 #[serde(rename_all = "camelCase")]
 struct ScriptOutput {
     subscription_type: Option<String>,
+    #[serde(default)]
     rate_limits_available: bool,
     rate_limits: Option<RateLimits>,
+    retry_after_seconds: Option<u64>,
 }
 
 /// The typed part of the SDK's experimental usage answer; every other field is ignored.
@@ -112,7 +117,7 @@ fn parse_output(stdout: &str) -> Result<PlanUsage, String> {
             windows.push(UsageWindow { label: model.display_name, utilization, resets_at: model.resets_at });
         }
     }
-    Ok(PlanUsage { subscription_type: output.subscription_type, windows })
+    Ok(PlanUsage { subscription_type: output.subscription_type, windows, retry_after_seconds: output.retry_after_seconds })
 }
 
 fn push_window(windows: &mut Vec<UsageWindow>, label: &str, window: Option<RawWindow>) {
@@ -166,6 +171,13 @@ mod tests {
     fn has_no_windows_without_plan_limits() {
         let stdout = r#"{"subscriptionType":null,"rateLimitsAvailable":false,"rateLimits":null}"#;
 
-        assert_eq!(parse_output(stdout).unwrap(), PlanUsage { subscription_type: None, windows: vec![] });
+        assert_eq!(parse_output(stdout).unwrap(), PlanUsage { subscription_type: None, windows: vec![], retry_after_seconds: None });
+    }
+
+    #[test]
+    fn passes_on_the_wait_of_a_refused_read() {
+        let stdout = r#"{"retryAfterSeconds":3264}"#;
+
+        assert_eq!(parse_output(stdout).unwrap(), PlanUsage { subscription_type: None, windows: vec![], retry_after_seconds: Some(3264) });
     }
 }

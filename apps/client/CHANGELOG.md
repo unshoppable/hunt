@@ -1,3 +1,9 @@
+## 0.74.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** the file search also finds classes and symbols, from the language server and from declarations in every source file ([a2280ef](https://github.com/unshoppable/hunt/commit/a2280ef))
+
 ## 0.73.0 (2026-10-22)
 
 ### 🚀 Features

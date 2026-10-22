@@ -1,3 +1,13 @@
+## 0.80.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** ⌘Ü renames the symbol at the caret and its usages across the project like WebStorm's Rename dialog, optionally also in comments, strings and non-code files with a preview ([7c81464](https://github.com/unshoppable/hunt/commit/7c81464))
+
+### 🩹 Fixes
+
+- **client:** while the usage endpoint refuses reads, a token account reads its plan limits from the rate-limit headers of a one-token Fable request ([ceb6349](https://github.com/unshoppable/hunt/commit/ceb6349))
+
 ## 0.79.0 (2026-10-22)
 
 ### 🚀 Features

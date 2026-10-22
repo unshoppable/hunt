@@ -1,3 +1,9 @@
+## 0.71.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** ⌘G in the editor removes unused imports and formats the file with the project's Prettier, or with tsgo when the project has none ([6504593](https://github.com/unshoppable/hunt/commit/6504593))
+
 ## 0.70.0 (2026-10-21)
 
 ### 🚀 Features

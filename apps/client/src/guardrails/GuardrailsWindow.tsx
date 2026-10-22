@@ -603,7 +603,6 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
                     ? `What should the new ${labels.singular} be about?`
                     : "What should this file contain?"
               }
-              hasSidebar={false}
               onClose={agentChat.close}
             />
           ) : null}

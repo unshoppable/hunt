@@ -50,6 +50,8 @@ type EventPayloads = {
   "editor:open": EditorOpenRequest;
   /** Sent by an editor window to every window once it takes `editor:open` events. */
   "editor:ready": { label: string };
+  /** Sent by a secondary window to the main window to show a session there (see sessions/showSession.ts). */
+  "session:show": { sessionId: string };
   /** Sent by the main window to a diff window booted ahead of time (see graph/diffWindows.ts). */
   "diff:open": DiffOpenRequest;
   /** Sent by a diff window to every window once it takes `diff:open` events and knows the sessions. */

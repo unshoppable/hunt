@@ -16,8 +16,9 @@ import { DeclineReasonButton } from "./DeclineReasonButton";
 import { useFollowScroll } from "./useFollowScroll";
 import { useVmConnect } from "./useVmConnect";
 import { titleFromPrompt } from "../sessions/sessionLabels";
-import { DANGER_CLEAR_BUTTON, GHOST_BUTTON_XS, ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SEND_BUTTON } from "../ui/buttons";
-import { CloseIcon, SendIcon, TrashIcon } from "../ui/icons";
+import { showSessionInMainWindow } from "../sessions/showSession";
+import { DANGER_CLEAR_BUTTON, ICON_BUTTON_SM, ICON_BUTTON_XS, PRIMARY_BUTTON_XS, SEND_BUTTON } from "../ui/buttons";
+import { CloseIcon, LinkIcon, SendIcon, TrashIcon } from "../ui/icons";
 import { trackDrag } from "../ui/pointerDrag";
 import { ResizeGrips } from "../ui/ResizeGrips";
 import { useAutoGrow, useTextareaDrag } from "../ui/useAutoGrow";
@@ -85,8 +86,6 @@ type SubChatPopoverProps = {
   context?: { label: string; text: string };
   /** Text the first question's textarea starts with; the caret is placed after it. */
   initialText?: string;
-  /** Whether the window has the sidebar the "Open in sidebar" button switches to; off in secondary windows. */
-  hasSidebar?: boolean;
   /** Called after the user moved or resized the popover, with how far its anchored corner now sits from the anchor. */
   onPlaced?: (offset: { x: number; y: number }) => void;
   /**
@@ -108,7 +107,7 @@ type SubChatPopoverProps = {
  * makes the text area taller at the expense of the conversation, remembered until it is dragged back to one line. A
  * question sent while a turn runs is queued for the end of that turn.
  */
-export function SubChatPopover({ parentSessionId, request, subSessionId: initialSubSessionId, title, placeholder, context, initialText = "", hasSidebar = true, onPlaced, onDecline, onClose }: SubChatPopoverProps) {
+export function SubChatPopover({ parentSessionId, request, subSessionId: initialSubSessionId, title, placeholder, context, initialText = "", onPlaced, onDecline, onClose }: SubChatPopoverProps) {
   const [subSessionId, setSubSessionId] = useState<string | null>(initialSubSessionId ?? null);
   const [text, setText] = useState(initialText);
   const [isCreating, setIsCreating] = useState(false);
@@ -132,7 +131,6 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   const answerPermission = useHuntStore((state) => state.answerPermission);
   const setConfigOption = useHuntStore((state) => state.setConfigOption);
   const knownOptions = useAgentDefaultsStore((state) => state.knownOptions);
-  const selectSession = useHuntStore((state) => state.selectSession);
   const closeSession = useHuntStore((state) => state.closeSession);
   const activeSessionId = useHuntStore((state) => state.activeSessionId);
   const chat = useHuntStore((state) => (subSessionId ? state.chats[subSessionId] : undefined));
@@ -297,8 +295,9 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
     setText((current) => appendPromptTexts(current, [{ id: promptId, text: promptText, images: [] }]));
   }
 
-  function showInMainPane(id: string) {
-    void selectSession(id);
+  /** Shows the sub chat in the main window's chat pane, also from a secondary window, and closes the popover. */
+  function jumpToChat(id: string) {
+    showSessionInMainWindow(id);
     onClose();
   }
 
@@ -431,24 +430,19 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
       className="chat fixed z-50 flex flex-col overflow-hidden rounded-xl border border-neutral-600 bg-(--surface-chat) text-sm shadow-2xl shadow-black/50 outline-none"
     >
       <header className="flex cursor-grab items-center gap-2 border-b border-(--line) pr-9 pl-12 py-2.5 select-none active:cursor-grabbing" onPointerDown={beginMove}>
-        <span className="min-w-0 flex-1 truncate text-[13px] text-neutral-400" title={describeSelection(request.selection)}>
+        <span className="min-w-0 truncate text-[13px] text-neutral-400" title={describeSelection(request.selection)}>
           {title ?? (
             <>
               Sub chat about <span className="font-mono text-neutral-300">{lines}</span>
             </>
           )}
         </span>
-        {hasSidebar && subSessionId && subSessionId !== activeSessionId ? (
-          <button
-            type="button"
-            onClick={() => showInMainPane(subSessionId)}
-            className={GHOST_BUTTON_XS}
-            title="Show this sub chat in the main pane"
-          >
-            Open in sidebar
+        {subSessionId && subSessionId !== activeSessionId ? (
+          <button type="button" onClick={() => jumpToChat(subSessionId)} className={`${ICON_BUTTON_XS} shrink-0`} title="Jump to chat" aria-label="Jump to chat">
+            <LinkIcon className="size-3.5" />
           </button>
         ) : null}
-        <button type="button" onClick={onClose} className={ICON_BUTTON_SM} title="Close (esc)" aria-label="Close">
+        <button type="button" onClick={onClose} className={`${ICON_BUTTON_SM} ml-auto`} title="Close (esc)" aria-label="Close">
           <CloseIcon />
         </button>
       </header>

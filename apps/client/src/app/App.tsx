@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useHuntStore } from "../state/store";
 import { SessionSidebar } from "../sessions/SessionSidebar";
 import { NewSessionView } from "../sessions/NewSessionView";
+import { useShowSessionRequests } from "../sessions/showSession";
 import { ChatPanel } from "../chat/ChatPanel";
 import { DiffPanel } from "../diff/DiffPanel";
 import { GitPanel } from "../git/GitPanel";
@@ -91,6 +92,7 @@ export function App() {
   useRemoteSettingsSync();
   useAccountsSync();
   useBackendEvents();
+  useShowSessionRequests();
   useRememberWindowBounds("main");
 
   // Each session's editor shows the tabs, carets and scroll positions it was left with, also after a restart.

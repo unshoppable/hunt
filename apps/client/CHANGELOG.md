@@ -1,3 +1,13 @@
+## 0.72.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** code copied from Hunt's editors is pasted into the prompt as a Markdown code block, and sent prompts show their code blocks highlighted ([0befe56](https://github.com/unshoppable/hunt/commit/0befe56))
+
+### 🩹 Fixes
+
+- **client:** type aliases take WebStorm's interface color, and the angle brackets of TypeScript generics its operator color ([5a45730](https://github.com/unshoppable/hunt/commit/5a45730))
+
 ## 0.71.0 (2026-10-22)
 
 ### 🚀 Features

@@ -1,3 +1,13 @@
+## 0.90.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** imports from path aliases and packages get their WebStorm color from the language server ([43dd827](https://github.com/unshoppable/hunt/commit/43dd827))
+
+### 🩹 Fixes
+
+- **client:** the popup of inserted lines shows only its toolbar, above the block, so the inserted lines stay visible ([9f15368](https://github.com/unshoppable/hunt/commit/9f15368))
+
 ## 0.89.0 (2026-10-22)
 
 ### 🚀 Features

@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
-import { classifyWebstorm } from "./webstormClassifier";
+import { classifyWebstorm, roleOfImportHover } from "./webstormClassifier";
 import { WEBSTORM_ROLES, type WebstormRole } from "./webstormRoles";
 
 const OTHER = `
@@ -13,6 +13,7 @@ export interface Shape { kind: string }
 const MAIN = `
 import { Repo, Entity, helper, Shape } from "./other";
 import * as mod from "./other";
+import { External, Missing as Renamed, Unknown } from "@scope/missing";
 declare const Deco: any;
 
 const CONFIG = { a: 1 };
@@ -52,6 +53,7 @@ function globalFn(param: number): void {
   mod.helper(1);
   const alias: Alias = { kind: "x" };
   alias.kind;
+  const external: External | Renamed | Unknown | null = null;
 }
 
 @Deco.table({ name: helper })
@@ -62,8 +64,17 @@ class Decorated {
 
 type Classified = { text: string; role: WebstormRole };
 
-/** Classifies `main.ts` (importing `other.ts`) with a program over in-memory sources and the ES2020 and DOM libs. */
-function classify(): Classified[] {
+/** Roles of the imports from the unresolvable `@scope/missing`, as the language server would report them. */
+const IMPORT_ROLES = {
+  "@scope/missing\0External": WEBSTORM_ROLES.indexOf("interface"),
+  "@scope/missing\0Missing": WEBSTORM_ROLES.indexOf("enum"),
+};
+
+/**
+ * Classifies `main.ts` (importing `other.ts`) with a program over in-memory sources and the ES2020 and DOM libs; the
+ * imports from `@scope/missing` take their roles from `IMPORT_ROLES`.
+ */
+function classify(): { classified: Classified[]; unresolvedImports: { key: string; text: string }[] } {
   const files: Record<string, string> = { "/project/main.ts": MAIN, "/project/other.ts": OTHER };
   const options: ts.CompilerOptions = {
     target: ts.ScriptTarget.ES2020,
@@ -88,16 +99,19 @@ function classify(): Classified[] {
   };
   const program = ts.createProgram(Object.keys(files), options, host);
   const sourceFile = program.getSourceFile("/project/main.ts")!;
-  const triples = classifyWebstorm(ts, sourceFile, program.getTypeChecker());
+  const { classifications: triples, unresolvedImports } = classifyWebstorm(ts, sourceFile, program.getTypeChecker(), IMPORT_ROLES);
 
   const result: Classified[] = [];
   for (let index = 0; index < triples.length; index += 3) {
     result.push({ text: MAIN.slice(triples[index], triples[index] + triples[index + 1]), role: WEBSTORM_ROLES[triples[index + 2]] });
   }
-  return result;
+  return {
+    classified: result,
+    unresolvedImports: unresolvedImports.map((unresolvedImport) => ({ key: unresolvedImport.key, text: MAIN.slice(unresolvedImport.offset).match(/^\w+/)![0] })),
+  };
 }
 
-const classified = classify();
+const { classified, unresolvedImports } = classify();
 
 /** The distinct roles every identifier spelled `text` got, in order of first appearance. */
 function rolesOf(text: string): WebstormRole[] {
@@ -165,6 +179,14 @@ describe("classifyWebstorm", () => {
     expect(rolesOf("mod")).toEqual(["moduleName"]);
   });
 
+  it("colors unresolved imports by the roles passed in and reports those without one", () => {
+    expect(rolesOf("External")).toEqual(["interface"]);
+    expect(rolesOf("Renamed")).toEqual(["enum"]);
+    expect(rolesOf("Missing")).toEqual([]);
+    expect(rolesOf("Unknown")).toEqual([]);
+    expect(unresolvedImports).toEqual([{ key: "@scope/missing\0Unknown", text: "Unknown" }]);
+  });
+
   it("colors decorator heads as metadata and their arguments normally", () => {
     expect(rolesOf("Deco")).toEqual(["globalVariable", "metadata"]);
     expect(rolesOf("table")).toEqual(["metadata"]);
@@ -193,5 +215,24 @@ describe("classifyWebstorm", () => {
   it("colors a shorthand property by its value", () => {
     expect(rolesOf("obj")).toEqual(["localVariable"]);
     expect(classified.filter((entry) => entry.text === "em").map((entry) => entry.role)).toEqual(["instanceField", "instanceField", "localVariable", "localVariable"]);
+  });
+});
+
+describe("roleOfImportHover", () => {
+  it("reads the kind of an import from the language server's hover", () => {
+    expect(roleOfImportHover("(alias) interface CreateHospitalCaseForAnalysis")).toBe("interface");
+    expect(roleOfImportHover("(alias) class HospitalCaseForAnalysis")).toBe("class");
+    expect(roleOfImportHover("(alias) abstract class Base<T>")).toBe("class");
+    expect(roleOfImportHover("(alias) type Id = string")).toBe("typeAlias");
+    expect(roleOfImportHover("(alias) enum MlCodeType")).toBe("enum");
+    expect(roleOfImportHover("(alias) const enum Flags")).toBe("enum");
+    expect(roleOfImportHover("(alias) function helper(): void")).toBe("globalFunction");
+    expect(roleOfImportHover("(alias) namespace Api")).toBe("moduleName");
+  });
+
+  it("leaves variables and other text without a role", () => {
+    expect(roleOfImportHover("(alias) const describe: SuiteAPI")).toBeNull();
+    expect(roleOfImportHover("(alias) let counter: number")).toBeNull();
+    expect(roleOfImportHover("interface Local")).toBeNull();
   });
 });

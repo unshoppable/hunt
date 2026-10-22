@@ -1,3 +1,10 @@
+## 0.73.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** closing an editor tab or window keeps unsaved edits, and the project tree and change list mark the file with a blue dot ([abfbb73](https://github.com/unshoppable/hunt/commit/abfbb73))
+- **client:** every session and sub session shows its inspector tab, its selected diff file and its editor tabs with caret and scroll position as it was left, also after a restart ([4050461](https://github.com/unshoppable/hunt/commit/4050461))
+
 ## 0.72.1 (2026-10-22)
 
 ### 🩹 Fixes

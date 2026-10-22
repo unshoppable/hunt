@@ -59,6 +59,7 @@ export const WEBSTORM_TOKEN_RULES: monaco.editor.ITokenThemeRule[] = [
   { token: "annotation", foreground: WEBSTORM.METADATA, fontStyle: "italic" },
   { token: "type.identifier", foreground: WEBSTORM.CLASS },
   { token: "type.identifier.interface", foreground: WEBSTORM.INTERFACE },
+  { token: "type.identifier.alias", foreground: WEBSTORM.INTERFACE },
   { token: "type.identifier.enum", foreground: WEBSTORM.ENUM },
   { token: "identifier", foreground: WEBSTORM.LOCAL_VARIABLE },
   { token: "identifier.function", foreground: WEBSTORM.GLOBAL_FUNCTION },
@@ -72,7 +73,8 @@ export const WEBSTORM_TOKEN_RULES: monaco.editor.ITokenThemeRule[] = [
   { token: "class", foreground: WEBSTORM.CLASS },
   { token: "interface", foreground: WEBSTORM.INTERFACE },
   { token: "enum", foreground: WEBSTORM.ENUM },
-  { token: "typeAlias", foreground: WEBSTORM.CLASS },
+  // WebStorm colors type aliases, its own and those of the libraries (`Omit`, `Partial`), with TS.INTERFACE.
+  { token: "typeAlias", foreground: WEBSTORM.INTERFACE },
   { token: "typeParameter", foreground: WEBSTORM.TYPE_PARAMETER },
   { token: "enumMember", foreground: WEBSTORM.STATIC_MEMBER_VARIABLE, fontStyle: "italic" },
   { token: "globalFunction", foreground: WEBSTORM.GLOBAL_FUNCTION },
@@ -105,6 +107,9 @@ export const WEBSTORM_TOKEN_RULES: monaco.editor.ITokenThemeRule[] = [
   { token: "delimiter.array", foreground: WEBSTORM.PUNCTUATION, fontStyle: "" },
   { token: "delimiter.parenthesis", foreground: WEBSTORM.PUNCTUATION, fontStyle: "" },
   { token: "delimiter.angle", foreground: WEBSTORM.PUNCTUATION, fontStyle: "" },
+  // WebStorm lexes the angle brackets of TypeScript generics as `<`/`>` operators (JS.OPERATION_SIGN).
+  { token: "delimiter.angle.ts", foreground: WEBSTORM.OPERATION_SIGN, fontStyle: "italic" },
+  { token: "delimiter.angle.js", foreground: WEBSTORM.OPERATION_SIGN, fontStyle: "italic" },
 
   // JSON (built-in grammar)
   { token: "string.key.json", foreground: WEBSTORM.JSON_KEY },
@@ -210,7 +215,8 @@ export function typescriptLanguage(tokenPostfix: ".ts" | ".js"): monaco.language
         [/@[a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)*/, "annotation"],
         [/(interface)(\s+)([A-Za-z_$][\w$]*)/, ["keyword", "", "type.identifier.interface"]],
         [/(enum)(\s+)([A-Za-z_$][\w$]*)/, ["keyword", "", "type.identifier.enum"]],
-        [/(class|type)(\s+)([A-Za-z_$][\w$]*)/, ["keyword", "", "type.identifier"]],
+        [/(type)(\s+)([A-Za-z_$][\w$]*)/, ["keyword", "", "type.identifier.alias"]],
+        [/(class)(\s+)([A-Za-z_$][\w$]*)/, ["keyword", "", "type.identifier"]],
         [/(function)(\s*\*?\s*)([A-Za-z_$][\w$]*)/, ["keyword", "", "identifier.function"]],
         [/(const|let|var)(\s+)([A-Za-z_$][\w$]*)/, ["keyword", "", "variable"]],
         [/(\.)(\s*)(#?[a-zA-Z_$][\w$]*)(?=\s*\()/, ["delimiter.dot", "", "identifier.member.function"]],

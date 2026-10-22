@@ -219,13 +219,19 @@ impl WorktreeDocuments {
         effects
     }
 
-    /// Records that the file on disk holds `text` now and returns whether the document still has unsaved edits.
+    /// Records that the file on disk holds `text` now and returns whether the document still has unsaved edits. A
+    /// document without unsaved edits takes `text` over, so that a later save cannot write its outdated text back.
     pub fn mark_saved(&mut self, path: &str, text: String) -> (bool, Effects) {
         let worktree_path = self.worktree_path();
         let Some(document) = self.documents.get_mut(path) else {
             return (false, Effects::default());
         };
         let was_dirty = document.is_dirty();
+        if !was_dirty && document.text != text {
+            let mut effects = self.replace(path, text, true);
+            effects.extend(self.close_if_unused(path));
+            return (false, effects);
+        }
         document.saved_text = text;
         let is_dirty = document.is_dirty();
         let mut effects = Effects::default();
@@ -722,6 +728,23 @@ mod tests {
         let DocumentEvent::Changed(event) = &effects.events[0] else { panic!("expected a change event") };
         assert_eq!((event.text.as_deref(), event.is_dirty), (Some("ab"), false));
         assert_eq!(documents.revert("a.ts"), Effects::default());
+    }
+
+    #[test]
+    fn a_clean_document_takes_the_text_written_elsewhere_over() {
+        let mut documents = documents();
+        documents.open("a.ts", "main", "typescript", read("old")).unwrap();
+
+        let (is_dirty, effects) = documents.mark_saved("a.ts", "new".into());
+        assert!(!is_dirty);
+        assert_eq!(methods(&effects), ["textDocument/didChange"]);
+        let DocumentEvent::Changed(event) = &effects.events[0] else { panic!("expected a change event") };
+        assert_eq!((event.text.as_deref(), event.is_dirty), (Some("new"), false));
+        assert_eq!(documents.text("a.ts").unwrap(), "new");
+
+        documents.edit("a.ts", 2, vec![change((0, 0), (0, 0), "my ")]).unwrap();
+        assert_eq!(documents.mark_saved("a.ts", "newer".into()).0, true, "unsaved edits stay");
+        assert_eq!(documents.text("a.ts").unwrap(), "my new");
     }
 
     #[test]

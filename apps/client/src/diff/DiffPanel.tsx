@@ -22,7 +22,7 @@ import { useDirtyPaths } from "../ide/useDirtyPaths";
 import { selectionChatsFor } from "../ide/selectionChats";
 import { useReviewedPullRequest } from "../review/reviewComments";
 import { confirmDestructive } from "../ui/confirm";
-import { isShortcut } from "../ui/shortcuts";
+import { isShortcut, useShortcutLabel } from "../ui/shortcuts";
 import { baseName } from "../ui/path";
 import { UnsavedDot } from "../ui/UnsavedDot";
 import { useDismiss } from "../ui/useDismiss";
@@ -109,6 +109,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const openInEditorShortcut = useShortcutLabel("editor.selectInTree");
   const subChat = useSubChatPopover();
   const closeSubChat = subChat.close;
   /** Bumped after local changes to the worktree (save, revert, shelve) so both effects below reload. */
@@ -140,6 +141,18 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [sessionId, worktreePath, noteWorktreeChanged]);
+
+  // ⇧⌘2 (keymap default, the editor's "select in tree") opens the selected file in the editor window.
+  useEffect(() => {
+    if (!selectedPath) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || !selectedPath || !isShortcut(event, "editor.selectInTree")) return;
+      event.preventDefault();
+      void openInEditorWindow(sessionId, { path: selectedPath });
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [sessionId, selectedPath]);
 
   // The first changelist loads at once; reloads after edits wait, so a burst of them loads once.
   const hasLoadedRef = useRef(false);
@@ -491,6 +504,18 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
           <div className="mb-1 truncate border-b border-(--line) px-2 pb-1 font-mono text-[12px] text-neutral-500" title={contextMenu.file.path}>
             {baseName(contextMenu.file.path)}
           </div>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setContextMenu(null);
+              void openInEditorWindow(sessionId, { path: contextMenu.file.path });
+            }}
+            className="flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left hover:bg-(--row-hover)"
+          >
+            Open in editor
+            {openInEditorShortcut ? <span className="text-neutral-500">{openInEditorShortcut}</span> : null}
+          </button>
           <button
             type="button"
             role="menuitem"

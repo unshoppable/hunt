@@ -355,7 +355,7 @@ to other or additional keys, flags two commands that share one and keeps the cha
 | ⌘E / ⌘R | Move the active tab to the pane on the left / right, creating it when needed |
 | ⇧⌘E / ⇧⌘R | Move the active tab to the pane above / below |
 | ⌘W / ⇧⌘W | Close the active tab / every tab; the editor window closes with its last tab |
-| ⇧⌘2 | Select the file in the project tree |
+| ⇧⌘2 | Select the file in the project tree; in the change list, open it in the editor |
 | ⌘S | Save every file with unsaved edits, also those of closed tabs and other windows; also with the focus in the project tree, the changelist or the chat |
 | ⌘G | Remove unused imports (tsgo), then format with the Prettier the worktree installs, its config and plugins included (`apps/client/scripts/prettier.mjs`); without Prettier with tsgo's formatter |
 | ⌘Ü | "Rename…" (also in the context menu): renames the symbol at the caret across the project through tsgo, asked at its declaration so imports follow; optionally also the name in comments and strings and in non-code files, which always opens the preview with a check box per occurrence; touched files without unsaved edits are saved (`apps/client/src/ide/RenameDialog.tsx`) |

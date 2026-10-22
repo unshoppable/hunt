@@ -54,7 +54,7 @@ export const KEYMAP_COMMANDS = [
   },
   { id: "editor.back", label: "Navigate back", group: "Editor", scope: "app", defaults: ["Meta+[", "Alt+Meta+ArrowLeft"] },
   { id: "editor.forward", label: "Navigate forward", group: "Editor", scope: "app", defaults: ["Meta+]", "Alt+Meta+ArrowRight"] },
-  { id: "editor.selectInTree", label: "Select the file in the project tree", group: "Editor", scope: "app", defaults: ["Shift+Meta+2"] },
+  { id: "editor.selectInTree", label: "Select the file in the project tree; in the change list, open it in the editor", group: "Editor", scope: "app", defaults: ["Shift+Meta+2"] },
   { id: "editor.closeTab", label: "Close tab", group: "Editor", scope: "app", defaults: ["Meta+w"] },
   { id: "editor.closeAllTabs", label: "Close all tabs", group: "Editor", scope: "app", defaults: ["Shift+Meta+w"] },
   { id: "editor.moveTabLeft", label: "Move tab to the pane on the left", group: "Editor", scope: "app", defaults: ["Meta+e"] },

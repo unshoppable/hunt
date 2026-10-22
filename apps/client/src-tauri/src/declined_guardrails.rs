@@ -1,6 +1,6 @@
 //! Guardrail suggestions the user declined, kept with their repository in `declined-guardrails.json` in the app data
-//! directory. The system prompt of every agent started in a repository lists that repository's declines, so the agent
-//! neither suggests them again nor anything as narrow.
+//! directory. `session::related` mirrors the declines of a session's repository into `WORKTREE_FILE` of its worktree,
+//! which the agent searches before it suggests a guardrail (`prompts/guardrail-offer.system-prompt.md`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -11,8 +11,8 @@ use uuid::Uuid;
 
 use crate::session::store;
 
-/// Lists the declined suggestions of the session's repository as examples of what not to suggest.
-const PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/declined-guardrails.system-prompt.md"));
+/// The declines of the worktree's repository, one JSON object per line, inside the worktree's `.hunt` folder.
+pub const WORKTREE_FILE: &str = ".hunt/declined-guardrails.jsonl";
 
 /// The kinds `<!-- hunt:guardrail KIND: … -->` may name (`KINDS` in `src/chat/guardrailSuggestion.ts`).
 const KINDS: [&str; 5] = ["instruction", "rule", "skill", "agent", "adr"];
@@ -27,16 +27,6 @@ pub enum DeclineReason {
     TooSpecific,
     AlreadyRecorded,
     NotWanted,
-}
-
-impl DeclineReason {
-    fn label(self) -> &'static str {
-        match self {
-            DeclineReason::TooSpecific => "too specific",
-            DeclineReason::AlreadyRecorded => "already recorded",
-            DeclineReason::NotWanted => "not wanted",
-        }
-    }
 }
 
 /// One declined suggestion: the repository its session works on, what the agent suggested and why the user declined it.
@@ -78,36 +68,33 @@ fn append(path: &Path, entry: DeclinedGuardrail) -> Result<(), String> {
     })
 }
 
-/// The prompt section listing the declines of `repo`, one line each; empty when the repository has none.
-fn prompt_for(entries: &[DeclinedGuardrail], repo: &Path) -> String {
-    let lines: Vec<String> = entries
+/// Every stored decline, oldest first.
+pub fn load_all(app: &AppHandle) -> Result<Vec<DeclinedGuardrail>, String> {
+    let path = file_path(app)?;
+    let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    load(&path)
+}
+
+/// The content of `WORKTREE_FILE` for a worktree of `repo`: its declines, oldest first, each with kind, reason, summary
+/// and date on one line; empty when the repository has none.
+pub fn worktree_text(entries: &[DeclinedGuardrail], repo: &Path) -> String {
+    entries
         .iter()
         .filter(|entry| entry.repo_path == repo)
-        .map(|entry| format!("- {}, {}: {}", entry.kind, entry.reason.label(), entry.summary.split_whitespace().collect::<Vec<_>>().join(" ")))
-        .collect();
-    if lines.is_empty() {
-        return String::new();
-    }
-    crate::graph::fill_prompt(PROMPT, &[("declinedGuardrails", &lines.join("\n"))])
+        .map(|entry| {
+            let line = serde_json::json!({
+                "kind": entry.kind,
+                "reason": entry.reason,
+                "summary": entry.summary.split_whitespace().collect::<Vec<_>>().join(" "),
+                "declinedAt": entry.declined_at.date_naive().to_string(),
+            });
+            format!("{line}\n")
+        })
+        .collect()
 }
 
-/// The system prompt section on the declines of the repository of the Hunt session `hunt_session_id`; empty when it
-/// has none or they cannot be read, which must not keep the agent from starting.
-pub fn system_prompt(app: &AppHandle, hunt_session_id: Uuid) -> String {
-    let section = (|| {
-        let repo = store::find_session(app, hunt_session_id)?.repo_path;
-        let path = file_path(app)?;
-        let _guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok::<_, String>(prompt_for(&load(&path)?, &repo))
-    })();
-    section.unwrap_or_else(|error| {
-        eprintln!("failed to list the declined guardrails: {error}");
-        String::new()
-    })
-}
-
-/// Records that the user declined the guardrail the agent of session `id` suggested; agents started in its repository
-/// from now on get it listed in their system prompt.
+/// Records that the user declined the guardrail the agent of session `id` suggested and rewrites `WORKTREE_FILE` of
+/// every worktree.
 #[tauri::command]
 pub fn decline_guardrail(app: AppHandle, id: Uuid, kind: String, summary: String, reason: DeclineReason) -> Result<(), String> {
     if !KINDS.contains(&kind.as_str()) {
@@ -115,7 +102,9 @@ pub fn decline_guardrail(app: AppHandle, id: Uuid, kind: String, summary: String
     }
     let record = store::find_session(&app, id)?;
     let entry = DeclinedGuardrail { repo_path: record.repo_path, kind, summary: summary.trim().to_string(), reason, session_id: id, declined_at: chrono::Utc::now() };
-    append(&file_path(&app)?, entry).map_err(|error| format!("failed to record the declined guardrail: {error}"))
+    append(&file_path(&app)?, entry).map_err(|error| format!("failed to record the declined guardrail: {error}"))?;
+    crate::session::related::refresh_all(&app);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -142,17 +131,20 @@ mod tests {
     }
 
     #[test]
-    fn prompt_lists_only_the_declines_of_the_repository() {
+    fn the_worktree_file_lists_only_the_declines_of_the_repository() {
         let entries = [
             entry("/repo", "Check the migration\nin a rollback transaction", DeclineReason::TooSpecific),
             entry("/other", "Something else", DeclineReason::NotWanted),
             entry("/repo", "Use useLoad", DeclineReason::AlreadyRecorded),
         ];
-        let prompt = prompt_for(&entries, Path::new("/repo"));
-        assert!(prompt.contains("- skill, too specific: Check the migration in a rollback transaction\n- skill, already recorded: Use useLoad"));
-        assert!(!prompt.contains("Something else"));
-        assert!(!prompt.contains("{{"));
-        assert_eq!(prompt_for(&entries, Path::new("/none")), "");
+        let text = worktree_text(&entries, Path::new("/repo"));
+        let lines: Vec<serde_json::Value> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["reason"], "tooSpecific");
+        assert_eq!(lines[0]["summary"], "Check the migration in a rollback transaction");
+        assert_eq!(lines[1]["kind"], "skill");
+        assert!(!text.contains("Something else"));
+        assert_eq!(worktree_text(&entries, Path::new("/none")), "");
     }
 
     #[test]

@@ -14,6 +14,12 @@ Never mark a decision or finding about one specific piece of code, file, migrati
 carried out or verified this one change. Ask yourself whether the guardrail would help in several different future
 tasks; if not, or if you are unsure, leave the marker out. Most replies get no marker.
 
+Hunt keeps `.hunt/declined-guardrails.jsonl` in the worktree: every guardrail suggestion the user declined in this
+repository, one JSON object per line with `kind`, `reason` (`tooSpecific`, `alreadyRecorded` or `notWanted`), `summary`
+and `declinedAt`; it is empty while nothing was declined. Before you add the marker, search it with `grep -i` for a few
+key words of your suggestion and look at the last lines with `tooSpecific` as examples of what is too narrow; never
+read the whole file. Leave the marker out when a declined suggestion says the same as yours or is as narrow as yours.
+
 KIND is the one that fits best: `adr` (architectural decision), `skill` (repeatable workflow), `rule` (convention for
 part of the code), `agent` (delegable specialist task) or `instruction` (CLAUDE.md). SUMMARY states in one sentence, in
 the language of the conversation, what the guardrail should say.

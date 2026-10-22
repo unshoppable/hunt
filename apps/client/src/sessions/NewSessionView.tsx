@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { commands } from "../ipc/commands";
 import { useHuntStore, type AgentSetup, type PromptDraft, type SessionStart, type WorktreeTarget } from "../state/store";
 import { commandsFor, useAgentDefaultsStore } from "../state/agentDefaults";
+import { useSessionViewStore } from "../state/sessionViews";
 import { configuredVmSettings, useSettingsStore } from "../state/settings";
 import { findSelectOption, listChoiceOptions, listModes } from "../chat/configOptions";
 import { PromptInput, type ConfigSelect } from "../chat/PromptInput";
@@ -83,7 +84,7 @@ export function NewSessionView({
   const latestRepoPath = useHuntStore((state) => latestTopLevelSession(state.sessions)?.repoPath ?? null);
   const createSession = useHuntStore((state) => state.createSession);
   const createSubSession = useHuntStore((state) => state.createSubSession);
-  const setRightTab = useHuntStore((state) => state.setRightTab);
+  const setTab = useSessionViewStore((state) => state.setTab);
   const knownOptions = useAgentDefaultsStore((state) => state.knownOptions);
   const knownCommands = useAgentDefaultsStore((state) => state.knownCommands);
   const preferred = useAgentDefaultsStore((state) => state.preferred);
@@ -212,7 +213,7 @@ export function NewSessionView({
       newBranch: null,
     };
     startSession(selected.title, target, null);
-    setRightTab("diff");
+    setTab(null, "diff");
   }
 
   /** Shows the list `next`, or the start view again when it shows already. */

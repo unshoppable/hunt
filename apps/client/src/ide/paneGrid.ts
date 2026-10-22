@@ -25,6 +25,20 @@ export function createPane(tabs: string[] = []): Pane {
   return { id: nextId("pane"), tabs, activePath: tabs[tabs.length - 1] ?? null };
 }
 
+/** `layout` with fresh row and pane ids, as a layout restored after a restart needs; `paneIds` maps each old pane id to its new one. */
+export function withFreshIds(layout: PaneLayout): { layout: PaneLayout; paneIds: Map<string, string> } {
+  const paneIds = new Map<string, string>();
+  const rows = layout.rows.map((row) => ({
+    id: nextId("row"),
+    panes: row.panes.map((pane) => {
+      const id = nextId("pane");
+      paneIds.set(pane.id, id);
+      return { ...pane, id };
+    }),
+  }));
+  return { layout: { rows }, paneIds };
+}
+
 export function findPane(layout: PaneLayout, paneId: string): Pane | null {
   for (const row of layout.rows) {
     const pane = row.panes.find((candidate) => candidate.id === paneId);

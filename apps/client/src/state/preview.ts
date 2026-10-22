@@ -3,6 +3,7 @@ import { commands } from "../ipc/commands";
 import type { PreviewStatus, TmuxWindow } from "../ipc/types";
 import { hasRespondingService, withLastKnown } from "../preview/services";
 import { errorText } from "../ui/useLoad";
+import { useSessionViewStore } from "./sessionViews";
 import { useHuntStore } from "./store";
 
 /** What Hunt asks the agent of a remote session when none of its services runs. */
@@ -85,7 +86,7 @@ export const usePreviewStore = create<PreviewState>((set) => {
 
     startApp: (id) => {
       update(id, (current) => ({ ...current, error: null, awaitingStart: true }));
-      useHuntStore.getState().setRightTab("preview");
+      useSessionViewStore.getState().setTab(id, "preview");
       // The normal prompt path: it starts a VM that is off and queues the prompt while the agent is busy.
       void useHuntStore.getState().sendPrompt(id, START_APP_PROMPT);
     },

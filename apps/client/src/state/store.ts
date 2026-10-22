@@ -45,12 +45,6 @@ export type SessionMode = { id: string; name: string; description?: string | nul
 export type ContextUsage = { used: number; size: number };
 
 /**
- * Views of the inspector pane: the changelist diff, the built-in editor, the component diagram or the reviewed pull
- * request, and for a remote session also its preview and a terminal on its VM.
- */
-export type RightTab = "diff" | "git" | "editor" | "graph" | "pullRequest" | "preview" | "terminal";
-
-/**
  * The sync of a remote session's files with its VM: whether one runs, when the last one succeeded, what the last one
  * failed with and the files it could not sync.
  */
@@ -218,7 +212,6 @@ export type HuntState = {
   chats: Record<string, SessionChat>;
   /** What the prompt box of a session holds but has not sent yet, by session id; the box shows it again when the session is opened again. */
   promptDrafts: Record<string, PromptDraft>;
-  rightTab: RightTab;
   /**
    * Set while the chat pane shows the start view for a new session; `parentId` names the session a sub session is
    * drafted for. A failed creation brings the view back with its `error` and the `prompt` that was not sent.
@@ -331,7 +324,6 @@ export type HuntState = {
   setMode: (id: string, modeId: string) => Promise<void>;
   setConfigOption: (id: string, configId: string, value: string) => Promise<void>;
   answerPermission: (id: string, requestId: string, optionId: string) => Promise<void>;
-  setRightTab: (tab: RightTab) => void;
   /** Bumps `editVersion` after a local write to the worktree (a save in the diff or editor pane) so every view reloads. */
   noteWorktreeChanged: (id: string) => void;
   /** Creates the empty chat record of `id` when there is none, so worktree-change events reach a window that shows the session without its chat (the editor window). */
@@ -999,7 +991,6 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     activeSessionId: null,
     chats: {},
     promptDrafts: {},
-    rightTab: "diff",
     draft: null,
     untitledIds: [],
     remoteSync: { isRunning: false, error: null },
@@ -1272,7 +1263,6 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       await commands.answerPermission(requestId, optionId);
     },
 
-    setRightTab: (rightTab) => set({ rightTab }),
 
     noteWorktreeChanged: (id) => {
       updateChat(id, (chat) => ({ ...chat, editVersion: chat.editVersion + 1 }));

@@ -11,7 +11,7 @@ import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession
 import { ChangeMarkers, type Marker } from "./changeMarkers";
 import { ChangePopover } from "./ChangePopover";
 import type { Workspace } from "./documents";
-import { noteCaret, useIdeStore, type PendingPosition } from "./ideStore";
+import { noteCaret, noteViewState, useIdeStore, viewStateOf, type PendingPosition } from "./ideStore";
 import { findUsages, formattingEdits, navigationAt, symbolPathAt, unusedImportEdits, type SymbolCrumb } from "./languageService";
 import { toMonacoRange, type TextEdit } from "./lsp/protocol";
 import { editsToText } from "./reformat";
@@ -31,6 +31,8 @@ import { baseName } from "../ui/path";
 import { errorText, useLoad } from "../ui/useLoad";
 
 const SYMBOL_PATH_DELAY_MS = 150;
+/** The caret and scroll position are remembered once they rested this long. */
+const VIEW_STATE_DELAY_MS = 300;
 /** Empty space the editor can scroll past the last line, instead of Monaco's default of a whole viewport. */
 const EDITOR_OVERSCROLL_PX = 400;
 
@@ -124,8 +126,6 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
   const hostRef = useRef<HTMLDivElement>(null);
   const tabListRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
-  /** Scroll position and selection per tab, restored when the tab is shown again. */
-  const viewStates = useRef(new Map<string, monaco.editor.ICodeEditorViewState | null>());
   const shownPathRef = useRef<string | null>(null);
   const markersRef = useRef<ChangeMarkers | null>(null);
   const chatMarkersRef = useRef<SelectionChatMarkers | null>(null);
@@ -254,6 +254,21 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
     setEditor(editor);
 
     let symbolTimer: ReturnType<typeof setTimeout> | null = null;
+    let viewStateTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Remembers the shown file's caret, selection and scroll position, so the tab shows them again, also after a restart. */
+    const saveViewState = () => {
+      viewStateTimer = null;
+      const shownPath = shownPathRef.current;
+      if (shownPath) {
+        noteViewState(latest.current.sessionId, latest.current.pane.id, shownPath, editor.saveViewState());
+      }
+    };
+    const scheduleViewState = () => {
+      if (viewStateTimer) {
+        clearTimeout(viewStateTimer);
+      }
+      viewStateTimer = setTimeout(saveViewState, VIEW_STATE_DELAY_MS);
+    };
     const subscriptions = [
       markers.onDidClickMarker((marker) => setShownMarker(marker)),
       markers.onDidChange(() => {
@@ -274,7 +289,9 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
         setComposer(null);
       }),
       editor.onDidFocusEditorWidget(() => latest.current.activatePane(latest.current.sessionId, latest.current.pane.id)),
+      editor.onDidScrollChange(scheduleViewState),
       editor.onDidChangeCursorPosition((event) => {
+        scheduleViewState();
         const { workspace: current, sessionId: id, pane: currentPane } = latest.current;
         const caretPath = current.pathOf(editor.getModel()?.uri ?? monaco.Uri.parse("inmemory://none"));
         if (caretPath) {
@@ -297,6 +314,10 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
       if (symbolTimer) {
         clearTimeout(symbolTimer);
       }
+      if (viewStateTimer) {
+        clearTimeout(viewStateTimer);
+      }
+      saveViewState();
       for (const subscription of subscriptions) {
         subscription.dispose();
       }
@@ -346,11 +367,11 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
         if (!editor || !activePath) return;
         if (editor.getModel() !== document.model) {
           if (shownPathRef.current) {
-            viewStates.current.set(shownPathRef.current, editor.saveViewState());
+            noteViewState(sessionId, pane.id, shownPathRef.current, editor.saveViewState());
           }
           editor.setModel(document.model);
           shownPathRef.current = activePath;
-          const viewState = viewStates.current.get(activePath);
+          const viewState = viewStateOf(sessionId, pane.id, activePath);
           if (viewState) {
             editor.restoreViewState(viewState);
           }
@@ -403,7 +424,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
     const layout = useIdeStore.getState().sessions[sessionId]?.layout;
     const isLastView = !layout || panesShowing(layout, path).length <= 1;
     if (isLastView && !(await workspace.discardIfConfirmed([path]))) return;
-    viewStates.current.delete(path);
+    noteViewState(sessionId, pane.id, path, null);
     closeTab(sessionId, pane.id, path);
   };
 

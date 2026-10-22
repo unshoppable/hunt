@@ -3,6 +3,7 @@ import { commands } from "../ipc/commands";
 import type { ChangedFile, ChangedFileView, FileDiff, FileVersion, GraphNode } from "../ipc/types";
 import { useHuntStore } from "../state/store";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
+import { useSessionViewStore } from "../state/sessionViews";
 import { useSettingsStore } from "../state/settings";
 import { isOwnChange, otherTouchers, type ChangeScope } from "./attribution";
 import { ownContent } from "./ownChanges";
@@ -78,7 +79,10 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   }, [scopedFiles, hiddenGlobsText]);
   /** The agent's review ratings from `.hunt/graph.json`, keyed by path; empty while there is no diagram. */
   const [reviewRatings, setReviewRatings] = useState<Map<string, GraphNode>>(() => new Map());
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  /** The selected file; the one selected when the session was left until the changelist arrives. */
+  const [selectedPath, setSelectedPath] = useState<string | null>(() => useSessionViewStore.getState().views[sessionId]?.diffPath ?? null);
+  const setDiffPath = useSessionViewStore((state) => state.setDiffPath);
+  const [isListLoaded, setIsListLoaded] = useState(false);
   const [diff, setDiff] = useState<FileDiff | null>(null);
   /** A newer version from disk that arrived while the editor had unsaved changes. */
   const [externalDiff, setExternalDiff] = useState<FileDiff | null>(null);
@@ -127,6 +131,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     {
       onValue: (result) => {
         setFiles(result);
+        setIsListLoaded(true);
         setError(null);
       },
       onError: (reason) => setError(errorText(reason)),
@@ -149,8 +154,15 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
 
   // The selection follows the visible list: a file that left it (reverted, shelved, or hidden by the scope or a glob) gives way to the first one.
   useEffect(() => {
+    if (!isListLoaded) return;
     setSelectedPath((current) => (current && visibleFiles.some((file) => file.path === current) ? current : (visibleFiles[0]?.path ?? null)));
-  }, [visibleFiles]);
+  }, [visibleFiles, isListLoaded]);
+
+  useEffect(() => {
+    if (isListLoaded) {
+      setDiffPath(sessionId, selectedPath);
+    }
+  }, [sessionId, selectedPath, isListLoaded, setDiffPath]);
 
   useEffect(() => {
     if (selectedPath) return;
@@ -173,7 +185,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
       onError: (reason) => setError(errorText(reason)),
     },
     [sessionId, selectedPath, editVersion, localVersion],
-    { isEnabled: !!selectedPath },
+    { isEnabled: !!selectedPath && isListLoaded },
   );
 
   const parentId = session?.parentId ?? null;

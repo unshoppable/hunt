@@ -11,6 +11,7 @@ import { useFileIconUrl } from "../diff/fileIcons";
 import { useFollowScroll } from "./useFollowScroll";
 import { SessionSummary, SessionSummaryToggle } from "./SessionSummary";
 import type { SelectionRequest } from "../diff/selectionContext";
+import { useSessionViewStore } from "../state/sessionViews";
 import { useSettingsStore } from "../state/settings";
 import { openGuardrailsWindow } from "../guardrails/openGuardrailsWindow";
 import { ensureAdrInstruction } from "../guardrails/adrInstruction";
@@ -80,7 +81,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const setConfigOption = useHuntStore((state) => state.setConfigOption);
   const answerPermission = useHuntStore((state) => state.answerPermission);
   const selectSession = useHuntStore((state) => state.selectSession);
-  const setRightTab = useHuntStore((state) => state.setRightTab);
+  const setTab = useSessionViewStore((state) => state.setTab);
   const openFile = useIdeStore((state) => state.openFile);
   const guardrailChat = useSubChatPopover();
   const [guardrailRequest, setGuardrailRequest] = useState("");
@@ -178,7 +179,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   function openSelectionInEditor() {
     if (!session?.selection) return;
     const { path, startLine, endLine } = session.selection;
-    setRightTab("editor");
+    setTab(sessionId, "editor");
     openFile(sessionId, path, { line: startLine, endLine });
   }
 

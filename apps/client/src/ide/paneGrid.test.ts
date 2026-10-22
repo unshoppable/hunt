@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_LAYOUT, closeTab, findPane, moveActiveTab, openInPane, openInRightSplit, type PaneLayout } from "./paneGrid";
+import { EMPTY_LAYOUT, allPanes, closeTab, findPane, moveActiveTab, openInPane, openInRightSplit, withFreshIds, type PaneLayout } from "./paneGrid";
 
 function shape(layout: PaneLayout): string[][][] {
   return layout.rows.map((row) => row.panes.map((pane) => pane.tabs));
@@ -115,5 +115,21 @@ describe("moveActiveTab", () => {
     const { layout: withE } = openInPane(down.layout, down.paneId, "e.ts");
     const up = moveActiveTab(withE, down.paneId, "up")!;
     expect(shape(up.layout)).toEqual([[["a.ts", "b.ts", "e.ts"], ["c.ts"]], [["d.ts"]]]);
+  });
+});
+
+describe("withFreshIds", () => {
+  it("renames rows and panes and maps the old pane ids to the new ones", () => {
+    const layout: PaneLayout = { rows: [{ id: "stored-row", panes: [{ id: "stored-a", tabs: ["a.ts", "b.ts"], activePath: "b.ts" }, { id: "stored-b", tabs: ["c.ts"], activePath: "c.ts" }] }] };
+    const { layout: fresh, paneIds } = withFreshIds(layout);
+    const panes = allPanes(fresh);
+    expect(fresh.rows[0]?.id).not.toBe("stored-row");
+    expect(panes.map((pane) => pane.id)).toEqual([paneIds.get("stored-a"), paneIds.get("stored-b")]);
+    expect(panes.map((pane) => pane.id)).not.toContain("stored-a");
+    expect(new Set(panes.map((pane) => pane.id)).size).toBe(2);
+    expect(panes.map(({ tabs, activePath }) => ({ tabs, activePath }))).toEqual([
+      { tabs: ["a.ts", "b.ts"], activePath: "b.ts" },
+      { tabs: ["c.ts"], activePath: "c.ts" },
+    ]);
   });
 });

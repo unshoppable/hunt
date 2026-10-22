@@ -1,5 +1,20 @@
 import { create } from "zustand";
-import { EMPTY_LAYOUT, activateTab, closeTab, findPane, moveActiveTab, openInPane, openInRightSplit, panesShowing, type Direction, type PaneLayout } from "./paneGrid";
+import type { editor } from "monaco-editor";
+import {
+  EMPTY_LAYOUT,
+  activateTab,
+  allPanes,
+  closeTab,
+  findPane,
+  firstPane,
+  moveActiveTab,
+  openInPane,
+  openInRightSplit,
+  panesShowing,
+  withFreshIds,
+  type Direction,
+  type PaneLayout,
+} from "./paneGrid";
 
 /**
  * A caret position the pane shows once `path` is open in it; with `endLine`, the lines `line..endLine` are selected
@@ -35,6 +50,51 @@ const carets = new Map<string, Location>();
 /** Records where the caret of `paneId` is; the next navigation away from there can be undone with `navigateBack`. */
 export function noteCaret(sessionId: string, location: Location): void {
   carets.set(`${sessionId}:${location.paneId}`, location);
+}
+
+/** Caret, selection and scroll position of each pane's tabs, by `sessionId:paneId:path`; outside the store so scrolling does not re-render. */
+const viewStates = new Map<string, editor.ICodeEditorViewState>();
+
+const viewStateListeners = new Set<(sessionId: string) => void>();
+
+function viewStateKey(sessionId: string, paneId: string, path: string): string {
+  return `${sessionId}:${paneId}:${path}`;
+}
+
+/** Records how `path` looked in `paneId`; the pane shows it that way when the tab comes back (`null` forgets it). */
+export function noteViewState(sessionId: string, paneId: string, path: string, viewState: editor.ICodeEditorViewState | null): void {
+  if (viewState) {
+    viewStates.set(viewStateKey(sessionId, paneId, path), viewState);
+  } else {
+    viewStates.delete(viewStateKey(sessionId, paneId, path));
+  }
+  for (const listener of viewStateListeners) {
+    listener(sessionId);
+  }
+}
+
+export function viewStateOf(sessionId: string, paneId: string, path: string): editor.ICodeEditorViewState | null {
+  return viewStates.get(viewStateKey(sessionId, paneId, path)) ?? null;
+}
+
+/** Calls `listener` with the session whose view states `noteViewState` changed; returns the unsubscribe function. */
+export function onViewStateChange(listener: (sessionId: string) => void): () => void {
+  viewStateListeners.add(listener);
+  return () => viewStateListeners.delete(listener);
+}
+
+/** A session's editor as it can be stored and brought back: its layout and the view states of its tabs by pane id, then path. */
+export type IdeSnapshot = { layout: PaneLayout; activePaneId: string | null; viewStates: Record<string, Record<string, editor.ICodeEditorViewState>> };
+
+export function snapshotOf(sessionId: string, session: IdeSession): IdeSnapshot {
+  const paneViewStates = allPanes(session.layout).map((pane) => {
+    const tabStates = pane.tabs.flatMap((path) => {
+      const viewState = viewStateOf(sessionId, pane.id, path);
+      return viewState ? [[path, viewState] as const] : [];
+    });
+    return [pane.id, Object.fromEntries(tabStates)] as const;
+  });
+  return { layout: session.layout, activePaneId: session.activePaneId, viewStates: Object.fromEntries(paneViewStates) };
 }
 
 function caretOf(sessionId: string, paneId: string | null): Location | null {
@@ -94,6 +154,8 @@ type IdeState = {
   moveActiveTab: (sessionId: string, direction: Direction) => void;
   clearPendingPosition: (sessionId: string, nonce: number) => void;
   revealActiveFile: (sessionId: string) => void;
+  /** Brings back a stored editor under fresh pane ids; a session the store holds already keeps what it shows. */
+  restoreSession: (sessionId: string, snapshot: IdeSnapshot) => void;
 };
 
 export const useIdeStore = create<IdeState>((set, get) => {
@@ -164,6 +226,20 @@ export const useIdeStore = create<IdeState>((set, get) => {
         nonceCounter += 1;
         return { ...session, revealRequest: { path: pane.activePath, nonce: nonceCounter } };
       });
+    },
+
+    restoreSession: (sessionId, snapshot) => {
+      if (get().sessions[sessionId]) return;
+      const { layout, paneIds } = withFreshIds(snapshot.layout);
+      for (const [storedPaneId, tabStates] of Object.entries(snapshot.viewStates)) {
+        const paneId = paneIds.get(storedPaneId);
+        if (!paneId) continue;
+        for (const [path, viewState] of Object.entries(tabStates)) {
+          viewStates.set(viewStateKey(sessionId, paneId, path), viewState);
+        }
+      }
+      const activePaneId = (snapshot.activePaneId && paneIds.get(snapshot.activePaneId)) || (firstPane(layout)?.id ?? null);
+      update(sessionId, () => ({ ...EMPTY_IDE_SESSION, layout, activePaneId }));
     },
   };
 });

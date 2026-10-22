@@ -21,6 +21,7 @@ import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes"
 import { PreviewPanel } from "../preview/PreviewPanel";
 import { isPreviewActive, isTerminalActive } from "../preview/services";
 import { usePreviewStore } from "../state/preview";
+import { rememberEditors, useRightTab, useSessionViewStore, type RightTab } from "../state/sessionViews";
 import { TerminalPanel } from "../terminal/TerminalPanel";
 import { HEADER_BAR } from "../ui/bars";
 import { TAB_ACTIVE, TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons";
@@ -51,8 +52,11 @@ export function App() {
     const preview = activeSessionId ? state.previews[activeSessionId] : undefined;
     return isTerminalActive(preview?.status ?? null, preview?.windows ?? null);
   });
-  const storedTab = useHuntStore((state) => state.rightTab);
-  const setRightTab = useHuntStore((state) => state.setRightTab);
+  /** The session whose tab the inspector shows and remembers; none while the start view shows. */
+  const shownSessionId = draft ? null : activeSessionId;
+  const storedTab = useRightTab(shownSessionId);
+  const setTab = useSessionViewStore((state) => state.setTab);
+  const setRightTab = (tab: RightTab) => setTab(shownSessionId, tab);
   const openFile = useIdeStore((state) => state.openFile);
   const ideLayout = useIdeStore((state) => (activeSessionId ? state.sessions[activeSessionId]?.layout : null) ?? EMPTY_IDE_SESSION.layout);
   const openPaths = useMemo(() => [...new Set(allPanes(ideLayout).flatMap((pane) => pane.tabs))], [ideLayout]);
@@ -88,6 +92,9 @@ export function App() {
   useAccountsSync();
   useBackendEvents();
   useRememberWindowBounds("main");
+
+  // Each session's editor shows the tabs, carets and scroll positions it was left with, also after a restart.
+  useEffect(() => rememberEditors(), []);
 
   // The window starts hidden (see tauri.conf.json) and appears once it has its remembered bounds; on first use it is
   // 1600 px wide (or as wide as the screen) and as tall as the screen.

@@ -1,3 +1,10 @@
+## 0.82.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** declined guardrail suggestions go into .claude/declined-guardrails.jsonl of the repository, and its CLAUDE.md tells agents to search them before they suggest a guardrail ([b8818dd](https://github.com/unshoppable/hunt/commit/b8818dd))
+- **client:** the agent searches the declined guardrail suggestions in .hunt/declined-guardrails.jsonl of its worktree before it suggests one, instead of getting them all in its system prompt ([e1ddcc4](https://github.com/unshoppable/hunt/commit/e1ddcc4))
+
 ## 0.81.0 (2026-10-22)
 
 ### 🚀 Features

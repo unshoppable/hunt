@@ -1,3 +1,9 @@
+## 0.76.0 (2026-10-22)
+
+### 🚀 Features
+
+- **client:** a guardrail suggestion can be declined with the × beside the "Guardrail" button, which then drops its highlight ([3aeced3](https://github.com/unshoppable/hunt/commit/3aeced3))
+
 ## 0.75.0 (2026-10-22)
 
 ### 🚀 Features

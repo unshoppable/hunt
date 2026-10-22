@@ -219,7 +219,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         <div ref={columnRef} className="chat-column">
           {session.selection ? (
             <div className="mb-5">
-              <SelectionCard selection={session.selection} isOpen />
+              <SelectionCard selection={session.selection} isOpen onOpen={openInEditor} />
             </div>
           ) : null}
           <MessageList

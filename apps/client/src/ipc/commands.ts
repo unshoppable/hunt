@@ -47,6 +47,8 @@ export const commands = {
   listBranches: (repoPath: string) => invoke<string[]>("list_branches", { repoPath }),
   /** The branch the repository's checkout is on; `HEAD` when it is detached. */
   currentBranch: (repoPath: string) => invoke<string>("current_branch", { repoPath }),
+  /** Fetches the branch `branch` of the repository's `origin`; `false` when `origin` has no such branch. */
+  fetchRepoBranch: (repoPath: string, branch: string) => invoke<boolean>("fetch_repo_branch", { repoPath, branch }),
   /** Open pull requests of the repository's GitHub remote, newest first; needs the `gh` CLI to be installed and logged in. */
   listPullRequests: (repoPath: string) => invoke<PullRequest[]>("list_pull_requests", { repoPath }),
   /** Title of the issue or pull request `number` of the GitHub repository `owner`/`name`, as `gh` sees it from `repoPath`. */

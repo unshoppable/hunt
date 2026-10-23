@@ -62,6 +62,7 @@ pub fn run() {
             session::commands::list_sessions,
             session::commands::list_branches,
             session::commands::current_branch,
+            session::commands::fetch_repo_branch,
             session::commands::list_pull_requests,
             session::commands::issue_title,
             session::commands::github_viewer,

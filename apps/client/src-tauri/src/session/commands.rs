@@ -100,6 +100,12 @@ pub async fn current_branch(repo_path: String) -> Result<String, String> {
     git::current_branch(Path::new(&repo_path)).await
 }
 
+/// Fetches the branch `branch` of the repository's `origin`; `false` when `origin` has no such branch.
+#[tauri::command]
+pub async fn fetch_repo_branch(repo_path: String, branch: String) -> Result<bool, String> {
+    git::fetch_branch(Path::new(&repo_path), &branch).await
+}
+
 #[tauri::command]
 pub async fn list_pull_requests(repo_path: String) -> Result<Vec<PullRequest>, String> {
     github::list_open_pull_requests(Path::new(&repo_path)).await

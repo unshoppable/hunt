@@ -191,18 +191,33 @@ export function NewSessionView({
    * Starts the review session of a pull request right away, without a prompt: a worktree on the pull request's own
    * branch (a local branch of that name, created from its copy on a remote when missing), titled after the pull
    * request and marked as its review, with the diff pane showing the pull request's changes against its target branch.
-   * Both branches must have been fetched into the repository.
+   * A branch the repository lacks is fetched from `origin` first.
    */
-  function selectPullRequest(selected: PullRequest) {
+  async function selectPullRequest(selected: PullRequest) {
     setView("start");
-    const branch = findPullRequestBranch(branches, selected.headRefName);
-    const targetBranch = findPullRequestBranch(branches, selected.baseRefName);
+    setError(null);
+    let knownBranches = branches;
+    const missingBranches = [selected.headRefName, selected.baseRefName].filter((name) => !findPullRequestBranch(knownBranches, name));
+    if (missingBranches.length) {
+      try {
+        // One fetch after the other: concurrent fetches into one repository contend for its ref locks.
+        for (const name of missingBranches) {
+          await commands.fetchRepoBranch(repoPath, name);
+        }
+        knownBranches = await commands.listBranches(repoPath);
+      } catch (reason) {
+        setError(errorText(reason));
+        return;
+      }
+      setBranches(knownBranches);
+    }
+    const branch = findPullRequestBranch(knownBranches, selected.headRefName);
+    const targetBranch = findPullRequestBranch(knownBranches, selected.baseRefName);
     if (!branch || !targetBranch) {
-      setError(`Branch "${branch ? selected.baseRefName : selected.headRefName}" of #${selected.number} is not in the repository yet; fetch it first.`);
+      setError(`Branch "${branch ? selected.baseRefName : selected.headRefName}" of #${selected.number} is not on origin.`);
       return;
     }
     setBaseRef(branch);
-    setError(null);
     const target: WorktreeTarget = {
       repoPath,
       baseRef: branch,
@@ -413,7 +428,7 @@ export function NewSessionView({
         ) : null}
       </header>
       {view === "pullRequests" ? (
-        <PullRequestList key={repoPath} repoPath={repoPath} onSelect={selectPullRequest} onClose={() => setView("start")} />
+        <PullRequestList key={repoPath} repoPath={repoPath} onSelect={(selected) => void selectPullRequest(selected)} onClose={() => setView("start")} />
       ) : view === "sessionVms" ? (
         <SessionVmList onClose={() => setView("start")} />
       ) : (

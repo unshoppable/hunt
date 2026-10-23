@@ -1,3 +1,9 @@
+## 0.101.1 (2026-10-23)
+
+### 🔥 Performance
+
+- **client:** ⌘click usages list the code usages without waiting for the Angular language server ([d5f96e5](https://github.com/unshoppable/hunt/commit/d5f96e5))
+
 ## 0.101.0 (2026-10-23)
 
 ### 🚀 Features

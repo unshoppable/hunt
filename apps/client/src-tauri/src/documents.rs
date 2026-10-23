@@ -18,12 +18,12 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Window};
 use uuid::Uuid;
 
-use crate::lsp::{self, LspServer};
+use crate::lsp::{self, LspServer, ServerKind};
 use crate::session::commands::{session_file, worktree_session, write_file};
 use crate::workspace;
 
-/// Monaco language ids whose documents the language server receives.
-const SERVED_LANGUAGES: [&str; 2] = ["typescript", "javascript"];
+/// Monaco language ids whose documents the language servers receive; `ServerKind::receives` picks the server.
+const SERVED_LANGUAGES: [&str; 3] = ["typescript", "javascript", "html"];
 
 /// A position as LSP counts it: zero-based line, column in UTF-16 code units.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -108,7 +108,7 @@ struct Document {
     /// The content on disk as last read or written.
     saved_text: String,
     version: i32,
-    /// The language id the server knows the document by; None for documents it does not receive.
+    /// The language id the servers know the document by; None for documents no server receives.
     language_id: Option<String>,
     /// Labels of the windows that loaded the document.
     holders: HashSet<String>,
@@ -277,12 +277,12 @@ impl WorktreeDocuments {
         effects
     }
 
-    /// Whether the language server receives any document of the worktree.
-    pub fn serves_any(&self) -> bool {
-        self.documents.values().any(|document| document.language_id.is_some())
+    /// Whether the `kind` server receives any document of the worktree.
+    pub fn serves_any(&self, kind: ServerKind) -> bool {
+        self.documents.iter().any(|(path, document)| document.language_id.is_some() && kind.receives(path))
     }
 
-    /// `didOpen` of every document the server receives, for a server that has not seen them yet.
+    /// `didOpen` of every served document, for a server that has not seen them yet; `send` drops those of other servers.
     pub fn open_notifications(&self) -> Vec<(&'static str, Value)> {
         self.documents.iter().filter_map(|(path, document)| open_notification(self.uri(path), document)).collect()
     }
@@ -405,15 +405,16 @@ pub struct DocumentRegistry {
 
 struct Entry {
     documents: WorktreeDocuments,
-    /// The server the served documents were opened in; another one gets them all instead of the next notifications.
-    server: Weak<LspServer>,
+    /// Per kind the server the served documents were opened in; another one gets them all instead of the next
+    /// notifications.
+    servers: HashMap<ServerKind, Weak<LspServer>>,
 }
 
 impl DocumentRegistry {
     fn entry(&self, worktree: &Path) -> Arc<tokio::sync::Mutex<Entry>> {
         let mut worktrees = self.worktrees.lock().unwrap();
         let entry = worktrees.entry(worktree.to_path_buf()).or_insert_with(|| {
-            Arc::new(tokio::sync::Mutex::new(Entry { documents: WorktreeDocuments::new(worktree.to_path_buf()), server: Weak::new() }))
+            Arc::new(tokio::sync::Mutex::new(Entry { documents: WorktreeDocuments::new(worktree.to_path_buf()), servers: HashMap::new() }))
         });
         entry.clone()
     }
@@ -458,9 +459,10 @@ async fn update<Output>(
     Ok(result)
 }
 
-/// Emits the events, then sends the notifications to the worktree's server, which is started while it serves any
-/// document. A server that has not seen the documents yet (a new or restarted one) gets them all opened at their
-/// current text instead. Server failures cost language features only, never the operation.
+/// Emits the events, then sends the notifications to the worktree's servers: the TypeScript server is started while
+/// it serves any document, the Angular server only gets them while it runs (a request starts it). A server that has
+/// not seen the documents yet (a new or restarted one) gets them all opened at their current text instead. Server
+/// failures cost language features only, never the operation.
 async fn deliver(app: &AppHandle, entry: &mut Entry, effects: Effects) {
     for event in effects.events {
         let _ = match event {
@@ -472,25 +474,35 @@ async fn deliver(app: &AppHandle, entry: &mut Entry, effects: Effects) {
         return;
     }
     let worktree = entry.documents.worktree.clone();
-    let server = if entry.documents.serves_any() {
-        lsp::server_for_worktree(app, &worktree).ok()
-    } else {
-        lsp::running_server(app, &worktree)
-    };
-    let Some(server) = server else {
-        return;
-    };
-    let notifications = if entry.server.upgrade().is_some_and(|known| Arc::ptr_eq(&known, &server)) {
-        effects.notifications
-    } else {
-        entry.server = Arc::downgrade(&server);
-        entry.documents.open_notifications()
-    };
-    send(&server, notifications).await;
+    for kind in ServerKind::ALL {
+        let server = if kind == ServerKind::Typescript && entry.documents.serves_any(kind) {
+            lsp::server_for_worktree(app, &worktree, kind).ok().map(|(server, _)| server)
+        } else {
+            lsp::running_server(app, &worktree, kind)
+        };
+        let Some(server) = server else { continue };
+        let notifications = if is_known(entry, &server) {
+            effects.notifications.clone()
+        } else {
+            entry.servers.insert(kind, Arc::downgrade(&server));
+            entry.documents.open_notifications()
+        };
+        send(&server, notifications).await;
+    }
 }
 
+/// Whether the served documents were opened in `server` already.
+fn is_known(entry: &Entry, server: &Arc<LspServer>) -> bool {
+    entry.servers.get(&server.kind()).and_then(Weak::upgrade).is_some_and(|known| Arc::ptr_eq(&known, server))
+}
+
+/// Sends the notifications about documents `server` receives, in order.
 async fn send(server: &LspServer, notifications: Vec<(&'static str, Value)>) {
     for (method, params) in notifications {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        if !server.kind().receives(uri) {
+            continue;
+        }
         if server.notify(method, params).await.is_err() {
             return;
         }
@@ -505,10 +517,10 @@ pub async fn open_in(app: AppHandle, worktree: PathBuf, server: Arc<LspServer>) 
         return;
     };
     let mut entry = entry.lock().await;
-    if entry.server.upgrade().is_some_and(|known| Arc::ptr_eq(&known, &server)) {
+    if is_known(&entry, &server) {
         return;
     }
-    entry.server = Arc::downgrade(&server);
+    entry.servers.insert(server.kind(), Arc::downgrade(&server));
     let notifications = entry.documents.open_notifications();
     send(&server, notifications).await;
 }
@@ -687,7 +699,17 @@ mod tests {
         let (_, effects) = documents.edit("README.md", 1, vec![change((0, 4), (0, 4), "!")]).unwrap();
         assert!(effects.notifications.is_empty());
         assert_eq!(effects.events.len(), 1);
-        assert!(!documents.serves_any());
+        assert!(!documents.serves_any(ServerKind::Typescript));
+        assert!(!documents.serves_any(ServerKind::Angular));
+    }
+
+    #[test]
+    fn a_template_reaches_only_the_angular_server() {
+        let mut documents = documents();
+        let (_, effects) = documents.open("app.html", "main", "html", read("<p></p>")).unwrap();
+        assert_eq!(methods(&effects), ["textDocument/didOpen"]);
+        assert!(!documents.serves_any(ServerKind::Typescript));
+        assert!(documents.serves_any(ServerKind::Angular));
     }
 
     #[test]
@@ -841,7 +863,8 @@ mod tests {
         let root = dir.path().canonicalize().unwrap();
         std::fs::write(root.join("a.ts"), "export const first = 1;\n").unwrap();
         std::fs::write(root.join("tsconfig.json"), r#"{ "compilerOptions": { "strict": true } }"#).unwrap();
-        let Ok(server) = LspServer::start(root.clone(), Arc::new(Silent)) else {
+        let started = lsp::Launch::typescript(&root).and_then(|launch| LspServer::start(root.clone(), ServerKind::Typescript, launch, Arc::new(Silent)));
+        let Ok(server) = started else {
             println!("tsgo not installed, skipping");
             return;
         };

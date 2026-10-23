@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { containerOf, isImportLine, isSourceFile, kindLabel, parameterTypesOf, sliceRuns, sortUsages, stepSelection, usageCountLabel, usageOnLine } from "./usages";
+import { containerOf, isImportLine, isSourceFile, isUsageFile, kindLabel, mergeReferences, parameterTypesOf, sliceRuns, sortUsages, stepSelection, usageCountLabel, usageOnLine } from "./usages";
 
 describe("usageOnLine", () => {
   it("trims the indentation and shifts the match offsets", () => {
@@ -54,6 +54,24 @@ describe("labels", () => {
     expect(isSourceFile("src/view.tsx")).toBe(true);
     expect(isSourceFile("README.md")).toBe(false);
     expect(isSourceFile("styles.css")).toBe(false);
+    expect(isUsageFile("src/app.component.html")).toBe(true);
+    expect(isUsageFile("src/app.component.ts")).toBe(true);
+    expect(isUsageFile("styles.css")).toBe(false);
+  });
+});
+
+describe("mergeReferences", () => {
+  const at = (uri: string, line: number, character: number, length: number) => ({ uri, range: { start: { line, character }, end: { line, character: character + length } } });
+  const page = "file:///work%20tree/app.page.ts";
+
+  it("adds the template references and drops the declaration the Angular server repeats", () => {
+    const typescript = [at(page, 12, 4, 7)];
+    const angular = [at("file:///work tree/app.page.ts", 12, 4, 7), at(page, 3, 12, 7), at("file:///work%20tree/app.page.html", 0, 5, 7)];
+    expect(mergeReferences(typescript, angular, page, { line: 3, character: 14 })).toEqual([at(page, 12, 4, 7), at("file:///work%20tree/app.page.html", 0, 5, 7)]);
+  });
+
+  it("keeps the TypeScript references when the Angular server has none", () => {
+    expect(mergeReferences([at(page, 1, 0, 3)], [], page, { line: 0, character: 0 })).toEqual([at(page, 1, 0, 3)]);
   });
 });
 

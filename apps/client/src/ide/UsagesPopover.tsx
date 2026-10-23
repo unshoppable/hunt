@@ -171,7 +171,6 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
   };
 
   const { declaration } = query;
-  const name = baseName(query.path);
   // A top-level export's container is its module (`"file:///…/user-list.query"`), which the path already names.
   const container = declaration.containerName.startsWith('"') ? "" : declaration.containerName;
   const scope = container ? `${container}, ${query.path}` : query.path;
@@ -186,7 +185,7 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
       ) : null}
       {usages && !usages.length ? (
         <p className="flex items-center px-3 text-neutral-500" style={{ height: ROW_HEIGHT }}>
-          No usages of {declaration.name} found outside {name}.
+          No usages of {declaration.name} found.
         </p>
       ) : null}
       {usages?.map((usage, index) => (

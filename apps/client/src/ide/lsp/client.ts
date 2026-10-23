@@ -1,6 +1,7 @@
 import * as monaco from "monaco-editor";
 import { commands } from "../../ipc/commands";
 import { listenTo } from "../../ipc/events";
+import type { LanguageServerKind } from "../../ipc/types";
 import type { Diagnostic, DocumentSymbol } from "./protocol";
 
 /** Language ids whose models the language server receives. */
@@ -63,16 +64,17 @@ export class LspClient {
   }
 
   /**
-   * Sends `method` and resolves with the server's result. Requests are sent after the queued document updates;
-   * a cancelled `token` cancels the request on the server, and the promise rejects.
+   * Sends `method` to `server` (the worktree's TypeScript server by default) and resolves with its result. Requests
+   * are sent after the queued document updates; a cancelled `token` cancels the request on the server, and the
+   * promise rejects.
    */
-  async request<Result>(method: string, params: unknown, token?: monaco.CancellationToken): Promise<Result> {
+  async request<Result>(method: string, params: unknown, token?: monaco.CancellationToken, server: LanguageServerKind = "typescript"): Promise<Result> {
     await this.queue;
     if (token?.isCancellationRequested) throw new Error("cancelled");
     const name = `${this.nextToken++}`;
-    const subscription = token?.onCancellationRequested(() => void commands.lspCancel(this.sessionId, name).catch(() => {}));
+    const subscription = token?.onCancellationRequested(() => void commands.lspCancel(this.sessionId, name, server).catch(() => {}));
     try {
-      return (await commands.lspRequest(this.sessionId, method, params, name)) as Result;
+      return (await commands.lspRequest(this.sessionId, method, params, name, server)) as Result;
     } catch (error) {
       this.reportOnce(error);
       throw error;

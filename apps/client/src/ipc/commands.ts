@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GithubTokenStatus, GuardrailDeclineReason, GithubViewer, GraphStatus, LogQuery, PlanUsage, PrettierOutput, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
+import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GithubTokenStatus, GuardrailDeclineReason, GithubViewer, GraphStatus, LanguageServerKind, LogQuery, PlanUsage, PrettierOutput, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
 export function assetUrl(path: string): string {
@@ -275,13 +275,13 @@ export const commands = {
   resolveImports: (id: string, from: string, specifiers: string[]) =>
     invoke<(string | null)[]>("resolve_imports", { id, from, specifiers }),
   /**
-   * JSON-RPC request to the worktree's TypeScript language server (started on first use); resolves with the
-   * result. `token` names the request for `lspCancel`.
+   * JSON-RPC request to the worktree's `server` (started on first use); resolves with the result. `token` names the
+   * request for `lspCancel`. The Angular server rejects in worktrees without `@angular/language-service`.
    */
-  lspRequest: (id: string, method: string, params: unknown, token?: string) =>
-    invoke<unknown>("lsp_request", { id, method, params, token: token ?? null }),
-  /** Cancels the pending language server request sent with `token`; unknown tokens are ignored. */
-  lspCancel: (id: string, token: string) => invoke<void>("lsp_cancel", { id, token }),
+  lspRequest: (id: string, method: string, params: unknown, token?: string, server: LanguageServerKind = "typescript") =>
+    invoke<unknown>("lsp_request", { id, method, params, token: token ?? null, server }),
+  /** Cancels the pending request sent to `server` with `token`; unknown tokens are ignored. */
+  lspCancel: (id: string, token: string, server: LanguageServerKind = "typescript") => invoke<void>("lsp_cancel", { id, token, server }),
   /**
    * Loads `path` into this window: the shared document with the unsaved edits of other windows, read from disk when no
    * window holds it yet. Calling it again re-reads the shared state.

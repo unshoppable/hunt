@@ -6,6 +6,7 @@ import {
   isIdentifier,
   isPackagePath,
   mergeOccurrences,
+  mergeRenameEdits,
   nameProblem,
   occurrenceAt,
   occurrenceSummary,
@@ -167,6 +168,24 @@ describe("editsByUri", () => {
 function onLine(group: "code" | "comment" | "text", path: string, line: number, column: number, endColumn: number, lineText: string) {
   return occurrenceAt(group, path, { line, column, endLine: line, endColumn }, "name", lineText);
 }
+
+describe("mergeRenameEdits", () => {
+  const edit = (line: number, character: number, length: number, newText: string) => ({ range: { start: { line, character }, end: { line, character: character + length } }, newText });
+
+  it("adds the template edits and skips those at places TypeScript renames already", () => {
+    const typescript = new Map([["file:///work%20tree/app.ts", [edit(4, 2, 7, "isDone")]]]);
+    const angular = new Map([
+      ["file:///work tree/app.ts", [edit(4, 2, 7, "isDone"), edit(9, 20, 7, "isDone")]],
+      ["file:///work%20tree/app.html", [edit(0, 5, 7, "isDone")]],
+    ]);
+    expect(mergeRenameEdits(typescript, angular)).toEqual(
+      new Map([
+        ["file:///work%20tree/app.ts", [edit(4, 2, 7, "isDone"), edit(9, 20, 7, "isDone")]],
+        ["file:///work%20tree/app.html", [edit(0, 5, 7, "isDone")]],
+      ]),
+    );
+  });
+});
 
 describe("occurrenceAt", () => {
   it("trims the indentation and marks the replaced range", () => {

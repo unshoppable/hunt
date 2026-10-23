@@ -5,8 +5,8 @@ import { lspClientForModel, type LspClient } from "./lsp/client";
 import { monacoLanguage } from "../diff/monaco";
 import { asLocationLinks, elementKindOf, hoverSignature, rangeContains, symbolsAt, toLspPosition, toLspRange, toMonacoRange, type CodeAction, type DocumentSymbol, type Hover, type Location, type LocationLink, type Position, type Range, type TextEdit, type WorkspaceEdit, type WorkspaceSymbol } from "./lsp/protocol";
 import { documentEdits } from "./reformat";
-import { commentAndStringMatches, editsByUri, isPackagePath, mergeOccurrences, occurrenceAt, quickInfoKind, serverErrorMessage, wordMatches, wordOccurrence, type RenameOccurrence } from "./rename";
-import { containerOf, FUNCTION_KINDS, isImportLine, isSourceFile, parameterTypesOf, sortUsages, usageOnLine, type Usage } from "./usages";
+import { commentAndStringMatches, editsByUri, isPackagePath, mergeOccurrences, mergeRenameEdits, occurrenceAt, quickInfoKind, serverErrorMessage, wordMatches, wordOccurrence, type RenameOccurrence } from "./rename";
+import { containerOf, FUNCTION_KINDS, isImportLine, isSourceFile, isUsageFile, mergeReferences, parameterTypesOf, sortUsages, usageOnLine, type Usage } from "./usages";
 
 export type DefinitionTarget = { uri: monaco.Uri; range: monaco.IRange };
 
@@ -126,8 +126,9 @@ async function declarationAt(client: LspClient, model: monaco.editor.ITextModel,
 
 /**
  * Every reference to the symbol at `position` across the project, without the declaration itself and without
- * import or re-export statements (they only repeat the usages in the file). The files holding references are
- * loaded into the workspace, so the popup can preview them.
+ * import or re-export statements (they only repeat the usages in the file). In Angular projects the references in
+ * component templates come from the Angular language server. The files holding references are loaded into the
+ * workspace, so the popup can preview them.
  */
 export async function findUsages(workspace: Workspace, model: monaco.editor.ITextModel, position: monaco.IPosition): Promise<Usage[]> {
   const client = lspClientForModel(model);
@@ -136,13 +137,18 @@ export async function findUsages(workspace: Workspace, model: monaco.editor.ITex
   if (name) {
     await loadProjectsMentioning(workspace, client, name);
   }
-  const params = { ...documentPosition(model, toLspPosition(position)), context: { includeDeclaration: false } };
-  const references = (await client.request<Location[] | null>("textDocument/references", params)) ?? [];
+  const at = toLspPosition(position);
+  const params = { ...documentPosition(model, at), context: { includeDeclaration: false } };
+  const [typescript, angular] = await Promise.all([
+    client.request<Location[] | null>("textDocument/references", params),
+    client.request<Location[] | null>("textDocument/references", params, undefined, "angular").catch(() => null),
+  ]);
+  const references = mergeReferences(typescript ?? [], angular ?? [], model.uri.toString(), at);
 
   const byPath = new Map<string, Location[]>();
   for (const reference of references) {
     const path = workspace.pathOf(monaco.Uri.parse(reference.uri));
-    if (!path || !isSourceFile(path)) continue;
+    if (!path || !isUsageFile(path)) continue;
     const list = byPath.get(path);
     if (list) {
       list.push(reference);
@@ -286,22 +292,27 @@ async function declarationToRename(client: LspClient, model: monaco.editor.IText
 
 /**
  * Everything renaming `target` to `newName` changes: the language server's edits across the project (whose projects
- * are loaded first, see `loadProjectsMentioning`; `model` names the server) and, as `options` ask, the whole-word matches
- * of the old name in comments and strings of source files and in every other file of the worktree. Rejects when the
- * server would edit a file outside the worktree or in a package.
+ * are loaded first, see `loadProjectsMentioning`; `model` names the server), in Angular projects the Angular language
+ * server's edits in component templates and, as `options` ask, the whole-word matches of the old name in comments and
+ * strings of source files and in every other file of the worktree. Rejects when the server would edit a file outside
+ * the worktree or in a package.
  */
 export async function planRename(workspace: Workspace, model: monaco.editor.ITextModel, target: RenameTarget, newName: string, options: RenameOptions): Promise<RenamePlan> {
   const client = lspClientForModel(model);
   if (!client) throw new Error("Rename needs the TypeScript language server, which does not serve this file.");
   const word = target.name.replace(/^#/, "");
   await loadProjectsMentioning(workspace, client, word).catch(() => {});
-  const edit = await client.request<WorkspaceEdit | null>("textDocument/rename", { textDocument: { uri: target.uri }, position: target.position, newName }).catch((reason) => {
-    throw new Error(serverErrorMessage(reason));
-  });
+  const params = { textDocument: { uri: target.uri }, position: target.position, newName };
+  const [edit, angularEdit] = await Promise.all([
+    client.request<WorkspaceEdit | null>("textDocument/rename", params).catch((reason) => {
+      throw new Error(serverErrorMessage(reason));
+    }),
+    client.request<WorkspaceEdit | null>("textDocument/rename", params, undefined, "angular").catch(() => null),
+  ]);
 
   const texts = new Map<string, string>();
   const occurrences: RenameOccurrence[] = [];
-  for (const [uri, edits] of editsByUri(edit)) {
+  for (const [uri, edits] of mergeRenameEdits(editsByUri(edit), editsByUri(angularEdit))) {
     const path = workspace.pathOf(monaco.Uri.parse(uri));
     if (!path) throw new Error(`The rename would change ${monaco.Uri.parse(uri).fsPath}, which lies outside the worktree.`);
     if (isPackagePath(path)) throw new Error(`The rename would change ${path}, which belongs to an installed package.`);

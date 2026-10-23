@@ -1,7 +1,7 @@
 /** Pure logic of the Rename refactoring (⌘Ü, see RenameDialog.tsx and `planRename` in languageService.ts). */
 
-import type { TextDocumentEdit, TextEdit, WorkspaceEdit } from "./lsp/protocol";
-import { isImportLine, usageOnLine } from "./usages";
+import type { Range, TextDocumentEdit, TextEdit, WorkspaceEdit } from "./lsp/protocol";
+import { isImportLine, uriKey, usageOnLine } from "./usages";
 
 /**
  * Where an occurrence was found, in the order the preview lists them: references the language server resolved, the
@@ -174,6 +174,30 @@ export function editsByUri(edit: WorkspaceEdit | null | undefined): Map<string, 
     if (!("textDocument" in change)) continue;
     const document = change as TextDocumentEdit;
     result.set(document.textDocument.uri, [...(result.get(document.textDocument.uri) ?? []), ...document.edits]);
+  }
+  return result;
+}
+
+/** Whether `left` starts before `right` ends and `right` before `left` ends. */
+function rangesOverlap(left: Range, right: Range): boolean {
+  const isBefore = (first: Range["start"], second: Range["start"]) => first.line < second.line || (first.line === second.line && first.character < second.character);
+  return isBefore(left.start, right.end) && isBefore(right.start, left.end);
+}
+
+/**
+ * The TypeScript server's rename edits plus the Angular server's edits that touch none of them (the ones in
+ * templates), per document URI; URIs that differ only in their escapes count as one document.
+ */
+export function mergeRenameEdits(typescript: Map<string, TextEdit[]>, angular: Map<string, TextEdit[]>): Map<string, TextEdit[]> {
+  const result = new Map(typescript);
+  const uris = new Map([...typescript.keys()].map((uri) => [uriKey(uri), uri]));
+  for (const [uri, edits] of angular) {
+    const known = uris.get(uriKey(uri)) ?? uri;
+    const existing = result.get(known) ?? [];
+    const added = edits.filter((edit) => !existing.some((other) => rangesOverlap(edit.range, other.range)));
+    if (!added.length) continue;
+    result.set(known, [...existing, ...added]);
+    uris.set(uriKey(uri), known);
   }
   return result;
 }

@@ -1,4 +1,5 @@
 import type { HighlightedLine } from "../code/highlight";
+import { rangeContains, type Location, type Position } from "./lsp/protocol";
 
 /** One reference to a symbol, ready for the usages popup (columns are 1-based like Monaco's). */
 export type Usage = {
@@ -22,6 +23,35 @@ const SOURCE_FILE = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 /** Whether the TypeScript worker can analyse `path`. */
 export function isSourceFile(path: string): boolean {
   return SOURCE_FILE.test(path);
+}
+
+/** Whether the usages popup lists references in `path`: source files and the HTML templates of Angular components. */
+export function isUsageFile(path: string): boolean {
+  return isSourceFile(path) || /\.html$/.test(path);
+}
+
+/** A URI as a comparable key: both servers encode the same path, but not necessarily with the same escapes. */
+export function uriKey(uri: string): string {
+  try {
+    return decodeURIComponent(uri);
+  } catch {
+    return uri;
+  }
+}
+
+function locationKey(location: Location): string {
+  return `${uriKey(location.uri)}:${location.range.start.line}:${location.range.start.character}`;
+}
+
+/**
+ * The references of the TypeScript server plus those only the Angular server knows (the ones in templates). The
+ * Angular server lists the declaration even when asked not to, so its references containing the asked `position` of
+ * the document `uri` are left out.
+ */
+export function mergeReferences(typescript: readonly Location[], angular: readonly Location[], uri: string, position: Position): Location[] {
+  const known = new Set(typescript.map(locationKey));
+  const isDeclaration = (location: Location) => uriKey(location.uri) === uriKey(uri) && rangeContains(location.range, position);
+  return [...typescript, ...angular.filter((location) => !known.has(locationKey(location)) && !isDeclaration(location))];
 }
 
 /** Builds a usage from a line's full text: trims the indentation and shifts the match offsets accordingly. */

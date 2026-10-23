@@ -67,6 +67,9 @@ export type SessionView = {
 };
 
 /** What the preparation of a worktree's `node_modules` (clone from the repository, else install) is doing or ended with. */
+/** The language servers of a worktree: tsgo, and in Angular projects the Angular language server. */
+export type LanguageServerKind = "typescript" | "angular";
+
 export type DependencyStatus = { phase: "running" | "ready" | "failed"; message: string };
 
 /**

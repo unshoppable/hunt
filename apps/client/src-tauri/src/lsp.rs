@@ -1,7 +1,9 @@
-//! One TypeScript language server (`tsgo --lsp --stdio`) per worktree. A server starts on first use, is shared by
-//! every session of its worktree and is bridged to the webview through generic JSON-RPC commands (`lsp_request`,
-//! `lsp_cancel`) plus the `lsp:diagnostics` and `lsp:exited` events. The open documents reach it only through
-//! `documents.rs`, which holds the one text of each file that every window edits.
+//! One TypeScript language server (`tsgo --lsp --stdio`) per worktree, plus in Angular projects the Angular language
+//! server (`ngserver`), which finds the usages and renames that reach into component templates. A server starts on
+//! first use, is shared by every session of its worktree and is bridged to the webview through generic JSON-RPC
+//! commands (`lsp_request`, `lsp_cancel`) plus the `lsp:diagnostics` and `lsp:exited` events of the TypeScript server.
+//! The open documents reach the servers only through `documents.rs`, which holds the one text of each file that every
+//! window edits.
 //!
 //! `LspServer` is the Tauri-free core (spawn, handshake, request, notify, file watching); `LspRegistry` and the commands
 //! add the per-worktree sharing and the event emission.
@@ -11,6 +13,7 @@
 //! files the agent creates, edits or deletes without an open document.
 
 use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -22,7 +25,7 @@ use glob::{MatchOptions, Pattern};
 use notify_debouncer_full::notify::event::ModifyKind;
 use notify_debouncer_full::notify::{self, EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer_opt, DebounceEventResult, Debouncer, NoCache};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -32,6 +35,7 @@ use tokio::sync::{oneshot, watch, OnceCell};
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
+use crate::acp::bundled_script_path;
 use crate::documents;
 use crate::session::store;
 
@@ -54,6 +58,10 @@ static SETTINGS: LazyLock<Value> = LazyLock::new(|| serde_json::from_str(SETTING
 
 const EXITED: &str = "language server exited";
 const NOT_FOUND: &str = "tsgo not found (install @typescript/native-preview)";
+/// The Angular language server Hunt ships, relative to the workspace root (see `bundled_script_path`).
+const ANGULAR_SERVER_SCRIPT: &str = "node_modules/@angular/language-server/index.js";
+/// File endings of the documents the TypeScript server receives; the Angular server receives templates too.
+const SCRIPT_ENDINGS: [&str; 8] = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 const READ_CHUNK: usize = 64 * 1024;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -68,11 +76,60 @@ pub trait LspEvents: Send + Sync + 'static {
     fn exited(&self, server: &Arc<LspServer>);
 }
 
+/// Which language server of a worktree a request or document goes to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ServerKind {
+    #[default]
+    Typescript,
+    Angular,
+}
+
+impl ServerKind {
+    pub const ALL: [ServerKind; 2] = [ServerKind::Typescript, ServerKind::Angular];
+
+    /// Whether the server receives the document at `path` (a path or a `file://` URI): TypeScript and JavaScript
+    /// files, and for the Angular server also the HTML templates.
+    pub fn receives(self, path: &str) -> bool {
+        let path = path.to_ascii_lowercase();
+        SCRIPT_ENDINGS.iter().any(|ending| path.ends_with(ending)) || (self == ServerKind::Angular && path.ends_with(".html"))
+    }
+}
+
+/// The program and arguments that start a language server.
+pub struct Launch {
+    program: PathBuf,
+    args: Vec<OsString>,
+}
+
+impl Launch {
+    /// `tsgo --lsp --stdio`, from the worktree's `node_modules` or the `PATH`.
+    pub fn typescript(worktree: &Path) -> Result<Self, String> {
+        let program = resolve_tsgo(worktree).ok_or(NOT_FOUND)?;
+        Ok(Self { program, args: vec!["--lsp".into(), "--stdio".into()] })
+    }
+
+    /// The Angular language server `script` on the `node` of `PATH`, with the TypeScript and the
+    /// `@angular/language-service` of the worktree; fails for a worktree that does not install the language service.
+    pub fn angular(script: &Path, worktree: &Path) -> Result<Self, String> {
+        if !worktree.join("node_modules/@angular/language-service/package.json").is_file() {
+            return Err(format!("failed to start the Angular language server: {} has no @angular/language-service", worktree.display()));
+        }
+        let mut args: Vec<OsString> = vec![script.into(), "--stdio".into()];
+        for probe in ["--tsProbeLocations", "--ngProbeLocations"] {
+            args.push(probe.into());
+            args.push(worktree.into());
+        }
+        Ok(Self { program: "node".into(), args })
+    }
+}
+
 type Pending = HashMap<i64, oneshot::Sender<Result<Value, String>>>;
 
-/// A running `tsgo --lsp --stdio` process speaking JSON-RPC 2.0 over its stdio.
+/// A running language server process speaking JSON-RPC 2.0 over its stdio.
 pub struct LspServer {
     worktree: PathBuf,
+    kind: ServerKind,
     pid: Option<u32>,
     /// Owned until the reader task reaps the process; everyone else only signals it.
     child: Mutex<Option<Child>>,
@@ -93,11 +150,10 @@ pub struct LspServer {
 }
 
 impl LspServer {
-    /// Spawns `tsgo --lsp --stdio` in `worktree` and begins the handshake; requests wait until it is done.
-    pub fn start(worktree: PathBuf, events: Arc<dyn LspEvents>) -> Result<Arc<Self>, String> {
-        let binary = resolve_tsgo(&worktree).ok_or(NOT_FOUND)?;
-        let mut child = Command::new(binary)
-            .args(["--lsp", "--stdio"])
+    /// Spawns the `kind` server with `launch` in `worktree` and begins the handshake; requests wait until it is done.
+    pub fn start(worktree: PathBuf, kind: ServerKind, launch: Launch, events: Arc<dyn LspEvents>) -> Result<Arc<Self>, String> {
+        let mut child = Command::new(&launch.program)
+            .args(&launch.args)
             .current_dir(&worktree)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -106,12 +162,13 @@ impl LspServer {
             .process_group(0)
             .kill_on_drop(true)
             .spawn()
-            .map_err(|error| format!("failed to start tsgo: {error}"))?;
-        let stdin = child.stdin.take().ok_or("tsgo stdin is not available")?;
-        let stdout = child.stdout.take().ok_or("tsgo stdout is not available")?;
+            .map_err(|error| format!("failed to start {}: {error}", launch.program.display()))?;
+        let stdin = child.stdin.take().ok_or("language server stdin is not available")?;
+        let stdout = child.stdout.take().ok_or("language server stdout is not available")?;
 
         let server = Arc::new(Self {
             worktree,
+            kind,
             pid: child.id(),
             child: Mutex::new(Some(child)),
             stdin: tokio::sync::Mutex::new(stdin),
@@ -137,6 +194,10 @@ impl LspServer {
             let _ = handshake.ensure_ready().await;
         });
         Ok(server)
+    }
+
+    pub fn kind(&self) -> ServerKind {
+        self.kind
     }
 
     /// Sends a request once the handshake is done and resolves with its `result` (`Null` when the server returns
@@ -703,40 +764,52 @@ fn path_of_file_uri(uri: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// Running servers keyed by worktree, plus the worktree of every session that used the LSP so a request needs no
-/// session store read.
+/// Running servers keyed by worktree and kind, plus the worktree of every session that used the LSP so a request
+/// needs no session store read.
 #[derive(Default)]
 pub struct LspRegistry {
-    servers: Mutex<HashMap<PathBuf, Arc<LspServer>>>,
+    servers: Mutex<HashMap<(PathBuf, ServerKind), Arc<LspServer>>>,
     worktrees: Mutex<HashMap<Uuid, PathBuf>>,
 }
 
 impl LspRegistry {
-    /// The running server of `worktree`, started with `events` when there is none; `true` for a server started now.
-    pub fn get_or_start(&self, worktree: &Path, events: impl FnOnce() -> Arc<dyn LspEvents>) -> Result<(Arc<LspServer>, bool), String> {
+    /// The running `kind` server of `worktree`, started with `launch` and `events` when there is none; `true` for a
+    /// server started now.
+    pub fn get_or_start(
+        &self,
+        worktree: &Path,
+        kind: ServerKind,
+        launch: impl FnOnce() -> Result<Launch, String>,
+        events: impl FnOnce() -> Arc<dyn LspEvents>,
+    ) -> Result<(Arc<LspServer>, bool), String> {
         let mut servers = self.servers.lock().unwrap();
-        if let Some(server) = servers.get(worktree) {
+        let key = (worktree.to_path_buf(), kind);
+        if let Some(server) = servers.get(&key) {
             return Ok((server.clone(), false));
         }
-        let server = LspServer::start(worktree.to_path_buf(), events())?;
-        servers.insert(worktree.to_path_buf(), server.clone());
+        let server = LspServer::start(worktree.to_path_buf(), kind, launch()?, events())?;
+        servers.insert(key, server.clone());
         Ok((server, true))
     }
 
-    /// Drops `server` when it is still the registered server of its worktree.
+    /// Drops `server` when it is still the registered server of its worktree and kind.
     fn forget(&self, server: &Arc<LspServer>) {
         let mut servers = self.servers.lock().unwrap();
-        if servers.get(&server.worktree).is_some_and(|current| Arc::ptr_eq(current, server)) {
-            servers.remove(&server.worktree);
+        let key = (server.worktree.clone(), server.kind);
+        if servers.get(&key).is_some_and(|current| Arc::ptr_eq(current, server)) {
+            servers.remove(&key);
         }
     }
 }
 
-/// Kills the server of `worktree` (if any) and waits until its process is gone.
+/// Kills the servers of `worktree` (if any) and waits until their processes are gone.
 pub async fn stop_for_worktree(registry: &LspRegistry, worktree: &Path) {
-    let server = registry.servers.lock().unwrap().remove(worktree);
+    let servers: Vec<Arc<LspServer>> = {
+        let mut servers = registry.servers.lock().unwrap();
+        ServerKind::ALL.iter().filter_map(|kind| servers.remove(&(worktree.to_path_buf(), *kind))).collect()
+    };
     registry.worktrees.lock().unwrap().retain(|_, path| path != worktree);
-    if let Some(server) = server {
+    for server in servers {
         server.stop().await;
     }
 }
@@ -765,7 +838,8 @@ struct ExitedEvent {
     worktree_path: String,
 }
 
-/// Forwards server events to every window and unregisters ended servers.
+/// Forwards the events of the TypeScript server to every window and unregisters ended servers. The windows know only
+/// the TypeScript server: Angular diagnostics would replace its markers of the same file.
 struct TauriEvents(AppHandle);
 
 impl LspEvents for TauriEvents {
@@ -781,8 +855,20 @@ impl LspEvents for TauriEvents {
     }
 }
 
-/// The server of the worktree of session `id`, started on demand; the worktree is remembered after the first lookup.
-fn server_for(app: &AppHandle, registry: &LspRegistry, id: Uuid) -> Result<Arc<LspServer>, String> {
+/// Unregisters an ended Angular server; its diagnostics stay unused.
+struct AngularEvents(AppHandle);
+
+impl LspEvents for AngularEvents {
+    fn diagnostics(&self, _worktree: &Path, _uri: String, _diagnostics: Value) {}
+
+    fn exited(&self, server: &Arc<LspServer>) {
+        self.0.state::<LspRegistry>().forget(server);
+    }
+}
+
+/// The `kind` server of the worktree of session `id`, started on demand; a server started now has the open documents
+/// before the request that started it. The worktree is remembered after the first lookup.
+async fn server_for(app: &AppHandle, registry: &LspRegistry, id: Uuid, kind: ServerKind) -> Result<Arc<LspServer>, String> {
     let cached = registry.worktrees.lock().unwrap().get(&id).cloned();
     let worktree = match cached {
         Some(worktree) => worktree,
@@ -795,23 +881,34 @@ fn server_for(app: &AppHandle, registry: &LspRegistry, id: Uuid) -> Result<Arc<L
             record.worktree_path
         }
     };
-    server_for_worktree(app, &worktree)
-}
-
-/// The server of `worktree`, started on demand; a server started now gets the open documents of the worktree.
-pub fn server_for_worktree(app: &AppHandle, worktree: &Path) -> Result<Arc<LspServer>, String> {
-    let (server, is_new) = app.state::<LspRegistry>().get_or_start(worktree, || Arc::new(TauriEvents(app.clone())))?;
+    let (server, is_new) = server_for_worktree(app, &worktree, kind)?;
     if is_new {
-        tauri::async_runtime::spawn(documents::open_in(app.clone(), worktree.to_path_buf(), server.clone()));
+        documents::open_in(app.clone(), worktree, server.clone()).await;
     }
     Ok(server)
 }
 
-/// The running server of `worktree`, if any.
-pub fn running_server(app: &AppHandle, worktree: &Path) -> Option<Arc<LspServer>> {
-    app.state::<LspRegistry>().servers.lock().unwrap().get(worktree).cloned()
+/// The `kind` server of `worktree`, started on demand; `true` for a server started now, which has no documents yet.
+pub fn server_for_worktree(app: &AppHandle, worktree: &Path, kind: ServerKind) -> Result<(Arc<LspServer>, bool), String> {
+    let launch = || match kind {
+        ServerKind::Typescript => Launch::typescript(worktree),
+        ServerKind::Angular => Launch::angular(&bundled_script_path(app, ANGULAR_SERVER_SCRIPT)?, worktree),
+    };
+    let events = || -> Arc<dyn LspEvents> {
+        match kind {
+            ServerKind::Typescript => Arc::new(TauriEvents(app.clone())),
+            ServerKind::Angular => Arc::new(AngularEvents(app.clone())),
+        }
+    };
+    app.state::<LspRegistry>().get_or_start(worktree, kind, launch, events)
 }
 
+/// The running `kind` server of `worktree`, if any.
+pub fn running_server(app: &AppHandle, worktree: &Path, kind: ServerKind) -> Option<Arc<LspServer>> {
+    app.state::<LspRegistry>().servers.lock().unwrap().get(&(worktree.to_path_buf(), kind)).cloned()
+}
+
+/// Sends `method` to the `server` (default: TypeScript) of session `id`'s worktree.
 #[tauri::command]
 pub async fn lsp_request(
     app: AppHandle,
@@ -820,13 +917,20 @@ pub async fn lsp_request(
     method: String,
     params: Value,
     token: Option<String>,
+    server: Option<ServerKind>,
 ) -> Result<Value, String> {
-    server_for(&app, &registry, id)?.request(&method, params, token).await
+    server_for(&app, &registry, id, server.unwrap_or_default()).await?.request(&method, params, token).await
 }
 
 #[tauri::command]
-pub async fn lsp_cancel(app: AppHandle, registry: State<'_, LspRegistry>, id: Uuid, token: String) -> Result<(), String> {
-    server_for(&app, &registry, id)?.cancel(&token).await
+pub async fn lsp_cancel(
+    app: AppHandle,
+    registry: State<'_, LspRegistry>,
+    id: Uuid,
+    token: String,
+    server: Option<ServerKind>,
+) -> Result<(), String> {
+    server_for(&app, &registry, id, server.unwrap_or_default()).await?.cancel(&token).await
 }
 
 #[cfg(test)]
@@ -920,6 +1024,75 @@ mod tests {
         status.is_ok_and(|status| status.success())
     }
 
+    fn start_typescript(worktree: &Path) -> Arc<LspServer> {
+        let launch = Launch::typescript(worktree).unwrap();
+        LspServer::start(worktree.to_path_buf(), ServerKind::Typescript, launch, Arc::new(Silent)).unwrap()
+    }
+
+    #[test]
+    fn each_server_receives_its_documents() {
+        assert!(ServerKind::Typescript.receives("src/a.ts"));
+        assert!(ServerKind::Typescript.receives("file:///repo/b.MJS"));
+        assert!(!ServerKind::Typescript.receives("src/a.html"));
+        assert!(ServerKind::Angular.receives("src/a.html"));
+        assert!(ServerKind::Angular.receives("src/a.tsx"));
+        assert!(!ServerKind::Angular.receives("src/a.css"));
+    }
+
+    #[tokio::test]
+    async fn references_reach_an_angular_template() {
+        let node_modules = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../node_modules");
+        let script = node_modules.join("@angular/language-server/index.js");
+        if !script.is_file() {
+            println!("@angular/language-server not installed, skipping");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let worktree_modules = root.join("node_modules/@angular");
+        std::fs::create_dir_all(worktree_modules.join("core")).unwrap();
+        std::os::unix::fs::symlink(node_modules.join("typescript"), root.join("node_modules/typescript")).unwrap();
+        std::os::unix::fs::symlink(node_modules.join("@angular/language-service"), worktree_modules.join("language-service")).unwrap();
+        // The compiler only needs to recognise `@Component` from `@angular/core`.
+        std::fs::write(worktree_modules.join("core/package.json"), r#"{ "name": "@angular/core", "version": "22.0.0", "types": "index.d.ts" }"#).unwrap();
+        let core = "export interface ComponentDecorator {\n  (obj: { selector?: string; templateUrl?: string }): ClassDecorator;\n}\n\
+                    export declare const Component: ComponentDecorator;\n";
+        std::fs::write(worktree_modules.join("core/index.d.ts"), core).unwrap();
+        std::fs::write(root.join("tsconfig.json"), r#"{ "compilerOptions": { "strict": true }, "files": ["app.ts"] }"#).unwrap();
+        let source = "import { Component } from \"@angular/core\";\n\n@Component({ selector: \"app-root\", templateUrl: \"./app.html\" })\n\
+                      export class App {\n  isReady(): boolean {\n    return true;\n  }\n}\n";
+        std::fs::write(root.join("app.ts"), source).unwrap();
+        std::fs::write(root.join("app.html"), "@if (isReady()) {\n  <p>ready</p>\n}\n").unwrap();
+
+        let launch = Launch::angular(&script, &root).unwrap();
+        let server = LspServer::start(root.clone(), ServerKind::Angular, launch, Arc::new(Silent)).unwrap();
+        let uri = file_uri(&root.join("app.ts"));
+        let open = json!({ "textDocument": { "uri": uri, "languageId": "typescript", "version": 1, "text": source } });
+        let references = json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 4, "character": 4 },
+            "context": { "includeDeclaration": false }
+        });
+        let found = tokio::time::timeout(Duration::from_secs(60), async {
+            server.notify("textDocument/didOpen", open).await.unwrap();
+            server.request("textDocument/references", references, None).await.unwrap()
+        })
+        .await
+        .expect("the Angular language server answers within 60s");
+
+        let template = found.as_array().unwrap().iter().find(|location| location["uri"] == file_uri(&root.join("app.html")));
+        let template = template.unwrap_or_else(|| panic!("no template reference in {found}"));
+        assert_eq!(template["range"]["start"], json!({ "line": 0, "character": 5 }));
+        server.stop().await;
+    }
+
+    #[test]
+    fn the_angular_server_needs_the_projects_language_service() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = Launch::angular(Path::new("/ngserver/index.js"), dir.path()).err().unwrap();
+        assert!(error.contains("has no @angular/language-service"), "{error}");
+    }
+
     #[tokio::test]
     async fn hover_over_a_typed_const_and_stop() {
         let dir = tempfile::tempdir().unwrap();
@@ -930,7 +1103,7 @@ mod tests {
         std::fs::write(dir.path().join("a.ts"), "export const answer: number = 42;\n").unwrap();
         std::fs::write(dir.path().join("tsconfig.json"), r#"{ "compilerOptions": { "strict": true } }"#).unwrap();
 
-        let server = LspServer::start(dir.path().to_path_buf(), Arc::new(Silent)).unwrap();
+        let server = start_typescript(dir.path());
         let pid = server.pid.expect("spawned process has a pid");
         let uri = file_uri(&dir.path().join("a.ts"));
         let open = json!({
@@ -968,7 +1141,7 @@ mod tests {
         std::fs::write(root.join("a.ts"), source).unwrap();
         std::fs::write(root.join("tsconfig.json"), r#"{ "compilerOptions": { "strict": true } }"#).unwrap();
 
-        let server = LspServer::start(root.clone(), Arc::new(Silent)).unwrap();
+        let server = start_typescript(&root);
         let uri = file_uri(&root.join("a.ts"));
         let open = json!({ "textDocument": { "uri": uri, "languageId": "typescript", "version": 1, "text": source } });
         let references = json!({
@@ -1003,7 +1176,7 @@ mod tests {
             println!("tsgo not installed, skipping");
             return;
         }
-        let server = LspServer::start(dir.path().to_path_buf(), Arc::new(Silent)).unwrap();
+        let server = start_typescript(dir.path());
         let pid = server.pid.expect("spawned process has a pid");
         server.ensure_ready().await.unwrap();
 

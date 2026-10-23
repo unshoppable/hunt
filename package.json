@@ -18,6 +18,7 @@
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.89.1",
     "@agentclientprotocol/sdk": "^1.8.0",
+    "@angular/language-server": "^22.2.3",
     "@git-diff-view/file": "^0.1.7",
     "@git-diff-view/react": "^0.1.7",
     "@monaco-editor/react": "^4.7.0",

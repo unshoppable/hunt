@@ -1,3 +1,9 @@
+## 0.96.0 (2026-10-23)
+
+### 🚀 Features
+
+- **client:** dragging the review "+" over several lines joins its two ends with a blue line, as on GitHub ([98546ba](https://github.com/unshoppable/hunt/commit/98546ba))
+
 ## 0.95.0 (2026-10-23)
 
 ### 🚀 Features

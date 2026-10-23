@@ -1,3 +1,14 @@
+## 0.91.0 (2026-10-23)
+
+### 🚀 Features
+
+- **client:** rules and ADR folders get a README on their first guardrail that says when a guardrail is a rule and when an ADR ([5814edd](https://github.com/unshoppable/hunt/commit/5814edd))
+- **client:** the Terminal tab shows for local sessions too, and package.json scripts get run buttons in the editor ([00855da](https://github.com/unshoppable/hunt/commit/00855da))
+
+### 🩹 Fixes
+
+- **client:** the Guardrail button drops its highlight once the suggested guardrail was taken up in the guardrail chat ([06d3706](https://github.com/unshoppable/hunt/commit/06d3706))
+
 ## 0.90.0 (2026-10-22)
 
 ### 🚀 Features

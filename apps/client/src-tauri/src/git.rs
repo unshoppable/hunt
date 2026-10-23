@@ -891,15 +891,25 @@ fn conflict_error(action: &str, conflicts: &str, error: &str) -> String {
     format!("failed to {action}: conflicts in {}; resolve them in the chat or by hand", files.join(", "))
 }
 
-/// Fast-forwards the local branch `branch`, which is not checked out here, to its upstream as fetched now; fails
-/// without an upstream, when the branch has commits its upstream lacks, or when a worktree has it checked out.
+/// Fast-forwards the local branch `branch`, which is not checked out here, to its upstream as fetched now, like
+/// `git pull --ff-only`: a branch whose upstream has no commits it lacks stays as it is. Fails without an upstream,
+/// when both have commits the other lacks, or when a worktree has the branch checked out.
 pub async fn fast_forward_branch(repo: &Path, branch: &str) -> Result<(), String> {
     ensure_branch_name(repo, branch).await?;
-    let upstream = run_git(repo, &["for-each-ref", "--format=%(upstream:short)", &format!("refs/heads/{branch}")]).await?;
-    let Some((remote, remote_branch)) = upstream.trim().split_once('/') else {
+    let local_ref = format!("refs/heads/{branch}");
+    let upstream = run_git(repo, &["for-each-ref", "--format=%(upstream:short)", &local_ref]).await?;
+    let upstream = upstream.trim();
+    let Some((remote, remote_branch)) = upstream.split_once('/') else {
         return Err(format!("failed to update {branch}: it has no upstream"));
     };
-    run_git(repo, &["fetch", "-q", "--", remote, &format!("refs/heads/{remote_branch}:refs/heads/{branch}")]).await?;
+    run_git(repo, &["fetch", "-q", "--", remote, &format!("refs/heads/{remote_branch}")]).await?;
+    if is_ancestor(repo, upstream, &local_ref).await {
+        return Ok(());
+    }
+    if !is_ancestor(repo, &local_ref, upstream).await {
+        return Err(format!("failed to update {branch}: it and {upstream} both have commits the other lacks; rebase or merge instead"));
+    }
+    run_git(repo, &["fetch", "-q", "--", ".", &format!("refs/remotes/{upstream}:{local_ref}")]).await?;
     Ok(())
 }
 
@@ -1813,6 +1823,29 @@ mod tests {
 
         assert_eq!(run_git(&repo, &["rev-parse", "develop"]).await.unwrap(), elsewhere);
         assert_eq!(fast_forward_branch(&repo, "loose").await.unwrap_err(), "failed to update loose: it has no upstream");
+    }
+
+    #[tokio::test]
+    async fn fast_forward_branch_keeps_a_branch_ahead_of_its_upstream_and_refuses_a_diverged_one() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+        git(&repo, &["branch", "--track", "develop", "origin/develop"]).await;
+        git(&repo, &["checkout", "-q", "develop"]).await;
+        std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+        commit_files(&repo, &["new.txt".into()], "local commit").await.unwrap();
+        let local = run_git(&repo, &["rev-parse", "develop"]).await.unwrap();
+        git(&repo, &["checkout", "-q", "--detach"]).await;
+
+        fast_forward_branch(&repo, "develop").await.unwrap();
+        assert_eq!(run_git(&repo, &["rev-parse", "develop"]).await.unwrap(), local);
+
+        commit_on_origin_develop(origin.path(), "two\n").await;
+        assert_eq!(
+            fast_forward_branch(&repo, "develop").await.unwrap_err(),
+            "failed to update develop: it and origin/develop both have commits the other lacks; rebase or merge instead"
+        );
+        assert_eq!(run_git(&repo, &["rev-parse", "develop"]).await.unwrap(), local);
     }
 
     #[tokio::test]

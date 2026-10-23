@@ -506,11 +506,10 @@ const SESSIONS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "
 
 /// Everything Hunt appends to the system prompt of the agent of the Hunt session `hunt_session_id`: the user's
 /// response-style prompt from the settings (if not cleared), the guardrail offer, the change references, the code block
-/// places, the question marker, the sessions file, the diagram instructions in the user's AI language and the optional
-/// selection context, each section separated from the next by a blank line.
+/// places, the question marker, the sessions file and the optional selection context, each section separated from the
+/// next by a blank line.
 pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prompt: Option<String>) -> String {
     let style = crate::preferences::system_prompt(app);
-    let diagram = crate::graph::system_prompt(&crate::preferences::ai_language(app));
     let mut append = String::new();
     if !style.is_empty() {
         append.push_str(&style);
@@ -525,7 +524,6 @@ pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prom
     append.push_str(QUESTION_PROMPT);
     append.push('\n');
     append.push_str(&crate::graph::fill_prompt(SESSIONS_PROMPT, &[("huntSessionId", &hunt_session_id.to_string())]));
-    append.push_str(&diagram);
     append.push_str(context_prompt.as_deref().unwrap_or_default());
     append
 }

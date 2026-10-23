@@ -39,11 +39,11 @@ use crate::remote::api::{validate_remote_secret_name, validate_remote_secret_val
 use crate::remote::preview::PreviewStatus;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize, TerminalTarget, TmuxWindow};
-use crate::remote::sync::Direction;
 use crate::remote::{self, claude_dir, Progress, RemoteStep, RemoteTarget, Reporter, VmRef, VmSettings};
 use crate::screenshots::{self, Screenshot};
 use crate::session::attribution::{self, FileVersion};
 use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus, Install};
+use crate::session::diagram_agent;
 use crate::session::link::{self, Link};
 use crate::session::related;
 use crate::session::relay_watch;
@@ -1914,67 +1914,23 @@ fn file_context_block(target: &Path, shown_as: &Path) -> Option<ContentBlock> {
     Some(ContentBlock::Resource(EmbeddedResource::new(EmbeddedResourceResource::TextResourceContents(TextResourceContents::new(text, uri)))))
 }
 
-/// Asks the agent to rewrite the diagram of `diagram_type` with its standard prompt, extended by the user's free-text
-/// `instructions` for this one run. The turn runs with the agent config values `model` and `effort` from the diagram
-/// settings; afterwards the agent gets back the model and effort the chat showed before. The turn is recorded as
-/// hidden, so the chat shows neither the prompt text nor the agent's output, and it leaves the session summary alone.
-/// The agent of a remote session diffs against the session's diff base as a commit, which its VM has too; the local
-/// edits, the schema and the diagram as the user edited it go there before the turn and the diagram comes back after
-/// it.
+/// Generates the diagram of `diagram_type` with its standard prompt, extended by the user's free-text `instructions`
+/// for this one run, in a background agent on `model` with `effort` (see `diagram_agent`); the session's chat agent
+/// takes no part.
 #[tauri::command]
 pub async fn refresh_graph(
     app: AppHandle,
-    registry: State<'_, SessionRegistry>,
     id: Uuid,
     diagram_type: graph::DiagramType,
     instructions: String,
     model: String,
     effort: String,
-) -> Result<String, String> {
+) -> Result<(), String> {
     let record = worktree_session(&app, id)?;
-    let is_remote = record.remote.is_some();
-    let diff_base = if is_remote { git::rev_parse(&record.worktree_path, record.diff_base()).await? } else { record.diff_base().to_string() };
-    if is_remote {
-        sync::flush(&app, id).await;
-        let mut pushed = vec![diagram_type.schema_path().to_string()];
-        if graph::diagram_path(&record.worktree_path, diagram_type).exists() {
-            pushed.push(diagram_type.path());
-        }
-        sync::copy_files(&app, id, Direction::Push, &pushed).await?;
-    }
-    let prompt = graph::refresh_prompt(diagram_type, &crate::preferences::ai_language(&app), &diff_base, instructions.trim());
-    let blocks = vec![ContentBlock::Text(TextContent::new(prompt))];
-    let LiveHandles { connection, acp_session_id, history } = live_session(&registry, id).await?;
-
-    // The model goes first: switching it resets the effort.
-    let graph_config = [(MODEL_CONFIG_ID, model.as_str()), (EFFORT_CONFIG_ID, effort.as_str())];
-    let chat_config = shown_config_values(&history.lock().unwrap(), &graph_config.map(|(config_id, _)| config_id));
-    let outcome = async {
-        for (config_id, value) in graph_config {
-            set_config_option(&connection, &acp_session_id, config_id, value).await?;
-        }
-        run_turn(&app, &registry, id, blocks, Some(graph::hidden_turn_meta()), None).await
-    }
-    .await;
-    let restored = async {
-        for (config_id, value) in &chat_config {
-            let options = set_config_option(&connection, &acp_session_id, config_id, value).await?;
-            let update = SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(options));
-            publish_update(&app, id, &history, SessionNotification::new(acp_session_id.clone(), update));
-        }
-        Ok::<(), String>(())
-    }
-    .await;
-
-    let stop_reason = outcome?;
-    restored?;
-    if is_remote {
-        sync::copy_files(&app, id, Direction::Pull, &[diagram_type.path()]).await?;
-    }
-    Ok(stop_reason)
+    diagram_agent::generate(&app, &record, diagram_type, &instructions, &model, &effort).await
 }
 
-/// Agent config options a diagram refresh switches for its turn.
+/// Agent config options the chat shows, which a handoff carries over to the VM.
 const MODEL_CONFIG_ID: &str = "model";
 const EFFORT_CONFIG_ID: &str = "effort";
 const MODE_CONFIG_ID: &str = "mode";
@@ -2870,8 +2826,8 @@ pub async fn read_graph(app: AppHandle, id: Uuid, diagram_type: graph::DiagramTy
     graph::read_graph(&record.worktree_path, diagram_type)
 }
 
-/// Writes the diagram of `diagram_type` the user edited in the Architecture tab; `content` is the whole file. A remote
-/// session gets the file onto its VM with the next diagram refresh, which pushes it before the agent's turn.
+/// Writes the diagram of `diagram_type` the user edited in the Architecture tab; `content` is the whole file, which the
+/// next diagram refresh starts from.
 #[tauri::command]
 pub async fn write_graph(app: AppHandle, id: Uuid, diagram_type: graph::DiagramType, content: String) -> Result<(), String> {
     let record = worktree_session(&app, id)?;

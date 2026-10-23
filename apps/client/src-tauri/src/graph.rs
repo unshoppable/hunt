@@ -18,15 +18,12 @@ use uuid::Uuid;
 
 use crate::preferences::ENGLISH_TERMS;
 
-const GRAPH_DIR: &str = ".hunt";
+pub const GRAPH_DIR: &str = ".hunt";
 /// Name the diagram folder had before the application was called Hunt; still found in worktrees of older sessions.
 const LEGACY_GRAPH_DIR: &str = ".harness";
 const GRAPH_FILE: &str = "graph.json";
 const GRAPH_SCHEMA_FILE: &str = "graph.schema.json";
 const DIAGRAM_SCHEMA_FILE: &str = "diagram.schema.json";
-/// The schema files relative to the worktree, which the sync of a remote session copies explicitly.
-const GRAPH_SCHEMA_PATH: &str = ".hunt/graph.schema.json";
-const DIAGRAM_SCHEMA_PATH: &str = ".hunt/diagram.schema.json";
 
 /// JSON schema of the dependency graph file; written into `.hunt/` so the agent can read it, and the frontend
 /// validates against the same shape.
@@ -36,7 +33,7 @@ pub const DIAGRAM_SCHEMA: &str = include_str!("diagram.schema.json");
 
 /// Which diagram a request is about: the file-level dependency graph or one of the shape diagrams. The frontend
 /// sends the kebab-case id, which is also the `<type>` in `diagram.<type>.json`.
-#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DiagramType {
     Dependencies,
@@ -61,19 +58,6 @@ impl DiagramType {
             Self::States => "diagram.states.json",
             Self::Erd => "diagram.erd.json",
             Self::Process => "diagram.process.json",
-        }
-    }
-
-    /// The diagram file relative to the worktree, which the sync of a remote session copies explicitly.
-    pub fn path(self) -> String {
-        format!("{GRAPH_DIR}/{}", self.file_name())
-    }
-
-    /// The schema file the diagram is validated against, relative to the worktree.
-    pub fn schema_path(self) -> &'static str {
-        match self {
-            Self::Dependencies => GRAPH_SCHEMA_PATH,
-            _ => DIAGRAM_SCHEMA_PATH,
         }
     }
 
@@ -109,8 +93,8 @@ fn prompt_start(template: &str) -> &str {
     template.split("{{").next().unwrap_or(template).trim()
 }
 
-/// Appended to Claude Code's system prompt so the agent knows what the diagrams are and how to write them;
-/// `language` is the one every label and description is written in.
+/// Appended to the system prompt of the diagram agent (`session::diagram_agent`) so it knows what the diagrams are and
+/// how to write them; `language` is the one every label and description is written in.
 pub fn system_prompt(language: &str) -> String {
     let shapes = fill_prompt(SHAPE_SYSTEM_PROMPT, &[("language", language), ("englishTerms", ENGLISH_TERMS)]);
     format!(
@@ -250,18 +234,29 @@ fn is_diagram_file(path: &Path) -> bool {
     name == GRAPH_FILE || (name.starts_with("diagram.") && name.ends_with(".json") && name != DIAGRAM_SCHEMA_FILE)
 }
 
-/// Creates `.hunt/` with the current schema files (taking over a `.hunt/` folder of an older session) and starts
-/// watching it for diagram rewrites.
-pub fn watch(app: &AppHandle, registry: &WatcherRegistry, hunt_session_id: Uuid, worktree: &Path) -> Result<(), String> {
+/// Creates `.hunt/` in `worktree` with the current schema files, taking over a `.hunt/` folder of an older session;
+/// returns the folder.
+pub fn prepare_dir(worktree: &Path) -> Result<PathBuf, String> {
     let directory = worktree.join(GRAPH_DIR);
     let legacy = worktree.join(LEGACY_GRAPH_DIR);
     if legacy.is_dir() && !directory.exists() {
         std::fs::rename(&legacy, &directory)
             .map_err(|error| format!("failed to rename {} to {}: {error}", legacy.display(), directory.display()))?;
     }
-    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    std::fs::write(directory.join(GRAPH_SCHEMA_FILE), SCHEMA).map_err(|error| error.to_string())?;
-    std::fs::write(directory.join(DIAGRAM_SCHEMA_FILE), DIAGRAM_SCHEMA).map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(&directory).map_err(|error| format!("failed to create {}: {error}", directory.display()))?;
+    std::fs::write(directory.join(GRAPH_SCHEMA_FILE), SCHEMA).map_err(|error| format!("failed to write {GRAPH_SCHEMA_FILE}: {error}"))?;
+    std::fs::write(directory.join(DIAGRAM_SCHEMA_FILE), DIAGRAM_SCHEMA).map_err(|error| format!("failed to write {DIAGRAM_SCHEMA_FILE}: {error}"))?;
+    Ok(directory)
+}
+
+/// Tells every window that a diagram file of the session `hunt_session_id` was rewritten.
+pub fn emit_changed(app: &AppHandle, hunt_session_id: Uuid) {
+    let _ = app.emit("graph:changed", GraphChangedEvent { hunt_session_id });
+}
+
+/// Prepares `.hunt/` (see `prepare_dir`) and starts watching it for diagram rewrites.
+pub fn watch(app: &AppHandle, registry: &WatcherRegistry, hunt_session_id: Uuid, worktree: &Path) -> Result<(), String> {
+    let directory = prepare_dir(worktree)?;
 
     let handle = app.clone();
     let mut debouncer = new_debouncer(Duration::from_millis(400), None, move |result: DebounceEventResult| {
@@ -270,7 +265,7 @@ pub fn watch(app: &AppHandle, registry: &WatcherRegistry, hunt_session_id: Uuid,
         if !touches_diagram {
             return;
         }
-        let _ = handle.emit("graph:changed", GraphChangedEvent { hunt_session_id });
+        emit_changed(&handle, hunt_session_id);
     })
     .map_err(|error| error.to_string())?;
     debouncer.watch(&directory, RecursiveMode::NonRecursive).map_err(|error| error.to_string())?;
@@ -353,11 +348,8 @@ mod tests {
         for (id, expected) in ids {
             let parsed: DiagramType = serde_json::from_value(serde_json::json!(id)).unwrap_or_else(|error| panic!("{id}: {error}"));
             assert_eq!(parsed, expected);
-            assert_eq!(parsed.path(), format!(".hunt/{}", parsed.file_name()));
         }
         assert_eq!(DiagramType::Erd.file_name(), "diagram.erd.json");
-        assert_eq!(DiagramType::Dependencies.schema_path(), ".hunt/graph.schema.json");
-        assert_eq!(DiagramType::States.schema_path(), ".hunt/diagram.schema.json");
     }
 
     #[test]
@@ -389,7 +381,7 @@ mod tests {
             assert!(prompt.starts_with(prompt_start(template)), "{diagram_type:?}");
             assert!(prompt.contains("`git diff --name-only d9f3dfc`"), "{diagram_type:?}");
             assert!(prompt.contains("in German"), "{diagram_type:?}");
-            assert!(prompt.contains(&format!("`{}`", diagram_type.path())), "{diagram_type:?}");
+            assert!(prompt.contains(&format!("`.hunt/{}`", diagram_type.file_name())), "{diagram_type:?}");
             assert!(prompt.ends_with("Additional instructions for this run: (none)\n"), "{diagram_type:?}");
             assert!(!prompt.contains("{{"), "{diagram_type:?}");
 

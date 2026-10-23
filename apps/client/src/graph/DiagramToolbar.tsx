@@ -42,9 +42,6 @@ export function DiagramStatusBadge({ status, hasDiagram }: { status: GraphStatus
   );
 }
 
-/** Toolbar hint while the session's agent runs a chat turn; the diagram is generated in the same agent session, so the button waits for it. */
-export const AGENT_BUSY_HINT = "The agent is busy in the chat; the diagram can be generated once its turn ends.";
-
 /**
  * The generate button of a diagram: its main part generates with the standard prompt, the chevron beside it opens a
  * popover with a text box whose instructions go along with that one run. ⌘/Ctrl+Enter in the box submits.

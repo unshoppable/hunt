@@ -217,8 +217,8 @@ Hunt asks for itself (session summaries and titles in `apps/client/src-tauri/src
 graph), German by default, and the system prompt addition of every new session, by default the response-style
 instructions in `apps/client/prompts/response-style.system-prompt.md` (plain language for software engineers). The frontend pushes
 both to `apps/client/src-tauri/src/preferences.rs` at start and on change; `apps/client/src-tauri/src/acp/connection.rs`
-appends the prompt, the diagram instructions and the selection context of a sub session to Claude Code's system prompt
-via the ACP `systemPrompt` meta.
+appends the prompt and the selection context of a sub session to Claude Code's system prompt via the ACP `systemPrompt`
+meta; the diagram instructions go only to the diagram agent (see "Architecture diagrams").
 
 #### Worktrees and changes
 
@@ -384,11 +384,15 @@ remembered until the app restarts.
 The Architecture tab shows one of six diagrams per session, picked in the dropdown of its toolbar and remembered per
 session: *Dependencies* (the file-level component diagram of the change) and the five shape diagrams *C4 Context*,
 *C4 Container*, *States* (UML state diagram), *ERD* (entity-relationship diagram) and *Process* (UML activity
-diagram). Every diagram is content the agent writes into a git-excluded file of the worktree during a hidden turn,
-and a view Hunt renders from it; the generate button runs the standard prompt of the chosen type, and the chevron
-beside it opens a box for additional instructions that go along with that one run. For the turn the session's agent
-switches to the model and effort from Settings → Agent (default `claude-opus-5-5` with `high`) and back to the
-chat's choice afterwards. The prompts name the session's diff base: `HEAD`, or the merge base of a reviewed pull
+diagram). Every diagram is content an agent writes into a git-excluded file of the worktree, and a view Hunt renders
+from it; the generate button runs the standard prompt of the chosen type, and the chevron beside it opens a box for
+additional instructions that go along with that one run. Each run is a headless `claude -p` process of its own in the
+session's local worktree (`apps/client/src-tauri/src/session/diagram_agent.rs`), on the model and effort from
+Settings → Agent (default `claude-opus-5-5` with `high`): the chat agent takes no part, so the chat can run a turn
+meanwhile, its agent may be stopped, and several diagram types can generate at once. The process may only read the
+worktree, run read-only git commands and write into `.hunt/`; it denies everything else without asking. A remote
+session's diagram is generated on the Mac as well, in the local worktree the file sync keeps in step with the VM. The
+prompts name the session's diff base: `HEAD`, or the merge base of a reviewed pull
 request. `apps/client/src-tauri/src/graph.rs` owns the prompts, the files and their status; the React panels live in
 `apps/client/src/graph/` (`ArchitecturePanel.tsx` picks the view, `GraphPanel.tsx` is the Dependencies view,
 `ShapeDiagramPanel.tsx` the five others).
@@ -397,8 +401,7 @@ The Dependencies diagram is `.hunt/graph.json` (schema in `apps/client/src-tauri
 per changed file plus the unchanged files that explain the change, and one edge per dependency with a label stating
 how the source uses the target (one to three words, a verb, a noun or both, in the AI language from the settings)
 and a description of how it is used. Hunt validates it, fills pairs the agent left out with unlabeled edges read
-from the import statements and lays it out with ELK inside React Flow. Opening the tab without a diagram generates
-one as soon as the agent is idle.
+from the import statements and lays it out with ELK inside React Flow. A diagram is generated only on a click.
 
 A shape diagram is `.hunt/diagram.<type>.json` (`diagram.c4-container.json` and so on; schema in
 `apps/client/src-tauri/src/diagram.schema.json`, which the prompt also copies into `.hunt/`): nodes with a kind
@@ -406,7 +409,7 @@ A shape diagram is `.hunt/diagram.<type>.json` (`diagram.c4-container.json` and 
 boundary groups, and edges with a label, a description, the ERD's columns and cardinalities, plus a `change` mark on
 everything the session added or altered. The file holds content only: shapes, colors, sizes and layout are Hunt's
 (`shapeNodes.tsx`, `shapeDiagram.ts`), so the same diagram looks the same on every branch. The prompts live in
-`apps/client/prompts/diagram/`: `diagram.system-prompt.md` extends the agent's system prompt with the rules shared by the five
+`apps/client/prompts/diagram/`: `diagram.system-prompt.md` extends the diagram agent's system prompt with the rules shared by the five
 types, `diagram-<type>.user-prompt.md` is the message of one type. A shape diagram is generated only on a click.
 
 The modification time of a diagram file is the time it was generated; every session records in `sessions.json` when

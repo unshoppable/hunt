@@ -1,6 +1,7 @@
 pub mod attribution;
 pub mod commands;
 pub mod dependencies;
+pub mod diagram_agent;
 pub mod link;
 pub mod related;
 pub mod relay_watch;

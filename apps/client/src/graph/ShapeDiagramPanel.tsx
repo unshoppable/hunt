@@ -8,7 +8,7 @@ import { STATUS_BAR } from "../ui/bars";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { PlusIcon, Spinner } from "../ui/icons";
 import { errorText, useLoad } from "../ui/useLoad";
-import { AGENT_BUSY_HINT, DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton } from "./DiagramToolbar";
+import { DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton } from "./DiagramToolbar";
 import { DIAGRAM_TYPES } from "./diagramTypes";
 import { addTable, emptyErd, serializeShapeDiagram } from "./erdEdit";
 import { decorateShapeFlow, layoutShapeDiagram, type ShapeDiagramFlowNode, type ShapeFlowEdge, type ShapeFocus } from "./shapeDiagram";
@@ -32,9 +32,8 @@ const NO_FOCUS: ShapeFocus = { hoveredEdgeId: null, hoveredNodeId: null, selecte
 export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: string; diagramType: ShapeDiagramType }) {
   const graphVersion = useHuntStore((state) => state.chats[sessionId]?.graphVersion ?? 0);
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
-  const isBusy = useHuntStore((state) => state.chats[sessionId]?.isBusy ?? false);
-  const isGeneratingGraph = useHuntStore((state) => state.chats[sessionId]?.isGeneratingGraph ?? false);
-  const isLive = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId)?.isLive ?? false);
+  const isGeneratingGraph = useHuntStore((state) => state.chats[sessionId]?.generatingDiagrams.includes(diagramType) ?? false);
+  const generateError = useHuntStore((state) => state.chats[sessionId]?.diagramErrors[diagramType] ?? null);
   const refreshGraph = useHuntStore((state) => state.refreshGraph);
   const typeName = DIAGRAM_TYPES.find((type) => type.id === diagramType)?.name ?? diagramType;
   const isErd = diagramType === "erd";
@@ -155,15 +154,13 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
   const generatedAt = status?.generatedAt ? new Date(status.generatedAt).toLocaleString() : null;
   const hint = isGeneratingGraph
     ? "Generating…"
-    : isBusy
-      ? AGENT_BUSY_HINT
-      : diagram === null
-        ? `No ${typeName} diagram yet`
-        : problems.length
-          ? "Parts of the agent's diagram do not match the schema and are left out; update the diagram to get them."
-          : isOutdated
-            ? "Files changed since the diagram was generated"
-            : null;
+    : diagram === null
+      ? `No ${typeName} diagram yet`
+      : problems.length
+        ? "Parts of the agent's diagram do not match the schema and are left out; update the diagram to get them."
+        : isOutdated
+          ? "Files changed since the diagram was generated"
+          : null;
   const emptyText = diagram
     ? "The diagram has no elements; update it to fill it."
     : isErd
@@ -176,7 +173,7 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
         <DiagramTypeDropdown sessionId={sessionId} />
         <GenerateSplitButton
           label={isGeneratingGraph ? "Generating…" : diagram ? "Update diagram" : "Generate diagram"}
-          isDisabled={!isLive || isBusy}
+          isDisabled={isGeneratingGraph}
           onGenerate={(instructions) => void refreshGraph(sessionId, diagramType, instructions)}
         />
         {isErd && diagram !== undefined ? (
@@ -185,7 +182,7 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
           </button>
         ) : null}
         <span
-          className={`flex min-w-0 flex-1 items-center gap-2 ${isGeneratingGraph || isBusy ? "text-neutral-400" : problems.length || isOutdated ? "text-amber-300/90" : "text-neutral-500"}`}
+          className={`flex min-w-0 flex-1 items-center gap-2 ${isGeneratingGraph ? "text-neutral-400" : problems.length || isOutdated ? "text-amber-300/90" : "text-neutral-500"}`}
           title={generatedAt ? `Diagram generated ${generatedAt}` : undefined}
         >
           {isGeneratingGraph ? <Spinner className="size-5 shrink-0" /> : null}
@@ -196,7 +193,7 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
       <div className="flex min-h-0 flex-1">
         <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
           <DiagramStatusBadge status={status} hasDiagram={Boolean(diagram)} />
-          {error ? <p className="absolute inset-x-3 top-3 z-10 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-[13px] text-red-300">{error}</p> : null}
+          {error || generateError ? <p className="absolute inset-x-3 top-3 z-10 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-[13px] text-red-300">{error ?? generateError}</p> : null}
           <ReactFlowProvider key={`${layoutVersion}:${zoomScale}`}>
             {diagram?.nodes.length ? (
               <ReactFlow

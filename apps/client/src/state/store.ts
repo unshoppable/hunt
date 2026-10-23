@@ -172,11 +172,13 @@ export type SessionChat = {
   editVersion: number;
   /** Bumped when the watcher reports a rewritten graph file. */
   graphVersion: number;
-  /** A diagram refresh turn is running; the graph panel shows it as generating. */
-  isGeneratingGraph: boolean;
+  /** The diagram types a background agent is generating right now (see `refreshGraph`). */
+  generatingDiagrams: DiagramType[];
+  /** Why the last generation of a diagram type failed; cleared when that type is generated again. */
+  diagramErrors: Partial<Record<DiagramType, string>>;
   /**
-   * Whether the latest turn is one Hunt sent itself (a diagram refresh). The chat shows neither its prompt nor its
-   * output nor a working indicator; the next turn of the user ends it.
+   * Whether the latest turn is one Hunt sent itself (a diagram refresh, which older sessions replay from their transcript).
+   * The chat shows neither its prompt nor its output nor a working indicator; the next turn of the user ends it.
    */
   isHiddenTurn: boolean;
   /**
@@ -329,7 +331,10 @@ export type HuntState = {
   declineGuardrail: (id: string, suggestion: GuardrailSuggestion, reason: GuardrailDeclineReason) => void;
   /** Hides the guardrail `suggestion` of `id` once the user took it up (see `SessionChat.dismissedGuardrailId`). */
   acceptGuardrail: (id: string, suggestion: GuardrailSuggestion) => void;
-  /** Asks the agent for a fresh component diagram as a hidden turn (see `SessionChat.isHiddenTurn`). */
+  /**
+   * Generates the diagram of `diagramType` in a background agent, independent of the chat agent, which may run a turn
+   * meanwhile; one run per type at a time (see `SessionChat.generatingDiagrams` and `diagramErrors`).
+   */
   refreshGraph: (id: string, diagramType: DiagramType, instructions?: string) => Promise<void>;
   cancelPrompt: (id: string) => Promise<void>;
   setMode: (id: string, modeId: string) => Promise<void>;
@@ -377,7 +382,8 @@ export function createEmptyChat(): SessionChat {
     error: null,
     editVersion: 0,
     graphVersion: 0,
-    isGeneratingGraph: false,
+    generatingDiagrams: [],
+    diagramErrors: {},
     isHiddenTurn: false,
     hasHistory: false,
     remoteStep: null,
@@ -766,12 +772,12 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
   }
 
   /**
-   * The empty chat a restarted agent fills; the mode, the queued prompts, a running remote operation or move and the file
-   * sync carry over.
+   * The empty chat a restarted agent fills; the mode, the queued prompts, a running remote operation or move, the file
+   * sync and the diagram generations carry over.
    */
   function replacedChat(chat: SessionChat): SessionChat {
-    const { modeId, queue, isLoading, remoteStep, remoteDetail, remoteRun, move, fileSync } = chat;
-    return { ...createEmptyChat(), modeId, queue, hasHistory: true, isLoading, remoteStep, remoteDetail, remoteRun, move, fileSync };
+    const { modeId, queue, isLoading, remoteStep, remoteDetail, remoteRun, move, fileSync, generatingDiagrams, diagramErrors } = chat;
+    return { ...createEmptyChat(), modeId, queue, hasHistory: true, isLoading, remoteStep, remoteDetail, remoteRun, move, fileSync, generatingDiagrams, diagramErrors };
   }
 
   /** Resolves once the chat of `id` runs no turn, also when there is no such chat (any more). */
@@ -1252,11 +1258,22 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     },
 
     refreshGraph: async (id, diagramType, instructions = "") => {
-      if (get().chats[id]?.move) return;
-      updateChat(id, (chat) => ({ ...chat, isGeneratingGraph: true, isHiddenTurn: true }));
+      const current = get().chats[id];
+      if (current?.move || current?.generatingDiagrams.includes(diagramType)) return;
       const { model, effort } = useSettingsStore.getState().graphAgent;
-      const request = () => commands.refreshGraph(id, diagramType, instructions, model, effort).finally(() => updateChat(id, (chat) => ({ ...chat, isGeneratingGraph: false })));
-      await runTurn(id, null, request);
+      updateChat(id, (chat) => ({
+        ...chat,
+        generatingDiagrams: [...chat.generatingDiagrams, diagramType],
+        diagramErrors: { ...chat.diagramErrors, [diagramType]: undefined },
+      }));
+      try {
+        await commands.refreshGraph(id, diagramType, instructions, model, effort);
+      } catch (error) {
+        updateChat(id, (chat) => ({ ...chat, diagramErrors: { ...chat.diagramErrors, [diagramType]: String(error) } }));
+      } finally {
+        updateChat(id, (chat) => ({ ...chat, generatingDiagrams: chat.generatingDiagrams.filter((type) => type !== diagramType) }));
+        usePlanUsageStore.getState().refresh();
+      }
     },
 
     cancelPrompt: async (id) => {

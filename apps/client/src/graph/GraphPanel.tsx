@@ -14,7 +14,7 @@ import { useReviewCommentCounts } from "../review/reviewComments";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { DependencyCard, type OutgoingDependency } from "./DependencyCard";
 import { buildDiagram, litByHover, type DiagramNode } from "./diagram";
-import { AGENT_BUSY_HINT, DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton } from "./DiagramToolbar";
+import { DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton } from "./DiagramToolbar";
 import { openDiffWindow } from "./diffWindows";
 import { FileFilterPopover } from "./FileFilterPopover";
 import { GraphFilters } from "./GraphFilters";
@@ -42,9 +42,8 @@ const FILE_HOVER_DELAY = 100;
 export function GraphPanel({ sessionId }: { sessionId: string }) {
   const graphVersion = useHuntStore((state) => state.chats[sessionId]?.graphVersion ?? 0);
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
-  const isBusy = useHuntStore((state) => state.chats[sessionId]?.isBusy ?? false);
-  const isGeneratingGraph = useHuntStore((state) => state.chats[sessionId]?.isGeneratingGraph ?? false);
-  const isLive = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId)?.isLive ?? false);
+  const isGeneratingGraph = useHuntStore((state) => state.chats[sessionId]?.generatingDiagrams.includes("dependencies") ?? false);
+  const generateError = useHuntStore((state) => state.chats[sessionId]?.diagramErrors.dependencies ?? null);
   const refreshGraph = useHuntStore((state) => state.refreshGraph);
   const graphFilter = useSettingsStore((state) => state.graphFilter);
 
@@ -197,15 +196,13 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
   const generatedAt = status?.generatedAt ? new Date(status.generatedAt).toLocaleString() : null;
   const hint = isGeneratingGraph
     ? "The agent is generating the diagram; its labels, review ratings and context files appear when it is done."
-    : isBusy
-      ? AGENT_BUSY_HINT
-      : isGraphUnusable
-        ? "The agent's diagram does not match the schema and is left out; update the diagram to get its labels."
-        : isOutdated
-          ? "Files changed since the diagram was generated; update it to match the current changes."
-          : graph
-            ? null
-            : "Edges show the imports between the changed files; generate the diagram for the agent's labels, review ratings and context files.";
+    : isGraphUnusable
+      ? "The agent's diagram does not match the schema and is left out; update the diagram to get its labels."
+      : isOutdated
+        ? "Files changed since the diagram was generated; update it to match the current changes."
+        : graph
+          ? null
+          : "Edges show the imports between the changed files; generate the diagram for the agent's labels, review ratings and context files.";
 
   const changedShown = diagram.nodes.filter((node) => node.isChanged).length;
   const contextShown = diagram.nodes.length - changedShown;
@@ -218,7 +215,7 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
         <DiagramTypeDropdown sessionId={sessionId} />
         <GenerateSplitButton
           label={isGeneratingGraph ? "Generating…" : graph ? "Update diagram" : "Generate diagram"}
-          isDisabled={!isLive || isBusy}
+          isDisabled={isGeneratingGraph}
           onGenerate={(instructions) => void refreshGraph(sessionId, "dependencies", instructions)}
         />
         <div className="relative">
@@ -243,7 +240,7 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
         </div>
         <GraphFilters hasRatings={isRated} />
         <span
-          className={`flex min-w-0 flex-1 items-center gap-2 ${isGeneratingGraph || isBusy ? "text-neutral-400" : isGraphUnusable || isOutdated ? "text-amber-300/90" : "text-neutral-500"}`}
+          className={`flex min-w-0 flex-1 items-center gap-2 ${isGeneratingGraph ? "text-neutral-400" : isGraphUnusable || isOutdated ? "text-amber-300/90" : "text-neutral-500"}`}
           title={generatedAt ? `Diagram generated ${generatedAt}` : undefined}
         >
           {isGeneratingGraph ? <Spinner className="size-5 shrink-0" /> : null}
@@ -253,7 +250,7 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
         <DiagramStatusBadge status={status} hasDiagram={Boolean(graph)} />
-        {error ? <p className="absolute inset-x-3 top-3 z-10 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-[13px] text-red-300">{error}</p> : null}
+        {error || generateError ? <p className="absolute inset-x-3 top-3 z-10 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-[13px] text-red-300">{error ?? generateError}</p> : null}
         <ReactFlowProvider key={`${layoutVersion}:${zoomScale}`}>
           {diagram.nodes.length ? (
             <CommentCountsContext value={commentCounts}>

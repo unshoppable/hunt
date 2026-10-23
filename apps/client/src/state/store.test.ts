@@ -562,39 +562,44 @@ describe("prompt queue", () => {
     expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(false);
   });
 
-  it("shows neither a diagram refresh nor the agent's output, and the next prompt ends the hidden turn", async () => {
-    vi.mocked(invoke).mockImplementation(async () => {
-      useHuntStore.getState().applyUpdate(SESSION, notification({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Diagram updated." } }));
-      return "EndTurn";
-    });
-
-    await useHuntStore.getState().refreshGraph(SESSION, "dependencies");
-    await useHuntStore.getState().refreshGraph(SESSION, "dependencies");
-    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ items: [], isHiddenTurn: true });
-
-    await useHuntStore.getState().sendPrompt(SESSION, "next");
-    const chat = useHuntStore.getState().chats[SESSION];
-    expect(chat.isHiddenTurn).toBe(false);
-    expect(chat.items.map((item) => item.kind)).toEqual(["user", "agent"]);
-  });
-
-  it("marks the chat as generating the diagram until the graph turn ends, not while a queued prompt runs after it", async () => {
-    const graphTurn = deferredTurn();
+  it("generates a diagram apart from the chat: the chat stays idle, a prompt runs meanwhile and a second click waits", async () => {
+    const generation = deferredTurn();
     const promptTurn = deferredTurn();
-    vi.mocked(invoke).mockReturnValueOnce(graphTurn.turn).mockReturnValueOnce(promptTurn.turn);
+    vi.mocked(invoke).mockReturnValueOnce(generation.turn).mockReturnValueOnce(promptTurn.turn);
+    const commandsCalled = () => vi.mocked(invoke).mock.calls.map(([command]) => command).filter((command) => command !== "get_plan_usage");
 
-    const refresh = useHuntStore.getState().refreshGraph(SESSION, "dependencies");
-    expect(useHuntStore.getState().chats[SESSION].isGeneratingGraph).toBe(true);
-    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("refresh_graph", { id: SESSION, diagramType: "dependencies", instructions: "", ...DEFAULT_GRAPH_AGENT });
-    await useHuntStore.getState().sendPrompt(SESSION, "next");
+    const refresh = useHuntStore.getState().refreshGraph(SESSION, "erd");
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("refresh_graph", { id: SESSION, diagramType: "erd", instructions: "", ...DEFAULT_GRAPH_AGENT });
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ generatingDiagrams: ["erd"], isBusy: false, isHiddenTurn: false });
 
-    graphTurn.finish("EndTurn");
-    await vi.waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledTimes(2));
-    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ isGeneratingGraph: false, isBusy: true });
+    await useHuntStore.getState().refreshGraph(SESSION, "erd");
+    expect(commandsCalled()).toEqual(["refresh_graph"]);
+
+    const send = useHuntStore.getState().sendPrompt(SESSION, "next");
+    expect(commandsCalled()).toEqual(["refresh_graph", "send_prompt"]);
+    expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(true);
+
+    generation.finish("");
+    await refresh;
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ generatingDiagrams: [], isBusy: true });
 
     promptTurn.finish("EndTurn");
-    await refresh;
+    await send;
     expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(false);
+  });
+
+  it("keeps the error of a failed generation for its diagram type until that type is generated again", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce("failed to generate the diagram: Not logged in");
+    await useHuntStore.getState().refreshGraph(SESSION, "dependencies");
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({
+      generatingDiagrams: [],
+      diagramErrors: { dependencies: "failed to generate the diagram: Not logged in" },
+      error: null,
+    });
+
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    await useHuntStore.getState().refreshGraph(SESSION, "dependencies");
+    expect(useHuntStore.getState().chats[SESSION].diagramErrors.dependencies).toBeUndefined();
   });
 
   it("keeps queued prompts unsent when the turn was cancelled", async () => {

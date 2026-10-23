@@ -27,6 +27,7 @@ use graph::WatcherRegistry;
 use remote::terminal::TerminalRegistry;
 use session::attribution::AttributionRegistry;
 use session::dependencies::DependencyRegistry;
+use session::diagram_agent::DiagramRuns;
 use session::summary::SummaryRegistry;
 use session::sync::SyncRegistry;
 use tauri::webview::PageLoadEvent;
@@ -49,6 +50,7 @@ pub fn run() {
         .manage(session::related::RelatedRegistry::default())
         .manage(session::relay_watch::RelayWatchRegistry::default())
         .manage(DependencyRegistry::default())
+        .manage(DiagramRuns::default())
         .manage(preferences::Preferences::default())
         .menu(|app| menu::build(app))
         .manage(AttributionRegistry::default())

@@ -98,6 +98,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const hasSession = Boolean(session);
   const isBusy = chat?.isBusy ?? false;
   const declineGuardrail = useHuntStore((state) => state.declineGuardrail);
+  const acceptGuardrail = useHuntStore((state) => state.acceptGuardrail);
   const foundSuggestion = isBusy ? null : findGuardrailSuggestion(chat?.items ?? []);
   const guardrailSuggestion = foundSuggestion?.replyId === chat?.dismissedGuardrailId ? null : foundSuggestion;
   const hasQuestion = !!chat && !isCreating && hasPendingQuestion(chat);
@@ -372,6 +373,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
             setGuardrailChatOffset({ x: x + offset.x, y: y + offset.y });
           }}
           onDecline={guardrailOffer ? (reason) => declineGuardrail(sessionId, guardrailOffer, reason) : undefined}
+          onAccept={guardrailOffer ? () => acceptGuardrail(sessionId, guardrailOffer) : undefined}
           onClose={guardrailChat.close}
         />
       ) : null}

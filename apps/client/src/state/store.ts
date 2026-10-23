@@ -199,7 +199,7 @@ export type SessionChat = {
   move: SessionMove | null;
   /** The file sync of a remote session; idle for a local one. */
   fileSync: FileSync;
-  /** The reply whose guardrail suggestion the user declined; the "Guardrail" button no longer offers it. */
+  /** The reply whose guardrail suggestion the user took up or declined; the "Guardrail" button no longer offers it. */
   dismissedGuardrailId: string | null;
 };
 
@@ -327,6 +327,8 @@ export type HuntState = {
    * it in the repository's `.claude/declined-guardrails.jsonl`, which agents search before they suggest a guardrail.
    */
   declineGuardrail: (id: string, suggestion: GuardrailSuggestion, reason: GuardrailDeclineReason) => void;
+  /** Hides the guardrail `suggestion` of `id` once the user took it up (see `SessionChat.dismissedGuardrailId`). */
+  acceptGuardrail: (id: string, suggestion: GuardrailSuggestion) => void;
   /** Asks the agent for a fresh component diagram as a hidden turn (see `SessionChat.isHiddenTurn`). */
   refreshGraph: (id: string, diagramType: DiagramType, instructions?: string) => Promise<void>;
   cancelPrompt: (id: string) => Promise<void>;
@@ -1228,6 +1230,10 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     declineGuardrail: (id, suggestion, reason) => {
       updateChat(id, (chat) => ({ ...chat, dismissedGuardrailId: suggestion.replyId }));
       commands.declineGuardrail(id, suggestion.kind, suggestion.summary, reason).catch((error) => updateChat(id, (chat) => ({ ...chat, error: String(error) })));
+    },
+
+    acceptGuardrail: (id, suggestion) => {
+      updateChat(id, (chat) => ({ ...chat, dismissedGuardrailId: suggestion.replyId }));
     },
 
     setPromptDraft: (id, draft) => {

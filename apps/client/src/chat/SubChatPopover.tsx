@@ -96,6 +96,8 @@ type SubChatPopoverProps = {
    * button until the first question is sent; it asks for the reason, then calls `onDecline` with it and closes the popover.
    */
   onDecline?: (reason: GuardrailDeclineReason) => void;
+  /** Called once the first question created the sub session, which takes up what the popover was opened for. */
+  onAccept?: () => void;
   onClose: () => void;
 };
 
@@ -110,7 +112,7 @@ type SubChatPopoverProps = {
  * makes the text area taller at the expense of the conversation, remembered until it is dragged back to one line. A
  * question sent while a turn runs is queued for the end of that turn.
  */
-export function SubChatPopover({ parentSessionId, request, subSessionId: initialSubSessionId, title, placeholder, context, initialText = "", onPlaced, onDecline, onClose }: SubChatPopoverProps) {
+export function SubChatPopover({ parentSessionId, request, subSessionId: initialSubSessionId, title, placeholder, context, initialText = "", onPlaced, onDecline, onAccept, onClose }: SubChatPopoverProps) {
   const [subSessionId, setSubSessionId] = useState<string | null>(initialSubSessionId ?? null);
   const [text, setText] = useState(initialText);
   const [isCreating, setIsCreating] = useState(false);
@@ -354,6 +356,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
       const setup = pickedModel ? { ...parentSetup, configValues: { ...parentSetup.configValues, model: pickedModel } } : parentSetup;
       const id = await createSubSession(parentSessionId, titleFromPrompt(trimmed), request.selection, { setup, prompt: { text: trimmed, images: [] } }, false);
       setSubSessionId(id);
+      onAccept?.();
     } catch (reason) {
       setError(String(reason));
       setText(trimmed);

@@ -413,7 +413,7 @@ export function NewSessionView({
         ) : null}
       </header>
       {view === "pullRequests" ? (
-        <PullRequestList repoPath={repoPath} onSelect={selectPullRequest} onClose={() => setView("start")} />
+        <PullRequestList key={repoPath} repoPath={repoPath} onSelect={selectPullRequest} onClose={() => setView("start")} />
       ) : view === "sessionVms" ? (
         <SessionVmList onClose={() => setView("start")} />
       ) : (

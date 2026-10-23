@@ -4,7 +4,7 @@ import { commands } from "../ipc/commands";
 import type { CheckSummary, PullRequest, PullRequestLabel, ViewerReview } from "../ipc/types";
 import { formatRelativeTime } from "../chat/ScreenshotPicker";
 import { Chip } from "../ui/Chip";
-import { CheckIcon, CloseIcon, CommentIcon, ExternalIcon } from "../ui/icons";
+import { CheckIcon, CloseIcon, CommentIcon, ExternalIcon, Spinner } from "../ui/icons";
 import { errorText, useLoad } from "../ui/useLoad";
 import { ListPane } from "./ListPane";
 import { filterPullRequests } from "./pullRequests";
@@ -30,19 +30,45 @@ const REVIEW_DECISIONS: Record<string, { label: string; className: string }> = {
   CHANGES_REQUESTED: { label: "Changes requested", className: "text-red-300" },
 };
 
+/** The open pull requests each repository listed last, by repository path; the next opening shows them at once. */
+const listedPullRequests = new Map<string, PullRequest[]>();
+
 /**
  * The repository's open pull requests, filling the chat pane in place of the start view, filtered by a search box
  * like the session sidebar's. Each row carries the metadata GitHub's own list shows (labels, review state, tasks,
- * checks, comments) and marks whether the signed-in user already reviewed it. Loads once when shown; a row hands
- * its pull request to `onSelect`, the arrow at its end opens it on GitHub.
+ * checks, comments) and marks whether the signed-in user already reviewed it. Loads once when shown; until then it
+ * shows what the repository listed last with a spinner beside the search box. A row hands its pull request to
+ * `onSelect`, the arrow at its end opens it on GitHub. Mount it with `key={repoPath}`: its state belongs to one repository.
  */
 export function PullRequestList({ repoPath, onSelect, onClose }: PullRequestListProps) {
   const [query, setQuery] = useState("");
-  const [pullRequests, setPullRequests] = useState<PullRequest[] | null>(null);
+  const [pullRequests, setPullRequests] = useState<PullRequest[] | null>(() => listedPullRequests.get(repoPath) ?? null);
+  const [isUpdating, setIsUpdating] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const rows = useMemo(() => filterPullRequests(pullRequests ?? [], query), [pullRequests, query]);
 
-  useLoad(() => commands.listPullRequests(repoPath), { onValue: setPullRequests, onError: (reason) => setError(errorText(reason)) }, [repoPath]);
+  useLoad(
+    () => commands.listPullRequests(repoPath),
+    {
+      onValue: (listed) => {
+        listedPullRequests.set(repoPath, listed);
+        setPullRequests(listed);
+        setIsUpdating(false);
+      },
+      onError: (reason) => {
+        setError(errorText(reason));
+        setIsUpdating(false);
+      },
+    },
+    [repoPath],
+  );
+
+  const tools =
+    isUpdating && pullRequests ? (
+      <span className="flex size-8 shrink-0 items-center justify-center text-neutral-500" role="status" title="Asking GitHub for the open pull requests" aria-label="Updating the pull requests">
+        <Spinner className="size-4" />
+      </span>
+    ) : null;
 
   return (
     <ListPane
@@ -50,6 +76,7 @@ export function PullRequestList({ repoPath, onSelect, onClose }: PullRequestList
       onQueryChange={setQuery}
       searchPlaceholder="Search pull requests"
       ariaLabel="Open pull requests"
+      tools={tools}
       error={error}
       isLoading={!pullRequests}
       emptyText="No open pull requests"

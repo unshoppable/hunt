@@ -11,6 +11,7 @@ import { GitPanel } from "../git/GitPanel";
 import { ArchitecturePanel } from "../graph/ArchitecturePanel";
 import { IdePanel } from "../ide/IdePanel";
 import { PullRequestPanel } from "../review/PullRequestPanel";
+import { useReviewCommentTotal } from "../review/reviewComments";
 import { keepDiffWindowWarm } from "../graph/diffWindows";
 import { keepGuardrailsWindowWarm } from "../guardrails/openGuardrailsWindow";
 import { keepSettingsWindowWarm } from "../settings/openSettingsWindow";
@@ -71,6 +72,8 @@ export function App() {
   /** The session whose tab the inspector shows and remembers; none while the start view shows. */
   const shownSessionId = draft ? null : activeSessionId;
   const storedTab = useRightTab(shownSessionId);
+  /** Review comments of the pull request the shown session reviews, drafts included; the Diff tab counts them. */
+  const reviewCommentCount = useReviewCommentTotal(shownSessionId);
   const setTab = useSessionViewStore((state) => state.setTab);
   const setRightTab = (tab: RightTab) => setTab(shownSessionId, tab);
   const openFile = useIdeStore((state) => state.openFile);
@@ -176,7 +179,7 @@ export function App() {
         <Panel id="inspector" defaultSize="62%" minSize={320} className="flex">
           <aside className="flex min-w-0 flex-1 flex-col bg-(--surface-inspector)">
             <nav data-tauri-drag-region="" className={`${HEADER_BAR} gap-1 border-b border-(--line) px-2`}>
-              <TabButton isActive={rightTab === "diff"} onClick={() => setRightTab("diff")} label="Diff" />
+              <TabButton isActive={rightTab === "diff"} onClick={() => setRightTab("diff")} label="Diff" commentCount={reviewCommentCount} />
               <TabButton isActive={rightTab === "git"} onClick={() => setRightTab("git")} label="Git" />
               <TabButton isActive={rightTab === "editor"} onClick={() => setRightTab("editor")} label="Editor" />
               <TabButton isActive={rightTab === "graph"} onClick={() => setRightTab("graph")} label="Architecture" />
@@ -265,8 +268,23 @@ function NoLocalWorktree({ sessionId }: { sessionId: string }) {
   return <div className="flex h-full items-center justify-center px-8 text-center text-[14px] text-neutral-500">{message}</div>;
 }
 
-/** A tab of the inspector; `hasActivity` adds a small green dot after the label. */
-function TabButton({ isActive, onClick, label, hasActivity = false }: { isActive: boolean; onClick: () => void; label: string; hasActivity?: boolean }) {
+/**
+ * A tab of the inspector; `hasActivity` adds a small green dot after the label, a `commentCount` above 0 a blue
+ * badge with that count of review comments, raised to the label's top right corner.
+ */
+function TabButton({
+  isActive,
+  onClick,
+  label,
+  hasActivity = false,
+  commentCount = 0,
+}: {
+  isActive: boolean;
+  onClick: () => void;
+  label: string;
+  hasActivity?: boolean;
+  commentCount?: number;
+}) {
   return (
     <button
       type="button"
@@ -275,6 +293,31 @@ function TabButton({ isActive, onClick, label, hasActivity = false }: { isActive
     >
       {label}
       {hasActivity ? <span className="size-1.5 shrink-0 rounded-full bg-green-400" title="Something runs on the VM" /> : null}
+      {commentCount ? <CountBadge count={commentCount} label={`${commentCount} review ${commentCount === 1 ? "comment" : "comments"}`} /> : null}
     </button>
+  );
+}
+
+const BADGE_HEIGHT = 16;
+/** Extra width per digit beyond the first, so `12` stretches the circle into a pill. */
+const BADGE_DIGIT_WIDTH = 6;
+/** Baseline that centres digits: half the height plus half their height (~0.7 em at 10px). */
+const BADGE_BASELINE = BADGE_HEIGHT / 2 + 3.5;
+
+/**
+ * A count in a blue circle, raised like a superscript; more than one digit stretch it into a pill. Drawn as one SVG
+ * so circle and digits share the same sub-pixel offset; HTML text snaps its baseline to whole pixels and drifts.
+ */
+function CountBadge({ count, label }: { count: number; label: string }) {
+  const text = count > 99 ? "99+" : String(count);
+  const width = BADGE_HEIGHT + (text.length - 1) * BADGE_DIGIT_WIDTH;
+  return (
+    <svg width={width} height={BADGE_HEIGHT} viewBox={`0 0 ${width} ${BADGE_HEIGHT}`} className="relative -top-1.5 -ml-0.5 shrink-0" role="img" aria-label={label}>
+      <title>{label}</title>
+      <rect width={width} height={BADGE_HEIGHT} rx={BADGE_HEIGHT / 2} className="fill-blue-600" />
+      <text x={width / 2} y={BADGE_BASELINE} textAnchor="middle" className="fill-white text-[10px] font-semibold">
+        {text}
+      </text>
+    </svg>
   );
 }

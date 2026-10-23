@@ -108,11 +108,12 @@ export function reviewCommentCounts(drafts: ReviewComment[], threads: ReviewThre
 }
 
 /**
- * Review comments per path of `sessionId` (see `reviewCommentCounts`); for a session that reviews a pull request,
- * showing them loads GitHub's review threads again once the last load is stale (see `useReviewThreadStore`).
+ * Review comments per path of `sessionId` (see `reviewCommentCounts`), none without a session; for a session that
+ * reviews a pull request, showing them loads GitHub's review threads again once the last load is stale (see
+ * `useReviewThreadStore`).
  */
-export function useReviewCommentCounts(sessionId: string): Map<string, number> {
-  const reviewSession = useHuntStore((state) => reviewSessionOf(state.sessions, sessionId));
+export function useReviewCommentCounts(sessionId: string | null): Map<string, number> {
+  const reviewSession = useHuntStore((state) => (sessionId ? reviewSessionOf(state.sessions, sessionId) : null));
   const threadSessionId = reviewSession?.pullRequest ? reviewSession.id : null;
   const load = useReviewThreadStore((state) => (threadSessionId ? state.loads[threadSessionId] : undefined));
   const refresh = useReviewThreadStore((state) => state.refresh);
@@ -121,6 +122,12 @@ export function useReviewCommentCounts(sessionId: string): Map<string, number> {
     refresh(threadSessionId);
   }, [refresh, threadSessionId]);
   return useMemo(() => reviewCommentCounts(reviewSession?.reviewComments ?? [], load?.threads ?? []), [reviewSession, load]);
+}
+
+/** How many review comments `sessionId` has across all files (see `useReviewCommentCounts`); 0 without a session. */
+export function useReviewCommentTotal(sessionId: string | null): number {
+  const counts = useReviewCommentCounts(sessionId);
+  return [...counts.values()].reduce((total, count) => total + count, 0);
 }
 
 /** How many review drafts `sessionId` has across all files. */

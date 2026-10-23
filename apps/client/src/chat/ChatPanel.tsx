@@ -16,6 +16,7 @@ import { useSessionViewStore } from "../state/sessionViews";
 import { useSettingsStore } from "../state/settings";
 import { openGuardrailsWindow } from "../guardrails/openGuardrailsWindow";
 import { ensureInstructionSections } from "../guardrails/instructionSections";
+import { ensureGuardrailReadmes } from "../guardrails/guardrailReadmes";
 import { GUARDRAIL_CHAT_PATH, guardrailTask, KIND_LABELS, listGuardrails } from "../guardrails/guardrails";
 import { buildGuardrailRequest, buildTranscript, findGuardrailSuggestion, transcriptTail, type GuardrailSuggestion } from "./guardrailSuggestion";
 import { SubChatPopover, useSubChatPopover } from "./SubChatPopover";
@@ -146,6 +147,15 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     if (!worktreePath || isCreating) return;
     void ensureInstructionSections(sessionId, worktreePath);
   }, [sessionId, worktreePath, isCreating]);
+
+  // Once an agent of this worktree (the session's own or a sub chat's) wrote the first rule or ADR, its folder gets the README.
+  const worktreeEditVersion = useHuntStore((state) =>
+    state.sessions.filter((candidate) => candidate.worktreePath === worktreePath).reduce((sum, candidate) => sum + (state.chats[candidate.id]?.editVersion ?? 0), 0),
+  );
+  useEffect(() => {
+    if (!worktreePath || isCreating) return;
+    void ensureGuardrailReadmes(sessionId, useSettingsStore.getState().guardrailDirs);
+  }, [sessionId, worktreePath, isCreating, worktreeEditVersion]);
 
   const followEnd = useFollowScroll(scrollRef, columnRef, `${sessionId}:${hasSession}`);
 

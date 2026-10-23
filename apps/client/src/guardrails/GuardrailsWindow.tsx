@@ -25,6 +25,7 @@ import { useTreeNavigation } from "../ui/useTreeNavigation";
 import { errorText, useLoad } from "../ui/useLoad";
 import { creationTask, generationTask, GUARDRAIL_CHAT_PATH, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailTask, guardrailTemplate, KIND_LABELS, kindHelp, listGuardrails, newGuardrailLocation, ownerFolderOf, treeFolders, type Guardrail, type GuardrailKind, type GuardrailListing, type GuardrailLocation } from "./guardrails";
 import { GuardrailTree } from "./GuardrailTree";
+import { ensureGuardrailReadmes } from "./guardrailReadmes";
 
 const KINDS: GuardrailKind[] = ["instruction", "rule", "skill", "agent", "adr"];
 
@@ -106,6 +107,7 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
       .then((next) => {
         setListing(next);
         setError(null);
+        void ensureGuardrailReadmes(sessionId, dirs);
         return next;
       })
       .catch((reason) => {

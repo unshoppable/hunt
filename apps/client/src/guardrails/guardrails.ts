@@ -65,7 +65,7 @@ export function kindHelp(kind: GuardrailKind): KindHelp {
         what: "Rules are Markdown files that extend the project instructions by topic.",
         loading:
           'A rule without a "paths" list in its front matter is loaded together with the project instructions and applies to every turn. With a list (for example paths: ["src/api/**"]) it is loaded only while Claude works on a file matching one of the globs.',
-        use: "Use a rule for conventions that concern one part of the code, such as the API layer or the tests, or to split a long CLAUDE.md into topics. Unlike a subfolder CLAUDE.md, a rule matches files anywhere by glob.",
+        use: "Use a rule for conventions that concern one part of the code, such as the API layer or the tests, or to split a long CLAUDE.md into topics. Unlike a subfolder CLAUDE.md, a rule matches files anywhere by glob. A rule tells Claude what to do when it writes code there; when it follows from an architectural decision, it names that decision (or its ADR) as the reason in one sentence.",
       };
     case "skill":
       return {
@@ -86,7 +86,7 @@ export function kindHelp(kind: GuardrailKind): KindHelp {
         what: "Architectural decision records document one decision each: its context, the decision and its consequences.",
         loading:
           "Claude Code does not load ADRs on its own. One reaches Claude only when a CLAUDE.md or a rule refers to it, or when Claude opens the file while exploring the repository. Hunt therefore offers, when a session opens, to add a section to the root CLAUDE.md that names the ADR folder and the ls and grep commands to search it.",
-        use: "Write an ADR when a decision shapes the architecture and others would otherwise ask why it was made: a framework, a data model, a boundary between modules. It records the reasoning for the team; it does not instruct Claude.",
+        use: "Write an ADR when a decision shapes the architecture and others would otherwise ask why it was made: a framework, a data model, a boundary between modules. It records why one alternative was chosen over the others; it does not instruct Claude. A coding convention that follows from the decision belongs in a rule that refers to the ADR.",
       };
   }
 }
@@ -463,7 +463,7 @@ function markdownEntries<T extends { name: string; isDir: boolean }>(entries: T[
   return entries.filter((entry) => !entry.isDir && entry.name.toLowerCase().endsWith(".md") && entry.name.toLowerCase() !== "readme.md");
 }
 
-/** Markdown files below `dir`, recursively, as worktree-relative paths. */
+/** Markdown files below `dir`, recursively, as worktree-relative paths; READMEs excluded. */
 async function markdownFilesBelow(sessionId: string, dir: string): Promise<string[]> {
   const entries = await listDirOrEmpty(sessionId, dir);
   const files: string[] = [];
@@ -471,7 +471,7 @@ async function markdownFilesBelow(sessionId: string, dir: string): Promise<strin
     const path = `${dir}/${entry.name}`;
     if (entry.isDir) {
       files.push(...(await markdownFilesBelow(sessionId, path)));
-    } else if (entry.name.toLowerCase().endsWith(".md")) {
+    } else if (entry.name.toLowerCase().endsWith(".md") && entry.name.toLowerCase() !== "readme.md") {
       files.push(path);
     }
   }

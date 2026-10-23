@@ -1,4 +1,4 @@
-import { useMemo, useState, type MouseEvent } from "react";
+import { Fragment, useMemo, useState, type MouseEvent } from "react";
 import type { GitRef, RefList } from "../ipc/types";
 import { useFolderIconUrl } from "../diff/fileIcons";
 import { ICON_BUTTON_XS } from "../ui/buttons";
@@ -154,23 +154,25 @@ export function RefTree({
         </li>
         {rows.map(({ node, depth }) =>
           node.kind === "group" ? (
-            <li
-              key={node.path}
-              onClick={() => {
-                toggle(node.path);
-                nav.select(node.path);
-              }}
-              data-tree-key={node.path}
-              data-selected={nav.cursor === node.path}
-              className="tree-row flex cursor-default items-center gap-[5px] pr-2.5 select-none"
-              style={{ paddingLeft: `calc(10px + ${depth} * var(--git-indent))` }}
-              title={node.path}
-            >
-              <ChevronIcon expanded={!collapsed.has(node.path)} className="size-4 shrink-0 text-neutral-500" />
-              {depth ? <img src={folderIconUrl(node.name, !collapsed.has(node.path))} alt="" className="size-[17px] shrink-0" /> : null}
-              <span className={`truncate ${depth ? "text-neutral-300" : "text-neutral-200"}`}>{node.name}</span>
-              <span className="pl-1 text-[0.85em] text-neutral-600">{node.count}</span>
-            </li>
+            <Fragment key={node.path}>
+              {node.path === "remote" ? <li aria-hidden="true" className="mx-2.5 my-1 border-t border-(--line)" /> : null}
+              <li
+                onClick={() => {
+                  toggle(node.path);
+                  nav.select(node.path);
+                }}
+                data-tree-key={node.path}
+                data-selected={nav.cursor === node.path}
+                className="tree-row flex cursor-default items-center gap-[5px] pr-2.5 select-none"
+                style={{ paddingLeft: `calc(10px + ${depth} * var(--git-indent))` }}
+                title={node.path}
+              >
+                <ChevronIcon expanded={!collapsed.has(node.path)} className="size-4 shrink-0 text-neutral-500" />
+                {depth ? <img src={folderIconUrl(node.name, !collapsed.has(node.path))} alt="" className="size-[17px] shrink-0" /> : null}
+                <span className={`truncate ${depth ? "text-neutral-300" : "text-neutral-200"}`}>{node.name}</span>
+                <span className="pl-1 text-[0.85em] text-neutral-600">{node.count}</span>
+              </li>
+            </Fragment>
           ) : (
             <li
               key={node.path}

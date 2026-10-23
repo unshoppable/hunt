@@ -1,4 +1,5 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { formatRelativeTime } from "../chat/ScreenshotPicker";
 import type { DiagramType, GraphStatus } from "../ipc/types";
 import { useSettingsStore } from "../state/settings";
 import { BUTTON_BASE, PRIMARY, PRIMARY_BUTTON_LG, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
@@ -19,25 +20,34 @@ export function DiagramTypeDropdown({ sessionId }: { sessionId: string }) {
 }
 
 /**
- * "Outdated" while worktree files changed after the diagram was generated, "Up to date" otherwise; nothing without a
- * diagram. Floats in the top-left corner of the diagram canvas, so its parent must be positioned.
+ * "Outdated" while worktree files changed after the diagram was generated, "Up to date" otherwise, followed by how long
+ * ago it was generated; nothing without a diagram. Floats in the top-left corner of the diagram canvas, so its parent
+ * must be positioned.
  */
 export function DiagramStatusBadge({ status, hasDiagram }: { status: GraphStatus | null; hasDiagram: boolean }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
   if (!hasDiagram) return null;
-  const generatedAt = status?.generatedAt ? new Date(status.generatedAt).toLocaleString() : null;
+  const generatedAt = status?.generatedAt ? new Date(status.generatedAt) : null;
+  const generatedAtText = generatedAt?.toLocaleString();
+  const age = generatedAt ? <span className="font-normal opacity-75"> · generated {formatRelativeTime(generatedAt.getTime(), now)}</span> : null;
   return status?.isOutdated ? (
     <span
       className={`${BADGE_BASE} border-amber-400/30 bg-amber-400/10 text-amber-300`}
-      title={generatedAt ? `Generated ${generatedAt}; files changed since.` : "Files changed since the diagram was generated."}
+      title={generatedAtText ? `Generated ${generatedAtText}; files changed since.` : "Files changed since the diagram was generated."}
     >
-      Outdated
+      Outdated{age}
     </span>
   ) : (
     <span
       className={`${BADGE_BASE} border-emerald-400/30 bg-emerald-400/10 text-emerald-300`}
-      title={generatedAt ? `Generated ${generatedAt}; no files changed since.` : "No files changed since the diagram was generated."}
+      title={generatedAtText ? `Generated ${generatedAtText}; no files changed since.` : "No files changed since the diagram was generated."}
     >
-      Up to date
+      Up to date{age}
     </span>
   );
 }

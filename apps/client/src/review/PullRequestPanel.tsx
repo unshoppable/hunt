@@ -86,8 +86,8 @@ export function PullRequestPanel({ sessionId }: { sessionId: string }) {
             <span className={`rounded-full px-2.5 py-0.5 text-[0.86em] font-medium ${badge.className}`}>{badge.label}</span>
             <span>
               <span className="font-medium text-neutral-200">{details.author}</span> wants to merge into{" "}
-              <code className="rounded bg-white/8 px-1.5 py-0.5 font-mono text-[0.86em] text-sky-300">{details.baseRefName}</code> from{" "}
-              <code className="rounded bg-white/8 px-1.5 py-0.5 font-mono text-[0.86em] text-sky-300">{details.headRefName}</code>
+              <code className="rounded bg-blue-500/20 px-1.5 py-0.5 font-mono text-[0.86em] text-sky-300">{details.baseRefName}</code> from{" "}
+              <code className="rounded bg-blue-500/20 px-1.5 py-0.5 font-mono text-[0.86em] text-sky-300">{details.headRefName}</code>
             </span>
           </div>
         </header>

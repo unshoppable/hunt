@@ -927,11 +927,11 @@ body,
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.85em;
 }
+/* Inline code chips in GitHub's dark neutral, light enough to stand out on every surface. */
 .markdown :not(pre) > code {
   padding: 0.1em 0.35em;
-  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(110, 118, 129, 0.4);
   color: #e8eaed;
 }
 .markdown pre {
@@ -954,6 +954,7 @@ body,
   margin: 0;
   border: 0;
   border-radius: 0;
+  background: transparent;
 }
 .markdown blockquote {
   padding-left: 0.8rem;
@@ -1035,9 +1036,12 @@ body,
   margin: 0 0.5em 0.2em -1.6em;
   vertical-align: middle;
 }
+/* The document sits on an inset card, so its code blocks are lighter than the card instead of inset themselves. */
+.markdown-document :is(pre, .code-location) {
+  background: rgba(110, 118, 129, 0.15);
+}
 .markdown-document :not(pre) > code {
   padding: 0.15em 0.4em;
-  border: 0;
   border-radius: 6px;
   font-size: 85%;
   line-height: 1;

@@ -1,3 +1,11 @@
+## 0.99.0 (2026-10-23)
+
+### 🚀 Features
+
+- **client:** the Diff tab shows the count of review comments as a blue badge while the session reviews a pull request ([4b3c09a](https://github.com/unshoppable/hunt/commit/4b3c09a))
+- **client:** diagrams generate in a background agent, independent of the chat ([f5ffb0b](https://github.com/unshoppable/hunt/commit/f5ffb0b))
+- **client:** the editor breadcrumb, Go to File, Find in Files and the usages popup show the file icon before the path ([5058a19](https://github.com/unshoppable/hunt/commit/5058a19))
+
 ## 0.98.0 (2026-10-23)
 
 ### 🚀 Features

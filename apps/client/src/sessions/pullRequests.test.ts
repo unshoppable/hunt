@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PullRequest } from "../ipc/types";
-import { filterPullRequests, findPullRequestBranch } from "./pullRequests";
+import { NO_PULL_REQUEST_FILTER, filterPullRequests, findPullRequestBranch, pullRequestAuthors } from "./pullRequests";
 
 function pullRequest(number: number, title: string, author: string, headRefName: string, labels: string[] = []): PullRequest {
   return {
@@ -50,6 +50,34 @@ describe("filterPullRequests", () => {
     expect(filterPullRequests(pullRequests, "alice ui").map((pr) => pr.number)).toEqual([12]);
     expect(filterPullRequests(pullRequests, "bug").map((pr) => pr.number)).toEqual([258]);
     expect(filterPullRequests(pullRequests, "alice hyphens")).toEqual([]);
+  });
+
+  it("keeps only the chosen author, combined with the query", () => {
+    expect(filterPullRequests(pullRequests, "", { ...NO_PULL_REQUEST_FILTER, author: "carol" }).map((pr) => pr.number)).toEqual([258]);
+    expect(filterPullRequests(pullRequests, "dropdown", { ...NO_PULL_REQUEST_FILTER, author: "alice" }).map((pr) => pr.number)).toEqual([12]);
+    expect(filterPullRequests(pullRequests, "dropdown", { ...NO_PULL_REQUEST_FILTER, author: "carol" })).toEqual([]);
+  });
+
+  it("keeps only the chosen review state, `none` for pull requests the user has no part in", () => {
+    const reviewed = [
+      { ...pullRequests[0], viewerReview: "requested" as const },
+      { ...pullRequests[1], viewerReview: "approved" as const },
+      pullRequests[2],
+    ];
+    expect(filterPullRequests(reviewed, "", { ...NO_PULL_REQUEST_FILTER, review: "requested" }).map((pr) => pr.number)).toEqual([261]);
+    expect(filterPullRequests(reviewed, "", { ...NO_PULL_REQUEST_FILTER, review: "none" }).map((pr) => pr.number)).toEqual([12]);
+  });
+
+  it("hides drafts on request", () => {
+    const withDraft = [pullRequests[0], { ...pullRequests[1], isDraft: true }];
+    expect(filterPullRequests(withDraft, "", { ...NO_PULL_REQUEST_FILTER, hidesDrafts: true }).map((pr) => pr.number)).toEqual([261]);
+  });
+});
+
+describe("pullRequestAuthors", () => {
+  it("lists each author once, sorted case-insensitively", () => {
+    const listed = [...pullRequests, pullRequest(7, "Docs", "Bob", "docs")];
+    expect(pullRequestAuthors(listed)).toEqual(["alice", "Bob", "carol"]);
   });
 });
 

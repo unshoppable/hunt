@@ -3,11 +3,14 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { commands } from "../ipc/commands";
 import type { CheckSummary, PullRequest, PullRequestLabel, ViewerReview } from "../ipc/types";
 import { formatRelativeTime } from "../chat/ScreenshotPicker";
+import { SECONDARY, SURFACE_BUTTON_XS } from "../ui/buttons";
 import { Chip } from "../ui/Chip";
+import { Dropdown } from "../ui/Dropdown";
+import type { DropdownOption } from "../ui/floatingMenu";
 import { CheckIcon, CloseIcon, CommentIcon, ExternalIcon, Spinner } from "../ui/icons";
 import { errorText, useLoad } from "../ui/useLoad";
 import { ListPane } from "./ListPane";
-import { filterPullRequests } from "./pullRequests";
+import { NO_PULL_REQUEST_FILTER, filterPullRequests, isFiltering, pullRequestAuthors, type PullRequestFilter, type ReviewFilter } from "./pullRequests";
 
 type PullRequestListProps = {
   /** Repository whose GitHub remote is asked for its open pull requests. */
@@ -30,22 +33,43 @@ const REVIEW_DECISIONS: Record<string, { label: string; className: string }> = {
   CHANGES_REQUESTED: { label: "Changes requested", className: "text-red-300" },
 };
 
+/** The review filter's options: every state, then the signed-in user's part as the row chips name it. */
+const REVIEW_FILTER_OPTIONS: DropdownOption[] = [
+  { id: "", name: "All review states" },
+  ...(Object.keys(VIEWER_REVIEW_CHIPS) as ViewerReview[]).map((review) => ({ id: review, name: VIEWER_REVIEW_CHIPS[review].label })),
+  { id: "none", name: "Not involved", description: "Neither requested from you nor reviewed by you" },
+];
+
 /** The open pull requests each repository listed last, by repository path; the next opening shows them at once. */
 const listedPullRequests = new Map<string, PullRequest[]>();
 
+/** The filters each repository's list used last, by repository path; the next opening applies them again. */
+const chosenFilters = new Map<string, PullRequestFilter>();
+
 /**
  * The repository's open pull requests, filling the chat pane in place of the start view, filtered by a search box
- * like the session sidebar's. Each row carries the metadata GitHub's own list shows (labels, review state, tasks,
+ * like the session sidebar's and, below it, by author, by the signed-in user's review state and by hiding drafts. Each row carries the metadata GitHub's own list shows (labels, review state, tasks,
  * checks, comments) and marks whether the signed-in user already reviewed it. Loads once when shown; until then it
  * shows what the repository listed last with a spinner beside the search box. A row hands its pull request to
  * `onSelect`, the arrow at its end opens it on GitHub. Mount it with `key={repoPath}`: its state belongs to one repository.
  */
 export function PullRequestList({ repoPath, onSelect, onClose }: PullRequestListProps) {
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<PullRequestFilter>(() => chosenFilters.get(repoPath) ?? NO_PULL_REQUEST_FILTER);
   const [pullRequests, setPullRequests] = useState<PullRequest[] | null>(() => listedPullRequests.get(repoPath) ?? null);
   const [isUpdating, setIsUpdating] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const rows = useMemo(() => filterPullRequests(pullRequests ?? [], query), [pullRequests, query]);
+  const rows = useMemo(() => filterPullRequests(pullRequests ?? [], query, filter), [pullRequests, query, filter]);
+  const authorOptions = useMemo<DropdownOption[]>(
+    () => [{ id: "", name: "All authors" }, ...pullRequestAuthors(pullRequests ?? []).map((login) => ({ id: login, name: login }))],
+    [pullRequests],
+  );
+
+  function changeFilter(change: Partial<PullRequestFilter>) {
+    const changed = { ...filter, ...change };
+    chosenFilters.set(repoPath, changed);
+    setFilter(changed);
+  }
 
   useLoad(
     () => commands.listPullRequests(repoPath),
@@ -70,6 +94,31 @@ export function PullRequestList({ repoPath, onSelect, onClose }: PullRequestList
       </span>
     ) : null;
 
+  const filters = (
+    <>
+      <Dropdown
+        title="Filter by author"
+        value={filter.author ?? ""}
+        options={authorOptions}
+        onChange={(author) => changeFilter({ author: author || null })}
+        isSearchable
+        searchPlaceholder="Search authors"
+        className={filterTriggerClass(filter.author !== null)}
+      />
+      <Dropdown
+        title="Filter by your review"
+        value={filter.review ?? ""}
+        options={REVIEW_FILTER_OPTIONS}
+        onChange={(review) => changeFilter({ review: (review as ReviewFilter) || null })}
+        className={filterTriggerClass(filter.review !== null)}
+      />
+      <label className="flex h-[29px] shrink-0 cursor-pointer items-center gap-2 rounded-md px-2.5 text-[13px] text-neutral-400 transition-colors hover:bg-(--row-hover) hover:text-neutral-200">
+        <input type="checkbox" checked={filter.hidesDrafts} onChange={(event) => changeFilter({ hidesDrafts: event.target.checked })} className="accent-blue-500" />
+        Hide drafts
+      </label>
+    </>
+  );
+
   return (
     <ListPane
       query={query}
@@ -77,10 +126,11 @@ export function PullRequestList({ repoPath, onSelect, onClose }: PullRequestList
       searchPlaceholder="Search pull requests"
       ariaLabel="Open pull requests"
       tools={tools}
+      filters={filters}
       error={error}
       isLoading={!pullRequests}
       emptyText="No open pull requests"
-      noMatchText={`No pull requests match “${query}”`}
+      noMatchText={noMatchText(query, filter)}
       rowCount={rows.length}
       hasItems={Boolean(pullRequests?.length)}
       onClose={onClose}
@@ -168,6 +218,16 @@ function MetaLine({ pullRequest }: { pullRequest: PullRequest }) {
       </span>
     </span>
   );
+}
+
+/** A filter dropdown below the search field; blue while it drops pull requests. */
+function filterTriggerClass(isActive: boolean): string {
+  return `${SURFACE_BUTTON_XS} max-w-60 ${isActive ? "border border-blue-400/40 bg-(--row-selected) text-white hover:border-blue-400/60" : SECONDARY}`;
+}
+
+function noMatchText(query: string, filter: PullRequestFilter): string {
+  if (!query.trim()) return "No pull requests match the filters";
+  return isFiltering(filter) ? `No pull requests match “${query}” and the filters` : `No pull requests match “${query}”`;
 }
 
 function openedTitle(pullRequest: PullRequest): string {

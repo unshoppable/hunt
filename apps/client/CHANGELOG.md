@@ -1,3 +1,10 @@
+## 0.96.1 (2026-10-23)
+
+### 🩹 Fixes
+
+- **client:** review comment cards show their text at 14px ([acb8562](https://github.com/unshoppable/hunt/commit/acb8562))
+- **client:** the review bar and the line between the two "+" run unbroken across deleted lines and comment cards ([2f0ad7d](https://github.com/unshoppable/hunt/commit/2f0ad7d))
+
 ## 0.96.0 (2026-10-23)
 
 ### 🚀 Features

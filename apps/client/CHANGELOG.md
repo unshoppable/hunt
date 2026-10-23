@@ -1,3 +1,9 @@
+## 0.95.0 (2026-10-23)
+
+### 🚀 Features
+
+- **client:** the editor marks every line of a file the changes add with a change stripe ([57d29f8](https://github.com/unshoppable/hunt/commit/57d29f8))
+
 ## 0.94.0 (2026-10-23)
 
 ### 🚀 Features

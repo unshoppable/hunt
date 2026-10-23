@@ -123,7 +123,7 @@ const MODES = [
 ] as const;
 /** GitHub's comment field: the UI sans font at 14px on a surface a shade darker than the panel. */
 const TEXTAREA =
-  "w-full resize-none rounded-md border border-(--line) bg-(--surface-input) px-2.5 py-2 text-sm text-neutral-200 outline-none placeholder:text-neutral-500 focus:border-blue-400/60";
+  "w-full resize-none rounded-md border border-(--line) bg-(--surface-input) px-2.5 py-2 text-[15px] text-neutral-200 outline-none placeholder:text-neutral-500 focus:border-blue-400/60";
 
 /** A way to save the text of a `CommentEditorPanel`; `onSubmit` rejects with the message to show. */
 export type CommentAction = { label: string; onSubmit: (body: string) => Promise<unknown> };
@@ -268,7 +268,7 @@ export function CommentEditorPanel({ initial = "", submitLabel, onSubmit, second
             className={`${mode === "write" ? "" : "hidden "}${TEXTAREA}`}
           />
           {mode === "preview" ? (
-            <div className="min-h-[4.5rem] px-1 py-1 text-sm">
+            <div className="min-h-[4.5rem] px-1 py-1 text-[15px]">
               {body.trim() ? <MarkdownText text={body} className="markdown-document" /> : <p className="text-neutral-500">Nothing to preview</p>}
             </div>
           ) : null}

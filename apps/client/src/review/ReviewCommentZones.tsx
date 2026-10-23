@@ -182,7 +182,7 @@ function threadLabel(thread: ReviewThread): string {
 const PENDING_BADGE = "rounded-full border border-amber-400/40 px-2 text-[13px] text-amber-300";
 /** GitHub's collapsed reply field: looks like a one-line text field and opens the comment editor. */
 const REPLY_FIELD =
-  "flex h-8 w-full cursor-text items-center rounded-md border border-(--line) bg-(--surface-input) px-2.5 text-left text-sm text-neutral-500 outline-none hover:border-white/15 focus-visible:ring-2 focus-visible:ring-blue-400/60";
+  "flex h-8 w-full cursor-text items-center rounded-md border border-(--line) bg-(--surface-input) px-2.5 text-left text-[15px] text-neutral-500 outline-none hover:border-white/15 focus-visible:ring-2 focus-visible:ring-blue-400/60";
 
 type ReviewThreadCardProps = {
   sessionId: string;

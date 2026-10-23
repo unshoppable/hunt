@@ -171,11 +171,12 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
 
 /**
  * First line of the first block where the file's current content (unsaved edits included) differs from its diff base,
- * as the change markers show it; undefined when the file has no change.
+ * as the change markers show it; undefined when the file has no change or lies outside the changes.
  */
 async function firstChangedLine(workspace: Workspace, path: string): Promise<number | undefined> {
   const [headText, document] = await Promise.all([workspace.headText(path), workspace.open(path)]);
-  const firstBlock = computeChangeBlocks(headText ?? "", document.model.getValue())[0];
+  if (headText === null) return undefined;
+  const firstBlock = computeChangeBlocks(headText, document.model.getValue())[0];
   if (!firstBlock) return undefined;
   return Math.min(firstBlock.modified.start, document.model.getLineCount());
 }

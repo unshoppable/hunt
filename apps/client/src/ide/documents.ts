@@ -107,13 +107,20 @@ export class Workspace {
     return { dispose: () => this.dirtyListeners.delete(listener) };
   }
 
-  /** Content of `path` at HEAD, or null when the file is not committed there (or cannot be read). Cached per worktree state. */
+  /**
+   * Content of `path` at the diff base: empty for a file the changes add, null for a file outside the changes (such as an
+   * ignored one) or one that cannot be read. Cached per worktree state.
+   */
   headText(path: string): Promise<string | null> {
     let pending = this.headTexts.get(path);
     if (!pending) {
       pending = commands
         .readFileDiff(this.sessionId, path)
-        .then((diff) => diff.oldContent)
+        .then(async (diff) => {
+          if (diff.oldContent !== null) return diff.oldContent;
+          const changedFiles = await commands.listChangedFiles(this.sessionId);
+          return changedFiles.some((changedFile) => changedFile.path === path) ? "" : null;
+        })
         .catch(() => null);
       this.headTexts.set(path, pending);
     }

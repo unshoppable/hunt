@@ -50,7 +50,7 @@ export class ChangeMarkers {
 
   constructor(
     private readonly editor: monaco.editor.ICodeEditor,
-    /** HEAD content of the model's file, or null when the file is not in HEAD (then nothing is marked). */
+    /** Base content of the model's file, empty for a file the changes add, or null for a file outside the changes (then nothing is marked). */
     private readonly headTextOf: (model: monaco.editor.ITextModel) => Promise<string | null>,
   ) {
     this.decorations = editor.createDecorationsCollection();
@@ -65,10 +65,7 @@ export class ChangeMarkers {
     return this.currentMarkers;
   }
 
-  /**
-   * Change blocks of the model against the base content. A file absent from the base is one block holding all its
-   * lines (every line is new, as in its diff), although no stripe marks it.
-   */
+  /** Change blocks of the model against the base content; a file the changes add is one block holding all its lines. */
   get blocks(): ChangeBlock[] {
     return this.currentBlocks;
   }
@@ -159,12 +156,8 @@ export class ChangeMarkers {
 
   private applyDiff(): void {
     const model = this.editor.getModel();
-    if (!model || !this.isHeadLoaded) {
+    if (!model || !this.isHeadLoaded || this.headText === null) {
       this.currentBlocks = [];
-      this.currentMarkers = [];
-      this.decorations.clear();
-    } else if (this.headText === null) {
-      this.currentBlocks = computeChangeBlocks("", model.getValue());
       this.currentMarkers = [];
       this.decorations.clear();
     } else {

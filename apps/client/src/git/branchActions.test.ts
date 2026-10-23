@@ -28,23 +28,26 @@ describe("branchActions", () => {
     expect(labels(branchActions(ref("feat/general/x", "local"), ownBranch))).toContain("Change push target…");
   });
 
-  it("rebases onto, merges, fast-forwards, pushes, renames and deletes another local branch", () => {
+  it("rebases onto, merges, pulls, force pulls, pushes, renames and deletes another local branch", () => {
     const actions = branchActions(ref("master", "local", "origin/master"), session);
     expect(labels(actions)).toEqual([
       "Rebase 'feat/general/x' onto 'master'",
       "Merge 'master' into 'feat/general/x'",
-      "Update from 'origin/master'",
+      "Pull from 'origin/master'",
+      "Force pull from 'origin/master'",
       "Push to 'origin/master'",
       "Rename…",
       "Delete",
     ]);
-    expect(actions.map((action) => action.kind)).toEqual(["rebase", "merge", "update", "pushBranch", "rename", "delete"]);
-    expect(actions.filter((action) => action.startsGroup).map((action) => action.kind)).toEqual(["update", "rename"]);
-    expect(actions.filter((action) => action.isDanger).map((action) => action.kind)).toEqual(["delete"]);
+    expect(actions.map((action) => action.kind)).toEqual(["rebase", "merge", "pull", "forcePull", "pushBranch", "rename", "delete"]);
+    expect(actions.filter((action) => action.startsGroup).map((action) => action.kind)).toEqual(["pull", "rename"]);
+    expect(actions.filter((action) => action.isDanger).map((action) => action.kind)).toEqual(["forcePull", "delete"]);
   });
 
-  it("cannot update a local branch without an upstream", () => {
-    expect(labels(branchActions(ref("working-old", "local"), session))).toContain("Update (The branch has no upstream)");
+  it("cannot pull a local branch without an upstream", () => {
+    const actionLabels = labels(branchActions(ref("working-old", "local"), session));
+    expect(actionLabels).toContain("Pull (The branch has no upstream)");
+    expect(actionLabels).toContain("Force pull (The branch has no upstream)");
   });
 
   it("fetches and deletes a remote branch of origin, and only rebases onto or merges one of another remote", () => {

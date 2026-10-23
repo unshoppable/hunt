@@ -2330,17 +2330,29 @@ pub async fn git_reset(app: AppHandle, id: Uuid, commit: String, mode: git::Rese
     move_head(&app, &record, HeadMove::Reset(commit, mode)).await
 }
 
-/// Updates the local branch `branch`: the session's own branch is rebased onto the branch on `origin` its push lands
-/// on, fetched first, as the push does; another local branch is fast-forwarded to its upstream.
+/// Rebases the session's own branch onto the branch on `origin` its push lands on, fetched first, as the push does.
 #[tauri::command]
-pub async fn git_update_branch(app: AppHandle, id: Uuid, branch: String) -> Result<(), String> {
+pub async fn git_update_branch(app: AppHandle, id: Uuid) -> Result<(), String> {
     let record = worktree_session(&app, id)?;
-    if branch != record.branch {
-        return git::fast_forward_branch(&record.worktree_path, &branch).await;
-    }
     let remote = remote_host(&app, &record).map(|(_, target)| target);
     let target = push_target(&record, remote.as_ref()).await;
     move_head(&app, &record, HeadMove::UpdateFrom(target)).await
+}
+
+/// Fast-forwards the local branch `branch`, another one than the session's, to its upstream as fetched now; `false`
+/// when the upstream has no commits the branch lacks.
+#[tauri::command]
+pub async fn git_pull_branch(app: AppHandle, id: Uuid, branch: String) -> Result<bool, String> {
+    let record = worktree_session(&app, id)?;
+    git::fast_forward_branch(&record.worktree_path, &branch).await
+}
+
+/// Resets the local branch `branch`, another one than the session's, to its upstream as fetched now; the commits the
+/// upstream lacks are lost.
+#[tauri::command]
+pub async fn git_force_pull_branch(app: AppHandle, id: Uuid, branch: String) -> Result<(), String> {
+    let record = worktree_session(&app, id)?;
+    git::reset_branch_to_upstream(&record.worktree_path, &branch).await
 }
 
 /// Pushes the local branch `branch`, another one than the session's (see `push_branch`), to the branch of the same

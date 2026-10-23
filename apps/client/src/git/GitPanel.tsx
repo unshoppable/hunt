@@ -50,6 +50,8 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
   const [isRetargeting, setIsRetargeting] = useState(false);
   /** What the running branch action is, shown in the branch tree's header; `null` while none runs. */
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
+  /** What the last branch action did, shown in the branch tree's header until the next one starts. */
+  const [notice, setNotice] = useState<string | null>(null);
   const diffFontSize = useSettingsStore((state) => state.panes.diff.fontSize);
   const diffLineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
   const diffFontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
@@ -170,10 +172,12 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
       return;
     }
     setBusyLabel(BUSY_LABELS[action.kind]);
+    setNotice(null);
     try {
-      const didRun = await performAction(sessionId, ref, action);
-      if (didRun) {
+      const outcome = await performAction(sessionId, ref, action);
+      if (outcome) {
         setError(null);
+        setNotice(outcome.notice);
         noteWorktreeChanged(sessionId);
       }
     } catch (reason) {
@@ -186,9 +190,11 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
   /** Fetches every branch of origin; a success reloads the branch tree and the log through `editVersion`. */
   const fetchOrigin = async () => {
     setBusyLabel(BUSY_LABELS.fetch);
+    setNotice(null);
     try {
       await commands.gitFetchOrigin(sessionId);
       setError(null);
+      setNotice("Fetched origin");
       noteWorktreeChanged(sessionId);
     } catch (reason) {
       setError(errorText(reason));
@@ -203,6 +209,7 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
     const message = `Delete ${count} local ${count === 1 ? "branch" : "branches"} without a branch on origin?\n\n${prunable.join("\n")}\n\nCommits only these branches have are lost.`;
     if (!(await confirmDestructive(message))) return;
     setBusyLabel(BUSY_LABELS.delete);
+    setNotice(null);
     const failures: string[] = [];
     for (const branch of prunable) {
       try {
@@ -232,6 +239,7 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
           filter={filter.reference}
           menuFor={menu?.ref.name ?? null}
           busyLabel={busyLabel}
+          notice={notice}
           prunable={prunable}
           onFilter={(reference) => setFilter((current) => ({ ...current, reference }))}
           onContextMenu={(ref, x, y) => setMenu({ ref, x, y })}
@@ -344,40 +352,57 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
   );
 }
 
+/** What a branch action that ran did, for the branch tree's header; `notice` is `null` when the tree itself shows it. */
+type ActionOutcome = { notice: string | null };
+
+const DONE: ActionOutcome = { notice: null };
+
 /**
- * Runs the Git command behind `action` for the branch `ref` of the session; returns whether it ran (a delete the
- * user did not confirm did not). A local branch whose commits no other branch has is deleted only after a confirmation.
+ * Runs the Git command behind `action` for the branch `ref` of the session; `null` when it did not run (a delete or
+ * force pull the user did not confirm). A local branch whose commits no other branch has is deleted only after a
+ * confirmation, and a force pull is confirmed since it drops the commits the upstream lacks.
  */
-async function performAction(sessionId: string, ref: GitRef, action: BranchAction): Promise<boolean> {
+async function performAction(sessionId: string, ref: GitRef, action: BranchAction): Promise<ActionOutcome | null> {
+  const upstream = ref.upstream ?? "its upstream";
   switch (action.kind) {
     case "rebase":
       await commands.gitRebase(sessionId, ref.name);
-      return true;
+      return DONE;
     case "merge":
       await commands.gitMerge(sessionId, ref.name);
-      return true;
+      return DONE;
     case "update":
-      await commands.gitUpdateBranch(sessionId, ref.name);
-      return true;
+      await commands.gitUpdateBranch(sessionId);
+      return DONE;
+    case "pull": {
+      const didMove = await commands.gitPullBranch(sessionId, ref.name);
+      return { notice: didMove ? `Pulled ${upstream} into ${ref.name}` : `${ref.name} is up to date with ${upstream}` };
+    }
+    case "forcePull": {
+      const lost = ref.ahead ? `The ${ref.ahead} ${ref.ahead === 1 ? "commit" : "commits"} it has that ${upstream} lacks are lost.` : `Commits it has that ${upstream} lacks are lost.`;
+      if (!(await confirmDestructive(`Force pull ${ref.name}?\n\n${ref.name} is reset to ${upstream}. ${lost}`, "Force pull"))) return null;
+      await commands.gitForcePullBranch(sessionId, ref.name);
+      return { notice: `Reset ${ref.name} to ${upstream}` };
+    }
     case "fetch":
       await commands.gitFetchBranch(sessionId, originBranchName(ref.name) ?? "");
-      return true;
+      return DONE;
     case "push":
       await commands.pushBranch(sessionId);
-      return true;
+      return DONE;
     case "pushBranch":
       await commands.gitPushLocalBranch(sessionId, ref.name);
-      return true;
+      return DONE;
     case "delete":
-      return deleteLocalBranch(sessionId, ref.name);
+      return (await deleteLocalBranch(sessionId, ref.name)) ? DONE : null;
     case "deleteRemote": {
-      if (!(await confirmDestructive(`Delete ${ref.name} on origin?\n\nEveryone who fetched it keeps a copy, but the branch is gone for the team.`))) return false;
+      if (!(await confirmDestructive(`Delete ${ref.name} on origin?\n\nEveryone who fetched it keeps a copy, but the branch is gone for the team.`))) return null;
       await commands.gitDeleteRemoteBranch(sessionId, originBranchName(ref.name) ?? "");
-      return true;
+      return DONE;
     }
     case "rename":
     case "retarget":
-      return false;
+      return null;
   }
 }
 

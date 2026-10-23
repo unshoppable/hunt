@@ -115,6 +115,8 @@ pub fn run() {
             session::commands::git_merge,
             session::commands::git_reset,
             session::commands::git_update_branch,
+            session::commands::git_pull_branch,
+            session::commands::git_force_pull_branch,
             session::commands::git_push_local_branch,
             session::commands::git_rename_branch,
             session::commands::set_push_target,

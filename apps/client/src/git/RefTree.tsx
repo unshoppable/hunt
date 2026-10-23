@@ -24,7 +24,8 @@ const ALL_KEY = "";
  * branch and open or close the groups. The checked-out branch shows how far it is
  * ahead of or behind its upstream, and the session's branch where a push lands (`pushes`), since Hunt pushes it onto
  * the branch the session was created from, never under its own name. The toolbar fetches origin (`onFetch`) and deletes
- * the local branches origin lacks (`prunable`, `onPrune`); the header shows `busyLabel` while an action runs.
+ * the local branches origin lacks (`prunable`, `onPrune`); the header shows `busyLabel` while an action runs and
+ * `notice` after it.
  */
 export function RefTree({
   refs,
@@ -32,6 +33,7 @@ export function RefTree({
   filter,
   menuFor,
   busyLabel,
+  notice,
   prunable,
   onFilter,
   onContextMenu,
@@ -43,6 +45,8 @@ export function RefTree({
   filter: string;
   menuFor: string | null;
   busyLabel: string | null;
+  /** What the last action did, shown in the header in place of the checked-out branch until the next one starts. */
+  notice: string | null;
   /** The local branches that have no branch on origin and are not checked out anywhere, which `onPrune` deletes. */
   prunable: string[];
   onFilter: (reference: string) => void;
@@ -134,8 +138,10 @@ export function RefTree({
       </div>
       <div className="flex items-center gap-1 border-b border-(--line) px-3 py-2.5 text-[13px] text-neutral-400">
         <span className="shrink-0">Branches</span>
-        {busyLabel ? (
-          <span className="min-w-0 flex-1 truncate text-right text-neutral-300">{busyLabel}</span>
+        {busyLabel || notice ? (
+          <span className="min-w-0 flex-1 truncate text-right text-neutral-300" title={busyLabel ?? notice ?? undefined}>
+            {busyLabel ?? notice}
+          </span>
         ) : refs ? (
           <span className="min-w-0 flex-1 truncate text-right text-neutral-500" title={refs.head === "HEAD" ? "No branch is checked out" : `Checked out: ${refs.head}`}>
             {refs.head === "HEAD" ? "detached HEAD" : refs.head}

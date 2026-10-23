@@ -4,7 +4,7 @@ import type { GitMenuEntry } from "./GitMenu";
 /** The session's own local branch and the branch on `origin` a push of it lands on. */
 export type PushRoute = { branch: string; target: string };
 
-export type BranchActionKind = "rebase" | "merge" | "update" | "fetch" | "push" | "pushBranch" | "retarget" | "rename" | "delete" | "deleteRemote";
+export type BranchActionKind = "rebase" | "merge" | "update" | "pull" | "forcePull" | "fetch" | "push" | "pushBranch" | "retarget" | "rename" | "delete" | "deleteRemote";
 
 /** One entry of a branch's context menu. */
 export type BranchAction = GitMenuEntry<BranchActionKind>;
@@ -25,6 +25,8 @@ export const BUSY_LABELS: Record<BranchActionKind, string> = {
   rebase: "Rebasing…",
   merge: "Merging…",
   update: "Updating…",
+  pull: "Pulling…",
+  forcePull: "Pulling…",
   fetch: "Fetching…",
   push: "Pushing…",
   pushBranch: "Pushing…",
@@ -42,8 +44,8 @@ export function originBranchName(remoteBranch: string): string | null {
 /**
  * The context menu of the branch `ref`: rebase the checked-out branch onto it or merge it in, update or fetch it, push,
  * rename and delete it. Hunt pushes the session's branch onto the branch it tracks on origin, so its Push and Update
- * name that branch and it alone can change the target; another local branch is pushed under its own name and
- * fast-forwarded from its upstream. A tag has no menu.
+ * name that branch and it alone can change the target; another local branch is pushed under its own name, pulled
+ * from its upstream by a fast-forward or force pulled, which resets it to the upstream. A tag has no menu.
  */
 export function branchActions(ref: GitRef, { head, pushes, isRemoteSession, isPollerSession }: BranchContext): BranchAction[] {
   if (ref.kind === "tag") return [];
@@ -70,7 +72,9 @@ export function branchActions(ref: GitRef, { head, pushes, isRemoteSession, isPo
     actions.push(entry("push", `Push to 'origin/${pushes.target}'`));
     actions.push(entry("retarget", "Change push target…", isPollerSession ? "A poller session pushes its own branch" : null));
   } else {
-    actions.push(entry("update", ref.upstream ? `Update from '${ref.upstream}'` : "Update", ref.upstream ? null : "The branch has no upstream", { startsGroup: true }));
+    const noUpstream = ref.upstream ? null : "The branch has no upstream";
+    actions.push(entry("pull", ref.upstream ? `Pull from '${ref.upstream}'` : "Pull", noUpstream, { startsGroup: true }));
+    actions.push(entry("forcePull", ref.upstream ? `Force pull from '${ref.upstream}'` : "Force pull", noUpstream, { isDanger: true }));
     actions.push(entry("pushBranch", `Push to 'origin/${ref.name}'`));
   }
   actions.push(entry("rename", "Rename…", isSessionBranch && isRemoteSession ? "The session's VM has the branch under this name" : null, { startsGroup: true }));

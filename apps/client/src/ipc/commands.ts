@@ -23,8 +23,12 @@ export const commands = {
   gitMerge: (sessionId: string, from: string) => invoke<void>("git_merge", { id: sessionId, from }),
   /** Resets the session's branch to the commit in `mode`, on its VM too; `keep` fails when an uncommitted change is in the way. */
   gitReset: (sessionId: string, commit: string, mode: ResetMode) => invoke<void>("git_reset", { id: sessionId, commit, mode }),
-  /** Rebases the session's branch onto the branch its push lands on, fetched first; fast-forwards another local branch to its upstream. */
-  gitUpdateBranch: (sessionId: string, branch: string) => invoke<void>("git_update_branch", { id: sessionId, branch }),
+  /** Rebases the session's branch onto the branch its push lands on, fetched first. */
+  gitUpdateBranch: (sessionId: string) => invoke<void>("git_update_branch", { id: sessionId }),
+  /** Fast-forwards another local branch to its upstream, fetched first; `false` when the upstream has no commits it lacks. */
+  gitPullBranch: (sessionId: string, branch: string) => invoke<boolean>("git_pull_branch", { id: sessionId, branch }),
+  /** Resets another local branch to its upstream, fetched first; the commits the upstream lacks are lost. */
+  gitForcePullBranch: (sessionId: string, branch: string) => invoke<void>("git_force_pull_branch", { id: sessionId, branch }),
   /** Pushes a local branch other than the session's to the branch of the same name on `origin`. */
   gitPushLocalBranch: (sessionId: string, branch: string) => invoke<void>("git_push_local_branch", { id: sessionId, branch }),
   /** Renames a local branch; the session follows a rename of its own branch, which a remote session refuses. */

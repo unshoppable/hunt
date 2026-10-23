@@ -2474,6 +2474,13 @@ pub async fn git_fetch_branch(app: AppHandle, id: Uuid, branch: String) -> Resul
     git::fetch_branch(&record.worktree_path, &branch).await
 }
 
+/// Fetches every branch of `origin` and drops the remote-tracking refs of the branches `origin` no longer has.
+#[tauri::command]
+pub async fn git_fetch_origin(app: AppHandle, id: Uuid) -> Result<(), String> {
+    let record = worktree_session(&app, id)?;
+    git::fetch_origin(&record.worktree_path).await
+}
+
 /// Added and removed lines of every changed file of the session (untracked files count as all added).
 #[tauri::command]
 pub async fn change_stats(app: AppHandle, id: Uuid) -> Result<Vec<git::ChangeStat>, String> {

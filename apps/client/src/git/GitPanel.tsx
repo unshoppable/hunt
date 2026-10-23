@@ -183,6 +183,20 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
     }
   };
 
+  /** Fetches every branch of origin; a success reloads the branch tree and the log through `editVersion`. */
+  const fetchOrigin = async () => {
+    setBusyLabel(BUSY_LABELS.fetch);
+    try {
+      await commands.gitFetchOrigin(sessionId);
+      setError(null);
+      noteWorktreeChanged(sessionId);
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setBusyLabel(null);
+    }
+  };
+
   /** Deletes every prunable branch after one confirmation that lists them; branches git refuses to delete are reported. */
   const pruneBranches = async () => {
     const count = prunable.length;
@@ -221,6 +235,7 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
           prunable={prunable}
           onFilter={(reference) => setFilter((current) => ({ ...current, reference }))}
           onContextMenu={(ref, x, y) => setMenu({ ref, x, y })}
+          onFetch={() => void fetchOrigin()}
           onPrune={() => void pruneBranches()}
         />
       </Panel>

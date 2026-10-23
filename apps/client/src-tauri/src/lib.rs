@@ -121,6 +121,7 @@ pub fn run() {
             session::commands::git_delete_branch,
             session::commands::git_delete_remote_branch,
             session::commands::git_fetch_branch,
+            session::commands::git_fetch_origin,
             session::commands::change_stats,
             session::commands::read_file_diff,
             session::commands::read_file_history,

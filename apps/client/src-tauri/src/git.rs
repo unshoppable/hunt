@@ -947,6 +947,12 @@ pub async fn fetch_branch(worktree: &Path, branch: &str) -> Result<bool, String>
     }
 }
 
+/// Fetches every branch of `origin` and drops the remote-tracking refs of the branches `origin` no longer has.
+pub async fn fetch_origin(worktree: &Path) -> Result<(), String> {
+    run_git(worktree, &["fetch", "-q", "--prune", "origin"]).await?;
+    Ok(())
+}
+
 /// Makes sure `origin` has the branch `branch` and the worktree its remote-tracking ref. A branch `origin` has is fetched;
 /// one it lacks is created there at the commit `origin`'s branch `from` points at, so that a push landing on it publishes
 /// what a push to `from` would. One round trip asks `origin` for both branches, `from` is fetched only when this

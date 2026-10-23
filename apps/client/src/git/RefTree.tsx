@@ -2,7 +2,7 @@ import { useMemo, useState, type MouseEvent } from "react";
 import type { GitRef, RefList } from "../ipc/types";
 import { useFolderIconUrl } from "../diff/fileIcons";
 import { ICON_BUTTON_XS } from "../ui/buttons";
-import { BranchIcon, ChevronIcon, TrashIcon } from "../ui/icons";
+import { BranchIcon, ChevronIcon, FetchIcon, TrashIcon } from "../ui/icons";
 import { toggleInCollapsed } from "../ui/treeExpansion";
 import type { TreeNavRow } from "../ui/treeNavigation";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
@@ -23,8 +23,8 @@ const ALL_KEY = "";
  * (`onContextMenu`, the branch stays highlighted while `menuFor` names it); the arrow keys move the filter from branch to
  * branch and open or close the groups. The checked-out branch shows how far it is
  * ahead of or behind its upstream, and the session's branch where a push lands (`pushes`), since Hunt pushes it onto
- * the branch the session was created from, never under its own name. The header shows `busyLabel` while an action runs
- * and a button that deletes the local branches origin lacks (`prunable`, `onPrune`).
+ * the branch the session was created from, never under its own name. The toolbar fetches origin (`onFetch`) and deletes
+ * the local branches origin lacks (`prunable`, `onPrune`); the header shows `busyLabel` while an action runs.
  */
 export function RefTree({
   refs,
@@ -35,6 +35,7 @@ export function RefTree({
   prunable,
   onFilter,
   onContextMenu,
+  onFetch,
   onPrune,
 }: {
   refs: RefList | null;
@@ -46,6 +47,7 @@ export function RefTree({
   prunable: string[];
   onFilter: (reference: string) => void;
   onContextMenu: (ref: GitRef, x: number, y: number) => void;
+  onFetch: () => void;
   onPrune: () => void;
 }) {
   const folderIconUrl = useFolderIconUrl();
@@ -115,7 +117,22 @@ export function RefTree({
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-(--git-bg)">
-      <div className="flex items-center gap-1 border-b border-(--line) py-2.5 pr-2 pl-3 text-[13px] text-neutral-400">
+      <div className="flex items-center gap-1 border-b border-(--line) px-2 py-2.5">
+        <button type="button" onClick={onFetch} disabled={!!busyLabel} className={ICON_BUTTON_XS} title="Fetch every branch of origin" aria-label="Fetch origin">
+          <FetchIcon className="size-4" />
+        </button>
+        <button
+          type="button"
+          onClick={onPrune}
+          disabled={!prunable.length || !!busyLabel}
+          className={ICON_BUTTON_XS}
+          title={prunable.length ? `Delete the ${prunable.length} local ${prunable.length === 1 ? "branch" : "branches"} without a branch on origin…` : "Every local branch has a branch on origin"}
+          aria-label="Delete local branches without a branch on origin"
+        >
+          <TrashIcon className="size-4" />
+        </button>
+      </div>
+      <div className="flex items-center gap-1 border-b border-(--line) px-3 py-2.5 text-[13px] text-neutral-400">
         <span className="shrink-0">Branches</span>
         {busyLabel ? (
           <span className="min-w-0 flex-1 truncate text-right text-neutral-300">{busyLabel}</span>
@@ -124,15 +141,6 @@ export function RefTree({
             {refs.head === "HEAD" ? "detached HEAD" : refs.head}
           </span>
         ) : null}
-        <button
-          type="button"
-          onClick={onPrune}
-          disabled={!prunable.length || !!busyLabel}
-          className={`${ICON_BUTTON_XS} -my-1.5`}
-          title={prunable.length ? `Delete the ${prunable.length} local ${prunable.length === 1 ? "branch" : "branches"} without a branch on origin…` : "Every local branch has a branch on origin"}
-        >
-          <TrashIcon className="size-4" />
-        </button>
       </div>
       <ul {...nav.listProps} className="min-h-0 flex-1 overflow-auto py-1 outline-none font-(family-name:--git-font-family) text-(length:--git-font-size) leading-(--git-line-height)">
         <li

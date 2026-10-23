@@ -38,6 +38,8 @@ export const commands = {
   gitDeleteRemoteBranch: (sessionId: string, branch: string) => invoke<void>("git_delete_remote_branch", { id: sessionId, branch }),
   /** Fetches the branch `branch` of `origin`; `false` when `origin` has no such branch. */
   gitFetchBranch: (sessionId: string, branch: string) => invoke<boolean>("git_fetch_branch", { id: sessionId, branch }),
+  /** Fetches every branch of `origin` and drops the remote-tracking refs of the branches `origin` no longer has. */
+  gitFetchOrigin: (sessionId: string) => invoke<void>("git_fetch_origin", { id: sessionId }),
   listBranches: (repoPath: string) => invoke<string[]>("list_branches", { repoPath }),
   /** The branch the repository's checkout is on; `HEAD` when it is detached. */
   currentBranch: (repoPath: string) => invoke<string>("current_branch", { repoPath }),

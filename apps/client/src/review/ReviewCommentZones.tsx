@@ -179,7 +179,7 @@ function threadLabel(thread: ReviewThread): string {
   return thread.side === "left" && !isFileSpan(thread) ? `Base ${label}` : label;
 }
 
-const PENDING_BADGE = "rounded-full border border-amber-400/40 px-2 text-[12px] text-amber-300";
+const PENDING_BADGE = "rounded-full border border-amber-400/40 px-2 text-[13px] text-amber-300";
 /** GitHub's collapsed reply field: looks like a one-line text field and opens the comment editor. */
 const REPLY_FIELD =
   "flex h-8 w-full cursor-text items-center rounded-md border border-(--line) bg-(--surface-input) px-2.5 text-left text-sm text-neutral-500 outline-none hover:border-white/15 focus-visible:ring-2 focus-visible:ring-blue-400/60";
@@ -299,7 +299,7 @@ type CommentRowProps = {
 function CommentRow({ avatar, author, createdAt, isPending = false, actions, children }: CommentRowProps) {
   return (
     <div className="px-3 py-2">
-      <div className="mb-1 flex items-center gap-2 text-[12px] text-neutral-500">
+      <div className="mb-1 flex items-center gap-2 text-[13px] text-neutral-500">
         {avatar}
         {author ? <span className="font-semibold text-neutral-300">{author}</span> : null}
         <span title={createdAt}>{formatRelativeTime(Date.parse(createdAt))}</span>
@@ -450,8 +450,8 @@ type ZoneFrameProps = {
 function ZoneFrame({ avatar, label, hint, actions, children }: ZoneFrameProps) {
   return (
     <div className="py-1.5 pr-3" style={{ paddingLeft: "var(--zone-content-left)" }}>
-      <div className="overflow-hidden rounded-lg border border-(--line) bg-(--surface-inset) text-[14px] leading-[1.5] text-neutral-200 shadow-md">
-        <div className={`flex min-h-9 items-center gap-2 bg-white/4 px-3 py-1 text-[12px] text-neutral-400${children ? " border-b border-(--line)" : ""}`}>
+      <div className="overflow-hidden rounded-lg border border-(--line) bg-(--surface-inset) text-[15px] leading-[1.5] text-neutral-200 shadow-md">
+        <div className={`flex min-h-9 items-center gap-2 bg-white/4 px-3 py-1 text-[13px] text-neutral-400${children ? " border-b border-(--line)" : ""}`}>
           {avatar}
           <span className="shrink-0 font-mono text-neutral-300">{label}</span>
           {hint ? <span className="min-w-0 truncate text-neutral-500">{hint}</span> : null}

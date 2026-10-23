@@ -1,3 +1,9 @@
+## 0.103.0 (2026-10-23)
+
+### 🚀 Features
+
+- **client:** each row of the pull request list starts with the author's avatar ([4827bce](https://github.com/unshoppable/hunt/commit/4827bce))
+
 ## 0.102.0 (2026-10-23)
 
 ### 🚀 Features

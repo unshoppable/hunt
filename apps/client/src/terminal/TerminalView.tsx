@@ -46,7 +46,7 @@ function terminalTheme(background: string): ITheme {
   return { ...ANSI_COLORS, background, foreground: "#d4d4d4", cursor: "#d4d4d4", cursorAccent: background, selectionBackground: "#4c8bf580" };
 }
 
-type TerminalStatus = { state: "connecting" } | { state: "open" } | { state: "ended"; message: string };
+type TerminalStatus = { state: "connecting" } | { state: "open" } | { state: "ended"; message: string; isSuccess?: boolean };
 
 const CONNECTING: TerminalStatus = { state: "connecting" };
 
@@ -237,7 +237,8 @@ export function TerminalView({
         (event) => {
           if (event.id !== terminalId) return;
           isOpen = false;
-          setStatus({ state: "ended", message: kind === "shell" ? describeLocalExit(event.code) : describeExit(event.code) });
+          const isShell = kind === "shell";
+          setStatus({ state: "ended", message: isShell ? describeLocalExit(event.code) : describeExit(event.code), isSuccess: isShell && event.code === 0 });
           callbacksRef.current.onRunningChange?.(false);
           callbacksRef.current.onExit?.();
         },
@@ -304,7 +305,7 @@ export function TerminalView({
             </>
           ) : (
             <>
-              <span className="min-w-0 truncate text-red-300" title={status.message}>
+              <span className={`min-w-0 truncate ${status.isSuccess ? "text-emerald-300" : "text-red-300"}`} title={status.message}>
                 {status.message}
               </span>
               <span className="flex-1" />

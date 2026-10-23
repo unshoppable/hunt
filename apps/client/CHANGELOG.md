@@ -1,3 +1,9 @@
+## 0.102.0 (2026-10-23)
+
+### 🚀 Features
+
+- **client:** the pull request list filters by author, by your review state and hides drafts on request ([96be5f2](https://github.com/unshoppable/hunt/commit/96be5f2))
+
 ## 0.101.2 (2026-10-23)
 
 ### 🩹 Fixes

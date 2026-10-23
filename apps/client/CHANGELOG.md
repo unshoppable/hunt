@@ -1,3 +1,10 @@
+## 0.93.0 (2026-10-23)
+
+### 🚀 Features
+
+- **client:** another local branch can be pulled or force pulled from its upstream, and the branch tree says what a pull did ([777c094](https://github.com/unshoppable/hunt/commit/777c094))
+- **client:** a line separates the remote branches from the local ones in the branch tree ([4919dca](https://github.com/unshoppable/hunt/commit/4919dca))
+
 ## 0.92.0 (2026-10-23)
 
 ### 🚀 Features

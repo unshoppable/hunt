@@ -1,3 +1,9 @@
+## 0.101.2 (2026-10-23)
+
+### 🩹 Fixes
+
+- **client:** a pull request whose branches the repository lacks fetches them from origin before its review session starts ([0ad6c1f](https://github.com/unshoppable/hunt/commit/0ad6c1f))
+
 ## 0.101.1 (2026-10-23)
 
 ### 🔥 Performance

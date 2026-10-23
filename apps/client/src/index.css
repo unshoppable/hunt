@@ -445,6 +445,14 @@ body,
 /* "+" of a pull request review (see review/addCommentGlyph.ts): GitHub's blue square on the hovered line, in the
    glyph margin left of the line numbers, centred on the cell; grey when the comment lands in the review summary as
    a note instead of inline. */
+.monaco-editor .harness-review-add,
+.monaco-editor .harness-review-link {
+  --review-glyph-color: #2f81f7;
+}
+.monaco-editor .harness-review-add--note,
+.monaco-editor .harness-review-link--note {
+  --review-glyph-color: #6e7681;
+}
 .monaco-editor .harness-review-add {
   cursor: pointer;
   z-index: 3;
@@ -457,7 +465,7 @@ body,
   height: min(18px, 100%);
   margin: auto;
   border-radius: 4px;
-  background: #2f81f7;
+  background: var(--review-glyph-color);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
   transition: transform 120ms ease;
 }
@@ -474,8 +482,17 @@ body,
 .monaco-editor .harness-review-add:hover::before {
   transform: scale(1.1);
 }
-.monaco-editor .harness-review-add--note::before {
-  background: #6e7681;
+/* While the "+" is dragged, a vertical line joins the "+" at both ends of the range: from the first one's centre down,
+   through the lines between, into the last one's centre. */
+.monaco-editor .harness-review-link {
+  z-index: 3;
+  background: linear-gradient(var(--review-glyph-color) 0 0) center / 2px 100% no-repeat;
+}
+.monaco-editor .harness-review-add--first {
+  background: linear-gradient(var(--review-glyph-color) 0 0) center bottom / 2px 50% no-repeat;
+}
+.monaco-editor .harness-review-add--last {
+  background: linear-gradient(var(--review-glyph-color) 0 0) center top / 2px 50% no-repeat;
 }
 /* WebStorm's green run triangle on each script of a package.json (see ide/scriptRunMarkers.ts), centred in the glyph
    margin cell; a click runs the script. */

@@ -3,6 +3,8 @@ import { selectedLineSpan } from "../diff/selectionContext";
 import type { LineSpan } from "./reviewComments";
 
 const GLYPH_CLASS = "harness-review-add";
+/** Line in the glyph margin that joins the two "+" of a drag across the lines between them. */
+const LINK_CLASS = "harness-review-link";
 export const RANGE_CLASS = "harness-review-range";
 
 /** Mouse targets that name a line of the model (text, its empty tail and the gutter cells), unlike zones and widgets. */
@@ -46,7 +48,8 @@ export function rangeDecoration(span: LineSpan, isInline: boolean): monaco.edito
  * GitHub's "+" on the hovered line of a pull request review, in the glyph margin left of the line numbers: blue
  * where a comment is posted inline (`isInline`), grey where it becomes a note in the review summary. A click reports the line, or the selected lines when the selection spans
  * several and holds the clicked one; dragging the "+" over other lines reports the dragged range, marked while the
- * drag lasts with a "+" at both ends. The reported target's box opens under the line the "+" was released on.
+ * drag lasts with a "+" at both ends, joined by a line in the glyph margin. The reported target's box opens under the
+ * line the "+" was released on.
  */
 export class AddCommentGlyph {
   private readonly decorations: monaco.editor.IEditorDecorationsCollection;
@@ -129,17 +132,7 @@ export class AddCommentGlyph {
       this.decorations.clear();
       return;
     }
-    this.decorations.set([this.glyphDecoration(shownLine, this.isInline({ startLine: shownLine, line: shownLine }))]);
-  }
-
-  private glyphDecoration(line: number, isInline: boolean): monaco.editor.IModelDeltaDecoration {
-    return {
-      range: { startLineNumber: line, startColumn: 1, endLineNumber: line, endColumn: 1 },
-      options: {
-        glyphMarginClassName: isInline ? GLYPH_CLASS : `${GLYPH_CLASS} ${GLYPH_CLASS}--note`,
-        stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
-      },
-    };
+    this.decorations.set([plusDecoration(shownLine, this.isInline({ startLine: shownLine, line: shownLine }))]);
   }
 
   private readonly onDomMouseDown = (event: MouseEvent): void => {
@@ -196,8 +189,16 @@ export class AddCommentGlyph {
     const { anchor, current } = this.drag;
     const span = { startLine: Math.min(anchor, current), line: Math.max(anchor, current) };
     const isInline = this.isInline(span);
-    const glyphs = anchor === current ? [this.glyphDecoration(anchor, isInline)] : [this.glyphDecoration(anchor, isInline), this.glyphDecoration(current, isInline)];
-    this.decorations.set([rangeDecoration(span, isInline), ...glyphs]);
+    if (anchor === current) {
+      this.decorations.set([rangeDecoration(span, isInline), plusDecoration(anchor, isInline)]);
+      return;
+    }
+    const decorations = [rangeDecoration(span, isInline), plusDecoration(span.startLine, isInline, "first"), plusDecoration(span.line, isInline, "last")];
+    if (span.line - span.startLine > 1) {
+      const between = { startLine: span.startLine + 1, line: span.line - 1 };
+      decorations.push(glyphMarginDecoration(between, isInline ? LINK_CLASS : `${LINK_CLASS} ${LINK_CLASS}--note`));
+    }
+    this.decorations.set(decorations);
   }
 
   /** Stops a running drag without reporting it; the hover glyph is restored on the next mouse move. */
@@ -219,4 +220,21 @@ export class AddCommentGlyph {
     if (endLine <= startLine || line < startLine || line > endLine) return { startLine: line, line };
     return { startLine, line: endLine };
   }
+}
+
+/**
+ * The "+" on `line`, grey where the comment becomes a note (`isInline` false). At the `first` or `last` line of a drag
+ * it also carries the half of the joining line that runs from its centre towards the other end.
+ */
+function plusDecoration(line: number, isInline: boolean, end?: "first" | "last"): monaco.editor.IModelDeltaDecoration {
+  const classNames = [GLYPH_CLASS, ...(isInline ? [] : [`${GLYPH_CLASS}--note`]), ...(end ? [`${GLYPH_CLASS}--${end}`] : [])];
+  return glyphMarginDecoration({ startLine: line, line }, classNames.join(" "));
+}
+
+/** Glyph margin decoration giving every line of `span` the classes `className`. */
+function glyphMarginDecoration(span: LineSpan, className: string): monaco.editor.IModelDeltaDecoration {
+  return {
+    range: { startLineNumber: span.startLine, startColumn: 1, endLineNumber: span.line, endColumn: 1 },
+    options: { glyphMarginClassName: className, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
+  };
 }

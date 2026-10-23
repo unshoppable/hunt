@@ -1,3 +1,9 @@
+## 0.103.1 (2026-10-23)
+
+### 🩹 Fixes
+
+- **client:** a new pull request review no longer shows "unknown session" instead of its review threads ([1336789](https://github.com/unshoppable/hunt/commit/1336789))
+
 ## 0.103.0 (2026-10-23)
 
 ### 🚀 Features

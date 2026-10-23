@@ -110,11 +110,12 @@ export function reviewCommentCounts(drafts: ReviewComment[], threads: ReviewThre
 /**
  * Review comments per path of `sessionId` (see `reviewCommentCounts`), none without a session; for a session that
  * reviews a pull request, showing them loads GitHub's review threads again once the last load is stale (see
- * `useReviewThreadStore`).
+ * `useReviewThreadStore`). A session still being created is not stored yet, so its threads load once it is.
  */
 export function useReviewCommentCounts(sessionId: string | null): Map<string, number> {
   const reviewSession = useHuntStore((state) => (sessionId ? reviewSessionOf(state.sessions, sessionId) : null));
-  const threadSessionId = reviewSession?.pullRequest ? reviewSession.id : null;
+  const isCreating = useHuntStore((state) => Boolean(reviewSession && state.creatingIds.includes(reviewSession.id)));
+  const threadSessionId = reviewSession?.pullRequest && !isCreating ? reviewSession.id : null;
   const load = useReviewThreadStore((state) => (threadSessionId ? state.loads[threadSessionId] : undefined));
   const refresh = useReviewThreadStore((state) => state.refresh);
   useEffect(() => {

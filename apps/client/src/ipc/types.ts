@@ -707,9 +707,18 @@ export type DocumentDirtyEvent = { worktreePath: string; path: string; isDirty: 
  * A file to show in an editor window, with an optional 1-based caret position. With `definitionOf` (the name
  * ⌘clicked at the position, e.g. in a diff) the window shows that name's declaration instead when the language
  * server knows one elsewhere inside the worktree, otherwise the position itself. With `revealInTree` the project tree
- * selects the file as on ⇧⌘2.
+ * selects the file as on ⇧⌘2. With `revealFirstChange` and no `line` the caret goes to the file's first change against
+ * its diff base, if it has one.
  */
-export type EditorOpenRequest = { path: string; line?: number; column?: number; inRightSplit?: boolean; definitionOf?: string; revealInTree?: boolean };
+export type EditorOpenRequest = {
+  path: string;
+  line?: number;
+  column?: number;
+  inRightSplit?: boolean;
+  definitionOf?: string;
+  revealInTree?: boolean;
+  revealFirstChange?: boolean;
+};
 
 /** A changed file of a session to show in a diff window (see graph/diffWindows.ts). */
 export type DiffOpenRequest = { sessionId: string; path: string };

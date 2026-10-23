@@ -155,7 +155,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     function onKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented || !selectedPath || !isShortcut(event, "editor.selectInTree")) return;
       event.preventDefault();
-      void openInEditorWindow(sessionId, { path: selectedPath, revealInTree: true });
+      void openInEditorWindow(sessionId, { path: selectedPath, revealInTree: true, revealFirstChange: true });
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -549,7 +549,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
               role="menuitem"
               onClick={() => {
                 setContextMenu(null);
-                void openInEditorWindow(sessionId, { path: contextMenu.target.path, revealInTree: true });
+                void openInEditorWindow(sessionId, { path: contextMenu.target.path, revealInTree: true, revealFirstChange: true });
               }}
               className="flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left hover:bg-(--row-hover)"
             >

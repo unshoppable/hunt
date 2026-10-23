@@ -3,10 +3,11 @@ import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useBackendEvents, usePaneStyles, useSettingsSync } from "../app/bootstrap";
 import { listenTo } from "../ipc/events";
+import { computeChangeBlocks } from "../diff/lineDiff";
 import type { EditorOpenRequest } from "../ipc/types";
 import { useHuntStore } from "../state/store";
 import { useSecondaryWindow } from "../ui/nativeWindow";
-import { workspaceFor } from "./documents";
+import { workspaceFor, type Workspace } from "./documents";
 import { FileSearchDialog, useFileSearchShortcut } from "./FileSearchDialog";
 import { FindInFilesDialog, useFindInFilesShortcut } from "./FindInFilesDialog";
 import { IdePanel } from "./IdePanel";
@@ -73,18 +74,27 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
     const subscription = listenTo(
       "editor:open",
       (request) => {
-        if (!request.definitionOf) {
+        const definitionOf = request.definitionOf;
+        const needsFirstChange = !!request.revealFirstChange && !request.line;
+        if (!definitionOf && !needsFirstChange) {
           open(request);
           return;
         }
-        // A declaration the session's worktree cannot resolve still opens the clicked position.
+        // A declaration or first change the session's worktree cannot resolve still opens the requested position.
         const worktreePath = useHuntStore.getState().sessions.find((candidate) => candidate.id === sessionId)?.worktreePath;
         if (!worktreePath) {
           open(request);
           return;
         }
+        const workspace = workspaceFor(sessionId, worktreePath);
+        if (!definitionOf) {
+          firstChangedLine(workspace, request.path)
+            .then((line) => open({ ...request, line }))
+            .catch(() => open(request));
+          return;
+        }
         const position = { lineNumber: request.line ?? 1, column: request.column ?? 1 };
-        resolveDefinition(workspaceFor(sessionId, worktreePath), request.path, position, request.definitionOf)
+        resolveDefinition(workspace, request.path, position, definitionOf)
           .then((target) => open({ ...target, inRightSplit: request.inRightSplit }))
           .catch(() => open(request));
       },
@@ -157,4 +167,15 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
       ) : null}
     </div>
   );
+}
+
+/**
+ * First line of the first block where the file's current content (unsaved edits included) differs from its diff base,
+ * as the change markers show it; undefined when the file has no change.
+ */
+async function firstChangedLine(workspace: Workspace, path: string): Promise<number | undefined> {
+  const [headText, document] = await Promise.all([workspace.headText(path), workspace.open(path)]);
+  const firstBlock = computeChangeBlocks(headText ?? "", document.model.getValue())[0];
+  if (!firstBlock) return undefined;
+  return Math.min(firstBlock.modified.start, document.model.getLineCount());
 }

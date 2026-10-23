@@ -31,7 +31,7 @@ let warmTimer: number | undefined;
 /**
  * Opens `request` in the session's editor window (see EditorWindow.tsx): an existing window gets the request as
  * the `editor:open` event and shows itself, a window still booting gets it once it is ready, otherwise a new one
- * starts with the request in its URL (a declaration request waits until the new window is ready).
+ * starts with the request in its URL (a declaration or first-change request waits until the new window is ready).
  */
 export async function openInEditorWindow(sessionId: string, request: EditorOpenRequest): Promise<void> {
   const label = editorWindowLabel(sessionId);
@@ -106,8 +106,8 @@ async function createEditorWindow(sessionId: string, request: EditorOpenRequest 
   listenForReady();
   const label = editorWindowLabel(sessionId);
   const title = useHuntStore.getState().sessions.find((session) => session.id === sessionId)?.title ?? "Editor";
-  // Resolving a declaration needs the session's worktree, which the page knows only once it reports `editor:ready`.
-  const queued = request?.definitionOf ? [request] : [];
+  // Resolving a declaration or the first change needs the session's worktree, which the page knows only once it reports `editor:ready`.
+  const queued = request?.definitionOf || request?.revealFirstChange ? [request] : [];
   const created = createWindow("editor", label, {
     url: `editor.html?${editorWindowQuery(sessionId, queued.length ? null : request)}`,
     title: `${title} – Editor`,

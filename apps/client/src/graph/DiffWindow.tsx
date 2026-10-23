@@ -210,7 +210,12 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
           <button type="button" onClick={() => setIsCollapsed(!isCollapsed)} className={SECONDARY_BUTTON_XS} title={isCollapsed ? "Show every unchanged line" : "Collapse every unchanged stretch"}>
             {isCollapsed ? "Expand all" : "Collapse unchanged"}
           </button>
-          <button type="button" onClick={() => void openInEditorWindow(sessionId, { path })} className={SECONDARY_BUTTON_XS} title="Open the file in the editor window">
+          <button
+            type="button"
+            onClick={() => void openInEditorWindow(sessionId, { path, revealFirstChange: true })}
+            className={SECONDARY_BUTTON_XS}
+            title="Open the file in the editor window at its first change"
+          >
             Open in editor
           </button>
         </div>

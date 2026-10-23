@@ -4,6 +4,7 @@ import * as monaco from "monaco-editor";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useBackendEvents, usePaneStyles, useSettingsSync } from "../app/bootstrap";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
+import { useFileIconUrl } from "../diff/fileIcons";
 import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, onShortcut, setupMonaco } from "../diff/monaco";
 import { workspaceFor, type Workspace } from "../ide/documents";
 import { selectionChatsFor, useSelectionChats, type SelectionChat } from "../ide/selectionChats";
@@ -59,6 +60,7 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
   const worktreePath = session?.worktreePath ?? "";
   const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
   const dirs = useSettingsStore((state) => state.guardrailDirs);
+  const fileIconUrl = useFileIconUrl();
   const [isLoaded, setIsLoaded] = useState(false);
   const workspace = workspaceFor(sessionId, worktreePath);
   const [kind, setKind] = useState<GuardrailKind>("instruction");
@@ -512,6 +514,7 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
           {selected ? (
             <>
               <div className="@container flex h-10 shrink-0 items-center gap-2 border-b border-(--line) px-3 text-[13px]">
+                <img src={fileIconUrl(selected.path)} alt="" className="size-4 shrink-0" />
                 <span className="min-w-0 flex-1 truncate text-neutral-400" title={`${worktreePath}/${selected.path}`}>
                   {selected.path}
                 </span>

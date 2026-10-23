@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useBackendEvents, usePaneStyles, useSettingsSync } from "../app/bootstrap";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
 import { CodeDiffEditor, type CodeDiffEditorHandle } from "../diff/CodeDiffEditor";
+import { useFileIconUrl } from "../diff/fileIcons";
 import { workspaceFor } from "../ide/documents";
 import { openInEditorWindow } from "../ide/editorWindows";
 import { commands } from "../ipc/commands";
@@ -80,6 +81,7 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
   const fontSize = useSettingsStore((state) => state.panes.diff.fontSize);
   const lineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
   const fontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
+  const fileIconUrl = useFileIconUrl();
 
   const [isLoaded, setIsLoaded] = useState(false);
   const [diff, setDiff] = useState<FileDiff | null>(null);
@@ -193,6 +195,7 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
           style={lineNumbersLeft === null ? { flex: "1 1 0%" } : { width: lineNumbersLeft, flexShrink: 0 }}
           title={path}
         >
+          <img data-tauri-drag-region="" src={fileIconUrl(path)} alt="" draggable={false} className="mr-1.5 size-4 shrink-0" />
           <span data-tauri-drag-region="" className="truncate">{path}</span>
           {isDirty ? <span data-tauri-drag-region="" className="ml-1.5 size-2 shrink-0 rounded-full bg-blue-400" title="Unsaved changes" /> : null}
         </span>

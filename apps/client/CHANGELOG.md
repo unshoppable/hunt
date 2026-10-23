@@ -1,3 +1,10 @@
+## 0.96.3 (2026-10-23)
+
+### 🩹 Fixes
+
+- **client:** the review comment editor shows its text at 14px ([bfa2143](https://github.com/unshoppable/hunt/commit/bfa2143))
+- **client:** the review comment editor, its preview and the reply field show their text at 15px ([c31f561](https://github.com/unshoppable/hunt/commit/c31f561))
+
 ## 0.96.2 (2026-10-23)
 
 ### 🩹 Fixes

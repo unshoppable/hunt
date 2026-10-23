@@ -1,3 +1,13 @@
+## 0.92.0 (2026-10-23)
+
+### 🚀 Features
+
+- **client:** a toolbar above the branch tree fetches origin and deletes the local branches origin lacks ([23c0481](https://github.com/unshoppable/hunt/commit/23c0481))
+
+### 🩹 Fixes
+
+- **client:** Update in a branch's context menu works like pull --ff-only and leaves a branch ahead of its upstream as it is ([dcb8317](https://github.com/unshoppable/hunt/commit/dcb8317))
+
 ## 0.91.1 (2026-10-23)
 
 ### 🩹 Fixes

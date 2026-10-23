@@ -8,6 +8,7 @@ import tsWorker from "./semantic.worker.ts?worker";
 import { registerSemanticTokens } from "./semanticTokens";
 import { registerLspProviders } from "../ide/lsp/providers";
 import { WEBSTORM, WEBSTORM_TOKEN_RULES, typescriptLanguage } from "./webstormScheme";
+import { angularTemplateLanguage } from "./angularTemplate";
 import { CODE_FONT_FAMILY, UI_FONT_FAMILY } from "../state/settings";
 import type { CommandId } from "../state/keymap";
 import { isShortcut, shortcutLabel } from "../ui/shortcuts";
@@ -279,6 +280,7 @@ export function setupMonaco(): void {
 
   monaco.languages.setMonarchTokensProvider("typescript", typescriptLanguage(".ts"));
   monaco.languages.setMonarchTokensProvider("javascript", typescriptLanguage(".js"));
+  monaco.languages.setMonarchTokensProvider("html", angularTemplateLanguage());
   registerSemanticTokens();
   registerLspProviders();
   setUpCompletionList();

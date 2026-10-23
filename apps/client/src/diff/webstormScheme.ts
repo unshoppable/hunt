@@ -2,8 +2,9 @@ import * as monaco from "monaco-editor";
 
 /**
  * Colors of the WebStorm scheme "Darcula copy1" (~/Library/Application Support/JetBrains/WebStorm<version>/colors),
- * keyed by the scheme's attribute names so both stay easy to compare. Font styles follow the scheme's
- * FONT_TYPE: 1 bold, 2 italic, 3 bold italic.
+ * keyed by the scheme's attribute names so both stay easy to compare; attributes the scheme leaves to its parent
+ * carry Darcula's defaults (`DEFAULT_KEYWORD`, `HTML_CUSTOM_TAG_NAME`, `NG_SIGNAL` of the Angular plugin). Font
+ * styles follow the scheme's FONT_TYPE: 1 bold, 2 italic, 3 bold italic.
  */
 export const WEBSTORM = {
   TEXT: "f7e862",
@@ -44,7 +45,15 @@ export const WEBSTORM = {
   CSS_FUNCTION: "fb73c0",
   CSS_HASH: "d1fc22",
   TAG: "629cfc",
+  HTML_CUSTOM_TAG_NAME: "26bda4",
+  HTML_TAG_DATA: "ffffff",
+  HTML_ENTITY_REFERENCE: "99e4f9",
   JSON_KEY: "9edafe",
+  DEFAULT_KEYWORD: "cc7832",
+  DEFAULT_BRACES: "f1f1f1",
+  NG_SIGNAL: "68aaa2",
+  NG_BINDING_ATTR_NAME: "65d6a4",
+  NG_BANANA_BINDING_ATTR_NAME: "7eeade",
 } as const;
 
 /**
@@ -149,6 +158,20 @@ export const WEBSTORM_TOKEN_RULES: monaco.editor.ITokenThemeRule[] = [
   { token: "attribute.name.xml", foreground: WEBSTORM.CSS_IDENT, fontStyle: "" },
   { token: "attribute.value.xml", foreground: WEBSTORM.STRING, fontStyle: "" },
   { token: "comment.xml", foreground: WEBSTORM.COMMENT, fontStyle: "" },
+
+  // Angular templates (angularTemplate.ts): HTML plus Angular's syntax, and the semantic `signal` role
+  { token: "text.html", foreground: WEBSTORM.HTML_TAG_DATA },
+  { token: "entity.html", foreground: WEBSTORM.HTML_ENTITY_REFERENCE },
+  { token: "tag.custom", foreground: WEBSTORM.HTML_CUSTOM_TAG_NAME },
+  { token: "attribute.name.binding", foreground: WEBSTORM.NG_BINDING_ATTR_NAME, fontStyle: "" },
+  { token: "attribute.name.banana", foreground: WEBSTORM.NG_BANANA_BINDING_ATTR_NAME, fontStyle: "" },
+  { token: "keyword.block", foreground: WEBSTORM.DEFAULT_KEYWORD, fontStyle: "" },
+  { token: "delimiter.block", foreground: WEBSTORM.DEFAULT_BRACES, fontStyle: "" },
+  { token: "delimiter.interpolation", foreground: WEBSTORM.DEFAULT_BRACES, fontStyle: "" },
+  { token: "delimiter.separator", foreground: WEBSTORM.PUNCTUATION, fontStyle: "italic" },
+  { token: "operator.ng", foreground: WEBSTORM.PUNCTUATION, fontStyle: "" },
+  { token: "identifier.pipe", foreground: WEBSTORM.INSTANCE_MEMBER_FUNCTION },
+  { token: "signal", foreground: WEBSTORM.NG_SIGNAL },
 ];
 
 /** Primitive type names and literals the scheme colors apart from the other keywords (JS.PRIMITIVE / JS.NULL_UNDEFINED). */

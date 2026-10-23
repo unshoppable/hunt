@@ -476,7 +476,7 @@ async fn deliver(app: &AppHandle, entry: &mut Entry, effects: Effects) {
     let worktree = entry.documents.worktree.clone();
     for kind in ServerKind::ALL {
         let server = if kind == ServerKind::Typescript && entry.documents.serves_any(kind) {
-            lsp::server_for_worktree(app, &worktree, kind).ok().map(|(server, _)| server)
+            lsp::server_for_worktree(app, &worktree, kind).ok()
         } else {
             lsp::running_server(app, &worktree, kind)
         };
@@ -509,8 +509,8 @@ async fn send(server: &LspServer, notifications: Vec<(&'static str, Value)>) {
     }
 }
 
-/// Opens the served documents of `worktree` in `server` unless they are open there already; for a server that a
-/// request started.
+/// Opens the served documents of `worktree` in `server` unless they are open there already; requests call it before
+/// they reach the server, and concurrent callers wait until the first one has sent the documents.
 pub async fn open_in(app: AppHandle, worktree: PathBuf, server: Arc<LspServer>) {
     let entry = app.state::<DocumentRegistry>().worktrees.lock().unwrap().get(&worktree).cloned();
     let Some(entry) = entry else {

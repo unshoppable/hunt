@@ -7,6 +7,9 @@ import type { Diagnostic, DocumentSymbol } from "./protocol";
 /** Language ids whose models the language server receives. */
 const SERVED_LANGUAGES = new Set(["typescript", "javascript"]);
 
+/** Language ids of the Angular templates, which only the Angular language server receives. */
+const TEMPLATE_LANGUAGES = new Set(["html"]);
+
 const clients = new Map<string, LspClient>();
 let eventsSubscribed = false;
 
@@ -21,6 +24,8 @@ const diagnosticsListeners = new Set<(model: monaco.editor.ITextModel, diagnosti
 export class LspClient {
   /** Models the server receives, by URI. */
   private readonly served = new Map<string, monaco.editor.ITextModel>();
+  /** URIs of the worktree's template models, which the Angular server receives. */
+  private readonly templates = new Set<string>();
   /** Document updates of this window in flight; a request waits for them so the server sees the edits it refers to. */
   private queue: Promise<void> = Promise.resolve();
   private nextToken = 1;
@@ -39,9 +44,19 @@ export class LspClient {
     return this.served.has(model.uri.toString());
   }
 
-  /** Counts a worktree model as served until it is disposed; models of other languages are ignored. */
+  /** Whether `model` is a worktree template the Angular server receives. */
+  servesTemplate(model: monaco.editor.ITextModel): boolean {
+    return this.templates.has(model.uri.toString());
+  }
+
+  /** Counts a worktree model as served (or as a template) until it is disposed; models of other languages are ignored. */
   serve(model: monaco.editor.ITextModel): void {
     const uri = model.uri.toString();
+    if (TEMPLATE_LANGUAGES.has(model.getLanguageId()) && !this.templates.has(uri)) {
+      this.templates.add(uri);
+      model.onWillDispose(() => this.templates.delete(uri));
+      return;
+    }
     if (!SERVED_LANGUAGES.has(model.getLanguageId()) || this.served.has(uri)) return;
     this.served.set(uri, model);
     model.onWillDispose(() => {
@@ -128,6 +143,14 @@ export function lspClientFor(sessionId: string, worktreePath: string): LspClient
 export function lspClientForModel(model: monaco.editor.ITextModel): LspClient | null {
   for (const client of clients.values()) {
     if (client.serves(model)) return client;
+  }
+  return null;
+}
+
+/** The client of the worktree `model` is a template of, or null for templates outside a worktree (diffs, previews). */
+export function lspClientForTemplate(model: monaco.editor.ITextModel): LspClient | null {
+  for (const client of clients.values()) {
+    if (client.servesTemplate(model)) return client;
   }
   return null;
 }

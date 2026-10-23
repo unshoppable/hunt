@@ -1,6 +1,7 @@
 import * as monaco from "monaco-editor";
-import { lspClientForModel } from "../ide/lsp/client";
+import { lspClientForModel, lspClientForTemplate } from "../ide/lsp/client";
 import { hoverSignature, toLspPosition, type Hover } from "../ide/lsp/protocol";
+import { TEMPLATE_ROLES, templateRoleOfHover, type TemplateRole } from "./angularTemplate";
 import { roleOfImportHover, type UnresolvedImport, type WebstormClassification } from "./webstormClassifier";
 import { WEBSTORM_ROLES } from "./webstormRoles";
 
@@ -120,7 +121,73 @@ export function refreshSemanticTokens(): void {
   tokensChanged.fire();
 }
 
-/** Registers `classifyModel` as the semantic token provider of the Monaco editors; the Monarch grammar only sees syntax. */
+/** Token of the template grammar (angularTemplate.ts) for a name at the top of an expression. */
+const TEMPLATE_NAME_TOKEN = "identifier.ng.html";
+
+/**
+ * Classifies the names at the top of the expressions of an Angular template (`displayName` in `{{ displayName() }}`)
+ * by asking the Angular language server what each one is (see `templateRoleOfHover`); `role` indexes
+ * `TEMPLATE_ROLES`. Null for models outside a worktree, when the worktree has no Angular, and when the model changed
+ * or was disposed meanwhile. The server loads the project on its first request, which takes a few seconds.
+ */
+async function classifyTemplate(model: monaco.editor.ITextModel, token: monaco.CancellationToken): Promise<SemanticSpan[] | null> {
+  const client = lspClientForTemplate(model);
+  if (!client) return null;
+  const version = model.getVersionId();
+  const names: { start: number; length: number; position: monaco.IPosition }[] = [];
+  monaco.editor.tokenize(model.getValue(), "html").forEach((lineTokens, lineIndex) => {
+    const lineNumber = lineIndex + 1;
+    lineTokens.forEach((lineToken, index) => {
+      if (lineToken.type !== TEMPLATE_NAME_TOKEN) return;
+      const end = lineTokens[index + 1]?.offset ?? model.getLineMaxColumn(lineNumber) - 1;
+      const position = { lineNumber, column: lineToken.offset + 1 };
+      names.push({ start: model.getOffsetAt(position), length: end - lineToken.offset, position });
+    });
+  });
+
+  if (!names.length) return [];
+
+  const uri = model.uri.toString();
+  const roleOf = async (position: monaco.IPosition) => {
+    const params = { textDocument: { uri }, position: toLspPosition(position) };
+    const hover = await client.request<Hover | null>("textDocument/hover", params, token, "angular");
+    return hover ? templateRoleOfHover(hoverSignature(hover)) : null;
+  };
+  // The first answer tells whether the worktree has an Angular server at all; the other names only ask a running one.
+  let roles: (TemplateRole | null)[];
+  try {
+    roles = [await roleOf(names[0].position)];
+  } catch {
+    return null;
+  }
+  roles.push(...(await Promise.all(names.slice(1).map((name) => roleOf(name.position).catch(() => null)))));
+  if (model.isDisposed() || model.getVersionId() !== version || token.isCancellationRequested) return null;
+  return names.flatMap((name, index) => {
+    const role = roles[index];
+    return role ? [{ start: name.start, length: name.length, role: TEMPLATE_ROLES.indexOf(role) }] : [];
+  });
+}
+
+/** Encodes `spans` (ordered by offset) as Monaco's relative semantic token data. */
+function encodeSpans(model: monaco.editor.ITextModel, spans: readonly SemanticSpan[]): monaco.languages.SemanticTokens {
+  const data: number[] = [];
+  let previousLine = 0;
+  let previousColumn = 0;
+  for (const span of spans) {
+    const position = model.getPositionAt(span.start);
+    const line = position.lineNumber - 1;
+    const column = position.column - 1;
+    data.push(line - previousLine, line === previousLine ? column - previousColumn : column, span.length, span.role, 0);
+    previousLine = line;
+    previousColumn = column;
+  }
+  return { data: new Uint32Array(data) };
+}
+
+/**
+ * Registers `classifyModel` as the semantic token provider of the TypeScript and JavaScript editors and
+ * `classifyTemplate` as the one of the HTML editors; the Monarch grammars only see syntax.
+ */
 export function registerSemanticTokens(): void {
   monaco.languages.registerDocumentSemanticTokensProvider(["typescript", "javascript"], {
     onDidChange: tokensChanged.event,
@@ -128,20 +195,15 @@ export function registerSemanticTokens(): void {
     releaseDocumentSemanticTokens: () => {},
     provideDocumentSemanticTokens: async (model) => {
       const spans = await classifyModel(model);
-      if (!spans) return null;
-
-      const data: number[] = [];
-      let previousLine = 0;
-      let previousColumn = 0;
-      for (const span of spans) {
-        const position = model.getPositionAt(span.start);
-        const line = position.lineNumber - 1;
-        const column = position.column - 1;
-        data.push(line - previousLine, line === previousLine ? column - previousColumn : column, span.length, span.role, 0);
-        previousLine = line;
-        previousColumn = column;
-      }
-      return { data: new Uint32Array(data) };
+      return spans ? encodeSpans(model, spans) : null;
+    },
+  });
+  monaco.languages.registerDocumentSemanticTokensProvider("html", {
+    getLegend: () => ({ tokenTypes: [...TEMPLATE_ROLES], tokenModifiers: [] }),
+    releaseDocumentSemanticTokens: () => {},
+    provideDocumentSemanticTokens: async (model, _lastResultId, token) => {
+      const spans = await classifyTemplate(model, token);
+      return spans ? encodeSpans(model, spans) : null;
     },
   });
 }

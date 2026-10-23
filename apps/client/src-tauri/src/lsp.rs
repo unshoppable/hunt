@@ -773,23 +773,22 @@ pub struct LspRegistry {
 }
 
 impl LspRegistry {
-    /// The running `kind` server of `worktree`, started with `launch` and `events` when there is none; `true` for a
-    /// server started now.
+    /// The running `kind` server of `worktree`, started with `launch` and `events` when there is none.
     pub fn get_or_start(
         &self,
         worktree: &Path,
         kind: ServerKind,
         launch: impl FnOnce() -> Result<Launch, String>,
         events: impl FnOnce() -> Arc<dyn LspEvents>,
-    ) -> Result<(Arc<LspServer>, bool), String> {
+    ) -> Result<Arc<LspServer>, String> {
         let mut servers = self.servers.lock().unwrap();
         let key = (worktree.to_path_buf(), kind);
         if let Some(server) = servers.get(&key) {
-            return Ok((server.clone(), false));
+            return Ok(server.clone());
         }
         let server = LspServer::start(worktree.to_path_buf(), kind, launch()?, events())?;
         servers.insert(key, server.clone());
-        Ok((server, true))
+        Ok(server)
     }
 
     /// Drops `server` when it is still the registered server of its worktree and kind.
@@ -866,8 +865,9 @@ impl LspEvents for AngularEvents {
     }
 }
 
-/// The `kind` server of the worktree of session `id`, started on demand; a server started now has the open documents
-/// before the request that started it. The worktree is remembered after the first lookup.
+/// The `kind` server of the worktree of session `id`, started on demand; the open documents reach a server started now
+/// before any request does, also when several requests start it at once. The worktree is remembered after the first
+/// lookup.
 async fn server_for(app: &AppHandle, registry: &LspRegistry, id: Uuid, kind: ServerKind) -> Result<Arc<LspServer>, String> {
     let cached = registry.worktrees.lock().unwrap().get(&id).cloned();
     let worktree = match cached {
@@ -881,15 +881,13 @@ async fn server_for(app: &AppHandle, registry: &LspRegistry, id: Uuid, kind: Ser
             record.worktree_path
         }
     };
-    let (server, is_new) = server_for_worktree(app, &worktree, kind)?;
-    if is_new {
-        documents::open_in(app.clone(), worktree, server.clone()).await;
-    }
+    let server = server_for_worktree(app, &worktree, kind)?;
+    documents::open_in(app.clone(), worktree, server.clone()).await;
     Ok(server)
 }
 
-/// The `kind` server of `worktree`, started on demand; `true` for a server started now, which has no documents yet.
-pub fn server_for_worktree(app: &AppHandle, worktree: &Path, kind: ServerKind) -> Result<(Arc<LspServer>, bool), String> {
+/// The `kind` server of `worktree`, started on demand; a server started now has no documents yet.
+pub fn server_for_worktree(app: &AppHandle, worktree: &Path, kind: ServerKind) -> Result<Arc<LspServer>, String> {
     let launch = || match kind {
         ServerKind::Typescript => Launch::typescript(worktree),
         ServerKind::Angular => Launch::angular(&bundled_script_path(app, ANGULAR_SERVER_SCRIPT)?, worktree),

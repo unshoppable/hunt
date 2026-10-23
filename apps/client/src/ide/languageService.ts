@@ -127,24 +127,45 @@ async function declarationAt(client: LspClient, model: monaco.editor.ITextModel,
 /**
  * Every reference to the symbol at `position` across the project, without the declaration itself and without
  * import or re-export statements (they only repeat the usages in the file). In Angular projects the references in
- * component templates come from the Angular language server. The files holding references are loaded into the
+ * component templates come from the Angular language server, which takes seconds while it loads projects, so
+ * `onUsages` gets the TypeScript server's usages as soon as they are in (`isComplete` false) and all usages once the
+ * Angular server has answered; a single call when it answered first. The files holding references are loaded into the
  * workspace, so the popup can preview them.
  */
-export async function findUsages(workspace: Workspace, model: monaco.editor.ITextModel, position: monaco.IPosition): Promise<Usage[]> {
+export async function findUsages(
+  workspace: Workspace,
+  model: monaco.editor.ITextModel,
+  position: monaco.IPosition,
+  onUsages: (usages: Usage[], isComplete: boolean) => void,
+): Promise<void> {
   const client = lspClientForModel(model);
-  if (!client) return [];
+  if (!client) {
+    onUsages([], true);
+    return;
+  }
+  const at = toLspPosition(position);
+  const params = { ...documentPosition(model, at), context: { includeDeclaration: false } };
+  let templateReferences: Location[] | undefined;
+  const templateSearch = client
+    .request<Location[] | null>("textDocument/references", params, undefined, "angular")
+    .catch(() => null)
+    .then((references) => {
+      templateReferences = references ?? [];
+    });
   const name = model.getWordAtPosition(position)?.word;
   if (name) {
     await loadProjectsMentioning(workspace, client, name);
   }
-  const at = toLspPosition(position);
-  const params = { ...documentPosition(model, at), context: { includeDeclaration: false } };
-  const [typescript, angular] = await Promise.all([
-    client.request<Location[] | null>("textDocument/references", params),
-    client.request<Location[] | null>("textDocument/references", params, undefined, "angular").catch(() => null),
-  ]);
-  const references = mergeReferences(typescript ?? [], angular ?? [], model.uri.toString(), at);
+  const references = (await client.request<Location[] | null>("textDocument/references", params)) ?? [];
+  if (!templateReferences) {
+    onUsages(await usagesOf(workspace, client, references), false);
+    await templateSearch;
+  }
+  onUsages(await usagesOf(workspace, client, mergeReferences(references, templateReferences ?? [], model.uri.toString(), at)), true);
+}
 
+/** The usages at `references` in the worktree's source files and templates, sorted, without import lines. */
+async function usagesOf(workspace: Workspace, client: LspClient, references: Location[]): Promise<Usage[]> {
   const byPath = new Map<string, Location[]>();
   for (const reference of references) {
     const path = workspace.pathOf(monaco.Uri.parse(reference.uri));

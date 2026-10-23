@@ -297,14 +297,15 @@ export function CodeDiffEditor({
               navigate();
               return;
             }
-            const query: UsagesQuery = { declaration: navigation.declaration, path: diff.path, anchor: position, usages: null };
+            const query: UsagesQuery = { declaration: navigation.declaration, path: diff.path, anchor: position, usages: null, isComplete: false };
+            const isShown = (shown: { query: UsagesQuery } | null) => shown?.query.declaration === query.declaration;
             setUsagesQuery({ editor: sideEditor, query });
-            findUsages(shared.workspace, model, position)
-              .then((usages) => setUsagesQuery((shown) => (shown?.query === query ? { ...shown, query: { ...query, usages } } : shown)))
-              .catch((reason) => {
-                setUsagesQuery((shown) => (shown?.query === query ? null : shown));
-                onErrorRef.current(errorText(reason));
-              });
+            findUsages(shared.workspace, model, position, (usages, isComplete) =>
+              setUsagesQuery((shown) => (shown && isShown(shown) ? { ...shown, query: { ...query, usages, isComplete } } : shown)),
+            ).catch((reason) => {
+              setUsagesQuery((shown) => (isShown(shown) ? null : shown));
+              onErrorRef.current(errorText(reason));
+            });
           });
       },
       onOpenInIde: (line, column) => onOpenInIdeRef.current(line, column),

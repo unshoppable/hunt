@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { containerOf, isImportLine, isSourceFile, isUsageFile, kindLabel, mergeReferences, parameterTypesOf, sliceRuns, sortUsages, stepSelection, usageCountLabel, usageOnLine } from "./usages";
+import { containerOf, isImportLine, isSourceFile, isUsageFile, kindLabel, mergeReferences, parameterTypesOf, sliceRuns, sortUsages, stepSelection, usageCountLabel, usageKey, usageOnLine, usagesStatus } from "./usages";
 
 describe("usageOnLine", () => {
   it("trims the indentation and shifts the match offsets", () => {
@@ -25,7 +25,7 @@ describe("sortUsages", () => {
       usageOnLine("a.ts", 9, 1, 2, "x", ""),
       usageOnLine("a.ts", 2, 1, 2, "x", ""),
     ];
-    expect(sortUsages(usages).map((usage) => `${usage.path}:${usage.line}:${usage.column}`)).toEqual(["a.ts:2:1", "a.ts:9:1", "a.ts:9:5", "b.ts:3:1"]);
+    expect(sortUsages(usages).map(usageKey)).toEqual(["a.ts:2:1", "a.ts:9:1", "a.ts:9:5", "b.ts:3:1"]);
   });
 });
 
@@ -47,6 +47,15 @@ describe("labels", () => {
     expect(usageCountLabel(0)).toBe("No usages");
     expect(usageCountLabel(1)).toBe("1 usage");
     expect(usageCountLabel(3)).toBe("3 usages");
+  });
+
+  it("tells while the search and then the template search runs", () => {
+    const usage = usageOnLine("a.ts", 1, 1, 2, "x", "");
+    expect(usagesStatus(null, false)).toBe("Searching…");
+    expect(usagesStatus([], false)).toBe("Searching templates…");
+    expect(usagesStatus([usage, usage], false)).toBe("2 usages, searching templates…");
+    expect(usagesStatus([], true)).toBe("No usages");
+    expect(usagesStatus([usage], true)).toBe("1 usage");
   });
 
   it("recognises source files", () => {

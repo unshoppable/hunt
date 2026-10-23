@@ -133,7 +133,8 @@ pub struct LspServer {
     pid: Option<u32>,
     /// Owned until the reader task reaps the process; everyone else only signals it.
     child: Mutex<Option<Child>>,
-    stdin: tokio::sync::Mutex<ChildStdin>,
+    /// Frames for `write_loop`, which writes them to stdin in order; queueing never waits for the server to read.
+    outbox: UnboundedSender<Vec<u8>>,
     next_id: AtomicI64,
     /// Requests awaiting their response; `None` once the process ended, so late requests fail at once.
     pending: Mutex<Option<Pending>>,
@@ -165,13 +166,15 @@ impl LspServer {
             .map_err(|error| format!("failed to start {}: {error}", launch.program.display()))?;
         let stdin = child.stdin.take().ok_or("language server stdin is not available")?;
         let stdout = child.stdout.take().ok_or("language server stdout is not available")?;
+        let (outbox, frames) = unbounded_channel();
+        tokio::spawn(write_loop(stdin, frames));
 
         let server = Arc::new(Self {
             worktree,
             kind,
             pid: child.id(),
             child: Mutex::new(Some(child)),
-            stdin: tokio::sync::Mutex::new(stdin),
+            outbox,
             next_id: AtomicI64::new(1),
             pending: Mutex::new(Some(HashMap::new())),
             tokens: Mutex::default(),
@@ -210,7 +213,7 @@ impl LspServer {
     /// Sends a notification once the handshake is done.
     pub async fn notify(&self, method: &str, params: Value) -> Result<(), String> {
         self.ensure_ready().await?;
-        self.write(&message(None, method, params)).await
+        self.write(&message(None, method, params))
     }
 
     /// Sends `$/cancelRequest` for the request registered under `token`; a no-op for unknown or answered requests.
@@ -222,7 +225,7 @@ impl LspServer {
         if !is_pending {
             return Ok(());
         }
-        self.write(&message(None, "$/cancelRequest", json!({ "id": id }))).await
+        self.write(&message(None, "$/cancelRequest", json!({ "id": id })))
     }
 
     /// Kills the process and waits (bounded) until it was reaped.
@@ -234,7 +237,7 @@ impl LspServer {
     /// Asks the server to end with `shutdown` and `exit`, each bounded, then kills whatever is still running.
     pub async fn shutdown(&self) {
         let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, self.send_request("shutdown", Value::Null, None)).await;
-        let _ = self.write(&message(None, "exit", Value::Null)).await;
+        let _ = self.write(&message(None, "exit", Value::Null));
         if tokio::time::timeout(SHUTDOWN_TIMEOUT, self.wait_exited()).await.is_err() {
             self.stop().await;
         }
@@ -299,9 +302,9 @@ impl LspServer {
             }
         });
         self.send_request("initialize", params, None).await?;
-        self.write(&message(None, "initialized", json!({}))).await?;
+        self.write(&message(None, "initialized", json!({})))?;
         let settings = json!({ "settings": *SETTINGS });
-        self.write(&message(None, "workspace/didChangeConfiguration", settings)).await
+        self.write(&message(None, "workspace/didChangeConfiguration", settings))
     }
 
     async fn send_request(&self, method: &str, params: Value, token: Option<String>) -> Result<Value, String> {
@@ -318,7 +321,7 @@ impl LspServer {
             self.tokens.lock().unwrap().insert(token.clone(), id);
         }
 
-        let outcome = match self.write(&message(Some(id), method, params)).await {
+        let outcome = match self.write(&message(Some(id), method, params)) {
             Ok(()) => receiver.await.unwrap_or_else(|_| Err(EXITED.into())),
             Err(error) => {
                 if let Some(pending) = self.pending.lock().unwrap().as_mut() {
@@ -336,17 +339,13 @@ impl LspServer {
         outcome
     }
 
-    /// Writes one framed message; the lock keeps frames of concurrent senders apart.
-    async fn write(&self, message: &Value) -> Result<(), String> {
+    /// Queues one framed message for `write_loop`, so a server that is busy and not reading its stdin holds up neither
+    /// the caller nor the document lock it may hold; fails once the process takes no more input.
+    fn write(&self, message: &Value) -> Result<(), String> {
         let body = serde_json::to_vec(message).map_err(|error| error.to_string())?;
-        let header = format!("Content-Length: {}\r\n\r\n", body.len());
-        let mut stdin = self.stdin.lock().await;
-        let written = async {
-            stdin.write_all(header.as_bytes()).await?;
-            stdin.write_all(&body).await?;
-            stdin.flush().await
-        };
-        written.await.map_err(|error| format!("language server write failed: {error}"))
+        let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+        frame.extend_from_slice(&body);
+        self.outbox.send(frame).map_err(|_| EXITED.to_string())
     }
 
     /// Routes one incoming message: answers server requests, forwards notifications, completes responses.
@@ -361,7 +360,7 @@ impl LspServer {
             (Some(Value::String(method)), Some(id)) => {
                 self.update_file_watchers(&method, &params);
                 let result = answer_server_request(&method, &params);
-                let _ = self.write(&json!({ "jsonrpc": "2.0", "id": id, "result": result })).await;
+                let _ = self.write(&json!({ "jsonrpc": "2.0", "id": id, "result": result }));
             }
             (Some(Value::String(method)), None) => {
                 if method != "textDocument/publishDiagnostics" {
@@ -462,6 +461,21 @@ async fn read_loop(server: Arc<LspServer>, mut stdout: ChildStdout, events: Arc<
         }
     }
     server.finish(events.as_ref()).await;
+}
+
+/// Writes the queued frames to stdin in order until the server is dropped or a write fails; `read_loop` reports the
+/// end of the process.
+async fn write_loop(mut stdin: ChildStdin, mut frames: UnboundedReceiver<Vec<u8>>) {
+    while let Some(frame) = frames.recv().await {
+        let written = async {
+            stdin.write_all(&frame).await?;
+            stdin.flush().await
+        };
+        if let Err(error) = written.await {
+            eprintln!("failed to write to the language server: {error}");
+            return;
+        }
+    }
 }
 
 /// A glob the server registered with `workspace/didChangeWatchedFiles`: the changes below `base` (lowercased) whose
@@ -1025,6 +1039,22 @@ mod tests {
     fn start_typescript(worktree: &Path) -> Arc<LspServer> {
         let launch = Launch::typescript(worktree).unwrap();
         LspServer::start(worktree.to_path_buf(), ServerKind::Typescript, launch, Arc::new(Silent)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn writes_never_wait_for_a_server_that_does_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = Launch { program: "sleep".into(), args: vec!["30".into()] };
+        let server = LspServer::start(dir.path().to_path_buf(), ServerKind::Typescript, launch, Arc::new(Silent)).unwrap();
+        // Far more than the 64 KB a pipe holds, so a write that waits for the reader would never return.
+        let open = json!({ "textDocument": { "uri": "file:///a.ts", "languageId": "typescript", "version": 1, "text": "x".repeat(1 << 20) } });
+
+        let started = std::time::Instant::now();
+        for _ in 0..4 {
+            server.write(&message(None, "textDocument/didOpen", open.clone())).unwrap();
+        }
+        assert!(started.elapsed() < Duration::from_secs(1), "writes took {:?}", started.elapsed());
+        server.stop().await;
     }
 
     #[test]

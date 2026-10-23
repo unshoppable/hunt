@@ -180,6 +180,11 @@ export function sortUsages(usages: Usage[]): Usage[] {
   return [...usages].sort((left, right) => left.path.localeCompare(right.path) || left.line - right.line || left.column - right.column);
 }
 
+/** Identifies a usage across updates of the list: its file and start position. */
+export function usageKey(usage: Usage): string {
+  return `${usage.path}:${usage.line}:${usage.column}`;
+}
+
 /** `index` moved by `delta` rows, stopping at the first and last row. */
 export function stepSelection(index: number, delta: number, count: number): number {
   if (!count) return -1;
@@ -218,4 +223,11 @@ export function kindLabel(kind: string): string {
 export function usageCountLabel(count: number): string {
   if (!count) return "No usages";
   return `${count} ${count === 1 ? "usage" : "usages"}`;
+}
+
+/** The popup header's status: `null` usages while the search runs, an incomplete list while the templates are searched. */
+export function usagesStatus(usages: readonly Usage[] | null, isComplete: boolean): string {
+  if (!usages) return "Searching…";
+  if (isComplete) return usageCountLabel(usages.length);
+  return usages.length ? `${usageCountLabel(usages.length)}, searching templates…` : "Searching templates…";
 }

@@ -18,7 +18,7 @@ import { usePopupSize } from "../ui/usePopupSize";
 import type { Workspace } from "./documents";
 import { KindIcon } from "./KindIcon";
 import type { Declaration } from "./languageService";
-import { kindLabel, sliceRuns, stepSelection, usageCountLabel, type Usage } from "./usages";
+import { kindLabel, sliceRuns, stepSelection, usageKey, usagesStatus, type Usage } from "./usages";
 
 /** Space the popup keeps from the overlay's edges. */
 const EDGE_GAP = 4;
@@ -33,6 +33,8 @@ export type UsagesQuery = {
   /** The ⌘clicked position; the popup opens below its line. */
   anchor: monaco.IPosition;
   usages: Usage[] | null;
+  /** False while the Angular language server may still add usages in templates (see `findUsages`). */
+  isComplete: boolean;
 };
 
 type UsagesPopoverProps = {
@@ -71,9 +73,11 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
   const overlay = useMemo(() => overlayOf(editor), [editor]);
   const [{ anchor, viewport }, setPlacement] = useState(() => placementOf(editor, overlay, query.anchor));
   const [offset, setOffset] = useState<Offset>({ x: 0, y: 0 });
-  const [selected, setSelected] = useState(0);
+  /** The picked row by `usageKey`, so it stays selected when template usages are added; the first row until one is picked. */
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [showPreview, setShowPreview] = useState(true);
   const usages = query.usages;
+  const selected = Math.max(0, usages?.findIndex((usage) => usageKey(usage) === selectedKey) ?? 0);
   const selectedUsage = usages?.[selected] ?? null;
   const fileIconUrl = useFileIconUrl();
   const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
@@ -110,7 +114,7 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.defaultPrevented || !usages?.length) return;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      setSelected(stepSelection(selected, event.key === "ArrowDown" ? 1 : -1, usages?.length ?? 0));
+      setSelectedKey(usageKey(usages[stepSelection(selected, event.key === "ArrowDown" ? 1 : -1, usages.length)]));
     } else if (event.key === "Enter" && usages?.[selected]) {
       onOpen(usages[selected]);
     } else {
@@ -179,23 +183,23 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
 
   const list = (
     <div ref={listRef} role="listbox" aria-label={`Usages of ${declaration.name}`} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden text-[14px]">
-      {!usages ? (
+      {!usages?.length && !query.isComplete ? (
         <p className="flex items-center px-3 text-neutral-500" style={{ height: ROW_HEIGHT }}>
           Searching the worktree for usages of {declaration.name}…
         </p>
       ) : null}
-      {usages && !usages.length ? (
+      {usages && !usages.length && query.isComplete ? (
         <p className="flex items-center px-3 text-neutral-500" style={{ height: ROW_HEIGHT }}>
           No usages of {declaration.name} found.
         </p>
       ) : null}
       {usages?.map((usage, index) => (
         <UsageRow
-          key={`${usage.path}:${usage.line}:${usage.column}`}
+          key={usageKey(usage)}
           usage={usage}
           language={workspace.get(usage.path)?.model.getLanguageId() ?? monacoLanguage(usage.path)}
           isSelected={index === selected}
-          onSelect={() => setSelected(index)}
+          onSelect={() => setSelectedKey(usageKey(usage))}
           onOpen={() => onOpen(usage)}
         />
       ))}
@@ -223,7 +227,7 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
             ({scope})
           </span>
         </span>
-        <span className="ml-auto shrink-0 text-neutral-400">{usages ? usageCountLabel(usages.length) : "Searching…"}</span>
+        <span className="ml-auto shrink-0 text-neutral-400">{usagesStatus(usages, query.isComplete)}</span>
         <ToolbarButton title="Open declaration in WebStorm" onClick={openInWebstorm}>
           <ExternalIcon className="size-4" />
         </ToolbarButton>

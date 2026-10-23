@@ -167,14 +167,15 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
             }
             const path = current.pathOf(model.uri);
             if (!path) return;
-            const query: UsagesQuery = { declaration: navigation.declaration, path, anchor: position, usages: null };
+            const query: UsagesQuery = { declaration: navigation.declaration, path, anchor: position, usages: null, isComplete: false };
+            const isShown = (shown: UsagesQuery | null) => shown?.declaration === query.declaration;
             setUsagesQuery(query);
-            findUsages(current, model, position)
-              .then((usages) => setUsagesQuery((shown) => (shown === query ? { ...query, usages } : shown)))
-              .catch((reason) => {
-                setUsagesQuery((shown) => (shown === query ? null : shown));
-                setError(String(reason));
-              });
+            findUsages(current, model, position, (usages, isComplete) =>
+              setUsagesQuery((shown) => (isShown(shown) ? { ...query, usages, isComplete } : shown)),
+            ).catch((reason) => {
+              setUsagesQuery((shown) => (isShown(shown) ? null : shown));
+              setError(String(reason));
+            });
           })
           .catch(() => {});
       },

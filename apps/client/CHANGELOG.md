@@ -1,3 +1,14 @@
+## 0.97.0 (2026-10-23)
+
+### 🚀 Features
+
+- **client:** the pull request list shows the pull requests it listed last at once and a spinner while it asks GitHub again ([8201518](https://github.com/unshoppable/hunt/commit/8201518))
+- **client:** show usages and rename reach Angular templates through the Angular language server ([c5eb5cc](https://github.com/unshoppable/hunt/commit/c5eb5cc))
+
+### 🩹 Fixes
+
+- **client:** the pull request list keeps "You approved" after a later comment review ([a5aa3d6](https://github.com/unshoppable/hunt/commit/a5aa3d6))
+
 ## 0.96.3 (2026-10-23)
 
 ### 🩹 Fixes

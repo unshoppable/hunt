@@ -1,3 +1,9 @@
+## 0.100.0 (2026-10-23)
+
+### 🚀 Features
+
+- **client:** the diagram status badge shows how long ago the diagram was generated ([6484bb4](https://github.com/unshoppable/hunt/commit/6484bb4))
+
 ## 0.99.0 (2026-10-23)
 
 ### 🚀 Features

@@ -450,7 +450,7 @@ type ZoneFrameProps = {
 function ZoneFrame({ avatar, label, hint, actions, children }: ZoneFrameProps) {
   return (
     <div className="py-1.5 pr-3" style={{ paddingLeft: "var(--zone-content-left)" }}>
-      <div className="overflow-hidden rounded-lg border border-(--line) bg-(--surface-inset) text-[13px] leading-[1.5] text-neutral-200 shadow-md">
+      <div className="overflow-hidden rounded-lg border border-(--line) bg-(--surface-inset) text-[14px] leading-[1.5] text-neutral-200 shadow-md">
         <div className={`flex min-h-9 items-center gap-2 bg-white/4 px-3 py-1 text-[12px] text-neutral-400${children ? " border-b border-(--line)" : ""}`}>
           {avatar}
           <span className="shrink-0 font-mono text-neutral-300">{label}</span>

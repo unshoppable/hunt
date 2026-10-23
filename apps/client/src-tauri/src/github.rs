@@ -135,6 +135,8 @@ struct GqlPullRequest {
     labels: GqlNodes<Label>,
     /// The latest review of each reviewer.
     latest_reviews: GqlNodes<GqlLatestReview>,
+    /// The latest approval, change request or dismissed review of each reviewer; a later comment review leaves it.
+    latest_opinionated_reviews: GqlNodes<GqlLatestReview>,
     review_requests: GqlNodes<GqlReviewRequest>,
     /// Only the head commit is asked for.
     commits: GqlNodes<GqlCommitNode>,
@@ -430,6 +432,7 @@ const LIST_QUERY: &str = r#"query($owner: String!, $name: String!) {
         additions deletions changedFiles totalCommentsCount reviewDecision
         labels(first: 20) { nodes { name color } }
         latestReviews(first: 100) { nodes { author { login } state } }
+        latestOpinionatedReviews(first: 100) { nodes { author { login } state } }
         reviewRequests(first: 100) { nodes { requestedReviewer { ... on User { login } } } }
         commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
           ... on CheckRun { status conclusion }
@@ -982,8 +985,9 @@ fn flatten_pull_request(pull_request: GqlPullRequest, viewer: &str) -> PullReque
     }
 }
 
-/// The signed-in user's part in the review: an outstanding request, else the verdict of their latest review. A
-/// dismissed or pending review counts as none.
+/// The signed-in user's part in the review: an outstanding request, else their latest approval or change request,
+/// else a comment review. A comment review after an approval keeps the approval, like GitHub's list; a dismissed or
+/// pending review counts as none.
 fn viewer_review(pull_request: &GqlPullRequest, viewer: &str) -> Option<ViewerReview> {
     let is_requested = pull_request
         .review_requests
@@ -993,17 +997,20 @@ fn viewer_review(pull_request: &GqlPullRequest, viewer: &str) -> Option<ViewerRe
     if is_requested {
         return Some(ViewerReview::Requested);
     }
-    let review = pull_request
-        .latest_reviews
+    match review_state(&pull_request.latest_opinionated_reviews, viewer) {
+        Some("APPROVED") => Some(ViewerReview::Approved),
+        Some("CHANGES_REQUESTED") => Some(ViewerReview::ChangesRequested),
+        _ => (review_state(&pull_request.latest_reviews, viewer) == Some("COMMENTED")).then_some(ViewerReview::Commented),
+    }
+}
+
+/// The state of `author`'s review among `reviews`; `None` when they wrote none.
+fn review_state<'a>(reviews: &'a GqlNodes<GqlLatestReview>, author: &str) -> Option<&'a str> {
+    reviews
         .nodes
         .iter()
-        .find(|review| review.author.as_ref().map(|author| author.login.as_str()) == Some(viewer))?;
-    match review.state.as_str() {
-        "APPROVED" => Some(ViewerReview::Approved),
-        "CHANGES_REQUESTED" => Some(ViewerReview::ChangesRequested),
-        "COMMENTED" => Some(ViewerReview::Commented),
-        _ => None,
-    }
+        .find(|review| review.author.as_ref().map(|review_author| review_author.login.as_str()) == Some(author))
+        .map(|review| review.state.as_str())
 }
 
 /// Buckets the checks of a commit by outcome the way GitHub's rollup does: a neutral or skipped run counts as
@@ -1166,16 +1173,16 @@ mod tests {
         assert_eq!(back.reply_to, Some(ReplyTarget::Draft(parent)));
     }
 
-    /// A list response with one pull request as seen by `viewer`; `latest_reviews` and `review_requests` are the
-    /// nodes of the respective connections.
-    fn list_json(viewer: &str, latest_reviews: &str, review_requests: &str) -> Vec<u8> {
+    /// A list response with one pull request as seen by `viewer`; `latest_reviews`, `opinionated_reviews` and
+    /// `review_requests` are the nodes of the respective connections.
+    fn list_json(viewer: &str, latest_reviews: &str, opinionated_reviews: &str, review_requests: &str) -> Vec<u8> {
         format!(
             r#"{{"data":{{"viewer":{{"login":"{viewer}"}},"repository":{{"pullRequests":{{"nodes":[{{
                 "number":261,"title":"export all reports","url":"https://github.com/o/r/pull/261","isDraft":false,
                 "createdAt":"2026-09-01T08:00:00Z","updatedAt":"2026-09-11T12:56:54Z","headRefName":"fixes/csv-export",
                 "baseRefName":"main","body":null,"author":{{"login":"alice"}},"additions":10,"deletions":2,"changedFiles":3,
                 "totalCommentsCount":11,"reviewDecision":null,"labels":{{"nodes":[]}},"latestReviews":{{"nodes":[{latest_reviews}]}},
-                "reviewRequests":{{"nodes":[{review_requests}]}},"commits":{{"nodes":[{{"commit":{{"statusCheckRollup":null}}}}]}}
+                "latestOpinionatedReviews":{{"nodes":[{opinionated_reviews}]}},"reviewRequests":{{"nodes":[{review_requests}]}},"commits":{{"nodes":[{{"commit":{{"statusCheckRollup":null}}}}]}}
             }}]}}}}}}}}"#
         )
         .into_bytes()
@@ -1191,6 +1198,7 @@ mod tests {
              "additions":562,"deletions":291,"changedFiles":13,"totalCommentsCount":11,"reviewDecision":"APPROVED",
              "labels":{"nodes":[{"name":"bug","color":"d73a4a"}]},
              "latestReviews":{"nodes":[{"author":{"login":"carol"},"state":"APPROVED"}]},
+             "latestOpinionatedReviews":{"nodes":[{"author":{"login":"carol"},"state":"APPROVED"}]},
              "reviewRequests":{"nodes":[{"requestedReviewer":{"login":"bob"}},{"requestedReviewer":{}}]},
              "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
                {"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":"SKIPPED"},
@@ -1199,7 +1207,7 @@ mod tests {
             {"number":258,"title":"Feat/hyphens","url":"https://github.com/o/r/pull/258","isDraft":true,
              "createdAt":"2026-07-01T08:00:00Z","updatedAt":"2026-07-13T21:08:33Z","headRefName":"feat/hyphens","baseRefName":"develop",
              "body":"","author":null,"additions":0,"deletions":0,"changedFiles":0,"totalCommentsCount":0,"reviewDecision":"",
-             "labels":{"nodes":[]},"latestReviews":{"nodes":[]},"reviewRequests":{"nodes":[]},
+             "labels":{"nodes":[]},"latestReviews":{"nodes":[]},"latestOpinionatedReviews":{"nodes":[]},"reviewRequests":{"nodes":[]},
              "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}
         ]}}}}"#;
         let pull_requests = parse_pull_requests(json).unwrap();
@@ -1231,18 +1239,32 @@ mod tests {
 
     #[test]
     fn viewer_review_prefers_an_outstanding_request_over_an_earlier_review() {
-        let viewer_review = |latest_reviews: &str, review_requests: &str| {
-            parse_pull_requests(&list_json("carol", latest_reviews, review_requests)).unwrap()[0].viewer_review
+        let viewer_review = |latest_reviews: &str, opinionated_reviews: &str, review_requests: &str| {
+            parse_pull_requests(&list_json("carol", latest_reviews, opinionated_reviews, review_requests)).unwrap()[0].viewer_review
         };
         let commented = r#"{"author":{"login":"carol"},"state":"COMMENTED"}"#;
-        assert_eq!(viewer_review(commented, r#"{"requestedReviewer":{"login":"carol"}}"#), Some(ViewerReview::Requested));
+        let approved = r#"{"author":{"login":"carol"},"state":"APPROVED"}"#;
+        assert_eq!(viewer_review(commented, approved, r#"{"requestedReviewer":{"login":"carol"}}"#), Some(ViewerReview::Requested));
         let other_requests = r#"{"requestedReviewer":{"login":"bob"}},{"requestedReviewer":{}}"#;
-        assert_eq!(viewer_review(commented, other_requests), Some(ViewerReview::Commented));
+        assert_eq!(viewer_review(commented, "", other_requests), Some(ViewerReview::Commented));
         let changes = r#"{"author":{"login":"carol"},"state":"CHANGES_REQUESTED"}"#;
-        assert_eq!(viewer_review(changes, ""), Some(ViewerReview::ChangesRequested));
-        assert_eq!(viewer_review(r#"{"author":{"login":"carol"},"state":"DISMISSED"}"#, ""), None);
-        assert_eq!(viewer_review(r#"{"author":{"login":"bob"},"state":"APPROVED"}"#, ""), None);
-        assert_eq!(viewer_review("", ""), None);
+        assert_eq!(viewer_review(changes, changes, ""), Some(ViewerReview::ChangesRequested));
+        let dismissed = r#"{"author":{"login":"carol"},"state":"DISMISSED"}"#;
+        assert_eq!(viewer_review(dismissed, dismissed, ""), None);
+        let approved_by_bob = r#"{"author":{"login":"bob"},"state":"APPROVED"}"#;
+        assert_eq!(viewer_review(approved_by_bob, approved_by_bob, ""), None);
+        assert_eq!(viewer_review("", "", ""), None);
+    }
+
+    #[test]
+    fn viewer_review_keeps_an_approval_that_a_later_comment_review_follows() {
+        let commented = r#"{"author":{"login":"carol"},"state":"COMMENTED"}"#;
+        let approved = r#"{"author":{"login":"carol"},"state":"APPROVED"}"#;
+        let pull_requests = parse_pull_requests(&list_json("carol", commented, approved, "")).unwrap();
+        assert_eq!(pull_requests[0].viewer_review, Some(ViewerReview::Approved));
+        let dismissed = r#"{"author":{"login":"carol"},"state":"DISMISSED"}"#;
+        let pull_requests = parse_pull_requests(&list_json("carol", commented, dismissed, "")).unwrap();
+        assert_eq!(pull_requests[0].viewer_review, Some(ViewerReview::Commented));
     }
 
     #[test]

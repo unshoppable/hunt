@@ -20,6 +20,8 @@ pub struct PullRequest {
     pub title: String,
     /// GitHub login of the author; `ghost` for a deleted account.
     pub author: String,
+    /// The author's avatar image; empty for a deleted account.
+    pub author_avatar_url: String,
     /// Branch the pull request merges from, as named on GitHub (without a remote prefix).
     pub head_ref_name: String,
     /// Branch the pull request merges into, as named on GitHub (without a remote prefix).
@@ -124,7 +126,7 @@ struct GqlPullRequest {
     body: Option<String>,
     /// `null` for a deleted account.
     #[serde(default)]
-    author: Option<GhAuthor>,
+    author: Option<GqlActor>,
     additions: u64,
     deletions: u64,
     changed_files: u64,
@@ -428,7 +430,7 @@ const LIST_QUERY: &str = r#"query($owner: String!, $name: String!) {
     pullRequests(states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
       nodes {
         number title url isDraft createdAt updatedAt headRefName baseRefName body
-        author { login }
+        author { login avatarUrl(size: 64) }
         additions deletions changedFiles totalCommentsCount reviewDecision
         labels(first: 20) { nodes { name color } }
         latestReviews(first: 100) { nodes { author { login } state } }
@@ -963,10 +965,13 @@ fn flatten_pull_request(pull_request: GqlPullRequest, viewer: &str) -> PullReque
         .first()
         .and_then(|node| node.commit.status_check_rollup.as_ref())
         .and_then(|rollup| summarize_checks(&rollup.contexts.nodes));
+    let (author, author_avatar_url) =
+        pull_request.author.map_or_else(|| ("ghost".to_string(), String::new()), |actor| (actor.login, actor.avatar_url));
     PullRequest {
         number: pull_request.number,
         title: pull_request.title,
-        author: pull_request.author.map(|author| author.login).unwrap_or_else(|| "ghost".to_string()),
+        author,
+        author_avatar_url,
         head_ref_name: pull_request.head_ref_name,
         base_ref_name: pull_request.base_ref_name,
         is_draft: pull_request.is_draft,
@@ -1180,7 +1185,7 @@ mod tests {
             r#"{{"data":{{"viewer":{{"login":"{viewer}"}},"repository":{{"pullRequests":{{"nodes":[{{
                 "number":261,"title":"export all reports","url":"https://github.com/o/r/pull/261","isDraft":false,
                 "createdAt":"2026-09-01T08:00:00Z","updatedAt":"2026-09-11T12:56:54Z","headRefName":"fixes/csv-export",
-                "baseRefName":"main","body":null,"author":{{"login":"alice"}},"additions":10,"deletions":2,"changedFiles":3,
+                "baseRefName":"main","body":null,"author":{{"login":"alice","avatarUrl":""}},"additions":10,"deletions":2,"changedFiles":3,
                 "totalCommentsCount":11,"reviewDecision":null,"labels":{{"nodes":[]}},"latestReviews":{{"nodes":[{latest_reviews}]}},
                 "latestOpinionatedReviews":{{"nodes":[{opinionated_reviews}]}},"reviewRequests":{{"nodes":[{review_requests}]}},"commits":{{"nodes":[{{"commit":{{"statusCheckRollup":null}}}}]}}
             }}]}}}}}}}}"#
@@ -1194,7 +1199,8 @@ mod tests {
             {"number":261,"title":"export all reports","url":"https://github.com/o/r/pull/261","isDraft":false,
              "createdAt":"2026-09-01T08:00:00Z","updatedAt":"2026-09-11T12:56:54Z",
              "headRefName":"fixes/csv-export","baseRefName":"main",
-             "body":"- [x] export\n- [ ] import\n1. [ ] docs\n-[ ] not a task\n- [ ]neither","author":{"login":"alice"},
+             "body":"- [x] export\n- [ ] import\n1. [ ] docs\n-[ ] not a task\n- [ ]neither",
+             "author":{"login":"alice","avatarUrl":"https://avatars.githubusercontent.com/u/1?s=64"},
              "additions":562,"deletions":291,"changedFiles":13,"totalCommentsCount":11,"reviewDecision":"APPROVED",
              "labels":{"nodes":[{"name":"bug","color":"d73a4a"}]},
              "latestReviews":{"nodes":[{"author":{"login":"carol"},"state":"APPROVED"}]},
@@ -1215,6 +1221,7 @@ mod tests {
         let first = &pull_requests[0];
         assert_eq!(first.number, 261);
         assert_eq!(first.author, "alice");
+        assert_eq!(first.author_avatar_url, "https://avatars.githubusercontent.com/u/1?s=64");
         assert_eq!(first.head_ref_name, "fixes/csv-export");
         assert_eq!(first.base_ref_name, "main");
         assert!(!first.is_draft);
@@ -1230,6 +1237,7 @@ mod tests {
         assert_eq!(second.number, 258);
         assert!(second.is_draft);
         assert_eq!(second.author, "ghost");
+        assert_eq!(second.author_avatar_url, "");
         assert_eq!(second.url, "https://github.com/o/r/pull/258");
         assert_eq!(second.review_decision, None);
         assert_eq!(second.viewer_review, None);

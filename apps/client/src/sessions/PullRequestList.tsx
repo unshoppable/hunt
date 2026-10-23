@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { commands } from "../ipc/commands";
 import type { CheckSummary, PullRequest, PullRequestLabel, ViewerReview } from "../ipc/types";
 import { formatRelativeTime } from "../chat/ScreenshotPicker";
+import { Avatar } from "../review/Avatar";
 import { SECONDARY, SURFACE_BUTTON_XS } from "../ui/buttons";
 import { Chip } from "../ui/Chip";
 import { Dropdown } from "../ui/Dropdown";
@@ -48,7 +49,8 @@ const chosenFilters = new Map<string, PullRequestFilter>();
 
 /**
  * The repository's open pull requests, filling the chat pane in place of the start view, filtered by a search box
- * like the session sidebar's and, below it, by author, by the signed-in user's review state and by hiding drafts. Each row carries the metadata GitHub's own list shows (labels, review state, tasks,
+ * like the session sidebar's and, below it, by author, by the signed-in user's review state and by hiding drafts.
+ * Each row starts with the author's avatar, carries the metadata GitHub's own list shows (labels, review state, tasks,
  * checks, comments) and marks whether the signed-in user already reviewed it. Loads once when shown; until then it
  * shows what the repository listed last with a spinner beside the search box. A row hands its pull request to
  * `onSelect`, the arrow at its end opens it on GitHub. Mount it with `key={repoPath}`: its state belongs to one repository.
@@ -138,21 +140,24 @@ export function PullRequestList({ repoPath, onSelect, onClose }: PullRequestList
       {rows.map((pullRequest) => (
         <li key={pullRequest.number}>
           <div className="group flex items-center rounded-lg transition-colors hover:bg-(--row-hover)">
-            <button type="button" onClick={() => onSelect(pullRequest)} className="flex min-w-0 flex-1 flex-col items-start gap-0.5 overflow-hidden py-2 pr-1 pl-3 text-left">
-              <span className="flex w-full items-center gap-1.5">
-                <span className="min-w-0 flex-1 truncate font-medium text-neutral-100">{pullRequest.title}</span>
-                {pullRequest.labels.map((label) => (
-                  <LabelChip key={label.name} label={label} />
-                ))}
-                {pullRequest.isDraft ? <Chip className="border-white/10 text-neutral-400">Draft</Chip> : null}
-                {pullRequest.viewerReview ? (
-                  <Chip className={VIEWER_REVIEW_CHIPS[pullRequest.viewerReview].className}>
-                    {VIEWER_REVIEW_CHIPS[pullRequest.viewerReview].icon}
-                    {VIEWER_REVIEW_CHIPS[pullRequest.viewerReview].label}
-                  </Chip>
-                ) : null}
+            <button type="button" onClick={() => onSelect(pullRequest)} className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden py-2 pr-1 pl-3 text-left">
+              <Avatar login={pullRequest.author} url={pullRequest.authorAvatarUrl} size="size-8" />
+              <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
+                <span className="flex w-full items-center gap-1.5">
+                  <span className="min-w-0 flex-1 truncate font-medium text-neutral-100">{pullRequest.title}</span>
+                  {pullRequest.labels.map((label) => (
+                    <LabelChip key={label.name} label={label} />
+                  ))}
+                  {pullRequest.isDraft ? <Chip className="border-white/10 text-neutral-400">Draft</Chip> : null}
+                  {pullRequest.viewerReview ? (
+                    <Chip className={VIEWER_REVIEW_CHIPS[pullRequest.viewerReview].className}>
+                      {VIEWER_REVIEW_CHIPS[pullRequest.viewerReview].icon}
+                      {VIEWER_REVIEW_CHIPS[pullRequest.viewerReview].label}
+                    </Chip>
+                  ) : null}
+                </span>
+                <MetaLine pullRequest={pullRequest} />
               </span>
-              <MetaLine pullRequest={pullRequest} />
             </button>
             <button
               type="button"

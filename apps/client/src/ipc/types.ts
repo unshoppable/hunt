@@ -396,6 +396,8 @@ export type PullRequest = {
   title: string;
   /** GitHub login of the author; `ghost` for a deleted account. */
   author: string;
+  /** The author's avatar image; empty for a deleted account. */
+  authorAvatarUrl: string;
   /** Branch the pull request merges from, as named on GitHub (without a remote prefix). */
   headRefName: string;
   /** Branch the pull request merges into, as named on GitHub (without a remote prefix). */

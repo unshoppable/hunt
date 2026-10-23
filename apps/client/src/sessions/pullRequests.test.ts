@@ -7,6 +7,7 @@ function pullRequest(number: number, title: string, author: string, headRefName:
     number,
     title,
     author,
+    authorAvatarUrl: "",
     headRefName,
     baseRefName: "main",
     isDraft: false,

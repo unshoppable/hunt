@@ -1,10 +1,11 @@
 import * as monaco from "monaco-editor";
 import { selectedLineSpan } from "../diff/selectionContext";
 import type { LineSpan } from "./reviewComments";
+import { SpanLine } from "./spanLine";
 
 const GLYPH_CLASS = "harness-review-add";
-/** Line in the glyph margin that joins the two "+" of a drag across the lines between them. */
-const LINK_CLASS = "harness-review-link";
+/** Edge length of the "+" square (see `.harness-review-add::before` in index.css). */
+const PLUS_SIZE = 18;
 export const RANGE_CLASS = "harness-review-range";
 
 /** Mouse targets that name a line of the model (text, its empty tail and the gutter cells), unlike zones and widgets. */
@@ -32,24 +33,25 @@ type Drag = {
   clientX: number;
 };
 
-/**
- * Whole-line decoration marking the lines `startLine..line` as GitHub does: yellow tint over gutter and text and a
- * bar at the text's left edge, blue where the comment is posted inline (`isInline`), grey where it becomes a note.
- */
-export function rangeDecoration(span: LineSpan, isInline: boolean): monaco.editor.IModelDeltaDecoration {
-  const className = isInline ? RANGE_CLASS : `${RANGE_CLASS} ${RANGE_CLASS}--note`;
+/** Whole-line decoration giving the lines `startLine..line` GitHub's yellow tint over gutter and text. */
+export function rangeDecoration(span: LineSpan): monaco.editor.IModelDeltaDecoration {
   return {
     range: { startLineNumber: span.startLine, startColumn: 1, endLineNumber: span.line, endColumn: 1 },
-    options: { isWholeLine: true, className, marginClassName: RANGE_CLASS, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
+    options: { isWholeLine: true, className: RANGE_CLASS, marginClassName: RANGE_CLASS, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
   };
+}
+
+/** GitHub's bar at the text's left edge beside the lines `rangeDecoration` tints; `show` it with the span. */
+export function rangeBar(editor: monaco.editor.ICodeEditor): SpanLine {
+  return new SpanLine(editor, (layoutInfo) => layoutInfo.contentLeft);
 }
 
 /**
  * GitHub's "+" on the hovered line of a pull request review, in the glyph margin left of the line numbers: blue
  * where a comment is posted inline (`isInline`), grey where it becomes a note in the review summary. A click reports the line, or the selected lines when the selection spans
  * several and holds the clicked one; dragging the "+" over other lines reports the dragged range, marked while the
- * drag lasts with a "+" at both ends, joined by a line in the glyph margin. The reported target's box opens under the
- * line the "+" was released on.
+ * drag lasts with a "+" at both ends joined by a line in the glyph margin, both running across the view zones between
+ * them. The reported target's box opens under the line the "+" was released on.
  */
 export class AddCommentGlyph {
   private readonly decorations: monaco.editor.IEditorDecorationsCollection;
@@ -58,6 +60,10 @@ export class AddCommentGlyph {
   /** Line the "+" is shown on. */
   private shownLine: number | null = null;
   private drag: Drag | null = null;
+  /** Bar beside the dragged lines. */
+  private readonly bar: SpanLine;
+  /** Line in the glyph margin from the bottom of the upper "+" of a drag to the top of the lower one. */
+  private readonly link: SpanLine;
 
   /** The editor's container: unlike `getDomNode()` it exists before the first model is set. */
   private readonly domNode: HTMLElement;
@@ -70,6 +76,13 @@ export class AddCommentGlyph {
     private readonly isInline: (span: LineSpan) => boolean,
   ) {
     this.decorations = editor.createDecorationsCollection();
+    this.bar = rangeBar(editor);
+    // Runs from below the upper "+" square to above the lower one; each square is centred in its line.
+    this.link = new SpanLine(
+      editor,
+      (layoutInfo) => layoutInfo.glyphMarginLeft + layoutInfo.glyphMarginWidth / 2 - 1,
+      (lineHeight) => (lineHeight + Math.min(PLUS_SIZE, lineHeight)) / 2,
+    );
     // The press is caught in the capture phase, before Monaco's own listener moves the cursor or starts a selection.
     this.domNode = editor.getContainerDomNode();
     this.domNode.addEventListener("mousedown", this.onDomMouseDown, true);
@@ -109,6 +122,8 @@ export class AddCommentGlyph {
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
+    this.bar.dispose();
+    this.link.dispose();
     this.decorations.clear();
     this.clickListeners.clear();
   }
@@ -132,7 +147,17 @@ export class AddCommentGlyph {
       this.decorations.clear();
       return;
     }
-    this.decorations.set([plusDecoration(shownLine, this.isInline({ startLine: shownLine, line: shownLine }))]);
+    this.decorations.set([this.glyphDecoration(shownLine, this.isInline({ startLine: shownLine, line: shownLine }))]);
+  }
+
+  private glyphDecoration(line: number, isInline: boolean): monaco.editor.IModelDeltaDecoration {
+    return {
+      range: { startLineNumber: line, startColumn: 1, endLineNumber: line, endColumn: 1 },
+      options: {
+        glyphMarginClassName: isInline ? GLYPH_CLASS : `${GLYPH_CLASS} ${GLYPH_CLASS}--note`,
+        stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+      },
+    };
   }
 
   private readonly onDomMouseDown = (event: MouseEvent): void => {
@@ -189,22 +214,22 @@ export class AddCommentGlyph {
     const { anchor, current } = this.drag;
     const span = { startLine: Math.min(anchor, current), line: Math.max(anchor, current) };
     const isInline = this.isInline(span);
+    const glyphs = anchor === current ? [this.glyphDecoration(anchor, isInline)] : [this.glyphDecoration(anchor, isInline), this.glyphDecoration(current, isInline)];
+    this.decorations.set([rangeDecoration(span), ...glyphs]);
+    this.bar.show(span, isInline);
     if (anchor === current) {
-      this.decorations.set([rangeDecoration(span, isInline), plusDecoration(anchor, isInline)]);
-      return;
+      this.link.hide();
+    } else {
+      this.link.show(span, isInline);
     }
-    const decorations = [rangeDecoration(span, isInline), plusDecoration(span.startLine, isInline, "first"), plusDecoration(span.line, isInline, "last")];
-    if (span.line - span.startLine > 1) {
-      const between = { startLine: span.startLine + 1, line: span.line - 1 };
-      decorations.push(glyphMarginDecoration(between, isInline ? LINK_CLASS : `${LINK_CLASS} ${LINK_CLASS}--note`));
-    }
-    this.decorations.set(decorations);
   }
 
   /** Stops a running drag without reporting it; the hover glyph is restored on the next mouse move. */
   private endDrag(): void {
     if (!this.drag) return;
     this.drag = null;
+    this.bar.hide();
+    this.link.hide();
     window.removeEventListener("mousemove", this.onWindowMouseMove, true);
     window.removeEventListener("mouseup", this.onWindowMouseUp, true);
     window.removeEventListener("keydown", this.onWindowKeyDown, true);
@@ -220,21 +245,4 @@ export class AddCommentGlyph {
     if (endLine <= startLine || line < startLine || line > endLine) return { startLine: line, line };
     return { startLine, line: endLine };
   }
-}
-
-/**
- * The "+" on `line`, grey where the comment becomes a note (`isInline` false). At the `first` or `last` line of a drag
- * it also carries the half of the joining line that runs from its centre towards the other end.
- */
-function plusDecoration(line: number, isInline: boolean, end?: "first" | "last"): monaco.editor.IModelDeltaDecoration {
-  const classNames = [GLYPH_CLASS, ...(isInline ? [] : [`${GLYPH_CLASS}--note`]), ...(end ? [`${GLYPH_CLASS}--${end}`] : [])];
-  return glyphMarginDecoration({ startLine: line, line }, classNames.join(" "));
-}
-
-/** Glyph margin decoration giving every line of `span` the classes `className`. */
-function glyphMarginDecoration(span: LineSpan, className: string): monaco.editor.IModelDeltaDecoration {
-  return {
-    range: { startLineNumber: span.startLine, startColumn: 1, endLineNumber: span.line, endColumn: 1 },
-    options: { glyphMarginClassName: className, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
-  };
 }

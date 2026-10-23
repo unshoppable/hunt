@@ -445,14 +445,6 @@ body,
 /* "+" of a pull request review (see review/addCommentGlyph.ts): GitHub's blue square on the hovered line, in the
    glyph margin left of the line numbers, centred on the cell; grey when the comment lands in the review summary as
    a note instead of inline. */
-.monaco-editor .harness-review-add,
-.monaco-editor .harness-review-link {
-  --review-glyph-color: #2f81f7;
-}
-.monaco-editor .harness-review-add--note,
-.monaco-editor .harness-review-link--note {
-  --review-glyph-color: #6e7681;
-}
 .monaco-editor .harness-review-add {
   cursor: pointer;
   z-index: 3;
@@ -465,7 +457,7 @@ body,
   height: min(18px, 100%);
   margin: auto;
   border-radius: 4px;
-  background: var(--review-glyph-color);
+  background: #2f81f7;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
   transition: transform 120ms ease;
 }
@@ -482,17 +474,8 @@ body,
 .monaco-editor .harness-review-add:hover::before {
   transform: scale(1.1);
 }
-/* While the "+" is dragged, a vertical line joins the "+" at both ends of the range: from the first one's centre down,
-   through the lines between, into the last one's centre. */
-.monaco-editor .harness-review-link {
-  z-index: 3;
-  background: linear-gradient(var(--review-glyph-color) 0 0) center / 2px 100% no-repeat;
-}
-.monaco-editor .harness-review-add--first {
-  background: linear-gradient(var(--review-glyph-color) 0 0) center bottom / 2px 50% no-repeat;
-}
-.monaco-editor .harness-review-add--last {
-  background: linear-gradient(var(--review-glyph-color) 0 0) center top / 2px 50% no-repeat;
+.monaco-editor .harness-review-add--note::before {
+  background: #6e7681;
 }
 /* WebStorm's green run triangle on each script of a package.json (see ide/scriptRunMarkers.ts), centred in the glyph
    margin cell; a click runs the script. */
@@ -514,21 +497,25 @@ body,
   background: #5fb865;
   transform: scale(1.15);
 }
-/* Lines a review comment is being dragged over or written for: GitHub's yellow tint over gutter and text and a
-   bar at the text's left edge in the color of the "+" (blue inline, grey note), which the open comment box
-   continues (see review/ReviewCommentZones.tsx). */
+/* Lines a review comment is being dragged over or written for: GitHub's yellow tint over gutter and text. */
 .monaco-editor .harness-review-range {
   z-index: 1;
   background: rgba(187, 128, 9, 0.3);
 }
-.monaco-editor .view-overlays .harness-review-range {
-  box-shadow: inset 2px 0 0 #2f81f7;
-}
-.monaco-editor .view-overlays .harness-review-range--note {
-  box-shadow: inset 2px 0 0 #6e7681;
-}
 .monaco-editor .margin-view-overlays .harness-review-range {
   background: rgba(187, 128, 9, 0.3);
+}
+/* Bar at the text's left edge beside those lines and the line joining the two "+" of a drag (see review/spanLine.ts),
+   in the color of the "+": blue inline, grey for a note. Both run across view zones and over comment cards; the open
+   comment box continues the bar. */
+.monaco-editor .harness-review-span-line {
+  z-index: 6;
+  width: 2px;
+  background: #2f81f7;
+  pointer-events: none;
+}
+.monaco-editor .harness-review-span-line--note {
+  background: #6e7681;
 }
 [data-review-composer] {
   position: relative;

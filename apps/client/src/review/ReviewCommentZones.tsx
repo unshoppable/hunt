@@ -10,7 +10,7 @@ import type { ReviewComment, ReviewThread } from "../ipc/types";
 import { GHOST_BUTTON_XS, ICON_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { ExternalIcon } from "../ui/icons";
-import { rangeDecoration, type CommentTarget } from "./addCommentGlyph";
+import { rangeBar, rangeDecoration, type CommentTarget } from "./addCommentGlyph";
 import { Avatar, useGithubViewer, ViewerAvatar } from "./Avatar";
 import { LineZone } from "./lineZone";
 import { CommentEditorPanel, NOTE_HINT, ReviewCommentComposer } from "./ReviewCommentComposer";
@@ -111,8 +111,14 @@ export function ReviewCommentZones({ editor, sessionId, path, blocks, composer, 
   const isComposerInline = composer ? isPostedOnDiff(blocks, composer.span) : false;
   useEffect(() => {
     if (composerStart === null || composerEnd === null) return;
-    const tint = editor.createDecorationsCollection([rangeDecoration({ startLine: composerStart, line: composerEnd }, isComposerInline)]);
-    return () => tint.clear();
+    const span = { startLine: composerStart, line: composerEnd };
+    const tint = editor.createDecorationsCollection([rangeDecoration(span)]);
+    const bar = rangeBar(editor);
+    bar.show(span, isComposerInline);
+    return () => {
+      tint.clear();
+      bar.dispose();
+    };
   }, [editor, composerStart, composerEnd, isComposerInline]);
 
   const composerZone = composer ? zones.get(COMPOSER_KEY) : undefined;

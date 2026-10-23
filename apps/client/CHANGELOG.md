@@ -1,3 +1,9 @@
+## 0.98.0 (2026-10-23)
+
+### 🚀 Features
+
+- **client:** the diff and guardrails windows show the file icon before the file path in their header ([e9fcf36](https://github.com/unshoppable/hunt/commit/e9fcf36))
+
 ## 0.97.0 (2026-10-23)
 
 ### 🚀 Features

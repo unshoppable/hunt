@@ -1,3 +1,9 @@
+## 0.94.0 (2026-10-23)
+
+### 🚀 Features
+
+- **client:** opening a file in the editor from the diff view or a diff window puts the caret on its first change ([920ef57](https://github.com/unshoppable/hunt/commit/920ef57))
+
 ## 0.93.0 (2026-10-23)
 
 ### 🚀 Features

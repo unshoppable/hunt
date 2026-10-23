@@ -1,3 +1,9 @@
+## 0.103.2 (2026-10-23)
+
+### 🩹 Fixes
+
+- **client:** inline code and code blocks in chat and pull requests stand out from the text like on GitHub ([888fbe7](https://github.com/unshoppable/hunt/commit/888fbe7))
+
 ## 0.103.1 (2026-10-23)
 
 ### 🩹 Fixes

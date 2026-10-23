@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import * as monaco from "monaco-editor";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
+import { useFileIconUrl } from "../diff/fileIcons";
 import { commands } from "../ipc/commands";
 import type { TextMatch, TextQuery, TextRange, TextSearchResult } from "../ipc/types";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
@@ -75,6 +76,7 @@ export function FindInFilesDialog({
   onClose: () => void;
 }) {
   const worktreePath = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.worktreePath ?? "");
+  const fileIconUrl = useFileIconUrl();
   const [query, setQuery] = useState<TextQuery>(() => (initialText ? { ...lastQuery, text: initialText } : lastQuery));
   const [result, setResult] = useState<{ query: TextQuery; value: TextSearchResult } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -249,8 +251,11 @@ export function FindInFilesDialog({
               </Panel>
             </PersistentGroup>
             <div className={`${STATUS_BAR} gap-3`}>
-              <span className="min-w-0 flex-1 truncate text-neutral-400" title={`${worktreePath}/${selectedMatch.path}`}>
-                {abbreviateHome(worktreePath)}/{selectedMatch.path}
+              <span className="flex min-w-0 flex-1 items-center gap-1.5 text-neutral-400" title={`${worktreePath}/${selectedMatch.path}`}>
+                <img src={fileIconUrl(selectedMatch.path)} alt="" className="size-4 shrink-0" />
+                <span className="truncate">
+                  {abbreviateHome(worktreePath)}/{selectedMatch.path}
+                </span>
               </span>
               <button
                 type="button"

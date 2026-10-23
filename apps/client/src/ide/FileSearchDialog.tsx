@@ -253,8 +253,11 @@ export function FileSearchDialog({
               />
             )}
             <div className={`${STATUS_BAR} gap-3`}>
-              <span className="min-w-0 flex-1 truncate text-neutral-400" title={`${worktreePath}/${selectedPath}`}>
-                {abbreviateHome(worktreePath)}/{selectedPath}
+              <span className="flex min-w-0 flex-1 items-center gap-1.5 text-neutral-400" title={`${worktreePath}/${selectedPath}`}>
+                <img src={fileIconUrl(selectedPath)} alt="" className="size-4 shrink-0" />
+                <span className="truncate">
+                  {abbreviateHome(worktreePath)}/{selectedPath}
+                </span>
               </span>
               <button
                 type="button"

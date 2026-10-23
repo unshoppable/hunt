@@ -455,10 +455,11 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
 
 /** The file name followed by the declarations around the caret, like WebStorm's editor breadcrumbs. */
 function Breadcrumb({ path, crumbs }: { path: string | null; crumbs: SymbolCrumb[] }) {
-  const name = path ? baseName(path) : null;
+  const fileIconUrl = useFileIconUrl();
   return (
     <div className={`${STATUS_BAR} gap-1.5 bg-(--surface-inspector)`} title={path ?? undefined}>
-      {name ? <span className="text-neutral-400">{name}</span> : null}
+      {path ? <img src={fileIconUrl(path)} alt="" className="size-4 shrink-0" /> : null}
+      {path ? <span className="text-neutral-400">{baseName(path)}</span> : null}
       {crumbs.map((crumb, index) => (
         <span key={`${index}:${crumb.name}`} className="flex items-center gap-1">
           <span className="text-neutral-600">›</span>

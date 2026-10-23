@@ -75,6 +75,7 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
   const [showPreview, setShowPreview] = useState(true);
   const usages = query.usages;
   const selectedUsage = usages?.[selected] ?? null;
+  const fileIconUrl = useFileIconUrl();
   const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
   const maxSize = { width: viewport.width - EDGE_GAP * 2, height: viewport.height - EDGE_GAP * 2 };
   // A dragged edge stops at the overlay's edge, so the opposite edge stays put.
@@ -255,7 +256,8 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
       ) : (
         list
       )}
-      <div className={`${STATUS_BAR} text-neutral-400`} title={selectedUsage?.path ?? query.path}>
+      <div className={`${STATUS_BAR} gap-1.5 text-neutral-400`} title={selectedUsage?.path ?? query.path}>
+        <img src={fileIconUrl(selectedUsage?.path ?? query.path)} alt="" className="size-4 shrink-0" />
         <span className="truncate">{selectedUsage?.path ?? query.path}</span>
       </div>
       <ResizeGrips edges={{ left: true, top: true, right: true, bottom: true }} {...grips} />

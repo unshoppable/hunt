@@ -1,3 +1,9 @@
+## 0.96.2 (2026-10-23)
+
+### 🩹 Fixes
+
+- **client:** review comment cards show their text at 15px and their headers at 13px ([8629465](https://github.com/unshoppable/hunt/commit/8629465))
+
 ## 0.96.1 (2026-10-23)
 
 ### 🩹 Fixes

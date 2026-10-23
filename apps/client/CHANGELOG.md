@@ -1,3 +1,9 @@
+## 0.91.1 (2026-10-23)
+
+### 🩹 Fixes
+
+- **client:** a script that finished with exit code 0 reports it in green instead of red ([2ac6d2a](https://github.com/unshoppable/hunt/commit/2ac6d2a))
+
 ## 0.91.0 (2026-10-23)
 
 ### 🚀 Features

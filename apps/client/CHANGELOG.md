@@ -1,3 +1,9 @@
+## 0.101.0 (2026-10-23)
+
+### 🚀 Features
+
+- **client:** Angular templates are highlighted like WebStorm, with signals, methods and fields told apart by the Angular language server ([3076868](https://github.com/unshoppable/hunt/commit/3076868))
+
 ## 0.100.0 (2026-10-23)
 
 ### 🚀 Features

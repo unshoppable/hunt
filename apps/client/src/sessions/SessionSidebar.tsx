@@ -359,6 +359,10 @@ export function SessionSidebar() {
               setRetargetingId(menuSession.id);
               return;
             }
+            if (entry.kind === "copyBranch") {
+              void navigator.clipboard.writeText(menuSession.branch).catch((reason) => setMenuError(`failed to copy the branch name: ${String(reason)}`));
+              return;
+            }
             void commands.openWorktreeInTerminal(menuSession.id).catch((reason) => setMenuError(String(reason)));
           }}
         />
@@ -370,12 +374,13 @@ export function SessionSidebar() {
 }
 
 /** The context menu of the top-level session `session` in the sidebar. */
-function sessionMenuEntries(session: SessionView, sessions: SessionView[]): GitMenuEntry<"terminal" | "retarget">[] {
+function sessionMenuEntries(session: SessionView, sessions: SessionView[]): GitMenuEntry<"terminal" | "copyBranch" | "retarget">[] {
   const noWorktree = !session.hasLocalWorktree ? "The session has no local worktree yet; connect it first" : null;
   const retargetDisabledReason =
     remoteOf(session, sessions)?.origin === "swf" ? "A poller session pushes its own branch" : !session.pushTarget ? "The session has no local worktree yet; connect it first" : null;
   return [
     { kind: "terminal", label: "Open in Terminal", disabledReason: noWorktree, isDanger: false, startsGroup: false },
+    { kind: "copyBranch", label: "Copy Branch Name", disabledReason: !session.branch ? "The session has no branch yet" : null, isDanger: false, startsGroup: false },
     { kind: "retarget", label: "Change Push Target…", disabledReason: retargetDisabledReason, isDanger: false, startsGroup: true },
   ];
 }

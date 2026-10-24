@@ -157,6 +157,7 @@ export function PullRequestList({ repoPath, onSelect, onClose }: PullRequestList
                     </Chip>
                   ) : null}
                 </span>
+                <span className="w-full truncate font-mono text-[12px] text-neutral-500">{pullRequest.headRefName}</span>
                 <MetaLine pullRequest={pullRequest} />
               </span>
             </button>
@@ -177,9 +178,9 @@ export function PullRequestList({ repoPath, onSelect, onClose }: PullRequestList
 }
 
 /**
- * The second line of a row: author, when it was opened, tasks, review decision and branch on the left;
- * diff size, checks and comment count on the right. The branch truncates first; in a narrow pane the left side is
- * clipped so the counts on the right stay visible.
+ * The last line of a row, below the branch: author, when it was opened, tasks and review decision on the left;
+ * diff size, checks and comment count on the right. In a narrow pane the left side is clipped so the counts on the
+ * right stay visible.
  */
 function MetaLine({ pullRequest }: { pullRequest: PullRequest }) {
   const decision = pullRequest.reviewDecision ? REVIEW_DECISIONS[pullRequest.reviewDecision] : undefined;
@@ -205,8 +206,6 @@ function MetaLine({ pullRequest }: { pullRequest: PullRequest }) {
             <span className={`shrink-0 ${decision.className}`}>{decision.label}</span>
           </>
         ) : null}
-        <Separator />
-        <span className="truncate font-mono">{pullRequest.headRefName}</span>
       </span>
       <span className="flex shrink-0 items-center gap-3">
         <span className="font-mono" title={`${pullRequest.changedFiles} changed files`}>

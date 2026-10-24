@@ -258,7 +258,7 @@ export function ChangeList({
   );
 
   // Arrow keys move through the rows and open a file's diff; Space toggles the checkbox of the row (a focused checkbox toggles itself).
-  const nav = useTreeNavigation({
+  const nav = useTreeNavigation<HTMLDivElement>({
     rows: navRows,
     selectedKey: selectedPath,
     onSelect,
@@ -278,7 +278,7 @@ export function ChangeList({
     revealKey: (key) => virtualRows.scrollToIndex(navRows.findIndex((row) => row.key === key)),
   });
   // Only the rows near the viewport render, so a worktree with thousands of changes scrolls and re-renders quickly.
-  const virtualRows = useVirtualRows(nav.listRef, navRows.length);
+  const virtualRows = useVirtualRows<HTMLUListElement>(nav.listRef, navRows.length);
 
   /** Warns when checked files hold unsaved edits; resolves to whether a commit or shelve of the checked files may go on. */
   const confirmSavedContent = async () => {
@@ -381,8 +381,10 @@ export function ChangeList({
     );
   };
 
+  // One compositing layer for the whole changelist: WebKit color-matches the scrolling list, which sits in its own layer,
+  // differently from the rest on a non-sRGB display, so its background would flicker lighter and darker while scrolling.
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-(--changelist-bg)">
+    <div className="flex min-w-0 flex-1 flex-col bg-(--changelist-bg) will-change-transform">
       <div className="flex items-center gap-1 border-b border-(--line) px-2 py-2.5 text-[13px] text-neutral-400">
         <button type="button" onClick={() => setTab("changes")} className={`${TAB_BUTTON_SM} ${tab === "changes" ? TAB_ACTIVE : TAB_INACTIVE}`}>
           Changes
@@ -445,7 +447,7 @@ export function ChangeList({
               </button>
             ) : null}
           </div>
-          <ul
+          <div
             {...nav.listProps}
             ref={virtualRows.containerRef}
             onKeyDown={(event) => {
@@ -456,16 +458,20 @@ export function ChangeList({
               event.preventDefault();
               onCopyPath(nav.cursor.endsWith("/") ? nav.cursor.slice(0, -1) : nav.cursor);
             }}
-            className="min-h-0 flex-1 overflow-y-auto bg-(--changelist-bg) outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)"
+            className="min-h-0 flex-1 overflow-y-auto outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)"
           >
-            <li aria-hidden="true" data-virtual-spacer style={{ height: virtualRows.spaceBefore }} />
-            {view === "flat"
-              ? files.slice(virtualRows.start, virtualRows.end).map((file) => renderFile(file, baseName(file.path), 0, true))
-              : rows
-                  .slice(virtualRows.start, virtualRows.end)
-                  .map(({ node, depth }) => (node.kind === "folder" ? renderFolder(node, depth) : renderFile(node.file, node.name, depth, false)))}
-            <li aria-hidden="true" data-virtual-spacer style={{ height: virtualRows.spaceAfter }} />
-          </ul>
+            <div style={{ height: virtualRows.totalHeight }}>
+              <div className="sticky top-0 overflow-hidden bg-(--changelist-bg)" style={{ height: virtualRows.viewportHeight || undefined }}>
+                <ul ref={virtualRows.rowsRef} className="relative">
+                  {view === "flat"
+                    ? files.slice(virtualRows.start, virtualRows.end).map((file) => renderFile(file, baseName(file.path), 0, true))
+                    : rows
+                        .slice(virtualRows.start, virtualRows.end)
+                        .map(({ node, depth }) => (node.kind === "folder" ? renderFolder(node, depth) : renderFile(node.file, node.name, depth, false)))}
+                </ul>
+              </div>
+            </div>
+          </div>
           {pullRequest ? (
             <div className="flex items-center gap-2 border-t border-(--line) px-3 py-2.5 text-[13px]">
               <button type="button" onClick={openReviewDialog} className={PRIMARY_BUTTON_XS} title={`Submit a review of pull request #${pullRequest.number}`}>

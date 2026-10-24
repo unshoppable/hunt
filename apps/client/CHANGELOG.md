@@ -1,3 +1,9 @@
+## 0.106.1 (2026-10-24)
+
+### 🩹 Fixes
+
+- **client:** review comments tint their lines behind the code, with the bar right of the line numbers like on GitHub ([3410c97](https://github.com/unshoppable/hunt/commit/3410c97))
+
 ## 0.106.0 (2026-10-24)
 
 ### 🚀 Features

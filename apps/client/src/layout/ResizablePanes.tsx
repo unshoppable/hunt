@@ -1,5 +1,5 @@
-import type { ReactNode, Ref } from "react";
-import { Group, Panel, Separator, useDefaultLayout, useGroupRef, usePanelRef, type GroupImperativeHandle } from "react-resizable-panels";
+import { useRef, type ReactNode, type RefObject } from "react";
+import { Group, Panel, Separator, useDefaultLayout, useGroupRef, usePanelRef, type GroupImperativeHandle, type Layout } from "react-resizable-panels";
 import { HEADER_BAR } from "../ui/bars";
 import { ChevronIcon } from "../ui/icons";
 
@@ -9,27 +9,68 @@ let isToggleAction = false;
 const PANE_ANIMATION_MS = 260;
 let paneAnimationTimer: number | undefined;
 
-/** Resizable pane group whose layout survives restarts (persisted in localStorage under `id`). */
+/**
+ * Resizable pane group whose layout survives restarts (persisted in localStorage under `id`). `toggleOnlyPanes` maps
+ * the ids of collapsible panes that only their toggle collapses to their minimum size in pixels: a drag that would
+ * collapse one stops it at that size, and the pane that took its width gives it back.
+ */
 export function PersistentGroup({
   id,
   orientation = "horizontal",
-  groupRef,
+  groupRef: givenGroupRef,
+  toggleOnlyPanes = {},
   className,
   children,
 }: {
   id: string;
   orientation?: "horizontal" | "vertical";
-  groupRef?: Ref<GroupImperativeHandle | null>;
+  groupRef?: RefObject<GroupImperativeHandle | null>;
+  toggleOnlyPanes?: Record<string, number>;
   className?: string;
   children: ReactNode;
 }) {
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({ groupId: id, onlySaveAfterUserInteractions: true });
+  const ownGroupRef = useGroupRef();
+  const groupRef = givenGroupRef ?? ownGroupRef;
+  const groupElement = useRef<HTMLDivElement>(null);
+  const previousLayout = useRef<Layout | null>(null);
+  const isRestoring = useRef(false);
+
+  const keepToggleOnlyPanesOpen = (layout: Layout) => {
+    const previous = previousLayout.current;
+    previousLayout.current = layout;
+    const element = groupElement.current;
+    if (!previous || !element || isRestoring.current || isToggleAction || !element.querySelector(":scope > [data-separator='active']")) return;
+    const groupSize = orientation === "horizontal" ? element.offsetWidth : element.offsetHeight;
+    const restored = { ...layout };
+    let restoredWidth = 0;
+    for (const [paneId, minimumPixels] of Object.entries(toggleOnlyPanes)) {
+      const minimum = (minimumPixels / groupSize) * 100;
+      const size = layout[paneId];
+      const previousSize = previous[paneId];
+      if (size === undefined || previousSize === undefined || size >= minimum - 0.1 || previousSize < minimum - 0.1) continue;
+      restored[paneId] = minimum;
+      restoredWidth += minimum - size;
+    }
+    const [grownId] = Object.keys(layout).sort((first, second) => layout[second] - previous[second] - (layout[first] - previous[first]));
+    if (!restoredWidth || !grownId) return;
+    restored[grownId] -= restoredWidth;
+    isRestoring.current = true;
+    try {
+      groupRef.current?.setLayout(restored);
+    } finally {
+      isRestoring.current = false;
+    }
+  };
+
   return (
     <Group
       id={id}
       orientation={orientation}
       groupRef={groupRef}
+      elementRef={groupElement}
       defaultLayout={defaultLayout}
+      onLayoutChange={keepToggleOnlyPanesOpen}
       onLayoutChanged={(layout, meta) => onLayoutChanged(layout, isToggleAction ? { ...meta, isUserInteraction: true } : meta)}
       className={className}
     >

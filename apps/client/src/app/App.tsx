@@ -190,7 +190,12 @@ export function App() {
 
   return (
     <>
-      <PersistentGroup id="hunt-panes" groupRef={mainGroup} className="h-full">
+      <PersistentGroup
+        id="hunt-panes"
+        groupRef={mainGroup}
+        toggleOnlyPanes={{ sessions: SESSIONS_MIN_WIDTH, chat: CHAT_MIN_WIDTH }}
+        className="h-full"
+      >
         <Panel
           id="sessions"
           panelRef={sessionsPanel}

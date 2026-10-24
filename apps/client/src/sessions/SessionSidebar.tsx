@@ -386,7 +386,7 @@ function SessionPushTargetDialog({ session, target, onClose }: { session: Sessio
   const [candidates, setCandidates] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useLoad(
-    () => commands.gitRefs(session.id),
+    () => commands.gitRefs({ kind: "session", id: session.id }),
     {
       onValue: (refs) => setCandidates(refs.refs.map((ref) => (ref.kind === "remote" ? originBranchName(ref.name) : null)).filter((name): name is string => !!name)),
       onError: (reason) => setError(String(reason)),

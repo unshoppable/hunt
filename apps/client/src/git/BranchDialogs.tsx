@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { commands } from "../ipc/commands";
+import type { GitScope } from "../ipc/types";
 import { INPUT } from "../diff/styles";
 import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD } from "../ui/buttons";
 import { PlusIcon, Spinner } from "../ui/icons";
@@ -166,7 +167,7 @@ export function PushTargetDialog({
 }
 
 /** Asks for the new name of the branch `branch` and renames it. Dragging an edge resizes the dialog. */
-export function RenameBranchDialog({ sessionId, branch, onClose, onRenamed }: { sessionId: string; branch: string; onClose: () => void; onRenamed: (newName: string) => void }) {
+export function RenameBranchDialog({ scope, branch, onClose, onRenamed }: { scope: GitScope; branch: string; onClose: () => void; onRenamed: (newName: string) => void }) {
   const dialog = useDialogSize("renameBranch");
   const [name, setName] = useState(branch);
   const [error, setError] = useState<string | null>(null);
@@ -179,7 +180,7 @@ export function RenameBranchDialog({ sessionId, branch, onClose, onRenamed }: { 
     setIsBusy(true);
     setError(null);
     try {
-      await commands.gitRenameBranch(sessionId, branch, newName);
+      await commands.gitRenameBranch(scope, branch, newName);
       onRenamed(newName);
       onClose();
     } catch (reason) {

@@ -223,6 +223,8 @@ export type HuntState = {
    * drafted for. A failed creation brings the view back with its `error` and the `prompt` that was not sent.
    */
   draft: { parentId: string | null; error?: string; prompt?: PromptDraft | null } | null;
+  /** The repository the user chose in the start view; `null` until they chose one (see `useStartRepoPath`). */
+  startRepoPath: string | null;
   /** Ids of sessions created without a prompt, titled after their repository until their first prompt names them. */
   untitledIds: string[];
   remoteSync: RemoteSync;
@@ -284,6 +286,8 @@ export type HuntState = {
   continueLocally: (id: string) => Promise<void>;
   /** Opens the start view in which the first prompt or the choice of a repository creates the session, or a sub session of `parentId`. */
   startDraft: (parentId?: string) => void;
+  /** Makes `path` the repository of the start view, whose Git tab shows its checkout while no session is active. */
+  setStartRepoPath: (path: string) => void;
   /**
    * Creates a session in a fresh worktree of `target` and makes it the active session at once; the worktree and the
    * agent come up in the background, then `start` is applied. A `null` title names the session after its repository
@@ -1010,6 +1014,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     chats: {},
     promptDrafts: {},
     draft: null,
+    startRepoPath: null,
     untitledIds: [],
     remoteSync: { isRunning: false, error: null },
     remoteLinks: {},
@@ -1061,6 +1066,10 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
 
     startDraft: (parentId) => {
       set({ draft: { parentId: parentId ?? null } });
+    },
+
+    setStartRepoPath: (path) => {
+      set({ startRepoPath: path });
     },
 
     selectSession: async (id) => {

@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useShallow } from "zustand/react/shallow";
 import { useHuntStore } from "../state/store";
 import { SessionSidebar } from "../sessions/SessionSidebar";
-import { NewSessionView } from "../sessions/NewSessionView";
+import { NewSessionView, useStartRepoPath } from "../sessions/NewSessionView";
 import { useShowSessionRequests } from "../sessions/showSession";
 import { ChatPanel } from "../chat/ChatPanel";
 import { DiffPanel } from "../diff/DiffPanel";
@@ -71,6 +71,9 @@ export function App() {
   );
   /** The session whose tab the inspector shows and remembers; none while the start view shows. */
   const shownSessionId = draft ? null : activeSessionId;
+  /** The repository of the start view, whose checkout the Git tab shows while the start view of a top-level session does. */
+  const startRepoPath = useStartRepoPath();
+  const isStartView = !activeSessionId || Boolean(draft);
   const storedTab = useRightTab(shownSessionId);
   /** Review comments of the pull request the shown session reviews, drafts included; the Diff tab counts them. */
   const reviewCommentCount = useReviewCommentTotal(shownSessionId);
@@ -197,6 +200,13 @@ export function App() {
               />
             </nav>
             <div className="min-h-0 flex-1">
+              {isStartView && rightTab === "git" ? (
+                draft?.parentId ? (
+                  <GitPanel key={`git:${draft.parentId}`} scope={{ kind: "session", id: draft.parentId }} />
+                ) : startRepoPath ? (
+                  <GitPanel key={`git:repo:${startRepoPath}`} scope={{ kind: "repo", path: startRepoPath }} />
+                ) : null
+              ) : null}
               {!activeSessionId || draft || isCreatingActive ? null : (
                 <>
                   {/* The panels are siblings of one fragment, so their keys carry the tab as well as the session: a shared key would keep React from removing a panel that another tab replaced. */}
@@ -205,7 +215,7 @@ export function App() {
                   ) : rightTab === "diff" ? (
                     <DiffPanel key={`diff:${activeSessionId}`} sessionId={activeSessionId} />
                   ) : rightTab === "git" ? (
-                    <GitPanel key={`git:${activeSessionId}`} sessionId={activeSessionId} />
+                    <GitPanel key={`git:${activeSessionId}`} scope={{ kind: "session", id: activeSessionId }} />
                   ) : rightTab === "editor" ? (
                     <IdePanel sessionId={activeSessionId} />
                   ) : rightTab === "pullRequest" ? (

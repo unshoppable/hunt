@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GithubTokenStatus, GuardrailDeclineReason, GithubViewer, GraphStatus, LanguageServerKind, LogQuery, PlanUsage, PrettierOutput, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
+import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GitScope, GithubTokenStatus, GuardrailDeclineReason, GithubViewer, GraphStatus, LanguageServerKind, LogQuery, PlanUsage, PrettierOutput, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
 export function assetUrl(path: string): string {
@@ -8,42 +8,44 @@ export function assetUrl(path: string): string {
 
 export const commands = {
   listSessions: () => invoke<SessionView[]>("list_sessions"),
-  /** A page of the commit log of the session's worktree, newest first in date order. */
-  gitLog: (sessionId: string, query: LogQuery) => invoke<Commit[]>("git_log", { id: sessionId, query }),
-  /** Every branch and tag of the session's worktree, its checked-out branch and the commits no remote has. */
-  gitRefs: (sessionId: string) => invoke<RefList>("git_refs", { id: sessionId }),
+  /** A page of the commit log of the scope, newest first in date order. */
+  gitLog: (scope: GitScope, query: LogQuery) => invoke<Commit[]>("git_log", { scope, query }),
+  /** Every branch and tag of the scope, its checked-out branch and the commits no remote has. */
+  gitRefs: (scope: GitScope) => invoke<RefList>("git_refs", { scope }),
   /** Message, committer, changed files and containing branches of the commit. */
-  gitCommit: (sessionId: string, commit: string) => invoke<CommitDetails>("git_commit", { id: sessionId, commit }),
+  gitCommit: (scope: GitScope, commit: string) => invoke<CommitDetails>("git_commit", { scope, commit }),
   /** The change of `path` in the commit against its first parent; `oldPath` is where a renamed file was before. */
-  gitCommitFileDiff: (sessionId: string, commit: string, path: string, oldPath: string | null) =>
-    invoke<FileDiff>("git_commit_file_diff", { id: sessionId, commit, path, oldPath }),
-  /** Rebases the session's branch onto the branch or remote branch `onto`; a conflict aborts and names the files. */
-  gitRebase: (sessionId: string, onto: string) => invoke<void>("git_rebase", { id: sessionId, onto }),
-  /** Merges the branch or remote branch `from` into the session's branch; a conflict aborts and names the files. */
-  gitMerge: (sessionId: string, from: string) => invoke<void>("git_merge", { id: sessionId, from }),
-  /** Resets the session's branch to the commit in `mode`, on its VM too; `keep` fails when an uncommitted change is in the way. */
-  gitReset: (sessionId: string, commit: string, mode: ResetMode) => invoke<void>("git_reset", { id: sessionId, commit, mode }),
+  gitCommitFileDiff: (scope: GitScope, commit: string, path: string, oldPath: string | null) =>
+    invoke<FileDiff>("git_commit_file_diff", { scope, commit, path, oldPath }),
+  /** Checks a branch out in the repository's own checkout; a remote one (`origin/<name>`) as the local branch of its name. */
+  gitCheckout: (repoPath: string, branch: string, isRemote: boolean) => invoke<void>("git_checkout", { repoPath, branch, isRemote }),
+  /** Rebases the checked-out branch onto the branch or remote branch `onto`; a conflict aborts and names the files. */
+  gitRebase: (scope: GitScope, onto: string) => invoke<void>("git_rebase", { scope, onto }),
+  /** Merges the branch or remote branch `from` into the checked-out branch; a conflict aborts and names the files. */
+  gitMerge: (scope: GitScope, from: string) => invoke<void>("git_merge", { scope, from }),
+  /** Resets the checked-out branch to the commit in `mode`, on a session's VM too; `keep` fails when an uncommitted change is in the way. */
+  gitReset: (scope: GitScope, commit: string, mode: ResetMode) => invoke<void>("git_reset", { scope, commit, mode }),
   /** Rebases the session's branch onto the branch its push lands on, fetched first. */
   gitUpdateBranch: (sessionId: string) => invoke<void>("git_update_branch", { id: sessionId }),
   /** Fast-forwards another local branch to its upstream, fetched first; `false` when the upstream has no commits it lacks. */
-  gitPullBranch: (sessionId: string, branch: string) => invoke<boolean>("git_pull_branch", { id: sessionId, branch }),
+  gitPullBranch: (scope: GitScope, branch: string) => invoke<boolean>("git_pull_branch", { scope, branch }),
   /** Resets another local branch to its upstream, fetched first; the commits the upstream lacks are lost. */
-  gitForcePullBranch: (sessionId: string, branch: string) => invoke<void>("git_force_pull_branch", { id: sessionId, branch }),
+  gitForcePullBranch: (scope: GitScope, branch: string) => invoke<void>("git_force_pull_branch", { scope, branch }),
   /** Pushes a local branch other than the session's to the branch of the same name on `origin`. */
-  gitPushLocalBranch: (sessionId: string, branch: string) => invoke<void>("git_push_local_branch", { id: sessionId, branch }),
-  /** Renames a local branch; the session follows a rename of its own branch, which a remote session refuses. */
-  gitRenameBranch: (sessionId: string, branch: string, newName: string) => invoke<void>("git_rename_branch", { id: sessionId, branch, newName }),
+  gitPushLocalBranch: (scope: GitScope, branch: string) => invoke<void>("git_push_local_branch", { scope, branch }),
+  /** Renames a local branch; the sessions on it follow, a remote one refuses. */
+  gitRenameBranch: (scope: GitScope, branch: string, newName: string) => invoke<void>("git_rename_branch", { scope, branch, newName }),
   /** Makes `target` on `origin` the branch a push of the session lands on, here and on the session's VM; a poller session refuses. */
   /** `create` makes a branch origin lacks there first, at the commit of the branch pushed to so far. */
   setPushTarget: (sessionId: string, target: string, create = false) => invoke<void>("set_push_target", { id: sessionId, target, create }),
   /** Deletes a local branch; without `force`, git refuses one whose commits its upstream (or HEAD) lacks with "not fully merged". */
-  gitDeleteBranch: (sessionId: string, branch: string, force: boolean) => invoke<void>("git_delete_branch", { id: sessionId, branch, force }),
+  gitDeleteBranch: (scope: GitScope, branch: string, force: boolean) => invoke<void>("git_delete_branch", { scope, branch, force }),
   /** Deletes the branch `branch` on `origin`. */
-  gitDeleteRemoteBranch: (sessionId: string, branch: string) => invoke<void>("git_delete_remote_branch", { id: sessionId, branch }),
+  gitDeleteRemoteBranch: (scope: GitScope, branch: string) => invoke<void>("git_delete_remote_branch", { scope, branch }),
   /** Fetches the branch `branch` of `origin`; `false` when `origin` has no such branch. */
-  gitFetchBranch: (sessionId: string, branch: string) => invoke<boolean>("git_fetch_branch", { id: sessionId, branch }),
+  gitFetchBranch: (scope: GitScope, branch: string) => invoke<boolean>("git_fetch_branch", { scope, branch }),
   /** Fetches every branch of `origin` and drops the remote-tracking refs of the branches `origin` no longer has. */
-  gitFetchOrigin: (sessionId: string) => invoke<void>("git_fetch_origin", { id: sessionId }),
+  gitFetchOrigin: (scope: GitScope) => invoke<void>("git_fetch_origin", { scope }),
   listBranches: (repoPath: string) => invoke<string[]>("list_branches", { repoPath }),
   /** The branch the repository's checkout is on; `HEAD` when it is detached. */
   currentBranch: (repoPath: string) => invoke<string>("current_branch", { repoPath }),

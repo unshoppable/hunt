@@ -410,6 +410,34 @@ pub async fn rename_branch(repo: &Path, branch: &str, new_name: &str) -> Result<
     Ok(())
 }
 
+/// Checks the local branch `branch` out in the checkout `repo`, or with `is_remote` the remote branch `origin/<name>`
+/// as the local branch `<name>`, created tracking it when missing. Git refuses while the branch is checked out in
+/// another worktree or working changes would be overwritten.
+pub async fn checkout_branch(repo: &Path, branch: &str, is_remote: bool) -> Result<(), String> {
+    let local = if is_remote {
+        branch.strip_prefix("origin/").ok_or_else(|| format!("failed to check out {branch}: only branches of origin"))?
+    } else {
+        branch
+    };
+    ensure_branch_name(repo, local).await?;
+    if is_remote && !local_branch_exists(repo, local).await {
+        run_git(repo, &["switch", "-q", "--track", "-c", local, &format!("refs/remotes/{branch}")]).await?;
+    } else {
+        run_git(repo, &["switch", "-q", local]).await?;
+    }
+    Ok(())
+}
+
+/// Rejects `path` unless it is the top level of a git repository.
+pub async fn ensure_repo_root(path: &Path) -> Result<(), String> {
+    let top_level = run_git(path, &["rev-parse", "--show-toplevel"]).await?;
+    let is_root = std::fs::canonicalize(top_level.trim()).ok() == std::fs::canonicalize(path).ok();
+    if !is_root {
+        return Err(format!("{} is not the top level of a git repository", path.display()));
+    }
+    Ok(())
+}
+
 /// Rejects `branch` as the name of a branch to create: an invalid name, or one `repo` has locally or on a remote already.
 pub async fn ensure_new_branch(repo: &Path, branch: &str) -> Result<(), String> {
     ensure_branch_name(repo, branch).await?;
@@ -1723,6 +1751,37 @@ mod tests {
         let commit = run_git(origin, &["rev-parse", "HEAD"]).await.unwrap();
         git(origin, &["checkout", "-q", "main"]).await;
         commit
+    }
+
+    #[tokio::test]
+    async fn checkout_branch_switches_local_branches_and_tracks_remote_ones() {
+        let origin = fixture().await;
+        git(origin.path(), &["branch", "develop"]).await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = clone_dir.path().join("repo");
+        git(clone_dir.path(), &["clone", "-q", origin.path().to_str().unwrap(), repo.to_str().unwrap()]).await;
+
+        checkout_branch(&repo, "origin/develop", true).await.unwrap();
+        assert_eq!(current_branch(&repo).await.unwrap(), "develop");
+        let upstream = run_git(&repo, &["rev-parse", "--abbrev-ref", "develop@{upstream}"]).await.unwrap();
+        assert_eq!(upstream.trim(), "origin/develop");
+
+        checkout_branch(&repo, "main", false).await.unwrap();
+        assert_eq!(current_branch(&repo).await.unwrap(), "main");
+        checkout_branch(&repo, "origin/develop", true).await.unwrap();
+        assert_eq!(current_branch(&repo).await.unwrap(), "develop");
+
+        assert_eq!(checkout_branch(&repo, "--orphan", false).await.unwrap_err(), "invalid branch name: \"--orphan\"");
+        assert!(checkout_branch(&repo, "upstream/develop", true).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ensure_repo_root_accepts_only_the_top_level() {
+        let dir = fixture().await;
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+
+        ensure_repo_root(dir.path()).await.unwrap();
+        assert!(ensure_repo_root(&dir.path().join("sub")).await.is_err());
     }
 
     #[tokio::test]

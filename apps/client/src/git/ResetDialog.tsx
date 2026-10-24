@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { commands } from "../ipc/commands";
-import type { Commit, ResetMode } from "../ipc/types";
+import type { Commit, GitScope, ResetMode } from "../ipc/types";
 import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
 import { Modal } from "../ui/Modal";
 import { useDialogSize } from "../ui/useDialogSize";
@@ -16,10 +16,10 @@ const RESET_MODES: { mode: ResetMode; label: string; description: string }[] = [
 let lastMode: ResetMode = "mixed";
 
 /**
- * WebStorm's "Git Reset" dialog: resets the checked-out branch `head` to `commit` in the picked mode, on the session's
- * VM too. Dragging an edge resizes the dialog.
+ * WebStorm's "Git Reset" dialog: resets the checked-out branch `head` of `scope` to `commit` in the picked mode, on a
+ * session's VM too. Dragging an edge resizes the dialog.
  */
-export function ResetDialog({ sessionId, head, commit, onClose, onReset }: { sessionId: string; head: string; commit: Commit; onClose: () => void; onReset: () => void }) {
+export function ResetDialog({ scope, head, commit, onClose, onReset }: { scope: GitScope; head: string; commit: Commit; onClose: () => void; onReset: () => void }) {
   const dialog = useDialogSize("reset");
   const [mode, setMode] = useState<ResetMode>(lastMode);
   const [error, setError] = useState<string | null>(null);
@@ -31,7 +31,7 @@ export function ResetDialog({ sessionId, head, commit, onClose, onReset }: { ses
     setError(null);
     lastMode = mode;
     try {
-      await commands.gitReset(sessionId, commit.id, mode);
+      await commands.gitReset(scope, commit.id, mode);
       onReset();
       onClose();
     } catch (reason) {

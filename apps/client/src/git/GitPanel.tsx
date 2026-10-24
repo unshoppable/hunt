@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { commands } from "../ipc/commands";
-import type { Commit, CommitDetails, CommitFile, FileDiff, GitRef, RefList } from "../ipc/types";
+import type { Commit, CommitDetails, CommitFile, FileDiff, GitRef, GitScope, RefList } from "../ipc/types";
 import { useHuntStore } from "../state/store";
 import { remoteOf } from "../chat/remoteSession";
 import { useSettingsStore } from "../state/settings";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
 import { CodeDiffEditor } from "../diff/CodeDiffEditor";
+import { monacoLanguage } from "../diff/monaco";
+import { SplitDiffView } from "../diff/SplitDiffView";
 import { openInEditorWindow } from "../ide/editorWindows";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
@@ -28,17 +30,31 @@ export type LogFilter = { reference: string; text: string };
 const COMMIT_MENU: GitMenuEntry<"reset">[] = [{ kind: "reset", label: "Reset Current Branch to Here…", disabledReason: null, isDanger: false, startsGroup: false }];
 
 /**
- * The Git tab: the branch tree, the commit log of the session's worktree with its graph, and the selected commit's
- * files, details and the diff of the selected file. The log starts on the session's own branch, so its commits show
- * on top of the branch they will be pushed to, and reloads after every turn of the agent and every local write
- * (`editVersion`), since both may commit. A new filter selects its newest commit, so a click on a branch shows its head
+ * The Git tab: the branch tree, the commit log of `scope` with its graph, and the selected commit's files, details and
+ * the diff of the selected file. For a session the log starts on its own branch, so its commits show on top of the
+ * branch they will be pushed to, and reloads after every turn of the agent and every local write (`editVersion`),
+ * since both may commit; a repository's checkout, shown while no session is active, reloads after the tab's own
+ * actions and can check branches out. A new filter selects its newest commit, so a click on a branch shows its head
  * and that commit's files; a right click on a commit offers to reset the checked-out branch to it.
  */
-export function GitPanel({ sessionId }: { sessionId: string }) {
-  const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
+export function GitPanel({ scope }: { scope: GitScope }) {
+  const sessionId = scope.kind === "session" ? scope.id : null;
+  /** Identifies the scope in load keys; the panel is remounted for another scope. */
+  const scopeKey = scope.kind === "session" ? scope.id : scope.path;
+  const editVersion = useHuntStore((state) => (sessionId ? (state.chats[sessionId]?.editVersion ?? 0) : 0));
   const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
+  /** Counts the changes the tab made to a repository's checkout, which has no session to count them. */
+  const [repoVersion, setRepoVersion] = useState(0);
+  const version = sessionId ? editVersion : repoVersion;
   const sessions = useHuntStore((state) => state.sessions);
   const session = sessions.find((candidate) => candidate.id === sessionId) ?? null;
+  const repoPath = session?.repoPath ?? (scope.kind === "repo" ? scope.path : null);
+  /** Why the menu cannot check a branch out: a session works on its branch, also one working in the repository's checkout. */
+  const checkoutBlocked = useMemo(() => {
+    if (session) return session.workspace === "checkout" ? "The session works in this checkout" : "The session's worktree is bound to its branch";
+    const holder = sessions.find((candidate) => candidate.workspace === "checkout" && candidate.repoPath === repoPath && !candidate.parentId);
+    return holder ? `The session "${holder.title}" works in this checkout` : null;
+  }, [session, sessions, repoPath]);
   const remote = session ? remoteOf(session, sessions) : null;
   /** The session's own branch and the branch on `origin` a push of it lands on; `null` without a session or local worktree. */
   const pushes = useMemo(() => (session?.pushTarget ? { branch: session.branch, target: session.pushTarget } : null), [session]);
@@ -68,23 +84,23 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** What the loaded commits belong to; a page that arrives for another key is dropped. */
-  const logKey = `${sessionId}\n${filter.reference}\n${filter.text}\n${editVersion}`;
+  const logKey = `${scopeKey}\n${filter.reference}\n${filter.text}\n${version}`;
   const logKeyRef = useRef(logKey);
   logKeyRef.current = logKey;
   /** The filter whose commits the log shows; the first page of another one selects its newest commit. */
   const shownFilterRef = useRef<string | null>(null);
 
   useLoad(
-    () => commands.gitRefs(sessionId),
+    () => commands.gitRefs(scope),
     { onValue: setRefs, onError: (reason) => setError(errorText(reason)) },
-    [sessionId, editVersion],
+    [scopeKey, version],
   );
 
   // The first page loads for every filter and after every change of the history; later pages append below.
   useLoad(
     () => {
       setIsLoading(true);
-      return commands.gitLog(sessionId, { ...filter, skip: 0, limit: PAGE_SIZE });
+      return commands.gitLog(scope, { ...filter, skip: 0, limit: PAGE_SIZE });
     },
     {
       onValue: (page) => {
@@ -111,7 +127,7 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
     const key = logKeyRef.current;
     setIsLoadingMore(true);
     commands
-      .gitLog(sessionId, { ...filter, skip: commits.length, limit: PAGE_SIZE })
+      .gitLog(scope, { ...filter, skip: commits.length, limit: PAGE_SIZE })
       .then((page) => {
         if (logKeyRef.current !== key) return;
         setCommits((current) => [...current, ...page]);
@@ -119,7 +135,7 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
       })
       .catch((reason) => setError(errorText(reason)))
       .finally(() => setIsLoadingMore(false));
-  }, [hasMore, isLoading, isLoadingMore, sessionId, filter, commits.length]);
+  }, [hasMore, isLoading, isLoadingMore, scope, filter, commits.length]);
 
   // The selection follows the list: a commit that left it gives way to the first one.
   useEffect(() => {
@@ -135,33 +151,44 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
   }, [selectedId]);
 
   useLoad(
-    () => commands.gitCommit(sessionId, selectedId ?? ""),
+    () => commands.gitCommit(scope, selectedId ?? ""),
     { onValue: setDetails, onError: (reason) => setError(errorText(reason)) },
-    [sessionId, selectedId, editVersion],
+    [scopeKey, selectedId, version],
     { isEnabled: !!selectedId },
   );
 
   useLoad(
-    () => commands.gitCommitFileDiff(sessionId, selectedId ?? "", selectedFile?.path ?? "", selectedFile?.oldPath ?? null),
+    () => commands.gitCommitFileDiff(scope, selectedId ?? "", selectedFile?.path ?? "", selectedFile?.oldPath ?? null),
     { onValue: setDiff, onError: (reason) => setError(errorText(reason)) },
-    [sessionId, selectedId, selectedFile],
+    [scopeKey, selectedId, selectedFile],
     { isEnabled: !!selectedId && !!selectedFile },
   );
 
   const selectedCommit = useMemo(() => commits.find((commit) => commit.id === selectedId) ?? null, [commits, selectedId]);
   const unpushed = useMemo(() => new Set(refs?.unpushed ?? []), [refs]);
   const localBranches = useMemo(() => new Set((refs?.refs ?? []).filter((ref) => ref.kind === "local").map((ref) => ref.name)), [refs]);
-  const menuActions = useMemo(() => (menu ? branchActions(menu.ref, { head: refs?.head ?? "HEAD", pushes, isRemoteSession: !!remote, isPollerSession: remote?.origin === "swf" }) : []), [menu, refs, pushes, remote]);
+  const menuActions = useMemo(() => (menu ? branchActions(menu.ref, { head: refs?.head ?? "HEAD", pushes, isRemoteSession: !!remote, isPollerSession: remote?.origin === "swf", checkoutBlocked }) : []),
+    [menu, refs, pushes, remote, checkoutBlocked],
+  );
   /** Local branches origin lacks that no session of the repository has checked out, which the branch tree's button deletes. */
   const prunable = useMemo(() => {
-    if (!refs || !session) return [];
-    const kept = new Set([refs.head, ...sessions.filter((candidate) => candidate.repoPath === session.repoPath).map((candidate) => candidate.branch)]);
+    if (!refs || !repoPath) return [];
+    const kept = new Set([refs.head, ...sessions.filter((candidate) => candidate.repoPath === repoPath).map((candidate) => candidate.branch)]);
     return localBranchesWithoutOrigin(refs.refs, kept);
-  }, [refs, session, sessions]);
+  }, [refs, repoPath, sessions]);
   /** The branches of origin a push could land on, without the `origin/` prefix. */
   const originBranches = useMemo(() => (refs?.refs ?? []).map((ref) => (ref.kind === "remote" ? originBranchName(ref.name) : null)).filter((name): name is string => !!name), [refs]);
 
-  /** Runs the Git command of `action` on the branch `ref`; a success reloads every view of the worktree through `editVersion`. */
+  /** Reloads every view of the scope: a session's through its `editVersion`, a repository's checkout in this tab. */
+  const refresh = () => {
+    if (sessionId) {
+      noteWorktreeChanged(sessionId);
+    } else {
+      setRepoVersion((current) => current + 1);
+    }
+  };
+
+  /** Runs the Git command of `action` on the branch `ref`; a success reloads every view of the scope. */
   const runAction = async (ref: GitRef, action: BranchAction) => {
     if (action.kind === "rename") {
       setRenaming(ref.name);
@@ -174,11 +201,11 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
     setBusyLabel(BUSY_LABELS[action.kind]);
     setNotice(null);
     try {
-      const outcome = await performAction(sessionId, ref, action);
+      const outcome = await performAction(scope, ref, action);
       if (outcome) {
         setError(null);
         setNotice(outcome.notice);
-        noteWorktreeChanged(sessionId);
+        refresh();
       }
     } catch (reason) {
       setError(errorText(reason));
@@ -187,15 +214,15 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
     }
   };
 
-  /** Fetches every branch of origin; a success reloads the branch tree and the log through `editVersion`. */
+  /** Fetches every branch of origin; a success reloads the branch tree and the log. */
   const fetchOrigin = async () => {
     setBusyLabel(BUSY_LABELS.fetch);
     setNotice(null);
     try {
-      await commands.gitFetchOrigin(sessionId);
+      await commands.gitFetchOrigin(scope);
       setError(null);
       setNotice("Fetched origin");
-      noteWorktreeChanged(sessionId);
+      refresh();
     } catch (reason) {
       setError(errorText(reason));
     } finally {
@@ -213,21 +240,21 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
     const failures: string[] = [];
     for (const branch of prunable) {
       try {
-        await commands.gitDeleteBranch(sessionId, branch, true);
+        await commands.gitDeleteBranch(scope, branch, true);
       } catch (reason) {
         failures.push(`${branch}: ${errorText(reason)}`);
       }
     }
     setBusyLabel(null);
     setError(failures.length ? failures.join("\n") : null);
-    noteWorktreeChanged(sessionId);
+    refresh();
   };
 
   const onRenamed = (branch: string, newName: string) => {
     if (filter.reference === branch) {
       setFilter((current) => ({ ...current, reference: newName }));
     }
-    noteWorktreeChanged(sessionId);
+    refresh();
   };
 
   return (
@@ -278,7 +305,7 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
                 <span className="min-w-0 flex-1 truncate font-mono text-neutral-300">
                   {selectedFile ? (selectedFile.oldPath ? `${selectedFile.oldPath} → ${selectedFile.path}` : selectedFile.path) : "No file selected"}
                 </span>
-                {selectedFile && selectedFile.status !== "D" ? (
+                {sessionId && selectedFile && selectedFile.status !== "D" ? (
                   <button
                     type="button"
                     onClick={() => void openInEditorWindow(sessionId, { path: selectedFile.path })}
@@ -290,7 +317,20 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
                 ) : null}
               </div>
               <div className="relative min-h-0 flex-1 bg-(--diff-bg)">
-                {diff && selectedFile && selectedId ? (
+                {diff && selectedFile && selectedId && !sessionId ? (
+                  <SplitDiffView
+                    key={`${scopeKey}:${selectedId}:${diff.path}`}
+                    original={diff.oldContent ?? ""}
+                    modified={diff.newContent ?? ""}
+                    language={monacoLanguage(diff.path)}
+                    fontSize={diffFontSize}
+                    lineHeight={diffLineHeight}
+                    fontFamily={diffFontFamily}
+                    readOnly
+                    collapseUnchanged
+                    onEditorsCreated={() => undefined}
+                  />
+                ) : diff && selectedFile && selectedId && sessionId ? (
                   <CodeDiffEditor
                     key={`${sessionId}:${selectedId}:${diff.path}`}
                     sessionId={sessionId}
@@ -343,10 +383,10 @@ export function GitPanel({ sessionId }: { sessionId: string }) {
           }}
         />
       ) : null}
-      {resetTarget ? <ResetDialog sessionId={sessionId} head={refs?.head ?? "HEAD"} commit={resetTarget} onClose={() => setResetTarget(null)} onReset={() => noteWorktreeChanged(sessionId)} /> : null}
-      {renaming ? <RenameBranchDialog sessionId={sessionId} branch={renaming} onClose={() => setRenaming(null)} onRenamed={(newName) => onRenamed(renaming, newName)} /> : null}
-      {isRetargeting && pushes ? (
-        <PushTargetDialog sessionId={sessionId} branch={pushes.branch} current={pushes.target} candidates={originBranches} onClose={() => setIsRetargeting(false)} onChanged={() => noteWorktreeChanged(sessionId)} />
+      {resetTarget ? <ResetDialog scope={scope} head={refs?.head ?? "HEAD"} commit={resetTarget} onClose={() => setResetTarget(null)} onReset={refresh} /> : null}
+      {renaming ? <RenameBranchDialog scope={scope} branch={renaming} onClose={() => setRenaming(null)} onRenamed={(newName) => onRenamed(renaming, newName)} /> : null}
+      {isRetargeting && pushes && sessionId ? (
+        <PushTargetDialog sessionId={sessionId} branch={pushes.branch} current={pushes.target} candidates={originBranches} onClose={() => setIsRetargeting(false)} onChanged={refresh} />
       ) : null}
     </PersistentGroup>
   );
@@ -358,46 +398,54 @@ type ActionOutcome = { notice: string | null };
 const DONE: ActionOutcome = { notice: null };
 
 /**
- * Runs the Git command behind `action` for the branch `ref` of the session; `null` when it did not run (a delete or
- * force pull the user did not confirm). A local branch whose commits no other branch has is deleted only after a
- * confirmation, and a force pull is confirmed since it drops the commits the upstream lacks.
+ * Runs the Git command behind `action` for the branch `ref` of `scope`; `null` when it did not run (a delete or force
+ * pull the user did not confirm, or an action of a session's own branch outside a session). A local branch whose
+ * commits no other branch has is deleted only after a confirmation, and a force pull is confirmed since it drops the
+ * commits the upstream lacks.
  */
-async function performAction(sessionId: string, ref: GitRef, action: BranchAction): Promise<ActionOutcome | null> {
+async function performAction(scope: GitScope, ref: GitRef, action: BranchAction): Promise<ActionOutcome | null> {
   const upstream = ref.upstream ?? "its upstream";
   switch (action.kind) {
+    case "checkout": {
+      if (scope.kind !== "repo") return null;
+      await commands.gitCheckout(scope.path, ref.name, ref.kind === "remote");
+      return { notice: `Checked out ${ref.kind === "remote" ? (originBranchName(ref.name) ?? ref.name) : ref.name}` };
+    }
     case "rebase":
-      await commands.gitRebase(sessionId, ref.name);
+      await commands.gitRebase(scope, ref.name);
       return DONE;
     case "merge":
-      await commands.gitMerge(sessionId, ref.name);
+      await commands.gitMerge(scope, ref.name);
       return DONE;
     case "update":
-      await commands.gitUpdateBranch(sessionId);
+      if (scope.kind !== "session") return null;
+      await commands.gitUpdateBranch(scope.id);
       return DONE;
     case "pull": {
-      const didMove = await commands.gitPullBranch(sessionId, ref.name);
+      const didMove = await commands.gitPullBranch(scope, ref.name);
       return { notice: didMove ? `Pulled ${upstream} into ${ref.name}` : `${ref.name} is up to date with ${upstream}` };
     }
     case "forcePull": {
       const lost = ref.ahead ? `The ${ref.ahead} ${ref.ahead === 1 ? "commit" : "commits"} it has that ${upstream} lacks are lost.` : `Commits it has that ${upstream} lacks are lost.`;
       if (!(await confirmDestructive(`Force pull ${ref.name}?\n\n${ref.name} is reset to ${upstream}. ${lost}`, "Force pull"))) return null;
-      await commands.gitForcePullBranch(sessionId, ref.name);
+      await commands.gitForcePullBranch(scope, ref.name);
       return { notice: `Reset ${ref.name} to ${upstream}` };
     }
     case "fetch":
-      await commands.gitFetchBranch(sessionId, originBranchName(ref.name) ?? "");
+      await commands.gitFetchBranch(scope, originBranchName(ref.name) ?? "");
       return DONE;
     case "push":
-      await commands.pushBranch(sessionId);
+      if (scope.kind !== "session") return null;
+      await commands.pushBranch(scope.id);
       return DONE;
     case "pushBranch":
-      await commands.gitPushLocalBranch(sessionId, ref.name);
+      await commands.gitPushLocalBranch(scope, ref.name);
       return DONE;
     case "delete":
-      return (await deleteLocalBranch(sessionId, ref.name)) ? DONE : null;
+      return (await deleteLocalBranch(scope, ref.name)) ? DONE : null;
     case "deleteRemote": {
       if (!(await confirmDestructive(`Delete ${ref.name} on origin?\n\nEveryone who fetched it keeps a copy, but the branch is gone for the team.`))) return null;
-      await commands.gitDeleteRemoteBranch(sessionId, originBranchName(ref.name) ?? "");
+      await commands.gitDeleteRemoteBranch(scope, originBranchName(ref.name) ?? "");
       return DONE;
     }
     case "rename":
@@ -406,14 +454,14 @@ async function performAction(sessionId: string, ref: GitRef, action: BranchActio
   }
 }
 
-async function deleteLocalBranch(sessionId: string, branch: string): Promise<boolean> {
+async function deleteLocalBranch(scope: GitScope, branch: string): Promise<boolean> {
   try {
-    await commands.gitDeleteBranch(sessionId, branch, false);
+    await commands.gitDeleteBranch(scope, branch, false);
     return true;
   } catch (reason) {
     if (!String(reason).includes("not fully merged")) throw reason;
   }
   if (!(await confirmDestructive(`Delete branch ${branch}?\n\nIt has commits no other branch has; they are lost with it.`))) return false;
-  await commands.gitDeleteBranch(sessionId, branch, true);
+  await commands.gitDeleteBranch(scope, branch, true);
   return true;
 }

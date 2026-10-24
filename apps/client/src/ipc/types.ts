@@ -509,6 +509,9 @@ export type GitRef = { name: string; kind: RefKind; target: string; upstream: st
 /** Every branch and tag, the checked-out branch (`HEAD` when detached) and the commits a push would publish. */
 export type RefList = { head: string; refs: GitRef[]; unpushed: string[] };
 
+/** What the Git tab works on: a session's worktree, or a repository's own checkout while no session is active. */
+export type GitScope = { kind: "session"; id: string } | { kind: "repo"; path: string };
+
 /** A file a commit changed; `oldPath` is set for a rename. */
 export type CommitFile = { path: string; status: string; oldPath: string | null };
 

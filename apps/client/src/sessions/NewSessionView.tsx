@@ -58,6 +58,17 @@ type View = "start" | "pullRequests" | "sessionVms";
 const LIST_TOGGLE = `${SECONDARY_BUTTON_XS} aria-pressed:border-white/15 aria-pressed:bg-(--row-active) aria-pressed:text-white`;
 
 /**
+ * The repository of the start view: the one the user chose, else the one used last, else the newest top-level
+ * session's, which is listed only once the stored sessions are loaded after launch; empty while there is none.
+ */
+export function useStartRepoPath(): string {
+  const chosen = useHuntStore((state) => state.startRepoPath);
+  const recent = useAgentDefaultsStore((state) => state.recentRepoPaths[0] ?? null);
+  const latest = useHuntStore((state) => latestTopLevelSession(state.sessions)?.repoPath ?? null);
+  return chosen ?? recent ?? latest ?? "";
+}
+
+/**
  * Start view for a new session, shown in the chat pane instead of a dialog. The repository used last is preselected;
  * choosing a repository (folder dialog or the list of recent ones) creates the session right away, titled after the
  * repository until the first prompt names it, so the sidebar lists it and the diff, editor and graph panes work before
@@ -80,8 +91,6 @@ export function NewSessionView({
   initialPrompt?: PromptDraft | null;
 }) {
   const parent = useHuntStore((state) => state.sessions.find((session) => session.id === parentId));
-  /** Repository of the newest top-level session; preselected when no repository was remembered yet. */
-  const latestRepoPath = useHuntStore((state) => latestTopLevelSession(state.sessions)?.repoPath ?? null);
   const createSession = useHuntStore((state) => state.createSession);
   const createSubSession = useHuntStore((state) => state.createSubSession);
   const setTab = useSessionViewStore((state) => state.setTab);
@@ -90,9 +99,12 @@ export function NewSessionView({
   const preferred = useAgentDefaultsStore((state) => state.preferred);
   const setPreferred = useAgentDefaultsStore((state) => state.setPreferred);
   const recentRepoPaths = useAgentDefaultsStore((state) => state.recentRepoPaths);
+  /** The repository of the view; the inspector's Git tab shows its checkout meanwhile. */
   /** Whether the remote settings name a gateway; without one there are no remote sessions to list. */
   const hasGateway = useSettingsStore((state) => configuredVmSettings(state.remote) !== null);
-  const [repoPath, setRepoPath] = useState(() => (parentId ? "" : (recentRepoPaths[0] ?? latestRepoPath ?? "")));
+  const startRepoPath = useStartRepoPath();
+  const setRepoPath = useHuntStore((state) => state.setStartRepoPath);
+  const repoPath = parentId ? "" : startRepoPath;
   const [branches, setBranches] = useState<string[]>([]);
   const [baseRef, setBaseRef] = useState("");
   /** Branch the repository's checkout is on; a session in the checkout starts from it. */
@@ -114,11 +126,6 @@ export function NewSessionView({
   const draftRef = useRef<PromptDraft | null>(initialPrompt);
   const recentReposButtonRef = useRef<HTMLButtonElement>(null);
 
-  // At launch the view is up before the stored sessions are listed: the newest session's repository is preselected once they are.
-  useEffect(() => {
-    if (repoPath || parentId || !latestRepoPath) return;
-    setRepoPath(latestRepoPath);
-  }, [repoPath, parentId, latestRepoPath]);
   useEffect(() => {
     if (repoPath) return;
     setBranches([]);

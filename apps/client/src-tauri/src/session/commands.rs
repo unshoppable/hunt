@@ -2161,35 +2161,70 @@ pub async fn list_changed_files(app: AppHandle, id: Uuid) -> Result<Vec<ChangedF
         .collect())
 }
 
-/// A page of the commit log of the session's worktree, see `git::LogQuery`.
-#[tauri::command]
-pub async fn git_log(app: AppHandle, id: Uuid, query: git::LogQuery) -> Result<Vec<git::Commit>, String> {
-    let record = worktree_session(&app, id)?;
-    git::log(&record.worktree_path, &query).await
+/// What the Git tab works on: the worktree of a session, or the own checkout of a repository when no session is active.
+#[derive(serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum GitScope {
+    Session { id: Uuid },
+    Repo { path: PathBuf },
 }
 
-/// Every branch and tag of the session's worktree, its checked-out branch and the commits no remote has.
-#[tauri::command]
-pub async fn git_refs(app: AppHandle, id: Uuid) -> Result<git::RefList, String> {
-    let record = worktree_session(&app, id)?;
-    git::refs(&record.worktree_path).await
+/// The directory git runs in for `scope`, with the session's record when it is one.
+async fn git_scope(app: &AppHandle, scope: &GitScope) -> Result<(PathBuf, Option<SessionRecord>), String> {
+    match scope {
+        GitScope::Session { id } => {
+            let record = worktree_session(app, *id)?;
+            Ok((record.worktree_path.clone(), Some(record)))
+        }
+        GitScope::Repo { path } => {
+            git::ensure_repo_root(path).await?;
+            Ok((path.clone(), None))
+        }
+    }
 }
 
-/// Message, committer, changed files and containing branches of the commit `commit` of the session's worktree.
+/// A page of the commit log of the scope, see `git::LogQuery`.
 #[tauri::command]
-pub async fn git_commit(app: AppHandle, id: Uuid, commit: String) -> Result<git::CommitDetails, String> {
-    let record = worktree_session(&app, id)?;
-    git::commit_details(&record.worktree_path, &commit).await
+pub async fn git_log(app: AppHandle, scope: GitScope, query: git::LogQuery) -> Result<Vec<git::Commit>, String> {
+    let (directory, _) = git_scope(&app, &scope).await?;
+    git::log(&directory, &query).await
 }
 
-/// The change of `path` (moved from `old_path` when the commit renamed it) in the commit `commit` of the session's worktree.
+/// Every branch and tag of the scope, its checked-out branch and the commits no remote has.
 #[tauri::command]
-pub async fn git_commit_file_diff(app: AppHandle, id: Uuid, commit: String, path: String, old_path: Option<String>) -> Result<FileDiff, String> {
-    let (record, _) = session_file(&app, id, &path)?;
+pub async fn git_refs(app: AppHandle, scope: GitScope) -> Result<git::RefList, String> {
+    let (directory, _) = git_scope(&app, &scope).await?;
+    git::refs(&directory).await
+}
+
+/// Message, committer, changed files and containing branches of the commit `commit` of the scope.
+#[tauri::command]
+pub async fn git_commit(app: AppHandle, scope: GitScope, commit: String) -> Result<git::CommitDetails, String> {
+    let (directory, _) = git_scope(&app, &scope).await?;
+    git::commit_details(&directory, &commit).await
+}
+
+/// The change of `path` (moved from `old_path` when the commit renamed it) in the commit `commit` of the scope.
+#[tauri::command]
+pub async fn git_commit_file_diff(app: AppHandle, scope: GitScope, commit: String, path: String, old_path: Option<String>) -> Result<FileDiff, String> {
+    let (directory, _) = git_scope(&app, &scope).await?;
+    git::ensure_inside_worktree(&path)?;
     if let Some(old_path) = &old_path {
         git::ensure_inside_worktree(old_path)?;
     }
-    git::commit_file_diff(&record.worktree_path, &commit, &path, old_path.as_deref()).await
+    git::commit_file_diff(&directory, &commit, &path, old_path.as_deref()).await
+}
+
+/// Checks the branch `branch` out in the repository's own checkout, a remote one (`is_remote`, `origin/<name>`) as the
+/// local branch of its name. Refused while a session works in that checkout, whose record names the branch.
+#[tauri::command]
+pub async fn git_checkout(app: AppHandle, repo_path: PathBuf, branch: String, is_remote: bool) -> Result<(), String> {
+    git::ensure_repo_root(&repo_path).await?;
+    let holder = store::load_sessions(&app)?.into_iter().find(|stored| stored.workspace == Workspace::Checkout && stored.repo_path == repo_path);
+    if let Some(holder) = holder {
+        return Err(format!("failed to check out {branch}: the session \"{}\" works in the checkout", holder.title));
+    }
+    git::checkout_branch(&repo_path, &branch, is_remote).await
 }
 
 /// A move of the session's branch to another commit, made in its local worktree from the Git tab.
@@ -2271,25 +2306,30 @@ async fn move_head(app: &AppHandle, record: &SessionRecord, change: HeadMove) ->
     .await
 }
 
-/// Rebases the session's branch onto the branch or remote branch `onto`; a conflict aborts and reports the files.
-#[tauri::command]
-pub async fn git_rebase(app: AppHandle, id: Uuid, onto: String) -> Result<(), String> {
-    let record = worktree_session(&app, id)?;
-    move_head(&app, &record, HeadMove::RebaseOnto(onto)).await
+/// Applies `change` to the checked-out branch of `scope`: a session's through `move_head`, a repository's checkout directly.
+async fn move_scope_head(app: &AppHandle, scope: &GitScope, change: HeadMove) -> Result<(), String> {
+    match git_scope(app, scope).await? {
+        (_, Some(record)) => move_head(app, &record, change).await,
+        (directory, None) => change.apply(&directory).await,
+    }
 }
 
-/// Merges the branch or remote branch `from` into the session's branch; a conflict aborts and reports the files.
+/// Rebases the checked-out branch onto the branch or remote branch `onto`; a conflict aborts and reports the files.
 #[tauri::command]
-pub async fn git_merge(app: AppHandle, id: Uuid, from: String) -> Result<(), String> {
-    let record = worktree_session(&app, id)?;
-    move_head(&app, &record, HeadMove::Merge(from)).await
+pub async fn git_rebase(app: AppHandle, scope: GitScope, onto: String) -> Result<(), String> {
+    move_scope_head(&app, &scope, HeadMove::RebaseOnto(onto)).await
 }
 
-/// Resets the session's branch to the commit `commit` in `mode`, WebStorm's "Reset Current Branch to Here".
+/// Merges the branch or remote branch `from` into the checked-out branch; a conflict aborts and reports the files.
 #[tauri::command]
-pub async fn git_reset(app: AppHandle, id: Uuid, commit: String, mode: git::ResetMode) -> Result<(), String> {
-    let record = worktree_session(&app, id)?;
-    move_head(&app, &record, HeadMove::Reset(commit, mode)).await
+pub async fn git_merge(app: AppHandle, scope: GitScope, from: String) -> Result<(), String> {
+    move_scope_head(&app, &scope, HeadMove::Merge(from)).await
+}
+
+/// Resets the checked-out branch to the commit `commit` in `mode`, WebStorm's "Reset Current Branch to Here".
+#[tauri::command]
+pub async fn git_reset(app: AppHandle, scope: GitScope, commit: String, mode: git::ResetMode) -> Result<(), String> {
+    move_scope_head(&app, &scope, HeadMove::Reset(commit, mode)).await
 }
 
 /// Rebases the session's own branch onto the branch on `origin` its push lands on, fetched first, as the push does.
@@ -2304,44 +2344,46 @@ pub async fn git_update_branch(app: AppHandle, id: Uuid) -> Result<(), String> {
 /// Fast-forwards the local branch `branch`, another one than the session's, to its upstream as fetched now; `false`
 /// when the upstream has no commits the branch lacks.
 #[tauri::command]
-pub async fn git_pull_branch(app: AppHandle, id: Uuid, branch: String) -> Result<bool, String> {
-    let record = worktree_session(&app, id)?;
-    git::fast_forward_branch(&record.worktree_path, &branch).await
+pub async fn git_pull_branch(app: AppHandle, scope: GitScope, branch: String) -> Result<bool, String> {
+    let (directory, _) = git_scope(&app, &scope).await?;
+    git::fast_forward_branch(&directory, &branch).await
 }
 
 /// Resets the local branch `branch`, another one than the session's, to its upstream as fetched now; the commits the
 /// upstream lacks are lost.
 #[tauri::command]
-pub async fn git_force_pull_branch(app: AppHandle, id: Uuid, branch: String) -> Result<(), String> {
-    let record = worktree_session(&app, id)?;
-    git::reset_branch_to_upstream(&record.worktree_path, &branch).await
+pub async fn git_force_pull_branch(app: AppHandle, scope: GitScope, branch: String) -> Result<(), String> {
+    let (directory, _) = git_scope(&app, &scope).await?;
+    git::reset_branch_to_upstream(&directory, &branch).await
 }
 
 /// Pushes the local branch `branch`, another one than the session's (see `push_branch`), to the branch of the same
 /// name on `origin`.
 #[tauri::command]
-pub async fn git_push_local_branch(app: AppHandle, id: Uuid, branch: String) -> Result<(), String> {
-    let record = worktree_session(&app, id)?;
-    git::push_local_branch(&record.worktree_path, &branch).await
+pub async fn git_push_local_branch(app: AppHandle, scope: GitScope, branch: String) -> Result<(), String> {
+    let (directory, _) = git_scope(&app, &scope).await?;
+    git::push_local_branch(&directory, &branch).await
 }
 
-/// Renames the local branch `branch` to `new_name`. The records of the session and its sub chats follow a rename of the
-/// session's own branch, which a remote session refuses, since its VM has the branch under that name.
+/// Renames the local branch `branch` to `new_name`. The records of the sessions of the repository on that branch and
+/// their sub chats follow; a remote session refuses, since its VM has the branch under that name.
 #[tauri::command]
-pub async fn git_rename_branch(app: AppHandle, id: Uuid, branch: String, new_name: String) -> Result<(), String> {
-    let record = worktree_session(&app, id)?;
-    let is_own = branch == record.branch;
-    if is_own && remote_host(&app, &record).is_some() {
+pub async fn git_rename_branch(app: AppHandle, scope: GitScope, branch: String, new_name: String) -> Result<(), String> {
+    let (directory, record) = git_scope(&app, &scope).await?;
+    let repo_path = record.map_or_else(|| directory.clone(), |record| record.repo_path);
+    let holders: Vec<SessionRecord> = store::load_sessions(&app)?
+        .into_iter()
+        .filter(|stored| stored.repo_path == repo_path && stored.branch == branch)
+        .collect();
+    if holders.iter().any(|holder| remote_host(&app, holder).is_some()) {
         return Err("failed to rename the branch: the session's VM has it under this name; retrieve the session first".into());
     }
-    git::rename_branch(&record.worktree_path, &branch, &new_name).await?;
-    if !is_own {
+    git::rename_branch(&directory, &branch, &new_name).await?;
+    if holders.is_empty() {
         return Ok(());
     }
-    for stored in store::load_sessions(&app)? {
-        if stored.worktree_path == record.worktree_path && stored.branch == branch {
-            store::update_session(&app, stored.id, |stored| stored.branch = new_name.clone())?;
-        }
+    for holder in holders {
+        store::update_session(&app, holder.id, |stored| stored.branch = new_name.clone())?;
     }
     announce_sessions_changed(&app);
     Ok(())
@@ -2429,30 +2471,30 @@ fn set_push_target_pending(app: &AppHandle, host_id: Uuid, is_pending: bool) {
 
 /// Deletes the local branch `branch`; without `force`, git refuses one whose commits its upstream (or HEAD) lacks.
 #[tauri::command]
-pub async fn git_delete_branch(app: AppHandle, id: Uuid, branch: String, force: bool) -> Result<(), String> {
-    let record = worktree_session(&app, id)?;
-    git::delete_local_branch(&record.worktree_path, &branch, force).await
+pub async fn git_delete_branch(app: AppHandle, scope: GitScope, branch: String, force: bool) -> Result<(), String> {
+    let (directory, _) = git_scope(&app, &scope).await?;
+    git::delete_local_branch(&directory, &branch, force).await
 }
 
 /// Deletes the branch `branch` on `origin`.
 #[tauri::command]
-pub async fn git_delete_remote_branch(app: AppHandle, id: Uuid, branch: String) -> Result<(), String> {
-    let record = worktree_session(&app, id)?;
-    git::delete_remote_branch(&record.worktree_path, &branch).await
+pub async fn git_delete_remote_branch(app: AppHandle, scope: GitScope, branch: String) -> Result<(), String> {
+    let (directory, _) = git_scope(&app, &scope).await?;
+    git::delete_remote_branch(&directory, &branch).await
 }
 
 /// Fetches the branch `branch` of `origin`; `false` when `origin` has no such branch.
 #[tauri::command]
-pub async fn git_fetch_branch(app: AppHandle, id: Uuid, branch: String) -> Result<bool, String> {
-    let record = worktree_session(&app, id)?;
-    git::fetch_branch(&record.worktree_path, &branch).await
+pub async fn git_fetch_branch(app: AppHandle, scope: GitScope, branch: String) -> Result<bool, String> {
+    let (directory, _) = git_scope(&app, &scope).await?;
+    git::fetch_branch(&directory, &branch).await
 }
 
 /// Fetches every branch of `origin` and drops the remote-tracking refs of the branches `origin` no longer has.
 #[tauri::command]
-pub async fn git_fetch_origin(app: AppHandle, id: Uuid) -> Result<(), String> {
-    let record = worktree_session(&app, id)?;
-    git::fetch_origin(&record.worktree_path).await
+pub async fn git_fetch_origin(app: AppHandle, scope: GitScope) -> Result<(), String> {
+    let (directory, _) = git_scope(&app, &scope).await?;
+    git::fetch_origin(&directory).await
 }
 
 /// Added and removed lines of every changed file of the session (untracked files count as all added).

@@ -1,3 +1,10 @@
+## 0.113.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** round toggles collapse the session list and the chat to an animated rail; both keep a minimum width ([639fcf5](https://github.com/unshoppable/hunt/commit/639fcf5))
+- **client:** guardrail prompts say when a decision is worth an ADR, a replaced ADR is deleted and its number is never given again ([9ef486b](https://github.com/unshoppable/hunt/commit/9ef486b))
+
 ## 0.112.0 (2026-10-24)
 
 ### 🚀 Features

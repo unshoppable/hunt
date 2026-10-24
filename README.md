@@ -397,13 +397,13 @@ or the agent wrote it, so no template file and no empty folder is ever left behi
 
 The "Lint rules" tab lists the ESLint rules of every `eslint.config.*` in the worktree (`read_lint_rules`,
 `apps/client/src-tauri/src/lint_rules.rs`). `apps/client/scripts/eslintRules.mjs` imports the configs on the
-worktree's `node`, so the ESLint and plugins it installs supply each rule's description and documentation link. Per
-config, the tab shows the blocks it adds, not those of a config it spreads, under the globs they apply to. A block
-lists the rules it switches on, and the ones it switches off after an earlier block switched them on. Each rule shows
-whether it comes from ESLint, from an installed plugin, or from a plugin that lives in the repository. The tab only
-reads. Its "Agent" button opens a sub chat whose agent changes the configuration
-(`apps/client/prompts/lint-config.system-prompt.md`). The rules are read again after every agent edit in the
-worktree and whenever the window comes back.
+worktree's `node`, so the ESLint and plugins it installs supply each rule's description and documentation link. The tab
+shows every rule a config switches on, once, grouped by its origin: a plugin that lives in the repository, ESLint itself,
+or an installed plugin. Selecting a rule shows what it checks and every place that sets it: the config, the file globs,
+the severity and the options. A config that spreads another one adds only its own blocks, and a rule switched off after
+an earlier block switched it on shows as `off` there. The tab only reads. Its "Agent" button opens a sub chat whose agent
+changes the selected rule (`apps/client/prompts/lint-rule.system-prompt.md`). The rules are read again after every
+agent edit in the worktree and whenever the window comes back.
 
 Opening a session checks that the worktree's root `CLAUDE.md` names the ADR folder and otherwise offers once to
 append an "Architectural decisions" section with the `ls`/`grep` lookup

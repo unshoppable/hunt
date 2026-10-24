@@ -1,3 +1,11 @@
+## 0.116.0 (2026-10-24)
+
+### 🚀 Features
+
+- the ADR folder of a repository comes from adrDir in its hunt.json (default .claude/resources/adrs), and the guardrail folders are no setting any more ([b01aab5](https://github.com/unshoppable/hunt/commit/b01aab5))
+- **client:** a remote family mirrors its terminal logs between ~/logs on the VM and .hunt/logs on this Mac, and sessions.md names the log folders of every machine ([72ada12](https://github.com/unshoppable/hunt/commit/72ada12))
+- **client:** local terminals run in a bundled tmux server per session family, which logs every window to .hunt/logs/desktop, and the agents on this Mac run their long-running processes there ([2a273ef](https://github.com/unshoppable/hunt/commit/2a273ef))
+
 ## 0.115.0 (2026-10-24)
 
 ### 🚀 Features

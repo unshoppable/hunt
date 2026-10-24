@@ -1,3 +1,9 @@
+## 0.26.0 (2026-10-24)
+
+### 🚀 Features
+
+- the ADR folder of a repository comes from adrDir in its hunt.json (default .claude/resources/adrs), and the guardrail folders are no setting any more ([b01aab5](https://github.com/unshoppable/hunt/commit/b01aab5))
+
 ## 0.25.0 (2026-10-24)
 
 ### 🚀 Features

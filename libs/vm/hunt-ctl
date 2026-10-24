@@ -80,6 +80,8 @@ readonly SERVICE_UNIT_PREFIX=hunt-service@
 readonly SERVICE_NAME_PATTERN='^[a-z][a-z0-9-]{0,31}$'
 # The sudo rule that lets the agent run `hunt-ctl service` (apps/session/vm/sudoers-hunt-service).
 readonly SERVICE_SUDOERS_DROPIN=/etc/sudoers.d/hunt-service
+# The agent's tmux configuration, which logs every window to ~/logs (apps/session/vm/tmux.conf).
+readonly TMUX_CONFIG=/etc/tmux.conf
 # A relay whose status.json heartbeat is older than this is gone.
 readonly HEARTBEAT_MAX_AGE_MS=120000
 # Ports preview-status never lists: Caddy's admin API, the Docker API, LLMNR of systemd-resolved, the preview proxy and
@@ -537,8 +539,8 @@ cmd_install_tools() {
 }
 
 # Installs the systemd units of the current release for the VM's role, the hunt-ctl link and, on a session VM, the
-# agent's login profile, the sudo rule of `hunt-ctl service` and the idle defaults, and (re)starts the units that run
-# all the time. Running services of hunt.json keep going; they take a changed unit at their next start.
+# agent's login profile and tmux configuration, the sudo rule of `hunt-ctl service` and the idle defaults, and
+# (re)starts the units that run all the time. Running services of hunt.json keep going; they take a changed unit at their next start.
 install_units() {
   local unit
   [[ -d $CURRENT/vm/systemd/$role ]] || die "no Hunt release is installed; run hunt-ctl install first"
@@ -559,6 +561,9 @@ install_units() {
   case $role in
     session)
       install -m 0644 "$CURRENT/vm/profile.sh" /etc/profile.d/hunt.sh
+      install -m 0644 "$CURRENT/vm/tmux.conf" "$TMUX_CONFIG"
+      # A tmux server of the agent that runs already (a suspended VM keeps its processes) takes the hooks at once.
+      runuser -u agent -- tmux source-file "$TMUX_CONFIG" >/dev/null 2>&1 || true
       install_sudoers "$CURRENT/vm/sudoers-hunt-service" "$SERVICE_SUDOERS_DROPIN"
       if [[ ! -f $IDLE_CONFIG ]]; then
         install -d -m 0755 "${IDLE_CONFIG%/*}"

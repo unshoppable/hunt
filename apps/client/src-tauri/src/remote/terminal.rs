@@ -1,7 +1,8 @@
 //! Interactive terminals, one per process of the app: on the VM of a remote session, and on this Mac in the family's
 //! tmux server (`crate::tmux`). The services of the repository's hunt.json run as systemd units on the VM and log to
 //! `~/logs/<name>.log`; a terminal follows such a log. The agents run their other long-running processes in the tmux
-//! session `app`, one window per process; a terminal shows one of these windows and takes input. A terminal is a
+//! session `app`, one window per process, which logs to `~/logs/<window name>.log` through the VM's `/etc/tmux.conf`
+//! (`apps/session/vm/tmux.conf`); a terminal shows one of these windows and takes input. A terminal is a
 //! program in a local pseudo terminal (OpenSSH for the VM, the bundled tmux here), so the programs see a real TTY and
 //! keep their colors. Knows nothing about Tauri; `session/commands.rs` owns the commands and forwards the output to the
 //! window.
@@ -20,7 +21,7 @@ use uuid::Uuid;
 
 use super::preview::is_service_name;
 use super::ssh::Ssh;
-use super::{shell_command, shell_quote};
+use super::shell_command;
 use super::RemoteTarget;
 use crate::tmux::{self, Machine, TmuxWindow};
 
@@ -59,37 +60,53 @@ pub async fn list_windows(ssh: &Ssh) -> Result<Vec<TmuxWindow>, String> {
     Ok(tmux::parse_windows(&ssh.run(&as_agent(&["sh", "-c", &tmux::list_windows_script("tmux")])).await?))
 }
 
-/// A package.json script a new tmux window runs: `npm run <script>`, typed into its shell in the folder `directory`.
-pub struct ScriptRun<'a> {
-    pub directory: &'a str,
-    pub script: &'a str,
+/// Starts a login shell in a new window of the tmux session `app` on the VM, created when it does not exist, and returns
+/// the window's ID. The window is called `shell`, or `shell-<n>` when that name is taken; like every window there, it
+/// logs to `~/logs/<name>.log` (the VM's `/etc/tmux.conf`).
+pub async fn open_shell_window(ssh: &Ssh) -> Result<String, String> {
+    let name = tmux::free_window_name(&list_windows(ssh).await?, "shell");
+    window_id_from(&run_script(ssh, &format!("{}echo \"$id\"", tmux::new_window_script("tmux", &name, None, None))).await?, "open a shell")
 }
 
-/// Starts a shell in a new window of the tmux session `app` on the VM, created when it does not exist, and returns the
-/// window's ID. Without `run` the window is called `shell`; with it, it is named after the script, starts in its folder
-/// and runs it, and its shell stays once the script ends, so its output does too. A name that is taken gets a number
-/// (`shell-2`), and the window logs to `~/logs/<name>.log` like the agent's windows.
-pub async fn open_shell_window(ssh: &Ssh, run: Option<ScriptRun<'_>>) -> Result<String, String> {
+/// Runs the package.json script `script` through npm in the folder `folder` on the VM and returns the ID of its window.
+/// The window stays open with the exit code once the script ends; the script's window that exists already is shown as
+/// it is while the script runs, and runs it again once it ended.
+pub async fn open_script_window(ssh: &Ssh, folder: &str, script: &str) -> Result<String, String> {
     let windows = list_windows(ssh).await?;
-    let output = ssh.run(&as_agent(&["sh", "-c", &shell_window_script(&windows, run)])).await?;
-    let id = output.trim().lines().last().unwrap_or_default();
-    tmux::ensure_window_id(id).map_err(|_| format!("failed to open a shell: tmux answered {output:?}"))?;
-    Ok(id.to_string())
+    if let Some(window) = tmux::script_window(&windows, script, folder) {
+        if window.is_dead {
+            run_script(ssh, &tmux::rerun_script("tmux", &window.id, folder, &script_command(script))?).await?;
+        }
+        return Ok(window.id.clone());
+    }
+    let name = tmux::free_window_name(&windows, &tmux::script_window_name(script));
+    let output = run_script(ssh, &tmux::script_window_script("tmux", &name, folder, script, &script_command(script))).await?;
+    window_id_from(&output, "run the script")
 }
 
-/// The `sh` script behind `open_shell_window` next to the windows `windows`, which prints the new window's ID last.
-fn shell_window_script(windows: &[TmuxWindow], run: Option<ScriptRun<'_>>) -> String {
-    let (base, folder, typed) = match run {
-        None => ("shell".to_string(), None, String::new()),
-        Some(run) => {
-            let command = shell_command("npm", &["run", run.script]);
-            let typed = format!(r#"tmux send-keys -t "$id" -l {} && tmux send-keys -t "$id" Enter && "#, shell_quote(&command));
-            (tmux::script_window_name(run.script), Some(run.directory), typed)
-        }
-    };
-    let name = tmux::free_window_name(windows, &base);
-    let logged = format!(r#"mkdir -p logs && tmux pipe-pane -o -t "$id" {} && "#, shell_quote(&format!("cat >> ~/logs/{name}.log")));
-    format!("{}{logged}{typed}echo \"$id\"", tmux::new_window_script("tmux", &name, folder, None))
+/// Runs the script of the script window `id` on the VM again in the same window, which logs it as before.
+pub async fn rerun_window(ssh: &Ssh, id: &str) -> Result<(), String> {
+    let windows = list_windows(ssh).await?;
+    let (script, folder) = tmux::script_of(&windows, id)?;
+    run_script(ssh, &tmux::rerun_script("tmux", id, folder, &script_command(script))?).await.map(|_| ())
+}
+
+/// The command a package.json script window on the VM runs: the script through npm in a login shell of the user
+/// `agent`, which takes the agent's environment from `/etc/profile.d/hunt.sh`.
+fn script_command(script: &str) -> String {
+    shell_command("bash", &["-l", "-c", &shell_command("npm", &["run", script])])
+}
+
+/// Runs the `sh` script `script` on the VM as the user `agent` and returns what it printed.
+async fn run_script(ssh: &Ssh, script: &str) -> Result<String, String> {
+    ssh.run(&as_agent(&["sh", "-c", script])).await
+}
+
+/// The window ID a window script printed last; `action` names what failed otherwise.
+fn window_id_from(output: &str, action: &str) -> Result<String, String> {
+    let id = output.trim().lines().last().unwrap_or_default();
+    tmux::ensure_window_id(id).map_err(|_| format!("failed to {action}: tmux answered {output:?}"))?;
+    Ok(id.to_string())
 }
 
 /// Ends the window `id` of the tmux session `app` on the VM and the processes in it.
@@ -396,22 +413,9 @@ mod tests {
     }
 
     #[test]
-    fn shell_window_script_logs_the_window_and_types_a_script_into_it_in_its_folder() {
-        let shell = TmuxWindow { id: "@1".into(), name: "shell".into(), script: None, is_dead: false, exit_code: None, folder: None };
-        assert_eq!(
-            shell_window_script(&[shell], None),
-            "id=$(if tmux has-session -t =app 2>/dev/null; then tmux new-window -d -t =app: -n shell-2 -P -F '#{window_id}'; \
-             else tmux new-session -d -s app -n shell-2 -P -F '#{window_id}'; fi) || exit 1; \
-             mkdir -p logs && tmux pipe-pane -o -t \"$id\" 'cat >> ~/logs/shell-2.log' && echo \"$id\""
-        );
-        let run = ScriptRun { directory: "/home/agent/work/app dir", script: "start:server" };
-        assert_eq!(
-            shell_window_script(&[], Some(run)),
-            "id=$(if tmux has-session -t =app 2>/dev/null; then tmux new-window -d -t =app: -n start:server -c '/home/agent/work/app dir' -P -F '#{window_id}'; \
-             else tmux new-session -d -s app -n start:server -c '/home/agent/work/app dir' -P -F '#{window_id}'; fi) || exit 1; \
-             mkdir -p logs && tmux pipe-pane -o -t \"$id\" 'cat >> ~/logs/start:server.log' && \
-             tmux send-keys -t \"$id\" -l 'npm run start:server' && tmux send-keys -t \"$id\" Enter && echo \"$id\""
-        );
+    fn a_script_window_on_the_vm_runs_npm_in_a_login_shell_of_the_agent() {
+        assert_eq!(script_command("start:server"), "bash -l -c 'npm run start:server'");
+        assert_eq!(script_command("a b; rm"), "bash -l -c 'npm run '\\''a b; rm'\\'''");
     }
 
     #[test]

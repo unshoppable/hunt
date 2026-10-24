@@ -29,6 +29,7 @@ describe("terminalTabs", () => {
     expect(tabs[2].target).toEqual({ kind: "window", id: "@4", machine: "vm" });
     expect(tabs[2].service).toBeNull();
     expect(tabs[4].target).toEqual({ kind: "window", id: "@1", machine: "desktop" });
+    expect(tabs[2].title).toContain("~/logs/worker.log");
     expect(tabs[4].title).toContain(".hunt/logs/desktop/vite.log");
   });
 
@@ -52,11 +53,12 @@ describe("windowState", () => {
 });
 
 describe("endedScriptWindow", () => {
-  it("offers to run again only an ended script window on this Mac", () => {
+  it("offers to run again only an ended script window, on the VM as on this Mac", () => {
     const ended = window("@2", "start", { script: "start", isDead: true, exitCode: 1 });
     const [vmTab, desktopTab] = terminalTabs([], [ended], [ended], true);
     expect(endedScriptWindow(desktopTab)).toBe(ended);
-    expect(endedScriptWindow(vmTab)).toBeNull();
+    expect(endedScriptWindow(vmTab)).toBe(ended);
+    expect(endedScriptWindow(terminalTabs([], [window("@3", "shell", { isDead: true })], [], false)[0])).toBeNull();
     expect(endedScriptWindow(terminalTabs([], [], [window("@2", "start", { script: "start" })], false)[0])).toBeNull();
     expect(endedScriptWindow(terminalTabs([service("api")], [], [], false)[0])).toBeNull();
   });

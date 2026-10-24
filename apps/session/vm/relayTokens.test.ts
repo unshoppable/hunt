@@ -21,7 +21,7 @@ const OTHER_ID = "7c0c6f2e-0000-4000-8000-0000000000bb";
 /** The image of services.test.ts. */
 const DOCKERFILE = `FROM node:24-bookworm-slim
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
-      bash ca-certificates curl iproute2 jq sudo util-linux \\
+      bash ca-certificates curl iproute2 jq sudo tmux util-linux \\
     && rm -rf /var/lib/apt/lists/*
 RUN groupadd -g 2000 agent && useradd -u 2000 -g 2000 -m -d /home/agent -s /bin/bash agent \\
     && mkdir -p /etc/hunt /etc/systemd/system /opt/hunt/node/bin && echo session >/etc/hunt/role \\

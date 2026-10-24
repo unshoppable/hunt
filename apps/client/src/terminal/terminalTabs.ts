@@ -57,9 +57,8 @@ export function windowState(window: TmuxWindow): Description | null {
   return { text: describeLocalExit(window.exitCode), tone: window.exitCode === 0 ? "idle" : "error" };
 }
 
-/** The ended package.json script window on this Mac that `tab` shows, which "Run again" runs again; null for any other tab. */
+/** The ended package.json script window that `tab` shows, which "Run again" runs again; null for any other tab. */
 export function endedScriptWindow(tab: TerminalTab): TmuxWindow | null {
-  if (tab.target.kind !== "window" || tab.target.machine !== "desktop") return null;
   return tab.window?.script && tab.window.isDead ? tab.window : null;
 }
 
@@ -100,5 +99,7 @@ function windowTabs(machine: Machine, windows: readonly TmuxWindow[], labelSuffi
 
 function windowTitle(machine: Machine, window: TmuxWindow): string {
   const what = window.script ? `npm run ${window.script} in the tmux window ${window.name}` : `The tmux window ${window.name}`;
-  return machine === "vm" ? `${what} on the VM` : `${what} on this Mac; its output goes to .hunt/logs/desktop/${window.name}.log`;
+  return machine === "vm"
+    ? `${what} on the VM; its output goes to ~/logs/${window.name}.log`
+    : `${what} on this Mac; its output goes to .hunt/logs/desktop/${window.name}.log`;
 }

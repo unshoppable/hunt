@@ -1021,16 +1021,20 @@ pub async fn open_shell_window(app: AppHandle, registry: State<'_, SessionRegist
     let target = running_remote(&app, &registry, id, "open a shell").await?;
     let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
     let Some(script) = script else {
-        return remote::terminal::open_shell_window(&ssh, None).await;
+        return remote::terminal::open_shell_window(&ssh).await;
     };
     let folder = Path::new(&remote_worktree(&app, id, &target, &ssh).await?).join(&directory).display().to_string();
-    remote::terminal::open_shell_window(&ssh, Some(remote::terminal::ScriptRun { directory: &folder, script: &script })).await
+    remote::terminal::open_script_window(&ssh, &folder, &script).await
 }
 
-/// Runs the package.json script of the script window `window_id` in the family's tmux server on this Mac again.
+/// Runs the package.json script of the ended script window `window_id` of the session `id` on `machine` again.
 #[tauri::command]
-pub async fn rerun_terminal_window(app: AppHandle, id: Uuid, window_id: String) -> Result<(), String> {
-    local_tmux(&app, id)?.1.rerun_window(&window_id).await
+pub async fn rerun_terminal_window(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, machine: Machine, window_id: String) -> Result<(), String> {
+    if machine == Machine::Desktop {
+        return local_tmux(&app, id)?.1.rerun_window(&window_id).await;
+    }
+    let target = running_remote(&app, &registry, id, "run the script again").await?;
+    remote::terminal::rerun_window(&Ssh::open(&target.vm, &ssh_dir()?).await?, &window_id).await
 }
 
 /// Ends the tmux window `window_id` of the session `id` on `machine` and the processes in it.
@@ -3272,7 +3276,8 @@ mod tests {
         assert!(REMOTE_PROMPT.contains("the section \"The repository's services\" below"));
         assert!(REMOTE_PROMPT.contains("```sh\nsudo -n hunt-ctl service start <name>…\n```"));
         assert!(REMOTE_PROMPT.contains("$HUNT_PREVIEW_URL_TEMPLATE` with `{port}`"));
-        assert!(REMOTE_PROMPT.contains("tmux pipe-pane -o -t app:<name> 'cat >> ~/logs/<name>.log'\n```"));
+        assert!(REMOTE_PROMPT.contains("tmux new-window -t app -n <name> '<command>'\n```"));
+        assert!(!REMOTE_PROMPT.contains("pipe-pane"), "every window on the VM logs through its /etc/tmux.conf");
 
         let poller = remote_system_prompt("", false, "", None);
         assert!(poller.starts_with("\n\n## Remote session\nThis session runs on a VM of its own. The user brings its commits back to their machine.\n\n"));

@@ -159,12 +159,12 @@ export const commands = {
   /**
    * Starts a shell in a new tmux window of the session `id` and resolves to the window's ID: on the VM of a remote
    * session, in the family's tmux server on this Mac for a local one. With `script` the window runs that package.json
-   * script of the worktree folder `directory`; on this Mac a window that already runs it is reused and, when the script
-   * ended, runs it again.
+   * script of the worktree folder `directory`; a window that already runs it is reused and, when the script ended, runs
+   * it again.
    */
   openShellWindow: (id: string, directory = "", script: string | null = null) => invoke<string>("open_shell_window", { id, directory, script }),
-  /** Runs the package.json script of the ended script window `windowId` in the family's tmux server on this Mac again. */
-  rerunTerminalWindow: (id: string, windowId: string) => invoke<void>("rerun_terminal_window", { id, windowId }),
+  /** Runs the package.json script of the ended script window `windowId` of the session `id` on `machine` again. */
+  rerunTerminalWindow: (id: string, machine: Machine, windowId: string) => invoke<void>("rerun_terminal_window", { id, machine, windowId }),
   /** Ends the tmux window `windowId` of the session `id` on `machine` and the processes in it. */
   closeTerminalWindow: (id: string, machine: Machine, windowId: string) => invoke<void>("close_terminal_window", { id, machine, windowId }),
   /** The checks of the worktree's hunt.json with their last runs. */

@@ -5,7 +5,8 @@
 //! Every window writes its output to `.hunt/logs/desktop/<window name>.log`, where the family's agents read it.
 //!
 //! Also holds the tmux scripts that the tmux session `app` on a session VM shares (`remote/terminal.rs`): they take the
-//! tmux command line, `tmux` there and the quoted `.hunt/tmux` here. Knows nothing about Tauri.
+//! tmux command line, `tmux` there and the quoted `.hunt/tmux` here. The VM's `/etc/tmux.conf`
+//! (`apps/session/vm/tmux.conf`) logs its windows with the same hooks as `config_text`. Knows nothing about Tauri.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -57,6 +58,10 @@ const LIST_FORMAT: &str = "#{window_id}\t#{pane_dead}\t#{pane_dead_status}\t#{@h
 /// The window options of a script window: the package.json script and the folder it runs in.
 const SCRIPT_OPTION: &str = "@hunt-script";
 const FOLDER_OPTION: &str = "@hunt-dir";
+
+/// The hooks after which a pane without a log pipe gets one: a new window, pane or session, and any `pipe-pane`, since
+/// a `pipe-pane -o` closes a pipe that is open (an agent's, or the hook of a grouped view session) and opens none.
+const LOG_HOOKS: [&str; 4] = ["after-new-session", "after-new-window", "after-split-window", "after-pipe-pane"];
 
 /// Where a tmux window runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -153,6 +158,42 @@ pub fn new_window_script(tmux: &str, name: &str, folder: Option<&str>, command: 
     )
 }
 
+/// The `sh` script that creates the window `name` in the tmux session `app`, runs `command` there in `folder` and prints
+/// the window's ID; `command` runs the package.json script `script`, which the window remembers with its folder. The
+/// window stays open with the exit code once the script ends: it starts with `PLACEHOLDER_COMMAND`, so that
+/// `remain-on-exit` is set before the script can end, and keeps the log pipe the configuration opened for it.
+pub fn script_window_script(tmux: &str, name: &str, folder: &str, script: &str, command: &str) -> String {
+    let created = new_window_script(tmux, name, Some(folder), Some(PLACEHOLDER_COMMAND));
+    let options: Vec<String> = [("remain-on-exit", "on"), (SCRIPT_OPTION, script), (FOLDER_OPTION, folder)]
+        .iter()
+        .map(|(option, value)| format!("set-option -w -t \"$id\" {} {} ';' ", shell_quote(option), shell_quote(value)))
+        .collect();
+    let respawn = format!("respawn-pane -k -t \"$id\" -c {} {}", shell_quote(folder), shell_quote(command));
+    format!("{created}{tmux} {}{respawn} && echo \"$id\"", options.concat())
+}
+
+/// The `sh` script that runs `command` in `folder` again in the ended script window `window_id`. Its `pipe-pane`
+/// without a command closes what is left of the window's log pipe (tmux 3.8 closes it when the program ends, 3.3a keeps
+/// it), so that the configuration's `after-pipe-pane` hook opens the log again.
+pub fn rerun_script(tmux: &str, window_id: &str, folder: &str, command: &str) -> Result<String, String> {
+    ensure_window_id(window_id)?;
+    Ok(format!("{tmux} respawn-pane -k -t {window_id} -c {} {} ';' pipe-pane -t {window_id}", shell_quote(folder), shell_quote(command)))
+}
+
+/// The window of `windows` that runs the package.json script `script` in `folder`.
+pub fn script_window<'a>(windows: &'a [TmuxWindow], script: &str, folder: &str) -> Option<&'a TmuxWindow> {
+    windows.iter().find(|window| window.script.as_deref() == Some(script) && window.folder.as_deref() == Some(folder))
+}
+
+/// The package.json script and the folder of the script window `window_id` of `windows`.
+pub fn script_of<'a>(windows: &'a [TmuxWindow], window_id: &str) -> Result<(&'a str, &'a str), String> {
+    windows
+        .iter()
+        .find(|window| window.id == window_id)
+        .and_then(|window| Some((window.script.as_deref()?, window.folder.as_deref()?)))
+        .ok_or_else(|| format!("failed to run the window {window_id} again: it runs no package.json script"))
+}
+
 /// The tmux arguments that show the window `window_id` in the tmux session `view` of its own, grouped with `app`, so
 /// terminals show different windows at once. The view has no status bar, takes the mouse (the wheel scrolls the
 /// window's history) and ends with its terminal. `-u` makes tmux send UTF-8 even when the environment names no UTF-8
@@ -219,37 +260,21 @@ impl LocalTmux {
     pub async fn open_script_window(&self, folder: &Path, script: &str) -> Result<String, String> {
         let windows = self.list_windows().await?;
         let folder = folder.to_string_lossy();
-        let existing = windows.iter().find(|window| window.script.as_deref() == Some(script) && window.folder.as_deref() == Some(&*folder));
-        if let Some(window) = existing {
+        if let Some(window) = script_window(&windows, script, &folder) {
             if window.is_dead {
-                self.rerun_window(&window.id).await?;
+                self.run(&rerun_script(&self.tmux(), &window.id, &folder, &script_command(script))?).await?;
             }
             return Ok(window.id.clone());
         }
         let name = free_window_name(&windows, &script_window_name(script));
-        let tmux = self.tmux();
-        let created = new_window_script(&tmux, &name, Some(&folder), Some(PLACEHOLDER_COMMAND));
-        let options: Vec<String> = [("remain-on-exit", "on"), (SCRIPT_OPTION, script), (FOLDER_OPTION, &folder)]
-            .iter()
-            .map(|(option, value)| format!("set-option -w -t \"$id\" {} {} ';' ", shell_quote(option), shell_quote(value)))
-            .collect();
-        let respawn = format!("respawn-pane -k -t \"$id\" -c {} {}", shell_quote(&folder), shell_quote(&script_command(script)));
-        let started = format!("{tmux} {}{respawn} && echo \"$id\"", options.concat());
-        window_id_from(&self.run(&format!("{created}{started}")).await?)
+        window_id_from(&self.run(&script_window_script(&self.tmux(), &name, &folder, script, &script_command(script))).await?)
     }
 
-    /// Runs the script of the script window `window_id` again in the same window and logs it as before.
+    /// Runs the script of the script window `window_id` again in the same window, which logs it as before.
     pub async fn rerun_window(&self, window_id: &str) -> Result<(), String> {
-        ensure_window_id(window_id)?;
-        let format = format!("#{{{SCRIPT_OPTION}}}\t#{{{FOLDER_OPTION}}}");
-        let output = self.run(&format!("{} display-message -p -t {window_id} {}", self.tmux(), shell_quote(&format))).await?;
-        let (script, folder) = output.trim_end_matches('\n').split_once('\t').unwrap_or_default();
-        if script.is_empty() {
-            return Err(format!("failed to run the window {window_id} again: it runs no package.json script"));
-        }
-        let log = log_command(&desktop_logs(&self.worktree));
-        let args = ["respawn-pane", "-k", "-t", window_id, "-c", folder, &script_command(script), ";", "pipe-pane", "-o", "-t", window_id, &log];
-        self.run(&shell_command(&self.wrapper().to_string_lossy(), &args)).await.map(|_| ())
+        let windows = self.list_windows().await?;
+        let (script, folder) = script_of(&windows, window_id)?;
+        self.run(&rerun_script(&self.tmux(), window_id, folder, &script_command(script))?).await.map(|_| ())
     }
 
     /// Ends the window `window_id` and the processes in it.
@@ -357,27 +382,31 @@ fn script_command(script: &str) -> String {
 }
 
 /// The `sh` command that `pipe-pane` runs for a window: it appends the window's output to `<logs>/<window name>.log`,
-/// after moving a log above `MAX_LOG_BYTES` to `<name>.log.1`. tmux expands the window name, quoted for `sh`.
+/// after moving a log above `MAX_LOG_BYTES` to `<name>.log.1`. tmux expands the window name, quoted for `sh`, and
+/// passes the command through `strftime`, so it holds no `%` but escaped ones; `find -size` measures the log the same
+/// on macOS and Linux, unlike `stat`.
 fn log_command(logs: &Path) -> String {
-    let folder = shell_quote(&logs.to_string_lossy()).replace('#', "##");
+    let folder = shell_quote(&logs.to_string_lossy()).replace('#', "##").replace('%', "%%");
+    let max_kib = MAX_LOG_BYTES / 1024;
     format!(
-        "log={folder}/#{{q:window_name}}.log; [ \"$(stat -f %z \"$log\" 2>/dev/null || echo 0)\" -gt {MAX_LOG_BYTES} ] && mv -f \"$log\" \"$log.1\"; \
+        "log={folder}/#{{q:window_name}}.log; [ -n \"$(find \"$log\" -size +{max_kib}k 2>/dev/null)\" ] && mv -f \"$log\" \"$log.1\"; \
          exec cat >> \"$log\""
     )
 }
 
-/// The server's configuration: every new window logs to `logs` (`log_command`), and a window keeps the name it was
-/// given, which names its log and its tab.
+/// The server's configuration: every pane logs to `logs` (`log_command`), and a window keeps the name it was given,
+/// which names its log and its tab. After each of `LOG_HOOKS` a pane without a log pipe gets one, so nothing but the
+/// end of its program ends a pane's log.
 fn config_text(logs: &Path) -> String {
-    let pipe = format!("pipe-pane -o \"{}\"", log_command(logs).replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$"));
+    let pipe = format!("pipe-pane \"{}\"", log_command(logs).replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$"));
     let mut text = format!(
         "# Written by Hunt for the terminals of this worktree; Hunt overwrites changes.\n\
          set -g history-limit {HISTORY_LINES}\n\
          set -gw automatic-rename off\n\
          set -gw allow-rename off\n"
     );
-    for hook in ["after-new-session", "after-new-window", "after-split-window"] {
-        text.push_str(&format!("set-hook -g {hook} {{ {pipe} }}\n"));
+    for hook in LOG_HOOKS {
+        text.push_str(&format!("set-hook -g {hook} {{ if -F '#{{?pane_pipe,,1}}' {{ {pipe} }} }}\n"));
     }
     text
 }
@@ -473,14 +502,44 @@ mod tests {
     }
 
     #[test]
-    fn config_logs_every_new_window_under_its_name() {
-        let config = config_text(Path::new("/Users/jane/Library/Application Support/hunt/wt #1/.hunt/logs/desktop"));
-        let hook = "set-hook -g after-new-window { pipe-pane -o \"log='/Users/jane/Library/Application Support/hunt/wt ##1/.hunt/logs/desktop'\
-                    /#{q:window_name}.log; [ \\\"\\$(stat -f %z \\\"\\$log\\\" 2>/dev/null || echo 0)\\\" -gt 20971520 ] \
-                    && mv -f \\\"\\$log\\\" \\\"\\$log.1\\\"; exec cat >> \\\"\\$log\\\"\" }";
+    fn config_logs_every_pane_without_a_log_under_its_window_name() {
+        let config = config_text(Path::new("/Users/jane/Library/Application Support/hunt/wt #1 100%/.hunt/logs/desktop"));
+        let hook = "set-hook -g after-new-window { if -F '#{?pane_pipe,,1}' { pipe-pane \"log='/Users/jane/Library/Application Support/hunt/wt ##1 100%%/.hunt/logs/desktop'\
+                    /#{q:window_name}.log; [ -n \\\"\\$(find \\\"\\$log\\\" -size +20480k 2>/dev/null)\\\" ] \
+                    && mv -f \\\"\\$log\\\" \\\"\\$log.1\\\"; exec cat >> \\\"\\$log\\\"\" } }";
         assert!(config.contains(hook), "{config}");
-        assert!(config.contains("set-hook -g after-new-session {"));
+        for hook in ["after-new-session", "after-split-window", "after-pipe-pane"] {
+            assert!(config.contains(&format!("set-hook -g {hook} {{ if -F '#{{?pane_pipe,,1}}' {{ pipe-pane \"log=")), "{hook}: {config}");
+        }
         assert!(config.contains("set -gw automatic-rename off"));
+    }
+
+    #[test]
+    fn a_script_window_keeps_its_script_and_folder_and_stays_once_the_script_ended() {
+        assert_eq!(
+            script_window_script("tmux", "start:server", "/w/app dir", "start:server", "bash -l -c 'npm run start:server'"),
+            "id=$(if tmux has-session -t =app 2>/dev/null; then tmux new-window -d -t =app: -n start:server -c '/w/app dir' -P -F '#{window_id}' \
+             'exec sleep 2147483647'; else tmux new-session -d -s app -n start:server -c '/w/app dir' -P -F '#{window_id}' 'exec sleep 2147483647'; fi) \
+             || exit 1; tmux set-option -w -t \"$id\" remain-on-exit on ';' set-option -w -t \"$id\" @hunt-script start:server ';' \
+             set-option -w -t \"$id\" @hunt-dir '/w/app dir' ';' respawn-pane -k -t \"$id\" -c '/w/app dir' \
+             'bash -l -c '\\''npm run start:server'\\''' && echo \"$id\""
+        );
+        assert_eq!(
+            rerun_script("tmux", "@4", "/w/app dir", "npm run build").unwrap(),
+            "tmux respawn-pane -k -t @4 -c '/w/app dir' 'npm run build' ';' pipe-pane -t @4"
+        );
+        assert!(rerun_script("tmux", "@4;kill-server", "/w", "npm run build").is_err());
+    }
+
+    #[test]
+    fn script_of_names_the_script_and_folder_of_a_script_window_only() {
+        let build = TmuxWindow { script: Some("build".into()), folder: Some("/w".into()), ..window("@2", "build") };
+        let windows = [window("@1", "shell"), build.clone()];
+        assert_eq!(script_of(&windows, "@2").unwrap(), ("build", "/w"));
+        assert!(script_of(&windows, "@1").is_err());
+        assert!(script_of(&windows, "@3").is_err());
+        assert_eq!(script_window(&windows, "build", "/w"), Some(&build));
+        assert_eq!(script_window(&windows, "build", "/other"), None);
     }
 
     /// Waits until the log `name` of the worktree holds `text` and returns the log.
@@ -502,10 +561,13 @@ mod tests {
         std::fs::write(worktree.path().join("package.json"), r#"{"scripts":{"fail":"echo failing && exit 3"}}"#).unwrap();
         let family_id = Uuid::new_v4();
         let tmux = LocalTmux::prepare(worktree.path(), family_id).unwrap();
+        let big_log = desktop_logs(worktree.path()).join("greeting.log");
+        std::fs::File::create(&big_log).unwrap().set_len(MAX_LOG_BYTES + 1).unwrap();
 
         let started = shell_command(&tmux.wrapper().to_string_lossy(), &["new-session", "-d", "-s", APP_SESSION, "-n", "greeting", "echo hello; sleep 30"]);
         tmux.run(&started).await.unwrap();
-        wait_for_log(worktree.path(), "greeting", "hello").await;
+        assert_eq!(wait_for_log(worktree.path(), "greeting", "hello").await, "hello\r\n");
+        assert_eq!(std::fs::metadata(big_log.with_extension("log.1")).unwrap().len(), MAX_LOG_BYTES + 1);
 
         let greeting = tmux.list_windows().await.unwrap().into_iter().find(|window| window.name == "greeting").unwrap();
         let (events, received) = std::sync::mpsc::channel();
@@ -536,6 +598,12 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         assert_eq!(tmux.run(&sessions).await.unwrap().trim(), APP_SESSION);
+
+        let is_logging = shell_command(&tmux.wrapper().to_string_lossy(), &["display-message", "-p", "-t", &greeting.id, "#{pane_pipe}"]);
+        assert_eq!(tmux.run(&is_logging).await.unwrap().trim(), "1", "the view's session ended the log");
+        let toggled = shell_command(&tmux.wrapper().to_string_lossy(), &["pipe-pane", "-o", "-t", &greeting.id, "cat >/dev/null"]);
+        tmux.run(&toggled).await.unwrap();
+        assert_eq!(tmux.run(&is_logging).await.unwrap().trim(), "1", "a pipe-pane -o ended the log");
 
         let script_window = tmux.open_script_window(worktree.path(), "fail").await.unwrap();
         wait_for_log(worktree.path(), "fail", "failing").await;

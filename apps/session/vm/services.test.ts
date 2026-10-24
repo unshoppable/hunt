@@ -20,7 +20,7 @@ const DOMAIN = "hunt.example.com";
 
 const DOCKERFILE = `FROM node:24-bookworm-slim
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
-      bash ca-certificates curl iproute2 jq sudo util-linux \\
+      bash ca-certificates curl iproute2 jq sudo tmux util-linux \\
     && rm -rf /var/lib/apt/lists/*
 RUN groupadd -g 2000 agent && useradd -u 2000 -g 2000 -m -d /home/agent -s /bin/bash agent \\
     && mkdir -p /etc/hunt /etc/systemd/system /opt/hunt/node/bin && echo session >/etc/hunt/role \\
@@ -191,6 +191,41 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(calls).toContain("systemctl daemon-reload");
     expect(calls.filter((call) => call.includes("hunt-service"))).toEqual([]);
     expect(sh("visudo -c -q && echo valid").stdout).toBe("valid\n");
+  });
+
+  it("logs every tmux window of the agent to ~/logs, through a pipe-pane -o and a grouped session, and rotates a big log", () => {
+    expect(sh("stat -c '%a %U' /etc/tmux.conf").stdout).toBe("644 root\n");
+    const tmux = (args: string) => sh(`runuser -u agent -- tmux ${args}`);
+    /** Waits until the log `name` holds `count` lines with `text` and returns the log. */
+    const waitForLog = (name: string, text: string, count = 1) =>
+      sh(`for _ in $(seq 100); do [ "$(grep -c -- "$2" "$1" 2>/dev/null)" -ge "$3" ] && break; sleep 0.1; done; cat "$1"`, [
+        `/home/agent/logs/${name}.log`,
+        text,
+        String(count),
+      ]).stdout;
+    const isLogging = (window: string) => tmux(`display-message -p -t app:${window} '#{pane_pipe}'`).stdout;
+    sh("install -d -o agent -g agent /home/agent/logs && truncate -s 21M /home/agent/logs/web.log && chown agent:agent /home/agent/logs/web.log");
+
+    expect(tmux(`new-session -d -s app -n web 'while :; do echo tick; sleep 0.1; done'`)).toMatchObject({ status: 0, stderr: "" });
+    expect(waitForLog("web", "tick")).toMatch(/^tick\r\n/);
+    expect(sh("stat -c %s /home/agent/logs/web.log.1").stdout).toBe(`${21 * 1024 * 1024}\n`);
+    expect(tmux("new-session -d -t =app -s hunt-view-1")).toMatchObject({ status: 0, stderr: "" });
+    expect(isLogging("web")).toBe("1\n");
+    expect(tmux("pipe-pane -o -t app:web 'cat >/dev/null'")).toMatchObject({ status: 0, stderr: "" });
+    expect(isLogging("web")).toBe("1\n");
+    const ticks = waitForLog("web", "tick").split("tick").length;
+    expect(waitForLog("web", "tick", ticks + 2).split("tick").length).toBeGreaterThan(ticks);
+
+    tmux("new-window -d -t =app: -n build 'exec sleep 2147483647' ';' set-option -w -t app:build remain-on-exit on");
+    tmux("respawn-pane -k -t app:build 'echo first; exit 3'");
+    expect(waitForLog("build", "first")).toBe("first\r\n");
+    tmux("respawn-pane -k -t app:build 'echo second; exit 4' ';' pipe-pane -t app:build");
+    expect(waitForLog("build", "second")).toBe("first\r\nsecond\r\n");
+    const ended = sh(
+      `for _ in $(seq 50); do s=$(runuser -u agent -- tmux display-message -p -t app:build '#{pane_dead} #{pane_dead_status}'); [ "$s" = "1 4" ] && break; sleep 0.1; done; echo "$s"`,
+    );
+    expect(ended.stdout).toBe("1 4\n");
+    tmux("kill-server");
   });
 
   it("lets the agent run only `hunt-ctl service` through sudo", () => {

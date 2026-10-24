@@ -29,7 +29,7 @@ type FocusRequest = { key: string | null; count: number };
  * run their processes. A remote session shows the services of the repository's hunt.json that are in use, as read-only
  * logs, and the windows on its VM, plus "(Mac)" the windows its sub chats opened on this Mac. "+" opens a shell in a
  * new window where the session's agent runs, × ends a window and its process; a package.json script run from the editor
- * gets a window of its own, which on this Mac stays after the script ended and offers "Run again". The first time a
+ * gets a window of its own, which stays after the script ended and offers "Run again". The first time a
  * local session's panel shows without windows, it opens a shell.
  * The panel stays mounted while another tab shows, so its terminals keep their connections. It asks for the processes
  * when it mounts and whenever it shows, then every few seconds, also while another tab shows; the VM only while the
@@ -181,13 +181,15 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
   };
 
   const runAgain = async (tab: TerminalTab, scriptWindow: TmuxWindow) => {
+    if (tab.target.kind !== "window") return;
+    const { machine } = tab.target;
     try {
-      await commands.rerunTerminalWindow(sessionId, scriptWindow.id);
+      await commands.rerunTerminalWindow(sessionId, machine, scriptWindow.id);
     } catch (reason) {
       setError(errorText(reason));
       return;
     }
-    await loadWindows(["desktop"]);
+    await loadWindows([machine]);
     activate(tab.key);
   };
 

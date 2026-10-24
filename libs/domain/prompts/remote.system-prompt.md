@@ -17,13 +17,11 @@ effect only at the next handoff.
 
 Run any other long-running process as a developer would locally (the repository's README, CLAUDE.md and package.json
 say how; Docker with Docker Compose works as usual) in the tmux session `app`, one window per process with a name no
-service has, and pipe each window to a log file, where you read its output:
+service has. Every window writes its output to `~/logs/<name>.log`, where you read it:
 
 ```sh
-mkdir -p ~/logs
 tmux has-session -t app 2>/dev/null || tmux new-session -d -s app
 tmux new-window -t app -n <name> '<command>'
-tmux pipe-pane -o -t app:<name> 'cat >> ~/logs/<name>.log'
 ```
 
 `tmux list-windows -t app` shows what runs; to restart a process, close its window with

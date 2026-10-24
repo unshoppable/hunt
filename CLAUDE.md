@@ -129,6 +129,9 @@ everything else goes here.
   spawn, serialize per key, `eprintln!` on failure.
 - Every tmux call on this Mac goes through the worktree's `.hunt/tmux` (`tmux.rs`: the bundled binary, the family's
   socket and `.hunt/tmux.conf`, whose hooks log every window to `.hunt/logs/desktop/`); never a `tmux` from `PATH`.
+  A session VM's system tmux reads `/etc/tmux.conf` (`apps/session/vm/tmux.conf`) with the same hooks; change both
+  together. Hunt never pipes a window to its log itself: the hooks do, also after any `pipe-pane`, since `-o` closes an
+  open pipe. tmux runs a pipe's command through `strftime`, so it holds no unescaped `%`.
 - `sessions.json` is written only through `session/store.rs` (temp file + rename, under `STORE_LOCK`); a new
   persisted field gets `#[serde(default)]`, a place in `SessionRecord::new`, and a mirror in `src/ipc/types.ts`.
 - Hunt's own agent jobs (diagram generation and the like) each run as a separate headless `claude -p` as in

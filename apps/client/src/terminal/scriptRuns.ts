@@ -10,9 +10,8 @@ import { useTerminalStore } from "../state/terminals";
 const MAIN_WINDOW_LABEL = "main";
 
 /**
- * Runs a package.json script in the Terminal tab of the main window, from any window: a local session runs it in a tmux
- * window of its own on this Mac, a remote session in a new tmux window on its VM. The main window shows the session and
- * its Terminal tab.
+ * Runs a package.json script in the Terminal tab of the main window, from any window: in a tmux window of its own, on
+ * this Mac for a local session and on its VM for a remote one. The main window shows the session and its Terminal tab.
  */
 export function runPackageScript(request: ScriptRunRequest): void {
   if (getCurrentWindow().label === MAIN_WINDOW_LABEL) {

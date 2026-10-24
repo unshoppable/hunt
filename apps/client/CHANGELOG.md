@@ -1,3 +1,17 @@
+## 0.117.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** the Lint rules tab lists every ESLint rule once, with what it checks and every config and glob that sets it ([d3bff7d](https://github.com/unshoppable/hunt/commit/d3bff7d))
+- **client:** ⌘1 and ⌘2 show or hide the session list and the chat, and the pane toggles name their shortcut ([f2ec779](https://github.com/unshoppable/hunt/commit/f2ec779))
+- **client:** the session title heads the summary box, and the Summary toggle shows or hides only the bullets below it ([21788b8](https://github.com/unshoppable/hunt/commit/21788b8))
+
+### 🩹 Fixes
+
+- **client:** file search ranks a name that contains a long query above one that matches it only as a subsequence ([fba26a3](https://github.com/unshoppable/hunt/commit/fba26a3))
+- **client:** the base side of a diff colors imports it cannot resolve like the identifiers of the same name on the current side ([51de6e0](https://github.com/unshoppable/hunt/commit/51de6e0))
+- **client:** the changelist keeps its rows in a sticky layer that follows the scroll offset, so a fast scroll shows no black gaps and the background no longer flickers ([ab43551](https://github.com/unshoppable/hunt/commit/ab43551))
+
 ## 0.116.0 (2026-10-24)
 
 ### 🚀 Features

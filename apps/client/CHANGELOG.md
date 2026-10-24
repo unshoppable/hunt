@@ -1,3 +1,9 @@
+## 0.121.1 (2026-10-24)
+
+### 🩹 Fixes
+
+- **client:** ⌘click in an Angular template jumps to the component or directive of a tag or attribute, to the input or output, and to the component member a name refers to, also in inline templates; ⌘click on templateUrl opens the template ([cb38779](https://github.com/unshoppable/hunt/commit/cb38779))
+
 ## 0.121.0 (2026-10-24)
 
 ### 🚀 Features

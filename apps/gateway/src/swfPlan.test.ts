@@ -8,7 +8,6 @@ import {
   branchName,
   checkPrivateFilesArchive,
   failureComment,
-  fillPrompt,
   firstPrompt,
   huntSessionFile,
   issuesToStart,
@@ -148,13 +147,6 @@ const prompts = {
   swfNudge: readFileSync(new URL("../prompts/swf-nudge.user-prompt.md", import.meta.url), "utf8"),
   swfAnswer: readFileSync(new URL("../prompts/swf-answer.user-prompt.md", import.meta.url), "utf8"),
 };
-
-describe("fillPrompt", () => {
-  it("replaces every placeholder and refuses one without a value", () => {
-    expect(fillPrompt("Issue #{{number}} of {{repo}}, #{{number}}", { number: "3", repo: "acme/app" })).toBe("Issue #3 of acme/app, #3");
-    expect(() => fillPrompt("{{missing}}", {})).toThrow("failed to fill the prompt: no value for {{missing}}");
-  });
-});
 
 /** Joins the lines of a wrapped paragraph: a line break followed by list indentation becomes one space. */
 function unwrap(text: string): string {

@@ -2,7 +2,7 @@
 
 Prompts `hunt-swf` sends to the agent of a session it started for a GitHub issue (`src/swf.ts`). The files are compiled
 in verbatim (`?raw` imports), so they hold nothing but the prompt text; this file says when each is sent.
-`{{placeholders}}` are filled by `fillPrompt` in `src/swfPlan.ts`, which throws on a placeholder without a value.
+`{{placeholders}}` are filled by `fillPrompt` (`libs/domain/src/prompts.ts`) in `src/swfPlan.ts`, which throws on a placeholder without a value.
 The label placeholders (`requested`, `running`, `question`, `done`, `failed`) are the labels of the repository's swf
 workflow; `relabelDone`, `relabelFailed`, `relabelQuestion` and `relabelResume` are the `gh issue edit` commands that
 move the issue from one label to the next (`labelValues`); the prompts append `--title` to the question and resume

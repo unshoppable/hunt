@@ -4,7 +4,7 @@ System-prompt parts that both the desktop app and the gateway's poller append to
 remote session. The files are compiled in verbatim (`include_str!` in `apps/client/src-tauri/src/session/commands.rs` and
 `acp/connection.rs`, `?raw` imports in `apps/gateway/src/swf.ts`), so they hold nothing but the prompt text; this file
 says who sends which of them and when. Only `sessions.system-prompt.md` carries a `{{placeholder}}`, filled by
-`fill_prompt` in `src-tauri/src/graph.rs` and `fillPrompt` in `apps/gateway/src/swfPlan.ts`.
+`fill_prompt` in `src-tauri/src/graph.rs` and `fillPrompt` in `libs/domain/src/prompts.ts`.
 
 | File | Sent by | When | Where it lands |
 | --- | --- | --- | --- |

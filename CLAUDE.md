@@ -48,7 +48,7 @@ everything else goes here.
 - Prompt files live in a `prompts/` folder of the project that sends them (`libs/domain/prompts/` for the parts the
   app and the poller share) and carry their role as suffix: `<name>.system-prompt.md` extends Claude Code's system
   prompt, `<name>.user-prompt.md` is a message Hunt sends into the chat, with `{{name}}` placeholders that code fills
-  (`fillPrompt` in `apps/gateway/src/swfPlan.ts`). Code never holds prompt text, and a prompt file holds nothing but
+  (`fillPrompt` in `libs/domain/src/prompts.ts`). Code never holds prompt text, and a prompt file holds nothing but
   its prompt: the `README.md` of each `prompts/` folder says who sends which file, when and where it lands.
 - Server code (`apps/gateway`, `apps/session`, `libs/domain`) must stay runnable on plain Node, since tests start it
   through type stripping: `erasableSyntaxOnly`, `.ts` extensions in relative imports, and no runtime package but

@@ -4,6 +4,7 @@
  * prompts its agent gets (`apps/gateway/prompts/*.user-prompt.md`, filled here) and the state of the agent the
  * issue's labels report.
  */
+import { fillPrompt } from "../../../libs/domain/src/prompts.ts";
 import type { Issue, IssueComment, IssueState } from "./github.ts";
 
 /** The statuses of a stopped VM, whose `lastStopTimestamp` says since when. */
@@ -246,15 +247,6 @@ function formatDate(iso: string): string {
 /** The `gh` command that replaces the label `from` of the issue with `to`. */
 function relabelCommand(repo: string, issue: number, from: string, to: string): string {
   return `gh issue edit ${issue} --repo ${repo} --remove-label ${from} --add-label ${to}`;
-}
-
-/** `template` with every `{{name}}` replaced by `values[name]`; a placeholder without a value is a bug. */
-export function fillPrompt(template: string, values: Record<string, string>): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (placeholder, name: string) => {
-    const value = values[name];
-    if (value === undefined) throw new Error(`failed to fill the prompt: no value for ${placeholder}`);
-    return value;
-  });
 }
 
 /** The label placeholders of the swf prompts: the labels and the `gh` commands that move the issue between them. */

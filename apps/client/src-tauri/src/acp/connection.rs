@@ -3,7 +3,7 @@
 //! requests through the UI.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
@@ -302,6 +302,7 @@ pub async fn connect(
         SessionStart::New { cwd } | SessionStart::Load { cwd, .. } => is_local.then(|| cwd.clone()),
     };
     let history: Arc<Mutex<Vec<SessionNotification>>> = Arc::default();
+    let system_prompt = system_prompt_append(&app, hunt_session_id, context_prompt, worktree.as_deref());
     let task = AgentTask {
         app: app.clone(),
         hunt_session_id,
@@ -309,7 +310,7 @@ pub async fn connect(
         sync_owner,
         history: history.clone(),
         start,
-        system_prompt: system_prompt_append(&app, hunt_session_id, context_prompt),
+        system_prompt,
         may_start_over: is_local,
         ready,
         shutdown: shutdown_receiver,
@@ -504,11 +505,15 @@ const QUESTION_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "
 /// its own Hunt session id filled in; shared with the gateway's poller.
 const SESSIONS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../libs/domain/prompts/sessions.system-prompt.md"));
 
+/// Tells an agent on this Mac how to run long-running processes in the worktree's tmux (`crate::tmux`), with the
+/// quoted path of its `.hunt/tmux` filled in.
+const TERMINALS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/terminals.system-prompt.md"));
+
 /// Everything Hunt appends to the system prompt of the agent of the Hunt session `hunt_session_id`: the user's
 /// response-style prompt from the settings (if not cleared), the guardrail offer, the change references, the code block
-/// places, the question marker, the sessions file and the optional selection context, each section separated from the
-/// next by a blank line.
-pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prompt: Option<String>) -> String {
+/// places, the question marker, the sessions file, for an agent on this Mac in the worktree `local_worktree` the
+/// terminals, and the optional selection context, each section separated from the next by a blank line.
+pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prompt: Option<String>, local_worktree: Option<&Path>) -> String {
     let style = crate::preferences::system_prompt(app);
     let mut append = String::new();
     if !style.is_empty() {
@@ -524,6 +529,11 @@ pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prom
     append.push_str(QUESTION_PROMPT);
     append.push('\n');
     append.push_str(&crate::graph::fill_prompt(SESSIONS_PROMPT, &[("huntSessionId", &hunt_session_id.to_string())]));
+    if let Some(worktree) = local_worktree {
+        append.push('\n');
+        let tmux = crate::remote::shell_quote(&crate::tmux::wrapper_path(worktree).to_string_lossy());
+        append.push_str(&crate::graph::fill_prompt(TERMINALS_PROMPT, &[("tmux", &tmux)]));
+    }
     append.push_str(context_prompt.as_deref().unwrap_or_default());
     append
 }

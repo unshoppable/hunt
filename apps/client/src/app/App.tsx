@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useShallow } from "zustand/react/shallow";
 import { useHuntStore } from "../state/store";
 import { SessionSidebar } from "../sessions/SessionSidebar";
 import { NewSessionView, useStartRepoPath } from "../sessions/NewSessionView";
@@ -36,14 +35,14 @@ import { ChecksPanel } from "../checks/ChecksPanel";
 import { isAnyCheckRunning } from "../checks/checks";
 import type { ChecksStatus } from "../ipc/types";
 import { PreviewPanel } from "../preview/PreviewPanel";
-import { isPreviewActive, isTerminalActive } from "../preview/services";
+import { isPreviewActive } from "../preview/services";
 import { useChecksStore } from "../state/checks";
 import { usePreviewStore } from "../state/preview";
-import { useTerminalStore } from "../state/terminals";
+import { NO_SESSION_WINDOWS, useTerminalStore } from "../state/terminals";
 import { rememberEditors, useRightTab, useSessionViewStore, type RightTab } from "../state/sessionViews";
-import { LocalTerminalPanel } from "../terminal/LocalTerminalPanel";
 import { useScriptRunRequests } from "../terminal/scriptRuns";
 import { TerminalPanel } from "../terminal/TerminalPanel";
+import { isTerminalActive } from "../terminal/terminalTabs";
 import { HEADER_BAR } from "../ui/bars";
 import { TAB_ACTIVE, TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons";
 import { restoreWindowBounds, useRememberWindowBounds } from "../ui/windowBounds";
@@ -71,25 +70,14 @@ export function App() {
   const hasActiveWorktree = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.hasLocalWorktree ?? false);
   /** Whether the active session reviews a pull request; only then does the PR Description tab show. */
   const isReviewingPullRequest = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === state.activeSessionId)?.pullRequest));
-  /** Something runs on the active session's VM: a green dot marks the Preview or the Terminal tab. */
-  const isPreviewBusy = usePreviewStore((state) => isPreviewActive((activeSessionId && state.previews[activeSessionId]?.status) || null));
-  const isTerminalBusy = usePreviewStore((state) => {
-    const preview = activeSessionId ? state.previews[activeSessionId] : undefined;
-    return isTerminalActive(preview?.status ?? null, preview?.windows ?? null);
-  });
-  /** A script runs in the active local session's terminals: a green dot marks the Terminal tab. */
-  const isLocalScriptRunning = useTerminalStore((state) =>
-    Boolean(activeSessionId && state.local[activeSessionId]?.terminals.some((terminal) => terminal.script && terminal.isRunning)),
-  );
+  const activePreviewStatus = usePreviewStore((state) => (activeSessionId && state.previews[activeSessionId]?.status) || null);
+  const activeWindows = useTerminalStore((state) => (activeSessionId && state.windows[activeSessionId]) || NO_SESSION_WINDOWS);
+  /** Something runs on the active session's VM: a green dot marks the Preview tab. */
+  const isPreviewBusy = isPreviewActive(activePreviewStatus);
+  /** A service or a process in a tmux window of the active session runs: a green dot marks the Terminal tab. */
+  const isTerminalBusy = isTerminalActive(activePreviewStatus, activeWindows);
   /** The checks of the active session ran: a dot on the Checks tab, green while one runs, red when one failed. */
   const checksDot = useChecksStore((state) => checksTabDot((activeSessionId && state.checks[activeSessionId]?.status) || null));
-  const localTerminals = useTerminalStore((state) => state.local);
-  const localSessionIds = useHuntStore(useShallow((state) => state.sessions.filter((session) => !session.remote).map((session) => session.id)));
-  /** The local sessions with terminals; their Terminal panels stay mounted, so switching sessions keeps the terminals running. */
-  const localTerminalSessionIds = useMemo(
-    () => localSessionIds.filter((sessionId) => localTerminals[sessionId]?.terminals.length),
-    [localSessionIds, localTerminals],
-  );
   /** The session whose tab the inspector shows and remembers; none while the start view shows. */
   const shownSessionId = draft ? null : activeSessionId;
   /** The repository of the start view, whose checkout the Git tab shows while the start view of a top-level session does. */
@@ -133,9 +121,6 @@ export function App() {
   const canSearchFiles = Boolean(activeSessionId) && !draft && hasLocalWorktree;
   /** A local session has no preview, a session without a pull request no description; they show the diff instead. */
   const rightTab = (!activeRemoteInstance && storedTab === "preview") || (!isReviewingPullRequest && storedTab === "pullRequest") ? "diff" : storedTab;
-  /** The local session whose Terminal panel shows; its panel mounts at the first show and stays while it has terminals. */
-  const shownLocalTerminalId = activeSessionId && !draft && !isCreatingActive && !activeRemoteInstance && rightTab === "terminal" ? activeSessionId : null;
-  const localTerminalPanelIds = shownLocalTerminalId && !localTerminalSessionIds.includes(shownLocalTerminalId) ? [...localTerminalSessionIds, shownLocalTerminalId] : localTerminalSessionIds;
 
   // ⌘P / double shift: "Go to File" for the active session's worktree.
   useFileSearchShortcut(() => {
@@ -273,7 +258,7 @@ export function App() {
                 isActive={rightTab === "terminal"}
                 onClick={() => setRightTab("terminal")}
                 label="Terminal"
-                dot={activeRemoteInstance ? (isTerminalBusy ? VM_BUSY_DOT : null) : isLocalScriptRunning ? SCRIPT_RUNNING_DOT : null}
+                dot={isTerminalBusy ? PROCESS_RUNNING_DOT : null}
               />
             </nav>
             <div className="min-h-0 flex-1">
@@ -303,13 +288,10 @@ export function App() {
                     <ArchitecturePanel key={`graph:${activeSessionId}`} sessionId={activeSessionId} />
                   )}
                   {activeRemoteInstance && rightTab === "preview" ? <PreviewPanel key={`preview:${activeSessionId}`} sessionId={activeSessionId} /> : null}
-                  {/* The terminal stays mounted while another tab shows, so switching tabs keeps its connection. */}
-                  {activeRemoteInstance ? <TerminalPanel key={`terminal:${activeSessionId}`} sessionId={activeSessionId} isVisible={rightTab === "terminal"} /> : null}
+                  {/* The terminal stays mounted while another tab shows, so switching tabs keeps its connection; tmux keeps its processes running in any case. */}
+                  <TerminalPanel key={`terminal:${activeSessionId}`} sessionId={activeSessionId} isVisible={rightTab === "terminal"} />
                 </>
               )}
-              {localTerminalPanelIds.map((sessionId) => (
-                <LocalTerminalPanel key={`local-terminal:${sessionId}`} sessionId={sessionId} isVisible={sessionId === shownLocalTerminalId} />
-              ))}
             </div>
           </aside>
         </Panel>
@@ -361,7 +343,7 @@ function NoLocalWorktree({ sessionId }: { sessionId: string }) {
 type TabDot = { tone: "running" | "failed"; title: string };
 
 const VM_BUSY_DOT: TabDot = { tone: "running", title: "Something runs on the VM" };
-const SCRIPT_RUNNING_DOT: TabDot = { tone: "running", title: "A script runs" };
+const PROCESS_RUNNING_DOT: TabDot = { tone: "running", title: "A process runs" };
 const CHECK_RUNNING_DOT: TabDot = { tone: "running", title: "A check runs" };
 const CHECK_FAILED_DOT: TabDot = { tone: "failed", title: "A check failed" };
 

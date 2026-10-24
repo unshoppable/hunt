@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { ChangedFileView, ChangeStat, CheckOutput, ChecksStatus, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GitScope, GithubTokenStatus, GuardrailDeclineReason, GithubViewer, GraphStatus, LanguageServerKind, LintRules, LogQuery, PlanUsage, PrettierOutput, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
+import type { ChangedFileView, ChangeStat, CheckOutput, ChecksStatus, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GitScope, GithubTokenStatus, GuardrailDeclineReason, GithubViewer, GraphStatus, LanguageServerKind, LintRules, LogQuery, Machine, PlanUsage, PrettierOutput, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
 export function assetUrl(path: string): string {
@@ -139,32 +139,34 @@ export const commands = {
    */
   setRemoteSettings: (settings: VmSettings | null) => invoke<void>("set_remote_settings", { settings }),
   /**
-   * Opens a terminal with `cols` × `rows` cells showing `process` on the VM of the remote session `id`. The caller picks
-   * `terminalId` and listens before it calls, since the output (`terminal:output`, then `terminal:exit`, both sent to
-   * this window only) may arrive before the promise resolves. A VM that is off stays off.
+   * Opens a terminal with `cols` × `rows` cells showing `process` of the session `id`: a service or tmux window on its
+   * VM, or a window of the family's tmux server on this Mac. The caller picks `terminalId` and listens before it calls,
+   * since the output (`terminal:output`, then `terminal:exit`, both sent to this window only) may arrive before the
+   * promise resolves. A VM that is off stays off.
    */
   openTerminal: (id: string, terminalId: string, process: TerminalTarget, cols: number, rows: number) =>
     invoke<void>("open_terminal", { id, terminalId, process, cols, rows }),
-  /**
-   * Opens a terminal with `cols` × `rows` cells in the worktree folder `directory` of the local session `id`: a login
-   * shell, or with `script` that package.json script, run by npm. Events as with `openTerminal`.
-   */
-  openLocalTerminal: (id: string, terminalId: string, directory: string, script: string | null, cols: number, rows: number) =>
-    invoke<void>("open_local_terminal", { id, terminalId, directory, script, cols, rows }),
   /** Types `data`, base64 of the input bytes, into the terminal. */
   writeTerminal: (terminalId: string, data: string) => invoke<void>("write_terminal", { terminalId, data }),
   resizeTerminal: (terminalId: string, cols: number, rows: number) => invoke<void>("resize_terminal", { terminalId, cols, rows }),
   /** Ends the terminal; the process it shows keeps running. Closing a terminal that is not open does nothing. */
   closeTerminal: (terminalId: string) => invoke<void>("close_terminal", { terminalId }),
-  /** The windows of the tmux session `app` on the VM of the remote session `id`; none while the VM is off. */
-  terminalWindows: (id: string) => invoke<TmuxWindow[]>("terminal_windows", { id }),
   /**
-   * Starts a shell in a new tmux window on the VM of the remote session `id` and resolves to the window's ID; with
-   * `script` the window runs that package.json script of the worktree folder `directory`.
+   * The windows of the tmux session `app` of the session `id` on `machine`: none while the VM is off, and none on this
+   * Mac while a remote session has no local worktree yet.
+   */
+  terminalWindows: (id: string, machine: Machine) => invoke<TmuxWindow[]>("terminal_windows", { id, machine }),
+  /**
+   * Starts a shell in a new tmux window of the session `id` and resolves to the window's ID: on the VM of a remote
+   * session, in the family's tmux server on this Mac for a local one. With `script` the window runs that package.json
+   * script of the worktree folder `directory`; on this Mac a window that already runs it is reused and, when the script
+   * ended, runs it again.
    */
   openShellWindow: (id: string, directory = "", script: string | null = null) => invoke<string>("open_shell_window", { id, directory, script }),
-  /** Ends the tmux window `windowId` on the VM of the remote session `id` and the processes in it. */
-  closeTerminalWindow: (id: string, windowId: string) => invoke<void>("close_terminal_window", { id, windowId }),
+  /** Runs the package.json script of the ended script window `windowId` in the family's tmux server on this Mac again. */
+  rerunTerminalWindow: (id: string, windowId: string) => invoke<void>("rerun_terminal_window", { id, windowId }),
+  /** Ends the tmux window `windowId` of the session `id` on `machine` and the processes in it. */
+  closeTerminalWindow: (id: string, machine: Machine, windowId: string) => invoke<void>("close_terminal_window", { id, machine, windowId }),
   /** The checks of the worktree's hunt.json with their last runs. */
   checksStatus: (id: string) => invoke<ChecksStatus>("checks_status", { id }),
   /** Runs the check `name`, locally or on the session's running VM; `checks:changed` and `checks:output` report the run. */

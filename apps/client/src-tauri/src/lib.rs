@@ -24,6 +24,7 @@ mod screenshots;
 mod workspace;
 mod session;
 mod terminal;
+mod tmux;
 
 use acp::{PermissionRegistry, SessionRegistry};
 use graph::WatcherRegistry;
@@ -100,12 +101,12 @@ pub fn run() {
             session::commands::delete_remote_secret,
             session::commands::set_remote_settings,
             session::commands::open_terminal,
-            session::commands::open_local_terminal,
             session::commands::write_terminal,
             session::commands::resize_terminal,
             session::commands::close_terminal,
             session::commands::terminal_windows,
             session::commands::open_shell_window,
+            session::commands::rerun_terminal_window,
             session::commands::close_terminal_window,
             session::commands::checks_status,
             session::commands::run_check,
@@ -226,14 +227,14 @@ pub fn run() {
                     let _ = main.set_focus();
                 }
             }
-            // `run` ends in process::exit, which skips Drop; stop the agent and language server processes explicitly first.
+            // `run` ends in process::exit, which skips Drop; stop the agent, language server and tmux processes explicitly first.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 app.state::<TerminalRegistry>().close_all();
                 app.state::<checks::CheckRegistry>().cancel_everything();
                 let registry = app.state::<SessionRegistry>();
                 let lsp_registry = app.state::<lsp::LspRegistry>();
                 tauri::async_runtime::block_on(async {
-                    tokio::join!(registry.shutdown_all(), lsp::shutdown_all(&lsp_registry));
+                    tokio::join!(registry.shutdown_all(), lsp::shutdown_all(&lsp_registry), tmux::kill_all_servers());
                 });
             }
         });

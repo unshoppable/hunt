@@ -702,7 +702,8 @@ log (`tail -n 5000 -F ~/logs/<name>.log`); `hunt-service` sets `FORCE_COLOR=1` u
 tools keep their colors in the log. Each window of the tmux session `app`, in which the agent runs its other
 long-running processes, gets a tab that takes input: it attaches to a tmux session of its own grouped with `app`
 (`hunt-view-<terminal id>`, no status bar, mouse on, destroyed with the terminal), so several tabs show different windows
-at once. "+" opens a shell in a new window `shell`, × ends a window after a confirmation. The panel lists the windows
+at once. "+" opens a shell in a new window `shell`, `shell-2`, …, whose output goes to `~/logs/<name>.log`, × ends a
+window after a confirmation. The panel lists the windows
 (`tmux list-windows`) and the services (`preview_status`) when it shows, then every 5 s while the session is connected.
 The backend (`apps/client/src-tauri/src/remote/terminal.rs`) runs `ssh -tt … sudo -n -iu agent …` in a local pseudo
 terminal (`portable-pty`), so the programs see a real TTY and keep their colors. A terminal joins the shared SSH
@@ -710,6 +711,23 @@ connection when one is open but never starts it, and streams its output to the w
 (`terminal:output`, then `terminal:exit`). It connects when its tab is first shown, stays connected while another tab
 shows, and ends when its process is gone, with the session's panel, its window or a reload; the processes keep running.
 A VM that is off is not started for it.
+
+On this Mac the *Terminal* tab works the same way, with the bundled tmux 3.8 (`scripts/buildTmux.ts`, a static build
+Hunt ships as a sidecar next to its executable; `client:tmux` builds it). Every family (a session and its sub chats) has
+a tmux server of its own on the socket `$TMPDIR/hunt-tmux/<root session id>` (`hunt-tmux-dev` for a debug build), so
+the windows of a local session and of its sub chats are one list. Whenever a local agent starts or a terminal opens,
+Hunt writes the worktree's `.hunt/tmux`, a wrapper that starts that binary on that socket with `.hunt/tmux.conf`
+(`apps/client/src-tauri/src/tmux.rs`); every tmux call of Hunt and of the agents goes through it, so the server always
+starts with Hunt's configuration. The agents on this Mac get its path in their system prompt
+(`apps/client/prompts/terminals.system-prompt.md`) and run their long-running processes as windows of its session `app`.
+The configuration's hooks pipe every new window into `.hunt/logs/desktop/<window name>.log`, which moves to `.log.1`
+beyond 20 MiB when a window starts. A local session's panel shows these windows and opens a shell when it first shows
+without any; a remote session's panel adds them, marked "(Mac)", to the VM's. A package.json script run from the editor
+gets a window named after it, which stays after the script ended (`remain-on-exit`) with its exit code and *Run again*
+(`respawn-pane`, then the log reattached); running the script again reuses that window. The panel lists the windows
+when it shows and every 5 s, also behind other tabs, which keeps the tab's green dot current: a script, a service or a
+process of an agent runs. The servers end when Hunt quits, when their session is deleted and when it is handed to a VM;
+a reload or another session leaves the processes running.
 
 While a remote session is connected, Hunt syncs its files between the worktree on the VM and the local worktree in
 both directions (`apps/client/src-tauri/src/remote/sync.rs`, triggered by `apps/client/src-tauri/src/session/sync.rs`),

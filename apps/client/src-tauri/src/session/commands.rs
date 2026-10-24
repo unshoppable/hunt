@@ -37,11 +37,12 @@ use crate::graph::{self, WatcherRegistry};
 use crate::ide;
 use crate::terminal;
 use crate::lint_rules::{self, LintRules};
+use crate::tmux::{self, LocalTmux, Machine, TmuxWindow};
 use crate::lsp::{self, LspRegistry};
 use crate::remote::api::{validate_remote_secret_name, validate_remote_secret_value, GatewayApi, RemoteSecretSummary};
 use crate::remote::preview::PreviewStatus;
 use crate::remote::ssh::{ssh_dir, Ssh};
-use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize, TerminalTarget, TmuxWindow};
+use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize, TerminalTarget};
 use crate::remote::{self, claude_dir, Progress, RemoteStep, RemoteTarget, Reporter, VmRef, VmSettings};
 use crate::screenshots::{self, Screenshot};
 use crate::session::attribution::{self, FileVersion};
@@ -541,6 +542,12 @@ async fn activate(
 ) -> Result<SessionView, String> {
     let id = record.id;
     let sync_owner = transport.sync_owner();
+    // An agent on this Mac finds the worktree's tmux, which its system prompt names, ready.
+    if sync_owner.is_none() && record.worktree_path.is_dir() {
+        if let Err(error) = LocalTmux::prepare(&record.worktree_path, record.parent_id.unwrap_or(id)) {
+            eprintln!("preparing the tmux of session {id} failed: {error}");
+        }
+    }
     let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt);
     let mut live = connect(app.clone(), id, start, context_prompt, transport).await?;
     let acp_session_id = live.acp_session_id.to_string();
@@ -924,9 +931,10 @@ async fn running_remote(app: &AppHandle, registry: &SessionRegistry, id: Uuid, a
     Ok(target)
 }
 
-/// Opens the terminal `terminal_id` with `cols` × `rows` cells showing `process` on the VM of the remote session `id`.
-/// The caller picks the ID so it can listen before the first output arrives: `terminal:output` and finally
-/// `terminal:exit` go to the calling window only, which owns the terminal. A VM that is off is not started.
+/// Opens the terminal `terminal_id` with `cols` × `rows` cells showing `process` of the session `id`: a service or a
+/// window on the VM of a remote session, whose VM must run (it is not started), or a window of the family's tmux server
+/// on this Mac. The caller picks the ID so it can listen before the first output arrives: `terminal:output` and finally
+/// `terminal:exit` go to the calling window only, which owns the terminal.
 #[tauri::command]
 pub async fn open_terminal(
     app: AppHandle,
@@ -939,34 +947,29 @@ pub async fn open_terminal(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let target = running_remote(&app, &registry, id, "open the terminal").await?;
-    let args = remote::terminal::attach_args(&target, &process, terminal_id, &ssh_dir()?).await?;
-    let terminal = Terminal::spawn("ssh", &args, None, &[], TerminalSize { cols, rows }, forward_terminal_events(&app, window.label(), terminal_id))?;
+    let size = TerminalSize { cols, rows };
+    let events = forward_terminal_events(&app, window.label(), terminal_id);
+    let terminal = match &process {
+        TerminalTarget::Window { id: window_id, machine: Machine::Desktop } => {
+            let (record, tmux) = local_tmux(&app, id)?;
+            let args = tmux::view_args(&tmux::view_name(terminal_id), window_id)?;
+            Terminal::spawn(&tmux.wrapper().to_string_lossy(), &args, Some(&record.worktree_path), &terminal::foreign_env(), size, events)?
+        }
+        _ => {
+            let target = running_remote(&app, &registry, id, "open the terminal").await?;
+            let args = remote::terminal::attach_args(&target, &process, terminal_id, &ssh_dir()?).await?;
+            Terminal::spawn("ssh", &args, None, &[], size, events)?
+        }
+    };
     terminals.insert(terminal_id, window.label(), terminal)
 }
 
-/// Opens the terminal `terminal_id` with `cols` × `rows` cells in the folder `directory` of the worktree of the local
-/// session `id`: a login shell, or with `script` that package.json script, run by npm. Its output and end go to the
-/// calling window as with `open_terminal`.
-#[tauri::command]
-pub fn open_local_terminal(
-    app: AppHandle,
-    window: tauri::WebviewWindow,
-    terminals: State<'_, TerminalRegistry>,
-    id: Uuid,
-    terminal_id: Uuid,
-    directory: String,
-    script: Option<String>,
-    cols: u16,
-    rows: u16,
-) -> Result<(), String> {
-    let record = local_session(&app, id)?;
-    let folder = worktree_file(&record, &directory)?;
-    let (program, args) = terminal::local_shell(script.as_deref());
-    let size = TerminalSize { cols, rows };
-    let events = forward_terminal_events(&app, window.label(), terminal_id);
-    let terminal = Terminal::spawn(&program, &args, Some(&folder), &terminal::foreign_env(), size, events)?;
-    terminals.insert(terminal_id, window.label(), terminal)
+/// The family's tmux server on this Mac for the session `id`, the server of the family's root session, with the
+/// worktree's `.hunt/tmux` written.
+fn local_tmux(app: &AppHandle, id: Uuid) -> Result<(SessionRecord, LocalTmux), String> {
+    let record = worktree_session(app, id)?;
+    let tmux = LocalTmux::prepare(&record.worktree_path, record.parent_id.unwrap_or(record.id))?;
+    Ok((record, tmux))
 }
 
 /// Hands the output and the end of the terminal `terminal_id` to the window `owner`, as `terminal:output` and `terminal:exit`.
@@ -983,10 +986,17 @@ fn forward_terminal_events(app: &AppHandle, owner: &str, terminal_id: Uuid) -> i
     }
 }
 
-/// The windows of the tmux session `app` on the VM of the remote session `id`, in their order. A VM that is off has
-/// none; it is not started.
+/// The windows of the tmux session `app` of the session `id` on `machine`, in their order: on the VM of a remote
+/// session, where a VM that is off has none and is not started, or in the family's tmux server on this Mac, which a
+/// remote session without a local worktree yet does not have.
 #[tauri::command]
-pub async fn terminal_windows(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid) -> Result<Vec<TmuxWindow>, String> {
+pub async fn terminal_windows(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, machine: Machine) -> Result<Vec<TmuxWindow>, String> {
+    if machine == Machine::Desktop {
+        if !store::find_session(&app, id)?.worktree_path.is_dir() {
+            return Ok(Vec::new());
+        }
+        return local_tmux(&app, id)?.1.list_windows().await;
+    }
     let (target, is_running) = remote_vm_state(&app, &registry, id, "list the terminal windows").await?;
     if !is_running {
         return Ok(Vec::new());
@@ -994,11 +1004,20 @@ pub async fn terminal_windows(app: AppHandle, registry: State<'_, SessionRegistr
     remote::terminal::list_windows(&Ssh::open(&target.vm, &ssh_dir()?).await?).await
 }
 
-/// Starts a shell in a new tmux window on the VM of the remote session `id` and returns the window's ID; with `script`
-/// the window runs that package.json script of the worktree folder `directory`.
+/// Starts a shell in a new tmux window of the session `id` and returns the window's ID: on the VM of a remote session,
+/// in the family's tmux server on this Mac for a local one. With `script` the window runs that package.json script of
+/// the worktree folder `directory`.
 #[tauri::command]
 pub async fn open_shell_window(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, directory: String, script: Option<String>) -> Result<String, String> {
     git::ensure_inside_worktree(&directory)?;
+    if store::find_session(&app, id)?.remote.is_none() {
+        let (record, tmux) = local_tmux(&app, id)?;
+        let folder = worktree_file(&record, &directory)?;
+        return match script {
+            Some(script) => tmux.open_script_window(&folder, &script).await,
+            None => tmux.open_shell_window(&folder).await,
+        };
+    }
     let target = running_remote(&app, &registry, id, "open a shell").await?;
     let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
     let Some(script) = script else {
@@ -1008,9 +1027,18 @@ pub async fn open_shell_window(app: AppHandle, registry: State<'_, SessionRegist
     remote::terminal::open_shell_window(&ssh, Some(remote::terminal::ScriptRun { directory: &folder, script: &script })).await
 }
 
-/// Ends the tmux window `window_id` on the VM of the remote session `id` and the processes in it.
+/// Runs the package.json script of the script window `window_id` in the family's tmux server on this Mac again.
 #[tauri::command]
-pub async fn close_terminal_window(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, window_id: String) -> Result<(), String> {
+pub async fn rerun_terminal_window(app: AppHandle, id: Uuid, window_id: String) -> Result<(), String> {
+    local_tmux(&app, id)?.1.rerun_window(&window_id).await
+}
+
+/// Ends the tmux window `window_id` of the session `id` on `machine` and the processes in it.
+#[tauri::command]
+pub async fn close_terminal_window(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, machine: Machine, window_id: String) -> Result<(), String> {
+    if machine == Machine::Desktop {
+        return local_tmux(&app, id)?.1.kill_window(&window_id).await;
+    }
     let target = running_remote(&app, &registry, id, "close the terminal window").await?;
     remote::terminal::kill_window(&Ssh::open(&target.vm, &ssh_dir()?).await?, &window_id).await
 }
@@ -1292,7 +1320,7 @@ pub async fn hand_off_session(
         store::update_session(&app, id, |stored| stored.leftover_vm = Some(gateway.session_vm(id)))?;
         let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt);
         let local_agent_md = remote::read_agent_md(&record.worktree_path)?;
-        let base_prompt = system_prompt_append(&app, id, context_prompt);
+        let base_prompt = system_prompt_append(&app, id, context_prompt, None);
         let has_github_token = github_token.is_some();
         let system_prompt = |services_prompt: &str, agent_md: Option<&str>| {
             remote_system_prompt(&base_prompt, has_github_token, services_prompt, agent_md.or(local_agent_md.as_deref()))
@@ -1321,6 +1349,10 @@ pub async fn hand_off_session(
 
     let activated = match handed_off {
         Ok(handed_off) => {
+            // The app's processes run on the VM from now on; those still running here would hold its ports.
+            if let Err(error) = tmux::kill_server(id).await {
+                eprintln!("ending the tmux server of session {id} failed: {error}");
+            }
             // The first sync takes the VM's files as they are after the handoff.
             sync::forget(&app, id);
             let stored = store::update_session(&app, id, |stored| {
@@ -1955,6 +1987,10 @@ async fn end_session(
     for child in store::load_sessions(app)?.into_iter().filter(|session| session.parent_id == Some(id)) {
         stop_agent(app, registry, watchers, permissions, child.id).await;
         store::remove_session(app, child.id)?;
+    }
+    // The family's terminals end with it, together with the processes its agents left running.
+    if let Err(error) = tmux::kill_server(id).await {
+        eprintln!("ending the tmux server of session {id} failed: {error}");
     }
     if let Some(target) = &record.remote {
         sync::stop_and_wait(app, id).await;

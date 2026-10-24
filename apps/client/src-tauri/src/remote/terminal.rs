@@ -1,8 +1,10 @@
-//! Interactive terminals on the VM of a remote session, one per process of the app. The services of the repository's
-//! hunt.json run as systemd units and log to `~/logs/<name>.log`; a terminal follows such a log. The agent runs its other
-//! long-running processes in the tmux session `app`, one window per process; a terminal shows one of these windows and
-//! takes input. A terminal is OpenSSH in a local pseudo terminal, so the programs see a real TTY and keep their colors.
-//! Knows nothing about Tauri; `session/commands.rs` owns the commands and forwards the output to the window.
+//! Interactive terminals, one per process of the app: on the VM of a remote session, and on this Mac in the family's
+//! tmux server (`crate::tmux`). The services of the repository's hunt.json run as systemd units on the VM and log to
+//! `~/logs/<name>.log`; a terminal follows such a log. The agents run their other long-running processes in the tmux
+//! session `app`, one window per process; a terminal shows one of these windows and takes input. A terminal is a
+//! program in a local pseudo terminal (OpenSSH for the VM, the bundled tmux here), so the programs see a real TTY and
+//! keep their colors. Knows nothing about Tauri; `session/commands.rs` owns the commands and forwards the output to the
+//! window.
 
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
@@ -13,19 +15,14 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use super::preview::is_service_name;
-use super::{shell_command, shell_quote};
 use super::ssh::Ssh;
+use super::{shell_command, shell_quote};
 use super::RemoteTarget;
-
-/// The tmux session in which the agent runs the app's processes (see `libs/domain/prompts/remote.system-prompt.md`).
-const APP_SESSION: &str = "app";
-
-/// `APP_SESSION` as a tmux target that matches its name exactly, not as a prefix.
-const APP_TARGET: &str = "=app";
+use crate::tmux::{self, Machine, TmuxWindow};
 
 /// Lines of a service's log a terminal shows before it follows the log.
 const LOG_LINES: &str = "5000";
@@ -39,37 +36,27 @@ const READ_BUFFER_SIZE: usize = 64 * 1024;
 /// How often the reader asks whether the program has ended once its terminal closed.
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-/// What a terminal shows on the VM.
+/// What a terminal shows.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum TerminalTarget {
-    /// The log of the hunt.json service `name`, read-only.
+    /// The log of the hunt.json service `name` on the VM, read-only.
     Service { name: String },
-    /// The window `id` of the tmux session `app`.
-    Window { id: String },
-}
-
-/// A window of the tmux session `app`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TmuxWindow {
-    /// tmux's ID of the window, such as `@3`; unlike its index and name, it neither changes nor repeats.
-    pub id: String,
-    pub name: String,
+    /// The window `id` of the tmux session `app` on `machine`.
+    Window { id: String, machine: Machine },
 }
 
 /// The `ssh` arguments of the terminal `terminal_id` showing `process` on the VM of the remote session `target`; the one
 /// place that picks the VM a terminal connects to.
 pub async fn attach_args(target: &RemoteTarget, process: &TerminalTarget, terminal_id: Uuid, ssh_dir: &Path) -> Result<Vec<String>, String> {
-    let command = remote_command(process, &format!("hunt-view-{}", terminal_id.simple()))?;
+    let command = remote_command(process, &tmux::view_name(terminal_id))?;
     let ssh = Ssh::open(&target.vm, ssh_dir).await?;
     Ok(ssh.terminal_args(&command))
 }
 
-/// The windows of the tmux session `app` in their order; none while the session does not exist.
+/// The windows of the tmux session `app` on the VM in their order; none while the session does not exist.
 pub async fn list_windows(ssh: &Ssh) -> Result<Vec<TmuxWindow>, String> {
-    let script =
-        format!("tmux has-session -t {APP_TARGET} 2>/dev/null || exit 0; exec tmux list-windows -t {APP_TARGET} -F '#{{window_id}} #{{window_name}}'");
-    Ok(parse_windows(&ssh.run(&as_agent(&["sh", "-c", &script])).await?))
+    Ok(tmux::parse_windows(&ssh.run(&as_agent(&["sh", "-c", &tmux::list_windows_script("tmux")])).await?))
 }
 
 /// A package.json script a new tmux window runs: `npm run <script>`, typed into its shell in the folder `directory`.
@@ -78,43 +65,41 @@ pub struct ScriptRun<'a> {
     pub script: &'a str,
 }
 
-/// Starts a shell in a new window of the tmux session `app`, created when it does not exist, and returns the window's
-/// ID. Without `run` the window is called `shell`; with it, it is named after the script, starts in its folder and
-/// runs it, and its shell stays once the script ends, so its output does too.
+/// Starts a shell in a new window of the tmux session `app` on the VM, created when it does not exist, and returns the
+/// window's ID. Without `run` the window is called `shell`; with it, it is named after the script, starts in its folder
+/// and runs it, and its shell stays once the script ends, so its output does too. A name that is taken gets a number
+/// (`shell-2`), and the window logs to `~/logs/<name>.log` like the agent's windows.
 pub async fn open_shell_window(ssh: &Ssh, run: Option<ScriptRun<'_>>) -> Result<String, String> {
-    let output = ssh.run(&as_agent(&["sh", "-c", &shell_window_script(run)])).await?;
+    let windows = list_windows(ssh).await?;
+    let output = ssh.run(&as_agent(&["sh", "-c", &shell_window_script(&windows, run)])).await?;
     let id = output.trim().lines().last().unwrap_or_default();
-    ensure_window_id(id).map_err(|_| format!("failed to open a shell: tmux answered {output:?}"))?;
+    tmux::ensure_window_id(id).map_err(|_| format!("failed to open a shell: tmux answered {output:?}"))?;
     Ok(id.to_string())
 }
 
-/// The `sh` script behind `open_shell_window`, which prints the new window's ID last.
-fn shell_window_script(run: Option<ScriptRun<'_>>) -> String {
-    let (name, folder, typed) = match run {
-        None => ("shell".to_string(), String::new(), String::new()),
+/// The `sh` script behind `open_shell_window` next to the windows `windows`, which prints the new window's ID last.
+fn shell_window_script(windows: &[TmuxWindow], run: Option<ScriptRun<'_>>) -> String {
+    let (base, folder, typed) = match run {
+        None => ("shell".to_string(), None, String::new()),
         Some(run) => {
             let command = shell_command("npm", &["run", run.script]);
             let typed = format!(r#"tmux send-keys -t "$id" -l {} && tmux send-keys -t "$id" Enter && "#, shell_quote(&command));
-            (shell_quote(run.script), format!(" -c {}", shell_quote(run.directory)), typed)
+            (tmux::script_window_name(run.script), Some(run.directory), typed)
         }
     };
-    format!(
-        "id=$(if tmux has-session -t {APP_TARGET} 2>/dev/null; then tmux new-window -d -t {APP_TARGET}: -n {name}{folder} -P -F '#{{window_id}}'; \
-         else tmux new-session -d -s {APP_SESSION} -n {name}{folder} -P -F '#{{window_id}}'; fi) || exit 1; {typed}echo \"$id\""
-    )
+    let name = tmux::free_window_name(windows, &base);
+    let logged = format!(r#"mkdir -p logs && tmux pipe-pane -o -t "$id" {} && "#, shell_quote(&format!("cat >> ~/logs/{name}.log")));
+    format!("{}{logged}{typed}echo \"$id\"", tmux::new_window_script("tmux", &name, folder, None))
 }
 
-/// Ends the window `id` of the tmux session `app` and the processes in it.
+/// Ends the window `id` of the tmux session `app` on the VM and the processes in it.
 pub async fn kill_window(ssh: &Ssh, id: &str) -> Result<(), String> {
-    ensure_window_id(id)?;
+    tmux::ensure_window_id(id)?;
     ssh.run(&as_agent(&["tmux", "kill-window", "-t", id])).await.map(|_| ())
 }
 
-/// The command a terminal runs on the VM to show `process`, as the user `agent`:
-/// - a service's log from its last lines on, followed across the rename at the service's next start;
-/// - a window in the tmux session `view` of its own, grouped with `app`, so terminals show different windows at once.
-///   The view has no status bar, takes the mouse (the wheel scrolls the window's history) and ends with its terminal.
-///   `-u` makes tmux send UTF-8 even when the login environment names no UTF-8 locale.
+/// The command a terminal runs on the VM to show `process`, as the user `agent`: a service's log from its last lines
+/// on, followed across the rename at the service's next start, or a window in a view of its own (`tmux::view_args`).
 fn remote_command(process: &TerminalTarget, view: &str) -> Result<String, String> {
     match process {
         TerminalTarget::Service { name } => {
@@ -123,16 +108,12 @@ fn remote_command(process: &TerminalTarget, view: &str) -> Result<String, String
             }
             Ok(as_agent(&["tail", "-n", LOG_LINES, "-F", "--", &format!("logs/{name}.log")]))
         }
-        TerminalTarget::Window { id } => {
-            ensure_window_id(id)?;
-            let window = format!("{view}:{id}");
-            let mut args = vec!["tmux", "-u", "new-session", "-t", APP_TARGET, "-s", view];
-            for (option, value) in [("destroy-unattached", "on"), ("status", "off"), ("mouse", "on")] {
-                args.extend([";", "set-option", "-t", view, option, value]);
-            }
-            args.extend([";", "select-window", "-t", &window]);
-            Ok(as_agent(&args))
+        TerminalTarget::Window { id, machine: Machine::Vm } => {
+            let mut args = vec!["tmux".to_string()];
+            args.extend(tmux::view_args(view, id)?);
+            Ok(as_agent(&args.iter().map(String::as_str).collect::<Vec<_>>()))
         }
+        TerminalTarget::Window { machine: Machine::Desktop, .. } => Err("failed to open the terminal: the window runs on this Mac".to_string()),
     }
 }
 
@@ -141,27 +122,6 @@ fn as_agent(args: &[&str]) -> String {
     let mut sudo = vec!["-n", "-iu", "agent"];
     sudo.extend_from_slice(args);
     shell_command("sudo", &sudo)
-}
-
-/// Refuses anything but a tmux window ID such as `@3`, so that it never reaches tmux as another kind of target.
-fn ensure_window_id(id: &str) -> Result<(), String> {
-    let digits = id.strip_prefix('@').unwrap_or_default();
-    if digits.is_empty() || !digits.chars().all(|character| character.is_ascii_digit()) {
-        return Err(format!("failed to reach the tmux window {id:?}: it is no window ID"));
-    }
-    Ok(())
-}
-
-/// The windows `tmux list-windows -F '#{window_id} #{window_name}'` printed; other lines are skipped.
-fn parse_windows(output: &str) -> Vec<TmuxWindow> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let (id, name) = line.split_once(' ')?;
-            ensure_window_id(id).ok()?;
-            Some(TmuxWindow { id: id.to_string(), name: name.to_string() })
-        })
-        .collect()
 }
 
 /// Size of a terminal in character cells.
@@ -415,7 +375,7 @@ mod tests {
     fn remote_command_follows_a_service_log_and_shows_a_window_in_a_view_of_its_own() {
         let service = TerminalTarget::Service { name: "web-api".into() };
         assert_eq!(remote_command(&service, "hunt-view-1").unwrap(), "sudo -n -iu agent tail -n 5000 -F -- logs/web-api.log");
-        let window = TerminalTarget::Window { id: "@12".into() };
+        let window = TerminalTarget::Window { id: "@12".into(), machine: Machine::Vm };
         assert_eq!(
             remote_command(&window, "hunt-view-1").unwrap(),
             "sudo -n -iu agent tmux -u new-session -t =app -s hunt-view-1 \
@@ -425,36 +385,31 @@ mod tests {
     }
 
     #[test]
-    fn remote_command_refuses_other_names_and_ids() {
+    fn remote_command_refuses_other_names_ids_and_windows_of_this_mac() {
         for name in ["../x", "Web", "web;rm", ""] {
             assert!(remote_command(&TerminalTarget::Service { name: name.into() }, "view").is_err(), "{name}");
         }
         for id in ["", "@", "12", "@1x", "@-1", "@1 ;kill-server", "app:@1"] {
-            assert!(remote_command(&TerminalTarget::Window { id: id.into() }, "view").is_err(), "{id}");
+            assert!(remote_command(&TerminalTarget::Window { id: id.into(), machine: Machine::Vm }, "view").is_err(), "{id}");
         }
+        assert!(remote_command(&TerminalTarget::Window { id: "@1".into(), machine: Machine::Desktop }, "view").is_err());
     }
 
     #[test]
-    fn parse_windows_keeps_ids_and_names_with_spaces_and_skips_other_lines() {
-        let windows = parse_windows("@1 web\n@7 my shell\nWelcome to the VM\n\n");
+    fn shell_window_script_logs_the_window_and_types_a_script_into_it_in_its_folder() {
+        let shell = TmuxWindow { id: "@1".into(), name: "shell".into(), script: None, is_dead: false, exit_code: None, folder: None };
         assert_eq!(
-            windows,
-            [TmuxWindow { id: "@1".into(), name: "web".into() }, TmuxWindow { id: "@7".into(), name: "my shell".into() }]
-        );
-    }
-
-    #[test]
-    fn shell_window_script_types_a_script_into_a_window_in_its_folder() {
-        assert_eq!(
-            shell_window_script(None),
-            "id=$(if tmux has-session -t =app 2>/dev/null; then tmux new-window -d -t =app: -n shell -P -F '#{window_id}'; \
-             else tmux new-session -d -s app -n shell -P -F '#{window_id}'; fi) || exit 1; echo \"$id\""
+            shell_window_script(&[shell], None),
+            "id=$(if tmux has-session -t =app 2>/dev/null; then tmux new-window -d -t =app: -n shell-2 -P -F '#{window_id}'; \
+             else tmux new-session -d -s app -n shell-2 -P -F '#{window_id}'; fi) || exit 1; \
+             mkdir -p logs && tmux pipe-pane -o -t \"$id\" 'cat >> ~/logs/shell-2.log' && echo \"$id\""
         );
         let run = ScriptRun { directory: "/home/agent/work/app dir", script: "start:server" };
         assert_eq!(
-            shell_window_script(Some(run)),
+            shell_window_script(&[], Some(run)),
             "id=$(if tmux has-session -t =app 2>/dev/null; then tmux new-window -d -t =app: -n start:server -c '/home/agent/work/app dir' -P -F '#{window_id}'; \
              else tmux new-session -d -s app -n start:server -c '/home/agent/work/app dir' -P -F '#{window_id}'; fi) || exit 1; \
+             mkdir -p logs && tmux pipe-pane -o -t \"$id\" 'cat >> ~/logs/start:server.log' && \
              tmux send-keys -t \"$id\" -l 'npm run start:server' && tmux send-keys -t \"$id\" Enter && echo \"$id\""
         );
     }
@@ -463,8 +418,8 @@ mod tests {
     fn a_target_arrives_as_the_frontend_sends_it() {
         let service: TerminalTarget = serde_json::from_str(r#"{"kind":"service","name":"web"}"#).unwrap();
         assert_eq!(service, TerminalTarget::Service { name: "web".into() });
-        let window: TerminalTarget = serde_json::from_str(r#"{"kind":"window","id":"@3"}"#).unwrap();
-        assert_eq!(window, TerminalTarget::Window { id: "@3".into() });
+        let window: TerminalTarget = serde_json::from_str(r#"{"kind":"window","id":"@3","machine":"desktop"}"#).unwrap();
+        assert_eq!(window, TerminalTarget::Window { id: "@3".into(), machine: Machine::Desktop });
     }
 
     #[test]

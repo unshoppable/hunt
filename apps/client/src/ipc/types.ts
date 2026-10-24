@@ -311,14 +311,18 @@ export type RemoteLinkEvent = { huntSessionId: string; link: RemoteLink };
 /** What the relay of a top-level remote session reports changed (mirror of `RelayActivityEvent` in src-tauri/src/session/relay_watch.rs). */
 export type RelayActivityEvent = { huntSessionId: string; relayActivity: RelayActivity };
 
-/** What a terminal shows on a session VM: the log of a hunt.json service, read-only, or a window of the tmux session `app`. */
-export type TerminalTarget = { kind: "service"; name: string } | { kind: "window"; id: string };
+/** Where a tmux window runs: on the session VM or in the family's tmux server on this Mac (mirror of `Machine` in src-tauri/src/tmux.rs). */
+export type Machine = "vm" | "desktop";
 
-/** A window of the tmux session `app` on a session VM; `id` is tmux's window ID such as `@3`, which never repeats. */
-export type TmuxWindow = { id: string; name: string };
+/** What a terminal shows: the log of a hunt.json service on the VM, read-only, or a window of the tmux session `app` on `machine`. */
+export type TerminalTarget = { kind: "service"; name: string } | { kind: "window"; id: string; machine: Machine };
 
-/** What a terminal of a local session shows: a login shell in the worktree folder `directory`, or the package.json script `script` npm runs there. */
-export type LocalTerminalTarget = { kind: "shell"; directory: string; script: string | null };
+/**
+ * A window of the tmux session `app` (mirror of `TmuxWindow` in src-tauri/src/tmux.rs); `id` is tmux's window ID such
+ * as `@3`, which never repeats on its server. A window Hunt opened for a package.json script names it in `script` and
+ * stays after the script ended, `isDead` with its `exitCode` (null when a signal ended it).
+ */
+export type TmuxWindow = { id: string; name: string; script: string | null; isDead: boolean; exitCode: number | null };
 
 /** Runs the package.json script `script` of the worktree folder `directory` (`""`: the worktree) in the Terminal tab of the session `sessionId`. */
 export type ScriptRunRequest = { sessionId: string; directory: string; script: string };

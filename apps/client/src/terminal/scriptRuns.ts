@@ -10,9 +10,9 @@ import { useTerminalStore } from "../state/terminals";
 const MAIN_WINDOW_LABEL = "main";
 
 /**
- * Runs a package.json script in the Terminal tab of the main window, from any window: a local session runs it in a
- * shell of its own in the worktree, a remote session in a new tmux window on its VM. The main window shows the session
- * and its Terminal tab.
+ * Runs a package.json script in the Terminal tab of the main window, from any window: a local session runs it in a tmux
+ * window of its own on this Mac, a remote session in a new tmux window on its VM. The main window shows the session and
+ * its Terminal tab.
  */
 export function runPackageScript(request: ScriptRunRequest): void {
   if (getCurrentWindow().label === MAIN_WINDOW_LABEL) {
@@ -37,10 +37,5 @@ function startScriptRun(request: ScriptRunRequest): void {
     void huntState.selectSession(sessionId);
   }
   useSessionViewStore.getState().setTab(sessionId, "terminal");
-  const isRemote = Boolean(huntState.sessions.find((session) => session.id === sessionId)?.remote);
-  if (isRemote) {
-    useTerminalStore.getState().requestRemoteScript(request);
-  } else {
-    useTerminalStore.getState().runLocalScript(request);
-  }
+  useTerminalStore.getState().requestScript(request);
 }

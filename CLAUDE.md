@@ -127,6 +127,8 @@ everything else goes here.
   Tauri-aware modules spawn with `tauri::async_runtime::spawn`; the Tauri-free LSP core uses `tokio::spawn`.
 - Background work that must not fail a command follows `session/summary.rs` and `session/attribution.rs`:
   spawn, serialize per key, `eprintln!` on failure.
+- Every tmux call on this Mac goes through the worktree's `.hunt/tmux` (`tmux.rs`: the bundled binary, the family's
+  socket and `.hunt/tmux.conf`, whose hooks log every window to `.hunt/logs/desktop/`); never a `tmux` from `PATH`.
 - `sessions.json` is written only through `session/store.rs` (temp file + rename, under `STORE_LOCK`); a new
   persisted field gets `#[serde(default)]`, a place in `SessionRecord::new`, and a mirror in `src/ipc/types.ts`.
 - Hunt's own agent jobs (diagram generation and the like) each run as a separate headless `claude -p` as in

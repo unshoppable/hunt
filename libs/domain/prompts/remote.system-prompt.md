@@ -28,7 +28,7 @@ tmux pipe-pane -o -t app:<name> 'cat >> ~/logs/<name>.log'
 
 `tmux list-windows -t app` shows what runs; to restart a process, close its window with
 `tmux kill-window -t app:<name>` and start it again. The user watches each window and each service's log in a tab of
-their own and opens shells as windows named `shell`; leave those alone. Dev servers must listen on 0.0.0.0 or
+their own and opens shells as windows named `shell` or `shell-<n>`; leave those alone. Dev servers must listen on 0.0.0.0 or
 localhost; port 8080 belongs to Hunt's preview proxy.
 
 ### Preview

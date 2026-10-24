@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { commands } from "../ipc/commands";
-import type { PreviewService, ScriptRunRequest, TmuxWindow } from "../ipc/types";
+import type { Machine, PreviewService, ScriptRunRequest, TmuxWindow } from "../ipc/types";
 import { describeService, isServiceInUse } from "../preview/services";
 import { usePreviewStore } from "../state/preview";
 import { useHuntStore } from "../state/store";
-import { useTerminalStore } from "../state/terminals";
+import { NO_SESSION_WINDOWS, useTerminalStore } from "../state/terminals";
 import { ICON_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { PlusIcon, Spinner } from "../ui/icons";
 import { errorText } from "../ui/useLoad";
-import { nextActiveKey, terminalTabs, windowTabKey, type TerminalTab } from "./terminalTabs";
+import { describeLocalExit } from "./terminalStream";
+import { endedScriptWindow, nextActiveKey, terminalTabs, windowState, windowTabKey, type TerminalTab } from "./terminalTabs";
 import { TerminalTabButton } from "./TerminalTabButton";
 import { TerminalView } from "./TerminalView";
 
-/** How often the panel asks the VM which processes run while the session is connected. */
+/** How often the panel asks for the processes: this Mac's always, the VM's while the session is connected. */
 const POLL_MS = 5000;
 
 const NO_SERVICES: PreviewService[] = [];
@@ -23,62 +24,74 @@ const NO_WINDOWS: TmuxWindow[] = [];
 type FocusRequest = { key: string | null; count: number };
 
 /**
- * The Terminal tab of a remote session: one tab per process of the app on its VM, like the tabs of a local terminal.
- * The services of the repository's hunt.json that are in use show their logs, read-only; the windows of the tmux
- * session `app`, in which the agent runs its other processes, take input. "+" opens a shell in a new window, × ends a
- * window and its process; a package.json script run from the editor gets a window of its own.
- * The panel stays mounted while another tab shows, so its terminals keep their connections. It asks the VM for the
- * processes when it mounts and whenever it shows, then every few seconds while the session is connected, which proves
- * a running VM, also while another tab shows.
+ * The Terminal tab of a session: one tab per process, each a window of a tmux session `app` that logs its output. A
+ * local session shows the windows of its family's tmux server on this Mac, in which its agents and its sub chats' agents
+ * run their processes. A remote session shows the services of the repository's hunt.json that are in use, as read-only
+ * logs, and the windows on its VM, plus "(Mac)" the windows its sub chats opened on this Mac. "+" opens a shell in a
+ * new window where the session's agent runs, × ends a window and its process; a package.json script run from the editor
+ * gets a window of its own, which on this Mac stays after the script ended and offers "Run again". The first time a
+ * local session's panel shows without windows, it opens a shell.
+ * The panel stays mounted while another tab shows, so its terminals keep their connections. It asks for the processes
+ * when it mounts and whenever it shows, then every few seconds, also while another tab shows; the VM only while the
+ * session is connected, which proves a running VM.
  */
 export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isVisible: boolean }) {
   const isLive = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === sessionId)?.isLive));
+  const isRemote = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === sessionId)?.remote));
   const hasPreviewDomain = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === sessionId)?.remote?.previewDomain));
   const services = usePreviewStore((state) => state.previews[sessionId]?.status?.services ?? NO_SERVICES);
   const isVmRunning = usePreviewStore((state) => state.previews[sessionId]?.status?.vmRunning ?? true);
-  const windows = usePreviewStore((state) => state.previews[sessionId]?.windows ?? null);
+  const windows = useTerminalStore((state) => state.windows[sessionId] ?? NO_SESSION_WINDOWS);
   const refreshServices = usePreviewStore((state) => state.refresh);
-  const refreshWindows = usePreviewStore((state) => state.refreshWindows);
-  const pendingRun = useTerminalStore((state) => state.remoteRuns[sessionId]);
+  const refreshWindows = useTerminalStore((state) => state.refreshWindows);
+  const pendingRun = useTerminalStore((state) => state.pendingRuns[sessionId]);
   const [error, setError] = useState<string | null>(null);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   /** The tabs shown at least once; each keeps its terminal while its process exists. */
   const [openedKeys, setOpenedKeys] = useState<string[]>([]);
   const [focusRequest, setFocusRequest] = useState<FocusRequest>({ key: null, count: 0 });
   const [isOpeningShell, setIsOpeningShell] = useState(false);
+  /** Where "+" and script runs open a window: where the session's agent runs. */
+  const shellMachine: Machine = isRemote ? "vm" : "desktop";
   const tabs = useMemo(
-    () => terminalTabs(services.filter((service) => isServiceInUse(service, isVmRunning)), windows ?? NO_WINDOWS),
-    [services, isVmRunning, windows],
+    () => terminalTabs(services.filter((service) => isServiceInUse(service, isVmRunning)), windows.vm ?? NO_WINDOWS, windows.desktop ?? NO_WINDOWS, isRemote),
+    [services, isVmRunning, windows, isRemote],
   );
+  const activeTab = tabs.find((tab) => tab.key === activeKey) ?? null;
+  const endedScript = activeTab ? endedScriptWindow(activeTab) : null;
+  const hasReadWindows = Boolean(windows.desktop) && (!isRemote || Boolean(windows.vm));
   const previousTabsRef = useRef<TerminalTab[]>([]);
   const wasVisibleRef = useRef(isVisible);
+  const hasOfferedShellRef = useRef(false);
 
-  const loadWindows = useCallback(async () => {
-    try {
-      await refreshWindows(sessionId);
-      setError(null);
-    } catch (reason) {
-      setError(errorText(reason));
-    }
-  }, [sessionId, refreshWindows]);
+  const loadWindows = useCallback(
+    async (machines: readonly Machine[]) => {
+      try {
+        await Promise.all(machines.map((machine) => refreshWindows(sessionId, machine)));
+        setError(null);
+      } catch (reason) {
+        setError(errorText(reason));
+      }
+    },
+    [sessionId, refreshWindows],
+  );
 
   // Reads at mount and whenever the tab shows; polls behind other tabs too, so the tab strip's green dot stays current.
   useEffect(() => {
-    const refresh = () => {
-      void loadWindows();
-      if (hasPreviewDomain) {
+    const refresh = (includesVm: boolean) => {
+      void loadWindows(isRemote && includesVm ? ["vm", "desktop"] : ["desktop"]);
+      if (includesVm && hasPreviewDomain) {
         void refreshServices(sessionId);
       }
     };
-    refresh();
-    if (!isLive) return;
+    refresh(true);
     const timer = window.setInterval(() => {
       if (!document.hidden) {
-        refresh();
+        refresh(isLive);
       }
     }, POLL_MS);
     return () => window.clearInterval(timer);
-  }, [sessionId, isVisible, isLive, hasPreviewDomain, loadWindows, refreshServices]);
+  }, [sessionId, isVisible, isLive, isRemote, hasPreviewDomain, loadWindows, refreshServices]);
 
   useEffect(() => {
     // The updater runs at the next render, after the ref moved on, so it gets the previous tabs as a value.
@@ -122,37 +135,60 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
       setIsOpeningShell(true);
       try {
         const id = await commands.openShellWindow(sessionId, run?.directory, run?.script ?? null);
-        await loadWindows();
-        activate(windowTabKey(id));
+        await loadWindows([shellMachine]);
+        activate(windowTabKey(shellMachine, id));
       } catch (reason) {
         setError(errorText(reason));
       } finally {
         setIsOpeningShell(false);
       }
     },
-    [sessionId, loadWindows, activate],
+    [sessionId, shellMachine, loadWindows, activate],
   );
 
   // A script run from an editor's play button (see terminal/scriptRuns.ts) waits in the store until this panel takes it.
   useEffect(() => {
     if (!pendingRun) return;
-    const run = useTerminalStore.getState().takeRemoteRun(sessionId);
+    const run = useTerminalStore.getState().takePendingRun(sessionId);
     if (run) {
       void openShell(run);
     }
   }, [sessionId, pendingRun, openShell]);
 
+  useEffect(() => {
+    if (isRemote || !isVisible || !windows.desktop || hasOfferedShellRef.current) return;
+    hasOfferedShellRef.current = true;
+    if (!windows.desktop.length && !pendingRun) {
+      void openShell();
+    }
+  }, [isRemote, isVisible, windows.desktop, pendingRun, openShell]);
+
   const closeWindow = async (tab: TerminalTab) => {
     if (tab.target.kind !== "window") return;
-    const isConfirmed = await confirmDestructive(`End "${tab.label}"? Its tmux window on the VM closes and the processes in it stop.`, "End");
-    if (!isConfirmed) return;
+    const { id, machine } = tab.target;
+    if (!tab.window?.isDead) {
+      const place = machine === "vm" ? "on the VM" : "on this Mac";
+      const isConfirmed = await confirmDestructive(`End "${tab.label}"? Its tmux window ${place} closes and the processes in it stop.`, "End");
+      if (!isConfirmed) return;
+    }
     try {
-      await commands.closeTerminalWindow(sessionId, tab.target.id);
+      await commands.closeTerminalWindow(sessionId, machine, id);
     } catch (reason) {
       setError(errorText(reason));
       return;
     }
-    await loadWindows();
+    await loadWindows([machine]);
+  };
+
+  const runAgain = async (tab: TerminalTab, scriptWindow: TmuxWindow) => {
+    try {
+      await commands.rerunTerminalWindow(sessionId, scriptWindow.id);
+    } catch (reason) {
+      setError(errorText(reason));
+      return;
+    }
+    await loadWindows(["desktop"]);
+    activate(tab.key);
   };
 
   return (
@@ -163,8 +199,8 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
             <TerminalTabButton
               key={tab.key}
               label={tab.label}
-              title={tab.service ? `The log of the service ${tab.service.name}, ~/logs/${tab.service.name}.log on the VM; read-only` : `tmux window ${tab.label}`}
-              state={tab.service ? describeService(tab.service, isVmRunning) : null}
+              title={tab.title}
+              state={tab.service ? describeService(tab.service, isVmRunning) : tab.window ? windowState(tab.window) : null}
               isActive={tab.key === activeKey}
               onActivate={() => activate(tab.key)}
               onClose={tab.target.kind === "window" ? () => void closeWindow(tab) : null}
@@ -176,6 +212,15 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
         </button>
       </div>
       {error ? <p className="border-b border-(--line) px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
+      {activeTab && endedScript ? (
+        <div className="flex h-[36px] shrink-0 items-center gap-2 border-b border-(--line) px-3 text-[13px]">
+          <span className={`min-w-0 truncate ${endedScript.exitCode === 0 ? "text-emerald-300" : "text-red-300"}`}>{describeLocalExit(endedScript.exitCode)}</span>
+          <span className="flex-1" />
+          <button type="button" onClick={() => void runAgain(activeTab, endedScript)} className={SECONDARY_BUTTON_XS}>
+            Run again
+          </button>
+        </div>
+      ) : null}
       <div className="min-h-0 flex-1">
         {tabs
           .filter((tab) => openedKeys.includes(tab.key))
@@ -188,9 +233,9 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
               focusRequest={focusRequest.key === tab.key ? focusRequest.count : 0}
             />
           ))}
-        {windows && !tabs.length ? (
+        {hasReadWindows && !tabs.length ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-[13px] text-neutral-500">
-            <p>No process runs on the VM yet.</p>
+            <p>{isRemote ? "No process runs on the VM yet." : "No terminal is open."}</p>
             <button type="button" onClick={() => void openShell()} disabled={isOpeningShell} className={SECONDARY_BUTTON_XS}>
               New shell
             </button>

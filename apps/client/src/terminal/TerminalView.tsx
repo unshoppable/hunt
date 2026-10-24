@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { commands } from "../ipc/commands";
 import { listenTo } from "../ipc/events";
-import type { LocalTerminalTarget, TerminalTarget } from "../ipc/types";
+import type { TerminalTarget } from "../ipc/types";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { Spinner } from "../ui/icons";
 import { errorText } from "../ui/useLoad";
-import { createResizeSync, decodeBase64, describeExit, describeLocalExit, encodeBinaryInput, encodeTextInput } from "./terminalStream";
+import { createResizeSync, decodeBase64, describeExit, encodeBinaryInput, encodeTextInput } from "./terminalStream";
 import { useXterm } from "./useXterm";
 
 /** Waits this long after the last size change before the remote programs learn the new size and redraw. */
@@ -15,19 +15,14 @@ const RESIZE_DELAY_MS = 80;
 /** Hides the cursor of a service's log: it takes no input, so a cursor would suggest that it does. */
 const HIDE_CURSOR = "\u001b[?25l";
 
-type TerminalStatus = { state: "connecting" } | { state: "open" } | { state: "ended"; message: string; isSuccess?: boolean };
+type TerminalStatus = { state: "connecting" } | { state: "open" } | { state: "ended"; message: string };
 
 const CONNECTING: TerminalStatus = { state: "connecting" };
 
-/** The command line a script's terminal starts with, dimmed, as the npm it runs would print it. */
-function scriptHeader(script: string): string {
-  return `\u001b[2m$ npm run ${script}\u001b[0m\r\n`;
-}
-
 /**
- * One terminal of the session `sessionId`, showing `target`: on the VM of a remote session a service's log, read-only,
- * or a tmux window, which takes input; in a local session a login shell or a package.json script run by npm. It connects the first time it is shown and stays connected while hidden, so switching
- * tabs keeps it; it ends when it unmounts. Each new value of `focusRequest` focuses it once while it is visible. Font,
+ * One terminal of the session `sessionId`, showing `target`: a service's log on the VM of a remote session, read-only,
+ * or a tmux window on the VM or this Mac, which takes input. It connects the first time it is shown and stays connected
+ * while hidden, so switching tabs keeps it; it ends when it unmounts. Each new value of `focusRequest` focuses it once while it is visible. Font,
  * line height and background follow the Terminal pane's settings. While it has the focus, it takes every key it understands (Escape
  * included) and stops the event, so the window's shortcuts do not see them; ⌘C copies its selection, a mouse selection
  * in a tmux window reaches the clipboard too, ⌘V pastes through the Edit menu, ⌘click opens a link.
@@ -37,17 +32,11 @@ export function TerminalView({
   target,
   isVisible,
   focusRequest,
-  onRunningChange,
-  onExit,
 }: {
   sessionId: string;
-  target: TerminalTarget | LocalTerminalTarget;
+  target: TerminalTarget;
   isVisible: boolean;
   focusRequest: number;
-  /** Told when the program starts and when it ends or the terminal fails. */
-  onRunningChange?: (isRunning: boolean) => void;
-  /** Told when the program ended by itself. */
-  onExit?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   /** Set once the view was first shown; its terminal exists from then on until the view unmounts. */
@@ -56,17 +45,12 @@ export function TerminalView({
   /** Bumped by "Reconnect"; every value opens a new connection. */
   const [attempt, setAttempt] = useState(0);
   const handledFocusRef = useRef(0);
-  const kind = target.kind;
-  /** The service's name, the window's ID or the shell's folder; with `kind` it names the process, whose target object changes every poll. */
-  const process = target.kind === "service" ? target.name : target.kind === "window" ? target.id : target.directory;
-  const script = target.kind === "shell" ? target.script : null;
-  const isReadOnly = kind === "service";
-  const callbacksRef = useRef({ onRunningChange, onExit });
+  /** The service's name or the window's ID; with `windowMachine` it names the process, whose target object changes every poll. */
+  const process = target.kind === "service" ? target.name : target.id;
+  /** The machine of a window; null for a service. */
+  const windowMachine = target.kind === "window" ? target.machine : null;
+  const isReadOnly = !windowMachine;
   const { view, background } = useXterm(hostRef, { isStarted, isReadOnly });
-
-  useEffect(() => {
-    callbacksRef.current = { onRunningChange, onExit };
-  }, [onRunningChange, onExit]);
 
   useEffect(() => {
     if (isVisible) {
@@ -90,7 +74,6 @@ export function TerminalView({
     const reportFailure = (reason: unknown) => {
       if (isDisposed) return;
       isOpen = false;
-      callbacksRef.current.onRunningChange?.(false);
       setStatus((current) => (current.state === "ended" ? current : { state: "ended", message: errorText(reason) }));
     };
     const resizes = createResizeSync((size) => void commands.resizeTerminal(terminalId, size.cols, size.rows).catch(reportFailure), RESIZE_DELAY_MS);
@@ -99,11 +82,8 @@ export function TerminalView({
       void commands.writeTerminal(terminalId, data).catch(reportFailure);
     };
     terminal.reset();
-    if (kind === "service") {
+    if (!windowMachine) {
       terminal.write(HIDE_CURSOR);
-    }
-    if (script) {
-      terminal.write(scriptHeader(script));
     }
     const listeners = [
       listenTo(
@@ -120,10 +100,7 @@ export function TerminalView({
         (event) => {
           if (event.id !== terminalId) return;
           isOpen = false;
-          const isShell = kind === "shell";
-          setStatus({ state: "ended", message: isShell ? describeLocalExit(event.code) : describeExit(event.code), isSuccess: isShell && event.code === 0 });
-          callbacksRef.current.onRunningChange?.(false);
-          callbacksRef.current.onExit?.();
+          setStatus({ state: "ended", message: describeExit(event.code) });
         },
         { target: windowLabel },
       ),
@@ -143,17 +120,13 @@ export function TerminalView({
         if (isDisposed) return;
         const size = { cols: terminal.cols, rows: terminal.rows };
         resizes.markSent(size);
-        if (kind === "shell") {
-          await commands.openLocalTerminal(sessionId, terminalId, process, script, size.cols, size.rows);
-        } else {
-          await commands.openTerminal(sessionId, terminalId, kind === "service" ? { kind, name: process } : { kind, id: process }, size.cols, size.rows);
-        }
+        const processTarget: TerminalTarget = windowMachine ? { kind: "window", id: process, machine: windowMachine } : { kind: "service", name: process };
+        await commands.openTerminal(sessionId, terminalId, processTarget, size.cols, size.rows);
         if (isDisposed) {
           void commands.closeTerminal(terminalId).catch((reason) => console.error("failed to close the terminal", reason));
           return;
         }
         isOpen = true;
-        callbacksRef.current.onRunningChange?.(true);
         resizes.push({ cols: terminal.cols, rows: terminal.rows });
         setStatus((current) => (current.state === "connecting" ? { state: "open" } : current));
       })
@@ -169,7 +142,7 @@ export function TerminalView({
       }
       void commands.closeTerminal(terminalId).catch((reason) => console.error("failed to close the terminal", reason));
     };
-  }, [view, sessionId, kind, process, script, attempt]);
+  }, [view, sessionId, process, windowMachine, attempt]);
 
   const reconnect = () => {
     setStatus(CONNECTING);
@@ -184,16 +157,16 @@ export function TerminalView({
           {status.state === "connecting" ? (
             <>
               <Spinner />
-              <span className="text-neutral-400">{kind === "shell" ? "Starting…" : "Connecting…"}</span>
+              <span className="text-neutral-400">Connecting…</span>
             </>
           ) : (
             <>
-              <span className={`min-w-0 truncate ${status.isSuccess ? "text-emerald-300" : "text-red-300"}`} title={status.message}>
+              <span className="min-w-0 truncate text-red-300" title={status.message}>
                 {status.message}
               </span>
               <span className="flex-1" />
               <button type="button" onClick={reconnect} className={SECONDARY_BUTTON_XS}>
-                {script ? "Run again" : kind === "shell" ? "Restart" : "Reconnect"}
+                Reconnect
               </button>
             </>
           )}

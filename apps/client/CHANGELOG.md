@@ -1,3 +1,9 @@
+## 0.105.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** ⌘F in the dependency diagram finds files by path or symbol and moves the view to them ([dd340fb](https://github.com/unshoppable/hunt/commit/dd340fb))
+
 ## 0.104.0 (2026-10-24)
 
 ### 🚀 Features

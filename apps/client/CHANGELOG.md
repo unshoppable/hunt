@@ -1,3 +1,9 @@
+## 0.121.0 (2026-10-24)
+
+### 🚀 Features
+
+- session VMs run a desktop whose Chromium the agent drives over CDP and the Desktop tab streams, preview pages get a review widget whose annotations land in the composer, and local agents may drive the user's Chrome through Claude in Chrome ([7beb218](https://github.com/unshoppable/hunt/commit/7beb218))
+
 ## 0.120.0 (2026-10-24)
 
 ### 🚀 Features

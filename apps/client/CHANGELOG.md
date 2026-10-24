@@ -1,3 +1,9 @@
+## 0.123.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** hovering in an Angular template or inline template shows what the Angular language server knows: the component of a tag, the type of an input, of a name in an expression or of a pipe ([dfe1986](https://github.com/unshoppable/hunt/commit/dfe1986))
+
 ## 0.122.0 (2026-10-24)
 
 ### 🚀 Features

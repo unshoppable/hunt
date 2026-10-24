@@ -1,3 +1,9 @@
+## 0.104.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** review comments keep their lines tinted, with the blue bar running down to the card, like on GitHub ([e326e45](https://github.com/unshoppable/hunt/commit/e326e45))
+
 ## 0.103.4 (2026-10-24)
 
 ### 🩹 Fixes

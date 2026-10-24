@@ -572,7 +572,7 @@ The agents that share a worktree learn of one another from `.hunt/sessions.md`, 
 (`libs/domain/prompts/sessions.system-prompt.md`, with the agent's own Hunt session id filled in): every session of the
 worktree (the session and its sub chats) with its Hunt session id, role (the session, or a sub chat with the selection
 or task it was opened from), title, whether its agent works right now, where it runs and the path of its transcript on
-each machine that has a copy, plus the summary bullets. The file is written anew whenever the stored sessions change, a
+each machine that has a copy, plus the summary bullets, and the folders of the family's terminal logs on each machine. The file is written anew whenever the stored sessions change, a
 session gets its title, an agent starts or stops or a turn starts or ends, and a connected remote session's copy goes
 to its VM a moment later (`sync::copy_files`, as the diagram does). `.hunt/` is excluded from Git and left out of the
 file sync, so the file never reaches the repository.
@@ -777,7 +777,12 @@ watches the local project folder and sends the files this Mac owns, the transcri
 VM's project folder the same way, so the agent on the VM can read what its sub chats did. Every offset is remembered per
 side (`remote-sync/<id>.transcripts.json` in the app data folder), so a channel that reopens asks only for what is
 missing; a mirror that changed under the stream is pulled from the start again, and a VM copy that is not as long as
-expected is sent from the start again. The protocol is in `apps/session/src/sync/transcriptProtocol.ts`. While the
+expected is sent from the start again. The protocol is in `apps/session/src/sync/transcriptProtocol.ts`. A second
+stream of the same kind, on a second helper over the same connection, mirrors the terminal logs between `~/logs` on the
+VM and `.hunt/logs` in the local worktree: this Mac owns `desktop/`, the logs of its tmux windows, which land in
+`~/logs/desktop/` on the VM, and the VM everything else, the logs of its services and windows. Its offsets are kept in
+`remote-sync/<id>.logs.json`, and forgetting the session's sync deletes the logs it brought. As with the transcripts,
+only complete lines cross, so a progress bar without a line break shows with the next one. While the
 stream has no channel (a VM on an older release, or while it reconnects), the sync after every turn that ends copies
 the session's transcript from the VM into the local project folder instead, as a backup for a VM that gets lost
 (`back_up_transcripts` in `apps/client/src-tauri/src/remote/retrieve.rs`); the backup and the retrieval leave the sub

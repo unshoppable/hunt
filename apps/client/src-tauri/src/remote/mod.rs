@@ -2,9 +2,9 @@
 //! provisions, starts and deletes the session VMs (`api.rs`),
 //! the names of the session VMs (`vm.rs`), the release check and tool install on them (`release.rs`), moving a session's
 //! git state and Claude Code transcript there and back (`handoff.rs`, `retrieve.rs`, `transcript.rs`), streaming the
-//! transcripts both ways while the session is connected (`transcript_channel.rs`, `transcript_sync.rs`), reading what a
-//! session's relay does while its VM runs (`status_channel.rs`), adopting session VMs no local session knows
-//! (`adoption.rs`), keeping the files of the VM and the local worktree in sync (`sync.rs`),
+//! transcripts and the terminal logs both ways while the session is connected (`transcript_channel.rs`,
+//! `transcript_sync.rs`), reading what a session's relay does while its VM runs (`status_channel.rs`), adopting session
+//! VMs no local session knows (`adoption.rs`), keeping the files of the VM and the local worktree in sync (`sync.rs`),
 //! committing and pushing on the VM for the changelist (`commit.rs`),
 //! previews (`preview.rs`) and terminals attached to the VM's tmux session (`terminal.rs`). Knows nothing about Tauri;
 //! `session/commands.rs` owns the commands.

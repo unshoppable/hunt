@@ -23,7 +23,8 @@ pub fn remote_project(remote_worktree: &str) -> String {
 }
 
 /// The replacements that move the text of a transcript between this Mac and the VM: the worktree and the project
-/// folder, each way.
+/// folder, each way. The default moves nothing.
+#[derive(Default)]
 pub struct Replacements {
     pub to_local: Vec<(String, String)>,
     pub to_remote: Vec<(String, String)>,

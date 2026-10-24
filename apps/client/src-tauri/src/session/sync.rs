@@ -8,14 +8,14 @@
 //! every sync the branch points at the same commit on both sides (`follow_head`): a commit of the agent's on the VM moves
 //! the local branch, a commit made here (Hunt's changelist, or any tool in the local worktree, seen through the
 //! worktree's reflog) moves the VM's.
-//! The transcripts move apart from the files, live and both ways (`session::transcripts`), started and stopped with
-//! the sync; while that stream has no channel, the sync after a turn ended backs the VM's transcript up into the local
-//! project folder (`remote::retrieve::back_up_transcripts`), so a VM that gets lost costs at most the running turn. Syncs of one
-//! session run one after the other, and requests that arrive meanwhile run one more afterwards; the sync stops when the
-//! last agent of the VM disconnected. An adopted session gets a local worktree first, once the local checkout of its
-//! repository is known; until then it is skipped quietly. Every sync that talks to the VM reports to the UI as
-//! `remote:sync` with the remote session's id, its failure and the files it could not sync; only the sync before a
-//! commit fails its command.
+//! The transcripts and the terminal logs move apart from the files, live and both ways (`session::transcripts`), started
+//! and stopped with the sync; while the transcript stream has no channel, the sync after a turn ended backs the VM's
+//! transcript up into the local project folder (`remote::retrieve::back_up_transcripts`), so a VM that gets lost costs
+//! at most the running turn. Syncs of one session run one after the other, and requests that arrive meanwhile run one
+//! more afterwards; the sync stops when the last agent of the VM disconnected. An adopted session gets a local worktree
+//! first, once the local checkout of its repository is known; until then it is skipped quietly. Every sync that talks
+//! to the VM reports to the UI as `remote:sync` with the remote session's id, its failure and the files it could not
+//! sync; only the sync before a commit fails its command.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
@@ -38,6 +38,7 @@ use crate::remote::commit::{align_heads, set_vm_origin_upstream, vm_origin_upstr
 use crate::remote::retrieve;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::sync::{self as file_sync, Direction, Live, Outcome, SyncTarget};
+use crate::remote::transcript_sync::StreamKind;
 use crate::remote::{claude_dir, RemoteTarget};
 use crate::session::dependencies::{self, Install};
 use crate::session::link::{self, Link};
@@ -95,8 +96,9 @@ struct SessionSync {
     /// Local paths and VM changes reported since the last sync.
     local_paths: Mutex<BTreeSet<String>>,
     remote_changes: Mutex<Vec<RemoteChange>>,
-    /// The transcript stream of the session, which runs beside the sync.
+    /// The transcript and the log stream of the session, which run beside the sync.
     transcripts: Arc<TranscriptLink>,
+    logs: Arc<TranscriptLink>,
 }
 
 impl SessionSync {
@@ -120,7 +122,8 @@ impl SessionSync {
             live: Mutex::new(None),
             local_paths: Mutex::default(),
             remote_changes: Mutex::default(),
-            transcripts: Arc::default(),
+            transcripts: Arc::new(TranscriptLink::new(StreamKind::Transcripts)),
+            logs: Arc::new(TranscriptLink::new(StreamKind::Logs)),
         }
     }
 
@@ -165,6 +168,7 @@ impl SessionSync {
         }
         self.lose_channel();
         self.transcripts.stop();
+        self.logs.stop();
     }
 }
 
@@ -235,17 +239,20 @@ pub fn attach(app: &AppHandle, id: Uuid, agent: Uuid) {
     if let Ok(record) = store::find_session(app, id) {
         if record.worktree_path.is_dir() {
             watch(app, id, &state, &record.worktree_path);
-            stream_transcripts(app, id, &state);
+            start_streams(app, id, &state);
         }
     }
     open_channel(app, id, &state);
     drive(app, id, state);
 }
 
-/// Starts the transcript stream of `id` beside its sync; a failure is only logged, the per-turn backup still runs.
-fn stream_transcripts(app: &AppHandle, id: Uuid, state: &SessionSync) {
-    if let Err(error) = transcripts::start(app, id, &state.transcripts) {
-        eprintln!("starting the transcript stream of session {id} failed: {error}");
+/// Starts the transcript and the log stream of `id` beside its sync; a failure is only logged, the per-turn backup still
+/// covers the VM's transcript.
+fn start_streams(app: &AppHandle, id: Uuid, state: &SessionSync) {
+    for link in [&state.transcripts, &state.logs] {
+        if let Err(error) = transcripts::start(app, id, link) {
+            eprintln!("starting the {} stream of session {id} failed: {error}", link.kind().name());
+        }
     }
 }
 
@@ -393,11 +400,14 @@ pub async fn copy_files(app: &AppHandle, id: Uuid, direction: Direction, paths: 
     file_sync::copy_files(&ssh, direction, &record.worktree_path, &target.worktree_path.display().to_string(), paths).await
 }
 
-/// Deletes the sync state of `id`, whose local worktree no longer follows a VM, and the state of its transcript stream.
+/// Deletes the sync state of `id`, whose local worktree no longer follows a VM, the state of its transcript and log
+/// streams, and the VM's logs the log stream brought into its local worktree.
 pub fn forget(app: &AppHandle, id: Uuid) {
-    let result = manifest_path(app, id).and_then(|path| {
-        file_sync::forget(&path)?;
-        file_sync::forget(&path.with_extension("transcripts.json"))
+    let result = manifest_path(app, id).and_then(|path| file_sync::forget(&path)).and_then(|()| {
+        for kind in [StreamKind::Transcripts, StreamKind::Logs] {
+            file_sync::forget(&transcripts::state_path(app, id, kind)?)?;
+        }
+        transcripts::forget_pulled_logs(&store::find_session(app, id)?.worktree_path)
     });
     if let Err(error) = result {
         eprintln!("deleting the sync state of session {id} failed: {error}");
@@ -744,7 +754,7 @@ async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &
     }
     if let Some(state) = active(app, id) {
         watch(app, id, &state, &record.worktree_path);
-        stream_transcripts(app, id, &state);
+        start_streams(app, id, &state);
     }
     Ok(record)
 }

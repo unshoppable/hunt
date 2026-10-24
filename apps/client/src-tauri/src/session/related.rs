@@ -1,11 +1,12 @@
 //! `.hunt/sessions.md` of a worktree: what the agents that work in it are told about one another. Hunt writes one
 //! file per family (a session and its sub chats, which share the worktree) with every session's id, role, title,
 //! whether its agent works right now, where it runs and the path of its transcript on each machine that has a copy,
-//! and points the agents at it from the system prompt (`libs/domain/prompts/sessions.system-prompt.md`). The file is
-//! written anew whenever the stored sessions change, a summary gave a session its title, an agent started or stopped
-//! or a turn started or ended, and reaches the VM of a connected remote session through its file sync's copy
-//! (`session::sync::copy_files`), a little later and once for every burst of changes. The `.hunt` folder is excluded
-//! from Git and left out of the file sync, so the file never reaches the repository.
+//! plus the folders of the family's terminal logs, and points the agents at it from the system prompt
+//! (`libs/domain/prompts/sessions.system-prompt.md`). The file is written anew whenever the stored sessions change, a
+//! summary gave a session its title, an agent started or stopped or a turn started or ended, and reaches the VM of a
+//! connected remote session through its file sync's copy (`session::sync::copy_files`), a little later and once for
+//! every burst of changes. The `.hunt` folder is excluded from Git and left out of the file sync, so the file never
+//! reaches the repository.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -16,11 +17,13 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
+use crate::remote::handoff::REMOTE_LOGS_DIR;
 use crate::remote::sync::Direction;
 use crate::remote::transcript::{local_project, remote_project};
 use crate::remote::{claude_dir, RemoteTarget};
 use crate::session::store::{self, SessionRecord};
 use crate::session::sync;
+use crate::tmux::{self, DESKTOP_LOGS, LOGS_DIR};
 
 /// The file, inside the worktree's `.hunt` folder.
 pub const SESSIONS_FILE: &str = ".hunt/sessions.md";
@@ -146,6 +149,28 @@ fn render(owner: &SessionRecord, sub_chats: &[&SessionRecord], claude_dir: &Path
         };
         text.push_str(&section(sub_chat, &role, remote, &project, state_of(sub_chat)));
     }
+    text.push_str(&logs_section(&owner.worktree_path, remote.is_some()));
+    text
+}
+
+/// Where the family's tmux windows and services log their output, on each machine that has a copy.
+fn logs_section(worktree: &Path, is_remote: bool) -> String {
+    let services = if is_remote { ", every service of hunt.json to `<service name>.log`," } else { "" };
+    let mut text = format!(
+        "\n## Terminal logs\n\nEvery tmux window of this family writes its output to `<window name>.log`{services} in the folders below. \
+         To see what a process of another session printed, read the end of its log, for example with `tail -n 200`.\n\n"
+    );
+    let desktop = tmux::desktop_logs(worktree);
+    if !is_remote {
+        text.push_str(&format!("- Windows on the desktop: `{}/`\n", desktop.display()));
+        return text;
+    }
+    text.push_str(&format!("- Windows on the desktop: on the desktop `{}/`, on the VM `{REMOTE_LOGS_DIR}/{DESKTOP_LOGS}/`\n", desktop.display()));
+    text.push_str(&format!(
+        "- Services and windows on the VM: on the VM `{REMOTE_LOGS_DIR}/`, on the desktop `{}/` (all but `{DESKTOP_LOGS}/`)\n",
+        worktree.join(LOGS_DIR).display()
+    ));
+    text.push_str("- The copies follow within seconds while the session is connected, a line once it is complete.\n");
     text
 }
 
@@ -273,6 +298,14 @@ mod tests {
              - Transcript on the VM: `/home/agent/.claude/projects/-home-agent-app/def.jsonl`\n"
         ));
         assert!(text.contains("\n## README\n\n- Hunt session id: `00000000-0000-0000-0000-000000000002`\n- Role: a sub chat of the session for the task: Write the file\n- Agent: not running\n- Agent runs on: the desktop\n- Transcript: none yet\n"));
+        assert!(text.contains(
+            "\n## Terminal logs\n\nEvery tmux window of this family writes its output to `<window name>.log`, every service of hunt.json to `<service name>.log`"
+        ));
+        assert!(text.ends_with(
+            "- Windows on the desktop: on the desktop `/Users/jane/wt/.hunt/logs/desktop/`, on the VM `/home/agent/logs/desktop/`\n\
+             - Services and windows on the VM: on the VM `/home/agent/logs/`, on the desktop `/Users/jane/wt/.hunt/logs/` (all but `desktop/`)\n\
+             - The copies follow within seconds while the session is connected, a line once it is complete.\n"
+        ));
     }
 
     #[test]
@@ -281,6 +314,7 @@ mod tests {
         owner.acp_session_id = Some("abc".into());
         let text = render(&owner, &[], Path::new("/Users/jane/.claude"), &|_| AgentState::NotRunning);
         assert!(text.contains("- Agent runs on: the desktop\n- Transcript on the desktop: `/Users/jane/.claude/projects/-Users-jane-wt/abc.jsonl`\n"));
+        assert!(text.ends_with("- Windows on the desktop: `/Users/jane/wt/.hunt/logs/desktop/`\n"));
         assert!(!text.contains("on the VM"));
     }
 }

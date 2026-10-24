@@ -19,6 +19,10 @@ use crate::private_files::{self, compile_patterns, list_ignored};
 /// Where the agent's `~/.claude` lives on the VM; transcripts there name this path.
 pub const REMOTE_CLAUDE_DIR: &str = "/home/agent/.claude";
 
+/// Where the terminal logs live on the VM: hunt-service and the VM's tmux write `<name>.log` there, and the log stream
+/// writes the logs of this Mac's tmux below `desktop/`.
+pub const REMOTE_LOGS_DIR: &str = "/home/agent/logs";
+
 /// The permission mode the relay runs the agent in: nobody is there to answer permission requests.
 pub const REMOTE_MODE: &str = "bypassPermissions";
 

@@ -395,6 +395,16 @@ rules and skills are shown in a tree of the worktree's folders, since Claude Cod
 are numbered after the highest existing one) and its agent chat; the file is written only once the template was edited
 or the agent wrote it, so no template file and no empty folder is ever left behind. ⌘S or "Save" writes an open file.
 
+The "Lint rules" tab lists the ESLint rules of every `eslint.config.*` in the worktree (`read_lint_rules`,
+`apps/client/src-tauri/src/lint_rules.rs`). `apps/client/scripts/eslintRules.mjs` imports the configs on the
+worktree's `node`, so the ESLint and plugins it installs supply each rule's description and documentation link. Per
+config, the tab shows the blocks it adds, not those of a config it spreads, under the globs they apply to. A block
+lists the rules it switches on, and the ones it switches off after an earlier block switched them on. Each rule shows
+whether it comes from ESLint, from an installed plugin, or from a plugin that lives in the repository. The tab only
+reads. Its "Agent" button opens a sub chat whose agent changes the configuration
+(`apps/client/prompts/lint-config.system-prompt.md`). The rules are read again after every agent edit in the
+worktree and whenever the window comes back.
+
 Opening a session checks that the worktree's root `CLAUDE.md` names the ADR folder and otherwise offers once to
 append an "Architectural decisions" section with the `ls`/`grep` lookup
 (`apps/client/src/guardrails/adrInstruction.ts`); without it Claude Code never reads the records. A decline is

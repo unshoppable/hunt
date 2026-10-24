@@ -27,8 +27,13 @@ import { errorText, useLoad } from "../ui/useLoad";
 import { creationTask, generationTask, GUARDRAIL_CHAT_PATH, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailTask, guardrailTemplate, KIND_LABELS, kindHelp, listGuardrails, newGuardrailLocation, ownerFolderOf, treeFolders, type Guardrail, type GuardrailKind, type GuardrailListing, type GuardrailLocation } from "./guardrails";
 import { GuardrailTree } from "./GuardrailTree";
 import { ensureGuardrailReadmes } from "./guardrailReadmes";
+import { LINT_HELP, LINT_TAB_LABEL } from "./lintRules";
+import { LintRulesPane } from "./LintRulesPane";
 
 const KINDS: GuardrailKind[] = ["instruction", "rule", "skill", "agent", "adr"];
+
+/** A tab of the window: a guardrail kind, or the ESLint rules (see LintRulesPane.tsx). */
+type GuardrailTab = GuardrailKind | "lint";
 
 /**
  * The repository's guardrails as a window of its own (see guardrailsWindow.ts), opened from the chat header: the
@@ -50,7 +55,7 @@ const KINDS: GuardrailKind[] = ["instruction", "rule", "skill", "agent", "adr"];
  * the name or one the agent chooses; the file opens as soon as it appears. "Agent" in the editor header opens a sub chat whose agent writes the open file
  * from the user's instructions; once that sub chat exists, the button shows whether its agent is working and
  * reopens the same chat after the popover was closed. The editor reloads the file after every edit an agent of the
- * worktree finishes. ⌘S or "Save" writes the file; the traffic light, Escape and ⌘W hide the window (after asking
+ * worktree finishes. The last tab lists the ESLint rules of the worktree instead (see LintRulesPane.tsx). ⌘S or "Save" writes the file; the traffic light, Escape and ⌘W hide the window (after asking
  * about unsaved edits). It closes itself once its session was removed.
  */
 export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isWarm: boolean }) {
@@ -64,12 +69,15 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
   const [isLoaded, setIsLoaded] = useState(false);
   const workspace = workspaceFor(sessionId, worktreePath);
   const [kind, setKind] = useState<GuardrailKind>("instruction");
+  const [isLintTab, setIsLintTab] = useState(false);
+  // Times the window was brought back, so that the lint rules tab reads the configs again.
+  const [focusCount, setFocusCount] = useState(0);
   const [listing, setListing] = useState<GuardrailListing | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [dirtyPaths, setDirtyPaths] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [collapsedFolders, setCollapsedFolders] = useState<ReadonlySet<string>>(new Set());
-  const helpHover = useHoverAnchor<GuardrailKind>(HELP_OPEN_DELAY);
+  const helpHover = useHoverAnchor<GuardrailTab>(HELP_OPEN_DELAY);
   const agentChat = useSubChatPopover();
   // The page of a new file of this tab's kind ("New …" or the "+" of a tree folder): where it goes (for a CLAUDE.md
   // `dir` is its folder), its name, and the creation chats that existed before it. Its content starts as the
@@ -127,6 +135,7 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
     const subscription = getCurrentWindow().onFocusChanged(({ payload: isFocused }) => {
       if (isFocused) {
         void refresh();
+        setFocusCount((count) => count + 1);
       }
     });
     return () => void subscription.then((unlisten) => unlisten());
@@ -232,6 +241,7 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
   });
 
   const selectKind = (next: GuardrailKind) => {
+    setIsLintTab(false);
     setKind(next);
     select(null);
     setCollapsedFolders(new Set());
@@ -366,6 +376,7 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
   /** Opens a new "New" chat below `button`, whose agent decides from the user's description which guardrail to create. */
   const openGuardrailAgent = (button: HTMLElement) => {
     if (!listing) return;
+    setIsLintTab(false);
     const rect = button.getBoundingClientRect();
     agentChat.open({ selection: { path: GUARDRAIL_CHAT_PATH, startLine: 1, endLine: 1, text: "", task: guardrailTask(listing) }, anchor: { x: rect.left, y: rect.bottom + 6 } });
   };
@@ -413,16 +424,30 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
               key={candidate}
               type="button"
               role="tab"
-              aria-selected={candidate === kind}
+              aria-selected={!isLintTab && candidate === kind}
               onClick={() => selectKind(candidate)}
               onMouseEnter={(event) => helpHover.enter(candidate, event.currentTarget)}
               onMouseLeave={helpHover.leave}
-              className={`${BUTTON_XS} ${candidate === kind ? "bg-(--row-active) text-white" : "text-neutral-400 hover:bg-(--row-hover) hover:text-white"}`}
+              className={`${BUTTON_XS} ${!isLintTab && candidate === kind ? "bg-(--row-active) text-white" : "text-neutral-400 hover:bg-(--row-hover) hover:text-white"}`}
             >
               {KIND_LABELS[candidate].plural}
               {listing ? <span className="ml-1 text-[13px] text-neutral-500">{listing[candidate].length}</span> : null}
             </button>
           ))}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={isLintTab}
+            onClick={() => {
+              setIsLintTab(true);
+              agentChat.close();
+            }}
+            onMouseEnter={(event) => helpHover.enter("lint", event.currentTarget)}
+            onMouseLeave={helpHover.leave}
+            className={`${BUTTON_XS} ${isLintTab ? "bg-(--row-active) text-white" : "text-neutral-400 hover:bg-(--row-hover) hover:text-white"}`}
+          >
+            {LINT_TAB_LABEL}
+          </button>
         </div>
         <button
           type="button"
@@ -439,7 +464,9 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
 
       {error ? <p className="border-b border-(--line) px-4 py-1.5 text-[13px] text-red-400">{error}</p> : null}
 
-      <div className="flex min-h-0 flex-1">
+      {isLintTab ? <LintRulesPane sessionId={sessionId} reloadVersion={editVersion + focusCount} /> : null}
+      {/* Stays mounted behind the lint rules tab, so that the open file and its unsaved edits are there on return. */}
+      <div className={`min-h-0 flex-1 ${isLintTab ? "hidden" : "flex"}`}>
         <aside className="flex w-72 shrink-0 flex-col border-r border-(--line) bg-(--surface-inset)">
           {kind !== "instruction" ? (
             <div className="p-2">
@@ -672,9 +699,9 @@ const HELP_WIDTH = 480;
 const HELP_MARGIN = 8;
 
 /** Explanation of the hovered tab's kind below it (`anchor`); the mouse may move into it to select its text. */
-function HelpTooltip({ anchor, onEnter, onLeave }: { anchor: HoverAnchor<GuardrailKind>; onEnter: () => void; onLeave: () => void }) {
-  const title = KIND_LABELS[anchor.key].plural;
-  const help = kindHelp(anchor.key);
+function HelpTooltip({ anchor, onEnter, onLeave }: { anchor: HoverAnchor<GuardrailTab>; onEnter: () => void; onLeave: () => void }) {
+  const title = anchor.key === "lint" ? LINT_TAB_LABEL : KIND_LABELS[anchor.key].plural;
+  const help = anchor.key === "lint" ? LINT_HELP : kindHelp(anchor.key);
   const width = Math.min(HELP_WIDTH, window.innerWidth - 2 * HELP_MARGIN);
   const left = Math.max(HELP_MARGIN, Math.min(anchor.rect.left, window.innerWidth - width - HELP_MARGIN));
 

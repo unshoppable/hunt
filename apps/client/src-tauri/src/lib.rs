@@ -13,6 +13,7 @@ mod graph;
 mod ide;
 mod keychain;
 mod legacy_identifier;
+mod lint_rules;
 mod lsp;
 mod menu;
 mod plan_usage;
@@ -166,6 +167,7 @@ pub fn run() {
             session::commands::list_deleted_files,
             session::commands::read_file,
             session::commands::format_with_prettier,
+            session::commands::read_lint_rules,
             session::commands::resolve_imports,
             session::commands::search_word,
             session::commands::find_in_files,

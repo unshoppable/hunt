@@ -36,6 +36,7 @@ use crate::private_files;
 use crate::graph::{self, WatcherRegistry};
 use crate::ide;
 use crate::terminal;
+use crate::lint_rules::{self, LintRules};
 use crate::lsp::{self, LspRegistry};
 use crate::remote::api::{validate_remote_secret_name, validate_remote_secret_value, GatewayApi, RemoteSecretSummary};
 use crate::remote::preview::PreviewStatus;
@@ -3110,6 +3111,15 @@ pub async fn format_with_prettier(app: AppHandle, id: Uuid, path: String, text: 
     let (record, file) = session_file(&app, id, &path)?;
     let script = bundled_script_path(&app, formatter::SCRIPT)?;
     formatter::format_with_prettier(&script, &record.worktree_path, &file, &text).await
+}
+
+/// The ESLint rules every `eslint.config.*` of the worktree sets, as the ESLint the worktree installs reads them.
+#[tauri::command]
+pub async fn read_lint_rules(app: AppHandle, id: Uuid) -> Result<LintRules, String> {
+    let record = worktree_session(&app, id)?;
+    let configs: Vec<String> = git::list_files(&record.worktree_path).await?.into_iter().filter(|path| lint_rules::is_config(path)).collect();
+    let script = bundled_script_path(&app, lint_rules::SCRIPT)?;
+    lint_rules::read_lint_rules(&script, &record.worktree_path, &configs).await
 }
 
 /// Worktree files containing `word` as a whole word; candidates for the editor's usage search.

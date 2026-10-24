@@ -1,3 +1,9 @@
+## 0.110.1 (2026-10-24)
+
+### 🩹 Fixes
+
+- **client:** the diff window no longer sends pointer and focus events to a local debug log server ([41961ce](https://github.com/unshoppable/hunt/commit/41961ce))
+
 ## 0.110.0 (2026-10-24)
 
 ### 🚀 Features

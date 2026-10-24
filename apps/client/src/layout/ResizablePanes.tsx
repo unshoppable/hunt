@@ -7,12 +7,11 @@ import { ChevronIcon } from "../ui/icons";
 let isToggleAction = false;
 /** How long the group animates the panes after a toggle; matches the transition in index.css. */
 const PANE_ANIMATION_MS = 260;
-let paneAnimationTimer: number | undefined;
 
 /**
- * Resizable pane group whose layout survives restarts (persisted in localStorage under `id`). A drag resizes only the
- * two panes beside the dragged separator; it never pushes the panes beyond them. `toggleOnlyPanes` maps the ids of
- * collapsible panes that only their toggle collapses to their minimum size in pixels: a drag stops them there.
+ * Resizable pane group whose layout survives restarts (persisted in localStorage under `id`). `toggleOnlyPanes` maps
+ * the ids of collapsible panes that only their toggle collapses to their minimum size in pixels: a drag stops them
+ * there and never pushes one that is not beside the dragged separator; other panes give way to a pushed neighbour.
  */
 export function PersistentGroup({
   id,
@@ -37,6 +36,7 @@ export function PersistentGroup({
   /** The layout when the current drag began; the library recomputes every pointer move from it. */
   const dragStartLayout = useRef<Layout | null>(null);
   const isRestoring = useRef(false);
+  const animationTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     const endDrag = () => {
@@ -45,6 +45,38 @@ export function PersistentGroup({
     window.addEventListener("pointerup", endDrag, true);
     return () => window.removeEventListener("pointerup", endDrag, true);
   }, []);
+
+  // While a toggle animates the panes, each pane's content keeps the larger of its old and new size, so a frame only
+  // changes how much of it the pane shows (index.css clips it) instead of laying the content out again.
+  const animateToggle = (layout: Layout) => {
+    const element = groupElement.current;
+    if (!element) return;
+    const isHorizontal = orientation === "horizontal";
+    const panes = [...element.children].filter((child): child is HTMLElement => child instanceof HTMLElement && child.hasAttribute("data-panel"));
+    const paneSpace = panes.reduce((total, pane) => total + (isHorizontal ? pane.offsetWidth : pane.offsetHeight), 0);
+    const contents = panes.map((pane) => {
+      const content = pane.firstElementChild;
+      if (!(content instanceof HTMLElement)) return null;
+      const size = Math.max(isHorizontal ? pane.offsetWidth : pane.offsetHeight, ((layout[pane.id] ?? 0) / 100) * paneSpace);
+      content.style[isHorizontal ? "minWidth" : "minHeight"] = `${size}px`;
+      return content;
+    });
+    element.setAttribute("data-pane-animating", "");
+    window.clearTimeout(animationTimer.current);
+    animationTimer.current = window.setTimeout(() => {
+      element.removeAttribute("data-pane-animating");
+      for (const content of contents) {
+        content?.style.removeProperty(isHorizontal ? "min-width" : "min-height");
+      }
+    }, PANE_ANIMATION_MS);
+  };
+
+  const handleLayoutChange = (layout: Layout) => {
+    if (isToggleAction) {
+      animateToggle(layout);
+    }
+    keepDragBesideSeparator(layout);
+  };
 
   const keepDragBesideSeparator = (layout: Layout) => {
     const previous = previousLayout.current;
@@ -60,9 +92,9 @@ export function PersistentGroup({
     const panes = [...element.children].filter((child): child is HTMLElement => child instanceof HTMLElement && child.hasAttribute("data-panel"));
     const paneIds = panes.map((pane) => pane.id);
     const restored = { ...layout };
-    // A pane beyond the two neighbours keeps its size; the neighbour on the separator's other side gives back what it took.
+    // A toggle-only pane beyond the two neighbours keeps its size; the neighbour on the separator's other side gives back what it took.
     for (const paneId of paneIds) {
-      if (paneId === before || paneId === after || start[paneId] === undefined || restored[paneId] === undefined) continue;
+      if (paneId === before || paneId === after || !toggleOnlyPanes[paneId] || start[paneId] === undefined || restored[paneId] === undefined) continue;
       const neighbour = paneIds.indexOf(paneId) < paneIds.indexOf(after) ? after : before;
       restored[neighbour] += restored[paneId] - start[paneId];
       restored[paneId] = start[paneId];
@@ -96,7 +128,7 @@ export function PersistentGroup({
       groupRef={groupRef}
       elementRef={groupElement}
       defaultLayout={defaultLayout}
-      onLayoutChange={keepDragBesideSeparator}
+      onLayoutChange={handleLayoutChange}
       onLayoutChanged={(layout, meta) => onLayoutChanged(layout, isToggleAction ? { ...meta, isUserInteraction: true } : meta)}
       className={className}
     >
@@ -118,6 +150,11 @@ export function PaneSeparator({ orientation = "horizontal" }: { orientation?: "h
 
 /** Width a collapsed pane keeps for its rail (`w-12`, 42px at the 14px root font). */
 export const RAIL_SIZE = "3rem";
+/**
+ * `collapsedThreshold` of a toggle-only pane: a drag that squeezes it below its minimum pushes the panes beyond it
+ * instead of collapsing it. Only a drag past the rail size still collapses it, which `PersistentGroup` undoes.
+ */
+export const PUSH_INSTEAD_OF_COLLAPSE = "100%";
 
 /**
  * The row a pane toggle sits in: the row of the session sidebar's search field, so every toggle shares its height.
@@ -134,11 +171,7 @@ export function PaneToggle({ isOpen, name, onToggle }: { isOpen: boolean; name: 
   return (
     <button
       type="button"
-      onClick={(event) => {
-        const group = event.currentTarget.closest("[data-group]");
-        group?.setAttribute("data-pane-animating", "");
-        window.clearTimeout(paneAnimationTimer);
-        paneAnimationTimer = window.setTimeout(() => group?.removeAttribute("data-pane-animating"), PANE_ANIMATION_MS);
+      onClick={() => {
         isToggleAction = true;
         try {
           onToggle();
@@ -162,7 +195,7 @@ export function PaneToggle({ isOpen, name, onToggle }: { isOpen: boolean; name: 
 /** What a collapsed pane shows in its place: an empty header row that drags the window, then the toggle restoring it. */
 export function PaneRail({ headerClassName = "", children }: { headerClassName?: string; children: ReactNode }) {
   return (
-    <div className="flex w-full min-w-0 animate-pane-in flex-col items-center">
+    <div className="flex w-12 shrink-0 animate-pane-in flex-col items-center">
       <div data-tauri-drag-region="" className={`${HEADER_BAR} w-full ${headerClassName}`} />
       <div className={PANE_TOGGLE_ROW}>{children}</div>
     </div>

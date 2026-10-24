@@ -20,7 +20,18 @@ import { FileSearchDialog, useFileSearchShortcut } from "../ide/FileSearchDialog
 import { FindInFilesDialog, useFindInFilesShortcut } from "../ide/FindInFilesDialog";
 import { EMPTY_IDE_SESSION, useIdeStore } from "../ide/ideStore";
 import { allPanes } from "../ide/paneGrid";
-import { PANE_TOGGLE_ROW, PaneRail, PaneSeparator, PaneToggle, Panel, PersistentGroup, RAIL_SIZE, useGroupRef, usePanelRef } from "../layout/ResizablePanes";
+import {
+  PANE_TOGGLE_ROW,
+  PaneRail,
+  PaneSeparator,
+  PaneToggle,
+  Panel,
+  PersistentGroup,
+  PUSH_INSTEAD_OF_COLLAPSE,
+  RAIL_SIZE,
+  useGroupRef,
+  usePanelRef,
+} from "../layout/ResizablePanes";
 import { PreviewPanel } from "../preview/PreviewPanel";
 import { isPreviewActive, isTerminalActive } from "../preview/services";
 import { usePreviewStore } from "../state/preview";
@@ -205,6 +216,7 @@ export function App() {
           maxSize={480}
           collapsible
           collapsedSize={RAIL_SIZE}
+          collapsedThreshold={PUSH_INSTEAD_OF_COLLAPSE}
           className="flex bg-(--sidebar-bg)"
         >
           {isSessionsCollapsed ? <PaneRail>{sessionsToggle}</PaneRail> : null}
@@ -221,6 +233,7 @@ export function App() {
           minSize={CHAT_MIN_WIDTH}
           collapsible
           collapsedSize={RAIL_SIZE}
+          collapsedThreshold={PUSH_INSTEAD_OF_COLLAPSE}
           className="flex bg-(--chat-bg)"
         >
           {isChatCollapsed ? <PaneRail headerClassName="border-b border-(--line)">{chatToggle}</PaneRail> : null}

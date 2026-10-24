@@ -123,6 +123,9 @@
     }
   }
 }
+[data-group][data-pane-animating] > [data-panel] {
+  overflow: hidden !important;
+}
 @media (prefers-reduced-motion: no-preference) {
   [data-group][data-pane-animating] > [data-panel] {
     transition: flex-grow 260ms cubic-bezier(0.32, 0.72, 0, 1);

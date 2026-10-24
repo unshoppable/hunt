@@ -1,3 +1,9 @@
+## 0.103.3 (2026-10-24)
+
+### 🩹 Fixes
+
+- **client:** code blocks in the chat are 1px smaller than its text ([78c2c21](https://github.com/unshoppable/hunt/commit/78c2c21))
+
 ## 0.103.2 (2026-10-23)
 
 ### 🩹 Fixes

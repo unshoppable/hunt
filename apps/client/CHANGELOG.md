@@ -1,3 +1,13 @@
+## 0.108.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** the Git tab shows the repository's checkout while no session is active and checks branches out ([dcdbe5c](https://github.com/unshoppable/hunt/commit/dcdbe5c))
+
+### 🩹 Fixes
+
+- **client:** a session opened without a prompt shows no working indicator while it is created ([ecd55bc](https://github.com/unshoppable/hunt/commit/ecd55bc))
+
 ## 0.107.0 (2026-10-24)
 
 ### 🚀 Features

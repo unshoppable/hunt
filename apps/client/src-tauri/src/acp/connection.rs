@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::v1::{
-    ClientCapabilities, ConfigOptionUpdate, InitializeRequest, LoadSessionRequest, Meta,
-    NewSessionRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    ClientCapabilities, ConfigOptionUpdate, EnvVariable, InitializeRequest, LoadSessionRequest, McpServer,
+    McpServerStdio, Meta, NewSessionRequest, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigOption, SessionId,
     SessionNotification, SessionUpdate,
 };
@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 use super::message_time::{self, Transcript};
 use crate::accounts;
+use crate::browser::{self, BrowserRegistry};
 use crate::graph;
 use crate::remote::claude_dir;
 use crate::session::attribution;
@@ -32,6 +33,12 @@ const ACP_SCRIPT: &str = "node_modules/@agentclientprotocol/claude-agent-acp/dis
 /// Turns on Claude in Chrome for a local agent, so that it drives the user's Chrome through Claude's extension. Claude
 /// Code ignores it while `accounts::TOKEN_ENV` is set, since Claude in Chrome needs the login of `claude /login`.
 const CLAUDE_IN_CHROME_ENV: &str = "CLAUDE_CODE_ENABLE_CFC";
+/// The Playwright MCP wrapper of a local agent, which drives the session's Chrome (`crate::browser`).
+const BROWSER_MCP_SCRIPT: &str = "apps/client/scripts/browserMcp.mjs";
+/// The name of the wrapper's MCP server, which prefixes its tools (`mcp__playwright__browser_navigate`).
+const BROWSER_MCP_NAME: &str = "playwright";
+/// Where the wrapper finds Hunt's browser control socket.
+const BROWSER_SOCKET_ENV: &str = "HUNT_BROWSER_SOCKET";
 
 /// A running agent process bound to one Hunt session.
 pub struct LiveSession {
@@ -221,6 +228,9 @@ struct AgentTask {
     history: Arc<Mutex<Vec<SessionNotification>>>,
     start: SessionStart,
     system_prompt: String,
+    /// The MCP servers the agent session gets: the browser wrapper for an agent on this Mac, none for a relay, which
+    /// passes its own.
+    mcp_servers: Vec<McpServer>,
     /// Whether a conversation the agent no longer has may be replaced by a new one; a relay never loses its session,
     /// so a remote session reports the error instead.
     may_start_over: bool,
@@ -285,6 +295,7 @@ pub async fn connect(
 ) -> Result<LiveSession, String> {
     let is_local = matches!(transport, AgentTransport::Local);
     let sync_owner = transport.sync_owner();
+    let mcp_servers = if is_local { vec![browser_mcp_server(&app, hunt_session_id)?] } else { Vec::new() };
     let agent = match transport {
         AgentTransport::Local => {
             let script = bundled_script_path(&app, ACP_SCRIPT)?;
@@ -317,6 +328,7 @@ pub async fn connect(
         history: history.clone(),
         start,
         system_prompt,
+        mcp_servers,
         may_start_over: is_local,
         ready,
         shutdown: shutdown_receiver,
@@ -338,7 +350,8 @@ pub async fn connect(
 /// Runs the agent process until it exits or the session is shut down: forwards its notifications and permission
 /// requests, hands the established session to `connect`, and announces the end to the registries and the UI.
 async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
-    let AgentTask { app, hunt_session_id, worktree, sync_owner, history, start, system_prompt, may_start_over, ready, shutdown, finished } = task;
+    let AgentTask { app, hunt_session_id, worktree, sync_owner, history, start, system_prompt, mcp_servers, may_start_over, ready, shutdown, finished } =
+        task;
     let notify_app = app.clone();
     let permission_app = app.clone();
     let session_ready = ready.clone();
@@ -389,7 +402,7 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
         )
         .connect_with(agent, |connection: ConnectionTo<Agent>| async move {
             let replay_end = || end_replay(&session_app, hunt_session_id, &replay);
-            run_session(connection, start, system_prompt, may_start_over, session_ready, replay_end, shutdown).await
+            run_session(connection, start, system_prompt, mcp_servers, may_start_over, session_ready, replay_end, shutdown).await
         })
         .await;
 
@@ -409,13 +422,14 @@ async fn run_session(
     connection: ConnectionTo<Agent>,
     start: SessionStart,
     system_prompt: String,
+    mcp_servers: Vec<McpServer>,
     may_start_over: bool,
     ready: ReadyHandoff,
     end_replay: impl FnOnce(),
     shutdown: oneshot::Receiver<()>,
 ) -> Result<(), Error> {
     // A failed setup is not fired here: it surfaces as the connection's result, which fires the handoff with it.
-    let (acp_session_id, config_options) = establish(&connection, start, &system_prompt, may_start_over).await?;
+    let (acp_session_id, config_options) = establish(&connection, start, &system_prompt, mcp_servers, may_start_over).await?;
     end_replay();
     ready.fire(Ok((acp_session_id, config_options, connection.clone())));
 
@@ -434,6 +448,7 @@ async fn forget_live_session(app: &AppHandle, hunt_session_id: Uuid) {
     attribution::forget_session(app, hunt_session_id);
     crate::session::sync::detach(app, hunt_session_id);
     crate::session::commands::close_desktop(app, hunt_session_id);
+    crate::session::commands::close_browser(app, hunt_session_id);
     crate::session::related::agent_stopped(app, hunt_session_id);
     app.state::<PermissionRegistry>()
         .0
@@ -442,14 +457,15 @@ async fn forget_live_session(app: &AppHandle, hunt_session_id: Uuid) {
         .retain(|_, pending| pending.hunt_session_id != hunt_session_id);
 }
 
-/// Initializes the protocol and creates or loads the session; returns its ID and config options.
-/// `system_prompt` is appended to the agent's own system prompt (see `system_prompt_append`).
+/// Initializes the protocol and creates or loads the session with the MCP servers `mcp_servers`; returns its ID and
+/// config options. `system_prompt` is appended to the agent's own system prompt (see `system_prompt_append`).
 /// With `may_start_over`, a conversation the agent no longer has (its transcript was cleaned up or never written) is
 /// replaced by a new one, so the session stays usable; the caller stores the new ID.
 async fn establish(
     connection: &ConnectionTo<Agent>,
     start: SessionStart,
     system_prompt: &str,
+    mcp_servers: Vec<McpServer>,
     may_start_over: bool,
 ) -> Result<(SessionId, Vec<SessionConfigOption>), Error> {
     let mut capability_meta = Meta::new();
@@ -463,16 +479,17 @@ async fn establish(
         .await?;
 
     match start {
-        SessionStart::New { cwd } => new_session(connection, cwd, system_prompt).await,
+        SessionStart::New { cwd } => new_session(connection, cwd, system_prompt, mcp_servers).await,
         SessionStart::Load { cwd, acp_session_id } => {
             let session_id = SessionId::new(acp_session_id);
             let request = LoadSessionRequest::new(session_id.clone(), cwd.clone())
+                .mcp_servers(mcp_servers.clone())
                 .meta(build_session_meta(system_prompt));
             match connection.send_request(request).block_task().await {
                 Ok(response) => Ok((session_id, response.config_options.unwrap_or_default())),
                 Err(error) if may_start_over && error.code == ErrorCode::ResourceNotFound => {
                     eprintln!("the agent no longer has the conversation {session_id}, starting a new one: {error}");
-                    new_session(connection, cwd, system_prompt).await
+                    new_session(connection, cwd, system_prompt, mcp_servers).await
                 }
                 Err(error) => Err(error),
             }
@@ -480,14 +497,16 @@ async fn establish(
     }
 }
 
-/// Creates a new session in `cwd` on the initialized connection; returns its ID and config options.
+/// Creates a new session in `cwd` with the MCP servers `mcp_servers` on the initialized connection; returns its ID and
+/// config options.
 async fn new_session(
     connection: &ConnectionTo<Agent>,
     cwd: PathBuf,
     system_prompt: &str,
+    mcp_servers: Vec<McpServer>,
 ) -> Result<(SessionId, Vec<SessionConfigOption>), Error> {
     let response = connection
-        .send_request(NewSessionRequest::new(cwd).meta(build_session_meta(system_prompt)))
+        .send_request(NewSessionRequest::new(cwd).mcp_servers(mcp_servers).meta(build_session_meta(system_prompt)))
         .block_task()
         .await?;
     Ok((response.session_id, response.config_options.unwrap_or_default()))
@@ -516,10 +535,14 @@ const SESSIONS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "
 /// quoted path of its `.hunt/tmux` filled in.
 const TERMINALS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/terminals.system-prompt.md"));
 
+/// Tells an agent on this Mac to use the Playwright tools of its session's Chrome (`crate::browser`) for the app it works
+/// on.
+const BROWSER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/browser.system-prompt.md"));
+
 /// Everything Hunt appends to the system prompt of the agent of the Hunt session `hunt_session_id`: the user's
 /// response-style prompt from the settings (if not cleared), the guardrail offer, the change references, the code block
 /// places, the question marker, the sessions file, for an agent on this Mac in the worktree `local_worktree` the
-/// terminals, and the optional selection context, each section separated from the next by a blank line.
+/// terminals and the browser, and the optional selection context, each section separated from the next by a blank line.
 pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prompt: Option<String>, local_worktree: Option<&Path>) -> String {
     let style = crate::preferences::system_prompt(app);
     let mut append = String::new();
@@ -540,6 +563,8 @@ pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prom
         append.push('\n');
         let tmux = crate::remote::shell_quote(&crate::tmux::wrapper_path(worktree).to_string_lossy());
         append.push_str(&crate::graph::fill_prompt(TERMINALS_PROMPT, &[("tmux", &tmux)]));
+        append.push('\n');
+        append.push_str(BROWSER_PROMPT);
     }
     append.push_str(context_prompt.as_deref().unwrap_or_default());
     append
@@ -550,6 +575,28 @@ fn build_session_meta(system_prompt: &str) -> Meta {
     let mut meta = Meta::new();
     meta.insert("systemPrompt".into(), serde_json::json!({ "append": system_prompt }));
     meta
+}
+
+/// The Playwright MCP server of the local agent of `hunt_session_id`: the wrapper `BROWSER_MCP_SCRIPT` run by the `node`
+/// on the PATH, given the session's CDP port (reserved here) and the control socket through which it opens the session's
+/// Chrome before the first browser tool.
+fn browser_mcp_server(app: &AppHandle, hunt_session_id: Uuid) -> Result<McpServer, String> {
+    let node = find_on_path("node").ok_or("failed to start the agent: node is not on the PATH")?;
+    let script = bundled_script_path(app, BROWSER_MCP_SCRIPT)?;
+    let port = app.state::<BrowserRegistry>().reserve_port(hunt_session_id)?;
+    let socket = browser::control_socket_path(&crate::session::store::browser_dir(app)?);
+    let server = McpServerStdio::new(BROWSER_MCP_NAME, node)
+        .args(vec![script.to_string_lossy().into_owned(), "--port".into(), port.to_string()])
+        .env(vec![
+            EnvVariable::new(BROWSER_SOCKET_ENV, socket.to_string_lossy()),
+            EnvVariable::new(crate::tmux::SESSION_ENV, hunt_session_id.to_string()),
+        ]);
+    Ok(McpServer::Stdio(server))
+}
+
+/// The file `program` in the first folder of the PATH that has one.
+fn find_on_path(program: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join(program)).find(|path| path.is_file())
 }
 
 /// Forwards the permission request to the UI and waits for `answer_permission`.

@@ -23,7 +23,9 @@ everything else goes here.
   in `apps/client/src-tauri`). The session's `test` runs its `build` first, and so does the gateway's: their Docker
   tests of `hunt-ctl` use the built artifact. `cargo build` must stay free of warnings.
 - `client:tmux` (`scripts/buildTmux.ts`) builds the static tmux Hunt bundles into `apps/client/src-tauri/binaries/`
-  (git-ignored, cached by Nx and CI); the client's `dev`, `bundle` and `test-rust` depend on it.
+  (git-ignored, cached by Nx and CI); the client's `dev`, `bundle` and `test-rust` depend on it, and likewise on
+  `client:review-widget` (`scripts/buildReviewWidget.ts`), which builds the review widget into
+  `apps/client/src-tauri/resources/review.js` for `browser.rs`. A plain `cargo build` needs both run first.
 - There is no formatter; never run prettier or `cargo fmt`. Format by hand: TypeScript up to ~160 columns, Rust per
   `apps/client/src-tauri/rustfmt.toml`.
 

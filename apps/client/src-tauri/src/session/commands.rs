@@ -20,6 +20,7 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::accounts;
+use crate::browser::{AnnotationSink, BrowserRegistry};
 use crate::checks::{self, CheckDefinition, CheckNotice, CheckRegistry, CheckRunView};
 use crate::declined_guardrails;
 use crate::acp::{
@@ -762,6 +763,33 @@ pub async fn desktop_open(
 pub fn close_desktop(app: &AppHandle, id: Uuid) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move { app.state::<DesktopRegistry>().close(id).await });
+}
+
+/// Opens the Chrome of the local session `id` and brings it to the front (see `crate::browser`).
+#[tauri::command]
+pub async fn browser_open(app: AppHandle, id: Uuid) -> Result<(), String> {
+    open_browser(&app, id, true).await
+}
+
+/// Opens the Chrome of the local session `id` with a copy of its repository's profile unless it runs; with `raises`, its
+/// window comes to the front. The annotations of its review widget go to the windows as `review:annotation`. The command
+/// and the browser control socket use it; a remote session has its Chromium on its VM.
+pub async fn open_browser(app: &AppHandle, id: Uuid, raises: bool) -> Result<(), String> {
+    let record = store::find_session(app, id).map_err(|error| format!("failed to open the browser: {error}"))?;
+    if record.remote.is_some() {
+        return Err("failed to open the browser: the session runs on a VM".into());
+    }
+    let browser_dir = store::browser_dir(app)?;
+    let emitter = app.clone();
+    let on_annotation: AnnotationSink = std::sync::Arc::new(move |annotation| relay_watch::emit_annotation(&emitter, id, annotation));
+    app.state::<BrowserRegistry>().open(id, &record.repo_path, &browser_dir, on_annotation, raises).await
+}
+
+/// Closes the Chrome of the session `id` in the background, once its agent or the session ends; its profile replaces
+/// the repository's.
+pub fn close_browser(app: &AppHandle, id: Uuid) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move { app.state::<BrowserRegistry>().close(id).await });
 }
 
 /// The session VMs the gateway of the remote settings lists, running or not (see `remote::adoption::list_session_vms`),
@@ -1962,6 +1990,7 @@ async fn stop_agent_and_wait(app: &AppHandle, registry: &SessionRegistry, watche
     graph::unwatch(watchers, id);
     attribution::forget_session(app, id);
     close_desktop(app, id);
+    close_browser(app, id);
     sync::stop_and_wait(app, id).await;
 }
 
@@ -2124,6 +2153,7 @@ async fn stop_agent(app: &AppHandle, registry: &SessionRegistry, watchers: &Watc
     graph::unwatch(watchers, id);
     attribution::forget_session(app, id);
     close_desktop(app, id);
+    close_browser(app, id);
     sync::detach(app, id);
 }
 

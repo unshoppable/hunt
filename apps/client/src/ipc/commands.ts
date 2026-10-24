@@ -131,6 +131,11 @@ export const commands = {
    */
   desktopOpen: (id: string) => invoke<DesktopEndpoint>("desktop_open", { id }),
   /**
+   * Opens the Chrome of the local session `id` with a copy of its repository's browser profile, or brings the running one
+   * to the front; the annotations of its review widget arrive as `review:annotation`.
+   */
+  browserOpen: (id: string) => invoke<void>("browser_open", { id }),
+  /**
    * Adopts the sessions of `ids` the gateway of `settings` lists that no local session knows, each in the local checkout
    * of its repository among `repoPaths` and the stored sessions' repositories, and brings the agent state of the remote
    * sessions this Mac has up to date; resolves with the IDs of the new sessions.

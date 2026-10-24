@@ -33,10 +33,31 @@
         "command": "node scripts/buildTmux.ts"
       }
     },
+    "review-widget": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "{workspaceRoot}/scripts/buildReviewWidget.ts",
+        "{workspaceRoot}/apps/session/src/review/**/*",
+        "{workspaceRoot}/libs/domain/src/**/*",
+        {
+          "externalDependencies": [
+            "esbuild"
+          ]
+        }
+      ],
+      "outputs": [
+        "{projectRoot}/src-tauri/resources/review.js"
+      ],
+      "options": {
+        "command": "node scripts/buildReviewWidget.ts apps/client/src-tauri/resources/review.js"
+      }
+    },
     "dev": {
       "executor": "nx:run-commands",
       "dependsOn": [
-        "tmux"
+        "tmux",
+        "review-widget"
       ],
       "options": {
         "command": "tauri dev",
@@ -47,7 +68,8 @@
     "bundle": {
       "executor": "nx:run-commands",
       "dependsOn": [
-        "tmux"
+        "tmux",
+        "review-widget"
       ],
       "options": {
         "command": "tauri build",
@@ -57,7 +79,7 @@
     "typecheck-tests": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "tsc --noEmit -p apps/client/tsconfig.json"
+        "command": "tsc --noEmit -p apps/client/tsconfig.json && tsc --noEmit -p apps/client/tsconfig.scripts.json"
       }
     },
     "lint": {
@@ -79,7 +101,8 @@
     "test-rust": {
       "executor": "nx:run-commands",
       "dependsOn": [
-        "tmux"
+        "tmux",
+        "review-widget"
       ],
       "options": {
         "command": "cargo test --manifest-path apps/client/src-tauri/Cargo.toml"
@@ -88,7 +111,9 @@
         "{projectRoot}/src-tauri/**/*",
         "!{projectRoot}/src-tauri/target/**/*",
         "{projectRoot}/prompts/**/*",
-        "{workspaceRoot}/libs/domain/prompts/**/*"
+        "{workspaceRoot}/libs/domain/prompts/**/*",
+        "{workspaceRoot}/apps/session/src/review/**/*",
+        "{workspaceRoot}/scripts/buildReviewWidget.ts"
       ]
     }
   }

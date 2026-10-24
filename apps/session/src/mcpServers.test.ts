@@ -14,7 +14,20 @@ describe("mcp-servers.json", () => {
     expect(others).toEqual([]);
     expect(pinned).toEqual(["@playwright/mcp"]);
     expect(playwright.command).toBe("/opt/hunt/node/bin/node");
-    expect(playwright.args).toEqual(["/opt/hunt/agent/playwright/node_modules/@playwright/mcp/cli.js", "--cdp-endpoint", "http://127.0.0.1:9222"]);
+    expect(playwright.args).toEqual([
+      "/opt/hunt/agent/playwright/node_modules/@playwright/mcp/cli.js",
+      "--cdp-endpoint",
+      "http://127.0.0.1:9222",
+      "--output-dir",
+      "/tmp/playwright-mcp",
+    ]);
     expect(playwright.env).toEqual([]);
+  });
+
+  it("pins the same @playwright/mcp as the root package.json, from which local sessions run it", () => {
+    const dependenciesOf = (relativePath: string) => (JSON.parse(read(relativePath)) as { dependencies: Record<string, string> }).dependencies;
+
+    expect(dependenciesOf("../playwright/package.json")["@playwright/mcp"]).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(dependenciesOf("../../../package.json")["@playwright/mcp"]).toBe(dependenciesOf("../playwright/package.json")["@playwright/mcp"]);
   });
 });

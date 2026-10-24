@@ -1,8 +1,9 @@
 /**
- * An annotation a person makes with the review widget on a guarded preview page of a session VM: the element they
- * picked and what they wrote about it. The review server (`apps/session/src/review/server.ts`) validates and stores it,
- * the status helper delivers it once to the desktop client, which shows it above the session's composer and sends it
- * along with the next prompt.
+ * An annotation a person makes with the review widget on a guarded preview page of a session VM or in the Chrome of a
+ * local session: the element they picked and what they wrote about it. On a VM the review server
+ * (`apps/session/src/review/server.ts`) validates and stores it and the status helper delivers it once to the desktop
+ * client; a local Chrome hands it to the desktop client through a CDP binding. The client shows it above the session's
+ * composer and sends it along with the next prompt.
  */
 import { isRecord } from "./jsonRpc.ts";
 

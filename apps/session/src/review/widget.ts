@@ -1,16 +1,17 @@
 /**
  * The review widget, which the review server (`server.ts`) adds to every HTML page of a guarded preview host as
- * `/__hunt/review.js`: a floating button starts picking, the element under the pointer is outlined, a click picks it
- * and opens a comment box, and "Add" posts the annotation to `/__hunt/review`, from where it reaches the session's
- * composer in the desktop client. Escape cancels picking and closes the box. All of the UI lives in a closed shadow
- * root, so the page's styles and scripts do not reach it; the only global is the guard against a second copy.
- * `scripts/buildVmArtifact.ts` bundles it for the browser as `session/review.js`.
+ * `/__hunt/review.js` and the desktop app injects into every page of a local session's Chrome: a floating button starts
+ * picking, the element under the pointer is outlined, a click picks it and opens a comment box, and "Add" hands the
+ * annotation over (`delivery.ts`: the CDP binding in a local Chrome, else a POST to `/__hunt/review`), from where it
+ * reaches the session's composer in the desktop client. Escape cancels picking and closes the box. All of the UI lives
+ * in a closed shadow root, so the page's styles and scripts do not reach it; the only global is the guard against a
+ * second copy. `scripts/buildReviewWidget.ts` bundles it for the browser.
  */
 import { ANNOTATION_LIMITS, type BrowserAnnotation } from "../../../../libs/domain/src/browserAnnotation.ts";
+import { deliverAnnotation, mountTiming, type PostJson } from "./delivery.ts";
 import { attributeSource, cssSelector, pickStyles, reactSource, shorten, shortenHtml, type ElementStep } from "./elementInfo.ts";
 
 const GUARD = "__huntReviewWidget";
-const ENDPOINT = "/__hunt/review";
 const HOST_TAG = "hunt-review";
 const MAX_SOURCE_ANCESTORS = 12;
 const TOAST_MS = 2_500;
@@ -144,13 +145,7 @@ function start(): void {
       addButton.disabled = true;
       error.hidden = true;
       try {
-        const response = await fetch(ENDPOINT, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(annotationOf(element, textarea.value.trim())),
-          credentials: "same-origin",
-        });
-        if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
+        await deliverAnnotation(annotationOf(element, textarea.value.trim()), globals, postJson);
         setPhase("idle");
         toast("Added to the session's next prompt in Hunt");
       } catch (failure) {
@@ -276,8 +271,15 @@ function annotationOf(element: Element, comment: string): BrowserAnnotation {
   return annotation;
 }
 
+const postJson: PostJson = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body, credentials: "same-origin" });
+
 const globals = window as unknown as Record<string, unknown>;
 if (!globals[GUARD] && window.top === window) {
   globals[GUARD] = true;
-  start();
+  const timing = mountTiming({ readyState: document.readyState, hasRoot: !!document.documentElement, hasBody: !!document.body });
+  if (timing === "now") {
+    start();
+  } else if (timing === "afterParsing") {
+    document.addEventListener("DOMContentLoaded", start, { once: true });
+  }
 }

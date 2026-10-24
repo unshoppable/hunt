@@ -231,6 +231,12 @@ pub fn worktrees_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// The folder of the local sessions' Chromes: the repositories' profiles, the sessions' copies and the control sockets
+/// (see `crate::browser`).
+pub fn browser_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join("browser"))
+}
+
 fn store_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir(app)?.join("sessions.json"))
 }

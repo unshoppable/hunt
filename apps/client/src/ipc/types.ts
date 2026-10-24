@@ -323,7 +323,8 @@ export type RelayActivityEvent = { huntSessionId: string; relayActivity: RelayAc
 
 /**
  * An annotation a person made with the review widget on a preview page of a remote session's VM, delivered once through
- * its status channel (mirror of `AnnotationEvent` in src-tauri/src/session/relay_watch.rs).
+ * its status channel, or in the Chrome of a local session (mirror of `AnnotationEvent` in
+ * src-tauri/src/session/relay_watch.rs).
  */
 export type AnnotationEvent = { huntSessionId: string; annotation: StoredBrowserAnnotation };
 

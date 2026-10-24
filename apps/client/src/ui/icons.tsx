@@ -163,6 +163,17 @@ export function ImageIcon({ className = "size-4" }: { className?: string }) {
   );
 }
 
+/** A globe, for the Chrome of a local session. */
+export function GlobeIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M1.75 8h12.5" />
+      <path d="M8 1.75c1.7 1.8 2.5 3.85 2.5 6.25S9.7 12.45 8 14.25C6.3 12.45 5.5 10.4 5.5 8S6.3 3.55 8 1.75Z" />
+    </svg>
+  );
+}
+
 /** A shield, for the repository's guardrails (rules, skills, ADRs). */
 export function ShieldIcon({ className = "size-3.5" }: { className?: string }) {
   return (

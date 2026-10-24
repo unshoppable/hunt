@@ -27,7 +27,7 @@ import { isShortcut } from "../ui/shortcuts";
 import { repoName } from "../ui/path";
 import { AGENT_CHIP, Chip } from "../ui/Chip";
 import { DANGER, ICON_BUTTON_BASE_SM, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { BranchIcon, FolderIcon, ShieldIcon, TrashIcon } from "../ui/icons";
+import { BranchIcon, FolderIcon, GlobeIcon, ShieldIcon, TrashIcon } from "../ui/icons";
 import { OpenInWebstormButton } from "./OpenInWebstormButton";
 import { RemoteToggle } from "./RemoteToggle";
 import { remoteDeleteQuestion } from "../sessions/remoteOrigin";
@@ -81,6 +81,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const closeSession = useHuntStore((state) => state.closeSession);
   const resumeSession = useHuntStore((state) => state.resumeSession);
   const continueLocally = useHuntStore((state) => state.continueLocally);
+  const openBrowser = useHuntStore((state) => state.openBrowser);
   const setMode = useHuntStore((state) => state.setMode);
   const setConfigOption = useHuntStore((state) => state.setConfigOption);
   const answerPermission = useHuntStore((state) => state.answerPermission);
@@ -214,6 +215,18 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         ) : null}
         {worktreeRemote ? null : <OpenInWebstormButton sessionId={sessionId} disabled={isCreating} />}
         <RemoteToggle sessionId={sessionId} />
+        {remote ? null : (
+          <button
+            type="button"
+            onClick={() => void openBrowser(sessionId)}
+            disabled={isCreating}
+            title="Open this session's Chrome, which its agent drives, or bring it to the front"
+            className={SECONDARY_BUTTON_MD}
+          >
+            <GlobeIcon />
+            Browser
+          </button>
+        )}
         <button type="button" onClick={() => void openGuardrailsWindow(sessionId)} disabled={isCreating} className={SECONDARY_BUTTON_MD}>
           <ShieldIcon />
           Guardrails

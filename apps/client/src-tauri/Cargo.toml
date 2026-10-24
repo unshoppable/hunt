@@ -40,6 +40,11 @@ sha2 = "0.10"
 libc = "0.2"
 fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs", version = "0.0.0" }
 portable-pty = "0.9"
+# The CDP connection to the Chrome of a local session (`browser.rs`); loopback only, so no TLS.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# Brings the Chrome of a local session to the front (`browser.rs`).
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSRunningApplication"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

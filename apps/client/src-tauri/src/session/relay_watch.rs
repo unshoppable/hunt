@@ -62,11 +62,18 @@ struct RelayActivityEvent {
     relay_activity: RelayActivity,
 }
 
+/// An annotation of the review widget for the composer of the session `hunt_session_id`, from the status channel of its
+/// VM or from the Chrome of a local session (`crate::browser`); mirror of `AnnotationEvent` in src/ipc/types.ts.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AnnotationEvent {
-    hunt_session_id: Uuid,
-    annotation: Annotation,
+pub struct AnnotationEvent {
+    pub hunt_session_id: Uuid,
+    pub annotation: Annotation,
+}
+
+/// Tells the windows about `annotation`, made for the session `id`, as `review:annotation`.
+pub fn emit_annotation(app: &AppHandle, id: Uuid, annotation: Annotation) {
+    let _ = app.emit("review:annotation", AnnotationEvent { hunt_session_id: id, annotation });
 }
 
 /// Watches the relays of `running`, the top-level remote sessions whose VM runs, each with its VM as the gateway lists
@@ -168,9 +175,7 @@ async fn connect(app: &AppHandle, id: Uuid, vm: &VmRef, closed: oneshot::Sender<
                 eprintln!("recording the relay status of session {id} failed: {error}");
             }
         }
-        Event::Annotation(annotation) => {
-            let _ = handle.emit("review:annotation", AnnotationEvent { hunt_session_id: id, annotation });
-        }
+        Event::Annotation(annotation) => emit_annotation(&handle, id, annotation),
         Event::Closed(reason) => {
             if let Some(closed) = closed.lock().unwrap().take() {
                 let _ = closed.send(reason);

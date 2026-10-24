@@ -1,4 +1,5 @@
 mod accounts;
+mod browser;
 mod checks;
 mod acp;
 mod declined_guardrails;
@@ -27,6 +28,7 @@ mod terminal;
 mod tmux;
 
 use acp::{PermissionRegistry, SessionRegistry};
+use browser::BrowserRegistry;
 use graph::WatcherRegistry;
 use remote::desktop::DesktopRegistry;
 use remote::terminal::TerminalRegistry;
@@ -66,6 +68,7 @@ pub fn run() {
         .manage(documents::DocumentRegistry::default())
         .manage(TerminalRegistry::default())
         .manage(DesktopRegistry::default())
+        .manage(BrowserRegistry::default())
         .manage(checks::CheckRegistry::default())
         .invoke_handler(tauri::generate_handler![
             session::commands::list_sessions,
@@ -111,6 +114,7 @@ pub fn run() {
             session::commands::rerun_terminal_window,
             session::commands::close_terminal_window,
             session::commands::desktop_open,
+            session::commands::browser_open,
             session::commands::checks_status,
             session::commands::run_check,
             session::commands::run_all_checks,
@@ -200,6 +204,27 @@ pub fn run() {
             github_token::set_github_token,
             github_token::remove_github_token,
         ])
+        // The Playwright MCP wrappers of the local agents open their session's Chrome through the browser control socket.
+        .setup(|app| {
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let socket_path = match session::store::browser_dir(&handle) {
+                    Ok(browser_dir) => browser::control_socket_path(&browser_dir),
+                    Err(error) => {
+                        eprintln!("failed to find the browser folder: {error}");
+                        return;
+                    }
+                };
+                let open = move |id| {
+                    let handle = handle.clone();
+                    async move { session::commands::open_browser(&handle, id, false).await }
+                };
+                if let Err(error) = browser::serve_control(socket_path, open).await {
+                    eprintln!("{error}");
+                }
+            });
+            Ok(())
+        })
         // A page that loads again (a reload) has lost its terminals and its document replicas, so they end with the old page.
         .on_page_load(|webview, payload| {
             if payload.event() == PageLoadEvent::Started {
@@ -230,15 +255,23 @@ pub fn run() {
                     let _ = main.set_focus();
                 }
             }
-            // `run` ends in process::exit, which skips Drop; stop the agent, language server and tmux processes explicitly first.
+            // `run` ends in process::exit, which skips Drop; stop the agent, language server, tmux and Chrome processes explicitly
+            // first.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 app.state::<TerminalRegistry>().close_all();
                 app.state::<checks::CheckRegistry>().cancel_everything();
                 let registry = app.state::<SessionRegistry>();
                 let lsp_registry = app.state::<lsp::LspRegistry>();
                 let desktops = app.state::<DesktopRegistry>();
+                let browsers = app.state::<BrowserRegistry>();
                 tauri::async_runtime::block_on(async {
-                    tokio::join!(registry.shutdown_all(), lsp::shutdown_all(&lsp_registry), tmux::kill_all_servers(), desktops.close_all());
+                    tokio::join!(
+                        registry.shutdown_all(),
+                        lsp::shutdown_all(&lsp_registry),
+                        tmux::kill_all_servers(),
+                        desktops.close_all(),
+                        browsers.close_all()
+                    );
                 });
             }
         });

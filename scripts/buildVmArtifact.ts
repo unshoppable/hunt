@@ -1,8 +1,8 @@
 /**
  * Builds the release artifact a VM runs, in the layout `hunt-ctl` and the systemd units expect below
  * `/srv/hunt/current`: `gateway/`, `relay/`, `session/` and `vm/`. Every Node entry point becomes one self-contained
- * ES module (`.mjs`) without third-party packages, so the VM needs nothing but Node; every browser entry point, which a
- * server of the VM hands to web pages, one minified script (`.js`).
+ * ES module (`.mjs`) without third-party packages, so the VM needs nothing but Node; the review widget, which the review
+ * server hands to web pages, one minified script (`.js`, see `buildReviewWidget.ts`).
  *
  *   node scripts/buildVmArtifact.ts <session|gateway>
  *
@@ -17,14 +17,15 @@ import { cpSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:f
 import { isBuiltin } from "node:module";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildReviewWidget } from "./buildReviewWidget.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 interface Artifact {
   /** Output path without extension → entry module, relative to the repository root. */
   entries: Record<string, string>;
-  /** Output path without extension → entry module of a script that runs in the browser. */
-  browserEntries?: Record<string, string>;
+  /** Path of the review widget's bundle in the artifact. */
+  reviewWidget?: string;
   /** Source → destination in the artifact, both relative; directories are copied whole. */
   files: [string, string][];
 }
@@ -39,9 +40,7 @@ const ARTIFACTS: Record<string, Artifact> = {
       "session/statusHelper": "apps/session/src/relay/statusHelper.ts",
       "session/reviewServer": "apps/session/src/review/server.ts",
     },
-    browserEntries: {
-      "session/review": "apps/session/src/review/widget.ts",
-    },
+    reviewWidget: "session/review.js",
     files: [
       ["libs/vm/hunt-ctl", "vm/hunt-ctl"],
       ["apps/session/vm/hunt-idle-check", "vm/hunt-idle-check"],
@@ -83,14 +82,6 @@ const builtinsOnly: Plugin = {
     context.onResolve({ filter: /^[^./]/ }, (args) =>
       isBuiltin(args.path) ? { path: args.path, external: true } : { errors: [{ text: `${args.path} is not a Node built-in; the VM has no node_modules` }] },
     );
-  },
-};
-
-/** A browser script imports nothing but modules of the repository. */
-const relativeOnly: Plugin = {
-  name: "relative-only",
-  setup(context) {
-    context.onResolve({ filter: /^[^./]/ }, (args) => ({ errors: [{ text: `${args.path} is no module of the repository; a browser script bundles no packages` }] }));
   },
 };
 
@@ -140,18 +131,8 @@ async function buildArtifact(name: string): Promise<void> {
     plugins: [builtinsOnly, rawText],
     logLevel: "warning",
   });
-  if (artifact.browserEntries) {
-    await build({
-      entryPoints: Object.fromEntries(Object.entries(artifact.browserEntries).map(([output, entry]) => [output, join(ROOT, entry)])),
-      outdir: out,
-      bundle: true,
-      minify: true,
-      platform: "browser",
-      format: "iife",
-      target: "es2020",
-      plugins: [relativeOnly],
-      logLevel: "warning",
-    });
+  if (artifact.reviewWidget) {
+    await buildReviewWidget(join(out, artifact.reviewWidget));
   }
   for (const [source, destination] of [...artifact.files, ["libs/domain/protocol.json", "protocol.json"]]) {
     cpSync(join(ROOT, source), join(out, destination), { recursive: true });

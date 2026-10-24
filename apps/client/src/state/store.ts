@@ -291,6 +291,8 @@ export type HuntState = {
    * its agent finished the running turn; the chat starts over and fills again from the local agent.
    */
   continueLocally: (id: string) => Promise<void>;
+  /** Opens or focuses the Chrome of the local session `id`; a failure lands in the chat's `error`. */
+  openBrowser: (id: string) => Promise<void>;
   /** Opens the start view in which the first prompt or the choice of a repository creates the session, or a sub session of `parentId`. */
   startDraft: (parentId?: string) => void;
   /** Makes `path` the repository of the start view, whose Git tab shows its checkout while no session is active. */
@@ -1136,6 +1138,14 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     retrieveSession: (id) => moveSession(id, "retrieve", null, () => commands.retrieveSession(id)),
 
     continueLocally: (id) => moveSession(id, "retrieve", null, () => commands.continueLocally(id)),
+
+    openBrowser: async (id) => {
+      try {
+        await commands.browserOpen(id);
+      } catch (error) {
+        updateChat(id, (chat) => ({ ...chat, error: String(error) }));
+      }
+    },
 
     loadHistory: async (id) => {
       // The agent survives a webview reload but this store does not: rebuild the chat from the backend's history.

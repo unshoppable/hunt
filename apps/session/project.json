@@ -21,6 +21,7 @@
         "^production",
         "{projectRoot}/project.json",
         "{workspaceRoot}/scripts/buildVmArtifact.ts",
+        "{workspaceRoot}/scripts/buildReviewWidget.ts",
         {
           "env": "APP_VERSION"
         }
@@ -43,6 +44,11 @@
     },
     "test": {
       "executor": "nx:run-commands",
+      "inputs": [
+        "default",
+        "^production",
+        "{workspaceRoot}/package.json"
+      ],
       "options": {
         "command": "vitest run",
         "cwd": "apps/session"

@@ -171,6 +171,32 @@ A local agent starts with `CLAUDE_CODE_ENABLE_CFC=1`, so it drives the user's ow
 the extension is installed and Claude Code runs with the login of `claude /login`; with another account picked in Hunt
 (`CLAUDE_CODE_OAUTH_TOKEN`), Claude Code leaves Claude in Chrome off.
 
+#### Local browser
+
+Every local session has a Google Chrome of its own, in a window of its own, which its agent drives through Playwright
+MCP, as an agent on a session VM drives its Chromium (`apps/client/src-tauri/src/browser.rs`). Two sessions never share
+a Chrome, since Playwright MCP takes over every tab of the Chrome it connects to.
+
+- **Agent side**: the agent starts with the MCP server `playwright`, the wrapper `apps/client/scripts/browserMcp.mjs`,
+  run by the `node` on the PATH with the session's CDP port (reserved at the agent's start) and the control socket of
+  this Hunt process, `<app data>/browser/control-<pid>.sock` (`acp/connection.rs`). The wrapper runs
+  `@playwright/mcp --cdp-endpoint` on that port and writes its output files to a temp folder per session, not into the
+  worktree. `apps/client/prompts/browser.system-prompt.md` points the agent at these tools for the app it works on.
+- **On demand**: Chrome starts with the agent's first browser tool call (the wrapper sends `{"open":"<session id>"}`
+  to the control socket and waits for `{"ok":true}`) or with "Browser" in the chat header (`browser_open`), which also
+  brings a running Chrome's window to the front.
+- **Profile per repository**: a new Chrome gets a copy of the repository's profile (`<app data>/browser/<repo hash>/
+  profile`) in `<app data>/browser/sessions/<session id>`, without Chrome's locks and caches, so the sign-ins made in
+  an earlier session of the repository are there. When the Chrome ends (its agent or session stops, Hunt quits, or the
+  user quits Chrome), its copy replaces the repository's profile; the session whose Chrome closed last wins.
+- **Review widget**: Hunt attaches to every page of the Chrome over CDP (`Target.setAutoAttach`), adds the binding
+  `__huntReview` and injects the review widget (`apps/client/src-tauri/resources/review.js`, built by
+  `client:review-widget` from `apps/session/src/review/widget.ts`) before the page's own scripts. The widget hands an
+  annotation to the binding instead of posting it; Hunt checks it like the review server does, gives it an ID and a time
+  and emits `review:annotation`, so it lands as a chip above the session's composer as on a VM (see "Remote sessions").
+
+Claude in Chrome stays available next to it, with the user's own Chrome and sign-ins.
+
 A session starts in the start view of the chat pane ("New" in the sidebar), which preselects the repository used
 last. Choosing a repository there, from the folder dialog or the list of recently used ones, creates the session right
 away, so the sidebar lists it and the diff, editor and graph panes work before anything was asked; such a session is

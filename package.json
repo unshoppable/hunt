@@ -21,6 +21,7 @@
     "@git-diff-view/file": "^0.1.7",
     "@git-diff-view/react": "^0.1.7",
     "@monaco-editor/react": "^4.7.0",
+    "@playwright/mcp": "0.0.83",
     "@rockorager/waymote": "0.1.8",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/api": "^2",

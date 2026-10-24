@@ -1,3 +1,9 @@
+## 0.111.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** arrows on the pane separators collapse and restore the sessions, chat and right pane ([83d4c57](https://github.com/unshoppable/hunt/commit/83d4c57))
+
 ## 0.110.1 (2026-10-24)
 
 ### 🩹 Fixes

@@ -460,9 +460,10 @@ async fn update<Output>(
 }
 
 /// Emits the events, then sends the notifications to the worktree's servers: the TypeScript server is started while
-/// it serves any document, the Angular server only gets them while it runs (a request starts it). A server that has
-/// not seen the documents yet (a new or restarted one) gets them all opened at their current text instead. Server
-/// failures cost language features only, never the operation.
+/// it serves any document, the Angular server only gets them while it runs (opening a document it receives or a
+/// request starts it, see `start_angular_server`). A server that has not seen the documents yet (a new or restarted
+/// one) gets them all opened at their current text instead. Server failures cost language features only, never the
+/// operation.
 async fn deliver(app: &AppHandle, entry: &mut Entry, effects: Effects) {
     for event in effects.events {
         let _ = match event {
@@ -539,10 +540,29 @@ pub fn release_owner(app: &AppHandle, owner: &str) {
     });
 }
 
+/// Starts the Angular server of `worktree` in the background unless it runs, and opens the served documents in it, so
+/// that it has loaded and analyzed their projects (seconds each) before a request needs it. Worktrees without
+/// `@angular/language-service` get none.
+fn start_angular_server(app: &AppHandle, worktree: &Path) {
+    if lsp::running_server(app, worktree, ServerKind::Angular).is_some() {
+        return;
+    }
+    let app = app.clone();
+    let worktree = worktree.to_path_buf();
+    tauri::async_runtime::spawn(async move {
+        let Ok(server) = lsp::server_for_worktree(&app, &worktree, ServerKind::Angular) else { return };
+        open_in(app, worktree, server).await;
+    });
+}
+
 #[tauri::command]
 pub async fn document_open(app: AppHandle, window: Window, id: Uuid, path: String, language_id: String) -> Result<DocumentState, String> {
     let worktree = worktree_of(&app, id)?;
-    update(&app, &worktree, |documents| documents.open(&path, window.label(), &language_id, || read_disk(&app, id, &path))).await
+    let state = update(&app, &worktree, |documents| documents.open(&path, window.label(), &language_id, || read_disk(&app, id, &path))).await?;
+    if SERVED_LANGUAGES.contains(&language_id.as_str()) && ServerKind::Angular.receives(&path) {
+        start_angular_server(&app, &worktree);
+    }
+    Ok(state)
 }
 
 #[tauri::command]

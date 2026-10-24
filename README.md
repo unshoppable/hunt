@@ -356,7 +356,8 @@ interface, instance field, static method, parameter, global/local variable, …)
 roles. In Angular projects the Angular language server adds the usages and renames in component templates and the
 go-to-declaration from templates (a tag or attribute to its component, directive, input or output; a name to the
 component member; `templateUrl` to the template); it needs seconds per newly loaded project (about 8 s cold, 25 ms
-warm), so its usages arrive after tsgo's.
+warm), so its usages arrive after tsgo's. Hunt starts it in the background when the first TypeScript or template file
+opens, so it has loaded the projects of the open files before the first request; it takes about 1 GB per worktree.
 
 The shortcuts below and those of the sidebar, chat and changelist are defaults: *Settings → Keymap* binds each command
 to other or additional keys, flags two commands that share one and keeps the changes in the settings store

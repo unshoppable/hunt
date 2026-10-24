@@ -1,3 +1,9 @@
+## 0.106.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** the diagram's comment count shows a larger bubble with the number centered on it, and a commented file gets a lighter border ([5b21b74](https://github.com/unshoppable/hunt/commit/5b21b74))
+
 ## 0.105.0 (2026-10-24)
 
 ### 🚀 Features

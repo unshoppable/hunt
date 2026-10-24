@@ -1,3 +1,9 @@
+## 0.113.2 (2026-10-24)
+
+### 🩹 Fixes
+
+- **client:** dragging a separator resizes only the two panes beside it, so the chat no longer pushes the session list ([e4b7f44](https://github.com/unshoppable/hunt/commit/e4b7f44))
+
 ## 0.113.1 (2026-10-24)
 
 ### 🩹 Fixes

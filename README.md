@@ -379,9 +379,10 @@ include files the agent created. Monaco's bundled TypeScript worker
 only colors code: `apps/client/src/diff/webstormClassifier.ts` assigns every identifier the role WebStorm would (class,
 interface, instance field, static method, parameter, global/local variable, …), colored by the user's WebStorm scheme
 (`apps/client/src/diff/webstormScheme.ts`); opening a file also loads its relative imports so imported names get their
-roles. In Angular projects the Angular language server adds the usages and renames in component templates and the
-go-to-declaration from templates (a tag or attribute to its component, directive, input or output; a name to the
-component member; `templateUrl` to the template); it needs seconds per newly loaded project (about 8 s cold, 25 ms
+roles. In Angular projects the Angular language server adds the usages and renames in component templates, and in
+templates and inline templates the hover (the component of a tag, the type of an input, a name or a pipe) and the
+go-to-declaration (a tag or attribute to its component, directive, input or output; a name to the component member;
+`templateUrl` to the template); it needs seconds per newly loaded project (about 8 s cold, 25 ms
 warm), so its usages arrive after tsgo's. Hunt starts it in the background when the first TypeScript or template file
 opens, so it has loaded the projects of the open files before the first request; it takes about 1 GB per worktree.
 

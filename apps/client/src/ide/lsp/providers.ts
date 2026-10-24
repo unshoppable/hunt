@@ -1,6 +1,6 @@
 import * as monaco from "monaco-editor";
 import { typeScriptWorkerFor } from "../../diff/semanticTokens";
-import { lspClientForModel, onPushedDiagnostics, type LspClient } from "./client";
+import { lspClientForModel, lspClientForTemplate, onPushedDiagnostics, type LspClient } from "./client";
 import { isMemberList, likelyVisibleOrder } from "./completionItems";
 import { hoverMarkdown, resolvedFields, toLspPosition, toLspRange, toMonacoCompletion, toMonacoPosition, toMonacoRange, toMonacoSignatureHelp, type CompletionItem, type CompletionList, type Diagnostic, type DocumentDiagnosticReport, type DocumentHighlight, type Hover, type InlayHint, type SignatureHelp } from "./protocol";
 
@@ -59,6 +59,7 @@ type LspSignatureHelp = monaco.languages.SignatureHelp & { lsp: SignatureHelp };
  * completion (with each row's type, documentation and auto-import on resolve; opening on its own at object members),
  * signature help, hover, inlay hints, occurrence highlights and diagnostics (pulled after edits, pushed ones applied as
  * they come). tsgo has no `semanticTokens`; coloring stays with the TypeScript worker (`diff/semanticTokens.ts`).
+ * In Angular projects the Angular language server adds the hover in templates and inline templates.
  * Models the server does not know (diff models, previews) get nothing from these providers; runs once.
  */
 export function registerLspProviders(): void {
@@ -108,11 +109,18 @@ export function registerLspProviders(): void {
     provideHover: (model, position, token) =>
       withClient(model, async (client) => {
         const hover = await client.request<Hover | null>("textDocument/hover", documentPosition(model, position), token);
-        if (!hover) return null;
-        const value = hoverMarkdown(hover);
-        if (!value.trim()) return null;
+        const value = hover ? hoverMarkdown(hover) : "";
+        // tsgo knows nothing inside a component's inline template; the Angular server does.
+        if (!hover || !value.trim()) return angularHover(client, model, position, token);
         return { contents: [{ value }], range: hover.range ? toMonacoRange(hover.range) : undefined };
       }),
+  });
+
+  monaco.languages.registerHoverProvider("html", {
+    provideHover: (model, position, token) => {
+      const client = lspClientForTemplate(model);
+      return client ? angularHover(client, model, position, token) : null;
+    },
   });
 
   monaco.languages.registerInlayHintsProvider(LANGUAGES, {
@@ -149,6 +157,20 @@ async function withClient<Result>(model: monaco.editor.ITextModel, provide: (cli
 
 function documentPosition(model: monaco.editor.ITextModel, position: monaco.IPosition) {
   return { textDocument: { uri: model.uri.toString() }, position: toLspPosition(position) };
+}
+
+/**
+ * The Angular language server's hover at `position` of a template or inline template: the component or directive of a
+ * tag, the type of an input, an expression's name or a pipe. Null when the worktree has no Angular server. The hover
+ * covers the hovered word: at a tag the server's range spans the whole element.
+ */
+async function angularHover(client: LspClient, model: monaco.editor.ITextModel, position: monaco.Position, token: monaco.CancellationToken): Promise<monaco.languages.Hover | null> {
+  const hover = await client.request<Hover | null>("textDocument/hover", documentPosition(model, position), token, "angular").catch(() => null);
+  const value = hover ? hoverMarkdown(hover) : "";
+  if (!value.trim()) return null;
+  const word = model.getWordAtPosition(position);
+  const range = word ? { startLineNumber: position.lineNumber, startColumn: word.startColumn, endLineNumber: position.lineNumber, endColumn: word.endColumn } : undefined;
+  return { contents: [{ value }], range };
 }
 
 /** LSP `CompletionTriggerKind` (1 invoked, 2 trigger character, 3 incomplete list) for Monaco's 0-based kinds. */

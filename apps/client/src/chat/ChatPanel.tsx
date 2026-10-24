@@ -238,7 +238,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           <MessageList
             items={chat?.items ?? []}
             plan={chat?.plan ?? []}
-            isBusy={(isBusy && !chat?.isHiddenTurn) || isCreating}
+            isBusy={(isBusy && !chat?.isHiddenTurn) || (isCreating && Boolean(chat?.items.length))}
             isVerbose={isVerbose}
             basePath={remote?.worktreePath ?? session.worktreePath}
             fileIndex={fileIndex}

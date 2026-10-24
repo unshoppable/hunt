@@ -21,12 +21,18 @@
  * `{"ok": false, "problems": […]}`, each problem starting with the path of the offending value; then it writes nothing
  * and exits with 1. The agent controls the worktree, so hunt.json and hunt.agent.md are read only as regular files,
  * never through a symlink.
+ *
+ *   node configCli.ts --worktree <dir> --check <name>
+ *
+ * looks the check <name> up in hunt.json for `hunt-ctl check`, writes nothing and prints
+ * `{"ok": true, "command": "…", "cwd": "<folder relative to the worktree, or null>"}`, or the problems as above when
+ * hunt.json is invalid or declares no such check.
  */
 import { closeSync, constants, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { messageOf } from "../../../libs/domain/src/errors.ts";
 import { parseRemoteSecrets } from "../../../libs/domain/src/remoteSecrets.ts";
-import { buildSessionConfig, ConfigError, envFile } from "./config.ts";
+import { buildSessionConfig, ConfigError, envFile, findCheck } from "./config.ts";
 
 const HUNT_JSON_MAX_BYTES = 256 * 1024;
 const AGENT_MD_NAME = "hunt.agent.md";
@@ -34,7 +40,7 @@ const AGENT_MD_MAX_BYTES = 20 * 1024;
 const ENV_SUFFIX = ".env";
 const USAGE =
   "usage: configCli.ts --worktree <dir> --short <8 hex digits> --domain <domain> --env-out <file> --caddy-out <file> --services-dir <dir> " +
-  "[--secrets <file>]";
+  "[--secrets <file>], or configCli.ts --worktree <dir> --check <name>";
 const FLAGS = {
   "--worktree": "worktree",
   "--short": "short",
@@ -44,8 +50,13 @@ const FLAGS = {
   "--services-dir": "servicesDir",
 } as const;
 const OPTIONAL_FLAGS = { "--secrets": "secrets" } as const;
+const CHECK_FLAG = "--check";
+const CHECK_FLAGS = { "--worktree": "worktree", [CHECK_FLAG]: "check" } as const;
 
 type Options = Record<(typeof FLAGS)[keyof typeof FLAGS], string> & Partial<Record<(typeof OPTIONAL_FLAGS)[keyof typeof OPTIONAL_FLAGS], string>>;
+type CheckOptions = Record<(typeof CHECK_FLAGS)[keyof typeof CHECK_FLAGS], string>;
+/** Flag → the key of its value. */
+type Flags = Readonly<Record<string, string>>;
 
 interface ServiceSummary {
   name: string;
@@ -61,20 +72,23 @@ interface Result {
   services_prompt?: string;
   agent_md?: string;
   swf_model?: string;
+  command?: string;
+  cwd?: string | null;
 }
 
-function parseArguments(args: string[]): Options {
-  const options: Partial<Options> = {};
+/** The value of each flag in `args` by the key `required` or `optional` maps it to; every flag of `required` must be given. */
+function parseArguments(args: string[], required: Flags, optional: Flags = {}): Record<string, string> {
+  const options: Record<string, string> = {};
   for (let index = 0; index < args.length; index += 2) {
     const [flag, value] = [args[index], args[index + 1]];
-    const key = Object.hasOwn(FLAGS, flag) ? FLAGS[flag as keyof typeof FLAGS] : OPTIONAL_FLAGS[flag as keyof typeof OPTIONAL_FLAGS];
+    const key = Object.hasOwn(required, flag) ? required[flag] : Object.hasOwn(optional, flag) ? optional[flag] : undefined;
     if (!key) throw new Error(`unknown argument ${flag}; ${USAGE}`);
     if (value === undefined) throw new Error(`${flag} needs a value`);
     options[key] = value;
   }
-  const missing = Object.entries(FLAGS).filter(([, key]) => !options[key]);
+  const missing = Object.entries(required).filter(([, key]) => !options[key]);
   if (missing.length > 0) throw new Error(`missing ${missing.map(([flag]) => flag).join(", ")}; ${USAGE}`);
-  return options as Options;
+  return options;
 }
 
 /** The regular file `name` in `dir` as text, undefined when there is none; anything else is a problem. */
@@ -150,18 +164,39 @@ function writeServiceEnvs(dir: string, envs: Record<string, Record<string, strin
   }
 }
 
-function run(args: string[]): Result {
-  const options = parseArguments(args);
-  const problems: string[] = [];
-  const huntJsonText = readWorktreeFile(options.worktree, "hunt.json", HUNT_JSON_MAX_BYTES, problems);
-  const agentMd = readWorktreeFile(options.worktree, AGENT_MD_NAME, AGENT_MD_MAX_BYTES, problems)?.trim();
-  const secrets = readRemoteSecrets(options.secrets, problems);
-  let huntJson: unknown;
+/** The parsed hunt.json of the worktree `dir`, undefined without one; anything else is a problem. */
+function readHuntJson(dir: string, problems: string[]): unknown {
+  const text = readWorktreeFile(dir, "hunt.json", HUNT_JSON_MAX_BYTES, problems);
+  if (text === undefined) return undefined;
   try {
-    huntJson = huntJsonText === undefined ? undefined : JSON.parse(huntJsonText);
+    return JSON.parse(text);
   } catch (error) {
     problems.push(`hunt.json: not valid JSON: ${messageOf(error)}`);
+    return undefined;
   }
+}
+
+/** The command line and folder of the check `options.check` of the worktree's hunt.json. */
+function runCheck(options: CheckOptions): Result {
+  const problems: string[] = [];
+  const huntJson = readHuntJson(options.worktree, problems);
+  if (problems.length > 0) return { ok: false, problems };
+  try {
+    const { command, cwd } = findCheck(huntJson, options.check);
+    return { ok: true, command, cwd };
+  } catch (error) {
+    if (!(error instanceof ConfigError)) throw error;
+    return { ok: false, problems: error.problems };
+  }
+}
+
+function run(args: string[]): Result {
+  if (args.includes(CHECK_FLAG)) return runCheck(parseArguments(args, CHECK_FLAGS) as CheckOptions);
+  const options = parseArguments(args, FLAGS, OPTIONAL_FLAGS) as Options;
+  const problems: string[] = [];
+  const huntJson = readHuntJson(options.worktree, problems);
+  const agentMd = readWorktreeFile(options.worktree, AGENT_MD_NAME, AGENT_MD_MAX_BYTES, problems)?.trim();
+  const secrets = readRemoteSecrets(options.secrets, problems);
   let result: Result;
   try {
     const config = buildSessionConfig(huntJson, { short: options.short, domain: options.domain }, options.worktree, secrets);

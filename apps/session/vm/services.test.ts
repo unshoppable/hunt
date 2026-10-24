@@ -2,10 +2,10 @@
  * The services of hunt.json on a session VM, in a Debian 12 container with Node 24, the base of the session VMs;
  * skipped without a Docker daemon. `hunt-ctl install-units` installs the unit, the run script and the sudo rule of the
  * built session artifact (`nx build session`), `session-config` runs its configCli on a worktree, and `service`,
- * `preview-status`, `stop` and `destroy` act on the units. A fake `systemctl` earlier on PATH (`fixtures/systemctl`)
- * logs its calls to /var/log/systemctl.log and keeps each unit's state in a file, so that `systemctl show` reports what
- * the calls did; enable and disable add and remove the unit's link in multi-user.target.wants as systemd does. Real sudo
- * checks the agent's rule.
+ * `preview-status`, `stop` and `destroy` act on the units; `check` runs a check of hunt.json in the worktree. A fake
+ * `systemctl` earlier on PATH (`fixtures/systemctl`) logs its calls to /var/log/systemctl.log and keeps each unit's
+ * state in a file, so that `systemctl show` reports what the calls did; enable and disable add and remove the unit's
+ * link in multi-user.target.wants as systemd does. Real sudo checks the agent's rule.
  */
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -63,6 +63,10 @@ const HUNT_JSON = {
     api: { command: "node server.js", port: 3000, guarded: false, env: { ADMIN_URL: "${services.admin.publicUrl}" } },
     admin: { command: "npm start", cwd: "admin", port: 4200, env: { API_URL: "${services.api.publicUrl}" } },
     ui: { command: "npm run ui", port: 4400, tls: true },
+  },
+  checks: {
+    good: { command: "echo ok-output", cwd: "admin" },
+    bad: { command: "echo bad-output; exit 3" },
   },
 };
 const AGENT_MD = "# Services\nStart api and admin together.\n";
@@ -457,5 +461,38 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(sh("tail -n 1 /home/agent/logs/admin.log").stdout).toBe("color=0\n");
     const invalid = docker(["exec", "--user", "agent", container, "/srv/hunt/current/vm/hunt-service", "../x"]);
     expect(invalid).toMatchObject({ status: 2, stderr: "usage: hunt-service <name>\n" });
+  });
+
+  it("runs a check of hunt.json in the worktree, passes its output through and exits with its status", () => {
+    sh("install -d -o agent -g agent /home/agent/app/.git");
+    expect(huntCtl("check", "/home/agent/app", "good")).toEqual({ status: 0, stdout: "ok-output\n", stderr: "" });
+    expect(huntCtl("check", "/home/agent/app/", "bad")).toEqual({ status: 3, stdout: "bad-output\n", stderr: "" });
+
+    const missing = huntCtl("check", "/home/agent/app", "lint");
+    expect(missing).toMatchObject({ status: 3, stdout: "" });
+    expect(missing.stderr).toBe("checks.lint: no such check\nhunt-ctl: hunt.json is not valid or declares no check lint (see above)\n");
+    expect(huntCtl("check", "/home/agent/app", "Bad")).toMatchObject({ status: 3, stdout: "", stderr: "hunt-ctl: invalid check name: Bad\n" });
+    expect(huntCtl("check", "/home/agent/other", "good")).toMatchObject({ status: 3, stderr: "hunt-ctl: not a session repository: /home/agent/other\n" });
+    expect(huntCtl("check", "/home/agent/app").status).toBe(2);
+  });
+
+  it("runs a check as the agent in a login shell with the session's variables, in color and without stdin", () => {
+    const command = 'echo "$(id -un) in $PWD color=$FORCE_COLOR url=${HUNT_PREVIEW_URL_TEMPLATE-}"; shopt -q login_shell && echo login; ' +
+      "read -r line || echo no-input; echo to-stderr >&2; exit 1";
+    seed({ version: 3, checks: { env: { command, cwd: "admin" } } }, "");
+    sh("install -d -o agent -g agent /home/agent/app/.git");
+    sessionConfig();
+    expect(huntCtlWithInput("typed\n", "check", "/home/agent/app", "env")).toEqual({
+      status: 1,
+      stdout: "agent in /home/agent/app/admin color=1 url=https://7c0c6f2e-{port}.hunt.example.com\nlogin\nno-input\n",
+      stderr: "to-stderr\n",
+    });
+
+    seed({ version: 3, checks: { env: { command: "true", cwd: "missing" } } }, "");
+    sh("install -d -o agent -g agent /home/agent/app/.git");
+    expect(huntCtl("check", "/home/agent/app", "env")).toMatchObject({
+      status: 3,
+      stderr: "hunt-ctl: the folder missing of the check env does not exist in the worktree\n",
+    });
   });
 });

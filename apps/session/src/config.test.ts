@@ -8,6 +8,8 @@ import {
   buildSessionConfig,
   ConfigError,
   envFile,
+  findCheck,
+  parseChecks,
   parseServices,
   WORKTREE_INCLUDE_RULE,
   proxyConfig,
@@ -97,6 +99,11 @@ function numbered(count: number): Record<string, unknown> {
   return Object.fromEntries(Array.from({ length: count }, (_unused, index) => [`s${index}`, { command: "npm start", port: 3000 + index }]));
 }
 
+/** A hunt.json with the services of `web({})` and the one check `lint`, extended by `fields`. */
+function lint(fields: Record<string, unknown>): Record<string, unknown> {
+  return { ...web({}), checks: { lint: { command: "npm run lint", ...fields } } };
+}
+
 describe("parseServices", () => {
   it("reads every field of every service in the order of hunt.json", () => {
     expect(parseServices(COMPLETE)).toEqual(COMPLETE_SERVICES);
@@ -129,10 +136,10 @@ describe("parseServices", () => {
     const cases: [unknown, string[]][] = [
       [[], ["hunt.json: must be an object"]],
       ["x", ["hunt.json: must be an object"]],
-      [{}, ["version: must be 3", "services: must be an object"]],
+      [{}, ["version: must be 3"]],
       [{ ...web({}), version: 2 }, ["version: must be 3"]],
       [{ ...web({}), version: "3" }, ["version: must be 3"]],
-      [{ preview: { version: 2, main: 4200 } }, [CONTRACT_2_PROBLEM, "version: must be 3", "services: must be an object"]],
+      [{ preview: { version: 2, main: 4200 } }, [CONTRACT_2_PROBLEM, "version: must be 3"]],
       [{ ...web({}), preview: { version: 2 } }, [CONTRACT_2_PROBLEM]],
       [{ ...web({}), environment: {}, "two words": 1 }, ["environment: unknown field", '["two words"]: unknown field']],
       [{ ...web({}), swf: "claude-opus-5-5" }, ["swf: must be an object"]],
@@ -240,11 +247,40 @@ describe("parseServices", () => {
         withServices({ Web: { command: "a", port: 3000 }, api: { command: "b", port: 3001, env: { A: "${services.Web.publicUrl}" } } }),
         [`services.Web: ${NAME_RULE}`, "services.api.env.A: ${services.Web.publicUrl}: hunt.json declares no service Web"],
       ],
+      [{ version: 3, checks: [] }, ["checks: must be an object"]],
+      [{ version: 3, checks: "npm test" }, ["checks: must be an object"]],
+      [
+        { version: 3, checks: Object.fromEntries(Array.from({ length: 33 }, (_unused, index) => [`c${index}`, { command: "npm test" }])) },
+        ["checks: must hold at most 32 checks"],
+      ],
+      [
+        { version: 3, checks: { Lint: {}, "1lint": {}, lint_all: {}, ["a".repeat(33)]: {} } },
+        [`checks.Lint: ${NAME_RULE}`, `checks["1lint"]: ${NAME_RULE}`, `checks.lint_all: ${NAME_RULE}`, `checks.${"a".repeat(33)}: ${NAME_RULE}`],
+      ],
+      [{ version: 3, checks: { lint: "npm run lint" } }, ["checks.lint: must be an object"]],
+      [lint({ port: 3000, env: {} }), ["checks.lint.port: unknown field", "checks.lint.env: unknown field"]],
+      [{ version: 3, checks: { lint: {} } }, ["checks.lint.command: must be a non-empty string"]],
+      [lint({ command: " " }), ["checks.lint.command: must be a non-empty string"]],
+      [lint({ command: ["npm", "test"] }), ["checks.lint.command: must be a non-empty string"]],
+      [lint({ command: "npm test\nrm -rf /" }), ["checks.lint.command: must be a single line"]],
+      [lint({ command: "x".repeat(4097) }), ["checks.lint.command: must be at most 4096 characters long"]],
+      ...["/srv/app", "../app", "a/./b", "a b", "", 1].map((cwd): [unknown, string[]] => [lint({ cwd }), [`checks.lint.cwd: ${CWD_RULE}`]]),
     ];
 
     for (const [huntJson, problems] of cases) {
       expect(problemsOf(huntJson), JSON.stringify(huntJson).slice(0, 200)).toEqual(problems);
     }
+  });
+
+  it("reads a hunt.json without services, with or without checks", () => {
+    expect(problemsOf({ version: 3 })).toEqual([]);
+    expect(problemsOf({ version: 3, checks: {} })).toEqual([]);
+    expect(problemsOf({ version: 3, checks: { test: { command: "npm test" } } })).toEqual([]);
+    expect(buildSessionConfig({ version: 3, checks: { test: { command: "npm test" } } }, HOST, WORKTREE)).toMatchObject({
+      services: [],
+      serviceEnvs: {},
+      servicesPrompt: servicesPrompt([], HOST),
+    });
   });
 
   it("rejects an invalid short ID or domain together with the problems of hunt.json", () => {
@@ -265,6 +301,44 @@ describe("parseServices", () => {
     for (const domain of ["hunt.example.c0m", "hunt.example.c", "hunt.example.123", "hunt.example.co-m", "-a.example.com", domainOfLength(234)]) {
       expect(problemsOf(undefined, { short: "7c0c6f2e", domain }), domain).toHaveLength(1);
     }
+  });
+});
+
+describe("parseChecks", () => {
+  it("reads every check in the order of hunt.json", () => {
+    const huntJson = {
+      ...COMPLETE,
+      checks: {
+        typecheck: { command: "npm run typecheck:all" },
+        test: { command: "npm test -- --reporter dot", cwd: "apps/web" },
+        ["a".repeat(32)]: { command: "x".repeat(4096), cwd: ".config/a.b_c-D9" },
+      },
+    };
+
+    expect(parseChecks(huntJson)).toEqual([
+      { name: "typecheck", command: "npm run typecheck:all", cwd: null },
+      { name: "test", command: "npm test -- --reporter dot", cwd: "apps/web" },
+      { name: "a".repeat(32), command: "x".repeat(4096), cwd: ".config/a.b_c-D9" },
+    ]);
+    expect(parseServices(huntJson)).toEqual(COMPLETE_SERVICES);
+  });
+
+  it("gives a repository without hunt.json or checks no checks and accepts 32 of them", () => {
+    expect(parseChecks(undefined)).toEqual([]);
+    expect(parseChecks(COMPLETE)).toEqual([]);
+    const many = Object.fromEntries(Array.from({ length: 32 }, (_unused, index) => [`c${index}`, { command: "npm test" }]));
+    expect(parseChecks({ version: 3, checks: many })).toHaveLength(32);
+  });
+
+  it("reports the problems of hunt.json, not only those of its checks", () => {
+    expect(() => parseChecks({ ...lint({}), version: 2 })).toThrow(new ConfigError(["version: must be 3"]));
+  });
+
+  it("finds a check by name and reports a missing one with its path", () => {
+    expect(findCheck(lint({ cwd: "apps/web" }), "lint")).toEqual({ name: "lint", command: "npm run lint", cwd: "apps/web" });
+    expect(() => findCheck(lint({}), "test")).toThrow(new ConfigError(["checks.test: no such check"]));
+    expect(() => findCheck(undefined, "lint")).toThrow(new ConfigError(["checks.lint: no such check"]));
+    expect(() => findCheck(lint({ command: "" }), "lint")).toThrow(new ConfigError(["checks.lint.command: must be a non-empty string"]));
   });
 });
 
@@ -788,5 +862,48 @@ describe("configCli", () => {
     expect(JSON.parse(unknown.stdout)).toEqual({ ok: false, problems: [expect.stringMatching(/^unknown argument --port; usage: /)] });
     const valueless = spawnSync(process.execPath, [CONFIG_CLI, "--worktree"], { encoding: "utf8" });
     expect(JSON.parse(valueless.stdout)).toEqual({ ok: false, problems: ["--worktree needs a value"] });
+  });
+
+  describe("--check", () => {
+    const HUNT_JSON = { version: 3, checks: { typecheck: { command: "npm run typecheck:all" }, test: { command: "npm test", cwd: "apps/web" } } };
+
+    function runCheck(paths: Paths, name: string, extra: string[] = []) {
+      const result = spawnSync(process.execPath, [CONFIG_CLI, "--worktree", paths.worktree, "--check", name, ...extra], { encoding: "utf8" });
+      return { status: result.status, stderr: result.stderr, output: JSON.parse(result.stdout) as unknown };
+    }
+
+    it("prints the command line and folder of the check and writes nothing", () => {
+      const paths = setup({ "hunt.json": JSON.stringify(HUNT_JSON), "hunt.agent.md": "x".repeat(20 * 1024 + 1) });
+
+      expect(runCheck(paths, "test")).toEqual({ status: 0, stderr: "", output: { ok: true, command: "npm test", cwd: "apps/web" } });
+      expect(runCheck(paths, "typecheck")).toEqual({ status: 0, stderr: "", output: { ok: true, command: "npm run typecheck:all", cwd: null } });
+      expect(readdirSync(join(paths.worktree, ".."))).toEqual(["worktree"]);
+    });
+
+    it("reports a check hunt.json does not declare, also without hunt.json", () => {
+      expect(runCheck(setup({ "hunt.json": JSON.stringify(HUNT_JSON) }), "lint")).toEqual({
+        status: 1,
+        stderr: "",
+        output: { ok: false, problems: ["checks.lint: no such check"] },
+      });
+      expect(runCheck(setup({}), "test").output).toEqual({ ok: false, problems: ["checks.test: no such check"] });
+    });
+
+    it("reports an invalid hunt.json, its symlink and unknown arguments", () => {
+      const invalid = setup({ "hunt.json": JSON.stringify({ ...HUNT_JSON, checks: { test: { command: "npm test", port: 3000 } } }) });
+      expect(runCheck(invalid, "test")).toMatchObject({ status: 1, output: { ok: false, problems: ["checks.test.port: unknown field"] } });
+
+      const broken = setup({ "hunt.json": "{oops" });
+      expect(runCheck(broken, "test").output).toEqual({ ok: false, problems: [expect.stringMatching(/^hunt\.json: not valid JSON: /)] });
+
+      const linked = setup({ "secret.json": JSON.stringify(HUNT_JSON) });
+      symlinkSync(join(linked.worktree, "secret.json"), join(linked.worktree, "hunt.json"));
+      expect(runCheck(linked, "test").output).toEqual({ ok: false, problems: ["hunt.json: must be a file, not a symlink"] });
+
+      expect(runCheck(linked, "test", ["--short", HOST.short]).output).toEqual({
+        ok: false,
+        problems: [expect.stringMatching(/^unknown argument --short; usage: /)],
+      });
+    });
   });
 });

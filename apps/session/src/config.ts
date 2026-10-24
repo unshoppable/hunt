@@ -1,7 +1,8 @@
 /**
  * A repository's `hunt.json` in contract version 3: the services of the repository, which Hunt runs on a session's VM
  * as systemd units that the agent starts when its task needs them, each with the ignored files it needs in a worktree,
- * and the settings of the sessions the gateway's poller starts for the repository's `swf` issues.
+ * the checks a person runs from the client's Checks tab, and the settings of the sessions the gateway's poller starts
+ * for the repository's `swf` issues.
  *
  *   {
  *     "version": 3,
@@ -14,12 +15,16 @@
  *         "worktreeInclude": ["apps/backend/.env.private"]
  *       },
  *       "ui": { "command": "npm start", "cwd": "apps/ui", "port": 4200, "env": { "BACKEND_ORIGIN": "${services.backend.publicUrl}" } }
+ *     },
+ *     "checks": {
+ *       "typecheck": { "command": "npm run typecheck:all" },
+ *       "test": { "command": "npm test", "cwd": "apps/web" }
  *     }
  *   }
  *
- * - `version` must be 3; `services` holds 1 to 64 services in the order of the file, each named by
- *   `^[a-z][a-z0-9-]{0,31}$`. A repository without hunt.json has no services. Unknown fields are errors, contract 2's
- *   `preview` section among them.
+ * - `version` must be 3; `services`, when present, holds 1 to 64 services in the order of the file, each named by
+ *   `^[a-z][a-z0-9-]{0,31}$`. A repository without hunt.json or `services` has no services. Unknown fields are errors,
+ *   contract 2's `preview` section among them.
  * - `command`: one non-empty line of at most 4096 characters, which bash runs in the service's folder.
  * - `cwd`: that folder relative to the worktree, the worktree itself without it; at most 255 characters, segments of
  *   letters, digits, `.`, `_` and `-`, none `.` or `..`.
@@ -42,6 +47,10 @@
  *   Claude model such as `claude-opus-5-5` (MODEL_ID), at most 128 characters, never an alias such as `opus`, whose
  *   model changes with Claude Code's releases. The poller sets it as the session's `model` config option; without it, or when the agent knows no such model (the relay logs that), Claude
  *   Code's default model applies. Sessions started from Hunt keep the model their user picks.
+ * - `checks`: optional, at most 32 commands such as a typecheck or the tests, in the order of the file, each named like a
+ *   service, with the only fields `command` and `cwd`, which follow the rules of a service's. The client's Checks tab
+ *   runs them in the worktree on the Mac, or on the session VM through `hunt-ctl check`, and shows their output and
+ *   exit status.
  *
  * `<short>` is the first 8 hex digits of the session ID. `configCli.ts` writes the session's environment, one
  * environment file per service and the configuration of the VM's preview proxy.
@@ -64,6 +73,13 @@ export interface ServiceConfig {
   remoteSecrets: Record<string, string>;
   /** The glob patterns of the ignored files the service needs in a worktree, relative to the worktree. */
   worktreeInclude: string[];
+}
+
+export interface CheckConfig {
+  name: string;
+  command: string;
+  /** Relative to the worktree; null for the worktree itself. */
+  cwd: string | null;
 }
 
 /** The host names of a session's preview: `<short>-<port>.<domain>` and `<short>-<port>-open.<domain>`. */
@@ -159,7 +175,7 @@ const ACCESS_LOG = "/var/log/hunt-proxy/access.log";
 /** Caddy names the access logger of a server `http.log.access.<default_logger_name>`. */
 const ACCESS_LOGGER = "preview";
 
-const ROOT_FIELDS = ["version", "swf", "services"];
+const ROOT_FIELDS = ["version", "swf", "services", "checks"];
 const SWF_FIELDS = ["model"];
 const MAX_MODEL_LENGTH = 128;
 /** The full ID of a Claude model, with an optional context hint: `claude-opus-5-5`, `claude-haiku-4-5-20251001`, `claude-sonnet-5-5[1m]`. */
@@ -171,6 +187,8 @@ const MAX_WORKTREE_INCLUDE = 64;
 const SERVICE_FIELDS = ["command", "cwd", "port", "tls", "guarded", "env", "remoteSecrets", "worktreeInclude"];
 const SERVICE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 const MAX_SERVICES = 64;
+const CHECK_FIELDS = ["command", "cwd"];
+const MAX_CHECKS = 32;
 const MAX_COMMAND_LENGTH = 4096;
 const MAX_CWD_LENGTH = 255;
 const CWD = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
@@ -265,6 +283,21 @@ export function parseServices(huntJson: unknown): ServiceConfig[] {
   const { services } = parseRoot(huntJson, problems);
   if (problems.messages.length > 0) throw new ConfigError(problems.messages);
   return services;
+}
+
+/** The checks of `huntJson` (the parsed file, undefined without one) in the order of the file; throws a ConfigError. */
+export function parseChecks(huntJson: unknown): CheckConfig[] {
+  const problems = new Problems();
+  const { checks } = parseRoot(huntJson, problems);
+  if (problems.messages.length > 0) throw new ConfigError(problems.messages);
+  return checks;
+}
+
+/** The check `name` of `huntJson`; throws a ConfigError when hunt.json is invalid or declares no such check. */
+export function findCheck(huntJson: unknown, name: string): CheckConfig {
+  const check = parseChecks(huntJson).find((candidate) => candidate.name === name);
+  if (!check) throw new ConfigError([`${at("checks", name)}: no such check`]);
+  return check;
 }
 
 /** The session's environment: `HUNT_PREVIEW_URL_TEMPLATE`, the URL of a port with `{port}` in its place. */
@@ -462,9 +495,9 @@ function record(value: unknown, path: string, fields: readonly string[] | null, 
   return value;
 }
 
-/** The services of `huntJson` in the order of the file and its `swf.model`; nothing of either without the file. */
-function parseRoot(huntJson: unknown, problems: Problems): { services: ServiceConfig[]; swfModel: string | null } {
-  const empty = { services: [], swfModel: null };
+/** The services and checks of `huntJson` in the order of the file and its `swf.model`; nothing of these without the file. */
+function parseRoot(huntJson: unknown, problems: Problems): { services: ServiceConfig[]; checks: CheckConfig[]; swfModel: string | null } {
+  const empty = { services: [], checks: [], swfModel: null };
   if (huntJson === undefined) return empty;
   const root = record(huntJson, "hunt.json", null, problems);
   if (!root) return empty;
@@ -476,7 +509,7 @@ function parseRoot(huntJson: unknown, problems: Problems): { services: ServiceCo
     problems.add("version", "must be 3");
   }
   const swfModel = parseSwfModel(root.swf, problems);
-  const declared = record(root.services, "services", null, problems);
+  const declared = root.services === undefined ? undefined : record(root.services, "services", null, problems);
   const entries = Object.entries(declared ?? {});
   if (declared && (entries.length === 0 || entries.length > MAX_SERVICES)) {
     problems.add("services", `must hold 1 to ${MAX_SERVICES} services`);
@@ -495,7 +528,28 @@ function parseRoot(huntJson: unknown, problems: Problems): { services: ServiceCo
     }
     services.push(service);
   }
-  return { services, swfModel };
+  return { services, checks: checkList(root.checks, problems), swfModel };
+}
+
+/** The checks of the optional `checks` section in the order of the file; see the module comment. Every problem is reported. */
+function checkList(value: unknown, problems: Problems): CheckConfig[] {
+  if (value === undefined) return [];
+  const entries = Object.entries(record(value, "checks", null, problems) ?? {});
+  if (entries.length > MAX_CHECKS) {
+    problems.add("checks", `must hold at most ${MAX_CHECKS} checks`);
+  }
+  const checks: CheckConfig[] = [];
+  for (const [name, entry] of entries) {
+    const path = at("checks", name);
+    if (!SERVICE_NAME.test(name)) {
+      problems.add(path, `invalid name, must match ${SERVICE_NAME.source}`);
+      continue;
+    }
+    const fields = record(entry, path, CHECK_FIELDS, problems);
+    if (!fields) continue;
+    checks.push({ name, command: commandLine(fields.command, at(path, "command"), problems), cwd: folder(fields.cwd, at(path, "cwd"), problems) });
+  }
+  return checks;
 }
 
 /** The `model` of the optional `swf` section; null without one. */

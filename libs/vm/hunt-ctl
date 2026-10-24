@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # hunt-ctl: the VM side of Hunt's remote sessions. Hunt runs it over SSH as `sudo -n hunt-ctl <command> …`. Every
 # command prints one JSON document on stdout, except the streaming ones (receive-pack, upload-pack, lfs-get,
-# get-claude), which pass raw data; progress and errors go to stderr, errors with a non-zero exit. Without arguments it
-# lists the commands.
+# get-claude, check), which pass raw data; progress and errors go to stderr, errors with a non-zero exit. Without
+# arguments it lists the commands.
 #
 # /etc/hunt/role names the kind of VM. A session VM (`session`) runs one session: its worktree, ~/.claude and agent
 # belong to the user agent, the relay runs as hunt-relay.service and the services of its hunt.json as
@@ -76,6 +76,7 @@ readonly SERVICES_DIR=/etc/hunt/services
 # `session-config` gives each service the ones the `remoteSecrets` of its hunt.json name.
 readonly REMOTE_SECRETS_FILE=/etc/hunt/remote-secrets.json
 readonly SERVICE_UNIT_PREFIX=hunt-service@
+# The name of a service or a check of hunt.json.
 readonly SERVICE_NAME_PATTERN='^[a-z][a-z0-9-]{0,31}$'
 # The sudo rule that lets the agent run `hunt-ctl service` (apps/session/vm/sudoers-hunt-service).
 readonly SERVICE_SUDOERS_DROPIN=/etc/sudoers.d/hunt-service
@@ -199,6 +200,10 @@ Session VM:
                          /etc/hunt/caddy.json, and (re)start the proxy; stops and disables the services hunt.json no
                          longer declares; prints the services' section of the agent's prompt, the text of the
                          repository's hunt.agent.md and the model hunt.json sets for swf sessions (swf.model)
+  check <worktree> <name>
+                         run the check <name> of the hunt.json in the session's worktree <worktree> as the agent in a
+                         login shell, in the worktree or the check's cwd, with FORCE_COLOR=1 and no stdin; passes its
+                         stdout and stderr through (streams) and exits with its exit status
   service <start|stop|restart|status> [<name>…]
                          start and enable (so that they come back when the VM boots), stop and disable, or restart the
                          named services of the hunt.json of the VM's session; prints the state of every service, for
@@ -1339,6 +1344,29 @@ cmd_session_config() {
     '{agent_md: ($result.agent_md // null), services_prompt: ($result.services_prompt // ""), swf_model: ($result.swf_model // null)}'
 }
 
+# Runs the check $2 of the hunt.json in the session worktree $1; see the usage. The check's output goes straight to
+# hunt-ctl's stdout and its original stderr (fd 4), past the copy of stderr for the journal.
+cmd_check() {
+  (( $# == 2 )) || usage
+  local name=$2 id worktree result command cwd dir status=0
+  [[ $name =~ $SERVICE_NAME_PATTERN ]] || die "invalid check name: $name"
+  id=$(session_of_path "$1")
+  worktree=$(worktree_of "$id")
+  [[ -x $HUNT_NODE ]] || die "$HUNT_NODE is missing; this VM is no session VM"
+  # The CLI reads hunt.json without following symlinks.
+  if ! result=$("$HUNT_NODE" "$CURRENT/session/configCli.mjs" --worktree "$worktree" --check "$name"); then
+    jq -r '.problems[]?' <<<"$result" >&2 2>/dev/null || true
+    die "hunt.json is not valid or declares no check $name (see above)"
+  fi
+  command=$(jq -r '.command' <<<"$result")
+  cwd=$(jq -r '.cwd // empty' <<<"$result")
+  dir=$worktree${cwd:+/$cwd}
+  [[ -d $dir ]] || die "the folder $cwd of the check $name does not exist in the worktree"
+  # In a || list neither errexit nor the ERR trap act on the check's failure, whose status becomes hunt-ctl's.
+  agent_run "$CURRENT/vm/agent.env" "$dir" FORCE_COLOR=1 /bin/bash -lc "$command" </dev/null 2>&4 || status=$?
+  exit "$status"
+}
+
 cmd_start() {
   local id keep_stored
   parse_relay_args 1 "$@"
@@ -1926,7 +1954,7 @@ main() {
   case $command in
     install | install-units | version) ;;
     install-tools | init | clone | receive-pack | upload-pack | lfs-put | lfs-get | put-files | put-remote-secrets | get-claude | \
-      prepare | deps | session-config | service | start | wait | stop | clear | snapshot | commit | push | github-token | status | preview-status | \
+      prepare | deps | session-config | check | service | start | wait | stop | clear | snapshot | commit | push | github-token | status | preview-status | \
       destroy)
       [[ $role == session ]] || die "hunt-ctl $command runs on session VMs only; this VM is the gateway"
       ;;
@@ -1975,6 +2003,10 @@ main() {
       ;;
     get-claude)
       cmd_get_claude "$@"
+      return
+      ;;
+    check)
+      cmd_check "$@"
       return
       ;;
   esac

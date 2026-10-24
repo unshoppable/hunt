@@ -1,7 +1,9 @@
 import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import { Group, Panel, Separator, useDefaultLayout, useGroupRef, usePanelRef, type GroupImperativeHandle, type Layout } from "react-resizable-panels";
+import type { CommandId } from "../state/keymap";
 import { HEADER_BAR } from "../ui/bars";
 import { ChevronIcon } from "../ui/icons";
+import { useShortcutLabel, withShortcut } from "../ui/shortcuts";
 
 /** Set while a pane toggle runs, so the layout it leaves is saved like one the user dragged to. */
 let isToggleAction = false;
@@ -162,24 +164,29 @@ export const PUSH_INSTEAD_OF_COLLAPSE = "100%";
  */
 export const PANE_TOGGLE_ROW = "mt-[12px] flex h-10 shrink-0 items-center";
 
+/** Runs `toggle`, which collapses or restores panes of a `PersistentGroup`, so the panes glide like after a toggle click. */
+export function runPaneToggle(toggle: () => void) {
+  isToggleAction = true;
+  try {
+    toggle();
+  } finally {
+    isToggleAction = false;
+  }
+}
+
 /**
  * Round button that collapses a pane to its rail or restores it; panes collapse to the left, so the chevron points
- * left while the pane is open. The panes of its group glide to their new widths.
+ * left while the pane is open. The panes of its group glide to their new widths. `shortcutId` names the keymap command
+ * that toggles the pane too, for the tooltip.
  */
-export function PaneToggle({ isOpen, name, onToggle }: { isOpen: boolean; name: string; onToggle: () => void }) {
+export function PaneToggle({ isOpen, name, shortcutId, onToggle }: { isOpen: boolean; name: string; shortcutId: CommandId; onToggle: () => void }) {
   const label = `${isOpen ? "Hide" : "Show"} ${name}`;
+  const shortcut = useShortcutLabel(shortcutId);
   return (
     <button
       type="button"
-      onClick={() => {
-        isToggleAction = true;
-        try {
-          onToggle();
-        } finally {
-          isToggleAction = false;
-        }
-      }}
-      title={label}
+      onClick={() => runPaneToggle(onToggle)}
+      title={withShortcut(label, shortcut)}
       aria-label={label}
       className={
         "flex size-[30px] shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/6 text-neutral-300 shadow-sm " +

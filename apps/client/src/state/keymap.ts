@@ -23,6 +23,8 @@ export type KeymapCommand = {
 
 export const KEYMAP_COMMANDS = [
   { id: "app.openSettings", label: "Open settings", group: "General", scope: "app", defaults: ["Meta+,"] },
+  { id: "app.toggleSessions", label: "Show or hide the session list", group: "General", scope: "app", defaults: ["Meta+1"] },
+  { id: "app.toggleChat", label: "Show or hide the chat", group: "General", scope: "app", defaults: ["Meta+2"] },
   { id: "session.next", label: "Next session", group: "Sessions", scope: "app", defaults: ["Ctrl+Tab"] },
   { id: "session.previous", label: "Previous session", group: "Sessions", scope: "app", defaults: ["Ctrl+Shift+Tab"] },
   { id: "session.remove", label: "Remove the selected session", group: "Sessions", scope: "sidebar", defaults: ["Meta+w"], note: "while the focus is in the sidebar" },

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useHuntStore } from "../state/store";
 import { SessionSidebar } from "../sessions/SessionSidebar";
@@ -28,6 +28,7 @@ import {
   PersistentGroup,
   PUSH_INSTEAD_OF_COLLAPSE,
   RAIL_SIZE,
+  runPaneToggle,
   useGroupRef,
   usePanelRef,
 } from "../layout/ResizablePanes";
@@ -45,6 +46,7 @@ import { TerminalPanel } from "../terminal/TerminalPanel";
 import { isTerminalActive } from "../terminal/terminalTabs";
 import { HEADER_BAR } from "../ui/bars";
 import { TAB_ACTIVE, TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons";
+import { shortcutCommand } from "../ui/shortcuts";
 import { restoreWindowBounds, useRememberWindowBounds } from "../ui/windowBounds";
 import { useAccountsSync, useAgentPreferencesSync, useBackendEvents, usePaneStyles, useRemoteSettingsSync, useSettingsSync } from "./bootstrap";
 
@@ -54,6 +56,7 @@ const REMOTE_AGENT_POLL_MS = 30_000;
 const SESSIONS_MIN_WIDTH = 240;
 /** Narrowest open chat that fits the prompt box (`min-w-[400px]` plus its padding in `PromptInput`) without cutting it off. */
 const CHAT_MIN_WIDTH = 480;
+const PANE_TOGGLE_COMMANDS = ["app.toggleSessions", "app.toggleChat"] as const;
 
 export function App() {
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
@@ -113,8 +116,22 @@ export function App() {
     mainGroup.current?.setLayout({ sessions: layout.chat, chat: layout.chat, inspector: layout.inspector + layout.sessions - layout.chat });
   };
   const toggleChat = () => (isChatCollapsed ? chatPanel.current?.expand() : chatPanel.current?.collapse());
-  const sessionsToggle = <PaneToggle isOpen={!isSessionsCollapsed} name="sessions" onToggle={toggleSessions} />;
-  const chatToggle = <PaneToggle isOpen={!isChatCollapsed} name="chat" onToggle={toggleChat} />;
+  const sessionsToggle = <PaneToggle isOpen={!isSessionsCollapsed} name="sessions" shortcutId="app.toggleSessions" onToggle={toggleSessions} />;
+  const chatToggle = <PaneToggle isOpen={!isChatCollapsed} name="chat" shortcutId="app.toggleChat" onToggle={toggleChat} />;
+  const paneToggles = useRef({ toggleSessions, toggleChat });
+  paneToggles.current = { toggleSessions, toggleChat };
+
+  // ⌘1 / ⌘2 (keymap defaults) collapse or restore the session list and the chat like their toggles.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      const command = event.defaultPrevented ? null : shortcutCommand(event, PANE_TOGGLE_COMMANDS);
+      if (!command) return;
+      event.preventDefault();
+      runPaneToggle(command === "app.toggleSessions" ? paneToggles.current.toggleSessions : paneToggles.current.toggleChat);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
   /** Find in Files is open, starting with the text that was selected in the editor (`null`: the last query). */
   const [findInFiles, setFindInFiles] = useState<{ initialText: string | null } | null>(null);
   const hasLocalWorktree = !isCreatingActive && hasActiveWorktree;

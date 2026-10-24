@@ -9,7 +9,11 @@ export type SessionMachineType = {
   /** Physical cores; each runs two vCPUs. */
   cores: number;
   memoryGb: number;
-  /** On-demand list price in europe-west1 on 2026-10-14, per running hour. */
+  /**
+   * On-demand list price in europe-west1 on 2026-10-14, per running hour. Prices come from the Cloud Billing catalog
+   * (`services/6F81-5844-456A/skus`), fetched with a user token and no `x-goog-user-project` header; with one naming
+   * a medconomy project the catalog answers 403.
+   */
   eurPerHour: number;
 };
 

@@ -475,7 +475,8 @@ body,
 
 /* "+" of a pull request review (see review/addCommentGlyph.ts): GitHub's blue square on the hovered line, in the
    glyph margin left of the line numbers, centred on the cell; grey when the comment lands in the review summary as
-   a note instead of inline. */
+   a note instead of inline. Glyph-margin decorations (`glyphMarginClassName`) render in `.glyph-margin-widgets`, not
+   `.margin-view-overlays`; select them as `.monaco-editor .<class>`. */
 .monaco-editor .hunt-review-add {
   cursor: pointer;
   z-index: 3;
@@ -879,7 +880,8 @@ body,
   --xy-minimap-mask-stroke-color: rgba(255, 255, 255, 0.3);
 }
 /* Edge labels and their description popovers stay above the edges (z-index -2), folders (-1) and files (0); the graph
-   keeps these levels fixed (zIndexMode "manual"). */
+   keeps these levels fixed (zIndexMode "manual"). Highlight hovered edges by color and stroke width, never by raising
+   them. */
 .react-flow__edgelabel-renderer {
   z-index: 1;
 }

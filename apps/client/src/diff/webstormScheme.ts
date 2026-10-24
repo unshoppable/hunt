@@ -14,6 +14,8 @@ export const WEBSTORM = {
   KEYWORD: "c08cff",
   PRIMITIVE: "abb8ff",
   METADATA: "bef057",
+  // Each color is one attribute of the WebStorm scheme; never merge two. TS.INTERFACE also colors type aliases,
+  // JS.CLASS colors classes.
   CLASS: "ff7ab3",
   INTERFACE: "fea7ff",
   ENUM: "a0afff",

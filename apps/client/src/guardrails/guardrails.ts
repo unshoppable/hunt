@@ -168,7 +168,8 @@ export const GUARDRAIL_CHAT_PATH = ".claude";
 /**
  * What the agent of the "New" button is asked to do: turn the user's description into the guardrail kind that fits
  * (instruction, rule, skill, agent or ADR) and write it where it belongs; while the kind, the content or the scope is
- * unclear, it asks the user instead of writing. `today` dates an ADR.
+ * unclear, it asks the user instead of writing. `today` dates an ADR. Wherever existing guardrails are checked, cover
+ * all five kinds (CLAUDE.md, rules, skills, agents, ADRs), never a subset.
  */
 export function guardrailTask(listing: GuardrailListing, today = new Date()): string {
   const creatable: CreatableKind[] = ["rule", "skill", "agent", "adr"];

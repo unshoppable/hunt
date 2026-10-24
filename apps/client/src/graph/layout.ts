@@ -108,6 +108,8 @@ async function runLayout(input: LayoutInput): Promise<LayoutResult> {
       "elk.layered.spacing.edgeNodeBetweenLayers": "24",
       "elk.layered.spacing.edgeEdgeBetweenLayers": "14",
       "elk.edgeRouting": "ORTHOGONAL",
+      // mergeEdges with EDGE_LENGTH compaction gives the shortest edges; `unnecessaryBendpoints` adds bends, and
+      // NETWORK_SIMPLEX node placement is no better than BRANDES_KOEPF.
       "elk.layered.mergeEdges": String(input.mergeEdges),
       "elk.layered.compaction.postCompaction.strategy": "EDGE_LENGTH",
       "elk.layered.thoroughness": "100",

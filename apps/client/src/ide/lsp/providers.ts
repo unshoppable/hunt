@@ -58,7 +58,7 @@ type LspSignatureHelp = monaco.languages.SignatureHelp & { lsp: SignatureHelp };
  * Registers the editor features served by the language server for TypeScript and JavaScript models of a worktree:
  * completion (with each row's type, documentation and auto-import on resolve; opening on its own at object members),
  * signature help, hover, inlay hints, occurrence highlights and diagnostics (pulled after edits, pushed ones applied as
- * they come).
+ * they come). tsgo has no `semanticTokens`; coloring stays with the TypeScript worker (`diff/semanticTokens.ts`).
  * Models the server does not know (diff models, previews) get nothing from these providers; runs once.
  */
 export function registerLspProviders(): void {
@@ -118,6 +118,7 @@ export function registerLspProviders(): void {
   monaco.languages.registerInlayHintsProvider(LANGUAGES, {
     provideInlayHints: (model, range, token) =>
       withClient(model, async (client) => {
+        // Monaco clamps `range` to the model; tsgo panics on a range past the last line.
         const params = { textDocument: { uri: model.uri.toString() }, range: toLspRange(range) };
         const hints = await client.request<InlayHint[] | null>("textDocument/inlayHint", params, token);
         return { hints: (hints ?? []).map(toMonacoInlayHint), dispose: () => {} };
@@ -165,10 +166,10 @@ function toLspCompletionTrigger(kind: monaco.languages.CompletionTriggerKind): 1
 /**
  * How to ask the server for the list Monaco wants at `position`, or null when there is nothing to ask for. `{` and `,`
  * (and a space after them) open the list only where an object member starts, which the TypeScript worker tells from
- * the syntax without a round trip to the server. The server does not know these characters (it answers `{` and `,`
- * with an error and a space with nothing), so the request is a plain invocation, and only a member list counts. A list
- * that opens on its own after anything but `.` has no item focused, so Enter still breaks the line until ↓ or a typed
- * letter picks one.
+ * the syntax without a round trip to the server. tsgo does not know these characters (it answers `{` and `,` with
+ * -32603 and a space with nothing), so the request is a plain invocation (triggerKind 1), and only a member list
+ * counts. A list that opens on its own after anything but `.` has no item focused, so Enter still breaks the line
+ * until ↓ or a typed letter picks one.
  */
 async function completionRequest(model: monaco.editor.ITextModel, position: monaco.Position, context: monaco.languages.CompletionContext): Promise<CompletionRequest | null> {
   const character = context.triggerCharacter;
@@ -226,7 +227,7 @@ async function resolveRowTypes(model: monaco.editor.ITextModel, suggestions: Lsp
  * or failed request is asked again next time. Items that did not come from the server stay as they are.
  */
 function resolveInto(item: LspCompletion, token: monaco.CancellationToken): Promise<void> {
-  // The server looks the item up by its `data`; without it the server process dies.
+  // tsgo looks the item up by its `data` and panics without it, which ends the server process.
   if (!item.lsp?.data || !item.client) return Promise.resolve();
   item.resolution ??= item.client.request<CompletionItem | null>("completionItem/resolve", item.lsp, token).then(
     (resolved) => {

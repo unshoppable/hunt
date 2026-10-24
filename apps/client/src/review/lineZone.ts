@@ -23,7 +23,10 @@ export class LineZone implements monaco.editor.IOverlayWidget {
     private readonly editor: monaco.editor.ICodeEditor,
     /** The line the zone sits under. */
     readonly afterLine: number,
-    /** Order among zones under the same line, lower first. */
+    /**
+     * Order among zones under the same line, lower first; keep it below 10000, Monaco's default, which the inline
+     * diff's deleted-lines zone uses: a later zone shifts the hidden original editor's base line numbers below it.
+     */
     ordinal: number,
   ) {
     this.domNode = document.createElement("div");

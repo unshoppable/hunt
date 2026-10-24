@@ -35,7 +35,8 @@ type Drag = {
 
 /**
  * Whole-line decoration giving the lines `startLine..line` GitHub's yellow tint behind gutter and text; `zIndex` lays
- * it over a diff's line backgrounds.
+ * it over a diff's line backgrounds. Order whole-line decorations with the `zIndex` option, never CSS z-index, which
+ * lifts `.cdr` above `.view-lines` and tints the text.
  */
 export function rangeDecoration(span: LineSpan): monaco.editor.IModelDeltaDecoration {
   return {
@@ -87,7 +88,10 @@ export class AddCommentGlyph {
 
   constructor(
     private readonly editor: monaco.editor.ICodeEditor,
-    /** Worktree path of a model, or null for models the review does not cover (then no "+" shows). */
+    /**
+     * Worktree path of a model, or null for models the review does not cover. The "+" shows on every line of a covered
+     * model, comment-only lines included; only `pathOf` returning null hides it.
+     */
     private readonly pathOf: (model: monaco.editor.ITextModel) => string | null,
     /** Whether a comment on `span` lies inside a diff hunk and is posted inline. */
     private readonly isInline: (span: LineSpan) => boolean,

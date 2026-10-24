@@ -113,7 +113,8 @@ export function parseGraph(value: unknown): ParsedGraph {
 
 /**
  * True when `label` is an identifier or a file name instead of a purpose: camelCase or PascalCase of several words,
- * UPPER_SNAKE, a dotted name such as `user.service.ts`, or the stem or name of one of `paths`.
+ * UPPER_SNAKE, a dotted name such as `user.service.ts`, or the stem or name of one of `paths`. Edge labels come only
+ * from the agent: fix the prompt, never add fallback words or translation tables.
  */
 export function isSymbolLikeLabel(label: string, ...paths: string[]): boolean {
   const trimmed = label.trim();

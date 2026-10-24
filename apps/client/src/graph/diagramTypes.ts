@@ -3,7 +3,12 @@ import type { DiagramType, ShapeDiagramType, ShapeKind } from "../ipc/types";
 /** One entry of the diagram picker: a diagram type, its name and what a reviewer sees in it. */
 export type DiagramTypeOption = { id: DiagramType; name: string; description: string };
 
-/** The diagram types the Architecture tab offers, in the order the picker lists them. */
+/**
+ * The diagram types the Architecture tab offers, in the order the picker lists them. A new type also needs its id in
+ * `DiagramType` (ipc/types.ts), entries in `KINDS_BY_TYPE` and `DIAGRAM_FILES`, the `type` enum and an `allOf` branch
+ * in `src-tauri/src/diagram.schema.json`, a `DiagramType` variant in `graph.rs` (in `SHAPE_TYPES`, with its
+ * `prompts/diagram/diagram-<type>.user-prompt.md`), and node views in `shapeNodes.tsx` for element kinds it adds.
+ */
 export const DIAGRAM_TYPES: DiagramTypeOption[] = [
   { id: "dependencies", name: "Dependencies", description: "Files of the change and how they depend on each other" },
   { id: "c4-context", name: "C4 Context", description: "The system under review, the people who use it and the external systems it talks to" },

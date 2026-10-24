@@ -128,7 +128,10 @@ export function tableRowCenterY(table: Pick<ShapeNode, "description">, index: nu
 /** Color of an ERD relationship's crow's feet: at rest, lit while hovered, or the change color it carries. */
 export type CrowTone = "rest" | "lit" | ShapeChange;
 
-/** Id of the crow's-foot marker for `cardinality` in `tone`; `CrowFootDefs` defines one marker per combination. */
+/**
+ * Id of the crow's-foot marker for `cardinality` in `tone`; `CrowFootDefs` defines one marker per combination. React
+ * Flow wraps a string `markerStart`/`markerEnd` in `url('#…')` itself, so this returns the bare id.
+ */
 export function crowMarker(cardinality: Cardinality, tone: CrowTone): string {
   return `crow-${cardinality}-${tone}`;
 }

@@ -96,7 +96,9 @@ npm run start:client
 ```
 
 `npm run start:client` runs `nx run client:dev`: `tauri dev` in `apps/client`, which starts Vite first.
-`npm run tauri -- <args>` runs any other Tauri CLI command there.
+`npm run tauri -- <args>` runs any other Tauri CLI command there. After the checkout moved to another folder, `tauri
+dev` fails on cached absolute paths ("failed to read plugin permissions") until `cargo clean` in
+`apps/client/src-tauri`.
 
 #### Verify
 
@@ -120,7 +122,8 @@ patch, `!` or `BREAKING CHANGE` → major), independently per app: it writes the
 
 - deploys the VM apps (`gateway`, `session`) affected since the commit the VMs run, the tag `deployed/prod`
   ([`ci-nx-affected-deploy.yml`](.github/workflows/ci-nx-affected-deploy.yml),
-  [`ci-build-and-deploy.yml`](.github/workflows/ci-build-and-deploy.yml)), and moves the tag;
+  [`ci-build-and-deploy.yml`](.github/workflows/ci-build-and-deploy.yml)), and moves the tag; a deploy that fails with
+  IAP `4003 failed to connect to backend` found the gateway VM stopped, which the deployer may not start;
 - publishes the session release when it got a `session@<version>` tag
   ([`ci-publish-session.yml`](.github/workflows/ci-publish-session.yml), also `workflow_dispatch`): the built release
   (`dist/apps/session`) as the asset `session.tar.gz` on the GitHub Release `session@<version>`, never marked latest;
@@ -192,7 +195,9 @@ so the state ends by itself once the user's answer follows and holds for a remot
 too); it turns green when a turn finished while another session was active and the user has not opened the session
 since. The agent marks a question explicitly by ending its reply with `<!-- hunt:question -->` (`hasQuestionMarker`
 in `libs/domain/src/question.ts`, which the relay uses as well); `libs/domain/prompts/question.system-prompt.md` tells it so and is part of every
-session's system prompt, local and remote. A last paragraph ending with a question mark remains the fallback
+session's system prompt, local and remote. The marker stands in for `AskUserQuestion`, which the ACP adapter disables
+unless the client advertises `elicitation.form`, which Hunt does not. A last paragraph ending with a question mark
+remains the fallback
 (`endsWithQuestion`). The marker is hidden in the chat like the guardrail marker and dropped from the transcript the
 guardrail agent gets. The chat pane shows the state as well: a "Question" chip in its header and a note under the
 messages (`ChatPanel.tsx`). At its start Hunt loads the chat of every session (`loadAllChats` in `src/state/store.ts`),
@@ -287,7 +292,8 @@ with the branch: the handoff copies it to the VM (`hunt-ctl prepare --upstream`)
 and every connect takes over what the VM records (`sync::take_over_vm_push_target`), so a Hunt that continues a
 session another one handed off pushes where that one meant to. The upstream is the only place that names it: the
 session list reads it into `pushTarget` (the window reads it again when it comes back to the front), and `baseRef`
-only names what the session was created from.
+only names what the session was created from. Without an active session the tab shows the repository checkout picked
+in the start view (`GitScope` of kind `repo`); there "Checkout" is enabled and diffs render with `SplitDiffView`.
 
 #### Pull request reviews
 
@@ -342,7 +348,8 @@ include files the agent created. Monaco's bundled TypeScript worker
 only colors code: `apps/client/src/diff/webstormClassifier.ts` assigns every identifier the role WebStorm would (class,
 interface, instance field, static method, parameter, global/local variable, …), colored by the user's WebStorm scheme
 (`apps/client/src/diff/webstormScheme.ts`); opening a file also loads its relative imports so imported names get their
-roles.
+roles. In Angular projects the Angular language server adds the usages and renames in component templates; it needs
+seconds per newly loaded project (about 8 s cold, 25 ms warm), so its usages arrive after tsgo's.
 
 The shortcuts below and those of the sidebar, chat and changelist are defaults: *Settings → Keymap* binds each command
 to other or additional keys, flags two commands that share one and keeps the changes in the settings store
@@ -354,7 +361,7 @@ to other or additional keys, flags two commands that share one and keeps the cha
 | ⇧⌘click | Open the position in WebStorm |
 | ⌘E / ⌘R | Move the active tab to the pane on the left / right, creating it when needed |
 | ⇧⌘E / ⇧⌘R | Move the active tab to the pane above / below |
-| ⌘W / ⇧⌘W | Close the active tab / every tab; the editor window closes with its last tab |
+| ⌘W / ⇧⌘W | Close the active tab / every tab; the last tab leaves an empty area, and ⌘W without a tab closes the editor window |
 | ⇧⌘2 | Select the file in the project tree; in the change list, open it in the editor |
 | ⌃⇧C | In the change list: copy the selected file's absolute path (also "Copy path" in its context menu) |
 | ⌘S | Save every file with unsaved edits, also those of closed tabs and other windows; also with the focus in the project tree, the changelist or the chat |
@@ -401,7 +408,9 @@ The Dependencies diagram is `.hunt/graph.json` (schema in `apps/client/src-tauri
 per changed file plus the unchanged files that explain the change, and one edge per dependency with a label stating
 how the source uses the target (one to three words, a verb, a noun or both, in the AI language from the settings)
 and a description of how it is used. Hunt validates it, fills pairs the agent left out with unlabeled edges read
-from the import statements and lays it out with ELK inside React Flow. A diagram is generated only on a click.
+from the import statements and lays it out with ELK inside React Flow. A diagram is generated only on a click. ⌘F
+jumps to the matching files and highlights them. When labels are missing, look at the session's `.hunt/graph.json`
+first: edge labels come only from the agent.
 
 A shape diagram is `.hunt/diagram.<type>.json` (`diagram.c4-container.json` and so on; schema in
 `apps/client/src-tauri/src/diagram.schema.json`, which the prompt also copies into `.hunt/`): nodes with a kind
@@ -416,6 +425,9 @@ The modification time of a diagram file is the time it was generated; every sess
 it last changed worktree files (agent edits via the change attribution, saves in Hunt panes, revert, shelve,
 unshelve), and the panel marks the diagram "Outdated" once such a change is newer than the diagram (`graph_status`
 command).
+
+The diagrams are React Flow, not tldraw: tldraw 5 needs a paid licence bound to the host name for a production build,
+which a Tauri app cannot satisfy, and its elbow arrows cross other shapes.
 
 #### Remote sessions
 
@@ -501,7 +513,9 @@ all of them as one JSON object in the latest version of the Secret Manager secre
 session VM it brings up for a handoff, a start or the poller (`hunt-ctl put-remote-secrets`,
 `/etc/hunt/remote-secrets.json`, which only root reads). A service of `hunt.json` names the ones it needs under
 `remoteSecrets` (`"OPENAI_API_KEY": "$MED_OPENAI_API_KEY"`), and `session-config` writes them into its environment file;
-a name without a remote secret fails `session-config` like any other problem of `hunt.json`. A changed value reaches
+a name without a remote secret fails `session-config` like any other problem of `hunt.json`. Names are global across
+repositories, so they carry the app as prefix (`MED_…`); single values go here, whole files into `worktreeInclude` (or
+`HUNT_SWF_FILES_*` for poller sessions). A changed value reaches
 the sessions that start or are handed off afterwards. While the gateway may not read the secret, the session VMs get
 none and the journal says why.
 
@@ -752,7 +766,8 @@ the reported paths replaced, and moves small files through the channel and large
 7,373 files at the round trip of IAP, a change takes about 80 ms from the VM here and 50 ms the other way. When both
 sides change the same file within that time, the local version wins and the chat names the file. The channel opens
 again after it ended, waiting 1 to 30 seconds after each failure in a row, and the full sync after it brings what
-changed meanwhile.
+changed meanwhile. Mutagen (no longer released) and Syncthing (a fixed delay of about 1.4 s) were measured against
+this channel and left out.
 
 Only one side writes while the two cannot sync (`apps/client/src-tauri/src/session/link.rs`). The local worktree may
 change while the channel is open or the agent of the VM is connected, and while the gateway says the VM is off (the
@@ -969,14 +984,15 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 | `libs/domain/` | Nx project `domain`: JSON-RPC and NDJSON framing, error messages and the system-prompt parts of remote sessions the apps share |
 | `libs/vm/` | Nx project `vm`: `hunt-ctl`, which Hunt and the gateway run on the VMs |
 | `scripts/` | Nx project `scripts`: the build of the VM release artifacts (`buildVmArtifact.ts`) |
-| `docs/adr/` | Architectural decision records |
+| `docs/adr/` | Earlier architectural decision records, kept as history |
 
 &nbsp;
 
 ### 🧠 Architectural decisions
 
-Decisions that shape the codebase are recorded in [`docs/adr/`](docs/adr), one file per decision with Context,
-Decision and Consequences. Read them before changing the parts they cover.
+Hunt keeps no new architectural decision records. The files in [`docs/adr/`](docs/adr) are history and do not
+constrain changes; a one-time decision is planned and carried out like any other change, and its constraints go into
+CLAUDE.md, the README or a code comment.
 
 &nbsp;
 

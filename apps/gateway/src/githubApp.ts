@@ -52,7 +52,10 @@ function base64url(data: Buffer | string): string {
   return Buffer.from(data).toString("base64url");
 }
 
-/** The app's JWT (RS256) at `nowMs`: issued JWT_BACKDATE_MS ago, valid for JWT_LIFETIME_MS, issuer `appId`. */
+/**
+ * The app's JWT (RS256) at `nowMs`: issued JWT_BACKDATE_MS ago, valid for JWT_LIFETIME_MS, issuer `appId`. `appId` is
+ * the numeric App ID; GitHub refuses the Client ID (`Iv23…`) as issuer.
+ */
 export function appJwt(appId: string, privateKey: KeyObject, nowMs: number): string {
   const seconds = Math.floor(nowMs / 1000);
   const header = base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));

@@ -1,4 +1,4 @@
-import { useRef, type ReactNode, type RefObject } from "react";
+import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import { Group, Panel, Separator, useDefaultLayout, useGroupRef, usePanelRef, type GroupImperativeHandle, type Layout } from "react-resizable-panels";
 import { HEADER_BAR } from "../ui/bars";
 import { ChevronIcon } from "../ui/icons";
@@ -10,9 +10,9 @@ const PANE_ANIMATION_MS = 260;
 let paneAnimationTimer: number | undefined;
 
 /**
- * Resizable pane group whose layout survives restarts (persisted in localStorage under `id`). `toggleOnlyPanes` maps
- * the ids of collapsible panes that only their toggle collapses to their minimum size in pixels: a drag that would
- * collapse one stops it at that size, and the pane that took its width gives it back.
+ * Resizable pane group whose layout survives restarts (persisted in localStorage under `id`). A drag resizes only the
+ * two panes beside the dragged separator; it never pushes the panes beyond them. `toggleOnlyPanes` maps the ids of
+ * collapsible panes that only their toggle collapses to their minimum size in pixels: a drag stops them there.
  */
 export function PersistentGroup({
   id,
@@ -34,27 +34,53 @@ export function PersistentGroup({
   const groupRef = givenGroupRef ?? ownGroupRef;
   const groupElement = useRef<HTMLDivElement>(null);
   const previousLayout = useRef<Layout | null>(null);
+  /** The layout when the current drag began; the library recomputes every pointer move from it. */
+  const dragStartLayout = useRef<Layout | null>(null);
   const isRestoring = useRef(false);
 
-  const keepToggleOnlyPanesOpen = (layout: Layout) => {
+  useEffect(() => {
+    const endDrag = () => {
+      dragStartLayout.current = null;
+    };
+    window.addEventListener("pointerup", endDrag, true);
+    return () => window.removeEventListener("pointerup", endDrag, true);
+  }, []);
+
+  const keepDragBesideSeparator = (layout: Layout) => {
     const previous = previousLayout.current;
     previousLayout.current = layout;
     const element = groupElement.current;
-    if (!previous || !element || isRestoring.current || isToggleAction || !element.querySelector(":scope > [data-separator='active']")) return;
-    const groupSize = orientation === "horizontal" ? element.offsetWidth : element.offsetHeight;
+    const separator = element?.querySelector(":scope > [data-separator='active']");
+    if (!previous || !element || !separator || isRestoring.current || isToggleAction) return;
+    dragStartLayout.current ??= previous;
+    const start = dragStartLayout.current;
+    const before = separator.previousElementSibling?.id;
+    const after = separator.nextElementSibling?.id;
+    if (!before || !after) return;
+    const panes = [...element.children].filter((child): child is HTMLElement => child instanceof HTMLElement && child.hasAttribute("data-panel"));
+    const paneIds = panes.map((pane) => pane.id);
     const restored = { ...layout };
-    let restoredWidth = 0;
-    for (const [paneId, minimumPixels] of Object.entries(toggleOnlyPanes)) {
-      const minimum = (minimumPixels / groupSize) * 100;
-      const size = layout[paneId];
-      const previousSize = previous[paneId];
-      if (size === undefined || previousSize === undefined || size >= minimum - 0.1 || previousSize < minimum - 0.1) continue;
-      restored[paneId] = minimum;
-      restoredWidth += minimum - size;
+    // A pane beyond the two neighbours keeps its size; the neighbour on the separator's other side gives back what it took.
+    for (const paneId of paneIds) {
+      if (paneId === before || paneId === after || start[paneId] === undefined || restored[paneId] === undefined) continue;
+      const neighbour = paneIds.indexOf(paneId) < paneIds.indexOf(after) ? after : before;
+      restored[neighbour] += restored[paneId] - start[paneId];
+      restored[paneId] = start[paneId];
     }
-    const [grownId] = Object.keys(layout).sort((first, second) => layout[second] - previous[second] - (layout[first] - previous[first]));
-    if (!restoredWidth || !grownId) return;
-    restored[grownId] -= restoredWidth;
+    // Layout percentages share out the panes' space, which excludes the separators.
+    const paneSpace = panes.reduce((total, pane) => total + (orientation === "horizontal" ? pane.offsetWidth : pane.offsetHeight), 0);
+    for (const [paneId, neighbour] of [
+      [before, after],
+      [after, before],
+    ]) {
+      const minimumPixels = toggleOnlyPanes[paneId];
+      if (!minimumPixels) continue;
+      const minimum = (minimumPixels / paneSpace) * 100;
+      if (restored[paneId] >= minimum - 0.1 || start[paneId] < minimum - 0.1) continue;
+      restored[neighbour] -= minimum - restored[paneId];
+      restored[paneId] = minimum;
+    }
+    if (paneIds.every((paneId) => Math.abs(restored[paneId] - layout[paneId]) < 0.01)) return;
     isRestoring.current = true;
     try {
       groupRef.current?.setLayout(restored);
@@ -70,7 +96,7 @@ export function PersistentGroup({
       groupRef={groupRef}
       elementRef={groupElement}
       defaultLayout={defaultLayout}
-      onLayoutChange={keepToggleOnlyPanesOpen}
+      onLayoutChange={keepDragBesideSeparator}
       onLayoutChanged={(layout, meta) => onLayoutChanged(layout, isToggleAction ? { ...meta, isUserInteraction: true } : meta)}
       className={className}
     >

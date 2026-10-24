@@ -62,11 +62,10 @@ export class TrailingReply {
   }
 }
 
-/** Whether a user message chunk belongs to a turn Hunt sent itself; transcripts older than the name carry `harness`. */
+/** Whether a user message chunk belongs to a turn Hunt sent itself. */
 function isHidden(meta: unknown): boolean {
-  if (!isRecord(meta)) return false;
-  const hunt = isRecord(meta.hunt) ? meta.hunt : isRecord(meta.harness) ? meta.harness : null;
-  return hunt?.hidden === true;
+  if (!isRecord(meta) || !isRecord(meta.hunt)) return false;
+  return meta.hunt.hidden === true;
 }
 
 function textOf(content: unknown): string {

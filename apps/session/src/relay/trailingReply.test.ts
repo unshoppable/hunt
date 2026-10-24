@@ -44,7 +44,6 @@ describe("TrailingReply", () => {
   it("leaves a turn Hunt sent itself out until the next user message", () => {
     const refresh = [user("draw the diagram", HIDDEN), entry({ sessionUpdate: "tool_call", toolCallId: "t9", title: "Write" }), agent("Diagram written.")];
     expect(asksQuestion([user("fix it"), agent("Shall I push?"), ...refresh])).toBe(true);
-    expect(asksQuestion([user("fix it"), agent("Shall I push?"), user("refresh", { harness: { hidden: true } }), agent("Done.")])).toBe(true);
     expect(asksQuestion([agent("Shall I push?"), ...refresh, user("go on"), agent("Pushed.")])).toBe(false);
   });
 

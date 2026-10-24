@@ -22,8 +22,8 @@ export const SearchHighlightContext = createContext<SearchHighlight | null>(null
 
 /**
  * One file: icon, name colored by git status and directory below the name; the line counts and review bars sit in the top-right corner,
- * the count of review comments in the bottom-right one. Context files without changes are dashed and dimmed. A file the
- * search matches gets a blue border, the active match a blue ring as well.
+ * the count of review comments in the bottom-right one, which also lightens the border. Context files without changes are
+ * dashed and dimmed. A file the search matches gets a blue border, the active match a blue ring as well.
  */
 export function FileNodeView({ data, selected }: NodeProps<FileNode>) {
   const fileIconUrl = useFileIconUrl();
@@ -37,8 +37,8 @@ export function FileNodeView({ data, selected }: NodeProps<FileNode>) {
       : searchHighlight?.matches.has(data.path)
         ? `${borderStyle} border-blue-400/80`
         : data.isChanged
-          ? "border-white/25"
-          : "border-dashed border-(--line) opacity-45";
+          ? commentCount ? "border-white/40" : "border-white/25"
+          : `border-dashed opacity-45 ${commentCount ? "border-white/25" : "border-(--line)"}`;
 
   return (
     <div className={`relative flex h-full w-full items-stretch overflow-hidden rounded-lg border bg-(--surface-inset) text-neutral-100 transition-shadow ${frame}`}>
@@ -73,12 +73,13 @@ function CommentCount({ count, className, isGhost = false }: { count: number; cl
   if (!count) return null;
   return (
     <span
-      className={`flex shrink-0 items-center gap-1 text-[12px] text-neutral-400 tabular-nums ${className}`}
+      className={`flex shrink-0 items-center gap-1 text-[13px] text-neutral-400 tabular-nums ${className}`}
       title={isGhost ? undefined : `${count} review ${count === 1 ? "comment" : "comments"}`}
       aria-hidden={isGhost}
     >
-      <CommentIcon className="size-3.5" />
-      {count}
+      <CommentIcon className="size-4" />
+      {/* Lifted to the middle of the bubble, which sits above its tail. */}
+      <span className="relative -top-px">{count}</span>
     </span>
   );
 }

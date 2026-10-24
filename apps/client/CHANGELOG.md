@@ -1,3 +1,9 @@
+## 0.113.3 (2026-10-24)
+
+### 🩹 Fixes
+
+- **client:** dragging the session list pushes a chat at its minimum width, and pane toggles animate without re-laying out the panes' content ([ded03e6](https://github.com/unshoppable/hunt/commit/ded03e6))
+
 ## 0.113.2 (2026-10-24)
 
 ### 🩹 Fixes

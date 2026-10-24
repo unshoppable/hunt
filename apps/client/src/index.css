@@ -956,6 +956,10 @@ body,
   border-radius: 0;
   background: transparent;
 }
+/* Code blocks in the chat sit 1px below the chat's text size. */
+.chat .markdown pre {
+  font-size: calc(1em - 1px);
+}
 .markdown blockquote {
   padding-left: 0.8rem;
   border-left: 2px solid var(--line);

@@ -37,6 +37,15 @@ describe("searchFiles", () => {
     expect(names.indexOf("reward.service.ts")).toBeGreaterThan(3);
   });
 
+  it("ranks a name containing a long query above a name matching it only as a subsequence", () => {
+    const paths = [
+      "apps/backend/src/app/api/specialist-department/entities/__tests/specialist-department-case-base.domain.spec-sqlite.ts",
+      "apps/backend/src/app/api/specialist-department/entities/specialist-department-case-base.domain.ts",
+    ];
+    const names = searchFiles(paths, "specialist-department-case-base.domain.ts").map((match) => match.name);
+    expect(names).toEqual(["specialist-department-case-base.domain.ts", "specialist-department-case-base.domain.spec-sqlite.ts"]);
+  });
+
   it("matches camel humps and separators as a subsequence", () => {
     expect(searchFiles(PATHS, "wedc")[0]?.name).toBe("ward-edit-dialog.component.ts");
     expect(searchFiles(PATHS, "PT")[0]?.name).toBe("ProjectTree.tsx");

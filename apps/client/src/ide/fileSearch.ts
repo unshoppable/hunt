@@ -36,7 +36,10 @@ export function isBoundary(text: string, index: number): boolean {
   return current !== current.toLowerCase() && previous === previous.toLowerCase();
 }
 
-/** Matches `query` (already lowercased) as a substring or, failing that, as a subsequence of `text`. */
+/**
+ * Matches `query` (already lowercased) as a substring or, failing that, as a subsequence of `text`. A substring
+ * scores 70–140, a subsequence 40–58 whatever the query length: its points are averaged per query character.
+ */
 export function matchText(text: string, query: string): TextMatch | null {
   const lower = text.toLowerCase();
   const substringIndex = lower.indexOf(query);
@@ -47,23 +50,23 @@ export function matchText(text: string, query: string): TextMatch | null {
   }
 
   const positions: number[] = [];
-  let score = 50;
+  let points = 0;
   let cursor = 0;
   for (const char of query) {
     const index = lower.indexOf(char, cursor);
     if (index < 0) return null;
     const gap = index - cursor;
     if (positions.length && gap === 0) {
-      score += 8;
+      points += 8;
     } else if (isBoundary(text, index)) {
-      score += 5;
+      points += 5;
     } else {
-      score -= Math.min(gap, 10);
+      points -= Math.min(gap, 10);
     }
     positions.push(index);
     cursor = index + 1;
   }
-  return { score, positions };
+  return { score: 50 + points / query.length, positions };
 }
 
 /** Ranks `paths` against `query`; the best `limit` matches come first. An empty query matches nothing. */

@@ -1,3 +1,9 @@
+## 0.118.0 (2026-10-24)
+
+### 🚀 Features
+
+- every tmux window on a session VM logs to ~/logs by itself and a script run there offers Run again; a terminal tab or a pipe-pane -o no longer ends a window's log, and logs move to .log.1 beyond 20 MiB ([91fa34f](https://github.com/unshoppable/hunt/commit/91fa34f))
+
 ## 0.117.0 (2026-10-24)
 
 ### 🚀 Features

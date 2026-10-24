@@ -1,3 +1,9 @@
+## 0.120.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** every terminal window on the Mac names the session it belongs to, and its tab shows that session's mark; a window an agent creates belongs to the agent's session ([ce03c97](https://github.com/unshoppable/hunt/commit/ce03c97))
+
 ## 0.119.1 (2026-10-24)
 
 ### 🩹 Fixes

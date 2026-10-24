@@ -1,3 +1,10 @@
+## 0.103.4 (2026-10-24)
+
+### 🩹 Fixes
+
+- **client:** chat answers separate their sections, with titles close to the block they introduce ([d04e48b](https://github.com/unshoppable/hunt/commit/d04e48b))
+- **client:** inline code in the chat has the size of the text around it ([5c0d135](https://github.com/unshoppable/hunt/commit/5c0d135))
+
 ## 0.103.3 (2026-10-24)
 
 ### 🩹 Fixes

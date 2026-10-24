@@ -353,8 +353,10 @@ include files the agent created. Monaco's bundled TypeScript worker
 only colors code: `apps/client/src/diff/webstormClassifier.ts` assigns every identifier the role WebStorm would (class,
 interface, instance field, static method, parameter, global/local variable, …), colored by the user's WebStorm scheme
 (`apps/client/src/diff/webstormScheme.ts`); opening a file also loads its relative imports so imported names get their
-roles. In Angular projects the Angular language server adds the usages and renames in component templates; it needs
-seconds per newly loaded project (about 8 s cold, 25 ms warm), so its usages arrive after tsgo's.
+roles. In Angular projects the Angular language server adds the usages and renames in component templates and the
+go-to-declaration from templates (a tag or attribute to its component, directive, input or output; a name to the
+component member; `templateUrl` to the template); it needs seconds per newly loaded project (about 8 s cold, 25 ms
+warm), so its usages arrive after tsgo's.
 
 The shortcuts below and those of the sidebar, chat and changelist are defaults: *Settings → Keymap* binds each command
 to other or additional keys, flags two commands that share one and keeps the changes in the settings store

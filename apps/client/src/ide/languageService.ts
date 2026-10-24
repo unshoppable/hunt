@@ -1,7 +1,7 @@
 import * as monaco from "monaco-editor";
 import { commands } from "../ipc/commands";
 import type { Workspace } from "./documents";
-import { lspClientForModel, type LspClient } from "./lsp/client";
+import { lspClientForModel, lspClientForTemplate, type LspClient } from "./lsp/client";
 import { monacoLanguage } from "../diff/monaco";
 import { asLocationLinks, elementKindOf, hoverSignature, rangeContains, symbolsAt, toLspPosition, toLspRange, toMonacoRange, type CodeAction, type DocumentSymbol, type Hover, type Location, type LocationLink, type Position, type Range, type TextEdit, type WorkspaceEdit, type WorkspaceSymbol } from "./lsp/protocol";
 import { documentEdits } from "./reformat";
@@ -28,19 +28,35 @@ function documentPosition(model: monaco.editor.ITextModel, position: Position) {
 /**
  * The ⌘click action for `position`, resolved by the language server: the usages when the click sits on the
  * name of a declaration (a definition's selection range contains the position), otherwise the first definition
- * inside the worktree to jump to. Null for files the server does not serve, positions without a symbol, or
- * declarations outside the worktree.
+ * inside the worktree to jump to. The Angular language server answers for Angular templates and, where the TypeScript
+ * server finds nothing, for a component's inline template and `templateUrl`: a tag or attribute leads to its
+ * component, directive, input or output, a name in an expression to the component member. Null for files no server
+ * serves, positions without a symbol, or declarations outside the worktree.
  */
 export async function navigationAt(model: monaco.editor.ITextModel, position: monaco.IPosition): Promise<Navigation | null> {
-  const client = lspClientForModel(model);
-  if (!client) return null;
   const at = toLspPosition(position);
+  const client = lspClientForModel(model);
+  if (!client) {
+    const templateClient = lspClientForTemplate(model);
+    return templateClient ? definitionInside(templateClient, await angularDefinitions(templateClient, model, at)) : null;
+  }
   const links = asLocationLinks(await client.request<LocationLink[] | Location[] | null>("textDocument/definition", documentPosition(model, at)));
   const own = model.uri.toString();
   for (const link of links) {
     if (link.targetUri !== own || !rangeContains(link.targetSelectionRange, at)) continue;
     return { type: "declaration", declaration: await declarationAt(client, model, at) };
   }
+  return definitionInside(client, links.length ? links : await angularDefinitions(client, model, at));
+}
+
+/** The Angular language server's definitions at `position`; none when the worktree has no Angular server. */
+async function angularDefinitions(client: LspClient, model: monaco.editor.ITextModel, position: Position): Promise<LocationLink[]> {
+  const params = documentPosition(model, position);
+  return asLocationLinks(await client.request<LocationLink[] | Location[] | null>("textDocument/definition", params, undefined, "angular").catch(() => null));
+}
+
+/** The jump to the first of `links` that lies inside the worktree; null without one. */
+function definitionInside(client: LspClient, links: LocationLink[]): Navigation | null {
   for (const link of links) {
     const uri = monaco.Uri.parse(link.targetUri);
     if (!isInside(uri, client)) continue;

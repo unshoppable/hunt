@@ -1,3 +1,9 @@
+## 0.110.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** the pull request list shows the branch in its own line below the title, and the session menu copies the branch name ([9039c30](https://github.com/unshoppable/hunt/commit/9039c30))
+
 ## 0.109.0 (2026-10-24)
 
 ### 🚀 Features

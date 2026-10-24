@@ -1,3 +1,9 @@
+## 0.122.0 (2026-10-24)
+
+### 🚀 Features
+
+- every local session gets a Chrome of its own, which its agent drives through Playwright MCP and on whose pages the review widget sends annotations to the session's composer ([4593b43](https://github.com/unshoppable/hunt/commit/4593b43))
+
 ## 0.121.2 (2026-10-24)
 
 ### 🔥 Performance

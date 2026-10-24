@@ -1,4 +1,5 @@
 mod accounts;
+mod checks;
 mod acp;
 mod declined_guardrails;
 mod documents;
@@ -61,6 +62,7 @@ pub fn run() {
         .manage(lsp::LspRegistry::default())
         .manage(documents::DocumentRegistry::default())
         .manage(TerminalRegistry::default())
+        .manage(checks::CheckRegistry::default())
         .invoke_handler(tauri::generate_handler![
             session::commands::list_sessions,
             session::commands::list_branches,
@@ -104,6 +106,12 @@ pub fn run() {
             session::commands::terminal_windows,
             session::commands::open_shell_window,
             session::commands::close_terminal_window,
+            session::commands::checks_status,
+            session::commands::run_check,
+            session::commands::run_all_checks,
+            session::commands::cancel_check,
+            session::commands::cancel_all_checks,
+            session::commands::check_output,
             session::commands::prepare_dependencies,
             session::commands::close_session,
             session::commands::send_prompt,
@@ -219,6 +227,7 @@ pub fn run() {
             // `run` ends in process::exit, which skips Drop; stop the agent and language server processes explicitly first.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 app.state::<TerminalRegistry>().close_all();
+                app.state::<checks::CheckRegistry>().cancel_everything();
                 let registry = app.state::<SessionRegistry>();
                 let lsp_registry = app.state::<lsp::LspRegistry>();
                 tauri::async_runtime::block_on(async {

@@ -5,7 +5,7 @@ so they hold nothing but the prompt text; this file says who sends which of them
 extends Claude Code's system prompt through the ACP `systemPrompt` meta, `<name>.user-prompt.md` is a message Hunt sends
 into the chat, `<name>.claude-md.md` a section Hunt adds to the CLAUDE.md of the user's repository, `<name>.readme.md`
 a README Hunt writes into a guardrail folder of it. `{{placeholders}}` are filled by `fill_prompt` in
-`src-tauri/src/graph.rs`, those of the READMEs by `guardrailReadme` in `src/guardrails/guardrailReadmes.ts`.
+`src-tauri/src/graph.rs` and `fillPrompt` in `libs/domain/src/prompts.ts`, those of the READMEs by `guardrailReadme` in `src/guardrails/guardrailReadmes.ts`.
 
 | File | When | Where it lands |
 | --- | --- | --- |
@@ -16,6 +16,8 @@ a README Hunt writes into a guardrail folder of it. `{{placeholders}}` are fille
 | `change-references.system-prompt.md` | every session | system prompt addition, after the guardrail offer. Asks the agent to end a reply that changed files with `<!-- hunt:changes … -->`, at most four `path:line` places, most important first, which `src/chat/changeReferences.ts` turns into rows with an "Open in editor" button below the reply |
 | `code-locations.system-prompt.md` | every session | system prompt addition, after the change references. Asks the agent to put `path:line` after the language of a fenced code block that shows a file's lines, which `MarkdownCodeBlock` in `src/chat/MessageList.tsx` shows as a header row with an "Open in editor" button above the code |
 | `handoff-start.user-prompt.md` | right after a handoff, when `hunt.json` declares services and none runs or starts and no user prompt ran or queued meanwhile (`startServicesAfterHandoff` in `src/state/store.ts`) | chat message, which the chat shows as a one-line notice instead of a bubble (`src/chat/huntPromptNotice.ts`); the agent starts the services the task needs, as `hunt.agent.md` describes, and nothing else |
+| `check-failed.user-prompt.md` | a click on *Send to agent* at a failed check in the Checks tab (`sendFailure` in `src/state/checks.ts`) | chat message; `{{name}}`, `{{command}}` and `{{exitCode}}` describe the check, `{{folder}}` is the folder it ran in, `{{output}}` the end of its output without escape sequences (`failureExcerpt` in `src/checks/checks.ts`) |
+| `checks-setup.user-prompt.md` | a click on *Set up checks* in the Checks tab of a session whose hunt.json declares none | chat message; the agent writes the `checks` section of hunt.json from the repository's scripts and CI |
 | `diagram/diagram.system-prompt.md` | every diagram generation, filled with the AI language | system prompt addition of the background diagram agent (`--append-system-prompt` of the `claude -p` process in `src-tauri/src/session/diagram_agent.rs`), after the component-diagram instructions `graph.rs` holds (`graph::system_prompt`); the rules shared by the five shape diagrams and the JSON schema `diagram.schema.json`. The chat agent of a session does not get it |
 | `diagram/diagram-<type>.user-prompt.md` | a click on *Generate* in the Architecture tab for `c4-context`, `c4-container`, `states`, `erd` or `process` (`graph::refresh_prompt`, command `refresh_graph`) | the prompt of the background diagram agent, sent through its stdin; the chat shows nothing of it. `{{diffBase}}` is the session's diff base (`HEAD` or the merge base of a reviewed pull request), `{{language}}` the AI language, `{{englishTerms}}` the rule to keep English technical terms, `{{instructions}}` the user's free text for this run or `(none)` |
 

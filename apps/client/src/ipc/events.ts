@@ -2,6 +2,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type {
   AttributionEvent,
+  CheckOutputEvent,
   ClosedEvent,
   DiffOpenRequest,
   DocumentChangedEvent,
@@ -69,6 +70,10 @@ type EventPayloads = {
   "terminal:output": TerminalOutputEvent;
   /** The end of a terminal's program, sent only to the window that opened it. */
   "terminal:exit": TerminalExitEvent;
+  /** A check of the session started, ended or was cancelled; sent to the main window (see checks/ChecksPanel.tsx). */
+  "checks:changed": { sessionId: string };
+  /** Output of a check's run, sent to the main window. */
+  "checks:output": CheckOutputEvent;
   /** Sent by any window to the main window to run a package.json script in its Terminal tab (see terminal/scriptRuns.ts). */
   "terminal:run-script": ScriptRunRequest;
 };

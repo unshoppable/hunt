@@ -60,6 +60,8 @@ decision records that steer the agent.
 - **Architecture diagrams.** The agent writes a dependency graph of the change to `.hunt/graph.json` and C4, state,
   ERD and process diagrams to `.hunt/diagram.<type>.json`; Hunt validates them and lays them out with ELK inside
   React Flow in its own style. A diagram flags itself as outdated when the worktree changes.
+- **Checks tab.** Runs the typecheck, lint, test and build commands that `hunt.json` declares, one by one or all at
+  once, shows which pass and whether a result is outdated, and sends a failure to the agent.
 - **Guardrails window.** Edit `CLAUDE.md`, `.claude/rules/*.md`, skills and ADRs in one place, with templates for
   new entries.
 - **Native windows.** Editor, diff, guardrails and settings open as separate macOS windows that stay in sync.
@@ -370,6 +372,18 @@ to other or additional keys, flags two commands that share one and keeps the cha
 | ⌘P or double shift | "Go to File": fuzzy search over `git ls-files`; `name:12` jumps to line 12 |
 | ⇧⌘F | "Find in Files": full-text search over the project files held in memory (⌥C match case, ⌥W words, ⌥X regex, file mask); starts with the editor's selection |
 
+#### Checks
+
+The `checks` section of the worktree's `hunt.json` names the commands that check a change, such as
+`"lint": {"command": "npm run lint"}`. The Checks tab lists them in the file's order and runs one, or all of them at
+once (`run_all_checks`); a local session runs the command in an interactive login shell in the worktree, a
+remote session on its VM through `hunt-ctl check`. Each run is a pseudo terminal (`remote/terminal.rs`), so the output
+keeps its colors; `checks.rs` keeps the last run of every check with its state, exit code, the last 4 MiB of output
+and the tree object of the worktree at its start (`git::worktree_tree`). A result whose tree differs from the
+worktree's now reads as outdated. The runs live as long as Hunt; `checks:changed` and `checks:output` report them to the
+main window. *Send to agent* posts a failed check with the end of its output into the chat
+(`check-failed.user-prompt.md`); a repository without checks gets *Set up checks*, which asks the agent to declare them.
+
 #### Guardrails
 
 "Guardrails" in the chat header opens a window of its own over the repository's rules (`.claude/rules/*.md`,
@@ -581,7 +595,11 @@ sessions"), and `worktreeInclude`, the ignored files the service needs, as glob 
 session VM gets from the checkout (see "Worktrees and changes") and the VM only validates. An optional `swf` section
 sets the model of the sessions the gateway's poller starts for the repository's issues as a full model ID
 (`"swf": {"model": "claude-opus-5-5"}`; an alias such as `opus` is rejected, since its model changes with Claude Code's
-releases).
+releases). An optional `checks` section names up to 32 commands such as a typecheck or the tests, each with a `command`
+and an optional `cwd` (`"checks": {"test": {"command": "npm test", "cwd": "apps/web"}}`); `services` is optional too,
+so a `hunt.json` may declare checks only. The client's Checks tab runs them: in the worktree on the Mac, or on the
+session VM through `hunt-ctl check <worktree> <name>`, which runs the check as `agent` in a login shell with
+`FORCE_COLOR=1`, passes its output through and exits with its exit status.
 `session-config` writes one environment file per service to
 `/etc/hunt/services/<name>.env` (mode 0600, read by systemd only), the session's environment `/etc/hunt/session.env`
 and the configuration of the VM's preview proxy, `hunt-proxy.service` (Caddy on port 8080), which serves `<short id>-<port>.<domain>` from that port on

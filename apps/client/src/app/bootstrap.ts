@@ -5,6 +5,7 @@ import { applyMonacoBackground } from "../diff/monaco";
 import { commands } from "../ipc/commands";
 import { listenTo } from "../ipc/events";
 import { useAccountsStore } from "../state/accounts";
+import { useChecksStore } from "../state/checks";
 import { configuredVmSettings, useSettingsStore, type PaneKey } from "../state/settings";
 import { useHuntStore } from "../state/store";
 
@@ -93,6 +94,13 @@ export function useAccountsSync(): void {
   }, []);
 }
 
+/** Reads the checks of the session again once the Checks tab has shown them. */
+function refreshShownChecks(sessionId: string): void {
+  const checksStore = useChecksStore.getState();
+  if (!checksStore.checks[sessionId]) return;
+  void checksStore.refresh(sessionId);
+}
+
 /** Feeds the backend's events into the Hunt store for as long as the component is mounted. */
 export function useBackendEvents(): void {
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
@@ -126,6 +134,7 @@ export function useBackendEvents(): void {
       listenTo("session:summary", applySummary),
       listenTo("sessions:changed", () => void refreshSessions()),
       listenTo("attribution:changed", (event) => applyAttributionChanged(event.worktreePath)),
+      listenTo("checks:changed", (event) => refreshShownChecks(event.sessionId)),
     ];
     return () => {
       for (const subscription of subscriptions) {

@@ -44,12 +44,20 @@ pub async fn open_directory(directory: &Path) -> Result<(), String> {
 /// it runs the package.json script `script` through npm and ends with it. A login shell also reads the profile files
 /// that put Node and npm on the `PATH`, which an app started from the Finder lacks.
 pub fn local_shell(script: Option<&str>) -> (String, Vec<String>) {
-    let shell = std::env::var("SHELL").ok().filter(|shell| !shell.is_empty()).unwrap_or_else(|| "/bin/zsh".to_string());
-    let args = match script {
-        None => vec!["-l".to_string()],
-        Some(script) => vec!["-l".to_string(), "-i".to_string(), "-c".to_string(), crate::remote::shell_command("npm", &["run", script])],
-    };
-    (shell, args)
+    match script {
+        None => (user_shell(), vec!["-l".to_string()]),
+        Some(script) => local_command(&crate::remote::shell_command("npm", &["run", script])),
+    }
+}
+
+/// Program and arguments that run the shell command line `command_line` in the user's interactive login shell, as
+/// `local_shell` runs a script, and end with it.
+pub fn local_command(command_line: &str) -> (String, Vec<String>) {
+    (user_shell(), vec!["-l".to_string(), "-i".to_string(), "-c".to_string(), command_line.to_string()])
+}
+
+fn user_shell() -> String {
+    std::env::var("SHELL").ok().filter(|shell| !shell.is_empty()).unwrap_or_else(|| "/bin/zsh".to_string())
 }
 
 /// The environment variables of Hunt that an embedded terminal leaves out: the `npm_*` ones of the `npm run` that

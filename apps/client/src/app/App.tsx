@@ -32,8 +32,12 @@ import {
   useGroupRef,
   usePanelRef,
 } from "../layout/ResizablePanes";
+import { ChecksPanel } from "../checks/ChecksPanel";
+import { isAnyCheckRunning } from "../checks/checks";
+import type { ChecksStatus } from "../ipc/types";
 import { PreviewPanel } from "../preview/PreviewPanel";
 import { isPreviewActive, isTerminalActive } from "../preview/services";
+import { useChecksStore } from "../state/checks";
 import { usePreviewStore } from "../state/preview";
 import { useTerminalStore } from "../state/terminals";
 import { rememberEditors, useRightTab, useSessionViewStore, type RightTab } from "../state/sessionViews";
@@ -77,6 +81,8 @@ export function App() {
   const isLocalScriptRunning = useTerminalStore((state) =>
     Boolean(activeSessionId && state.local[activeSessionId]?.terminals.some((terminal) => terminal.script && terminal.isRunning)),
   );
+  /** The checks of the active session ran: a dot on the Checks tab, green while one runs, red when one failed. */
+  const checksDot = useChecksStore((state) => checksTabDot((activeSessionId && state.checks[activeSessionId]?.status) || null));
   const localTerminals = useTerminalStore((state) => state.local);
   const localSessionIds = useHuntStore(useShallow((state) => state.sessions.filter((session) => !session.remote).map((session) => session.id)));
   /** The local sessions with terminals; their Terminal panels stay mounted, so switching sessions keeps the terminals running. */
@@ -260,13 +266,14 @@ export function App() {
                 <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} label="PR Description" />
               ) : null}
               {activeRemoteInstance ? (
-                <TabButton isActive={rightTab === "preview"} onClick={() => setRightTab("preview")} label="Preview" hasActivity={isPreviewBusy} />
+                <TabButton isActive={rightTab === "preview"} onClick={() => setRightTab("preview")} label="Preview" dot={isPreviewBusy ? VM_BUSY_DOT : null} />
               ) : null}
+              <TabButton isActive={rightTab === "checks"} onClick={() => setRightTab("checks")} label="Checks" dot={checksDot} />
               <TabButton
                 isActive={rightTab === "terminal"}
                 onClick={() => setRightTab("terminal")}
                 label="Terminal"
-                hasActivity={activeRemoteInstance ? isTerminalBusy : isLocalScriptRunning}
+                dot={activeRemoteInstance ? (isTerminalBusy ? VM_BUSY_DOT : null) : isLocalScriptRunning ? SCRIPT_RUNNING_DOT : null}
               />
             </nav>
             <div className="min-h-0 flex-1">
@@ -290,6 +297,8 @@ export function App() {
                     <IdePanel sessionId={activeSessionId} />
                   ) : rightTab === "pullRequest" ? (
                     <PullRequestPanel key={`pullRequest:${activeSessionId}`} sessionId={activeSessionId} />
+                  ) : rightTab === "checks" ? (
+                    <ChecksPanel key={`checks:${activeSessionId}`} sessionId={activeSessionId} />
                   ) : (
                     <ArchitecturePanel key={`graph:${activeSessionId}`} sessionId={activeSessionId} />
                   )}
@@ -348,21 +357,34 @@ function NoLocalWorktree({ sessionId }: { sessionId: string }) {
   return <div className="flex h-full items-center justify-center px-8 text-center text-[14px] text-neutral-500">{message}</div>;
 }
 
+/** A status dot on a tab: green while something runs there, red when something failed. */
+type TabDot = { tone: "running" | "failed"; title: string };
+
+const VM_BUSY_DOT: TabDot = { tone: "running", title: "Something runs on the VM" };
+const SCRIPT_RUNNING_DOT: TabDot = { tone: "running", title: "A script runs" };
+const CHECK_RUNNING_DOT: TabDot = { tone: "running", title: "A check runs" };
+const CHECK_FAILED_DOT: TabDot = { tone: "failed", title: "A check failed" };
+
+function checksTabDot(status: ChecksStatus | null): TabDot | null {
+  if (isAnyCheckRunning(status)) return CHECK_RUNNING_DOT;
+  return status?.runs.some((run) => run.state === "failed" && !status.outdated.includes(run.name)) ? CHECK_FAILED_DOT : null;
+}
+
 /**
- * A tab of the inspector; `hasActivity` adds a small green dot after the label, a `commentCount` above 0 a blue
- * badge with that count of review comments, raised to the label's top right corner.
+ * A tab of the inspector; `dot` adds a small status dot after the label, a `commentCount` above 0 a blue badge with
+ * that count of review comments, raised to the label's top right corner.
  */
 function TabButton({
   isActive,
   onClick,
   label,
-  hasActivity = false,
+  dot = null,
   commentCount = 0,
 }: {
   isActive: boolean;
   onClick: () => void;
   label: string;
-  hasActivity?: boolean;
+  dot?: TabDot | null;
   commentCount?: number;
 }) {
   return (
@@ -372,7 +394,7 @@ function TabButton({
       className={`${TAB_BUTTON} gap-1.5 ${isActive ? TAB_ACTIVE : TAB_INACTIVE}`}
     >
       {label}
-      {hasActivity ? <span className="size-1.5 shrink-0 rounded-full bg-green-400" title="Something runs on the VM" /> : null}
+      {dot ? <span className={`size-1.5 shrink-0 rounded-full ${dot.tone === "running" ? "bg-green-400" : "bg-red-400"}`} title={dot.title} /> : null}
       {commentCount ? <CountBadge count={commentCount} label={`${commentCount} review ${commentCount === 1 ? "comment" : "comments"}`} /> : null}
     </button>
   );

@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { ChangedFileView, ChangeStat, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GitScope, GithubTokenStatus, GuardrailDeclineReason, GithubViewer, GraphStatus, LanguageServerKind, LogQuery, PlanUsage, PrettierOutput, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
+import type { ChangedFileView, ChangeStat, CheckOutput, ChecksStatus, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GitScope, GithubTokenStatus, GuardrailDeclineReason, GithubViewer, GraphStatus, LanguageServerKind, LogQuery, PlanUsage, PrettierOutput, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
 export function assetUrl(path: string): string {
@@ -165,6 +165,18 @@ export const commands = {
   openShellWindow: (id: string, directory = "", script: string | null = null) => invoke<string>("open_shell_window", { id, directory, script }),
   /** Ends the tmux window `windowId` on the VM of the remote session `id` and the processes in it. */
   closeTerminalWindow: (id: string, windowId: string) => invoke<void>("close_terminal_window", { id, windowId }),
+  /** The checks of the worktree's hunt.json with their last runs. */
+  checksStatus: (id: string) => invoke<ChecksStatus>("checks_status", { id }),
+  /** Runs the check `name`, locally or on the session's running VM; `checks:changed` and `checks:output` report the run. */
+  runCheck: (id: string, name: string) => invoke<void>("run_check", { id, name }),
+  /** Runs every check at once, except those that run already; a check that cannot start fails with the error as its output. */
+  runAllChecks: (id: string) => invoke<void>("run_all_checks", { id }),
+  /** Stops the check `name`. */
+  cancelCheck: (id: string, name: string) => invoke<void>("cancel_check", { id, name }),
+  /** Stops every running check of the session. */
+  cancelAllChecks: (id: string) => invoke<void>("cancel_all_checks", { id }),
+  /** The output of the last run of the check `name`; `null` before its first run. */
+  checkOutput: (id: string, name: string) => invoke<CheckOutput | null>("check_output", { id, name }),
   closeSession: (id: string, ending: SessionEnding) => invoke<void>("close_session", { id, ending }),
   /** Prepares the worktree's `node_modules` again after a failed attempt; progress arrives through `sessions:changed`. */
   prepareDependencies: (id: string) => invoke<void>("prepare_dependencies", { id }),

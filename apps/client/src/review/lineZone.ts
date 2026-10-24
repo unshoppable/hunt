@@ -1,12 +1,13 @@
 import * as monaco from "monaco-editor";
+import { reviewBarLeft } from "./addCommentGlyph";
 
 let zoneCounter = 0;
 
 /**
  * Interactive DOM under a line of the editor, like Monaco's own zone widgets: a view zone reserves the space and
  * scrolls with the text, an overlay widget holds `domNode`, as the editor's lines layer would cover the zone's own
- * node. The zone's height follows the rendered height of `domNode`; `--zone-content-left` on it is the x offset
- * of the code, for content that aligns with the text.
+ * node. The zone's height follows the rendered height of `domNode`; `--zone-bar-left` on it is the x of the review
+ * bar (see `reviewBarLeft`), for content that continues the bar or aligns with it.
  */
 export class LineZone implements monaco.editor.IOverlayWidget {
   readonly domNode: HTMLDivElement;
@@ -88,7 +89,7 @@ export class LineZone implements monaco.editor.IOverlayWidget {
     const layoutInfo = this.editor.getLayoutInfo();
     this.domNode.style.left = "0px";
     this.domNode.style.width = `${layoutInfo.width - layoutInfo.verticalScrollbarWidth}px`;
-    this.domNode.style.setProperty("--zone-content-left", `${layoutInfo.contentLeft}px`);
+    this.domNode.style.setProperty("--zone-bar-left", `${reviewBarLeft(layoutInfo)}px`);
   }
 
   private relayoutZone(): void {

@@ -7,8 +7,8 @@ const GLYPH_CLASS = "hunt-chat-glyph";
 const BUSY_CLASS = "hunt-chat-glyph-busy";
 /** Set on the editor's container while the line decorations column holds chat buttons; moves the fold chevrons right of them. */
 const HAS_GLYPHS_CLASS = "hunt-has-chat-glyphs";
-/** Width of the line decorations column while it holds the chat buttons: the change stripe zone, the button, a gap. */
-const DECORATIONS_WIDTH_WITH_GLYPHS = 40;
+/** Width the chat buttons add to the line decorations column, right of the change stripe zone: the button and a gap. */
+const GLYPHS_WIDTH = 30;
 
 function toDecoration(chat: SelectionChat, isBusy: boolean): monaco.editor.IModelDeltaDecoration {
   const line = chat.selection.startLine;
@@ -88,7 +88,7 @@ export class SelectionChatMarkers {
     const shown = isShown ? this.chats : [];
     this.decorations.set(shown.map((chat) => toDecoration(chat, this.busyChatIds.has(chat.sessionId))));
     this.domNode.classList.toggle(HAS_GLYPHS_CLASS, shown.length > 0);
-    const width = shown.length ? DECORATIONS_WIDTH_WITH_GLYPHS : this.plainDecorationsWidth;
+    const width = shown.length ? this.plainDecorationsWidth + GLYPHS_WIDTH : this.plainDecorationsWidth;
     if (this.editor.getOption(monaco.editor.EditorOption.lineDecorationsWidth) !== width) {
       this.editor.updateOptions({ lineDecorationsWidth: width });
     }

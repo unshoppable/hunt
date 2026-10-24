@@ -26,6 +26,12 @@ import { errorText } from "../ui/useLoad";
 
 setupMonaco();
 
+/**
+ * Width of the unified diff's column of "+" and "-": Monaco's 10px plus 8px on their left for the review bar (see
+ * `.hunt-code-diff .insert-sign` in index.css).
+ */
+const DECORATIONS_WIDTH = 18;
+
 export type CodeDiffEditorHandle = {
   /** Scrolls to the top and opens the box for a review comment on the whole file there; only in a pull request review. */
   commentOnFile: () => void;
@@ -390,6 +396,7 @@ export function CodeDiffEditor({
       renderOverviewRuler: false,
       glyphMargin: true,
       lineNumbersMinChars: 2,
+      lineDecorationsWidth: DECORATIONS_WIDTH,
       hideUnchangedRegions: { enabled: true, contextLineCount: 3 },
       stickyScroll: { enabled: false },
       diffAlgorithm: "advanced",
@@ -492,7 +499,7 @@ export function CodeDiffEditor({
         keepCurrentOriginalModel
         keepCurrentModifiedModel
         loading={<span className="text-[13px] text-neutral-500">Loading editor…</span>}
-        wrapperProps={{ className: "absolute inset-0" }}
+        wrapperProps={{ className: "absolute inset-0 hunt-code-diff" }}
       />
       {overlays}
     </UnifiedDiffView>

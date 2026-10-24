@@ -482,15 +482,15 @@ type ZoneFrameProps = {
 };
 
 /**
- * GitHub-style card under a line, 10px right of the code's left edge like the comment box: a tinted header with avatar,
- * line label, hint and actions, the content below.
+ * GitHub-style card under a line, 10px right of the review bar like the comment box: a tinted header with avatar, line
+ * label, hint and actions, the content below.
  */
 function ZoneFrame({ avatar, label, hint, mark, actions, children }: ZoneFrameProps) {
   return (
     <div
       data-review-bar={mark ? (mark.isInline ? "inline" : "note") : undefined}
       className="py-1.5 pr-3"
-      style={{ paddingLeft: "calc(var(--zone-content-left) + 10px)" }}
+      style={{ paddingLeft: "calc(var(--zone-bar-left) + 10px)" }}
     >
       <div className="overflow-hidden rounded-lg border border-(--line) bg-(--surface-inset) text-[15px] leading-[1.5] text-neutral-200 shadow-md">
         <div className={`flex min-h-9 items-center gap-2 bg-white/4 px-3 py-1 text-[13px] text-neutral-400${children ? " border-b border-(--line)" : ""}`}>

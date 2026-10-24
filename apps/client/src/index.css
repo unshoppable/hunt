@@ -368,14 +368,24 @@ body,
 /* Sub chat button right of the line numbers (see ide/selectionChatMarkers.ts): a small icon button with the agent
    sparkle in the blue-violet agent gradient on the first line of a selection a sub chat was opened from; a click
    reopens the chat in its popover. Monaco stretches the node over the whole line decorations column; the button
-   takes 22px of it after the change stripe zone (the column's plain 10px) so the two never overlap, and lies above
-   the fold chevron's node, which spans the column too. While the column holds buttons the chevrons centre in the
-   space right of them. */
+   takes 22px of it after the change stripe zone (the column's plain 10px, 18px with a code diff's "+" and "-") so the
+   two never overlap, and lies above the fold chevron's node, which spans the column too. While the column holds
+   buttons the chevrons centre in the space right of them. */
 .monaco-editor .margin-view-overlays .hunt-chat-glyph {
   width: 22px !important;
   margin-left: 10px;
   z-index: 1;
   cursor: pointer;
+}
+.hunt-code-diff .monaco-editor .margin-view-overlays .hunt-chat-glyph {
+  margin-left: 18px;
+}
+/* "+" and "-" of a code diff (see diff/CodeDiffEditor.tsx) 8px into their column, leaving room on their left for the
+   review bar, as on GitHub. */
+.hunt-code-diff .insert-sign,
+.hunt-code-diff .delete-sign {
+  box-sizing: border-box;
+  padding-left: 8px;
 }
 .hunt-has-chat-glyphs .monaco-editor .margin-view-overlays .cldr[class*="codicon-folding-"] {
   box-sizing: border-box;
@@ -497,19 +507,17 @@ body,
   background: #5fb865;
   transform: scale(1.15);
 }
-/* Lines a review comment is being dragged over, written for or open on: GitHub's yellow tint over gutter and text. It
-   lies above the text, so it lets the pointer through: Monaco selects only what it hits itself. */
+/* Lines a review comment is being dragged over, written for or open on: GitHub's yellow tint behind gutter and text.
+   Their change stripe gives way to the bar, which takes its place. */
 .monaco-editor .harness-review-range {
-  z-index: 1;
-  background: rgba(187, 128, 9, 0.3);
-  pointer-events: none;
-}
-.monaco-editor .margin-view-overlays .harness-review-range {
   background: rgba(187, 128, 9, 0.3);
 }
-/* Bar at the text's left edge beside those lines and the line joining the two "+" of a drag (see review/spanLine.ts),
-   in the color of the "+": blue inline, grey for a note. Both run across view zones and over comment cards; the open
-   comment box and the card of a comment continue the bar. */
+.monaco-editor .margin-view-overlays .harness-review-range ~ .hunt-change::before {
+  display: none;
+}
+/* Bar right of the line numbers beside those lines (see reviewBarLeft in review/addCommentGlyph.ts) and the line
+   joining the two "+" of a drag (see review/spanLine.ts), in the color of the "+": blue inline, grey for a note. Both
+   run across view zones and over comment cards; the open comment box and the card of a comment continue the bar. */
 .monaco-editor .harness-review-span-line {
   z-index: 6;
   width: 2px;
@@ -529,7 +537,7 @@ body,
   position: absolute;
   top: 0;
   bottom: 0;
-  left: var(--zone-content-left);
+  left: var(--zone-bar-left);
   width: 2px;
   background: #2f81f7;
 }

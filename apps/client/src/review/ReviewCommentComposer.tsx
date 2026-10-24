@@ -39,7 +39,7 @@ type ReviewCommentComposerProps = {
  * GitHub's "add a comment" box under a diff line: a card with the viewer's avatar and "Add a comment on line R15"
  * (or "lines R15 to R28", or "this file" above the first line) above a `CommentEditorPanel` whose primary action
  * starts the review or adds to it. The outer element carries `data-review-composer` ("inline" or "note": the range's
- * blue or grey bar runs along it) and sits 10px right of the code's left edge via `--zone-content-left`.
+ * blue or grey bar runs along it) and sits 10px right of the bar via `--zone-bar-left`.
  */
 export function ReviewCommentComposer({ sessionId, span, isInline, onSubmit, onClose }: ReviewCommentComposerProps) {
   const hasDrafts = useReviewDraftCount(sessionId) > 0;
@@ -53,7 +53,7 @@ export function ReviewCommentComposer({ sessionId, span, isInline, onSubmit, onC
     <div
       data-review-composer={isInline ? "inline" : "note"}
       className="py-2 pr-3 text-[13px] leading-[1.5] text-neutral-200"
-      style={{ paddingLeft: "calc(var(--zone-content-left) + 10px)" }}
+      style={{ paddingLeft: "calc(var(--zone-bar-left) + 10px)" }}
     >
       <div className="rounded-md border border-(--line) bg-(--surface-inset) shadow-md">
         <div className="flex items-center gap-2 px-3 py-2.5">

@@ -33,17 +33,34 @@ type Drag = {
   clientX: number;
 };
 
-/** Whole-line decoration giving the lines `startLine..line` GitHub's yellow tint over gutter and text. */
+/**
+ * Whole-line decoration giving the lines `startLine..line` GitHub's yellow tint behind gutter and text; `zIndex` lays
+ * it over a diff's line backgrounds.
+ */
 export function rangeDecoration(span: LineSpan): monaco.editor.IModelDeltaDecoration {
   return {
     range: { startLineNumber: span.startLine, startColumn: 1, endLineNumber: span.line, endColumn: 1 },
-    options: { isWholeLine: true, className: RANGE_CLASS, marginClassName: RANGE_CLASS, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
+    options: {
+      isWholeLine: true,
+      className: RANGE_CLASS,
+      marginClassName: RANGE_CLASS,
+      zIndex: 1,
+      stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+    },
   };
 }
 
-/** GitHub's bar at the text's left edge beside the lines `rangeDecoration` tints; `show` it with the span. */
+/**
+ * x of GitHub's bar beside the tinted lines: 2px right of the line numbers, where the change stripe starts (it gives
+ * way on tinted lines) and left of a code diff's "+" and "-" (see `.hunt-code-diff .insert-sign` in index.css).
+ */
+export function reviewBarLeft(layoutInfo: monaco.editor.EditorLayoutInfo): number {
+  return layoutInfo.decorationsLeft + 2;
+}
+
+/** GitHub's bar at `reviewBarLeft` beside the lines `rangeDecoration` tints; `show` it with the span. */
 export function rangeBar(editor: monaco.editor.ICodeEditor): SpanLine {
-  return new SpanLine(editor, (layoutInfo) => layoutInfo.contentLeft);
+  return new SpanLine(editor, reviewBarLeft);
 }
 
 /**

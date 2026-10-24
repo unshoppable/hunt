@@ -60,7 +60,8 @@ function clamp(value: number, min: number, max: number): number {
  * WebStorm's "Show Usages" popup for a ⌘clicked declaration: a title naming the symbol with its parameter types, a
  * toolbar, one row per usage (file, enclosing declaration, line, the highlighted line with the name in bold), a
  * read-only preview of the selected usage and the selected file's project-relative path in the footer. ↑ / ↓ move
- * the selection, Enter or a double click opens the usage in the pane, Esc or a click outside closes the popup.
+ * the selection, Enter or a double click opens the usage in the pane, Esc or a click outside closes the popup. A
+ * single usage opens in the pane as soon as the search is complete.
  * The popup is moved by dragging its title bar, resized by dragging any edge or corner (the size is remembered
  * across sessions) and the split between list and preview by dragging the separator. It is rendered into the closest
  * `data-ide-root` element (the overlay: the IDE panel, the diff view), so it can be moved over the project tree and the
@@ -94,8 +95,15 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
     top: clamp(anchor.top + offset.y + shift.y, EDGE_GAP, Math.max(EDGE_GAP, EDGE_GAP + maxSize.height - size.height)),
   };
 
-  const latest = useRef({ position, anchor, shift });
-  latest.current = { position, anchor, shift };
+  const latest = useRef({ position, anchor, shift, onOpen });
+  latest.current = { position, anchor, shift, onOpen };
+
+  // A symbol with a single usage opens it right away, once no further usages can arrive.
+  useEffect(() => {
+    if (query.isComplete && usages?.length === 1) {
+      latest.current.onOpen(usages[0]);
+    }
+  }, [query.isComplete, usages]);
 
   useEffect(() => {
     const subscription = editor.onDidLayoutChange(() => setPlacement(placementOf(editor, overlay, query.anchor)));

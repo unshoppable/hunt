@@ -733,7 +733,12 @@ pipe gets one. The agents on this Mac get its path in their system prompt
 (`apps/client/prompts/terminals.system-prompt.md`) and run their long-running processes as windows of its session `app`.
 The configuration's hooks give every pane without a log pipe one into `.hunt/logs/desktop/<window name>.log`, after a
 new window, pane or session and after any `pipe-pane`, so that a `pipe-pane -o`, which closes an open pipe, never ends
-a log; a log moves to `.log.1` beyond 20 MiB when its window starts. A local session's panel shows these windows and opens a shell when it first shows
+a log; a log moves to `.log.1` beyond 20 MiB when its window starts. Every window on this Mac names the Hunt session it
+belongs to in its window option `@hunt-session`: Hunt sets it for a shell to the session whose panel opened it and for a
+script window to the session that last ran its script, and `.hunt/tmux` sets it for a window an agent creates, from the
+`HUNT_SESSION_ID` Hunt gives each local agent (the configuration keeps the variable out of the panes). A window on the
+VM belongs to the session there. A tab of a window of another session of the family carries that session's mark, and
+`.hunt/sessions.md` tells the agents how to list the owners. A local session's panel shows these windows and opens a shell when it first shows
 without any; a remote session's panel adds them, marked "(Mac)", to the VM's. A package.json script run from the editor
 gets a window named after it, which stays after the script ended (`remain-on-exit`) with its exit code and *Run again*
 (`respawn-pane`, then an empty `pipe-pane`, after which the hook opens the log again); running the script again

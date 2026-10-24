@@ -62,6 +62,12 @@ export function endedScriptWindow(tab: TerminalTab): TmuxWindow | null {
   return tab.window?.script && tab.window.isDead ? tab.window : null;
 }
 
+/** The Hunt session another than `sessionId` that the window of `tab` belongs to; null for its own, an unknown or a service. */
+export function tabOwner(tab: TerminalTab, sessionId: string): string | null {
+  const owner = tab.window?.owner;
+  return owner && owner !== sessionId ? owner : null;
+}
+
 /** Whether a process runs in the window: a script that has not ended or anything else than a shell Hunt opened. */
 export function isProcessWindow(window: TmuxWindow): boolean {
   return !window.isDead && (Boolean(window.script) || !SHELL_NAME.test(window.name));
@@ -99,7 +105,7 @@ function windowTabs(machine: Machine, windows: readonly TmuxWindow[], labelSuffi
 
 function windowTitle(machine: Machine, window: TmuxWindow): string {
   const what = window.script ? `npm run ${window.script} in the tmux window ${window.name}` : `The tmux window ${window.name}`;
-  return machine === "vm"
-    ? `${what} on the VM; its output goes to ~/logs/${window.name}.log`
-    : `${what} on this Mac; its output goes to .hunt/logs/desktop/${window.name}.log`;
+  if (machine === "vm") return `${what} on the VM; its output goes to ~/logs/${window.name}.log`;
+  const owner = window.owner ? "" : "; Hunt does not know which session it belongs to";
+  return `${what} on this Mac; its output goes to .hunt/logs/desktop/${window.name}.log${owner}`;
 }

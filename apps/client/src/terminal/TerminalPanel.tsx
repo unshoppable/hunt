@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { commands } from "../ipc/commands";
 import type { Machine, PreviewService, ScriptRunRequest, TmuxWindow } from "../ipc/types";
+import { ownerLabel } from "../diff/attribution";
 import { describeService, isServiceInUse } from "../preview/services";
+import { sessionMarks } from "../sessions/sessionLabels";
 import { usePreviewStore } from "../state/preview";
 import { useHuntStore } from "../state/store";
 import { NO_SESSION_WINDOWS, useTerminalStore } from "../state/terminals";
@@ -10,7 +12,7 @@ import { confirmDestructive } from "../ui/confirm";
 import { PlusIcon, Spinner } from "../ui/icons";
 import { errorText } from "../ui/useLoad";
 import { describeLocalExit } from "./terminalStream";
-import { endedScriptWindow, nextActiveKey, terminalTabs, windowState, windowTabKey, type TerminalTab } from "./terminalTabs";
+import { endedScriptWindow, nextActiveKey, tabOwner, terminalTabs, windowState, windowTabKey, type TerminalTab } from "./terminalTabs";
 import { TerminalTabButton } from "./TerminalTabButton";
 import { TerminalView } from "./TerminalView";
 
@@ -29,8 +31,9 @@ type FocusRequest = { key: string | null; count: number };
  * run their processes. A remote session shows the services of the repository's hunt.json that are in use, as read-only
  * logs, and the windows on its VM, plus "(Mac)" the windows its sub chats opened on this Mac. "+" opens a shell in a
  * new window where the session's agent runs, × ends a window and its process; a package.json script run from the editor
- * gets a window of its own, which stays after the script ended and offers "Run again". The first time a
- * local session's panel shows without windows, it opens a shell.
+ * gets a window of its own, which stays after the script ended and offers "Run again". A window of another session of
+ * the family carries that session's mark. The first time a local session's panel shows without windows, it opens a
+ * shell.
  * The panel stays mounted while another tab shows, so its terminals keep their connections. It asks for the processes
  * when it mounts and whenever it shows, then every few seconds, also while another tab shows; the VM only while the
  * session is connected, which proves a running VM.
@@ -39,6 +42,9 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
   const isLive = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === sessionId)?.isLive));
   const isRemote = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === sessionId)?.remote));
   const hasPreviewDomain = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === sessionId)?.remote?.previewDomain));
+  const parentId = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.parentId ?? null);
+  const sessions = useHuntStore((state) => state.sessions);
+  const marks = useMemo(() => sessionMarks(sessions), [sessions]);
   const services = usePreviewStore((state) => state.previews[sessionId]?.status?.services ?? NO_SERVICES);
   const isVmRunning = usePreviewStore((state) => state.previews[sessionId]?.status?.vmRunning ?? true);
   const windows = useTerminalStore((state) => state.windows[sessionId] ?? NO_SESSION_WINDOWS);
@@ -197,17 +203,22 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
     <div className={`h-full min-h-0 flex-col ${isVisible ? "flex" : "hidden"}`}>
       <div className="flex min-w-0 items-center gap-1 border-b border-(--line) px-2 py-2.5 text-[13px]">
         <div role="tablist" className="terminal-tabs flex min-w-0 items-center gap-1 overflow-x-auto">
-          {tabs.map((tab) => (
-            <TerminalTabButton
-              key={tab.key}
-              label={tab.label}
-              title={tab.title}
-              state={tab.service ? describeService(tab.service, isVmRunning) : tab.window ? windowState(tab.window) : null}
-              isActive={tab.key === activeKey}
-              onActivate={() => activate(tab.key)}
-              onClose={tab.target.kind === "window" ? () => void closeWindow(tab) : null}
-            />
-          ))}
+          {tabs.map((tab) => {
+            const ownerId = tabOwner(tab, sessionId);
+            const owner = ownerId ? { id: ownerId, ...ownerLabel(ownerId, sessions, marks, sessionId, parentId) } : null;
+            return (
+              <TerminalTabButton
+                key={tab.key}
+                label={tab.label}
+                title={owner ? `${tab.title}; it belongs to ${owner.mark} ${owner.title}` : tab.title}
+                state={tab.service ? describeService(tab.service, isVmRunning) : tab.window ? windowState(tab.window) : null}
+                owner={owner}
+                isActive={tab.key === activeKey}
+                onActivate={() => activate(tab.key)}
+                onClose={tab.target.kind === "window" ? () => void closeWindow(tab) : null}
+              />
+            );
+          })}
         </div>
         <button type="button" onClick={() => void openShell()} disabled={isOpeningShell} title="New shell" className={ICON_BUTTON_XS}>
           {isOpeningShell ? <Spinner /> : <PlusIcon />}

@@ -1001,7 +1001,13 @@ pub async fn terminal_windows(app: AppHandle, registry: State<'_, SessionRegistr
     if !is_running {
         return Ok(Vec::new());
     }
-    remote::terminal::list_windows(&Ssh::open(&target.vm, &ssh_dir()?).await?).await
+    // Only the family's root session runs on its VM, so every window there belongs to it.
+    let root = store::find_session(&app, id)?.parent_id.unwrap_or(id);
+    let mut windows = remote::terminal::list_windows(&Ssh::open(&target.vm, &ssh_dir()?).await?).await?;
+    for window in &mut windows {
+        window.owner.get_or_insert(root);
+    }
+    Ok(windows)
 }
 
 /// Starts a shell in a new tmux window of the session `id` and returns the window's ID: on the VM of a remote session,
@@ -1014,8 +1020,8 @@ pub async fn open_shell_window(app: AppHandle, registry: State<'_, SessionRegist
         let (record, tmux) = local_tmux(&app, id).await?;
         let folder = worktree_file(&record, &directory)?;
         return match script {
-            Some(script) => tmux.open_script_window(&folder, &script).await,
-            None => tmux.open_shell_window(&folder).await,
+            Some(script) => tmux.open_script_window(&folder, &script, id).await,
+            None => tmux.open_shell_window(&folder, id).await,
         };
     }
     let target = running_remote(&app, &registry, id, "open a shell").await?;
@@ -1031,7 +1037,7 @@ pub async fn open_shell_window(app: AppHandle, registry: State<'_, SessionRegist
 #[tauri::command]
 pub async fn rerun_terminal_window(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, machine: Machine, window_id: String) -> Result<(), String> {
     if machine == Machine::Desktop {
-        return local_tmux(&app, id).await?.1.rerun_window(&window_id).await;
+        return local_tmux(&app, id).await?.1.rerun_window(&window_id, id).await;
     }
     let target = running_remote(&app, &registry, id, "run the script again").await?;
     remote::terminal::rerun_window(&Ssh::open(&target.vm, &ssh_dir()?).await?, &window_id).await

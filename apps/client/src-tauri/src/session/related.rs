@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::acp::message_time;
 use crate::git;
 use crate::remote::handoff::REMOTE_LOGS_DIR;
+use crate::remote::shell_quote;
 use crate::remote::sync::Direction;
 use crate::remote::transcript::{local_project, remote_project};
 use crate::remote::{claude_dir, RemoteTarget};
@@ -273,8 +274,14 @@ fn logs_section(worktree: &Path, is_remote: bool) -> String {
          To see what a process of another session printed, read the end of its log, for example with `tail -n 200`.\n\n"
     );
     let desktop = tmux::desktop_logs(worktree);
+    let wrapper = shell_quote(&tmux::wrapper_path(worktree).to_string_lossy());
+    let owners = format!(
+        "\nEvery window on the desktop names the Hunt session it belongs to in its tmux option `@hunt-session`: the session \
+         whose Terminal tab opened it or last ran its script, or whose agent created it; it is empty when Hunt does not know. \
+         `{wrapper} list-windows -t app -F '#{{window_name}} #{{@hunt-session}}'` lists them."
+    );
     if !is_remote {
-        text.push_str(&format!("- Windows on the desktop: `{}/`\n", desktop.display()));
+        text.push_str(&format!("- Windows on the desktop: `{}/`\n{owners}\n", desktop.display()));
         return text;
     }
     text.push_str(&format!("- Windows on the desktop: on the desktop `{}/`, on the VM `{REMOTE_LOGS_DIR}/{DESKTOP_LOGS}/`\n", desktop.display()));
@@ -283,6 +290,7 @@ fn logs_section(worktree: &Path, is_remote: bool) -> String {
         worktree.join(LOGS_DIR).display()
     ));
     text.push_str("- The copies follow within seconds while the session is connected, a line once it is complete.\n");
+    text.push_str(&format!("{owners} Every window on the VM belongs to the session that runs there.\n"));
     text
 }
 
@@ -430,7 +438,11 @@ mod tests {
         assert!(text.ends_with(
             "- Windows on the desktop: on the desktop `/Users/jane/wt/.hunt/logs/desktop/`, on the VM `/home/agent/logs/desktop/`\n\
              - Services and windows on the VM: on the VM `/home/agent/logs/`, on the desktop `/Users/jane/wt/.hunt/logs/` (all but `desktop/`)\n\
-             - The copies follow within seconds while the session is connected, a line once it is complete.\n"
+             - The copies follow within seconds while the session is connected, a line once it is complete.\n\n\
+             Every window on the desktop names the Hunt session it belongs to in its tmux option `@hunt-session`: the session whose Terminal tab \
+             opened it or last ran its script, or whose agent created it; it is empty when Hunt does not know. \
+             `/Users/jane/wt/.hunt/tmux list-windows -t app -F '#{window_name} #{@hunt-session}'` lists them. \
+             Every window on the VM belongs to the session that runs there.\n"
         ));
     }
 
@@ -440,7 +452,8 @@ mod tests {
         owner.acp_session_id = Some("abc".into());
         let text = render_with(&owner, &[], &|_| AgentState::NotRunning, &[], &[]);
         assert!(text.contains("- Agent runs on: the desktop\n- Transcript on the desktop: `/Users/jane/.claude/projects/-Users-jane-wt/abc.jsonl`\n"));
-        assert!(text.ends_with("- Windows on the desktop: `/Users/jane/wt/.hunt/logs/desktop/`\n"));
+        assert!(text.contains("- Windows on the desktop: `/Users/jane/wt/.hunt/logs/desktop/`\n\nEvery window on the desktop names the Hunt session"));
+        assert!(text.ends_with("`/Users/jane/wt/.hunt/tmux list-windows -t app -F '#{window_name} #{@hunt-session}'` lists them.\n"));
         assert!(!text.contains("on the VM"));
         assert!(!text.contains("request") && !text.contains("Uncommitted"));
     }

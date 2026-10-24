@@ -285,7 +285,7 @@ pub async fn connect(
     let agent = match transport {
         AgentTransport::Local => {
             let script = bundled_script_path(&app, ACP_SCRIPT)?;
-            let mut config = AcpAgentConfig::new("node").arg(script.to_string_lossy());
+            let mut config = AcpAgentConfig::new("node").arg(script.to_string_lossy()).env(crate::tmux::SESSION_ENV, hunt_session_id.to_string());
             if let Some(token) = accounts::active_token(&app).await? {
                 config = config.env(accounts::TOKEN_ENV, token);
             }

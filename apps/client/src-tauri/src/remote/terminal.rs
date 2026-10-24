@@ -75,12 +75,12 @@ pub async fn open_script_window(ssh: &Ssh, folder: &str, script: &str) -> Result
     let windows = list_windows(ssh).await?;
     if let Some(window) = tmux::script_window(&windows, script, folder) {
         if window.is_dead {
-            run_script(ssh, &tmux::rerun_script("tmux", &window.id, folder, &script_command(script))?).await?;
+            run_script(ssh, &tmux::rerun_script("tmux", &window.id, folder, &script_command(script), None)?).await?;
         }
         return Ok(window.id.clone());
     }
     let name = tmux::free_window_name(&windows, &tmux::script_window_name(script));
-    let output = run_script(ssh, &tmux::script_window_script("tmux", &name, folder, script, &script_command(script))).await?;
+    let output = run_script(ssh, &tmux::script_window_script("tmux", &name, folder, script, &script_command(script), None)).await?;
     window_id_from(&output, "run the script")
 }
 
@@ -88,7 +88,7 @@ pub async fn open_script_window(ssh: &Ssh, folder: &str, script: &str) -> Result
 pub async fn rerun_window(ssh: &Ssh, id: &str) -> Result<(), String> {
     let windows = list_windows(ssh).await?;
     let (script, folder) = tmux::script_of(&windows, id)?;
-    run_script(ssh, &tmux::rerun_script("tmux", id, folder, &script_command(script))?).await.map(|_| ())
+    run_script(ssh, &tmux::rerun_script("tmux", id, folder, &script_command(script), None)?).await.map(|_| ())
 }
 
 /// The command a package.json script window on the VM runs: the script through npm in a login shell of the user

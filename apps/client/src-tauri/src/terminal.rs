@@ -52,9 +52,13 @@ fn user_shell() -> String {
 }
 
 /// The environment variables of Hunt that a terminal, a check and the tmux server leave out: the `npm_*` ones of the
-/// `npm run` that started Hunt in development, which would steer the npm of the terminal.
+/// `npm run` that started Hunt in development, which would steer the npm of the terminal, and an agent's session ID
+/// (`tmux::SESSION_ENV`) when an agent started Hunt.
 pub fn foreign_env() -> Vec<String> {
-    std::env::vars_os().filter_map(|(name, _)| name.into_string().ok()).filter(|name| name.starts_with("npm_")).collect()
+    std::env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
+        .filter(|name| name.starts_with("npm_") || name == crate::tmux::SESSION_ENV)
+        .collect()
 }
 
 async fn run(command: &mut Command) -> Result<(), String> {

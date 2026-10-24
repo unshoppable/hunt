@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { PreviewService, PreviewStatus, TmuxWindow } from "../ipc/types";
-import { endedScriptWindow, isProcessWindow, isTerminalActive, nextActiveKey, terminalTabs, windowState } from "./terminalTabs";
+import { endedScriptWindow, isProcessWindow, isTerminalActive, nextActiveKey, tabOwner, terminalTabs, windowState } from "./terminalTabs";
 
 function service(name: string, state: PreviewService["state"] = "running"): PreviewService {
   return { name, port: 3000, url: `https://${name}.example`, guarded: true, tls: false, enabled: true, state, responds: true };
 }
 
 function window(id: string, name: string, overrides: Partial<TmuxWindow> = {}): TmuxWindow {
-  return { id, name, script: null, isDead: false, exitCode: null, ...overrides };
+  return { id, name, script: null, isDead: false, exitCode: null, owner: null, ...overrides };
 }
 
 function status(services: PreviewService[]): PreviewStatus {
@@ -40,6 +40,19 @@ describe("terminalTabs", () => {
   it("tells windows of the same name on one machine apart by their order", () => {
     const tabs = terminalTabs([], [window("@1", "shell"), window("@2", "vite"), window("@5", "shell")], [window("@3", "shell")], false);
     expect(tabs.map((tab) => tab.label)).toEqual(["shell", "vite", "shell 2", "shell"]);
+  });
+
+  it("says when Hunt does not know which session a window on this Mac belongs to", () => {
+    const tabs = terminalTabs([], [window("@1", "worker")], [window("@2", "vite"), window("@3", "shell", { owner: "sub" })], true);
+    expect(tabs.map((tab) => tab.title.endsWith("Hunt does not know which session it belongs to"))).toEqual([false, true, false]);
+  });
+});
+
+describe("tabOwner", () => {
+  it("names the other session a window belongs to, but not the panel's own session, an unknown one or a service", () => {
+    const tabs = terminalTabs([service("api")], [], [window("@1", "shell", { owner: "parent" }), window("@2", "vite", { owner: "sub" }), window("@3", "old")], false);
+    expect(tabs.map((tab) => tabOwner(tab, "sub"))).toEqual([null, "parent", null, null]);
+    expect(tabs.map((tab) => tabOwner(tab, "parent"))).toEqual([null, null, "sub", null]);
   });
 });
 

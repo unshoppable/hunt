@@ -1,4 +1,5 @@
 import type { Description, Tone } from "../preview/services";
+import { SessionMark } from "../sessions/SessionMark";
 import { TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
 import { CloseIcon } from "../ui/icons";
 
@@ -10,11 +11,15 @@ const TONE_DOT: Record<Tone, string> = {
   idle: "bg-neutral-600",
 };
 
-/** A tab of a Terminal panel's strip, with a dot for `state` when given and × to end its process (also by middle click). */
+/**
+ * A tab of a Terminal panel's strip, with a dot for `state` when given, the mark of the other session the window belongs
+ * to (`owner`) and × to end its process (also by middle click).
+ */
 export function TerminalTabButton({
   label,
   title,
   state,
+  owner,
   isActive,
   onActivate,
   onClose,
@@ -22,6 +27,7 @@ export function TerminalTabButton({
   label: string;
   title: string;
   state: Description | null;
+  owner: { id: string; mark: string } | null;
   isActive: boolean;
   onActivate: () => void;
   onClose: (() => void) | null;
@@ -40,6 +46,7 @@ export function TerminalTabButton({
       className={`${TAB_BUTTON_SM} group cursor-pointer gap-1.5 ${isActive ? TAB_ACTIVE : TAB_INACTIVE}`}
     >
       {state ? <span className={`size-2 shrink-0 rounded-full ${TONE_DOT[state.tone]}`} title={state.text} /> : null}
+      {owner ? <SessionMark sessionId={owner.id} mark={owner.mark} /> : null}
       <span className="whitespace-nowrap">{label}</span>
       {onClose ? (
         <button

@@ -71,4 +71,10 @@ jobs:
 
       - run: npm ci
 
+      # test-rust depends on client:tmux, whose script skips the build when the cached binary matches it.
+      - uses: actions/cache@v4
+        with:
+          path: apps/client/src-tauri/binaries
+          key: tmux-aarch64-apple-darwin-${{ hashFiles('scripts/buildTmux.ts') }}
+
       - run: npx nx affected -t test-rust --base origin/${{ github.base_ref }} --outputStyle=static

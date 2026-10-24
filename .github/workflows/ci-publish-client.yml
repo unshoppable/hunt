@@ -2,7 +2,8 @@
 # in-app updater (releases/latest/download/latest.json). Called by ci-release when a release commit carries a client
 # tag; dispatchable to retry one.
 #   1. build    – the Apple Silicon DMG plus the updater artifacts (Hunt.app.tar.gz, its .sig and latest.json) on a
-#                 draft release with the version's section of apps/client/CHANGELOG.md.
+#                 draft release with the version's section of apps/client/CHANGELOG.md; the app bundles the tmux that
+#                 scripts/buildTmux.ts builds, cached by the script's hash.
 #   2. publish  – publishes the draft once every target built; running installs then offer the update.
 # The release is created and published with the token of the release GitHub App (secrets RELEASE_APP_ID,
 # RELEASE_APP_PRIVATE_KEY): GITHUB_TOKEN may not create one on a commit range that changed workflow files.
@@ -62,6 +63,14 @@ jobs:
           workspaces: apps/client/src-tauri
 
       - run: npm ci
+
+      - uses: actions/cache@v4
+        with:
+          path: apps/client/src-tauri/binaries
+          key: tmux-${{ matrix.target }}-${{ hashFiles('scripts/buildTmux.ts') }}
+
+      - name: Build the bundled tmux
+        run: node scripts/buildTmux.ts
 
       - name: Release notes from the changelog
         id: notes

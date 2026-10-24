@@ -51,8 +51,10 @@
       "../../../node_modules/diff/": "node_modules/diff/",
       "../scripts/eslintRules.mjs": "apps/client/scripts/eslintRules.mjs",
       "../scripts/planUsage.mjs": "apps/client/scripts/planUsage.mjs",
-      "../scripts/prettier.mjs": "apps/client/scripts/prettier.mjs"
-    }
+      "../scripts/prettier.mjs": "apps/client/scripts/prettier.mjs",
+      "binaries/licenses/tmux.txt": "licenses/tmux.txt"
+    },
+    "externalBin": ["binaries/tmux"]
   },
   "plugins": {
     "updater": {

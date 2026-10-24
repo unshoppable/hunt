@@ -1,3 +1,9 @@
+## 0.121.2 (2026-10-24)
+
+### 🔥 Performance
+
+- **client:** the Angular language server starts in the background when the first TypeScript or template file of a worktree opens, so the first ⌘click, usages search or rename in an Angular project no longer waits seconds for it to load the project ([f8db58a](https://github.com/unshoppable/hunt/commit/f8db58a))
+
 ## 0.121.1 (2026-10-24)
 
 ### 🩹 Fixes

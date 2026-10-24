@@ -1,3 +1,9 @@
+## 0.115.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** the Guardrails window lists the ESLint rules of the worktree per config, and an agent changes them ([e9be3f2](https://github.com/unshoppable/hunt/commit/e9be3f2))
+
 ## 0.114.1 (2026-10-24)
 
 ### 🩹 Fixes

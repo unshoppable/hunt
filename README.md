@@ -717,9 +717,13 @@ its WebSockets (`/stream`, `/control`): SSH forward → `hunt-proxy`, which chec
 The forward is kept per session and reused while the desktop answers through it; it is cancelled (`ssh -O cancel`) when
 the session's agent or the session ends and when Hunt quits, and otherwise ends with the SSH master. When the stream
 loses its connection, the panel calls `desktop_open` again, which replaces a forward that no longer answers. The panel
-stays mounted while another tab shows, so the stream survives tab switches, and the VM's output follows the panel's size.
-Clicking the stream gives it the keyboard: Escape and every ⌘ combination go to the VM instead of Hunt, taken in the
-capture phase ahead of every other listener of the window (`desktop/keyRouting.ts`); clicking outside gives the keys back.
+stays mounted while another tab shows, so the stream survives tab switches. The VM's output stays at 1280×720, scaled
+into the panel: Debian 12's sway 1.7 reports its headless output without modes, so Waymote's resize finds no output.
+Clicking the stream gives it the keyboard: Escape and every ⌘ combination go to the VM instead of Hunt, since the stage
+is a remote input that Hunt's shortcuts skip (`isRemoteInput` in `src/ui/shortcuts.ts`); clicking outside gives the keys
+back. The SDK sends each key as its Linux key code in the gateway's US layout, plus its character while no modifier is
+held; ahead of it, `desktop/keyTranslation.ts` sends ⌘ as Ctrl, a character typed with ⌥ (@, |, [ on a German Mac) as
+text, and a ⌘ or ⌃ letter shortcut on the US key of the letter the Mac's layout typed, so ⌘Z on QWERTZ is Ctrl+Z.
 
 The gateway keeps no sessions. Its edge proxy `hunt-edge` (Caddy in Docker on port 8080 behind the load balancer)
 serves only the load balancer's address ranges, removes IAP's headers and cookies and forwards every preview host with

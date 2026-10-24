@@ -8,6 +8,7 @@ import { Spinner } from "../ui/icons";
 import { REMOTE_INPUT_ATTRIBUTE } from "../ui/shortcuts";
 import { errorText, useLoad } from "../ui/useLoad";
 import { describeDesktop, hasLostConnection, type Tone } from "./desktopStatus";
+import { KeyTranslator } from "./keyTranslation";
 
 const TONE_COLOR: Record<Tone, string> = {
   ok: "text-green-300",
@@ -19,10 +20,12 @@ const TONE_COLOR: Record<Tone, string> = {
 /**
  * The Desktop tab of a remote session: the VM's desktop, where the agent drives Chromium, streamed by its Waymote
  * gateway through a forward of the shared SSH connection (`desktop_open`). The canvas fills the panel and the VM's
- * output follows its size; audio stays off. Clicking the stream gives it the keyboard, Escape and ⌘ shortcuts included:
- * the stage is a remote input, which Hunt's shortcuts skip (`isRemoteInput`), and its keys go no further than the stage,
- * past the window's Escape listeners. Clicking outside gives the keys back to Hunt. The panel connects the first time it shows and
- * stays mounted while another tab shows, so the stream survives tab switches; another session unmounts it.
+ * output stays at its own size, scaled into the panel; audio stays off. Clicking the stream gives it the keyboard, Escape
+ * and ⌘ shortcuts included: the stage is a remote input, which Hunt's shortcuts skip (`isRemoteInput`), and its keys go
+ * no further than the stage, past the window's Escape listeners. Ahead of the SDK, the stage turns the Mac's keys into the
+ * VM's in the capture phase (`keyTranslation.ts`: ⌘ as Ctrl, ⌥ characters as text, letter shortcuts on their US key).
+ * Clicking outside gives the keys back to Hunt. The panel connects the first time it shows and stays mounted while
+ * another tab shows, so the stream survives tab switches; another session unmounts it.
  */
 export function DesktopPanel({ sessionId, isVisible }: { sessionId: string; isVisible: boolean }) {
   const [hasShown, setHasShown] = useState(isVisible);
@@ -61,6 +64,26 @@ export function DesktopPanel({ sessionId, isVisible }: { sessionId: string; isVi
     if (!endpoint || !stage || !canvas || !textInput) return;
     const session = new WaymoteSession({ endpoint: endpoint.url, audio: false, remoteDisplay: { mode: "observe", element: stage } });
     session.attachSurface({ canvas, textInputElement: textInput, controlOnFocus: true });
+    const translator = new KeyTranslator();
+    const replacements = new WeakSet<Event>();
+    const translateKey = (event: KeyboardEvent) => {
+      if (replacements.has(event) || event.isComposing) return;
+      const translation = event.type === "keydown" ? translator.keyDown(event) : translator.keyUp(event);
+      if (translation.kind === "pass") return;
+      if (translation.kind === "text") {
+        // The SDK sends a text input's `insertText` as typed text.
+        textInput.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertText", data: translation.text, bubbles: true, cancelable: true }));
+      } else {
+        const replacement = new KeyboardEvent(event.type, { ...translation.press, repeat: event.repeat, bubbles: true, cancelable: true });
+        replacements.add(replacement);
+        event.target?.dispatchEvent(replacement);
+      }
+      if (translation.kind === "prepend") return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    stage.addEventListener("keydown", translateKey, true);
+    stage.addEventListener("keyup", translateKey, true);
     let previousVideo: VideoState | null = null;
     const unsubscribers = [
       session.on("state", (state) => {
@@ -82,6 +105,8 @@ export function DesktopPanel({ sessionId, isVisible }: { sessionId: string; isVi
     // Holding the input from the start lets the VM's output take the panel's size before the first click.
     session.input.acquire();
     return () => {
+      stage.removeEventListener("keydown", translateKey, true);
+      stage.removeEventListener("keyup", translateKey, true);
       for (const unsubscribe of unsubscribers) {
         unsubscribe();
       }

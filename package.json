@@ -8,10 +8,9 @@
     "start:client": "nx run client:dev",
     "tauri": "cd apps/client && tauri",
     "build:all": "nx run-many -t build --all",
-    "typecheck:all": "nx run-many -t typecheck --all",
     "lint:all": "nx run-many -t lint --all",
     "test:all": "nx run-many -t test test-rust --all",
-    "check": "nx run-many -t typecheck lint test test-rust --all",
+    "check": "nx run-many -t lint test test-rust --all",
     "nx": "nx",
     "prepare": "husky install && (git config --get-all remote.origin.fetch | grep -qF 'refs/tags/deployed' || git config --add remote.origin.fetch '+refs/tags/deployed/*:refs/tags/deployed/*')"
   },

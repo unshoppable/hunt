@@ -6,11 +6,16 @@
     "type:tooling"
   ],
   "targets": {
-    "typecheck": {
+    "typecheck-tests": {
       "executor": "nx:run-commands",
       "options": {
         "command": "tsc --noEmit -p tsconfig.scripts.json"
-      }
+      },
+      "inputs": [
+        "default",
+        "^production",
+        "{workspaceRoot}/tsconfig.scripts.json"
+      ]
     },
     "lint": {
       "executor": "nx:run-commands",

@@ -7,7 +7,7 @@
     "type:agnostic"
   ],
   "targets": {
-    "typecheck": {
+    "typecheck-tests": {
       "executor": "nx:run-commands",
       "options": {
         "command": "tsc --noEmit -p libs/domain/tsconfig.json"
@@ -24,7 +24,10 @@
       "options": {
         "command": "vitest run",
         "cwd": "libs/domain"
-      }
+      },
+      "dependsOn": [
+        "typecheck-tests"
+      ]
     }
   }
 }

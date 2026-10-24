@@ -16,12 +16,8 @@
         "{workspaceRoot}/dist/apps/client"
       ],
       "options": {
-        "cwd": "apps/client",
-        "commands": [
-          "tsc -p tsconfig.json",
-          "vite build"
-        ],
-        "parallel": false
+        "command": "vite build",
+        "cwd": "apps/client"
       }
     },
     "dev": {
@@ -39,7 +35,7 @@
         "cwd": "apps/client"
       }
     },
-    "typecheck": {
+    "typecheck-tests": {
       "executor": "nx:run-commands",
       "options": {
         "command": "tsc --noEmit -p apps/client/tsconfig.json"
@@ -56,7 +52,10 @@
       "options": {
         "command": "vitest run",
         "cwd": "apps/client"
-      }
+      },
+      "dependsOn": [
+        "typecheck-tests"
+      ]
     },
     "test-rust": {
       "executor": "nx:run-commands",

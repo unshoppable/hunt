@@ -1,4 +1,4 @@
-//! The checks of a repository: named command lines such as lint, typecheck or test that its `hunt.json` declares under
+//! The checks of a repository: named command lines such as lint, test or build that its `hunt.json` declares under
 //! `checks`, which the Checks tab runs in a session's worktree, locally or on the VM (`hunt-ctl check`). Each check of a
 //! session keeps its last run: state, times, exit code, the tail of its output and the worktree's tree object at its
 //! start, which tells whether the result still describes the worktree. Knows nothing about Tauri;
@@ -339,12 +339,12 @@ mod tests {
 
     #[test]
     fn checks_come_from_hunt_json_in_the_order_of_the_file() {
-        let worktree = write_hunt_json(r#"{"version":3,"checks":{"typecheck":{"command":"npm run typecheck"},"lint":{"command":" npx eslint . ","cwd":"apps/web"}}}"#);
+        let worktree = write_hunt_json(r#"{"version":3,"checks":{"test":{"command":"npm test"},"lint":{"command":" npx eslint . ","cwd":"apps/web"}}}"#);
         let checks = read_checks(worktree.path()).unwrap();
         assert_eq!(
             checks,
             [
-                CheckDefinition { name: "typecheck".into(), command: "npm run typecheck".into(), cwd: None },
+                CheckDefinition { name: "test".into(), command: "npm test".into(), cwd: None },
                 CheckDefinition { name: "lint".into(), command: "npx eslint .".into(), cwd: Some("apps/web".into()) },
             ]
         );

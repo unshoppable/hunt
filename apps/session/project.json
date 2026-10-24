@@ -7,7 +7,8 @@
     "type:backend"
   ],
   "implicitDependencies": [
-    "vm"
+    "vm",
+    "scripts"
   ],
   "targets": {
     "build": {
@@ -28,7 +29,7 @@
         "command": "node scripts/buildVmArtifact.ts session"
       }
     },
-    "typecheck": {
+    "typecheck-tests": {
       "executor": "nx:run-commands",
       "options": {
         "command": "tsc --noEmit -p apps/session/tsconfig.json"
@@ -47,7 +48,14 @@
         "cwd": "apps/session"
       },
       "dependsOn": [
-        "build"
+        "build",
+        "typecheck-tests",
+        {
+          "projects": [
+            "scripts"
+          ],
+          "target": "typecheck-tests"
+        }
       ]
     }
   }

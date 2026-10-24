@@ -309,14 +309,14 @@ describe("parseChecks", () => {
     const huntJson = {
       ...COMPLETE,
       checks: {
-        typecheck: { command: "npm run typecheck:all" },
+        format: { command: "npm run format:check" },
         test: { command: "npm test -- --reporter dot", cwd: "apps/web" },
         ["a".repeat(32)]: { command: "x".repeat(4096), cwd: ".config/a.b_c-D9" },
       },
     };
 
     expect(parseChecks(huntJson)).toEqual([
-      { name: "typecheck", command: "npm run typecheck:all", cwd: null },
+      { name: "format", command: "npm run format:check", cwd: null },
       { name: "test", command: "npm test -- --reporter dot", cwd: "apps/web" },
       { name: "a".repeat(32), command: "x".repeat(4096), cwd: ".config/a.b_c-D9" },
     ]);
@@ -865,7 +865,7 @@ describe("configCli", () => {
   });
 
   describe("--check", () => {
-    const HUNT_JSON = { version: 3, checks: { typecheck: { command: "npm run typecheck:all" }, test: { command: "npm test", cwd: "apps/web" } } };
+    const HUNT_JSON = { version: 3, checks: { format: { command: "npm run format:check" }, test: { command: "npm test", cwd: "apps/web" } } };
 
     function runCheck(paths: Paths, name: string, extra: string[] = []) {
       const result = spawnSync(process.execPath, [CONFIG_CLI, "--worktree", paths.worktree, "--check", name, ...extra], { encoding: "utf8" });
@@ -876,7 +876,7 @@ describe("configCli", () => {
       const paths = setup({ "hunt.json": JSON.stringify(HUNT_JSON), "hunt.agent.md": "x".repeat(20 * 1024 + 1) });
 
       expect(runCheck(paths, "test")).toEqual({ status: 0, stderr: "", output: { ok: true, command: "npm test", cwd: "apps/web" } });
-      expect(runCheck(paths, "typecheck")).toEqual({ status: 0, stderr: "", output: { ok: true, command: "npm run typecheck:all", cwd: null } });
+      expect(runCheck(paths, "format")).toEqual({ status: 0, stderr: "", output: { ok: true, command: "npm run format:check", cwd: null } });
       expect(readdirSync(join(paths.worktree, ".."))).toEqual(["worktree"]);
     });
 

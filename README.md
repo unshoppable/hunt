@@ -60,7 +60,7 @@ decision records that steer the agent.
 - **Architecture diagrams.** The agent writes a dependency graph of the change to `.hunt/graph.json` and C4, state,
   ERD and process diagrams to `.hunt/diagram.<type>.json`; Hunt validates them and lays them out with ELK inside
   React Flow in its own style. A diagram flags itself as outdated when the worktree changes.
-- **Checks tab.** Runs the typecheck, lint, test and build commands that `hunt.json` declares, one by one or all at
+- **Checks tab.** Runs the commands that `hunt.json` declares, such as lint, test and build, one by one or all at
   once, shows which pass and whether a result is outdated, and sends a failure to the agent.
 - **Guardrails window.** Edit `CLAUDE.md`, `.claude/rules/*.md`, skills and ADRs in one place, with templates for
   new entries.
@@ -105,9 +105,9 @@ dev` fails on cached absolute paths ("failed to read plugin permissions") until 
 #### Verify
 
 ```sh
-npm run check                                      # typecheck, lint, vitest and cargo test of every project
-npx nx affected -t typecheck lint test test-rust   # the same for the projects a change touches
-npx nx run session:test                            # one target of one project
+npm run check                            # tsc, eslint, vitest and cargo test of every project
+npx nx affected -t lint test test-rust   # the same for the projects a change touches
+npx nx run session:test                  # one target of one project
 ```
 
 #### Release
@@ -143,8 +143,8 @@ patch, `!` or `BREAKING CHANGE` → major), independently per app: it writes the
   reads `latest.json` of the latest *published* release. The gateway release gets no GitHub Release.
 
 `npx nx release --skip-publish --dry-run` shows what the next run would do. Pull requests run
-[`ci-pull-request.yml`](.github/workflows/ci-pull-request.yml): `nx affected` typecheck, lint, test and build, and the
-Rust tests on macOS.
+[`ci-pull-request.yml`](.github/workflows/ci-pull-request.yml): `nx affected` lint, test and build (each test after `tsc`),
+and the Rust tests on macOS.
 
 The updater artifacts are signed with the key whose public half is in `apps/client/src-tauri/tauri.conf.json`
 (`plugins.updater.pubkey`); the workflow reads the private key from the repository secrets `TAURI_SIGNING_PRIVATE_KEY`
@@ -595,7 +595,7 @@ sessions"), and `worktreeInclude`, the ignored files the service needs, as glob 
 session VM gets from the checkout (see "Worktrees and changes") and the VM only validates. An optional `swf` section
 sets the model of the sessions the gateway's poller starts for the repository's issues as a full model ID
 (`"swf": {"model": "claude-opus-5-5"}`; an alias such as `opus` is rejected, since its model changes with Claude Code's
-releases). An optional `checks` section names up to 32 commands such as a typecheck or the tests, each with a `command`
+releases). An optional `checks` section names up to 32 commands such as the linter or the tests, each with a `command`
 and an optional `cwd` (`"checks": {"test": {"command": "npm test", "cwd": "apps/web"}}`); `services` is optional too,
 so a `hunt.json` may declare checks only. The client's Checks tab runs them: in the worktree on the Mac, or on the
 session VM through `hunt-ctl check <worktree> <name>`, which runs the check as `agent` in a login shell with

@@ -7,7 +7,8 @@
     "type:backend"
   ],
   "implicitDependencies": [
-    "vm"
+    "vm",
+    "scripts"
   ],
   "targets": {
     "build": {
@@ -28,7 +29,7 @@
         "command": "node scripts/buildVmArtifact.ts gateway"
       }
     },
-    "typecheck": {
+    "typecheck-tests": {
       "executor": "nx:run-commands",
       "options": {
         "command": "tsc --noEmit -p apps/gateway/tsconfig.json"
@@ -47,7 +48,14 @@
         "cwd": "apps/gateway"
       },
       "dependsOn": [
-        "build"
+        "build",
+        "typecheck-tests",
+        {
+          "projects": [
+            "scripts"
+          ],
+          "target": "typecheck-tests"
+        }
       ]
     }
   }

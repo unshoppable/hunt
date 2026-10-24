@@ -1,6 +1,7 @@
 # Checks a pull request: its branch name (feat|feature|fix|chore/<scope>/<branch-name>) and its title, which becomes the
-# commit message of the squash merge and so must follow Conventional Commits for nx release; typecheck, lint, test and
-# build of every project the change affects (nx affected); the Rust tests of the desktop app on macOS.
+# commit message of the squash merge and so must follow Conventional Commits for nx release; lint, test and build of
+# every project the change affects (nx affected), each test after tsc of its project (`typecheck-tests`); the Rust tests
+# of the desktop app on macOS.
 name: 🦾 CI | Pull Request
 run-name: '[ PR #${{ github.event.pull_request.number }} ] ${{ github.event.pull_request.title }}'
 
@@ -47,7 +48,7 @@ jobs:
 
       - run: npm ci
 
-      - run: npx nx affected -t typecheck lint test build --base origin/${{ github.base_ref }} --outputStyle=static
+      - run: npx nx affected -t lint test build --base origin/${{ github.base_ref }} --outputStyle=static
 
   rust:
     runs-on: macos-latest

@@ -23,12 +23,12 @@ const TONE_COLOR: Record<Tone, string> = {
 };
 
 const EXAMPLE = `"checks": {
-  "typecheck": { "command": "npm run typecheck" },
+  "test": { "command": "npm test" },
   "lint": { "command": "npm run lint", "cwd": "apps/web" }
 }`;
 
 /**
- * The Checks tab of a session: the checks of the worktree's hunt.json (lint, typecheck, test, …) with the state of their
+ * The Checks tab of a session: the checks of the worktree's hunt.json (lint, test, build, …) with the state of their
  * last run, run one by one or all at once, locally or on the session's VM; below them the output of the selected
  * check, by default of the first one that runs or failed. A result that started on another state of the worktree reads
  * as outdated. A failed check goes to the agent with the end of its output. Reads the checks again when the agent
@@ -87,7 +87,7 @@ export function ChecksPanel({ sessionId }: { sessionId: string }) {
       {checks.status && !rows.length && !problem ? (
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-4 text-[13px] text-neutral-300">
           <p className={HINT}>
-            The repository's hunt.json declares no checks. Checks are the commands that typecheck, lint, test or build it; this tab runs them in the
+            The repository's hunt.json declares no checks. Checks are the commands that lint, test or build it; this tab runs them in the
             session's worktree and shows whether they pass.
           </p>
           <pre className="rounded-md bg-white/4 px-3 py-2 font-mono text-[12px] leading-relaxed text-neutral-300">{EXAMPLE}</pre>

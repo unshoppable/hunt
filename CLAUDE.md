@@ -12,14 +12,16 @@ everything else goes here.
   pinned through Volta in the root `package.json`.
 - `npm run start:client` runs the app (`nx run client:dev`: `tauri dev`, whose `beforeDevCommand` starts Vite);
   `npm run tauri -- <args>` runs the Tauri CLI in `apps/client`.
-- `npm run check` runs `typecheck`, `lint`, `test` and `test-rust` of every project; `build:all`, `typecheck:all`,
-  `lint:all` and `test:all` run one kind. `npx nx affected -t <targets>` runs them for the projects a change touches,
+- `npm run check` runs `lint`, `test` and `test-rust` of every project; `build:all`, `lint:all` and `test:all` run
+  one kind. `npx nx affected -t <targets>` runs them for the projects a change touches,
   `npx nx run <project>:<target>` for one.
-- Targets: `typecheck` (strict tsc), `lint` and `test` (vitest per project, no root config; the client's tests are pure
-  logic in the node environment); `build` for `client`, `gateway` and `session`; the client adds `dev`, `bundle`
-  (`tauri build`) and `test-rust` (`cargo test` in `apps/client/src-tauri`). The session's `test` runs its `build`
-  first, and so does the gateway's: their Docker tests of `hunt-ctl` use the built artifact. `cargo build` must stay
-  free of warnings.
+- Targets: `typecheck-tests` (strict `tsc --noEmit` of the project's tsconfig, tests included), which each `test`
+  lists in `dependsOn` in its `project.json`, so nothing calls it alone; the tests of `gateway` and `session` also run
+  the one of `scripts`, which has no tests. Builds (Vite, esbuild) do not type-check. `lint` and `test` (vitest per
+  project, no root config; vitest only transpiles; the client's tests are pure logic in the node environment); `build`
+  for `client`, `gateway` and `session`; the client adds `dev`, `bundle` (`tauri build`) and `test-rust` (`cargo test`
+  in `apps/client/src-tauri`). The session's `test` runs its `build` first, and so does the gateway's: their Docker
+  tests of `hunt-ctl` use the built artifact. `cargo build` must stay free of warnings.
 - There is no formatter; never run prettier or `cargo fmt`. Format by hand: TypeScript up to ~160 columns, Rust per
   `apps/client/src-tauri/rustfmt.toml`.
 
@@ -30,7 +32,7 @@ everything else goes here.
   (`libs/domain`, code, agent prompts and the protocol number the apps share), `vm` (`libs/vm`, `hunt-ctl`) and
   `scripts` (`scripts/`, the VM artifact build). Builds write to `dist/apps/<project>`. Paths and project names carry
   no `hunt` segment or prefix.
-- TypeScript 6 defaults `types` to `[]`: Node scripts under `scripts/` typecheck through `tsconfig.scripts.json`
+- TypeScript 6 defaults `types` to `[]`: Node scripts under `scripts/` are type-checked through `tsconfig.scripts.json`
   (`types: ["node"]`); never add `node` types to a browser config, it turns `setTimeout` into `NodeJS.Timeout`.
 - Paths starting with `src/` or `src-tauri/` and the window pages are relative to `apps/client/`; bare module paths
   such as `ide/paneGrid.ts` or `session/commands.rs` to its `src/` or `src-tauri/src/`.

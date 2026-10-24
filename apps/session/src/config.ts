@@ -17,7 +17,7 @@
  *       "ui": { "command": "npm start", "cwd": "apps/ui", "port": 4200, "env": { "BACKEND_ORIGIN": "${services.backend.publicUrl}" } }
  *     },
  *     "checks": {
- *       "typecheck": { "command": "npm run typecheck:all" },
+ *       "format": { "command": "npm run format:check" },
  *       "test": { "command": "npm test", "cwd": "apps/web" }
  *     }
  *   }
@@ -47,7 +47,7 @@
  *   Claude model such as `claude-opus-5-5` (MODEL_ID), at most 128 characters, never an alias such as `opus`, whose
  *   model changes with Claude Code's releases. The poller sets it as the session's `model` config option; without it, or when the agent knows no such model (the relay logs that), Claude
  *   Code's default model applies. Sessions started from Hunt keep the model their user picks.
- * - `checks`: optional, at most 32 commands such as a typecheck or the tests, in the order of the file, each named like a
+ * - `checks`: optional, at most 32 commands such as the linter or the tests, in the order of the file, each named like a
  *   service, with the only fields `command` and `cwd`, which follow the rules of a service's. The client's Checks tab
  *   runs them in the worktree on the Mac, or on the session VM through `hunt-ctl check`, and shows their output and
  *   exit status.

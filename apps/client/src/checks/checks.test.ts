@@ -17,7 +17,7 @@ describe("checkRows", () => {
   it("lists the checks in the order of hunt.json with their last runs", () => {
     const status: ChecksStatus = {
       definitions: [
-        { name: "typecheck", command: "tsc", cwd: null },
+        { name: "build", command: "vite build", cwd: null },
         { name: "lint", command: "eslint .", cwd: "apps/web" },
       ],
       problem: null,

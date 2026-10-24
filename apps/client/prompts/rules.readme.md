@@ -12,7 +12,7 @@ matching file. This README is loaded only while a rule is written or edited.
 
 - A rule tells what to do whenever code in its part of the repository changes, phrased as an instruction, with its
   reason in one sentence.
-- An ADR in `{{adrDir}}/` records a decision made once between alternatives, such as a framework, a data model or a
-  boundary between modules, and why it was made. It instructs no one and is not loaded on its own.
+- An ADR in `{{adrDir}}/` records a decision made once between alternatives, such as a data model or a boundary between
+  modules, and why it was made. It instructs no one and is not loaded on its own.
 - A convention that follows from a decision is a rule that names the decision or its ADR as the reason. Write an ADR
   only when the decision itself is not recorded anywhere yet.

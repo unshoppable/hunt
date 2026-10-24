@@ -53,8 +53,9 @@ export function guardrailsSection(dirs: GuardrailDirs): string {
     "file, migration, data set, bug or task never does, nor how a single change was carried out. Before proposing one, check",
     "every kind above: a guardrail that repeats an existing one, whatever its kind, is a defect. The content decides the kind:",
     "a convention for every task goes into CLAUDE.md, one for part of the code into a rule, a recurring workflow into a skill,",
-    "a delegable specialist task into an agent, an architectural decision into an ADR. A convention that follows from a",
-    "decision is a rule that names the decision as its reason, not an ADR. Write a guardrail only when the user asks for it.",
+    "a delegable specialist task into an agent, an architectural decision into an ADR when it meets the criteria in",
+    `\`${dirs.adr}/README.md\`. A convention that follows from a decision is a rule that names the decision as its reason,`,
+    "not an ADR. Write a guardrail only when the user asks for it.",
   ].join("\n");
 }
 

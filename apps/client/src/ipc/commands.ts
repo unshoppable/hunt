@@ -263,6 +263,8 @@ export const commands = {
   listDir: (id: string, path: string) => invoke<DirEntry[]>("list_dir", { id, path }),
   /** Every project file of the worktree (tracked and untracked, ignored excluded), sorted, for the file search. */
   listFiles: (id: string) => invoke<string[]>("list_files", { id }),
+  /** Worktree-relative paths below `dir` that a commit of the checked-out history deleted, sorted. */
+  listDeletedFiles: (id: string, dir: string) => invoke<string[]>("list_deleted_files", { id, dir }),
   /** Text content of a worktree file. */
   readFile: (id: string, path: string) => invoke<string>("read_file", { id, path }),
   /** `text` as the Prettier the worktree installs (with its config and plugins) formats the worktree file `path`. */

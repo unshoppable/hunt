@@ -2933,6 +2933,13 @@ pub async fn list_files(app: AppHandle, id: Uuid) -> Result<Vec<String>, String>
     git::list_files(&record.worktree_path).await
 }
 
+/// Worktree-relative paths below `dir` that a commit of the checked-out history deleted, such as replaced ADRs.
+#[tauri::command]
+pub async fn list_deleted_files(app: AppHandle, id: Uuid, dir: String) -> Result<Vec<String>, String> {
+    let (record, _) = session_file(&app, id, &dir)?;
+    git::deleted_files(&record.worktree_path, &dir).await
+}
+
 /// Text content of a worktree file for the built-in editor.
 #[tauri::command]
 pub async fn read_file(app: AppHandle, id: Uuid, path: String) -> Result<String, String> {

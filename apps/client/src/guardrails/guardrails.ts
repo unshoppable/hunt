@@ -1,6 +1,6 @@
 import { commands } from "../ipc/commands";
 import { normalizeGuardrailDir, type GuardrailDirs, type GuardrailKind } from "../state/settings";
-import { dirName, isInsideFolder, splitPath } from "../ui/path";
+import { baseName, dirName, isInsideFolder, splitPath } from "../ui/path";
 
 export type { GuardrailDirs, GuardrailKind } from "../state/settings";
 
@@ -26,6 +26,8 @@ export type GuardrailListing = Record<GuardrailKind, Guardrail[]> & {
    * same path below any folder (`src/api/.claude/rules`), which Claude Code loads once it works in that folder.
    */
   foundDirs: Record<TreeDirKind, string[]>;
+  /** File names of the ADRs the checked-out history deleted; their numbers are never given again. */
+  deletedAdrs: string[];
 };
 
 /** Kinds whose directory Claude Code also reads below any folder of the worktree; their tabs show the folder tree. */
@@ -86,7 +88,7 @@ export function kindHelp(kind: GuardrailKind): KindHelp {
         what: "Architectural decision records document one decision each: its context, the decision and its consequences.",
         loading:
           "Claude Code does not load ADRs on its own. One reaches Claude only when a CLAUDE.md or a rule refers to it, or when Claude opens the file while exploring the repository. Hunt therefore offers, when a session opens, to add a section to the root CLAUDE.md that names the ADR folder and the ls and grep commands to search it.",
-        use: "Write an ADR when a decision shapes the architecture and others would otherwise ask why it was made: a framework, a data model, a boundary between modules. It records why one alternative was chosen over the others; it does not instruct Claude. A coding convention that follows from the decision belongs in a rule that refers to the ADR.",
+        use: "Write an ADR only for a decision that still binds future changes, that the code does not show or that looks wrong without its reason, that someone would otherwise \"fix\" or question again, and that affects more than one place; a decision about one place is a comment in the code there. It records why one alternative was chosen over the others; it does not instruct Claude. A coding convention that follows from the decision belongs in a rule that refers to the ADR.",
       };
   }
 }
@@ -109,7 +111,7 @@ function kindContent(kind: GuardrailKind, path: string): string {
     case "agent":
       return "a subagent definition: a front matter with `name`, `description` (when to delegate to it) and optionally `tools` and `model`, then the system prompt of the subagent.";
     case "adr":
-      return "an architectural decision record with the sections Context, Decision and Consequences; keep the heading's number and the date.";
+      return "an architectural decision record with the sections Context, Decision and Consequences; keep the heading's number and the date. When it replaces an earlier ADR, its Context names that one by number and title and says why its reason no longer holds, and the earlier file is deleted.";
   }
 }
 
@@ -156,7 +158,7 @@ function placeOf(kind: CreatableKind, listing: GuardrailListing, file: string, {
     case "agent":
       return `\`${dir}/${file}.md\``;
     case "adr":
-      return `\`${dir}/${String(nextAdrNumber(listing.adr)).padStart(4, "0")}-${file}.md\`; the heading starts with the number ${nextAdrNumber(listing.adr)} and the record is dated ${today.toISOString().slice(0, 10)}`;
+      return `\`${dir}/${String(nextAdrNumber(listing.adr, listing.deletedAdrs)).padStart(4, "0")}-${file}.md\`; the heading starts with the number ${nextAdrNumber(listing.adr, listing.deletedAdrs)} and the record is dated ${today.toISOString().slice(0, 10)}`;
   }
 }
 
@@ -178,7 +180,7 @@ export function guardrailTask(listing: GuardrailListing, today = new Date()): st
     "The user describes a guardrail for this repository. Turn the description into exactly one guardrail of the kind that fits and write it where it belongs:",
     ...kinds,
     "Decide the kind from the user's message and from the repository. When the message leaves open which kind fits, what the guardrail should say or which part of the code it applies to, write nothing yet: ask one short question, naming the kinds in question with one sentence on how they differ, and continue once the user answered.",
-    "Before writing, read the existing files of that kind and follow their naming and structure. Extend an existing file when the request belongs there instead of adding a duplicate, and never overwrite or delete other content. When a guardrail of any kind already says what the user asks for, write nothing and name that file instead. Choose <name> as a short kebab-case name that says what the file is about, so that an agent finds the file by its name alone.",
+    "Before writing, read the existing files of that kind and follow their naming and structure. Extend an existing file when the request belongs there instead of adding a duplicate, and never overwrite or delete other content except an ADR the new one replaces. When a guardrail of any kind already says what the user asks for, write nothing and name that file instead. Choose <name> as a short kebab-case name that says what the file is about, so that an agent finds the file by its name alone.",
     `Write the file with your file-editing tools and answer with the kind you chose, the path and a short summary of what you wrote. ${CONTEXT_RULE}`,
   ].join("\n");
 }
@@ -350,17 +352,17 @@ export function adrNumber(fileName: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-/** The number for the next ADR: one more than the highest existing one, starting at 1. */
-export function nextAdrNumber(existing: Guardrail[]): number {
-  const highest = Math.max(0, ...existing.map((adr) => adrNumber(adr.name) ?? 0));
-  return highest + 1;
+/** The number for the next ADR: one more than the highest one of an existing or a `deleted` ADR file, starting at 1. */
+export function nextAdrNumber(existing: Guardrail[], deleted: string[] = []): number {
+  const names = [...existing.map((adr) => adr.name), ...deleted];
+  return Math.max(0, ...names.map((name) => adrNumber(name) ?? 0)) + 1;
 }
 
 /**
  * Path of a new guardrail named `title` in the listing's folders, null when `title` yields no usable file name. For
- * an instruction file `title` is the folder it goes into (empty for the repository root); the existing ADRs decide
- * the ADR's number. `location` names the directory (by default the kind's configured one) and, for a rule, the
- * folder below it.
+ * an instruction file `title` is the folder it goes into (empty for the repository root); the existing and deleted
+ * ADRs decide the ADR's number. `location` names the directory (by default the kind's configured one) and, for a
+ * rule, the folder below it.
  */
 export function guardrailPath(kind: GuardrailKind, title: string, listing: GuardrailListing, location: Partial<GuardrailLocation> = {}): string | null {
   if (kind === "instruction") {
@@ -380,7 +382,7 @@ export function guardrailPath(kind: GuardrailKind, title: string, listing: Guard
     case "agent":
       return `${listing.dirs.agent}/${slug}.md`;
     case "adr":
-      return `${listing.dirs.adr}/${String(nextAdrNumber(listing.adr)).padStart(4, "0")}-${slug}.md`;
+      return `${listing.dirs.adr}/${String(nextAdrNumber(listing.adr, listing.deletedAdrs)).padStart(4, "0")}-${slug}.md`;
   }
 }
 
@@ -399,7 +401,7 @@ export function guardrailTemplate(kind: GuardrailKind, title: string, listing: G
     case "agent":
       return `---\nname: ${slugify(heading)}\ndescription: \n---\n\n# ${heading}\n\nYou are \n`;
     case "adr":
-      return `# ${nextAdrNumber(listing.adr)}. ${heading}\n\nDate: ${today.toISOString().slice(0, 10)}\n\n## Context\n\n\n## Decision\n\n\n## Consequences\n\n`;
+      return `# ${nextAdrNumber(listing.adr, listing.deletedAdrs)}. ${heading}\n\nDate: ${today.toISOString().slice(0, 10)}\n\n## Context\n\n\n## Decision\n\n\n## Consequences\n\n`;
   }
 }
 
@@ -487,9 +489,23 @@ async function listFilesOrEmpty(sessionId: string): Promise<string[]> {
   }
 }
 
+/** Files below `dir` that the worktree's history deleted, or none when the history cannot be read. */
+async function listDeletedFilesOrEmpty(sessionId: string, dir: string): Promise<string[]> {
+  try {
+    return await commands.listDeletedFiles(sessionId, dir);
+  } catch {
+    return [];
+  }
+}
+
 /** Reads the instruction files of the session's worktree and its rules, skills, agents and ADRs from the folders in `dirs`. */
 export async function listGuardrails(sessionId: string, dirs: GuardrailDirs): Promise<GuardrailListing> {
-  const [files, agentEntries, adrEntries] = await Promise.all([listFilesOrEmpty(sessionId), listDirOrEmpty(sessionId, dirs.agent), listDirOrEmpty(sessionId, dirs.adr)]);
+  const [files, agentEntries, adrEntries, deletedAdrs] = await Promise.all([
+    listFilesOrEmpty(sessionId),
+    listDirOrEmpty(sessionId, dirs.agent),
+    listDirOrEmpty(sessionId, dirs.adr),
+    listDeletedFilesOrEmpty(sessionId, dirs.adr),
+  ]);
   const folders = foldersOf(files);
   // The configured directory at the root is always read; deeper ones are those the project files reveal.
   const dirsOfKind = (dir: string) => [dir, ...folders.filter((folder) => folder.endsWith(`/${dir}`))];
@@ -532,5 +548,15 @@ export async function listGuardrails(sessionId: string, dirs: GuardrailDirs): Pr
   const adrs: Guardrail[] = markdownEntries(adrEntries).map((entry) => ({ kind: "adr", path: `${dirs.adr}/${entry.name}`, name: entry.name.slice(0, -3), folder: "" }));
   adrs.sort((left, right) => (adrNumber(right.name) ?? 0) - (adrNumber(left.name) ?? 0) || left.name.localeCompare(right.name));
 
-  return { instruction: instructions, rule: rules, skill: skills, agent: agents, adr: adrs, dirs, folders, foundDirs: { rule: ruleDirs, skill: skillDirs } };
+  return {
+    instruction: instructions,
+    rule: rules,
+    skill: skills,
+    agent: agents,
+    adr: adrs,
+    dirs,
+    folders,
+    foundDirs: { rule: ruleDirs, skill: skillDirs },
+    deletedAdrs: deletedAdrs.map(baseName),
+  };
 }

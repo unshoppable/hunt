@@ -15,6 +15,7 @@ const listing = (adrs: Guardrail[] = [], dirs: Partial<GuardrailDirs> = {}, more
   dirs: { ...DEFAULT_GUARDRAIL_DIRS, ...dirs },
   folders: [],
   foundDirs: { rule: [], skill: [] },
+  deletedAdrs: [],
   ...more,
 });
 
@@ -41,6 +42,11 @@ describe("nextAdrNumber", () => {
   it("starts at 1 and continues after the highest existing number", () => {
     expect(nextAdrNumber([])).toBe(1);
     expect(nextAdrNumber([adr("0001-a"), adr("0009-b"), adr("notes")])).toBe(10);
+  });
+
+  it("never gives the number of a deleted ADR again", () => {
+    expect(nextAdrNumber([adr("0001-a")], ["0003-replaced.md", "README.md"])).toBe(4);
+    expect(guardrailPath("adr", "Use Postgres", listing([adr("0001-a")], {}, { deletedAdrs: ["0002-replaced.md"] }))).toBe("docs/adr/0003-use-postgres.md");
   });
 });
 

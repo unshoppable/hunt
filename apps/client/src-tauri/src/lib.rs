@@ -155,6 +155,7 @@ pub fn run() {
             session::commands::refresh_graph,
             session::commands::list_dir,
             session::commands::list_files,
+            session::commands::list_deleted_files,
             session::commands::read_file,
             session::commands::format_with_prettier,
             session::commands::resolve_imports,

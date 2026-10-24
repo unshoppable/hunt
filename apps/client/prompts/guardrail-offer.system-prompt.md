@@ -17,10 +17,11 @@ tasks; if not, or if you are unsure, leave the marker out. Most replies get no m
 KIND is the one that fits best: `adr` (architectural decision), `skill` (repeatable workflow), `rule` (convention for
 part of the code), `agent` (delegable specialist task) or `instruction` (CLAUDE.md). A `rule` says how code is written
 in one part of the repository and applies to every change there; an `adr` records a decision made once between
-alternatives, such as a framework, a data model or a module boundary, and why it was made. A convention that follows
-from a decision is a `rule` that names the decision as its reason; mark `adr` only when the decision itself is not
-recorded anywhere yet. SUMMARY states in one sentence, in the language of the conversation, what the guardrail should
-say.
+alternatives, such as a data model or a module boundary, and why it was made. A convention that follows from a
+decision is a `rule` that names the decision as its reason. Mark `adr` only when the decision is not recorded anywhere
+yet, still binds future changes, affects more than one place, and would otherwise look wrong, be "fixed" or be
+questioned again; a decision about one place belongs in a code comment there. SUMMARY states in one sentence, in the
+language of the conversation, what the guardrail should say.
 
 Never mark trivial answers or anything an existing guardrail already says, whatever its kind: CLAUDE.md files, rules,
 skills, agents and ADRs. Knowledge that only the code shows is not recorded yet. Hunt hides the marker and highlights

@@ -601,6 +601,15 @@ pub async fn list_files(worktree: &Path) -> Result<Vec<String>, String> {
     Ok(files)
 }
 
+/// Paths below `dir` that a commit of the checked-out history deleted, sorted and without duplicates.
+pub async fn deleted_files(worktree: &Path, dir: &str) -> Result<Vec<String>, String> {
+    let deleted = run_git(worktree, &["log", "--diff-filter=D", "--name-only", "-z", "--format=", "--", dir]).await?;
+    let mut files: Vec<String> = deleted.split('\0').map(str::trim).filter(|path| !path.is_empty()).map(str::to_string).collect();
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
 /// Tracked changes against `base` plus untracked files, sorted by path.
 pub async fn changed_files(worktree: &Path, base: &str) -> Result<Vec<ChangedFile>, String> {
     let mut files: Vec<ChangedFile> = Vec::new();
@@ -2247,6 +2256,23 @@ mod tests {
 
         let files = list_files(repo).await.unwrap();
         assert_eq!(files, vec![".gitignore".to_string(), "src/new.ts".to_string(), "tracked.txt".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn deleted_files_lists_only_the_deleted_files_below_the_folder() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        std::fs::create_dir_all(repo.join("docs/adr")).unwrap();
+        std::fs::write(repo.join("docs/adr/0001-kept.md"), "kept\n").unwrap();
+        std::fs::write(repo.join("docs/adr/0002-replaced.md"), "replaced\n").unwrap();
+        git(repo, &["add", "."]).await;
+        git(repo, &["commit", "-q", "-m", "add"]).await;
+        std::fs::remove_file(repo.join("docs/adr/0002-replaced.md")).unwrap();
+        std::fs::remove_file(repo.join("other.txt")).unwrap();
+        git(repo, &["add", "-A"]).await;
+        git(repo, &["commit", "-q", "-m", "delete"]).await;
+
+        assert_eq!(deleted_files(repo, "docs/adr").await.unwrap(), vec!["docs/adr/0002-replaced.md".to_string()]);
     }
 
     #[test]

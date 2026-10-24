@@ -144,6 +144,7 @@ export function PullRequestList({ repoPath, onSelect, onClose }: PullRequestList
               <Avatar login={pullRequest.author} url={pullRequest.authorAvatarUrl} size="size-8" />
               <span className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
                 <span className="flex w-full items-center gap-1.5">
+                  <span className="shrink-0 font-medium tabular-nums text-sky-300">#{pullRequest.number}</span>
                   <span className="min-w-0 flex-1 truncate font-medium text-neutral-100">{pullRequest.title}</span>
                   {pullRequest.labels.map((label) => (
                     <LabelChip key={label.name} label={label} />
@@ -176,7 +177,7 @@ export function PullRequestList({ repoPath, onSelect, onClose }: PullRequestList
 }
 
 /**
- * The second line of a row: number, author, when it was opened, tasks, review decision and branch on the left;
+ * The second line of a row: author, when it was opened, tasks, review decision and branch on the left;
  * diff size, checks and comment count on the right. The branch truncates first; in a narrow pane the left side is
  * clipped so the counts on the right stay visible.
  */
@@ -185,8 +186,6 @@ function MetaLine({ pullRequest }: { pullRequest: PullRequest }) {
   return (
     <span className="flex w-full min-w-0 items-center gap-2 text-[12px] text-neutral-500">
       <span className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-        <span className="shrink-0">#{pullRequest.number}</span>
-        <Separator />
         <span className="shrink-0">{pullRequest.author}</span>
         <Separator />
         <span className="shrink-0" title={openedTitle(pullRequest)}>

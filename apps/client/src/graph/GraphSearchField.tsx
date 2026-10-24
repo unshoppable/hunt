@@ -2,12 +2,14 @@ import { useEffect, useMemo, useRef, type KeyboardEvent, type RefObject } from "
 import { useReactFlow } from "@xyflow/react";
 import { ICON_BUTTON_XS } from "../ui/buttons";
 import { ChevronDownIcon, CloseIcon, SearchIcon } from "../ui/icons";
+import { MATCH_KIND_RANK, type MatchKind } from "./graphSearch";
 import type { DiagramFlowNode } from "./layout";
 
 /**
  * The ⌘F field of the dependency diagram, floating in the canvas' top-right corner. The diagram highlights every file
- * in `matches` (see graphSearch.ts) and the view moves to the active one: to the topmost match while the active one
- * stops matching, to the next with Enter or ↓, to the previous with ⇧Enter or ↑. Escape closes the field.
+ * in `matches` (see graphSearch.ts) and the view moves to the active one: to the first match while the active one
+ * stops matching or a better kind of match turns up, to the next with Enter or ↓, to the previous with ⇧Enter or ↑.
+ * Matches are visited by kind (name, path, symbol), each kind from top to bottom, left to right. Escape closes the field.
  * `minZoom` is the zoom the view comes in to at least, so the file's name is readable.
  */
 export function GraphSearchField({
@@ -21,7 +23,7 @@ export function GraphSearchField({
   onClose,
 }: {
   query: string;
-  matches: ReadonlySet<string> | null;
+  matches: ReadonlyMap<string, MatchKind> | null;
   activePath: string | null;
   minZoom: number;
   inputRef: RefObject<HTMLInputElement | null>;
@@ -31,13 +33,13 @@ export function GraphSearchField({
 }) {
   const { getInternalNode, getZoom, setCenter } = useReactFlow<DiagramFlowNode>();
 
-  /** The matching files from top to bottom, left to right. */
+  /** The matching files by kind, then from top to bottom, left to right. */
   const ordered = useMemo(() => {
-    const placed = [...(matches ?? [])].flatMap((path) => {
+    const placed = [...(matches ?? [])].flatMap(([path, kind]) => {
       const node = getInternalNode(path);
-      return node ? [{ path, position: node.internals.positionAbsolute }] : [];
+      return node ? [{ path, rank: MATCH_KIND_RANK[kind], position: node.internals.positionAbsolute }] : [];
     });
-    placed.sort((left, right) => left.position.y - right.position.y || left.position.x - right.position.x);
+    placed.sort((left, right) => left.rank - right.rank || left.position.y - right.position.y || left.position.x - right.position.x);
     return placed.map((entry) => entry.path);
   }, [matches, getInternalNode]);
 
@@ -54,9 +56,12 @@ export function GraphSearchField({
   goToRef.current = goTo;
   const activePathRef = useRef(activePath);
   activePathRef.current = activePath;
+  const matchesRef = useRef(matches);
+  matchesRef.current = matches;
 
   useEffect(() => {
-    if (activePathRef.current && ordered.includes(activePathRef.current)) return;
+    const activeKind = activePathRef.current ? matchesRef.current?.get(activePathRef.current) : undefined;
+    if (activeKind && activeKind === matchesRef.current?.get(ordered[0])) return;
     if (ordered.length) {
       goToRef.current(ordered[0]);
     } else {

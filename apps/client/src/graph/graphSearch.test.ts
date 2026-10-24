@@ -41,13 +41,23 @@ describe("searchDiagramFiles", () => {
     expect(searchDiagramFiles(PATHS, IDENTIFIERS, "  ")).toBeNull();
   });
 
-  it("matches paths and the identifiers of the content", () => {
-    expect(searchDiagramFiles(PATHS, IDENTIFIERS, "sync")).toEqual(new Set(["apps/backend/employee-import.service.ts", "apps/backend/working-time-sync.service.ts"]));
-    expect(searchDiagramFiles(PATHS, IDENTIFIERS, "jobOutStat")).toEqual(new Set(["libs/shared/job-outcome.types.ts"]));
+  it("keeps only the files whose name matches while there are any", () => {
+    expect(searchDiagramFiles(PATHS, IDENTIFIERS, "sync")).toEqual(new Map([["apps/backend/working-time-sync.service.ts", "name"]]));
+  });
+
+  it("falls back to paths and the identifiers of the content", () => {
+    expect(searchDiagramFiles(PATHS, IDENTIFIERS, "backend")).toEqual(
+      new Map([
+        ["apps/backend/employee-import.service.ts", "path"],
+        ["apps/backend/working-time-sync.service.ts", "path"],
+      ]),
+    );
+    expect(searchDiagramFiles(PATHS, IDENTIFIERS, "enqueue")).toEqual(new Map([["apps/backend/employee-import.service.ts", "symbol"]]));
+    expect(searchDiagramFiles(PATHS, IDENTIFIERS, "jobOutStat")).toEqual(new Map([["libs/shared/job-outcome.types.ts", "symbol"]]));
   });
 
   it("needs every word to match the path or an identifier", () => {
-    expect(searchDiagramFiles(PATHS, IDENTIFIERS, "employee enqueue")).toEqual(new Set(["apps/backend/employee-import.service.ts"]));
-    expect(searchDiagramFiles(PATHS, IDENTIFIERS, "working enqueue")).toEqual(new Set());
+    expect(searchDiagramFiles(PATHS, IDENTIFIERS, "backend enqueue")).toEqual(new Map([["apps/backend/employee-import.service.ts", "symbol"]]));
+    expect(searchDiagramFiles(PATHS, IDENTIFIERS, "working enqueue")).toEqual(new Map());
   });
 });

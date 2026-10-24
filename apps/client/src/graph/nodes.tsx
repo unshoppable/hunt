@@ -6,6 +6,7 @@ import { CommentIcon } from "../ui/icons";
 import { HoverTooltip } from "../ui/HoverTooltip";
 import { baseName } from "../ui/path";
 import type { DiagramNode, ShortPath } from "./diagram";
+import type { MatchKind } from "./graphSearch";
 import { ReviewBars } from "./ReviewBars";
 import type { DependencyEdge, FileNode, FolderGroupNode } from "./layout";
 import { EDGE_COLOR, EDGE_COLOR_HIGHLIGHTED, LABEL_HEIGHT, MAX_LABEL_WIDTH, orthogonalPath } from "./layout";
@@ -17,7 +18,7 @@ export const HANDLE_STYLE = { opacity: 0, width: 1, height: 1, minWidth: 0, minH
 export const CommentCountsContext = createContext<Map<string, number>>(new Map());
 
 /** The files the ⌘F search matches and the one the view moved to; null while the search is closed. */
-export type SearchHighlight = { matches: ReadonlySet<string>; activePath: string | null };
+export type SearchHighlight = { matches: ReadonlyMap<string, MatchKind>; activePath: string | null };
 export const SearchHighlightContext = createContext<SearchHighlight | null>(null);
 
 /**

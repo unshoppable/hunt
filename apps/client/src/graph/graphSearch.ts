@@ -1,12 +1,20 @@
 /**
  * The ⌘F search of the dependency diagram. A file matches when every word of the query matches its path or one of the
- * identifiers in its content: the symbols it declares, imports and uses. A word matches as a substring, ignoring case,
+ * identifiers in its content: the symbols it declares, imports and uses. Files whose name matches take precedence: while
+ * there is one, the other files do not count; otherwise matches by path rank above matches by symbol. A word matches as a substring, ignoring case,
  * or fuzzily by camel humps and separators: each character either follows the previous one or starts a word, so
  * `wtss` finds `workingTimeSyncService` and `emp-imp` finds `employee-import.service.ts`.
  */
 
 import { isBoundary } from "../ide/fileSearch";
 import { commands } from "../ipc/commands";
+import { baseName } from "../ui/path";
+
+/** What a file matches by: every word its name, every word its path, or some word only an identifier of its content. */
+export type MatchKind = "name" | "path" | "symbol";
+
+/** The order matches are visited in; the lower comes first. */
+export const MATCH_KIND_RANK: Record<MatchKind, number> = { name: 0, path: 1, symbol: 2 };
 
 const IDENTIFIER = /[A-Za-z_$][\w$]+/g;
 const SEPARATORS = /[\/\-_. ]/g;
@@ -49,19 +57,29 @@ export function matchesWord(text: string, word: string): boolean {
 }
 
 /**
- * The paths of `paths` matching `query`, with the identifiers of each file's content from `identifiersByPath`; a file
- * without an entry matches by its path only. Null while the query is empty.
+ * The paths of `paths` matching `query` and what each matches by, with the identifiers of each file's content from
+ * `identifiersByPath`; a file without an entry matches by its path only. Only files matching by name while there are
+ * any. Null while the query is empty.
  */
-export function searchDiagramFiles(paths: readonly string[], identifiersByPath: ReadonlyMap<string, ReadonlySet<string>>, query: string): Set<string> | null {
+export function searchDiagramFiles(paths: readonly string[], identifiersByPath: ReadonlyMap<string, ReadonlySet<string>>, query: string): Map<string, MatchKind> | null {
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) return null;
-  const matches = new Set<string>();
+  const matches = new Map<string, MatchKind>();
   for (const path of paths) {
-    const identifiers = [...(identifiersByPath.get(path) ?? [])];
-    const isMatch = words.every((word) => matchesWord(path, word) || identifiers.some((identifier) => matchesWord(identifier, word)));
-    if (isMatch) {
-      matches.add(path);
+    const kind = matchKindOf(path, identifiersByPath.get(path), words);
+    if (kind) {
+      matches.set(path, kind);
     }
   }
-  return matches;
+  const byName = [...matches].filter(([, kind]) => kind === "name");
+  return byName.length ? new Map(byName) : matches;
+}
+
+function matchKindOf(path: string, identifiers: ReadonlySet<string> | undefined, words: readonly string[]): MatchKind | null {
+  const name = baseName(path);
+  if (words.every((word) => matchesWord(name, word))) return "name";
+  if (words.every((word) => matchesWord(path, word))) return "path";
+  const identifierList = [...(identifiers ?? [])];
+  const isMatch = words.every((word) => matchesWord(path, word) || identifierList.some((identifier) => matchesWord(identifier, word)));
+  return isMatch ? "symbol" : null;
 }

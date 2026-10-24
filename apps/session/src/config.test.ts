@@ -142,6 +142,7 @@ describe("parseServices", () => {
       [{ preview: { version: 2, main: 4200 } }, [CONTRACT_2_PROBLEM, "version: must be 3"]],
       [{ ...web({}), preview: { version: 2 } }, [CONTRACT_2_PROBLEM]],
       [{ ...web({}), environment: {}, "two words": 1 }, ["environment: unknown field", '["two words"]: unknown field']],
+      ...["/srv/adr", "../adr", "a/./b", "", 1].map((adrDir): [unknown, string[]] => [{ ...web({}), adrDir }, [`adrDir: ${CWD_RULE}`]]),
       [{ ...web({}), swf: "claude-opus-5-5" }, ["swf: must be an object"]],
       [{ ...web({}), swf: { model: "claude-opus-5-5", effort: "high" } }, ["swf.effort: unknown field"]],
       ...["", "opus", "sonnet[1m]", "default", "Claude-Opus-5-5", "claude-", "claude-opus-5-5 ", "claude opus", "claude-opus-5-5\nx", `claude-${"x".repeat(122)}`, 5, null].map(
@@ -401,6 +402,10 @@ describe("environments", () => {
     expect(config.proxy).toEqual(proxyConfig(COMPLETE_SERVICES, HOST));
     expect(config.servicesPrompt).toBe(servicesPrompt(COMPLETE_SERVICES, HOST));
     expect(buildSessionConfig(undefined, HOST, WORKTREE)).toMatchObject({ services: [], serviceEnvs: {}, servicesPrompt: servicesPrompt([], HOST) });
+  });
+
+  it("accepts the folder of the architectural decision records", () => {
+    expect(buildSessionConfig({ ...web({}), adrDir: ".claude/resources/adrs" }, HOST, WORKTREE).services).toEqual(buildSessionConfig(web({}), HOST, WORKTREE).services);
   });
 
   it("reads the model of swf sessions, none without the swf section or its model", () => {

@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_GUARDRAIL_DIRS, type GuardrailDirs } from "../state/settings";
-import { adrNumber, creationTask, expandedForTree, foldersOf, generationTask, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailTask, guardrailTemplate, guardrailTreeRows, kindHelp, newGuardrailLocation, nextAdrNumber, ownerFolderOf, slugify, treeFolders, type Guardrail, type GuardrailListing } from "./guardrails";
+import { adrDirOf, adrNumber, creationTask, DEFAULT_GUARDRAIL_DIRS, expandedForTree, foldersOf, generationTask, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailTask, guardrailTemplate, guardrailTreeRows, kindHelp, newGuardrailLocation, nextAdrNumber, normalizeGuardrailDir, ownerFolderOf, slugify, treeFolders, type Guardrail, type GuardrailDirs, type GuardrailListing } from "./guardrails";
 
-const adr = (name: string): Guardrail => ({ kind: "adr", path: `docs/adr/${name}.md`, name, folder: "" });
+const adr = (name: string): Guardrail => ({ kind: "adr", path: `.claude/resources/adrs/${name}.md`, name, folder: "" });
 const instruction = (folder: string): Guardrail => ({ kind: "instruction", path: folder ? `${folder}/CLAUDE.md` : "CLAUDE.md", name: "CLAUDE.md", folder: "" });
 const rule = (folder: string, name: string): Guardrail => ({ kind: "rule", path: `.claude/rules/${folder ? `${folder}/` : ""}${name}.md`, name, folder });
 const skill = (dir: string, name: string): Guardrail => ({ kind: "skill", path: `${dir}/${name}/SKILL.md`, name, folder: "" });
@@ -46,7 +45,7 @@ describe("nextAdrNumber", () => {
 
   it("never gives the number of a deleted ADR again", () => {
     expect(nextAdrNumber([adr("0001-a")], ["0003-replaced.md", "README.md"])).toBe(4);
-    expect(guardrailPath("adr", "Use Postgres", listing([adr("0001-a")], {}, { deletedAdrs: ["0002-replaced.md"] }))).toBe("docs/adr/0003-use-postgres.md");
+    expect(guardrailPath("adr", "Use Postgres", listing([adr("0001-a")], {}, { deletedAdrs: ["0002-replaced.md"] }))).toBe(".claude/resources/adrs/0003-use-postgres.md");
   });
 });
 
@@ -55,7 +54,7 @@ describe("guardrailPath", () => {
     expect(guardrailPath("rule", "No console logs", listing())).toBe(".claude/rules/no-console-logs.md");
     expect(guardrailPath("skill", "Deploy Staging", listing())).toBe(".claude/skills/deploy-staging/SKILL.md");
     expect(guardrailPath("agent", "Code Reviewer", listing())).toBe(".claude/agents/code-reviewer.md");
-    expect(guardrailPath("adr", "Use Postgres", listing([adr("0003-x")]))).toBe("docs/adr/0004-use-postgres.md");
+    expect(guardrailPath("adr", "Use Postgres", listing([adr("0003-x")]))).toBe(".claude/resources/adrs/0004-use-postgres.md");
     expect(guardrailPath("rule", "Naming", listing(), { folder: "api/http" })).toBe(".claude/rules/api/http/naming.md");
     expect(guardrailPath("rule", "Naming", listing(), { dir: "src/api/.claude/rules" })).toBe("src/api/.claude/rules/naming.md");
     expect(guardrailPath("skill", "Deploy", listing(), { dir: "src/api/.claude/skills" })).toBe("src/api/.claude/skills/deploy/SKILL.md");
@@ -153,7 +152,7 @@ describe("generationTask", () => {
     expect(creationTask("rule", listing())).not.toContain("The directory belongs to");
     expect(creationTask("instruction", listing(), "", { dir: "src/api" })).toContain("Put it at `src/api/CLAUDE.md`.");
     expect(creationTask("instruction", listing())).toContain("Put it at `CLAUDE.md`.");
-    expect(creationTask("adr", listing([adr("0007-use-postgres")]), "", {}, new Date("2026-10-11T12:00:00Z"))).toContain("`docs/adr/0008-<name>.md`; the heading starts with the number 8 and the record is dated 2026-10-11");
+    expect(creationTask("adr", listing([adr("0007-use-postgres")]), "", {}, new Date("2026-10-11T12:00:00Z"))).toContain("`.claude/resources/adrs/0008-<name>.md`; the heading starts with the number 8 and the record is dated 2026-10-11");
   });
 
   it("keeps the name the user typed", () => {
@@ -176,7 +175,7 @@ describe("guardrailTask", () => {
     expect(task).toContain("`docs/rules/<name>.md`");
     expect(task).toContain("`.claude/skills/<name>/SKILL.md`");
     expect(task).toContain("`.claude/agents/<name>.md`");
-    expect(task).toContain("`docs/adr/0008-<name>.md`; the heading starts with the number 8 and the record is dated 2026-10-11");
+    expect(task).toContain("`.claude/resources/adrs/0008-<name>.md`; the heading starts with the number 8 and the record is dated 2026-10-11");
     expect(task).toContain("write nothing yet: ask one short question");
     expect(task).toContain("as short as possible and as long as necessary");
   });
@@ -289,5 +288,32 @@ describe("guardrailTreeRows", () => {
   it("tells which folders hold entries somewhere below them", () => {
     const rows = guardrailTreeRows(folders, [instruction("src/api")], new Set(["", "src"]), "hunt");
     expect(rows.filter((row) => row.type === "folder").map((row) => `${row.name}${row.holdsEntries ? "+" : "-"}`)).toEqual(["hunt+", "docs-", "src+", "api+", "ui-"]);
+  });
+});
+
+describe("normalizeGuardrailDir", () => {
+  it("strips surrounding whitespace, leading ./ and trailing slashes", () => {
+    expect(normalizeGuardrailDir("  ./docs/adr/ ")).toBe("docs/adr");
+    expect(normalizeGuardrailDir("docs//decisions")).toBe("docs/decisions");
+    expect(normalizeGuardrailDir(".claude\\rules")).toBe(".claude/rules");
+  });
+
+  it("rejects empty, absolute and parent-escaping paths", () => {
+    expect(normalizeGuardrailDir("   ")).toBeNull();
+    expect(normalizeGuardrailDir("./")).toBeNull();
+    expect(normalizeGuardrailDir("/etc")).toBeNull();
+    expect(normalizeGuardrailDir("../other/docs")).toBeNull();
+  });
+});
+
+describe("adrDirOf", () => {
+  it("reads the ADR folder hunt.json sets as adrDir", () => {
+    expect(adrDirOf('{ "version": 3, "adrDir": "./docs/adr/" }')).toBe("docs/adr");
+  });
+
+  it("falls back to the default without the file, the field or a usable value", () => {
+    for (const huntJson of ["", "{", "null", '{ "version": 3 }', '{ "adrDir": 7 }', '{ "adrDir": "../elsewhere" }', '{ "adrDir": "/etc" }']) {
+      expect(adrDirOf(huntJson)).toBe(DEFAULT_GUARDRAIL_DIRS.adr);
+    }
   });
 });

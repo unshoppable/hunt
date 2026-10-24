@@ -38,10 +38,10 @@ type GuardrailTab = GuardrailKind | "lint";
 /**
  * The repository's guardrails as a window of its own (see guardrailsWindow.ts), opened from the chat header: the
  * `CLAUDE.md` instruction files anywhere in the session's worktree, its rules (`.claude/rules`), skills
- * (`.claude/skills/<name>/SKILL.md`), subagents (`.claude/agents`) and architectural decision records (`docs/adr`),
- * one tab each; the folders are set in the settings (`guardrailDirs`). Rules and skills are also read from the same
- * directory below any folder of the worktree (`src/api/.claude/rules`), which Claude Code loads once it works in
- * that folder. The help button at the right of the tab bar explains the active tab's kind in a popover; "New" at
+ * (`.claude/skills/<name>/SKILL.md`), subagents (`.claude/agents`) and architectural decision records
+ * (`.claude/resources/adrs` unless hunt.json sets `adrDir`, see `readGuardrailDirs`), one tab each. Rules and skills
+ * are also read from the same directory below any folder of the worktree (`src/api/.claude/rules`), which Claude Code
+ * loads once it works in that folder. The help button at the right of the tab bar explains the active tab's kind in a popover; "New" at
  * the right of the tab bar opens a sub chat whose agent turns the user's description into the guardrail kind that
  * fits, asking back while that is unclear, and the file it creates opens. The list on the left opens a file in the
  * Markdown editor on the right: instructions, rules and skills in a tree of the worktree's folders (see
@@ -64,7 +64,6 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
   const worktreePath = session?.worktreePath ?? "";
   const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
-  const dirs = useSettingsStore((state) => state.guardrailDirs);
   const fileIconUrl = useFileIconUrl();
   const [isLoaded, setIsLoaded] = useState(false);
   const workspace = workspaceFor(sessionId, worktreePath);
@@ -113,18 +112,18 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
   }, [isLoaded, hasSession]);
 
   const refresh = useCallback(() => {
-    return listGuardrails(sessionId, dirs)
+    return listGuardrails(sessionId)
       .then((next) => {
         setListing(next);
         setError(null);
-        void ensureGuardrailReadmes(sessionId, dirs);
+        void ensureGuardrailReadmes(sessionId, next.dirs);
         return next;
       })
       .catch((reason) => {
         setError(String(reason));
         return null;
       });
-  }, [sessionId, dirs]);
+  }, [sessionId]);
 
   useEffect(() => {
     void refresh();

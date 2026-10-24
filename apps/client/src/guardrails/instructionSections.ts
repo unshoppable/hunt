@@ -1,6 +1,6 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { commands } from "../ipc/commands";
-import { useSettingsStore, type GuardrailDirs } from "../state/settings";
+import { readGuardrailDirs, type GuardrailDirs } from "./guardrails";
 
 const INSTRUCTION_FILE = "CLAUDE.md";
 const GUARDRAILS_SECTION_HEADING = "## Guardrails";
@@ -110,9 +110,9 @@ const pending = new Set<string>();
  */
 export async function ensureInstructionSections(sessionId: string, worktreePath: string): Promise<void> {
   if (declined.has(worktreePath) || pending.has(worktreePath)) return;
-  const dirs = useSettingsStore.getState().guardrailDirs;
   pending.add(worktreePath);
   try {
+    const dirs = await readGuardrailDirs(sessionId);
     const content = await readInstructionFile(sessionId);
     const missing = missingSections(content, dirs);
     if (!missing.length) return;

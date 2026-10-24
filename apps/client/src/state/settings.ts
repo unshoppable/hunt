@@ -191,26 +191,6 @@ export function normalizeRemote(remote: RemoteSettings): RemoteSettings {
   return { project: remote.project.trim(), machineType: isSessionMachineType(remote.machineType) ? remote.machineType : "" };
 }
 
-/** The kinds of guardrail that live in a folder of their own, set below. */
-export type GuardrailDirKind = "rule" | "skill" | "agent" | "adr";
-
-/** The kinds of guardrail the guardrails window manages: `CLAUDE.md` instruction files anywhere in the worktree plus the folder-based kinds. */
-export type GuardrailKind = "instruction" | GuardrailDirKind;
-
-/** Worktree-relative folders the guardrails window reads and writes each folder-based kind in, without a trailing slash. */
-export type GuardrailDirs = Record<GuardrailDirKind, string>;
-
-/** Where Claude Code reads project rules, skills and subagents from, and the usual folder for architectural decision records. */
-export const DEFAULT_GUARDRAIL_DIRS: GuardrailDirs = { rule: ".claude/rules", skill: ".claude/skills", agent: ".claude/agents", adr: "docs/adr" };
-
-/** `./docs/adr/` → `docs/adr`; null when nothing is left or the path is absolute or leaves the worktree. */
-export function normalizeGuardrailDir(input: string): string | null {
-  const trimmed = input.trim().replace(/\\/g, "/");
-  const segments = trimmed.split("/").filter((segment) => segment && segment !== ".");
-  if (!segments.length || trimmed.startsWith("/") || segments.includes("..")) return null;
-  return segments.join("/");
-}
-
 /**
  * One file icon rule: files whose worktree-relative path matches `glob` (see diff/glob.ts) get the vendored icon
  * named `icon` (see diff/fileIcons.ts). Rules are tried in order; the first whose glob matches wins.
@@ -337,7 +317,6 @@ type SettingsState = {
   /** System prompt addition for every agent session; see `DEFAULT_SYSTEM_PROMPT`. */
   systemPrompt: string;
   graphAgent: GraphAgent;
-  guardrailDirs: GuardrailDirs;
   iconRules: IconRule[];
   folderIconRules: FolderIconRule[];
   /** Whether the chat shows the session summary box above the messages. */
@@ -365,8 +344,6 @@ type SettingsState = {
   setAiLanguage: (language: string) => void;
   setSystemPrompt: (prompt: string) => void;
   setGraphAgent: (key: keyof GraphAgent, value: string) => void;
-  setGuardrailDir: (kind: GuardrailDirKind, dir: string) => void;
-  resetGuardrailDirs: () => void;
   setIconRules: (rules: IconRule[]) => void;
   resetIconRules: () => void;
   setFolderIconRules: (rules: FolderIconRule[]) => void;
@@ -412,7 +389,6 @@ export type PersistedState = {
   aiLanguage?: string;
   systemPrompt?: string;
   graphAgent?: Partial<GraphAgent>;
-  guardrailDirs?: Partial<GuardrailDirs>;
   iconRules?: IconRule[];
   folderIconRules?: FolderIconRule[];
   showSummary?: boolean;
@@ -466,7 +442,7 @@ function withDefaults(panes: Partial<Record<PaneKey, Partial<PaneSettings>>> | u
 }
 
 /** Current version of the persisted shape; `migrateSettings` brings older ones up to date. */
-export const SETTINGS_VERSION = 15;
+export const SETTINGS_VERSION = 16;
 
 /** Shape persisted up to version 6, which kept one field per resizable popup. */
 type Version6State = PersistedState & { usagesPopupSize?: PopupSize; fileSearchDialogSize?: PopupSize; subChatPopoverSize?: PopupSize };
@@ -530,6 +506,15 @@ function withoutInfrastructureFields(stored: PersistedState): PersistedState {
   return { ...stored, remote: Object.fromEntries(Object.entries(stored.remote).filter(([key]) => REMOTE_KEYS.includes(key))) };
 }
 
+/** Shape persisted up to version 15, which kept the guardrail folders; Claude Code fixes them and hunt.json sets the ADR folder. */
+type Version15State = PersistedState & { guardrailDirs?: unknown };
+
+function withoutGuardrailDirs(stored: Version15State): PersistedState {
+  const migrated: Version15State = { ...stored };
+  delete migrated.guardrailDirs;
+  return migrated;
+}
+
 /** The editor and the terminal followed the diff pane's font up to version 14; they start from its stored values. */
 function seedFromDiffPane(stored: PersistedState): PersistedState {
   const diff = stored.panes?.diff;
@@ -545,11 +530,17 @@ function seedFromDiffPane(stored: PersistedState): PersistedState {
  * versions 1 to 4 and 7 had defaults that are lifted to the current ones where the user never changed them, versions
  * 5 and 6 kept the size of each resizable popup in its own field, versions up to 8 named Catppuccin icons in their icon
  * rules, versions up to 13 kept remote settings that the infrastructure repository or the repository's hunt.json
- * configures now, and up to version 14 the editor and the terminal used the diff pane's font. Fields a version did not have (`guardrailDirs`, `showSummary`, `iconRules`, `folderIconRules`,
+ * configures now, up to version 14 the editor and the terminal used the diff pane's font, and up to version 15 the
+ * guardrail folders were settings. Fields a version did not have (`showSummary`, `iconRules`, `folderIconRules`,
  * `confirmSessionDelete`, `diffLineScope`, `changelistScopes`, `graphExcludedFiles`, …) are filled in from the defaults
  * by `mergeSettings`.
  */
 export function migrateSettings(persisted: unknown, version: number): PersistedState {
+  if (version >= 16) return persisted as PersistedState;
+  return withoutGuardrailDirs(migrateToVersion15(persisted, version));
+}
+
+function migrateToVersion15(persisted: unknown, version: number): PersistedState {
   if (version >= 15) return persisted as PersistedState;
   return seedFromDiffPane(migrateToVersion14(persisted, version));
 }
@@ -590,17 +581,16 @@ function migrateToVersion8(persisted: unknown, version: number): PersistedState 
 }
 
 /**
- * Layers the persisted state over `current` (the defaults with the actions). Panes, guardrail folders and popup sizes
- * gain entries over time, so stored ones are layered over the defaults per key instead of replacing them.
+ * Layers the persisted state over `current` (the defaults with the actions). Panes and popup sizes gain entries
+ * over time, so stored ones are layered over the defaults per key instead of replacing them.
  */
-export function mergeSettings<T extends Pick<SettingsState, "panes" | "graphAgent" | "guardrailDirs" | "popupSizes" | "gitLogColumns" | "remote">>(persisted: unknown, current: T): T {
+export function mergeSettings<T extends Pick<SettingsState, "panes" | "graphAgent" | "popupSizes" | "gitLogColumns" | "remote">>(persisted: unknown, current: T): T {
   const stored = persisted as PersistedState | undefined;
   return {
     ...current,
     ...stored,
     panes: withDefaults(stored?.panes),
     graphAgent: { ...DEFAULT_GRAPH_AGENT, ...stored?.graphAgent },
-    guardrailDirs: { ...DEFAULT_GUARDRAIL_DIRS, ...stored?.guardrailDirs },
     popupSizes: withDefaultPopupSizes(stored?.popupSizes),
     gitLogColumns: { ...DEFAULT_GIT_LOG_COLUMNS, ...stored?.gitLogColumns },
     remote: normalizeRemote({ ...DEFAULT_REMOTE, ...stored?.remote }),
@@ -628,7 +618,6 @@ export const useSettingsStore = create<SettingsState>()(
       aiLanguage: DEFAULT_AI_LANGUAGE,
       systemPrompt: DEFAULT_SYSTEM_PROMPT,
       graphAgent: DEFAULT_GRAPH_AGENT,
-      guardrailDirs: DEFAULT_GUARDRAIL_DIRS,
       iconRules: DEFAULT_ICON_RULES,
       folderIconRules: DEFAULT_FOLDER_ICON_RULES,
       showSummary: true,
@@ -681,12 +670,6 @@ export const useSettingsStore = create<SettingsState>()(
       setAiLanguage: (language) => set((state) => (language.trim() ? { aiLanguage: language.trim() } : state)),
       setSystemPrompt: (prompt) => set({ systemPrompt: prompt.trim() }),
       setGraphAgent: (key, value) => set((state) => (value.trim() ? { graphAgent: { ...state.graphAgent, [key]: value.trim() } } : state)),
-      setGuardrailDir: (kind, dir) =>
-        set((state) => {
-          const normalized = normalizeGuardrailDir(dir);
-          return normalized ? { guardrailDirs: { ...state.guardrailDirs, [kind]: normalized } } : state;
-        }),
-      resetGuardrailDirs: () => set({ guardrailDirs: DEFAULT_GUARDRAIL_DIRS }),
       setIconRules: (rules) => set({ iconRules: rules.map(normalizeIconRule) }),
       resetIconRules: () => set({ iconRules: DEFAULT_ICON_RULES }),
       setFolderIconRules: (rules) => set({ folderIconRules: rules.map(normalizeFolderIconRule) }),
@@ -717,7 +700,6 @@ export const useSettingsStore = create<SettingsState>()(
         aiLanguage: state.aiLanguage,
         systemPrompt: state.systemPrompt,
         graphAgent: state.graphAgent,
-        guardrailDirs: state.guardrailDirs,
         iconRules: state.iconRules,
         folderIconRules: state.folderIconRules,
         showSummary: state.showSummary,

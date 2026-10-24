@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_GUARDRAIL_DIRS } from "../state/settings";
+import { DEFAULT_GUARDRAIL_DIRS } from "./guardrails";
 import { adrSection, guardrailsSection, hasAdrInstruction, hasGuardrailsInstruction, missingSections, withSections } from "./instructionSections";
 
 describe("hasAdrInstruction", () => {
@@ -29,12 +29,12 @@ describe("missingSections", () => {
     const missing = missingSections("# Project", DEFAULT_GUARDRAIL_DIRS);
     expect(missing.map((section) => section.build(DEFAULT_GUARDRAIL_DIRS))).toEqual([
       guardrailsSection(DEFAULT_GUARDRAIL_DIRS),
-      adrSection("docs/adr"),
+      adrSection(DEFAULT_GUARDRAIL_DIRS.adr),
     ]);
   });
 
   it("leaves out the sections the file already holds", () => {
-    const missing = missingSections(`# Project\n\n${adrSection("docs/adr")}`, DEFAULT_GUARDRAIL_DIRS);
+    const missing = missingSections(`# Project\n\n${adrSection(DEFAULT_GUARDRAIL_DIRS.adr)}`, DEFAULT_GUARDRAIL_DIRS);
     expect(missing.map((section) => section.build(DEFAULT_GUARDRAIL_DIRS))).toEqual([guardrailsSection(DEFAULT_GUARDRAIL_DIRS)]);
   });
 
@@ -48,12 +48,12 @@ describe("withSections", () => {
   it("appends each section after one blank line and keeps the existing content", () => {
     const missing = missingSections("", DEFAULT_GUARDRAIL_DIRS);
     const result = withSections("# Project\n\nRun `npm test`.\n\n\n", missing, DEFAULT_GUARDRAIL_DIRS);
-    expect(result).toBe(`# Project\n\nRun \`npm test\`.\n\n${guardrailsSection(DEFAULT_GUARDRAIL_DIRS)}\n\n${adrSection("docs/adr")}\n`);
+    expect(result).toBe(`# Project\n\nRun \`npm test\`.\n\n${guardrailsSection(DEFAULT_GUARDRAIL_DIRS)}\n\n${adrSection(DEFAULT_GUARDRAIL_DIRS.adr)}\n`);
   });
 
   it("holds the sections alone for a missing or empty file", () => {
     const missing = missingSections("", DEFAULT_GUARDRAIL_DIRS);
-    expect(withSections("", missing, DEFAULT_GUARDRAIL_DIRS)).toBe(`${guardrailsSection(DEFAULT_GUARDRAIL_DIRS)}\n\n${adrSection("docs/adr")}\n`);
+    expect(withSections("", missing, DEFAULT_GUARDRAIL_DIRS)).toBe(`${guardrailsSection(DEFAULT_GUARDRAIL_DIRS)}\n\n${adrSection(DEFAULT_GUARDRAIL_DIRS.adr)}\n`);
   });
 
   it("names the configured folders", () => {

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   CODE_FONT_FAMILY,
   DEFAULT_GRAPH_AGENT,
-  DEFAULT_GUARDRAIL_DIRS,
   DEFAULT_PANES,
   DEFAULT_GIT_LOG_COLUMNS,
   DEFAULT_POPUP_SIZES,
@@ -11,24 +10,8 @@ import {
   configuredVmSettings,
   mergeSettings,
   migrateSettings,
-  normalizeGuardrailDir,
   normalizeRemote,
 } from "./settings";
-
-describe("normalizeGuardrailDir", () => {
-  it("strips surrounding whitespace, leading ./ and trailing slashes", () => {
-    expect(normalizeGuardrailDir("  ./docs/adr/ ")).toBe("docs/adr");
-    expect(normalizeGuardrailDir("docs//decisions")).toBe("docs/decisions");
-    expect(normalizeGuardrailDir(".claude\\rules")).toBe(".claude/rules");
-  });
-
-  it("rejects empty, absolute and parent-escaping paths", () => {
-    expect(normalizeGuardrailDir("   ")).toBeNull();
-    expect(normalizeGuardrailDir("./")).toBeNull();
-    expect(normalizeGuardrailDir("/etc")).toBeNull();
-    expect(normalizeGuardrailDir("../other/docs")).toBeNull();
-  });
-});
 
 describe("migrateSettings", () => {
   it("moves the version 0 font sizes into the panes and fills the rest from the defaults", () => {
@@ -103,6 +86,11 @@ describe("migrateSettings", () => {
     expect(migrateSettings({ aiLanguage: "English" }, 14)).toEqual({ aiLanguage: "English" });
   });
 
+  it("drops the guardrail folders of version 15", () => {
+    expect(migrateSettings({ guardrailDirs: { rule: ".claude/rules", adr: "docs/adr" }, aiLanguage: "English" }, 15)).toEqual({ aiLanguage: "English" });
+    expect(migrateSettings({ aiLanguage: "English" }, 15)).toEqual({ aiLanguage: "English" });
+  });
+
   it("passes the current version through untouched", () => {
     const stored = { panes: { chat: { fontSize: 18 } }, aiLanguage: "English", later: true };
     expect(migrateSettings(stored, SETTINGS_VERSION)).toBe(stored);
@@ -113,7 +101,6 @@ describe("mergeSettings", () => {
   const current = {
     panes: DEFAULT_PANES,
     graphAgent: DEFAULT_GRAPH_AGENT,
-    guardrailDirs: DEFAULT_GUARDRAIL_DIRS,
     popupSizes: DEFAULT_POPUP_SIZES,
     gitLogColumns: DEFAULT_GIT_LOG_COLUMNS,
     remote: DEFAULT_REMOTE,
@@ -130,18 +117,16 @@ describe("mergeSettings", () => {
     expect(merged.panes.chat).toEqual({ ...DEFAULT_PANES.chat, fontSize: 18 });
   });
 
-  it("fills a missing pane, guardrail folder, popup size and diagram agent value from the defaults", () => {
+  it("fills a missing pane, popup size and diagram agent value from the defaults", () => {
     const persisted = {
       panes: { chat: { fontSize: 18 } },
       graphAgent: { model: "fable" },
-      guardrailDirs: { adr: "decisions" },
       popupSizes: { usages: { width: 900, height: 500 } },
     };
     const merged = mergeSettings(persisted, current);
     expect(merged.graphAgent).toEqual({ ...DEFAULT_GRAPH_AGENT, model: "fable" });
     expect(merged.panes.sidebar).toEqual(DEFAULT_PANES.sidebar);
     expect(merged.panes.diff).toEqual(DEFAULT_PANES.diff);
-    expect(merged.guardrailDirs).toEqual({ ...DEFAULT_GUARDRAIL_DIRS, adr: "decisions" });
     expect(merged.popupSizes).toEqual({ ...DEFAULT_POPUP_SIZES, usages: { width: 900, height: 500 } });
     expect(mergeSettings({ gitLogColumns: { author: 200 } }, current).gitLogColumns).toEqual({ ...DEFAULT_GIT_LOG_COLUMNS, author: 200 });
   });
@@ -160,7 +145,6 @@ describe("mergeSettings", () => {
     const merged = mergeSettings(undefined, current);
     expect(merged.panes).toEqual(DEFAULT_PANES);
     expect(merged.graphAgent).toEqual(DEFAULT_GRAPH_AGENT);
-    expect(merged.guardrailDirs).toEqual(DEFAULT_GUARDRAIL_DIRS);
     expect(merged.popupSizes).toEqual(DEFAULT_POPUP_SIZES);
   });
 });

@@ -388,7 +388,7 @@ main window. *Send to agent* posts a failed check with the end of its output int
 
 "Guardrails" in the chat header opens a window of its own over the repository's rules (`.claude/rules/*.md`,
 `CLAUDE.md`), skills (`.claude/skills/<name>/SKILL.md`) and architectural decision records
-(`docs/adr/NNNN-title.md`, or the existing ADR folder), one tab each (`apps/client/src/guardrails/`). Instructions,
+(`.claude/resources/adrs/NNNN-title.md`, or the folder `adrDir` of `hunt.json` names), one tab each (`apps/client/src/guardrails/`). Instructions,
 rules and skills are shown in a tree of the worktree's folders, since Claude Code also reads a `.claude/rules` or
 `.claude/skills` below any folder once it works on a file there; the "+" of a folder creates an entry in that folder's
 `.claude`. Entries open in a Markdown editor. "New …" and "+" open the page of a new file with the kind's template (ADRs
@@ -607,7 +607,9 @@ sets the model of the sessions the gateway's poller starts for the repository's 
 (`"swf": {"model": "claude-opus-5-5"}`; an alias such as `opus` is rejected, since its model changes with Claude Code's
 releases). An optional `checks` section names up to 32 commands such as the linter or the tests, each with a `command`
 and an optional `cwd` (`"checks": {"test": {"command": "npm test", "cwd": "apps/web"}}`); `services` is optional too,
-so a `hunt.json` may declare checks only. The client's Checks tab runs them: in the worktree on the Mac, or on the
+so a `hunt.json` may declare checks only. An optional `adrDir` names the folder of the repository's architectural
+decision records (`"adrDir": "docs/adr"`, `.claude/resources/adrs` without it), which the guardrails window lists and
+writes; the VM only validates it. The client's Checks tab runs the checks: in the worktree on the Mac, or on the
 session VM through `hunt-ctl check <worktree> <name>`, which runs the check as `agent` in a login shell with
 `FORCE_COLOR=1`, passes its output through and exits with its exit status.
 `session-config` writes one environment file per service to

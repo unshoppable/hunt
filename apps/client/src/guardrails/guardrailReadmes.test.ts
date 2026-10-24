@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_GUARDRAIL_DIRS } from "../state/settings";
+import { DEFAULT_GUARDRAIL_DIRS } from "./guardrails";
 import { guardrailReadme, needsReadme } from "./guardrailReadmes";
 
 const file = (name: string) => ({ name, isDir: false });

@@ -17,7 +17,7 @@ import { useSettingsStore } from "../state/settings";
 import { openGuardrailsWindow } from "../guardrails/openGuardrailsWindow";
 import { ensureInstructionSections } from "../guardrails/instructionSections";
 import { ensureGuardrailReadmes } from "../guardrails/guardrailReadmes";
-import { GUARDRAIL_CHAT_PATH, guardrailTask, KIND_LABELS, listGuardrails } from "../guardrails/guardrails";
+import { GUARDRAIL_CHAT_PATH, guardrailTask, KIND_LABELS, listGuardrails, readGuardrailDirs } from "../guardrails/guardrails";
 import { buildGuardrailRequest, buildTranscript, findGuardrailSuggestion, transcriptTail, type GuardrailSuggestion } from "./guardrailSuggestion";
 import { SubChatPopover, useSubChatPopover } from "./SubChatPopover";
 import { SaveGuardrailButton } from "./SaveGuardrailButton";
@@ -154,7 +154,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   );
   useEffect(() => {
     if (!worktreePath || isCreating) return;
-    void ensureGuardrailReadmes(sessionId, useSettingsStore.getState().guardrailDirs);
+    void readGuardrailDirs(sessionId).then((dirs) => ensureGuardrailReadmes(sessionId, dirs));
   }, [sessionId, worktreePath, isCreating, worktreeEditVersion]);
 
   const followEnd = useFollowScroll(scrollRef, columnRef, `${sessionId}:${hasSession}`);
@@ -192,7 +192,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
    * of this session as context.
    */
   async function openGuardrailChat(bounds: DOMRect) {
-    const listing = await listGuardrails(sessionId, useSettingsStore.getState().guardrailDirs);
+    const listing = await listGuardrails(sessionId);
     const transcript = buildTranscript(chat?.items ?? []);
     const task = `${guardrailTask(listing)}\n\n## Conversation the guardrail comes from\nThe user opened this chat from the session below; use it as the context of the request.\n\n${transcript}`;
     setGuardrailContext(transcriptTail(transcript, CONTEXT_PREVIEW_LINES));

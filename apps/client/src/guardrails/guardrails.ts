@@ -1,8 +1,50 @@
 import { commands } from "../ipc/commands";
-import { normalizeGuardrailDir, type GuardrailDirs, type GuardrailKind } from "../state/settings";
 import { baseName, dirName, isInsideFolder, splitPath } from "../ui/path";
 
-export type { GuardrailDirs, GuardrailKind } from "../state/settings";
+/** The kinds of guardrail that live in a folder of their own. */
+export type GuardrailDirKind = "rule" | "skill" | "agent" | "adr";
+
+/** The kinds of guardrail the guardrails window manages: `CLAUDE.md` instruction files anywhere in the worktree plus the folder-based kinds. */
+export type GuardrailKind = "instruction" | GuardrailDirKind;
+
+/** Worktree-relative folders the guardrails window reads and writes each folder-based kind in, without a trailing slash. */
+export type GuardrailDirs = Record<GuardrailDirKind, string>;
+
+/**
+ * The folders of a repository whose hunt.json sets no `adrDir`: Claude Code reads rules, skills and subagents only from
+ * these, while ADRs have no fixed place and go among the files Claude Code never loads on its own.
+ */
+export const DEFAULT_GUARDRAIL_DIRS: GuardrailDirs = { rule: ".claude/rules", skill: ".claude/skills", agent: ".claude/agents", adr: ".claude/resources/adrs" };
+
+/** The repository's Hunt configuration, whose optional `adrDir` names the ADR folder. */
+const HUNT_JSON = "hunt.json";
+
+/** `./docs/adr/` → `docs/adr`; null when nothing is left or the path is absolute or leaves the worktree. */
+export function normalizeGuardrailDir(input: string): string | null {
+  const trimmed = input.trim().replace(/\\/g, "/");
+  const segments = trimmed.split("/").filter((segment) => segment && segment !== ".");
+  if (!segments.length || trimmed.startsWith("/") || segments.includes("..")) return null;
+  return segments.join("/");
+}
+
+/**
+ * The ADR folder the text of a hunt.json sets as `adrDir`; the default without one or for an unreadable file or value,
+ * which `hunt-ctl session-config` reports on a session VM.
+ */
+export function adrDirOf(huntJson: string): string {
+  try {
+    const adrDir: unknown = JSON.parse(huntJson)?.adrDir;
+    return (typeof adrDir === "string" && normalizeGuardrailDir(adrDir)) || DEFAULT_GUARDRAIL_DIRS.adr;
+  } catch {
+    return DEFAULT_GUARDRAIL_DIRS.adr;
+  }
+}
+
+/** The guardrail folders of the session's worktree: Claude Code's fixed ones and the ADR folder of its hunt.json. */
+export async function readGuardrailDirs(sessionId: string): Promise<GuardrailDirs> {
+  const huntJson = await commands.readFile(sessionId, HUNT_JSON).catch(() => "");
+  return { ...DEFAULT_GUARDRAIL_DIRS, adr: adrDirOf(huntJson) };
+}
 
 export type Guardrail = {
   kind: GuardrailKind;
@@ -17,7 +59,7 @@ export type Guardrail = {
 export type GuardrailListRow = { type: "folder"; folder: string; name: string; depth: number } | { type: "entry"; entry: Guardrail; depth: number };
 
 export type GuardrailListing = Record<GuardrailKind, Guardrail[]> & {
-  /** The folders (see settings) the listing was read from and new guardrails go into. */
+  /** The folders (see `readGuardrailDirs`) the listing was read from and new guardrails go into. */
   dirs: GuardrailDirs;
   /** Every folder of the worktree holding a project file (see `foldersOf`), for the trees. */
   folders: string[];
@@ -499,8 +541,9 @@ async function listDeletedFilesOrEmpty(sessionId: string, dir: string): Promise<
   }
 }
 
-/** Reads the instruction files of the session's worktree and its rules, skills, agents and ADRs from the folders in `dirs`. */
-export async function listGuardrails(sessionId: string, dirs: GuardrailDirs): Promise<GuardrailListing> {
+/** Reads the instruction files of the session's worktree and its rules, skills, agents and ADRs from its guardrail folders. */
+export async function listGuardrails(sessionId: string): Promise<GuardrailListing> {
+  const dirs = await readGuardrailDirs(sessionId);
   const [files, agentEntries, adrEntries, deletedAdrs] = await Promise.all([
     listFilesOrEmpty(sessionId),
     listDirOrEmpty(sessionId, dirs.agent),

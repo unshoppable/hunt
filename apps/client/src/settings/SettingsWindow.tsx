@@ -10,7 +10,6 @@ import {
   AI_LANGUAGE_PRESETS,
   DEFAULT_AI_LANGUAGE,
   DEFAULT_GRAPH_AGENT,
-  DEFAULT_GUARDRAIL_DIRS,
   DEFAULT_PANES,
   DEFAULT_REMOTE,
   DEFAULT_SYSTEM_PROMPT,
@@ -20,8 +19,6 @@ import {
   isFolderIconRulesDefault,
   isIconRulesDefault,
   useSettingsStore,
-  type GuardrailDirs,
-  type GuardrailDirKind,
   type FolderIconRule,
   type IconRule,
   type NumericPaneSetting,
@@ -64,19 +61,17 @@ const SECTIONS: Section[] = [
 ];
 
 /**
- * The pages that are not a pane: what Hunt asks the agent for on its own, how sessions are deleted, where the
- * guardrails window keeps its files, which icon a file or folder gets, the keyboard shortcuts and whether a newer
- * Hunt exists.
+ * The pages that are not a pane: what Hunt asks the agent for on its own, how sessions are deleted, which icon a
+ * file or folder gets, the keyboard shortcuts and whether a newer Hunt exists.
  */
 const AGENT_PAGE = "agent";
 const SESSIONS_PAGE = "sessions";
 const REMOTE_PAGE = "remote";
-const GUARDRAILS_PAGE = "guardrails";
 const FILE_ICONS_PAGE = "fileIcons";
 const FOLDER_ICONS_PAGE = "folderIcons";
 const KEYMAP_PAGE = "keymap";
 const UPDATES_PAGE: SettingsPage = "updates";
-type Page = PaneKey | typeof AGENT_PAGE | typeof SESSIONS_PAGE | typeof REMOTE_PAGE | typeof GUARDRAILS_PAGE | typeof FILE_ICONS_PAGE | typeof FOLDER_ICONS_PAGE | typeof KEYMAP_PAGE | SettingsPage;
+type Page = PaneKey | typeof AGENT_PAGE | typeof SESSIONS_PAGE | typeof REMOTE_PAGE | typeof FILE_ICONS_PAGE | typeof FOLDER_ICONS_PAGE | typeof KEYMAP_PAGE | SettingsPage;
 
 /** Whether the window was booted ahead of time (`?warm=1`) and stays hidden until the main window shows it. */
 const isWarm = new URLSearchParams(window.location.search).has("warm");
@@ -94,7 +89,6 @@ const NAV_GROUPS: { title: string; pages: { key: Page; title: string }[] }[] = [
       { key: AGENT_PAGE, title: "Agent" },
       { key: SESSIONS_PAGE, title: "Sessions" },
       { key: REMOTE_PAGE, title: "Remote VM" },
-      { key: GUARDRAILS_PAGE, title: "Guardrails" },
       { key: FILE_ICONS_PAGE, title: "File icons" },
       { key: FOLDER_ICONS_PAGE, title: "Folder icons" },
       { key: KEYMAP_PAGE, title: "Keymap" },
@@ -102,14 +96,6 @@ const NAV_GROUPS: { title: string; pages: { key: Page; title: string }[] }[] = [
     ],
   },
   { title: "Panes", pages: SECTIONS.map((section) => ({ key: section.pane, title: section.title })) },
-];
-
-/** One folder field per folder-based guardrail kind, in the order of the guardrails window's tabs. */
-const GUARDRAIL_DIR_FIELDS: { kind: GuardrailDirKind; label: string; hint: string }[] = [
-  { kind: "rule", label: "Rules folder", hint: "Claude Code loads rules from .claude/rules; files elsewhere are not read on their own." },
-  { kind: "skill", label: "Skills folder", hint: "Claude Code loads skills from .claude/skills/<name>/SKILL.md; files elsewhere are not read on their own." },
-  { kind: "agent", label: "Agents folder", hint: "Claude Code loads subagents from .claude/agents/*.md; files elsewhere are not read on their own." },
-  { kind: "adr", label: "ADR folder", hint: "Architectural decision records, numbered NNNN-title.md." },
 ];
 
 const FIELD_LABELS: Record<keyof PaneSettings, { label: string; unit: string }> = {
@@ -129,7 +115,6 @@ const FIELD_LABELS: Record<keyof PaneSettings, { label: string; unit: string }> 
 export function SettingsWindow() {
   const resetPanes = useSettingsStore((state) => state.resetPanes);
   const setAiLanguage = useSettingsStore((state) => state.setAiLanguage);
-  const resetGuardrailDirs = useSettingsStore((state) => state.resetGuardrailDirs);
   const resetIconRules = useSettingsStore((state) => state.resetIconRules);
   const resetFolderIconRules = useSettingsStore((state) => state.resetFolderIconRules);
   const setConfirmSessionDelete = useSettingsStore((state) => state.setConfirmSessionDelete);
@@ -140,7 +125,6 @@ export function SettingsWindow() {
   const resetAll = () => {
     resetPanes();
     setAiLanguage(DEFAULT_AI_LANGUAGE);
-    resetGuardrailDirs();
     resetIconRules();
     resetFolderIconRules();
     setConfirmSessionDelete(true);
@@ -187,8 +171,6 @@ export function SettingsWindow() {
             <SessionsSection />
           ) : activePage === REMOTE_PAGE ? (
             <RemoteSection />
-          ) : activePage === GUARDRAILS_PAGE ? (
-            <GuardrailsSection />
           ) : activePage === FILE_ICONS_PAGE ? (
             <FileIconsSection />
           ) : activePage === FOLDER_ICONS_PAGE ? (
@@ -242,10 +224,6 @@ function NavItem({ title, active, onSelect }: { title: string; active: boolean; 
 function isPaneDefault(pane: PaneKey, settings: PaneSettings): boolean {
   const fields = SECTIONS.find((section) => section.pane === pane)?.fields ?? [];
   return fields.every((field) => settings[field] === DEFAULT_PANES[pane][field]);
-}
-
-function isGuardrailDirsDefault(dirs: GuardrailDirs): boolean {
-  return GUARDRAIL_DIR_FIELDS.every(({ kind }) => dirs[kind] === DEFAULT_GUARDRAIL_DIRS[kind]);
 }
 
 /** Page heading with the hint below and a reset button once a value differs from the defaults. */
@@ -876,27 +854,6 @@ function RemoteSecretRow({
       </div>
       {problem ? <p className="text-[13px] leading-snug text-red-300">{problem}</p> : null}
     </div>
-  );
-}
-
-/** Where the guardrails window reads and writes rules, skills and ADRs, as folders relative to the session's worktree. */
-function GuardrailsSection() {
-  const dirs = useSettingsStore((state) => state.guardrailDirs);
-  const setGuardrailDir = useSettingsStore((state) => state.setGuardrailDir);
-  const resetGuardrailDirs = useSettingsStore((state) => state.resetGuardrailDirs);
-
-  return (
-    <section>
-      <PageHeader title="Guardrails" hint="Folders of the guardrails window, relative to the repository root" isDefault={isGuardrailDirsDefault(dirs)} onReset={resetGuardrailDirs} />
-      <div className="flex flex-col gap-4">
-        {GUARDRAIL_DIR_FIELDS.map(({ kind, label, hint }) => (
-          <div key={kind} className="flex flex-col gap-1">
-            <TextRow label={label} value={dirs[kind]} onChange={(dir) => setGuardrailDir(kind, dir)} isMonospace />
-            <p className="text-[13px] leading-snug text-neutral-500">{hint}</p>
-          </div>
-        ))}
-      </div>
-    </section>
   );
 }
 

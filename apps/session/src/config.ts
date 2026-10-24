@@ -1,11 +1,12 @@
 /**
  * A repository's `hunt.json` in contract version 3: the services of the repository, which Hunt runs on a session's VM
  * as systemd units that the agent starts when its task needs them, each with the ignored files it needs in a worktree,
- * the checks a person runs from the client's Checks tab, and the settings of the sessions the gateway's poller starts
- * for the repository's `swf` issues.
+ * the checks a person runs from the client's Checks tab, the settings of the sessions the gateway's poller starts
+ * for the repository's `swf` issues, and the folder of its architectural decision records.
  *
  *   {
  *     "version": 3,
+ *     "adrDir": "docs/adr",
  *     "swf": { "model": "claude-opus-5-5" },
  *     "services": {
  *       "backend": {
@@ -51,6 +52,9 @@
  *   service, with the only fields `command` and `cwd`, which follow the rules of a service's. The client's Checks tab
  *   runs them in the worktree on the Mac, or on the session VM through `hunt-ctl check`, and shows their output and
  *   exit status.
+ * - `adrDir`: optional, the folder of the repository's architectural decision records, which the client's guardrails
+ *   window lists and writes; it follows the rules of a service's `cwd` and is `.claude/resources/adrs` without it. The
+ *   VM only validates it.
  *
  * `<short>` is the first 8 hex digits of the session ID. `configCli.ts` writes the session's environment, one
  * environment file per service and the configuration of the VM's preview proxy.
@@ -175,7 +179,7 @@ const ACCESS_LOG = "/var/log/hunt-proxy/access.log";
 /** Caddy names the access logger of a server `http.log.access.<default_logger_name>`. */
 const ACCESS_LOGGER = "preview";
 
-const ROOT_FIELDS = ["version", "swf", "services", "checks"];
+const ROOT_FIELDS = ["version", "adrDir", "swf", "services", "checks"];
 const SWF_FIELDS = ["model"];
 const MAX_MODEL_LENGTH = 128;
 /** The full ID of a Claude model, with an optional context hint: `claude-opus-5-5`, `claude-haiku-4-5-20251001`, `claude-sonnet-5-5[1m]`. */
@@ -508,6 +512,7 @@ function parseRoot(huntJson: unknown, problems: Problems): { services: ServiceCo
   if (root.version !== 3) {
     problems.add("version", "must be 3");
   }
+  folder(root.adrDir, "adrDir", problems);
   const swfModel = parseSwfModel(root.swf, problems);
   const declared = root.services === undefined ? undefined : record(root.services, "services", null, problems);
   const entries = Object.entries(declared ?? {});

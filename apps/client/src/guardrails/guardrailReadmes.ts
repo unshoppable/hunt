@@ -1,7 +1,7 @@
 import adrReadme from "../../prompts/adr.readme.md?raw";
 import rulesReadme from "../../prompts/rules.readme.md?raw";
 import { commands } from "../ipc/commands";
-import type { GuardrailDirs } from "../state/settings";
+import type { GuardrailDirs } from "./guardrails";
 
 const README_FILE = "README.md";
 

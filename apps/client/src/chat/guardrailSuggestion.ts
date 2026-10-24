@@ -1,5 +1,5 @@
 import type { ChatItem, GuardrailDeclineReason } from "../ipc/types";
-import type { GuardrailKind } from "../state/settings";
+import type { GuardrailKind } from "../guardrails/guardrails";
 import { QUESTION_MARKER } from "../../../../libs/domain/src/question.ts";
 import { stripChangeMarker } from "./changeReferences";
 

@@ -1,3 +1,9 @@
+## 0.125.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** usages, Go to File, Find in Files, sub chats, the rename preview, image views and the screenshot picker open as windows of their own that move anywhere, also outside the app; the button in their title row or Settings → Popups puts them back into the app window ([a4dd2a1](https://github.com/unshoppable/hunt/commit/a4dd2a1))
+
 ## 0.124.0 (2026-10-24)
 
 ### 🚀 Features

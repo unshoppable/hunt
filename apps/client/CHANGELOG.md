@@ -1,3 +1,9 @@
+## 0.113.1 (2026-10-24)
+
+### 🩹 Fixes
+
+- **client:** dragging a separator stops the session list and the chat at their minimum width; only their toggles collapse them ([6e0ce81](https://github.com/unshoppable/hunt/commit/6e0ce81))
+
 ## 0.113.0 (2026-10-24)
 
 ### 🚀 Features

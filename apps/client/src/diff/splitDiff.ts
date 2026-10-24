@@ -14,6 +14,7 @@ import {
   type UnchangedRegion,
 } from "./lineDiff";
 import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, changeMark } from "./monaco";
+import { borrowImportRoles } from "./semanticTokens";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const GRADIENT_ID = "hunt-diff-change";
@@ -119,6 +120,7 @@ export class SplitDiffController {
 
     this.originalModel = monaco.editor.createModel(options.original, options.language);
     this.modifiedModel = options.modifiedModel ?? monaco.editor.createModel(options.modified, options.language);
+    borrowImportRoles(this.originalModel, this.modifiedModel);
     this.original = monaco.editor.create(originalElement, {
       ...SHARED_EDITOR_OPTIONS,
       model: this.originalModel,

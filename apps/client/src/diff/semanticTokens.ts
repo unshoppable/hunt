@@ -60,6 +60,13 @@ export async function classifyModel(model: monaco.editor.ITextModel): Promise<Se
     const worker = await typeScriptWorkerFor(model);
     if (!worker) return null;
     classification = await worker.getSemanticClassifications(model.uri.toString(), importRoles.get(model) ?? {});
+    const source = importRoleSources.get(model);
+    if (source && classification.unresolvedImports.length) {
+      const roles = await borrowedImportRoles(model, source, classification.unresolvedImports);
+      if (roles) {
+        classification = await worker.getSemanticClassifications(model.uri.toString(), roles);
+      }
+    }
   } catch {
     return null;
   }
@@ -76,6 +83,42 @@ export async function classifyModel(model: monaco.editor.ITextModel): Promise<Se
     spans.push({ start: classifications[index], length: classifications[index + 1], role });
   }
   return spans;
+}
+
+/** The model each model borrows the roles of its unresolved imports from (see `borrowImportRoles`). */
+const importRoleSources = new WeakMap<monaco.editor.ITextModel, monaco.editor.ITextModel>();
+
+/**
+ * Colors each import of `model` that neither the worker nor the language server can resolve like the identifier of
+ * the same name in `source`. For the base revision of a diff, whose model has no path and whose imports may point to
+ * files that no longer exist, with the current side as `source`.
+ */
+export function borrowImportRoles(model: monaco.editor.ITextModel, source: monaco.editor.ITextModel): void {
+  importRoleSources.set(model, source);
+}
+
+/** `importRoles` of `model` plus a role for each of `imports`: the role of the first identifier in `source` with its local name, else -1. */
+async function borrowedImportRoles(
+  model: monaco.editor.ITextModel,
+  source: monaco.editor.ITextModel,
+  imports: UnresolvedImport[],
+): Promise<Record<string, number> | null> {
+  const sourceSpans = await classifyModel(source);
+  if (!sourceSpans || model.isDisposed()) return null;
+  const sourceText = source.getValue();
+  const rolesByName = new Map<string, number>();
+  for (const span of sourceSpans) {
+    const name = sourceText.slice(span.start, span.start + span.length);
+    if (!rolesByName.has(name)) {
+      rolesByName.set(name, span.role);
+    }
+  }
+  const roles = { ...importRoles.get(model) };
+  for (const unresolvedImport of imports) {
+    const name = model.getWordAtPosition(model.getPositionAt(unresolvedImport.offset))?.word;
+    roles[unresolvedImport.key] = (name ? rolesByName.get(name) : undefined) ?? -1;
+  }
+  return roles;
 }
 
 /**

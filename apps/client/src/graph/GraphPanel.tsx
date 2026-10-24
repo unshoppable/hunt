@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Background, Controls, MiniMap, ReactFlow, ReactFlowProvider, useEdgesState, useNodesState, useReactFlow, type EdgeTypes, type NodeTypes } from "@xyflow/react";
 import { openInEditorWindow } from "../ide/editorWindows";
 import { commands } from "../ipc/commands";
@@ -9,6 +9,7 @@ import { useHuntStore } from "../state/store";
 import { STATUS_BAR } from "../ui/bars";
 import { ChevronIcon, Spinner } from "../ui/icons";
 import { useHoverAnchor } from "../ui/hoverAnchor";
+import { isShortcut } from "../ui/shortcuts";
 import { errorText, useLoad } from "../ui/useLoad";
 import { useReviewCommentCounts } from "../review/reviewComments";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons";
@@ -18,9 +19,11 @@ import { DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton } from "./
 import { openDiffWindow } from "./diffWindows";
 import { FileFilterPopover } from "./FileFilterPopover";
 import { GraphFilters } from "./GraphFilters";
+import { GraphSearchField } from "./GraphSearchField";
+import { readIdentifiers, searchDiagramFiles } from "./graphSearch";
 import { collectImportEdges } from "./imports";
 import { edgeMarker, layoutDiagram, type DependencyEdge, type DiagramFlowNode } from "./layout";
-import { AliasChip, CommentCountsContext, DependencyEdgeView, FileNodeView, FolderGroupView, fileNodeMinWidth } from "./nodes";
+import { AliasChip, CommentCountsContext, DependencyEdgeView, FileNodeView, FolderGroupView, SearchHighlightContext, fileNodeMinWidth, type SearchHighlight } from "./nodes";
 import { REVIEW_LABELS, ReviewBars } from "./ReviewBars";
 import { parseGraph } from "./schema";
 
@@ -38,6 +41,7 @@ const FILE_HOVER_DELAY = 100;
  * share a translucent group area. A click on a changed file opens its diff in a window of its own; the "Files" popover hides files
  * from the diagram, the relevance and glob filters beside it hide files by the agent's review rating and by path. Directories read as their module and a shortened folder path, the full path shows on hover; the
  * legend above the footer lists the modules' root folders. The agent generates the diagram only on a click on the generate button.
+ * ⌘F opens a search over the paths and the symbols of the diagram's files that highlights the matches and moves the view to them.
  */
 export function GraphPanel({ sessionId }: { sessionId: string }) {
   const graphVersion = useHuntStore((state) => state.chats[sessionId]?.graphVersion ?? 0);
@@ -76,6 +80,13 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<DiagramFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<DependencyEdge>([]);
   const commentCounts = useReviewCommentCounts(sessionId);
+  /** The text of the ⌘F search; null while it is closed. */
+  const [searchQuery, setSearchQuery] = useState<string | null>(null);
+  const [activeMatch, setActiveMatch] = useState<string | null>(null);
+  /** Identifiers in the content of each file of the diagram, read while the search is open. */
+  const [identifiersByPath, setIdentifiersByPath] = useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const isSearchOpen = searchQuery !== null;
 
   useEffect(() => {
     setIsFilterOpen(false);
@@ -138,6 +149,32 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
     [graph, importEdges, files, stats, excluded, diagramFilter],
   );
   const checkedCount = files.filter((file) => !excluded.has(file.path)).length;
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || !isShortcut(event, "graph.find")) return;
+      event.preventDefault();
+      setSearchQuery((query) => query ?? "");
+      requestAnimationFrame(() => searchInputRef.current?.select());
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const diagramPaths = useMemo(() => diagram.nodes.map((node) => node.path), [diagram]);
+  useLoad(
+    () => readIdentifiers(sessionId, diagramPaths),
+    { onValue: setIdentifiersByPath, onError: (reason) => setError(errorText(reason)) },
+    [sessionId, diagramPaths, editVersion, isSearchOpen],
+    { isEnabled: isSearchOpen },
+  );
+  const deferredQuery = useDeferredValue(searchQuery ?? "");
+  const searchMatches = useMemo(() => searchDiagramFiles(diagramPaths, identifiersByPath, deferredQuery), [diagramPaths, identifiersByPath, deferredQuery]);
+  const searchHighlight = useMemo(() => (isSearchOpen && searchMatches ? { matches: searchMatches, activePath: activeMatch } : null), [isSearchOpen, searchMatches, activeMatch]);
+  const closeSearch = useCallback(() => {
+    setSearchQuery(null);
+    setActiveMatch(null);
+  }, []);
 
   useLoad(
     (signal) => layoutDiagram(diagram, signal),
@@ -254,39 +291,53 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
         <ReactFlowProvider key={`${layoutVersion}:${zoomScale}`}>
           {diagram.nodes.length ? (
             <CommentCountsContext value={commentCounts}>
-              <ReactFlow
-                nodes={nodes}
-                edges={edges}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
-                nodeTypes={NODE_TYPES}
-                edgeTypes={EDGE_TYPES}
-                onNodeClick={(_event, node) => node.type === "file" && activate(node.data)}
-                onNodeMouseEnter={(event, node) => node.type === "file" && fileHover.enter(node.id, event.currentTarget as HTMLElement)}
-                onNodeMouseLeave={(_event, node) => node.type === "file" && fileHover.leave()}
-                onEdgeMouseEnter={(_event, edge) => setHoveredEdgeId(edge.id)}
-                onEdgeMouseLeave={() => setHoveredEdgeId(null)}
-                fitView
-                fitViewOptions={fitViewOptions}
-                minZoom={0.2}
-                maxZoom={2 * Math.max(1, zoomScale)}
-                colorMode="dark"
-                nodesDraggable={false}
-                nodesConnectable={false}
-                elementsSelectable={false}
-                zIndexMode="manual"
-                proOptions={{ hideAttribution: true }}
-              >
-                <Background gap={24} color="#2f343d" />
-                <Controls showInteractive={false} fitViewOptions={fitViewOptions} />
-                <DiagramMiniMap />
-              </ReactFlow>
+              <SearchHighlightContext value={searchHighlight}>
+                <ReactFlow
+                  nodes={nodes}
+                  edges={edges}
+                  onNodesChange={onNodesChange}
+                  onEdgesChange={onEdgesChange}
+                  nodeTypes={NODE_TYPES}
+                  edgeTypes={EDGE_TYPES}
+                  onNodeClick={(_event, node) => node.type === "file" && activate(node.data)}
+                  onNodeMouseEnter={(event, node) => node.type === "file" && fileHover.enter(node.id, event.currentTarget as HTMLElement)}
+                  onNodeMouseLeave={(_event, node) => node.type === "file" && fileHover.leave()}
+                  onEdgeMouseEnter={(_event, edge) => setHoveredEdgeId(edge.id)}
+                  onEdgeMouseLeave={() => setHoveredEdgeId(null)}
+                  fitView
+                  fitViewOptions={fitViewOptions}
+                  minZoom={0.2}
+                  maxZoom={2 * Math.max(1, zoomScale)}
+                  colorMode="dark"
+                  nodesDraggable={false}
+                  nodesConnectable={false}
+                  elementsSelectable={false}
+                  zIndexMode="manual"
+                  proOptions={{ hideAttribution: true }}
+                >
+                  <Background gap={24} color="#2f343d" />
+                  <Controls showInteractive={false} fitViewOptions={fitViewOptions} />
+                  <DiagramMiniMap searchHighlight={searchHighlight} />
+                </ReactFlow>
+              </SearchHighlightContext>
             </CommentCountsContext>
           ) : (
             <div className="flex h-full items-center justify-center p-6 text-center text-sm text-neutral-500">
               {files.length ? "Every changed file is hidden by the filters." : "No uncommitted changes. The diagram shows the changed files of this session once there are some."}
             </div>
           )}
+          {isSearchOpen && diagram.nodes.length ? (
+            <GraphSearchField
+              query={searchQuery}
+              matches={searchMatches}
+              activePath={activeMatch}
+              minZoom={zoomScale}
+              inputRef={searchInputRef}
+              onQueryChange={setSearchQuery}
+              onActivePathChange={setActiveMatch}
+              onClose={closeSearch}
+            />
+          ) : null}
           {hoveredNode && dependencies.length ? (
             <DependencyCard
               node={hoveredNode}
@@ -350,15 +401,15 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
   );
 }
 
-/** Overview of the whole diagram in the bottom-right corner: drag or scroll it to move and zoom the view, click to center there. */
-function DiagramMiniMap() {
+/** Overview of the whole diagram in the bottom-right corner: drag or scroll it to move and zoom the view, click to center there. Search matches show blue. */
+function DiagramMiniMap({ searchHighlight }: { searchHighlight: SearchHighlight | null }) {
   const { getZoom, setCenter } = useReactFlow();
   return (
     <MiniMap<DiagramFlowNode>
       pannable
       zoomable
       ariaLabel="Diagram overview"
-      nodeColor={miniMapNodeColor}
+      nodeColor={(node) => (node.type === "file" && searchHighlight?.matches.has(node.id) ? "#60a5fa" : miniMapNodeColor(node))}
       nodeBorderRadius={4}
       maskStrokeWidth={1}
       onClick={(_event, position) => void setCenter(position.x, position.y, { zoom: getZoom(), duration: 200 })}

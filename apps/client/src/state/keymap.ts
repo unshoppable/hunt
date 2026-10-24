@@ -77,6 +77,7 @@ export const KEYMAP_COMMANDS = [
   { id: "editor.moveTabRight", label: "Move tab to the pane on the right", group: "Editor", scope: "app", defaults: ["Meta+r"] },
   { id: "editor.moveTabUp", label: "Move tab to the pane above", group: "Editor", scope: "app", defaults: ["Shift+Meta+e"] },
   { id: "editor.moveTabDown", label: "Move tab to the pane below", group: "Editor", scope: "app", defaults: ["Shift+Meta+r"] },
+  { id: "graph.find", label: "Find files by name or symbol in the dependency diagram", group: "Architecture", scope: "app", defaults: ["Meta+f"] },
 ] as const satisfies readonly KeymapCommand[];
 
 export type CommandId = (typeof KEYMAP_COMMANDS)[number]["id"];

@@ -16,20 +16,32 @@ export const HANDLE_STYLE = { opacity: 0, width: 1, height: 1, minWidth: 0, minH
 /** Review comments per file path (see `useReviewCommentCounts`), counted in the bottom-right corner of each file box. */
 export const CommentCountsContext = createContext<Map<string, number>>(new Map());
 
+/** The files the ⌘F search matches and the one the view moved to; null while the search is closed. */
+export type SearchHighlight = { matches: ReadonlySet<string>; activePath: string | null };
+export const SearchHighlightContext = createContext<SearchHighlight | null>(null);
+
 /**
  * One file: icon, name colored by git status and directory below the name; the line counts and review bars sit in the top-right corner,
- * the count of review comments in the bottom-right one. Context files without changes are dashed and dimmed.
+ * the count of review comments in the bottom-right one. Context files without changes are dashed and dimmed. A file the
+ * search matches gets a blue border, the active match a blue ring as well.
  */
 export function FileNodeView({ data, selected }: NodeProps<FileNode>) {
   const fileIconUrl = useFileIconUrl();
   const commentCount = useContext(CommentCountsContext).get(data.path) ?? 0;
+  const searchHighlight = useContext(SearchHighlightContext);
+  const borderStyle = data.isChanged ? "" : "border-dashed";
+  const frame = selected
+    ? "border-white/60 shadow-[0_0_0_3px_rgba(255,255,255,0.12)]"
+    : searchHighlight?.activePath === data.path
+      ? `${borderStyle} border-blue-400 shadow-[0_0_0_4px_rgba(96,165,250,0.4)]`
+      : searchHighlight?.matches.has(data.path)
+        ? `${borderStyle} border-blue-400/80`
+        : data.isChanged
+          ? "border-white/25"
+          : "border-dashed border-(--line) opacity-45";
 
   return (
-    <div
-      className={`relative flex h-full w-full items-stretch overflow-hidden rounded-lg border bg-(--surface-inset) text-neutral-100 transition-shadow ${
-        selected ? "border-white/60 shadow-[0_0_0_3px_rgba(255,255,255,0.12)]" : data.isChanged ? "border-white/25" : "border-dashed border-(--line) opacity-45"
-      }`}
-    >
+    <div className={`relative flex h-full w-full items-stretch overflow-hidden rounded-lg border bg-(--surface-inset) text-neutral-100 transition-shadow ${frame}`}>
       <Handle type="target" position={Position.Top} style={HANDLE_STYLE} />
       <Handle type="source" position={Position.Bottom} style={HANDLE_STYLE} />
       <CornerStats data={data} className="absolute top-2 right-3" />

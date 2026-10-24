@@ -27,7 +27,8 @@ export function parseQuery(raw: string): ParsedQuery {
 
 type TextMatch = { score: number; positions: number[] };
 
-function isBoundary(text: string, index: number): boolean {
+/** Whether `text[index]` starts a word: the first character, one after a separator or an upper-case letter after a lower-case one. */
+export function isBoundary(text: string, index: number): boolean {
   if (index === 0) return true;
   const previous = text[index - 1];
   if (previous === "/" || previous === "-" || previous === "_" || previous === "." || previous === " ") return true;

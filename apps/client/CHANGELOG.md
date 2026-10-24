@@ -1,3 +1,9 @@
+## 0.123.1 (2026-10-24)
+
+### 🩹 Fixes
+
+- **client:** in the Desktop tab ⌘ shortcuts act as Ctrl shortcuts in the VM, characters typed with ⌥ such as @ | [ arrive, and letter shortcuts like ⌘Z work on any keyboard layout ([9e14999](https://github.com/unshoppable/hunt/commit/9e14999))
+
 ## 0.123.0 (2026-10-24)
 
 ### 🚀 Features

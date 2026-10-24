@@ -1,3 +1,9 @@
+## 0.114.1 (2026-10-24)
+
+### 🩹 Fixes
+
+- **client:** a file removed from the index but still on disk is listed once, and the changelist renders a larger buffer of rows that changes in steps ([6f928ae](https://github.com/unshoppable/hunt/commit/6f928ae))
+
 ## 0.114.0 (2026-10-24)
 
 ### 🚀 Features

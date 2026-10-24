@@ -727,7 +727,9 @@ a tmux server of its own on the socket `$TMPDIR/hunt-tmux/<root session id>` (`h
 the windows of a local session and of its sub chats are one list. Whenever a local agent starts or a terminal opens,
 Hunt writes the worktree's `.hunt/tmux`, a wrapper that starts that binary on that socket with `.hunt/tmux.conf`
 (`apps/client/src-tauri/src/tmux.rs`); every tmux call of Hunt and of the agents goes through it, so the server always
-starts with Hunt's configuration. The agents on this Mac get its path in their system prompt
+starts with Hunt's configuration. A server that outlived an app run that ended without quitting (a crash, a restart of
+`tauri dev`) loads the configuration the first time the app writes it in a run, and each of its live panes without a log
+pipe gets one. The agents on this Mac get its path in their system prompt
 (`apps/client/prompts/terminals.system-prompt.md`) and run their long-running processes as windows of its session `app`.
 The configuration's hooks give every pane without a log pipe one into `.hunt/logs/desktop/<window name>.log`, after a
 new window, pane or session and after any `pipe-pane`, so that a `pipe-pane -o`, which closes an open pipe, never ends

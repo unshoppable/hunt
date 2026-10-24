@@ -8,6 +8,7 @@
 //! tmux command line, `tmux` there and the quoted `.hunt/tmux` here. The VM's `/etc/tmux.conf`
 //! (`apps/session/vm/tmux.conf`) logs its windows with the same hooks as `config_text`. Knows nothing about Tauri.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -38,6 +39,9 @@ pub const DESKTOP_LOGS: &str = "desktop";
 
 /// Size above which a window's log moves to `<name>.log.1` when the window starts, as `hunt-service` does on a VM.
 const MAX_LOG_BYTES: u64 = 20 * 1024 * 1024;
+
+/// Worktrees whose server `LocalTmux::prepare` gave the current configuration in this app run.
+static RELOADED_WORKTREES: std::sync::Mutex<BTreeSet<PathBuf>> = std::sync::Mutex::new(BTreeSet::new());
 
 /// The folder of the servers' sockets in the user's temporary folder; a debug build has its own, so that a Hunt in
 /// development never ends the servers of the installed one.
@@ -221,8 +225,9 @@ pub struct LocalTmux {
 
 impl LocalTmux {
     /// Writes the worktree's `.hunt/tmux` and `.hunt/tmux.conf` for the family whose root session is `family_id` and
-    /// creates the folder of its logs; files that are current stay untouched.
-    pub fn prepare(worktree: &Path, family_id: Uuid) -> Result<Self, String> {
+    /// creates the folder of its logs; files that are current stay untouched. The first call for a worktree in an app
+    /// run also loads the configuration into its server, if one runs (`reload`).
+    pub async fn prepare(worktree: &Path, family_id: Uuid) -> Result<Self, String> {
         let binary = bundled_binary()?;
         let socket = socket_path(family_id)?;
         let socket_dir = socket.parent().unwrap_or(Path::new("/"));
@@ -234,7 +239,21 @@ impl LocalTmux {
         let config = worktree.join(CONFIG_FILE);
         write_if_changed(&config, &config_text(&logs), 0o644)?;
         write_if_changed(&worktree.join(WRAPPER_FILE), &wrapper_text(&binary, &socket, &config), 0o755)?;
-        Ok(LocalTmux { worktree: worktree.to_path_buf() })
+        let tmux = LocalTmux { worktree: worktree.to_path_buf() };
+        if RELOADED_WORKTREES.lock().unwrap().insert(worktree.to_path_buf()) {
+            if let Err(error) = tmux.reload().await {
+                eprintln!("loading the tmux configuration of {} failed: {error}", worktree.display());
+            }
+        }
+        Ok(tmux)
+    }
+
+    /// Loads `.hunt/tmux.conf` into the family's server, if one runs, and gives each live pane without a log pipe one. A
+    /// server outlives an app run that ends without quitting (a crash, a restart of `tauri dev`) and keeps the hooks of
+    /// the configuration it started with until it loads another.
+    async fn reload(&self) -> Result<(), String> {
+        let config = shell_quote(&self.worktree.join(CONFIG_FILE).to_string_lossy());
+        self.run(&reload_script(&self.tmux(), &config)).await.map(|_| ())
     }
 
     /// The `.hunt/tmux` every tmux command on this Mac goes through.
@@ -348,6 +367,18 @@ async fn kill_server_at(socket: &Path) -> Result<(), String> {
         let _ = std::fs::remove_file(socket);
     }
     Ok(())
+}
+
+/// The `sh` script of `LocalTmux::reload`, which ends quietly when no server runs. The empty `pipe-pane` runs the
+/// `after-pipe-pane` hook of `config_text`, which opens the pane's log.
+fn reload_script(tmux: &str, config: &str) -> String {
+    format!(
+        "{tmux} list-sessions >/dev/null 2>&1 || exit 0\n\
+         {tmux} source-file {config} || exit 1\n\
+         for pane in $({tmux} list-panes -a -F '#{{?#{{||:#{{pane_pipe}},#{{pane_dead}}}},,#{{pane_id}}}}'); do\n  \
+         {tmux} pipe-pane -t \"$pane\" || exit 1\n\
+         done\n"
+    )
 }
 
 /// The tmux next to Hunt's executable, where Tauri puts the sidecar (`bundle.externalBin`); a debug build, the tests
@@ -560,7 +591,7 @@ mod tests {
         let worktree = tempfile::tempdir().unwrap();
         std::fs::write(worktree.path().join("package.json"), r#"{"scripts":{"fail":"echo failing && exit 3"}}"#).unwrap();
         let family_id = Uuid::new_v4();
-        let tmux = LocalTmux::prepare(worktree.path(), family_id).unwrap();
+        let tmux = LocalTmux::prepare(worktree.path(), family_id).await.unwrap();
         let big_log = desktop_logs(worktree.path()).join("greeting.log");
         std::fs::File::create(&big_log).unwrap().set_len(MAX_LOG_BYTES + 1).unwrap();
 
@@ -632,6 +663,32 @@ mod tests {
         assert!(tmux.list_windows().await.unwrap().iter().all(|window| window.id != script_window));
         kill_server(family_id).await.unwrap();
         assert!(tmux.list_windows().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn preparing_gives_a_server_that_runs_already_the_current_configuration_and_its_panes_a_log() {
+        let worktree = tempfile::tempdir().unwrap();
+        let family_id = Uuid::new_v4();
+        let logs = desktop_logs(worktree.path());
+        std::fs::create_dir_all(&logs).unwrap();
+        let old_config = worktree.path().join("old.conf");
+        let old_hook = format!("pipe-pane -o \"exec cat >> {}/#{{window_name}}.log\"", logs.display());
+        std::fs::write(&old_config, format!("set-hook -g after-new-session '{old_hook}'\n")).unwrap();
+        let socket = socket_path(family_id).unwrap();
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let (binary, socket, old_config) = (bundled_binary().unwrap(), socket.to_string_lossy().into_owned(), old_config.to_string_lossy().into_owned());
+        let old_server = |args: &[&str]| shell_command(&binary.to_string_lossy(), &[&["-S", socket.as_str(), "-f", old_config.as_str()], args].concat());
+        let unprepared = LocalTmux { worktree: worktree.path().to_path_buf() };
+        unprepared.run(&old_server(&["new-session", "-d", "-s", APP_SESSION, "-n", "shell", "sh"])).await.unwrap();
+        unprepared.run(&old_server(&["new-session", "-d", "-t", APP_TARGET, "-s", "hunt-view-old"])).await.unwrap();
+        let is_logging = old_server(&["display-message", "-p", "-t", "=app:shell", "#{pane_pipe}"]);
+        assert_eq!(unprepared.run(&is_logging).await.unwrap().trim(), "0", "the old hook kept the log");
+
+        let tmux = LocalTmux::prepare(worktree.path(), family_id).await.unwrap();
+        assert_eq!(tmux.run(&is_logging).await.unwrap().trim(), "1");
+        tmux.run(&old_server(&["send-keys", "-t", "=app:shell", "echo healed", "Enter"])).await.unwrap();
+        wait_for_log(worktree.path(), "shell", "healed").await;
+        kill_server(family_id).await.unwrap();
     }
 
     #[test]

@@ -544,7 +544,7 @@ async fn activate(
     let sync_owner = transport.sync_owner();
     // An agent on this Mac finds the worktree's tmux, which its system prompt names, ready.
     if sync_owner.is_none() && record.worktree_path.is_dir() {
-        if let Err(error) = LocalTmux::prepare(&record.worktree_path, record.parent_id.unwrap_or(id)) {
+        if let Err(error) = LocalTmux::prepare(&record.worktree_path, record.parent_id.unwrap_or(id)).await {
             eprintln!("preparing the tmux of session {id} failed: {error}");
         }
     }
@@ -951,7 +951,7 @@ pub async fn open_terminal(
     let events = forward_terminal_events(&app, window.label(), terminal_id);
     let terminal = match &process {
         TerminalTarget::Window { id: window_id, machine: Machine::Desktop } => {
-            let (record, tmux) = local_tmux(&app, id)?;
+            let (record, tmux) = local_tmux(&app, id).await?;
             let args = tmux::view_args(&tmux::view_name(terminal_id), window_id)?;
             Terminal::spawn(&tmux.wrapper().to_string_lossy(), &args, Some(&record.worktree_path), &terminal::foreign_env(), size, events)?
         }
@@ -966,9 +966,9 @@ pub async fn open_terminal(
 
 /// The family's tmux server on this Mac for the session `id`, the server of the family's root session, with the
 /// worktree's `.hunt/tmux` written.
-fn local_tmux(app: &AppHandle, id: Uuid) -> Result<(SessionRecord, LocalTmux), String> {
+async fn local_tmux(app: &AppHandle, id: Uuid) -> Result<(SessionRecord, LocalTmux), String> {
     let record = worktree_session(app, id)?;
-    let tmux = LocalTmux::prepare(&record.worktree_path, record.parent_id.unwrap_or(record.id))?;
+    let tmux = LocalTmux::prepare(&record.worktree_path, record.parent_id.unwrap_or(record.id)).await?;
     Ok((record, tmux))
 }
 
@@ -995,7 +995,7 @@ pub async fn terminal_windows(app: AppHandle, registry: State<'_, SessionRegistr
         if !store::find_session(&app, id)?.worktree_path.is_dir() {
             return Ok(Vec::new());
         }
-        return local_tmux(&app, id)?.1.list_windows().await;
+        return local_tmux(&app, id).await?.1.list_windows().await;
     }
     let (target, is_running) = remote_vm_state(&app, &registry, id, "list the terminal windows").await?;
     if !is_running {
@@ -1011,7 +1011,7 @@ pub async fn terminal_windows(app: AppHandle, registry: State<'_, SessionRegistr
 pub async fn open_shell_window(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, directory: String, script: Option<String>) -> Result<String, String> {
     git::ensure_inside_worktree(&directory)?;
     if store::find_session(&app, id)?.remote.is_none() {
-        let (record, tmux) = local_tmux(&app, id)?;
+        let (record, tmux) = local_tmux(&app, id).await?;
         let folder = worktree_file(&record, &directory)?;
         return match script {
             Some(script) => tmux.open_script_window(&folder, &script).await,
@@ -1031,7 +1031,7 @@ pub async fn open_shell_window(app: AppHandle, registry: State<'_, SessionRegist
 #[tauri::command]
 pub async fn rerun_terminal_window(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, machine: Machine, window_id: String) -> Result<(), String> {
     if machine == Machine::Desktop {
-        return local_tmux(&app, id)?.1.rerun_window(&window_id).await;
+        return local_tmux(&app, id).await?.1.rerun_window(&window_id).await;
     }
     let target = running_remote(&app, &registry, id, "run the script again").await?;
     remote::terminal::rerun_window(&Ssh::open(&target.vm, &ssh_dir()?).await?, &window_id).await
@@ -1041,7 +1041,7 @@ pub async fn rerun_terminal_window(app: AppHandle, registry: State<'_, SessionRe
 #[tauri::command]
 pub async fn close_terminal_window(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, machine: Machine, window_id: String) -> Result<(), String> {
     if machine == Machine::Desktop {
-        return local_tmux(&app, id)?.1.kill_window(&window_id).await;
+        return local_tmux(&app, id).await?.1.kill_window(&window_id).await;
     }
     let target = running_remote(&app, &registry, id, "close the terminal window").await?;
     remote::terminal::kill_window(&Ssh::open(&target.vm, &ssh_dir()?).await?, &window_id).await

@@ -435,7 +435,7 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
       "systemctl disable --quiet hunt-service@admin.service hunt-service@api.service",
       "systemctl stop hunt-service@*.service",
       "systemctl reset-failed hunt-service@*.service",
-      "systemctl disable --quiet --now hunt-proxy.service",
+      "systemctl disable --quiet --now hunt-proxy.service hunt-review.service hunt-desktop.service",
     ]);
     expect(huntCtlJson("service", "status").services.map((service: { enabled: boolean; state: string }) => [service.enabled, service.state])).toEqual([
       [false, "stopped"],
@@ -455,7 +455,7 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
       "systemctl disable --quiet hunt-service@ui.service",
       "systemctl stop hunt-service@*.service",
       "systemctl reset-failed hunt-service@*.service",
-      "systemctl disable --quiet --now hunt-proxy.service",
+      "systemctl disable --quiet --now hunt-proxy.service hunt-review.service",
     ]);
     expect(sh("cat /run/fake-systemd/hunt-service@api.service /run/fake-systemd/hunt-service@ui.service").stdout).toBe("inactive\ninactive\n");
     expect(sh("ls -A /etc/systemd/system/multi-user.target.wants").stdout).toBe("");

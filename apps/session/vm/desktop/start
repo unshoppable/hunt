@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# The desktop of a session VM (hunt-desktop.service), run as the agent: a headless sway, the Chromium the agent drives
+# over CDP on 127.0.0.1:9222 (./browser) and the Waymote gateway on 127.0.0.1:9230, which streams the desktop as H.264
+# to the Desktop tab of the desktop client through hunt-proxy's desktop server on 127.0.0.1:9231. The client resizes
+# the output to its tab. When any of the three exits, the script exits and systemd starts the desktop again.
+set -euo pipefail
+
+readonly DESKTOP_DIR=${BASH_SOURCE[0]%/*}
+readonly WAYMOTE_DIR=/opt/hunt/agent/waymote
+readonly GATEWAY_LISTEN=127.0.0.1:9230
+: "${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be the runtime folder of the desktop}"
+
+# sway renders in software without input devices; the output is created by the headless backend.
+export WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman
+# A socket left by an earlier run would be found before sway creates its own.
+rm -f -- "$XDG_RUNTIME_DIR"/wayland-*
+sway --config "$DESKTOP_DIR/sway.config" &
+
+for _ in $(seq 1 200); do
+  socket=$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -type s -name 'wayland-*' -printf '%f\n' | head -n 1)
+  [[ -n $socket ]] && break
+  sleep 0.05
+done
+[[ -n ${socket:-} ]] || { echo "sway did not create a Wayland socket" >&2; exit 1; }
+export WAYLAND_DISPLAY=$socket
+
+"$DESKTOP_DIR/browser" &
+"$WAYMOTE_DIR/bin/waymote-gateway" -listen "$GATEWAY_LISTEN" -streamd "$WAYMOTE_DIR/bin/waymote-streamd" \
+  -frame-rate 30 -bitrate 8000 -audio-source '' &
+
+wait -n
+exit 1

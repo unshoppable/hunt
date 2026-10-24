@@ -15,7 +15,8 @@
  *         "remoteSecrets": { "OPENAI_API_KEY": "$MED_OPENAI_API_KEY" },
  *         "worktreeInclude": ["apps/backend/.env.private"]
  *       },
- *       "ui": { "command": "npm start", "cwd": "apps/ui", "port": 4200, "env": { "BACKEND_ORIGIN": "${services.backend.publicUrl}" } }
+ *       "ui": { "command": "npm start", "cwd": "apps/ui", "port": 4200, "env": { "BACKEND_ORIGIN": "${services.backend.publicUrl}" } },
+ *       "storybook": { "command": "npm run storybook", "port": 6006, "review": false }
  *     },
  *     "checks": {
  *       "format": { "command": "npm run format:check" },
@@ -33,6 +34,8 @@
  * - `tls`: whether the service speaks HTTPS, false by default; its certificate is not checked, so a self-signed one works.
  * - `guarded`: true by default. Every service answers at `https://<short>-<port>.<domain>` behind IAP's Google login; a
  *   service with false also answers at `https://<short>-<port>-open.<domain>` without IAP, behind the app's own login only.
+ * - `review`: true by default: the HTML pages of the service's guarded host get Hunt's review widget, with which a
+ *   person comments on an element of the page for the agent (`review/server.ts`); false leaves its pages unchanged.
  * - `env`: variables of this service only. Keys match `^[A-Z_][A-Z0-9_]*$` and do not start with `CLAUDE_` or `HUNT_`;
  *   values are single lines. `${services.<name>.publicUrl}` in a value becomes the URL of that service, its open URL when
  *   it is not guarded; every other `${…}` but contract 2's `${HUNT_…}` stays as it is.
@@ -71,6 +74,8 @@ export interface ServiceConfig {
   port: number;
   tls: boolean;
   guarded: boolean;
+  /** Whether the HTML pages of its guarded host get the review widget. */
+  review: boolean;
   /** The service's variables as hunt.json declares them, placeholders unresolved. */
   env: Record<string, string>;
   /** The service's variables whose values are remote secrets: variable → name of the remote secret, without the `$`. */
@@ -141,6 +146,12 @@ export interface CaddyConfig {
           /** What answers a request that `routes` failed to deliver. */
           errors: { routes: CaddyRoute[] };
         };
+        desktop: {
+          listen: string[];
+          protocols: string[];
+          automatic_https: { disable: boolean };
+          routes: CaddyRoute[];
+        };
       };
     };
   };
@@ -164,6 +175,10 @@ const RESERVED_PORTS: ReadonlyMap<number, string> = new Map([
   [2376, "the Docker API over TLS"],
   [5355, "LLMNR of systemd-resolved"],
   [8080, "the session VM's preview proxy"],
+  [9222, "the remote debugging port of the desktop's Chromium"],
+  [9230, "the desktop's Waymote gateway"],
+  [9231, "the desktop's proxy for the desktop client"],
+  [9232, "the review server of the preview proxy"],
   [20201, "the Google Ops Agent's OpenTelemetry collector"],
   [20202, "the Google Ops Agent's Fluent Bit"],
 ]);
@@ -178,6 +193,23 @@ const PROXY_ADMIN = "unix//run/hunt-proxy/admin.sock";
 const ACCESS_LOG = "/var/log/hunt-proxy/access.log";
 /** Caddy names the access logger of a server `http.log.access.<default_logger_name>`. */
 const ACCESS_LOGGER = "preview";
+/** The review server of `hunt-review.service` (`review/server.ts`), which adds the review widget to the guarded pages. */
+const REVIEW_SERVER = "127.0.0.1:9232";
+/** The paths of the review server on every guarded port host: the widget's script and where it posts annotations. */
+const REVIEW_PATHS = "/__hunt/*";
+/** The headers that tell the review server the dev server behind a page; hunt-proxy sets them, a browser's are overwritten. */
+const UPSTREAM_PORT_HEADER = "X-Hunt-Upstream-Port";
+const UPSTREAM_TLS_HEADER = "X-Hunt-Upstream-Tls";
+/** A browser loading a page, which the review server answers. */
+const PAGE_LOAD = { method: ["GET"], header: { Accept: ["*text/html*"] } };
+/** How the review server marks the 502 of a dev server that refused the connection. */
+const UNREACHABLE_MARK = { "X-Hunt-Upstream": ["unreachable"] };
+/** Where the desktop proxy listens; the desktop client reaches it through an SSH port forward. */
+const DESKTOP_LISTEN = "127.0.0.1:9231";
+/** The Waymote gateway of `hunt-desktop.service`, which streams the desktop. */
+const WAYMOTE_GATEWAY = "127.0.0.1:9230";
+/** The origins of the desktop client's pages: the bundled app and the Vite dev server of `tauri dev`. */
+const DESKTOP_ORIGINS = ["tauri://localhost", "http://localhost:1420"];
 
 const ROOT_FIELDS = ["version", "adrDir", "swf", "services", "checks"];
 const SWF_FIELDS = ["model"];
@@ -188,7 +220,7 @@ const MODEL_RULE = `must be the full ID of a Claude model such as "claude-opus-5
 /** The rule a `worktreeInclude` entry must follow. */
 export const WORKTREE_INCLUDE_RULE = "must be a glob pattern relative to the worktree: one line of at most 255 characters, not absolute, without a .. segment";
 const MAX_WORKTREE_INCLUDE = 64;
-const SERVICE_FIELDS = ["command", "cwd", "port", "tls", "guarded", "env", "remoteSecrets", "worktreeInclude"];
+const SERVICE_FIELDS = ["command", "cwd", "port", "tls", "guarded", "review", "env", "remoteSecrets", "worktreeInclude"];
 const SERVICE_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 const MAX_SERVICES = 64;
 const CHECK_FIELDS = ["command", "cwd"];
@@ -385,6 +417,16 @@ export function servicesPrompt(services: readonly ServiceConfig[], host: Session
  * NOT_RUNNING_BODY, which tells a stranger nothing about the services. Every request except the health check goes to
  * ACCESS_LOG as one JSON line; Caddy writes Cookie and Authorization headers there redacted. Caddy's own warnings and
  * errors, such as an upstream that refuses the connection, go to stderr, hunt-proxy's journal, as one readable line each.
+ *
+ * On the port hosts, never the open hosts, the review server on REVIEW_SERVER answers REVIEW_PATHS and the page loads
+ * (GET with `text/html` in Accept), except those of the services with `"review": false`: it adds the review widget to
+ * the HTML it fetches from the port in UPSTREAM_PORT_HEADER, over HTTPS when UPSTREAM_TLS_HEADER is `true`, with the
+ * same Host header and without IAP's headers and cookies. Its 502 for a port nothing listens on (UNREACHABLE_MARK)
+ * becomes an error of the proxy, which then answers with the same 503 as for a request it proxied itself.
+ *
+ * A second server on DESKTOP_LISTEN passes the desktop client's requests on to the Waymote gateway and answers every
+ * other one 403. The gateway accepts a WebSocket only from its own origin, which the desktop client's pages cannot have,
+ * so the proxy lets DESKTOP_ORIGINS through as that origin; a web page that reaches the forwarded port stays refused.
  */
 export function proxyConfig(services: readonly ServiceConfig[], host: SessionHost): CaddyConfig {
   const hostMatch = (name: string, pattern: string) => ({
@@ -432,7 +474,15 @@ export function proxyConfig(services: readonly ServiceConfig[], host: SessionHos
                 .map((service) => route({ host: [openHost(host, service.port)] }, proxy(`localhost:${service.port}`, service.tls))),
               route(hostMatch("open", "[0-9]+-open"), notFound(NOT_OPEN_BODY)),
               ...services
-                .filter((service) => service.tls)
+                .filter((service) => !service.review)
+                .map((service) => route({ host: [portHost(host, service.port)] }, proxy(`localhost:${service.port}`, service.tls))),
+              route({ ...hostMatch("port", PORT_PATTERN), path: [REVIEW_PATHS] }, proxy(REVIEW_SERVER, false)),
+              ...services
+                .filter((service) => service.review && service.tls)
+                .map((service) => route({ host: [portHost(host, service.port)], ...PAGE_LOAD }, reviewProxy(String(service.port), true))),
+              route({ ...hostMatch("port", PORT_PATTERN), ...PAGE_LOAD }, reviewProxy("{http.regexp.port.1}", false)),
+              ...services
+                .filter((service) => service.review && service.tls)
                 .map((service) => route({ host: [portHost(host, service.port)] }, proxy(`localhost:${service.port}`, true))),
               route(hostMatch("port", PORT_PATTERN), proxy("localhost:{http.regexp.port.1}", false)),
               { handle: [{ handler: "static_response", status_code: 404 }] },
@@ -450,25 +500,51 @@ export function proxyConfig(services: readonly ServiceConfig[], host: SessionHos
               ],
             },
           },
+          desktop: {
+            listen: [DESKTOP_LISTEN],
+            protocols: ["h1"],
+            automatic_https: { disable: true },
+            routes: [
+              route(
+                { expression: `{http.request.header.Origin} in [${DESKTOP_ORIGINS.map((origin) => `'${origin}'`).join(", ")}]` },
+                {
+                  handler: "reverse_proxy",
+                  upstreams: [{ dial: WAYMOTE_GATEWAY }],
+                  flush_interval: -1,
+                  headers: { request: { set: { Host: [WAYMOTE_GATEWAY], Origin: [`http://${WAYMOTE_GATEWAY}`] } } },
+                },
+              ),
+              { handle: [{ handler: "static_response", status_code: 403 }] },
+            ],
+          },
         },
       },
     },
   };
 }
 
-function proxy(dial: string, tls: boolean): Record<string, unknown> {
+/** Passes the request on to `dial` with its own Host header and without IAP's headers and cookies; `headers` are set on top. */
+function proxy(dial: string, tls: boolean, headers: Record<string, string[]> = {}): Record<string, unknown> {
   return {
     handler: "reverse_proxy",
     upstreams: [{ dial }],
     flush_interval: -1,
     headers: {
       request: {
-        set: { Host: ["{http.request.hostport}"] },
+        set: { Host: ["{http.request.hostport}"], ...headers },
         delete: IAP_HEADERS,
         replace: { Cookie: [{ search_regexp: IAP_COOKIE, replace: "" }] },
       },
     },
     ...(tls ? { transport: { protocol: "http", tls: { insecure_skip_verify: true } } } : {}),
+  };
+}
+
+/** Passes a page load on to the review server for the dev server on `port`; a port nothing listens on becomes an error. */
+function reviewProxy(port: string, tls: boolean): Record<string, unknown> {
+  return {
+    ...proxy(REVIEW_SERVER, false, { [UPSTREAM_PORT_HEADER]: [port], [UPSTREAM_TLS_HEADER]: [String(tls)] }),
+    handle_response: [{ match: { status_code: [502], headers: UNREACHABLE_MARK }, routes: [{ handle: [{ handler: "error", status_code: 502 }] }] }],
   };
 }
 
@@ -604,11 +680,12 @@ function parseService(name: string, value: unknown, names: ReadonlySet<string>, 
   const port = checkPort(fields.port, at(path, "port"), problems);
   const tls = flag(fields.tls, false, at(path, "tls"), problems);
   const guarded = flag(fields.guarded, true, at(path, "guarded"), problems);
+  const review = flag(fields.review, true, at(path, "review"), problems);
   const env = environment(fields.env, at(path, "env"), names, problems);
   const secrets = remoteSecrets(fields.remoteSecrets, at(path, "remoteSecrets"), env, problems);
   const include = worktreeInclude(fields.worktreeInclude, at(path, "worktreeInclude"), problems);
   if (port === undefined) return undefined;
-  return { name, command, cwd, port, tls, guarded, env, remoteSecrets: secrets, worktreeInclude: include };
+  return { name, command, cwd, port, tls, guarded, review, env, remoteSecrets: secrets, worktreeInclude: include };
 }
 
 function commandLine(value: unknown, path: string, problems: Problems): string {

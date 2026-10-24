@@ -1,0 +1,26 @@
+# The desktop of a session VM (vm/desktop/start): a headless sway with the Chromium that the agent drives over CDP and
+# the user watches and takes over in the Desktop tab of the desktop client, which the Waymote gateway streams. All of it
+# listens on 127.0.0.1 only; the client reaches the gateway through an SSH port forward to hunt-proxy's desktop server.
+# `hunt-ctl start` enables the unit, so it comes back when the VM boots; it runs only once `hunt-ctl install-tools`
+# installed Waymote.
+[Unit]
+Description=Desktop of Hunt's session VM
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/hunt/agent/waymote/bin/waymote-gateway
+
+[Service]
+# Names the service's journal entries; Cloud Logging shows it as the label service.
+SyslogIdentifier=hunt-desktop
+User=agent
+Group=agent
+WorkingDirectory=/home/agent
+RuntimeDirectory=hunt-desktop
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=/run/hunt-desktop
+ExecStart=/srv/hunt/current/vm/desktop/start
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

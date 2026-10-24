@@ -167,6 +167,9 @@ See [CLAUDE.md](CLAUDE.md) for the conventions contributors and coding agents fo
 `apps/client/src-tauri/src/acp/` spawns `@agentclientprotocol/claude-agent-acp` per session and forwards every
 `session/update` to the UI as the `acp:update` event; permission requests become `acp:permission`, and one the agent
 withdraws with `$/cancel_request` becomes `acp:permission-withdrawn`, which removes it from the chat.
+A local agent starts with `CLAUDE_CODE_ENABLE_CFC=1`, so it drives the user's own Chrome through Claude in Chrome when
+the extension is installed and Claude Code runs with the login of `claude /login`; with another account picked in Hunt
+(`CLAUDE_CODE_OAUTH_TOKEN`), Claude Code leaves Claude in Chrome off.
 
 A session starts in the start view of the chat pane ("New" in the sidebar), which preselects the repository used
 last. Choosing a repository there, from the folder dialog or the list of recently used ones, creates the session right
@@ -591,8 +594,9 @@ rights than the agent has anyway. Files that come back from the VM are copied wi
 On a session VM, `hunt-ctl install` puts the release under `/srv/hunt/releases/<hash>`, and `hunt-ctl install-tools`
 adds what the agent works with besides the VM's base image: build tools, gh, Terraform, Volta for the Node and npm
 versions a repository pins, the ACP adapter in the version `apps/session/acp-version` pins, with the native Claude Code
-CLI, and Playwright's MCP server with Chromium (`apps/session/playwright/`, offered to Claude Code through
-`apps/session/mcp-servers.json`); a tool that is at its version already is skipped. The image build of the session VMs
+CLI, Playwright's MCP server with Chromium (`apps/session/playwright/`, offered to Claude Code through
+`apps/session/mcp-servers.json`) and the desktop's sway, FFmpeg, Noto CJK fonts and Waymote (pinned like gh); a tool
+that is at its version already is skipped. The image build of the session VMs
 runs it, so an image holds the tools; the app and the poller run it on every VM they set up, for an image that lacks
 some. The relay runs as `hunt-relay.service` (`apps/session/vm/systemd/`) with the agent's
 environment (`apps/session/vm/agent.env`), `HUNT_PREVIEW_URL_TEMPLATE` and the Claude Code token and Git identity of
@@ -603,7 +607,8 @@ wrapper and `/etc/hunt/github-token`.
 
 `hunt-ctl session-config` reads the repository's `hunt.json` (contract version 3, `apps/session/src/config.ts`). It
 lists every service of the repository, a monorepo all of its apps, with its `command`, an optional `cwd`, its `port`,
-`tls` (the port speaks HTTPS), `guarded` (behind IAP, the default) and `env`, whose values may name a service's URL as
+`tls` (the port speaks HTTPS), `guarded` (behind IAP, the default), `review` (the review widget on its pages, the
+default; see below) and `env`, whose values may name a service's URL as
 `${services.<name>.publicUrl}`, `remoteSecrets`, variables whose values are remote secrets (`"$<NAME>"`, see "Remote
 sessions"), and `worktreeInclude`, the ignored files the service needs, as glob patterns, which every worktree and
 session VM gets from the checkout (see "Worktrees and changes") and the VM only validates. An optional `swf` section
@@ -632,6 +637,18 @@ agent starts nothing. A started service stays enabled and starts again with the 
 session back or deleting it stops and disables every service. `hunt-ctl preview-status` reports the state of every
 service, whether its port answers on localhost and the ports that listen on all or the loopback addresses.
 
+Every session VM runs a desktop, `hunt-desktop.service` (`apps/session/vm/desktop/`), as the user `agent`, which
+`hunt-ctl start` enables and `stop` disables: a headless sway (Debian 12's; labwc, which Amp uses, would need Debian
+13's libc), Playwright's Chromium with its profile in `~/.config/hunt-chromium`, so sign-ins survive restarts, and CDP
+on 127.0.0.1:9222, and the [Waymote](https://github.com/rockorager/waymote) gateway on 127.0.0.1:9230, which streams
+the desktop as H.264 over WebSockets. The agent's Playwright MCP server connects to that Chromium with
+`--cdp-endpoint`, so the user watches every step of the agent in the *Desktop* tab and can take over, for a sign-in or
+a CAPTCHA. The client reaches the gateway through an SSH port forward to `hunt-proxy`'s second server on
+127.0.0.1:9231, which passes on only requests from the client's origins (`tauri://localhost`, the Vite dev server's
+`http://localhost:1420`) as the gateway's own origin, because Waymote accepts a WebSocket only from its own origin, and
+refuses every other request, such as one of a web page that found the forwarded port. Ports 9222, 9230 and 9231 are
+reserved. The desktop has no clipboard: sway 1.7 lacks the `ext-data-control` protocol Waymote's clipboard needs.
+
 The gateway, a VM that runs all the time, routes `https://<short id>-<port>.<domain>` to any port of the session VM; the
 load balancer in front of it lets only IAP's access group through, and a request for a VM that is off starts it.
 `https://<short id>-<port>-open.<domain>` reaches the services marked `"guarded": false` without IAP, so a UI behind IAP
@@ -639,9 +656,40 @@ can call its backend on a host of its own, as it does locally; only the app's ow
 next to a remote session's chat (`apps/client/src/preview/PreviewPanel.tsx`) polls `preview_status`, which runs
 `hunt-ctl preview-status <id>` on the VM, and shows every service with its state, URL and whether it answers, marks the
 public ones and lists the other ports that listen, except the reserved ones (`RESERVED_PORTS`: Caddy, Docker, the
-preview proxy, LLMNR and the Ops Agent), which no service may take and the preview proxy refuses; Hunt builds the URLs from the session ID and the preview domain the gateway reported at the handoff, the VM reports only
+preview proxy and its review server, the desktop, LLMNR and the Ops Agent), which no service may take and the preview proxy refuses; Hunt builds the URLs from the session ID and the preview domain the gateway reported at the handoff, the VM reports only
 port numbers. While no service runs, *Start the app* sends the agent a normal prompt to start the services the task
 needs, which starts a VM that is off.
+
+Every HTML page of a guarded port host carries a review widget, like Amp's: a *Review* button in the corner starts
+picking, the element under the pointer is outlined, a click picks it and opens a comment box, and *Add* posts the
+annotation (the page's URL and title, a unique CSS selector, the element's text, shortened HTML, box and a few computed
+styles, its source file and line where React's debug info or a `data-source`/`data-inspector-*` attribute tells it,
+and the comment; `libs/domain/src/browserAnnotation.ts`). The widget (`apps/session/src/review/widget.ts`, served as
+`/__hunt/review.js`) lives in a closed shadow root. The preview proxy sends the page loads (GET with `text/html` in
+Accept) and `/__hunt/*` of the port hosts to the review server `hunt-review.service` on 127.0.0.1:9232
+(`apps/session/src/review/server.ts`), which fetches the page from the service's port as the proxy would and adds the
+script tag before `</head>`; an answer it cannot reach becomes the proxy's usual 503. The `-open` hosts get neither
+the widget nor `/__hunt/*`, so strangers cannot write into the session. A service opts out with `"review": false` in
+hunt.json, a single page with the response header `x-hunt-review-widget: off`. The review server stores each
+annotation as a file in `/run/hunt-review/annotations`; the status helper (below) takes them out and sends each once
+to Hunt, which emits `review:annotation` and shows it as a chip above the session's composer
+(`apps/client/src/chat/PromptInput.tsx`). Nothing is sent by itself: the next prompt the user sends carries every chip,
+formatted by `apps/client/src/chat/annotationPrompt.ts` into `apps/client/prompts/browser-annotations.user-prompt.md`,
+also with an empty text, and clears them. Annotations that arrive while Hunt does not run wait on the VM until the
+session's status channel opens; `hunt-ctl stop` drops them.
+
+The *Desktop* tab next to it (`apps/client/src/desktop/DesktopPanel.tsx`) shows the VM's desktop, where the agent drives
+Chromium, through the Waymote SDK (`@rockorager/waymote`), with audio off. The first time the tab shows, it calls
+`desktop_open` (`apps/client/src-tauri/src/remote/desktop.rs`), which asks the gateway whether the VM runs (it is not
+started), forwards a free port on this Mac's 127.0.0.1 to the VM's 127.0.0.1:9231 over the shared SSH connection
+(`ssh -O forward`), checks `/healthz` with Hunt's origin and returns `http://127.0.0.1:<port>`, from which the SDK opens
+its WebSockets (`/stream`, `/control`): SSH forward → `hunt-proxy`, which checks the origin → Waymote on 127.0.0.1:9230.
+The forward is kept per session and reused while the desktop answers through it; it is cancelled (`ssh -O cancel`) when
+the session's agent or the session ends and when Hunt quits, and otherwise ends with the SSH master. When the stream
+loses its connection, the panel calls `desktop_open` again, which replaces a forward that no longer answers. The panel
+stays mounted while another tab shows, so the stream survives tab switches, and the VM's output follows the panel's size.
+Clicking the stream gives it the keyboard: Escape and every ⌘ combination go to the VM instead of Hunt, taken in the
+capture phase ahead of every other listener of the window (`desktop/keyRouting.ts`); clicking outside gives the keys back.
 
 The gateway keeps no sessions. Its edge proxy `hunt-edge` (Caddy in Docker on port 8080 behind the load balancer)
 serves only the load balancer's address ranges, removes IAP's headers and cookies and forwards every preview host with
@@ -981,7 +1029,7 @@ The same listing keeps a status channel open to the VM of every remote session i
 (`apps/client/src-tauri/src/session/relay_watch.rs`, `remote/status_channel.rs`): over the VM's shared SSH connection
 Hunt runs the status helper (`apps/session/src/relay/statusHelper.ts`, `sudo -n -u agent … statusHelper.mjs`), which
 reads the relay's `status.json` every second and reports whether a turn runs and whether the agent waits for an answer
-whenever that changes (`statusReport.ts`). Hunt stores the report with the session (`remote.relayActivity`), so the
+whenever that changes (`statusReport.ts`), and hands over the annotations of the review widget (above). Hunt stores the report with the session (`remote.relayActivity`), so the
 sidebar shows it before the session is opened, and for a suspended VM as last reported, also after a restart of Hunt.
 The helper is neither `hunt-ctl` nor a client of the relay and has no terminal, so it does not count as activity: the
 VM still suspends when idle, which ends the channel, and nothing here starts a VM. A channel that ends is opened again
@@ -1043,13 +1091,13 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 | `apps/client/src-tauri/src/documents.rs` | The one shared text of every loaded worktree file, for all windows and the language server |
 | `apps/client/src-tauri/src/workspace.rs` | Project tree and file access |
 | `apps/client/src-tauri/src/graph.rs` | Architecture diagram prompts, files and status |
-| `apps/client/src-tauri/src/remote/` | Session VMs, SSH to them, handoff and retrieval of remote sessions, previews, terminals |
+| `apps/client/src-tauri/src/remote/` | Session VMs, SSH to them, handoff and retrieval of remote sessions, previews, desktops, terminals |
 | `apps/client/src/ipc/` | Every Tauri command, event and shared type |
 | `apps/client/src/state/` | Zustand stores and chat reducers |
-| `apps/client/src/` `chat/`, `diff/`, `git/`, `ide/`, `graph/`, `guardrails/`, `preview/`, `review/`, `sessions/`, `settings/`, `terminal/` | One folder per tab or window |
+| `apps/client/src/` `chat/`, `desktop/`, `diff/`, `git/`, `ide/`, `graph/`, `guardrails/`, `preview/`, `review/`, `sessions/`, `settings/`, `terminal/` | One folder per tab or window |
 | `apps/client/src/ui/` | Primitives shared by every feature |
 | `apps/gateway/` | Nx project `gateway`: the gateway VM's API (`src/api.ts`, `src/orchestrator.ts`, `vm/hunt-api`), issue poller (`src/swf.ts`, its prompts in `prompts/`), wake service (`src/wake.ts`) and systemd units (`vm/systemd/`) |
-| `apps/session/` | Nx project `session`: the relay (`src/relay/`), the `hunt.json` services contract (`src/config.ts`), the versions of the agent's tools and the session VM's files and systemd units (`vm/`) |
+| `apps/session/` | Nx project `session`: the relay (`src/relay/`), the preview's review server and widget (`src/review/`), the `hunt.json` services contract (`src/config.ts`), the versions of the agent's tools and the session VM's files and systemd units (`vm/`) |
 | `libs/domain/` | Nx project `domain`: JSON-RPC and NDJSON framing, error messages and the system-prompt parts of remote sessions the apps share |
 | `libs/vm/` | Nx project `vm`: `hunt-ctl`, which Hunt and the gateway run on the VMs |
 | `scripts/` | Nx project `scripts`: the build of the VM release artifacts (`buildVmArtifact.ts`) |

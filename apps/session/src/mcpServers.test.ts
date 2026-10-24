@@ -7,14 +7,14 @@ function read(relativePath: string): string {
 }
 
 describe("mcp-servers.json", () => {
-  it("is a valid server list whose Playwright server runs the package playwright/ pins, where hunt-ctl installs it", () => {
+  it("is a valid server list whose Playwright server runs the package playwright/ pins, where hunt-ctl installs it, against the desktop's Chromium", () => {
     const [playwright, ...others] = parseMcpServers(read("../mcp-servers.json"));
     const pinned = Object.keys((JSON.parse(read("../playwright/package.json")) as { dependencies: Record<string, string> }).dependencies);
 
     expect(others).toEqual([]);
     expect(pinned).toEqual(["@playwright/mcp"]);
     expect(playwright.command).toBe("/opt/hunt/node/bin/node");
-    expect(playwright.args[0]).toBe("/opt/hunt/agent/playwright/node_modules/@playwright/mcp/cli.js");
-    expect(playwright.env).toEqual([{ name: "PLAYWRIGHT_BROWSERS_PATH", value: "/opt/hunt/agent/playwright/browsers" }]);
+    expect(playwright.args).toEqual(["/opt/hunt/agent/playwright/node_modules/@playwright/mcp/cli.js", "--cdp-endpoint", "http://127.0.0.1:9222"]);
+    expect(playwright.env).toEqual([]);
   });
 });

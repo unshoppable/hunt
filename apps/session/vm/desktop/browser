@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Runs the desktop's Chromium, Playwright's, again whenever it exits, so that closing its last window does not end the
+# desktop. It keeps its profile in ~/.config/hunt-chromium, so sign-ins survive restarts of the VM, and serves CDP on
+# 127.0.0.1:9222 for the agent's Playwright MCP server (session/mcp-servers.json); Chromium allows remote debugging only
+# with a profile other than the default one.
+set -euo pipefail
+
+readonly BROWSERS_DIR=/opt/hunt/agent/playwright/browsers
+readonly PROFILE_DIR=$HOME/.config/hunt-chromium
+
+chromium=$(find "$BROWSERS_DIR" -path '*/chromium-*/chrome-linux*/chrome' -type f -perm -u+x | sort | tail -n 1)
+[[ -n $chromium ]] || { echo "no Chromium below $BROWSERS_DIR; run hunt-ctl install-tools" >&2; exit 1; }
+while :; do
+  "$chromium" --ozone-platform=wayland --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
+    --user-data-dir="$PROFILE_DIR" --no-first-run --no-default-browser-check --password-store=basic about:blank || true
+  sleep 1
+done

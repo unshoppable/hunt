@@ -54,7 +54,7 @@ const COMPLETE = {
     },
     ui: { command: "npm start -- --port 4200", cwd: "apps/ui", port: 4200, env: { DEV_BACKEND_ORIGIN: "${services.backend.publicUrl}" } },
     docs: { command: "npx serve docs", port: 4400, tls: true },
-    admin: { command: 'echo "$PATH" && npm run admin', port: 4800, guarded: false },
+    admin: { command: 'echo "$PATH" && npm run admin', port: 4800, guarded: false, review: false },
   },
 };
 
@@ -66,13 +66,14 @@ const COMPLETE_SERVICES: ServiceConfig[] = [
     port: 3000,
     tls: true,
     guarded: false,
+    review: true,
     env: COMPLETE.services.backend.env,
     remoteSecrets: {},
     worktreeInclude: [],
   },
-  { name: "ui", command: "npm start -- --port 4200", cwd: "apps/ui", port: 4200, tls: false, guarded: true, env: COMPLETE.services.ui.env, remoteSecrets: {}, worktreeInclude: [] },
-  { name: "docs", command: "npx serve docs", cwd: null, port: 4400, tls: true, guarded: true, env: {}, remoteSecrets: {}, worktreeInclude: [] },
-  { name: "admin", command: 'echo "$PATH" && npm run admin', cwd: null, port: 4800, tls: false, guarded: false, env: {}, remoteSecrets: {}, worktreeInclude: [] },
+  { name: "ui", command: "npm start -- --port 4200", cwd: "apps/ui", port: 4200, tls: false, guarded: true, review: true, env: COMPLETE.services.ui.env, remoteSecrets: {}, worktreeInclude: [] },
+  { name: "docs", command: "npx serve docs", cwd: null, port: 4400, tls: true, guarded: true, review: true, env: {}, remoteSecrets: {}, worktreeInclude: [] },
+  { name: "admin", command: 'echo "$PATH" && npm run admin', cwd: null, port: 4800, tls: false, guarded: false, review: false, env: {}, remoteSecrets: {}, worktreeInclude: [] },
 ];
 
 function problemsOf(huntJson: unknown, host: SessionHost = HOST, secrets: Record<string, string> = {}): string[] {
@@ -109,11 +110,11 @@ describe("parseServices", () => {
     expect(parseServices(COMPLETE)).toEqual(COMPLETE_SERVICES);
   });
 
-  it("gives a repository without hunt.json no services and a service without the optional fields no folder, no TLS and IAP", () => {
+  it("gives a repository without hunt.json no services and a service without the optional fields no folder, no TLS, IAP and the review widget", () => {
     expect(parseServices(undefined)).toEqual([]);
     expect(parseServices(web({ worktreeInclude: ["apps/web/.env.private", "config/*.local"] }))[0].worktreeInclude).toEqual(["apps/web/.env.private", "config/*.local"]);
     expect(parseServices(web({ worktreeInclude: [] }))[0].worktreeInclude).toEqual([]);
-    expect(parseServices(web({}))).toEqual([{ name: "web", command: "npm start", cwd: null, port: 3000, tls: false, guarded: true, env: {}, remoteSecrets: {}, worktreeInclude: [] }]);
+    expect(parseServices(web({}))).toEqual([{ name: "web", command: "npm start", cwd: null, port: 3000, tls: false, guarded: true, review: true, env: {}, remoteSecrets: {}, worktreeInclude: [] }]);
   });
 
   it("reads the remote secrets of a service by variable, without the $", () => {
@@ -127,8 +128,8 @@ describe("parseServices", () => {
 
     expect(parseServices(huntJson)).toHaveLength(64);
     expect(parseServices(huntJson).slice(62)).toEqual([
-      { name: "a".repeat(32), ...longest, tls: false, guarded: true, env: {}, remoteSecrets: {}, worktreeInclude: [] },
-      { name: "w-2", command: "npm start", cwd: ".config/a.b_c-D9", port: 1024, tls: false, guarded: true, env: {}, remoteSecrets: {}, worktreeInclude: [] },
+      { name: "a".repeat(32), ...longest, tls: false, guarded: true, review: true, env: {}, remoteSecrets: {}, worktreeInclude: [] },
+      { name: "w-2", command: "npm start", cwd: ".config/a.b_c-D9", port: 1024, tls: false, guarded: true, review: true, env: {}, remoteSecrets: {}, worktreeInclude: [] },
     ]);
   });
 
@@ -189,13 +190,20 @@ describe("parseServices", () => {
       [web({ port: 2376 }), ["services.web.port: 2376 is reserved for the Docker API over TLS"]],
       [web({ port: 5355 }), ["services.web.port: 5355 is reserved for LLMNR of systemd-resolved"]],
       [web({ port: 8080 }), ["services.web.port: 8080 is reserved for the session VM's preview proxy"]],
+      [web({ port: 9222 }), ["services.web.port: 9222 is reserved for the remote debugging port of the desktop's Chromium"]],
+      [web({ port: 9230 }), ["services.web.port: 9230 is reserved for the desktop's Waymote gateway"]],
+      [web({ port: 9231 }), ["services.web.port: 9231 is reserved for the desktop's proxy for the desktop client"]],
+      [web({ port: 9232 }), ["services.web.port: 9232 is reserved for the review server of the preview proxy"]],
       [web({ port: 20201 }), ["services.web.port: 20201 is reserved for the Google Ops Agent's OpenTelemetry collector"]],
       [web({ port: 20202 }), ["services.web.port: 20202 is reserved for the Google Ops Agent's Fluent Bit"]],
       [
         withServices({ web: { command: "a", port: 3000 }, api: { command: "b", port: 3000 }, docs: { command: "c", port: 3000 } }),
         ["services.api.port: 3000 is the port of the service web already", "services.docs.port: 3000 is the port of the service web already"],
       ],
-      [web({ tls: "true", guarded: 0 }), ["services.web.tls: must be true or false", "services.web.guarded: must be true or false"]],
+      [
+        web({ tls: "true", guarded: 0, review: "no" }),
+        ["services.web.tls: must be true or false", "services.web.guarded: must be true or false", "services.web.review: must be true or false"],
+      ],
       [web({ env: [] }), ["services.web.env: must be an object"]],
       [web({ env: { lower: "x" } }), ["services.web.env.lower: invalid name, must match ^[A-Z_][A-Z0-9_]*$"]],
       [web({ env: { "BAD-KEY": "x" } }), ["services.web.env.BAD-KEY: invalid name, must match ^[A-Z_][A-Z0-9_]*$"]],
@@ -494,19 +502,37 @@ describe("proxyConfig", () => {
   const server = config.apps.http.servers.preview;
 
   type HostPattern = { name: string; pattern: string };
+  /** The method and headers of a request; a script's GET without `text/html` in Accept by default. */
+  type RequestShape = { method: string; headers: Record<string, string> };
+  const PAGE_LOAD: RequestShape = { method: "GET", headers: { Accept: "text/html,application/xhtml+xml,*/*;q=0.8" } };
+
+  /** Whether `actual` matches a value of Caddy's header matcher, where a leading or trailing `*` stands for any text. */
+  function headerMatches(pattern: string, actual: string): boolean {
+    const text = pattern.replace(/^\*/, "").replace(/\*$/, "");
+    if (pattern.startsWith("*") && pattern.endsWith("*")) return actual.includes(text);
+    if (pattern.startsWith("*")) return actual.endsWith(text);
+    if (pattern.endsWith("*")) return actual.startsWith(text);
+    return actual === text;
+  }
 
   /**
    * The first route of `proxy` that matches a request to `hostName` at `path`, as Caddy picks it, with the captures of its
    * regexps; with `refused`, the first of its error routes for that request when its upstream refused the connection.
    */
-  function routeFor(proxy: CaddyConfig, hostName: string, path = "/", refused = false) {
+  function routeFor(proxy: CaddyConfig, hostName: string, path = "/", refused = false, request: RequestShape = { method: "GET", headers: {} }) {
     const server = proxy.apps.http.servers.preview;
     for (const route of refused ? server.errors.routes : server.routes) {
       const captures: Record<string, RegExpExecArray> = {};
       const matchesSet = (set: Record<string, unknown>) =>
         Object.entries(set).every(([kind, value]) => {
           if (kind === "host") return (value as string[]).includes(hostName);
-          if (kind === "path") return (value as string[]).includes(path);
+          if (kind === "path") return (value as string[]).some((pattern) => (pattern.endsWith("*") ? path.startsWith(pattern.slice(0, -1)) : pattern === path));
+          if (kind === "method") return (value as string[]).includes(request.method);
+          if (kind === "header") {
+            return Object.entries(value as Record<string, string[]>).every(([name, patterns]) =>
+              patterns.some((pattern) => headerMatches(pattern, request.headers[name] ?? "")),
+            );
+          }
           if (kind === "expression") return refused && value === "{http.error.status_code} == 502";
           if (kind !== "vars_regexp") throw new Error(`unknown matcher ${kind}`);
           return Object.entries(value as Record<string, HostPattern>).every(([placeholder, { name, pattern }]) => {
@@ -523,14 +549,28 @@ describe("proxyConfig", () => {
     throw new Error(`no route for ${hostName}${path}`);
   }
 
-  /** What `proxy` answers a request to `hostName` at `path` with: a status code or the upstream URL. */
-  function answer(proxy: CaddyConfig, hostName: string, path = "/"): string {
-    const { route, captures } = routeFor(proxy, hostName, path);
-    const handler = route.handle.at(-1) as { handler: string; status_code?: number; upstreams?: { dial: string }[]; transport?: unknown };
+  /**
+   * What `proxy` answers a request to `hostName` at `path` with: a status code, the upstream URL, or for the review server
+   * `review` and, for a page load, the URL of the dev server it fetches the page from.
+   */
+  function answer(proxy: CaddyConfig, hostName: string, path = "/", request?: RequestShape): string {
+    const { route, captures } = routeFor(proxy, hostName, path, false, request);
+    const handler = route.handle.at(-1) as {
+      handler: string;
+      status_code?: number;
+      upstreams?: { dial: string }[];
+      transport?: unknown;
+      headers?: { request: { set: Record<string, string[]> } };
+    };
     if (handler.handler === "static_response") return String(handler.status_code);
     const placeholder = /\{http\.regexp\.(\w+)\.(\d)\}/g;
-    const dial = handler.upstreams![0].dial.replace(placeholder, (_placeholder, name: string, group: string) => captures[name][Number(group)]);
-    return `${handler.transport ? "https" : "http"}://${dial}`;
+    const resolve = (value: string) => value.replace(placeholder, (_placeholder, name: string, group: string) => captures[name][Number(group)]);
+    const dial = resolve(handler.upstreams![0].dial);
+    if (dial !== "127.0.0.1:9232") return `${handler.transport ? "https" : "http"}://${dial}`;
+    const upstreamPort = handler.headers?.request.set["X-Hunt-Upstream-Port"];
+    if (!upstreamPort) return "review";
+    const isTls = handler.headers!.request.set["X-Hunt-Upstream-Tls"][0] === "true";
+    return `review ${isTls ? "https" : "http"}://localhost:${resolve(upstreamPort[0])}`;
   }
 
   function bodyFor(proxy: CaddyConfig, hostName: string): unknown {
@@ -560,6 +600,28 @@ describe("proxyConfig", () => {
     expect(routeFor(config, "7c0c6f2e-3000.hunt.example.com", "/hunt-healthz").route.handle[0]).toEqual({ handler: "vars", log_skip: true });
   });
 
+  it("passes the desktop client's origins on to the Waymote gateway as the gateway's own origin and refuses every other request", () => {
+    const desktop = config.apps.http.servers.desktop;
+    expect(desktop.listen).toEqual(["127.0.0.1:9231"]);
+    expect(desktop.protocols).toEqual(["h1"]);
+    expect(desktop.automatic_https).toEqual({ disable: true });
+    expect(desktop.routes).toEqual([
+      {
+        match: [{ expression: "{http.request.header.Origin} in ['tauri://localhost', 'http://localhost:1420']" }],
+        handle: [
+          {
+            handler: "reverse_proxy",
+            upstreams: [{ dial: "127.0.0.1:9230" }],
+            flush_interval: -1,
+            headers: { request: { set: { Host: ["127.0.0.1:9230"], Origin: ["http://127.0.0.1:9230"] } } },
+          },
+        ],
+        terminal: true,
+      },
+      { handle: [{ handler: "static_response", status_code: 403 }] },
+    ]);
+  });
+
   it("ends every route but the last, which answers every other host with 404", () => {
     expect(server.routes.slice(0, -1).every((route) => route.terminal && route.match)).toBe(true);
     expect(server.routes.at(-1)).toEqual({ handle: [{ handler: "static_response", status_code: 404 }] });
@@ -587,6 +649,10 @@ describe("proxyConfig", () => {
       ["7c0c6f2e-2376.hunt.example.com", "403"],
       ["7c0c6f2e-5355.hunt.example.com", "403"],
       ["7c0c6f2e-8080.hunt.example.com", "403"],
+      ["7c0c6f2e-9222.hunt.example.com", "403"],
+      ["7c0c6f2e-9230.hunt.example.com", "403"],
+      ["7c0c6f2e-9231.hunt.example.com", "403"],
+      ["7c0c6f2e-9232.hunt.example.com", "403"],
       ["7c0c6f2e-20201.hunt.example.com", "403"],
       ["7c0c6f2e-20202.hunt.example.com", "403"],
     ];
@@ -599,6 +665,46 @@ describe("proxyConfig", () => {
       [{ host: ["7c0c6f2e-3000-open.hunt.example.com"] }],
       [{ host: ["7c0c6f2e-4800-open.hunt.example.com"] }],
     ]);
+  });
+
+  it("sends the page loads and /__hunt/ of the port hosts to the review server, not those of open hosts or services with review false", () => {
+    const post: Parameters<typeof answer>[3] = { method: "POST", headers: PAGE_LOAD.headers };
+    const cases: [string, string, Parameters<typeof answer>[3], string][] = [
+      ["7c0c6f2e-4200.hunt.example.com", "/orders", PAGE_LOAD, "review http://localhost:4200"],
+      ["7c0c6f2e-4400.hunt.example.com", "/", PAGE_LOAD, "review https://localhost:4400"],
+      ["7c0c6f2e-3000.hunt.example.com", "/", PAGE_LOAD, "review https://localhost:3000"],
+      ["7c0c6f2e-5173.hunt.example.com", "/", PAGE_LOAD, "review http://localhost:5173"],
+      ["7c0c6f2e-4800.hunt.example.com", "/", PAGE_LOAD, "http://localhost:4800"],
+      ["7c0c6f2e-3000-open.hunt.example.com", "/", PAGE_LOAD, "https://localhost:3000"],
+      ["7c0c6f2e-4800-open.hunt.example.com", "/", PAGE_LOAD, "http://localhost:4800"],
+      ["7c0c6f2e-4200.hunt.example.com", "/api/orders", undefined, "http://localhost:4200"],
+      ["7c0c6f2e-4400.hunt.example.com", "/main.js", { method: "GET", headers: { Accept: "*/*" } }, "https://localhost:4400"],
+      ["7c0c6f2e-4200.hunt.example.com", "/form", post, "http://localhost:4200"],
+      ["7c0c6f2e-9232.hunt.example.com", "/", PAGE_LOAD, "403"],
+      ["7c0c6f2e-4200.hunt.example.com", "/__hunt/review.js", undefined, "review"],
+      ["7c0c6f2e-5173.hunt.example.com", "/__hunt/review", post, "review"],
+      ["7c0c6f2e-4800.hunt.example.com", "/__hunt/review.js", undefined, "http://localhost:4800"],
+      ["7c0c6f2e-3000-open.hunt.example.com", "/__hunt/review", post, "https://localhost:3000"],
+      ["7c0c6f2e-4200-open.hunt.example.com", "/__hunt/review.js", undefined, "404"],
+    ];
+
+    for (const [hostName, path, request, expected] of cases) {
+      expect(answer(config, hostName, path, request), `${request?.method ?? "GET"} ${hostName}${path}`).toBe(expected);
+    }
+    expect(answer(proxyConfig([], HOST), "7c0c6f2e-4200.hunt.example.com", "/", PAGE_LOAD)).toBe("review http://localhost:4200");
+  });
+
+  it("turns the review server's mark of a port nothing listens on into an error, so that the 503 pages answer", () => {
+    const reviewProxies = server.routes
+      .flatMap((route) => route.handle)
+      .filter((handler) => JSON.stringify(handler.headers ?? {}).includes("X-Hunt-Upstream-Port"));
+    expect(reviewProxies).toHaveLength(3);
+    for (const handler of reviewProxies) {
+      expect(handler.handle_response).toEqual([
+        { match: { status_code: [502], headers: { "X-Hunt-Upstream": ["unreachable"] } }, routes: [{ handle: [{ handler: "error", status_code: 502 }] }] },
+      ]);
+      expect(handler.transport).toBeUndefined();
+    }
   });
 
   it("explains the 404 of the main host and of an open host without a public service", () => {
@@ -648,7 +754,7 @@ describe("proxyConfig", () => {
 
   it("keeps the Host header, removes IAP's headers and cookies and flushes every response at once, on the open hosts too", () => {
     const proxies = server.routes.flatMap((route) => route.handle).filter((handler) => handler.handler === "reverse_proxy");
-    expect(proxies).toHaveLength(5);
+    expect(proxies).toHaveLength(10);
     expect(proxies).toContain(routeFor(config, "7c0c6f2e-3000-open.hunt.example.com").route.handle[0]);
     for (const handler of proxies) {
       expect(handler).toMatchObject({

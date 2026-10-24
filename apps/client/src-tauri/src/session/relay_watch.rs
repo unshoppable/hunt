@@ -5,7 +5,8 @@
 //! channel that closed while its VM still runs; a channel that failed to open is tried again at the next listing, then
 //! not before `SECOND_RETRY`, then not before `LATER_RETRY`. What a relay reports lands in the session's
 //! `relay_activity`, which the windows hear as `remote:relay`; the sessions are not announced, since nothing else of
-//! them changed.
+//! them changed. An annotation the channel delivers goes to the windows as `review:annotation`, for the session's
+//! composer.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -18,7 +19,7 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::remote::ssh::{ssh_dir, Ssh};
-use crate::remote::status_channel::{Event, Report, StatusChannel, Turn};
+use crate::remote::status_channel::{Annotation, Event, Report, StatusChannel, Turn};
 use crate::remote::{RelayActivity, RemoteTarget, VmRef};
 use crate::session::store;
 
@@ -59,6 +60,13 @@ struct Streak {
 struct RelayActivityEvent {
     hunt_session_id: Uuid,
     relay_activity: RelayActivity,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnnotationEvent {
+    hunt_session_id: Uuid,
+    annotation: Annotation,
 }
 
 /// Watches the relays of `running`, the top-level remote sessions whose VM runs, each with its VM as the gateway lists
@@ -147,8 +155,8 @@ fn spawn_watch(app: &AppHandle, id: Uuid, vm: VmRef, generation: u64) -> tauri::
     })
 }
 
-/// Opens the status channel of session `id` on `vm`; its reports land in the session's record, and `closed` gets why
-/// it ended.
+/// Opens the status channel of session `id` on `vm`; its reports land in the session's record, its annotations go to the
+/// windows, and `closed` gets why it ended.
 async fn connect(app: &AppHandle, id: Uuid, vm: &VmRef, closed: oneshot::Sender<String>) -> Result<StatusChannel, String> {
     let ssh = Ssh::open(vm, &ssh_dir()?).await?;
     let handle = app.clone();
@@ -159,6 +167,9 @@ async fn connect(app: &AppHandle, id: Uuid, vm: &VmRef, closed: oneshot::Sender<
             if let Err(error) = record_report(&handle, id, &watched, &report) {
                 eprintln!("recording the relay status of session {id} failed: {error}");
             }
+        }
+        Event::Annotation(annotation) => {
+            let _ = handle.emit("review:annotation", AnnotationEvent { hunt_session_id: id, annotation });
         }
         Event::Closed(reason) => {
             if let Some(closed) = closed.lock().unwrap().take() {

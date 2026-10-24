@@ -1,0 +1,25 @@
+# The review server of the preview proxy (session/reviewServer.mjs, apps/session/src/review/server.ts) on 127.0.0.1:9232:
+# hunt-proxy sends it the page loads of the guarded preview hosts, and it adds the review widget to their HTML, serves
+# the widget and stores each annotation the widget posts in /run/hunt-review/annotations, where the status helper picks
+# it up for the desktop client. `hunt-ctl start` enables it together with the proxy, `stop` disables it, which removes
+# the annotations nobody fetched with the runtime folder.
+[Unit]
+Description=Review server of Hunt's preview proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Names the service's journal entries; Cloud Logging shows it as the label service.
+SyslogIdentifier=hunt-review
+User=agent
+Group=agent
+RuntimeDirectory=hunt-review
+RuntimeDirectoryMode=0700
+# A new release restarts the server; annotations nobody fetched yet stay.
+RuntimeDirectoryPreserve=restart
+ExecStart=/opt/hunt/node/bin/node /srv/hunt/current/session/reviewServer.mjs
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

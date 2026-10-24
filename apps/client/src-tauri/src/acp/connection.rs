@@ -29,6 +29,9 @@ use crate::remote::claude_dir;
 use crate::session::attribution;
 
 const ACP_SCRIPT: &str = "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
+/// Turns on Claude in Chrome for a local agent, so that it drives the user's Chrome through Claude's extension. Claude
+/// Code ignores it while `accounts::TOKEN_ENV` is set, since Claude in Chrome needs the login of `claude /login`.
+const CLAUDE_IN_CHROME_ENV: &str = "CLAUDE_CODE_ENABLE_CFC";
 
 /// A running agent process bound to one Hunt session.
 pub struct LiveSession {
@@ -285,7 +288,10 @@ pub async fn connect(
     let agent = match transport {
         AgentTransport::Local => {
             let script = bundled_script_path(&app, ACP_SCRIPT)?;
-            let mut config = AcpAgentConfig::new("node").arg(script.to_string_lossy()).env(crate::tmux::SESSION_ENV, hunt_session_id.to_string());
+            let mut config = AcpAgentConfig::new("node")
+                .arg(script.to_string_lossy())
+                .env(crate::tmux::SESSION_ENV, hunt_session_id.to_string())
+                .env(CLAUDE_IN_CHROME_ENV, "1");
             if let Some(token) = accounts::active_token(&app).await? {
                 config = config.env(accounts::TOKEN_ENV, token);
             }
@@ -427,6 +433,7 @@ async fn forget_live_session(app: &AppHandle, hunt_session_id: Uuid) {
     crate::graph::unwatch(&app.state::<crate::graph::WatcherRegistry>(), hunt_session_id);
     attribution::forget_session(app, hunt_session_id);
     crate::session::sync::detach(app, hunt_session_id);
+    crate::session::commands::close_desktop(app, hunt_session_id);
     crate::session::related::agent_stopped(app, hunt_session_id);
     app.state::<PermissionRegistry>()
         .0

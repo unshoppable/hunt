@@ -1,6 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type {
+  AnnotationEvent,
   AttributionEvent,
   CheckOutputEvent,
   ClosedEvent,
@@ -41,6 +42,8 @@ type EventPayloads = {
   "remote:link": RemoteLinkEvent;
   /** The relay of a remote session reported another activity through its status channel, or its VM stopped mid-turn. */
   "remote:relay": RelayActivityEvent;
+  /** The review widget on a preview page of a remote session's VM delivered an annotation, for the session's composer. */
+  "review:annotation": AnnotationEvent;
   "graph:changed": GraphChangedEvent;
   "session:summary": SummaryEvent;
   "attribution:changed": AttributionEvent;

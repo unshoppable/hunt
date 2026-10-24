@@ -28,6 +28,7 @@ mod tmux;
 
 use acp::{PermissionRegistry, SessionRegistry};
 use graph::WatcherRegistry;
+use remote::desktop::DesktopRegistry;
 use remote::terminal::TerminalRegistry;
 use session::attribution::AttributionRegistry;
 use session::dependencies::DependencyRegistry;
@@ -64,6 +65,7 @@ pub fn run() {
         .manage(lsp::LspRegistry::default())
         .manage(documents::DocumentRegistry::default())
         .manage(TerminalRegistry::default())
+        .manage(DesktopRegistry::default())
         .manage(checks::CheckRegistry::default())
         .invoke_handler(tauri::generate_handler![
             session::commands::list_sessions,
@@ -108,6 +110,7 @@ pub fn run() {
             session::commands::open_shell_window,
             session::commands::rerun_terminal_window,
             session::commands::close_terminal_window,
+            session::commands::desktop_open,
             session::commands::checks_status,
             session::commands::run_check,
             session::commands::run_all_checks,
@@ -233,8 +236,9 @@ pub fn run() {
                 app.state::<checks::CheckRegistry>().cancel_everything();
                 let registry = app.state::<SessionRegistry>();
                 let lsp_registry = app.state::<lsp::LspRegistry>();
+                let desktops = app.state::<DesktopRegistry>();
                 tauri::async_runtime::block_on(async {
-                    tokio::join!(registry.shutdown_all(), lsp::shutdown_all(&lsp_registry), tmux::kill_all_servers());
+                    tokio::join!(registry.shutdown_all(), lsp::shutdown_all(&lsp_registry), tmux::kill_all_servers(), desktops.close_all());
                 });
             }
         });

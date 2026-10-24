@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { AvailableCommand, PullRequestRef, Screenshot } from "../ipc/types";
+import type { AvailableCommand, PullRequestRef, Screenshot, StoredBrowserAnnotation } from "../ipc/types";
 import { useSettingsStore } from "../state/settings";
 import type { PromptDraft, QueuedPrompt } from "../state/store";
 import { PillSelect } from "./PillSelect";
@@ -8,7 +8,7 @@ import { appendPromptTexts, QueuedPrompts, useReturnedPrompts } from "./QueuedPr
 import { ScreenshotTrigger, screenshotUrl } from "./ScreenshotPicker";
 import { CLEAR_BUTTON, SEND_BUTTON } from "../ui/buttons";
 import type { DropdownOption } from "../ui/floatingMenu";
-import { CloseIcon, EraserIcon, GitHubIcon, SendIcon } from "../ui/icons";
+import { CloseIcon, CommentIcon, EraserIcon, GitHubIcon, SendIcon } from "../ui/icons";
 import { ResizeGrips } from "../ui/ResizeGrips";
 import { useAutoGrow, useTextareaDrag } from "../ui/useAutoGrow";
 import { useDismiss } from "../ui/useDismiss";
@@ -17,6 +17,7 @@ import { matchCommands, slashQueryOf } from "./slashCommands";
 import { codePasteText, EDITOR_CLIPBOARD_TYPE, editorCopyLanguage } from "./codePaste";
 import { insertImageReference, removeImageReference, shiftImageReferences } from "./imageReferences";
 import { useImageDrop } from "./useImageDrop";
+import { annotationElementLabel, annotationTooltip, promptWithAnnotations } from "./annotationPrompt";
 
 /** One agent config dropdown (model, effort, …) shown in the prompt toolbar. */
 export type ConfigSelect = { id: string; name: string; value: string; choices: DropdownOption[] };
@@ -32,14 +33,18 @@ const MODE_CLASS: Record<string, string | undefined> = {
   bypassPermissions: "text-[#f098a4]",
 };
 
+/** The × that appears on a hovered attachment or annotation chip and removes it. */
+const REMOVE_CHIP_BUTTON =
+  "absolute -top-2 -right-2 flex size-6 items-center justify-center rounded-full border border-neutral-500 bg-neutral-800 text-neutral-200 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-neutral-700";
+
 /** Share of the window height the text area may be dragged to at most. */
 const MAX_PROMPT_HEIGHT_SHARE = 0.6;
 
 /**
- * The prompt box: a rounded card with the text area, attached screenshots, slash-command suggestions and a toolbar of
- * model, effort and mode pills. Dragging its top edge makes the text area taller; the height is remembered until it is
- * dragged back to the two lines the box starts with. Used inside a session and, with an `extension` bar for repository
- * and branch, as the start view's composer. The screenshot picker sits in the left margin of the box. While the agent
+ * The prompt box: a rounded card with the text area, the review widget's annotations, attached screenshots,
+ * slash-command suggestions and a toolbar of model, effort and mode pills. Dragging its top edge makes the text area
+ * taller; the height is remembered until it is dragged back to the two lines the box starts with. Used inside a session
+ * and, with an `extension` bar for repository and branch, as the start view's composer. The screenshot picker sits in the left margin of the box. While the agent
  * is busy, sending queues the prompt (shown above the box) for the end of the running turn; the send button therefore
  * never turns into a stop button, Escape stops the turn. The send-now shortcut (⌃↩, ⌘↩) sends the prompt at once, stopping
  * the running turn; while the box is empty it sends the first queued prompt instead.
@@ -69,6 +74,9 @@ export function PromptInput({
   placeholder = "Ask anything, / for commands",
   hint = "",
   dropZoneRef,
+  annotations = [],
+  onRemoveAnnotation = () => {},
+  onAnnotationsSent = () => {},
 }: {
   isBusy: boolean;
   /** The agent is starting (also `isBusy` then): prompts queue until it runs, and there is no turn to interrupt or stop. */
@@ -109,6 +117,14 @@ export function PromptInput({
   hint?: string;
   /** Element whose area takes dropped image files as attachments; the box itself without it. */
   dropZoneRef?: RefObject<HTMLElement | null>;
+  /**
+   * Annotations of the review widget on the session's preview page, shown as chips above the text; the next prompt takes
+   * them along (`promptWithAnnotations`), also without text, unless it is a slash command.
+   */
+  annotations?: StoredBrowserAnnotation[];
+  onRemoveAnnotation?: (annotationId: string) => void;
+  /** Called once a sent or queued prompt took the annotations along. */
+  onAnnotationsSent?: () => void;
 }) {
   const interruptShortcut = useShortcutLabel("chat.interrupt");
   const sendNowShortcut = useShortcutLabel("chat.sendNow");
@@ -131,7 +147,7 @@ export function PromptInput({
   const slashQuery = isSuggestionsDismissed ? null : slashQueryOf(text);
   const suggestions = slashQuery === null ? [] : matchCommands(commands, slashQuery);
   const selectedSuggestion = suggestions[Math.min(suggestionIndex, suggestions.length - 1)];
-  const canSend = Boolean(text.trim() || attachments.length) && !isBlocked;
+  const canSend = Boolean(text.trim() || attachments.length || annotations.length) && !isBlocked;
 
   useDismiss(suggestionsRef, () => setIsSuggestionsDismissed(true), { anchorRefs: [textareaRef], isEnabled: suggestions.length > 0 });
   useAutoGrow(textareaRef, text, 8, heightDrag.minHeight);
@@ -174,14 +190,20 @@ export function PromptInput({
   function submit(sendsNow = false) {
     const trimmed = text.trim();
     const images = attachments;
-    if ((!trimmed && !images.length) || isBlocked) return;
+    // A slash command must start the prompt, so it leaves the annotations for the next prompt.
+    const sentAnnotations = trimmed.startsWith("/") ? [] : annotations;
+    if ((!trimmed && !images.length && !sentAnnotations.length) || isBlocked) return;
+    const prompt = promptWithAnnotations(sentAnnotations, trimmed);
     if (sendsNow) {
-      onSendNow(trimmed, images);
+      onSendNow(prompt, images);
     } else {
-      onSend(trimmed, images);
+      onSend(prompt, images);
     }
     setText("");
     setAttachments([]);
+    if (sentAnnotations.length) {
+      onAnnotationsSent();
+    }
   }
 
   /** Sends the queued `prompt` at once, interrupting the running turn. */
@@ -317,6 +339,29 @@ export function PromptInput({
               Drop images to attach them
             </div>
           ) : null}
+          {annotations.length ? (
+            <div className="flex flex-wrap gap-2 px-3 pt-3">
+              {annotations.map((annotation) => (
+                <span
+                  key={annotation.id}
+                  className="group relative flex h-7 max-w-80 items-center gap-1.5 rounded-md border border-white/10 bg-black/30 px-2 text-[12px]"
+                  title={annotationTooltip(annotation)}
+                >
+                  <CommentIcon className="size-3 shrink-0 text-neutral-400" />
+                  <span className="min-w-0 truncate text-neutral-200">{annotation.comment}</span>
+                  <span className="max-w-48 shrink-0 truncate text-neutral-500">{annotationElementLabel(annotation)}</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove the annotation "${annotation.comment}"`}
+                    onClick={() => onRemoveAnnotation(annotation.id)}
+                    className={REMOVE_CHIP_BUTTON}
+                  >
+                    <CloseIcon className="size-2.5" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
           {attachments.length ? (
             <div className="flex flex-wrap gap-2 px-3 pt-3">
               {attachments.map((attachment, index) => (
@@ -327,7 +372,7 @@ export function PromptInput({
                     type="button"
                     aria-label={`Remove ${attachment.name}`}
                     onClick={() => removeAttachment(index)}
-                    className="absolute -top-2 -right-2 flex size-6 items-center justify-center rounded-full border border-neutral-500 bg-neutral-800 text-neutral-200 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-neutral-700"
+                    className={REMOVE_CHIP_BUTTON}
                   >
                     <CloseIcon className="size-2.5" />
                   </button>

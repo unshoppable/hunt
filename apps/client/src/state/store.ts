@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { ContentBlock, SessionConfigOption, SessionNotification, ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
 import { assetUrl, commands } from "../ipc/commands";
 import type {
+  AnnotationEvent,
   AvailableCommand,
   ChatItem,
   ClosedEvent,
@@ -26,6 +27,7 @@ import type {
   SelectionContext,
   SessionEnding,
   SessionView,
+  StoredBrowserAnnotation,
   Workspace,
   SummaryEvent,
   ToolCallView,
@@ -219,6 +221,11 @@ export type HuntState = {
   /** What the prompt box of a session holds but has not sent yet, by session id; the box shows it again when the session is opened again. */
   promptDrafts: Record<string, PromptDraft>;
   /**
+   * The annotations of the review widget a remote session's status channel delivered, by session id, in arrival order;
+   * the composer shows them and sends them along with the next prompt.
+   */
+  annotations: Record<string, StoredBrowserAnnotation[]>;
+  /**
    * Set while the chat pane shows the start view for a new session; `parentId` names the session a sub session is
    * drafted for. A failed creation brings the view back with its `error` and the `prompt` that was not sent.
    */
@@ -328,6 +335,12 @@ export type HuntState = {
   unqueuePrompt: (id: string, promptId: string) => void;
   /** Remembers what the prompt box of `id` holds (see `promptDrafts`); an empty draft forgets it. */
   setPromptDraft: (id: string, draft: PromptDraft) => void;
+  /** Adds the delivered annotation to its session's (see `annotations`); one whose id the session has already is ignored. */
+  applyAnnotation: (event: AnnotationEvent) => void;
+  /** Takes the annotation `annotationId` out of the session `id`'s. */
+  removeAnnotation: (id: string, annotationId: string) => void;
+  /** Forgets every annotation of the session `id`, once the composer sent them. */
+  clearAnnotations: (id: string) => void;
   /**
    * Declines the guardrail `suggestion` of `id` for `reason`: hides it (see `SessionChat.dismissedGuardrailId`) and records
    * it in the repository's `.claude/declined-guardrails.jsonl`, which agents search before they suggest a guardrail.
@@ -400,15 +413,17 @@ export function createEmptyChat(): SessionChat {
   };
 }
 
-/** The chats and prompt drafts of `state` without those of the sessions `ids`. */
-function withoutSessions(state: HuntState, ids: string[]): Pick<HuntState, "chats" | "promptDrafts"> {
+/** The chats, prompt drafts and annotations of `state` without those of the sessions `ids`. */
+function withoutSessions(state: HuntState, ids: string[]): Pick<HuntState, "chats" | "promptDrafts" | "annotations"> {
   const chats = { ...state.chats };
   const promptDrafts = { ...state.promptDrafts };
+  const annotations = { ...state.annotations };
   for (const id of ids) {
     delete chats[id];
     delete promptDrafts[id];
+    delete annotations[id];
   }
-  return { chats, promptDrafts };
+  return { chats, promptDrafts, annotations };
 }
 
 /**
@@ -1010,6 +1025,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
     activeSessionId: null,
     chats: {},
     promptDrafts: {},
+    annotations: {},
     draft: null,
     startRepoPath: null,
     untitledIds: [],
@@ -1260,6 +1276,38 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
           promptDrafts[id] = draft;
         }
         return { promptDrafts };
+      });
+    },
+
+    applyAnnotation: ({ huntSessionId, annotation }) => {
+      set((state) => {
+        const current = state.annotations[huntSessionId] ?? [];
+        if (current.some((known) => known.id === annotation.id)) return state;
+        return { annotations: { ...state.annotations, [huntSessionId]: [...current, annotation] } };
+      });
+    },
+
+    removeAnnotation: (id, annotationId) => {
+      set((state) => {
+        const current = state.annotations[id];
+        if (!current?.some((annotation) => annotation.id === annotationId)) return state;
+        const remaining = current.filter((annotation) => annotation.id !== annotationId);
+        const annotations = { ...state.annotations };
+        if (remaining.length) {
+          annotations[id] = remaining;
+        } else {
+          delete annotations[id];
+        }
+        return { annotations };
+      });
+    },
+
+    clearAnnotations: (id) => {
+      set((state) => {
+        if (!state.annotations[id]) return state;
+        const annotations = { ...state.annotations };
+        delete annotations[id];
+        return { annotations };
       });
     },
 

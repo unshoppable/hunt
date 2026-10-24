@@ -7,7 +7,11 @@
  *   and then whenever one of the fields changes. `turn` is null while the relay serves no session: there is no status
  *   file, the relay is starting or failed, or its heartbeat is older than `HEARTBEAT_MAX_AGE_MS`; the other fields are
  *   null then too. `question` is also null when the relay is too old to report it.
+ * - `{"t":"annotation","annotation":{…}}` once for every annotation the review widget of a preview page stored
+ *   (`StoredBrowserAnnotation` of `libs/domain/src/browserAnnotation.ts`), in the order of arrival; the helper takes it
+ *   out of the review server's spool folder, so no other client gets it.
  */
+import type { StoredBrowserAnnotation } from "../../../../libs/domain/src/browserAnnotation.ts";
 import { isRecord } from "../../../../libs/domain/src/jsonRpc.ts";
 import { parseLine } from "../../../../libs/domain/src/ndjson.ts";
 import type { TurnState } from "./status.ts";
@@ -21,6 +25,11 @@ export interface StatusReport {
   /** Whether the agent's last turn ended with a message asking a question. */
   question: boolean | null;
   lastTurnEndedAt: number | null;
+}
+
+export interface AnnotationReport {
+  t: "annotation";
+  annotation: StoredBrowserAnnotation;
 }
 
 const NOT_SERVING: StatusReport = { t: "status", turn: null, question: null, lastTurnEndedAt: null };

@@ -1,13 +1,26 @@
 import { commandOf, bindingsOf, formatShortcut, matchesCommand, type CommandId, type KeyPress } from "../state/keymap";
 import { useSettingsStore } from "../state/settings";
 
+/** Marks an element whose keys, shortcuts included, belong to a remote machine, such as the Desktop tab's stream. */
+export const REMOTE_INPUT_ATTRIBUTE = "data-remote-input";
+
+/** A key press; one from a keyboard event carries its target, which `isRemoteInput` checks. */
+type ShortcutPress = KeyPress & { target?: EventTarget | null };
+
+/** Whether `target` lies inside an element marked with REMOTE_INPUT_ATTRIBUTE, whose keys no shortcut of Hunt takes. */
+export function isRemoteInput(target: EventTarget | null | undefined): boolean {
+  return typeof Element !== "undefined" && target instanceof Element && Boolean(target.closest(`[${REMOTE_INPUT_ATTRIBUTE}]`));
+}
+
 /** Whether `event` presses a binding of `id`; reads the keymap at press time, so a change in the settings applies at once. */
-export function isShortcut(event: KeyPress, id: CommandId): boolean {
+export function isShortcut(event: ShortcutPress, id: CommandId): boolean {
+  if (isRemoteInput(event.target)) return false;
   return matchesCommand(event, useSettingsStore.getState().keymap, id);
 }
 
 /** The first of `ids` whose binding `event` presses, or null. */
-export function shortcutCommand<T extends CommandId>(event: KeyPress, ids: readonly T[]): T | null {
+export function shortcutCommand<T extends CommandId>(event: ShortcutPress, ids: readonly T[]): T | null {
+  if (isRemoteInput(event.target)) return null;
   return commandOf(event, useSettingsStore.getState().keymap, ids);
 }
 

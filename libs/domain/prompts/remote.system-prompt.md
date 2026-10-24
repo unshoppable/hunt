@@ -35,6 +35,12 @@ login. A service that hunt.json marks public (`"guarded": false`) is also at its
 login protects. Check changes to the user interface with the Playwright tools against http://localhost:<port>; the
 screenshots you take show up in the user's chat.
 
+### Browser
+The Playwright tools drive the Chromium on this VM's desktop, which the user watches live in Hunt's Desktop tab and
+can take over at any time. Its profile persists, so sign-ins stay. When a page needs a sign-in, a CAPTCHA or another
+step only the user can take, ask the user to do it in the Desktop tab and wait for their answer. Leave Chromium
+running and keep the tabs you did not open.
+
 ### After a restart
 The VM shuts down while the session is idle and starts again with the next prompt. Files, Docker images and volumes
 stay. Enabled services start again by themselves and containers as their Docker restart policy says, but tmux windows

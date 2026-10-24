@@ -4,9 +4,9 @@ import { onViewStateChange, snapshotOf, useIdeStore, type IdeSnapshot } from "..
 
 /**
  * Views of the inspector pane: the changelist diff, the built-in editor, the component diagram, the reviewed pull
- * request, the checks of hunt.json or the terminals, and for a remote session also its preview.
+ * request, the checks of hunt.json or the terminals, and for a remote session also its preview and its VM's desktop.
  */
-export type RightTab = "diff" | "git" | "editor" | "graph" | "pullRequest" | "preview" | "checks" | "terminal";
+export type RightTab = "diff" | "git" | "editor" | "graph" | "pullRequest" | "preview" | "desktop" | "checks" | "terminal";
 
 /** What the inspector of a session showed when it was left: the tab, the file selected in the Diff tab and the Editor tab's panes. */
 export type SessionView = { tab?: RightTab; diffPath?: string | null; editor?: IdeSnapshot };

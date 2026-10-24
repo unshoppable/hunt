@@ -9,6 +9,9 @@ import type {
   ToolCallStatus,
   ToolKind,
 } from "@agentclientprotocol/sdk";
+import type { StoredBrowserAnnotation } from "../../../../libs/domain/src/browserAnnotation.ts";
+
+export type { StoredBrowserAnnotation };
 
 export type SessionView = {
   id: string;
@@ -278,6 +281,13 @@ export type PreviewStatus = { vmRunning: boolean; services: PreviewService[]; li
 export type PreviewPort = { port: number; url: string };
 
 /**
+ * Where the remote desktop of a session answers on this Mac (mirror of `DesktopEndpoint` in
+ * src-tauri/src/remote/desktop.rs): `url` is the Waymote gateway's base URL `http://127.0.0.1:<port>`, a forward of the
+ * shared SSH connection to the VM's desktop proxy; the SDK connects its WebSockets to `ws://` URLs of its paths.
+ */
+export type DesktopEndpoint = { url: string };
+
+/**
  * The step a remote operation on a session is at; `null` once it ended. `detail` is the gateway's last log line about
  * the step, e.g. why the VM does not answer yet; `null` until it sends one.
  */
@@ -310,6 +320,12 @@ export type RemoteLinkEvent = { huntSessionId: string; link: RemoteLink };
 
 /** What the relay of a top-level remote session reports changed (mirror of `RelayActivityEvent` in src-tauri/src/session/relay_watch.rs). */
 export type RelayActivityEvent = { huntSessionId: string; relayActivity: RelayActivity };
+
+/**
+ * An annotation a person made with the review widget on a preview page of a remote session's VM, delivered once through
+ * its status channel (mirror of `AnnotationEvent` in src-tauri/src/session/relay_watch.rs).
+ */
+export type AnnotationEvent = { huntSessionId: string; annotation: StoredBrowserAnnotation };
 
 /** Where a tmux window runs: on the session VM or in the family's tmux server on this Mac (mirror of `Machine` in src-tauri/src/tmux.rs). */
 export type Machine = "vm" | "desktop";

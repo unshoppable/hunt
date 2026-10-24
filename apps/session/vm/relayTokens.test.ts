@@ -159,13 +159,14 @@ describe.skipIf(!hasDocker())("the tokens of a session's relay in a Debian conta
     return [...claude, ...github];
   }
 
-  it("starts the session's relay with the tokens on stdin, which with --keep-stored only fill what the VM has not stored", () => {
+  it("starts the session's relay with the tokens on stdin, which with --keep-stored only fill what the VM has not stored, and its desktop", () => {
     expect(huntCtlJson(["start", ID, "--keep-stored"], "sk-ant-new\ngithub_pat_1\n")).toEqual({ relay: "running" });
     expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="token"', "github_pat_1"]);
     expect(systemctlCalls()).toEqual([
       "systemctl is-active --quiet hunt-relay.service",
       "systemctl enable --quiet hunt-relay.service",
       "systemctl restart hunt-relay.service",
+      "systemctl enable --quiet --now hunt-desktop.service",
     ]);
     // The agent reads the GitHub token through gh's wrapper; only root writes it.
     expect(sh('stat -c "%a %U %G" /etc/hunt/github-token').stdout).toBe("640 root agent\n");
@@ -231,13 +232,20 @@ describe.skipIf(!hasDocker())("the tokens of a session's relay in a Debian conta
   });
 
   it("restarts a running relay with another Claude token between turns and keeps its token while a turn runs or with --keep-stored", () => {
+    /** The calls of two starts that leave the running relay alone and enable the desktop each. */
+    const RUNNING_RELAY_STARTS = [
+      "systemctl is-active --quiet hunt-relay.service",
+      "systemctl enable --quiet --now hunt-desktop.service",
+      "systemctl is-active --quiet hunt-relay.service",
+      "systemctl enable --quiet --now hunt-desktop.service",
+    ];
     huntCtlJson(["start", ID], "sk-ant-one\ngithub_pat_1\n");
     systemctlCalls();
     // The same token, or none, leaves the running relay alone.
     expect(huntCtlJson(["start", ID], "sk-ant-one\n\n")).toEqual({ relay: "running" });
     expect(huntCtlJson(["start", ID], "\ngithub_pat_2\n")).toEqual({ relay: "running" });
     expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="sk-ant-one"', "github_pat_1"]);
-    expect(systemctlCalls()).toEqual(["systemctl is-active --quiet hunt-relay.service", "systemctl is-active --quiet hunt-relay.service"]);
+    expect(systemctlCalls()).toEqual(RUNNING_RELAY_STARTS);
 
     // Another token waits while a turn runs, and loses to the stored one with --keep-stored.
     writeStatus({ state: "ready", acpSessionId: "acp-session", turn: "running" });
@@ -245,7 +253,7 @@ describe.skipIf(!hasDocker())("the tokens of a session's relay in a Debian conta
     writeStatus({ state: "ready", acpSessionId: "acp-session", turn: "idle" });
     expect(huntCtlJson(["start", ID, "--keep-stored"], "sk-ant-two\ngithub_pat_2\n")).toEqual({ relay: "running" });
     expect(storedTokens()).toEqual(['CLAUDE_CODE_OAUTH_TOKEN="sk-ant-one"', "github_pat_1"]);
-    expect(systemctlCalls()).toEqual(["systemctl is-active --quiet hunt-relay.service", "systemctl is-active --quiet hunt-relay.service"]);
+    expect(systemctlCalls()).toEqual(RUNNING_RELAY_STARTS);
 
     // Between turns the relay restarts with the token given, and the GitHub token comes along.
     expect(huntCtlJson(["start", ID], "sk-ant-two\ngithub_pat_2\n")).toEqual({ relay: "running" });
@@ -254,6 +262,7 @@ describe.skipIf(!hasDocker())("the tokens of a session's relay in a Debian conta
       "systemctl is-active --quiet hunt-relay.service",
       "systemctl enable --quiet hunt-relay.service",
       "systemctl restart hunt-relay.service",
+      "systemctl enable --quiet --now hunt-desktop.service",
     ]);
   });
 

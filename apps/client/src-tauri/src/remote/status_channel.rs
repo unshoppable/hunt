@@ -1,12 +1,15 @@
 //! The status channel of a remote session: the status helper on its VM (`session/statusHelper.mjs` of the installed
 //! session release, run over the shared SSH connection as the agent's user) reports what the session's relay records in
-//! its status whenever the turn, the question or the end of the last turn changes. Messages are JSON lines, first
-//! `{"t":"ready"}`, then one `{"t":"status",…}` per change; the helper ends with its stdin. The helper only reads, so the
-//! channel neither starts a stopped VM nor keeps one awake. Knows nothing about Tauri.
+//! its status whenever the turn, the question or the end of the last turn changes, and delivers each annotation a person
+//! made with the review widget on a preview page of the VM once. Messages are JSON lines, first `{"t":"ready"}`, then one
+//! `{"t":"status",…}` per change and one `{"t":"annotation","annotation":{…}}` per annotation; the helper ends with its
+//! stdin. The helper only reads, so the channel neither starts a stopped VM nor keeps one awake. Knows nothing about
+//! Tauri.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::oneshot;
@@ -41,10 +44,62 @@ pub struct Report {
     pub last_turn_ended_at: Option<i64>,
 }
 
+/// An annotation a person made with the review widget on a preview page of the VM, as the review server stored it
+/// (mirror of `StoredBrowserAnnotation` in `libs/domain/src/browserAnnotation.ts`); unknown fields are ignored.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Annotation {
+    /// A random UUID the review server assigns.
+    pub id: String,
+    /// When the review server received it (Unix ms).
+    pub created_at: i64,
+    pub url: String,
+    pub title: String,
+    /// A CSS selector that matches the picked element only.
+    pub selector: String,
+    /// The element's visible text, shortened.
+    pub text: String,
+    /// The element's HTML, shortened.
+    pub outer_html: String,
+    /// The element's box in CSS pixels of the viewport.
+    pub rect: AnnotationRect,
+    pub viewport: AnnotationViewport,
+    /// A few computed styles of the element, by CSS property.
+    pub styles: BTreeMap<String, String>,
+    /// Where the element is rendered in the app's sources, when the page tells.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<AnnotationSource>,
+    pub comment: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+pub struct AnnotationRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+pub struct AnnotationViewport {
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct AnnotationSource {
+    pub file: String,
+    pub line: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+}
+
 /// What the helper reports once it is ready.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Status(Report),
+    /// An annotation of the review widget, delivered once.
+    Annotation(Annotation),
     /// The channel ended, with what the helper or ssh said last.
     Closed(String),
 }
@@ -81,6 +136,7 @@ impl StatusChannel {
                         }
                     }
                     Some(Message::Status(report)) => on_event(Event::Status(report)),
+                    Some(Message::Annotation(annotation)) => on_event(Event::Annotation(annotation)),
                     None => {}
                 }
             }
@@ -103,10 +159,11 @@ impl StatusChannel {
 }
 
 /// A message of the helper, read.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum Message {
     Ready,
     Status(Report),
+    Annotation(Annotation),
 }
 
 #[derive(Deserialize)]
@@ -114,6 +171,7 @@ enum Message {
 enum Incoming {
     Ready,
     Status(Report),
+    Annotation { annotation: Annotation },
 }
 
 /// Reads one line of the helper; `None` for a line it cannot read, such as a message of a newer helper.
@@ -121,6 +179,7 @@ fn parse_message(line: &str) -> Option<Message> {
     Some(match serde_json::from_str(line).ok()? {
         Incoming::Ready => Message::Ready,
         Incoming::Status(report) => Message::Status(report),
+        Incoming::Annotation { annotation } => Message::Annotation(annotation),
     })
 }
 
@@ -146,6 +205,51 @@ mod tests {
         let older = r#"{"t":"status","turn":"idle","lastTurnEndedAt":1760000000000}"#;
         let report = Report { turn: Some(Turn::Idle), question: None, last_turn_ended_at: Some(1_760_000_000_000) };
         assert_eq!(parse_message(older), Some(Message::Status(report)));
+    }
+
+    const ANNOTATION: &str = concat!(
+        r#"{"t":"annotation","annotation":{"id":"5b0c","createdAt":1760000000000,"url":"https://app.example/cart","title":"Cart","#,
+        r#""selector":"main > button.buy","text":"Buy","outerHtml":"<button class=\"buy\">Buy</button>","#,
+        r#""rect":{"x":10,"y":20.5,"width":80,"height":32},"viewport":{"width":1280,"height":800},"styles":{"color":"rgb(0, 0, 0)"},"#,
+        r#""source":{"file":"src/Cart.tsx","line":12,"column":5},"comment":"Make it blue","extra":true}}"#,
+    );
+
+    #[test]
+    fn reads_an_annotation_and_ignores_unknown_fields() {
+        let Some(Message::Annotation(annotation)) = parse_message(ANNOTATION) else { panic!("no annotation read") };
+        assert_eq!(annotation.id, "5b0c");
+        assert_eq!(annotation.created_at, 1_760_000_000_000);
+        assert_eq!(annotation.outer_html, r#"<button class="buy">Buy</button>"#);
+        assert_eq!(annotation.rect, AnnotationRect { x: 10.0, y: 20.5, width: 80.0, height: 32.0 });
+        assert_eq!(annotation.viewport, AnnotationViewport { width: 1280.0, height: 800.0 });
+        assert_eq!(annotation.styles, BTreeMap::from([("color".to_string(), "rgb(0, 0, 0)".to_string())]));
+        assert_eq!(annotation.source, Some(AnnotationSource { file: "src/Cart.tsx".into(), line: 12, column: Some(5) }));
+        assert_eq!(annotation.comment, "Make it blue");
+    }
+
+    #[test]
+    fn an_annotation_without_source_or_column_keeps_them_out_of_the_frontend_payload() {
+        let without_source = ANNOTATION.replace(r#""source":{"file":"src/Cart.tsx","line":12,"column":5},"#, "");
+        let Some(Message::Annotation(annotation)) = parse_message(&without_source) else { panic!("no annotation read") };
+        assert_eq!(annotation.source, None);
+        let payload = serde_json::to_value(&annotation).unwrap();
+        assert!(payload.get("source").is_none());
+        assert_eq!(payload["outerHtml"], r#"<button class="buy">Buy</button>"#);
+        assert_eq!(payload["createdAt"], 1_760_000_000_000_i64);
+
+        let without_column = ANNOTATION.replace(r#","column":5"#, "");
+        let Some(Message::Annotation(annotation)) = parse_message(&without_column) else { panic!("no annotation read") };
+        assert_eq!(annotation.source, Some(AnnotationSource { file: "src/Cart.tsx".into(), line: 12, column: None }));
+        assert_eq!(serde_json::to_value(&annotation).unwrap()["source"], serde_json::json!({ "file": "src/Cart.tsx", "line": 12 }));
+    }
+
+    #[test]
+    fn skips_a_malformed_annotation() {
+        assert_eq!(parse_message(r#"{"t":"annotation"}"#), None);
+        assert_eq!(parse_message(&ANNOTATION.replace(r#""comment":"Make it blue","#, "")), None);
+        assert_eq!(parse_message(&ANNOTATION.replace(r#""line":12"#, r#""line":"12""#)), None);
+        assert_eq!(parse_message(&ANNOTATION.replace(r#""createdAt":1760000000000"#, r#""createdAt":"now""#)), None);
+        assert_eq!(parse_message(&ANNOTATION.replace(r#""rect":{"x":10,"#, r#""rect":{"#)), None);
     }
 
     #[test]

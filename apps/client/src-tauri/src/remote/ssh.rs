@@ -1,6 +1,6 @@
 //! OpenSSH to the VMs of remote sessions and to the gateway through an IAP tunnel (`gcloud compute start-iap-tunnel` as
-//! the ProxyCommand) with a key of Hunt's own that is registered with OS Login. Short commands and the calls of the
-//! gateway API share one multiplexed connection per VM; the ACP stream of a session gets a tunnel of its own, because
+//! the ProxyCommand) with a key of Hunt's own that is registered with OS Login. Short commands, the calls of the
+//! gateway API and port forwards share one multiplexed connection per VM; the ACP stream of a session gets a tunnel of its own, because
 //! `AcpAgent` kills its whole process group when the session ends and would take a shared master down with it.
 //! Terminals join the shared connection while one is open, but never start it, for the same reason.
 
@@ -143,6 +143,46 @@ impl Ssh {
     /// tunnel and the handshake; fails like `run` when the VM cannot be reached.
     pub async fn warm_up(&self) -> Result<(), String> {
         self.run("true").await.map(|_| ())
+    }
+
+    /// Forwards `local_port` on this Mac's loopback address to `remote_port` on the VM's through the shared connection,
+    /// which is opened first when it is down. The forward lives in the master and ends with it or with
+    /// `cancel_local_forward`.
+    pub async fn forward_local_port(&self, local_port: u16, remote_port: u16) -> Result<(), String> {
+        self.warm_up().await?;
+        self.control_master(&self.forward_control_args("forward", local_port, remote_port))
+            .await
+            .map_err(|error| format!("failed to forward port {local_port} to port {remote_port} of the VM {}: {error}", self.vm.instance))
+    }
+
+    /// Ends the forward `forward_local_port` opened for `local_port`; connections through it stay open until they close.
+    pub async fn cancel_local_forward(&self, local_port: u16, remote_port: u16) -> Result<(), String> {
+        self.control_master(&self.forward_control_args("cancel", local_port, remote_port))
+            .await
+            .map_err(|error| format!("failed to cancel the forward of port {local_port} to the VM {}: {error}", self.vm.instance))
+    }
+
+    /// Arguments of `ssh` that ask the shared connection's master to `operation` (`forward` or `cancel`) the forward of
+    /// `local_port` on this Mac's loopback address to `remote_port` on the VM's.
+    fn forward_control_args(&self, operation: &str, local_port: u16, remote_port: u16) -> Vec<String> {
+        let mut args = self.options(Connection::Shared);
+        args.extend(["-O".to_string(), operation.to_string(), "-L".to_string(), format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}")]);
+        args.push(self.vm.instance.clone());
+        args
+    }
+
+    /// Runs `ssh` with the control command `args` against the running master; fails with its standard error.
+    async fn control_master(&self, args: &[String]) -> Result<(), String> {
+        let output = Command::new("ssh")
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(|error| format!("failed to run ssh: {error}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        Ok(())
     }
 
     /// Runs `command` on the VM and returns its standard output as text.
@@ -365,6 +405,17 @@ mod tests {
         assert!(args.contains(&"EscapeChar=none".to_string()));
         assert!(!args.iter().any(|arg| arg.starts_with("ControlPersist")));
         assert_eq!(&args[args.len() - 2..], ["vm-hunt", "sudo -n -iu agent tmux -u new-session -A -s app"]);
+    }
+
+    #[test]
+    fn forward_control_args_address_the_shared_master_and_bind_only_loopback() {
+        let args = ssh().forward_control_args("forward", 52011, 9231);
+        assert!(args.contains(&"ControlPath=~/.ssh/hunt-%C".to_string()));
+        assert!(args.contains(&"ControlMaster=auto".to_string()));
+        assert!(args.contains(&"-l".to_string()) && args.contains(&"jane_example_com".to_string()));
+        assert_eq!(&args[args.len() - 5..], ["-O", "forward", "-L", "127.0.0.1:52011:127.0.0.1:9231", "vm-hunt"]);
+        let cancel = ssh().forward_control_args("cancel", 52011, 9231);
+        assert_eq!(&cancel[cancel.len() - 5..], ["-O", "cancel", "-L", "127.0.0.1:52011:127.0.0.1:9231", "vm-hunt"]);
     }
 
     #[tokio::test]

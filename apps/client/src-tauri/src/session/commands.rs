@@ -40,6 +40,7 @@ use crate::lint_rules::{self, LintRules};
 use crate::tmux::{self, LocalTmux, Machine, TmuxWindow};
 use crate::lsp::{self, LspRegistry};
 use crate::remote::api::{validate_remote_secret_name, validate_remote_secret_value, GatewayApi, RemoteSecretSummary};
+use crate::remote::desktop::{DesktopEndpoint, DesktopRegistry};
 use crate::remote::preview::PreviewStatus;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::terminal::{Terminal, TerminalEvent, TerminalRegistry, TerminalSize, TerminalTarget};
@@ -741,6 +742,26 @@ pub async fn preview_status(app: AppHandle, registry: State<'_, SessionRegistry>
     let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
     let status = remote::hunt_ctl(&ssh, &["preview-status", &id.to_string()]).await?;
     remote::preview::parse_status(&status, id, domain)
+}
+
+/// The remote desktop of the session `id`: the base URL (`http://127.0.0.1:<port>`) of a forward from this Mac to its
+/// VM's desktop proxy, opened once and kept for the session (see `remote::desktop`). A VM that is off is an error and
+/// stays off.
+#[tauri::command]
+pub async fn desktop_open(
+    app: AppHandle,
+    registry: State<'_, SessionRegistry>,
+    desktops: State<'_, DesktopRegistry>,
+    id: Uuid,
+) -> Result<DesktopEndpoint, String> {
+    let running_vm = || async { Ok(running_remote(&app, &registry, id, "open the remote desktop").await?.vm) };
+    desktops.open(id, &ssh_dir()?, running_vm).await
+}
+
+/// Cancels the desktop forward of the session `id` in the background, once its agent or the session ends.
+pub fn close_desktop(app: &AppHandle, id: Uuid) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move { app.state::<DesktopRegistry>().close(id).await });
 }
 
 /// The session VMs the gateway of the remote settings lists, running or not (see `remote::adoption::list_session_vms`),
@@ -1940,6 +1961,7 @@ async fn stop_agent_and_wait(app: &AppHandle, registry: &SessionRegistry, watche
     }
     graph::unwatch(watchers, id);
     attribution::forget_session(app, id);
+    close_desktop(app, id);
     sync::stop_and_wait(app, id).await;
 }
 
@@ -2101,6 +2123,7 @@ async fn stop_agent(app: &AppHandle, registry: &SessionRegistry, watchers: &Watc
     }
     graph::unwatch(watchers, id);
     attribution::forget_session(app, id);
+    close_desktop(app, id);
     sync::detach(app, id);
 }
 

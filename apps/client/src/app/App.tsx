@@ -35,6 +35,7 @@ import {
 import { ChecksPanel } from "../checks/ChecksPanel";
 import { isAnyCheckRunning } from "../checks/checks";
 import type { ChecksStatus } from "../ipc/types";
+import { DesktopPanel } from "../desktop/DesktopPanel";
 import { PreviewPanel } from "../preview/PreviewPanel";
 import { isPreviewActive } from "../preview/services";
 import { useChecksStore } from "../state/checks";
@@ -67,7 +68,7 @@ export function App() {
   const draft = useHuntStore((state) => state.draft);
   /** The active session is still being created: it has no worktree yet, so the inspector and the file search wait. */
   const isCreatingActive = useHuntStore((state) => Boolean(state.activeSessionId && state.creatingIds.includes(state.activeSessionId)));
-  /** The VM the active session runs on; it adds the Preview tab and puts the Terminal tab on the VM. */
+  /** The VM the active session runs on; it adds the Preview and Desktop tabs and puts the Terminal tab on the VM. */
   const activeRemoteInstance = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.remote?.vm.instance ?? null);
   /** Whether the active session's worktree exists here; a remote session adopted from its VM gets one with its first sync. */
   const hasActiveWorktree = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.hasLocalWorktree ?? false);
@@ -136,8 +137,9 @@ export function App() {
   const [findInFiles, setFindInFiles] = useState<{ initialText: string | null } | null>(null);
   const hasLocalWorktree = !isCreatingActive && hasActiveWorktree;
   const canSearchFiles = Boolean(activeSessionId) && !draft && hasLocalWorktree;
-  /** A local session has no preview, a session without a pull request no description; they show the diff instead. */
-  const rightTab = (!activeRemoteInstance && storedTab === "preview") || (!isReviewingPullRequest && storedTab === "pullRequest") ? "diff" : storedTab;
+  /** A local session has no preview or desktop, a session without a pull request no description; they show the diff instead. */
+  const isRemoteOnlyTab = storedTab === "preview" || storedTab === "desktop";
+  const rightTab = (!activeRemoteInstance && isRemoteOnlyTab) || (!isReviewingPullRequest && storedTab === "pullRequest") ? "diff" : storedTab;
 
   // ⌘P / double shift: "Go to File" for the active session's worktree.
   useFileSearchShortcut(() => {
@@ -270,6 +272,7 @@ export function App() {
               {activeRemoteInstance ? (
                 <TabButton isActive={rightTab === "preview"} onClick={() => setRightTab("preview")} label="Preview" dot={isPreviewBusy ? VM_BUSY_DOT : null} />
               ) : null}
+              {activeRemoteInstance ? <TabButton isActive={rightTab === "desktop"} onClick={() => setRightTab("desktop")} label="Desktop" /> : null}
               <TabButton isActive={rightTab === "checks"} onClick={() => setRightTab("checks")} label="Checks" dot={checksDot} />
               <TabButton
                 isActive={rightTab === "terminal"}
@@ -289,7 +292,7 @@ export function App() {
               {!activeSessionId || draft || isCreatingActive ? null : (
                 <>
                   {/* The panels are siblings of one fragment, so their keys carry the tab as well as the session: a shared key would keep React from removing a panel that another tab replaced. */}
-                  {rightTab === "preview" || rightTab === "terminal" ? null : activeRemoteInstance && !hasActiveWorktree ? (
+                  {rightTab === "preview" || rightTab === "desktop" || rightTab === "terminal" ? null : activeRemoteInstance && !hasActiveWorktree ? (
                     <NoLocalWorktree sessionId={activeSessionId} />
                   ) : rightTab === "diff" ? (
                     <DiffPanel key={`diff:${activeSessionId}`} sessionId={activeSessionId} />
@@ -305,6 +308,8 @@ export function App() {
                     <ArchitecturePanel key={`graph:${activeSessionId}`} sessionId={activeSessionId} />
                   )}
                   {activeRemoteInstance && rightTab === "preview" ? <PreviewPanel key={`preview:${activeSessionId}`} sessionId={activeSessionId} /> : null}
+                  {/* The desktop stays mounted while another tab shows, so switching tabs keeps its stream; another session ends it. */}
+                  {activeRemoteInstance ? <DesktopPanel key={`desktop:${activeSessionId}`} sessionId={activeSessionId} isVisible={rightTab === "desktop"} /> : null}
                   {/* The terminal stays mounted while another tab shows, so switching tabs keeps its connection; tmux keeps its processes running in any case. */}
                   <TerminalPanel key={`terminal:${activeSessionId}`} sessionId={activeSessionId} isVisible={rightTab === "terminal"} />
                 </>

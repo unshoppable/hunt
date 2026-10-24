@@ -13,6 +13,7 @@ pub mod adoption;
 pub mod api;
 pub mod channel;
 pub mod commit;
+pub mod desktop;
 pub mod handoff;
 pub mod memory;
 pub mod preview;

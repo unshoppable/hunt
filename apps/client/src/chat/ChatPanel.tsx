@@ -74,6 +74,9 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const unqueuePrompt = useHuntStore((state) => state.unqueuePrompt);
   const promptDraft = useHuntStore((state) => state.promptDrafts[sessionId]);
   const setPromptDraft = useHuntStore((state) => state.setPromptDraft);
+  const annotations = useHuntStore((state) => state.annotations[sessionId]);
+  const removeAnnotation = useHuntStore((state) => state.removeAnnotation);
+  const clearAnnotations = useHuntStore((state) => state.clearAnnotations);
   const cancelPrompt = useHuntStore((state) => state.cancelPrompt);
   const closeSession = useHuntStore((state) => state.closeSession);
   const resumeSession = useHuntStore((state) => state.resumeSession);
@@ -370,6 +373,9 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         pullRequest={session.pullRequest}
         extension={<SessionTargetBar repoPath={session.repoPath} branch={session.branch} />}
         dropZoneRef={panelRef}
+        annotations={annotations}
+        onRemoveAnnotation={(annotationId) => removeAnnotation(sessionId, annotationId)}
+        onAnnotationsSent={() => clearAnnotations(sessionId)}
       />
       {guardrailChat.shown ? (
         <SubChatPopover

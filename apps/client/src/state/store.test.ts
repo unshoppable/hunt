@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionNotification } from "@agentclientprotocol/sdk";
-import type { Screenshot, SessionView } from "../ipc/types";
+import type { Screenshot, SessionView, StoredBrowserAnnotation } from "../ipc/types";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -28,6 +28,60 @@ describe("session summary", () => {
     const sessions = useHuntStore.getState().sessions;
     expect(sessions[0]).toMatchObject({ title: "New", summary: ["did a", "did b"] });
     expect(sessions[1]).toMatchObject({ title: "Other", summary: ["kept"] });
+  });
+});
+
+describe("browser annotations", () => {
+  beforeEach(() => {
+    useHuntStore.setState({ annotations: {} });
+  });
+
+  function annotation(id: string, comment: string): StoredBrowserAnnotation {
+    return {
+      id,
+      createdAt: 1_760_000_000_000,
+      url: "https://app.example/",
+      title: "App",
+      selector: "main > h1",
+      text: "Welcome",
+      outerHtml: "<h1>Welcome</h1>",
+      rect: { x: 0, y: 0, width: 100, height: 40 },
+      viewport: { width: 1280, height: 800 },
+      styles: {},
+      comment,
+    };
+  }
+
+  it("collects the delivered annotations per session in arrival order and ignores one delivered again", () => {
+    const { applyAnnotation } = useHuntStore.getState();
+    applyAnnotation({ huntSessionId: SESSION, annotation: annotation("a", "Larger") });
+    applyAnnotation({ huntSessionId: SESSION, annotation: annotation("b", "Bold") });
+    applyAnnotation({ huntSessionId: "other", annotation: annotation("a", "Elsewhere") });
+    const before = useHuntStore.getState().annotations;
+    applyAnnotation({ huntSessionId: SESSION, annotation: annotation("a", "Larger, again") });
+
+    const { annotations } = useHuntStore.getState();
+    expect(annotations).toBe(before);
+    expect(annotations[SESSION].map((stored) => stored.comment)).toEqual(["Larger", "Bold"]);
+    expect(annotations.other.map((stored) => stored.comment)).toEqual(["Elsewhere"]);
+  });
+
+  it("removes one annotation, forgets a session without any and clears a session's annotations", () => {
+    const { applyAnnotation, removeAnnotation, clearAnnotations } = useHuntStore.getState();
+    applyAnnotation({ huntSessionId: SESSION, annotation: annotation("a", "Larger") });
+    applyAnnotation({ huntSessionId: SESSION, annotation: annotation("b", "Bold") });
+    applyAnnotation({ huntSessionId: "other", annotation: annotation("c", "Elsewhere") });
+
+    removeAnnotation(SESSION, "a");
+    expect(useHuntStore.getState().annotations[SESSION].map((stored) => stored.id)).toEqual(["b"]);
+    const before = useHuntStore.getState().annotations;
+    removeAnnotation(SESSION, "unknown");
+    expect(useHuntStore.getState().annotations).toBe(before);
+    removeAnnotation(SESSION, "b");
+    expect(SESSION in useHuntStore.getState().annotations).toBe(false);
+
+    clearAnnotations("other");
+    expect(useHuntStore.getState().annotations).toEqual({});
   });
 });
 
@@ -949,6 +1003,7 @@ describe("closeSession", () => {
     const sub = { ...storedSession("sub", "Sub"), parentId: "parent" };
     useHuntStore.setState({
       chats: { parent: createEmptyChat(), sub: createEmptyChat(), other: createEmptyChat() },
+      annotations: { parent: [], other: [] },
       sessions: [sub, storedSession("parent", "Parent"), storedSession("other", "Other")],
       creatingIds: [],
       removingIds: [],
@@ -971,6 +1026,7 @@ describe("closeSession", () => {
     expect(pending.removingIds).toEqual(["parent", "sub"]);
     expect(pending.activeSessionId).toBeNull();
     expect(Object.keys(pending.chats)).toEqual(["other"]);
+    expect(Object.keys(pending.annotations)).toEqual(["other"]);
 
     finish();
     await closing;

@@ -1,7 +1,8 @@
 /**
  * Builds the release artifact a VM runs, in the layout `hunt-ctl` and the systemd units expect below
  * `/srv/hunt/current`: `gateway/`, `relay/`, `session/` and `vm/`. Every Node entry point becomes one self-contained
- * ES module (`.mjs`) without third-party packages, so the VM needs nothing but Node.
+ * ES module (`.mjs`) without third-party packages, so the VM needs nothing but Node; every browser entry point, which a
+ * server of the VM hands to web pages, one minified script (`.js`).
  *
  *   node scripts/buildVmArtifact.ts <session|gateway>
  *
@@ -22,6 +23,8 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 interface Artifact {
   /** Output path without extension → entry module, relative to the repository root. */
   entries: Record<string, string>;
+  /** Output path without extension → entry module of a script that runs in the browser. */
+  browserEntries?: Record<string, string>;
   /** Source → destination in the artifact, both relative; directories are copied whole. */
   files: [string, string][];
 }
@@ -34,6 +37,10 @@ const ARTIFACTS: Record<string, Artifact> = {
       "session/syncHelper": "apps/session/src/sync/helper.ts",
       "session/transcriptHelper": "apps/session/src/sync/transcripts.ts",
       "session/statusHelper": "apps/session/src/relay/statusHelper.ts",
+      "session/reviewServer": "apps/session/src/review/server.ts",
+    },
+    browserEntries: {
+      "session/review": "apps/session/src/review/widget.ts",
     },
     files: [
       ["libs/vm/hunt-ctl", "vm/hunt-ctl"],
@@ -45,6 +52,7 @@ const ARTIFACTS: Record<string, Artifact> = {
       ["apps/session/vm/profile.sh", "vm/profile.sh"],
       ["apps/session/vm/tmux.conf", "vm/tmux.conf"],
       ["apps/session/vm/systemd", "vm/systemd/session"],
+      ["apps/session/vm/desktop", "vm/desktop"],
       ["apps/session/acp-version", "session/acp-version"],
       ["apps/session/mcp-servers.json", "session/mcp-servers.json"],
       ["apps/session/playwright/package.json", "session/playwright/package.json"],
@@ -75,6 +83,14 @@ const builtinsOnly: Plugin = {
     context.onResolve({ filter: /^[^./]/ }, (args) =>
       isBuiltin(args.path) ? { path: args.path, external: true } : { errors: [{ text: `${args.path} is not a Node built-in; the VM has no node_modules` }] },
     );
+  },
+};
+
+/** A browser script imports nothing but modules of the repository. */
+const relativeOnly: Plugin = {
+  name: "relative-only",
+  setup(context) {
+    context.onResolve({ filter: /^[^./]/ }, (args) => ({ errors: [{ text: `${args.path} is no module of the repository; a browser script bundles no packages` }] }));
   },
 };
 
@@ -124,6 +140,19 @@ async function buildArtifact(name: string): Promise<void> {
     plugins: [builtinsOnly, rawText],
     logLevel: "warning",
   });
+  if (artifact.browserEntries) {
+    await build({
+      entryPoints: Object.fromEntries(Object.entries(artifact.browserEntries).map(([output, entry]) => [output, join(ROOT, entry)])),
+      outdir: out,
+      bundle: true,
+      minify: true,
+      platform: "browser",
+      format: "iife",
+      target: "es2020",
+      plugins: [relativeOnly],
+      logLevel: "warning",
+    });
+  }
   for (const [source, destination] of [...artifact.files, ["libs/domain/protocol.json", "protocol.json"]]) {
     cpSync(join(ROOT, source), join(out, destination), { recursive: true });
   }

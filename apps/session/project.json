@@ -32,7 +32,7 @@
     "typecheck-tests": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "tsc --noEmit -p apps/session/tsconfig.json"
+        "command": "tsc --noEmit -p apps/session/tsconfig.json && tsc --noEmit -p apps/session/tsconfig.widget.json"
       }
     },
     "lint": {

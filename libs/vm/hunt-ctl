@@ -58,6 +58,8 @@ readonly VOLTA_HOME=/opt/volta
 readonly TOOL_STAMPS=/var/lib/hunt/tools
 readonly RELAY_UNIT=hunt-relay.service
 readonly PROXY_UNIT=hunt-proxy.service
+readonly DESKTOP_UNIT=hunt-desktop.service
+readonly REVIEW_UNIT=hunt-review.service
 readonly RELAY_SOCKET=/run/hunt/relay.sock
 readonly RELAY_STATUS=/run/hunt/status.json
 readonly SESSION_ENV=/etc/hunt/session.env
@@ -67,6 +69,8 @@ readonly SECRETS_ENV=/etc/hunt/secrets.env
 # every later invocation without a relay restart.
 readonly GITHUB_TOKEN_FILE=/etc/hunt/github-token
 readonly GH_BINARY=/usr/local/libexec/hunt/gh
+# Waymote's binaries, which hunt-desktop.service and vm/desktop/start expect there.
+readonly WAYMOTE_DIR=/opt/hunt/agent/waymote
 readonly PROXY_CONFIG=/etc/hunt/caddy.json
 readonly IDLE_CONFIG=/etc/hunt/idle.conf
 # The environment of each service of hunt.json, <name>.env, which `session-config` writes and hunt-service@.service
@@ -84,14 +88,17 @@ readonly SERVICE_SUDOERS_DROPIN=/etc/sudoers.d/hunt-service
 readonly TMUX_CONFIG=/etc/tmux.conf
 # A relay whose status.json heartbeat is older than this is gone.
 readonly HEARTBEAT_MAX_AGE_MS=120000
-# Ports preview-status never lists: Caddy's admin API, the Docker API, LLMNR of systemd-resolved, the preview proxy and
-# the Google Ops Agent's OpenTelemetry collector and Fluent Bit; apps/session/src/config.ts reserves the same.
-readonly RESERVED_PORTS='2019 2375 2376 5355 8080 20201 20202'
+# Ports preview-status never lists: Caddy's admin API, the Docker API, LLMNR of systemd-resolved, the preview proxy, the
+# desktop, the preview proxy's review server and the Google Ops Agent's OpenTelemetry collector and Fluent Bit;
+# apps/session/src/config.ts reserves the same.
+readonly RESERVED_PORTS='2019 2375 2376 5355 8080 9222 9230 9231 9232 20201 20202'
 # Pinned x86_64 downloads, like the VMs.
 readonly GH_VERSION=2.102.0
 readonly GH_SHA256=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
 readonly TERRAFORM_VERSION=1.15.8
 readonly TERRAFORM_SHA256=d25ce7b6902013ad905db3d2eab0be4cd905887fe88b81a6171b8d5503c31f3d
+readonly WAYMOTE_VERSION=0.1.8
+readonly WAYMOTE_SHA256=5f43897fade7fd38ba4b47ad90f0f837ee34cd393e18d68e5eab5694fbb82375
 readonly VOLTA_VERSION=2.0.2
 readonly VOLTA_SHA256=6cec054c911fb925b629a09455775af6e95dc0f5694a4c28b63979ab9ef18037
 # The Node and npm Volta runs where a repository pins none.
@@ -100,6 +107,9 @@ readonly VOLTA_NPM=11.16.0
 # Debian packages on top of the VM's base: compilers for native npm modules and unzip for the agent's builds, rsync for
 # the file sync with the desktop app.
 readonly -a AGENT_PACKAGES=(g++ make python3 rsync unzip)
+# The desktop of vm/desktop: sway as headless compositor, FFmpeg for Waymote's H.264 encoder and the fonts of pages in
+# other scripts than Latin; the rest of Chromium's libraries comes with Playwright's browser.
+readonly -a DESKTOP_PACKAGES=(sway ffmpeg fonts-noto-cjk)
 
 # ---- Gateway ----
 # The preview domain of the edge proxy: `install --domain` sets it, later installs keep it.
@@ -212,13 +222,13 @@ Session VM:
                          status of those named (default: all). The agent may run it as `sudo -n hunt-ctl service …`
   start <id> [--keep-stored]
                          start the session's relay unless it runs, with the tokens from stdin (see read_tokens; the
-                         GitHub token goes to /etc/hunt/github-token for git, Git LFS and gh), and its preview proxy
-                         once session-config wrote it; an empty line keeps the token stored before, and with
+                         GitHub token goes to /etc/hunt/github-token for git, Git LFS and gh), its preview proxy
+                         and review server once session-config wrote it and its desktop; an empty line keeps the token stored before, and with
                          --keep-stored so does a given one, which then only fills what the VM has not stored. A relay
                          that runs with another Claude Code token than the one given restarts with it between turns
   wait <id> [--timeout <seconds>]
                          wait until the session's relay serves its socket (default 120 seconds)
-  stop <id>              stop and disable the session's relay, its services and preview proxy
+  stop <id>              stop and disable the session's relay, its services, preview proxy, review server and desktop
   clear <id> [--keep-stored]
                          restart the session's relay with a new conversation, with the tokens from stdin as start
                          takes them
@@ -570,8 +580,9 @@ install_units() {
         printf 'IDLE_MINUTES=30\nBOOT_GRACE_MINUTES=15\nPREVIEW_MAX_MINUTES=120\nSUSPEND_WAIT_MINUTES=15\n' >"$IDLE_CONFIG"
       fi
       systemctl enable --quiet --now hunt-idle.timer
-      # A running proxy takes changes of its unit only with a restart; the relay keeps running until its next start.
-      systemctl try-restart "$PROXY_UNIT"
+      # A running proxy takes changes of its unit only with a restart, so do the desktop and the review server with a new
+      # release; the relay keeps running until its next start.
+      systemctl try-restart "$PROXY_UNIT" "$DESKTOP_UNIT" "$REVIEW_UNIT"
       ;;
     gateway)
       install_gateway_access
@@ -619,7 +630,8 @@ cmd_version() {
 # ---- Session VM: the agent's tools ----------------------------------------------------------------------------------
 # What the agent works with besides the VM's base (Docker, Node 24, git, Git LFS, jq, socat, tmux, Caddy): build tools,
 # gh, Terraform, Volta for the Node and npm versions a repository pins, the ACP adapter with the native Claude Code
-# CLI and Playwright's MCP server with Chromium. Every step is skipped when the tool is at its version already.
+# CLI, Playwright's MCP server with Chromium and the desktop's sway, FFmpeg and Waymote. Every step is skipped when the
+# tool is at its version already.
 
 install_agent_tools() {
   local release=$1
@@ -631,6 +643,7 @@ install_agent_tools() {
   install_volta "$release"
   install_acp "$release"
   install_playwright "$release"
+  install_waymote
   # Node 24's corepack serves `hunt-ctl deps` and the agent for pnpm and yarn; it runs on whatever `node` Volta resolves.
   if [[ -f /opt/hunt/node/lib/node_modules/corepack/dist/corepack.js ]]; then
     ln -sfn /opt/hunt/node/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
@@ -646,7 +659,7 @@ install_agent_tools() {
 install_packages() {
   local package
   local -a missing=()
-  for package in "${AGENT_PACKAGES[@]}"; do
+  for package in "${AGENT_PACKAGES[@]}" "${DESKTOP_PACKAGES[@]}"; do
     if [[ $(dpkg-query -W -f '${Status}' "$package" 2>/dev/null) != "install ok installed" ]]; then
       missing+=("$package")
     fi
@@ -678,6 +691,22 @@ install_terraform() {
   unzip -q "$dir/terraform.zip" terraform -d "$dir"
   install -m 0755 "$dir/terraform" /usr/local/bin/terraform
   mark_tool terraform "$TERRAFORM_VERSION"
+}
+
+# Waymote's gateway and stream daemon, which stream the desktop (vm/desktop/start), in WAYMOTE_DIR.
+install_waymote() {
+  local dir staging
+  [[ -x $WAYMOTE_DIR/bin/waymote-gateway ]] && tool_current waymote "$WAYMOTE_VERSION" && return
+  log info "installing Waymote $WAYMOTE_VERSION"
+  make_scratch_dir dir
+  download "https://github.com/rockorager/waymote/releases/download/v$WAYMOTE_VERSION/waymote-server-$WAYMOTE_VERSION-linux-x86_64.tar.gz" \
+    "$WAYMOTE_SHA256" "$dir/waymote.tar.gz"
+  tar -xzf "$dir/waymote.tar.gz" -C "$dir" --no-same-owner
+  staging=$(mktemp -d "$AGENT_TOOLS/.waymote.XXXXXX")
+  temporary_paths+=("$staging")
+  install -D -m 0755 -t "$staging/bin" "$dir/waymote-server-$WAYMOTE_VERSION-linux-x86_64/bin/"{waymote-gateway,waymote-streamd}
+  replace_dir "$staging" "$WAYMOTE_DIR"
+  mark_tool waymote "$WAYMOTE_VERSION"
 }
 
 # Volta's shims come first on the agent's PATH (vm/agent.env), so `node` and `npm` follow a repository's `volta` pins
@@ -727,9 +756,10 @@ install_acp() {
   ln -sfn "$dir/$cli" /usr/local/bin/claude
 }
 
-# Playwright's MCP server for the agent's browser checks, in the versions session/playwright/package-lock.json pins,
-# with Chromium and the system libraries it needs. The browser lies in the server's own folder, so a repository's own
-# Playwright never mixes its browsers in; the relay offers the server to Claude Code as session/mcp-servers.json lists.
+# Playwright's MCP server for the agent's browser, in the versions session/playwright/package-lock.json pins, with
+# Chromium and the system libraries it needs. The browser lies in the server's own folder, so a repository's own
+# Playwright never mixes its browsers in; the desktop (vm/desktop/browser) runs it, and the relay offers the server,
+# connected to it over CDP, to Claude Code as session/mcp-servers.json lists.
 install_playwright() {
   local source=$1/session/playwright dir=$AGENT_TOOLS/playwright stamp staging
   stamp=$(cat "$source/package.json" "$source/package-lock.json" | sha256sum)
@@ -1378,8 +1408,9 @@ cmd_start() {
   require_prepared "$id"
   start_relay "$id" "$keep_stored"
   if [[ -f $PROXY_CONFIG ]]; then
-    systemctl enable --quiet --now "$PROXY_UNIT"
+    systemctl enable --quiet --now "$PROXY_UNIT" "$REVIEW_UNIT"
   fi
+  systemctl enable --quiet --now "$DESKTOP_UNIT"
   emit '{relay: "running"}'
 }
 
@@ -1402,14 +1433,15 @@ cmd_wait() {
 }
 
 # The relay closes the adapter, which writes the transcript, within the unit's stop timeout. Disabled, it stays down
-# when the VM boots, until `start`. The services and the preview proxy stop and stay disabled as well, so that no open
-# host stays reachable once the session is back on the Mac, not even for a process outside the services on its port.
+# when the VM boots, until `start`. The services, the preview proxy with its review server and the desktop stop and stay
+# disabled as well, so that no open host stays reachable once the session is back on the Mac, not even for a process
+# outside the services on its port, and annotations nobody fetched go with the review server's runtime folder.
 cmd_stop() {
   local id keep_stored
   parse_relay_args '' "$@"
   systemctl disable --quiet --now "$RELAY_UNIT"
   stop_services
-  systemctl disable --quiet --now "$PROXY_UNIT"
+  systemctl disable --quiet --now "$PROXY_UNIT" "$REVIEW_UNIT" "$DESKTOP_UNIT"
   emit '{}'
 }
 
@@ -1743,7 +1775,7 @@ destroy_session() {
   systemctl disable --quiet --now "$RELAY_UNIT" 2>/dev/null || true
   systemctl reset-failed "$RELAY_UNIT" 2>/dev/null || true
   stop_services 2>/dev/null || true
-  systemctl disable --quiet --now "$PROXY_UNIT" 2>/dev/null || true
+  systemctl disable --quiet --now "$PROXY_UNIT" "$REVIEW_UNIT" 2>/dev/null || true
   rm -f -- "$SECRETS_ENV" "$GITHUB_TOKEN_FILE" "$SESSION_ENV" "$PROXY_CONFIG" "$REMOTE_SECRETS_FILE"
   rm -rf -- "$SERVICES_DIR"
   if [[ -f $SESSIONS/$id/meta.json ]]; then

@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { ChangedFileView, ChangeStat, CheckOutput, ChecksStatus, ClaudeAccounts, Commit, CommitDetails, DiagramType, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GitScope, GithubTokenStatus, GuardrailDeclineReason, GithubViewer, GraphStatus, LanguageServerKind, LintRules, LogQuery, Machine, PlanUsage, PrettierOutput, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
+import type { ChangedFileView, ChangeStat, CheckOutput, ChecksStatus, ClaudeAccounts, Commit, CommitDetails, DiagramType, DesktopEndpoint, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GitScope, GithubTokenStatus, GuardrailDeclineReason, GithubViewer, GraphStatus, LanguageServerKind, LintRules, LogQuery, Machine, PlanUsage, PrettierOutput, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
 export function assetUrl(path: string): string {
@@ -125,6 +125,11 @@ export const commands = {
   snoozeRemoteCleanup: (id: string) => invoke<void>("snooze_remote_cleanup", { id }),
   /** What listens on the remote session's VM and whether its main port answers; a VM that is off reports nothing and stays off. */
   previewStatus: (id: string) => invoke<PreviewStatus>("preview_status", { id }),
+  /**
+   * Opens a forward from this Mac to the remote desktop of the session's VM, or reuses the one that answers, and resolves
+   * with its base URL; a VM that is off is an error and stays off.
+   */
+  desktopOpen: (id: string) => invoke<DesktopEndpoint>("desktop_open", { id }),
   /**
    * Adopts the sessions of `ids` the gateway of `settings` lists that no local session knows, each in the local checkout
    * of its repository among `repoPaths` and the stored sessions' repositories, and brings the agent state of the remote

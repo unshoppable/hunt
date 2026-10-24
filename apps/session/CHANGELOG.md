@@ -1,3 +1,7 @@
+## 0.27.1 (2026-10-24)
+
+This was a version bump only for session to align it with other projects, there were no code changes.
+
 ## 0.27.0 (2026-10-24)
 
 ### 🚀 Features

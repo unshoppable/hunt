@@ -1,3 +1,9 @@
+## 0.119.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** sessions.md names each session's current or last request and the uncommitted changes its tool calls made, plus the changes no session made, and follows every file change ([2507df7](https://github.com/unshoppable/hunt/commit/2507df7))
+
 ## 0.118.0 (2026-10-24)
 
 ### 🚀 Features

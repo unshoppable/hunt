@@ -15,8 +15,8 @@ import { keepDiffWindowWarm } from "../graph/diffWindows";
 import { keepGuardrailsWindowWarm } from "../guardrails/openGuardrailsWindow";
 import { keepSettingsWindowWarm } from "../settings/openSettingsWindow";
 import { keepEditorWindowWarm, openInEditorWindow } from "../ide/editorWindows";
-import { FileSearchDialog, useFileSearchShortcut } from "../ide/FileSearchDialog";
-import { FindInFilesDialog, useFindInFilesShortcut } from "../ide/FindInFilesDialog";
+import { FileSearchPopup, useFileSearchShortcut } from "../ide/FileSearchDialog";
+import { FindInFilesPopup, useFindInFilesShortcut } from "../ide/FindInFilesDialog";
 import { EMPTY_IDE_SESSION, useIdeStore } from "../ide/ideStore";
 import { allPanes } from "../ide/paneGrid";
 import {
@@ -38,6 +38,7 @@ import type { ChecksStatus } from "../ipc/types";
 import { DesktopPanel } from "../desktop/DesktopPanel";
 import { PreviewPanel } from "../preview/PreviewPanel";
 import { isPreviewActive } from "../preview/services";
+import { usePopupRequest } from "../popup/usePopupRequest";
 import { useChecksStore } from "../state/checks";
 import { usePreviewStore } from "../state/preview";
 import { NO_SESSION_WINDOWS, useTerminalStore } from "../state/terminals";
@@ -95,7 +96,7 @@ export function App() {
   const openFile = useIdeStore((state) => state.openFile);
   const ideLayout = useIdeStore((state) => (activeSessionId ? state.sessions[activeSessionId]?.layout : null) ?? EMPTY_IDE_SESSION.layout);
   const openPaths = useMemo(() => [...new Set(allPanes(ideLayout).flatMap((pane) => pane.tabs))], [ideLayout]);
-  const [isFileSearchOpen, setIsFileSearchOpen] = useState(false);
+  const fileSearch = usePopupRequest<null>();
   const mainGroup = useGroupRef();
   const sessionsPanel = usePanelRef();
   const chatPanel = usePanelRef();
@@ -133,8 +134,8 @@ export function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
-  /** Find in Files is open, starting with the text that was selected in the editor (`null`: the last query). */
-  const [findInFiles, setFindInFiles] = useState<{ initialText: string | null } | null>(null);
+  /** Find in Files, starting with the text that was selected in the editor (`null`: the last query). */
+  const findInFiles = usePopupRequest<string | null>();
   const hasLocalWorktree = !isCreatingActive && hasActiveWorktree;
   const canSearchFiles = Boolean(activeSessionId) && !draft && hasLocalWorktree;
   /** A local session has no preview or desktop, a session without a pull request no description; they show the diff instead. */
@@ -144,14 +145,14 @@ export function App() {
   // ⌘P / double shift: "Go to File" for the active session's worktree.
   useFileSearchShortcut(() => {
     if (canSearchFiles) {
-      setIsFileSearchOpen(true);
+      fileSearch.show(null);
     }
   });
 
   // ⇧⌘F: "Find in Files" for the active session's worktree.
   useFindInFilesShortcut((initialText) => {
     if (canSearchFiles) {
-      setFindInFiles({ initialText });
+      findInFiles.show(initialText);
     }
   });
 
@@ -318,11 +319,12 @@ export function App() {
           </aside>
         </Panel>
       </PersistentGroup>
-      {isFileSearchOpen && canSearchFiles && activeSessionId ? (
-        <FileSearchDialog
+      {fileSearch.request && canSearchFiles && activeSessionId ? (
+        <FileSearchPopup
           sessionId={activeSessionId}
           openPaths={openPaths}
-          onClose={() => setIsFileSearchOpen(false)}
+          revision={fileSearch.request.revision}
+          onClose={fileSearch.close}
           onOpen={(path, line, column, inRightSplit) => {
             if (rightTab === "editor") {
               openFile(activeSessionId, path, { line, column, inRightSplit });
@@ -332,11 +334,12 @@ export function App() {
           }}
         />
       ) : null}
-      {findInFiles && canSearchFiles && activeSessionId ? (
-        <FindInFilesDialog
+      {findInFiles.request && canSearchFiles && activeSessionId ? (
+        <FindInFilesPopup
           sessionId={activeSessionId}
-          initialText={findInFiles.initialText}
-          onClose={() => setFindInFiles(null)}
+          initialText={findInFiles.request.value}
+          revision={findInFiles.request.revision}
+          onClose={findInFiles.close}
           onOpen={(path, line, column, inRightSplit) => {
             if (rightTab === "editor") {
               openFile(activeSessionId, path, { line, column, inRightSplit });

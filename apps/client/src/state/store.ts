@@ -97,7 +97,7 @@ export type WorktreeTarget = {
 };
 
 /** The agent setup a chat currently runs with, so a sub session can start like its parent. */
-export function agentSetupOf(chat: SessionChat): AgentSetup {
+export function agentSetupOf(chat: Pick<SessionChat, "configOptions" | "modeId">): AgentSetup {
   const configValues: Record<string, string> = {};
   for (const option of chat.configOptions) {
     if (option.type !== "select") continue;

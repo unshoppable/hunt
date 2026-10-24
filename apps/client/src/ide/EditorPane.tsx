@@ -24,7 +24,7 @@ import { attachSelectionAgent } from "./selectionAgent";
 import { ScriptRunMarkers } from "./scriptRunMarkers";
 import { SelectionChatMarkers } from "./selectionChatMarkers";
 import { useBusyChatIds, useSelectionChats } from "./selectionChats";
-import { UsagesPopover, type UsagesQuery } from "./UsagesPopover";
+import { isUsagesPopupInApp, UsagesPopup, type UsagesQuery } from "./UsagesPopover";
 import type { Usage } from "./usages";
 import { runPackageScript } from "../terminal/scriptRuns";
 import { STATUS_BAR } from "../ui/bars";
@@ -241,11 +241,15 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
       }),
       editor.onDidChangeModelContent(() => {
         setShownMarker(null);
-        setUsagesQuery(null);
+        if (isUsagesPopupInApp()) {
+          setUsagesQuery(null);
+        }
       }),
       editor.onDidChangeModel(() => {
         setShownMarker(null);
-        setUsagesQuery(null);
+        if (isUsagesPopupInApp()) {
+          setUsagesQuery(null);
+        }
         setComposer(null);
       }),
       editor.onDidFocusEditorWidget(() => latest.current.activatePane(latest.current.sessionId, latest.current.pane.id)),
@@ -382,7 +386,6 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
   }, [activePath]);
 
   const openUsage = (usage: Usage) => {
-    setUsagesQuery(null);
     openFile(sessionId, usage.path, { paneId: pane.id, line: usage.line, column: usage.column });
   };
 
@@ -433,7 +436,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
         {shownMarker && editorRef.current && markersRef.current ? (
           <ChangePopover editor={editorRef.current} markers={markersRef.current} marker={shownMarker} onShowMarker={setShownMarker} onClose={() => setShownMarker(null)} />
         ) : null}
-        {usagesQuery && editorRef.current ? <UsagesPopover editor={editorRef.current} workspace={workspace} query={usagesQuery} onOpen={openUsage} onClose={() => setUsagesQuery(null)} /> : null}
+        {usagesQuery && editorRef.current ? <UsagesPopup editor={editorRef.current} workspace={workspace} query={usagesQuery} onOpen={openUsage} onClose={() => setUsagesQuery(null)} /> : null}
         {renameQuery ? (
           <RenameDialog
             workspace={workspace}

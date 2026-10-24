@@ -46,9 +46,10 @@ everything else goes here.
   tabs and windows; `src/diff/monaco.ts`, `styles.ts` and `fileIcons.ts` are the shared Monaco and icon layer and
   may be imported by any feature.
 - Every native window is a root HTML page (`index.html`, `editor.html`, `diff.html`, `guardrails.html`,
-  `settings.html`) with a 10-line bootstrap in `src/<name>.tsx` and a `<Name>Window.tsx` in its feature folder;
-  windows are created only through `openOrFocusWindow` (or `createWindow` after an explicit existence check) in
-  `src/ui/nativeWindow.ts`.
+  `settings.html`, `popup.html`) with a 10-line bootstrap in `src/<name>.tsx` and a `<Name>Window.tsx` in its feature
+  folder (`popup/PopupWindow.tsx` for every detachable popup); windows are created only through `openOrFocusWindow`
+  (or `createWindow` after an explicit existence check) in `src/ui/nativeWindow.ts`, popup windows only through
+  `useDetachedPopup`.
 - Pure logic lives in a `.ts` module with a sibling `.test.ts` next to the component or store that uses it
   (`ide/paneGrid.ts`, `diff/lineDiff.ts`, `ide/lsp/protocol.ts`, `graph/schema.ts`, `state/store.ts` reducers).
 - Prompt files live in a `prompts/` folder of the project that sends them (`libs/domain/prompts/` for the parts the
@@ -91,6 +92,14 @@ everything else goes here.
 - **Floating surfaces** (dialogs and popovers, not context menus) are resizable and remember their size: a `PopupKey`
   with a default in `DEFAULT_POPUP_SIZES` (`src/state/settings.ts`), `useDialogSize` for a `Modal`, `usePopupSize`
   with `<ResizeGrips>` as a direct child of a popover's root; no fixed `w-[…]`.
+- **Detachable popups** (`DetachablePopupKey` in `src/state/settings.ts`) show in a native window of their own or in
+  the app window, as `detachedPopups` says. Each splits into a view with `isDetached`, the in-app frame (Modal or
+  popover, closed by Escape and a click outside) and a host-side `Detached…` that calls `useDetachedPopup`
+  (`src/popup/`); the window gets plain data (`PopupContents` in `popup/protocol.ts`) and sends `PopupActions` back,
+  since it has stores of its own. A popup window closes only on its own Escape, ⌘W and traffic light: navigating from
+  it keeps it open, finishing buttons (Attach, Refactor, Decline) close it. In a window the view must not stop
+  `mousedown` propagation (Tauri's drag region listens on `document`) nor add window-wide Escape or click-outside
+  listeners. Both title rows carry `PopupModeButton`.
 - **Agent state** shows only busy or idle, plus `SessionMark`'s question and unseen badges; never whether the agent
   process runs (`isLive`).
 - **Window permissions**: every mutating window call (`close`, `setTitle`, `setSize`, `show`, `setFocus`, …) needs its

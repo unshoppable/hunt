@@ -38,7 +38,7 @@ use session::diagram_agent::DiagramRuns;
 use session::summary::SummaryRegistry;
 use session::sync::SyncRegistry;
 use tauri::webview::PageLoadEvent;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -238,9 +238,13 @@ pub fn run() {
                 documents::release_owner(window.app_handle(), window.label());
             }
             // The main window's traffic light hides it like a Mac app's: the agents keep running and the Dock icon shows it again.
+            // Its popup windows hide with it (see popup/PopupWindow.tsx).
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
+                    if let Err(error) = window.emit("window:hidden", serde_json::json!({ "label": window.label() })) {
+                        eprintln!("failed to announce the hidden main window: {error}");
+                    }
                     let _ = window.hide();
                 }
             }

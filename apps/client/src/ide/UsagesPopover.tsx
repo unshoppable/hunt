@@ -1,4 +1,14 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { createPortal } from "react-dom";
 import * as monaco from "monaco-editor";
 import { tokenizeCode, type HighlightedLine } from "../code/highlight";
@@ -7,15 +17,19 @@ import { useFileIconUrl } from "../diff/fileIcons";
 import { PREVIEW_EDITOR_OPTIONS, monacoLanguage } from "../diff/monaco";
 import { commands } from "../ipc/commands";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
-import { CODE_FONT_FAMILY } from "../state/settings";
+import { PopupModeButton, PopupWindowTitleBar } from "../popup/PopupTitleBar";
+import type { PopupActions } from "../popup/protocol";
+import { openInHostWindow, useDetachedPopup } from "../popup/useDetachedPopup";
+import { CODE_FONT_FAMILY, useSettingsStore } from "../state/settings";
 import { STATUS_BAR } from "../ui/bars";
 import { ChevronIcon, CopyIcon, ExternalIcon, EyeIcon } from "../ui/icons";
 import { baseName } from "../ui/path";
 import { trackDrag } from "../ui/pointerDrag";
 import { ResizeGrips } from "../ui/ResizeGrips";
 import { useDismiss } from "../ui/useDismiss";
+import { useLoad } from "../ui/useLoad";
 import { usePopupSize } from "../ui/usePopupSize";
-import type { Workspace } from "./documents";
+import { workspaceFor, type Workspace } from "./documents";
 import { KindIcon } from "./KindIcon";
 import type { Declaration } from "./languageService";
 import { kindLabel, sliceRuns, stepSelection, usageKey, usagesStatus, type Usage } from "./usages";
@@ -37,14 +51,81 @@ export type UsagesQuery = {
   isComplete: boolean;
 };
 
-type UsagesPopoverProps = {
+/** Font of the preview: the one of the editor the query came from. `lineHeight` is in px. */
+export type PreviewFont = { fontSize: number; fontFamily: string; lineHeight: number };
+
+/** What the usages window shows (see popup/protocol.ts). */
+export type UsagesContent = { sessionId: string; worktreePath: string; query: UsagesQuery; font: PreviewFont };
+
+type UsagesPopupProps = {
   editor: monaco.editor.IStandaloneCodeEditor;
   workspace: Workspace;
   query: UsagesQuery;
-  /** Called with the usage to show in the pane (Enter or double click). */
+  /** Called with the usage to show in the pane (Enter or double click); the popup closes itself if it should. */
   onOpen: (usage: Usage) => void;
   onClose: () => void;
 };
+
+/**
+ * Whether the usages popup lives inside the app window, where it closes with the change of its editor's content or
+ * file; a usages window of its own stays until the user closes it. Read in event handlers.
+ */
+export function isUsagesPopupInApp(): boolean {
+  return !useSettingsStore.getState().detachedPopups.usages;
+}
+
+/**
+ * The usages of a ⌘clicked declaration (see UsagesView): inside the app window as a popover below the clicked line,
+ * or in a window of its own (see popup/useDetachedPopup.ts), as the user chose.
+ */
+export function UsagesPopup(props: UsagesPopupProps) {
+  const isDetached = useSettingsStore((state) => state.detachedPopups.usages);
+  return isDetached ? <DetachedUsages {...props} /> : <UsagesPopover {...props} />;
+}
+
+/** The usages window's host side: hands the query over and opens the usages picked there in the host. */
+function DetachedUsages({ editor, workspace, query, onOpen, onClose }: UsagesPopupProps) {
+  const content = useMemo<UsagesContent>(() => {
+    const fontInfo = editor.getOption(monaco.editor.EditorOption.fontInfo);
+    const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
+    return { sessionId: workspace.sessionId, worktreePath: workspace.worktreePath, query, font: { fontSize: fontInfo.fontSize, fontFamily: fontInfo.fontFamily, lineHeight } };
+  }, [editor, workspace, query]);
+  useDetachedPopup("usages", content, {
+    revision: query.declaration,
+    anchor: () => anchorOnPage(editor, query.anchor),
+    onAction: (action: PopupActions["usages"]) =>
+      openInHostWindow(() => {
+        onOpen(action.usage);
+        editor.focus();
+      }),
+    onClose,
+  });
+  return null;
+}
+
+/** The usages window's page side (see popup/PopupWindow.tsx): the usages with previews from the window's own documents. */
+export function UsagesWindowContent({ content, onAction }: { content: UsagesContent; onAction: (action: PopupActions["usages"]) => void }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const workspace = useMemo(() => workspaceFor(content.sessionId, content.worktreePath), [content.sessionId, content.worktreePath]);
+
+  useEffect(() => {
+    rootRef.current?.focus();
+  }, [content.query.declaration]);
+
+  return (
+    <UsagesView
+      rootRef={rootRef}
+      className="h-screen"
+      workspace={workspace}
+      query={content.query}
+      font={content.font}
+      isDetached
+      onOpen={(usage) => onAction({ type: "open", usage })}
+    />
+  );
+}
+
+type UsagesPopoverProps = UsagesPopupProps;
 
 /** Where the popup sits relative to the anchor; dragging the title bar or its left or top edge changes it. */
 type Offset = { x: number; y: number };
@@ -57,30 +138,17 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /**
- * WebStorm's "Show Usages" popup for a ⌘clicked declaration: a title naming the symbol with its parameter types, a
- * toolbar, one row per usage (file, enclosing declaration, line, the highlighted line with the name in bold), a
- * read-only preview of the selected usage and the selected file's project-relative path in the footer. ↑ / ↓ move
- * the selection, Enter or a double click opens the usage in the pane, Esc or a click outside closes the popup. A
- * single usage opens in the pane as soon as the search is complete.
- * The popup is moved by dragging its title bar, resized by dragging any edge or corner (the size is remembered
- * across sessions) and the split between list and preview by dragging the separator. It is rendered into the closest
- * `data-ide-root` element (the overlay: the IDE panel, the diff view), so it can be moved over the project tree and the
- * other panes, not only the editor.
+ * The usages inside the app window: a popover below the ⌘clicked line, moved by dragging its title bar and resized by
+ * dragging any edge or corner (the size is remembered across sessions). Esc, a click outside or opening a usage close
+ * it. It is rendered into the closest `data-ide-root` element (the overlay: the IDE panel, the diff view), so it can be
+ * moved over the project tree and the other panes, not only the editor.
  */
-export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: UsagesPopoverProps) {
+function UsagesPopover({ editor, workspace, query, onOpen, onClose }: UsagesPopoverProps) {
   const rootRef = useRef<HTMLDivElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-  const previewRef = useRef<HTMLDivElement>(null);
   const overlay = useMemo(() => overlayOf(editor), [editor]);
   const [{ anchor, viewport }, setPlacement] = useState(() => placementOf(editor, overlay, query.anchor));
   const [offset, setOffset] = useState<Offset>({ x: 0, y: 0 });
-  /** The picked row by `usageKey`, so it stays selected when template usages are added; the first row until one is picked. */
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [showPreview, setShowPreview] = useState(true);
-  const usages = query.usages;
-  const selected = Math.max(0, usages?.findIndex((usage) => usageKey(usage) === selectedKey) ?? 0);
-  const selectedUsage = usages?.[selected] ?? null;
-  const fileIconUrl = useFileIconUrl();
+  const fontInfo = editor.getOption(monaco.editor.EditorOption.fontInfo);
   const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
   const maxSize = { width: viewport.width - EDGE_GAP * 2, height: viewport.height - EDGE_GAP * 2 };
   // A dragged edge stops at the overlay's edge, so the opposite edge stays put.
@@ -95,15 +163,8 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
     top: clamp(anchor.top + offset.y + shift.y, EDGE_GAP, Math.max(EDGE_GAP, EDGE_GAP + maxSize.height - size.height)),
   };
 
-  const latest = useRef({ position, anchor, shift, onOpen });
-  latest.current = { position, anchor, shift, onOpen };
-
-  // A symbol with a single usage opens it right away, once no further usages can arrive.
-  useEffect(() => {
-    if (query.isComplete && usages?.length === 1) {
-      latest.current.onOpen(usages[0]);
-    }
-  }, [query.isComplete, usages]);
+  const latest = useRef({ position, anchor, shift });
+  latest.current = { position, anchor, shift };
 
   useEffect(() => {
     const subscription = editor.onDidLayoutChange(() => setPlacement(placementOf(editor, overlay, query.anchor)));
@@ -117,6 +178,79 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
   }, [editor]);
 
   useDismiss(rootRef, onClose);
+
+  /** Drags the popup by its title bar; the offset is kept relative to the anchor so the popup follows a relayout. */
+  const beginMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+    const start = { ...offset };
+    trackDrag(
+      event,
+      (dx, dy) => setOffset({ x: start.x + dx, y: start.y + dy }),
+      () => {
+        // Snaps the offset to where the popup ended up, so a drag past the overlay's edge does not leave slack.
+        const { position: end, anchor: origin, shift: moved } = latest.current;
+        setOffset({ x: end.left - origin.left - moved.x, y: end.top - origin.top - moved.y });
+      },
+    );
+  };
+
+  return createPortal(
+    <UsagesView
+      rootRef={rootRef}
+      className="absolute z-20 rounded-md border border-neutral-600 shadow-xl shadow-black/50"
+      style={{ top: position.top, left: position.left, width: size.width, height: size.height }}
+      workspace={workspace}
+      query={query}
+      font={{ fontSize: fontInfo.fontSize, fontFamily: fontInfo.fontFamily, lineHeight }}
+      isDetached={false}
+      onMove={beginMove}
+      onOpen={(usage) => {
+        onOpen(usage);
+        onClose();
+      }}
+    >
+      <ResizeGrips edges={{ left: true, top: true, right: true, bottom: true }} {...grips} />
+    </UsagesView>,
+    overlay,
+  );
+}
+
+type UsagesViewProps = {
+  /** The focusable root, which takes ↑ / ↓ and Enter. */
+  rootRef: RefObject<HTMLDivElement | null>;
+  /** Placement and frame classes of the root. */
+  className: string;
+  style?: CSSProperties;
+  workspace: Workspace;
+  query: UsagesQuery;
+  font: PreviewFont;
+  /** In a window of its own the title bar is the window's drag region; inside the app it moves the popup by `onMove`. */
+  isDetached: boolean;
+  onMove?: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onOpen: (usage: Usage) => void;
+  /** Extra layers of the frame, e.g. the resize grips. */
+  children?: ReactNode;
+};
+
+/**
+ * WebStorm's "Show Usages" popup for a ⌘clicked declaration: a title naming the symbol with its parameter types, a
+ * toolbar, one row per usage (file, enclosing declaration, line, the highlighted line with the name in bold), a
+ * read-only preview of the selected usage and the selected file's project-relative path in the footer. ↑ / ↓ move
+ * the selection, Enter or a double click opens the usage in the pane, and the split between list and preview follows
+ * the separator.
+ */
+function UsagesView({ rootRef, className, style, workspace, query, font, isDetached, onMove, onOpen, children }: UsagesViewProps) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+  /** The picked row by `usageKey`, so it stays selected when template usages are added; the first row until one is picked. */
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [showPreview, setShowPreview] = useState(true);
+  const [previewModel, setPreviewModel] = useState<monaco.editor.ITextModel | null>(null);
+  const usages = query.usages;
+  const selected = Math.max(0, usages?.findIndex((usage) => usageKey(usage) === selectedKey) ?? 0);
+  const selectedUsage = usages?.[selected] ?? null;
+  const fileIconUrl = useFileIconUrl();
+  const { fontSize, fontFamily, lineHeight } = font;
 
   /** ↑ / ↓ and Enter act on the list while the focus is anywhere in the popup; the preview keeps the keys it handled. */
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -136,12 +270,18 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
     listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }, [selected]);
 
+  // A usages window has documents of its own and loads the selected usage's file first.
+  const selectedPath = selectedUsage?.path ?? null;
+  useLoad(
+    async () => (selectedPath ? (workspace.get(selectedPath) ?? (await workspace.load(selectedPath))).model : null),
+    { onValue: setPreviewModel, onError: () => setPreviewModel(null) },
+    [workspace, selectedPath],
+  );
+
   useEffect(() => {
     const host = previewRef.current;
-    const model = selectedUsage ? workspace.get(selectedUsage.path)?.model : null;
-    if (!host || !model || !selectedUsage || !showPreview) return;
-    const fontInfo = editor.getOption(monaco.editor.EditorOption.fontInfo);
-    const preview = monaco.editor.create(host, { ...PREVIEW_EDITOR_OPTIONS, model, fontSize: fontInfo.fontSize, fontFamily: fontInfo.fontFamily, lineHeight });
+    if (!host || !previewModel || !selectedUsage || !showPreview || previewModel.isDisposed()) return;
+    const preview = monaco.editor.create(host, { ...PREVIEW_EDITOR_OPTIONS, model: previewModel, fontSize, fontFamily, lineHeight });
     const { line, column, endColumn } = selectedUsage;
     preview.createDecorationsCollection([{ range: new monaco.Range(line, column, line, endColumn), options: { inlineClassName: "hunt-usage-match" } }]);
     const reveal = () => preview.revealPositionInCenter({ lineNumber: line, column: endColumn });
@@ -157,22 +297,7 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
       layoutSubscription.dispose();
       preview.dispose();
     };
-  }, [editor, workspace, selectedUsage, lineHeight, showPreview]);
-
-  /** Drags the popup by its title bar; the offset is kept relative to the anchor so the popup follows a relayout. */
-  const beginMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
-    const start = { ...offset };
-    trackDrag(
-      event,
-      (dx, dy) => setOffset({ x: start.x + dx, y: start.y + dy }),
-      () => {
-        // Snaps the offset to where the popup ended up, so a drag past the overlay's edge does not leave slack.
-        const { position: end, anchor: origin, shift: moved } = latest.current;
-        setOffset({ x: end.left - origin.left - moved.x, y: end.top - origin.top - moved.y });
-      },
-    );
-  };
+  }, [previewModel, selectedUsage, fontSize, fontFamily, lineHeight, showPreview]);
 
   const copyUsages = () => {
     if (!usages?.length) return;
@@ -214,32 +339,44 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
     </div>
   );
 
-  return createPortal(
+  const title = (
+    <>
+      <span className="truncate">
+        <span className="font-semibold text-neutral-100">
+          {kindLabel(declaration.kind)} {declaration.name}
+          {declaration.signature ?? ""}
+        </span>
+        <span className="ml-1.5 text-neutral-500" title={scope}>
+          ({scope})
+        </span>
+      </span>
+      <span className="ml-auto shrink-0 text-neutral-400">{usagesStatus(usages, query.isComplete)}</span>
+      <ToolbarButton title="Open declaration in WebStorm" onClick={openInWebstorm}>
+        <ExternalIcon className="size-4" />
+      </ToolbarButton>
+    </>
+  );
+
+  return (
     <div
       ref={rootRef}
       role="dialog"
       aria-label="Usages"
       tabIndex={-1}
-      className="hunt-usages-popover absolute z-20 flex flex-col overflow-hidden rounded-md border border-neutral-600 bg-(--surface-inspector) text-[13px] shadow-xl shadow-black/50 outline-none"
-      style={{ top: position.top, left: position.left, width: size.width, height: size.height }}
+      className={`hunt-usages-popover flex flex-col overflow-hidden bg-(--surface-inspector) text-[13px] outline-none ${className}`}
+      style={style}
       onKeyDown={onKeyDown}
-      onMouseDown={(event) => event.stopPropagation()}
+      // Inside the app the presses stay off the panes beneath; in a window they must reach Tauri's drag region handler.
+      onMouseDown={isDetached ? undefined : (event) => event.stopPropagation()}
     >
-      <div className="flex shrink-0 cursor-grab items-center gap-2 border-b border-(--line) px-3 py-2 text-[13px] whitespace-nowrap select-none active:cursor-grabbing" onPointerDown={beginMove}>
-        <span className="truncate">
-          <span className="font-semibold text-neutral-100">
-            {kindLabel(declaration.kind)} {declaration.name}
-            {declaration.signature ?? ""}
-          </span>
-          <span className="ml-1.5 text-neutral-500" title={scope}>
-            ({scope})
-          </span>
-        </span>
-        <span className="ml-auto shrink-0 text-neutral-400">{usagesStatus(usages, query.isComplete)}</span>
-        <ToolbarButton title="Open declaration in WebStorm" onClick={openInWebstorm}>
-          <ExternalIcon className="size-4" />
-        </ToolbarButton>
-      </div>
+      {isDetached ? (
+        <PopupWindowTitleBar popupKey="usages">{title}</PopupWindowTitleBar>
+      ) : (
+        <div className="flex shrink-0 cursor-grab items-center gap-2 border-b border-(--line) px-3 py-2 text-[13px] whitespace-nowrap select-none active:cursor-grabbing" onPointerDown={onMove}>
+          {title}
+          <PopupModeButton popupKey="usages" isDetached={false} />
+        </div>
+      )}
       <div className="flex shrink-0 items-center gap-0.5 border-b border-(--line) px-2 py-2 whitespace-nowrap text-neutral-300">
         <ToolbarButton title="Copy usages" disabled={!usages?.length} onClick={copyUsages}>
           <CopyIcon className="size-4" />
@@ -272,9 +409,8 @@ export function UsagesPopover({ editor, workspace, query, onOpen, onClose }: Usa
         <img src={fileIconUrl(selectedUsage?.path ?? query.path)} alt="" className="size-4 shrink-0" />
         <span className="truncate">{selectedUsage?.path ?? query.path}</span>
       </div>
-      <ResizeGrips edges={{ left: true, top: true, right: true, bottom: true }} {...grips} />
-    </div>,
-    overlay,
+      {children}
+    </div>
   );
 }
 
@@ -351,6 +487,13 @@ function ScopeIcon() {
       <path d="M2.5 6.5h11M6.5 6.5v7" />
     </svg>
   );
+}
+
+/** Where the usages window opens: below the ⌘clicked line at the left edge of the code, in the page's coordinates. */
+function anchorOnPage(editor: monaco.editor.ICodeEditor, position: monaco.IPosition): { x: number; y: number } {
+  const line = editor.getScrolledVisiblePosition(position);
+  const editorRect = editor.getContainerDomNode().getBoundingClientRect();
+  return { x: editorRect.left + editor.getLayoutInfo().contentLeft, y: editorRect.top + (line ? line.top + line.height : 0) };
 }
 
 /** The positioned element the popup floats in: the IDE panel's root (see IdePanel.tsx), else the editor's own host. */

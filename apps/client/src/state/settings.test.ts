@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CODE_FONT_FAMILY,
+  DEFAULT_DETACHED_POPUPS,
   DEFAULT_GRAPH_AGENT,
   DEFAULT_PANES,
   DEFAULT_GIT_LOG_COLUMNS,
@@ -102,6 +103,7 @@ describe("mergeSettings", () => {
     panes: DEFAULT_PANES,
     graphAgent: DEFAULT_GRAPH_AGENT,
     popupSizes: DEFAULT_POPUP_SIZES,
+    detachedPopups: DEFAULT_DETACHED_POPUPS,
     gitLogColumns: DEFAULT_GIT_LOG_COLUMNS,
     remote: DEFAULT_REMOTE,
     aiLanguage: "German",
@@ -129,6 +131,12 @@ describe("mergeSettings", () => {
     expect(merged.panes.diff).toEqual(DEFAULT_PANES.diff);
     expect(merged.popupSizes).toEqual({ ...DEFAULT_POPUP_SIZES, usages: { width: 900, height: 500 } });
     expect(mergeSettings({ gitLogColumns: { author: 200 } }, current).gitLogColumns).toEqual({ ...DEFAULT_GIT_LOG_COLUMNS, author: 200 });
+  });
+
+  it("keeps the stored popup modes and detaches the popups that have none yet", () => {
+    const merged = mergeSettings({ detachedPopups: { usages: false } }, current);
+    expect(merged.detachedPopups).toEqual({ ...DEFAULT_DETACHED_POPUPS, usages: false });
+    expect(merged.detachedPopups.subChat).toBe(true);
   });
 
   it("falls back to the template's machine type for a stored one Hunt no longer offers", () => {

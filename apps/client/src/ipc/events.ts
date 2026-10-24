@@ -15,6 +15,7 @@ import type {
   MessageTimesEvent,
   PermissionEvent,
   PermissionWithdrawnEvent,
+  PopupShowRequest,
   RelayActivityEvent,
   RemoteLinkEvent,
   RemoteProgressEvent,
@@ -61,6 +62,18 @@ type EventPayloads = {
   "diff:open": DiffOpenRequest;
   /** Sent by a diff window to every window once it takes `diff:open` events and knows the sessions. */
   "diff:ready": { label: string };
+  /** Sent by a host window to a popup window: what to show (see popup/useDetachedPopup.ts). */
+  "popup:show": PopupShowRequest;
+  /** Sent by a host window to a popup window when the popup it owns (`token`) goes. */
+  "popup:hide": { token: string };
+  /** Sent by a popup window to every window once it takes `popup:show` events. */
+  "popup:ready": { label: string };
+  /** Sent by a popup window to its host window: what the user did in the popup `token` (see popup/protocol.ts). */
+  "popup:action": { token: string; action: unknown };
+  /** Sent by a popup window to its host window when the user closed the popup `token` or another window took it over. */
+  "popup:closed": { token: string };
+  /** A window hid itself (see ui/nativeWindow.ts) or the main window's traffic light hid it; its popup windows hide too. */
+  "window:hidden": { label: string };
   /** Sent by the window whose settings store changed (see app/bootstrap.ts); `source` is its label. */
   "settings:changed": { source: string };
   /** Sent by the main window to the open settings window (see settings/openSettingsWindow.ts) to switch its page. */

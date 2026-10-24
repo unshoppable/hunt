@@ -19,7 +19,7 @@ import { confirmDestructive } from "../ui/confirm";
 import { useHoverAnchor, type HoverAnchor } from "../ui/hoverAnchor";
 import { ChevronIcon, PlusIcon, SparkleIcon, TrashIcon } from "../ui/icons";
 import { UnsavedDot } from "../ui/UnsavedDot";
-import { useSecondaryWindow } from "../ui/nativeWindow";
+import { hideCurrentWindow, useSecondaryWindow } from "../ui/nativeWindow";
 import { baseName, isInsideFolder } from "../ui/path";
 import { toggleInCollapsed } from "../ui/treeExpansion";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
@@ -247,7 +247,7 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
   };
 
   // A warm window stays hidden until the main window shows it (see openGuardrailsWindow.ts); hiding keeps unsaved edits.
-  useSecondaryWindow("guardrails", () => getCurrentWindow().hide(), { isReady: !isWarm });
+  useSecondaryWindow("guardrails", hideCurrentWindow, { isReady: !isWarm });
 
   /** Writes a new file named after `title` at `location` with `content`, by default the kind's template, and opens it. */
   const create = async (title: string, content?: string, location: Partial<GuardrailLocation> = {}) => {

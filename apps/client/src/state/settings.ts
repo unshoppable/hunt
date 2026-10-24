@@ -114,6 +114,20 @@ export const DEFAULT_POPUP_SIZES: Record<PopupKey, PopupSize> = {
   renamePreview: { width: 1100, height: 760 },
 };
 
+/** The work popups that can show in a native window of their own instead of inside their app window (see popup/useDetachedPopup.ts). */
+export type DetachablePopupKey = Extract<PopupKey, "usages" | "subChat" | "fileSearch" | "findInFiles" | "renamePreview" | "image" | "screenshots">;
+
+/** Whether each work popup opens in a window of its own (true) or inside its app window; every popup starts detached. */
+export const DEFAULT_DETACHED_POPUPS: Record<DetachablePopupKey, boolean> = {
+  usages: true,
+  subChat: true,
+  fileSearch: true,
+  findInFiles: true,
+  renamePreview: true,
+  image: true,
+  screenshots: true,
+};
+
 /** Distance in px between where a popup opened by default and where the user last left it. */
 export type PopupOffset = { x: number; y: number };
 
@@ -305,6 +319,7 @@ type SettingsState = {
   /** Diagram type the Architecture tab shows, keyed by session id; a session without an entry shows the dependencies. */
   diagramTypes: Record<string, DiagramType>;
   popupSizes: Record<PopupKey, PopupSize>;
+  detachedPopups: Record<DetachablePopupKey, boolean>;
   gitLogColumns: GitLogColumns;
   /** Height in px the user dragged the chat's prompt box to; null sizes the box to its text. */
   promptHeight: number | null;
@@ -336,6 +351,8 @@ type SettingsState = {
   setGraphExcludedFiles: (sessionId: string, paths: string[]) => void;
   setDiagramType: (sessionId: string, diagramType: DiagramType) => void;
   setPopupSize: (key: PopupKey, size: PopupSize) => void;
+  setPopupDetached: (key: DetachablePopupKey, isDetached: boolean) => void;
+  resetDetachedPopups: () => void;
   setGitLogColumns: (columns: GitLogColumns) => void;
   setPromptHeight: (height: number | null) => void;
   setSubChatPromptHeight: (height: number | null) => void;
@@ -381,6 +398,7 @@ export type PersistedState = {
   graphExcludedFiles?: Record<string, string[]>;
   diagramTypes?: Record<string, DiagramType>;
   popupSizes?: Partial<Record<PopupKey, PopupSize>>;
+  detachedPopups?: Partial<Record<DetachablePopupKey, boolean>>;
   gitLogColumns?: Partial<GitLogColumns>;
   promptHeight?: number | null;
   subChatPromptHeight?: number | null;
@@ -581,10 +599,10 @@ function migrateToVersion8(persisted: unknown, version: number): PersistedState 
 }
 
 /**
- * Layers the persisted state over `current` (the defaults with the actions). Panes and popup sizes gain entries
- * over time, so stored ones are layered over the defaults per key instead of replacing them.
+ * Layers the persisted state over `current` (the defaults with the actions). Panes, popup sizes and detached popups
+ * gain entries over time, so stored ones are layered over the defaults per key instead of replacing them.
  */
-export function mergeSettings<T extends Pick<SettingsState, "panes" | "graphAgent" | "popupSizes" | "gitLogColumns" | "remote">>(persisted: unknown, current: T): T {
+export function mergeSettings<T extends Pick<SettingsState, "panes" | "graphAgent" | "popupSizes" | "detachedPopups" | "gitLogColumns" | "remote">>(persisted: unknown, current: T): T {
   const stored = persisted as PersistedState | undefined;
   return {
     ...current,
@@ -592,6 +610,7 @@ export function mergeSettings<T extends Pick<SettingsState, "panes" | "graphAgen
     panes: withDefaults(stored?.panes),
     graphAgent: { ...DEFAULT_GRAPH_AGENT, ...stored?.graphAgent },
     popupSizes: withDefaultPopupSizes(stored?.popupSizes),
+    detachedPopups: { ...DEFAULT_DETACHED_POPUPS, ...stored?.detachedPopups },
     gitLogColumns: { ...DEFAULT_GIT_LOG_COLUMNS, ...stored?.gitLogColumns },
     remote: normalizeRemote({ ...DEFAULT_REMOTE, ...stored?.remote }),
     keymap: normalizeKeymap(stored?.keymap),
@@ -610,6 +629,7 @@ export const useSettingsStore = create<SettingsState>()(
       graphExcludedFiles: {},
       diagramTypes: {},
       popupSizes: DEFAULT_POPUP_SIZES,
+      detachedPopups: DEFAULT_DETACHED_POPUPS,
       gitLogColumns: DEFAULT_GIT_LOG_COLUMNS,
       promptHeight: null,
       subChatPromptHeight: null,
@@ -658,6 +678,8 @@ export const useSettingsStore = create<SettingsState>()(
           return { diagramTypes: diagramType === "dependencies" ? rest : { ...rest, [sessionId]: diagramType } };
         }),
       setPopupSize: (key, size) => set((state) => ({ popupSizes: { ...state.popupSizes, [key]: roundedSize(size) } })),
+      setPopupDetached: (key, isDetached) => set((state) => ({ detachedPopups: { ...state.detachedPopups, [key]: isDetached } })),
+      resetDetachedPopups: () => set({ detachedPopups: DEFAULT_DETACHED_POPUPS }),
       setGitLogColumns: (columns) => set({ gitLogColumns: { author: Math.round(columns.author), date: Math.round(columns.date) } }),
       setPromptHeight: (height) => set({ promptHeight: height === null ? null : Math.round(height) }),
       setSubChatPromptHeight: (height) => set({ subChatPromptHeight: height === null ? null : Math.round(height) }),
@@ -692,6 +714,7 @@ export const useSettingsStore = create<SettingsState>()(
         graphExcludedFiles: state.graphExcludedFiles,
         diagramTypes: state.diagramTypes,
         popupSizes: state.popupSizes,
+        detachedPopups: state.detachedPopups,
         gitLogColumns: state.gitLogColumns,
         promptHeight: state.promptHeight,
         subChatPromptHeight: state.subChatPromptHeight,

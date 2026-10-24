@@ -795,6 +795,16 @@ export type EditorOpenRequest = {
 /** A changed file of a session to show in a diff window (see graph/diffWindows.ts). */
 export type DiffOpenRequest = { sessionId: string; path: string };
 
+/** A window's bounds in logical screen px. */
+export type ScreenRect = { x: number; y: number; width: number; height: number };
+
+/**
+ * A host window's request to the popup window of `kind` (see popup/useDetachedPopup.ts): show `content` for the popup
+ * `token` of `hostLabel`. A hidden window opens at `placement`; a shown one stays where it is and takes the focus
+ * only with `focus`. `content` is the plain data popup/protocol.ts types per kind.
+ */
+export type PopupShowRequest = { kind: string; hostLabel: string; token: string; content: unknown; placement: ScreenRect; focus: boolean };
+
 /** An image file in the macOS screenshot folder. */
 export type Screenshot = {
   name: string;

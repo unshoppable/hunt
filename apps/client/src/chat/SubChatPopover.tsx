@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import type { SelectionRequest } from "../diff/selectionContext";
 import type { GuardrailDeclineReason, SelectionContext } from "../ipc/types";
 import { useAgentDefaultsStore } from "../state/agentDefaults";
 import { useSettingsStore } from "../state/settings";
 import { agentSetupOf, useHuntStore } from "../state/store";
-import type { QueuedPrompt } from "../state/store";
+import type { QueuedPrompt, SessionChat } from "../state/store";
 import { DeleteSessionDialog } from "../sessions/DeleteSessionDialog";
+import { PopupModeButton, PopupWindowTitleBar } from "../popup/PopupTitleBar";
+import type { PopupActions } from "../popup/protocol";
+import { useDetachedPopup } from "../popup/useDetachedPopup";
 import { findSelectOption, listChoiceOptions } from "./configOptions";
 import { MessageList } from "./MessageList";
 import type { FileTarget } from "./changeReferences";
@@ -101,18 +104,140 @@ type SubChatPopoverProps = {
   onClose: () => void;
 };
 
+/** The parent's agent settings a new sub chat starts from; a popup window has no chat of the parent and gets them from its host. */
+type ParentAgent = Pick<SessionChat, "configOptions" | "modeId">;
+
+/** What the sub chat window shows (see useDetachedPopup.ts); `canDecline` stands for the host's `onDecline`. */
+export type SubChatContent = Pick<SubChatPopoverProps, "parentSessionId" | "request" | "subSessionId" | "title" | "placeholder" | "context" | "initialText"> & {
+  parentAgent: ParentAgent | null;
+  canDecline: boolean;
+};
+
+type SubChatViewProps = Omit<SubChatPopoverProps, "onAccept"> & {
+  isDetached: boolean;
+  /** Overrides the parent's chat in this window's store. */
+  parentAgent?: ParentAgent | null;
+  /** Called once the first question created the sub session. */
+  onCreated: (subSessionId: string) => void;
+};
+
 /**
- * Floating chat next to a code selection. A new sub session is created with the first question, takes over the
- * parent chat's agent settings and mode, and then behaves like any session: it runs in the background, shows up
- * under its parent in the sidebar and can be opened there in full. Escape and a mouse press outside every floating
- * surface close the popover; closing keeps the session, and the glyph on the selection's first line reopens it with
- * the whole conversation. The model pill in the footer picks the model of a new sub chat or switches the model of the
- * existing one. The popover is resized by dragging its edges (the size is remembered across sessions); until it is
- * dragged taller, it is as tall as its content, up to the remembered height. Dragging the top edge of the input area
- * makes the text area taller at the expense of the conversation, remembered until it is dragged back to one line. A
- * question sent while a turn runs is queued for the end of that turn.
+ * Floating chat next to a code selection (see `SubChatView`), inside the app window or in a window of its own, as the
+ * user chose (see useDetachedPopup.ts). It keeps the sub session the first question created, so that the conversation
+ * stays when the user switches between the two.
  */
-export function SubChatPopover({ parentSessionId, request, subSessionId: initialSubSessionId, title, placeholder, context, initialText = "", onPlaced, onDecline, onAccept, onClose }: SubChatPopoverProps) {
+export function SubChatPopover({ subSessionId, onAccept, ...props }: SubChatPopoverProps) {
+  const isDetached = useSettingsStore((state) => state.detachedPopups.subChat);
+  const [createdSubSessionId, setCreatedSubSessionId] = useState<string | null>(null);
+  const shownSubSessionId = createdSubSessionId ?? subSessionId;
+  const onCreated = (id: string) => {
+    setCreatedSubSessionId(id);
+    onAccept?.();
+  };
+  if (isDetached) {
+    return <DetachedSubChat {...props} subSessionId={shownSubSessionId} onCreated={onCreated} />;
+  }
+  return <SubChatView {...props} subSessionId={shownSubSessionId} isDetached={false} onCreated={onCreated} />;
+}
+
+/** The sub chat window's host side: hands the chat over and passes on what the user decides there. */
+function DetachedSubChat({
+  parentSessionId,
+  request,
+  subSessionId,
+  title,
+  placeholder,
+  context,
+  initialText,
+  onDecline,
+  onCreated,
+  onClose,
+}: Omit<SubChatViewProps, "isDetached">) {
+  const configOptions = useHuntStore((state) => state.chats[parentSessionId]?.configOptions);
+  const modeId = useHuntStore((state) => state.chats[parentSessionId]?.modeId);
+  const parentAgent = configOptions && modeId !== undefined ? { configOptions, modeId } : null;
+  // Hosts build `request` and `context` anew on each render; the window gets them again only when they changed.
+  const serialized = JSON.stringify({
+    parentSessionId,
+    request,
+    subSessionId,
+    title,
+    placeholder,
+    context,
+    initialText,
+    parentAgent,
+    canDecline: !!onDecline,
+  } satisfies SubChatContent);
+  const content = useMemo(() => JSON.parse(serialized) as SubChatContent, [serialized]);
+  useDetachedPopup("subChat", content, {
+    // Each sub chat mounts anew (see `useSubChatPopover`), so its window takes the focus once per showing.
+    revision: null,
+    anchor: () => {
+      const { x, y, corner } = request.anchor;
+      if (corner !== "bottomRight") return { x, y };
+      const size = useSettingsStore.getState().popupSizes.subChat;
+      return { x: x - size.width, y: y - size.height };
+    },
+    onAction: (action: PopupActions["subChat"]) => {
+      if (action.type === "created") {
+        onCreated(action.subSessionId);
+      } else {
+        onDecline?.(action.reason);
+      }
+    },
+    onClose,
+  });
+  return null;
+}
+
+/** The sub chat in its own window (see PopupWindow.tsx); a declined offer goes back to the host window. */
+export function SubChatWindowContent({ content, onAction, onClose }: { content: SubChatContent; onAction: (action: PopupActions["subChat"]) => void; onClose: () => void }) {
+  return (
+    <SubChatView
+      parentSessionId={content.parentSessionId}
+      request={content.request}
+      subSessionId={content.subSessionId}
+      title={content.title}
+      placeholder={content.placeholder}
+      context={content.context}
+      initialText={content.initialText}
+      parentAgent={content.parentAgent}
+      isDetached
+      onDecline={content.canDecline ? (reason) => onAction({ type: "decline", reason }) : undefined}
+      onCreated={(subSessionId) => onAction({ type: "created", subSessionId })}
+      onClose={onClose}
+    />
+  );
+}
+
+/**
+ * Chat about a code selection. A new sub session is created with the first question, takes over the parent chat's
+ * agent settings and mode, and then behaves like any session: it runs in the background, shows up under its parent in
+ * the sidebar and can be opened there in full. Closing keeps the session, and the glyph on the selection's first line
+ * reopens it with the whole conversation. The model pill in the footer picks the model of a new sub chat or switches
+ * the model of the existing one. Dragging the top edge of the input area makes the text area taller at the expense of
+ * the conversation, remembered until it is dragged back to one line. A question sent while a turn runs is queued for
+ * the end of that turn.
+ * Inside the app it floats at the selection: Escape and a mouse press outside every floating surface close it, and it
+ * is resized by dragging its edges (the size is remembered across sessions); until it is dragged taller, it is as tall
+ * as its content, up to the remembered height. `isDetached` fills a popup window instead, which only its own Escape,
+ * ⌘W and traffic light close.
+ */
+function SubChatView({
+  parentSessionId,
+  request,
+  subSessionId: initialSubSessionId,
+  title,
+  placeholder,
+  context,
+  initialText = "",
+  isDetached,
+  parentAgent,
+  onPlaced,
+  onDecline,
+  onCreated,
+  onClose,
+}: SubChatViewProps) {
   const [subSessionId, setSubSessionId] = useState<string | null>(initialSubSessionId ?? null);
   const [text, setText] = useState(initialText);
   const [isCreating, setIsCreating] = useState(false);
@@ -139,7 +264,8 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   const closeSession = useHuntStore((state) => state.closeSession);
   const activeSessionId = useHuntStore((state) => state.activeSessionId);
   const chat = useHuntStore((state) => (subSessionId ? state.chats[subSessionId] : undefined));
-  const parentChat = useHuntStore((state) => state.chats[parentSessionId]);
+  const storedParentChat = useHuntStore((state) => state.chats[parentSessionId]);
+  const parentChat = parentAgent ?? storedParentChat;
   const subSession = useHuntStore((state) => state.sessions.find((session) => session.id === subSessionId));
   const parent = useHuntStore((state) => state.sessions.find((session) => session.id === parentSessionId));
   // A remote session's worktree that is locked for want of a connection connects on its own while the popover is open.
@@ -290,7 +416,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
     const textarea = textareaRef.current;
     if (!root || !textarea) return 0;
     const chrome = root.offsetHeight - (scrollRef.current?.offsetHeight ?? 0) - textarea.offsetHeight;
-    return size.height - chrome - MIN_MESSAGES_HEIGHT;
+    return (isDetached ? root.offsetHeight : size.height) - chrome - MIN_MESSAGES_HEIGHT;
   });
   useAutoGrow(textareaRef, text, 5, heightDrag.minHeight);
   useReturnedPrompts(
@@ -356,7 +482,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
       const setup = pickedModel ? { ...parentSetup, configValues: { ...parentSetup.configValues, model: pickedModel } } : parentSetup;
       const id = await createSubSession(parentSessionId, titleFromPrompt(trimmed), request.selection, { setup, prompt: { text: trimmed, images: [] } }, false);
       setSubSessionId(id);
-      onAccept?.();
+      onCreated(id);
     } catch (reason) {
       setError(String(reason));
       setText(trimmed);
@@ -370,6 +496,13 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   onEscapeRef.current = onClose;
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (isDetached) {
+      // The window's own Escape closes it (see PopupWindow.tsx), except while the permission prompt reads its keys from this element.
+      if (event.key === "Escape" && chat?.permission) {
+        event.stopPropagation();
+      }
+      return;
+    }
     // The popover owns the keyboard: the main chat's esc / shift+tab shortcuts must not fire from here.
     event.stopPropagation();
     // The permission prompt reads its own keys (digits, enter, esc) from this element.
@@ -382,7 +515,7 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   // every popover's (see useDismiss) so that the window-wide Escape shortcuts stay quiet. With a permission pending
   // it only moves the focus here, where the prompt answers the next Escape. The delete dialog takes its own Escape.
   useEffect(() => {
-    if (isConfirmingDelete) return;
+    if (isConfirmingDelete || isDetached) return;
     function onWindowKeyDown(event: globalThis.KeyboardEvent) {
       if (event.key !== "Escape" || rootRef.current?.contains(event.target as Node)) return;
       event.preventDefault();
@@ -395,18 +528,18 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
     }
     window.addEventListener("keydown", onWindowKeyDown, true);
     return () => window.removeEventListener("keydown", onWindowKeyDown, true);
-  }, [hasPermission, isConfirmingDelete]);
+  }, [hasPermission, isConfirmingDelete, isDetached]);
 
   // A mouse press outside every floating surface closes the popover as well.
   useEffect(() => {
-    if (isConfirmingDelete) return;
+    if (isConfirmingDelete || isDetached) return;
     function onWindowMouseDown(event: MouseEvent) {
       if (event.target instanceof Element && event.target.closest(FLOATING_SURFACE)) return;
       onEscapeRef.current();
     }
     window.addEventListener("mousedown", onWindowMouseDown, true);
     return () => window.removeEventListener("mousedown", onWindowMouseDown, true);
-  }, [isConfirmingDelete]);
+  }, [isConfirmingDelete, isDetached]);
 
   function onTextareaKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (isShortcut(event, "chat.sendNow")) {
@@ -429,6 +562,22 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
   const showsSelection = !subSessionId && !title;
   const showsContext = !subSessionId && Boolean(context?.text);
   const hasBody = showsSelection || showsContext || Boolean(chat && (chat.isLoading || chat.items.length || chat.permission || chat.error)) || Boolean(error);
+  const heading = (
+    <>
+      <span className="min-w-0 truncate text-[13px] text-neutral-400" title={describeSelection(request.selection)}>
+        {title ?? (
+          <>
+            Sub chat about <span className="font-mono text-neutral-300">{lines}</span>
+          </>
+        )}
+      </span>
+      {subSessionId && subSessionId !== activeSessionId ? (
+        <button type="button" onClick={() => jumpToChat(subSessionId)} className={`${ICON_BUTTON_XS} shrink-0`} title="Jump to chat" aria-label="Jump to chat">
+          <LinkIcon className="size-3.5" />
+        </button>
+      ) : null}
+    </>
+  );
 
   return (
     <div
@@ -436,28 +585,29 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
       role="dialog"
       tabIndex={-1}
       aria-label={title ?? `Sub chat about ${describeSelection(request.selection)}`}
-      style={{ left, top, width: size.width, maxHeight: size.height, height: isHeightSet ? size.height : undefined }}
+      style={isDetached ? undefined : { left, top, width: size.width, maxHeight: size.height, height: isHeightSet ? size.height : undefined }}
       onKeyDown={onKeyDown}
-      onMouseDown={(event) => event.stopPropagation()}
-      className="chat fixed z-50 flex flex-col overflow-hidden rounded-xl border border-neutral-600 bg-(--surface-chat) text-sm shadow-2xl shadow-black/50 outline-none"
+      // Inside the app the presses stay off the panes beneath; in a window they must reach Tauri's drag region handler.
+      onMouseDown={isDetached ? undefined : (event) => event.stopPropagation()}
+      className={`chat flex flex-col overflow-hidden bg-(--surface-chat) text-sm outline-none ${
+        isDetached ? "h-screen" : "fixed z-50 rounded-xl border border-neutral-600 shadow-2xl shadow-black/50"
+      }`}
     >
-      <header className="flex cursor-grab items-center gap-2 border-b border-(--line) pr-9 pl-12 py-2.5 select-none active:cursor-grabbing" onPointerDown={beginMove}>
-        <span className="min-w-0 truncate text-[13px] text-neutral-400" title={describeSelection(request.selection)}>
-          {title ?? (
-            <>
-              Sub chat about <span className="font-mono text-neutral-300">{lines}</span>
-            </>
-          )}
-        </span>
-        {subSessionId && subSessionId !== activeSessionId ? (
-          <button type="button" onClick={() => jumpToChat(subSessionId)} className={`${ICON_BUTTON_XS} shrink-0`} title="Jump to chat" aria-label="Jump to chat">
-            <LinkIcon className="size-3.5" />
-          </button>
-        ) : null}
-        <button type="button" onClick={onClose} className={`${ICON_BUTTON_SM} ml-auto`} title="Close (esc)" aria-label="Close">
-          <CloseIcon />
-        </button>
-      </header>
+      {isDetached ? (
+        <PopupWindowTitleBar popupKey="subChat">
+          <div className="flex min-w-0 flex-1 items-center gap-2">{heading}</div>
+        </PopupWindowTitleBar>
+      ) : (
+        <header className="flex cursor-grab items-center gap-2 border-b border-(--line) pr-9 pl-12 py-2.5 select-none active:cursor-grabbing" onPointerDown={beginMove}>
+          {heading}
+          <div className="ml-auto flex items-center gap-1">
+            <PopupModeButton popupKey="subChat" isDetached={false} />
+            <button type="button" onClick={onClose} className={ICON_BUTTON_SM} title="Close (esc)" aria-label="Close">
+              <CloseIcon />
+            </button>
+          </div>
+        </header>
+      )}
 
       <div ref={scrollRef} className={`min-h-0 flex-1 overflow-y-auto px-12 ${hasBody ? "py-3" : ""}`}>
         <div ref={contentRef} className="flex flex-col gap-3">
@@ -553,14 +703,16 @@ export function SubChatPopover({ parentSessionId, request, subSessionId: initial
       {isConfirmingDelete && subSession ? (
         <DeleteSessionDialog question={`Delete sub session "${subSession.title}"?`} onConfirm={deleteSubSession} onClose={() => setIsConfirmingDelete(false)} />
       ) : null}
-      <ResizeGrips
-        edges={{ left: true, top: true, right: true, bottom: true }}
-        {...grips}
-        onEnd={() => {
-          grips.onEnd();
-          reportPlace();
-        }}
-      />
+      {isDetached ? null : (
+        <ResizeGrips
+          edges={{ left: true, top: true, right: true, bottom: true }}
+          {...grips}
+          onEnd={() => {
+            grips.onEnd();
+            reportPlace();
+          }}
+        />
+      )}
     </div>
   );
 }

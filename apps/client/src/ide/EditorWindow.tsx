@@ -6,14 +6,15 @@ import { listenTo } from "../ipc/events";
 import { computeChangeBlocks } from "../diff/lineDiff";
 import type { EditorOpenRequest } from "../ipc/types";
 import { useHuntStore } from "../state/store";
-import { useSecondaryWindow } from "../ui/nativeWindow";
+import { hideCurrentWindow, useSecondaryWindow } from "../ui/nativeWindow";
 import { workspaceFor, type Workspace } from "./documents";
-import { FileSearchDialog, useFileSearchShortcut } from "./FileSearchDialog";
-import { FindInFilesDialog, useFindInFilesShortcut } from "./FindInFilesDialog";
+import { FileSearchPopup, useFileSearchShortcut } from "./FileSearchDialog";
+import { FindInFilesPopup, useFindInFilesShortcut } from "./FindInFilesDialog";
 import { IdePanel } from "./IdePanel";
 import { useIdeSession, useIdeStore } from "./ideStore";
 import { resolveDefinition } from "./languageService";
 import { allPanes } from "./paneGrid";
+import { usePopupRequest } from "../popup/usePopupRequest";
 import { HEADER_BAR } from "../ui/bars";
 
 /**
@@ -33,9 +34,9 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
   const closeAllTabs = useIdeStore((state) => state.closeAllTabs);
   const ide = useIdeSession(sessionId);
   const openPaths = useMemo(() => [...new Set(allPanes(ide.layout).flatMap((pane) => pane.tabs))], [ide.layout]);
-  const [isFileSearchOpen, setIsFileSearchOpen] = useState(false);
-  /** Find in Files is open, starting with the text that was selected in the editor (`null`: the last query). */
-  const [findInFiles, setFindInFiles] = useState<{ initialText: string | null } | null>(null);
+  const fileSearch = usePopupRequest<null>();
+  /** Find in Files, starting with the text that was selected in the editor (`null`: the last query). */
+  const findInFiles = usePopupRequest<string | null>();
   const [isLoaded, setIsLoaded] = useState(false);
   const [isListening, setIsListening] = useState(false);
   /** Number of open requests so far; the window shows itself (again) with each one. */
@@ -44,8 +45,8 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
   usePaneStyles();
   useSettingsSync();
   useBackendEvents();
-  useFileSearchShortcut(() => setIsFileSearchOpen(true));
-  useFindInFilesShortcut((initialText) => setFindInFiles({ initialText }));
+  useFileSearchShortcut(() => fileSearch.show(null));
+  useFindInFilesShortcut((initialText) => findInFiles.show(initialText));
 
   // A failed session list leaves `session` empty, which destroys the window below instead of keeping it hidden.
   useEffect(() => {
@@ -113,9 +114,9 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
   /** Hides the window and drops its tabs and dialogs; unsaved edits in its tabs stay in the shared documents. */
   const closeWindow = async () => {
     closeAllTabs(sessionId);
-    setIsFileSearchOpen(false);
-    setFindInFiles(null);
-    await getCurrentWindow().hide();
+    fileSearch.close();
+    findInFiles.close();
+    await hideCurrentWindow();
   };
   const closeWindowRef = useRef(closeWindow);
   closeWindowRef.current = closeWindow;
@@ -149,19 +150,21 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
       <div className="min-h-0 flex-1">
         <IdePanel sessionId={sessionId} onCloseEmpty={() => void closeWindowRef.current()} />
       </div>
-      {isFileSearchOpen ? (
-        <FileSearchDialog
+      {fileSearch.request ? (
+        <FileSearchPopup
           sessionId={sessionId}
           openPaths={openPaths}
-          onClose={() => setIsFileSearchOpen(false)}
+          revision={fileSearch.request.revision}
+          onClose={fileSearch.close}
           onOpen={(path, line, column, inRightSplit) => openFile(sessionId, path, { line, column, inRightSplit })}
         />
       ) : null}
-      {findInFiles ? (
-        <FindInFilesDialog
+      {findInFiles.request ? (
+        <FindInFilesPopup
           sessionId={sessionId}
-          initialText={findInFiles.initialText}
-          onClose={() => setFindInFiles(null)}
+          initialText={findInFiles.request.value}
+          revision={findInFiles.request.revision}
+          onClose={findInFiles.close}
           onOpen={(path, line, column, inRightSplit) => openFile(sessionId, path, { line, column, inRightSplit })}
         />
       ) : null}

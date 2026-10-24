@@ -5,6 +5,9 @@ import { useFileIconUrl } from "../diff/fileIcons";
 import { PREVIEW_EDITOR_OPTIONS, monacoLanguage, setupMonaco } from "../diff/monaco";
 import type { SelectionRequest } from "../diff/selectionContext";
 import { commands } from "../ipc/commands";
+import { PopupModeButton, PopupWindowTitleBar } from "../popup/PopupTitleBar";
+import type { PopupActions } from "../popup/protocol";
+import { openInHostWindow, useDetachedPopup } from "../popup/useDetachedPopup";
 import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { STATUS_BAR } from "../ui/bars";
@@ -92,30 +95,95 @@ export function useFileSearchShortcut(onTrigger: () => void) {
   }, []);
 }
 
+/** What the File Search window shows (see useDetachedPopup.ts). */
+export type FileSearchContent = { sessionId: string; worktreePath: string; openPaths: string[] };
+
+/** 1-based caret position, if any; `inRightSplit` asks for the file right of the current pane (WebStorm's "Open In Right Split"). */
+type OpenFile = (path: string, line: number | undefined, column: number | undefined, inRightSplit: boolean) => void;
+
+type FileSearchPopupProps = {
+  sessionId: string;
+  /** Files currently open in the editor, most recently opened last; shown while the query is empty. */
+  openPaths: string[];
+  /** Changes with every ⌘P or double shift, which brings the File Search window to the front again. */
+  revision: number;
+  onOpen: OpenFile;
+  onClose: () => void;
+};
+
+/**
+ * "Go to file or symbol" (see `FileSearchView`) inside the app window or in a window of its own, as the user chose
+ * (see useDetachedPopup.ts). The window stays open while files are opened from it.
+ */
+export function FileSearchPopup({ sessionId, openPaths, revision, onOpen, onClose }: FileSearchPopupProps) {
+  const isDetached = useSettingsStore((state) => state.detachedPopups.fileSearch);
+  const worktreePath = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.worktreePath ?? "");
+  if (isDetached) {
+    return <DetachedFileSearch sessionId={sessionId} worktreePath={worktreePath} openPaths={openPaths} revision={revision} onOpen={onOpen} onClose={onClose} />;
+  }
+  return <FileSearchView sessionId={sessionId} worktreePath={worktreePath} openPaths={openPaths} isDetached={false} onOpen={onOpen} onClose={onClose} />;
+}
+
+/** The File Search window's host side: hands the session over and opens the files picked there in the host. */
+function DetachedFileSearch({ sessionId, worktreePath, openPaths, revision, onOpen, onClose }: FileSearchPopupProps & { worktreePath: string }) {
+  const content = useMemo<FileSearchContent>(() => ({ sessionId, worktreePath, openPaths }), [sessionId, worktreePath, openPaths]);
+  useDetachedPopup("fileSearch", content, {
+    revision,
+    anchor: () => "top",
+    onAction: (action: PopupActions["fileSearch"]) => openInHostWindow(() => onOpen(action.path, action.line, action.column, action.inRightSplit)),
+    onClose,
+  });
+  return null;
+}
+
+/** File Search in its own window (see PopupWindow.tsx); the files picked here open in the host window. */
+export function FileSearchWindowContent({
+  content,
+  onAction,
+  onClose,
+}: {
+  content: FileSearchContent;
+  onAction: (action: PopupActions["fileSearch"]) => void;
+  onClose: () => void;
+}) {
+  return (
+    <FileSearchView
+      sessionId={content.sessionId}
+      worktreePath={content.worktreePath}
+      openPaths={content.openPaths}
+      isDetached
+      onOpen={(path, line, column, inRightSplit) => onAction({ type: "open", path, line, column, inRightSplit })}
+      onClose={onClose}
+    />
+  );
+}
+
 /**
  * WebStorm-style "Search Everywhere" for files and symbols: a search field over every project file with fuzzy ranking
  * (see fileSearch.ts) and, for an identifier, over the declared classes and symbols (see symbolSearch.ts).
  * With an empty query the open files are listed. The selected file is previewed below the list like in WebStorm's
  * "Search Everywhere", with its path and an "Open In Right Split" action in the footer. ↑/↓ move the selection,
- * Enter opens (`name:12` places the caret on line 12, a symbol at its name), ⇧Enter opens in a right split, Esc or a click on the
- * backdrop closes. Dragging a side or the bottom edge resizes the dialog; the size is remembered across sessions.
+ * Enter opens (`name:12` places the caret on line 12, a symbol at its name), ⇧Enter opens in a right split.
+ * Inside the app it is a dialog that Esc or a click on the backdrop closes, as does opening a file; dragging a side or
+ * the bottom edge resizes it and the size is remembered across sessions. `isDetached` fills a popup window instead.
  * Text selected in the preview opens a sub chat about it over the dialog; while that is open, Esc closes only the sub chat.
  */
-export function FileSearchDialog({
+function FileSearchView({
   sessionId,
+  worktreePath,
   openPaths,
+  isDetached,
   onOpen,
   onClose,
 }: {
   sessionId: string;
-  /** Files currently open in the editor, most recently opened last; shown while the query is empty. */
+  worktreePath: string;
   openPaths: string[];
-  /** 1-based caret position, if any; `inRightSplit` asks for the file right of the current pane (WebStorm's "Open In Right Split"). */
-  onOpen: (path: string, line: number | undefined, column: number | undefined, inRightSplit: boolean) => void;
+  isDetached: boolean;
+  onOpen: OpenFile;
   onClose: () => void;
 }) {
   const fileIconUrl = useFileIconUrl();
-  const worktreePath = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.worktreePath ?? "");
   const [query, setQuery] = useState("");
   const [files, setFiles] = useState<string[] | null>(null);
   const [symbolCandidates, setSymbolCandidates] = useState<SymbolCandidate[]>([]);
@@ -127,6 +195,8 @@ export function FileSearchDialog({
   /** Where the mouse was last seen over the list; the rows scrolling under a resting mouse must not change the selection. */
   const mouseRef = useRef<{ x: number; y: number } | null>(null);
   const subChat = useSubChatPopover();
+  /** A sub chat in a window of its own leaves the dialog free to close. */
+  const isSubChatDetached = useSettingsStore((state) => state.detachedPopups.subChat);
 
   useLoad(() => commands.listFiles(sessionId), { onValue: setFiles, onError: (reason) => setError(errorText(reason)) }, [sessionId]);
 
@@ -166,7 +236,10 @@ export function FileSearchDialog({
     } else {
       onOpen(row.match.path, row.match.line, row.match.column, inRightSplit);
     }
-    onClose();
+    // A window of its own stays open for the next file.
+    if (!isDetached) {
+      onClose();
+    }
   };
 
   const selectUnderMouse = (event: ReactMouseEvent, index: number) => {
@@ -191,10 +264,8 @@ export function FileSearchDialog({
     event.preventDefault();
   };
 
-  // Without a preview the dialog is as tall as its list, up to the remembered height.
-  const style = { width: size.width, height: selectedRow ? size.height : undefined, maxHeight: size.height };
-  return (
-    <Modal label="Go to file or symbol" onClose={onClose} isCloseable={!subChat.shown} align="top" className="bg-(--surface-inspector)" style={style} resize={grips}>
+  const body = (
+    <>
       {/* `contents` keeps the rows in the dialog's own column layout; the keys bubble up through it. */}
       <div className="contents" onKeyDown={onKeyDown}>
         <div className="flex shrink-0 items-center gap-2 border-b border-(--line) px-3">
@@ -211,6 +282,7 @@ export function FileSearchDialog({
             className="h-10 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-neutral-500"
           />
           <span className="text-[13px] text-neutral-500">{files ? `${files.length} files` : "Loading…"}</span>
+          {isDetached ? null : <PopupModeButton popupKey="fileSearch" isDetached={false} />}
         </div>
         {error ? <p className="shrink-0 px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
         {/* With a preview the list leaves it at least half of the dialog; without one it takes the whole height. */}
@@ -275,6 +347,24 @@ export function FileSearchDialog({
       {subChat.shown ? (
         <SubChatPopover key={subChat.shown.key} parentSessionId={sessionId} request={subChat.shown.request} subSessionId={subChat.shown.subSessionId} onClose={subChat.close} />
       ) : null}
+    </>
+  );
+
+  if (isDetached) {
+    return (
+      <div role="dialog" aria-label="Go to file or symbol" className="flex h-screen flex-col bg-(--surface-inspector)">
+        <PopupWindowTitleBar popupKey="fileSearch">
+          <span className="min-w-0 flex-1 truncate font-semibold text-neutral-200">Go to File or Symbol</span>
+        </PopupWindowTitleBar>
+        {body}
+      </div>
+    );
+  }
+  // Without a preview the dialog is as tall as its list, up to the remembered height.
+  const style = { width: size.width, height: selectedRow ? size.height : undefined, maxHeight: size.height };
+  return (
+    <Modal label="Go to file or symbol" onClose={onClose} isCloseable={!subChat.shown || isSubChatDetached} align="top" className="bg-(--surface-inspector)" style={style} resize={grips}>
+      {body}
     </Modal>
   );
 }

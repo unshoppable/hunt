@@ -1,17 +1,22 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { PopupModeButton, PopupWindowTitleBar } from "../popup/PopupTitleBar";
+import { useDetachedPopup } from "../popup/useDetachedPopup";
+import { useSettingsStore } from "../state/settings";
 import { Modal } from "../ui/Modal";
 import { useDialogSize } from "../ui/useDialogSize";
 
 /**
- * Images of a chat message or tool result as a row of thumbnails; a click on one shows it in a dialog, fitted into
- * the dialog, which the user resizes by dragging its edges. `urls` are asset URLs of screenshots the user attached or `data:` URLs that `imageDataUrl`
- * (chat/imageData.ts) accepted; they are only ever loaded by an `<img>`.
+ * Images of a chat message or tool result as a row of thumbnails; a click on one shows it full size, fitted into a
+ * dialog the user resizes by dragging its edges or into a window of its own (see popup/useDetachedPopup.ts). `urls`
+ * are asset URLs of screenshots the user attached or `data:` URLs that `imageDataUrl` (chat/imageData.ts) accepted;
+ * they are only ever loaded by an `<img>`.
  */
 export function ChatImages({ urls, className = "" }: { urls: string[]; className?: string }) {
   const [shownUrl, setShownUrl] = useState<string | null>(null);
-  const dialog = useDialogSize("image", { fillsHeight: true });
+  const isDetached = useSettingsStore((state) => state.detachedPopups.image);
   if (!urls.length) return null;
 
+  const close = () => setShownUrl(null);
   return (
     <>
       <div className={`flex flex-wrap items-start gap-2 ${className}`}>
@@ -27,11 +32,41 @@ export function ChatImages({ urls, className = "" }: { urls: string[]; className
           </button>
         ))}
       </div>
-      {shownUrl ? (
-        <Modal label="Image" onClose={() => setShownUrl(null)} className="bg-(--surface-inset)" style={dialog.style} resize={dialog.resize}>
-          <img src={shownUrl} alt="" className="block h-full w-full object-contain" />
-        </Modal>
-      ) : null}
+      {shownUrl ? isDetached ? <DetachedImage url={shownUrl} onClose={close} /> : <ImageDialog url={shownUrl} onClose={close} /> : null}
     </>
+  );
+}
+
+/** What the image window shows (see popup/protocol.ts). */
+export type ImageContent = { url: string };
+
+function ImageDialog({ url, onClose }: { url: string; onClose: () => void }) {
+  const dialog = useDialogSize("image", { fillsHeight: true });
+  return (
+    <Modal label="Image" onClose={onClose} className="bg-(--surface-inset)" style={dialog.style} resize={dialog.resize}>
+      <img src={url} alt="" className="block h-full w-full object-contain" />
+      <span className="absolute top-2 right-2 rounded-md bg-black/50">
+        <PopupModeButton popupKey="image" isDetached={false} />
+      </span>
+    </Modal>
+  );
+}
+
+/** The image window's host side. */
+function DetachedImage({ url, onClose }: { url: string; onClose: () => void }) {
+  const content = useMemo<ImageContent>(() => ({ url }), [url]);
+  useDetachedPopup("image", content, { revision: url, anchor: () => "center", onAction: () => {}, onClose });
+  return null;
+}
+
+/** The image window's page side (see popup/PopupWindow.tsx): the image fitted into the window. */
+export function ImageWindowContent({ content }: { content: ImageContent }) {
+  return (
+    <div className="flex h-screen flex-col bg-(--surface-inset)">
+      <PopupWindowTitleBar popupKey="image">
+        <span className="min-w-0 flex-1 truncate text-neutral-300">Image</span>
+      </PopupWindowTitleBar>
+      <img src={content.url} alt="" className="block min-h-0 w-full flex-1 object-contain" />
+    </div>
   );
 }

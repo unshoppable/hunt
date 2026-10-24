@@ -9,7 +9,7 @@ import { workspaceFor } from "../ide/documents";
 import { findUsages, navigationAt, type RenameTarget } from "../ide/languageService";
 import { attachRefactorings } from "../ide/refactorings";
 import { RenameDialog } from "../ide/RenameDialog";
-import { UsagesPopover, type UsagesQuery } from "../ide/UsagesPopover";
+import { isUsagesPopupInApp, UsagesPopup, type UsagesQuery } from "../ide/UsagesPopover";
 import type { Usage } from "../ide/usages";
 import { attachSelectionAgent } from "../ide/selectionAgent";
 import { SelectionChatMarkers } from "../ide/selectionChatMarkers";
@@ -206,7 +206,9 @@ export function CodeDiffEditor({
   if (previousMode !== mode) {
     setPreviousMode(mode);
     setComposer(null);
-    setUsagesQuery(null);
+    if (isUsagesPopupInApp()) {
+      setUsagesQuery(null);
+    }
     const liveContent = modifiedEditorRef.current?.getValue();
     if (liveContent !== undefined && liveContent !== modifiedValue) {
       setModifiedValue(liveContent);
@@ -373,7 +375,11 @@ export function CodeDiffEditor({
     });
     const reportDirty = () => onDirtyChangeRef.current(modifiedEditor.getValue() !== savedContentRef.current);
     modifiedEditor.onDidChangeModelContent(reportDirty);
-    modifiedEditor.onDidChangeModelContent(() => setUsagesQuery(null));
+    modifiedEditor.onDidChangeModelContent(() => {
+      if (isUsagesPopupInApp()) {
+        setUsagesQuery(null);
+      }
+    });
     // A shared document may come with unsaved edits from the editor tab.
     reportDirty();
     onShortcut(modifiedEditor, "editor.save", () => onSaveRef.current(modifiedEditor.getValue()));
@@ -441,14 +447,11 @@ export function CodeDiffEditor({
         <ReviewCommentZones editor={modifiedEditor} sessionId={sessionId} path={diff.path} blocks={blocks} composer={composer} onCloseComposer={() => setComposer(null)} />
       ) : null}
       {usagesQuery && shared ? (
-        <UsagesPopover
+        <UsagesPopup
           editor={usagesQuery.editor}
           workspace={shared.workspace}
           query={usagesQuery.query}
-          onOpen={(usage) => {
-            setUsagesQuery(null);
-            onOpenUsageRef.current(usage);
-          }}
+          onOpen={(usage) => onOpenUsageRef.current(usage)}
           onClose={() => setUsagesQuery(null)}
         />
       ) : null}

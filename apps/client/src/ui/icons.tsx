@@ -105,6 +105,26 @@ export function ExternalIcon({ className = "size-3.5" }: { className?: string })
   );
 }
 
+/** A window lifted off another one, for moving a popup into a window of its own. */
+export function DetachIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2.5" y="5.5" width="8" height="8" rx="1.5" />
+      <path d="M5.5 2.5h7a1 1 0 0 1 1 1v7" />
+    </svg>
+  );
+}
+
+/** An arrow into a window, for putting a popup back into its app window. */
+export function AttachIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" />
+      <path d="M11 5 6.5 9.5M6.5 6v3.5H10" />
+    </svg>
+  );
+}
+
 /** A tick, for things that passed or were approved. */
 export function CheckIcon({ className = "size-3.5" }: { className?: string }) {
   return (

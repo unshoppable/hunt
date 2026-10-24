@@ -65,6 +65,9 @@ decision records that steer the agent.
 - **Guardrails window.** Edit `CLAUDE.md`, `.claude/rules/*.md`, skills and ADRs in one place, with templates for
   new entries.
 - **Native windows.** Editor, diff, guardrails and settings open as separate macOS windows that stay in sync.
+  Usages, Go to File, Find in Files, sub chats, the rename preview, image views and the screenshot picker open as
+  windows of their own too, which can be moved anywhere; the button in their title row or *Settings → Popups* puts
+  them back into the app window.
 
 &nbsp;
 

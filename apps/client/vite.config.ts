@@ -19,8 +19,8 @@ export default defineConfig(() => ({
   build: {
     outDir: "../../dist/apps/client",
     emptyOutDir: true,
-    // The main window and the editor, diff, guardrails and settings windows (see ui/nativeWindow.ts) are separate pages.
-    rollupOptions: { input: ["index.html", "editor.html", "diff.html", "guardrails.html", "settings.html"] },
+    // The main window, the editor, diff, guardrails and settings windows and the popup windows (see ui/nativeWindow.ts) are separate pages.
+    rollupOptions: { input: ["index.html", "editor.html", "diff.html", "guardrails.html", "settings.html", "popup.html"] },
     // Keep the ~2,500 Atom Material icon SVGs (src/diff/atomIcons) as separate asset files instead of inlining them
     assetsInlineLimit: (filePath: string) => (filePath.includes("atomIcons") ? false : undefined),
   },

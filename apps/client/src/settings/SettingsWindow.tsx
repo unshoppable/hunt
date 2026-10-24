@@ -11,6 +11,7 @@ import {
   DEFAULT_AI_LANGUAGE,
   DEFAULT_GRAPH_AGENT,
   DEFAULT_PANES,
+  DEFAULT_DETACHED_POPUPS,
   DEFAULT_REMOTE,
   DEFAULT_SYSTEM_PROMPT,
   FONT_FAMILY_PRESETS,
@@ -19,6 +20,7 @@ import {
   isFolderIconRulesDefault,
   isIconRulesDefault,
   useSettingsStore,
+  type DetachablePopupKey,
   type FolderIconRule,
   type IconRule,
   type NumericPaneSetting,
@@ -66,12 +68,13 @@ const SECTIONS: Section[] = [
  */
 const AGENT_PAGE = "agent";
 const SESSIONS_PAGE = "sessions";
+const POPUPS_PAGE = "popups";
 const REMOTE_PAGE = "remote";
 const FILE_ICONS_PAGE = "fileIcons";
 const FOLDER_ICONS_PAGE = "folderIcons";
 const KEYMAP_PAGE = "keymap";
 const UPDATES_PAGE: SettingsPage = "updates";
-type Page = PaneKey | typeof AGENT_PAGE | typeof SESSIONS_PAGE | typeof REMOTE_PAGE | typeof FILE_ICONS_PAGE | typeof FOLDER_ICONS_PAGE | typeof KEYMAP_PAGE | SettingsPage;
+type Page = PaneKey | typeof AGENT_PAGE | typeof SESSIONS_PAGE | typeof POPUPS_PAGE | typeof REMOTE_PAGE | typeof FILE_ICONS_PAGE | typeof FOLDER_ICONS_PAGE | typeof KEYMAP_PAGE | SettingsPage;
 
 /** Whether the window was booted ahead of time (`?warm=1`) and stays hidden until the main window shows it. */
 const isWarm = new URLSearchParams(window.location.search).has("warm");
@@ -88,6 +91,7 @@ const NAV_GROUPS: { title: string; pages: { key: Page; title: string }[] }[] = [
     pages: [
       { key: AGENT_PAGE, title: "Agent" },
       { key: SESSIONS_PAGE, title: "Sessions" },
+      { key: POPUPS_PAGE, title: "Popups" },
       { key: REMOTE_PAGE, title: "Remote VM" },
       { key: FILE_ICONS_PAGE, title: "File icons" },
       { key: FOLDER_ICONS_PAGE, title: "Folder icons" },
@@ -118,6 +122,7 @@ export function SettingsWindow() {
   const resetIconRules = useSettingsStore((state) => state.resetIconRules);
   const resetFolderIconRules = useSettingsStore((state) => state.resetFolderIconRules);
   const setConfirmSessionDelete = useSettingsStore((state) => state.setConfirmSessionDelete);
+  const resetDetachedPopups = useSettingsStore((state) => state.resetDetachedPopups);
   const resetKeymap = useSettingsStore((state) => state.resetKeymap);
   const [activePage, setActivePage] = useState<Page>(initialPage);
   const [version, setVersion] = useState<string | null>(null);
@@ -128,6 +133,7 @@ export function SettingsWindow() {
     resetIconRules();
     resetFolderIconRules();
     setConfirmSessionDelete(true);
+    resetDetachedPopups();
     resetKeymap();
   };
 
@@ -169,6 +175,8 @@ export function SettingsWindow() {
             <PaneSection key={activeSection.pane} {...activeSection} />
           ) : activePage === SESSIONS_PAGE ? (
             <SessionsSection />
+          ) : activePage === POPUPS_PAGE ? (
+            <PopupsSection />
           ) : activePage === REMOTE_PAGE ? (
             <RemoteSection />
           ) : activePage === FILE_ICONS_PAGE ? (
@@ -476,6 +484,43 @@ function SessionsSection() {
           Ask before deleting a session
         </label>
         <p className="text-[13px] leading-snug text-neutral-500">Deleting a session also removes its sub sessions and its worktree. Without the question, the delete button{removeShortcut ? ` and ${removeShortcut}` : ""} act at once.</p>
+      </div>
+    </section>
+  );
+}
+
+/** What each work popup is, in the words of the Popups page. */
+const POPUP_LABELS: Record<DetachablePopupKey, string> = {
+  usages: "Usages of a ⌘clicked declaration",
+  fileSearch: "Go to file or symbol",
+  findInFiles: "Find in Files",
+  subChat: "Sub chats",
+  renamePreview: "Rename preview",
+  image: "Images of the chat",
+  screenshots: "Screenshot picker",
+};
+
+/** Which work popups open in a window of their own; the button in each popup's title bar switches the same setting. */
+function PopupsSection() {
+  const detachedPopups = useSettingsStore((state) => state.detachedPopups);
+  const setPopupDetached = useSettingsStore((state) => state.setPopupDetached);
+  const resetDetachedPopups = useSettingsStore((state) => state.resetDetachedPopups);
+  const isDefault = (Object.keys(DEFAULT_DETACHED_POPUPS) as DetachablePopupKey[]).every((key) => detachedPopups[key] === DEFAULT_DETACHED_POPUPS[key]);
+
+  return (
+    <section>
+      <PageHeader title="Popups" hint="Which popups open in a window of their own" isDefault={isDefault} onReset={resetDetachedPopups} />
+      <div className="flex flex-col gap-2">
+        {(Object.keys(POPUP_LABELS) as DetachablePopupKey[]).map((key) => (
+          <label key={key} className="flex items-center gap-2 text-sm text-neutral-100">
+            <input type="checkbox" checked={detachedPopups[key]} onChange={(event) => setPopupDetached(key, event.target.checked)} className="hunt-checkbox" />
+            {POPUP_LABELS[key]}
+          </label>
+        ))}
+        <p className="text-[13px] leading-snug text-neutral-500">
+          A popup in a window of its own can be moved anywhere, also onto another display, and stays open until Esc, ⌘W or its close button. Inside the app window a
+          click outside closes it.
+        </p>
       </div>
     </section>
   );

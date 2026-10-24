@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { assetUrl, commands } from "../ipc/commands";
 import type { Screenshot } from "../ipc/types";
+import { PopupModeButton, PopupWindowTitleBar } from "../popup/PopupTitleBar";
+import type { PopupActions } from "../popup/protocol";
+import { useDetachedPopup } from "../popup/useDetachedPopup";
+import { useSettingsStore } from "../state/settings";
 import { useHoverAnchor } from "../ui/hoverAnchor";
 import { CLEAR_BUTTON, GHOST_BUTTON_XS, PRIMARY_BUTTON_XS } from "../ui/buttons";
 import { ImageIcon } from "../ui/icons";
@@ -56,8 +61,14 @@ function useScreenshots(isActive: boolean): { screenshots: Screenshot[] | null; 
 export function ScreenshotTrigger({ onPick, className = "" }: { onPick: (screenshots: Screenshot[]) => void; className?: string }) {
   const hover = useHoverAnchor<"screenshots">();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const isDialogDetached = useSettingsStore((state) => state.detachedPopups.screenshots);
   const isPopoverOpen = Boolean(hover.anchor) && !isDialogOpen;
-  const { screenshots, error } = useScreenshots(isPopoverOpen || isDialogOpen);
+  // A screenshot window loads the screenshots itself.
+  const { screenshots, error } = useScreenshots(isPopoverOpen || (isDialogOpen && !isDialogDetached));
+  const attach = (picked: Screenshot[]) => {
+    onPick(picked);
+    setIsDialogOpen(false);
+  };
 
   return (
     <>
@@ -86,17 +97,8 @@ export function ScreenshotTrigger({ onPick, className = "" }: { onPick: (screens
           onLeave={hover.leave}
         />
       ) : null}
-      {isDialogOpen ? (
-        <ScreenshotDialog
-          screenshots={screenshots}
-          error={error}
-          onAttach={(picked) => {
-            onPick(picked);
-            setIsDialogOpen(false);
-          }}
-          onClose={() => setIsDialogOpen(false)}
-        />
-      ) : null}
+      {isDialogOpen && isDialogDetached ? <DetachedScreenshotDialog onAttach={attach} onClose={() => setIsDialogOpen(false)} /> : null}
+      {isDialogOpen && !isDialogDetached ? <ScreenshotDialog screenshots={screenshots} error={error} onAttach={attach} onClose={() => setIsDialogOpen(false)} /> : null}
     </>
   );
 }
@@ -156,22 +158,63 @@ function ScreenshotPopover({
   );
 }
 
-/** Grid of every screenshot with multi-select; Enter attaches the selection, Esc or the backdrop closes. */
-function ScreenshotDialog({
-  screenshots,
-  error,
-  onAttach,
-  onClose,
-}: {
+type ScreenshotChooserProps = {
   screenshots: Screenshot[] | null;
   error: string | null;
   onAttach: (screenshots: Screenshot[]) => void;
   onClose: () => void;
-}) {
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
-  const picked = (screenshots ?? []).filter((screenshot) => selected.has(screenshot.path));
+};
+
+/** The screenshot picker inside the app window: a dialog over the dimmed window; Esc or the backdrop closes it. */
+function ScreenshotDialog(props: ScreenshotChooserProps) {
   const viewport = useViewportSize();
   const { size, isHeightSet, grips } = usePopupSize("screenshots", { min: DIALOG_MIN_SIZE, max: { width: viewport.width * DIALOG_MAX_SHARE, height: viewport.height * DIALOG_MAX_SHARE } });
+  return (
+    <Modal
+      label="Attach screenshots"
+      onClose={props.onClose}
+      className="bg-(--surface-inspector)"
+      style={{ width: size.width, maxHeight: size.height, height: isHeightSet ? size.height : undefined }}
+      resize={grips}
+    >
+      <ScreenshotChooser {...props} isDetached={false} />
+    </Modal>
+  );
+}
+
+/** What the screenshot window shows (see popup/protocol.ts): nothing but itself, it loads the screenshots on its own. */
+export type ScreenshotsContent = Record<string, never>;
+
+const SCREENSHOTS_CONTENT: ScreenshotsContent = {};
+
+/** The screenshot window's host side: the screenshots picked there are attached here. */
+function DetachedScreenshotDialog({ onAttach, onClose }: Pick<ScreenshotChooserProps, "onAttach" | "onClose">) {
+  useDetachedPopup("screenshots", SCREENSHOTS_CONTENT, {
+    revision: SCREENSHOTS_CONTENT,
+    anchor: () => "center",
+    onAction: (action: PopupActions["screenshots"]) => {
+      onAttach(action.screenshots);
+      void getCurrentWindow().setFocus();
+    },
+    onClose,
+  });
+  return null;
+}
+
+/** The screenshot window's page side (see popup/PopupWindow.tsx). */
+export function ScreenshotsWindowContent({ onAction, onClose }: { onAction: (action: PopupActions["screenshots"]) => void; onClose: () => void }) {
+  const { screenshots, error } = useScreenshots(true);
+  return (
+    <div className="flex h-screen flex-col bg-(--surface-inspector)">
+      <ScreenshotChooser screenshots={screenshots} error={error} isDetached onAttach={(picked) => onAction({ type: "attach", screenshots: picked })} onClose={onClose} />
+    </div>
+  );
+}
+
+/** Grid of every screenshot with multi-select; Enter attaches the selection. */
+function ScreenshotChooser({ screenshots, error, isDetached, onAttach, onClose }: ScreenshotChooserProps & { isDetached: boolean }) {
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const picked = (screenshots ?? []).filter((screenshot) => selected.has(screenshot.path));
 
   function toggle(path: string) {
     setSelected((current) => {
@@ -205,18 +248,22 @@ function ScreenshotDialog({
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
 
+  const title = (
+    <>
+      <span className="min-w-0 flex-1 truncate text-sm font-medium text-neutral-100">Screenshots</span>
+      <span className="text-[13px] text-neutral-500">{screenshots ? `${screenshots.length} images` : "Loading…"}</span>
+    </>
+  );
   return (
-    <Modal
-      label="Attach screenshots"
-      onClose={onClose}
-      className="bg-(--surface-inspector)"
-      style={{ width: size.width, maxHeight: size.height, height: isHeightSet ? size.height : undefined }}
-      resize={grips}
-    >
-      <div className="flex h-11 items-center justify-between border-b border-(--line) px-4">
-        <span className="text-sm font-medium text-neutral-100">Screenshots</span>
-        <span className="text-[13px] text-neutral-500">{screenshots ? `${screenshots.length} images` : "Loading…"}</span>
-      </div>
+    <>
+      {isDetached ? (
+        <PopupWindowTitleBar popupKey="screenshots">{title}</PopupWindowTitleBar>
+      ) : (
+        <div className="flex h-11 items-center gap-2 border-b border-(--line) pr-2 pl-4">
+          {title}
+          <PopupModeButton popupKey="screenshots" isDetached={false} />
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {error ? <p className="text-sm text-red-400">{error}</p> : null}
         {screenshots && !screenshots.length ? <p className="text-sm text-neutral-500">No screenshots yet.</p> : null}
@@ -263,7 +310,7 @@ function ScreenshotDialog({
           {picked.length > 1 ? `Attach ${picked.length} screenshots` : "Attach screenshot"}
         </button>
       </div>
-    </Modal>
+    </>
   );
 }
 

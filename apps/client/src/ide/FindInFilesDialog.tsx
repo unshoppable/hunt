@@ -5,6 +5,10 @@ import { useFileIconUrl } from "../diff/fileIcons";
 import { commands } from "../ipc/commands";
 import type { TextMatch, TextQuery, TextRange, TextSearchResult } from "../ipc/types";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
+import { PopupModeButton, PopupWindowTitleBar } from "../popup/PopupTitleBar";
+import type { PopupActions } from "../popup/protocol";
+import { openInHostWindow, useDetachedPopup } from "../popup/useDetachedPopup";
+import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { STATUS_BAR } from "../ui/bars";
 import { SearchIcon } from "../ui/icons";
@@ -55,27 +59,94 @@ export function useFindInFilesShortcut(onTrigger: (selected: string | null) => v
   }, []);
 }
 
+/** What the Find in Files window shows (see useDetachedPopup.ts); a new `revision` starts the search over with `initialText`. */
+export type FindInFilesContent = { sessionId: string; worktreePath: string; initialText: string | null; revision: number };
+
+/** 1-based position of the match; `inRightSplit` asks for the file right of the current pane. */
+type OpenMatch = (path: string, line: number, column: number, inRightSplit: boolean) => void;
+
+type FindInFilesPopupProps = {
+  sessionId: string;
+  /** The text selected in the editor; `null` keeps the last query. */
+  initialText: string | null;
+  /** Changes with every ⇧⌘F, which brings the Find in Files window to the front again with `initialText`. */
+  revision: number;
+  onOpen: OpenMatch;
+  onClose: () => void;
+};
+
+/**
+ * "Find in Files" (see `FindInFilesView`) inside the app window or in a window of its own, as the user chose (see
+ * useDetachedPopup.ts). The window stays open while matches are opened from it.
+ */
+export function FindInFilesPopup({ sessionId, initialText, revision, onOpen, onClose }: FindInFilesPopupProps) {
+  const isDetached = useSettingsStore((state) => state.detachedPopups.findInFiles);
+  const worktreePath = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.worktreePath ?? "");
+  if (isDetached) {
+    return <DetachedFindInFiles sessionId={sessionId} worktreePath={worktreePath} initialText={initialText} revision={revision} onOpen={onOpen} onClose={onClose} />;
+  }
+  return <FindInFilesView sessionId={sessionId} worktreePath={worktreePath} initialText={initialText} isDetached={false} onOpen={onOpen} onClose={onClose} />;
+}
+
+/** The Find in Files window's host side: hands the query over and opens the matches picked there in the host. */
+function DetachedFindInFiles({ sessionId, worktreePath, initialText, revision, onOpen, onClose }: FindInFilesPopupProps & { worktreePath: string }) {
+  const content = useMemo<FindInFilesContent>(() => ({ sessionId, worktreePath, initialText, revision }), [sessionId, worktreePath, initialText, revision]);
+  useDetachedPopup("findInFiles", content, {
+    revision,
+    anchor: () => "top",
+    onAction: (action: PopupActions["findInFiles"]) => openInHostWindow(() => onOpen(action.path, action.line, action.column, action.inRightSplit)),
+    onClose,
+  });
+  return null;
+}
+
+/** Find in Files in its own window (see PopupWindow.tsx); the matches picked here open in the host window. */
+export function FindInFilesWindowContent({
+  content,
+  onAction,
+  onClose,
+}: {
+  content: FindInFilesContent;
+  onAction: (action: PopupActions["findInFiles"]) => void;
+  onClose: () => void;
+}) {
+  return (
+    <FindInFilesView
+      key={content.revision}
+      sessionId={content.sessionId}
+      worktreePath={content.worktreePath}
+      initialText={content.initialText}
+      isDetached
+      onOpen={(path, line, column, inRightSplit) => onAction({ type: "open", path, line, column, inRightSplit })}
+      onClose={onClose}
+    />
+  );
+}
+
 /**
  * WebStorm-style "Find in Files": searches the text of every project file (see find_in_files.rs) as you type and
  * lists the matching lines on every keystroke; the selected match is previewed below the list. `initialText` (the editor's selection)
  * replaces the last query. ⌥C, ⌥W and ⌥X toggle Match Case, Words and Regex; the file mask takes comma-separated
  * masks such as `*.ts, !*.spec.ts`. ↑/↓ or a click select a match (hovering only highlights the row), Enter or a
- * double click opens it, ⇧Enter opens it in a right split, Esc or a click on the backdrop closes. The size is remembered across sessions.
+ * double click opens it, ⇧Enter opens it in a right split. Inside the app it is a dialog that Esc or a click on the
+ * backdrop closes, as does opening a match; its size is remembered across sessions. `isDetached` fills a popup window instead.
  * Text selected in the preview opens a sub chat about it over the dialog; while that is open, Esc closes only the sub chat.
  */
-export function FindInFilesDialog({
+function FindInFilesView({
   sessionId,
+  worktreePath,
   initialText,
+  isDetached,
   onOpen,
   onClose,
 }: {
   sessionId: string;
+  worktreePath: string;
   initialText: string | null;
-  /** 1-based position of the match; `inRightSplit` asks for the file right of the current pane. */
-  onOpen: (path: string, line: number, column: number, inRightSplit: boolean) => void;
+  isDetached: boolean;
+  onOpen: OpenMatch;
   onClose: () => void;
 }) {
-  const worktreePath = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.worktreePath ?? "");
   const fileIconUrl = useFileIconUrl();
   const [query, setQuery] = useState<TextQuery>(() => (initialText ? { ...lastQuery, text: initialText } : lastQuery));
   const [result, setResult] = useState<{ query: TextQuery; value: TextSearchResult } | null>(null);
@@ -86,6 +157,8 @@ export function FindInFilesDialog({
   const viewport = useViewportSize();
   const { size, grips } = usePopupSize("findInFiles", { min: MIN_SIZE, max: { width: viewport.width * MAX_WIDTH_SHARE, height: viewport.height * MAX_HEIGHT_SHARE } });
   const subChat = useSubChatPopover();
+  /** A sub chat in a window of its own leaves the dialog free to close. */
+  const isSubChatDetached = useSettingsStore((state) => state.detachedPopups.subChat);
 
   useEffect(() => {
     lastQuery = query;
@@ -123,7 +196,10 @@ export function FindInFilesDialog({
   const open = (match: TextMatch | undefined, inRightSplit = false) => {
     if (!match) return;
     onOpen(match.path, match.line, match.column, inRightSplit);
-    onClose();
+    // A window of its own stays open for the next match.
+    if (!isDetached) {
+      onClose();
+    }
   };
 
   /** ↑ / ↓, Enter and the ⌥ toggles act from anywhere in the dialog (the preview keeps the keys it handled). */
@@ -161,8 +237,6 @@ export function FindInFilesDialog({
 
   // The last result stays on screen while the next search runs (an empty query's result only loaded the files).
   const status = !query.text ? "" : result?.query.text ? matchSummary(result.value) : "Searching…";
-  // Without a preview the dialog is as tall as its list, up to the remembered height.
-  const style = { width: size.width, height: selectedMatch ? size.height : undefined, maxHeight: size.height };
   const list = (
     <ul ref={listRef} className={`min-h-0 overflow-auto py-1 text-[13px] ${selectedMatch ? "flex-1" : ""}`}>
       {matches.map((match, index) => {
@@ -190,25 +264,35 @@ export function FindInFilesDialog({
       })}
     </ul>
   );
-  return (
-    <Modal label="Find in files" onClose={onClose} isCloseable={!subChat.shown} align="top" className="bg-(--surface-inspector)" style={style} resize={grips}>
+  const header = (
+    <>
+      <span className="shrink-0 font-semibold text-neutral-200">Find in Files</span>
+      <span className="min-w-0 flex-1 truncate text-neutral-500">{status}</span>
+      <label className="flex shrink-0 items-center gap-2 text-neutral-400">
+        File mask
+        <input
+          value={query.fileMask}
+          onChange={(event) => update({ fileMask: event.target.value })}
+          placeholder="*.ts, !*.spec.ts"
+          spellCheck={false}
+          className="h-7 w-44 rounded-md border border-(--line) bg-transparent px-2 text-neutral-200 outline-none placeholder:text-neutral-600 focus:border-blue-500/70"
+        />
+      </label>
+    </>
+  );
+  const body = (
+    <>
       {/* `contents` keeps the rows in the dialog's own column layout; the keys bubble up through it. */}
       <div className="contents" onKeyDown={onKeyDown} onPointerUp={onPointerUp}>
-        <div className="flex h-10 shrink-0 items-center gap-3 px-3 text-[13px]">
-          <span className="shrink-0 font-semibold text-neutral-200">Find in Files</span>
-          <span className="min-w-0 flex-1 truncate text-neutral-500">{status}</span>
-          <label className="flex shrink-0 items-center gap-2 text-neutral-400">
-            File mask
-            <input
-              value={query.fileMask}
-              onChange={(event) => update({ fileMask: event.target.value })}
-              placeholder="*.ts, !*.spec.ts"
-              spellCheck={false}
-              className="h-7 w-44 rounded-md border border-(--line) bg-transparent px-2 text-neutral-200 outline-none placeholder:text-neutral-600 focus:border-blue-500/70"
-            />
-          </label>
-        </div>
-        <div className="flex shrink-0 items-center gap-2 border-y border-(--line) px-3">
+        {isDetached ? (
+          <PopupWindowTitleBar popupKey="findInFiles">{header}</PopupWindowTitleBar>
+        ) : (
+          <div className="flex h-10 shrink-0 items-center gap-3 px-3 text-[13px]">
+            {header}
+            <PopupModeButton popupKey="findInFiles" isDetached={false} />
+          </div>
+        )}
+        <div className={`flex shrink-0 items-center gap-2 border-b border-(--line) px-3 ${isDetached ? "" : "border-t"}`}>
           <SearchIcon className="size-4 shrink-0 text-neutral-500" />
           <input
             ref={inputRef}
@@ -275,6 +359,21 @@ export function FindInFilesDialog({
       {subChat.shown ? (
         <SubChatPopover key={subChat.shown.key} parentSessionId={sessionId} request={subChat.shown.request} subSessionId={subChat.shown.subSessionId} onClose={subChat.close} />
       ) : null}
+    </>
+  );
+
+  if (isDetached) {
+    return (
+      <div role="dialog" aria-label="Find in files" className="flex h-screen flex-col bg-(--surface-inspector)">
+        {body}
+      </div>
+    );
+  }
+  // Without a preview the dialog is as tall as its list, up to the remembered height.
+  const style = { width: size.width, height: selectedMatch ? size.height : undefined, maxHeight: size.height };
+  return (
+    <Modal label="Find in files" onClose={onClose} isCloseable={!subChat.shown || isSubChatDetached} align="top" className="bg-(--surface-inspector)" style={style} resize={grips}>
+      {body}
     </Modal>
   );
 }

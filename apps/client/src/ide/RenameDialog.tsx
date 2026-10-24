@@ -2,6 +2,10 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboa
 import type * as monaco from "monaco-editor";
 import { INPUT } from "../diff/styles";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
+import { PopupModeButton, PopupWindowTitleBar } from "../popup/PopupTitleBar";
+import type { PopupActions } from "../popup/protocol";
+import { openInHostWindow, useDetachedPopup } from "../popup/useDetachedPopup";
+import { useSettingsStore } from "../state/settings";
 import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD } from "../ui/buttons";
 import { Modal } from "../ui/Modal";
 import { splitPath } from "../ui/path";
@@ -135,6 +139,12 @@ export function RenameDialog({ workspace, model, target, onClose }: RenameDialog
   );
 }
 
+/** What the rename preview lists: the plan without the file texts, which only the host needs to rename. */
+type PreviewedPlan = Pick<RenamePlan, "name" | "newName" | "occurrences">;
+
+/** What the rename preview window shows (see useDetachedPopup.ts); the host renames and reports progress and failure here. */
+export type RenamePreviewContent = { sessionId: string; plan: PreviewedPlan; reason: string | null; isApplying: boolean; error: string | null };
+
 type RenamePreviewProps = {
   workspace: Workspace;
   plan: RenamePlan;
@@ -145,16 +155,128 @@ type RenamePreviewProps = {
 };
 
 /**
- * WebStorm's refactoring preview: the occurrences grouped into code usages, comments and strings, and text
- * occurrences, each with a check box (a group's box switches all of its rows), and the selected one shown in its file
- * below. ↑/↓ select a row, Space switches its box; Do Refactor renames the checked occurrences.
+ * The rename preview (see `RenamePreviewView`) inside the app window or in a window of its own, as the user chose (see
+ * useDetachedPopup.ts); either way the host renames the checked occurrences through `workspace` and closes once done.
  */
 function RenamePreview({ workspace, plan, reason, onBack, onClose }: RenamePreviewProps) {
+  const isDetached = useSettingsStore((state) => state.detachedPopups.renamePreview);
+  const [isApplying, setIsApplying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function apply(included: ReadonlySet<string>) {
+    if (isApplying) return;
+    setIsApplying(true);
+    setError(null);
+    try {
+      await applyRename(workspace, plan, included);
+      onClose();
+    } catch (failure) {
+      setError(errorText(failure));
+      setIsApplying(false);
+    }
+  }
+
+  if (isDetached) {
+    return (
+      <DetachedRenamePreview
+        sessionId={workspace.sessionId}
+        plan={plan}
+        reason={reason}
+        isApplying={isApplying}
+        error={error}
+        onApply={(included) => void apply(included)}
+        onBack={onBack}
+        onClose={onClose}
+      />
+    );
+  }
+  return (
+    <RenamePreviewView
+      sessionId={workspace.sessionId}
+      plan={plan}
+      reason={reason}
+      isApplying={isApplying}
+      error={error}
+      isDetached={false}
+      onApply={(included) => void apply(included)}
+      onBack={onBack}
+      onClose={onClose}
+    />
+  );
+}
+
+type RenamePreviewViewProps = {
+  sessionId: string;
+  plan: PreviewedPlan;
+  reason: string | null;
+  isApplying: boolean;
+  error: string | null;
+  isDetached: boolean;
+  /** Renames the occurrences with these keys. */
+  onApply: (included: ReadonlySet<string>) => void;
+  onBack: () => void;
+  onClose: () => void;
+};
+
+/** The rename preview window's host side: hands the plan over, renames what is checked there and goes back on request. */
+function DetachedRenamePreview({
+  sessionId,
+  plan,
+  reason,
+  isApplying,
+  error,
+  onApply,
+  onBack,
+  onClose,
+}: Omit<RenamePreviewViewProps, "plan" | "isDetached"> & { plan: RenamePlan }) {
+  const content = useMemo<RenamePreviewContent>(
+    () => ({ sessionId, plan: { name: plan.name, newName: plan.newName, occurrences: plan.occurrences }, reason, isApplying, error }),
+    [sessionId, plan, reason, isApplying, error],
+  );
+  useDetachedPopup("renamePreview", content, {
+    revision: plan,
+    anchor: () => "center",
+    onAction: (action: PopupActions["renamePreview"]) => openInHostWindow(() => (action.type === "apply" ? onApply(new Set(action.keys)) : onBack())),
+    onClose,
+  });
+  return null;
+}
+
+/** The rename preview in its own window (see PopupWindow.tsx); the host window renames and goes back to its Rename dialog. */
+export function RenamePreviewWindowContent({
+  content,
+  onAction,
+  onClose,
+}: {
+  content: RenamePreviewContent;
+  onAction: (action: PopupActions["renamePreview"]) => void;
+  onClose: () => void;
+}) {
+  return (
+    <RenamePreviewView
+      sessionId={content.sessionId}
+      plan={content.plan}
+      reason={content.reason}
+      isApplying={content.isApplying}
+      error={content.error}
+      isDetached
+      onApply={(included) => onAction({ type: "apply", keys: [...included] })}
+      onBack={() => onAction({ type: "back" })}
+      onClose={onClose}
+    />
+  );
+}
+
+/**
+ * WebStorm's refactoring preview: the occurrences grouped into code usages, comments and strings, and text
+ * occurrences, each with a check box (a group's box switches all of its rows), and the selected one shown in its file
+ * below. ↑/↓ select a row, Space switches its box; Do Refactor renames the checked occurrences. Inside the app it is a
+ * dialog; `isDetached` fills a popup window instead.
+ */
+function RenamePreviewView({ sessionId, plan, reason, isApplying, error, isDetached, onApply, onBack, onClose }: RenamePreviewViewProps) {
   const dialog = useDialogSize("renamePreview", { fillsHeight: true, min: { width: 560, height: 320 } });
   const [included, setIncluded] = useState(() => new Set(plan.occurrences.map((occurrence) => occurrence.key)));
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [isApplying, setIsApplying] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const groups = useMemo(
@@ -189,18 +311,10 @@ function RenamePreview({ workspace, plan, reason, onBack, onClose }: RenamePrevi
     });
   };
 
-  async function refactor() {
+  const refactor = () => {
     if (!checked.length || isApplying) return;
-    setIsApplying(true);
-    setError(null);
-    try {
-      await applyRename(workspace, plan, included);
-      onClose();
-    } catch (reason) {
-      setError(errorText(reason));
-      setIsApplying(false);
-    }
-  }
+    onApply(included);
+  };
 
   const onKeyDown = (event: ReactKeyboardEvent) => {
     if (event.defaultPrevented || !plan.occurrences.length) return;
@@ -217,14 +331,24 @@ function RenamePreview({ workspace, plan, reason, onBack, onClose }: RenamePrevi
     event.preventDefault();
   };
 
-  return (
-    <Modal label="Rename preview" onClose={onClose} isCloseable={!isApplying} className="bg-(--surface-inspector)" style={dialog.style} resize={dialog.resize}>
-      <div className="flex h-10 shrink-0 items-center gap-3 border-b border-(--line) px-3 text-[13px]">
-        <span className="min-w-0 truncate font-semibold text-neutral-200">
-          Rename '<span className="font-mono">{plan.name}</span>' to '<span className="font-mono">{plan.newName}</span>'
-        </span>
-        <span className="shrink-0 text-neutral-500">{occurrenceSummary(plan.occurrences)}</span>
-      </div>
+  const heading = (
+    <>
+      <span className="min-w-0 truncate font-semibold text-neutral-200">
+        Rename '<span className="font-mono">{plan.name}</span>' to '<span className="font-mono">{plan.newName}</span>'
+      </span>
+      <span className="min-w-0 flex-1 truncate text-neutral-500">{occurrenceSummary(plan.occurrences)}</span>
+    </>
+  );
+  const body = (
+    <>
+      {isDetached ? (
+        <PopupWindowTitleBar popupKey="renamePreview">{heading}</PopupWindowTitleBar>
+      ) : (
+        <div className="flex h-10 shrink-0 items-center gap-3 border-b border-(--line) px-3 text-[13px]">
+          {heading}
+          <PopupModeButton popupKey="renamePreview" isDetached={false} />
+        </div>
+      )}
       {reason ? <p className="shrink-0 border-b border-(--line) bg-amber-300/10 px-3 py-2 text-[13px] text-amber-200">{reason}</p> : null}
       <PersistentGroup id="rename-preview" orientation="vertical" className="flex min-h-0 flex-1 flex-col">
         <Panel id="list" defaultSize="45" minSize={MIN_LIST_HEIGHT} className="flex min-h-0 flex-col">
@@ -298,7 +422,7 @@ function RenamePreview({ workspace, plan, reason, onBack, onClose }: RenamePrevi
         <Panel id="preview" defaultSize="55" minSize={MIN_PREVIEW_HEIGHT} className="flex min-h-0 flex-col">
           {selected ? (
             <FilePreview
-              sessionId={workspace.sessionId}
+              sessionId={sessionId}
               path={selected.path}
               line={selected.line}
               column={selected.column}
@@ -317,10 +441,23 @@ function RenamePreview({ workspace, plan, reason, onBack, onClose }: RenamePrevi
         <button type="button" onClick={onClose} disabled={isApplying} className={GHOST_BUTTON_MD}>
           Cancel
         </button>
-        <button type="button" onClick={() => void refactor()} disabled={!checked.length || isApplying} className={PRIMARY_BUTTON_MD}>
+        <button type="button" onClick={refactor} disabled={!checked.length || isApplying} className={PRIMARY_BUTTON_MD}>
           {isApplying ? "Renaming…" : `Do Refactor (${checked.length})`}
         </button>
       </div>
+    </>
+  );
+
+  if (isDetached) {
+    return (
+      <div role="dialog" aria-label="Rename preview" className="flex h-screen flex-col bg-(--surface-inspector)">
+        {body}
+      </div>
+    );
+  }
+  return (
+    <Modal label="Rename preview" onClose={onClose} isCloseable={!isApplying} className="bg-(--surface-inspector)" style={dialog.style} resize={dialog.resize}>
+      {body}
     </Modal>
   );
 }

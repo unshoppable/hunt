@@ -1,3 +1,9 @@
+## 0.119.1 (2026-10-24)
+
+### 🩹 Fixes
+
+- **client:** a family's tmux server that outlived the app loads the current configuration once per app run, so its windows log again after a crash or a restart of tauri dev ([37062ad](https://github.com/unshoppable/hunt/commit/37062ad))
+
 ## 0.119.0 (2026-10-24)
 
 ### 🚀 Features

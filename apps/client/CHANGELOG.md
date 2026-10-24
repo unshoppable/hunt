@@ -1,3 +1,13 @@
+## 0.114.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** a Checks tab runs the checks of hunt.json, alone or all at once, and sends a failure to the agent ([67eee33](https://github.com/unshoppable/hunt/commit/67eee33))
+
+### 🩹 Fixes
+
+- **client:** the changelist renders only the rows near its viewport, so thousands of changes scroll without black gaps and stay responsive ([56e30eb](https://github.com/unshoppable/hunt/commit/56e30eb))
+
 ## 0.113.3 (2026-10-24)
 
 ### 🩹 Fixes

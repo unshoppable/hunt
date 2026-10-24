@@ -1,3 +1,9 @@
+## 0.25.0 (2026-10-24)
+
+### 🚀 Features
+
+- **session:** hunt.json declares checks, which hunt-ctl check runs in a session's worktree as the agent ([567116f](https://github.com/unshoppable/hunt/commit/567116f))
+
 ## 0.24.2 (2026-10-23)
 
 This was a version bump only for session to align it with other projects, there were no code changes.

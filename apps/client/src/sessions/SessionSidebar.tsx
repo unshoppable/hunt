@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { commands } from "../ipc/commands";
 import type { SessionEnding, SessionView } from "../ipc/types";
 import { checkForUpdate } from "../ipc/updater";
@@ -13,6 +13,7 @@ import { DeleteSessionDialog } from "./DeleteSessionDialog";
 import { StaleRemoteDialog } from "./StaleRemoteDialog";
 import { remoteOriginLabel, remoteOriginTitle, removeFromSidebarQuestion } from "./remoteOrigin";
 import { PlanUsageBar } from "./PlanUsageBar";
+import { PANE_TOGGLE_ROW } from "../layout/ResizablePanes";
 import { HEADER_BAR } from "../ui/bars";
 import { ICON_BUTTON, PRIMARY_BUTTON_XS } from "../ui/buttons";
 import { Dropdown } from "../ui/Dropdown";
@@ -28,7 +29,8 @@ import { isShortcut, shortcutCommand, useShortcutLabel, withShortcut } from "../
 /** The keymap commands that step through the visible sessions. */
 const SESSION_CYCLE_COMMANDS = ["session.next", "session.previous"] as const;
 
-export function SessionSidebar() {
+/** The session list; `collapseToggle` sits beside the search field. */
+export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }) {
   const fileIconUrl = useFileIconUrl();
   const sessions = useHuntStore((state) => state.sessions);
   const activeSessionId = useHuntStore((state) => state.activeSessionId);
@@ -202,7 +204,10 @@ export function SessionSidebar() {
           </button>
         </span>
       </div>
-      <SearchField value={query} onChange={setQuery} ariaLabel="Search sessions" className="mx-2 mt-[12px] mb-2" />
+      <div className={`${PANE_TOGGLE_ROW} mx-2 mb-2 gap-2`}>
+        <SearchField value={query} onChange={setQuery} ariaLabel="Search sessions" className="min-w-0 flex-1" />
+        {collapseToggle}
+      </div>
       {remoteSync.error ? (
         <p className="mx-2 mb-2 rounded-md bg-red-400/10 px-2.5 py-1.5 text-[13px] break-words text-red-300">
           Refreshing the remote sessions failed: {remoteSync.error}

@@ -203,7 +203,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
 
   return (
     <div ref={panelRef} className="chat flex h-full min-h-0 flex-col bg-(--chat-bg)">
-      <header data-tauri-drag-region="" className={`${HEADER_BAR} gap-3 border-b border-(--line) px-4 in-data-leading:pl-23`}>
+      <header data-tauri-drag-region="" className={`${HEADER_BAR} gap-3 border-b border-(--line) px-4 in-data-leading:pl-11`}>
         <div data-tauri-drag-region="" className="flex min-w-0 flex-1 items-center gap-1">
           <div data-tauri-drag-region="" className="truncate text-[14px] font-semibold">{session.title}</div>
           {session.remote && !session.parentId ? (
@@ -228,7 +228,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
 
       {showSummary ? <SessionSummary session={session} onOpenFile={openInEditor} /> : null}
 
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto py-5 pr-12 pl-5">
         <div ref={columnRef} className="chat-column">
           {session.selection ? (
             <div className="mb-5">

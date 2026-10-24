@@ -402,7 +402,7 @@ export function NewSessionView({
 
   return (
     <div className="chat @container flex h-full min-h-0 flex-col bg-(--chat-bg)">
-      <header data-tauri-drag-region="" className={`${HEADER_BAR} gap-2 border-b border-(--line) px-4 in-data-leading:pl-23 text-sm`}>
+      <header data-tauri-drag-region="" className={`${HEADER_BAR} gap-2 border-b border-(--line) px-4 in-data-leading:pl-11 text-sm`}>
         <span data-tauri-drag-region="" className="truncate text-neutral-400">{projectName ?? "No repository"}</span>
         <span data-tauri-drag-region="" className="text-neutral-600">/</span>
         <span data-tauri-drag-region="" className="truncate font-semibold">{parent ? `New sub session of ${parent.title}` : "New session"}</span>
@@ -438,7 +438,7 @@ export function NewSessionView({
       ) : view === "sessionVms" ? (
         <SessionVmList onClose={() => setView("start")} />
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col justify-center overflow-y-auto py-8">
+        <div className="flex min-h-0 flex-1 flex-col justify-center overflow-y-auto py-8 pr-12">
           <div className="chat-column px-5 text-center">
             <h1 className="text-3xl font-medium tracking-tight text-neutral-100">
               What should we build

@@ -10,7 +10,7 @@ import { FileReferenceList } from "./FileReferenceList";
  */
 export function SessionSummary({ session, onOpenFile }: { session: SessionView; onOpenFile: (location: FileLocation) => void }) {
   return (
-    <div className="border-b border-(--line) bg-white/8 px-5 pt-4 pb-[18px]">
+    <div className="border-b border-(--line) bg-white/8 pt-4 pr-12 pb-[18px] pl-5">
       <div className="chat-column">
         <div className="mb-1.5 text-[13px] font-medium uppercase tracking-wide text-neutral-500">Summary</div>
         {session.selection ? <FileReferenceList locations={[session.selection]} onOpen={onOpenFile} className="mb-2.5" /> : null}

@@ -1,19 +1,25 @@
-import type { ReactNode } from "react";
-import { Group, Panel, Separator, useDefaultLayout, usePanelRef } from "react-resizable-panels";
+import type { ReactNode, Ref } from "react";
+import { Group, Panel, Separator, useDefaultLayout, useGroupRef, usePanelRef, type GroupImperativeHandle } from "react-resizable-panels";
+import { HEADER_BAR } from "../ui/bars";
 import { ChevronIcon } from "../ui/icons";
 
-/** Set while a separator arrow runs its action, so the layout it leaves is saved like one the user dragged to. */
-let isArrowAction = false;
+/** Set while a pane toggle runs, so the layout it leaves is saved like one the user dragged to. */
+let isToggleAction = false;
+/** How long the group animates the panes after a toggle; matches the transition in index.css. */
+const PANE_ANIMATION_MS = 260;
+let paneAnimationTimer: number | undefined;
 
 /** Resizable pane group whose layout survives restarts (persisted in localStorage under `id`). */
 export function PersistentGroup({
   id,
   orientation = "horizontal",
+  groupRef,
   className,
   children,
 }: {
   id: string;
   orientation?: "horizontal" | "vertical";
+  groupRef?: Ref<GroupImperativeHandle | null>;
   className?: string;
   children: ReactNode;
 }) {
@@ -22,8 +28,9 @@ export function PersistentGroup({
     <Group
       id={id}
       orientation={orientation}
+      groupRef={groupRef}
       defaultLayout={defaultLayout}
-      onLayoutChanged={(layout, meta) => onLayoutChanged(layout, isArrowAction ? { ...meta, isUserInteraction: true } : meta)}
+      onLayoutChanged={(layout, meta) => onLayoutChanged(layout, isToggleAction ? { ...meta, isUserInteraction: true } : meta)}
       className={className}
     >
       {children}
@@ -42,61 +49,57 @@ export function PaneSeparator({ orientation = "horizontal" }: { orientation?: "h
   );
 }
 
-/** Width of the arrow pair on a separator, two 14px buttons and the line between them. */
-const ARROWS_WIDTH = 31;
+/** Width a collapsed pane keeps for its rail (`w-12`, 42px at the 14px root font). */
+export const RAIL_SIZE = "3rem";
 
 /**
- * The arrows on top of a separator, like a split pane's one-touch buttons: each arrow moves the separator to its side
- * by collapsing or restoring a pane; `null` disables an arrow. Rendered outside the group, since the group starts a
- * drag on any pointerdown inside a separator's hit area. `x` is the separator's distance from the left edge of the
- * positioned parent; the arrows stay inside that parent when the separator reaches its edge.
+ * The row a pane toggle sits in: the row of the session sidebar's search field, so every toggle shares its height.
+ * Panes that show a toggle keep their content clear of it.
  */
-export function SeparatorArrows({
-  x,
-  top,
-  onLeft,
-  onRight,
-}: {
-  x: number;
-  top: number;
-  onLeft: { label: string; run: () => void } | null;
-  onRight: { label: string; run: () => void } | null;
-}) {
-  return (
-    <div
-      className="absolute z-10 flex h-6 -translate-x-1/2 overflow-hidden rounded-md border border-(--line) bg-(--surface-input) shadow-md"
-      style={{ left: `clamp(${ARROWS_WIDTH / 2}px, ${x}px, calc(100% - ${ARROWS_WIDTH / 2}px))`, top, width: ARROWS_WIDTH }}
-    >
-      <ArrowButton action={onLeft} pointsLeft />
-      <span className="w-px shrink-0 bg-(--line)" />
-      <ArrowButton action={onRight} pointsLeft={false} />
-    </div>
-  );
-}
+export const PANE_TOGGLE_ROW = "mt-[12px] flex h-10 shrink-0 items-center";
 
-function ArrowButton({ action, pointsLeft }: { action: { label: string; run: () => void } | null; pointsLeft: boolean }) {
+/**
+ * Round button that collapses a pane to its rail or restores it; panes collapse to the left, so the chevron points
+ * left while the pane is open. The panes of its group glide to their new widths.
+ */
+export function PaneToggle({ isOpen, name, onToggle }: { isOpen: boolean; name: string; onToggle: () => void }) {
+  const label = `${isOpen ? "Hide" : "Show"} ${name}`;
   return (
     <button
       type="button"
-      disabled={!action}
-      onClick={() => {
-        isArrowAction = true;
+      onClick={(event) => {
+        const group = event.currentTarget.closest("[data-group]");
+        group?.setAttribute("data-pane-animating", "");
+        window.clearTimeout(paneAnimationTimer);
+        paneAnimationTimer = window.setTimeout(() => group?.removeAttribute("data-pane-animating"), PANE_ANIMATION_MS);
+        isToggleAction = true;
         try {
-          action?.run();
+          onToggle();
         } finally {
-          isArrowAction = false;
+          isToggleAction = false;
         }
       }}
-      title={action?.label}
-      aria-label={action?.label}
+      title={label}
+      aria-label={label}
       className={
-        "flex flex-1 items-center justify-center text-neutral-400 transition-colors outline-none hover:bg-(--row-hover) hover:text-white " +
-        "focus-visible:bg-(--row-active) disabled:text-neutral-700"
+        "flex size-[30px] shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/6 text-neutral-300 shadow-sm " +
+        "shadow-black/30 backdrop-blur-md transition-[background-color,border-color,color,scale] duration-150 outline-none hover:border-white/20 " +
+        "hover:bg-white/12 hover:text-white active:scale-92 focus-visible:ring-2 focus-visible:ring-blue-400/60"
       }
     >
-      <ChevronIcon expanded={false} className={`size-3 ${pointsLeft ? "rotate-180" : ""}`} />
+      <ChevronIcon expanded={false} className={`size-4 ${isOpen ? "rotate-180" : ""}`} />
     </button>
   );
 }
 
-export { Panel, usePanelRef };
+/** What a collapsed pane shows in its place: an empty header row that drags the window, then the toggle restoring it. */
+export function PaneRail({ headerClassName = "", children }: { headerClassName?: string; children: ReactNode }) {
+  return (
+    <div className="flex w-full min-w-0 animate-pane-in flex-col items-center">
+      <div data-tauri-drag-region="" className={`${HEADER_BAR} w-full ${headerClassName}`} />
+      <div className={PANE_TOGGLE_ROW}>{children}</div>
+    </div>
+  );
+}
+
+export { Panel, useGroupRef, usePanelRef };

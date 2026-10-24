@@ -49,7 +49,7 @@ export function ListPane({
 }: ListPaneProps) {
   return (
     <section aria-label={ariaLabel} className="flex min-h-0 flex-1 flex-col text-sm">
-      <div className="flex shrink-0 items-center gap-2 px-4 pt-3 pb-2">
+      <div className="flex shrink-0 items-center gap-2 pt-[12px] pr-12 pb-2 pl-4">
         <SearchField value={query} onChange={onQueryChange} placeholder={searchPlaceholder} ariaLabel={searchPlaceholder} autoFocus onEscape={onClose} className="min-w-0 flex-1" />
         {tools}
         <button type="button" onClick={onClose} className={ICON_BUTTON_SM} title="Back to the start view (Escape)" aria-label="Close the list">

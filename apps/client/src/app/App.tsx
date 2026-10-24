@@ -20,7 +20,7 @@ import { FileSearchDialog, useFileSearchShortcut } from "../ide/FileSearchDialog
 import { FindInFilesDialog, useFindInFilesShortcut } from "../ide/FindInFilesDialog";
 import { EMPTY_IDE_SESSION, useIdeStore } from "../ide/ideStore";
 import { allPanes } from "../ide/paneGrid";
-import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
+import { PaneSeparator, Panel, PersistentGroup, SeparatorArrows, usePanelRef } from "../layout/ResizablePanes";
 import { PreviewPanel } from "../preview/PreviewPanel";
 import { isPreviewActive, isTerminalActive } from "../preview/services";
 import { usePreviewStore } from "../state/preview";
@@ -36,6 +36,13 @@ import { useAccountsSync, useAgentPreferencesSync, useBackendEvents, usePaneStyl
 
 /** How often the sidebar re-reads the gateway's listing, as often as the gateway's poller updates the agent states in it. */
 const REMOTE_AGENT_POLL_MS = 30_000;
+
+/** Distance of the separator arrows from the window top: just below the 42px header row. */
+const SEPARATOR_ARROWS_TOP = 50;
+/** How far the chat/inspector arrows move down while the chat is collapsed, so they clear the sessions/chat arrows at the same spot. */
+const STACKED_ARROWS_OFFSET = 30;
+
+type PaneWidths = { sessions: number; chat: number; inspector: number };
 
 export function App() {
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
@@ -83,6 +90,26 @@ export function App() {
   const ideLayout = useIdeStore((state) => (activeSessionId ? state.sessions[activeSessionId]?.layout : null) ?? EMPTY_IDE_SESSION.layout);
   const openPaths = useMemo(() => [...new Set(allPanes(ideLayout).flatMap((pane) => pane.tabs))], [ideLayout]);
   const [isFileSearchOpen, setIsFileSearchOpen] = useState(false);
+  const sessionsPanel = usePanelRef();
+  const chatPanel = usePanelRef();
+  const inspectorPanel = usePanelRef();
+  /** Pixel widths of the three panes, known after their first layout; a collapsed pane is 0 wide. */
+  const [paneWidths, setPaneWidths] = useState<Partial<PaneWidths>>({});
+  const trackWidth = (pane: keyof PaneWidths) => (size: { inPixels: number }) =>
+    setPaneWidths((widths) => (widths[pane] === size.inPixels ? widths : { ...widths, [pane]: size.inPixels }));
+  const isSessionsCollapsed = paneWidths.sessions === 0;
+  const isChatCollapsed = paneWidths.chat === 0;
+  const isInspectorCollapsed = paneWidths.inspector === 0;
+  /**
+   * Collapses the session list. Its width goes to the chat, which a collapsed chat would take as a reason to expand;
+   * a collapsed chat therefore passes it on to the inspector and keeps the width it restores to.
+   */
+  const hideSessions = () => {
+    sessionsPanel.current?.collapse();
+    if (isChatCollapsed) {
+      chatPanel.current?.resize(0);
+    }
+  };
   /** Find in Files is open, starting with the text that was selected in the editor (`null`: the last query). */
   const [findInFiles, setFindInFiles] = useState<{ initialText: string | null } | null>(null);
   const hasLocalWorktree = !isCreatingActive && hasActiveWorktree;
@@ -163,78 +190,118 @@ export function App() {
 
   return (
     <>
-      <PersistentGroup id="hunt-main" className="h-full">
-        <Panel id="sessions" defaultSize={200} minSize={180} maxSize={480} className="flex">
-          <SessionSidebar />
-        </Panel>
-        <PaneSeparator />
-        <Panel id="chat" minSize={360} className="flex">
-          <section className="flex min-w-0 flex-1 flex-col">
-            {/* Without an open session the chat pane shows the start view, so the first prompt or the choice of a repository creates a session right away. */}
-            {activeSessionId && !draft ? (
-              <ChatPanel sessionId={activeSessionId} />
-            ) : (
-              <NewSessionView key={draft?.parentId ?? ""} parentId={draft?.parentId ?? null} initialError={draft?.error} initialPrompt={draft?.prompt} />
-            )}
-          </section>
-        </Panel>
-        <PaneSeparator />
-        <Panel id="inspector" defaultSize="62%" minSize={320} className="flex">
-          <aside className="flex min-w-0 flex-1 flex-col bg-(--surface-inspector)">
-            <nav data-tauri-drag-region="" className={`${HEADER_BAR} gap-1 border-b border-(--line) px-2`}>
-              <TabButton isActive={rightTab === "diff"} onClick={() => setRightTab("diff")} label="Diff" commentCount={reviewCommentCount} />
-              <TabButton isActive={rightTab === "git"} onClick={() => setRightTab("git")} label="Git" />
-              <TabButton isActive={rightTab === "editor"} onClick={() => setRightTab("editor")} label="Editor" />
-              <TabButton isActive={rightTab === "graph"} onClick={() => setRightTab("graph")} label="Architecture" />
-              {isReviewingPullRequest ? (
-                <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} label="PR Description" />
-              ) : null}
-              {activeRemoteInstance ? (
-                <TabButton isActive={rightTab === "preview"} onClick={() => setRightTab("preview")} label="Preview" hasActivity={isPreviewBusy} />
-              ) : null}
-              <TabButton
-                isActive={rightTab === "terminal"}
-                onClick={() => setRightTab("terminal")}
-                label="Terminal"
-                hasActivity={activeRemoteInstance ? isTerminalBusy : isLocalScriptRunning}
-              />
-            </nav>
-            <div className="min-h-0 flex-1">
-              {isStartView && rightTab === "git" ? (
-                draft?.parentId ? (
-                  <GitPanel key={`git:${draft.parentId}`} scope={{ kind: "session", id: draft.parentId }} />
-                ) : startRepoPath ? (
-                  <GitPanel key={`git:repo:${startRepoPath}`} scope={{ kind: "repo", path: startRepoPath }} />
-                ) : null
-              ) : null}
-              {!activeSessionId || draft || isCreatingActive ? null : (
-                <>
-                  {/* The panels are siblings of one fragment, so their keys carry the tab as well as the session: a shared key would keep React from removing a panel that another tab replaced. */}
-                  {rightTab === "preview" || rightTab === "terminal" ? null : activeRemoteInstance && !hasActiveWorktree ? (
-                    <NoLocalWorktree sessionId={activeSessionId} />
-                  ) : rightTab === "diff" ? (
-                    <DiffPanel key={`diff:${activeSessionId}`} sessionId={activeSessionId} />
-                  ) : rightTab === "git" ? (
-                    <GitPanel key={`git:${activeSessionId}`} scope={{ kind: "session", id: activeSessionId }} />
-                  ) : rightTab === "editor" ? (
-                    <IdePanel sessionId={activeSessionId} />
-                  ) : rightTab === "pullRequest" ? (
-                    <PullRequestPanel key={`pullRequest:${activeSessionId}`} sessionId={activeSessionId} />
-                  ) : (
-                    <ArchitecturePanel key={`graph:${activeSessionId}`} sessionId={activeSessionId} />
-                  )}
-                  {activeRemoteInstance && rightTab === "preview" ? <PreviewPanel key={`preview:${activeSessionId}`} sessionId={activeSessionId} /> : null}
-                  {/* The terminal stays mounted while another tab shows, so switching tabs keeps its connection. */}
-                  {activeRemoteInstance ? <TerminalPanel key={`terminal:${activeSessionId}`} sessionId={activeSessionId} isVisible={rightTab === "terminal"} /> : null}
-                </>
+      <div className="relative h-full">
+        <PersistentGroup id="hunt-main" className="h-full">
+          <Panel
+            id="sessions"
+            panelRef={sessionsPanel}
+            onResize={trackWidth("sessions")}
+            defaultSize={200}
+            minSize={180}
+            maxSize={480}
+            collapsible
+            className="flex"
+          >
+            <SessionSidebar />
+          </Panel>
+          <PaneSeparator />
+          <Panel id="chat" panelRef={chatPanel} onResize={trackWidth("chat")} minSize={360} collapsible className="flex">
+            {/* `data-leading` marks the pane at the window's left edge, whose header makes room for the traffic lights. */}
+            <section data-leading={isSessionsCollapsed || undefined} className="flex min-w-0 flex-1 flex-col">
+              {/* Without an open session the chat pane shows the start view, so the first prompt or the choice of a repository creates a session right away. */}
+              {activeSessionId && !draft ? (
+                <ChatPanel sessionId={activeSessionId} />
+              ) : (
+                <NewSessionView key={draft?.parentId ?? ""} parentId={draft?.parentId ?? null} initialError={draft?.error} initialPrompt={draft?.prompt} />
               )}
-              {localTerminalPanelIds.map((sessionId) => (
-                <LocalTerminalPanel key={`local-terminal:${sessionId}`} sessionId={sessionId} isVisible={sessionId === shownLocalTerminalId} />
-              ))}
-            </div>
-          </aside>
-        </Panel>
-      </PersistentGroup>
+            </section>
+          </Panel>
+          <PaneSeparator />
+          <Panel id="inspector" panelRef={inspectorPanel} onResize={trackWidth("inspector")} defaultSize="62%" minSize={320} collapsible className="flex">
+            <aside data-leading={(isSessionsCollapsed && isChatCollapsed) || undefined} className="flex min-w-0 flex-1 flex-col bg-(--surface-inspector)">
+              <nav data-tauri-drag-region="" className={`${HEADER_BAR} gap-1 border-b border-(--line) px-2 in-data-leading:pl-23`}>
+                <TabButton isActive={rightTab === "diff"} onClick={() => setRightTab("diff")} label="Diff" commentCount={reviewCommentCount} />
+                <TabButton isActive={rightTab === "git"} onClick={() => setRightTab("git")} label="Git" />
+                <TabButton isActive={rightTab === "editor"} onClick={() => setRightTab("editor")} label="Editor" />
+                <TabButton isActive={rightTab === "graph"} onClick={() => setRightTab("graph")} label="Architecture" />
+                {isReviewingPullRequest ? (
+                  <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} label="PR Description" />
+                ) : null}
+                {activeRemoteInstance ? (
+                  <TabButton isActive={rightTab === "preview"} onClick={() => setRightTab("preview")} label="Preview" hasActivity={isPreviewBusy} />
+                ) : null}
+                <TabButton
+                  isActive={rightTab === "terminal"}
+                  onClick={() => setRightTab("terminal")}
+                  label="Terminal"
+                  hasActivity={activeRemoteInstance ? isTerminalBusy : isLocalScriptRunning}
+                />
+              </nav>
+              <div className="min-h-0 flex-1">
+                {isStartView && rightTab === "git" ? (
+                  draft?.parentId ? (
+                    <GitPanel key={`git:${draft.parentId}`} scope={{ kind: "session", id: draft.parentId }} />
+                  ) : startRepoPath ? (
+                    <GitPanel key={`git:repo:${startRepoPath}`} scope={{ kind: "repo", path: startRepoPath }} />
+                  ) : null
+                ) : null}
+                {!activeSessionId || draft || isCreatingActive ? null : (
+                  <>
+                    {/* The panels are siblings of one fragment, so their keys carry the tab as well as the session: a shared key would keep React from removing a panel that another tab replaced. */}
+                    {rightTab === "preview" || rightTab === "terminal" ? null : activeRemoteInstance && !hasActiveWorktree ? (
+                      <NoLocalWorktree sessionId={activeSessionId} />
+                    ) : rightTab === "diff" ? (
+                      <DiffPanel key={`diff:${activeSessionId}`} sessionId={activeSessionId} />
+                    ) : rightTab === "git" ? (
+                      <GitPanel key={`git:${activeSessionId}`} scope={{ kind: "session", id: activeSessionId }} />
+                    ) : rightTab === "editor" ? (
+                      <IdePanel sessionId={activeSessionId} />
+                    ) : rightTab === "pullRequest" ? (
+                      <PullRequestPanel key={`pullRequest:${activeSessionId}`} sessionId={activeSessionId} />
+                    ) : (
+                      <ArchitecturePanel key={`graph:${activeSessionId}`} sessionId={activeSessionId} />
+                    )}
+                    {activeRemoteInstance && rightTab === "preview" ? <PreviewPanel key={`preview:${activeSessionId}`} sessionId={activeSessionId} /> : null}
+                    {/* The terminal stays mounted while another tab shows, so switching tabs keeps its connection. */}
+                    {activeRemoteInstance ? <TerminalPanel key={`terminal:${activeSessionId}`} sessionId={activeSessionId} isVisible={rightTab === "terminal"} /> : null}
+                  </>
+                )}
+                {localTerminalPanelIds.map((sessionId) => (
+                  <LocalTerminalPanel key={`local-terminal:${sessionId}`} sessionId={sessionId} isVisible={sessionId === shownLocalTerminalId} />
+                ))}
+              </div>
+            </aside>
+          </Panel>
+        </PersistentGroup>
+        {paneWidths.sessions === undefined || paneWidths.chat === undefined ? null : (
+          <>
+            <SeparatorArrows
+              x={paneWidths.sessions + 0.5}
+              top={SEPARATOR_ARROWS_TOP}
+              onLeft={isSessionsCollapsed ? null : { label: "Hide sessions", run: hideSessions }}
+              onRight={isSessionsCollapsed ? { label: "Show sessions", run: () => sessionsPanel.current?.expand() } : null}
+            />
+            <SeparatorArrows
+              x={paneWidths.sessions + 1 + paneWidths.chat + 0.5}
+              top={SEPARATOR_ARROWS_TOP + (isChatCollapsed ? STACKED_ARROWS_OFFSET : 0)}
+              onLeft={
+                isInspectorCollapsed
+                  ? { label: "Show the right pane", run: () => inspectorPanel.current?.expand() }
+                  : isChatCollapsed
+                    ? null
+                    : { label: "Hide chat", run: () => chatPanel.current?.collapse() }
+              }
+              onRight={
+                isChatCollapsed
+                  ? { label: "Show chat", run: () => chatPanel.current?.expand() }
+                  : isInspectorCollapsed
+                    ? null
+                    : { label: "Hide the right pane", run: () => inspectorPanel.current?.collapse() }
+              }
+            />
+          </>
+        )}
+      </div>
       {isFileSearchOpen && canSearchFiles && activeSessionId ? (
         <FileSearchDialog
           sessionId={activeSessionId}

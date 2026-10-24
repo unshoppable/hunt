@@ -203,7 +203,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
 
   return (
     <div ref={panelRef} className="chat flex h-full min-h-0 flex-col bg-(--chat-bg)">
-      <header data-tauri-drag-region="" className={`${HEADER_BAR} gap-3 border-b border-(--line) px-4`}>
+      <header data-tauri-drag-region="" className={`${HEADER_BAR} gap-3 border-b border-(--line) px-4 in-data-leading:pl-23`}>
         <div data-tauri-drag-region="" className="flex min-w-0 flex-1 items-center gap-1">
           <div data-tauri-drag-region="" className="truncate text-[14px] font-semibold">{session.title}</div>
           {session.remote && !session.parentId ? (

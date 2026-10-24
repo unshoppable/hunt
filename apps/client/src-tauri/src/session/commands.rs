@@ -1540,12 +1540,20 @@ const PRESERVE_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 /// Serializes the changes to `remote-cleanups.json`.
 static PENDING_CLEANUPS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// File of the pending cleanups in the app data folder.
+const PENDING_CLEANUPS_FILE: &str = "remote-cleanups.json";
+
 fn pending_cleanups_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(store::app_data_dir(app)?.join("remote-cleanups.json"))
+    Ok(store::app_data_dir(app)?.join(PENDING_CLEANUPS_FILE))
 }
 
 fn read_pending_cleanups(path: &Path) -> Vec<PendingCleanup> {
     std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+}
+
+fn write_pending_cleanups(path: &Path, cleanups: &[PendingCleanup]) -> Result<(), String> {
+    let bytes = serde_json::to_vec(cleanups).map_err(|error| error.to_string())?;
+    std::fs::write(path, bytes).map_err(|error| error.to_string())
 }
 
 /// Applies `change` to the pending cleanups on disk.
@@ -1554,12 +1562,29 @@ fn change_pending_cleanups(app: &AppHandle, change: impl FnOnce(&mut Vec<Pending
     let changed = pending_cleanups_path(app).and_then(|path| {
         let mut cleanups = read_pending_cleanups(&path);
         change(&mut cleanups);
-        let bytes = serde_json::to_vec(&cleanups).map_err(|error| error.to_string())?;
-        std::fs::write(path, bytes).map_err(|error| error.to_string())
+        write_pending_cleanups(&path, &cleanups)
     });
     if let Err(error) = changed {
         eprintln!("saving the pending remote cleanups failed: {error}");
     }
+}
+
+/// Points the local worktrees below `from` that the pending cleanups in `data_dir` save a VM's state into to the same
+/// place below `to`, after the folder moved there.
+pub fn relocate_pending_cleanups(data_dir: &Path, from: &Path, to: &Path) -> Result<(), String> {
+    let _guard = PENDING_CLEANUPS_LOCK.lock().unwrap();
+    let path = data_dir.join(PENDING_CLEANUPS_FILE);
+    let mut cleanups = read_pending_cleanups(&path);
+    let mut changed = false;
+    for preserve in cleanups.iter_mut().filter_map(|cleanup| cleanup.preserve.as_mut()) {
+        let Ok(rest) = preserve.worktree.strip_prefix(from) else { continue };
+        preserve.worktree = to.join(rest);
+        changed = true;
+    }
+    if !changed {
+        return Ok(());
+    }
+    write_pending_cleanups(&path, &cleanups).map_err(|error| format!("failed to rewrite {PENDING_CLEANUPS_FILE}: {error}"))
 }
 
 /// Forgets what this Mac keeps for the remote session `id` on `target` (the base of its memory merge) and, with

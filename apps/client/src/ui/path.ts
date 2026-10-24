@@ -12,7 +12,7 @@ export function dirName(path: string): string {
 
 /**
  * The name of a repository from its path: the last non-empty segment, so a trailing slash does not matter
- * (`/Users/me/dev/harness/` → `harness`); the path itself when it has no segment.
+ * (`/Users/me/dev/hunt/` → `hunt`); the path itself when it has no segment.
  */
 export function repoName(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;

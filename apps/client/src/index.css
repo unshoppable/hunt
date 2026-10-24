@@ -455,11 +455,11 @@ body,
 /* "+" of a pull request review (see review/addCommentGlyph.ts): GitHub's blue square on the hovered line, in the
    glyph margin left of the line numbers, centred on the cell; grey when the comment lands in the review summary as
    a note instead of inline. */
-.monaco-editor .harness-review-add {
+.monaco-editor .hunt-review-add {
   cursor: pointer;
   z-index: 3;
 }
-.monaco-editor .harness-review-add::before {
+.monaco-editor .hunt-review-add::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -471,7 +471,7 @@ body,
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
   transition: transform 120ms ease;
 }
-.monaco-editor .harness-review-add::after {
+.monaco-editor .hunt-review-add::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -481,10 +481,10 @@ body,
   background: #fff;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M6 1.5v9M1.5 6h9' stroke='%23000' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
 }
-.monaco-editor .harness-review-add:hover::before {
+.monaco-editor .hunt-review-add:hover::before {
   transform: scale(1.1);
 }
-.monaco-editor .harness-review-add--note::before {
+.monaco-editor .hunt-review-add--note::before {
   background: #6e7681;
 }
 /* WebStorm's green run triangle on each script of a package.json (see ide/scriptRunMarkers.ts), centred in the glyph
@@ -509,22 +509,22 @@ body,
 }
 /* Lines a review comment is being dragged over, written for or open on: GitHub's yellow tint behind gutter and text.
    Their change stripe gives way to the bar, which takes its place. */
-.monaco-editor .harness-review-range {
+.monaco-editor .hunt-review-range {
   background: rgba(187, 128, 9, 0.3);
 }
-.monaco-editor .margin-view-overlays .harness-review-range ~ .hunt-change::before {
+.monaco-editor .margin-view-overlays .hunt-review-range ~ .hunt-change::before {
   display: none;
 }
 /* Bar right of the line numbers beside those lines (see reviewBarLeft in review/addCommentGlyph.ts) and the line
    joining the two "+" of a drag (see review/spanLine.ts), in the color of the "+": blue inline, grey for a note. Both
    run across view zones and over comment cards; the open comment box and the card of a comment continue the bar. */
-.monaco-editor .harness-review-span-line {
+.monaco-editor .hunt-review-span-line {
   z-index: 6;
   width: 2px;
   background: #2f81f7;
   pointer-events: none;
 }
-.monaco-editor .harness-review-span-line--note {
+.monaco-editor .hunt-review-span-line--note {
   background: #6e7681;
 }
 [data-review-composer],
@@ -548,7 +548,7 @@ body,
 
 /* Comment cards and the comment box under a line (see review/lineZone.ts): an overlay widget that the zone places
    itself; it starts hidden until the first top arrives. */
-.monaco-editor .harness-review-zone {
+.monaco-editor .hunt-review-zone {
   position: absolute;
   left: 0;
   z-index: 5;

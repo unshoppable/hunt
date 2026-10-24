@@ -19,8 +19,6 @@ use uuid::Uuid;
 use crate::preferences::ENGLISH_TERMS;
 
 pub const GRAPH_DIR: &str = ".hunt";
-/// Name the diagram folder had before the application was called Hunt; still found in worktrees of older sessions.
-const LEGACY_GRAPH_DIR: &str = ".harness";
 const GRAPH_FILE: &str = "graph.json";
 const GRAPH_SCHEMA_FILE: &str = "graph.schema.json";
 const DIAGRAM_SCHEMA_FILE: &str = "diagram.schema.json";
@@ -234,15 +232,9 @@ fn is_diagram_file(path: &Path) -> bool {
     name == GRAPH_FILE || (name.starts_with("diagram.") && name.ends_with(".json") && name != DIAGRAM_SCHEMA_FILE)
 }
 
-/// Creates `.hunt/` in `worktree` with the current schema files, taking over a `.hunt/` folder of an older session;
-/// returns the folder.
+/// Creates `.hunt/` in `worktree` with the current schema files; returns the folder.
 pub fn prepare_dir(worktree: &Path) -> Result<PathBuf, String> {
     let directory = worktree.join(GRAPH_DIR);
-    let legacy = worktree.join(LEGACY_GRAPH_DIR);
-    if legacy.is_dir() && !directory.exists() {
-        std::fs::rename(&legacy, &directory)
-            .map_err(|error| format!("failed to rename {} to {}: {error}", legacy.display(), directory.display()))?;
-    }
     std::fs::create_dir_all(&directory).map_err(|error| format!("failed to create {}: {error}", directory.display()))?;
     std::fs::write(directory.join(GRAPH_SCHEMA_FILE), SCHEMA).map_err(|error| format!("failed to write {GRAPH_SCHEMA_FILE}: {error}"))?;
     std::fs::write(directory.join(DIAGRAM_SCHEMA_FILE), DIAGRAM_SCHEMA).map_err(|error| format!("failed to write {DIAGRAM_SCHEMA_FILE}: {error}"))?;

@@ -122,8 +122,8 @@ mod tests {
     #[test]
     fn project_slug_replaces_everything_but_letters_and_digits() {
         assert_eq!(
-            project_slug("/Users/jane/Library/Application Support/info.medconomy.harness/worktrees/0123abcd-1111"),
-            "-Users-jane-Library-Application-Support-info-medconomy-harness-worktrees-0123abcd-1111"
+            project_slug("/Users/jane/Library/Application Support/info.medconomy.hunt/worktrees/0123abcd-1111"),
+            "-Users-jane-Library-Application-Support-info-medconomy-hunt-worktrees-0123abcd-1111"
         );
         assert_eq!(project_slug("/srv/worktrees/a_b"), "-srv-worktrees-a-b");
     }

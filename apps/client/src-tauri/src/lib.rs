@@ -11,6 +11,7 @@ mod github_token;
 mod graph;
 mod ide;
 mod keychain;
+mod legacy_identifier;
 mod lsp;
 mod menu;
 mod plan_usage;
@@ -35,6 +36,8 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    legacy_identifier::migrate(&context.config().identifier);
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(external_links::init())
@@ -202,7 +205,7 @@ pub fn run() {
                 }
             }
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
             #[cfg(target_os = "macos")]

@@ -296,6 +296,14 @@ pub async fn list_branches(repo: &Path) -> Result<Vec<String>, String> {
     Ok(branches)
 }
 
+/// Points the repository's record of the linked worktree `worktree` back at it after its folder was moved outside git.
+pub async fn repair_worktree(worktree: &Path) -> Result<(), String> {
+    run_git(worktree, &["worktree", "repair"])
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("failed to repair the worktree {}: {error}", worktree.display()))
+}
+
 pub async fn worktree_add(repo: &Path, branch: &str, path: &Path, base: &str) -> Result<(), String> {
     let path = path.to_string_lossy();
     run_git(repo, &["worktree", "add", "-b", branch, &path, base]).await?;
@@ -468,7 +476,7 @@ pub async fn delete_refs(repo: &Path, prefix: &str) -> Result<(), String> {
 }
 
 /// Adds `.hunt/` to the repository's `info/exclude` (shared by all worktrees) so the diagram folder never shows up in
-/// git; an entry for the folder's former name `.harness/` is replaced.
+/// git.
 pub async fn exclude_hunt_dir(worktree: &Path) -> Result<(), String> {
     let exclude_path = run_git(worktree, &["rev-parse", "--git-path", "info/exclude"]).await?;
     let exclude_path = worktree.join(exclude_path.trim());
@@ -481,7 +489,10 @@ pub async fn exclude_hunt_dir(worktree: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let mut content: String = existing.lines().filter(|line| line.trim() != ".harness/").map(|line| format!("{line}\n")).collect();
+    let mut content = existing;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
     content.push_str(".hunt/\n");
     std::fs::write(&exclude_path, content).map_err(|error| error.to_string())
 }
@@ -2112,11 +2123,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exclude_hunt_dir_replaces_the_former_folder_name_and_runs_once() {
+    async fn exclude_hunt_dir_appends_the_entry_once() {
         let dir = fixture().await;
         let repo = dir.path();
         let exclude = repo.join(".git/info/exclude");
-        std::fs::write(&exclude, "*.tmp\n.harness/\n").unwrap();
+        std::fs::write(&exclude, "*.tmp").unwrap();
 
         exclude_hunt_dir(repo).await.unwrap();
         assert_eq!(std::fs::read_to_string(&exclude).unwrap(), "*.tmp\n.hunt/\n");

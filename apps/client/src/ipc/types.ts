@@ -635,10 +635,9 @@ export type ShapeDiagram = { type: ShapeDiagramType; title?: string; nodes: Shap
 
 /**
  * `_meta` Hunt attaches to message chunks: `hidden` marks the chunks of a user turn it sent itself, `at` (RFC 3339) is
- * when the agent's transcript says the message was written (`acp/message_time.rs`). `harness` is the key older
- * transcripts used.
+ * when the agent's transcript says the message was written (`acp/message_time.rs`).
  */
-export type HuntChunkMeta = { hunt?: HuntChunk; harness?: HuntChunk };
+export type HuntChunkMeta = { hunt?: HuntChunk };
 type HuntChunk = { hidden?: boolean; at?: string };
 
 export type UpdateEvent = { huntSessionId: string; notification: SessionNotification };

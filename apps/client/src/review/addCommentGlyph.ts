@@ -3,10 +3,10 @@ import { selectedLineSpan } from "../diff/selectionContext";
 import type { LineSpan } from "./reviewComments";
 import { SpanLine } from "./spanLine";
 
-const GLYPH_CLASS = "harness-review-add";
-/** Edge length of the "+" square (see `.harness-review-add::before` in index.css). */
+const GLYPH_CLASS = "hunt-review-add";
+/** Edge length of the "+" square (see `.hunt-review-add::before` in index.css). */
 const PLUS_SIZE = 18;
-export const RANGE_CLASS = "harness-review-range";
+export const RANGE_CLASS = "hunt-review-range";
 
 /** Mouse targets that name a line of the model (text, its empty tail and the gutter cells), unlike zones and widgets. */
 const LINE_TARGETS = new Set<monaco.editor.MouseTargetType>([

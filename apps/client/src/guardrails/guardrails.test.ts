@@ -262,8 +262,8 @@ describe("guardrailTreeRows", () => {
   const label = (row: ReturnType<typeof guardrailTreeRows>[number]) => `${"  ".repeat(row.depth)}${row.type === "folder" ? `${row.name}/${row.hasEntry ? "*" : ""}` : row.entry.path}`;
 
   it("lists subfolders before a folder's own entries and hides closed folders", () => {
-    const rows = guardrailTreeRows(folders, [instruction(""), instruction("src/api")], new Set(["", "src", "src/api"]), "harness");
-    expect(rows.map(label)).toEqual(["harness/*", "  docs/", "  src/", "    api/*", "      src/api/CLAUDE.md", "    ui/", "  CLAUDE.md"]);
+    const rows = guardrailTreeRows(folders, [instruction(""), instruction("src/api")], new Set(["", "src", "src/api"]), "hunt");
+    expect(rows.map(label)).toEqual(["hunt/*", "  docs/", "  src/", "    api/*", "      src/api/CLAUDE.md", "    ui/", "  CLAUDE.md"]);
   });
 
   it("lists rules under their folder and skills under the skills directory", () => {
@@ -271,17 +271,17 @@ describe("guardrailTreeRows", () => {
       [".claude", ".claude/rules", ".claude/rules/api", ".claude/skills"],
       [rule("", "general"), rule("api", "naming"), skill(".claude/skills", "deploy")],
       new Set(["", ".claude", ".claude/rules", ".claude/rules/api", ".claude/skills"]),
-      "harness",
+      "hunt",
     );
-    expect(rows.map(label)).toEqual(["harness/", "  .claude/", "    rules/*", "      api/*", "        .claude/rules/api/naming.md", "      .claude/rules/general.md", "    skills/*", "      .claude/skills/deploy/SKILL.md"]);
+    expect(rows.map(label)).toEqual(["hunt/", "  .claude/", "    rules/*", "      api/*", "        .claude/rules/api/naming.md", "      .claude/rules/general.md", "    skills/*", "      .claude/skills/deploy/SKILL.md"]);
   });
 
   it("shows only the root when it is closed", () => {
-    expect(guardrailTreeRows(folders, [instruction("")], new Set(), "harness").map(label)).toEqual(["harness/*"]);
+    expect(guardrailTreeRows(folders, [instruction("")], new Set(), "hunt").map(label)).toEqual(["hunt/*"]);
   });
 
   it("tells which folders hold entries somewhere below them", () => {
-    const rows = guardrailTreeRows(folders, [instruction("src/api")], new Set(["", "src"]), "harness");
-    expect(rows.filter((row) => row.type === "folder").map((row) => `${row.name}${row.holdsEntries ? "+" : "-"}`)).toEqual(["harness+", "docs-", "src+", "api+", "ui-"]);
+    const rows = guardrailTreeRows(folders, [instruction("src/api")], new Set(["", "src"]), "hunt");
+    expect(rows.filter((row) => row.type === "folder").map((row) => `${row.name}${row.holdsEntries ? "+" : "-"}`)).toEqual(["hunt+", "docs-", "src+", "api+", "ui-"]);
   });
 });

@@ -235,6 +235,23 @@ fn store_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir(app)?.join("sessions.json"))
 }
 
+/// Points every worktree below `from` stored in the `sessions.json` of `data_dir` to the same place below `to`, after
+/// the folder moved there.
+pub fn relocate_worktrees(data_dir: &Path, from: &Path, to: &Path) -> Result<(), String> {
+    let store = Store::at(data_dir.join("sessions.json"));
+    let mut sessions = store.load()?;
+    let mut changed = false;
+    for session in &mut sessions {
+        let Ok(rest) = session.worktree_path.strip_prefix(from) else { continue };
+        session.worktree_path = to.join(rest);
+        changed = true;
+    }
+    if changed {
+        store.save(&sessions)?;
+    }
+    Ok(())
+}
+
 /// Serializes every read and read-modify-write cycle on `sessions.json`; commands and the background summarizer share the file.
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 

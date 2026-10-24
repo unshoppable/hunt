@@ -11,7 +11,7 @@ let zoneCounter = 0;
  */
 export class LineZone implements monaco.editor.IOverlayWidget {
   readonly domNode: HTMLDivElement;
-  private readonly id = `harness.lineZone.${zoneCounter++}`;
+  private readonly id = `hunt.lineZone.${zoneCounter++}`;
   private readonly zone: monaco.editor.IViewZone;
   private zoneId: string | null = null;
   private readonly observer: ResizeObserver;
@@ -27,7 +27,7 @@ export class LineZone implements monaco.editor.IOverlayWidget {
     ordinal: number,
   ) {
     this.domNode = document.createElement("div");
-    this.domNode.className = "harness-review-zone";
+    this.domNode.className = "hunt-review-zone";
     // Stops Monaco from moving its caret or starting a selection on a press inside the zone; Monaco listens on an ancestor.
     this.domNode.addEventListener("mousedown", (event) => event.stopPropagation());
     // Monaco hides a zone when the line after `afterLine` is collapsed, which is the case under the last context line

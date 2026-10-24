@@ -94,10 +94,17 @@ fn may_write(kind: ToolKind) -> bool {
     matches!(kind, ToolKind::Edit | ToolKind::Delete | ToolKind::Move | ToolKind::Execute | ToolKind::Other)
 }
 
-/// The edit log directory of `worktree` in the app data, named by a UUID derived from the worktree path.
+/// Folder of the edit logs in the app data folder.
+const EDIT_LOG_DIR: &str = "edit-log";
+
+/// The name of the edit log directory of `worktree`: a UUID derived from the worktree path.
+fn edit_log_name(worktree: &Path) -> String {
+    Uuid::new_v5(&Uuid::NAMESPACE_URL, worktree.to_string_lossy().as_bytes()).to_string()
+}
+
+/// The edit log directory of `worktree` in the app data.
 fn edit_log_dir(app: &AppHandle, worktree: &Path) -> Result<PathBuf, String> {
-    let name = Uuid::new_v5(&Uuid::NAMESPACE_URL, worktree.to_string_lossy().as_bytes());
-    let dir = store::app_data_dir(app)?.join("edit-log").join(name.to_string());
+    let dir = store::app_data_dir(app)?.join(EDIT_LOG_DIR).join(edit_log_name(worktree));
     std::fs::create_dir_all(&dir).map_err(|error| format!("failed to create the edit log: {error}"))?;
     Ok(dir)
 }
@@ -125,6 +132,17 @@ pub fn observe(app: &AppHandle, session_id: Uuid, worktree: &Path, notification:
 /// Drops the in-flight tool calls of a session whose agent stopped.
 pub fn forget_session(app: &AppHandle, session_id: Uuid) {
     app.state::<AttributionRegistry>().writing_calls.lock().unwrap().retain(|(id, _)| *id != session_id);
+}
+
+/// Renames the edit log in `data_dir` of a worktree that moved from `from` to `to`; does nothing when it has none.
+pub fn relocate_edit_log(data_dir: &Path, from: &Path, to: &Path) -> Result<(), String> {
+    let logs = data_dir.join(EDIT_LOG_DIR);
+    let source = logs.join(edit_log_name(from));
+    let target = logs.join(edit_log_name(to));
+    if !source.is_dir() || target.exists() {
+        return Ok(());
+    }
+    std::fs::rename(&source, &target).map_err(|error| format!("failed to move the edit log of {}: {error}", from.display()))
 }
 
 /// Deletes the edit log of `worktree` once no session works in it any more.

@@ -500,10 +500,7 @@ const TURN_OUTPUT_UPDATES = new Set<SessionNotification["update"]["sessionUpdate
 
 /** Whether a user message chunk belongs to a turn Hunt sent itself. */
 function isHiddenChunk(meta: unknown): boolean {
-  const chunkMeta = meta as HuntChunkMeta | null | undefined;
-  // Turns replayed from a transcript older than the name Hunt still carry the meta under `harness`.
-  const hunt = chunkMeta?.hunt ?? chunkMeta?.harness;
-  return Boolean(hunt?.hidden);
+  return Boolean((meta as HuntChunkMeta | null | undefined)?.hunt?.hidden);
 }
 
 /** The message of a chunk and the transcript time the backend stamped it with. */

@@ -22,9 +22,9 @@ export class SpanLine {
     /** Distance the line keeps from the span's top and bottom edges at the given line height. */
     private readonly insetOf: (lineHeight: number) => number = () => 0,
   ) {
-    this.domNode.className = "harness-review-span-line";
+    this.domNode.className = "hunt-review-span-line";
     this.domNode.hidden = true;
-    const id = `harness.reviewSpanLine.${spanLineCounter++}`;
+    const id = `hunt.reviewSpanLine.${spanLineCounter++}`;
     // Monaco does not place a widget without a position; `layout` does.
     this.widget = { getId: () => id, getDomNode: () => this.domNode, getPosition: () => null };
     editor.addOverlayWidget(this.widget);
@@ -37,7 +37,7 @@ export class SpanLine {
 
   show(span: LineSpan, isInline: boolean): void {
     this.span = span;
-    this.domNode.classList.toggle("harness-review-span-line--note", !isInline);
+    this.domNode.classList.toggle("hunt-review-span-line--note", !isInline);
     this.layout();
   }
 

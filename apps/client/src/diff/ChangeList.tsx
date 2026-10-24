@@ -30,6 +30,7 @@ import { isShortcut } from "../ui/shortcuts";
 import { toggleInCollapsed } from "../ui/treeExpansion";
 import type { TreeNavRow } from "../ui/treeNavigation";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
+import { useVirtualRows } from "../ui/useVirtualRows";
 
 type Tab = "changes" | "shelf";
 
@@ -274,7 +275,10 @@ export function ChangeList({
         toggleGroup(folder.files);
       }
     },
+    revealKey: (key) => virtualRows.scrollToIndex(navRows.findIndex((row) => row.key === key)),
   });
+  // Only the rows near the viewport render, so a worktree with thousands of changes scrolls and re-renders quickly.
+  const virtualRows = useVirtualRows(nav.listRef, navRows.length);
 
   /** Warns when checked files hold unsaved edits; resolves to whether a commit or shelve of the checked files may go on. */
   const confirmSavedContent = async () => {
@@ -443,6 +447,7 @@ export function ChangeList({
           </div>
           <ul
             {...nav.listProps}
+            ref={virtualRows.containerRef}
             onKeyDown={(event) => {
               if (!nav.cursor || !isShortcut(event, "changes.copyPath")) {
                 nav.listProps.onKeyDown(event);
@@ -451,11 +456,15 @@ export function ChangeList({
               event.preventDefault();
               onCopyPath(nav.cursor.endsWith("/") ? nav.cursor.slice(0, -1) : nav.cursor);
             }}
-            className="min-h-0 flex-1 overflow-y-auto outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)"
+            className="min-h-0 flex-1 overflow-y-auto bg-(--changelist-bg) outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)"
           >
+            <li aria-hidden="true" data-virtual-spacer style={{ height: virtualRows.spaceBefore }} />
             {view === "flat"
-              ? files.map((file) => renderFile(file, baseName(file.path), 0, true))
-              : rows.map(({ node, depth }) => (node.kind === "folder" ? renderFolder(node, depth) : renderFile(node.file, node.name, depth, false)))}
+              ? files.slice(virtualRows.start, virtualRows.end).map((file) => renderFile(file, baseName(file.path), 0, true))
+              : rows
+                  .slice(virtualRows.start, virtualRows.end)
+                  .map(({ node, depth }) => (node.kind === "folder" ? renderFolder(node, depth) : renderFile(node.file, node.name, depth, false)))}
+            <li aria-hidden="true" data-virtual-spacer style={{ height: virtualRows.spaceAfter }} />
           </ul>
           {pullRequest ? (
             <div className="flex items-center gap-2 border-t border-(--line) px-3 py-2.5 text-[13px]">

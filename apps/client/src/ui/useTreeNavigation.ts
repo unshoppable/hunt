@@ -15,6 +15,7 @@ export function useTreeNavigation<Container extends HTMLElement = HTMLUListEleme
   onToggle,
   onActivate,
   onCheck,
+  revealKey,
 }: {
   rows: readonly TreeNavRow[];
   /** The row the owner shows as selected (the file whose diff is open, the branch the log is filtered on). */
@@ -27,6 +28,8 @@ export function useTreeNavigation<Container extends HTMLElement = HTMLUListEleme
   onActivate?: (key: string) => void;
   /** Space on a row. */
   onCheck?: (key: string) => void;
+  /** Scrolls the row into view; needed by a virtualized list, whose rows off screen have no element to scroll to. */
+  revealKey?: (key: string) => void;
 }) {
   const listRef = useRef<Container>(null);
   const [rowCursor, setRowCursor] = useState<{ key: string; selectedKey: string | null } | null>(null);
@@ -49,7 +52,11 @@ export function useTreeNavigation<Container extends HTMLElement = HTMLUListEleme
       select(key);
     }
     const list = listRef.current;
-    list?.querySelector<HTMLElement>(`[data-tree-key="${CSS.escape(key)}"]`)?.scrollIntoView({ block: "nearest" });
+    if (revealKey) {
+      revealKey(key);
+    } else {
+      list?.querySelector<HTMLElement>(`[data-tree-key="${CSS.escape(key)}"]`)?.scrollIntoView({ block: "nearest" });
+    }
     list?.focus({ preventScroll: true });
   };
 

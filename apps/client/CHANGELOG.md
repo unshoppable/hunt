@@ -1,3 +1,9 @@
+## 0.107.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** ⌘F in the dependency diagram prefers files whose name matches over matches by path or symbol ([844e20b](https://github.com/unshoppable/hunt/commit/844e20b))
+
 ## 0.106.1 (2026-10-24)
 
 ### 🩹 Fixes

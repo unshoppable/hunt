@@ -956,7 +956,10 @@ body,
   border-radius: 0;
   background: transparent;
 }
-/* Code blocks in the chat sit 1px below the chat's text size. */
+/* In the chat, inline code keeps the size of the text around it and code blocks sit 1px below it. */
+.chat .markdown :not(pre) > code {
+  font-size: 1em;
+}
 .chat .markdown pre {
   font-size: calc(1em - 1px);
 }

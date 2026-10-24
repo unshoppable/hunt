@@ -201,6 +201,7 @@ export function MarkdownText({
 }) {
   const components = useMemo<Components>(
     () => ({
+      p: ({ node, children }) => <p className={isTitleParagraph(node) ? "markdown-title" : undefined}>{children}</p>,
       pre: ({ node, children }) => (
         <MarkdownCodeBlock node={node} basePath={basePath} onOpenFile={onOpenFile}>
           {children}
@@ -222,6 +223,12 @@ export function MarkdownText({
       </Markdown>
     </div>
   );
+}
+
+/** A paragraph of nothing but bold text, which agents write as a section title. */
+function isTitleParagraph(node: ExtraProps["node"]): boolean {
+  const onlyChild = node?.children.length === 1 ? node.children[0] : null;
+  return onlyChild?.type === "element" && onlyChild.tagName === "strong";
 }
 
 /**

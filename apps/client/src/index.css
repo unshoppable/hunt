@@ -878,10 +878,10 @@ body,
   overflow-wrap: anywhere;
 }
 .markdown :is(p, ul, ol, pre, blockquote, table) {
-  margin: 0.65rem 0;
+  margin: 1em 0;
 }
 .markdown :is(h1, h2, h3, h4) {
-  margin: 1.1rem 0 0.4rem;
+  margin: 1.75em 0 0.4em;
   font-weight: 600;
   line-height: 1.3;
   color: #f5f6f8;
@@ -944,7 +944,7 @@ body,
 }
 /* Code block with the file place it shows as a header row above the code (MarkdownCodeBlock). */
 .markdown .code-location {
-  margin: 0.65rem 0;
+  margin: 1em 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface-inset);
@@ -962,6 +962,17 @@ body,
 }
 .chat .markdown pre {
   font-size: calc(1em - 1px);
+}
+/* Section titles in the chat (headings and bold-only paragraphs, see MarkdownText) sit far from the block before them
+   and close to the block they introduce. */
+.chat .markdown > .markdown-title {
+  margin-bottom: 0.4em;
+}
+.chat .markdown > :is(h1, h2, h3, h4, .markdown-title) + * {
+  margin-top: 0;
+}
+.chat .markdown > * + .markdown-title {
+  margin-top: 1.75em;
 }
 .markdown blockquote {
   padding-left: 0.8rem;

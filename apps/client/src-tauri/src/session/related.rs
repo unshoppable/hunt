@@ -1,15 +1,16 @@
 //! `.hunt/sessions.md` of a worktree: what the agents that work in it are told about one another. Hunt writes one
 //! file per family (a session and its sub chats, which share the worktree) with every session's id, role, title,
-//! whether its agent works right now, where it runs and the path of its transcript on each machine that has a copy,
-//! plus the folders of the family's terminal logs, and points the agents at it from the system prompt
-//! (`libs/domain/prompts/sessions.system-prompt.md`). The file is written anew whenever the stored sessions change, a
-//! summary gave a session its title, an agent started or stopped or a turn started or ended, and reaches the VM of a
-//! connected remote session through its file sync's copy (`session::sync::copy_files`), a little later and once for
-//! every burst of changes. The `.hunt` folder is excluded from Git and left out of the file sync, so the file never
-//! reaches the repository.
+//! whether its agent works right now, where it runs, the path of its transcript on each machine that has a copy, its
+//! current or last request (the transcript's last prompt) and the uncommitted changes its tool calls made
+//! (`session/attribution.rs`), plus the changes none of them made and the folders of the family's terminal logs, and
+//! points the agents at it from the system prompt (`libs/domain/prompts/sessions.system-prompt.md`). The file is
+//! written anew a moment after the stored sessions change, a summary gave a session its title, an agent started or
+//! stopped, a turn started or ended or a session changed files, once for every burst of these, and reaches the VM of a
+//! connected remote session through its file sync's copy (`session::sync::copy_files`), a little later. The `.hunt`
+//! folder is excluded from Git and left out of the file sync, so the file never reaches the repository.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -17,6 +18,8 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
+use crate::acp::message_time;
+use crate::git;
 use crate::remote::handoff::REMOTE_LOGS_DIR;
 use crate::remote::sync::Direction;
 use crate::remote::transcript::{local_project, remote_project};
@@ -27,17 +30,57 @@ use crate::tmux::{self, DESKTOP_LOGS, LOGS_DIR};
 
 /// The file, inside the worktree's `.hunt` folder.
 pub const SESSIONS_FILE: &str = ".hunt/sessions.md";
+/// How long changes are gathered before the files are written.
+const REFRESH_DELAY: Duration = Duration::from_millis(300);
 /// How long changes are gathered before the file goes to the VM.
 const PUSH_DELAY: Duration = Duration::from_millis(800);
+/// The most changed files the file lists in one place; it counts the rest.
+const MAX_LISTED_PATHS: usize = 50;
+/// The most characters of a request the file quotes.
+const MAX_REQUEST_CHARS: usize = 300;
 
 /// What the file tells of the agents: which sessions have one, and whether it runs a turn.
 #[derive(Default)]
 pub struct RelatedRegistry {
     /// The sessions whose agent is connected, with whether its turn runs.
     agents: Mutex<HashMap<Uuid, bool>>,
+    /// The families whose file is to be written anew, by their root session.
+    to_refresh: Batch,
     /// The remote sessions whose file is to go to their VM.
-    to_push: Mutex<HashSet<Uuid>>,
-    is_pushing: AtomicBool,
+    to_push: Batch,
+}
+
+/// Families that wait for a task to work through them, and whether that task runs.
+#[derive(Default)]
+struct Batch {
+    waiting: Mutex<HashSet<Uuid>>,
+    is_running: AtomicBool,
+}
+
+impl Batch {
+    /// Adds `owners`; true when no task runs, so that the caller starts one.
+    fn add(&self, owners: impl IntoIterator<Item = Uuid>) -> bool {
+        self.waiting.lock().unwrap().extend(owners);
+        !self.is_running.swap(true, Ordering::SeqCst)
+    }
+
+    /// Takes the waiting families. Without any the task ends, decided under the lock, so that a family added now starts
+    /// a new one.
+    fn take(&self) -> Vec<Uuid> {
+        let mut waiting = self.waiting.lock().unwrap();
+        if waiting.is_empty() {
+            self.is_running.store(false, Ordering::SeqCst);
+        }
+        std::mem::take(&mut *waiting).into_iter().collect()
+    }
+}
+
+/// What the file tells beyond the stored sessions: the worktree's uncommitted changes and each session's last request.
+struct Activity<'a> {
+    /// The paths of the worktree's uncommitted changes.
+    changed: &'a [String],
+    /// The last prompt of each session whose transcript holds one.
+    requests: &'a HashMap<Uuid, String>,
 }
 
 /// What a session's agent is doing, as the file says it.
@@ -83,54 +126,92 @@ pub fn set_turn(app: &AppHandle, id: Uuid, is_running: bool) {
     }
 }
 
-/// Writes the file of the family of `id` (its own, or its parent's for a sub chat) anew; a failure is only logged.
+/// Has the file of the family of `id` (its own, or its parent's for a sub chat) written anew in a moment; a failure is
+/// only logged.
 pub fn refresh_family(app: &AppHandle, id: Uuid) {
     let owner = store::find_session(app, id).ok().map(|record| record.parent_id.unwrap_or(record.id)).unwrap_or(id);
-    if let Err(error) = refresh(app, &[owner]) {
-        eprintln!("writing the sessions file of session {owner} failed: {error}");
+    refresh_later(app, [owner]);
+}
+
+/// Has the file of every family written anew in a moment; a failure is only logged.
+pub fn refresh_all(app: &AppHandle) {
+    match store::load_sessions(app) {
+        Ok(sessions) => refresh_later(app, sessions.iter().filter(|record| record.parent_id.is_none()).map(|record| record.id)),
+        Err(error) => eprintln!("writing the sessions files failed: {error}"),
     }
 }
 
-/// Writes the file of every family anew; a failure is only logged.
-pub fn refresh_all(app: &AppHandle) {
-    let owners: Vec<Uuid> = match store::load_sessions(app) {
-        Ok(sessions) => sessions.iter().filter(|record| record.parent_id.is_none()).map(|record| record.id).collect(),
+/// Has the files of the families of `owners` written anew after `REFRESH_DELAY`, together with every other asked for
+/// meanwhile, one after the other.
+fn refresh_later(app: &AppHandle, owners: impl IntoIterator<Item = Uuid>) {
+    if !app.state::<RelatedRegistry>().to_refresh.add(owners) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(REFRESH_DELAY).await;
+            let owners = app.state::<RelatedRegistry>().to_refresh.take();
+            if owners.is_empty() {
+                return;
+            }
+            for owner in owners {
+                if let Err(error) = refresh(&app, owner).await {
+                    eprintln!("writing the sessions file of session {owner} failed: {error}");
+                }
+            }
+        }
+    });
+}
+
+/// Writes the file of the family of `owner` anew, and has it copied to the VM of a connected remote session.
+async fn refresh(app: &AppHandle, owner: Uuid) -> Result<(), String> {
+    let sessions = store::load_sessions(app)?;
+    let Some(record) = sessions.iter().find(|record| record.id == owner) else { return Ok(()) };
+    if !record.worktree_path.is_dir() {
+        return Ok(());
+    }
+    let sub_chats: Vec<&SessionRecord> = sessions.iter().filter(|session| session.parent_id == Some(owner)).collect();
+    let changed: Vec<String> = match git::changed_files(&record.worktree_path, git::DIFF_BASE).await {
+        Ok(files) => files.into_iter().map(|file| file.path).collect(),
         Err(error) => {
-            eprintln!("writing the sessions files failed: {error}");
-            return;
+            eprintln!("listing the changes for the sessions file of session {owner} failed: {error}");
+            Vec::new()
         }
     };
-    if let Err(error) = refresh(app, &owners) {
-        eprintln!("writing the sessions files failed: {error}");
-    }
-}
-
-fn refresh(app: &AppHandle, owners: &[Uuid]) -> Result<(), String> {
-    let sessions = store::load_sessions(app)?;
     let claude = claude_dir()?;
+    let project = local_project(&record.worktree_path, &claude);
+    let transcripts: Vec<(Uuid, PathBuf)> = std::iter::once(record)
+        .chain(sub_chats.iter().copied())
+        .filter_map(|session| Some((session.id, project.join(format!("{}.jsonl", session.acp_session_id.as_ref()?)))))
+        .collect();
+    let requests: HashMap<Uuid, String> = tauri::async_runtime::spawn_blocking(move || {
+        transcripts.into_iter().filter_map(|(id, path)| Some((id, message_time::last_prompt(&path)?))).collect()
+    })
+    .await
+    .map_err(|error| format!("failed to read the transcripts: {error}"))?;
     let agents = app.state::<RelatedRegistry>().agents.lock().unwrap().clone();
     let state_of = |record: &SessionRecord| match agents.get(&record.id) {
         Some(true) => AgentState::Working,
         Some(false) => AgentState::Idle,
         None => AgentState::NotRunning,
     };
-    for owner in owners {
-        let Some(record) = sessions.iter().find(|record| record.id == *owner) else { continue };
-        if !record.worktree_path.is_dir() {
-            continue;
-        }
-        let sub_chats: Vec<&SessionRecord> = sessions.iter().filter(|session| session.parent_id == Some(*owner)).collect();
-        let text = render(record, &sub_chats, &claude, &state_of);
-        write_atomic(&record.worktree_path.join(SESSIONS_FILE), &text)?;
-        if record.remote.is_some() && sync::is_syncing(app, *owner) {
-            push_later(app, *owner);
-        }
+    let text = render(record, &sub_chats, &claude, &state_of, &Activity { changed: &changed, requests: &requests });
+    write_atomic(&record.worktree_path.join(SESSIONS_FILE), &text)?;
+    if record.remote.is_some() && sync::is_syncing(app, owner) {
+        push_later(app, owner);
     }
     Ok(())
 }
 
 /// The file of the family of `owner`.
-fn render(owner: &SessionRecord, sub_chats: &[&SessionRecord], claude_dir: &Path, state_of: &dyn Fn(&SessionRecord) -> AgentState) -> String {
+fn render(
+    owner: &SessionRecord,
+    sub_chats: &[&SessionRecord],
+    claude_dir: &Path,
+    state_of: &dyn Fn(&SessionRecord) -> AgentState,
+    activity: &Activity,
+) -> String {
     let mut text = String::from(
         "# Sessions in this worktree\n\nHunt writes this file; do not edit it. Every session below works in this worktree. A transcript path is \
          given for each machine that has a copy; use the one of the machine you run on. A transcript is JSONL, one record per line, \
@@ -138,7 +219,7 @@ fn render(owner: &SessionRecord, sub_chats: &[&SessionRecord], claude_dir: &Path
     );
     let project = local_project(&owner.worktree_path, claude_dir);
     let remote = owner.remote.as_ref();
-    text.push_str(&section(owner, "the session", remote, &project, state_of(owner)));
+    text.push_str(&section(owner, "the session", remote, &project, state_of(owner), activity));
     for sub_chat in sub_chats {
         let role = match &sub_chat.selection {
             Some(selection) => match &selection.task {
@@ -147,10 +228,41 @@ fn render(owner: &SessionRecord, sub_chats: &[&SessionRecord], claude_dir: &Path
             },
             None => "a sub chat of the session".to_string(),
         };
-        text.push_str(&section(sub_chat, &role, remote, &project, state_of(sub_chat)));
+        text.push_str(&section(sub_chat, &role, remote, &project, state_of(sub_chat), activity));
     }
+    let family: Vec<&SessionRecord> = std::iter::once(owner).chain(sub_chats.iter().copied()).collect();
+    text.push_str(&untouched_section(&family, activity.changed, remote.is_some()));
     text.push_str(&logs_section(&owner.worktree_path, remote.is_some()));
     text
+}
+
+/// The uncommitted changes that no session of `family` made with its tool calls; nothing when there are none.
+fn untouched_section(family: &[&SessionRecord], changed: &[String], is_remote: bool) -> String {
+    let untouched: Vec<&str> =
+        changed.iter().filter(|path| !family.iter().any(|record| record.touched_files.contains(path))).map(String::as_str).collect();
+    if untouched.is_empty() {
+        return String::new();
+    }
+    let makers = if is_remote { "the user, an IDE or the session's agent on the VM, whose changes Hunt does not attribute yet" } else { "the user or an IDE" };
+    format!("\n## Changes no session made\n\nUncommitted changes that no session's tool calls made; they come from {makers}:\n\n{}", path_list(&untouched, ""))
+}
+
+/// `paths` as list items indented by `indent`, at most `MAX_LISTED_PATHS` of them, then how many more there are.
+fn path_list(paths: &[&str], indent: &str) -> String {
+    let mut text: String = paths.iter().take(MAX_LISTED_PATHS).map(|path| format!("{indent}- `{path}`\n")).collect();
+    if paths.len() > MAX_LISTED_PATHS {
+        text.push_str(&format!("{indent}- … and {} more\n", paths.len() - MAX_LISTED_PATHS));
+    }
+    text
+}
+
+/// `request` cut to `MAX_REQUEST_CHARS` characters.
+fn shortened(request: &str) -> String {
+    if request.chars().count() <= MAX_REQUEST_CHARS {
+        return request.to_string();
+    }
+    let cut: String = request.chars().take(MAX_REQUEST_CHARS - 1).collect();
+    format!("{}…", cut.trim_end())
 }
 
 /// Where the family's tmux windows and services log their output, on each machine that has a copy.
@@ -175,7 +287,7 @@ fn logs_section(worktree: &Path, is_remote: bool) -> String {
 }
 
 /// The section of one session; `remote` is where the family's session runs when it runs on a VM.
-fn section(record: &SessionRecord, role: &str, remote: Option<&RemoteTarget>, project: &Path, state: AgentState) -> String {
+fn section(record: &SessionRecord, role: &str, remote: Option<&RemoteTarget>, project: &Path, state: AgentState, activity: &Activity) -> String {
     let mut text = format!("\n## {}\n\n- Hunt session id: `{}`\n- Role: {role}\n- Agent: {}\n", record.title.trim(), record.id, state.label());
     let runs_on = match (record.parent_id, remote) {
         (None, Some(target)) => format!("the session VM `{}`", target.vm.instance),
@@ -192,11 +304,20 @@ fn section(record: &SessionRecord, role: &str, remote: Option<&RemoteTarget>, pr
         }
         None => text.push_str("- Transcript: none yet\n"),
     }
+    if let Some(request) = activity.requests.get(&record.id) {
+        let label = if state == AgentState::Working { "Current request" } else { "Last request" };
+        text.push_str(&format!("- {label}: {}\n", shortened(request)));
+    }
     if !record.summary.is_empty() {
         text.push_str("- So far:\n");
         for line in &record.summary {
             text.push_str(&format!("  - {}\n", line.trim()));
         }
+    }
+    let changes: Vec<&str> = activity.changed.iter().filter(|path| record.touched_files.contains(path)).map(String::as_str).collect();
+    if !changes.is_empty() {
+        text.push_str("- Uncommitted changes from its tool calls:\n");
+        text.push_str(&path_list(&changes, "  "));
     }
     text
 }
@@ -214,16 +335,17 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
 /// Has the file of the remote session `owner` copied to its VM after `PUSH_DELAY`, together with every other asked for
 /// meanwhile.
 fn push_later(app: &AppHandle, owner: Uuid) {
-    let registry = app.state::<RelatedRegistry>();
-    registry.to_push.lock().unwrap().insert(owner);
-    if registry.is_pushing.swap(true, Ordering::SeqCst) {
+    if !app.state::<RelatedRegistry>().to_push.add([owner]) {
         return;
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(PUSH_DELAY).await;
-            let owners: Vec<Uuid> = std::mem::take(&mut *app.state::<RelatedRegistry>().to_push.lock().unwrap()).into_iter().collect();
+            let owners = app.state::<RelatedRegistry>().to_push.take();
+            if owners.is_empty() {
+                return;
+            }
             for owner in owners {
                 if !sync::is_syncing(&app, owner) {
                     continue;
@@ -231,13 +353,6 @@ fn push_later(app: &AppHandle, owner: Uuid) {
                 if let Err(error) = sync::copy_files(&app, owner, Direction::Push, &[SESSIONS_FILE.to_string()]).await {
                     eprintln!("copying the sessions file of session {owner} to its VM failed: {error}");
                 }
-            }
-            let registry = app.state::<RelatedRegistry>();
-            let to_push = registry.to_push.lock().unwrap();
-            if to_push.is_empty() {
-                // Decided under the lock, so a request that comes now sees the task gone and starts a new one.
-                registry.is_pushing.store(false, Ordering::SeqCst);
-                return;
             }
         }
     });
@@ -254,13 +369,8 @@ mod tests {
         SessionRecord::new(id, title.into(), PathBuf::from("/repo"), PathBuf::from("/Users/jane/wt"), "b".into(), "main".into(), "c".into())
     }
 
-    #[test]
-    fn the_file_names_every_session_with_its_role_state_and_transcripts() {
-        let (owner_id, sub_id, task_id) = (Uuid::nil(), Uuid::from_u128(1), Uuid::from_u128(2));
-        let mut owner = record(owner_id, "Fix login");
-        owner.acp_session_id = Some("abc".into());
-        owner.summary = vec!["Found the bug in auth.ts".into()];
-        owner.remote = Some(RemoteTarget {
+    fn remote_target() -> RemoteTarget {
+        RemoteTarget {
             vm: VmRef { project: "p".into(), zone: "z".into(), instance: "vm-hunt-s-0000".into() },
             worktree_path: PathBuf::from("/home/agent/app"),
             repo: "acme/app".into(),
@@ -276,7 +386,23 @@ mod tests {
             agent: String::new(),
             push_target_pending: false,
             relay_activity: None,
-        });
+        }
+    }
+
+    /// Renders the file of `owner` and `sub_chats` with the changed files `changed` and the requests `requests`.
+    fn render_with(owner: &SessionRecord, sub_chats: &[&SessionRecord], state_of: &dyn Fn(&SessionRecord) -> AgentState, changed: &[&str], requests: &[(Uuid, &str)]) -> String {
+        let changed: Vec<String> = changed.iter().map(|path| path.to_string()).collect();
+        let requests: HashMap<Uuid, String> = requests.iter().map(|(id, request)| (*id, request.to_string())).collect();
+        render(owner, sub_chats, Path::new("/Users/jane/.claude"), state_of, &Activity { changed: &changed, requests: &requests })
+    }
+
+    #[test]
+    fn the_file_names_every_session_with_its_role_state_and_transcripts() {
+        let (owner_id, sub_id, task_id) = (Uuid::nil(), Uuid::from_u128(1), Uuid::from_u128(2));
+        let mut owner = record(owner_id, "Fix login");
+        owner.acp_session_id = Some("abc".into());
+        owner.summary = vec!["Found the bug in auth.ts".into()];
+        owner.remote = Some(remote_target());
         let selection = SelectionContext { path: "src/auth.ts".into(), start_line: 3, end_line: 9, text: "x".into(), task: None };
         let mut sub = SessionRecord::sub_session(sub_id, "Why this check?".into(), &owner, Some(selection));
         sub.acp_session_id = Some("def".into());
@@ -284,7 +410,7 @@ mod tests {
         let task_sub = SessionRecord::sub_session(task_id, "README".into(), &owner, Some(task));
         let state_of = |record: &SessionRecord| if record.id == sub_id { AgentState::Working } else if record.id == owner_id { AgentState::Idle } else { AgentState::NotRunning };
 
-        let text = render(&owner, &[&sub, &task_sub], Path::new("/Users/jane/.claude"), &state_of);
+        let text = render_with(&owner, &[&sub, &task_sub], &state_of, &[], &[]);
 
         assert!(text.starts_with("# Sessions in this worktree\n\nHunt writes this file; do not edit it."));
         assert!(text.contains(
@@ -312,9 +438,45 @@ mod tests {
     fn a_local_session_lists_only_desktop_transcripts() {
         let mut owner = record(Uuid::nil(), "Local");
         owner.acp_session_id = Some("abc".into());
-        let text = render(&owner, &[], Path::new("/Users/jane/.claude"), &|_| AgentState::NotRunning);
+        let text = render_with(&owner, &[], &|_| AgentState::NotRunning, &[], &[]);
         assert!(text.contains("- Agent runs on: the desktop\n- Transcript on the desktop: `/Users/jane/.claude/projects/-Users-jane-wt/abc.jsonl`\n"));
         assert!(text.ends_with("- Windows on the desktop: `/Users/jane/wt/.hunt/logs/desktop/`\n"));
         assert!(!text.contains("on the VM"));
+        assert!(!text.contains("request") && !text.contains("Uncommitted"));
+    }
+
+    #[test]
+    fn the_file_names_each_session_s_request_and_uncommitted_changes_and_those_no_session_made() {
+        let (owner_id, sub_id) = (Uuid::nil(), Uuid::from_u128(1));
+        let mut owner = record(owner_id, "Fix login");
+        owner.touched_files = vec!["src/auth.ts".into(), "src/committed.ts".into(), "src/shared.ts".into()];
+        let mut sub = SessionRecord::sub_session(sub_id, "Tests".into(), &owner, None);
+        sub.touched_files = vec!["src/auth.test.ts".into(), "src/shared.ts".into()];
+        let long_request = "x".repeat(400);
+        let state_of = |record: &SessionRecord| if record.id == sub_id { AgentState::Working } else { AgentState::Idle };
+        let changed = ["src/auth.ts", "src/auth.test.ts", "src/shared.ts", "README.md"];
+
+        let text = render_with(&owner, &[&sub], &state_of, &changed, &[(owner_id, "Fix the login"), (sub_id, &long_request)]);
+
+        assert!(text.contains(
+            "- Transcript: none yet\n- Last request: Fix the login\n- Uncommitted changes from its tool calls:\n  - `src/auth.ts`\n  - `src/shared.ts`\n\n## Tests\n"
+        ));
+        assert!(text.contains(&format!(
+            "- Current request: {}…\n- Uncommitted changes from its tool calls:\n  - `src/auth.test.ts`\n  - `src/shared.ts`\n",
+            "x".repeat(299)
+        )));
+        assert!(text.contains(
+            "\n## Changes no session made\n\nUncommitted changes that no session's tool calls made; they come from the user or an IDE:\n\n- `README.md`\n\n## Terminal logs\n"
+        ));
+        assert!(!text.contains("src/committed.ts"));
+
+        owner.remote = Some(remote_target());
+        let many: Vec<String> = (0..52).map(|number| format!("src/{number}.ts")).collect();
+        owner.touched_files = many.clone();
+        let changed: Vec<&str> = many.iter().map(String::as_str).chain(["README.md"]).collect();
+        let text = render_with(&owner, &[], &state_of, &changed, &[]);
+        assert!(text.contains("  - `src/49.ts`\n  - … and 2 more\n\n## Changes no session made\n"));
+        assert!(!text.contains("`src/50.ts`"));
+        assert!(text.contains("they come from the user, an IDE or the session's agent on the VM, whose changes Hunt does not attribute yet:\n\n- `README.md`\n"));
     }
 }

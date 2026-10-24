@@ -407,9 +407,10 @@ pub fn forget_touched_files(app: &AppHandle, worktree: &Path, paths: &[String]) 
     store.save(&sessions)
 }
 
-/// Records that `id` changed files in its worktree just now.
+/// Records that `id` changed files in its worktree just now, which its family's `.hunt/sessions.md` then lists.
 pub fn note_worktree_changed(app: &AppHandle, id: Uuid) -> Result<(), String> {
     update_session(app, id, |record| record.worktree_changed_at = Some(chrono::Utc::now()))?;
+    crate::session::related::refresh_family(app, id);
     Ok(())
 }
 

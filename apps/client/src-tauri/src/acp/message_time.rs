@@ -3,8 +3,10 @@
 //! loading a session is stamped as it arrives, by its `messageId` (the entry's `uuid` for a user message, the API
 //! message id for an agent reply). A live message is stamped once its turn ended (`resolve`): an agent reply by its
 //! API message id, a prompt Hunt sent by the first entry of its turn whose chain of `parentUuid`s leads back to it.
+//! `last_prompt` reads a transcript's last prompt for `.hunt/sessions.md`.
 
 use std::collections::HashMap;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -22,6 +24,11 @@ const RESOLVE_ATTEMPTS: usize = 4;
 const RESOLVE_RETRY: Duration = Duration::from_millis(500);
 /// The most `parentUuid` links a prompt is searched across, which also ends a chain that runs in a circle.
 const MAX_CHAIN: usize = 1000;
+/// Bytes `last_prompt` reads from a transcript's end first; it doubles them until a prompt shows.
+const LAST_PROMPT_BLOCK: u64 = 64 * 1024;
+/// The tags whose content Claude Code's transcript adds to a prompt's text: the file of a sub chat's selection
+/// (`<context ref="…">`) and reminders.
+const ADDED_TAGS: [&str; 2] = ["context", "system-reminder"];
 
 /// One entry of a transcript: when it was written, the entry before it and whether it is a prompt (a user entry that
 /// is neither a tool result nor meta text Claude Code added).
@@ -36,6 +43,77 @@ struct Entry {
 pub struct Transcript {
     entries: HashMap<String, Entry>,
     first_entries: HashMap<String, String>,
+}
+
+/// The content blocks of a transcript entry's message; none when its content is a plain string.
+fn blocks_of(entry: &serde_json::Value) -> &[serde_json::Value] {
+    entry.pointer("/message/content").and_then(|content| content.as_array()).map(Vec::as_slice).unwrap_or_default()
+}
+
+fn block_type(block: &serde_json::Value) -> &str {
+    block.get("type").and_then(|value| value.as_str()).unwrap_or_default()
+}
+
+/// Whether the transcript entry `entry` is a prompt: a user entry that is neither a tool result nor meta text Claude
+/// Code added.
+fn is_prompt(entry: &serde_json::Value) -> bool {
+    entry.get("type").and_then(|value| value.as_str()) == Some("user")
+        && entry.get("isMeta").and_then(|value| value.as_bool()) != Some(true)
+        && (entry.pointer("/message/content").is_some_and(|content| content.is_string())
+            || blocks_of(entry).iter().any(|block| block_type(block) != "tool_result"))
+}
+
+/// The text of the last prompt in the transcript at `path`, without what `ADDED_TAGS` enclose and with its whitespace
+/// collapsed to single spaces; `None` without a transcript, a prompt or text in the last prompt. Reads the file from its
+/// end, `LAST_PROMPT_BLOCK` bytes first and twice as many each time no prompt shows.
+pub fn last_prompt(path: &Path) -> Option<String> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    let mut length = LAST_PROMPT_BLOCK.min(size);
+    loop {
+        file.seek(SeekFrom::Start(size - length)).ok()?;
+        let mut bytes = Vec::new();
+        (&mut file).take(length).read_to_end(&mut bytes).ok()?;
+        let text = String::from_utf8_lossy(&bytes);
+        // A block that does not start the file starts inside a line.
+        let lines = if length < size { text.split_once('\n').map_or("", |(_, rest)| rest) } else { &text };
+        let prompt = lines.lines().rev().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()).find(is_prompt);
+        if let Some(prompt) = prompt {
+            return Some(prompt_text(&prompt)).filter(|text| !text.is_empty());
+        }
+        if length == size {
+            return None;
+        }
+        length = (length * 2).min(size);
+    }
+}
+
+/// The text of the prompt entry `entry`: its text blocks, without what `ADDED_TAGS` enclose, whitespace collapsed.
+fn prompt_text(entry: &serde_json::Value) -> String {
+    let text = match entry.pointer("/message/content") {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        _ => blocks_of(entry)
+            .iter()
+            .filter(|block| block_type(block) == "text")
+            .filter_map(|block| block.get("text")?.as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+    };
+    let text = ADDED_TAGS.iter().fold(text, |text, tag| without_tag(&text, tag));
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `text` without the elements `<tag …>…</tag>`; an element that is not closed runs to the end.
+fn without_tag(text: &str, tag: &str) -> String {
+    let (open, close) = (format!("<{tag}"), format!("</{tag}>"));
+    let mut rest = text;
+    let mut kept = String::new();
+    while let Some(start) = rest.find(&open) {
+        kept.push_str(&rest[..start]);
+        rest = rest[start..].find(&close).map_or("", |end| &rest[start + end + close.len()..]);
+    }
+    kept.push_str(rest);
+    kept
 }
 
 impl Transcript {
@@ -57,17 +135,11 @@ impl Transcript {
             let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else { continue };
             let text = |pointer: &str| entry.pointer(pointer).and_then(|value| value.as_str()).map(str::to_string);
             let (Some(uuid), Some(timestamp)) = (text("/uuid"), text("/timestamp")) else { continue };
-            let content = entry.pointer("/message/content");
-            let blocks = content.and_then(|content| content.as_array()).map(Vec::as_slice).unwrap_or_default();
-            let block_type = |block: &serde_json::Value| block.get("type").and_then(|value| value.as_str()).unwrap_or_default().to_string();
-            let is_prompt = text("/type").as_deref() == Some("user")
-                && entry.get("isMeta").and_then(|value| value.as_bool()) != Some(true)
-                && (content.is_some_and(|content| content.is_string()) || blocks.iter().any(|block| block_type(block) != "tool_result"));
-            let tool_uses = blocks.iter().filter(|block| block_type(block) == "tool_use").filter_map(|block| block.get("id")?.as_str());
+            let tool_uses = blocks_of(&entry).iter().filter(|block| block_type(block) == "tool_use").filter_map(|block| block.get("id")?.as_str());
             for id in text("/message/id").into_iter().chain(tool_uses.map(str::to_string)) {
                 transcript.first_entries.entry(id).or_insert_with(|| uuid.clone());
             }
-            transcript.entries.insert(uuid, Entry { timestamp, parent: text("/parentUuid"), is_prompt });
+            transcript.entries.insert(uuid, Entry { timestamp, parent: text("/parentUuid"), is_prompt: is_prompt(&entry) });
         }
         transcript
     }
@@ -231,6 +303,29 @@ not json"#;
 
     fn time_of(notification: &mut SessionNotification) -> Option<String> {
         time_in(message_chunk(notification)?.meta.as_ref()).map(str::to_string)
+    }
+
+    #[test]
+    fn last_prompt_reads_the_text_of_the_last_prompt_from_the_end_without_added_context() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("s.jsonl");
+        assert_eq!(last_prompt(&path), None);
+        std::fs::write(&path, TRANSCRIPT).unwrap();
+        assert_eq!(last_prompt(&path).as_deref(), Some("second"));
+
+        let selection = r#"{"type":"user","uuid":"u2","message":{"role":"user","content":[{"type":"text","text":"[@auth.ts](file:///w/auth.ts)"},{"type":"text","text":"Why  this\ncheck?"},{"type":"text","text":"\n<context ref=\"file:///w/auth.ts\">\nlet a = 1;\n</context>"},{"type":"text","text":"<system-reminder>be brief</system-reminder>"}]}}"#;
+        let reply = r#"{"type":"assistant","uuid":"a9","message":{"id":"msg_9","content":[{"type":"text","text":"PADDING"}]}}"#.replace("PADDING", &"x".repeat(1000));
+        let mut text = format!("{TRANSCRIPT}\n{selection}\n");
+        for _ in 0..200 {
+            text.push_str(&reply);
+            text.push('\n');
+        }
+        std::fs::write(&path, &text).unwrap();
+        assert!(text.len() as u64 > 2 * LAST_PROMPT_BLOCK);
+        assert_eq!(last_prompt(&path).as_deref(), Some("[@auth.ts](file:///w/auth.ts) Why this check?"));
+
+        std::fs::write(&path, format!("{selection}\n{}\n", r#"{"type":"user","uuid":"u3","message":{"role":"user","content":[{"type":"image"}]}}"#)).unwrap();
+        assert_eq!(last_prompt(&path), None);
     }
 
     #[test]

@@ -2927,7 +2927,9 @@ pub async fn commit_files(app: AppHandle, id: Uuid, paths: Vec<String>, message:
         Some((owner, _)) if sync::is_connected(&app, owner) => commit_followed(&app, owner, &record.worktree_path, &paths, &message).await?,
         _ => git::commit_files(&record.worktree_path, &paths, &message).await?,
     }
-    store::forget_touched_files(&app, &record.worktree_path, &paths)
+    store::forget_touched_files(&app, &record.worktree_path, &paths)?;
+    related::refresh_family(&app, id);
+    Ok(())
 }
 
 /// Commits `paths` of the remote session `id` in its local worktree `worktree` while no sync of it runs, after one sent

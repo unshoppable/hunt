@@ -571,10 +571,14 @@ The agents that share a worktree learn of one another from `.hunt/sessions.md`, 
 (`apps/client/src-tauri/src/session/related.rs`) and the system prompt points at
 (`libs/domain/prompts/sessions.system-prompt.md`, with the agent's own Hunt session id filled in): every session of the
 worktree (the session and its sub chats) with its Hunt session id, role (the session, or a sub chat with the selection
-or task it was opened from), title, whether its agent works right now, where it runs and the path of its transcript on
-each machine that has a copy, plus the summary bullets, and the folders of the family's terminal logs on each machine. The file is written anew whenever the stored sessions change, a
-session gets its title, an agent starts or stops or a turn starts or ends, and a connected remote session's copy goes
-to its VM a moment later (`sync::copy_files`, as the diagram does). `.hunt/` is excluded from Git and left out of the
+or task it was opened from), title, whether its agent works right now, where it runs, the path of its transcript on
+each machine that has a copy, its current or last request (the last prompt of that transcript, read from its end), the
+summary bullets and the uncommitted changes its tool calls made (`apps/client/src-tauri/src/session/attribution.rs`);
+then the uncommitted changes no session made (in a remote session also those of the agent on the VM, which Hunt does
+not attribute yet) and the folders of the family's terminal logs on each machine. The file is written anew a moment
+after the stored sessions change, a session gets its title, an agent starts or stops, a turn starts or ends or a
+session changes files, once for every burst of these, and a connected remote session's copy goes to its VM a moment
+later (`sync::copy_files`, as the diagram does). `.hunt/` is excluded from Git and left out of the
 file sync, so the file never reaches the repository.
 
 Every session has a VM of its own, which is the isolation boundary: the agent works there as the user `agent`, with

@@ -1,3 +1,9 @@
+## 0.124.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** ⌘click on a declaration with a single usage jumps straight to it instead of listing it in the usages popup ([55020a3](https://github.com/unshoppable/hunt/commit/55020a3))
+
 ## 0.123.1 (2026-10-24)
 
 ### 🩹 Fixes

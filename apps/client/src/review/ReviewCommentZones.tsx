@@ -16,14 +16,18 @@ import { LineZone } from "./lineZone";
 import { CommentEditorPanel, NOTE_HINT, ReviewCommentComposer } from "./ReviewCommentComposer";
 import {
   draftCards,
+  draftMark,
   isFileSpan,
   isPostedOnDiff,
+  mergeSpans,
   reloadReviewThreads,
   threadAnchorLine,
+  threadMark,
   useReviewComments,
   useReviewDraftCount,
   useReviewThreads,
   type LineSpan,
+  type MarkedSpan,
 } from "./reviewComments";
 
 const COMPOSER_KEY = "composer";
@@ -47,8 +51,9 @@ type ReviewCommentZonesProps = {
 /**
  * The review threads of `path` on GitHub and its drafted review comments as cards under their lines (those on the
  * whole file above the first line), drafted replies inside the card they answer, and, while `composer` is set, the box
- * for a new comment, each in a `LineZone` of `editor`. Zones persist across renders; a thread or draft that
- * disappears takes its zone with it. Remount (key) when `editor` or `path` changes.
+ * for a new comment, each in a `LineZone` of `editor`, with the lines they comment on marked as on GitHub (see
+ * `draftMark`, `threadMark`). Zones persist across renders; a thread or draft that disappears takes its zone with it.
+ * Remount (key) when `editor` or `path` changes.
  */
 export function ReviewCommentZones({ editor, sessionId, path, blocks, composer, onCloseComposer }: ReviewCommentZonesProps) {
   const comments = useReviewComments(sessionId, path);
@@ -103,23 +108,30 @@ export function ReviewCommentZones({ editor, sessionId, path, blocks, composer, 
     [editor],
   );
 
-  // Tints the composer's lines, as GitHub does, for as long as the box is open; the bar's color follows the "+". A
-  // comment on the whole file tints nothing.
-  const tintedSpan = composer && !isFileSpan(composer.span) ? composer.span : null;
-  const composerStart = tintedSpan?.startLine ?? null;
-  const composerEnd = tintedSpan?.line ?? null;
+  // Tints the lines of every open comment and of the comment box, as GitHub does, each line once, with a bar beside
+  // each span in the color of the "+"; the card or box under the span continues the bar. `marksSignature` stands for `marks`.
   const isComposerInline = composer ? isPostedOnDiff(blocks, composer.span) : false;
+  const marks = [
+    ...threads.map(threadMark),
+    ...roots.map((comment) => draftMark(blocks, comment)),
+    composer ? draftMark(blocks, composer.span) : null,
+  ].filter((mark) => mark !== null);
+  const marksSignature = marks.map((mark) => `${mark.startLine}-${mark.line}${mark.isInline ? "" : " note"}`).join("\n");
   useEffect(() => {
-    if (composerStart === null || composerEnd === null) return;
-    const span = { startLine: composerStart, line: composerEnd };
-    const tint = editor.createDecorationsCollection([rangeDecoration(span)]);
-    const bar = rangeBar(editor);
-    bar.show(span, isComposerInline);
+    const tint = editor.createDecorationsCollection(mergeSpans(marks).map((span) => rangeDecoration(span)));
+    const bars = marks.map((mark) => {
+      const bar = rangeBar(editor);
+      bar.show(mark, mark.isInline);
+      return bar;
+    });
     return () => {
       tint.clear();
-      bar.dispose();
+      for (const bar of bars) {
+        bar.dispose();
+      }
     };
-  }, [editor, composerStart, composerEnd, isComposerInline]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, marksSignature]);
 
   const composerZone = composer ? zones.get(COMPOSER_KEY) : undefined;
   const threadsErrorZone = threadsError ? zones.get(THREADS_ERROR_KEY) : undefined;
@@ -137,13 +149,23 @@ export function ReviewCommentZones({ editor, sessionId, path, blocks, composer, 
       {threads.map((thread) => {
         const zone = zones.get(thread.id);
         if (!zone) return null;
-        const card = <ReviewThreadCard sessionId={sessionId} thread={thread} anchorLine={threadAnchorLine(blocks, thread)} drafts={replies.get(thread.id) ?? []} />;
+        const card = (
+          <ReviewThreadCard sessionId={sessionId} thread={thread} anchorLine={threadAnchorLine(blocks, thread)} mark={threadMark(thread)} drafts={replies.get(thread.id) ?? []} />
+        );
         return createPortal(card, zone.domNode, thread.id);
       })}
       {roots.map((comment) => {
         const zone = zones.get(comment.id);
         if (!zone) return null;
-        const card = <ReviewCommentCard sessionId={sessionId} comment={comment} replies={replies.get(comment.id) ?? []} isInline={isPostedOnDiff(blocks, comment)} />;
+        const card = (
+          <ReviewCommentCard
+            sessionId={sessionId}
+            comment={comment}
+            replies={replies.get(comment.id) ?? []}
+            isInline={isPostedOnDiff(blocks, comment)}
+            mark={draftMark(blocks, comment)}
+          />
+        );
         return createPortal(card, zone.domNode, comment.id);
       })}
       {orphans.map((comment) => {
@@ -189,6 +211,8 @@ type ReviewThreadCardProps = {
   thread: ReviewThread;
   /** The line of the new file version the card sits under (see `threadAnchorLine`); drafted replies carry it. */
   anchorLine: number;
+  /** The lines the thread marks (see `threadMark`); the card continues their bar. */
+  mark: MarkedSpan | null;
   /** Drafted replies to the thread, oldest first. */
   drafts: ReviewComment[];
 };
@@ -198,7 +222,7 @@ type ReviewThreadCardProps = {
  * first comment, every reply with its author's avatar, the drafted replies marked "Pending", GitHub's "Write a reply"
  * and "Resolve conversation". A resolved thread shows only its header until expanded; resolving collapses it.
  */
-function ReviewThreadCard({ sessionId, thread, anchorLine, drafts }: ReviewThreadCardProps) {
+function ReviewThreadCard({ sessionId, thread, anchorLine, mark, drafts }: ReviewThreadCardProps) {
   const [isExpanded, setIsExpanded] = useState(!thread.isResolved || drafts.length > 0);
   // Resolution as last requested here, until a load of the threads reports a different one.
   const [isResolved, setIsResolved] = useState(thread.isResolved);
@@ -243,6 +267,7 @@ function ReviewThreadCard({ sessionId, thread, anchorLine, drafts }: ReviewThrea
       avatar={<Avatar login={first.author} url={first.avatarUrl} size="size-5" />}
       label={threadLabel(thread)}
       hint={hint}
+      mark={mark}
       actions={
         <>
           {isResolved ? (
@@ -406,17 +431,25 @@ type ReviewCommentCardProps = {
   replies: ReviewComment[];
   /** Whether the comment is posted on the diff; otherwise it becomes a note, which the header says. */
   isInline: boolean;
+  /** The lines the comment marks (see `draftMark`); the card continues their bar. */
+  mark: MarkedSpan | null;
 };
 
 /**
  * A drafted comment: the viewer's avatar, its lines (or "File"), the text as markdown with buttons to edit or delete
  * it, its drafted replies and GitHub's "Write a reply". Deleting it deletes its replies too.
  */
-function ReviewCommentCard({ sessionId, comment, replies, isInline }: ReviewCommentCardProps) {
+function ReviewCommentCard({ sessionId, comment, replies, isInline, mark }: ReviewCommentCardProps) {
   const { actions, content } = useDraftActions(sessionId, comment, replies.length ? "Delete this review comment and its replies?" : "Delete this review comment?");
   const draftReply = (body: string) => commands.addReviewComment(sessionId, comment.path, comment.startLine, comment.line, body, { kind: "draft", id: comment.id });
   return (
-    <ZoneFrame avatar={<ViewerAvatar sessionId={sessionId} size="size-5" />} label={lineLabel(comment)} hint={isInline ? null : NOTE_HINT} actions={actions}>
+    <ZoneFrame
+      avatar={<ViewerAvatar sessionId={sessionId} size="size-5" />}
+      label={lineLabel(comment)}
+      hint={isInline ? null : NOTE_HINT}
+      mark={mark}
+      actions={actions}
+    >
       <div className="px-3 py-2">{content}</div>
       {replies.map((reply) => (
         <DraftReply key={reply.id} sessionId={sessionId} comment={reply} />
@@ -441,15 +474,24 @@ type ZoneFrameProps = {
   avatar?: ReactNode;
   label: string;
   hint: string | null;
+  /** The lines the comment marks; their bar runs on along the card, 10px left of it. */
+  mark?: MarkedSpan | null;
   actions?: ReactNode;
   /** Sections under the header, divided by rules; each brings its own padding. None leaves only the header. */
   children?: ReactNode;
 };
 
-/** GitHub-style card under a line: a tinted header with avatar, line label, hint and actions, the content below. */
-function ZoneFrame({ avatar, label, hint, actions, children }: ZoneFrameProps) {
+/**
+ * GitHub-style card under a line, 10px right of the code's left edge like the comment box: a tinted header with avatar,
+ * line label, hint and actions, the content below.
+ */
+function ZoneFrame({ avatar, label, hint, mark, actions, children }: ZoneFrameProps) {
   return (
-    <div className="py-1.5 pr-3" style={{ paddingLeft: "var(--zone-content-left)" }}>
+    <div
+      data-review-bar={mark ? (mark.isInline ? "inline" : "note") : undefined}
+      className="py-1.5 pr-3"
+      style={{ paddingLeft: "calc(var(--zone-content-left) + 10px)" }}
+    >
       <div className="overflow-hidden rounded-lg border border-(--line) bg-(--surface-inset) text-[15px] leading-[1.5] text-neutral-200 shadow-md">
         <div className={`flex min-h-9 items-center gap-2 bg-white/4 px-3 py-1 text-[13px] text-neutral-400${children ? " border-b border-(--line)" : ""}`}>
           {avatar}

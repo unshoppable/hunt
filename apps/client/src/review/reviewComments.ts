@@ -163,6 +163,35 @@ export function isPostedOnDiff(blocks: ChangeBlock[], span: LineSpan): boolean {
   return isFileSpan(span) ? blocks.length > 0 : isInsideHunk(blocks, span.startLine, span.line);
 }
 
+/** Lines a comment marks with GitHub's tint and a bar beside them: blue for a comment posted inline, grey for a note. */
+export type MarkedSpan = LineSpan & { isInline: boolean };
+
+/** The lines a drafted comment, or the comment box, on `span` marks; none for a comment on the whole file. */
+export function draftMark(blocks: ChangeBlock[], span: LineSpan): MarkedSpan | null {
+  if (isFileSpan(span)) return null;
+  return { startLine: span.startLine, line: span.line, isInline: isPostedOnDiff(blocks, span) };
+}
+
+/** The lines an unresolved thread on the new file version marks; resolved threads, base lines and the whole file mark none. */
+export function threadMark(thread: Pick<ReviewThread, "side" | "startLine" | "line" | "isResolved">): MarkedSpan | null {
+  if (thread.side !== "right" || thread.isResolved || isFileSpan(thread)) return null;
+  return { startLine: thread.startLine, line: thread.line, isInline: true };
+}
+
+/** `spans` sorted by their first line, overlapping ones merged, so that a line lies in at most one span. */
+export function mergeSpans(spans: LineSpan[]): LineSpan[] {
+  const merged: LineSpan[] = [];
+  for (const span of [...spans].sort((left, right) => left.startLine - right.startLine)) {
+    const last = merged[merged.length - 1];
+    if (last && span.startLine <= last.line) {
+      last.line = Math.max(last.line, span.line);
+    } else {
+      merged.push({ startLine: span.startLine, line: span.line });
+    }
+  }
+  return merged;
+}
+
 /**
  * The line of the new file version a thread's card sits under: the last line of a thread on the new version, 0 (above
  * the first line) for a thread on the whole file. A thread on lines of the base version sits under the new lines that

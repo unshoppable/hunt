@@ -497,17 +497,19 @@ body,
   background: #5fb865;
   transform: scale(1.15);
 }
-/* Lines a review comment is being dragged over or written for: GitHub's yellow tint over gutter and text. */
+/* Lines a review comment is being dragged over, written for or open on: GitHub's yellow tint over gutter and text. It
+   lies above the text, so it lets the pointer through: Monaco selects only what it hits itself. */
 .monaco-editor .harness-review-range {
   z-index: 1;
   background: rgba(187, 128, 9, 0.3);
+  pointer-events: none;
 }
 .monaco-editor .margin-view-overlays .harness-review-range {
   background: rgba(187, 128, 9, 0.3);
 }
 /* Bar at the text's left edge beside those lines and the line joining the two "+" of a drag (see review/spanLine.ts),
    in the color of the "+": blue inline, grey for a note. Both run across view zones and over comment cards; the open
-   comment box continues the bar. */
+   comment box and the card of a comment continue the bar. */
 .monaco-editor .harness-review-span-line {
   z-index: 6;
   width: 2px;
@@ -517,10 +519,12 @@ body,
 .monaco-editor .harness-review-span-line--note {
   background: #6e7681;
 }
-[data-review-composer] {
+[data-review-composer],
+[data-review-bar] {
   position: relative;
 }
-[data-review-composer]::before {
+[data-review-composer]::before,
+[data-review-bar]::before {
   content: "";
   position: absolute;
   top: 0;
@@ -529,7 +533,8 @@ body,
   width: 2px;
   background: #2f81f7;
 }
-[data-review-composer="note"]::before {
+[data-review-composer="note"]::before,
+[data-review-bar="note"]::before {
   background: #6e7681;
 }
 

@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { ReplyTarget, ReviewComment, ReviewThread, SessionView } from "../ipc/types";
-import { draftCards, FILE_SPAN, isInsideHunk, isPostedOnDiff, reviewCommentCounts, reviewCommentsFor, reviewSessionOf, threadAnchorLine } from "./reviewComments";
+import {
+  draftCards,
+  draftMark,
+  FILE_SPAN,
+  isInsideHunk,
+  isPostedOnDiff,
+  mergeSpans,
+  reviewCommentCounts,
+  reviewCommentsFor,
+  reviewSessionOf,
+  threadAnchorLine,
+  threadMark,
+} from "./reviewComments";
 
 function session(id: string, parentId: string | null, reviewComments: ReviewComment[] = []): SessionView {
   return {
@@ -171,5 +183,41 @@ describe("threadAnchorLine", () => {
     expect(threadAnchorLine(blocks, { side: "left", line: 2 })).toBe(2);
     expect(threadAnchorLine(blocks, { side: "left", line: 8 })).toBe(9);
     expect(threadAnchorLine(blocks, { side: "left", line: 12 })).toBe(11);
+  });
+});
+
+describe("draftMark and threadMark", () => {
+  const blocks = [{ original: { start: 10, end: 12 }, modified: { start: 10, end: 13 } }];
+
+  it("marks a draft's lines, blue inside a hunk and grey outside, and nothing for a file comment", () => {
+    expect(draftMark(blocks, { startLine: 9, line: 11 })).toEqual({ startLine: 9, line: 11, isInline: true });
+    expect(draftMark(blocks, { startLine: 30, line: 30 })).toEqual({ startLine: 30, line: 30, isInline: false });
+    expect(draftMark(blocks, FILE_SPAN)).toBeNull();
+  });
+
+  it("marks only unresolved threads on lines of the new version", () => {
+    const thread = { side: "right" as const, startLine: 4, line: 6, isResolved: false };
+    expect(threadMark(thread)).toEqual({ startLine: 4, line: 6, isInline: true });
+    expect(threadMark({ ...thread, isResolved: true })).toBeNull();
+    expect(threadMark({ ...thread, side: "left" })).toBeNull();
+    expect(threadMark({ ...thread, startLine: 0, line: 0 })).toBeNull();
+  });
+});
+
+describe("mergeSpans", () => {
+  it("sorts the spans and merges overlapping ones", () => {
+    const spans = [
+      { startLine: 20, line: 22 },
+      { startLine: 3, line: 5 },
+      { startLine: 5, line: 5 },
+      { startLine: 4, line: 8 },
+      { startLine: 9, line: 9 },
+    ];
+    expect(mergeSpans(spans)).toEqual([
+      { startLine: 3, line: 8 },
+      { startLine: 9, line: 9 },
+      { startLine: 20, line: 22 },
+    ]);
+    expect(mergeSpans([])).toEqual([]);
   });
 });

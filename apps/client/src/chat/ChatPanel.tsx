@@ -90,7 +90,6 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const [guardrailOffer, setGuardrailOffer] = useState<GuardrailSuggestion | null>(null);
   /** The end of this session's conversation, shown in the guardrail chat as the context its agent gets. */
   const [guardrailContext, setGuardrailContext] = useState("");
-  const showSummary = useSettingsStore((state) => state.showSummary);
   const setGuardrailChatOffset = useSettingsStore((state) => state.setGuardrailChatOffset);
   const panelRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -204,14 +203,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   return (
     <div ref={panelRef} className="chat flex h-full min-h-0 flex-col bg-(--chat-bg)">
       <header data-tauri-drag-region="" className={`${HEADER_BAR} gap-3 border-b border-(--line) px-4 in-data-leading:pl-11`}>
-        <div data-tauri-drag-region="" className="flex min-w-0 flex-1 items-center gap-1">
-          <div data-tauri-drag-region="" className="truncate text-[14px] font-semibold">{session.title}</div>
-          {session.remote && !session.parentId ? (
-            <button type="button" onClick={() => void deleteRemoteSession()} title="Delete the session and its VM" aria-label="Delete the session and its VM" className={`${ICON_BUTTON_BASE_SM} ${DANGER}`}>
-              <TrashIcon className="size-4" />
-            </button>
-          ) : null}
-        </div>
+        <div data-tauri-drag-region="" className="flex-1" />
         {hasQuestion ? (
           <Chip className={AGENT_CHIP.question} title="The agent waits for your answer">
             Question
@@ -226,7 +218,17 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         <SessionSummaryToggle />
       </header>
 
-      {showSummary ? <SessionSummary session={session} onOpenFile={openInEditor} /> : null}
+      <SessionSummary
+        session={session}
+        onOpenFile={openInEditor}
+        titleActions={
+          session.remote && !session.parentId ? (
+            <button type="button" onClick={() => void deleteRemoteSession()} title="Delete the session and its VM" aria-label="Delete the session and its VM" className={`${ICON_BUTTON_BASE_SM} ${DANGER}`}>
+              <TrashIcon className="size-4" />
+            </button>
+          ) : null
+        }
+      />
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto py-5 pr-12 pl-5">
         <div ref={columnRef} className="chat-column">

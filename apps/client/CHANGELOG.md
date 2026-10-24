@@ -1,3 +1,13 @@
+## 0.112.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** Hunt keeps its data under the bundle identifier info.medconomy.hunt ([8f0d034](https://github.com/unshoppable/hunt/commit/8f0d034))
+
+### 🩹 Fixes
+
+- **client:** dev builds carry the bundle identifier info.medconomy.hunt, so their webview uses Hunt's storage ([3565b12](https://github.com/unshoppable/hunt/commit/3565b12))
+
 ## 0.111.0 (2026-10-24)
 
 ### 🚀 Features

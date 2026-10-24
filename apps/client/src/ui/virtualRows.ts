@@ -2,16 +2,20 @@
 export type RowRange = { start: number; end: number };
 
 /**
- * The rows of a list of `rowCount` rows of `rowHeight` px each that touch the viewport (`scrollTop`, `viewportHeight`),
- * widened by `overscan` rows on each side, so a fast scroll shows rendered rows before the next render arrives. While
- * the row height is unknown (0) only the first row renders, so that it can be measured.
+ * The rows of a list of `rowCount` rows of `rowHeight` px each to render for the viewport (`scrollTop`,
+ * `viewportHeight`): the rows that touch it plus at least `overscan` rows on each side, with both ends rounded out to
+ * a multiple of `overscan`. The range thus changes only every `overscan` rows, and a fast scroll, which the webview
+ * moves before the next render arrives, still shows rendered rows. While the row height is unknown (0) only the first
+ * row renders, so that it can be measured.
  */
 export function visibleRowRange(scrollTop: number, viewportHeight: number, rowHeight: number, rowCount: number, overscan: number): RowRange {
   if (rowCount <= 0) return { start: 0, end: 0 };
   if (rowHeight <= 0) return { start: 0, end: 1 };
-  const first = Math.floor(Math.max(0, scrollTop) / rowHeight);
+  const chunk = Math.max(1, overscan);
+  const first = Math.min(Math.floor(Math.max(0, scrollTop) / rowHeight), rowCount);
   const last = Math.ceil((Math.max(0, scrollTop) + viewportHeight) / rowHeight);
-  return { start: Math.max(0, Math.min(first, rowCount) - overscan), end: Math.min(rowCount, last + overscan) };
+  const start = Math.floor(Math.max(0, first - overscan) / chunk) * chunk;
+  return { start: Math.min(start, Math.max(0, rowCount - 1)), end: Math.min(rowCount, Math.ceil((last + overscan) / chunk) * chunk) };
 }
 
 /**

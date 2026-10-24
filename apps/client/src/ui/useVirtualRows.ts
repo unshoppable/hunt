@@ -27,7 +27,7 @@ export type VirtualRows = {
  * any element with that attribute) of `spaceBefore` px, the rows `start` to `end`, and a spacer of `spaceAfter` px,
  * all as direct children.
  */
-export function useVirtualRows(listRef: RefObject<HTMLElement | null>, rowCount: number, overscan = 20): VirtualRows {
+export function useVirtualRows(listRef: RefObject<HTMLElement | null>, rowCount: number, overscan = 40): VirtualRows {
   const [layout, setLayout] = useState<Layout>({ range: { start: 0, end: 0 }, rowHeight: 0 });
   const rowCountRef = useRef(rowCount);
   rowCountRef.current = rowCount;

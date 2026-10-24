@@ -634,13 +634,19 @@ fn push_name_status(files: &mut Vec<ChangedFile>, output: &str) {
     }
 }
 
-/// Adds one `?` entry per non-empty line of `output` to `files`.
+/// Adds one `?` entry per non-empty line of `output` to `files`. A path `files` already lists (a file removed from the
+/// index but still on disk, which `git diff` reports as deleted) stays one entry and counts as modified, so every
+/// path is listed once.
 fn push_untracked(files: &mut Vec<ChangedFile>, output: &str) {
+    let listed: HashMap<String, usize> = files.iter().enumerate().map(|(index, file)| (file.path.clone(), index)).collect();
     for line in output.lines() {
         if line.trim().is_empty() {
             continue;
         }
-        files.push(ChangedFile { path: line.to_string(), status: "?".into() });
+        match listed.get(line) {
+            Some(&index) => files[index].status = "M".into(),
+            None => files.push(ChangedFile { path: line.to_string(), status: "?".into() }),
+        }
     }
 }
 
@@ -1484,6 +1490,15 @@ mod tests {
         assert_eq!(commits[0].authored_at.to_rfc3339(), "2026-10-09T22:38:00+00:00");
         assert!(commits[1].parents.is_empty());
         assert!(commits[1].refs.is_empty());
+    }
+
+    #[test]
+    fn push_untracked_lists_a_path_deleted_from_the_index_but_on_disk_once_as_modified() {
+        let mut files = Vec::new();
+        push_name_status(&mut files, "D\teslint-suppressions.json\nM\tsrc/main.ts\n");
+        push_untracked(&mut files, "eslint-suppressions.json\nnotes.md\n");
+        let entries: Vec<(&str, &str)> = files.iter().map(|file| (file.path.as_str(), file.status.as_str())).collect();
+        assert_eq!(entries, vec![("eslint-suppressions.json", "M"), ("src/main.ts", "M"), ("notes.md", "?")]);
     }
 
     #[test]

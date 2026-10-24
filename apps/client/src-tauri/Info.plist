@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the bundle's Info.plist and embedded into dev builds. Dev builds get no CFBundleIdentifier from
+     tauri.conf.json, so without it macOS picks an installed Hunt.app's identifier and with it that app's webview
+     storage. Keep it equal to "identifier" in tauri.conf.json. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>info.medconomy.hunt</string>
+</dict>
+</plist>

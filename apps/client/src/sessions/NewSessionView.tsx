@@ -23,11 +23,10 @@ import { findPullRequestBranch } from "./pullRequests";
 import { SessionVmList } from "./SessionVmList";
 import { latestTopLevelSession, titleFromPrompt } from "./sessionLabels";
 
-/** Where a session can work; "New environment" (issue #2) is announced but not built yet, hence disabled. */
+/** Where a session can work. */
 const WORKSPACE_OPTIONS: DropdownOption[] = [
   { id: "worktree", name: "Worktree", description: "A fresh worktree off the base branch" },
   { id: "checkout", name: "Current checkout", description: "The repository's checkout as it is" },
-  { id: "environment", name: "New environment", description: "Not available yet", isDisabled: true },
 ];
 
 /** Trigger of a dropdown in the bar below the composer. */

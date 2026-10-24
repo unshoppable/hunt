@@ -1,3 +1,13 @@
+## 0.109.0 (2026-10-24)
+
+### 🚀 Features
+
+- **client:** the pull request list shows each pull request's number in front of its title ([31a4a0f](https://github.com/unshoppable/hunt/commit/31a4a0f))
+
+### 🩹 Fixes
+
+- **client:** the start view's workspace menu no longer lists the unavailable "New environment" entry ([b37f998](https://github.com/unshoppable/hunt/commit/b37f998))
+
 ## 0.108.0 (2026-10-24)
 
 ### 🚀 Features

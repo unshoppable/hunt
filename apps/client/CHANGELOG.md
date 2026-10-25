@@ -1,3 +1,9 @@
+## 0.129.0 (2026-10-25)
+
+### 🚀 Features
+
+- **client:** a Git action reports its outcome in a status toast at the window's bottom right, a failure staying until it is closed, and the branch tree's toolbar shows a spinner while one runs ([42285b1](https://github.com/unshoppable/hunt/commit/42285b1))
+
 ## 0.128.0 (2026-10-25)
 
 ### 🚀 Features

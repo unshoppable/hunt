@@ -1,4 +1,4 @@
-import { useRef, type RefObject } from "react";
+import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
 import { BranchIcon } from "../ui/icons";
 import { ResizeGrips } from "../ui/ResizeGrips";
@@ -16,8 +16,9 @@ export type PushMode = "push" | "commitAndPush";
 /**
  * Popover above the changelist's footer that names, before anything is pushed, the branch on `origin` the push lands
  * on and where it runs. Its confirm button holds the focus, so Enter pushes; Escape or a click outside closes it, a
- * press on one of `anchorRefs` closes without reopening. It hangs from the footer's left or right end (`align`) and is
- * as tall as its content up to the remembered height; dragging its top or outer edge resizes it.
+ * press on one of `anchorRefs` closes without reopening. It hangs from the footer's left or right end (`align`), never
+ * wider than the footer so that the panel does not clip it, and is as tall as its content up to the remembered height;
+ * dragging its top or outer edge resizes it.
  */
 export function PushPopover({
   mode,
@@ -50,7 +51,18 @@ export function PushPopover({
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const viewport = useViewportSize();
-  const { size, isHeightSet, grips } = usePopupSize("push", { min: MIN_SIZE, max: { width: viewport.width * MAX_SHARE, height: viewport.height * MAX_SHARE } });
+  // The footer the popover is positioned in; the popover never grows wider than it.
+  const [footerWidth, setFooterWidth] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const footer = rootRef.current?.offsetParent;
+    if (!(footer instanceof HTMLElement)) return;
+    setFooterWidth(footer.clientWidth);
+    const observer = new ResizeObserver(() => setFooterWidth(footer.clientWidth));
+    observer.observe(footer);
+    return () => observer.disconnect();
+  }, []);
+  const maxWidth = footerWidth === null ? viewport.width * MAX_SHARE : Math.min(footerWidth, viewport.width * MAX_SHARE);
+  const { size, isHeightSet, grips } = usePopupSize("push", { min: MIN_SIZE, max: { width: maxWidth, height: viewport.height * MAX_SHARE } });
   useDismiss(rootRef, onClose, { anchorRefs });
 
   const remoteTarget = `origin/${target}`;

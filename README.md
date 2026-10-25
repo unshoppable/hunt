@@ -388,6 +388,10 @@ go-to-declaration (a tag or attribute to its component, directive, input or outp
 `templateUrl` to the template); it needs seconds per newly loaded project (about 8 s cold, 25 ms
 warm), so its usages arrive after tsgo's. Hunt starts it in the background when the first TypeScript or template file
 opens, so it has loaded the projects of the open files before the first request; it takes about 1 GB per worktree.
+Class members nothing uses are greyed out like WebStorm's "Unused property" (`apps/client/src/ide/unusedMemberMarkers.ts`):
+the TypeScript worker names the public and protected members that may be unused, and a member is greyed out once
+neither tsgo, nor the Angular server, nor tsgo again after loading the projects of every file mentioning the name find a
+reference, and the template beside its file does not mention it (a base class's template used by subclasses elsewhere).
 
 The shortcuts below and those of the sidebar, chat and changelist are defaults: *Settings → Keymap* binds each command
 to other or additional keys, flags two commands that share one and keeps the changes in the settings store
@@ -401,7 +405,7 @@ to other or additional keys, flags two commands that share one and keeps the cha
 | ⇧⌘E / ⇧⌘R | Move the active tab to the pane above / below |
 | ⌘W / ⇧⌘W | Close the active tab / every tab; the last tab leaves an empty area, and ⌘W without a tab closes the editor window |
 | ⇧⌘2 | Select the file in the project tree; in the change list, open it in the editor |
-| ⌃⇧C | In the change list: copy the selected file's absolute path (also "Copy path" in its context menu) |
+| ⌃⇧C | Copy the absolute path: in the editor of the open file, in the change list and the project tree of the selected rows (also "Copy path" in their context menus) |
 | ⌘S | Save every file with unsaved edits, also those of closed tabs and other windows; also with the focus in the project tree, the changelist or the chat |
 | ⌘G | Remove unused imports (tsgo), then format with the Prettier the worktree installs, its config and plugins included (`apps/client/scripts/prettier.mjs`); without Prettier with tsgo's formatter |
 | ⌘Ü | "Rename…" (also in the context menu): renames the symbol at the caret across the project through tsgo, asked at its declaration so imports follow; optionally also the name in comments and strings and in non-code files, which always opens the preview with a check box per occurrence; touched files without unsaved edits are saved (`apps/client/src/ide/RenameDialog.tsx`) |

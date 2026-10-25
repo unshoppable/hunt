@@ -151,7 +151,28 @@ pub async fn search(registry: &FindRegistry, worktree: &Path, query: &TextQuery,
     if !running.is_current() {
         return Ok(TextSearchResult::default());
     }
+    search_index(worktree, &index, &mut files, matcher, Collect::Lines, move || running.is_current()).await
+}
 
+/// The worktree files containing `query`, in path order, all of them: a search that neither cancels nor is cancelled
+/// by the "Find in Files" searches of the worktree, for lookups behind other features (the usage search).
+pub async fn files_containing(registry: &FindRegistry, worktree: &Path, query: &TextQuery) -> Result<Vec<String>, String> {
+    let matcher = Matcher::new(query)?;
+    let index = registry.index(worktree);
+    let mut files = index.files.lock().await;
+    let result = search_index(worktree, &index, &mut files, matcher, Collect::Files, || true).await?;
+    Ok(result.matches.into_iter().map(|found| found.path).collect())
+}
+
+/// Lists the files when the list is missing or stale, then searches the texts on a blocking thread.
+async fn search_index(
+    worktree: &Path,
+    index: &Arc<WorktreeIndex>,
+    files: &mut FileIndex,
+    matcher: Option<Matcher>,
+    collect: Collect,
+    is_current: impl Fn() -> bool + Send + Sync + 'static,
+) -> Result<TextSearchResult, String> {
     match files.listed_at {
         None => {
             files.paths = Arc::new(git::list_files(worktree).await?);
@@ -173,7 +194,7 @@ pub async fn search(registry: &FindRegistry, worktree: &Path, query: &TextQuery,
     let paths = files.paths.clone();
     let texts = std::mem::take(&mut files.texts);
     let root = worktree.to_path_buf();
-    let (texts, result) = tokio::task::spawn_blocking(move || search_files(&root, &paths, texts, matcher.as_ref(), &|| running.is_current()))
+    let (texts, result) = tokio::task::spawn_blocking(move || search_files(&root, &paths, texts, matcher.as_ref(), collect, &is_current))
     .await
     .map_err(|error| format!("failed to search: {error}"))?;
     files.texts = texts;
@@ -232,6 +253,13 @@ impl Matcher {
     }
 }
 
+/// What a search collects: every matching line up to `MATCH_LIMIT`, or the first matching line of every file.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Collect {
+    Lines,
+    Files,
+}
+
 /// What one chunk of files yields: its re-read texts by index into the paths, and its matching lines (at most one
 /// more than the limit).
 #[derive(Default)]
@@ -242,7 +270,7 @@ struct ChunkResult {
 
 /// Brings the texts of `paths` up to date and searches them with `matcher` on every core; returns the texts to keep.
 /// Stops early once the result is complete or `is_current` turns false.
-fn search_files(root: &Path, paths: &[String], mut texts: HashMap<String, CachedText>, matcher: Option<&Matcher>, is_current: &(dyn Fn() -> bool + Sync)) -> (HashMap<String, CachedText>, TextSearchResult) {
+fn search_files(root: &Path, paths: &[String], mut texts: HashMap<String, CachedText>, matcher: Option<&Matcher>, collect: Collect, is_current: &(dyn Fn() -> bool + Sync)) -> (HashMap<String, CachedText>, TextSearchResult) {
     let chunks: Vec<&[String]> = paths.chunks(CHUNK_FILES).collect();
     let results: Mutex<Vec<Option<ChunkResult>>> = Mutex::new((0..chunks.len()).map(|_| None).collect());
     let next = AtomicUsize::new(0);
@@ -267,14 +295,19 @@ fn search_files(root: &Path, paths: &[String], mut texts: HashMap<String, Cached
                         result.updates.push((chunk_index * CHUNK_FILES + offset, fresh));
                     }
                     let (Some(matcher), Some(text)) = (matcher, text) else { continue };
-                    if result.matches.len() <= MATCH_LIMIT && matcher.accepts(path) {
-                        search_text(path, &text, &matcher.regex, MATCH_LIMIT + 1, &mut result.matches);
+                    if !matcher.accepts(path) {
+                        continue;
+                    }
+                    match collect {
+                        Collect::Lines if result.matches.len() <= MATCH_LIMIT => search_text(path, &text, &matcher.regex, MATCH_LIMIT + 1, &mut result.matches),
+                        Collect::Lines => {}
+                        Collect::Files => search_text(path, &text, &matcher.regex, result.matches.len() + 1, &mut result.matches),
                     }
                 }
                 let mut results = results.lock().unwrap();
                 results[chunk_index] = Some(result);
                 let found: usize = results.iter().map_while(|result| result.as_ref().map(|result| result.matches.len())).sum();
-                if matcher.is_some() && found > MATCH_LIMIT {
+                if matcher.is_some() && collect == Collect::Lines && found > MATCH_LIMIT {
                     is_done.store(true, Ordering::Relaxed);
                 }
             });
@@ -288,7 +321,7 @@ fn search_files(root: &Path, paths: &[String], mut texts: HashMap<String, Cached
         }
         result.matches.extend(chunk.matches);
     }
-    if result.matches.len() > MATCH_LIMIT {
+    if collect == Collect::Lines && result.matches.len() > MATCH_LIMIT {
         result.matches.truncate(MATCH_LIMIT);
         result.is_truncated = true;
     }
@@ -421,6 +454,21 @@ mod tests {
         assert!(found.preview.starts_with('…') && found.preview.ends_with('…'));
         assert_eq!(found.ranges, vec![TextRange { start: 41, end: 47 }]);
         assert_eq!(&found.preview[41 + 2..47 + 2], "needle");
+    }
+
+    #[tokio::test]
+    async fn files_containing_lists_every_file_once_and_is_not_cancelled_by_a_later_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.ts"), "UserListQuery\nUserListQuery\n").unwrap();
+        std::fs::write(root.join("b.ts"), "new UserListQuery()\n").unwrap();
+        std::fs::write(root.join("c.ts"), "UserListQueryPage\n").unwrap();
+        let registry = FindRegistry::default();
+        registry.index(root).files.lock().await.listed_at = Some(Instant::now());
+        registry.index(root).files.lock().await.paths = Arc::new(vec!["a.ts".into(), "b.ts".into(), "c.ts".into()]);
+        let query = TextQuery { text: "UserListQuery".into(), match_case: true, whole_words: true, is_regex: false, file_mask: String::new() };
+        let _later = RunningSearch::start(registry.index(root), f64::MAX);
+        assert_eq!(files_containing(&registry, root, &query).await.unwrap(), vec!["a.ts".to_string(), "b.ts".to_string()]);
     }
 
     #[test]

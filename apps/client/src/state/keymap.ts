@@ -46,7 +46,7 @@ export const KEYMAP_COMMANDS = [
     group: "Changes",
     scope: "app",
     defaults: ["Ctrl+Shift+c"],
-    note: "in the change list and the editor's project tree",
+    note: "in the change list, the editor's project tree and, for the open file, the editor",
   },
   { id: "editor.save", label: "Save all files with unsaved edits", group: "Editor", scope: "app", defaults: ["Meta+s"] },
   { id: "editor.reformat", label: "Reformat file and remove unused imports", group: "Editor", scope: "app", defaults: ["Meta+g"] },

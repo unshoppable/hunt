@@ -31,6 +31,7 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
   const ensureChat = useHuntStore((state) => state.ensureChat);
   const openFile = useIdeStore((state) => state.openFile);
   const revealActiveFile = useIdeStore((state) => state.revealActiveFile);
+  const revealFolder = useIdeStore((state) => state.revealFolder);
   const closeAllTabs = useIdeStore((state) => state.closeAllTabs);
   const ide = useIdeSession(sessionId);
   const openPaths = useMemo(() => [...new Set(allPanes(ide.layout).flatMap((pane) => pane.tabs))], [ide.layout]);
@@ -59,7 +60,11 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
   useEffect(() => ensureChat(sessionId), [ensureChat, sessionId]);
 
   useEffect(() => {
-    const show = ({ path, line, column, inRightSplit, revealInTree }: EditorOpenRequest) => {
+    const show = ({ path, line, column, inRightSplit, revealInTree, isFolder }: EditorOpenRequest) => {
+      if (isFolder) {
+        revealFolder(sessionId, path);
+        return;
+      }
       openFile(sessionId, path, { line, column, inRightSplit });
       if (revealInTree) {
         revealActiveFile(sessionId);
@@ -103,7 +108,7 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
     );
     void subscription.then(() => setIsListening(true));
     return () => void subscription.then((unlisten) => unlisten());
-  }, [sessionId, initialRequest, openFile, revealActiveFile]);
+  }, [sessionId, initialRequest, openFile, revealActiveFile, revealFolder]);
 
   // The window that opened this one queues requests until the page listens and knows its sessions (see editorWindows.ts).
   useEffect(() => {

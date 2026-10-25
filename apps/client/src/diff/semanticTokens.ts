@@ -2,6 +2,7 @@ import * as monaco from "monaco-editor";
 import { lspClientForModel, lspClientForTemplate } from "../ide/lsp/client";
 import { hoverSignature, toLspPosition, type Hover } from "../ide/lsp/protocol";
 import { TEMPLATE_ROLES, templateRoleOfHover, type TemplateRole } from "./angularTemplate";
+import type { MemberCandidate } from "../ide/unusedMembers";
 import { roleOfImportHover, type UnresolvedImport, type WebstormClassification } from "./webstormClassifier";
 import { WEBSTORM_ROLES } from "./webstormRoles";
 
@@ -9,6 +10,7 @@ import { WEBSTORM_ROLES } from "./webstormRoles";
 export type SemanticWorker = monaco.typescript.TypeScriptWorker & {
   getSemanticClassifications(fileName: string, importRoles: Record<string, number>): Promise<WebstormClassification>;
   isObjectMemberPosition(fileName: string, offset: number): Promise<boolean>;
+  unusedMemberCandidates(fileName: string): Promise<MemberCandidate[]>;
 };
 
 /**
@@ -164,8 +166,8 @@ export function refreshSemanticTokens(): void {
   tokensChanged.fire();
 }
 
-/** Token of the template grammar (angularTemplate.ts) for a name at the top of an expression. */
-const TEMPLATE_NAME_TOKEN = "identifier.ng.html";
+/** Tokens of the template grammar (angularTemplate.ts) for a name at the top of an expression, read or called. */
+const TEMPLATE_NAME_TOKENS = new Set(["identifier.ng.html", "identifier.ng.function.html"]);
 
 /**
  * Classifies the names at the top of the expressions of an Angular template (`displayName` in `{{ displayName() }}`)
@@ -181,7 +183,7 @@ async function classifyTemplate(model: monaco.editor.ITextModel, token: monaco.C
   monaco.editor.tokenize(model.getValue(), "html").forEach((lineTokens, lineIndex) => {
     const lineNumber = lineIndex + 1;
     lineTokens.forEach((lineToken, index) => {
-      if (lineToken.type !== TEMPLATE_NAME_TOKEN) return;
+      if (!TEMPLATE_NAME_TOKENS.has(lineToken.type)) return;
       const end = lineTokens[index + 1]?.offset ?? model.getLineMaxColumn(lineNumber) - 1;
       const position = { lineNumber, column: lineToken.offset + 1 };
       names.push({ start: model.getOffsetAt(position), length: end - lineToken.offset, position });

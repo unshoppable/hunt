@@ -192,6 +192,9 @@ pub struct SelectionContext {
     /// replaces the default framing of the system prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// The chat is about the folder `path` rather than a file; `text` is empty then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_folder: bool,
 }
 
 impl SelectionContext {
@@ -199,6 +202,7 @@ impl SelectionContext {
     /// the file's current content then comes with every prompt (see `send_prompt`) rather than as a snapshot here.
     pub fn to_system_prompt(&self) -> String {
         match &self.task {
+            Some(task) if self.is_folder => format!("\n## Task\n{}\n", task),
             Some(task) => format!(
                 "\n## Task\n{}\n\nEvery message of the user carries the current content of `{}` as a context block, as long as the file exists.\n",
                 task, self.path

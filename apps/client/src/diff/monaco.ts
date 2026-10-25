@@ -9,6 +9,7 @@ import { registerSemanticTokens } from "./semanticTokens";
 import { registerLspProviders } from "../ide/lsp/providers";
 import { WEBSTORM, WEBSTORM_TOKEN_RULES, typescriptLanguage } from "./webstormScheme";
 import { angularTemplateLanguage } from "./angularTemplate";
+import { cssLanguage } from "./cssLanguage";
 import { CODE_FONT_FAMILY, UI_FONT_FAMILY } from "../state/settings";
 import type { CommandId } from "../state/keymap";
 import { isShortcut, shortcutLabel } from "../ui/shortcuts";
@@ -227,6 +228,12 @@ function labelKeybinding(label: string): ResolvedKeybinding {
   };
 }
 
+/** Tailwind's at-rules, which the CSS language service would otherwise mark as unknown; WebStorm's Tailwind plugin knows them. */
+const TAILWIND_CSS_DATA: monaco.css.CSSDataV1 = {
+  version: 1.1,
+  atDirectives: ["@tailwind", "@apply", "@config", "@plugin", "@source", "@theme", "@utility", "@variant", "@custom-variant", "@reference", "@screen"].map((name) => ({ name })),
+};
+
 let isSetUp = false;
 
 /** Bundles Monaco with Vite instead of the loader's CDN default and registers the language workers; runs once. */
@@ -276,10 +283,13 @@ export function setupMonaco(): void {
   }
   for (const defaults of [monaco.css.cssDefaults, monaco.css.scssDefaults, monaco.css.lessDefaults]) {
     defaults.setModeConfiguration({ ...defaults.modeConfiguration, definitions: false });
+    defaults.setOptions({ ...defaults.options, data: { useDefaultDataProvider: true, dataProviders: { tailwind: TAILWIND_CSS_DATA } } });
   }
 
   monaco.languages.setMonarchTokensProvider("typescript", typescriptLanguage(".ts"));
   monaco.languages.setMonarchTokensProvider("javascript", typescriptLanguage(".js"));
+  monaco.languages.setMonarchTokensProvider("css", cssLanguage(".css"));
+  monaco.languages.setMonarchTokensProvider("scss", cssLanguage(".scss"));
   monaco.languages.setMonarchTokensProvider("html", angularTemplateLanguage());
   registerSemanticTokens();
   registerLspProviders();

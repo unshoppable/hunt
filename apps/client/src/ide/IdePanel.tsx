@@ -1,15 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { fillPrompt } from "../../../../libs/domain/src/prompts.ts";
+import projectTreeFilePrompt from "../../prompts/project-tree-file.system-prompt.md?raw";
+import projectTreeFolderPrompt from "../../prompts/project-tree-folder.system-prompt.md?raw";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
+import { commands } from "../ipc/commands";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
 import { useHuntStore } from "../state/store";
 import { repoName } from "../ui/path";
 import { isShortcut, shortcutCommand } from "../ui/shortcuts";
+import { errorText } from "../ui/useLoad";
 import { DependencyBanner } from "./DependencyBanner";
 import { workspaceFor } from "./documents";
 import { EditorGrid } from "./EditorGrid";
 import { EMPTY_IDE_SESSION, useIdeSession, useIdeStore } from "./ideStore";
 import { findPane } from "./paneGrid";
-import { ProjectTree } from "./ProjectTree";
+import { ProjectTree, type ProjectTreeTarget } from "./ProjectTree";
+import { selectionChatsFor } from "./selectionChats";
 import { useDirtyPaths } from "./useDirtyPaths";
 
 /** Events of the mouse's extra buttons that the editor and the webview must not act on. */
@@ -43,7 +49,7 @@ function isForeignTextField(root: HTMLElement | null): boolean {
  * stays until ⌘W is pressed once more, which calls `onCloseEmpty` (the editor window closes then). ⇧⌘2 selects the active file in the project
  * tree. The tree selection follows ⇧⌘2 only, never the active pane. ⌘S saves every file with unsaved edits, also with the
  * focus in the project tree (see `Workspace.saveAll`). ⌘[ / ⌘] (also ⌥⌘← / ⌥⌘→) and the mouse's back / forward buttons step through the
- * navigation history.
+ * navigation history. ⌃⇧C copies the active file's absolute path, in the project tree the paths of the selected rows.
  */
 export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onCloseEmpty?: () => void }) {
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId) ?? null);
@@ -68,7 +74,7 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
 
   // Closing tabs keeps their unsaved edits in the shared documents; the project tree and the change list mark them.
   const dirtyPaths = useDirtyPaths(workspace);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void workspace.reloadFromDisk();
@@ -117,13 +123,27 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
       event.preventDefault();
       workspace
         .saveAll()
-        .then(() => setSaveError(null))
-        .catch((reason) => setSaveError(String(reason)))
+        .then(() => setError(null))
+        .catch((reason) => setError(String(reason)))
         .finally(() => noteWorktreeChanged(sessionId));
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [workspace, sessionId, noteWorktreeChanged]);
+
+  // ⌃⇧C (keymap default) copies the active file's absolute path; the project tree takes it first for its own selection.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || !isShortcut(event, "changes.copyPath") || isForeignTextField(rootRef.current)) return;
+      const { layout, activePaneId } = useIdeStore.getState().sessions[sessionId] ?? EMPTY_IDE_SESSION;
+      const activePath = activePaneId ? findPane(layout, activePaneId)?.activePath : null;
+      if (!activePath) return;
+      event.preventDefault();
+      void navigator.clipboard.writeText(`${workspace.worktreePath}/${activePath}`).catch((reason) => setError(`failed to copy the path: ${errorText(reason)}`));
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [workspace, sessionId]);
 
   // The mouse's back (button 3) and forward (button 4) buttons navigate on release; neither press nor release
   // reaches the editor (no caret move) or the webview's own history.
@@ -151,6 +171,32 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
     };
   }, [sessionId, navigateBack, navigateForward]);
 
+  /**
+   * Opens the sub chat about the whole file or folder beside its agent button in the project tree: the existing chat
+   * with its conversation, or a new one whose agent gets the file's current content with every prompt.
+   */
+  const askAgent = (target: ProjectTreeTarget, button: HTMLElement) => {
+    const rect = button.getBoundingClientRect();
+    const anchor = { x: rect.right + 6, y: rect.top };
+    const existingChat = selectionChatsFor(useHuntStore.getState().sessions, sessionId, target.path).find((chat) => !!chat.selection.task);
+    if (existingChat) {
+      subChat.open({ selection: existingChat.selection, anchor }, existingChat.sessionId);
+      return;
+    }
+    if (target.isFolder) {
+      const task = fillPrompt(projectTreeFolderPrompt.trim(), { path: target.path });
+      subChat.open({ selection: { path: target.path, startLine: 1, endLine: 1, text: "", task, isFolder: true }, anchor });
+      return;
+    }
+    commands
+      .readFile(sessionId, target.path)
+      .then((text) => {
+        const task = fillPrompt(projectTreeFilePrompt.trim(), { path: target.path });
+        subChat.open({ selection: { path: target.path, startLine: 1, endLine: Math.max(1, text.split("\n").length), text, task }, anchor });
+      })
+      .catch((reason) => setError(errorText(reason)));
+  };
+
   if (!session) return null;
 
   const projectName = repoName(session.repoPath) || session.title;
@@ -170,12 +216,13 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
             unsavedPaths={dirtyPaths}
             workspace={workspace}
             onOpen={(path) => openFile(sessionId, path)}
+            onAskAgent={askAgent}
           />
         </Panel>
         <PaneSeparator />
         <Panel id="editors" minSize={300} className="flex flex-col">
           <DependencyBanner sessionId={sessionId} status={session.dependencies} />
-          {saveError ? <p className="border-b border-(--line) px-3 py-2 text-[13px] text-red-400">{saveError}</p> : null}
+          {error ? <p className="border-b border-(--line) px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
           <EditorGrid sessionId={sessionId} workspace={workspace} ide={ide} dirtyPaths={dirtyPaths} onOpenSubChat={subChat.open} onToggleSubChat={subChat.toggle} />
         </Panel>
       </PersistentGroup>

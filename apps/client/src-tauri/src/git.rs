@@ -1072,17 +1072,6 @@ async fn ensure_branch_name(repo: &Path, branch: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Worktree-relative paths of the text files containing `word` as a whole word (tracked and untracked, never
-/// ignored files), sorted as git lists them. `word` must be an identifier.
-pub async fn files_containing_word(worktree: &Path, word: &str) -> Result<Vec<String>, String> {
-    let is_identifier = !word.is_empty() && word.chars().all(|char| char.is_alphanumeric() || char == '_' || char == '$');
-    if !is_identifier {
-        return Err(format!("not an identifier: {word:?}"));
-    }
-    let output = run_git(worktree, &["grep", "-I", "-l", "-w", "-F", "--untracked", "-e", word, "--"]).await?;
-    Ok(output.lines().filter(|line| !line.is_empty()).map(str::to_string).collect())
-}
-
 /// One commit of the log.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2197,22 +2186,6 @@ mod tests {
         assert_eq!(snapshot_tree(repo, &store).await.unwrap(), tree);
         // The snapshot's objects live in the store, not in the repository.
         assert!(run_git(repo, &["cat-file", "-e", &tree]).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn files_containing_word_matches_whole_words_in_tracked_and_untracked_files() {
-        let dir = fixture().await;
-        let repo = dir.path();
-        std::fs::write(repo.join("tracked.txt"), "class UserListQuery {}\n").unwrap();
-        std::fs::write(repo.join("other.txt"), "UserListQueryPage\n").unwrap();
-        std::fs::write(repo.join("new.ts"), "new UserListQuery()\n").unwrap();
-        std::fs::write(repo.join("ignored.ts"), "UserListQuery\n").unwrap();
-        std::fs::write(repo.join(".gitignore"), "ignored.ts\n").unwrap();
-
-        let files = files_containing_word(repo, "UserListQuery").await.unwrap();
-        assert_eq!(files, vec!["new.ts".to_string(), "tracked.txt".to_string()]);
-        assert_eq!(files_containing_word(repo, "Missing").await.unwrap(), Vec::<String>::new());
-        assert!(files_containing_word(repo, "--help").await.is_err());
     }
 
     #[test]

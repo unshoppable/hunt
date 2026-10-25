@@ -43,6 +43,11 @@ function wholeFileTask(file: ChangedFile): string {
   return `The user opened this chat from the changelist about the whole file \`${file.path}\`; the current work ${change}. Answer questions about the file and its changes, and edit the file when asked to.`;
 }
 
+/** Task of a sub chat opened from a changelist folder row: the chat is about the folder and the changed files in it. */
+function folderTask(path: string): string {
+  return `The user opened this chat from the changelist about the folder \`${path}/\` and the changes the current work made in it. Answer questions about the folder and its changes, and edit its files when asked to.`;
+}
+
 /** Files that do not exist at the base commit are removed instead of restored; a folder reverts every listed file in it. */
 function revertLabel(target: ChangeListTarget): string {
   if (target.isFolder) return target.files.length === 1 ? "Revert 1 file" : `Revert ${target.files.length} files`;
@@ -333,14 +338,19 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
    * Opens the sub chat about the whole of `file` beside its agent button in the changelist: the existing whole-file
    * chat with its conversation, or a new one whose agent gets the file's current content with every prompt.
    */
-  const askAgentAboutFile = (file: ChangedFile, button: HTMLElement) => {
+  const askAgent = (target: ChangeListTarget, button: HTMLElement) => {
     const rect = button.getBoundingClientRect();
     const anchor = { x: rect.right + 6, y: rect.top };
-    const fileChat = selectionChatsFor(useHuntStore.getState().sessions, sessionId, file.path).find((chat) => !!chat.selection.task);
-    if (fileChat) {
-      subChat.open({ selection: fileChat.selection, anchor }, fileChat.sessionId);
+    const existingChat = selectionChatsFor(useHuntStore.getState().sessions, sessionId, target.path).find((chat) => !!chat.selection.task);
+    if (existingChat) {
+      subChat.open({ selection: existingChat.selection, anchor }, existingChat.sessionId);
       return;
     }
+    if (target.isFolder) {
+      subChat.open({ selection: { path: target.path, startLine: 1, endLine: 1, text: "", task: folderTask(target.path), isFolder: true }, anchor });
+      return;
+    }
+    const [file] = target.files;
     commands
       .readFileDiff(sessionId, file.path)
       .then((result) => {
@@ -398,7 +408,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
         onSelect={selectFile}
         onContextMenu={openContextMenu}
         onCopyPath={copyPath}
-        onAskAgent={askAgentAboutFile}
+        onAskAgent={askAgent}
         onWorktreeChanged={() => {
           setLocalVersion((version) => version + 1);
           noteWorktreeChanged(sessionId);
@@ -548,20 +558,19 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
           <div className="mb-1 truncate border-b border-(--line) px-2 pb-1 font-mono text-[12px] text-neutral-500" title={contextMenu.target.path}>
             {baseName(contextMenu.target.path)}
           </div>
-          {contextMenu.target.isFolder ? null : (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setContextMenu(null);
-                void openInEditorWindow(sessionId, { path: contextMenu.target.path, revealInTree: true, revealFirstChange: true });
-              }}
-              className="flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left hover:bg-(--row-hover)"
-            >
-              Open in editor
-              {openInEditorShortcut ? <span className="text-neutral-500">{openInEditorShortcut}</span> : null}
-            </button>
-          )}
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setContextMenu(null);
+              const { path, isFolder } = contextMenu.target;
+              void openInEditorWindow(sessionId, isFolder ? { path, isFolder } : { path, revealInTree: true, revealFirstChange: true });
+            }}
+            className="flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left hover:bg-(--row-hover)"
+          >
+            Open in editor
+            {openInEditorShortcut && !contextMenu.target.isFolder ? <span className="text-neutral-500">{openInEditorShortcut}</span> : null}
+          </button>
           <button
             type="button"
             role="menuitem"

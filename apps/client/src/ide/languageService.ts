@@ -3,6 +3,7 @@ import { commands } from "../ipc/commands";
 import type { Workspace } from "./documents";
 import { lspClientForModel, lspClientForTemplate, type LspClient } from "./lsp/client";
 import { monacoLanguage } from "../diff/monaco";
+import { pathLiteralAt } from "../diff/pathLiteral";
 import { asLocationLinks, elementKindOf, hoverSignature, rangeContains, symbolsAt, toLspPosition, toLspRange, toMonacoRange, type CodeAction, type DocumentSymbol, type Hover, type Location, type LocationLink, type Position, type Range, type TextEdit, type WorkspaceEdit, type WorkspaceSymbol } from "./lsp/protocol";
 import { documentEdits } from "./reformat";
 import { commentAndStringMatches, editsByUri, isPackagePath, mergeOccurrences, mergeRenameEdits, occurrenceAt, quickInfoKind, serverErrorMessage, wordMatches, wordOccurrence, type RenameOccurrence } from "./rename";
@@ -26,14 +27,17 @@ function documentPosition(model: monaco.editor.ITextModel, position: Position) {
 }
 
 /**
- * The ⌘click action for `position`, resolved by the language server: the usages when the click sits on the
+ * The ⌘click action for `position`: a relative path literal naming a worktree file (`templateUrl: './a.html'`, an
+ * import specifier) opens that file. Otherwise the language server resolves it: the usages when the click sits on the
  * name of a declaration (a definition's selection range contains the position), otherwise the first definition
  * inside the worktree to jump to. The Angular language server answers for Angular templates and, where the TypeScript
- * server finds nothing, for a component's inline template and `templateUrl`: a tag or attribute leads to its
- * component, directive, input or output, a name in an expression to the component member. Null for files no server
- * serves, positions without a symbol, or declarations outside the worktree.
+ * server finds nothing, for a component's inline template: a tag or attribute leads to its component, directive,
+ * input or output, a name in an expression to the component member. Null for files no server serves, positions
+ * without a symbol, or declarations outside the worktree.
  */
 export async function navigationAt(model: monaco.editor.ITextModel, position: monaco.IPosition): Promise<Navigation | null> {
+  const file = await pathLiteralFile(model, position);
+  if (file) return file;
   const at = toLspPosition(position);
   const client = lspClientForModel(model);
   if (!client) {
@@ -47,6 +51,21 @@ export async function navigationAt(model: monaco.editor.ITextModel, position: mo
     return { type: "declaration", declaration: await declarationAt(client, model, at) };
   }
   return definitionInside(client, links.length ? links : await angularDefinitions(client, model, at));
+}
+
+/**
+ * The start of the worktree file the relative path literal at `position` names, resolved from the model's folder like
+ * a relative import (`./user.service` finds `user.service.ts`); null outside such a literal or without that file.
+ */
+async function pathLiteralFile(model: monaco.editor.ITextModel, position: monaco.IPosition): Promise<Navigation | null> {
+  const literal = pathLiteralAt(model.getLineContent(position.lineNumber), position.column);
+  const client = lspClientForModel(model) ?? lspClientForTemplate(model);
+  if (!literal || !client || !isInside(model.uri, client)) return null;
+  const from = model.uri.path.slice(client.worktreePath.length + 1);
+  const [path] = await commands.resolveImports(client.sessionId, from, [literal.path]).catch(() => [null]);
+  if (!path) return null;
+  const uri = monaco.Uri.file(`${client.worktreePath}/${path}`);
+  return { type: "definition", target: { uri, range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 } } };
 }
 
 /** The Angular language server's definitions at `position`; none when the worktree has no Angular server. */
@@ -142,10 +161,11 @@ async function declarationAt(client: LspClient, model: monaco.editor.ITextModel,
 
 /**
  * Every reference to the symbol at `position` across the project, without the declaration itself and without
- * import or re-export statements (they only repeat the usages in the file). In Angular projects the references in
- * component templates come from the Angular language server, which takes seconds while it loads projects, so
- * `onUsages` gets the TypeScript server's usages as soon as they are in (`isComplete` false) and all usages once the
- * Angular server has answered; a single call when it answered first. The files holding references are loaded into the
+ * import or re-export statements (they only repeat the usages in the file). Three searches run at once: the TypeScript
+ * server's in its loaded projects, its search again once the projects of every file mentioning the name are loaded
+ * (a worktree search), and the Angular language server's in component templates, which takes seconds while it loads
+ * projects. `onUsages` gets the usages found so far whenever one of them ends, `isComplete` after the last. A failed
+ * worktree search leaves the usages to the loaded projects. The files holding references are loaded into the
  * workspace, so the popup can preview them.
  */
 export async function findUsages(
@@ -161,23 +181,35 @@ export async function findUsages(
   }
   const at = toLspPosition(position);
   const params = { ...documentPosition(model, at), context: { includeDeclaration: false } };
-  let templateReferences: Location[] | undefined;
+  let typeScriptReferences: Location[] = [];
+  let templateReferences: Location[] = [];
+  let pendingSearches = 3;
+  let reports = Promise.resolve();
+  /** Hands the usages found so far to `onUsages` after the ones reported before; the last search completes them. */
+  const report = () => {
+    pendingSearches -= 1;
+    const references = mergeReferences(typeScriptReferences, templateReferences, model.uri.toString(), at);
+    const isComplete = !pendingSearches;
+    reports = reports.then(async () => onUsages(await usagesOf(workspace, client, references), isComplete));
+  };
+  const searchTypeScript = async () => {
+    typeScriptReferences = (await client.request<Location[] | null>("textDocument/references", params)) ?? [];
+    report();
+  };
+  const name = model.getWordAtPosition(position)?.word;
+  const projectsLoaded = name ? loadProjectsMentioning(client, name).catch(() => []) : Promise.resolve([]);
   const templateSearch = client
     .request<Location[] | null>("textDocument/references", params, undefined, "angular")
     .catch(() => null)
     .then((references) => {
       templateReferences = references ?? [];
+      report();
     });
-  const name = model.getWordAtPosition(position)?.word;
-  if (name) {
-    await loadProjectsMentioning(workspace, client, name);
-  }
-  const references = (await client.request<Location[] | null>("textDocument/references", params)) ?? [];
-  if (!templateReferences) {
-    onUsages(await usagesOf(workspace, client, references), false);
-    await templateSearch;
-  }
-  onUsages(await usagesOf(workspace, client, mergeReferences(references, templateReferences ?? [], model.uri.toString(), at)), true);
+  await searchTypeScript();
+  await projectsLoaded;
+  await searchTypeScript();
+  await templateSearch;
+  await reports;
 }
 
 /** The usages at `references` in the worktree's source files and templates, sorted, without import lines. */
@@ -219,11 +251,19 @@ async function usagesOf(workspace: Workspace, client: LspClient, references: Loc
  * Loads the TypeScript project of every worktree source file containing `name` as a whole word. tsgo searches
  * references only in the projects it has loaded, which are those of the open files, so a library's usages in an app
  * stay hidden until a file of the app is open; asked for a file's `custom/projectInfo`, it loads the file's project.
- * A server without that method answers with an error, which leaves the search to the loaded projects.
+ * A server without that method answers with an error, which leaves the search to the loaded projects. Resolves with
+ * the worktree paths of every file containing `name`, source files or not.
  */
-async function loadProjectsMentioning(workspace: Workspace, client: LspClient, name: string): Promise<void> {
-  const paths = await commands.searchWord(workspace.sessionId, name);
-  const requests = paths.filter(isSourceFile).map((path) => client.request("custom/projectInfo", { textDocument: { uri: workspace.uriOf(path).toString() } }).catch(() => null));
+export async function loadProjectsMentioning(client: LspClient, name: string): Promise<string[]> {
+  const paths = await commands.searchWord(client.sessionId, name);
+  await loadProjectsOf(client, paths);
+  return paths;
+}
+
+/** Loads the TypeScript project of every source file among `paths` (worktree paths) into the server, as `loadProjectsMentioning` does. */
+export async function loadProjectsOf(client: LspClient, paths: readonly string[]): Promise<void> {
+  const uriOf = (path: string) => monaco.Uri.file(`${client.worktreePath}/${path}`).toString();
+  const requests = paths.filter(isSourceFile).map((path) => client.request("custom/projectInfo", { textDocument: { uri: uriOf(path) } }).catch(() => null));
   await Promise.all(requests);
 }
 
@@ -338,7 +378,7 @@ export async function planRename(workspace: Workspace, model: monaco.editor.ITex
   const client = lspClientForModel(model);
   if (!client) throw new Error("Rename needs the TypeScript language server, which does not serve this file.");
   const word = target.name.replace(/^#/, "");
-  await loadProjectsMentioning(workspace, client, word).catch(() => {});
+  await loadProjectsMentioning(client, word).catch(() => {});
   const params = { textDocument: { uri: target.uri }, position: target.position, newName };
   const [edit, angularEdit] = await Promise.all([
     client.request<WorkspaceEdit | null>("textDocument/rename", params).catch((reason) => {

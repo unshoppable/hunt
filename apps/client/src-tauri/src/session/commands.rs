@@ -2176,7 +2176,7 @@ pub async fn send_prompt(
         return Err("the prompt is empty".into());
     }
     let record = store::find_session(&app, id)?;
-    if let Some(selection) = record.selection.as_ref().filter(|selection| selection.task.is_some()) {
+    if let Some(selection) = record.selection.as_ref().filter(|selection| selection.task.is_some() && !selection.is_folder) {
         if let Ok(target) = worktree_file(&record, &selection.path) {
             // The agent on a VM knows the file by its path there; the local copy holds the same content once synced.
             let shown_as = match &record.remote {
@@ -3223,11 +3223,16 @@ pub async fn read_lint_rules(app: AppHandle, id: Uuid) -> Result<LintRules, Stri
     lint_rules::read_lint_rules(&script, &record.worktree_path, &configs).await
 }
 
-/// Worktree files containing `word` as a whole word; candidates for the editor's usage search.
+/// Worktree files containing `word` as a whole word, from the Find in Files index; candidates for the editor's usage search.
 #[tauri::command]
-pub async fn search_word(app: AppHandle, id: Uuid, word: String) -> Result<Vec<String>, String> {
+pub async fn search_word(app: AppHandle, registry: State<'_, FindRegistry>, id: Uuid, word: String) -> Result<Vec<String>, String> {
     let record = worktree_session(&app, id)?;
-    git::files_containing_word(&record.worktree_path, &word).await
+    let is_identifier = !word.is_empty() && word.chars().all(|char| char.is_alphanumeric() || char == '_' || char == '$');
+    if !is_identifier {
+        return Err(format!("not an identifier: {word:?}"));
+    }
+    let query = TextQuery { text: word, match_case: true, whole_words: true, is_regex: false, file_mask: String::new() };
+    find_in_files::files_containing(&registry, &record.worktree_path, &query).await
 }
 
 /// Lines of worktree files matching `query`, for the editor's Find in Files.

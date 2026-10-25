@@ -501,6 +501,8 @@ export type SelectionContext = {
   text: string;
   /** What the sub chat is for when it was not opened from a code selection (see guardrails); replaces the default framing. */
   task?: string;
+  /** The chat is about the folder `path` (a changelist folder row) rather than a file; `text` is empty then. */
+  isFolder?: boolean;
 };
 
 export type ChangedFile = {
@@ -790,6 +792,8 @@ export type EditorOpenRequest = {
   definitionOf?: string;
   revealInTree?: boolean;
   revealFirstChange?: boolean;
+  /** `path` is a folder: the project tree reveals and expands it, and no file opens. */
+  isFolder?: boolean;
 };
 
 /** A changed file of a session to show in a diff window (see graph/diffWindows.ts). */

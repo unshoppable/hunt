@@ -28,8 +28,8 @@ use notify_debouncer_full::{new_debouncer_opt, DebounceEventResult, Debouncer, N
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{oneshot, watch, OnceCell};
 use tokio::task::JoinSet;
@@ -158,7 +158,7 @@ impl LspServer {
             .current_dir(&worktree)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             // Its own process group: `tsgo` on PATH is usually a shim that spawns node, which spawns the native binary.
             .process_group(0)
             .kill_on_drop(true)
@@ -166,6 +166,8 @@ impl LspServer {
             .map_err(|error| format!("failed to start {}: {error}", launch.program.display()))?;
         let stdin = child.stdin.take().ok_or("language server stdin is not available")?;
         let stdout = child.stdout.take().ok_or("language server stdout is not available")?;
+        let stderr = child.stderr.take().ok_or("language server stderr is not available")?;
+        tokio::spawn(forward_stderr(kind, stderr));
         let (outbox, frames) = unbounded_channel();
         tokio::spawn(write_loop(stdin, frames));
 
@@ -425,6 +427,9 @@ impl LspServer {
         }
         let child = self.child.lock().unwrap().take();
         if let Some(mut child) = child {
+            if let Ok(Some(status)) = child.try_wait() {
+                eprintln!("{:?} language server of {} exited on its own with {status}", self.kind, self.worktree.display());
+            }
             kill_group(&mut child);
             let _ = child.wait().await;
         }
@@ -440,6 +445,14 @@ impl LspServer {
 
     async fn wait_exited(&self) {
         let _ = self.exited.subscribe().wait_for(|exited| *exited).await;
+    }
+}
+
+/// Prints every stderr line of the `kind` server, which is where a crashing server leaves its reason.
+async fn forward_stderr(kind: ServerKind, stderr: ChildStderr) {
+    let mut lines = BufReader::new(stderr).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        eprintln!("{kind:?} language server: {line}");
     }
 }
 

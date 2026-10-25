@@ -98,8 +98,12 @@ export class LspClient {
     }
   }
 
-  /** The document symbol tree of `model`, shared between callers asking for the same model version. */
+  /**
+   * The document symbol tree of `model`, shared between callers asking for the same model version; empty for models
+   * the server does not receive, such as templates, since tsgo crashes on a request for a file it cannot parse.
+   */
   documentSymbols(model: monaco.editor.ITextModel): Promise<DocumentSymbol[]> {
+    if (!this.serves(model)) return Promise.resolve([]);
     const uri = model.uri.toString();
     const version = model.getVersionId();
     const cached = this.symbols.get(uri);

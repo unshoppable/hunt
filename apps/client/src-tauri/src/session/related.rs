@@ -411,10 +411,10 @@ mod tests {
         owner.acp_session_id = Some("abc".into());
         owner.summary = vec!["Found the bug in auth.ts".into()];
         owner.remote = Some(remote_target());
-        let selection = SelectionContext { path: "src/auth.ts".into(), start_line: 3, end_line: 9, text: "x".into(), task: None };
+        let selection = SelectionContext { path: "src/auth.ts".into(), start_line: 3, end_line: 9, text: "x".into(), task: None, is_folder: false };
         let mut sub = SessionRecord::sub_session(sub_id, "Why this check?".into(), &owner, Some(selection));
         sub.acp_session_id = Some("def".into());
-        let task = SelectionContext { path: "README.md".into(), start_line: 1, end_line: 1, text: String::new(), task: Some("Write the file".into()) };
+        let task = SelectionContext { path: "README.md".into(), start_line: 1, end_line: 1, text: String::new(), task: Some("Write the file".into()), is_folder: false };
         let task_sub = SessionRecord::sub_session(task_id, "README".into(), &owner, Some(task));
         let state_of = |record: &SessionRecord| if record.id == sub_id { AgentState::Working } else if record.id == owner_id { AgentState::Idle } else { AgentState::NotRunning };
 

@@ -34,8 +34,8 @@ export type IdeSession = {
   layout: PaneLayout;
   activePaneId: string | null;
   pendingPosition: PendingPosition | null;
-  /** The project tree expands to and selects this file (⇧⌘2). */
-  revealRequest: { path: string; nonce: number } | null;
+  /** The project tree expands to and selects this file (⇧⌘2), or this folder, which it expands as well. */
+  revealRequest: { path: string; nonce: number; isFolder?: boolean } | null;
   history: NavigationHistory;
 };
 
@@ -164,6 +164,8 @@ type IdeState = {
   moveActiveTab: (sessionId: string, direction: Direction) => void;
   clearPendingPosition: (sessionId: string, nonce: number) => void;
   revealActiveFile: (sessionId: string) => void;
+  /** Expands the project tree to the folder `path`, expands the folder and selects it. */
+  revealFolder: (sessionId: string, path: string) => void;
   /** Brings back a stored editor under fresh pane ids; a session the store holds already keeps what it shows. */
   restoreSession: (sessionId: string, snapshot: IdeSnapshot) => void;
 };
@@ -236,6 +238,11 @@ export const useIdeStore = create<IdeState>((set, get) => {
         nonceCounter += 1;
         return { ...session, revealRequest: { path: pane.activePath, nonce: nonceCounter } };
       });
+    },
+
+    revealFolder: (sessionId, path) => {
+      nonceCounter += 1;
+      update(sessionId, (session) => ({ ...session, revealRequest: { path, nonce: nonceCounter, isFolder: true } }));
     },
 
     restoreSession: (sessionId, snapshot) => {

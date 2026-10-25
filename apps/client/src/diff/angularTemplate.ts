@@ -20,8 +20,9 @@ function tagToken(next?: string): monaco.languages.IExpandedMonarchLanguageActio
 
 /**
  * Rules of an Angular expression (interpolations, bindings, block parameters). Names at the top of an expression
- * are `identifier.ng`, which the semantic tokens of semanticTokens.ts color by what the Angular language server
- * says they are (signal, method, field); members, pipes, keys and literals get their color here.
+ * are `identifier.ng` (`identifier.ng.function` when called), which the semantic tokens of semanticTokens.ts color
+ * by what the Angular language server says they are (signal, method, field); without a server (previews) a called
+ * name keeps the method color. Members, pipes, keys and literals get their color here.
  */
 function expressionRules(stringQuotes: readonly ("'" | '"')[]): monaco.languages.IMonarchLanguageRule[] {
   const strings = stringQuotes.map((quote): monaco.languages.IMonarchLanguageRule => [new RegExp(`${quote}(?:[^${quote}\\\\]|\\\\.)*${quote}?`), "string"]);
@@ -33,6 +34,7 @@ function expressionRules(stringQuotes: readonly ("'" | '"')[]): monaco.languages
     [/(\??\.)(\s*)([a-zA-Z_$][\w$]*)/, ["delimiter.dot", "", "identifier.member"]],
     // A microsyntax key (`context:` of `*ngTemplateOutlet="…; context: …"`) names a directive input, not a member.
     [/[a-zA-Z_$][\w$]*(?=:(?!:))/, "identifier"],
+    [/[a-zA-Z_$][\w$]*(?=\s*\()/, { cases: { "@primitives": "keyword.primitive", "@keywords": "keyword", "@default": "identifier.ng.function" } }],
     [/[a-zA-Z_$][\w$]*/, { cases: { "@primitives": "keyword.primitive", "@keywords": "keyword", "@default": "identifier.ng" } }],
     [/\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/, "number"],
     ...strings,

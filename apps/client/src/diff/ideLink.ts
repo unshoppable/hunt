@@ -1,6 +1,7 @@
 import * as monaco from "monaco-editor";
+import { pathLiteralAt } from "./pathLiteral";
 
-/** Class on the word under the cursor while Cmd is held; styled in index.css (underline, highlight, pointer). */
+/** Class on the link under the cursor while Cmd is held; styled in index.css (underline, highlight, pointer). */
 const LINK_CLASS = "hunt-ide-link";
 
 export type IdeLinkHandlers = {
@@ -10,10 +11,18 @@ export type IdeLinkHandlers = {
   onOpenInIde: (line: number, column: number) => void;
 };
 
+/** The text a ⌘click at `position` acts on: a relative path literal as a whole, otherwise the word; null on neither. */
+function linkRangeAt(model: monaco.editor.ITextModel, position: monaco.Position): monaco.Range | null {
+  const line = position.lineNumber;
+  const literal = pathLiteralAt(model.getLineContent(line), position.column);
+  const span = literal ?? model.getWordAtPosition(position);
+  return span ? new monaco.Range(line, span.startColumn, line, span.endColumn) : null;
+}
+
 /**
- * Wires ⌘click and ⇧⌘click to the handlers and, while Cmd is held, marks the hovered word as a link so the
- * editor reads as clickable before the click. The hover decoration follows the mouse and disappears when Cmd is
- * released or the mouse leaves the editor. Returns a disposable that removes the listeners and the decoration.
+ * Wires ⌘click and ⇧⌘click to the handlers and, while Cmd is held, marks the hovered word or relative path literal
+ * as a link so the editor reads as clickable before the click. The hover decoration follows the mouse and disappears
+ * when Cmd is released or the mouse leaves the editor. Returns a disposable that removes the listeners and the decoration.
  */
 export function attachIdeLink(editor: monaco.editor.ICodeEditor, handlers: IdeLinkHandlers): monaco.IDisposable {
   const decorations = editor.createDecorationsCollection();
@@ -21,17 +30,12 @@ export function attachIdeLink(editor: monaco.editor.ICodeEditor, handlers: IdeLi
 
   const render = (isMetaHeld: boolean) => {
     const model = editor.getModel();
-    const word = isMetaHeld && hovered && model ? model.getWordAtPosition(hovered) : null;
-    if (!word || !hovered) {
+    const range = isMetaHeld && hovered && model ? linkRangeAt(model, hovered) : null;
+    if (!range) {
       decorations.clear();
       return;
     }
-    decorations.set([
-      {
-        range: new monaco.Range(hovered.lineNumber, word.startColumn, hovered.lineNumber, word.endColumn),
-        options: { inlineClassName: LINK_CLASS },
-      },
-    ]);
+    decorations.set([{ range, options: { inlineClassName: LINK_CLASS } }]);
   };
 
   const onKey = (event: KeyboardEvent) => {

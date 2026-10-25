@@ -20,11 +20,12 @@ import { usePopupSize } from "../ui/usePopupSize";
 import { useViewportSize } from "../ui/useViewportSize";
 import { searchFiles, parseQuery, type FileMatch } from "./fileSearch";
 import { KindIcon } from "./KindIcon";
+import { loadProjectsOf } from "./languageService";
 import { lspClientFor } from "./lsp/client";
 import type { WorkspaceSymbol } from "./lsp/protocol";
 import { attachSelectionAgent } from "./selectionAgent";
 import { MARKING_SELECTION_SOURCE } from "./selectionAskButton";
-import { CLASS_KINDS, declarationQuery, declarationsOf, isSymbolQuery, rankSymbols, workspaceSymbolsIn, type SymbolCandidate, type SymbolMatch } from "./symbolSearch";
+import { declarationQuery, declarationsOf, isSymbolQuery, mentionQuery, mergeResults, rankSymbols, resultGroup, workspaceSymbolsIn, type SearchResult, type SymbolCandidate, type SymbolMatch } from "./symbolSearch";
 
 /** Timeout for the second Shift press of "double shift", and the interval of a second press when Shift stays down. */
 const DOUBLE_SHIFT_MS = 400;
@@ -38,26 +39,24 @@ const MAX_HEIGHT_SHARE = 0.84;
 /** Pause after the last keystroke before symbols are searched. */
 const SYMBOL_SEARCH_DELAY_MS = 150;
 
-/** A result row: classes come first, then files, then the other symbols, like WebStorm's "Search Everywhere". */
-type Row = { type: "file"; match: FileMatch } | { type: "symbol"; match: SymbolMatch };
-
-function rowGroup(row: Row): string {
-  if (row.type === "file") return "Files";
-  return CLASS_KINDS.has(row.match.kind) ? "Classes" : "Symbols";
-}
-
-function rowKey(row: Row): string {
+function rowKey(row: SearchResult): string {
   return row.type === "file" ? row.match.path : `symbol:${row.match.path}:${row.match.line}:${row.match.name}`;
 }
 
 /** The language server's workspace symbols and the declarations a text search finds for `text`; a failing source adds none. */
+/**
+ * The symbols named like `text`: class members and the like from the TypeScript server, whose search covers only the
+ * projects it has loaded, so the projects of the files mentioning `text` are loaded first; top-level declarations
+ * from a text search, which also finds them in projects the server could not load.
+ */
 async function findSymbols(sessionId: string, worktreePath: string, text: string, files: ReadonlySet<string>): Promise<SymbolCandidate[]> {
-  const [symbols, declarations] = await Promise.all([
-    lspClientFor(sessionId, worktreePath)
-      .request<WorkspaceSymbol[] | null>("workspace/symbol", { query: text })
-      .catch(() => null),
-    commands.findInFiles(sessionId, declarationQuery(text)).catch(() => null),
-  ]);
+  const client = lspClientFor(sessionId, worktreePath);
+  const workspaceSymbols = async () => {
+    const mentions = await commands.findInFiles(sessionId, mentionQuery(text)).catch(() => null);
+    await loadProjectsOf(client, [...new Set((mentions?.matches ?? []).map((match) => match.path))]);
+    return client.request<WorkspaceSymbol[] | null>("workspace/symbol", { query: text });
+  };
+  const [symbols, declarations] = await Promise.all([workspaceSymbols().catch(() => null), commands.findInFiles(sessionId, declarationQuery(text)).catch(() => null)]);
   return [...workspaceSymbolsIn(symbols ?? [], worktreePath, files), ...declarationsOf(declarations?.matches ?? [])];
 }
 
@@ -161,13 +160,17 @@ export function FileSearchWindowContent({
 /**
  * WebStorm-style "Search Everywhere" for files and symbols: a search field over every project file with fuzzy ranking
  * (see fileSearch.ts) and, for an identifier, over the declared classes and symbols (see symbolSearch.ts).
- * With an empty query the open files are listed. The selected file is previewed below the list like in WebStorm's
+ * With an empty query the open files are listed; the session's last query comes back selected, so typing replaces
+ * it. The selected file is previewed below the list like in WebStorm's
  * "Search Everywhere", with its path and an "Open In Right Split" action in the footer. ↑/↓ move the selection,
  * Enter opens (`name:12` places the caret on line 12, a symbol at its name), ⇧Enter opens in a right split.
  * Inside the app it is a dialog that Esc or a click on the backdrop closes, as does opening a file; dragging a side or
  * the bottom edge resizes it and the size is remembered across sessions. `isDetached` fills a popup window instead.
  * Text selected in the preview opens a sub chat about it over the dialog; while that is open, Esc closes only the sub chat.
  */
+/** The last query of each session, shown again when its search opens; per page, as the popup window has one of its own. */
+const lastQueries = new Map<string, string>();
+
 function FileSearchView({
   sessionId,
   worktreePath,
@@ -184,7 +187,11 @@ function FileSearchView({
   onClose: () => void;
 }) {
   const fileIconUrl = useFileIconUrl();
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(() => lastQueries.get(sessionId) ?? "");
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    inputRef.current?.select();
+  }, []);
   const [files, setFiles] = useState<string[] | null>(null);
   const [symbolCandidates, setSymbolCandidates] = useState<SymbolCandidate[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -210,13 +217,10 @@ function FileSearchView({
     { delayMs: SYMBOL_SEARCH_DELAY_MS, isEnabled: isSymbolSearch && !!files && !!worktreePath },
   );
 
-  const rows = useMemo<Row[]>(() => {
+  const rows = useMemo<SearchResult[]>(() => {
     const fileMatches = parsed.text ? searchFiles(files ?? [], parsed.text) : [...openPaths].reverse().map((path) => ({ path, ...splitPath(path), score: 0, positions: [] }));
-    const fileRows = fileMatches.map((match): Row => ({ type: "file", match }));
-    if (!isSymbolSearch) return fileRows;
     // Candidates of the previous query stay until the new ones arrive, ranked against the current text.
-    const symbolRows = rankSymbols(symbolCandidates, parsed.text).map((match): Row => ({ type: "symbol", match }));
-    return [...symbolRows.filter((row) => rowGroup(row) === "Classes"), ...fileRows, ...symbolRows.filter((row) => rowGroup(row) === "Symbols")];
+    return mergeResults(fileMatches, isSymbolSearch ? rankSymbols(symbolCandidates, parsed.text) : []);
   }, [files, parsed.text, openPaths, isSymbolSearch, symbolCandidates]);
   const hasSymbols = rows.some((row) => row.type === "symbol");
 
@@ -226,10 +230,10 @@ function FileSearchView({
     listRef.current?.querySelector(`[data-row="${selected}"]`)?.scrollIntoView({ block: "nearest" });
   }, [selected, rows]);
 
-  const selectedRow = rows[selected] as Row | undefined;
+  const selectedRow = rows[selected] as SearchResult | undefined;
   const selectedPath = selectedRow?.match.path;
 
-  const open = (row: Row | undefined, inRightSplit = false) => {
+  const open = (row: SearchResult | undefined, inRightSplit = false) => {
     if (!row) return;
     if (row.type === "file") {
       onOpen(row.match.path, parsed.line ?? undefined, undefined, inRightSplit);
@@ -271,9 +275,11 @@ function FileSearchView({
         <div className="flex shrink-0 items-center gap-2 border-b border-(--line) px-3">
           <SearchIcon className="size-4 shrink-0 text-neutral-500" />
           <input
+            ref={inputRef}
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
+              lastQueries.set(sessionId, event.target.value);
               setSelectedIndex(0);
             }}
             placeholder="Go to file or symbol (append :line to jump to a line)"
@@ -289,8 +295,8 @@ function FileSearchView({
         <ul ref={listRef} className={`min-h-0 overflow-auto py-1 text-[13px] ${selectedRow ? "max-h-[45%] shrink-0 border-b border-(--line)" : ""}`}>
           {rows.map((row, index) => (
             <Fragment key={rowKey(row)}>
-              {hasSymbols && (index === 0 || rowGroup(rows[index - 1]) !== rowGroup(row)) ? (
-                <li className="px-3 pt-2 pb-1 text-[12px] text-neutral-500">{rowGroup(row)}</li>
+              {hasSymbols && (index === 0 || resultGroup(rows[index - 1]) !== resultGroup(row)) ? (
+                <li className="px-3 pt-2 pb-1 text-[12px] text-neutral-500">{resultGroup(row)}</li>
               ) : null}
               <li
                 onMouseMove={(event) => selectUnderMouse(event, index)}

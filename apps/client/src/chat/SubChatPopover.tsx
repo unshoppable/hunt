@@ -25,6 +25,7 @@ import { titleFromPrompt } from "../sessions/sessionLabels";
 import { showSessionInMainWindow } from "../sessions/showSession";
 import { DANGER_CLEAR_BUTTON, ICON_BUTTON_SM, ICON_BUTTON_XS, PRIMARY_BUTTON_XS, SEND_BUTTON } from "../ui/buttons";
 import { CloseIcon, LinkIcon, SendIcon, TrashIcon } from "../ui/icons";
+import { baseName } from "../ui/path";
 import { trackDrag } from "../ui/pointerDrag";
 import { ResizeGrips } from "../ui/ResizeGrips";
 import { useAutoGrow, useTextareaDrag } from "../ui/useAutoGrow";
@@ -557,17 +558,20 @@ function SubChatView({
     }
   }
 
-  const lines = describeLines(request.selection);
-  /** A stopped sub session has nothing to show between the header and the footer. */
-  const showsSelection = !subSessionId && !title;
+  const isFolder = !!request.selection.isFolder;
+  /** What the header names: the selected lines, or the folder of a chat about a whole folder. */
+  const subject = isFolder ? `${baseName(request.selection.path)}/` : describeLines(request.selection);
+  const fullSubject = isFolder ? `${request.selection.path}/` : describeSelection(request.selection);
+  /** A stopped sub session has nothing to show between the header and the footer; a folder has no selected text. */
+  const showsSelection = !subSessionId && !title && !isFolder;
   const showsContext = !subSessionId && Boolean(context?.text);
   const hasBody = showsSelection || showsContext || Boolean(chat && (chat.isLoading || chat.items.length || chat.permission || chat.error)) || Boolean(error);
   const heading = (
     <>
-      <span className="min-w-0 truncate text-[13px] text-neutral-400" title={describeSelection(request.selection)}>
+      <span className="min-w-0 truncate text-[13px] text-neutral-400" title={fullSubject}>
         {title ?? (
           <>
-            Sub chat about <span className="font-mono text-neutral-300">{lines}</span>
+            Sub chat about <span className="font-mono text-neutral-300">{subject}</span>
           </>
         )}
       </span>
@@ -584,7 +588,7 @@ function SubChatView({
       ref={rootRef}
       role="dialog"
       tabIndex={-1}
-      aria-label={title ?? `Sub chat about ${describeSelection(request.selection)}`}
+      aria-label={title ?? `Sub chat about ${fullSubject}`}
       style={isDetached ? undefined : { left, top, width: size.width, maxHeight: size.height, height: isHeightSet ? size.height : undefined }}
       onKeyDown={onKeyDown}
       // Inside the app the presses stay off the panes beneath; in a window they must reach Tauri's drag region handler.
@@ -611,7 +615,7 @@ function SubChatView({
 
       <div ref={scrollRef} className={`min-h-0 flex-1 overflow-y-auto px-12 ${hasBody ? "py-3" : ""}`}>
         <div ref={contentRef} className="flex flex-col gap-3">
-          {showsSelection ? <SelectionCard selection={request.selection} isOpen label={lines} /> : null}
+          {showsSelection ? <SelectionCard selection={request.selection} isOpen label={subject} /> : null}
           {showsContext && context ? <ContextCard label={context.label} text={context.text} /> : null}
           {chat?.isLoading ? <p className="text-neutral-500">Loading session…</p> : null}
           {chat ? (

@@ -74,12 +74,38 @@ export function isUsagesPopupInApp(): boolean {
   return !useSettingsStore.getState().detachedPopups.usages;
 }
 
+/** How long a search that has found at most one usage may run before the popup shows its progress. */
+const SHOW_PROGRESS_AFTER_MS = 500;
+
 /**
  * The usages of a ⌘clicked declaration (see UsagesView): inside the app window as a popover below the clicked line,
- * or in a window of its own (see popup/useDetachedPopup.ts), as the user chose.
+ * or in a window of its own (see popup/useDetachedPopup.ts), as the user chose. A single usage opens in the pane as
+ * soon as the search is complete, without a popup to pick from; so while the search may still end that way, the popup
+ * stays hidden, unless the search takes long.
  */
 export function UsagesPopup(props: UsagesPopupProps) {
   const isDetached = useSettingsStore((state) => state.detachedPopups.usages);
+  const { query, onOpen, onClose } = props;
+  const latest = useRef({ onOpen, onClose });
+  latest.current = { onOpen, onClose };
+  const usageCount = query.usages?.length ?? 0;
+  const isSingle = query.isComplete && usageCount === 1;
+  useEffect(() => {
+    if (isSingle && query.usages) {
+      latest.current.onOpen(query.usages[0]);
+      latest.current.onClose();
+    }
+  }, [isSingle, query.usages]);
+
+  const [isSlow, setIsSlow] = useState(false);
+  useEffect(() => {
+    setIsSlow(false);
+    const timer = setTimeout(() => setIsSlow(true), SHOW_PROGRESS_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [query.declaration]);
+
+  const isDecided = usageCount >= 2 || (query.isComplete && !isSingle);
+  if (isSingle || (!isDecided && !isSlow)) return null;
   return isDetached ? <DetachedUsages {...props} /> : <UsagesPopover {...props} />;
 }
 

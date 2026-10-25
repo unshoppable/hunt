@@ -6,7 +6,7 @@ import { useHuntStore } from "../state/store";
 import { configuredVmSettings, useSettingsStore } from "../state/settings";
 import { accountOptions, LOCAL_LOGIN, useAccountsStore } from "../state/accounts";
 import { openSettingsWindow } from "../settings/openSettingsWindow";
-import { useFileIconUrl } from "../diff/fileIcons";
+import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, sessionReference, sessionSubtitle, sidebarTitle, type ReferenceTone } from "./sessionLabels";
 import { SessionMark } from "./SessionMark";
 import { DeleteSessionDialog } from "./DeleteSessionDialog";
@@ -32,6 +32,7 @@ const SESSION_CYCLE_COMMANDS = ["session.next", "session.previous"] as const;
 /** The session list; `collapseToggle` sits beside the search field. */
 export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }) {
   const fileIconUrl = useFileIconUrl();
+  const folderIconUrl = useFolderIconUrl();
   const sessions = useHuntStore((state) => state.sessions);
   const activeSessionId = useHuntStore((state) => state.activeSessionId);
   const selectSession = useHuntStore((state) => state.selectSession);
@@ -302,7 +303,7 @@ export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }
                   </span>
                   <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.9375em] text-neutral-400" title={isSubChat ? session.selection?.path : undefined}>
                     {isSubChat && session.selection ? (
-                      <img src={fileIconUrl(session.selection.path)} alt="" className="size-4 shrink-0" />
+                      <img src={session.selection.isFolder ? folderIconUrl(session.selection.path) : fileIconUrl(session.selection.path)} alt="" className="size-4 shrink-0" />
                     ) : null}
                     {!isSubChat ? (session.pullRequest ? <GitHubIcon className="size-4 shrink-0" /> : <BranchIcon className="size-4 shrink-0" />) : null}
                     <span className="truncate">{isCreating && !isSubChat ? (session.workspace === "checkout" ? "Starting…" : "Creating worktree…") : sessionSubtitle(session)}</span>

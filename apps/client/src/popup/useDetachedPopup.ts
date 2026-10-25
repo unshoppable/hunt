@@ -51,6 +51,8 @@ export function useDetachedPopup<Kind extends PopupKind>(kind: Kind, content: Po
         if (!shown || showing.current !== current) return;
         const placement = await popupWindowBounds(kind, shownOptions.anchor());
         await ensurePopupWindow(kind, placement);
+        // The caller may have dropped its content meanwhile; the window then stays hidden.
+        if (showing.current !== current) return;
         const focus = current.sentRevision !== shownOptions.revision;
         current.sentRevision = shownOptions.revision;
         const request = { kind, hostLabel: getCurrentWindow().label, token: current.token, content: shown, placement, focus };

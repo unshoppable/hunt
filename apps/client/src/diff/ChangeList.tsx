@@ -60,7 +60,8 @@ export type ScopeControl = { value: ChangeScope; hiddenCount: number; includesPa
  * and shelve actions for the checked files or, in a pull request review, the submission of the review. The glob field in
  * the header hides files from the list (the owner applies it to `files`, `hiddenByGlobsCount` says how many it left out);
  * a file the agent rated in the dependency graph (`reviewRatings`) shows its review relevance behind its name. Every
- * file row has an agent button that opens a sub chat about the whole file; it shows on hover, or always once such a chat exists.
+ * file and folder row has an agent button that opens a sub chat about the whole file or folder; it shows on hover, or
+ * always once such a chat exists.
  * A right click on a file or folder row opens the owner's context menu; ⌃⇧C in the focused list copies the path of the row
  * under the cursor.
  */
@@ -93,8 +94,8 @@ export function ChangeList({
   onContextMenu: (event: MouseEvent, target: ChangeListTarget) => void;
   /** Copies the absolute path of the worktree-relative `path`. */
   onCopyPath: (path: string) => void;
-  /** Opens the sub chat about the whole file next to its agent button; without it there is none. */
-  onAskAgent?: (file: ChangedFile, button: HTMLElement) => void;
+  /** Opens the sub chat about the whole file or folder next to its agent button; without it there is none. */
+  onAskAgent?: (target: ChangeListTarget, button: HTMLElement) => void;
   /** Called after a shelve or unshelve so the owner reloads the worktree state. */
   onWorktreeChanged: () => void;
 }) {
@@ -146,18 +147,18 @@ export function ChangeList({
   const busyChatIds = useBusyChatIds();
   const marks = useMemo(() => sessionMarks(sessions), [sessions]);
   /**
-   * Paths with a whole-file sub chat (a selection with a task), whose agent button stays visible, mapped to whether
-   * that chat's agent is running a turn, which makes the button pulse.
+   * File and folder paths with a sub chat about the whole of them (a selection with a task), whose agent button stays
+   * visible, mapped to whether that chat's agent is running a turn, which makes the button pulse.
    */
-  const fileChats = useMemo(() => {
+  const agentChats = useMemo(() => {
     const result = new Map<string, boolean>();
-    for (const file of files) {
-      const chats = selectionChatsFor(sessions, sessionId, file.path).filter((chat) => !!chat.selection.task);
+    for (const path of [...files.map((file) => file.path), ...folderPaths(tree)]) {
+      const chats = selectionChatsFor(sessions, sessionId, path).filter((chat) => !!chat.selection.task);
       if (!chats.length) continue;
-      result.set(file.path, chats.some((chat) => busyChatIds.has(chat.sessionId)));
+      result.set(path, chats.some((chat) => busyChatIds.has(chat.sessionId)));
     }
     return result;
-  }, [files, sessions, sessionId, busyChatIds]);
+  }, [files, tree, sessions, sessionId, busyChatIds]);
 
   /**
    * Marks of the other sessions of the worktree that changed a file: `null` when only this session or its parent did.
@@ -310,6 +311,24 @@ export function ChangeList({
     onWorktreeChanged();
   };
 
+  /** The agent button of a file or folder row; it shows on hover, or always once a sub chat about the row exists. */
+  const renderAgentButton = (target: ChangeListTarget) => {
+    if (!onAskAgent) return null;
+    const hasChat = agentChats.has(target.path);
+    const subject = target.isFolder ? "folder" : "file";
+    return (
+      <AgentButton
+        onClick={(event) => onAskAgent(target, event.currentTarget)}
+        isBusy={agentChats.get(target.path) ?? false}
+        size={24}
+        sparkleSize={20}
+        className={`-my-1 transition-opacity focus-visible:opacity-100 ${hasChat ? "" : "opacity-0 group-hover:opacity-100"}`}
+        title={hasChat ? `Show the agent's chat about this ${subject}` : `Ask the agent about this ${subject}`}
+        aria-label={hasChat ? `Show the agent's chat about this ${subject}` : `Ask the agent about this ${subject}`}
+      />
+    );
+  };
+
   const renderFile = (file: ChangedFile, name: string, depth: number, showDirectory: boolean) => {
     const rating = reviewRatings.get(file.path);
     return (
@@ -335,17 +354,7 @@ export function ChangeList({
           {showDirectory ? <span className="ml-auto truncate pl-1 text-[0.85em] text-neutral-600">{dirName(file.path)}</span> : null}
           {rating?.review ? <ReviewBars level={rating.review} reason={rating.reviewReason} className={`size-3.5 ${showDirectory ? "" : "ml-auto"}`} /> : null}
         </button>
-        {onAskAgent ? (
-          <AgentButton
-            onClick={(event) => onAskAgent(file, event.currentTarget)}
-            isBusy={fileChats.get(file.path) ?? false}
-            size={24}
-            sparkleSize={20}
-            className={`-my-1 transition-opacity focus-visible:opacity-100 ${fileChats.has(file.path) ? "" : "opacity-0 group-hover:opacity-100"}`}
-            title={fileChats.has(file.path) ? "Show the agent's chat about this file" : "Ask the agent about this file"}
-            aria-label={fileChats.has(file.path) ? "Show the agent's chat about this file" : "Ask the agent about this file"}
-          />
-        ) : null}
+        {renderAgentButton({ path: file.path, files: [file], isFolder: false })}
       </li>
     );
   };
@@ -358,7 +367,7 @@ export function ChangeList({
         key={`dir:${folder.path}`}
         data-tree-key={key}
         data-selected={nav.cursor === key}
-        className="tree-row flex items-center gap-1.5 pr-2.5"
+        className="tree-row group flex items-center gap-1.5 pr-2.5"
         style={{ paddingLeft: `calc(12px + ${depth} * var(--changelist-indent))` }}
       >
         <Checkbox state={stateOf(folder.files)} onChange={() => toggleGroup(folder.files)} />
@@ -377,6 +386,7 @@ export function ChangeList({
           <span className="truncate text-neutral-300">{folder.name}</span>
           <span className="pl-1 text-[0.85em] text-neutral-600">{folder.files.length}</span>
         </button>
+        {renderAgentButton({ path: folder.path, files: folder.files, isFolder: true })}
       </li>
     );
   };

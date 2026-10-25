@@ -5,7 +5,7 @@
  */
 
 import type { TextMatch, TextQuery } from "../ipc/types";
-import { matchText } from "./fileSearch";
+import { NAME_MATCH_BONUS, matchText, type FileMatch } from "./fileSearch";
 import { elementKindOf, type WorkspaceSymbol } from "./lsp/protocol";
 
 /** A declaration found by the language server or the text search; `line` and `column` are 1-based and point at the name. */
@@ -14,7 +14,7 @@ export type SymbolCandidate = { name: string; kind: string; containerName: strin
 /** A candidate matching the query; `positions` index into `name`. */
 export type SymbolMatch = SymbolCandidate & { score: number; positions: number[] };
 
-/** Kinds WebStorm lists as "Classes"; they rank above files, the other symbols below them. */
+/** Kinds WebStorm lists as "Classes", in a group of their own before the files. */
 export const CLASS_KINDS = new Set(["class", "interface", "type", "enum"]);
 
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
@@ -29,6 +29,11 @@ const KEYWORD_KINDS: Record<string, string> = { "function*": "function", namespa
 /** Whether `text` can name a symbol; other queries (paths, file names with dots) search files only. */
 export function isSymbolQuery(text: string): boolean {
   return IDENTIFIER.test(text);
+}
+
+/** The Find in Files query for the source files mentioning `text` anywhere, ignoring case. */
+export function mentionQuery(text: string): TextQuery {
+  return { text, matchCase: false, wholeWords: false, isRegex: false, fileMask: SOURCE_FILE_MASK };
 }
 
 /** The Find in Files query for the unindented declarations whose name contains `text`, ignoring case. */
@@ -89,4 +94,34 @@ export function rankSymbols(candidates: readonly SymbolCandidate[], query: strin
       right.score - left.score || classRank(left) - classRank(right) || left.name.length - right.name.length || left.path.localeCompare(right.path) || left.line - right.line,
   );
   return matches.slice(0, limit);
+}
+
+/** A result of the file search: a file or a symbol. */
+export type SearchResult = { type: "file"; match: FileMatch } | { type: "symbol"; match: SymbolMatch };
+
+/** The group a result is listed under. */
+export function resultGroup(result: SearchResult): "Classes" | "Files" | "Symbols" {
+  if (result.type === "file") return "Files";
+  return CLASS_KINDS.has(result.match.kind) ? "Classes" : "Symbols";
+}
+
+/** A result's score on the scale of `searchFiles`: a symbol matches by its name, like a file matched by its name. */
+function resultScore(result: SearchResult): number {
+  return result.type === "file" ? result.match.score : NAME_MATCH_BONUS + result.match.score;
+}
+
+/**
+ * Lists the classes, the files and the other symbols in groups, each in the order given, and puts the group with the
+ * best match first, so a symbol named like the query comes before files that match only loosely. Groups whose best
+ * matches tie keep the order of WebStorm's "Search Everywhere": classes, files, symbols.
+ */
+export function mergeResults(files: readonly FileMatch[], symbols: readonly SymbolMatch[]): SearchResult[] {
+  const symbolResults = symbols.map((match): SearchResult => ({ type: "symbol", match }));
+  const groups = [
+    symbolResults.filter((result) => resultGroup(result) === "Classes"),
+    files.map((match): SearchResult => ({ type: "file", match })),
+    symbolResults.filter((result) => resultGroup(result) === "Symbols"),
+  ];
+  const bestScore = (group: SearchResult[]) => Math.max(...group.map(resultScore));
+  return groups.sort((left, right) => bestScore(right) - bestScore(left)).flat();
 }

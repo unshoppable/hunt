@@ -16,6 +16,9 @@ export type FileMatch = {
 
 export type ParsedQuery = { text: string; line: number | null };
 
+/** Added to the score of a match in the file name, which ranks it above every match in the directories. */
+export const NAME_MATCH_BONUS = 1000;
+
 /** Splits `ward-edit:42` into the search text and the requested line; the line is `null` when absent or invalid. */
 export function parseQuery(raw: string): ParsedQuery {
   const trimmed = raw.trim();
@@ -84,7 +87,7 @@ export function searchFiles(paths: readonly string[], query: string, limit = 50)
       const byName = matchText(name, needle);
       if (byName) {
         const offset = slash + 1;
-        match = { path, name, dir, score: 1000 + byName.score, positions: byName.positions.map((position) => position + offset) };
+        match = { path, name, dir, score: NAME_MATCH_BONUS + byName.score, positions: byName.positions.map((position) => position + offset) };
       }
     }
     if (!match) {

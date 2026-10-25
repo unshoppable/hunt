@@ -41,8 +41,9 @@ export function sidebarTitle(session: SessionView): string {
   return session.title.startsWith(prefix) ? session.title.slice(prefix.length) : session.title;
 }
 
-/** File name and line range a sub chat was opened from, e.g. `store.ts:L10-L12`. */
+/** File name and line range a sub chat was opened from, e.g. `store.ts:L10-L12`, or the folder it is about, e.g. `adr/`. */
 export function describeSubChatSource(selection: SelectionContext): string {
+  if (selection.isFolder) return `${baseName(selection.path)}/`;
   const fileName = baseName(selection.path);
   const lines = selection.startLine === selection.endLine ? `L${selection.startLine}` : `L${selection.startLine}-L${selection.endLine}`;
   return `${fileName}:${lines}`;

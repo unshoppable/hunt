@@ -42,10 +42,24 @@ export const WEBSTORM = {
   CSS_PROPERTY_NAME: "c183f9",
   CSS_PROPERTY_VALUE: "fbad64",
   CSS_KEYWORD: "d75757",
+  CSS_IMPORTANT: "d75757",
   CSS_IDENT: "85c984",
   CSS_PSEUDO: "e8bf6a",
   CSS_FUNCTION: "fb73c0",
   CSS_HASH: "d1fc22",
+  CSS_COLOR: "99e4f9",
+  CSS_URL: "287bde",
+  CSS_OPERATORS: "f1f1f1",
+  // CSS.BRACES, BRACKETS, PARENTHESES, COLON, COMMA, DOT and SEMICOLON, which the scheme sets to one color
+  CSS_PUNCTUATION: "f1f1f1",
+  // SASS_* attributes that differ from their CSS.* counterpart; SCSS files use them in place of the CSS.* ones.
+  SASS_COMMENT: "8b8996",
+  SASS_KEYWORD: "ff8cae",
+  SASS_FUNCTION: "ff92b2",
+  SASS_PSEUDO: "8ec990",
+  SASS_VARIABLE: "f7e862",
+  SASS_OPERATORS: "99e4f9",
+  SASS_INTERPOLATION: "d78f51",
   TAG: "629cfc",
   HTML_CUSTOM_TAG_NAME: "26bda4",
   HTML_TAG_DATA: "ffffff",
@@ -59,10 +73,21 @@ export const WEBSTORM = {
 } as const;
 
 /**
- * Theme token rules mapping Monaco's token names to the scheme: the Monarch tokens of `typescriptLanguage` and the
- * built-in grammars, and one rule per WebStorm role of webstormRoles.ts (`class`, `parameter`, `instanceMethod`, …)
- * that the semantic tokens of semanticTokens.ts carry. The scheme's bold styles are left out: the editor font has
- * no bold weight, and the synthesized one breaks the monospace grid.
+ * Rules for a token of the CSS/SCSS grammar (cssLanguage.ts): the scheme's CSS.* color for `.css`, its SASS_* color
+ * for `.scss`. Both are upright, so the token does not inherit the italics of a rule it shares a name with (`keyword`).
+ */
+function stylesheetRules(token: string, cssColor: string, scssColor: string = cssColor): monaco.editor.ITokenThemeRule[] {
+  return [
+    { token: `${token}.css`, foreground: cssColor, fontStyle: "" },
+    { token: `${token}.scss`, foreground: scssColor, fontStyle: "" },
+  ];
+}
+
+/**
+ * Theme token rules mapping Monaco's token names to the scheme: the Monarch tokens of `typescriptLanguage`,
+ * `cssLanguage` and the built-in grammars, and one rule per WebStorm role of webstormRoles.ts (`class`, `parameter`,
+ * `instanceMethod`, …) that the semantic tokens of semanticTokens.ts carry. The scheme's bold styles are left out:
+ * the editor font has no bold weight, and the synthesized one breaks the monospace grid.
  */
 export const WEBSTORM_TOKEN_RULES: monaco.editor.ITokenThemeRule[] = [
   { token: "keyword", foreground: WEBSTORM.KEYWORD, fontStyle: "italic" },
@@ -127,25 +152,30 @@ export const WEBSTORM_TOKEN_RULES: monaco.editor.ITokenThemeRule[] = [
   { token: "string.value.json", foreground: WEBSTORM.STRING },
   { token: "keyword.json", foreground: WEBSTORM.KEYWORD, fontStyle: "italic" },
 
-  // CSS / SCSS / LESS (built-in grammars)
-  { token: "tag.css", foreground: WEBSTORM.TAG },
-  { token: "tag.scss", foreground: WEBSTORM.TAG },
-  { token: "tag.less", foreground: WEBSTORM.TAG },
-  { token: "attribute.name.css", foreground: WEBSTORM.CSS_PROPERTY_NAME },
-  { token: "attribute.name.scss", foreground: WEBSTORM.CSS_PROPERTY_NAME },
-  { token: "attribute.name.less", foreground: WEBSTORM.CSS_PROPERTY_NAME },
-  { token: "attribute.value.css", foreground: WEBSTORM.CSS_PROPERTY_VALUE },
-  { token: "attribute.value.scss", foreground: WEBSTORM.CSS_PROPERTY_VALUE },
-  { token: "attribute.value.less", foreground: WEBSTORM.CSS_PROPERTY_VALUE },
-  { token: "attribute.value.number.css", foreground: WEBSTORM.NUMBER },
-  { token: "attribute.value.unit.css", foreground: WEBSTORM.NUMBER },
-  { token: "attribute.value.hex.css", foreground: WEBSTORM.NUMBER },
-  { token: "keyword.css", foreground: WEBSTORM.CSS_KEYWORD },
-  { token: "keyword.scss", foreground: WEBSTORM.CSS_KEYWORD },
-  { token: "string.css", foreground: WEBSTORM.STRING },
-  { token: "comment.css", foreground: WEBSTORM.COMMENT },
-  { token: "delimiter.css", foreground: "f1f1f1", fontStyle: "" },
-  { token: "number.css", foreground: WEBSTORM.NUMBER },
+  // CSS / SCSS (cssLanguage.ts). WebStorm colors class names, `&` and attribute names with CSS.IDENT and units with
+  // CSS.PROPERTY_VALUE, since the scheme sets no color of their own.
+  ...stylesheetRules("comment", WEBSTORM.COMMENT, WEBSTORM.SASS_COMMENT),
+  ...stylesheetRules("string", WEBSTORM.STRING),
+  ...stylesheetRules("url", WEBSTORM.CSS_URL),
+  ...stylesheetRules("tag", WEBSTORM.TAG),
+  ...stylesheetRules("className", WEBSTORM.CSS_IDENT),
+  ...stylesheetRules("parentSelector", WEBSTORM.CSS_IDENT),
+  ...stylesheetRules("attributeName", WEBSTORM.CSS_IDENT),
+  ...stylesheetRules("idSelector", WEBSTORM.CSS_HASH),
+  ...stylesheetRules("pseudo", WEBSTORM.CSS_PSEUDO, WEBSTORM.SASS_PSEUDO),
+  ...stylesheetRules("identifier", WEBSTORM.CSS_IDENT),
+  ...stylesheetRules("keyword", WEBSTORM.CSS_KEYWORD, WEBSTORM.SASS_KEYWORD),
+  ...stylesheetRules("important", WEBSTORM.CSS_IMPORTANT),
+  ...stylesheetRules("propertyName", WEBSTORM.CSS_PROPERTY_NAME),
+  ...stylesheetRules("propertyValue", WEBSTORM.CSS_PROPERTY_VALUE),
+  ...stylesheetRules("number", WEBSTORM.NUMBER),
+  ...stylesheetRules("unit", WEBSTORM.CSS_PROPERTY_VALUE),
+  ...stylesheetRules("color", WEBSTORM.CSS_COLOR),
+  ...stylesheetRules("function", WEBSTORM.CSS_FUNCTION, WEBSTORM.SASS_FUNCTION),
+  ...stylesheetRules("variable", WEBSTORM.SASS_VARIABLE),
+  ...stylesheetRules("interpolation", WEBSTORM.SASS_INTERPOLATION),
+  ...stylesheetRules("operator", WEBSTORM.CSS_OPERATORS, WEBSTORM.SASS_OPERATORS),
+  ...stylesheetRules("delimiter", WEBSTORM.CSS_PUNCTUATION),
 
   // HTML / XML (built-in grammars)
   { token: "tag.html", foreground: WEBSTORM.TAG },
@@ -173,6 +203,7 @@ export const WEBSTORM_TOKEN_RULES: monaco.editor.ITokenThemeRule[] = [
   { token: "delimiter.separator", foreground: WEBSTORM.PUNCTUATION, fontStyle: "italic" },
   { token: "operator.ng", foreground: WEBSTORM.PUNCTUATION, fontStyle: "" },
   { token: "identifier.pipe", foreground: WEBSTORM.INSTANCE_MEMBER_FUNCTION },
+  { token: "identifier.ng.function", foreground: WEBSTORM.INSTANCE_MEMBER_FUNCTION },
   { token: "signal", foreground: WEBSTORM.NG_SIGNAL },
 ];
 

@@ -22,6 +22,7 @@ import { ReviewCommentZones } from "../review/ReviewCommentZones";
 import { isInsideHunk, useReviewedPullRequest } from "../review/reviewComments";
 import { attachSelectionAgent } from "./selectionAgent";
 import { ScriptRunMarkers } from "./scriptRunMarkers";
+import { UnusedMemberMarkers } from "./unusedMemberMarkers";
 import { SelectionChatMarkers } from "./selectionChatMarkers";
 import { useBusyChatIds, useSelectionChats } from "./selectionChats";
 import { isUsagesPopupInApp, UsagesPopup, type UsagesQuery } from "./UsagesPopover";
@@ -206,6 +207,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
       return path && baseName(path) === "package.json" ? path : null;
     });
     scriptRunMarkersRef.current = scriptRunMarkers;
+    const unusedMemberMarkers = new UnusedMemberMarkers(editor);
     setEditor(editor);
 
     let symbolTimer: ReturnType<typeof setTimeout> | null = null;
@@ -293,6 +295,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
       addCommentGlyph.dispose();
       scriptRunMarkers.dispose();
       scriptRunMarkersRef.current = null;
+      unusedMemberMarkers.dispose();
       refactorings.dispose();
       agent?.dispose();
       setEditor(null);

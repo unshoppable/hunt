@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TextMatch } from "../ipc/types";
-import { declarationQuery, declarationsOf, isSymbolQuery, rankSymbols, workspaceSymbolsIn, type SymbolCandidate } from "./symbolSearch";
+import { searchFiles } from "./fileSearch";
+import { declarationQuery, declarationsOf, isSymbolQuery, mergeResults, rankSymbols, resultGroup, workspaceSymbolsIn, type SymbolCandidate } from "./symbolSearch";
 
 function textMatch(path: string, line: number, preview: string, start = 0): TextMatch {
   return { path, line, column: start + 1, endColumn: preview.length + 1, preview, ranges: [{ start, end: preview.length }] };
@@ -91,5 +92,21 @@ describe("rankSymbols", () => {
     expect(rankSymbols([candidate("PdfDocumentVector", "class")], "pdfdocvec")).toHaveLength(1);
     expect(rankSymbols([candidate("Alpha", "class", "a.ts"), candidate("Alps", "class", "b.ts")], "al", 1)).toHaveLength(1);
     expect(rankSymbols([candidate("Alpha", "class")], "  ")).toEqual([]);
+  });
+});
+
+describe("mergeResults", () => {
+  const sectionPath = "apps/ppp-rl/admin-ui/src/app/pages/administrative-daten/pages/location-detail/components/stammdaten-tab/location-arbeitsstunden-pro-tag-section/location-arbeitsstunden-pro-tag-section.component.ts";
+  const files = [sectionPath, "src/validation.ts"];
+  const symbols = [candidate("validateUserPassword", "function"), candidate("ValidationPipe", "class")];
+  const listing = (query: string) =>
+    mergeResults(searchFiles(files, query), rankSymbols(symbols, query)).map((result) => `${resultGroup(result)}: ${result.type === "file" ? result.match.path : result.match.name}`);
+
+  it("puts a symbol named like the query before files that match only loosely", () => {
+    expect(listing("validateuserpas")).toEqual(["Symbols: validateUserPassword", `Files: ${sectionPath}`]);
+  });
+
+  it("keeps classes, files, symbols on equally good matches", () => {
+    expect(listing("valid")).toEqual(["Classes: ValidationPipe", "Files: src/validation.ts", `Files: ${sectionPath}`, "Symbols: validateUserPassword"]);
   });
 });

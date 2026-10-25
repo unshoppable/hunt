@@ -5,6 +5,7 @@ import type { DirEntry } from "../ipc/types";
 import { rootFolderIconUrl, useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
 import { STATUS_NAME_CLASS } from "../diff/styles";
 import { useHuntStore } from "../state/store";
+import { AgentButton } from "../ui/AgentButton";
 import { confirmDestructive } from "../ui/confirm";
 import { dirName, outermostPaths } from "../ui/path";
 import { shortcutCommand, useShortcutLabel } from "../ui/shortcuts";
@@ -18,8 +19,12 @@ import { useTreeNavigation } from "../ui/useTreeNavigation";
 import type { Workspace } from "./documents";
 import { EMPTY_MARKS, FOLDER_COLORS, FOLDER_COLOR_NAMES, markedColor, useFolderColorStore, type FolderColor } from "./folderColors";
 import { useIdeStore } from "./ideStore";
+import { selectionChatsFor, useBusyChatIds } from "./selectionChats";
 
 type Row = { path: string; name: string; isDir: boolean; depth: number };
+
+/** The file or folder row whose agent button was clicked. */
+export type ProjectTreeTarget = { path: string; isFolder: boolean };
 
 /**
  * The row a right click opened the context menu for (`""` is the project row), and where; `paths` are the rows copy
@@ -57,7 +62,8 @@ function deleteQuestion(entries: readonly Pick<Row, "path" | "isDir">[]): string
  * ⌘-click adds or removes a row. The context menu also copies the absolute paths of the selected rows (⌃⇧C) and
  * deletes them (⌘⌫), closing their tabs. The selection changes on click, with the arrow keys and on `revealRequest`
  * (⇧⌘2), never when the editor's active tab changes; Enter opens the selected file. `refreshVersion` relists every
- * open directory.
+ * open directory. Every file and folder row has an agent button that opens a sub chat about the whole file or folder; it
+ * shows on hover, or always once such a chat exists, also one opened from the changelist.
  */
 export function ProjectTree({
   sessionId,
@@ -68,16 +74,19 @@ export function ProjectTree({
   unsavedPaths,
   workspace,
   onOpen,
+  onAskAgent,
 }: {
   sessionId: string;
   repoPath: string;
   projectName: string;
-  revealRequest: { path: string; nonce: number } | null;
+  revealRequest: { path: string; nonce: number; isFolder?: boolean } | null;
   refreshVersion: number;
   /** Files with unsaved edits; they get a blue dot. */
   unsavedPaths: readonly string[];
   workspace: Workspace;
   onOpen: (path: string) => void;
+  /** Opens the sub chat about the whole file or folder next to its agent button. */
+  onAskAgent: (target: ProjectTreeTarget, button: HTMLElement) => void;
 }) {
   const [listings, setListings] = useState<Listings>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
@@ -91,6 +100,8 @@ export function ProjectTree({
   const setFolderColor = useFolderColorStore((state) => state.setFolderColor);
   const isLocked = useHuntStore((state) => isWorktreeLocked(state.sessions, state.remoteLinks, sessionId));
   const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
+  const sessions = useHuntStore((state) => state.sessions);
+  const busyChatIds = useBusyChatIds();
   const closeTabsOf = useIdeStore((state) => state.closeTabsOf);
   const copyPathShortcut = useShortcutLabel("changes.copyPath");
   const deleteShortcut = useShortcutLabel("editor.deleteInTree");
@@ -120,6 +131,21 @@ export function ProjectTree({
     // `listings` is intentionally not a dependency: it is relisted, never a trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshVersion, sessionId, list]);
+
+  /**
+   * Paths with a sub chat about the whole file or folder (a selection with a task), whose agent button stays visible,
+   * mapped to whether that chat's agent is running a turn, which makes the button pulse.
+   */
+  const agentChats = useMemo(() => {
+    const result = new Map<string, boolean>();
+    const paths = new Set(sessions.flatMap((session) => (session.selection?.task ? [session.selection.path] : [])));
+    for (const path of paths) {
+      const chats = selectionChatsFor(sessions, sessionId, path).filter((chat) => !!chat.selection.task);
+      if (!chats.length) continue;
+      result.set(path, chats.some((chat) => busyChatIds.has(chat.sessionId)));
+    }
+    return result;
+  }, [sessions, sessionId, busyChatIds]);
 
   const rows = useMemo(() => {
     const result: Row[] = [];
@@ -164,19 +190,20 @@ export function ProjectTree({
   const nav = useTreeNavigation({ rows: navRows, selectedKey: selection?.lead ?? null, onSelect: selectOnly, onToggle: toggle, onActivate: onOpen });
   const { listRef } = nav;
 
-  // ⇧⌘2: list and expand every ancestor, then scroll the file into view.
+  // ⇧⌘2: list and expand every ancestor, then scroll the file into view; a revealed folder is expanded as well. The
+  // focus stays where it is, so the editor keeps the caret.
   const revealPath = revealRequest?.path ?? "";
   useLoad(
     async () => {
-      const ancestors = parentPaths(revealPath);
-      for (const ancestor of ancestors) {
-        await list(ancestor);
+      const folders = revealRequest?.isFolder ? [...parentPaths(revealPath), revealPath] : parentPaths(revealPath);
+      for (const folder of folders) {
+        await list(folder);
       }
-      return ancestors;
+      return folders;
     },
     {
-      onValue: (ancestors) => {
-        setExpanded((current) => new Set([...current, ...ancestors]));
+      onValue: (folders) => {
+        setExpanded((current) => new Set([...current, ...folders]));
         selectOnly(revealPath);
         setScrollTarget(revealPath);
       },
@@ -260,7 +287,6 @@ export function ProjectTree({
     const row = listRef.current?.querySelector<HTMLElement>(`[data-tree-key="${CSS.escape(scrollTarget)}"]`);
     if (!row) return;
     row.scrollIntoView({ block: "center" });
-    row.focus();
     setScrollTarget(null);
   }, [scrollTarget, rows, listRef]);
 
@@ -308,8 +334,11 @@ export function ProjectTree({
             status={statusByPath[row.path]}
             isUnsaved={!row.isDir && unsavedPaths.includes(row.path)}
             color={markedColor(marks, row.path)}
+            hasAgentChat={agentChats.has(row.path)}
+            isAgentBusy={agentChats.get(row.path) ?? false}
             onClick={(event) => clickRow(event, row)}
             onContextMenu={(event) => openContextMenu(event, row)}
+            onAskAgent={(button) => onAskAgent({ path: row.path, isFolder: row.isDir }, button)}
           />
         ))}
       </ul>
@@ -382,7 +411,8 @@ export function ProjectTree({
 
 /**
  * One row: the folder color is its background, hover is a translucent layer over it and the selection replaces
- * both (WebStorm's blue), so a selected row reads the same in every folder.
+ * both (WebStorm's blue), so a selected row reads the same in every folder. With `onAskAgent` the row ends in the agent
+ * button, which shows on hover or, with `hasAgentChat`, always.
  */
 function TreeRow({
   path,
@@ -394,19 +424,26 @@ function TreeRow({
   status,
   isUnsaved = false,
   color,
+  hasAgentChat = false,
+  isAgentBusy = false,
   onClick,
   onContextMenu,
+  onAskAgent,
 }: Row & {
   isExpanded: boolean;
   isSelected: boolean;
   status: string | undefined;
   isUnsaved?: boolean;
   color: FolderColor | null;
+  hasAgentChat?: boolean;
+  isAgentBusy?: boolean;
   onClick: (event: MouseEvent) => void;
   onContextMenu?: (event: MouseEvent) => void;
+  onAskAgent?: (button: HTMLElement) => void;
 }) {
   const fileIconUrl = useFileIconUrl();
   const folderIconUrl = useFolderIconUrl();
+  const agentLabel = hasAgentChat ? `Show the agent's chat about this ${isDir ? "folder" : "file"}` : `Ask the agent about this ${isDir ? "folder" : "file"}`;
   return (
     <li
       data-tree-key={path}
@@ -415,13 +452,27 @@ function TreeRow({
       onContextMenu={onContextMenu}
       title={path || name}
       data-selected={isSelected}
-      className="tree-row flex cursor-pointer items-center gap-[5px] pr-2.5 outline-none select-none"
+      className="tree-row group flex cursor-pointer items-center gap-[5px] pr-2.5 outline-none select-none"
       style={{ paddingLeft: `calc(10px + ${depth} * var(--changelist-indent))`, backgroundColor: color ? FOLDER_COLORS[color].background : undefined }}
     >
       {isDir ? <ChevronIcon expanded={isExpanded} /> : <span className="size-4 shrink-0" />}
       <img src={!isDir ? fileIconUrl(path) : path ? folderIconUrl(path, isExpanded) : rootFolderIconUrl(isExpanded)} alt="" className="size-[17px] shrink-0" />
       <span className={`truncate ${isDir ? "text-neutral-300" : (STATUS_NAME_CLASS[status ?? ""] ?? "text-neutral-200")}`}>{name}</span>
       {isUnsaved ? <UnsavedDot /> : null}
+      {onAskAgent ? (
+        <AgentButton
+          onClick={(event) => {
+            event.stopPropagation();
+            onAskAgent(event.currentTarget);
+          }}
+          isBusy={isAgentBusy}
+          size={24}
+          sparkleSize={20}
+          className={`-my-1 ml-auto transition-opacity focus-visible:opacity-100 ${hasAgentChat ? "" : "opacity-0 group-hover:opacity-100"}`}
+          title={agentLabel}
+          aria-label={agentLabel}
+        />
+      ) : null}
     </li>
   );
 }

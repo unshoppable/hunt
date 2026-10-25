@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionView } from "../ipc/types";
-import { cycleSessionId, filterSessionRows, groupSessions, issueFromPrompt, latestTopLevelSession, sessionMarks, sessionReference, sidebarTitle, titleFromPrompt } from "./sessionLabels";
+import { cycleSessionId, describeSubChatSource, filterSessionRows, groupSessions, issueFromPrompt, latestTopLevelSession, sessionMarks, sessionReference, sidebarTitle, titleFromPrompt } from "./sessionLabels";
 
 function session(id: string, title: string, branch: string, parentId: string | null = null, path?: string): SessionView {
   return {
@@ -67,6 +67,14 @@ describe("sidebarTitle", () => {
     expect(sidebarTitle({ ...session("r", "#1465 feat: compress images", "feat/x"), pullRequest })).toBe("feat: compress images");
     expect(sidebarTitle({ ...session("r", "feat: compress images", "feat/x"), pullRequest })).toBe("feat: compress images");
     expect(sidebarTitle(session("r", "#1465 not a review", "feat/x"))).toBe("#1465 not a review");
+  });
+});
+
+describe("describeSubChatSource", () => {
+  it("names the file and lines of a selection, or the folder of a chat about a whole folder", () => {
+    expect(describeSubChatSource({ path: "src/state/store.ts", startLine: 10, endLine: 12, text: "x" })).toBe("store.ts:L10-L12");
+    expect(describeSubChatSource({ path: "src/state/store.ts", startLine: 3, endLine: 3, text: "x" })).toBe("store.ts:L3");
+    expect(describeSubChatSource({ path: "docs/adr", startLine: 1, endLine: 1, text: "", task: "t", isFolder: true })).toBe("adr/");
   });
 });
 

@@ -248,7 +248,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto py-5 pr-12 pl-5">
         <div ref={columnRef} className="chat-column">
-          {session.selection ? (
+          {session.selection && !session.selection.isFolder ? (
             <div className="mb-5">
               <SelectionCard selection={session.selection} isOpen onOpen={openInEditor} />
             </div>

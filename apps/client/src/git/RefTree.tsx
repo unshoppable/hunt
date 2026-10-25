@@ -19,7 +19,8 @@ const ALL_KEY = "";
 
 /**
  * The branch tree beside the log: Local, Remote and Tags, nested by the slashes in their names. A click on a branch
- * or tag shows only its history, a second click shows every branch again; a right click on a branch opens its menu
+ * or tag shows only its history, a second click shows every branch again, a double click keeps its history shown as
+ * WebStorm's log does; a right click on a branch opens its menu
  * (`onContextMenu`, the branch stays highlighted while `menuFor` names it); the arrow keys move the filter from branch to
  * branch and open or close the groups. The checked-out branch shows how far it is
  * ahead of or behind its upstream, and the session's branch where a push lands (`pushes`), since Hunt pushes it onto
@@ -182,7 +183,16 @@ export function RefTree({
           ) : (
             <li
               key={node.path}
-              onClick={() => (nav.cursor === node.path ? onFilter("") : nav.select(node.path))}
+              onClick={(event: MouseEvent) => {
+                // The second click of a double click is the double click's.
+                if (event.detail > 1) return;
+                if (nav.cursor === node.path) {
+                  onFilter("");
+                } else {
+                  nav.select(node.path);
+                }
+              }}
+              onDoubleClick={() => onFilter(node.ref.name)}
               onContextMenu={node.ref.kind === "tag" ? undefined : (event: MouseEvent) => openMenu(event, node.ref)}
               data-tree-key={node.path}
               data-selected={nav.cursor === node.path}

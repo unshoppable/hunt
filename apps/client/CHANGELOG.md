@@ -1,3 +1,14 @@
+## 0.126.0 (2026-10-25)
+
+### 🚀 Features
+
+- **client:** sub chats about a whole file or folder from the project tree and about a folder from the changelist, class members nothing uses are greyed out like WebStorm's "Unused property", ⌘click on a relative path literal opens its file, CSS and SCSS get WebStorm's colors, and ⌃⇧C copies the path in the editor and the project tree ([6097244](https://github.com/unshoppable/hunt/commit/6097244))
+- **client:** the commit button spins while a commit runs, and the changelist of the diff tab keeps 240px so its header and commit rows fit ([e426df3](https://github.com/unshoppable/hunt/commit/e426df3))
+
+### 🩹 Fixes
+
+- **client:** committing from the changelist works when the deletion of a chosen file is already staged ([eb1de51](https://github.com/unshoppable/hunt/commit/eb1de51))
+
 ## 0.125.0 (2026-10-24)
 
 ### 🚀 Features

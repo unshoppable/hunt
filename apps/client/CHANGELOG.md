@@ -1,3 +1,9 @@
+## 0.128.0 (2026-10-25)
+
+### 🚀 Features
+
+- **client:** a double click on a branch or tag in the log's tree keeps its history shown, as WebStorm's log does ([b66ad1d](https://github.com/unshoppable/hunt/commit/b66ad1d))
+
 ## 0.127.1 (2026-10-25)
 
 ### 🩹 Fixes

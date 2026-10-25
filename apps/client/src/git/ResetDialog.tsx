@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { commands } from "../ipc/commands";
 import type { Commit, GitScope, ResetMode } from "../ipc/types";
+import { reportSuccess } from "../state/statusToasts";
 import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
 import { Modal } from "../ui/Modal";
 import { useDialogSize } from "../ui/useDialogSize";
@@ -32,6 +33,7 @@ export function ResetDialog({ scope, head, commit, onClose, onReset }: { scope: 
     lastMode = mode;
     try {
       await commands.gitReset(scope, commit.id, mode);
+      reportSuccess(`Reset ${head === "HEAD" ? "the detached HEAD" : head} to ${commit.id.slice(0, 8)} (${mode})`);
       onReset();
       onClose();
     } catch (reason) {

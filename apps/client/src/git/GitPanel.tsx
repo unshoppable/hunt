@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { commands } from "../ipc/commands";
 import type { Commit, CommitDetails, CommitFile, FileDiff, GitRef, GitScope, RefList } from "../ipc/types";
 import { useHuntStore } from "../state/store";
+import { reportFailure, reportSuccess } from "../state/statusToasts";
 import { remoteOf } from "../chat/remoteSession";
 import { useSettingsStore } from "../state/settings";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
@@ -66,8 +67,6 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   const [isRetargeting, setIsRetargeting] = useState(false);
   /** What the running branch action is, shown in the branch tree's header; `null` while none runs. */
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
-  /** What the last branch action did, shown in the branch tree's header until the next one starts. */
-  const [notice, setNotice] = useState<string | null>(null);
   const diffFontSize = useSettingsStore((state) => state.panes.diff.fontSize);
   const diffLineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
   const diffFontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
@@ -188,7 +187,7 @@ export function GitPanel({ scope }: { scope: GitScope }) {
     }
   };
 
-  /** Runs the Git command of `action` on the branch `ref`; a success reloads every view of the scope. */
+  /** Runs the Git command of `action` on the branch `ref` and reports its outcome; a success reloads every view of the scope. */
   const runAction = async (ref: GitRef, action: BranchAction) => {
     if (action.kind === "rename") {
       setRenaming(ref.name);
@@ -199,32 +198,28 @@ export function GitPanel({ scope }: { scope: GitScope }) {
       return;
     }
     setBusyLabel(BUSY_LABELS[action.kind]);
-    setNotice(null);
     try {
-      const outcome = await performAction(scope, ref, action);
-      if (outcome) {
-        setError(null);
-        setNotice(outcome.notice);
+      const done = await performAction(scope, ref, action);
+      if (done) {
+        reportSuccess(done);
         refresh();
       }
     } catch (reason) {
-      setError(errorText(reason));
+      reportFailure(errorText(reason));
     } finally {
       setBusyLabel(null);
     }
   };
 
-  /** Fetches every branch of origin; a success reloads the branch tree and the log. */
+  /** Fetches every branch of origin and reports the outcome; a success reloads the branch tree and the log. */
   const fetchOrigin = async () => {
     setBusyLabel(BUSY_LABELS.fetch);
-    setNotice(null);
     try {
       await commands.gitFetchOrigin(scope);
-      setError(null);
-      setNotice("Fetched origin");
+      reportSuccess("Fetched origin");
       refresh();
     } catch (reason) {
-      setError(errorText(reason));
+      reportFailure(errorText(reason));
     } finally {
       setBusyLabel(null);
     }
@@ -236,7 +231,6 @@ export function GitPanel({ scope }: { scope: GitScope }) {
     const message = `Delete ${count} local ${count === 1 ? "branch" : "branches"} without a branch on origin?\n\n${prunable.join("\n")}\n\nCommits only these branches have are lost.`;
     if (!(await confirmDestructive(message))) return;
     setBusyLabel(BUSY_LABELS.delete);
-    setNotice(null);
     const failures: string[] = [];
     for (const branch of prunable) {
       try {
@@ -246,7 +240,13 @@ export function GitPanel({ scope }: { scope: GitScope }) {
       }
     }
     setBusyLabel(null);
-    setError(failures.length ? failures.join("\n") : null);
+    const deleted = count - failures.length;
+    if (deleted) {
+      reportSuccess(`Deleted ${deleted} local ${deleted === 1 ? "branch" : "branches"}`);
+    }
+    if (failures.length) {
+      reportFailure(failures.join("\n"));
+    }
     refresh();
   };
 
@@ -266,7 +266,6 @@ export function GitPanel({ scope }: { scope: GitScope }) {
           filter={filter.reference}
           menuFor={menu?.ref.name ?? null}
           busyLabel={busyLabel}
-          notice={notice}
           prunable={prunable}
           onFilter={(reference) => setFilter((current) => ({ ...current, reference }))}
           onContextMenu={(ref, x, y) => setMenu({ ref, x, y })}
@@ -392,61 +391,56 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   );
 }
 
-/** What a branch action that ran did, for the branch tree's header; `notice` is `null` when the tree itself shows it. */
-type ActionOutcome = { notice: string | null };
-
-const DONE: ActionOutcome = { notice: null };
-
 /**
- * Runs the Git command behind `action` for the branch `ref` of `scope`; `null` when it did not run (a delete or force
- * pull the user did not confirm, or an action of a session's own branch outside a session). A local branch whose
- * commits no other branch has is deleted only after a confirmation, and a force pull is confirmed since it drops the
- * commits the upstream lacks.
+ * Runs the Git command behind `action` for the branch `ref` of `scope` and resolves to what it did, for the status
+ * toast; `null` when it did not run (a delete or force pull the user did not confirm, or an action of a session's own
+ * branch outside a session). A local branch whose commits no other branch has is deleted only after a confirmation, and
+ * a force pull is confirmed since it drops the commits the upstream lacks.
  */
-async function performAction(scope: GitScope, ref: GitRef, action: BranchAction): Promise<ActionOutcome | null> {
+async function performAction(scope: GitScope, ref: GitRef, action: BranchAction): Promise<string | null> {
   const upstream = ref.upstream ?? "its upstream";
   switch (action.kind) {
     case "checkout": {
       if (scope.kind !== "repo") return null;
       await commands.gitCheckout(scope.path, ref.name, ref.kind === "remote");
-      return { notice: `Checked out ${ref.kind === "remote" ? (originBranchName(ref.name) ?? ref.name) : ref.name}` };
+      return `Checked out ${ref.kind === "remote" ? (originBranchName(ref.name) ?? ref.name) : ref.name}`;
     }
     case "rebase":
       await commands.gitRebase(scope, ref.name);
-      return DONE;
+      return `Rebased onto ${ref.name}`;
     case "merge":
       await commands.gitMerge(scope, ref.name);
-      return DONE;
+      return `Merged ${ref.name}`;
     case "update":
       if (scope.kind !== "session") return null;
       await commands.gitUpdateBranch(scope.id);
-      return DONE;
+      return `Updated ${ref.name} from ${upstream}`;
     case "pull": {
       const didMove = await commands.gitPullBranch(scope, ref.name);
-      return { notice: didMove ? `Pulled ${upstream} into ${ref.name}` : `${ref.name} is up to date with ${upstream}` };
+      return didMove ? `Pulled ${upstream} into ${ref.name}` : `${ref.name} is up to date with ${upstream}`;
     }
     case "forcePull": {
       const lost = ref.ahead ? `The ${ref.ahead} ${ref.ahead === 1 ? "commit" : "commits"} it has that ${upstream} lacks are lost.` : `Commits it has that ${upstream} lacks are lost.`;
       if (!(await confirmDestructive(`Force pull ${ref.name}?\n\n${ref.name} is reset to ${upstream}. ${lost}`, "Force pull"))) return null;
       await commands.gitForcePullBranch(scope, ref.name);
-      return { notice: `Reset ${ref.name} to ${upstream}` };
+      return `Reset ${ref.name} to ${upstream}`;
     }
     case "fetch":
       await commands.gitFetchBranch(scope, originBranchName(ref.name) ?? "");
-      return DONE;
+      return `Fetched ${ref.name}`;
     case "push":
       if (scope.kind !== "session") return null;
       await commands.pushBranch(scope.id);
-      return DONE;
+      return `Pushed ${ref.name} to ${upstream}`;
     case "pushBranch":
       await commands.gitPushLocalBranch(scope, ref.name);
-      return DONE;
+      return `Pushed ${ref.name} to origin/${ref.name}`;
     case "delete":
-      return (await deleteLocalBranch(scope, ref.name)) ? DONE : null;
+      return (await deleteLocalBranch(scope, ref.name)) ? `Deleted ${ref.name}` : null;
     case "deleteRemote": {
       if (!(await confirmDestructive(`Delete ${ref.name} on origin?\n\nEveryone who fetched it keeps a copy, but the branch is gone for the team.`))) return null;
       await commands.gitDeleteRemoteBranch(scope, originBranchName(ref.name) ?? "");
-      return DONE;
+      return `Deleted ${ref.name}`;
     }
     case "rename":
     case "retarget":

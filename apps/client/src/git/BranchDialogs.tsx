@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { commands } from "../ipc/commands";
 import type { GitScope } from "../ipc/types";
+import { reportSuccess } from "../state/statusToasts";
 import { INPUT } from "../diff/styles";
 import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD } from "../ui/buttons";
 import { PlusIcon, Spinner } from "../ui/icons";
@@ -58,6 +59,7 @@ export function PushTargetDialog({
     setError(null);
     try {
       await commands.setPushTarget(sessionId, choice, isCreating);
+      reportSuccess(`${branch} now pushes to origin/${choice}`);
       onChanged(choice);
       onClose();
     } catch (reason) {
@@ -181,6 +183,7 @@ export function RenameBranchDialog({ scope, branch, onClose, onRenamed }: { scop
     setError(null);
     try {
       await commands.gitRenameBranch(scope, branch, newName);
+      reportSuccess(`Renamed ${branch} to ${newName}`);
       onRenamed(newName);
       onClose();
     } catch (reason) {

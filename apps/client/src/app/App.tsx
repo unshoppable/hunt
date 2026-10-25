@@ -51,6 +51,7 @@ import { HEADER_BAR } from "../ui/bars";
 import { TAB_ACTIVE, TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons";
 import { BranchIcon, CodeIcon, DiagramIcon, DiffIcon, EyeIcon, GlobeIcon, MonitorIcon, PullRequestIcon, TaskListIcon, TerminalIcon } from "../ui/icons";
 import { shortcutCommand } from "../ui/shortcuts";
+import { StatusToasts } from "../ui/StatusToasts";
 import { restoreWindowBounds, useRememberWindowBounds } from "../ui/windowBounds";
 import { useAccountsSync, useAgentPreferencesSync, useBackendEvents, usePaneStyles, useRemoteSettingsSync, useSettingsSync } from "./bootstrap";
 
@@ -384,6 +385,7 @@ export function App() {
           }}
         />
       ) : null}
+      <StatusToasts />
     </>
   );
 }

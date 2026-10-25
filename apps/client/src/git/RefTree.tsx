@@ -2,7 +2,7 @@ import { Fragment, useMemo, useState, type MouseEvent } from "react";
 import type { GitRef, RefList } from "../ipc/types";
 import { useFolderIconUrl } from "../diff/fileIcons";
 import { ICON_BUTTON_XS } from "../ui/buttons";
-import { BranchIcon, ChevronIcon, FetchIcon, TrashIcon } from "../ui/icons";
+import { BranchIcon, ChevronIcon, FetchIcon, Spinner, TrashIcon } from "../ui/icons";
 import { toggleInCollapsed } from "../ui/treeExpansion";
 import type { TreeNavRow } from "../ui/treeNavigation";
 import { useTreeNavigation } from "../ui/useTreeNavigation";
@@ -25,8 +25,8 @@ const ALL_KEY = "";
  * branch and open or close the groups. The checked-out branch shows how far it is
  * ahead of or behind its upstream, and the session's branch where a push lands (`pushes`), since Hunt pushes it onto
  * the branch the session was created from, never under its own name. The toolbar fetches origin (`onFetch`) and deletes
- * the local branches origin lacks (`prunable`, `onPrune`); the header shows `busyLabel` while an action runs and
- * `notice` after it.
+ * the local branches origin lacks (`prunable`, `onPrune`) and spins at its right end while an action runs; the header
+ * then shows `busyLabel` in place of the checked-out branch.
  */
 export function RefTree({
   refs,
@@ -34,7 +34,6 @@ export function RefTree({
   filter,
   menuFor,
   busyLabel,
-  notice,
   prunable,
   onFilter,
   onContextMenu,
@@ -46,8 +45,6 @@ export function RefTree({
   filter: string;
   menuFor: string | null;
   busyLabel: string | null;
-  /** What the last action did, shown in the header in place of the checked-out branch until the next one starts. */
-  notice: string | null;
   /** The local branches that have no branch on origin and are not checked out anywhere, which `onPrune` deletes. */
   prunable: string[];
   onFilter: (reference: string) => void;
@@ -136,12 +133,17 @@ export function RefTree({
         >
           <TrashIcon className="size-4" />
         </button>
+        {busyLabel ? (
+          <span role="status" aria-label={busyLabel} title={busyLabel} className="ml-auto flex size-7 shrink-0 items-center justify-center text-neutral-400">
+            <Spinner className="size-4" />
+          </span>
+        ) : null}
       </div>
       <div className="flex items-center gap-1 border-b border-(--line) px-3 py-2.5 text-[13px] text-neutral-400">
         <span className="shrink-0">Branches</span>
-        {busyLabel || notice ? (
-          <span className="min-w-0 flex-1 truncate text-right text-neutral-300" title={busyLabel ?? notice ?? undefined}>
-            {busyLabel ?? notice}
+        {busyLabel ? (
+          <span className="min-w-0 flex-1 truncate text-right text-neutral-300" title={busyLabel}>
+            {busyLabel}
           </span>
         ) : refs ? (
           <span className="min-w-0 flex-1 truncate text-right text-neutral-500" title={refs.head === "HEAD" ? "No branch is checked out" : `Checked out: ${refs.head}`}>

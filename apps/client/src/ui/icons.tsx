@@ -286,6 +286,16 @@ export function InfoIcon({ className = "size-3.5" }: { className?: string }) {
     </svg>
   );
 }
+
+/** A circled exclamation mark, for failures. */
+export function AlertIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M8 4.75V8.5M8 10.9v.1" />
+    </svg>
+  );
+}
 /** Trash can, for delete buttons. */
 export function TrashIcon({ className = "size-3.5" }: { className?: string }) {
   return (

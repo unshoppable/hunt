@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { commands } from "../ipc/commands";
 import { WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
 import { BUTTON_BASE, PRIMARY, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { ChevronDownIcon, PaperPlaneIcon } from "../ui/icons";
+import { ChevronDownIcon, PaperPlaneIcon, Spinner } from "../ui/icons";
 import { ResizeGrips } from "../ui/ResizeGrips";
 import { useDismiss } from "../ui/useDismiss";
 import { PushPopover, type PushMode } from "./PushPopover";
@@ -184,7 +184,14 @@ export function CommitBox({
                 : `${isRemote ? "Commit the checked files on the session's branch here; the branch on its VM follows" : "Commit the checked files on the session's branch"} (⌘⏎, ⇧⌘⏎ also pushes)`
             }
           >
-            {step === "commit" ? "Committing…" : "Commit"}
+            {step === "commit" ? (
+              <>
+                <Spinner />
+                Committing…
+              </>
+            ) : (
+              "Commit"
+            )}
           </button>
           <button
             ref={chevronRef}

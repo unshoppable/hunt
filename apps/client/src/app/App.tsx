@@ -5,7 +5,7 @@ import { SessionSidebar } from "../sessions/SessionSidebar";
 import { NewSessionView, useStartRepoPath } from "../sessions/NewSessionView";
 import { useShowSessionRequests } from "../sessions/showSession";
 import { ChatPanel } from "../chat/ChatPanel";
-import { DiffPanel } from "../diff/DiffPanel";
+import { CHANGE_LIST_MIN_WIDTH, DiffPanel } from "../diff/DiffPanel";
 import { GitPanel } from "../git/GitPanel";
 import { ArchitecturePanel } from "../graph/ArchitecturePanel";
 import { IdePanel } from "../ide/IdePanel";
@@ -58,6 +58,8 @@ const REMOTE_AGENT_POLL_MS = 30_000;
 const SESSIONS_MIN_WIDTH = 240;
 /** Narrowest open chat that fits the prompt box (`min-w-[400px]` plus its padding in `PromptInput`) without cutting it off. */
 const CHAT_MIN_WIDTH = 480;
+/** Narrowest inspector that keeps the diff tab's changelist at its minimum beside a viewer of the same width. */
+const INSPECTOR_MIN_WIDTH = CHANGE_LIST_MIN_WIDTH * 2;
 const PANE_TOGGLE_COMMANDS = ["app.toggleSessions", "app.toggleChat"] as const;
 
 export function App() {
@@ -260,7 +262,7 @@ export function App() {
           </section>
         </Panel>
         <PaneSeparator />
-        <Panel id="inspector" minSize={320} className="flex">
+        <Panel id="inspector" minSize={INSPECTOR_MIN_WIDTH} className="flex">
           <aside className="flex min-w-0 flex-1 flex-col bg-(--surface-inspector)">
             <nav data-tauri-drag-region="" className={`${HEADER_BAR} gap-1 border-b border-(--line) px-2`}>
               <TabButton isActive={rightTab === "diff"} onClick={() => setRightTab("diff")} label="Diff" commentCount={reviewCommentCount} />

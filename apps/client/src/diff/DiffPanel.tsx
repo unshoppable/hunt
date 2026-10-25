@@ -28,6 +28,11 @@ import { UnsavedDot } from "../ui/UnsavedDot";
 import { useDismiss } from "../ui/useDismiss";
 import { errorText, useLoad } from "../ui/useLoad";
 
+/** Narrowest changelist whose header row and commit row (Commit with its chevron, Shelve, the selection count and Push) still fit. */
+export const CHANGE_LIST_MIN_WIDTH = 240;
+/** Narrowest diff viewer worth reading beside the changelist. */
+const VIEWER_MIN_WIDTH = 240;
+
 type ContextMenuState = { x: number; y: number; target: ChangeListTarget };
 
 type DiffMode = "split" | "unified";
@@ -381,7 +386,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
 
   return (
     <PersistentGroup id="hunt-diff" className="h-full min-h-0">
-      <Panel id="files" defaultSize="16%" minSize={140} maxSize={520} className="flex">
+      <Panel id="files" defaultSize="16%" minSize={CHANGE_LIST_MIN_WIDTH} maxSize={520} className="flex">
       <ChangeList
         sessionId={sessionId}
         files={visibleFiles}
@@ -401,7 +406,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
       />
       </Panel>
       <PaneSeparator />
-      <Panel id="viewer" minSize={240} className="flex">
+      <Panel id="viewer" minSize={VIEWER_MIN_WIDTH} className="flex">
       <div className="flex min-w-0 flex-1 flex-col">
         {/* In split mode the file comment button starts where the right side's line numbers do. */}
         <div ref={headerRef} className="flex items-center border-b border-(--line) py-2.5 pr-3 text-[13px]">

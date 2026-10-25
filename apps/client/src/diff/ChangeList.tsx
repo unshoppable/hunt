@@ -24,7 +24,7 @@ import { isWorktreeLocked, remoteOf } from "../chat/remoteSession";
 import { ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { GlobFilterInput } from "../ui/GlobFilterInput";
-import { ArchiveIcon, PencilIcon, SwapIcon, WebstormIcon } from "../ui/icons";
+import { ArchiveIcon, PencilIcon, Spinner, SwapIcon, WebstormIcon } from "../ui/icons";
 import { UnsavedDot } from "../ui/UnsavedDot";
 import { isShortcut } from "../ui/shortcuts";
 import { toggleInCollapsed } from "../ui/treeExpansion";
@@ -68,6 +68,7 @@ export type ScopeControl = { value: ChangeScope; hiddenCount: number; includesPa
 export function ChangeList({
   sessionId,
   files,
+  isLoading,
   hiddenByGlobsCount,
   reviewRatings,
   scope,
@@ -81,6 +82,8 @@ export function ChangeList({
 }: {
   sessionId: string;
   files: ChangedFileView[];
+  /** Whether `files` are being (re)loaded; the header shows a spinner meanwhile. */
+  isLoading: boolean;
   /** Files in scope that the hidden globs leave out of `files`. */
   hiddenByGlobsCount: number;
   /** The agent's review rating per path, from the dependency graph. */
@@ -403,6 +406,7 @@ export function ChangeList({
           <ArchiveIcon />
           Shelf
         </button>
+        {isLoading ? <Spinner className="ml-1.5 size-4 shrink-0 text-neutral-400" /> : null}
         <span className="flex-1" />
         {isRemote ? null : (
           <button

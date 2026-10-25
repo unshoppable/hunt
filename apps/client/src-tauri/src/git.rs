@@ -880,6 +880,8 @@ pub async fn drop_shelf(worktree: &Path, reference: &str) -> Result<(), String> 
 /// Commits exactly `paths` (untracked files and deletions included) with `message` on the worktree's current branch.
 /// Changes staged for other paths stay staged and out of the commit; the repository's commit hooks run. `paths` are
 /// unstaged first because `add` with a pathspec fails on a staged deletion, which is in neither index nor worktree.
+/// During a merge Git refuses a commit limited to paths, so the merge commit then carries the whole index: the merge
+/// result as staged plus `paths`; worktree changes of other paths stay uncommitted.
 pub async fn commit_files(worktree: &Path, paths: &[String], message: &str) -> Result<(), String> {
     ensure_paths(paths)?;
     if message.trim().is_empty() {
@@ -888,8 +890,17 @@ pub async fn commit_files(worktree: &Path, paths: &[String], message: &str) -> R
 
     run_git(worktree, &with_paths(&["reset", "-q", "--"], paths)).await?;
     run_git(worktree, &with_paths(&["add", "-A", "--"], paths)).await?;
-    run_git(worktree, &with_paths(&["commit", "-q", "-m", message, "--"], paths)).await?;
+    if is_merging(worktree).await {
+        run_git(worktree, &["commit", "-q", "-m", message]).await?;
+    } else {
+        run_git(worktree, &with_paths(&["commit", "-q", "-m", message, "--"], paths)).await?;
+    }
     Ok(())
+}
+
+/// Whether a merge is in progress in the worktree, i.e. `MERGE_HEAD` exists.
+pub async fn is_merging(worktree: &Path) -> bool {
+    run_git(worktree, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).await.is_ok()
 }
 
 /// Pushes the worktree's `HEAD` to the branch `target` on `origin` and makes `origin/<target>` the upstream of the
@@ -1812,6 +1823,33 @@ mod tests {
 
         let committed = run_git(repo, &["show", "--name-status", "--format=%s", "HEAD"]).await.unwrap();
         assert_eq!(committed.trim(), "feat: replace tracked.txt\n\nA\tnew.txt\nD\ttracked.txt");
+    }
+
+    #[tokio::test]
+    async fn commit_files_concludes_a_merge_with_the_whole_index() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        git(repo, &["checkout", "-q", "-b", "feature"]).await;
+        std::fs::write(repo.join("other.txt"), "feature\n").unwrap();
+        git(repo, &["commit", "-q", "-am", "feature"]).await;
+        git(repo, &["checkout", "-q", "main"]).await;
+        std::fs::write(repo.join("tracked.txt"), "main\n").unwrap();
+        git(repo, &["commit", "-q", "-am", "main"]).await;
+        git(repo, &["merge", "-q", "--no-commit", "--no-ff", "feature"]).await;
+        std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+        std::fs::write(repo.join("tracked.txt"), "edited\n").unwrap();
+
+        commit_files(repo, &["new.txt".into()], "merge feature").await.unwrap();
+
+        let committed = run_git(repo, &["show", "--name-status", "--format=%s", "HEAD"]).await.unwrap();
+        let parents = run_git(repo, &["rev-list", "--parents", "-n", "1", "HEAD"]).await.unwrap();
+        assert_eq!(parents.split_whitespace().count(), 3, "{parents}");
+        assert!(committed.contains("merge feature"), "{committed}");
+        let files = run_git(repo, &["diff", "--name-only", "HEAD~1", "HEAD"]).await.unwrap();
+        assert_eq!(files.trim(), "new.txt\nother.txt");
+        let left = run_git(repo, &["status", "--porcelain"]).await.unwrap();
+        assert_eq!(left.trim_end(), " M tracked.txt");
+        assert!(!is_merging(repo).await);
     }
 
     #[tokio::test]

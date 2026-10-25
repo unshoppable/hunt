@@ -104,6 +104,8 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(() => useSessionViewStore.getState().views[sessionId]?.diffPath ?? null);
   const setDiffPath = useSessionViewStore((state) => state.setDiffPath);
   const [isListLoaded, setIsListLoaded] = useState(false);
+  /** Whether a load of the changelist is in flight; the changelist header shows a spinner meanwhile. */
+  const [isListLoading, setIsListLoading] = useState(false);
   const [diff, setDiff] = useState<FileDiff | null>(null);
   /** A newer version from disk that arrived while the editor had unsaved changes. */
   const [externalDiff, setExternalDiff] = useState<FileDiff | null>(null);
@@ -198,15 +200,20 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   useLoad(
     () => {
       hasLoadedRef.current = true;
+      setIsListLoading(true);
       return commands.listChangedFiles(sessionId);
     },
     {
       onValue: (result) => {
         setFiles(result);
         setIsListLoaded(true);
+        setIsListLoading(false);
         setError(null);
       },
-      onError: (reason) => setError(errorText(reason)),
+      onError: (reason) => {
+        setIsListLoading(false);
+        setError(errorText(reason));
+      },
     },
     [sessionId, editVersion, localVersion],
     { delayMs: hasLoadedRef.current ? 300 : 0 },
@@ -401,6 +408,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
       <ChangeList
         sessionId={sessionId}
         files={visibleFiles}
+        isLoading={isListLoading}
         hiddenByGlobsCount={scopedFiles.length - visibleFiles.length}
         reviewRatings={reviewRatings}
         scope={isSharedWorktree ? { value: scope, hiddenCount: files.length - scopedFiles.length, includesParent: !!session?.parentId, onChange: setScope } : null}

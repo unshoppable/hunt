@@ -391,10 +391,9 @@ export function ChangeList({
     );
   };
 
-  // One compositing layer for the whole changelist: WebKit color-matches the scrolling list, which sits in its own layer,
-  // differently from the rest on a non-sRGB display, so its background would flicker lighter and darker while scrolling.
+  // `changelist` puts every section into a compositing layer of its own (see index.css).
   return (
-    <div className="flex min-w-0 flex-1 flex-col bg-(--changelist-bg) will-change-transform">
+    <div className="changelist flex min-w-0 flex-1 flex-col bg-(--changelist-bg)">
       <div className="flex items-center gap-1 border-b border-(--line) px-2 py-2.5 text-[13px] text-neutral-400">
         <button type="button" onClick={() => setTab("changes")} className={`${TAB_BUTTON_SM} gap-1.5 ${tab === "changes" ? TAB_ACTIVE : TAB_INACTIVE}`}>
           <PencilIcon />

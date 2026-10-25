@@ -758,6 +758,15 @@ body,
   display: none;
 }
 
+/* Changelist (see diff/ChangeList.tsx): every section paints its background in a compositing layer of its own, like the
+   scrolling file list, so that WebKit color-matches them alike on a non-sRGB display and the list's background does not
+   flicker lighter and darker while scrolling. One layer for the whole changelist grows past 2048 px on a tall window of a
+   1x display; WebKit then tiles it into 512 px tiles and paints the bottom right tile lighter. */
+.changelist > * {
+  background: var(--changelist-bg);
+  will-change: transform;
+}
+
 /* Side-by-side diff (see diff/splitDiff.ts): editor | original line numbers | connector gutter | editor. Clipped, so
    that revert arrows positioned past the gutter never make the enclosing pane (an overflow: auto panel) scrollable.
    The own compositing layer keeps the empty columns (original gutter, line numbers, connectors) color-matched like the

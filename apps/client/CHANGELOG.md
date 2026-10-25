@@ -1,3 +1,9 @@
+## 0.126.1 (2026-10-25)
+
+### 🩹 Fixes
+
+- **client:** the push popover never grows wider than the changelist's footer, so the panel does not clip it ([d9ec1fa](https://github.com/unshoppable/hunt/commit/d9ec1fa))
+
 ## 0.126.0 (2026-10-25)
 
 ### 🚀 Features

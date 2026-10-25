@@ -856,13 +856,15 @@ pub async fn drop_shelf(worktree: &Path, reference: &str) -> Result<(), String> 
 }
 
 /// Commits exactly `paths` (untracked files and deletions included) with `message` on the worktree's current branch.
-/// Changes staged for other paths stay staged and out of the commit; the repository's commit hooks run.
+/// Changes staged for other paths stay staged and out of the commit; the repository's commit hooks run. `paths` are
+/// unstaged first because `add` with a pathspec fails on a staged deletion, which is in neither index nor worktree.
 pub async fn commit_files(worktree: &Path, paths: &[String], message: &str) -> Result<(), String> {
     ensure_paths(paths)?;
     if message.trim().is_empty() {
         return Err("commit message must not be empty".into());
     }
 
+    run_git(worktree, &with_paths(&["reset", "-q", "--"], paths)).await?;
     run_git(worktree, &with_paths(&["add", "-A", "--"], paths)).await?;
     run_git(worktree, &with_paths(&["commit", "-q", "-m", message, "--"], paths)).await?;
     Ok(())
@@ -1758,6 +1760,19 @@ mod tests {
         assert_eq!(committed.trim(), "feat: replace tracked.txt\n\nA\tnew.txt\nD\ttracked.txt");
         let left = run_git(repo, &["status", "--porcelain"]).await.unwrap();
         assert_eq!(left.trim_end(), "M  other.txt");
+    }
+
+    #[tokio::test]
+    async fn commit_files_commits_a_staged_deletion() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        git(repo, &["rm", "-q", "tracked.txt"]).await;
+        std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+
+        commit_files(repo, &["tracked.txt".into(), "new.txt".into()], "feat: replace tracked.txt").await.unwrap();
+
+        let committed = run_git(repo, &["show", "--name-status", "--format=%s", "HEAD"]).await.unwrap();
+        assert_eq!(committed.trim(), "feat: replace tracked.txt\n\nA\tnew.txt\nD\ttracked.txt");
     }
 
     #[tokio::test]

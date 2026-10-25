@@ -1,3 +1,9 @@
+## 0.127.1 (2026-10-25)
+
+### 🩹 Fixes
+
+- **client:** the changelist's background stays one color on a tall window of a 1x display, where WebKit tiled its single compositing layer and painted the bottom right tile lighter ([02c711d](https://github.com/unshoppable/hunt/commit/02c711d))
+
 ## 0.127.0 (2026-10-25)
 
 ### 🚀 Features

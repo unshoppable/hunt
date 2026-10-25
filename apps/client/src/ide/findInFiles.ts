@@ -1,8 +1,13 @@
 /** Display helpers for Find in Files (⇧⌘F, see FindInFilesDialog.tsx and find_in_files.rs). */
 
+import type { HighlightedLine } from "../code/highlight";
 import type { TextRange, TextSearchResult } from "../ipc/types";
+import { sliceRuns } from "./usages";
 
 export type TextPart = { text: string; isMatch: boolean };
+
+/** A stretch of a colored line that is either matched or not. */
+export type HighlightedPart = { runs: HighlightedLine; isMatch: boolean };
 
 /** `text` cut into alternating plain and matched parts; `ranges` are sorted, non-overlapping and end exclusive. */
 export function splitByRanges(text: string, ranges: readonly TextRange[]): TextPart[] {
@@ -22,6 +27,17 @@ export function splitByRanges(text: string, ranges: readonly TextRange[]): TextP
     parts.push({ text: text.slice(cursor), isMatch: false });
   }
   return parts;
+}
+
+/** The colored `runs` of one line cut at the matched `ranges` (see `splitByRanges`), so the rest of the line keeps its token colors. */
+export function splitRunsByRanges(runs: HighlightedLine, ranges: readonly TextRange[]): HighlightedPart[] {
+  const text = runs.map((run) => run.text).join("");
+  let offset = 0;
+  return splitByRanges(text, ranges).map((part) => {
+    const start = offset;
+    offset += part.text.length;
+    return { runs: sliceRuns(runs, start, offset), isMatch: part.isMatch };
+  });
 }
 
 /** WebStorm's header line: `12 matches in 3 files`, with `+` once the search stopped at its limit, or `No matches`. */

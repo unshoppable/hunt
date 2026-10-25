@@ -33,6 +33,7 @@ const CONTRACT_2_PROBLEM = 'preview: the preview section of contract 2 is no lon
 const IAP_HEADERS = ["X-Goog-Iap-Jwt-Assertion", "X-Goog-Authenticated-User-Email", "X-Goog-Authenticated-User-Id"];
 const REMOTE_SECRET_RULE = 'must be "$<NAME>", the name of a remote secret matching ^[A-Z][A-Z0-9_]{0,63}$';
 const MODEL_RULE = 'must be the full ID of a Claude model such as "claude-opus-5-5", at most 128 characters, not an alias such as "opus"';
+const SKILL_NAME_RULE = 'must be the kebab-case name of a skill such as "guardrail": letters, digits and "-", at most 64 characters';
 const MISSING_SECRET = "services.web.remoteSecrets.OPENAI_API_KEY: no remote secret MED_OPENAI_API_KEY; set it in Hunt under Settings → Remote VM";
 
 /** A hunt.json with every field: a forward and a self reference, a folder, TLS and two services that are not guarded. */
@@ -144,6 +145,7 @@ describe("parseServices", () => {
       [{ ...web({}), preview: { version: 2 } }, [CONTRACT_2_PROBLEM]],
       [{ ...web({}), environment: {}, "two words": 1 }, ["environment: unknown field", '["two words"]: unknown field']],
       ...["/srv/adr", "../adr", "a/./b", "", 1].map((adrDir): [unknown, string[]] => [{ ...web({}), adrDir }, [`adrDir: ${CWD_RULE}`]]),
+      ...["", "Guardrail", "guard rail", "-guardrail", "a--b", "a".repeat(65), 1].map((guardrailSkill): [unknown, string[]] => [{ ...web({}), guardrailSkill }, [`guardrailSkill: ${SKILL_NAME_RULE}`]]),
       [{ ...web({}), swf: "claude-opus-5-5" }, ["swf: must be an object"]],
       [{ ...web({}), swf: { model: "claude-opus-5-5", effort: "high" } }, ["swf.effort: unknown field"]],
       ...["", "opus", "sonnet[1m]", "default", "Claude-Opus-5-5", "claude-", "claude-opus-5-5 ", "claude opus", "claude-opus-5-5\nx", `claude-${"x".repeat(122)}`, 5, null].map(
@@ -410,6 +412,10 @@ describe("environments", () => {
     expect(config.proxy).toEqual(proxyConfig(COMPLETE_SERVICES, HOST));
     expect(config.servicesPrompt).toBe(servicesPrompt(COMPLETE_SERVICES, HOST));
     expect(buildSessionConfig(undefined, HOST, WORKTREE)).toMatchObject({ services: [], serviceEnvs: {}, servicesPrompt: servicesPrompt([], HOST) });
+  });
+
+  it("accepts the name of the guardrail skill", () => {
+    expect(problemsOf({ ...web({}), guardrailSkill: "team-lessons-2" })).toEqual([]);
   });
 
   it("accepts the folder of the architectural decision records", () => {

@@ -15,6 +15,8 @@ import {
 } from "./lineDiff";
 import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, changeMark } from "./monaco";
 import { borrowImportRoles } from "./semanticTokens";
+import { DEFAULT_SPLIT_DIFF_SHARE, clampSplitDiffShare } from "../state/settings";
+import { trackPointerDrag } from "../ui/pointerDrag";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const GRADIENT_ID = "hunt-diff-change";
@@ -26,6 +28,8 @@ const REDIFF_DELAY_MS = 120;
 const REVERT_ARROW_SIZE = 16;
 const ORIGINAL_LEFT_PADDING = 16;
 const FOLD_GLYPH_CLASS = "split-diff__fold";
+const REVERT_CLASS = "split-diff__revert";
+const GUTTER_DRAGGING_CLASS = "split-diff__gutter--dragging";
 
 /** Monaco keeps `setHiddenAreas` out of the public typings although every code editor implements it. */
 type EditorWithHiddenAreas = monaco.editor.IStandaloneCodeEditor & { setHiddenAreas(ranges: monaco.IRange[]): void };
@@ -34,7 +38,8 @@ type EditorWithHiddenAreas = monaco.editor.IStandaloneCodeEditor & { setHiddenAr
  * With `readOnly`, the modified side cannot be edited and the gutter has no revert arrows. With `collapseUnchanged`,
  * unchanged stretches start collapsed instead of expanded. With `modifiedModel` (a worktree document shared with other
  * editors), the modified side shows that model instead of one made from `modified`; it is never disposed here, and new
- * texts replace its content as an undoable edit.
+ * texts replace its content as an undoable edit. `originalShare` is the share of the width the original side takes
+ * (both sides equal by default); dragging the gutter changes it and reports the new share to `onOriginalShareChange`.
  */
 export type SplitDiffOptions = {
   original: string;
@@ -46,6 +51,8 @@ export type SplitDiffOptions = {
   fontFamily: string;
   readOnly?: boolean;
   collapseUnchanged?: boolean;
+  originalShare?: number;
+  onOriginalShareChange?: (share: number) => void;
 };
 
 const SHARED_EDITOR_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = {
@@ -76,7 +83,8 @@ const SHARED_EDITOR_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions 
  * to the connector gutter, the editable modified text on the right. Lines are never padded to align the sides;
  * instead both editors scroll in step through the change blocks and the connectors bend between them.
  * Unchanged stretches can collapse into a "hidden lines" bar that expands on click; an expanded stretch has a fold
- * glyph on its first modified line that collapses it again.
+ * glyph on its first modified line that collapses it again. The gutter drags to resize the sides against each other;
+ * a double click on it makes them equal again.
  */
 export class SplitDiffController {
   readonly original: EditorWithHiddenAreas;
@@ -85,8 +93,11 @@ export class SplitDiffController {
   private readonly originalModel: monaco.editor.ITextModel;
   private readonly modifiedModel: monaco.editor.ITextModel;
   private readonly elements: HTMLElement[];
+  private readonly originalElement: HTMLElement;
+  private readonly modifiedElement: HTMLElement;
   private readonly numbersElement: HTMLElement;
   private readonly gutterElement: HTMLElement;
+  private readonly onOriginalShareChange: ((share: number) => void) | undefined;
   private readonly shapes: SVGGElement;
   private readonly revertLayer: HTMLElement;
   private readonly originalDecorations: monaco.editor.IEditorDecorationsCollection;
@@ -111,12 +122,18 @@ export class SplitDiffController {
     this.isReadOnly = !!options.readOnly;
     this.ownsModifiedModel = !options.modifiedModel;
     this.isCollapsingUnchanged = !!options.collapseUnchanged;
+    this.onOriginalShareChange = options.onOriginalShareChange;
     const originalElement = createElement("div", "split-diff__editor");
+    this.originalElement = originalElement;
     this.numbersElement = createElement("div", "split-diff__numbers");
     this.gutterElement = createElement("div", "split-diff__gutter");
     const modifiedElement = createElement("div", "split-diff__editor");
+    this.modifiedElement = modifiedElement;
     this.elements = [originalElement, this.numbersElement, this.gutterElement, modifiedElement];
     root.append(...this.elements);
+    this.setOriginalShare(options.originalShare ?? DEFAULT_SPLIT_DIFF_SHARE);
+    this.gutterElement.addEventListener("pointerdown", (event) => this.onGutterPointerDown(event));
+    this.gutterElement.addEventListener("dblclick", (event) => this.onGutterDoubleClick(event));
 
     this.originalModel = monaco.editor.createModel(options.original, options.language);
     this.modifiedModel = options.modifiedModel ?? monaco.editor.createModel(options.modified, options.language);
@@ -223,6 +240,13 @@ export class SplitDiffController {
     this.resetRegions();
     this.applyHiddenRegions();
     this.scheduleRedraw();
+  }
+
+  /** Gives the original side `share` of the width the two sides have together; Monaco's automatic layout follows. */
+  setOriginalShare(share: number): void {
+    const clamped = clampSplitDiffShare(share);
+    this.originalElement.style.flexGrow = String(clamped);
+    this.modifiedElement.style.flexGrow = String(1 - clamped);
   }
 
   /** `lineHeight` is a multiple of the font size (Monaco treats values below 8 as a factor). */
@@ -374,6 +398,34 @@ export class SplitDiffController {
     this.scheduleRedraw();
   }
 
+  /** A primary press on the gutter (not on a revert arrow) drags the seam between the sides. */
+  private onGutterPointerDown(event: PointerEvent): void {
+    if (event.button !== 0 || isRevertArrow(event.target)) return;
+    const width = this.originalElement.clientWidth + this.modifiedElement.clientWidth;
+    if (!width) return;
+    const startWidth = this.originalElement.clientWidth;
+    let share = clampSplitDiffShare(startWidth / width);
+    this.gutterElement.classList.add(GUTTER_DRAGGING_CLASS);
+    trackPointerDrag(
+      this.gutterElement,
+      event,
+      (dx) => {
+        share = clampSplitDiffShare((startWidth + dx) / width);
+        this.setOriginalShare(share);
+      },
+      () => {
+        this.gutterElement.classList.remove(GUTTER_DRAGGING_CLASS);
+        this.onOriginalShareChange?.(share);
+      },
+    );
+  }
+
+  private onGutterDoubleClick(event: MouseEvent): void {
+    if (isRevertArrow(event.target)) return;
+    this.setOriginalShare(DEFAULT_SPLIT_DIFF_SHARE);
+    this.onOriginalShareChange?.(DEFAULT_SPLIT_DIFF_SHARE);
+  }
+
   private onScroll(side: Side, event: monaco.IScrollEvent): void {
     this.scheduleRedraw();
     if (this.isSyncingScroll || (!event.scrollTopChanged && !event.scrollLeftChanged)) return;
@@ -482,6 +534,10 @@ export class SplitDiffController {
   }
 }
 
+function isRevertArrow(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(`.${REVERT_CLASS}`) !== null;
+}
+
 function createElement(tag: string, className: string): HTMLElement {
   const element = document.createElement(tag);
   element.className = className;
@@ -533,7 +589,7 @@ function blockBounds(editor: monaco.editor.ICodeEditor, range: LineRange): [numb
 function createRevertArrow(block: ChangeBlock, top: number, slotHeight: number, onClick: () => void): HTMLElement {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "split-diff__revert";
+  button.className = REVERT_CLASS;
   button.title = rangeLength(block.original) === 0 ? "Remove inserted lines" : "Revert to original";
   button.innerHTML = `<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M5 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   button.style.top = `${top + (slotHeight - REVERT_ARROW_SIZE) / 2}px`;

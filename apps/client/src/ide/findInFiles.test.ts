@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchSummary, selectionQuery, splitByRanges } from "./findInFiles";
+import { matchSummary, selectionQuery, splitByRanges, splitRunsByRanges } from "./findInFiles";
 
 const match = (path: string, line: number) => ({ path, line, column: 1, endColumn: 2, preview: "x", ranges: [] });
 
@@ -18,6 +18,27 @@ describe("splitByRanges", () => {
       { text: "ab", isMatch: true },
     ]);
     expect(splitByRanges("plain", [])).toEqual([{ text: "plain", isMatch: false }]);
+  });
+});
+
+describe("splitRunsByRanges", () => {
+  const keyword = { foreground: "#c08cff", fontStyle: 0 };
+  const text = { foreground: "#f7e862", fontStyle: 0 };
+
+  it("cuts the runs at the matches and keeps each stretch's style", () => {
+    const runs = [
+      { text: "const", style: keyword },
+      { text: " shouldPoll;", style: text },
+    ];
+    expect(splitRunsByRanges(runs, [{ start: 3, end: 12 }])).toEqual([
+      { runs: [{ text: "con", style: keyword }], isMatch: false },
+      { runs: [{ text: "st", style: keyword }, { text: " should", style: text }], isMatch: true },
+      { runs: [{ text: "Poll;", style: text }], isMatch: false },
+    ]);
+  });
+
+  it("returns the whole line as one part without matches", () => {
+    expect(splitRunsByRanges([{ text: "plain", style: text }], [])).toEqual([{ runs: [{ text: "plain", style: text }], isMatch: false }]);
   });
 });
 

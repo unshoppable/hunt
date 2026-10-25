@@ -381,8 +381,8 @@ export type HuntState = {
   applyRelayActivity: (event: RelayActivityEvent) => void;
   applyGraphChanged: (huntSessionId: string) => void;
   applySummary: (event: SummaryEvent) => void;
-  /** Reloads the changes of every open session that works in the worktree a tool call just changed. */
-  applyAttributionChanged: (worktreePath: string) => void;
+  /** Reloads the changes of every open session that works in `worktreePath`, after a tool call or a change from outside Hunt changed it. */
+  applyWorktreeChanged: (worktreePath: string) => void;
 };
 
 export function createEmptyChat(): SessionChat {
@@ -1467,7 +1467,7 @@ export const useHuntStore = create<HuntState>((set, get, store) => {
       updateChat(huntSessionId, (chat) => ({ ...chat, graphVersion: chat.graphVersion + 1 }));
     },
 
-    applyAttributionChanged: (worktreePath) => {
+    applyWorktreeChanged: (worktreePath) => {
       set((state) => {
         const chats = { ...state.chats };
         for (const session of state.sessions) {

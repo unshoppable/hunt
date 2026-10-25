@@ -6,9 +6,14 @@ import type { PointerEvent as ReactPointerEvent } from "react";
  * outside the element, and its default (text selection, focus change) is suppressed.
  */
 export function trackDrag(event: ReactPointerEvent<HTMLElement>, onMove: (dx: number, dy: number) => void, onEnd: () => void): void {
+  event.stopPropagation();
+  trackPointerDrag(event.currentTarget, event.nativeEvent, onMove, onEnd);
+}
+
+/** `trackDrag` for a native pointer press on `target`, e.g. from a listener added outside React. */
+export function trackPointerDrag(target: HTMLElement, event: PointerEvent, onMove: (dx: number, dy: number) => void, onEnd: () => void): void {
   event.preventDefault();
   event.stopPropagation();
-  const target = event.currentTarget;
   const origin = { x: event.clientX, y: event.clientY };
   const handleMove = (move: PointerEvent) => onMove(move.clientX - origin.x, move.clientY - origin.y);
   const handleEnd = () => {

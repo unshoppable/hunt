@@ -93,6 +93,16 @@ export type GitLogColumns = { author: number; date: number };
 
 export const DEFAULT_GIT_LOG_COLUMNS: GitLogColumns = { author: 150, date: 104 };
 
+/** Share of a side-by-side diff's width the original side takes by default: both sides equal. */
+export const DEFAULT_SPLIT_DIFF_SHARE = 0.5;
+/** Narrowest either side of a side-by-side diff can be dragged to, as a share of the width. */
+export const MIN_SPLIT_DIFF_SHARE = 0.15;
+
+/** Keeps a side-by-side diff share within the draggable range, rounded so that storage does not fill with float noise. */
+export function clampSplitDiffShare(share: number): number {
+  return Math.round(Math.min(1 - MIN_SPLIT_DIFF_SHARE, Math.max(MIN_SPLIT_DIFF_SHARE, share)) * 1000) / 1000;
+}
+
 export const DEFAULT_POPUP_SIZES: Record<PopupKey, PopupSize> = {
   usages: { width: 1040, height: 600 },
   fileSearch: { width: 960, height: 760 },
@@ -321,6 +331,8 @@ type SettingsState = {
   popupSizes: Record<PopupKey, PopupSize>;
   detachedPopups: Record<DetachablePopupKey, boolean>;
   gitLogColumns: GitLogColumns;
+  /** Share of a side-by-side diff's width the original side takes; the user drags the gutter to change it. */
+  splitDiffShare: number;
   /** Height in px the user dragged the chat's prompt box to; null sizes the box to its text. */
   promptHeight: number | null;
   /** Height in px the user dragged the sub chat popover's text area to; null sizes it to its text. */
@@ -354,6 +366,7 @@ type SettingsState = {
   setPopupDetached: (key: DetachablePopupKey, isDetached: boolean) => void;
   resetDetachedPopups: () => void;
   setGitLogColumns: (columns: GitLogColumns) => void;
+  setSplitDiffShare: (share: number) => void;
   setPromptHeight: (height: number | null) => void;
   setSubChatPromptHeight: (height: number | null) => void;
   setGuardrailChatOffset: (offset: PopupOffset) => void;
@@ -400,6 +413,7 @@ export type PersistedState = {
   popupSizes?: Partial<Record<PopupKey, PopupSize>>;
   detachedPopups?: Partial<Record<DetachablePopupKey, boolean>>;
   gitLogColumns?: Partial<GitLogColumns>;
+  splitDiffShare?: number;
   promptHeight?: number | null;
   subChatPromptHeight?: number | null;
   guardrailChatOffset?: PopupOffset;
@@ -631,6 +645,7 @@ export const useSettingsStore = create<SettingsState>()(
       popupSizes: DEFAULT_POPUP_SIZES,
       detachedPopups: DEFAULT_DETACHED_POPUPS,
       gitLogColumns: DEFAULT_GIT_LOG_COLUMNS,
+      splitDiffShare: DEFAULT_SPLIT_DIFF_SHARE,
       promptHeight: null,
       subChatPromptHeight: null,
       guardrailChatOffset: { x: 0, y: 0 },
@@ -681,6 +696,7 @@ export const useSettingsStore = create<SettingsState>()(
       setPopupDetached: (key, isDetached) => set((state) => ({ detachedPopups: { ...state.detachedPopups, [key]: isDetached } })),
       resetDetachedPopups: () => set({ detachedPopups: DEFAULT_DETACHED_POPUPS }),
       setGitLogColumns: (columns) => set({ gitLogColumns: { author: Math.round(columns.author), date: Math.round(columns.date) } }),
+      setSplitDiffShare: (share) => set({ splitDiffShare: clampSplitDiffShare(share) }),
       setPromptHeight: (height) => set({ promptHeight: height === null ? null : Math.round(height) }),
       setSubChatPromptHeight: (height) => set({ subChatPromptHeight: height === null ? null : Math.round(height) }),
       setGuardrailChatOffset: (offset) => set({ guardrailChatOffset: { x: Math.round(offset.x), y: Math.round(offset.y) } }),

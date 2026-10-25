@@ -71,6 +71,7 @@ export function ProjectTree({
   projectName,
   revealRequest,
   refreshVersion,
+  statusByPath,
   unsavedPaths,
   workspace,
   onOpen,
@@ -81,6 +82,8 @@ export function ProjectTree({
   projectName: string;
   revealRequest: { path: string; nonce: number; isFolder?: boolean } | null;
   refreshVersion: number;
+  /** Git status letter of each changed file (see useFileStatuses.ts); it colors the file's name. */
+  statusByPath: Readonly<Record<string, string>>;
   /** Files with unsaved edits; they get a blue dot. */
   unsavedPaths: readonly string[];
   workspace: Workspace;
@@ -90,7 +93,6 @@ export function ProjectTree({
 }) {
   const [listings, setListings] = useState<Listings>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
-  const [statusByPath, setStatusByPath] = useState<Record<string, string>>({});
   const [selection, setSelection] = useState<TreeSelection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [scrollTarget, setScrollTarget] = useState<string | null>(null);
@@ -120,17 +122,13 @@ export function ProjectTree({
     list("").catch((reason) => setError(String(reason)));
   }, [list]);
 
-  // Agent edits, saves and reverts change listings and statuses; relist what is open instead of resetting the tree.
+  // Agent edits, saves and reverts change listings; relist what is open instead of resetting the tree.
   useEffect(() => {
     const paths = Object.keys(listings);
     Promise.allSettled(paths.map(list)).catch(() => {});
-    commands
-      .listChangedFiles(sessionId)
-      .then((files) => setStatusByPath(Object.fromEntries(files.map((file) => [file.path, file.status]))))
-      .catch(() => {});
     // `listings` is intentionally not a dependency: it is relisted, never a trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshVersion, sessionId, list]);
+  }, [refreshVersion, list]);
 
   /**
    * Paths with a sub chat about the whole file or folder (a selection with a task), whose agent button stays visible,

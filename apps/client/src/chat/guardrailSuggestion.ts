@@ -1,5 +1,7 @@
+import guardrailChatPrompt from "../../prompts/guardrail-chat.system-prompt.md?raw";
 import type { ChatItem, GuardrailDeclineReason } from "../ipc/types";
 import type { GuardrailKind } from "../guardrails/guardrails";
+import { fillPrompt } from "../../../../libs/domain/src/prompts.ts";
 import { QUESTION_MARKER } from "../../../../libs/domain/src/question.ts";
 import { stripChangeMarker } from "./changeReferences";
 
@@ -22,8 +24,6 @@ export type GuardrailSuggestion = { kind: GuardrailKind; summary: string; replyI
 const MARKER = /^[ \t]*<!--\s*hunt:guardrail\s+(\w+)\s*:?\s*([\s\S]*?)\s*-->[ \t]*$/m;
 /** A comment at the end of a reply (its text may hold `>`), also any prefix of one while the marker is still streaming in. */
 const TRAILING_MARKER = /\s*<(?:!(?:-(?:-(?:(?!-->)[\s\S])*(?:-->)?)?)?)?\s*$/;
-/** The first line of every guardrail request the "Guardrail" button prefills. */
-const REQUEST_LEAD = "Erzeuge eine passende Guardrail für folgendes:";
 /** Characters of the conversation handed to the guardrail agent; older messages are cut off beyond that. */
 const TRANSCRIPT_LIMIT = 60_000;
 
@@ -45,9 +45,17 @@ export function stripGuardrailMarker(text: string): string {
   return text.replace(MARKER, "").replace(TRAILING_MARKER, "").trimEnd();
 }
 
-/** The prompt the "Guardrail" button prefills: the suggested guardrail, or the bare request for the user to complete. */
-export function buildGuardrailRequest(suggestion: GuardrailSuggestion | null, kindLabel: string): string {
-  return suggestion ? `${REQUEST_LEAD}\n${kindLabel}: ${suggestion.summary}` : `${REQUEST_LEAD}\n`;
+/**
+ * The prompt the "Guardrail" button prefills: the repository's guardrail skill (`guardrailSkillOf`) invoked with the
+ * suggested guardrail, or bare for the user to complete.
+ */
+export function buildGuardrailRequest(suggestion: GuardrailSuggestion | null, kindLabel: string, skill: string): string {
+  return suggestion ? `/${skill} ${kindLabel}: ${suggestion.summary}` : `/${skill} `;
+}
+
+/** The task of the guardrail chat (`prompts/guardrail-chat.system-prompt.md`): follow the skill, with the conversation as context. */
+export function guardrailChatTask(skill: string, transcript: string): string {
+  return fillPrompt(guardrailChatPrompt, { skillName: skill, skillFile: `.claude/skills/${skill}/SKILL.md`, transcript });
 }
 
 /** The user and agent messages of a chat as Markdown without Hunt's markers, newest last, cut to the last `TRANSCRIPT_LIMIT` characters. */

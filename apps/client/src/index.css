@@ -797,6 +797,23 @@ body,
   position: relative;
   flex: none;
   width: 36px;
+  cursor: col-resize;
+}
+/* The seam shows like a pane separator (see layout/ResizablePanes.tsx): a 1px blue line down the gutter's middle. */
+.split-diff__gutter::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: transparent;
+  transition: background-color 150ms;
+  pointer-events: none;
+}
+.split-diff__gutter:hover::after,
+.split-diff__gutter--dragging::after {
+  background: var(--color-blue-500, #3b82f6);
 }
 .split-diff__connectors {
   position: absolute;
@@ -808,6 +825,7 @@ body,
 .split-diff__reverts {
   position: absolute;
   inset: 0;
+  z-index: 1;
   pointer-events: none;
 }
 .split-diff__revert {

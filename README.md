@@ -186,8 +186,8 @@ a Chrome, since Playwright MCP takes over every tab of the Chrome it connects to
   `@playwright/mcp --cdp-endpoint` on that port and writes its output files to a temp folder per session, not into the
   worktree. `apps/client/prompts/browser.system-prompt.md` points the agent at these tools for the app it works on.
 - **On demand**: Chrome starts with the agent's first browser tool call (the wrapper sends `{"open":"<session id>"}`
-  to the control socket and waits for `{"ok":true}`) or with "Browser" in the chat header (`browser_open`), which also
-  brings a running Chrome's window to the front.
+  to the control socket and waits for `{"ok":true}`) or with "Browser" beside the inspector's Terminal tab
+  (`browser_open`), which also brings a running Chrome's window to the front.
 - **Profile per repository**: a new Chrome gets a copy of the repository's profile (`<app data>/browser/<repo hash>/
   profile`) in `<app data>/browser/sessions/<session id>`, without Chrome's locks and caches, so the sign-ins made in
   an earlier session of the repository are there. When the Chrome ends (its agent or session stops, Hunt quits, or the
@@ -291,6 +291,11 @@ session's own files by default ("Show all" lifts the filter); a sub session's ow
 it sees the parent's changelist plus its own and hides only sibling sub sessions. Unattributed changes count as the
 top-level session's; files other sessions touched carry those sessions' marks. Committing, shelving or reverting a file
 clears its attribution.
+
+The changelist follows the disk: `apps/client/src-tauri/src/session/worktree_watch.rs` watches every live session's
+worktree (one watch per worktree, shared by its sessions) and the reflog of its `HEAD`, and after a change made outside
+Hunt — an editor, a terminal, another agent, a commit or checkout — every session of that worktree reloads its changes
+(`worktree:changed`). Hunt's own folders and paths git ignores stay silent, so a build does not reload the changelist.
 
 Every snapshot that differs from the previous one also goes into the worktree's edit log with the session that made
 the difference. Log and snapshot objects live in Hunt's app data (`edit-log/<id>/`, objects written through
@@ -434,6 +439,19 @@ rules and skills are shown in a tree of the worktree's folders, since Claude Cod
 `.claude`. Entries open in a Markdown editor. "New …" and "+" open the page of a new file with the kind's template (ADRs
 are numbered after the highest existing one) and its agent chat; the file is written only once the template was edited
 or the agent wrote it, so no template file and no empty folder is ever left behind. ⌘S or "Save" writes an open file.
+
+The "Guardrail" button in the composer's header records a lesson of the conversation through the repository's
+guardrail skill, `.claude/skills/<name>/SKILL.md` with the name `guardrailSkill` of `hunt.json` (`guardrail` without
+it; `apps/client/src-tauri/src/guardrail_skill.rs`). Every session start writes the skill from
+`apps/client/prompts/guardrail.skill.md` into a worktree that lacks it, as a change of the session, and never touches
+an existing one. The skill says when a lesson qualifies as a guardrail, how to check the declines and the existing
+guardrails and where each kind goes. Its qualification criteria, the text between its `<!-- hunt:criteria -->` and
+`<!-- /hunt:criteria -->` comments, are quoted in every agent's system prompt (`guardrail-offer.system-prompt.md`), so
+the button lights up by the repository's own criteria: the agent ends a reply that holds such a lesson with
+`<!-- hunt:guardrail KIND: SUMMARY -->`, which the chat hides and turns into a violet "Guardrail" button with the kind. A
+click opens a sub chat whose first message is prefilled with `/<name> KIND: SUMMARY` (or `/<name> ` without a
+suggestion) and whose task (`guardrail-chat.system-prompt.md`) carries the conversation as context. "Decline" appends
+the suggestion to `.claude/declined-guardrails.jsonl`, which the skill greps before it writes.
 
 The "Lint rules" tab lists the ESLint rules of every `eslint.config.*` in the worktree (`read_lint_rules`,
 `apps/client/src-tauri/src/lint_rules.rs`). `apps/client/scripts/eslintRules.mjs` imports the configs on the
@@ -655,7 +673,9 @@ releases). An optional `checks` section names up to 32 commands such as the lint
 and an optional `cwd` (`"checks": {"test": {"command": "npm test", "cwd": "apps/web"}}`); `services` is optional too,
 so a `hunt.json` may declare checks only. An optional `adrDir` names the folder of the repository's architectural
 decision records (`"adrDir": "docs/adr"`, `.claude/resources/adrs` without it), which the guardrails window lists and
-writes; the VM only validates it. The client's Checks tab runs the checks: in the worktree on the Mac, or on the
+writes; the VM only validates it. An optional `guardrailSkill` names the Claude Code skill the chat's "Guardrail"
+button invokes (`"guardrailSkill": "team-lessons"`, `guardrail` without it; see "Guardrails"); the VM only validates
+the name. The client's Checks tab runs the checks: in the worktree on the Mac, or on the
 session VM through `hunt-ctl check <worktree> <name>`, which runs the check as `agent` in a login shell with
 `FORCE_COLOR=1`, passes its output through and exits with its exit status.
 `session-config` writes one environment file per service to

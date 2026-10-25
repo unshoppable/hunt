@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { emit } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, type BackgroundThrottlingPolicy } from "@tauri-apps/api/window";
 import { storedWindowPlacement, useRememberWindowBounds, type WindowKind } from "./windowBounds";
 
 /** Default size of a window kind, used until a window of that kind was remembered (see windowBounds.ts). */
@@ -12,10 +12,20 @@ type NativeWindowOptions = NonNullable<ConstructorParameters<typeof WebviewWindo
 
 /**
  * The chrome every native window of Hunt shares: resizable, hidden until its page shows it, and an overlay title bar
- * whose traffic lights sit in the page's header row (see tauri.conf.json for the main window).
+ * whose traffic lights sit in the page's header row (see tauri.conf.json for the main window). WebKit suspends the page
+ * of a window that stays hidden for a few minutes until the window shows again; since these pages show their window
+ * themselves (a popup on `popup:show`, the editor on `editor:open`), background throttling is off.
  */
 function windowChrome(): NativeWindowOptions {
-  return { resizable: true, visible: false, titleBarStyle: "overlay", hiddenTitle: true, trafficLightPosition: new LogicalPosition(12, 23) };
+  return {
+    resizable: true,
+    visible: false,
+    titleBarStyle: "overlay",
+    hiddenTitle: true,
+    trafficLightPosition: new LogicalPosition(12, 23),
+    // The enum is exported as a type only.
+    backgroundThrottling: "disabled" as BackgroundThrottlingPolicy,
+  };
 }
 
 /** Options a window of `kind` is created with: Hunt's chrome and the remembered bounds of `kind` (the first window is centered). */

@@ -10,3 +10,4 @@ pub mod store;
 pub mod summary;
 pub mod sync;
 pub mod transcripts;
+pub mod worktree_watch;

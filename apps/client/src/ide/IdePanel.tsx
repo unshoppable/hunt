@@ -17,6 +17,7 @@ import { findPane } from "./paneGrid";
 import { ProjectTree, type ProjectTreeTarget } from "./ProjectTree";
 import { selectionChatsFor } from "./selectionChats";
 import { useDirtyPaths } from "./useDirtyPaths";
+import { useFileStatuses } from "./useFileStatuses";
 
 /** Events of the mouse's extra buttons that the editor and the webview must not act on. */
 const MOUSE_BUTTON_EVENTS = ["mousedown", "mouseup", "auxclick"] as const;
@@ -74,6 +75,8 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
 
   // Closing tabs keeps their unsaved edits in the shared documents; the project tree and the change list mark them.
   const dirtyPaths = useDirtyPaths(workspace);
+  // The project tree and the editor tabs color changed files like the changelist.
+  const statusByPath = useFileStatuses(sessionId, editVersion);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -213,6 +216,7 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
             projectName={projectName}
             revealRequest={ide.revealRequest}
             refreshVersion={editVersion}
+            statusByPath={statusByPath}
             unsavedPaths={dirtyPaths}
             workspace={workspace}
             onOpen={(path) => openFile(sessionId, path)}
@@ -223,7 +227,15 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
         <Panel id="editors" minSize={300} className="flex flex-col">
           <DependencyBanner sessionId={sessionId} status={session.dependencies} />
           {error ? <p className="border-b border-(--line) px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
-          <EditorGrid sessionId={sessionId} workspace={workspace} ide={ide} dirtyPaths={dirtyPaths} onOpenSubChat={subChat.open} onToggleSubChat={subChat.toggle} />
+          <EditorGrid
+            sessionId={sessionId}
+            workspace={workspace}
+            ide={ide}
+            dirtyPaths={dirtyPaths}
+            statusByPath={statusByPath}
+            onOpenSubChat={subChat.open}
+            onToggleSubChat={subChat.toggle}
+          />
         </Panel>
       </PersistentGroup>
       {subChat.shown ? (

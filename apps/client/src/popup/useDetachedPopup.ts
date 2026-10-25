@@ -30,6 +30,12 @@ let showingCount = 0;
 /** Popup windows this window is creating, until their page reports `popup:ready`. */
 const booting = new Map<string, Promise<void>>();
 
+/** Delay after the main window mounted before the popup windows boot, after the editor, guardrails and settings windows. */
+const WARM_DELAY_MS = 2000;
+
+/** The order the popup windows boot in: the kinds a shortcut opens first, since a shortcut is expected to answer at once. */
+const WARM_ORDER: readonly PopupKind[] = ["findInFiles", "fileSearch", "usages", "subChat", "renamePreview", "image", "screenshots"];
+
 /**
  * Shows `content` in the popup window of `kind`, owned by this window, as long as `content` is set: the window opens
  * at `anchor` (kept inside the screen) with the popup's remembered size, follows every change of `content` and goes
@@ -103,11 +109,13 @@ export function useDetachedPopup<Kind extends PopupKind>(kind: Kind, content: Po
     };
   }, [isShown, kind, send]);
 
+  // A new revision with unchanged content (another ⌘P while the window is open) only brings the window to the front.
+  const revision = options.revision;
   useEffect(() => {
     if (content) {
       send();
     }
-  }, [content, send]);
+  }, [content, revision, send]);
 }
 
 /**
@@ -134,6 +142,27 @@ async function popupWindowBounds(kind: PopupKind, anchor: PopupAnchor): Promise<
     return { x: areaPosition.x, y: areaPosition.y, width: areaSize.width, height: areaSize.height };
   });
   return fitIntoWorkArea(popupBounds(anchor, page, useSettingsStore.getState().popupSizes[kind]), areas);
+}
+
+/**
+ * Boots the popup window of every kind the user keeps in a window of its own hidden, one after another, so the first
+ * ⇧⌘F or ⌘P after a start only has to show it instead of waiting for its page to load (seconds under the dev server).
+ * Call once when the main window mounts; a kind put into a window later boots when it is first shown.
+ */
+export function keepPopupWindowsWarm(): void {
+  globalThis.setTimeout(() => {
+    void (async () => {
+      const detached = useSettingsStore.getState().detachedPopups;
+      for (const kind of WARM_ORDER) {
+        if (!detached[kind]) continue;
+        try {
+          await ensurePopupWindow(kind, await popupWindowBounds(kind, "top"));
+        } catch (reason) {
+          console.error(`failed to warm the ${kind} popup window: ${reason}`);
+        }
+      }
+    })();
+  }, WARM_DELAY_MS);
 }
 
 /**

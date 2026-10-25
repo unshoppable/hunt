@@ -719,6 +719,8 @@ export type MessageTimesEvent = { huntSessionId: string; times: Record<string, s
 export type GraphChangedEvent = { huntSessionId: string };
 /** Sent after a tool call changed files in `worktreePath`; every session of that worktree reloads its changes. */
 export type AttributionEvent = { worktreePath: string };
+/** Files in `worktreePath` changed outside Hunt (an editor, a terminal, another agent) or its `HEAD` moved; every session of that worktree reloads its changes. */
+export type WorktreeChangedEvent = { worktreePath: string };
 /** Result of the background summarizer after a finished turn; `title` is the (possibly unchanged) session title. */
 export type SummaryEvent = { huntSessionId: string; title: string; summary: string[] };
 

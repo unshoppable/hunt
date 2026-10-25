@@ -14,8 +14,12 @@ const draftBySession = new Map<string, string>();
 
 /** Smallest height of the message box: two lines of text plus the input's padding and border. */
 const MIN_HEIGHT = 57;
-/** Rows of the file list that a dragged message box leaves visible above it. */
-const LIST_ROOM = 80;
+/**
+ * Smallest height of the file list above the message box: a drag stops there, and a box whose stored height no longer
+ * fits (a shorter window, another session's changelist) shrinks to make room, down to `MIN_HEIGHT`, so the changelist
+ * never overflows its pane.
+ */
+export const LIST_ROOM = 80;
 /** Height of the message box dragged last, shared by every changelist of the window; unset until the first drag. */
 let draggedHeight: number | null = null;
 
@@ -148,8 +152,8 @@ export function CommitBox({
   };
 
   return (
-    <div className="border-t border-(--line) px-3 py-4 text-[13px]">
-      <div ref={boxRef} className="relative mb-2.5" style={{ height: height ?? undefined }}>
+    <div className="flex flex-col border-t border-(--line) px-3 py-4 text-[13px]">
+      <div ref={boxRef} className="relative mb-2.5" style={{ height: height ?? undefined, minHeight: MIN_HEIGHT }}>
         <textarea
           value={message}
           onChange={(event) => setMessage(event.target.value)}
@@ -169,8 +173,8 @@ export function CommitBox({
         />
         <ResizeGrips edges={{ top: true }} {...grips} />
       </div>
-      {error ? <p className="mb-2 whitespace-pre-wrap text-red-400">{error}</p> : null}
-      <div className="relative flex items-center gap-2">
+      {error ? <p className="mb-2 shrink-0 whitespace-pre-wrap text-red-400">{error}</p> : null}
+      <div className="relative flex shrink-0 items-center gap-2">
         <div className={`relative flex ${isLocked ? "opacity-40" : ""}`}>
           <button
             type="button"

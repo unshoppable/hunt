@@ -106,7 +106,7 @@ export function useBackendEvents(): void {
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
   const applyUpdate = useHuntStore((state) => state.applyUpdate);
   const applyReplay = useHuntStore((state) => state.applyReplay);
-  const applyAttributionChanged = useHuntStore((state) => state.applyAttributionChanged);
+  const applyWorktreeChanged = useHuntStore((state) => state.applyWorktreeChanged);
   const applyPermission = useHuntStore((state) => state.applyPermission);
   const applyPermissionWithdrawn = useHuntStore((state) => state.applyPermissionWithdrawn);
   const applyClosed = useHuntStore((state) => state.applyClosed);
@@ -135,7 +135,8 @@ export function useBackendEvents(): void {
       listenTo("graph:changed", (event) => applyGraphChanged(event.huntSessionId)),
       listenTo("session:summary", applySummary),
       listenTo("sessions:changed", () => void refreshSessions()),
-      listenTo("attribution:changed", (event) => applyAttributionChanged(event.worktreePath)),
+      listenTo("attribution:changed", (event) => applyWorktreeChanged(event.worktreePath)),
+      listenTo("worktree:changed", (event) => applyWorktreeChanged(event.worktreePath)),
       listenTo("checks:changed", (event) => refreshShownChecks(event.sessionId)),
     ];
     return () => {
@@ -158,6 +159,6 @@ export function useBackendEvents(): void {
     applyAnnotation,
     applyGraphChanged,
     applySummary,
-    applyAttributionChanged,
+    applyWorktreeChanged,
   ]);
 }

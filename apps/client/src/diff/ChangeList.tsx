@@ -7,7 +7,7 @@ import { selectionChatsFor, useBusyChatIds } from "../ide/selectionChats";
 import { otherTouchers, ownerLabel, type ChangeScope } from "./attribution";
 import { buildChangeTree, folderPaths, type FolderNode, type TreeNode } from "./changeTree";
 import { Checkbox, type CheckState } from "./Checkbox";
-import { CommitBox } from "./CommitBox";
+import { CommitBox, LIST_ROOM } from "./CommitBox";
 import { useFileIconUrl, useFolderIconUrl } from "./fileIcons";
 import { useReviewDraftCount } from "../review/reviewComments";
 import { useLoad } from "../ui/useLoad";
@@ -24,7 +24,7 @@ import { isWorktreeLocked, remoteOf } from "../chat/remoteSession";
 import { ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
 import { confirmDestructive } from "../ui/confirm";
 import { GlobFilterInput } from "../ui/GlobFilterInput";
-import { SwapIcon } from "../ui/icons";
+import { ArchiveIcon, PencilIcon, SwapIcon, WebstormIcon } from "../ui/icons";
 import { UnsavedDot } from "../ui/UnsavedDot";
 import { isShortcut } from "../ui/shortcuts";
 import { toggleInCollapsed } from "../ui/treeExpansion";
@@ -396,27 +396,15 @@ export function ChangeList({
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-(--changelist-bg) will-change-transform">
       <div className="flex items-center gap-1 border-b border-(--line) px-2 py-2.5 text-[13px] text-neutral-400">
-        <button type="button" onClick={() => setTab("changes")} className={`${TAB_BUTTON_SM} ${tab === "changes" ? TAB_ACTIVE : TAB_INACTIVE}`}>
+        <button type="button" onClick={() => setTab("changes")} className={`${TAB_BUTTON_SM} gap-1.5 ${tab === "changes" ? TAB_ACTIVE : TAB_INACTIVE}`}>
+          <PencilIcon />
           Changes
         </button>
-        <button type="button" onClick={() => setTab("shelf")} className={`${TAB_BUTTON_SM} ${tab === "shelf" ? TAB_ACTIVE : TAB_INACTIVE}`}>
+        <button type="button" onClick={() => setTab("shelf")} className={`${TAB_BUTTON_SM} gap-1.5 ${tab === "shelf" ? TAB_ACTIVE : TAB_INACTIVE}`}>
+          <ArchiveIcon />
           Shelf
         </button>
-        {tab === "changes" ? (
-          <GlobFilterInput value={hiddenGlobs} onApply={setHiddenGlobs} placeholder="Hide files, e.g. *.spec.ts" className="mx-1 min-w-0 flex-1" />
-        ) : (
-          <span className="flex-1" />
-        )}
-        {tab === "changes" ? (
-          <button
-            type="button"
-            onClick={() => setView(view === "flat" ? "tree" : "flat")}
-            className={`${ICON_BUTTON_SM} -my-0.5`}
-            title={view === "flat" ? "Group by folder" : "Show as flat list"}
-          >
-            {view === "flat" ? <TreeIcon /> : <ListIcon />}
-          </button>
-        ) : null}
+        <span className="flex-1" />
         {isRemote ? null : (
           <button
             type="button"
@@ -424,10 +412,24 @@ export function ChangeList({
             className={SECONDARY_BUTTON_XS}
             title="Open worktree in WebStorm"
           >
+            <WebstormIcon className="size-3.5" />
             WebStorm
           </button>
         )}
       </div>
+      {tab === "changes" ? (
+        <div className="flex items-center gap-1 border-b border-(--line) px-2 py-1.5 text-[13px] text-neutral-400">
+          <GlobFilterInput value={hiddenGlobs} onApply={setHiddenGlobs} placeholder="Hide files, e.g. *.spec.ts" className="min-w-0 flex-1" />
+          <button
+            type="button"
+            onClick={() => setView(view === "flat" ? "tree" : "flat")}
+            className={ICON_BUTTON_SM}
+            title={view === "flat" ? "Group by folder" : "Show as flat list"}
+          >
+            {view === "flat" ? <TreeIcon /> : <ListIcon />}
+          </button>
+        </div>
+      ) : null}
 
       {tab === "shelf" ? (
         <ShelfList sessionId={sessionId} version={shelfVersion} onChanged={worktreeChanged} />
@@ -468,7 +470,8 @@ export function ChangeList({
               event.preventDefault();
               onCopyPath(nav.cursor.endsWith("/") ? nav.cursor.slice(0, -1) : nav.cursor);
             }}
-            className="min-h-0 flex-1 overflow-y-auto outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)"
+            className="flex-1 overflow-y-auto outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size) leading-(--changelist-line-height)"
+            style={{ minHeight: LIST_ROOM }}
           >
             <div style={{ height: virtualRows.totalHeight }}>
               <div className="sticky top-0 overflow-hidden bg-(--changelist-bg)" style={{ height: virtualRows.viewportHeight || undefined }}>

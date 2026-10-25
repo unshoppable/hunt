@@ -47,3 +47,26 @@ export function useHighlightedCode(text: string, language: string, path?: string
     return semantic?.text === text ? applySemanticSpans(lines, text, semantic.spans) : lines;
   }, [text, language, isLoaded, semantic]);
 }
+
+/**
+ * The grammars of `languages` that are loaded, so `tokenizeCode` can color their lines; the missing ones are loaded
+ * and a new set is returned as each one arrives. Languages without a grammar never show up in it.
+ */
+export function useLoadedTokenizers(languages: readonly string[]): ReadonlySet<string> {
+  const key = [...new Set(languages)].sort().join(" ");
+  const [loadedHere, setLoadedHere] = useState<ReadonlySet<string>>(() => new Set());
+
+  useEffect(() => {
+    for (const language of key.split(" ")) {
+      if (!language || hasTokenizer(language)) continue;
+      // A loaded grammar stays loaded, so a late result is still true and needs no staleness check.
+      void loadTokenizer(language).then((isLoaded) => {
+        if (isLoaded) {
+          setLoadedHere((current) => new Set(current).add(language));
+        }
+      });
+    }
+  }, [key]);
+
+  return useMemo(() => new Set([...loadedHere, ...key.split(" ").filter((language) => language && hasTokenizer(language))]), [key, loadedHere]);
+}

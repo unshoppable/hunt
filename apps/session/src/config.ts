@@ -58,6 +58,10 @@
  * - `adrDir`: optional, the folder of the repository's architectural decision records, which the client's guardrails
  *   window lists and writes; it follows the rules of a service's `cwd` and is `.claude/resources/adrs` without it. The
  *   VM only validates it.
+ * - `guardrailSkill`: optional, the name of the Claude Code skill (`.claude/skills/<name>/SKILL.md`) the client's
+ *   "Guardrail" button invokes and whose criteria decide when the button lights up: kebab-case of letters and digits,
+ *   at most 64 characters, `guardrail` without it. The client writes the skill from its template when a session
+ *   starts in a worktree that lacks it; the VM only validates the name.
  *
  * `<short>` is the first 8 hex digits of the session ID. `configCli.ts` writes the session's environment, one
  * environment file per service and the configuration of the VM's preview proxy.
@@ -211,7 +215,7 @@ const WAYMOTE_GATEWAY = "127.0.0.1:9230";
 /** The origins of the desktop client's pages: the bundled app and the Vite dev server of `tauri dev`. */
 const DESKTOP_ORIGINS = ["tauri://localhost", "http://localhost:1420"];
 
-const ROOT_FIELDS = ["version", "adrDir", "swf", "services", "checks"];
+const ROOT_FIELDS = ["version", "adrDir", "guardrailSkill", "swf", "services", "checks"];
 const SWF_FIELDS = ["model"];
 const MAX_MODEL_LENGTH = 128;
 /** The full ID of a Claude model, with an optional context hint: `claude-opus-5-5`, `claude-haiku-4-5-20251001`, `claude-sonnet-5-5[1m]`. */
@@ -231,6 +235,10 @@ const CWD = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
 const CWD_RULE =
   `must be a folder relative to the worktree such as "apps/web": at most ${MAX_CWD_LENGTH} characters, ` +
   'segments of letters, digits, ".", "_" and "-", none . or ..';
+const MAX_SKILL_NAME_LENGTH = 64;
+/** A skill name as Claude Code accepts it (`is_skill_name` in `apps/client/src-tauri/src/guardrail_skill.rs`). */
+const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const SKILL_NAME_RULE = `must be the kebab-case name of a skill such as "guardrail": letters, digits and "-", at most ${MAX_SKILL_NAME_LENGTH} characters`;
 const LINE_BREAK = /[\n\r\0]/;
 const ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
 const RESERVED_ENV_PREFIXES = ["CLAUDE_", "HUNT_"];
@@ -589,6 +597,7 @@ function parseRoot(huntJson: unknown, problems: Problems): { services: ServiceCo
     problems.add("version", "must be 3");
   }
   folder(root.adrDir, "adrDir", problems);
+  skillName(root.guardrailSkill, "guardrailSkill", problems);
   const swfModel = parseSwfModel(root.swf, problems);
   const declared = root.services === undefined ? undefined : record(root.services, "services", null, problems);
   const entries = Object.entries(declared ?? {});
@@ -712,6 +721,14 @@ function folder(value: unknown, path: string, problems: Problems): string | null
     !value.split("/").some((segment) => segment === "." || segment === "..");
   if (isFolder) return value;
   problems.add(path, CWD_RULE);
+  return null;
+}
+
+/** `value` as the name of a Claude Code skill; null without one. */
+function skillName(value: unknown, path: string, problems: Problems): string | null {
+  if (value === undefined) return null;
+  if (typeof value === "string" && value.length <= MAX_SKILL_NAME_LENGTH && SKILL_NAME.test(value)) return value;
+  problems.add(path, SKILL_NAME_RULE);
   return null;
 }
 

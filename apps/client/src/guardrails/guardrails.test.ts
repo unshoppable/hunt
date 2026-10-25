@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { adrDirOf, adrNumber, creationTask, DEFAULT_GUARDRAIL_DIRS, expandedForTree, foldersOf, generationTask, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailTask, guardrailTemplate, guardrailTreeRows, kindHelp, newGuardrailLocation, nextAdrNumber, normalizeGuardrailDir, ownerFolderOf, slugify, treeFolders, type Guardrail, type GuardrailDirs, type GuardrailListing } from "./guardrails";
+import { adrDirOf, adrNumber, creationTask, DEFAULT_GUARDRAIL_DIRS, DEFAULT_GUARDRAIL_SKILL, expandedForTree, foldersOf, generationTask, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailSkillOf, guardrailTask, guardrailTemplate, guardrailTreeRows, kindHelp, newGuardrailLocation, nextAdrNumber, normalizeGuardrailDir, ownerFolderOf, slugify, treeFolders, type Guardrail, type GuardrailDirs, type GuardrailListing } from "./guardrails";
 
 const adr = (name: string): Guardrail => ({ kind: "adr", path: `.claude/resources/adrs/${name}.md`, name, folder: "" });
 const instruction = (folder: string): Guardrail => ({ kind: "instruction", path: folder ? `${folder}/CLAUDE.md` : "CLAUDE.md", name: "CLAUDE.md", folder: "" });
@@ -314,6 +314,18 @@ describe("adrDirOf", () => {
   it("falls back to the default without the file, the field or a usable value", () => {
     for (const huntJson of ["", "{", "null", '{ "version": 3 }', '{ "adrDir": 7 }', '{ "adrDir": "../elsewhere" }', '{ "adrDir": "/etc" }']) {
       expect(adrDirOf(huntJson)).toBe(DEFAULT_GUARDRAIL_DIRS.adr);
+    }
+  });
+});
+
+describe("guardrailSkillOf", () => {
+  it("reads the skill hunt.json sets as guardrailSkill", () => {
+    expect(guardrailSkillOf('{ "version": 3, "guardrailSkill": "team-lessons" }')).toBe("team-lessons");
+  });
+
+  it("falls back to the default without the file, the field or a usable value", () => {
+    for (const huntJson of ["", "{", "null", '{ "version": 3 }', '{ "guardrailSkill": 7 }', '{ "guardrailSkill": "Team Lessons" }', '{ "guardrailSkill": "-a" }', `{ "guardrailSkill": "${"a".repeat(65)}" }`]) {
+      expect(guardrailSkillOf(huntJson)).toBe(DEFAULT_GUARDRAIL_SKILL);
     }
   });
 });

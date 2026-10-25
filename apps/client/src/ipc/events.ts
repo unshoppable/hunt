@@ -26,6 +26,7 @@ import type {
   TerminalExitEvent,
   TerminalOutputEvent,
   UpdateEvent,
+  WorktreeChangedEvent,
 } from "./types";
 
 type EventPayloads = {
@@ -48,6 +49,8 @@ type EventPayloads = {
   "graph:changed": GraphChangedEvent;
   "session:summary": SummaryEvent;
   "attribution:changed": AttributionEvent;
+  /** Files of a worktree changed outside Hunt, or its `HEAD` moved (see session/worktree_watch.rs). */
+  "worktree:changed": WorktreeChangedEvent;
   /** The backend added or removed sessions; every window reloads its list. */
   "sessions:changed": undefined;
   /** The backend added, removed or switched the Claude account (see settings/SettingsWindow.tsx). */

@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import * as monaco from "monaco-editor";
 import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
+import { tokenizeCode, type HighlightedLine } from "../code/highlight";
+import { useLoadedTokenizers } from "../code/useHighlightedCode";
 import { useFileIconUrl } from "../diff/fileIcons";
+import { monacoLanguage } from "../diff/monaco";
 import { commands } from "../ipc/commands";
 import type { TextMatch, TextQuery, TextRange, TextSearchResult } from "../ipc/types";
 import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
@@ -19,7 +22,7 @@ import { errorText, useLoad } from "../ui/useLoad";
 import { usePopupSize } from "../ui/usePopupSize";
 import { useViewportSize } from "../ui/useViewportSize";
 import { abbreviateHome, FilePreview } from "./FileSearchDialog";
-import { matchSummary, selectionQuery, splitByRanges } from "./findInFiles";
+import { matchSummary, selectionQuery, splitRunsByRanges } from "./findInFiles";
 
 const MIN_SIZE = { width: 560, height: 280 };
 /** The largest share of the window's width and height the dialog may take. */
@@ -28,6 +31,8 @@ const MAX_HEIGHT_SHARE = 0.84;
 /** Smallest heights in pixels the list and the preview can be dragged to: two rows and three lines. */
 const MIN_LIST_HEIGHT = 56;
 const MIN_PREVIEW_HEIGHT = 64;
+/** The list's text color, for lines whose grammar is still loading or that have none. */
+const PLAIN_STYLE = { foreground: "#e5e5e5", fontStyle: 0 };
 
 /** The last query of this window; the dialog reopens with it like WebStorm's. */
 let lastQuery: TextQuery = { text: "", matchCase: false, wholeWords: false, isRegex: false, fileMask: "" };
@@ -125,7 +130,7 @@ export function FindInFilesWindowContent({
 
 /**
  * WebStorm-style "Find in Files": searches the text of every project file (see find_in_files.rs) as you type and
- * lists the matching lines on every keystroke; the selected match is previewed below the list. `initialText` (the editor's selection)
+ * lists the matching lines, colored like the editor, on every keystroke; the selected match is previewed below the list. `initialText` (the editor's selection)
  * replaces the last query. ⌥C, ⌥W and ⌥X toggle Match Case, Words and Regex; the file mask takes comma-separated
  * masks such as `*.ts, !*.spec.ts`. ↑/↓ or a click select a match (hovering only highlights the row), Enter or a
  * double click opens it, ⇧Enter opens it in a right split. Inside the app it is a dialog that Esc or a click on the
@@ -183,6 +188,8 @@ function FindInFilesView({
   const matches = useMemo(() => (query.text && !error ? (result?.value.matches ?? []) : []), [query.text, error, result]);
   const selected = Math.min(selectedIndex, Math.max(matches.length - 1, 0));
   const selectedMatch = matches[selected] as TextMatch | undefined;
+  const tokenizers = useLoadedTokenizers(matches.map((match) => monacoLanguage(match.path)));
+  const previews = useMemo(() => matches.map((match) => previewRuns(match, tokenizers)), [matches, tokenizers]);
 
   useEffect(() => {
     listRef.current?.children[selected]?.scrollIntoView({ block: "nearest" });
@@ -252,7 +259,7 @@ function FindInFilesView({
             className="tree-row flex cursor-pointer items-center gap-4 px-3 py-1"
           >
             <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-pre text-neutral-200">
-              <MatchedText text={match.preview} ranges={match.ranges} />
+              <MatchedText runs={previews[index]} ranges={match.ranges} />
             </span>
             <span className="flex max-w-[45%] min-w-0 shrink-0 text-neutral-500">
               {dir ? <span className="truncate">{dir}/</span> : null}
@@ -396,17 +403,33 @@ function OptionToggle({ label, isOn, onToggle, children }: { label: string; isOn
   );
 }
 
-/** `text` with the `ranges` emphasized. */
-function MatchedText({ text, ranges }: { text: string; ranges: TextRange[] }) {
+/** The preview of `match` colored with the grammar of its file like WebStorm's list, or plain while that grammar is not loaded. */
+function previewRuns(match: TextMatch, tokenizers: ReadonlySet<string>): HighlightedLine {
+  const language = monacoLanguage(match.path);
+  const runs = tokenizers.has(language) ? tokenizeCode(match.preview, language)?.[0] : undefined;
+  return runs ?? [{ text: match.preview, style: PLAIN_STYLE }];
+}
+
+/**
+ * A preview's colored `runs` with the `ranges` in WebStorm's opaque amber box with black text; only the colors are
+ * taken, the list keeps its upright UI font.
+ */
+function MatchedText({ runs, ranges }: { runs: HighlightedLine; ranges: TextRange[] }) {
   return (
     <>
-      {splitByRanges(text, ranges).map((part, index) =>
+      {splitRunsByRanges(runs, ranges).map((part, index) =>
         part.isMatch ? (
-          <mark key={index} className="rounded-sm bg-amber-300/30 text-inherit">
-            {part.text}
+          <mark key={index} className="rounded-sm bg-[#b4985c] text-black">
+            {part.runs.map((run) => run.text).join("")}
           </mark>
         ) : (
-          <span key={index}>{part.text}</span>
+          <Fragment key={index}>
+            {part.runs.map((run, runIndex) => (
+              <span key={runIndex} style={{ color: run.style.foreground }}>
+                {run.text}
+              </span>
+            ))}
+          </Fragment>
         ),
       )}
     </>

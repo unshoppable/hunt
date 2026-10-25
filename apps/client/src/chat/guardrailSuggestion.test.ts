@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatItem } from "../ipc/types";
-import { buildGuardrailRequest, buildTranscript, findGuardrailSuggestion, stripGuardrailMarker, transcriptTail } from "./guardrailSuggestion";
+import { buildGuardrailRequest, buildTranscript, findGuardrailSuggestion, guardrailChatTask, stripGuardrailMarker, transcriptTail } from "./guardrailSuggestion";
 
 const user = (text: string): ChatItem => ({ kind: "user", id: text, text, images: [] });
 const agent = (text: string): ChatItem => ({ kind: "agent", id: text, text, images: [] });
@@ -47,9 +47,18 @@ describe("stripGuardrailMarker", () => {
 });
 
 describe("buildGuardrailRequest", () => {
-  it("prefills the suggestion or leaves the request open", () => {
-    expect(buildGuardrailRequest({ kind: "adr", summary: "Use ports.", replyId: "a1" }, "ADR")).toBe("Erzeuge eine passende Guardrail für folgendes:\nADR: Use ports.");
-    expect(buildGuardrailRequest(null, "")).toBe("Erzeuge eine passende Guardrail für folgendes:\n");
+  it("invokes the guardrail skill with the suggestion or leaves the request open", () => {
+    expect(buildGuardrailRequest({ kind: "adr", summary: "Use ports.", replyId: "a1" }, "ADR", "guardrail")).toBe("/guardrail ADR: Use ports.");
+    expect(buildGuardrailRequest(null, "", "team-lessons")).toBe("/team-lessons ");
+  });
+});
+
+describe("guardrailChatTask", () => {
+  it("names the skill and its file and ends with the conversation", () => {
+    const task = guardrailChatTask("lessons", "### User\nq");
+    expect(task).toContain("`/lessons` skill (`.claude/skills/lessons/SKILL.md`)");
+    expect(task.trimEnd().endsWith("### User\nq")).toBe(true);
+    expect(task).not.toContain("{{");
   });
 });
 

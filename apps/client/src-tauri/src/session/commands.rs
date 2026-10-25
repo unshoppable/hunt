@@ -23,6 +23,7 @@ use crate::accounts;
 use crate::browser::{AnnotationSink, BrowserRegistry};
 use crate::checks::{self, CheckDefinition, CheckNotice, CheckRegistry, CheckRunView};
 use crate::declined_guardrails;
+use crate::guardrail_skill;
 use crate::acp::{
     bundled_script_path, connect, message_time, publish_update, system_prompt_append, AgentTransport, LiveHandles, PermissionRegistry,
     SessionRegistry, SessionStart,
@@ -57,6 +58,7 @@ use crate::session::review;
 use crate::session::store::{self, announce_sessions_changed, SelectionContext, SessionRecord, Workspace};
 use crate::session::summary;
 use crate::session::sync;
+use crate::session::worktree_watch::{self, WorktreeWatchers};
 use crate::workspace;
 
 #[derive(Clone, Serialize)]
@@ -530,8 +532,8 @@ pub async fn prepare_dependencies(app: AppHandle, id: Uuid) -> Result<(), String
 }
 
 /// Connects the agent of `record` with `start` (its selection, if any, goes into the system prompt), stores the
-/// ACP session ID it got, registers the live session and starts watching its worktree for the diagram; a remote
-/// session starts syncing its files. The store may change while the agent starts (attribution, summary, or the session
+/// ACP session ID it got, registers the live session and starts watching its worktree for the diagram and for changes
+/// from outside; a remote session starts syncing its files. The store may change while the agent starts (attribution, summary, or the session
 /// being closed), so the view is built from the record as stored afterwards; a session closed meanwhile gets its agent
 /// shut down again.
 async fn activate(
@@ -548,6 +550,12 @@ async fn activate(
     if sync_owner.is_none() && record.worktree_path.is_dir() {
         if let Err(error) = LocalTmux::prepare(&record.worktree_path, record.parent_id.unwrap_or(id)).await {
             eprintln!("preparing the tmux of session {id} failed: {error}");
+        }
+    }
+    // The guardrail skill exists before the system prompt quotes its criteria.
+    if record.worktree_path.is_dir() {
+        if let Err(error) = ensure_guardrail_skill(app, &record).await {
+            eprintln!("writing the guardrail skill into the worktree of session {id} failed: {error}");
         }
     }
     let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt);
@@ -588,6 +596,9 @@ async fn activate(
     }
     if let Err(error) = graph::watch(app, watchers, id, &record.worktree_path) {
         eprintln!("watching the graph of session {id} failed: {error}");
+    }
+    if let Err(error) = worktree_watch::watch(app, &app.state::<WorktreeWatchers>(), id, &record.worktree_path) {
+        eprintln!("watching the worktree of session {id} for changes failed: {error}");
     }
     Ok(SessionView::new(app, record, true).await)
 }
@@ -1988,6 +1999,7 @@ async fn stop_agent_and_wait(app: &AppHandle, registry: &SessionRegistry, watche
         let _ = finished.await;
     }
     graph::unwatch(watchers, id);
+    worktree_watch::unwatch(&app.state::<WorktreeWatchers>(), id);
     attribution::forget_session(app, id);
     close_desktop(app, id);
     close_browser(app, id);
@@ -2151,6 +2163,7 @@ async fn stop_agent(app: &AppHandle, registry: &SessionRegistry, watchers: &Watc
         live.shutdown();
     }
     graph::unwatch(watchers, id);
+    worktree_watch::unwatch(&app.state::<WorktreeWatchers>(), id);
     attribution::forget_session(app, id);
     close_desktop(app, id);
     close_browser(app, id);
@@ -2831,6 +2844,21 @@ pub(crate) fn worktree_session(app: &AppHandle, id: Uuid) -> Result<SessionRecor
 fn worktree_file(record: &SessionRecord, path: &str) -> Result<PathBuf, String> {
     git::ensure_inside_worktree(path)?;
     Ok(record.worktree_path.join(path))
+}
+
+/// Writes the repository's guardrail skill into the session's worktree unless it exists (`guardrail_skill::ensure`);
+/// the new file counts as the session's own change.
+async fn ensure_guardrail_skill(app: &AppHandle, record: &SessionRecord) -> Result<(), String> {
+    let mut written = None;
+    attribution::record_write(app, &record.worktree_path, record.id, || {
+        written = guardrail_skill::ensure(&record.worktree_path)?;
+        Ok(())
+    })
+    .await?;
+    let Some(path) = written else { return Ok(()) };
+    store::add_touched_files(app, record.id, std::slice::from_ref(&path))?;
+    sync::note_local_change(app, record.id);
+    store::note_worktree_changed(app, record.id)
 }
 
 /// Records in the session's worktree that the user declined the guardrail its agent suggested (`declined_guardrails`);

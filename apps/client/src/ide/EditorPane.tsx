@@ -5,6 +5,7 @@ import { attachIdeLink } from "../diff/ideLink";
 import { useFileIconUrl } from "../diff/fileIcons";
 import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, setupMonaco } from "../diff/monaco";
 import { anchorBelowLine, type SelectionRequest } from "../diff/selectionContext";
+import { STATUS_NAME_CLASS } from "../diff/styles";
 import { useSettingsStore } from "../state/settings";
 import { useHuntStore } from "../state/store";
 import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
@@ -47,6 +48,8 @@ type EditorPaneProps = {
   /** The pane keyboard shortcuts act on; its active tab is marked in the accent color. */
   isActive: boolean;
   dirtyPaths: readonly string[];
+  /** Git status letter of each changed file; a tab's name is colored like in the changelist (new green, modified blue). */
+  statusByPath: Readonly<Record<string, string>>;
   pendingPosition: PendingPosition | null;
   /**
    * Opens the sub chat popover: from the context menu ("Ask Claude about selection") with the selected lines, or
@@ -69,7 +72,7 @@ type EditorPaneProps = {
  * script of a package.json gets a green run triangle in the glyph margin; a click saves the file and runs the script in
  * the Terminal tab.
  */
-export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, pendingPosition, onOpenSubChat, onToggleSubChat }: EditorPaneProps) {
+export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, statusByPath, pendingPosition, onOpenSubChat, onToggleSubChat }: EditorPaneProps) {
   const fileIconUrl = useFileIconUrl();
   const fontSize = useSettingsStore((state) => state.panes.editor.fontSize);
   const lineHeight = useSettingsStore((state) => state.panes.editor.lineHeight);
@@ -418,7 +421,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, p
               }`}
             >
               <img src={fileIconUrl(path)} alt="" className="size-4 shrink-0" />
-              <span className="whitespace-nowrap">{name}</span>
+              <span className={`whitespace-nowrap ${STATUS_NAME_CLASS[statusByPath[path] ?? ""] ?? ""}`}>{name}</span>
               <button
                 type="button"
                 onClick={(event) => requestClose(path, event)}

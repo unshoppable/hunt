@@ -45,6 +45,7 @@ use crate::session::link::{self, Link};
 use crate::session::related;
 use crate::session::store::{self, announce_sessions_changed, SessionRecord};
 use crate::session::transcripts::{self, TranscriptLink};
+use crate::session::worktree_watch::{self, WorktreeWatchers};
 
 /// How often a sync runs while the agent's turn runs and no channel reports the VM's changes.
 const TURN_POLL: Duration = Duration::from_secs(10);
@@ -752,6 +753,9 @@ async fn ensure_local_worktree(app: &AppHandle, record: SessionRecord, target: &
     if let Err(error) = graph::watch(app, &app.state::<WatcherRegistry>(), id, &record.worktree_path) {
         eprintln!("watching the graph of session {id} failed: {error}");
     }
+    if let Err(error) = worktree_watch::watch(app, &app.state::<WorktreeWatchers>(), id, &record.worktree_path) {
+        eprintln!("watching the worktree of session {id} for changes failed: {error}");
+    }
     if let Some(state) = active(app, id) {
         watch(app, id, &state, &record.worktree_path);
         start_streams(app, id, &state);
@@ -811,7 +815,7 @@ pub async fn take_over_vm_push_target(app: &AppHandle, id: Uuid, ssh: &Ssh, targ
 fn watch(app: &AppHandle, id: Uuid, state: &Arc<SessionSync>, worktree: &Path) {
     let handle = app.clone();
     let root = worktree.to_path_buf();
-    let reflogs = git_dir_of(worktree).map(|git_dir| git_dir.join("logs"));
+    let reflogs = git::git_dir_of(worktree).map(|git_dir| git_dir.join("logs"));
     let head_reflog = reflogs.as_ref().map(|reflogs| reflogs.join("HEAD"));
     let reports = Arc::downgrade(state);
     let on_events = move |result: DebounceEventResult| {
@@ -822,7 +826,8 @@ fn watch(app: &AppHandle, id: Uuid, state: &Arc<SessionSync>, worktree: &Path) {
             return;
         };
         let moved_head = events.iter().flat_map(|event| &event.paths).any(|path| head_reflog.as_ref() == Some(path));
-        let paths: BTreeSet<String> = events.iter().flat_map(|event| &event.paths).filter_map(|path| synced_path(&root, path)).collect();
+        let paths: BTreeSet<String> =
+            events.iter().flat_map(|event| &event.paths).filter_map(|path| git::worktree_change_path(&root, path)).collect();
         if paths.is_empty() && !moved_head {
             return;
         }
@@ -850,28 +855,6 @@ fn watch(app: &AppHandle, id: Uuid, state: &Arc<SessionSync>, worktree: &Path) {
     }
 }
 
-/// The git directory of `worktree`, which holds its `HEAD` and reflog: `.git` itself in a main checkout, or the
-/// directory a linked worktree's `.git` file names (`gitdir: <path>`, relative to the worktree when not absolute).
-fn git_dir_of(worktree: &Path) -> Option<PathBuf> {
-    let dot_git = worktree.join(".git");
-    if dot_git.is_dir() {
-        return Some(dot_git);
-    }
-    let pointer = std::fs::read_to_string(&dot_git).ok()?;
-    let target = pointer.strip_prefix("gitdir:")?.trim();
-    Some(worktree.join(target))
-}
-
-/// The worktree-relative path of a change at `path` that may concern a synced file of `worktree`: one inside it,
-/// outside `.git`, `.hunt` and `node_modules` folders.
-fn synced_path(worktree: &Path, path: &Path) -> Option<String> {
-    let relative = path.strip_prefix(worktree).ok()?;
-    if relative.components().any(|component| matches!(component.as_os_str().to_str(), Some(".git" | ".hunt" | "node_modules"))) {
-        return None;
-    }
-    relative.to_str().filter(|relative| !relative.is_empty()).map(str::to_string)
-}
-
 /// Asks for a sync of `id` every `TURN_POLL` while no channel is open, until the turn ends or the session stops syncing.
 fn poll(app: &AppHandle, id: Uuid, state: &SessionSync) {
     let mut poller = state.poller.lock().unwrap();
@@ -892,34 +875,6 @@ fn poll(app: &AppHandle, id: Uuid, state: &SessionSync) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn synced_paths_skip_git_diagram_and_dependency_folders() {
-        let worktree = Path::new("/Users/jane/Library/Application Support/hunt/worktrees/x");
-        assert_eq!(synced_path(worktree, &worktree.join("src/main.ts")).as_deref(), Some("src/main.ts"));
-        assert_eq!(synced_path(worktree, &worktree.join(".gitignore")).as_deref(), Some(".gitignore"));
-        assert_eq!(synced_path(worktree, &worktree.join(".git/index")), None);
-        assert_eq!(synced_path(worktree, &worktree.join(".hunt/graph.json")), None);
-        assert_eq!(synced_path(worktree, &worktree.join("apps/web/node_modules/react/index.js")), None);
-        assert_eq!(synced_path(worktree, worktree), None);
-        assert_eq!(synced_path(worktree, Path::new("/tmp/elsewhere.txt")), None);
-    }
-
-    #[test]
-    fn the_git_dir_is_the_folder_or_what_the_worktrees_git_file_names() {
-        let main = tempfile::tempdir().unwrap();
-        std::fs::create_dir(main.path().join(".git")).unwrap();
-        assert_eq!(git_dir_of(main.path()), Some(main.path().join(".git")));
-
-        let linked = tempfile::tempdir().unwrap();
-        std::fs::write(linked.path().join(".git"), "gitdir: /repo/.git/worktrees/x\n").unwrap();
-        assert_eq!(git_dir_of(linked.path()), Some(PathBuf::from("/repo/.git/worktrees/x")));
-        std::fs::write(linked.path().join(".git"), "gitdir: ../main/.git/worktrees/x\n").unwrap();
-        assert_eq!(git_dir_of(linked.path()), Some(linked.path().join("../main/.git/worktrees/x")));
-
-        let bare = tempfile::tempdir().unwrap();
-        assert_eq!(git_dir_of(bare.path()), None);
-    }
 
     #[test]
     fn relay_turn_reads_the_hunt_meta() {

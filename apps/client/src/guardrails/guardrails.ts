@@ -46,6 +46,30 @@ export async function readGuardrailDirs(sessionId: string): Promise<GuardrailDir
   return { ...DEFAULT_GUARDRAIL_DIRS, adr: adrDirOf(huntJson) };
 }
 
+/** The guardrail skill of a repository whose hunt.json sets no `guardrailSkill` (`DEFAULT_SKILL` in `src-tauri/src/guardrail_skill.rs`). */
+export const DEFAULT_GUARDRAIL_SKILL = "guardrail";
+/** A skill name as Claude Code accepts it: kebab-case of letters and digits, at most 64 characters. */
+const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * The guardrail skill the text of a hunt.json sets as `guardrailSkill`: the skill at `.claude/skills/<name>/SKILL.md`
+ * the "Guardrail" button invokes; the default without one or for an unreadable file or value.
+ */
+export function guardrailSkillOf(huntJson: string): string {
+  try {
+    const skill: unknown = JSON.parse(huntJson)?.guardrailSkill;
+    return typeof skill === "string" && skill.length <= 64 && SKILL_NAME.test(skill) ? skill : DEFAULT_GUARDRAIL_SKILL;
+  } catch {
+    return DEFAULT_GUARDRAIL_SKILL;
+  }
+}
+
+/** The guardrail skill of the session's worktree (see `guardrailSkillOf`). */
+export async function readGuardrailSkill(sessionId: string): Promise<string> {
+  const huntJson = await commands.readFile(sessionId, HUNT_JSON).catch(() => "");
+  return guardrailSkillOf(huntJson);
+}
+
 export type Guardrail = {
   kind: GuardrailKind;
   /** Worktree-relative path of the Markdown file. */

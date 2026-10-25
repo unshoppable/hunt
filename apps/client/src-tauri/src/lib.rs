@@ -11,6 +11,7 @@ mod git;
 mod github;
 mod github_token;
 mod graph;
+mod guardrail_skill;
 mod ide;
 mod keychain;
 mod legacy_identifier;
@@ -53,6 +54,7 @@ pub fn run() {
         .manage(SessionRegistry::default())
         .manage(PermissionRegistry::default())
         .manage(WatcherRegistry::default())
+        .manage(session::worktree_watch::WorktreeWatchers::default())
         .manage(SummaryRegistry::default())
         .manage(SyncRegistry::default())
         .manage(session::link::LinkRegistry::default())

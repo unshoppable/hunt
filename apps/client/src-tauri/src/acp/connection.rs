@@ -445,6 +445,7 @@ async fn forget_live_session(app: &AppHandle, hunt_session_id: Uuid) {
     app.state::<SessionRegistry>().live.lock().await.remove(&hunt_session_id);
     app.state::<SessionRegistry>().end_start(hunt_session_id).await;
     crate::graph::unwatch(&app.state::<crate::graph::WatcherRegistry>(), hunt_session_id);
+    crate::session::worktree_watch::unwatch(&app.state::<crate::session::worktree_watch::WorktreeWatchers>(), hunt_session_id);
     attribution::forget_session(app, hunt_session_id);
     crate::session::sync::detach(app, hunt_session_id);
     crate::session::commands::close_desktop(app, hunt_session_id);
@@ -512,9 +513,6 @@ async fn new_session(
     Ok((response.session_id, response.config_options.unwrap_or_default()))
 }
 
-/// Asks the agent to offer recording an answer the user accepted as an ADR, skill, rule, agent or instruction.
-const GUARDRAIL_OFFER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/guardrail-offer.system-prompt.md"));
-
 /// Asks the agent to end a reply that changed files with the `<!-- hunt:changes -->` marker listing the most important
 /// places, which the chat shows below the reply.
 const CHANGE_REFERENCES_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/change-references.system-prompt.md"));
@@ -540,7 +538,8 @@ const TERMINALS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), 
 const BROWSER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/browser.system-prompt.md"));
 
 /// Everything Hunt appends to the system prompt of the agent of the Hunt session `hunt_session_id`: the user's
-/// response-style prompt from the settings (if not cleared), the guardrail offer, the change references, the code block
+/// response-style prompt from the settings (if not cleared), the guardrail offer (with the criteria of the repository's
+/// guardrail skill when `local_worktree` is known, see `crate::guardrail_skill`), the change references, the code block
 /// places, the question marker, the sessions file, for an agent on this Mac in the worktree `local_worktree` the
 /// terminals and the browser, and the optional selection context, each section separated from the next by a blank line.
 pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prompt: Option<String>, local_worktree: Option<&Path>) -> String {
@@ -550,7 +549,7 @@ pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prom
         append.push_str(&style);
         append.push_str("\n\n");
     }
-    append.push_str(GUARDRAIL_OFFER_PROMPT);
+    append.push_str(&crate::guardrail_skill::offer_prompt(local_worktree));
     append.push('\n');
     append.push_str(CHANGE_REFERENCES_PROMPT);
     append.push('\n');

@@ -1,5 +1,6 @@
 /** Small stroke icons for buttons; they inherit the text color and size via `className`. */
 
+import { useId } from "react";
 
 export function CloseIcon({ className = "size-3.5" }: { className?: string }) {
   return (
@@ -194,6 +195,68 @@ export function GlobeIcon({ className = "size-3.5" }: { className?: string }) {
   );
 }
 
+/** A page with a plus over a minus, for diffs. */
+export function DiffIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3.25 2.75a1 1 0 0 1 1-1h4.9l3.6 3.6v7.9a1 1 0 0 1-1 1h-7.5a1 1 0 0 1-1-1v-10.5Z" />
+      <path d="M8 5.5v3.5M6.25 7.25h3.5M6.25 11h3.5" />
+    </svg>
+  );
+}
+
+/** Three boxes joined by lines, for diagrams. */
+export function DiagramIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="5.5" y="1.75" width="5" height="3.5" rx="0.75" />
+      <rect x="1.75" y="10.75" width="5" height="3.5" rx="0.75" />
+      <rect x="9.25" y="10.75" width="5" height="3.5" rx="0.75" />
+      <path d="M8 5.25V8M4.25 10.75V8h7.5v2.75" />
+    </svg>
+  );
+}
+
+/** A monitor on a stand, for a remote desktop. */
+export function MonitorIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="1.75" y="2.5" width="12.5" height="8.5" rx="1.25" />
+      <path d="M8 11v2.75M5.5 13.75h5" />
+    </svg>
+  );
+}
+
+/** A prompt in a window, for terminals. */
+export function TerminalIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="1.75" y="2.5" width="12.5" height="11" rx="1.5" />
+      <path d="m4.75 6 2 2-2 2M8.5 10.5h2.75" />
+    </svg>
+  );
+}
+
+/** A pencil, for edited things. */
+export function PencilIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M10.75 2.5a1.4 1.4 0 0 1 2 0l.75.75a1.4 1.4 0 0 1 0 2L5.75 13 2.5 13.5 3 10.25Z" />
+      <path d="m9.5 3.75 2.75 2.75" />
+    </svg>
+  );
+}
+
+/** An archive box, for shelved changes. */
+export function ArchiveIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="1.75" y="2.75" width="12.5" height="3.5" rx="1" />
+      <path d="M2.75 6.25v6a1 1 0 0 0 1 1h8.5a1 1 0 0 0 1-1v-6M6.5 9h3" />
+    </svg>
+  );
+}
+
 /** A shield, for the repository's guardrails (rules, skills, ADRs). */
 export function ShieldIcon({ className = "size-3.5" }: { className?: string }) {
   return (
@@ -380,7 +443,7 @@ export function QuoteIcon({ className = "size-4" }: { className?: string }) {
   );
 }
 
-/** Angle brackets, for the code action of a markdown toolbar. */
+/** Angle brackets, for code: the code action of a markdown toolbar and the Editor tab. */
 export function CodeIcon({ className = "size-4" }: { className?: string }) {
   return (
     <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -417,7 +480,7 @@ export function NumberedListIcon({ className = "size-4" }: { className?: string 
   );
 }
 
-/** Three lines with checkboxes, for the task list action of a markdown toolbar. */
+/** Lines with checkboxes, for checklists: the task list action of a markdown toolbar and the Checks tab. */
 export function TaskListIcon({ className = "size-4" }: { className?: string }) {
   return (
     <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -438,18 +501,22 @@ export function MentionIcon({ className = "size-4" }: { className?: string }) {
   );
 }
 
-/** WebStorm's product logo: a gradient tile with the black "WS" square, drawn in its own colors. */
+/**
+ * WebStorm's product logo: a gradient tile with the black "WS" square, drawn in its own colors. Each instance owns its
+ * gradient id, because a shared id resolves to the first instance, which paints nothing while it sits in a hidden pane.
+ */
 export function WebstormIcon({ className = "size-4" }: { className?: string }) {
+  const gradientId = useId();
   return (
     <svg viewBox="0 0 16 16" className={className} aria-hidden="true">
       <defs>
-        <linearGradient id="webstorm-tile" x1="0" y1="16" x2="16" y2="0" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gradientId} x1="0" y1="16" x2="16" y2="0" gradientUnits="userSpaceOnUse">
           <stop offset="0" stopColor="#07C3F2" />
           <stop offset="0.55" stopColor="#087CFA" />
           <stop offset="1" stopColor="#FCF84A" />
         </linearGradient>
       </defs>
-      <rect width="16" height="16" rx="3.5" fill="url(#webstorm-tile)" />
+      <rect width="16" height="16" rx="3.5" fill={`url(#${gradientId})`} />
       <rect x="3" y="3" width="10" height="10" rx="0.5" fill="#000" />
       <text x="4" y="8.6" fill="#fff" fontFamily="system-ui, sans-serif" fontSize="4.6" fontWeight="700">WS</text>
       <rect x="4" y="10.6" width="3.8" height="0.9" fill="#fff" />

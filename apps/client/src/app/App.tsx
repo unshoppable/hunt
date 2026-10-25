@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useHuntStore } from "../state/store";
 import { SessionSidebar } from "../sessions/SessionSidebar";
@@ -38,6 +38,7 @@ import type { ChecksStatus } from "../ipc/types";
 import { DesktopPanel } from "../desktop/DesktopPanel";
 import { PreviewPanel } from "../preview/PreviewPanel";
 import { isPreviewActive } from "../preview/services";
+import { keepPopupWindowsWarm } from "../popup/useDetachedPopup";
 import { usePopupRequest } from "../popup/usePopupRequest";
 import { useChecksStore } from "../state/checks";
 import { usePreviewStore } from "../state/preview";
@@ -48,6 +49,7 @@ import { TerminalPanel } from "../terminal/TerminalPanel";
 import { isTerminalActive } from "../terminal/terminalTabs";
 import { HEADER_BAR } from "../ui/bars";
 import { TAB_ACTIVE, TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons";
+import { BranchIcon, CodeIcon, DiagramIcon, DiffIcon, EyeIcon, GlobeIcon, MonitorIcon, PullRequestIcon, TaskListIcon, TerminalIcon } from "../ui/icons";
 import { shortcutCommand } from "../ui/shortcuts";
 import { restoreWindowBounds, useRememberWindowBounds } from "../ui/windowBounds";
 import { useAccountsSync, useAgentPreferencesSync, useBackendEvents, usePaneStyles, useRemoteSettingsSync, useSettingsSync } from "./bootstrap";
@@ -71,7 +73,7 @@ export function App() {
   const draft = useHuntStore((state) => state.draft);
   /** The active session is still being created: it has no worktree yet, so the inspector and the file search wait. */
   const isCreatingActive = useHuntStore((state) => Boolean(state.activeSessionId && state.creatingIds.includes(state.activeSessionId)));
-  /** The VM the active session runs on; it adds the Preview and Desktop tabs and puts the Terminal tab on the VM. */
+  /** The VM the active session runs on; it adds the Preview and Desktop tabs, puts the Terminal tab on the VM and hides the Browser button. */
   const activeRemoteInstance = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.remote?.vm.instance ?? null);
   /** Whether the active session's worktree exists here; a remote session adopted from its VM gets one with its first sync. */
   const hasActiveWorktree = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.hasLocalWorktree ?? false);
@@ -96,6 +98,7 @@ export function App() {
   const setTab = useSessionViewStore((state) => state.setTab);
   const setRightTab = (tab: RightTab) => setTab(shownSessionId, tab);
   const openFile = useIdeStore((state) => state.openFile);
+  const openBrowser = useHuntStore((state) => state.openBrowser);
   const ideLayout = useIdeStore((state) => (activeSessionId ? state.sessions[activeSessionId]?.layout : null) ?? EMPTY_IDE_SESSION.layout);
   const openPaths = useMemo(() => [...new Set(allPanes(ideLayout).flatMap((pane) => pane.tabs))], [ideLayout]);
   const fileSearch = usePopupRequest<null>();
@@ -212,6 +215,9 @@ export function App() {
   // The settings window boots hidden too, so ⌘, and the gear button only have to show it (see settings/openSettingsWindow.ts).
   useEffect(() => keepSettingsWindowWarm(), []);
 
+  // The popup windows of the detached popups boot hidden as well, so the first ⇧⌘F or ⌘P only has to show one (see popup/useDetachedPopup.ts).
+  useEffect(() => keepPopupWindowsWarm(), []);
+
   return (
     <>
       <PersistentGroup
@@ -265,24 +271,51 @@ export function App() {
         <Panel id="inspector" minSize={INSPECTOR_MIN_WIDTH} className="flex">
           <aside className="flex min-w-0 flex-1 flex-col bg-(--surface-inspector)">
             <nav data-tauri-drag-region="" className={`${HEADER_BAR} gap-1 border-b border-(--line) px-2`}>
-              <TabButton isActive={rightTab === "diff"} onClick={() => setRightTab("diff")} label="Diff" commentCount={reviewCommentCount} />
-              <TabButton isActive={rightTab === "git"} onClick={() => setRightTab("git")} label="Git" />
-              <TabButton isActive={rightTab === "editor"} onClick={() => setRightTab("editor")} label="Editor" />
-              <TabButton isActive={rightTab === "graph"} onClick={() => setRightTab("graph")} label="Architecture" />
+              <TabButton isActive={rightTab === "diff"} onClick={() => setRightTab("diff")} icon={<DiffIcon />} label="Diff" commentCount={reviewCommentCount} />
+              <TabButton isActive={rightTab === "git"} onClick={() => setRightTab("git")} icon={<BranchIcon />} label="Git" />
+              <TabButton isActive={rightTab === "editor"} onClick={() => setRightTab("editor")} icon={<CodeIcon className="size-3.5" />} label="Editor" />
+              <TabButton isActive={rightTab === "graph"} onClick={() => setRightTab("graph")} icon={<DiagramIcon />} label="Architecture" />
               {isReviewingPullRequest ? (
-                <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} label="PR Description" />
+                <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} icon={<PullRequestIcon />} label="PR Description" />
               ) : null}
               {activeRemoteInstance ? (
-                <TabButton isActive={rightTab === "preview"} onClick={() => setRightTab("preview")} label="Preview" dot={isPreviewBusy ? VM_BUSY_DOT : null} />
+                <TabButton
+                  isActive={rightTab === "preview"}
+                  onClick={() => setRightTab("preview")}
+                  icon={<EyeIcon />}
+                  label="Preview"
+                  dot={isPreviewBusy ? VM_BUSY_DOT : null}
+                />
               ) : null}
-              {activeRemoteInstance ? <TabButton isActive={rightTab === "desktop"} onClick={() => setRightTab("desktop")} label="Desktop" /> : null}
-              <TabButton isActive={rightTab === "checks"} onClick={() => setRightTab("checks")} label="Checks" dot={checksDot} />
+              {activeRemoteInstance ? (
+                <TabButton isActive={rightTab === "desktop"} onClick={() => setRightTab("desktop")} icon={<MonitorIcon />} label="Desktop" />
+              ) : null}
+              <TabButton
+                isActive={rightTab === "checks"}
+                onClick={() => setRightTab("checks")}
+                icon={<TaskListIcon className="size-3.5" />}
+                label="Checks"
+                dot={checksDot}
+              />
               <TabButton
                 isActive={rightTab === "terminal"}
                 onClick={() => setRightTab("terminal")}
+                icon={<TerminalIcon />}
                 label="Terminal"
                 dot={isTerminalBusy ? PROCESS_RUNNING_DOT : null}
               />
+              {shownSessionId && !activeRemoteInstance ? (
+                <button
+                  type="button"
+                  onClick={() => void openBrowser(shownSessionId)}
+                  disabled={isCreatingActive}
+                  title="Open this session's Chrome, which its agent drives, or bring it to the front"
+                  className={`${TAB_BUTTON} gap-1.5 ${TAB_INACTIVE} disabled:pointer-events-none disabled:opacity-40`}
+                >
+                  <GlobeIcon />
+                  Browser
+                </button>
+              ) : null}
             </nav>
             <div className="min-h-0 flex-1">
               {isStartView && rightTab === "git" ? (
@@ -386,12 +419,14 @@ function checksTabDot(status: ChecksStatus | null): TabDot | null {
 function TabButton({
   isActive,
   onClick,
+  icon,
   label,
   dot = null,
   commentCount = 0,
 }: {
   isActive: boolean;
   onClick: () => void;
+  icon: ReactNode;
   label: string;
   dot?: TabDot | null;
   commentCount?: number;
@@ -402,6 +437,7 @@ function TabButton({
       onClick={onClick}
       className={`${TAB_BUTTON} gap-1.5 ${isActive ? TAB_ACTIVE : TAB_INACTIVE}`}
     >
+      {icon}
       {label}
       {dot ? <span className={`size-1.5 shrink-0 rounded-full ${dot.tone === "running" ? "bg-green-400" : "bg-red-400"}`} title={dot.title} /> : null}
       {commentCount ? <CountBadge count={commentCount} label={`${commentCount} review ${commentCount === 1 ? "comment" : "comments"}`} /> : null}

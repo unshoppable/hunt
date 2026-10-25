@@ -23,6 +23,7 @@ import { selectionChatsFor } from "../ide/selectionChats";
 import { useReviewedPullRequest } from "../review/reviewComments";
 import { confirmDestructive } from "../ui/confirm";
 import { isShortcut, useShortcutLabel } from "../ui/shortcuts";
+import { WebstormIcon } from "../ui/icons";
 import { baseName } from "../ui/path";
 import { UnsavedDot } from "../ui/UnsavedDot";
 import { useDismiss } from "../ui/useDismiss";
@@ -447,6 +448,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
               className={SECONDARY_BUTTON_XS}
               title="Open all changed files in WebStorm's directory diff"
             >
+              <WebstormIcon className="size-3.5" />
               Diff in WebStorm
             </button>
           </div>

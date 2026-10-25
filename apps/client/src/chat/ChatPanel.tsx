@@ -17,8 +17,8 @@ import { useSettingsStore } from "../state/settings";
 import { openGuardrailsWindow } from "../guardrails/openGuardrailsWindow";
 import { ensureInstructionSections } from "../guardrails/instructionSections";
 import { ensureGuardrailReadmes } from "../guardrails/guardrailReadmes";
-import { GUARDRAIL_CHAT_PATH, guardrailTask, KIND_LABELS, listGuardrails, readGuardrailDirs } from "../guardrails/guardrails";
-import { buildGuardrailRequest, buildTranscript, findGuardrailSuggestion, transcriptTail, type GuardrailSuggestion } from "./guardrailSuggestion";
+import { GUARDRAIL_CHAT_PATH, KIND_LABELS, readGuardrailDirs, readGuardrailSkill } from "../guardrails/guardrails";
+import { buildGuardrailRequest, buildTranscript, findGuardrailSuggestion, guardrailChatTask, transcriptTail, type GuardrailSuggestion } from "./guardrailSuggestion";
 import { SubChatPopover, useSubChatPopover } from "./SubChatPopover";
 import { SaveGuardrailButton } from "./SaveGuardrailButton";
 import { ContextMeter } from "./ContextMeter";
@@ -27,7 +27,7 @@ import { isShortcut } from "../ui/shortcuts";
 import { repoName } from "../ui/path";
 import { AGENT_CHIP, Chip } from "../ui/Chip";
 import { DANGER, ICON_BUTTON_BASE_SM, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { BranchIcon, FolderIcon, GlobeIcon, ShieldIcon, TrashIcon } from "../ui/icons";
+import { BranchIcon, FolderIcon, ShieldIcon, TrashIcon } from "../ui/icons";
 import { OpenInWebstormButton } from "./OpenInWebstormButton";
 import { RemoteToggle } from "./RemoteToggle";
 import { remoteDeleteQuestion } from "../sessions/remoteOrigin";
@@ -81,7 +81,6 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const closeSession = useHuntStore((state) => state.closeSession);
   const resumeSession = useHuntStore((state) => state.resumeSession);
   const continueLocally = useHuntStore((state) => state.continueLocally);
-  const openBrowser = useHuntStore((state) => state.openBrowser);
   const setMode = useHuntStore((state) => state.setMode);
   const setConfigOption = useHuntStore((state) => state.setConfigOption);
   const answerPermission = useHuntStore((state) => state.answerPermission);
@@ -191,15 +190,15 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
 
   /**
    * Opens the guardrail sub chat right above the "Guardrail" button, flush with its right edge: its first question is
-   * prefilled with the guardrail the agent suggested (or the bare request), and its agent gets the whole conversation
-   * of this session as context.
+   * prefilled with the repository's guardrail skill and the guardrail the agent suggested (or the bare skill call), and
+   * its agent gets the whole conversation of this session as context.
    */
   async function openGuardrailChat(bounds: DOMRect) {
-    const listing = await listGuardrails(sessionId);
+    const skill = await readGuardrailSkill(sessionId);
     const transcript = buildTranscript(chat?.items ?? []);
-    const task = `${guardrailTask(listing)}\n\n## Conversation the guardrail comes from\nThe user opened this chat from the session below; use it as the context of the request.\n\n${transcript}`;
+    const task = guardrailChatTask(skill, transcript);
     setGuardrailContext(transcriptTail(transcript, CONTEXT_PREVIEW_LINES));
-    setGuardrailRequest(buildGuardrailRequest(guardrailSuggestion, guardrailSuggestion ? KIND_LABELS[guardrailSuggestion.kind].singular : ""));
+    setGuardrailRequest(buildGuardrailRequest(guardrailSuggestion, guardrailSuggestion ? KIND_LABELS[guardrailSuggestion.kind].singular : "", skill));
     setGuardrailOffer(guardrailSuggestion);
     guardrailChat.open({ selection: { path: GUARDRAIL_CHAT_PATH, startLine: 1, endLine: 1, text: "", task }, anchor: guardrailChatAnchor(bounds) });
   }
@@ -215,18 +214,6 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         ) : null}
         {worktreeRemote ? null : <OpenInWebstormButton sessionId={sessionId} disabled={isCreating} />}
         <RemoteToggle sessionId={sessionId} />
-        {remote ? null : (
-          <button
-            type="button"
-            onClick={() => void openBrowser(sessionId)}
-            disabled={isCreating}
-            title="Open this session's Chrome, which its agent drives, or bring it to the front"
-            className={SECONDARY_BUTTON_MD}
-          >
-            <GlobeIcon />
-            Browser
-          </button>
-        )}
         <button type="button" onClick={() => void openGuardrailsWindow(sessionId)} disabled={isCreating} className={SECONDARY_BUTTON_MD}>
           <ShieldIcon />
           Guardrails

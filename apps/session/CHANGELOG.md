@@ -1,3 +1,9 @@
+## 0.30.0 (2026-10-25)
+
+### 🚀 Features
+
+- the "Guardrail" button records a lesson through the repository's guardrail skill (`guardrailSkill` of hunt.json), which a session start writes into a worktree that lacks it and whose criteria decide when the button lights up, the changelist reloads after changes made outside Hunt, the gutter of a side-by-side diff drags to resize its sides, Find in Files colors its lines like the editor, the project tree and the editor tabs color changed files like the changelist, and the first ⇧⌘F or ⌘P after a start opens at once ([6d16364](https://github.com/unshoppable/hunt/commit/6d16364))
+
 ## 0.29.0 (2026-10-24)
 
 ### 🚀 Features

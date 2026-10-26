@@ -1,7 +1,8 @@
 // The Playwright MCP server of a local session's agent, started by Hunt as `node browserMcp.mjs --port <port>` with
 // HUNT_BROWSER_SOCKET (Hunt's browser control socket) and HUNT_SESSION_ID in the environment. It runs
 // `@playwright/mcp --cdp-endpoint http://127.0.0.1:<port>`, whose output files (snapshots, screenshots) go to a
-// per-session temp folder instead of `.playwright-mcp/` in the agent's worktree. It passes the NDJSON lines of stdio
+// per-session temp folder instead of `.playwright-mcp/` in the agent's worktree, and which may open `file://` URLs
+// (the browser is the user's own Chrome profile anyway). It passes the NDJSON lines of stdio
 // through both ways unchanged, except that it holds the first `tools/call` and every message after it until Hunt opened
 // the session's Chrome: it sends `{"open":"<session id>"}` as one line to the socket and reads one line back,
 // `{"ok":true}` or `{"error":"<message>"}`. A failure answers that call with a JSON-RPC error, and the next call asks
@@ -29,7 +30,7 @@ if (!Number.isInteger(port) || port <= 0) {
 
 const serverScript = process.env.HUNT_BROWSER_MCP_CLI || join(dirname(createRequire(import.meta.url).resolve("@playwright/mcp/package.json")), "cli.js");
 const outputFolder = join(tmpdir(), "hunt-playwright-mcp", process.env.HUNT_SESSION_ID ?? "");
-const serverArguments = [serverScript, "--cdp-endpoint", `http://127.0.0.1:${port}`, "--output-dir", outputFolder];
+const serverArguments = [serverScript, "--cdp-endpoint", `http://127.0.0.1:${port}`, "--output-dir", outputFolder, "--allow-unrestricted-file-access"];
 const server = spawn(process.execPath, serverArguments, { stdio: ["pipe", "pipe", "inherit"] });
 
 let isOpen = false;

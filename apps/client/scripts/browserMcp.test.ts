@@ -120,7 +120,7 @@ function request(id: number, method: string): Message {
 }
 
 function resultOf(id: number, method: string): Message {
-  const args = ["--cdp-endpoint", `http://127.0.0.1:${PORT}`, "--output-dir", join(tmpdir(), "hunt-playwright-mcp", SESSION_ID)];
+  const args = ["--cdp-endpoint", `http://127.0.0.1:${PORT}`, "--output-dir", join(tmpdir(), "hunt-playwright-mcp", SESSION_ID), "--allow-unrestricted-file-access"];
   return { jsonrpc: "2.0", id, result: { method, args } };
 }
 

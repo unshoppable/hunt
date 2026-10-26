@@ -1,3 +1,9 @@
+## 0.130.0 (2026-10-25)
+
+### 🚀 Features
+
+- **client:** a commit during a merge concludes the merge with the whole index instead of failing on the pathspec, and the changelist header shows a spinner while the file list reloads ([1ab5192](https://github.com/unshoppable/hunt/commit/1ab5192))
+
 ## 0.129.0 (2026-10-25)
 
 ### 🚀 Features

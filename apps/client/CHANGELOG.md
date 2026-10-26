@@ -1,3 +1,9 @@
+## 0.130.1 (2026-10-26)
+
+### 🩹 Fixes
+
+- **client:** the session's Playwright MCP may open file:// URLs ([7a2a5ad](https://github.com/unshoppable/hunt/commit/7a2a5ad))
+
 ## 0.130.0 (2026-10-25)
 
 ### 🚀 Features

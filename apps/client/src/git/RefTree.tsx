@@ -1,13 +1,13 @@
 import { Fragment, useMemo, useState, type MouseEvent } from "react";
-import type { GitRef, RefList } from "../ipc/types";
-import { useFolderIconUrl } from "../diff/fileIcons";
-import { ICON_BUTTON_XS } from "../ui/buttons";
-import { BranchIcon, ChevronIcon, FetchIcon, Spinner, TrashIcon } from "../ui/icons";
-import { toggleInCollapsed } from "../ui/treeExpansion";
-import type { TreeNavRow } from "../ui/treeNavigation";
-import { useTreeNavigation } from "../ui/useTreeNavigation";
-import type { PushRoute } from "./branchActions";
-import { buildRefTree, groupPaths, type RefTreeNode } from "./refGroups";
+import type { GitRef, RefList } from "./git.types";
+import { useFolderIconUrl } from "../ui/file-icons/file-icons.hook";
+import { ICON_BUTTON_XS } from "../ui/buttons.constants";
+import { BranchIcon, ChevronIcon, FetchIcon, Spinner, TrashIcon } from "../ui/Icons";
+import { toggleInCollapsed } from "../common/tree/tree-expansion.utils";
+import type { TreeNavRow } from "../common/tree/tree-navigation.utils";
+import { useTreeNavigation } from "../ui/tree-navigation.hook";
+import type { PushRoute } from "./branch-actions.utils";
+import { buildRefTree, groupPaths, type RefTreeNode } from "./ref-groups.utils";
 
 /** Collapsed groups, kept across session switches for the window's lifetime; tags start collapsed. */
 const collapsedGroups = new Set<string>(["tags"]);

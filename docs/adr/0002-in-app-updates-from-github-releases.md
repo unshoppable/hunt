@@ -29,7 +29,7 @@ The app has no Apple Developer signing or notarization; adding them is out of sc
 - The UI is the *Updates* page of the settings window: current version, one check when the page opens, "Download and
   install", then "Restart now". The main window checks once per launch (not in dev builds) and marks the gear button
   with a dot that opens that page. A failed background check is silent; the page reports errors.
-- Every plugin call goes through `src/ipc/updater.ts`; `src/settings/updateProgress.ts` holds the pure progress logic.
+- Every plugin call goes through `src/ipc/updater.utils.ts`; `src/settings/update-progress.utils.ts` holds the pure progress logic.
 
 ## Consequences
 

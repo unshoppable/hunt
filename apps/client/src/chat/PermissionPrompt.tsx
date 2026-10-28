@@ -1,6 +1,6 @@
 import { useEffect, useState, type RefObject } from "react";
-import type { PendingPermission } from "../ipc/types";
-import { ToolCallBody } from "./ToolCallCard";
+import type { PendingPermission } from "./chat.types";
+import { ToolCallBody } from "./messages/ToolCallCard";
 
 /** Box title per tool kind, as the terminal names its permission dialogs. */
 const TITLE_BY_KIND: Record<string, string> = {

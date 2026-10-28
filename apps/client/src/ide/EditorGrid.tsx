@@ -1,14 +1,14 @@
 import { Fragment } from "react";
 import { Group } from "react-resizable-panels";
-import { PaneSeparator, Panel } from "../layout/ResizablePanes";
-import type { Workspace } from "./documents";
+import { PaneSeparator, Panel } from "../ui/ResizablePanes";
+import type { DocumentWorkspace } from "./documents/documents.service";
 import { EditorPane } from "./EditorPane";
-import type { IdeSession } from "./ideStore";
-import type { SelectionRequest } from "../diff/selectionContext";
+import type { IdeSession } from "./ide.store";
+import type { SelectionRequest } from "../editor/selection-request.monaco";
 
 type EditorGridProps = {
   sessionId: string;
-  workspace: Workspace;
+  workspace: DocumentWorkspace;
   ide: IdeSession;
   /** Files with unsaved edits. */
   dirtyPaths: readonly string[];

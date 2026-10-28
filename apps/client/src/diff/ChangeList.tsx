@@ -1,36 +1,42 @@
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { commands } from "../ipc/commands";
-import type { ChangedFile, ChangedFileView, GraphNode } from "../ipc/types";
-import { useSettingsStore } from "../state/settings";
-import { useHuntStore } from "../state/store";
-import { selectionChatsFor, useBusyChatIds } from "../ide/selectionChats";
-import { otherTouchers, ownerLabel, type ChangeScope } from "./attribution";
-import { buildChangeTree, folderPaths, type FolderNode, type TreeNode } from "./changeTree";
-import { Checkbox, type CheckState } from "./Checkbox";
+import type { ChangedFile } from "../common/changes/changed-file.types";
+import type { GraphNode } from "../graph/graph.types";
+import type { ChangedFileView } from "./diff.types";
+import { useSettingsStore, type ChangelistScope } from "../settings/settings.store";
+import { useHuntStore } from "../sessions/hunt.store";
+import { selectionChatsFor } from "../ide/selection/selection-chats.utils";
+import { useBusyChatIds, useUnseenChatIds } from "../ide/selection/selection-chats.hook";
+import { otherTouchers, ownerLabel } from "./attribution.utils";
+import { buildChangeTree, folderPaths, type FolderNode, type TreeNode } from "../common/tree/change-tree.utils";
+import { Checkbox, type CheckState } from "../ui/Checkbox";
 import { CommitBox, LIST_ROOM } from "./CommitBox";
-import { useFileIconUrl, useFolderIconUrl } from "./fileIcons";
-import { useReviewDraftCount } from "../review/reviewComments";
-import { useLoad } from "../ui/useLoad";
-import { ReviewDialog } from "./ReviewDialog";
+import { useFileIconUrl, useFolderIconUrl } from "../ui/file-icons/file-icons.hook";
+import { useReviewCommentCounts, useReviewDraftCount } from "../review/review-comments.hook";
+import { useLoad } from "../ui/load.hook";
+import { ReviewDialog } from "../review/ReviewDialog";
+import { CommentCount } from "../review/CommentCount";
 import { ReviewBars } from "../graph/ReviewBars";
 import { ShelfList } from "./ShelfList";
-import { sessionMarks } from "../sessions/sessionLabels";
+import { sessionMarks } from "../sessions/session-labels.utils";
 import { SessionMark } from "../sessions/SessionMark";
 import { ShelveDialog } from "./ShelveDialog";
-import { baseName, dirName } from "../ui/path";
-import { STATUS_NAME_CLASS } from "./styles";
+import { baseName, dirName } from "../common/path/path.utils";
+import { STATUS_NAME_CLASS } from "../ui/styles.constants";
 import { AgentButton } from "../ui/AgentButton";
-import { isWorktreeLocked, remoteOf } from "../chat/remoteSession";
-import { ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
-import { confirmDestructive } from "../ui/confirm";
+import { isWorktreeLocked, remoteOf } from "../sessions/remote/remote-session.utils";
+import { ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons.constants";
+import { confirmDestructive } from "../ui/confirm.utils";
 import { GlobFilterInput } from "../ui/GlobFilterInput";
-import { ArchiveIcon, PencilIcon, Spinner, SwapIcon, WebstormIcon } from "../ui/icons";
+import { ArchiveIcon, PencilIcon, Spinner, WebstormIcon } from "../ui/Icons";
+import { Dropdown } from "../ui/Dropdown";
+import type { DropdownOption } from "../ui/floating-menu.utils";
 import { UnsavedDot } from "../ui/UnsavedDot";
-import { isShortcut } from "../ui/shortcuts";
-import { toggleInCollapsed } from "../ui/treeExpansion";
-import type { TreeNavRow } from "../ui/treeNavigation";
-import { useTreeNavigation } from "../ui/useTreeNavigation";
-import { useVirtualRows } from "../ui/useVirtualRows";
+import { isShortcut } from "../ui/shortcuts.utils";
+import { toggleInCollapsed } from "../common/tree/tree-expansion.utils";
+import type { TreeNavRow } from "../common/tree/tree-navigation.utils";
+import { useTreeNavigation } from "../ui/tree-navigation.hook";
+import { useVirtualRows } from "../ui/virtual-rows.hook";
 
 type Tab = "changes" | "shelf";
 
@@ -50,18 +56,37 @@ const checkedByFamily = new Map<string, Set<string>>();
 const collapsedBySession = new Map<string, Set<string>>();
 
 /**
- * Scope toggle of a shared worktree; `hiddenCount` is how many files the current scope leaves out and
- * `includesParent` is set for a sub session, whose own scope also holds the changes of its parent.
+ * Scope picker of a shared worktree; `counts` holds how many files each scope lists and `hasParent` is set for a sub
+ * session, the only one for which `downstream` differs from `own`.
  */
-export type ScopeControl = { value: ChangeScope; hiddenCount: number; includesParent: boolean; onChange: (scope: ChangeScope) => void };
+export type ScopeControl = {
+  value: ChangelistScope;
+  counts: Record<ChangelistScope, number>;
+  hasParent: boolean;
+  onChange: (scope: ChangelistScope) => void;
+};
+
+const SCOPE_OPTIONS: { id: ChangelistScope; name: string; description: string }[] = [
+  { id: "own", name: "Show own", description: "Only the changes of this session" },
+  { id: "downstream", name: "Show downstream", description: "The changes of this session and its parent" },
+  { id: "all", name: "Show all", description: "Every uncommitted change in the worktree" },
+];
+
+/** The options of the scope picker, each with the number of files it lists. */
+function scopeOptions(scope: ScopeControl): DropdownOption[] {
+  return SCOPE_OPTIONS.filter((option) => option.id !== "downstream" || scope.hasParent).map((option) => {
+    const count = scope.counts[option.id];
+    return { ...option, description: `${option.description} · ${count} ${count === 1 ? "file" : "files"}` };
+  });
+}
 
 /**
  * The changelist: changed files as a flat list or folder tree with checkboxes, plus the shelf tab and either the commit
  * and shelve actions for the checked files or, in a pull request review, the submission of the review. The glob field in
  * the header hides files from the list (the owner applies it to `files`, `hiddenByGlobsCount` says how many it left out);
- * a file the agent rated in the dependency graph (`reviewRatings`) shows its review relevance behind its name. Every
- * file and folder row has an agent button that opens a sub chat about the whole file or folder; it shows on hover, or
- * always once such a chat exists.
+ * a file the agent rated in the dependency graph (`reviewRatings`) shows its review relevance behind its name, a file
+ * with review comments their count before that. Every file and folder row has an agent button that opens a sub chat
+ * about the whole file or folder; it shows on hover, or always once such a chat exists.
  * A right click on a file or folder row opens the owner's context menu; ⌃⇧C in the focused list copies the path of the row
  * under the cursor.
  */
@@ -72,6 +97,7 @@ export function ChangeList({
   hiddenByGlobsCount,
   reviewRatings,
   scope,
+  ownerIds,
   selectedPath,
   unsavedPaths,
   onSelect,
@@ -90,6 +116,8 @@ export function ChangeList({
   reviewRatings: Map<string, GraphNode>;
   /** Set when other sessions share the worktree; `null` hides the toggle. */
   scope: ScopeControl | null;
+  /** Sessions whose changes count as this session's own (`scopeOwnerIds`); the badge of a file marks every other one. */
+  ownerIds: string[];
   selectedPath: string | null;
   /** Files with unsaved edits; they get a blue dot, and committing or shelving them uses the content on disk. */
   unsavedPaths: readonly string[];
@@ -121,6 +149,7 @@ export function ChangeList({
   const target = session?.pushTarget ?? "";
   const isLocked = useHuntStore((state) => isWorktreeLocked(state.sessions, state.remoteLinks, sessionId));
   const draftCount = useReviewDraftCount(sessionId);
+  const commentCounts = useReviewCommentCounts(sessionId);
   const [tab, setTab] = useState<Tab>("changes");
   /** Files start unchecked; the checked paths survive a switch to another session and back and are shared with the parent and its sub sessions. */
   const checkedKey = parentId ?? sessionId;
@@ -148,31 +177,36 @@ export function ChangeList({
   const tree = useMemo(() => buildChangeTree(files), [files]);
   const filesByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   const busyChatIds = useBusyChatIds();
+  const unseenChatIds = useUnseenChatIds();
   const marks = useMemo(() => sessionMarks(sessions), [sessions]);
   /**
    * File and folder paths with a sub chat about the whole of them (a selection with a task), whose agent button stays
-   * visible, mapped to whether that chat's agent is running a turn, which makes the button pulse.
+   * visible, mapped to whether that chat's agent is running a turn, which makes the button pulse, and whether it has a
+   * reply the user has not looked at yet, which rings it in mint.
    */
   const agentChats = useMemo(() => {
-    const result = new Map<string, boolean>();
+    const result = new Map<string, { isBusy: boolean; hasUnseenReply: boolean }>();
     for (const path of [...files.map((file) => file.path), ...folderPaths(tree)]) {
       const chats = selectionChatsFor(sessions, sessionId, path).filter((chat) => !!chat.selection.task);
       if (!chats.length) continue;
-      result.set(path, chats.some((chat) => busyChatIds.has(chat.sessionId)));
+      result.set(path, {
+        isBusy: chats.some((chat) => busyChatIds.has(chat.sessionId)),
+        hasUnseenReply: chats.some((chat) => unseenChatIds.has(chat.sessionId)),
+      });
     }
     return result;
-  }, [files, tree, sessions, sessionId, busyChatIds]);
+  }, [files, tree, sessions, sessionId, busyChatIds, unseenChatIds]);
 
   /**
-   * Marks of the other sessions of the worktree that changed a file: `null` when only this session or its parent did.
-   * A sub session of another family carries its parent's letter, e.g. `B2`; a deleted session shows `?`.
+   * Marks of the other sessions of the worktree that changed a file: `null` when only the `ownerIds` did. A sub session
+   * of another family carries its parent's letter, e.g. `B2`; a deleted session shows `?`.
    */
   const renderOwnerBadge = (path: string) => {
     const file = filesByPath.get(path);
     if (!file) return null;
-    const owners = otherTouchers(file, sessionId, parentId).map((id) => ({ id, ...ownerLabel(id, sessions, marks, sessionId, parentId) }));
+    const owners = otherTouchers(file, ownerIds).map((id) => ({ id, ...ownerLabel(id, sessions, marks, sessionId, parentId) }));
     if (!owners.length) return null;
-    const isShared = file.touchedBy.includes(sessionId) || (!!parentId && file.touchedBy.includes(parentId));
+    const isShared = file.touchedBy.some((id) => ownerIds.includes(id));
     const titles = owners.map((owner) => `${owner.mark} ${owner.title}`).join(", ");
     return (
       <span
@@ -317,14 +351,16 @@ export function ChangeList({
   /** The agent button of a file or folder row; it shows on hover, or always once a sub chat about the row exists. */
   const renderAgentButton = (target: ChangeListTarget) => {
     if (!onAskAgent) return null;
-    const hasChat = agentChats.has(target.path);
+    const agentChat = agentChats.get(target.path);
+    const hasChat = !!agentChat;
     const subject = target.isFolder ? "folder" : "file";
     return (
       <AgentButton
         onClick={(event) => onAskAgent(target, event.currentTarget)}
-        isBusy={agentChats.get(target.path) ?? false}
-        size={24}
-        sparkleSize={20}
+        isBusy={agentChat?.isBusy ?? false}
+        hasUnseenReply={agentChat?.hasUnseenReply ?? false}
+        size={22}
+        sparkleSize={18}
         className={`-my-1 transition-opacity focus-visible:opacity-100 ${hasChat ? "" : "opacity-0 group-hover:opacity-100"}`}
         title={hasChat ? `Show the agent's chat about this ${subject}` : `Ask the agent about this ${subject}`}
         aria-label={hasChat ? `Show the agent's chat about this ${subject}` : `Ask the agent about this ${subject}`}
@@ -354,8 +390,9 @@ export function ChangeList({
           <span className={`truncate ${STATUS_NAME_CLASS[file.status] ?? "text-neutral-200"}`}>{name}</span>
           {unsavedPaths.includes(file.path) ? <UnsavedDot /> : null}
           {renderOwnerBadge(file.path)}
-          {showDirectory ? <span className="ml-auto truncate pl-1 text-[0.85em] text-neutral-600">{dirName(file.path)}</span> : null}
-          {rating?.review ? <ReviewBars level={rating.review} reason={rating.reviewReason} className={`size-3.5 ${showDirectory ? "" : "ml-auto"}`} /> : null}
+          {showDirectory ? <span className="ml-auto truncate pl-1 text-[0.85em] text-neutral-600">{dirName(file.path)}</span> : <span className="flex-1" />}
+          <CommentCount count={commentCounts.get(file.path) ?? 0} iconClassName="size-3.5" />
+          {rating?.review ? <ReviewBars level={rating.review} reason={rating.reviewReason} className="size-3.5" /> : null}
         </button>
         {renderAgentButton({ path: file.path, files: [file], isFolder: false })}
       </li>
@@ -445,21 +482,13 @@ export function ChangeList({
               {hiddenByGlobsCount ? ` · ${hiddenByGlobsCount} hidden` : ""}
             </span>
             {scope ? (
-              <button
-                type="button"
-                onClick={() => scope.onChange(scope.value === "own" ? "all" : "own")}
+              <Dropdown
+                title="Which changes the list shows"
+                value={scope.value}
+                options={scopeOptions(scope)}
+                onChange={(id) => scope.onChange(id as ChangelistScope)}
                 className={`${SECONDARY_BUTTON_XS} ml-auto`}
-                title={
-                  scope.value === "own"
-                    ? "Show every uncommitted change in the shared worktree"
-                    : scope.includesParent
-                      ? "Show only the changes made by this session and its parent"
-                      : "Show only the changes made by this session"
-                }
-              >
-                <SwapIcon />
-                {scope.value === "own" ? `Show all${scope.hiddenCount ? ` (+${scope.hiddenCount})` : ""}` : "Show own"}
-              </button>
+              />
             ) : null}
           </div>
           <div

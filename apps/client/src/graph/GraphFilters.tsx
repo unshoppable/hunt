@@ -1,6 +1,6 @@
-import type { ReviewLevel } from "../ipc/types";
-import { useSettingsStore } from "../state/settings";
-import { TAB_ACTIVE, TAB_INACTIVE } from "../ui/buttons";
+import type { ReviewLevel } from "../common/diagram/diagram.types";
+import { useSettingsStore } from "../settings/settings.store";
+import { TAB_ACTIVE, TAB_INACTIVE } from "../ui/buttons.constants";
 import { GLOB_FILTER_HELP, GlobFilterInput } from "../ui/GlobFilterInput";
 import { REVIEW_LABELS, ReviewBars } from "./ReviewBars";
 

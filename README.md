@@ -167,7 +167,7 @@ See [CLAUDE.md](CLAUDE.md) for the conventions contributors and coding agents fo
 
 #### Sessions and the agent
 
-`apps/client/src-tauri/src/acp/` spawns `@agentclientprotocol/claude-agent-acp` per session and forwards every
+`apps/client/src-tauri/src/agent/acp/` spawns `@agentclientprotocol/claude-agent-acp` per session and forwards every
 `session/update` to the UI as the `acp:update` event; permission requests become `acp:permission`, and one the agent
 withdraws with `$/cancel_request` becomes `acp:permission-withdrawn`, which removes it from the chat.
 A local agent starts with `CLAUDE_CODE_ENABLE_CFC=1`, so it drives the user's own Chrome through Claude in Chrome when
@@ -177,16 +177,17 @@ the extension is installed and Claude Code runs with the login of `claude /login
 #### Local browser
 
 Every local session has a Google Chrome of its own, in a window of its own, which its agent drives through Playwright
-MCP, as an agent on a session VM drives its Chromium (`apps/client/src-tauri/src/browser.rs`). Two sessions never share
+MCP, as an agent on a session VM drives its Chromium (`apps/client/src-tauri/src/agent/browser.rs`). Two sessions never share
 a Chrome, since Playwright MCP takes over every tab of the Chrome it connects to.
 
 - **Agent side**: the agent starts with the MCP server `playwright`, the wrapper `apps/client/scripts/browserMcp.mjs`,
   run by the `node` on the PATH with the session's CDP port (reserved at the agent's start) and the control socket of
-  this Hunt process, `<app data>/browser/control-<pid>.sock` (`acp/connection.rs`). The wrapper runs
+  this Hunt process in `HUNT_CONTROL_SOCKET` (see "Steering the UI", `agent/acp/connection.rs`). The wrapper runs
   `@playwright/mcp --cdp-endpoint` on that port and writes its output files to a temp folder per session, not into the
   worktree. `apps/client/prompts/browser.system-prompt.md` points the agent at these tools for the app it works on.
-- **On demand**: Chrome starts with the agent's first browser tool call (the wrapper sends `{"open":"<session id>"}`
-  to the control socket and waits for `{"ok":true}`) or with "Browser" beside the inspector's Terminal tab
+- **On demand**: Chrome starts with the agent's first browser tool call (the wrapper sends
+  `{"type":"openBrowser","session":"<session id>"}` to the control socket and waits for `{"ok":true}`) or with
+  "Browser" beside the inspector's Terminal tab
   (`browser_open`), which also brings a running Chrome's window to the front.
 - **Profile per repository**: a new Chrome gets a copy of the repository's profile (`<app data>/browser/<repo hash>/
   profile`) in `<app data>/browser/sessions/<session id>`, without Chrome's locks and caches, so the sign-ins made in
@@ -194,11 +195,12 @@ a Chrome, since Playwright MCP takes over every tab of the Chrome it connects to
   user quits Chrome), its copy replaces the repository's profile; the session whose Chrome closed last wins.
 - **Review widget**: Hunt attaches to every page of the Chrome over CDP (`Target.setAutoAttach`), adds the binding
   `__huntReview` and injects the review widget (`apps/client/src-tauri/resources/review.js`, built by
-  `client:review-widget` from `apps/session/src/review/widget.ts`) before the page's own scripts. The widget hands an
+  `client:review-widget` from `apps/session/src/review/review-widget.main.ts`) before the page's own scripts. The widget hands an
   annotation to the binding instead of posting it; Hunt checks it like the review server does, gives it an ID and a time
   and emits `review:annotation`, so it lands as a chip above the session's composer as on a VM (see "Remote sessions").
 
-Claude in Chrome stays available next to it, with the user's own Chrome and sign-ins.
+Claude in Chrome stays available next to it, with the user's own Chrome and sign-ins: the prompt sends the agent there
+for every site other than the app it works on, and to Playwright when Claude in Chrome is off.
 
 A session starts in the start view of the chat pane ("New" in the sidebar), which preselects the repository used
 last. Choosing a repository there, from the folder dialog or the list of recently used ones, creates the session right
@@ -212,34 +214,34 @@ it, adopting it first when this Mac does not know it (`apps/client/src/sessions/
 repository's checkout) and the base branch; choosing a base branch starts the worktree session off it right away,
 without a prompt, titled after the repository like one started by choosing a repository; text typed into the prompt
 box but not sent stays unsent in the new session's box, whichever pick started it. The branch menu's "New branch…" names a branch the session creates instead
-of the generated one (`newBranch` of `create_session`, checked by `sessions/newBranch.ts` and `git::ensure_new_branch`):
+of the generated one (`newBranch` of `create_session`, checked by `sessions/new-branch.utils.ts` and `git::ensure_new_branch`):
 off the base in a worktree, or at the checkout's own branch, which the checkout switches to. Such a branch is the
 session's base like a reviewed pull request's: a push lands on it under its own name and deleting the session keeps it.
 
 The sidebar groups the sessions by repository, each group under a heading with the repository's name
-(`groupSessions` in `apps/client/src/sessions/sessionLabels.ts`): groups in alphabetical order, inside a group the
+(`groupSessions` in `apps/client/src/sessions/session-labels.utils.ts`): groups in alphabetical order, inside a group the
 sessions in creation order, each followed by its sub sessions. A session's row shows its title, its branch and the
 branch on origin a push lands on, with the pull request or issue it works on as a badge. A right click on a session
 offers "Change Push Target…", the Git tab's dialog.
 
 The mark of a session in the sidebar (`apps/client/src/sessions/SessionMark.tsx`) shows what its agent is up to: an arc
 runs around it while a turn runs; it turns amber with a `?` badge when the agent ended its turn with a question
-(`hasPendingQuestion` in `src/state/store.ts`: the chat is idle and its last item is an agent message that asks one,
+(`hasPendingQuestion` in `src/chat/chat.store-slice.ts`: the chat is idle and its last item is an agent message that asks one,
 so the state ends by itself once the user's answer follows and holds for a remote session's replayed conversation
 too); it turns green when a turn finished while another session was active and the user has not opened the session
 since. The agent marks a question explicitly by ending its reply with `<!-- hunt:question -->` (`hasQuestionMarker`
-in `libs/domain/src/question.ts`, which the relay uses as well); `libs/domain/prompts/question.system-prompt.md` tells it so and is part of every
+in `libs/domain/src/shared/question.utils.ts`, which the relay uses as well); `libs/domain/prompts/question.system-prompt.md` tells it so and is part of every
 session's system prompt, local and remote. The marker stands in for `AskUserQuestion`, which the ACP adapter disables
 unless the client advertises `elicitation.form`, which Hunt does not. A last paragraph ending with a question mark
 remains the fallback
 (`endsWithQuestion`). The marker is hidden in the chat like the guardrail marker and dropped from the transcript the
 guardrail agent gets. The chat pane shows the state as well: a "Question" chip in its header and a note under the
-messages (`ChatPanel.tsx`). At its start Hunt loads the chat of every session (`loadAllChats` in `src/state/store.ts`),
+messages (`ChatPanel.tsx`). At its start Hunt loads the chat of every session (`loadAllChats` in `src/sessions/session.store-slice.ts`),
 so every mark shows its state before the session is opened: it starts the agent of every local session, sub sessions
 included, and rebuilds the chat of an agent that already runs. A remote session is connected only when it is opened,
 since a connect would wake its VM and keep it awake; until then its mark shows what the relay on its VM reports through
 the status channel (see "Remote sessions"), live while the VM runs and as last reported while it is suspended, and the
-agent state the gateway recorded (`remote.agent`) where no relay reported yet (`src/sessions/sessionMarkState.ts`). Opening it
+agent state the gateway recorded (`remote.agent`) where no relay reported yet (`src/sessions/session-mark-state.utils.ts`). Opening it
 attaches to its relay, whose agent kept running while Hunt was closed ("Connecting to the agent on the VM…"); only a
 relay that does not run, or one that runs with another Claude account than the one picked now and no turn, starts anew.
 
@@ -255,17 +257,53 @@ The "Agent" page of the settings dialog holds what Hunt tells the agent on its o
 Hunt asks for itself (session summaries and titles in `apps/client/src-tauri/src/session/summary.rs`, the dependency
 graph), German by default, and the system prompt addition of every new session, by default the response-style
 instructions in `apps/client/prompts/response-style.system-prompt.md` (plain language for software engineers). The frontend pushes
-both to `apps/client/src-tauri/src/preferences.rs` at start and on change; `apps/client/src-tauri/src/acp/connection.rs`
+both to `apps/client/src-tauri/src/platform/preferences.rs` at start and on change; `apps/client/src-tauri/src/agent/acp/connection.rs`
 appends the prompt and the selection context of a sub session to Claude Code's system prompt via the ACP `systemPrompt`
 meta; the diagram instructions go only to the diagram agent (see "Architecture diagrams").
 
+#### Steering the UI
+
+The processes of a local agent steer this Hunt through its control socket, `<app data>/control/hunt-<pid>.sock` (one
+per Hunt process, since a `tauri dev` beside the installed app shares the app data folder; mode 0600, folder 0700),
+whose path the agent and its Playwright MCP wrapper get in `HUNT_CONTROL_SOCKET` (`apps/client/src-tauri/src/platform/control.rs`).
+Each connection carries one JSON line of at most 64 KiB and one answer, `{"ok":true}`, `{"ok":true,"result":…}` or
+`{"error":"…"}`: `{"type":"openBrowser",…}` opens the session's Chrome, `{"type":"ui","session":…,"command":…}` runs a
+command of `hunt-client`.
+
+- **`hunt-client`**: `apps/client/scripts/huntClient.mjs`, which the agent runs through the worktree's
+  `.hunt/hunt-client` (written when the agent starts, like `.hunt/tmux`) and which
+  `apps/client/prompts/client.system-prompt.md` names, each for the agent's own session (`HUNT_SESSION_ID`) unless
+  `--session` names another; `--help` lists them. It prints a command's result on stdout, a string as it is and
+  anything else as JSON.
+  - *Read*: `state` reports what the main window shows of the session: whether it is selected, whether the window is
+    visible and focused, the inspector tab, the file of the Editor tab's active pane with cursor and selection (the
+    selected text cut to 20 000 characters) and the file of the Diff tab. An editor window is a webview of its own,
+    which `state` does not see. `checks` reports the checks of hunt.json with their last runs, a failed one with the end
+    of its output (`failureExcerpt`).
+  - *Show*: `show`, `tab <name>`, `open file <path>` (`--line`, `--match` finds the line by its text, `--column`,
+    `--end-line` selects lines, `--window`), `open diff <path>`, `open commit <revision>` (resolved by
+    `git_resolve_commit`, then selected in the Git tab),
+    `open terminal <name>` (a tab of the Terminal panel by its label), `open preview <service>` (a session on a VM),
+    `open settings [--page <page>]`, `open guardrails` and `open browser`.
+  - *Act*: `notify <text>` shows a toast while the focused main window shows the session, else a system notification
+    (`tauri-plugin-notification`; a click on it does not select the session). `checks run [<name>]` starts one or every check
+    and, unless `--no-wait`, asks for `checks` every 2 s until those ended. `subchat <prompt>` starts a sub chat beside
+    the session with its agent setup and prints `{"session":…}`. `title <text>` sets the title and marks it fixed
+    (`titleIsFixed`), so neither the summarizer nor the naming after the first prompt changes it again.
+- **Main window**: Rust passes the command on unchecked as `control:command` to the window `main`
+  (`session/commands/control.rs`) and waits up to 15 s for `answer_control_command`. `useControlCommands`
+  (`apps/client/src/control/`) checks it and runs it with the functions the UI uses itself, since every window and tab
+  is opened from the main window.
+- **No VM**: an agent on a session VM gets neither the variable nor the wrapper (`.hunt/` does not sync), so it cannot
+  reach the Mac's Hunt.
+
 #### Worktrees and changes
 
-`apps/client/src-tauri/src/git.rs` creates `feat/general/<slug>-<id>` worktrees under the app data directory (the
+`apps/client/src-tauri/src/git/git.rs` creates `feat/general/<slug>-<id>` worktrees under the app data directory (the
 `<type>/<scope>/<name>` form repositories check branch names against; a pull request review works on the pull
 request's own branch, a session the user named a branch for on that one), lists their changes against the session's diff base (`HEAD`, or the merge base of a reviewed
 pull request) and supports shelving and reverting them. The changelist's *Push* (`push_branch`) pushes `HEAD` to the
-branch on `origin` the worktree's branch tracks, else to one of its own name (`push_target` in `session/commands.rs`:
+branch on `origin` the worktree's branch tracks, else to one of its own name (`push_target` in `session/commands/mod.rs`:
 the base branch, a reviewed pull request's branch, the checkout's upstream), after a rebase onto it when it moved on;
 a plain `git push` in a session's worktree goes to the same branch (`git::configure_push`: `push.default=upstream`
 and `push.autoSetupRemote` in the worktree's own config); a conflict aborts the rebase and names the files. A first prompt that starts with the URL of a GitHub
@@ -273,7 +311,7 @@ issue or pull request titles the session `#<number> <title>` (`issueFromPrompt`,
 
 A new worktree has none of the repository's ignored files either, which is where a service's `.env.private` lives. Each
 service of the repository's `hunt.json` names the ones it needs as glob patterns under `worktreeInclude`
-(`"worktreeInclude": ["apps/med/.env.private"]`; the contract below), and `apps/client/src-tauri/src/private_files.rs`
+(`"worktreeInclude": ["apps/med/.env.private"]`; the contract below), and `apps/client/src-tauri/src/git/private_files.rs`
 copies the matching ignored files of the repository's own checkout into every worktree Hunt creates, for a new session,
 an adopted remote session and a retrieved one, files inside ignored folders included and `node_modules` left out; a file
 the worktree has already stays. Claude Code and Conductor read the same kind of list from `.worktreeinclude`.
@@ -301,23 +339,23 @@ Every snapshot that differs from the previous one also goes into the worktree's 
 the difference. Log and snapshot objects live in Hunt's app data (`edit-log/<id>/`, objects written through
 `GIT_OBJECT_DIRECTORY` with the repository's objects as alternates), never in the repository, and are deleted with
 the last session of the worktree. For a file other sessions changed too, the diff offers "All changes" and "This
-session": the latter replays the file's versions from the log (`apps/client/src/diff/ownChanges.ts`) and shows,
+session": the latter replays the file's versions from the log (`apps/client/src/diff/own-changes.utils.ts`) and shows,
 read-only, only the lines the session and its parent changed.
 
 #### Git log
 
 The Git tab after Diff is the worktree's history, laid out like IntelliJ's log: the branch tree on the left (Local,
 Remote and Tags, nested by the slashes in their names; a click shows one ref's history from the top with its head
-selected, a second click every ref again), the commits in the middle with the graph, the branch and tag chips, author and date, and on the right the
+selected, a second click every ref again, a double click keeps it shown), the commits in the middle with the graph, the branch and tag chips, author and date, and on the right the
 files of the selected commit as a folder tree, its message, author, committer, refs and containing branches, and the
 read-only diff of the selected file against the commit's first parent. The log pages through `git log --date-order`
-500 commits at a time (`git_log`, `apps/client/src-tauri/src/git.rs`). The text field filters while typing: it keeps
+500 commits at a time (`git_log`, `apps/client/src-tauri/src/git/git.rs`). The text field filters while typing: it keeps
 the commits whose message contains the text, ignoring case, or whose hash starts with it, and rewrites each parent to
 the nearest match on its first-parent line, so the graph still joins the matches. Commits no remote has yet carry an
-arrow. `apps/client/src/git/commitGraph.ts` lays the
+arrow. `apps/client/src/git/commit-graph.utils.ts` lays the
 lanes out from the parent lists, `CommitLog.tsx` renders only the visible rows, and the log reloads after every turn
 of the agent and every local write. The log opens on the session's branch, which the tree marks with the branch its
-push lands on (`→ master`). A right click on a branch opens its menu (`src/git/branchActions.ts`): rebase the
+push lands on (`→ master`). A right click on a branch opens its menu (`src/git/branch-actions.utils.ts`): rebase the
 checked-out branch onto it or merge it in (a conflict aborts and names the files), update it (the session's branch is
 rebased onto the branch its push lands on, as the push does first; another local branch is fast-forwarded from its
 upstream), push, rename and delete it (a branch with commits no other branch has only after a confirmation), and for
@@ -336,7 +374,7 @@ in the start view (`GitScope` of kind `repo`); there "Checkout" is enabled and d
 
 #### Pull request reviews
 
-`apps/client/src-tauri/src/github.rs` lists the open pull requests of a repository and reads one with its conversation
+`apps/client/src-tauri/src/github/github.rs` lists the open pull requests of a repository and reads one with its conversation
 through the `gh` CLI. The "PR review" button of the new-session view (`apps/client/src/sessions/PullRequestList.tsx`)
 lists them in the chat pane with a search box; picking one starts the session right away, without a prompt: a worktree on the pull
 request's own branch, titled after the pull request, with the pull request and the merge base with its target branch
@@ -348,17 +386,17 @@ included, has the branch checked out already. Deleting the session deletes the b
 The changelist of such a session compares against that merge base, so it lists the pull request's changes, and its
 "Submit review…" button posts a comment, approval or change request through `gh pr review`. The "PR Description" tab
 (`apps/client/src/review/`) renders the pull request's description, comments and reviews like GitHub's conversation
-view. In its code views hovering a line shows GitHub's "+" in the gutter (`apps/client/src/review/addCommentGlyph.ts`);
+view. In its code views hovering a line shows GitHub's "+" in the gutter (`apps/client/src/review/add-comment-glyph.monaco.ts`);
 a click opens a comment box under the line, and drafted comments stay there as cards
 (`apps/client/src/review/ReviewCommentZones.tsx`, stored as `reviewComments` in `sessions.json`) until the review goes
 out. A draft on a line of a diff hunk (blue "+") is posted inline through the REST API
 (`apps/client/src-tauri/src/session/review.rs`); a draft elsewhere (grey "+") becomes a note in the review summary with
 the commented lines as a code block. "Comment on file" in the header of the diff views drafts a comment on the whole
 file, shown above its first line; GitHub's REST API cannot take those with a review, so the review is then created
-pending, gets them through GraphQL and is submitted there (`apps/client/src-tauri/src/github.rs`). The review threads
+pending, gets them through GraphQL and is submitted there (`apps/client/src-tauri/src/github/github.rs`). The review threads
 already on GitHub show as cards under their lines as well, with the avatar of whoever opened them before the lines and
 every reply below; resolved threads stay collapsed. They are loaded through GraphQL (`list_review_threads`) into
-`apps/client/src/state/reviewThreads.ts` when a file shows and they are older than 30 seconds, and right after a review
+`apps/client/src/review/review-threads.store.ts` when a file shows and they are older than 30 seconds, and right after a review
 was submitted. A draft's card carries the avatar of the account `gh` is logged in as. Every card ends in GitHub's "Write
 a reply". A reply is drafted like a comment ("Start a review" / "Add review comment", stored with `replyTo`) and shows
 as "Pending" in its card until the review goes out: a reply to a draft joins the thread that draft opens (or its note),
@@ -369,38 +407,38 @@ at once; a reply whose thread is gone keeps a card of its own.
 #### Editor
 
 The "Editor" tab is a small built-in IDE for the worktree: a lazily listed project tree
-(`apps/client/src-tauri/src/workspace.rs`) and Monaco editor panes with tabs and a symbol breadcrumb
+(`apps/client/src-tauri/src/ide/workspace.rs`) and Monaco editor panes with tabs and a symbol breadcrumb
 (`apps/client/src/ide/`). A folder's context menu marks it with a color that tints it and everything below it, like
-WebStorm's file colors; marks are kept per repository in `apps/client/src/ide/folderColors.ts`. Files live as
+WebStorm's file colors; marks are kept per repository in `apps/client/src/ide/project-tree/folder-colors.store.ts`. Files live as
 `file://<worktree>/…` models. Like an IDE's editors, every window shares one document per file: the backend holds its
-text and saved state (`apps/client/src-tauri/src/documents.rs`), each window's model is a replica
-(`apps/client/src/ide/documents.ts`), so an edit, the unsaved mark and a save show in every window at once. Closing a
+text and saved state (`apps/client/src-tauri/src/ide/documents.rs`), each window's model is a replica
+(`apps/client/src/ide/documents/documents.service.ts`), so an edit, the unsaved mark and a save show in every window at once. Closing a
 tab or a window keeps unsaved edits: the backend holds them until a save or a rollback, and the project tree and the
 change list mark the file with a blue dot.
 
 Hover, inlay hints, diagnostics, the breadcrumb, go-to-declaration and usages come from the TypeScript 7 language
 server (`tsgo --lsp`, from the worktree's `node_modules/.bin` or the PATH), one process per worktree managed by
-`apps/client/src-tauri/src/lsp.rs` and bridged through `apps/client/src/ide/lsp/`. The server reads loaded files from
+`apps/client/src-tauri/src/ide/lsp.rs` and bridged through `apps/client/src/ide/lsp/`. The server reads loaded files from
 the shared documents, which reload from disk after every agent edit, and every other file from disk; a watcher on the
 worktree reports the changes matching the globs the server registers (`workspace/didChangeWatchedFiles`), so usages
 include files the agent created. Monaco's bundled TypeScript worker
-only colors code: `apps/client/src/diff/webstormClassifier.ts` assigns every identifier the role WebStorm would (class,
+only colors code: `apps/client/src/editor/webstorm-classifier.utils.ts` assigns every identifier the role WebStorm would (class,
 interface, instance field, static method, parameter, global/local variable, …), colored by the user's WebStorm scheme
-(`apps/client/src/diff/webstormScheme.ts`); opening a file also loads its relative imports so imported names get their
+(`apps/client/src/editor/webstorm-scheme.monaco.ts`); opening a file also loads its relative imports so imported names get their
 roles. In Angular projects the Angular language server adds the usages and renames in component templates, and in
 templates and inline templates the hover (the component of a tag, the type of an input, a name or a pipe) and the
 go-to-declaration (a tag or attribute to its component, directive, input or output; a name to the component member;
 `templateUrl` to the template); it needs seconds per newly loaded project (about 8 s cold, 25 ms
 warm), so its usages arrive after tsgo's. Hunt starts it in the background when the first TypeScript or template file
 opens, so it has loaded the projects of the open files before the first request; it takes about 1 GB per worktree.
-Class members nothing uses are greyed out like WebStorm's "Unused property" (`apps/client/src/ide/unusedMemberMarkers.ts`):
-the TypeScript worker names the public and protected members that may be unused, and a member is greyed out once
+Class members nothing uses get a grey wavy underline like WebStorm's "Unused property" (`apps/client/src/ide/language/unused-member-markers.monaco.ts`):
+the TypeScript worker names the public and protected members that may be unused, and a member is marked once
 neither tsgo, nor the Angular server, nor tsgo again after loading the projects of every file mentioning the name find a
 reference, and the template beside its file does not mention it (a base class's template used by subclasses elsewhere).
 
 The shortcuts below and those of the sidebar, chat and changelist are defaults: *Settings → Keymap* binds each command
 to other or additional keys, flags two commands that share one and keeps the changes in the settings store
-(`apps/client/src/state/keymap.ts` lists the commands, `apps/client/src/ui/shortcuts.ts` matches a key press).
+(`apps/client/src/common/keymap/keymap-commands.data.ts` lists the commands, `apps/client/src/ui/shortcuts.utils.ts` matches a key press).
 
 | Shortcut | Action |
 | --- | --- |
@@ -413,17 +451,17 @@ to other or additional keys, flags two commands that share one and keeps the cha
 | ⌃⇧C | Copy the absolute path: in the editor of the open file, in the change list and the project tree of the selected rows (also "Copy path" in their context menus) |
 | ⌘S | Save every file with unsaved edits, also those of closed tabs and other windows; also with the focus in the project tree, the changelist or the chat |
 | ⌘G | Remove unused imports (tsgo), then format with the Prettier the worktree installs, its config and plugins included (`apps/client/scripts/prettier.mjs`); without Prettier with tsgo's formatter |
-| ⌘Ü | "Rename…" (also in the context menu): renames the symbol at the caret across the project through tsgo, asked at its declaration so imports follow; optionally also the name in comments and strings and in non-code files, which always opens the preview with a check box per occurrence; touched files without unsaved edits are saved (`apps/client/src/ide/RenameDialog.tsx`) |
-| ⌘P or double shift | "Go to File": fuzzy search over `git ls-files`; `name:12` jumps to line 12 |
-| ⇧⌘F | "Find in Files": full-text search over the project files held in memory (⌥C match case, ⌥W words, ⌥X regex, file mask); starts with the editor's selection |
+| ⌘Ü | "Rename…" (also in the context menu): renames the symbol at the caret across the project through tsgo, asked at its declaration so imports follow; optionally also the name in comments and strings and in non-code files, which always opens the preview with a check box per occurrence; touched files without unsaved edits are saved (`apps/client/src/ide/language/RenameDialog.tsx`) |
+| ⌘P or double shift | "Go to File": fuzzy search over `git ls-files`; `name:12` jumps to line 12; the preview edits the file like an editor tab |
+| ⇧⌘F | "Find in Files": full-text search over the project files held in memory, a file with unsaved edits in its editor text (⌥C match case, ⌥W words, ⌥X regex, file mask); starts with the editor's selection; the preview edits the file like an editor tab |
 
 #### Checks
 
 The `checks` section of the worktree's `hunt.json` names the commands that check a change, such as
 `"lint": {"command": "npm run lint"}`. The Checks tab lists them in the file's order and runs one, or all of them at
 once (`run_all_checks`); a local session runs the command in an interactive login shell in the worktree, a
-remote session on its VM through `hunt-ctl check`. Each run is a pseudo terminal (`remote/terminal.rs`), so the output
-keeps its colors; `checks.rs` keeps the last run of every check with its state, exit code, the last 4 MiB of output
+remote session on its VM through `hunt-ctl check`. Each run is a pseudo terminal (`terminal/interactive.rs`), so the output
+keeps its colors; `checks/checks.rs` keeps the last run of every check with its state, exit code, the last 4 MiB of output
 and the tree object of the worktree at its start (`git::worktree_tree`). A result whose tree differs from the
 worktree's now reads as outdated. The runs live as long as Hunt; `checks:changed` and `checks:output` report them to the
 main window. *Send to agent* posts a failed check with the end of its output into the chat
@@ -442,7 +480,7 @@ or the agent wrote it, so no template file and no empty folder is ever left behi
 
 The "Guardrail" button in the composer's header records a lesson of the conversation through the repository's
 guardrail skill, `.claude/skills/<name>/SKILL.md` with the name `guardrailSkill` of `hunt.json` (`guardrail` without
-it; `apps/client/src-tauri/src/guardrail_skill.rs`). Every session start writes the skill from
+it; `apps/client/src-tauri/src/agent/guardrail_skill.rs`). Every session start writes the skill from
 `apps/client/prompts/guardrail.skill.md` into a worktree that lacks it, as a change of the session, and never touches
 an existing one. The skill says when a lesson qualifies as a guardrail, how to check the declines and the existing
 guardrails and where each kind goes. Its qualification criteria, the text between its `<!-- hunt:criteria -->` and
@@ -454,7 +492,7 @@ suggestion) and whose task (`guardrail-chat.system-prompt.md`) carries the conve
 the suggestion to `.claude/declined-guardrails.jsonl`, which the skill greps before it writes.
 
 The "Lint rules" tab lists the ESLint rules of every `eslint.config.*` in the worktree (`read_lint_rules`,
-`apps/client/src-tauri/src/lint_rules.rs`). `apps/client/scripts/eslintRules.mjs` imports the configs on the
+`apps/client/src-tauri/src/ide/lint_rules.rs`). `apps/client/scripts/eslintRules.mjs` imports the configs on the
 worktree's `node`, so the ESLint and plugins it installs supply each rule's description and documentation link. The tab
 shows every rule a config switches on, once, grouped by its origin: a plugin that lives in the repository, ESLint itself,
 or an installed plugin. Selecting a rule shows what it checks and every place that sets it: the config, the file globs,
@@ -465,8 +503,17 @@ agent edit in the worktree and whenever the window comes back.
 
 Opening a session checks that the worktree's root `CLAUDE.md` names the ADR folder and otherwise offers once to
 append an "Architectural decisions" section with the `ls`/`grep` lookup
-(`apps/client/src/guardrails/adrInstruction.ts`); without it Claude Code never reads the records. A decline is
+(`apps/client/src/guardrails/instruction-sections.utils.ts`); without it Claude Code never reads the records. A decline is
 remembered until the app restarts.
+Then, when the worktree's `hunt.json` has an `swf` section whose `swf.skills` names no skill for an agent step of the
+poller's swf pipeline (see "Remote sessions"), or names one whose skill file is missing, it asks once whether to add the
+missing entries to `hunt.json` (`swf-<step>`) and to create the missing skill files from
+`apps/client/prompts/swf-<step>.skill.md` (`apps/client/src/guardrails/swf-skills.utils.ts`,
+`apps/client/src-tauri/src/agent/swf_skills.rs`): Hunt has no default skill, so a session of the poller cannot start
+until every step has one. Each file lands at `.claude/skills/<name>/SKILL.md` under the step's name as a change of the
+session, says what its step does and leaves the repository's part as `TODO:` lines; the gate skill starts with Hunt's
+default rubric of when a person has to review. Existing entries and skills stay as they are, and a decline is remembered
+until the app restarts.
 
 #### Architecture diagrams
 
@@ -482,11 +529,11 @@ meanwhile, its agent may be stopped, and several diagram types can generate at o
 worktree, run read-only git commands and write into `.hunt/`; it denies everything else without asking. A remote
 session's diagram is generated on the Mac as well, in the local worktree the file sync keeps in step with the VM. The
 prompts name the session's diff base: `HEAD`, or the merge base of a reviewed pull
-request. `apps/client/src-tauri/src/graph.rs` owns the prompts, the files and their status; the React panels live in
+request. `apps/client/src-tauri/src/graph/graph.rs` owns the prompts, the files and their status; the React panels live in
 `apps/client/src/graph/` (`ArchitecturePanel.tsx` picks the view, `GraphPanel.tsx` is the Dependencies view,
 `ShapeDiagramPanel.tsx` the five others).
 
-The Dependencies diagram is `.hunt/graph.json` (schema in `apps/client/src-tauri/src/graph.schema.json`): one node
+The Dependencies diagram is `.hunt/graph.json` (schema in `apps/client/src-tauri/src/graph/graph.schema.json`): one node
 per changed file plus the unchanged files that explain the change, and one edge per dependency with a label stating
 how the source uses the target (one to three words, a verb, a noun or both, in the AI language from the settings)
 and a description of how it is used. Hunt validates it, fills pairs the agent left out with unlabeled edges read
@@ -495,11 +542,11 @@ jumps to the matching files and highlights them. When labels are missing, look a
 first: edge labels come only from the agent.
 
 A shape diagram is `.hunt/diagram.<type>.json` (`diagram.c4-container.json` and so on; schema in
-`apps/client/src-tauri/src/diagram.schema.json`, which the prompt also copies into `.hunt/`): nodes with a kind
+`apps/client/src-tauri/src/graph/diagram.schema.json`, which the prompt also copies into `.hunt/`): nodes with a kind
 (`person`, `system`, `container`, `database`, `table`, `state`, `decision`, …), label and description, optional
 boundary groups, and edges with a label, a description, the ERD's columns and cardinalities, plus a `change` mark on
 everything the session added or altered. The file holds content only: shapes, colors, sizes and layout are Hunt's
-(`shapeNodes.tsx`, `shapeDiagram.ts`), so the same diagram looks the same on every branch. The prompts live in
+(`ShapeNodes.tsx`, `shape-diagram.utils.ts`), so the same diagram looks the same on every branch. The prompts live in
 `apps/client/prompts/diagram/`: `diagram.system-prompt.md` extends the diagram agent's system prompt with the rules shared by the five
 types, `diagram-<type>.user-prompt.md` is the message of one type. A shape diagram is generated only on a click.
 
@@ -516,11 +563,11 @@ which a Tauri app cannot satisfy, and its elbow arrows cross other shapes.
 A session can move to a Compute Engine VM of its own and keep working there while Hunt is closed ("Remote" in the chat
 header, set up under *Settings → Remote VM*: the Google Cloud project of the gateway and the machine type of new session
 VMs). The app
-creates, starts and deletes no VM itself: it calls the gateway API (`libs/domain/src/gatewayApi.ts`,
+creates, starts and deletes no VM itself: it calls the gateway API (`libs/domain/src/gateway-api/gateway-api.types.ts`,
 `apps/client/src-tauri/src/remote/api.rs`) as `hunt-api <method>` over its SSH connection to the gateway, with the
 request as one JSON object on stdin; stdout streams NDJSON events, progress steps and log lines, then one result or
 error. The app passes session IDs and, to `sessions.provision`, the chosen machine type: one of
-`libs/domain/src/sessionMachineTypes.ts`, which the gateway checks and uses only for a VM it creates, or none for the
+`libs/domain/src/session/session-machine-type.types.ts`, which the gateway checks and uses only for a VM it creates, or none for the
 template's. The gateway names the VM `vm-hunt-s-<short id>` (`<short id>` is the first 8 hex digits of the session ID)
 and owns its project, zone, instance template and preview domain, which `hello` reports.
 The first call to a gateway in an app run checks that its `hello.api` is the `api` of `libs/domain/protocol.json` and
@@ -550,7 +597,7 @@ keep the stored preview domain without `--domain`), and `hunt-ctl stage-session 
 `/srv/hunt/session-releases/<hash>`, points `/srv/hunt/session-current` at it and keeps the one before. Each time the
 gateway provisions or starts a session VM, it compares the VM's `/var/lib/hunt/installed-hash` with the staged
 release's `.hash` and, when they differ, packs the staged release, unpacks it on the VM into
-`/srv/hunt/incoming/<uuid>` and installs it there with its own `hunt-ctl install` (`apps/gateway/src/sessionVm.ts`).
+`/srv/hunt/incoming/<uuid>` and installs it there with its own `hunt-ctl install` (`apps/gateway/src/session-vm/session-vm-ssh.client.ts`).
 `hunt-ctl install` and `stage-session` refuse a folder without `.version`, which is what older Hunt apps push. A relay
 that runs keeps running and starts on the new release with its next start.
 
@@ -571,7 +618,7 @@ that runs with another one restarts with it between turns (`hunt-ctl start`), so
 picked in Hunt, as it does locally; while a turn runs, the relay keeps its account until its next start. A failed handoff removes the session's worktree from the VM but keeps
 the VM (`leftoverVm` in `sessions.json`): the next attempt skips the first boot, and deleting the session deletes it.
 
-With a GitHub token under *Settings → Remote VM* (`apps/client/src-tauri/src/github_token.rs`, kept in the keychain),
+With a GitHub token under *Settings → Remote VM* (`apps/client/src-tauri/src/github/github_token.rs`, kept in the keychain),
 the agent pushes and runs `gh` as the user: the token goes on stdin next to the Claude token, `hunt-ctl` keeps it in
 `/etc/hunt/github-token` (root and `agent` read it), `/usr/local/bin/gh` is Hunt's wrapper (`apps/session/vm/hunt-gh`)
 that exports it as `GH_TOKEN` for each run of the real gh, the repository there gets `origin` as
@@ -588,10 +635,10 @@ agent does on GitHub happens as the poller's GitHub App, and so does a push from
 yet.
 
 Values a service needs that the repository does not hold, such as an API key, are remote secrets
-(`libs/domain/src/remoteSecrets.ts`): *Settings → Remote VM* lists them by name with the last four characters of
+(`libs/domain/src/remote-secrets/`): *Settings → Remote VM* lists them by name with the last four characters of
 longer values, adds, replaces and deletes them through the gateway, and never reads a value back. The gateway keeps
 all of them as one JSON object in the latest version of the Secret Manager secret `HUNT_REMOTE_SECRETS`
-(`apps/gateway/src/remoteSecretStore.ts`; a change adds a version and destroys the others) and puts the object on every
+(`apps/gateway/src/remote-secrets/remote-secrets.service.ts`; a change adds a version and destroys the others) and puts the object on every
 session VM it brings up for a handoff, a start or the poller (`hunt-ctl put-remote-secrets`,
 `/etc/hunt/remote-secrets.json`, which only root reads). A service of `hunt.json` names the ones it needs under
 `remoteSecrets` (`"OPENAI_API_KEY": "$MED_OPENAI_API_KEY"`), and `session-config` writes them into its environment file;
@@ -609,11 +656,11 @@ as the Hunt apps of different people, can be attached at once: each gets every u
 another, and a permission request goes to all of them; the first answer counts, and the relay withdraws the request from
 the others. The guardrails stay local and wait until the session comes back; diff, editor, graph and pull request work
 on the local worktree, which Hunt keeps in sync with the VM (below). For every tool call the agent finishes, the relay
-writes one line to the journal, which the Ops Agent ships to Cloud Logging (`toolCalls.ts`): tool, status, duration,
+writes one line to the journal, which the Ops Agent ships to Cloud Logging (`tool-call-log.domain.ts`): tool, status, duration,
 for a command its exit code and number of output lines, and the title, for Bash the whole command. The output stays
 out. Its status file `/run/hunt/status.json`, which `hunt-ctl wait`, the idle check and the status channel read, also
 tells whether the agent waits for an answer (`question`: no turn runs, no permission request is open and the
-conversation ends with a reply that asks a question, laid out in items as the chat does, `trailingReply.ts`). A prompt's
+conversation ends with a reply that asks a question, laid out in items as the chat does, `trailing-reply.domain.ts`). A prompt's
 `_meta` goes on the chunks the relay records for it, so a turn Hunt sent itself (`hunt.hidden`, a diagram refresh) is
 left out of it as the chat leaves it out.
 
@@ -660,7 +707,7 @@ tmux session running. Login shells of `agent`, such as the terminal's tmux sessi
 the Claude Code token (`/etc/profile.d/hunt.sh`); `gh` and git reach GitHub from them as from the agent, through the
 wrapper and `/etc/hunt/github-token`.
 
-`hunt-ctl session-config` reads the repository's `hunt.json` (contract version 3, `apps/session/src/config.ts`). It
+`hunt-ctl session-config` reads the repository's `hunt.json` (contract version 3, `apps/session/src/session-config/hunt-json.value-object.ts`). It
 lists every service of the repository, a monorepo all of its apps, with its `command`, an optional `cwd`, its `port`,
 `tls` (the port speaks HTTPS), `guarded` (behind IAP, the default), `review` (the review widget on its pages, the
 default; see below) and `env`, whose values may name a service's URL as
@@ -669,7 +716,19 @@ sessions"), and `worktreeInclude`, the ignored files the service needs, as glob 
 session VM gets from the checkout (see "Worktrees and changes") and the VM only validates. An optional `swf` section
 sets the model of the sessions the gateway's poller starts for the repository's issues as a full model ID
 (`"swf": {"model": "claude-opus-5-5"}`; an alias such as `opus` is rejected, since its model changes with Claude Code's
-releases). An optional `checks` section names up to 32 commands such as the linter or the tests, each with a `command`
+releases) and, under `humanReviewPaths`, glob patterns with the rules of `worktreeInclude`: a pull request of a poller
+session that touches a file matching one of them always needs a human reviewer
+(`"humanReviewPaths": ["**/migrations/**"]`; `session-config` reports them as `swf_human_review_paths`), and under
+`skills` the names of the Claude Code skills with which the repository refines the agent steps of the pipeline, keyed
+by the step (`"skills": {"plan": "swf-plan", "implement": "swf-implement", "verify": "swf-verify", "gate": "acme-review",
+"pr": "swf-pr"}`, names like `guardrailSkill`). With a `swf` section, `skills` is required and names every agent step
+(`plan`, `implement`, `verify`, `gate`, `pr`): Hunt has no default skill, so a missing map or step is a problem of
+hunt.json (`swf.skills: must name the skill of every agent step …`, `swf.skills.<step>: must name the skill of the
+step …`), as is each skill file `.claude/skills/<name>/SKILL.md` the worktree lacks; `session-config` reports the skill
+of every step as `swf_skills`. The client asks to add the missing entries (`swf-<step>`) and to create the missing
+skill files when a session of the repository opens. The step's prompt tells the agent to invoke its skill first; see
+"Step skills" in `apps/gateway/software-factory/README.md`. An optional
+`checks` section names up to 32 commands such as the linter or the tests, each with a `command`
 and an optional `cwd` (`"checks": {"test": {"command": "npm test", "cwd": "apps/web"}}`); `services` is optional too,
 so a `hunt.json` may declare checks only. An optional `adrDir` names the folder of the repository's architectural
 decision records (`"adrDir": "docs/adr"`, `.claude/resources/adrs` without it), which the guardrails window lists and
@@ -689,7 +748,7 @@ writes its output to `~/logs/<name>.log`. The agent starts the services its task
 `hunt.agent.md` groups them, with `sudo -n hunt-ctl service start|restart|stop|status <name>…`, the only commands
 `/etc/sudoers.d/hunt-service` allows it. Right after the handoff of a session whose chat holds a prompt, when no prompt
 is queued, hunt.json declares services and none of them runs, Hunt asks the agent in a turn of its own to start what its
-task needs (`HANDOFF_START_PROMPT` in `apps/client/src/preview/services.ts`); when its task leaves that unclear, the
+task needs (`HANDOFF_START_PROMPT` in `apps/client/src/preview/preview-services.utils.ts`); when its task leaves that unclear, the
 agent starts nothing. A started service stays enabled and starts again with the VM; bringing the
 session back or deleting it stops and disables every service. `hunt-ctl preview-status` reports the state of every
 service, whether its port answers on localhost and the ports that listen on all or the loopback addresses.
@@ -721,17 +780,17 @@ Every HTML page of a guarded port host carries a review widget, like Amp's: a *R
 picking, the element under the pointer is outlined, a click picks it and opens a comment box, and *Add* posts the
 annotation (the page's URL and title, a unique CSS selector, the element's text, shortened HTML, box and a few computed
 styles, its source file and line where React's debug info or a `data-source`/`data-inspector-*` attribute tells it,
-and the comment; `libs/domain/src/browserAnnotation.ts`). The widget (`apps/session/src/review/widget.ts`, served as
+and the comment; `libs/domain/src/review/browser-annotation.utils.ts`). The widget (`apps/session/src/review/review-widget.main.ts`, served as
 `/__hunt/review.js`) lives in a closed shadow root. The preview proxy sends the page loads (GET with `text/html` in
 Accept) and `/__hunt/*` of the port hosts to the review server `hunt-review.service` on 127.0.0.1:9232
-(`apps/session/src/review/server.ts`), which fetches the page from the service's port as the proxy would and adds the
+(`apps/session/src/review/review-server.service.ts`), which fetches the page from the service's port as the proxy would and adds the
 script tag before `</head>`; an answer it cannot reach becomes the proxy's usual 503. The `-open` hosts get neither
 the widget nor `/__hunt/*`, so strangers cannot write into the session. A service opts out with `"review": false` in
 hunt.json, a single page with the response header `x-hunt-review-widget: off`. The review server stores each
 annotation as a file in `/run/hunt-review/annotations`; the status helper (below) takes them out and sends each once
 to Hunt, which emits `review:annotation` and shows it as a chip above the session's composer
-(`apps/client/src/chat/PromptInput.tsx`). Nothing is sent by itself: the next prompt the user sends carries every chip,
-formatted by `apps/client/src/chat/annotationPrompt.ts` into `apps/client/prompts/browser-annotations.user-prompt.md`,
+(`apps/client/src/chat/prompt/PromptInput.tsx`). Nothing is sent by itself: the next prompt the user sends carries every chip,
+formatted by `apps/client/src/chat/prompt/annotation-prompt.utils.ts` into `apps/client/prompts/browser-annotations.user-prompt.md`,
 also with an empty text, and clears them. Annotations that arrive while Hunt does not run wait on the VM until the
 session's status channel opens; `hunt-ctl stop` drops them.
 
@@ -747,9 +806,9 @@ loses its connection, the panel calls `desktop_open` again, which replaces a for
 stays mounted while another tab shows, so the stream survives tab switches. The VM's output stays at 1280×720, scaled
 into the panel: Debian 12's sway 1.7 reports its headless output without modes, so Waymote's resize finds no output.
 Clicking the stream gives it the keyboard: Escape and every ⌘ combination go to the VM instead of Hunt, since the stage
-is a remote input that Hunt's shortcuts skip (`isRemoteInput` in `src/ui/shortcuts.ts`); clicking outside gives the keys
+is a remote input that Hunt's shortcuts skip (`isRemoteInput` in `src/ui/shortcuts.utils.ts`); clicking outside gives the keys
 back. The SDK sends each key as its Linux key code in the gateway's US layout, plus its character while no modifier is
-held; ahead of it, `desktop/keyTranslation.ts` sends ⌘ as Ctrl, a character typed with ⌥ (@, |, [ on a German Mac) as
+held; ahead of it, `desktop/key-translator.domain.ts` sends ⌘ as Ctrl, a character typed with ⌥ (@, |, [ on a German Mac) as
 text, and a ⌘ or ⌃ letter shortcut on the US key of the letter the Mac's layout typed, so ⌘Z on QWERTZ is Ctrl+Z.
 
 The gateway keeps no sessions. Its edge proxy `hunt-edge` (Caddy in Docker on port 8080 behind the load balancer)
@@ -757,7 +816,7 @@ serves only the load balancer's address ranges, removes IAP's headers and cookie
 its Host header to `vm-hunt-s-<short id>.<zone>.c.<project>.internal:8080`, trying the session zones in their order
 (below): the session VMs' internal DNS names are the whole routing table, and only the zone that holds the VM resolves.
 A request it cannot deliver (502, 503 or 504, because the VM is off, still booting or in no session zone) goes to
-`hunt-wake.service` on 127.0.0.1:9180 (`apps/gateway/src/wake.ts`). It looks the VM up in every zone through the
+`hunt-wake.service` on 127.0.0.1:9180 (`apps/gateway/src/wake/wake.main.ts`). It looks the VM up in every zone through the
 Compute Engine API with the gateway's service account, starts or resumes it for a page load, at most once every 30
 seconds and never for a script's request of a tab already open, and answers with a page that reloads every 5 seconds
 until the VM answers. A VM the gateway is moving to another zone (below) gets a reloading page as well; hunt-wake
@@ -766,16 +825,18 @@ started from Hunt.
 A second listener on port 8081 serves the load balancer's backend without IAP: it forwards only
 `<short id>-<port>-open.<domain>` the same way and answers 503 for a VM that is off, without starting it.
 
-The gateway API (`hunt-api.service`, `apps/gateway/src/api.ts`) is the control plane of the session VMs, with the
-contract of `libs/domain/src/gatewayApi.ts`. It listens on the Unix socket `/run/hunt-api/api.sock`, which only the
+The gateway API (`hunt-api.service`, `apps/gateway/src/gateway-api/gateway-api.main.ts`) is the control plane of the session VMs, with the
+contract of `libs/domain/src/gateway-api/gateway-api.types.ts`. It listens on the Unix socket `/run/hunt-api/api.sock`, which only the
 system user `hunt-gw` opens. On the gateway, sshd forces `/usr/local/bin/hunt-api` (`apps/gateway/vm/hunt-api`) on
 every user outside the group `google-sudoers` (`/etc/ssh/sshd_config.d/20-hunt-api.conf`, without a terminal, port or
 socket forwarding, agent or X11 forwarding and `~/.ssh/rc`): it accepts only `hunt-api <method>` and runs the forwarder
-`apps/gateway/src/apiClient.ts` as `hunt-gw` through sudo, the one command `/etc/sudoers.d/hunt-api` allows. The
+`apps/gateway/src/gateway-api/gateway-api-forwarder.main.ts` as `hunt-gw` through sudo, the one command `/etc/sudoers.d/hunt-api` allows. The
 forwarder sends one line `{caller, method, params}` over the socket, with sudo's `SUDO_USER` as the caller, and copies
-the events to stdout; admins call `hunt-api <method>` the same way. `apps/gateway/src/apiProtocol.ts` checks the
-method and params (session IDs are lowercase UUIDs, repositories `<owner>/<repo>`, branches valid Git branch names).
-The VM methods go through `apps/gateway/src/orchestrator.ts`, which the poller uses as well: `sessions.provision`
+the events to stdout; admins call `hunt-api <method>` the same way. `apps/gateway/src/gateway-api/gateway-api-protocol.utils.ts` checks the
+method and parses the params into the value objects of `libs/domain/src/session/` and `libs/domain/src/remote-secrets/`
+(session IDs are lowercase UUIDs, repositories `<owner>/<repo>`, branches valid Git branch names), which the server
+passes on.
+The VM methods go through `apps/gateway/src/session-vm/session-vm.service.ts`, which the poller uses as well: `sessions.provision`
 creates `vm-hunt-s-<short id>` from `tpl-hunt-session` unless it exists in any zone. It tries the session zones in
 order, `/etc/hunt/session-zones`, which `hunt-ctl install` writes from the gateway's instance metadata
 `hunt-session-zones` (comma-separated, only zones of the gateway's region count; without it the gateway's own zone), and
@@ -835,7 +896,7 @@ Hunt ships as a sidecar next to its executable; `client:tmux` builds it). Every 
 a tmux server of its own on the socket `$TMPDIR/hunt-tmux/<root session id>` (`hunt-tmux-dev` for a debug build), so
 the windows of a local session and of its sub chats are one list. Whenever a local agent starts or a terminal opens,
 Hunt writes the worktree's `.hunt/tmux`, a wrapper that starts that binary on that socket with `.hunt/tmux.conf`
-(`apps/client/src-tauri/src/tmux.rs`); every tmux call of Hunt and of the agents goes through it, so the server always
+(`apps/client/src-tauri/src/terminal/tmux.rs`); every tmux call of Hunt and of the agents goes through it, so the server always
 starts with Hunt's configuration. A server that outlived an app run that ended without quitting (a crash, a restart of
 `tauri dev`) loads the configuration the first time the app writes it in a run, and each of its live panes without a log
 pipe gets one. The agents on this Mac get its path in their system prompt
@@ -895,7 +956,7 @@ is uncommitted on both sides, as for a local session. The VM's branch also follo
 on. When both sides committed since they last agreed, neither follows, and the chat says so with the reset to make.
 
 The Claude Code transcripts move beside the files, live and both ways (`apps/client/src-tauri/src/session/transcripts.rs`,
-`remote/transcript_sync.rs`): the transcript helper on the VM (`apps/session/src/sync/transcripts.ts`, started over the
+`remote/transcript_sync.rs`): the transcript helper on the VM (`apps/session/src/sync/transcript-helper.main.ts`, started over the
 same SSH connection as the sync helper) watches the agent's project folder `~/.claude/projects/<slug>` there and reports
 every file the agent writes (the session's transcript, its subagent transcripts, tool results; the memory excepted) as
 it grows, from the offset this Mac holds, and Hunt appends the complete lines, with their paths moved here, to a mirror in
@@ -904,7 +965,7 @@ watches the local project folder and sends the files this Mac owns, the transcri
 VM's project folder the same way, so the agent on the VM can read what its sub chats did. Every offset is remembered per
 side (`remote-sync/<id>.transcripts.json` in the app data folder), so a channel that reopens asks only for what is
 missing; a mirror that changed under the stream is pulled from the start again, and a VM copy that is not as long as
-expected is sent from the start again. The protocol is in `apps/session/src/sync/transcriptProtocol.ts`. A second
+expected is sent from the start again. The protocol is in `apps/session/src/sync/transcript-protocol.types.ts`. A second
 stream of the same kind, on a second helper over the same connection, mirrors the terminal logs between `~/logs` on the
 VM and `.hunt/logs` in the local worktree: this Mac owns `desktop/`, the logs of its tmux windows, which land in
 `~/logs/desktop/` on the VM, and the VM everything else, the logs of its services and windows. Its offsets are kept in
@@ -936,7 +997,7 @@ The live sync runs over a channel to a helper on the VM that the client starts o
 connection and keeps open (`sudo -n -u agent /opt/hunt/node/bin/node /srv/hunt/current/session/syncHelper.mjs
 <worktree>`, `apps/session/src/sync/`; client side `apps/client/src-tauri/src/remote/channel.rs`). The helper watches
 every folder of the worktree that Git does not ignore and speaks NDJSON on stdin and stdout
-(`apps/session/src/sync/protocol.ts`): it reports changed files with their state and, up to 1 MiB, their content,
+(`apps/session/src/sync/sync-protocol.types.ts`): it reports changed files with their state and, up to 1 MiB, their content,
 applies the writes, links and deletions the client sends and acknowledges them without echoing them back, says when
 `HEAD` may have moved and asks for a full sync after a change of the ignore rules or a failed watch. The local watcher
 reports paths after 50 ms. A live sync plans like a full one, from both listings as the last sync left them with only
@@ -953,7 +1014,7 @@ next sync sends the changes). Otherwise it is locked: the VM runs without a conn
 gateway can be reached. Hunt then refuses its own writes (saves, moves, deletions, revert, shelve, unshelve, commit)
 and its editors turn read-only; editors outside Hunt are not held back. A chat of the locked worktree (the session's or
 a sub chat's, in the chat pane or the sub chat popover) connects the session to its running VM on its own
-(`apps/client/src/chat/useVmConnect.ts`), which brings the sync back and lifts the lock, and shows the connect's step
+(`apps/client/src/sessions/remote/vm-connect.hook.ts`), which brings the sync back and lifts the lock, and shows the connect's step
 meanwhile; only a failed connect offers *Connect* to try again, and a VM that cannot be reached offers *Continue
 locally*. A locked session is checked again every 15 seconds. *Continue locally*
 (`continue_locally`) makes the session local with the files as last synced and the conversation as of the agent's last
@@ -980,19 +1041,21 @@ What the agent changed in the memory is merged into the local one three-way agai
 keeps the local version with the VM's next to it as `<name>.remote-<id>.md`, and `MEMORY.md` takes the VM's added and
 removed lines.
 
-The gateway's poller `hunt-swf.service` (`apps/gateway/src/swf.ts`) starts a session for every open GitHub issue
+The gateway's poller `hunt-swf.service` (`apps/gateway/src/swf/swf.main.ts`, its `Poller` in `poller.service.ts`) starts a session for every open GitHub issue
 labelled `swf` in the repositories that the gateway's instance metadata `hunt-swf-repos` lists (comma-separated
 `<owner>/<repo>`), with at most `hunt-swf-max-sessions` (default 2, at most 10) at once. The infrastructure repository
 sets both; the poller reads them from the metadata server at every poll, so a change needs no restart, and an invalid
 value keeps it idle. Every 30 seconds it lists the open issues through GitHub's REST
 API and, while fewer of its VMs
 (label `hunt-origin=swf`, any status but `TERMINATED`, `STOPPED` and `SUSPENDED`) are up than the limit allows, claims the oldest
-issue: `swf` becomes `swf:running` (the labels `swf:running`, `swf:question`, `swf:done` and `swf:failed` are created
-when missing), the issue moves to the `In Progress` column of every project (Projects v2) it is an item of (the
+issue: `swf` becomes `swf:plan` (the labels `swf:<step>` for every step of the pipeline, `swf:question`, `swf:done` and
+`swf:failed` are created when missing) and the poller posts its **pipeline record**, one comment on the issue that it
+edits in place at every transition (a status line for people, `<!-- hunt:pipeline {…} -->` for the poller; the model
+`apps/gateway/src/swf/pipeline.domain.ts`, stored by `pipeline-record.client.ts`), so that a restart loses nothing; the issue moves to the `In Progress` column of every project (Projects v2) it is an item of (the
 `Status` option matched case-insensitively; a project without one is left alone, and a failure, such as the app lacking
 the organization permission "Projects: read and write", is only logged). Then it does what a handoff does, with the gateway's service account instead
-of a Mac: the orchestrator creates `vm-hunt-s-<short id>` from the configured instance template (labelled
-`hunt-origin=swf`, without an owner), records the session, repository,
+of a Mac: the session VM service (`apps/gateway/src/session-vm/session-vm.service.ts`) creates `vm-hunt-s-<short id>`
+from the configured instance template (labelled `hunt-origin=swf`, without an owner), records the session, repository,
 branch `feat/general/<issue>-<slug of the title>` (`fix/general/…` for an issue labelled `bug`), title and issue in the
 VM's metadata, waits for the startup script and installs the staged session release, over `gcloud compute ssh
 --internal-ip` (OS Login as admin, one shared SSH connection per VM); `hunt-ctl install-tools` follows.
@@ -1010,40 +1073,62 @@ sets the model of the repository's `hunt.json` (`swf.model`), which the relay ap
 option, and without one, or with a model Claude Code does not know (the relay's journal says so), Claude Code's
 default model applies. The system prompt is
 the remote, Git and question parts a handoff appends (`libs/domain/prompts/`, which the app and the poller compile in),
-the poller's own `apps/gateway/prompts/swf.system-prompt.md` with the issue's workflow, the repository's services and
+the poller's own `apps/gateway/software-factory/0-system-prompt.md` with the issue's workflow, the repository's services and
 its `hunt.agent.md`; the parts Hunt takes from its user's settings (response style, guardrail offer, diagram language)
-do not exist on the gateway. The poller then sends the issue with all its comments as the first prompt through the
-relay and disconnects; the relay runs the turn without a client. The workflow has eight steps: read the issue and the
-repository's guardrails (README, CLAUDE.md, rules, skills, ADRs, `hunt.agent.md`); ask every question only a person can
-answer, in the issue's language: put a red question mark and the word for a question back (`❓ RÜCKFRAGE: ` in German) in front of the issue's
-title and replace `swf:running` with `swf:question`, so that GitHub's notification mail carries it in its subject, then
-comment every question at once, starting with the same mark in bold and a mention of the assignees, and end the turn with
-the questions and the marker `<!-- hunt:question -->` (the answer reaches the agent as its next prompt, from a Hunt
-desktop that opened the session, and it takes the label back to `swf:running` and the mark off the title); comment a short implementation plan on the issue and carry
-it out without waiting for approval; then a loop of three steps until a pass finds nothing: implement the plan or the
-last findings, check the change as a developer would locally (build, tests, linters, and for anything the user sees the
-goal in the browser with the Playwright tools) and review the whole diff as a critical reviewer against the issue and
-the guardrails, at most three passes before it asks the assignees with `swf:question`; push the branch, open a pull request with `Closes #<issue>`, the decisions it took and how it checked
-the change, comment its link on the issue and watch the pull request's checks (a failure sends it back into the loop);
-stop the services and tmux windows it started, delete its scratch files, leave the working tree clean and replace
-`swf:running` with `swf:done`. When it cannot finish, it sets `swf:failed` with a comment instead. A setup that fails gets `swf:failed` and a comment with the error;
-its VM stays for inspection.
+do not exist on the gateway.
 
-Every poll also follows the agent of each running session VM the poller is not setting up: it reads the issue and
-records the state its labels report (`running`, `question`, `done`, `failed`; a closed or deleted issue counts as
-`done`) in the VM's metadata `hunt-agent` when it changed, which `sessions.list` reports as `agent` and the desktop
-shows in its lists. While the issue is still labelled `swf:running`, `hunt-ctl status` tells whether the relay's turn
-ended: then the poller reminds the agent once with a prompt that names the three ways out (finish, ask with
-`swf:question`, give up with `swf:failed`), and when the reminded turn ends the same way it replaces `swf:running` with
-`swf:failed` and comments that the VM keeps the session. While the issue is labelled `swf:question`, the poller watches
-it for the answer: a comment by someone other than the app's bot user after the agent's question (the agent comments
-through the app's token, so its question is the bot's latest comment) goes to the agent as a prompt
-(`apps/gateway/prompts/swf-answer.user-prompt.md`) that tells it to take the label back to `swf:running`; a VM that
-stopped meanwhile is started first through the orchestrator, and the next poll delivers the answer. No reminder and no
-answer goes to a session a Hunt desktop is connected to. The reminders and the delivered answers live only in the
-poller's memory, so after a restart a session may be reminded once more or get an answer a second time.
+The poller then drives the session through the **steps of the pipeline**, one prompt per step
+(`apps/gateway/software-factory/`, see its README): `plan`, `implement`, `verify`, `gate`, `pr` are agent steps; `review`,
+`human-review` and `merge` are the poller's own. The agent ends an agent step with a **step result**, one comment on
+the issue that carries `<!-- hunt:step {…} -->` (`libs/domain/src/swf/step-result.utils.ts`); the poller reads it at the next poll,
+moves the label to the next step and, once the relay is idle and no desktop is connected, sends the next step's prompt.
+`plan` reads the issue and the repository's guardrails (README, CLAUDE.md, rules, skills, ADRs, `hunt.agent.md`), asks
+every question only a person can answer and comments the plan with the acceptance criteria. `implement` carries out the
+plan or fixes the findings the prompt names, runs the repository's checks, commits and pushes. `verify` runs hunt.json's
+`checks` and the repository's, verifies every acceptance criterion (in the browser with the Playwright tools for
+anything the user sees) and reads the diff as a reviewer; its findings send the issue back to `implement`, which counts
+as an attempt. `gate` has a subagent with a fresh context judge from the diff, the issue and the repository's rubric (the
+gate step's skill, `swf-gate` by default) whether a person has to review before the merge; `humanReview` stays true once set, and a
+pull request that changes a file matching `swf.humanReviewPaths` of hunt.json sets it too. `pr` opens the pull request
+(`Closes #<issue>`), comments its link and cleans up the VM; the issue moves to `In Review` in its projects, and when a
+person has to review, the pull request gets the label `hunt:human-review`, the issue's assignees (or its author) are
+requested as reviewers and mentioned once. `review` waits for the checks of the head commit and for the verdict of the
+repository's Claude review (`<!-- claude-pr-review:verdict {"headSha","blocking","findings"} -->` at the end of its
+comment): a failing check or blocking findings send the issue back to `implement` with the finding, else it goes on
+to `human-review` (waits for a person's approval; a change request goes back to `implement` with the review's text) or
+`merge` (updates the branch when it is behind the base, squash-merges when GitHub reports it mergeable, sends conflicts
+back to `implement`). After every return to `implement` the pipeline runs `verify` and `gate` again before the pull
+request is reviewed once more; after `MAX_ATTEMPTS` (5) returns the agent is told to ask the people instead
+(`2-implement-escalate.user-prompt.md`). Every agent step has a skill the repository keeps (`.claude/skills/<name>/SKILL.md`)
+and names under `swf.skills` of its hunt.json: the step's prompt tells the agent to invoke it first (the gate step's
+prompt hands it to the judging subagent), and Hunt has no fallback prompt for a missing one; the step's result, labels and questions stay
+Hunt's. A merged pull request ends the pipeline: `swf:done`, `Done` in the projects and a
+comment. A pull request closed without a merge, a missing pull request or an agent that ends a step's turn twice
+without a result (one reminder in between) mark the issue `swf:failed` with a comment; a setup that fails does so too,
+and its VM stays for inspection.
 
-The poller acts on GitHub as a GitHub App (`apps/gateway/src/githubApp.ts`): its App ID and private key come from
+Questions work at every step: the agent puts a red question mark and the word for a question back (`❓ RÜCKFRAGE: ` in
+German) in front of the issue's title and replaces the step's label with `swf:question`, so that GitHub's notification
+mail carries it in its subject, comments every question at once with a mention of the assignees and ends the turn with
+`<!-- hunt:question -->`. While the issue is labelled `swf:question`, the poller watches it for the answer: a comment by
+someone other than the app's bot user after the agent's question goes to the agent as a prompt
+(`answer.user-prompt.md`) that tells it to take the label back to the step; an answer given in a Hunt desktop needs
+none of this. A VM that stopped meanwhile, or one whose step has a prompt pending, is started first through the
+session VM service, and the next poll sends the prompt. No prompt goes to a session a Hunt desktop is connected to. Every
+poll records the state the issue's labels report (the step, `question`, `done`, `failed`; a closed or deleted issue
+counts as `done`) in the VM's metadata `hunt-agent` when it changed, which `sessions.list` reports as `agent` and the
+desktop shows in its lists. Only the delivered answers live in the poller's memory, so after a restart a session may
+get an answer a second time. Sessions started before the pipeline (issues labelled `swf:running`, no record comment)
+are left alone with a warning in the journal.
+
+The target repository takes part with: a `swf` section in hunt.json (`swf.humanReviewPaths` among its settings), the
+skill of every agent step (the gate's holds the rubric for the review necessity), a Claude review workflow that runs on every push and ends its comment with the verdict marker, and a
+required status check that passes a pull request of the poller's bot without the label `hunt:human-review` and any other
+pull request only with a person's approval (app-framework's `review-gate`), in place of a required approval in the
+branch's ruleset. The GitHub App needs `checks: read` to see the check runs of a head commit; without it the review
+step treats the commit as having no checks.
+
+The poller acts on GitHub as a GitHub App (`apps/gateway/src/swf/github-app.client.ts`): its App ID and private key come from
 Secret Manager (`HUNT_SWF_GITHUB_APP_ID`, `HUNT_SWF_GITHUB_APP_KEY`), as do the Claude Code OAuth token its sessions
 run with (`HUNT_SWF_CLAUDE_TOKEN`), the private files of its repositories (`HUNT_SWF_FILES_<owner>_<repo>`) and the
 remote secrets (`HUNT_REMOTE_SECRETS`). The
@@ -1056,11 +1141,11 @@ commits (author `<slug>[bot]`), pushes and pull requests of a poller session sho
 an hour on one repository. None of the key, tokens or files reaches a log line, a comment or a command line;
 `journalctl -u hunt-swf` on the gateway shows one line per decision, Compute Engine call and command on a session VM.
 
-The same service suspends idle session VMs (`apps/gateway/src/idle.ts`): once a minute it lists the running VMs labelled
+The same service suspends idle session VMs (`apps/gateway/src/session-vm/idle-sweeper.service.ts`): once a minute it lists the running VMs labelled
 `hunt-role=session`, runs the idle check of each (`hunt-idle-check --dry-run`, below) over SSH and suspends every VM
 whose check reports `idle` through the Compute Engine API, waiting until Compute Engine has saved the VM's memory. A VM
 that fails (one still booting does not answer over SSH yet, a suspend Compute Engine refuses) is logged once per failure.
-It also deletes forgotten session VMs (`apps/gateway/src/reaper.ts`): once an hour it lists the VMs labelled
+It also deletes forgotten session VMs (`apps/gateway/src/session-vm/reaper.service.ts`): once an hour it lists the VMs labelled
 `hunt-role=session` and deletes, with all its disks, every one that Compute Engine reports as suspended or stopped for
 more than 7 days (`lastSuspendedTimestamp`, `lastStopTimestamp`). Since a session VM is suspended half an hour after the
 agent's, the client's or a preview's last activity, that is a week without anyone touching the session. Right before
@@ -1088,9 +1173,9 @@ works or asked on the issue before its conversation is loaded. Only the button s
 
 The same listing keeps a status channel open to the VM of every remote session it reports running
 (`apps/client/src-tauri/src/session/relay_watch.rs`, `remote/status_channel.rs`): over the VM's shared SSH connection
-Hunt runs the status helper (`apps/session/src/relay/statusHelper.ts`, `sudo -n -u agent … statusHelper.mjs`), which
+Hunt runs the status helper (`apps/session/src/relay/status-helper.main.ts`, `sudo -n -u agent … statusHelper.mjs`), which
 reads the relay's `status.json` every second and reports whether a turn runs and whether the agent waits for an answer
-whenever that changes (`statusReport.ts`), and hands over the annotations of the review widget (above). Hunt stores the report with the session (`remote.relayActivity`), so the
+whenever that changes (`status-report.utils.ts`), and hands over the annotations of the review widget (above). Hunt stores the report with the session (`remote.relayActivity`), so the
 sidebar shows it before the session is opened, and for a suspended VM as last reported, also after a restart of Hunt.
 The helper is neither `hunt-ctl` nor a client of the relay and has no terminal, so it does not count as activity: the
 VM still suspends when idle, which ends the channel, and nothing here starts a VM. A channel that ends is opened again
@@ -1111,7 +1196,7 @@ A remote session keeps its VM, which costs only its disk and its saved memory (a
 off, until it is retrieved or deleted. Hunt records
 when its agent last worked (a prompt it sent, a turn that ended, or the relay's last turn when it connects) and, once
 that is seven days ago, asks in the main window whether to retrieve or delete it
-(`apps/client/src/sessions/StaleRemoteDialog.tsx`); "Later" asks again three days later. A session VM is suspended by
+(`apps/client/src/sessions/remote/StaleRemoteDialog.tsx`); "Later" asks again three days later. A session VM is suspended by
 the gateway after 30 minutes without a running turn, client activity, terminal input or `hunt-ctl` run: its idle check
 (`apps/session/vm/hunt-idle-check`, every minute through `hunt-idle.timer`) decides and the gateway's sweeper (above)
 asks it and suspends; a preview page view or a request other than GET counts too, for at most two hours after the agent
@@ -1134,6 +1219,28 @@ Hunt units set `SyslogIdentifier` to their own name, so no log line repeats it. 
 journal of the Hunt services to Cloud Logging with that identifier as the label `service`, where the steps of a handoff
 show up with `labels.service="hunt-ctl" AND labels."compute.googleapis.com/resource_name"="vm-hunt-s-<short id>"`.
 
+#### Command line (`hunt`)
+
+`hunt` reaches the sessions on VMs from a terminal, whether Hunt runs or not (`apps/client/src-tauri/src/cli/`, built
+as the second binary `hunt-cli` of the app, whose own binary is named `hunt`). *Settings → Updates → Install command
+line tool* links it as `~/.local/bin/hunt` (`platform/cli_install.rs`); `hunt --help` lists the commands. A session is
+named by its ID or a start of it of at least 4 hex digits that no other ID starts with, as `hunt sessions` shows it.
+
+- **`hunt sessions [--json]`**: the stored sessions oldest first, each sub chat below its session, with the VM each
+  runs on or `local`; `--json` prints them as stored.
+- **`hunt vm start|stop|ssh <session>`**: starts the session's VM through the gateway as a connect does (moving it to
+  another zone when its own has no capacity); stops it, refusing while the agent's turn runs unless `--force`; opens a
+  shell on it as a new window of the tmux session `app`, which Hunt's Terminal tab shows too.
+- **`hunt attach <session>`**: a line-based chat with the session's agent through its relay, which serves Hunt
+  meanwhile: shows the last 40 lines of the conversation, sends each line typed as a prompt, shows the agent's text,
+  a line per tool call and the prompts of other clients; Ctrl+C cancels the turn, Ctrl+D quits and leaves the turn
+  running. It starts the relay with the same tokens as Hunt, so a running relay keeps running.
+
+It reads `sessions.json` and `accounts.json` of the app data folder but never writes them, since their lock holds only
+within the app: a VM the gateway moved to another zone is stored by Hunt's next connect. The gateway's project comes
+from the session's `remote.vm.project`, since Hunt's settings live in the webview. Sessions on this Mac are listed
+only. Data goes to stdout, progress and errors to stderr; a usage error exits with 2, any other failure with 1.
+
 &nbsp;
 
 ### 📁 Project layout
@@ -1144,22 +1251,24 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 | Path | Owns |
 | --- | --- |
 | `apps/client/` | Nx project `client`: the desktop app, with the Rust shell in `src-tauri/`, the React UI in `src/`, one HTML page per window and the system-prompt parts and prompts in `prompts/` |
-| `apps/client/src-tauri/src/acp/` | Agent process per session, ACP event forwarding |
-| `apps/client/src-tauri/src/git.rs` | Worktrees, changelists, shelve, revert, commit, push and the commit log |
-| `apps/client/src-tauri/src/github.rs` | Pull requests through `gh` |
+| `apps/client/src-tauri/src/agent/acp/` | Agent process per session, ACP event forwarding |
+| `apps/client/src-tauri/src/git/git.rs` | Worktrees, changelists, shelve, revert, commit, push and the commit log |
+| `apps/client/src-tauri/src/github/github.rs` | Pull requests through `gh` |
 | `apps/client/src-tauri/src/session/` | Session commands, store, attribution, summaries, reviews |
-| `apps/client/src-tauri/src/lsp.rs` | One `tsgo --lsp` process per worktree |
-| `apps/client/src-tauri/src/documents.rs` | The one shared text of every loaded worktree file, for all windows and the language server |
-| `apps/client/src-tauri/src/workspace.rs` | Project tree and file access |
-| `apps/client/src-tauri/src/graph.rs` | Architecture diagram prompts, files and status |
+| `apps/client/src-tauri/src/ide/lsp.rs` | One `tsgo --lsp` process per worktree |
+| `apps/client/src-tauri/src/ide/documents.rs` | The one shared text of every loaded worktree file, for all windows and the language server |
+| `apps/client/src-tauri/src/ide/workspace.rs` | Project tree and file access |
+| `apps/client/src-tauri/src/graph/graph.rs` | Architecture diagram prompts, files and status |
 | `apps/client/src-tauri/src/remote/` | Session VMs, SSH to them, handoff and retrieval of remote sessions, previews, desktops, terminals |
-| `apps/client/src/ipc/` | Every Tauri command, event and shared type |
-| `apps/client/src/state/` | Zustand stores and chat reducers |
-| `apps/client/src/` `chat/`, `desktop/`, `diff/`, `git/`, `ide/`, `graph/`, `guardrails/`, `preview/`, `review/`, `sessions/`, `settings/`, `terminal/` | One folder per tab or window |
+| `apps/client/src/ipc/` | Every Tauri command and event; the types they carry live in the `*.types.ts` of the feature that owns them |
+| `apps/client/src/windows/` | The bootstrap of each native window, whose root runs the hooks of `app/window-bootstrap.hook.ts` the window needs |
+| `apps/client/src/` `chat/`, `desktop/`, `diff/`, `git/`, `ide/`, `graph/`, `guardrails/`, `preview/`, `review/`, `sessions/`, `settings/`, `terminal/` | One folder per tab or window, with its zustand stores (`*.store.ts`; the chat reducers in `chat/chat-reducer.utils.ts`) and the IPC types it owns (`*.types.ts`) |
 | `apps/client/src/ui/` | Primitives shared by every feature |
-| `apps/gateway/` | Nx project `gateway`: the gateway VM's API (`src/api.ts`, `src/orchestrator.ts`, `vm/hunt-api`), issue poller (`src/swf.ts`, its prompts in `prompts/`), wake service (`src/wake.ts`) and systemd units (`vm/systemd/`) |
-| `apps/session/` | Nx project `session`: the relay (`src/relay/`), the preview's review server and widget (`src/review/`), the `hunt.json` services contract (`src/config.ts`), the versions of the agent's tools and the session VM's files and systemd units (`vm/`) |
-| `libs/domain/` | Nx project `domain`: JSON-RPC and NDJSON framing, error messages and the system-prompt parts of remote sessions the apps share |
+| `apps/client/src/common/` | Logic and types several features share: paths, globs, trees, the keymap, changed files, diagram types, relative times |
+| `apps/client/src/editor/` | The Monaco layer: setup, editor options, grammars, semantic tokens, line diffs |
+| `apps/gateway/` | Nx project `gateway`: the gateway VM's API (`src/gateway-api/gateway-api.main.ts`, `src/session-vm/session-vm.service.ts`, `vm/hunt-api`), issue poller (`src/swf/swf.main.ts`, `src/swf/poller.service.ts`, the steps of its pipeline with their prompts in `software-factory/`), wake service (`src/wake/wake.main.ts`) and systemd units (`vm/systemd/`) |
+| `apps/session/` | Nx project `session`: the relay (`src/relay/`), the preview's review server and widget (`src/review/`), the `hunt.json` services contract (`src/session-config/hunt-json.value-object.ts`), the versions of the agent's tools and the session VM's files and systemd units (`vm/`) |
+| `libs/domain/` | Nx project `domain`: the concepts the apps share, one folder each (`session/`: session ID, VM name, repository, branch; `swf/`: steps, step results, workflow labels, pull request state, review verdict; `remote-secrets/`; `gateway-api/`; `review/`), the value-object and domain-model base classes in `model/`, JSON-RPC and NDJSON framing in `shared/` and the system-prompt parts of remote sessions in `prompts/` |
 | `libs/vm/` | Nx project `vm`: `hunt-ctl`, which Hunt and the gateway run on the VMs |
 | `scripts/` | Nx project `scripts`: the build of the VM release artifacts (`buildVmArtifact.ts`) |
 | `docs/adr/` | Earlier architectural decision records, kept as history |
@@ -1178,7 +1287,7 @@ CLAUDE.md, the README or a code comment.
 
 Hunt is released under the [MIT License](LICENSE).
 
-The file icons in `apps/client/src/diff/atomIcons/` are the [Atom Material
+The file icons in `apps/client/src/ui/file-icons/atom-icons/` are the [Atom Material
 Icons](https://github.com/mallowigi/iconGenerator) in pastel colors (MIT, see the `LICENSE` file in that folder).
 Release bundles ship the Claude Agent SDK and the ACP adapter from npm under their own terms:
 `@anthropic-ai/claude-agent-sdk` is © Anthropic PBC and governed by the [Claude Code legal

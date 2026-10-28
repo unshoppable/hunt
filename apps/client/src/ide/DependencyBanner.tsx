@@ -1,6 +1,6 @@
 import { commands } from "../ipc/commands";
-import type { DependencyStatus } from "../ipc/types";
-import { Spinner } from "../ui/icons";
+import type { DependencyStatus } from "../sessions/session.types";
+import { Spinner } from "../ui/Icons";
 
 /**
  * Row above the editor panes while the worktree's `node_modules` is being cloned or installed, or when that

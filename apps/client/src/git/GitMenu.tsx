@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { useDismiss } from "../ui/useDismiss";
+import { useDismiss } from "../ui/dismiss.hook";
 
 /** One entry of a context menu of the Git tab. */
 export type GitMenuEntry<Kind extends string> = {

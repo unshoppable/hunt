@@ -1,4 +1,4 @@
-# Serves the gateway API (apps/gateway/src/api.ts) on /run/hunt-api/api.sock, which only hunt-gw opens: users reach it
+# Serves the gateway API (apps/gateway/src/gateway-api/gateway-api.main.ts) on /run/hunt-api/api.sock, which only hunt-gw opens: users reach it
 # through `hunt-api <method>` over SSH (apps/gateway/vm/hunt-api), which runs the forwarder as hunt-gw through sudo.
 # It creates, starts, stops and deletes session VMs with the gateway's service account and reaches them with
 # `gcloud compute ssh --internal-ip`, whose configuration and key live in the state directory. A reload (after

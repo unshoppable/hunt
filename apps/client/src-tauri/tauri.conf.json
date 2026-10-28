@@ -54,6 +54,7 @@
       "../../../node_modules/playwright-core/": "node_modules/playwright-core/",
       "../scripts/browserMcp.mjs": "apps/client/scripts/browserMcp.mjs",
       "../scripts/eslintRules.mjs": "apps/client/scripts/eslintRules.mjs",
+      "../scripts/huntClient.mjs": "apps/client/scripts/huntClient.mjs",
       "../scripts/planUsage.mjs": "apps/client/scripts/planUsage.mjs",
       "../scripts/prettier.mjs": "apps/client/scripts/prettier.mjs",
       "binaries/licenses/tmux.txt": "licenses/tmux.txt"

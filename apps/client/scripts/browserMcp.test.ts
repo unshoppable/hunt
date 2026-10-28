@@ -10,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 const WRAPPER = fileURLToPath(new URL("./browserMcp.mjs", import.meta.url));
 const SESSION_ID = "6f0c2a52-0b55-4c4e-9d0e-2f8b1f3c7a10";
 const PORT = 9333;
+/** The request the wrapper sends to Hunt's control socket. */
+const OPEN_REQUEST = { type: "openBrowser", session: SESSION_ID };
 /** Long enough for a message the wrapper wrongly lets through to come back from the fake server. */
 const SETTLE_MS = 150;
 
@@ -82,7 +84,7 @@ function startWrapper(environment: Record<string, string> = {}): Wrapper {
   const child = spawn(process.execPath, [WRAPPER, "--port", String(PORT)], {
     env: {
       ...process.env,
-      HUNT_BROWSER_SOCKET: socketPath,
+      HUNT_CONTROL_SOCKET: socketPath,
       HUNT_SESSION_ID: SESSION_ID,
       HUNT_BROWSER_MCP_CLI: join(folder, "fakeServer.mjs"),
       ...environment,
@@ -159,7 +161,7 @@ describe("browserMcp.mjs", () => {
     await until(() => openRequests.length === 1);
     await delay(SETTLE_MS);
 
-    expect(openRequests).toEqual([{ open: SESSION_ID }]);
+    expect(openRequests).toEqual([OPEN_REQUEST]);
     expect(wrapper.pending).toEqual([]);
 
     answerOpen(JSON.stringify({ ok: true }));
@@ -191,7 +193,7 @@ describe("browserMcp.mjs", () => {
     wrapper.send(request(2, "tools/call"));
 
     expect(await wrapper.next()).toEqual(resultOf(2, "tools/call"));
-    expect(openRequests).toEqual([{ open: SESSION_ID }, { open: SESSION_ID }]);
+    expect(openRequests).toEqual([OPEN_REQUEST, OPEN_REQUEST]);
   });
 
   it("answers the tool call with an error when Hunt does not listen on the socket", async () => {

@@ -1,33 +1,38 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { commands } from "../ipc/commands";
-import type { ChangedFile, ChangedFileView, FileDiff, FileVersion, GraphNode } from "../ipc/types";
-import { useHuntStore } from "../state/store";
-import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
-import { useSessionViewStore } from "../state/sessionViews";
-import { useSettingsStore } from "../state/settings";
-import { isOwnChange, otherTouchers, ownerLabel, type ChangeScope } from "./attribution";
-import { ownView } from "./ownChanges";
-import type { OverwriteMark } from "./overwriteMarkers";
-import { sessionMarks } from "../sessions/sessionLabels";
+import type { ChangedFile } from "../common/changes/changed-file.types";
+import type { GraphNode } from "../graph/graph.types";
+import type { ChangedFileView, FileDiff, FileVersion } from "./diff.types";
+import { useHuntStore } from "../sessions/hunt.store";
+import { PaneSeparator, Panel, PersistentGroup } from "../ui/ResizablePanes";
+import { useSessionViewStore } from "../sessions/inspector.store";
+import { useSettingsStore, type ChangelistScope } from "../settings/settings.store";
+import { countByScope, isInScope, otherTouchers, ownerLabel, scopeOwnerIds } from "./attribution.utils";
+import { ownView } from "./own-changes.utils";
+import type { OverwriteMark } from "./overwrite-markers.monaco";
+import { sessionMarks } from "../sessions/session-labels.utils";
 import { ChangeList, type ChangeListTarget } from "./ChangeList";
-import { matchesGlob, splitGlobs } from "./glob";
-import { parseGraph } from "../graph/schema";
-import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
+import { matchesGlob, splitGlobs } from "../common/glob/glob.utils";
+import { parseGraph } from "../graph/schema.utils";
+import { SubChatPopover } from "../chat/sub-chat/SubChatPopover";
+import { useSubChatPopover } from "../chat/sub-chat/sub-chat-popover.hook";
 import { CodeDiffEditor, type CodeDiffEditorHandle } from "./CodeDiffEditor";
-import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
-import { GHOST_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
-import { workspaceFor } from "../ide/documents";
-import { openInEditorWindow } from "../ide/editorWindows";
-import { useDirtyPaths } from "../ide/useDirtyPaths";
-import { selectionChatsFor } from "../ide/selectionChats";
-import { useReviewedPullRequest } from "../review/reviewComments";
-import { confirmDestructive } from "../ui/confirm";
-import { isShortcut, useShortcutLabel } from "../ui/shortcuts";
-import { WebstormIcon } from "../ui/icons";
-import { baseName } from "../ui/path";
+import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../sessions/remote/remote-session.utils";
+import { GHOST_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons.constants";
+import { workspaceFor } from "../ide/documents/documents.service";
+import { openInEditorWindow } from "../ide/editor-window.utils";
+import { useDirtyPaths } from "../ide/documents/dirty-paths.hook";
+import { selectionChatsFor } from "../ide/selection/selection-chats.utils";
+import { useReviewedPullRequest } from "../review/review-comments.hook";
+import { confirmDestructive } from "../ui/confirm.utils";
+import { isShortcut } from "../ui/shortcuts.utils";
+import { useShortcutLabel } from "../ui/shortcut-label.hook";
+import { WebstormIcon } from "../ui/Icons";
+import { baseName } from "../common/path/path.utils";
 import { UnsavedDot } from "../ui/UnsavedDot";
-import { useDismiss } from "../ui/useDismiss";
-import { errorText, useLoad } from "../ui/useLoad";
+import { useDismiss } from "../ui/dismiss.hook";
+import { useLoad } from "../ui/load.hook";
+import { errorText } from "../ui/error-text.utils";
 
 /** Narrowest changelist whose header row and commit row (Commit with its chevron, Shelve, the selection count and Push) still fit. */
 export const CHANGE_LIST_MIN_WIDTH = 240;
@@ -84,13 +89,19 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
       state.sessions.some((candidate) => candidate.id !== sessionId && candidate.worktreePath === session?.worktreePath),
   );
   const [files, setFiles] = useState<ChangedFileView[]>([]);
+  const parentId = session?.parentId ?? null;
+  const workspace = session?.workspace ?? "worktree";
   const scope = useSettingsStore((state) => state.changelistScopes[sessionId] ?? "own");
   const setChangelistScope = useSettingsStore((state) => state.setChangelistScope);
-  const setScope = useCallback((next: ChangeScope) => setChangelistScope(sessionId, next), [setChangelistScope, sessionId]);
+  const setScope = useCallback((next: ChangelistScope) => setChangelistScope(sessionId, next), [setChangelistScope, sessionId]);
+  const ownerIds = useMemo(() => scopeOwnerIds(scope, sessionId, parentId), [scope, sessionId, parentId]);
+  /** The own changes include those of the parent session. */
+  const includesParent = ownerIds.length > 1;
   const scopedFiles = useMemo(() => {
-    if (!isSharedWorktree || scope === "all") return files;
-    return files.filter((file) => isOwnChange(file, sessionId, session?.parentId ?? null, session?.workspace ?? "worktree"));
-  }, [files, scope, isSharedWorktree, sessionId, session?.parentId, session?.workspace]);
+    if (!isSharedWorktree) return files;
+    return files.filter((file) => isInScope(file, scope, sessionId, parentId, workspace));
+  }, [files, scope, isSharedWorktree, sessionId, parentId, workspace]);
+  const scopeCounts = useMemo(() => countByScope(files, sessionId, parentId, workspace), [files, sessionId, parentId, workspace]);
   /** The files in scope minus those matching one of the changelist's hidden globs. */
   const hiddenGlobsText = useSettingsStore((state) => state.changelistHiddenGlobs);
   const visibleFiles = useMemo(() => {
@@ -267,9 +278,8 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     { isEnabled: !!selectedPath && isListLoaded },
   );
 
-  const parentId = session?.parentId ?? null;
   const selectedFile = files.find((file) => file.path === selectedPath);
-  const isOwnView = lineScope === "own" && !!selectedFile && otherTouchers(selectedFile, sessionId, parentId).length > 0;
+  const isOwnView = lineScope === "own" && !!selectedFile && otherTouchers(selectedFile, ownerIds).length > 0;
 
   useLoad(
     () => commands.readFileHistory(sessionId, selectedPath ?? ""),
@@ -281,15 +291,15 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     { isEnabled: isOwnView && !!selectedPath },
   );
 
-  const isOwn = useCallback((id: string | null) => !!id && (id === sessionId || id === parentId), [sessionId, parentId]);
-  /** This session or its parent touched the file, but its loaded history holds none of their versions, e.g. from before it was recorded. */
+  const isOwn = useCallback((id: string | null) => !!id && ownerIds.includes(id), [ownerIds]);
+  /** The owner sessions touched the file, but its loaded history holds none of their versions, e.g. from before it was recorded. */
   const isOwnHistoryMissing =
     isOwnView &&
     history?.path === selectedFile.path &&
     selectedFile.touchedBy.some(isOwn) &&
     !history.versions.some((version) => isOwn(version.sessionId));
   /**
-   * The diff with only the lines this session and its parent changed, once the file's history is loaded. Without their
+   * The diff with only the lines the owner sessions changed, once the file's history is loaded. Without their
    * versions in the history the lines cannot be told apart, so it is the full diff.
    */
   const own = useMemo(() => {
@@ -403,7 +413,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    <PersistentGroup id="hunt-diff" className="h-full min-h-0">
+    <PersistentGroup id="hunt-diff" fillPane="viewer" className="h-full min-h-0">
       <Panel id="files" defaultSize="16%" minSize={CHANGE_LIST_MIN_WIDTH} maxSize={520} className="flex">
       <ChangeList
         sessionId={sessionId}
@@ -411,7 +421,8 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
         isLoading={isListLoading}
         hiddenByGlobsCount={scopedFiles.length - visibleFiles.length}
         reviewRatings={reviewRatings}
-        scope={isSharedWorktree ? { value: scope, hiddenCount: files.length - scopedFiles.length, includesParent: !!session?.parentId, onChange: setScope } : null}
+        scope={isSharedWorktree ? { value: scope, counts: scopeCounts, hasParent: !!parentId, onChange: setScope } : null}
+        ownerIds={ownerIds}
         selectedPath={selectedPath}
         unsavedPaths={unsavedPaths}
         onSelect={selectFile}
@@ -483,19 +494,19 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
         {error ? <p className="border-b border-(--line) px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
         {isOwnHistoryMissing ? (
           <p className="border-b border-(--line) px-3 py-2 text-[13px] text-neutral-400">
-            {parentId ? "This session or its parent" : "This session"} changed this file before Hunt recorded edits line by line, so this shows the
+            {includesParent ? "This session or its parent" : "This session"} changed this file before Hunt recorded edits line by line, so this shows the
             changes of all sessions.
           </p>
         ) : null}
         <div data-ide-root="" className="relative min-h-0 flex-1 bg-(--diff-bg)">
-          {selectedFile && otherTouchers(selectedFile, sessionId, parentId).length ? (
+          {selectedFile && otherTouchers(selectedFile, ownerIds).length ? (
             <div className="absolute top-2 right-6 z-10 flex gap-0.5 rounded-md border border-neutral-600 bg-(--surface-inset) p-0.5 text-[13px] shadow-lg shadow-black/40">
               <button
                 type="button"
                 disabled={isDirty}
                 onClick={() => setLineScope("own")}
                 className={`${TAB_BUTTON_SM} ${lineScope === "own" ? TAB_ACTIVE : TAB_INACTIVE} disabled:opacity-50`}
-                title={isDirty ? "Save or discard your edits first" : `Show only the lines ${parentId ? "this session and its parent" : "this session"} changed (read-only)`}
+                title={isDirty ? "Save or discard your edits first" : `Show only the lines ${includesParent ? "this session and its parent" : "this session"} changed (read-only)`}
               >
                 Own
               </button>
@@ -512,7 +523,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
           {isOwnView && !ownDiff ? (
             <p className="p-3 text-[13px] text-neutral-500">Loading the history of this file…</p>
           ) : ownDiff && ownDiff.newContent === (ownDiff.oldContent ?? "") ? (
-            <p className="p-3 text-[13px] text-neutral-500">{parentId ? "This session and its parent did not change this file." : "This session did not change this file."}</p>
+            <p className="p-3 text-[13px] text-neutral-500">{includesParent ? "This session and its parent did not change this file." : "This session did not change this file."}</p>
           ) : shownDiff ? (
             <CodeDiffEditor
               key={`${sessionId}:${shownDiff.path}:${isOwnView ? "own" : "all"}`}
@@ -546,7 +557,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
                 : scopedFiles.length
                   ? "Every change is hidden by the changelist's file filter."
                   : files.length
-                    ? session?.parentId
+                    ? includesParent
                       ? "No changes by this session or its parent."
                       : "No changes by this session."
                     : "No changes."}

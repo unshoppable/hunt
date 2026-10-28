@@ -1,9 +1,10 @@
 // Prints the claude.ai plan rate limits (5-hour, weekly, weekly per model) as JSON on stdout. With an account token in
 // CLAUDE_CODE_OAUTH_TOKEN it reads the usage endpoint directly, since the Agent SDK turns its 429 answer into "no plan
-// limits" and drops `retry-after`. While that endpoint refuses reads, a one-token request to PROBE_MODEL reads the
-// limits from the `anthropic-ratelimit-unified-*` response headers instead; only when that fails too it prints
-// `{"retryAfterSeconds":n}`. The local login goes through the SDK, which refreshes its token: it opens a Claude Code
-// session without sending a prompt, so the query costs no tokens. Spawned by `get_plan_usage` in plan_usage.rs.
+// limits" and drops `retry-after`. When that endpoint refuses a read (429 for too many requests, 403 for a token
+// without the `user:profile` scope), a one-token request to PROBE_MODEL reads the limits from the
+// `anthropic-ratelimit-unified-*` response headers instead; when that fails too, a 429 prints `{"retryAfterSeconds":n}`
+// and any other refusal fails. The local login goes through the SDK, which refreshes its token: it opens a Claude Code
+// session without sending a prompt, so the query costs no tokens. Spawned by `get_plan_usage` in agent/plan_usage.rs.
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
@@ -28,16 +29,16 @@ async function readWithToken(token) {
     headers: { Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" },
     signal: AbortSignal.timeout(10_000),
   });
-  if (response.status === 429) {
-    try {
-      return await readFromHeaders(token);
-    } catch (error) {
-      process.stderr.write(`header probe failed: ${error?.message ?? error}`);
-      return { retryAfterSeconds: Number(response.headers.get("retry-after")) || DEFAULT_RETRY_AFTER_SECONDS };
-    }
+  if (response.ok) return { subscriptionType: null, rateLimitsAvailable: true, rateLimits: await response.json() };
+  const refusal = `usage endpoint answered ${response.status}: ${(await response.text()).slice(0, 300)}`;
+  try {
+    return await readFromHeaders(token);
+  } catch (error) {
+    const probeFailure = `header probe failed: ${error?.message ?? error}`;
+    if (response.status !== 429) throw new Error(`${refusal}; ${probeFailure}`);
+    process.stderr.write(probeFailure);
+    return { retryAfterSeconds: Number(response.headers.get("retry-after")) || DEFAULT_RETRY_AFTER_SECONDS };
   }
-  if (!response.ok) throw new Error(`usage endpoint answered ${response.status}: ${(await response.text()).slice(0, 300)}`);
-  return { subscriptionType: null, rateLimitsAvailable: true, rateLimits: await response.json() };
 }
 
 /** Reads the limits from the rate-limit headers of a one-token request, in the usage endpoint's shape. */

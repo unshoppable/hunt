@@ -4,6 +4,8 @@ interface AgentButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>,
   ref?: Ref<HTMLButtonElement>;
   /** Lets the button's glow breathe while the agent it stands for is running a turn. */
   isBusy?: boolean;
+  /** Rings the button in mint while its agent has a reply the user has not looked at yet; a running turn's glow wins. */
+  hasUnseenReply?: boolean;
   /** Edge length of the square surface in px. */
   size?: number;
   /** Edge length of the sparkle in px. */
@@ -17,10 +19,11 @@ interface AgentButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>,
  * Square button with the agent sparkle (the `.hunt-agent-button` of index.css), the control that opens or shows the
  * agent's chat about a file or selection; callers pass `title` and `aria-label`, since the optional label may be hidden.
  */
-export function AgentButton({ isBusy = false, size = 22, sparkleSize = 15, label, labelClassName = "", className = "", style, ...props }: AgentButtonProps) {
+export function AgentButton({ isBusy = false, hasUnseenReply = false, size = 22, sparkleSize = 15, label, labelClassName = "", className = "", style, ...props }: AgentButtonProps) {
   const sizing = { "--agent-button-size": `${size}px`, "--agent-sparkle-size": `${sparkleSize}px`, ...style } as CSSProperties;
+  const stateClass = isBusy ? "hunt-agent-button-busy" : hasUnseenReply ? "hunt-agent-button-unseen" : "";
   return (
-    <button type="button" className={`hunt-agent-button ${label ? "hunt-agent-button-labelled" : ""} ${isBusy ? "hunt-agent-button-busy" : ""} ${className}`} style={sizing} {...props}>
+    <button type="button" className={`hunt-agent-button ${label ? "hunt-agent-button-labelled" : ""} ${stateClass} ${className}`} style={sizing} {...props}>
       {label ? <span className={`hunt-agent-button-label ${labelClassName}`}>{label}</span> : null}
     </button>
   );

@@ -1,7 +1,7 @@
 /**
- * Bundles the review widget (`apps/session/src/review/widget.ts`) into one minified browser script. The VM artifact
- * ships it as `session/review.js` (`buildVmArtifact.ts`); the desktop app compiles it in and injects it into every page
- * of a local session's Chrome (`nx run client:review-widget` writes `apps/client/src-tauri/resources/review.js`).
+ * Bundles the review widget (`apps/session/src/review/review-widget.main.ts`) into one minified browser script. The VM
+ * artifact ships it as `session/review.js` (`buildVmArtifact.ts`); the desktop app compiles it in and injects it into
+ * every page of a local session's Chrome (`nx run client:review-widget` writes `apps/client/src-tauri/resources/review.js`).
  *
  *   node scripts/buildReviewWidget.ts <output file>
  */
@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const WIDGET_ENTRY = "apps/session/src/review/widget.ts";
+const WIDGET_ENTRY = "apps/session/src/review/review-widget.main.ts";
 
 /** A browser script imports nothing but modules of the repository. */
 const relativeOnly: Plugin = {

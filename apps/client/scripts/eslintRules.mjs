@@ -7,7 +7,7 @@
 // blocks without such a rule are left out. Every rule carries its documented description and URL and its origin: ESLint
 // itself ("core"), a plugin installed from a registry ("package"), or a plugin that lives in the repository
 // ("repository"). Prints `{ "error": <first line of the message> }` when the input cannot be read. Spawned by
-// `read_lint_rules` in lint_rules.rs.
+// `read_lint_rules` in ide/lint_rules.rs.
 import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, sep } from "node:path";

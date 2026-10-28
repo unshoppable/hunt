@@ -6,5 +6,5 @@
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["src/review/widget.ts"]
+  "include": ["src/review/review-widget.main.ts"]
 }

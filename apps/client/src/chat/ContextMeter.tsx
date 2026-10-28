@@ -1,4 +1,4 @@
-import type { ContextUsage } from "../state/store";
+import type { ContextUsage } from "./chat.store-slice";
 import { UsageBar } from "../ui/UsageBar";
 
 /** Fill level of the context window as a bar plus `42.3k / 200k (21%)`, shown left of the Guardrail button above the prompt box. */

@@ -22,7 +22,7 @@ pub struct SessionRecord {
     pub worktree_path: PathBuf,
     pub branch: String,
     /// The ref the session was created from. Where its push lands is the upstream of `branch` (`push_target` in
-    /// `session/commands.rs`), not this.
+    /// `session/commands/mod.rs`), not this.
     pub base_ref: String,
     pub base_commit: String,
     pub acp_session_id: Option<String>,
@@ -195,6 +195,10 @@ pub struct SelectionContext {
     /// The chat is about the folder `path` rather than a file; `text` is empty then.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_folder: bool,
+    /// The lines were selected on the original side of a diff, so they number the version before the changes rather
+    /// than the working tree.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_original: bool,
 }
 
 impl SelectionContext {
@@ -208,9 +212,13 @@ impl SelectionContext {
                 task, self.path
             ),
             None => format!(
-                "\n## Selected code\nThe user opened this chat from a selection in `{}` (lines {}-{}, current working-tree version). \
+                "\n## Selected code\nThe user opened this chat from a selection in `{}` (lines {}-{}, {}). \
 Questions refer to this selection unless stated otherwise.\n```\n{}\n```\n",
-                self.path, self.start_line, self.end_line, self.text
+                self.path,
+                self.start_line,
+                self.end_line,
+                if self.is_original { "original side of the diff: the version before the changes" } else { "current working-tree version" },
+                self.text
             ),
         }
     }
@@ -235,20 +243,37 @@ pub fn worktrees_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// The folder of the local sessions' Chromes: the repositories' profiles, the sessions' copies and the control sockets
-/// (see `crate::browser`).
+/// The folder of the local sessions' Chromes: the repositories' profiles and the sessions' copies (see
+/// `crate::agent::browser`).
 pub fn browser_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir(app)?.join("browser"))
 }
 
+/// The folder of the Hunt processes' control sockets (see `crate::platform::control`).
+pub fn control_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join("control"))
+}
+
 fn store_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app_data_dir(app)?.join("sessions.json"))
+    Ok(sessions_file(&app_data_dir(app)?))
+}
+
+/// The `sessions.json` of the app data folder `data_dir`.
+fn sessions_file(data_dir: &Path) -> PathBuf {
+    data_dir.join("sessions.json")
+}
+
+/// Every session stored in the app data folder `data_dir`, for readers outside the app (`crate::cli`). Only the app
+/// writes the file: its lock holds within its own process, and the atomic replace (`Store::save`) is what lets another
+/// process read it.
+pub fn read_sessions(data_dir: &Path) -> Result<Vec<SessionRecord>, String> {
+    Store::at(sessions_file(data_dir)).load()
 }
 
 /// Points every worktree below `from` stored in the `sessions.json` of `data_dir` to the same place below `to`, after
 /// the folder moved there.
 pub fn relocate_worktrees(data_dir: &Path, from: &Path, to: &Path) -> Result<(), String> {
-    let store = Store::at(data_dir.join("sessions.json"));
+    let store = Store::at(sessions_file(data_dir));
     let mut sessions = store.load()?;
     let mut changed = false;
     for session in &mut sessions {

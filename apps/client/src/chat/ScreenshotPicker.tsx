@@ -2,18 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { assetUrl, commands } from "../ipc/commands";
-import type { Screenshot } from "../ipc/types";
-import { PopupModeButton, PopupWindowTitleBar } from "../popup/PopupTitleBar";
-import type { PopupActions } from "../popup/protocol";
-import { useDetachedPopup } from "../popup/useDetachedPopup";
-import { useSettingsStore } from "../state/settings";
-import { useHoverAnchor } from "../ui/hoverAnchor";
-import { CLEAR_BUTTON, GHOST_BUTTON_XS, PRIMARY_BUTTON_XS } from "../ui/buttons";
-import { ImageIcon } from "../ui/icons";
+import type { Screenshot } from "./chat.types";
+import { PopupModeButton, PopupWindowTitleBar } from "../ui/PopupTitleBar";
+import type { PopupActions } from "../ui/popup-protocol.utils";
+import { useDetachedPopup } from "../ui/detached-popup.hook";
+import { useSettingsStore } from "../settings/settings.store";
+import { useHoverAnchor } from "../ui/hover-anchor.hook";
+import { CLEAR_BUTTON, GHOST_BUTTON_XS, PRIMARY_BUTTON_XS } from "../ui/buttons.constants";
+import { ImageIcon } from "../ui/Icons";
 import { Modal } from "../ui/Modal";
-import { errorText, useLoad } from "../ui/useLoad";
-import { usePopupSize } from "../ui/usePopupSize";
-import { useViewportSize } from "../ui/useViewportSize";
+import { useLoad } from "../ui/load.hook";
+import { errorText } from "../ui/error-text.utils";
+import { usePopupSize } from "../ui/popup-size.hook";
+import { useViewportSize } from "../ui/viewport-size.hook";
+import { formatRelativeTime } from "../common/time/relative-time.utils";
 
 const POPOVER_WIDTH = 340;
 const POPOVER_ITEMS = 8;
@@ -26,22 +28,6 @@ const DIALOG_MAX_SHARE = 0.92;
 /** URL the webview can load a screenshot file from (Tauri's asset protocol). */
 export function screenshotUrl(screenshot: Screenshot): string {
   return assetUrl(screenshot.path);
-}
-
-/** `just now`, `5 minutes ago`, `yesterday`, `3 weeks ago`: how long ago `timestamp` (unix milliseconds) was. */
-export function formatRelativeTime(timestamp: number, now = Date.now()): string {
-  const seconds = Math.max(0, Math.round((now - timestamp) / 1000));
-  if (seconds < 60) return "just now";
-  const formatter = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return formatter.format(-minutes, "minute");
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return formatter.format(-hours, "hour");
-  const days = Math.round(hours / 24);
-  if (days < 7) return formatter.format(-days, "day");
-  if (days < 30) return formatter.format(-Math.round(days / 7), "week");
-  if (days < 365) return formatter.format(-Math.round(days / 30), "month");
-  return formatter.format(-Math.round(days / 365), "year");
 }
 
 /** The screenshot folder's images, loaded afresh each time `isActive` turns true, so new screenshots show up. */
@@ -182,7 +168,7 @@ function ScreenshotDialog(props: ScreenshotChooserProps) {
   );
 }
 
-/** What the screenshot window shows (see popup/protocol.ts): nothing but itself, it loads the screenshots on its own. */
+/** What the screenshot window shows (see ui/popup-protocol.utils.ts): nothing but itself, it loads the screenshots on its own. */
 export type ScreenshotsContent = Record<string, never>;
 
 const SCREENSHOTS_CONTENT: ScreenshotsContent = {};

@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from "react";
-import type { SelectionContext } from "../ipc/types";
-import { CodeBlock } from "../code/CodeBlock";
-import { monacoLanguage } from "../diff/monaco";
-import { ChevronIcon } from "../ui/icons";
-import type { FileLocation } from "./changeReferences";
+import type { SelectionContext } from "../editor/selection-context.types";
+import { CodeBlock } from "../editor/CodeBlock";
+import { monacoLanguage } from "../editor/language-id.utils";
+import { ChevronIcon } from "../ui/Icons";
+import { Collapsible } from "../ui/Collapsible";
+import type { FileLocation } from "./change-references.utils";
 
 /** `L3-L9` label of a selection's lines. */
 export function describeLines(selection: Pick<FileLocation, "startLine" | "endLine">): string {
@@ -93,7 +94,7 @@ function CollapsibleCard({ kind, summary, isInitiallyOpen, children }: { kind: s
         </button>
         {summary}
       </div>
-      {isExpanded ? children : null}
+      <Collapsible isOpen={isExpanded}>{children}</Collapsible>
     </div>
   );
 }

@@ -1,7 +1,7 @@
-import type { Description, Tone } from "../preview/services";
+import type { Description, Tone } from "../preview/preview-services.utils";
 import { SessionMark } from "../sessions/SessionMark";
-import { TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons";
-import { CloseIcon } from "../ui/icons";
+import { TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons.constants";
+import { CloseIcon } from "../ui/Icons";
 
 const TONE_DOT: Record<Tone, string> = {
   ok: "bg-green-400",

@@ -1,14 +1,14 @@
 import { useMemo, useState } from "react";
-import { PopupModeButton, PopupWindowTitleBar } from "../popup/PopupTitleBar";
-import { useDetachedPopup } from "../popup/useDetachedPopup";
-import { useSettingsStore } from "../state/settings";
+import { PopupModeButton, PopupWindowTitleBar } from "../ui/PopupTitleBar";
+import { useDetachedPopup } from "../ui/detached-popup.hook";
+import { useSettingsStore } from "../settings/settings.store";
 import { Modal } from "../ui/Modal";
-import { useDialogSize } from "../ui/useDialogSize";
+import { useDialogSize } from "../ui/dialog-size.hook";
 
 /**
  * Images of a chat message or tool result as a row of thumbnails; a click on one shows it full size, fitted into a
- * dialog the user resizes by dragging its edges or into a window of its own (see popup/useDetachedPopup.ts). `urls`
- * are asset URLs of screenshots the user attached or `data:` URLs that `imageDataUrl` (chat/imageData.ts) accepted;
+ * dialog the user resizes by dragging its edges or into a window of its own (see ui/detached-popup.hook.ts). `urls`
+ * are asset URLs of screenshots the user attached or `data:` URLs that `imageDataUrl` (chat/image-data.utils.ts) accepted;
  * they are only ever loaded by an `<img>`.
  */
 export function ChatImages({ urls, className = "" }: { urls: string[]; className?: string }) {
@@ -37,7 +37,7 @@ export function ChatImages({ urls, className = "" }: { urls: string[]; className
   );
 }
 
-/** What the image window shows (see popup/protocol.ts). */
+/** What the image window shows (see ui/popup-protocol.utils.ts). */
 export type ImageContent = { url: string };
 
 function ImageDialog({ url, onClose }: { url: string; onClose: () => void }) {

@@ -1,0 +1,359 @@
+import { describe, expect, it } from "vitest";
+import {
+  createCompute,
+  describeComputeCall,
+  isStockout,
+  mergeMetadataItems,
+  parseDisk,
+  parseInstance,
+  parseOperation,
+  regionOf,
+} from "./compute-engine.client.ts";
+import { fakeFetch, fixedMetadata } from "./gcp.fixtures.ts";
+
+const PROJECT_URL = "https://compute.googleapis.com/compute/v1/projects/medconomy-hunt";
+const ZONE_URL = `${PROJECT_URL}/zones/europe-west3-a`;
+const AGGREGATED_URL = `${PROJECT_URL}/aggregated/instances?returnPartialSuccess=true`;
+
+describe("createCompute", () => {
+  it("lists the VMs of a label in every zone, page by page, and keeps only those that carry it", async () => {
+    const filter = encodeURIComponent('labels.hunt-origin = "swf"');
+    const { fetchImpl, requests } = fakeFetch({
+      [`GET ${AGGREGATED_URL}&filter=${filter}`]: () =>
+        Response.json({
+          items: { "zones/europe-west3-a": { instances: [{ name: "vm-hunt-s-00000001", status: "RUNNING", labels: { "hunt-origin": "swf" } }] } },
+          nextPageToken: "p2",
+        }),
+      [`GET ${AGGREGATED_URL}&filter=${filter}&pageToken=p2`]: () =>
+        Response.json({
+          items: {
+            "zones/europe-west3-b": {
+              instances: [{ name: "vm-hunt-s-00000002", status: "TERMINATED", labels: { "hunt-origin": "swf" } }, { name: "vm-hunt-medc", status: "RUNNING" }],
+            },
+          },
+        }),
+    });
+
+    const vms = await createCompute(fixedMetadata, fetchImpl).listByLabel("hunt-origin", "swf");
+    expect(vms.map((vm) => `${vm.name} ${vm.status}`)).toEqual(["vm-hunt-s-00000001 RUNNING", "vm-hunt-s-00000002 TERMINATED"]);
+    expect(requests.every((request) => request.authorization === "Bearer token-1")).toBe(true);
+  });
+
+  it("finds a VM by name in whichever zone holds it", async () => {
+    const filter = encodeURIComponent('name = "vm-hunt-s-ab12cd34"');
+    const { fetchImpl } = fakeFetch({
+      [`GET ${AGGREGATED_URL}&filter=${filter}`]: () =>
+        Response.json({ items: { "zones/europe-west3-c": { instances: [{ name: "vm-hunt-s-ab12cd34", zone: "projects/p/zones/europe-west3-c" }] } } }),
+      [`GET ${AGGREGATED_URL}&filter=${encodeURIComponent('name = "vm-hunt-s-00000000"')}`]: () =>
+        Response.json({ items: { "zones/europe-west3-a": { warning: { code: "NO_RESULTS_ON_PAGE" } } } }),
+    });
+    const compute = createCompute(fixedMetadata, fetchImpl);
+
+    expect((await compute.locate("vm-hunt-s-ab12cd34"))?.zone).toBe("europe-west3-c");
+    expect(await compute.locate("vm-hunt-s-00000000")).toBeNull();
+  });
+
+  it("creates a VM from the global instance template in the given zone and returns its operation", async () => {
+    const template = encodeURIComponent("projects/medconomy-hunt/global/instanceTemplates/tpl-hunt-session");
+    const { fetchImpl, requests } = fakeFetch({
+      [`POST ${ZONE_URL}/instances?sourceInstanceTemplate=${template}`]: () => Response.json({ kind: "compute#operation", name: "operation-1" }),
+      [`POST ${PROJECT_URL}/zones/europe-west3-b/instances?sourceInstanceTemplate=${template}`]: () =>
+        Response.json({ kind: "compute#operation", name: "operation-2", zone: `${PROJECT_URL}/zones/europe-west3-b` }),
+    });
+    const compute = createCompute(fixedMetadata, fetchImpl);
+    const labels = { "hunt-role": "session", "hunt-session": "ab12cd34", "hunt-origin": "swf" };
+
+    expect(await compute.insert("europe-west3-a", { name: "vm-hunt-s-ab12cd34", template: "tpl-hunt-session", labels, machineType: null })).toEqual({
+      name: "operation-1",
+      zone: "europe-west3-a",
+    });
+    expect(await compute.insert("europe-west3-b", { name: "vm-hunt-s-ab12cd34", template: "tpl-hunt-session", labels, machineType: "c4d-standard-8" })).toEqual({
+      name: "operation-2",
+      zone: "europe-west3-b",
+    });
+    expect(requests.map((request) => request.body)).toEqual([
+      { name: "vm-hunt-s-ab12cd34", labels },
+      { name: "vm-hunt-s-ab12cd34", labels, machineType: "zones/europe-west3-b/machineTypes/c4d-standard-8" },
+    ]);
+  });
+
+  it("waits for an operation through its wait endpoint and reads the state and the error of a finished one", async () => {
+    const { fetchImpl } = fakeFetch({
+      [`POST ${ZONE_URL}/operations/operation-1/wait`]: () => Response.json({ name: "operation-1", status: "RUNNING" }),
+      [`POST ${ZONE_URL}/operations/operation-2/wait`]: () =>
+        Response.json({ name: "operation-2", status: "DONE", error: { errors: [{ code: "QUOTA_EXCEEDED", message: "Quota exceeded." }] } }),
+    });
+    const compute = createCompute(fixedMetadata, fetchImpl);
+
+    expect(await compute.waitOperation({ name: "operation-1", zone: "europe-west3-a" })).toEqual({ isDone: false, error: null });
+    expect(await compute.waitOperation({ name: "operation-2", zone: "europe-west3-a" })).toEqual({
+      isDone: true,
+      error: { code: "QUOTA_EXCEEDED", message: "Quota exceeded.", machineType: null },
+    });
+  });
+
+  it("lists the VMs of a filter in every zone of the project, page by page", async () => {
+    const filter = encodeURIComponent('labels.hunt-role = "session"');
+    const { fetchImpl } = fakeFetch({
+      [`GET ${AGGREGATED_URL}&filter=${filter}`]: () =>
+        Response.json({
+          items: {
+            "zones/europe-west3-a": { instances: [{ name: "vm-hunt-s-00000001", zone: "projects/p/zones/europe-west3-a" }] },
+            "zones/us-central1-a": { warning: { code: "NO_RESULTS_ON_PAGE" } },
+          },
+          nextPageToken: "p2",
+        }),
+      [`GET ${AGGREGATED_URL}&filter=${filter}&pageToken=p2`]: () =>
+        Response.json({ items: { "zones/europe-west1-c": { instances: [{ name: "vm-hunt-s-00000002", zone: "projects/p/zones/europe-west1-c" }] } } }),
+    });
+
+    const vms = await createCompute(fixedMetadata, fetchImpl).list('labels.hunt-role = "session"');
+    expect(vms.map((vm) => `${vm.name} ${vm.zone}`)).toEqual(["vm-hunt-s-00000001 europe-west3-a", "vm-hunt-s-00000002 europe-west1-c"]);
+  });
+
+  it("starts, resumes, suspends, stops and deletes a VM in its zone and marks its disks for deletion", async () => {
+    const instance = `${PROJECT_URL}/zones/europe-west3-b/instances/vm-hunt-s-ab12cd34`;
+    const { fetchImpl, requests } = fakeFetch({
+      [`POST ${instance}/start`]: () => Response.json({ kind: "compute#operation", name: "operation-3" }),
+      [`POST ${instance}/resume`]: () => new Response("denied", { status: 403 }),
+      [`POST ${instance}/suspend`]: () => Response.json({ kind: "compute#operation", name: "operation-4" }),
+      [`POST ${instance}/stop`]: () => Response.json({ kind: "compute#operation" }),
+      [`POST ${instance}/setDiskAutoDelete?autoDelete=true&deviceName=data%201`]: () => Response.json({ kind: "compute#operation" }),
+      [`DELETE ${instance}`]: () => Response.json({ kind: "compute#operation" }),
+    });
+    const compute = createCompute(fixedMetadata, fetchImpl);
+    const zone = "europe-west3-b";
+
+    expect(await compute.start(zone, "vm-hunt-s-ab12cd34")).toEqual({ name: "operation-3", zone });
+    await expect(compute.resume(zone, "vm-hunt-s-ab12cd34")).rejects.toThrow("failed to resume vm-hunt-s-ab12cd34: HTTP 403 denied");
+    expect(await compute.suspend(zone, "vm-hunt-s-ab12cd34")).toEqual({ name: "operation-4", zone });
+    await compute.stop(zone, "vm-hunt-s-ab12cd34");
+    await compute.setDiskAutoDelete(zone, "vm-hunt-s-ab12cd34", "data 1");
+    await compute.delete(zone, "vm-hunt-s-ab12cd34");
+    expect(requests.map((request) => `${request.method} ${request.url.slice(instance.length)} ${request.authorization}`)).toEqual([
+      "POST /start Bearer token-1",
+      "POST /resume Bearer token-1",
+      "POST /suspend Bearer token-1",
+      "POST /stop Bearer token-1",
+      "POST /setDiskAutoDelete?autoDelete=true&deviceName=data%201 Bearer token-1",
+      "DELETE  Bearer token-1",
+    ]);
+  });
+
+  it("creates a moved VM from the template with a boot disk from a snapshot and the metadata given", async () => {
+    const template = encodeURIComponent("projects/medconomy-hunt/global/instanceTemplates/tpl-hunt-session");
+    const { fetchImpl, requests } = fakeFetch({
+      [`POST ${ZONE_URL}/instances?sourceInstanceTemplate=${template}`]: () => Response.json({ kind: "compute#operation", name: "operation-1" }),
+    });
+    const compute = createCompute(fixedMetadata, fetchImpl);
+    const labels = { "hunt-role": "session", "hunt-session": "ab12cd34", "hunt-origin": "desktop" };
+    const metadata = [{ key: "startup-script", value: "#!/bin/sh" }, { key: "hunt-session-id", value: "ab12cd34-0000-4000-8000-000000000001" }];
+
+    const bootDisk = { snapshot: "vm-hunt-s-ab12cd34-move", type: "hyperdisk-balanced", sizeGb: 50 };
+    await compute.insert("europe-west3-a", { name: "vm-hunt-s-ab12cd34", template: "tpl-hunt-session", labels, machineType: "c4d-standard-8", metadata, bootDisk });
+    expect(requests[0].body).toEqual({
+      name: "vm-hunt-s-ab12cd34",
+      labels,
+      machineType: "zones/europe-west3-a/machineTypes/c4d-standard-8",
+      metadata: { items: metadata },
+      disks: [
+        {
+          boot: true,
+          autoDelete: true,
+          deviceName: "persistent-disk-0",
+          initializeParams: {
+            diskName: "vm-hunt-s-ab12cd34",
+            sourceSnapshot: "global/snapshots/vm-hunt-s-ab12cd34-move",
+            diskType: "zones/europe-west3-a/diskTypes/hyperdisk-balanced",
+            diskSizeGb: "50",
+          },
+        },
+      ],
+    });
+  });
+
+  it("renames a VM, reads and snapshots disks and deletes snapshots, with global operations for the latter", async () => {
+    const instance = `${ZONE_URL}/instances/vm-hunt-s-ab12cd34`;
+    const disk = `${ZONE_URL}/disks/vm-hunt-s-ab12cd34`;
+    const { fetchImpl, requests } = fakeFetch({
+      [`POST ${instance}/setName`]: () => Response.json({ kind: "compute#operation", name: "operation-1" }),
+      [`GET ${disk}`]: () => Response.json({ name: "vm-hunt-s-ab12cd34", type: `${ZONE_URL}/diskTypes/hyperdisk-balanced`, sizeGb: "50" }),
+      [`GET ${ZONE_URL}/disks/vm-hunt-s-00000000`]: () => new Response("not found", { status: 404 }),
+      [`POST ${disk}/createSnapshot`]: () => Response.json({ kind: "compute#operation", name: "operation-2" }),
+      [`DELETE ${PROJECT_URL}/global/snapshots/vm-hunt-s-ab12cd34-move`]: () => Response.json({ kind: "compute#operation", name: "operation-5" }),
+      [`DELETE ${PROJECT_URL}/global/snapshots/vm-hunt-s-00000000-move`]: () => new Response("not found", { status: 404 }),
+      [`POST ${PROJECT_URL}/global/operations/operation-5/wait`]: () => Response.json({ name: "operation-5", status: "DONE" }),
+    });
+    const compute = createCompute(fixedMetadata, fetchImpl);
+    const zone = "europe-west3-a";
+
+    expect(await compute.setName(zone, "vm-hunt-s-ab12cd34", "vm-hunt-s-ab12cd34-moving")).toEqual({ name: "operation-1", zone });
+    expect(await compute.getDisk(zone, "vm-hunt-s-ab12cd34")).toEqual({ type: "hyperdisk-balanced", sizeGb: 50 });
+    await expect(compute.getDisk(zone, "vm-hunt-s-00000000")).rejects.toThrow("failed to look up the disk vm-hunt-s-00000000 in europe-west3-a: HTTP 404 not found");
+    expect(await compute.createSnapshot(zone, "vm-hunt-s-ab12cd34", "vm-hunt-s-ab12cd34-move")).toEqual({ name: "operation-2", zone });
+    const deletion = await compute.deleteSnapshot("vm-hunt-s-ab12cd34-move");
+    expect(deletion).toEqual({ name: "operation-5", zone: null });
+    expect(await compute.waitOperation(deletion)).toEqual({ isDone: true, error: null });
+    await expect(compute.deleteSnapshot("vm-hunt-s-00000000-move")).rejects.toThrow("failed to delete the snapshot vm-hunt-s-00000000-move: HTTP 404 not found");
+    expect(requests.slice(0, 4).map((request) => request.body)).toEqual([
+      { name: "vm-hunt-s-ab12cd34-moving", currentName: "vm-hunt-s-ab12cd34" },
+      undefined,
+      undefined,
+      { name: "vm-hunt-s-ab12cd34-move", storageLocations: ["europe-west3"] },
+    ]);
+    expect(describeComputeCall(`${PROJECT_URL}/global/snapshots/vm-hunt-s-ab12cd34-move`)).toBe("global/snapshots/vm-hunt-s-ab12cd34-move");
+  });
+
+  it("reads an instance, answers null for a missing one and sets metadata with the fingerprint", async () => {
+    const { fetchImpl, requests } = fakeFetch({
+      [`GET ${ZONE_URL}/instances/vm-hunt-s-ab12cd34`]: () =>
+        Response.json({ name: "vm-hunt-s-ab12cd34", status: "PROVISIONING", metadata: { fingerprint: "fp1", items: [{ key: "startup-script", value: "#!/bin/sh" }] } }),
+      [`GET ${ZONE_URL}/instances/vm-hunt-s-00000000`]: () => new Response("not found", { status: 404 }),
+      [`POST ${ZONE_URL}/instances/vm-hunt-s-ab12cd34/setMetadata`]: () => new Response("Supplied fingerprint does not match", { status: 412 }),
+    });
+    const compute = createCompute(fixedMetadata, fetchImpl);
+
+    const instance = await compute.get("europe-west3-a", "vm-hunt-s-ab12cd34");
+    expect(instance?.metadata).toEqual({ fingerprint: "fp1", items: [{ key: "startup-script", value: "#!/bin/sh" }] });
+    expect(await compute.get("europe-west3-a", "vm-hunt-s-00000000")).toBeNull();
+    await expect(compute.setMetadata("europe-west3-a", "vm-hunt-s-ab12cd34", "fp1", [])).rejects.toThrow(
+      "failed to set the metadata of vm-hunt-s-ab12cd34: HTTP 412",
+    );
+    expect(requests.at(-1)?.body).toEqual({ fingerprint: "fp1", items: [] });
+  });
+});
+
+describe("operations", () => {
+  it("parses a stockout with the machine type it names, and falls back to the zone of the call", () => {
+    const operation = parseOperation(
+      {
+        name: "operation-1792005009343",
+        status: "DONE",
+        error: {
+          errors: [
+            {
+              code: "ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS",
+              message: "The zone 'projects/medconomy-hunt/zones/europe-west1-c' does not have enough resources available to fulfill the request.",
+              errorDetails: [
+                { help: { links: [] } },
+                { errorInfo: { domain: "compute.googleapis.com", metadatas: { vmType: "c4d-standard-8", zone: "europe-west1-c" }, reason: "stockout" } },
+              ],
+            },
+          ],
+        },
+      },
+      "europe-west1-c",
+    );
+    expect(operation).toEqual({
+      name: "operation-1792005009343",
+      zone: "europe-west1-c",
+      isDone: true,
+      error: {
+        code: "ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS",
+        message: "The zone 'projects/medconomy-hunt/zones/europe-west1-c' does not have enough resources available to fulfill the request.",
+        machineType: "c4d-standard-8",
+      },
+    });
+    expect(isStockout(operation.error!.code)).toBe(true);
+    expect(isStockout("failed to create vm: HTTP 503 ZONE_RESOURCE_POOL_EXHAUSTED")).toBe(true);
+    expect(isStockout("QUOTA_EXCEEDED")).toBe(false);
+    expect(parseOperation({ status: "PENDING" }, "europe-west1-b")).toEqual({ name: "", zone: "europe-west1-b", isDone: false, error: null });
+  });
+});
+
+describe("Compute Engine log", () => {
+  it("names the zone, resource and filter of a call without base and project", () => {
+    expect(describeComputeCall(`${ZONE_URL}/instances/vm-hunt-s-ab12cd34/start`)).toBe("zones/europe-west3-a/instances/vm-hunt-s-ab12cd34/start");
+    expect(describeComputeCall(`${ZONE_URL}/instances?filter=${encodeURIComponent('labels.hunt-origin = "swf"')}&pageToken=p2`)).toBe(
+      'zones/europe-west3-a/instances, filter labels.hunt-origin = "swf"',
+    );
+    expect(
+      describeComputeCall(
+        `https://compute.googleapis.com/compute/v1/projects/medconomy-hunt/aggregated/instances?returnPartialSuccess=true&filter=${encodeURIComponent("labels.a = b")}`,
+      ),
+    ).toBe("aggregated/instances, filter labels.a = b");
+  });
+
+  it("logs every call with its HTTP status or why it failed, and the duration", async () => {
+    const instance = `${ZONE_URL}/instances/vm-hunt-s-ab12cd34`;
+    const { fetchImpl } = fakeFetch({
+      [`GET ${instance}`]: () => new Response("not found", { status: 404 }),
+      [`POST ${instance}/start`]: () => Response.json({ kind: "compute#operation" }),
+    });
+    const lines: string[] = [];
+    const compute = createCompute(fixedMetadata, fetchImpl, (message) => lines.push(message));
+
+    expect(await compute.get("europe-west3-a", "vm-hunt-s-ab12cd34")).toBeNull();
+    await compute.start("europe-west3-a", "vm-hunt-s-ab12cd34");
+    await expect(compute.stop("europe-west3-a", "vm-hunt-s-ab12cd34")).rejects.toThrow("unexpected request");
+    expect(lines.map((line) => line.replace(/\d+ ms/, "N ms"))).toEqual([
+      "Compute Engine GET zones/europe-west3-a/instances/vm-hunt-s-ab12cd34: HTTP 404 in N ms",
+      "Compute Engine POST zones/europe-west3-a/instances/vm-hunt-s-ab12cd34/start: HTTP 200 in N ms",
+      `Compute Engine POST zones/europe-west3-a/instances/vm-hunt-s-ab12cd34/stop: failed after N ms: unexpected request POST ${instance}/stop`,
+    ]);
+  });
+});
+
+describe("metadata items", () => {
+  it("replaces and adds the session keys and keeps the template's", () => {
+    const items = [
+      { key: "startup-script", value: "#!/bin/sh" },
+      { key: "hunt-title", value: "old" },
+      { key: "enable-oslogin", value: "TRUE" },
+    ];
+    expect(mergeMetadataItems(items, { "hunt-title": "Fix login", "hunt-issue": "12" })).toEqual([
+      { key: "startup-script", value: "#!/bin/sh" },
+      { key: "enable-oslogin", value: "TRUE" },
+      { key: "hunt-title", value: "Fix login" },
+      { key: "hunt-issue", value: "12" },
+    ]);
+  });
+
+  it("parses an instance with missing parts", () => {
+    expect(parseInstance({ name: "vm", labels: { a: "b", c: 1 } })).toEqual({
+      name: "vm",
+      zone: "",
+      status: "",
+      creationTimestamp: "",
+      lastStopTimestamp: "",
+      lastSuspendedTimestamp: "",
+      labels: { a: "b" },
+      metadata: { fingerprint: "", items: [] },
+      disks: [],
+      machineType: "",
+    });
+  });
+
+  it("parses the zone, creation and stop times and disks of an instance", () => {
+    const instance = parseInstance({
+      name: "vm-hunt-s-ab12cd34",
+      zone: "https://www.googleapis.com/compute/v1/projects/medconomy-hunt/zones/europe-west3-a",
+      creationTimestamp: "2026-10-13T01:02:03.456-07:00",
+      lastStopTimestamp: "2026-10-14T01:02:03.456-07:00",
+      metadata: { items: [{ key: "hunt-session-id", value: "ab12cd34-0000-4000-8000-000000000001" }] },
+      machineType: "https://www.googleapis.com/compute/v1/projects/medconomy-hunt/zones/europe-west3-a/machineTypes/c4d-standard-8",
+      disks: [
+        { deviceName: "persistent-disk-0", autoDelete: true, boot: true, source: "https://www.googleapis.com/compute/v1/projects/medconomy-hunt/zones/europe-west3-a/disks/vm-hunt-s-ab12cd34" },
+        { deviceName: "data", autoDelete: false },
+        { autoDelete: true },
+      ],
+    });
+    expect(instance).toMatchObject({
+      zone: "europe-west3-a",
+      creationTimestamp: "2026-10-13T01:02:03.456-07:00",
+      lastStopTimestamp: "2026-10-14T01:02:03.456-07:00",
+      lastSuspendedTimestamp: "",
+      machineType: "c4d-standard-8",
+      disks: [
+        { deviceName: "persistent-disk-0", autoDelete: true, boot: true, source: "vm-hunt-s-ab12cd34" },
+        { deviceName: "data", autoDelete: false, boot: false, source: "" },
+      ],
+    });
+  });
+
+  it("parses a disk's type and size, and a zone's region", () => {
+    expect(parseDisk({ type: `${ZONE_URL}/diskTypes/hyperdisk-balanced`, sizeGb: "50" })).toEqual({ type: "hyperdisk-balanced", sizeGb: 50 });
+    expect(parseDisk({})).toEqual({ type: "", sizeGb: 0 });
+    expect(regionOf("europe-west1-c")).toBe("europe-west1");
+  });
+});

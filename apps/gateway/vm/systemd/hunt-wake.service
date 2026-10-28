@@ -1,4 +1,4 @@
-# Wakes stopped session VMs for their previews (apps/gateway/src/wake.ts): the edge proxy hands every request it cannot
+# Wakes stopped session VMs for their previews (apps/gateway/src/wake/wake.main.ts): the edge proxy hands every request it cannot
 # deliver to a session VM to 127.0.0.1:9180, and the service starts the VM with the gateway's service account, as
 # hunt-gw, the one user next to root that reaches the metadata server (hunt-firewall.service).
 [Unit]

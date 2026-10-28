@@ -1,4 +1,4 @@
-//! The gateway API (`libs/domain/src/gatewayApi.ts`), the control plane of remote sessions: Hunt lists, provisions,
+//! The gateway API (`libs/domain/src/gateway-api/gateway-api.types.ts`), the control plane of remote sessions: Hunt lists, provisions,
 //! starts and deletes session VMs and configures the gateway's poller only through it. A call runs `hunt-api <method>`
 //! over the SSH connection to the gateway with the request as one JSON object on stdin; stdout carries NDJSON events,
 //! `progress` and `log` lines, then one `result` (exit 0) or `error` (exit 1). Hunt passes only session IDs: the gateway
@@ -15,7 +15,8 @@ use uuid::Uuid;
 
 use super::release::PROTOCOL_JSON;
 use super::ssh::Ssh;
-use super::{preview, shell_command, Progress, RemoteStep, StartSteps, VmRef};
+use super::{preview, Progress, RemoteStep, StartSteps, VmRef};
+use crate::platform::shell::shell_command;
 
 #[derive(Deserialize)]
 struct ApiFile {
@@ -67,7 +68,8 @@ pub struct SessionSummary {
     pub issue: Option<u64>,
     /// When the VM was created, RFC 3339.
     pub created_at: String,
-    /// The state of the session's agent as the gateway recorded it: `running`, `question` (waits for an answer), `done`
+    /// The state of the session's agent as the gateway recorded it: the step of the poller's pipeline (`plan`,
+    /// `implement`, `verify`, `gate`, `pr`, `review`, `human-review`, `merge`), `question` (waits for an answer), `done`
     /// or `failed`; empty when unknown.
     #[serde(default)]
     pub agent: String,
@@ -147,7 +149,7 @@ pub struct ProvisionRequest<'a> {
     /// `<owner>/<repo>`.
     pub repo: &'a str,
     pub branch: &'a str,
-    /// One of `libs/domain/src/sessionMachineTypes.ts` for a VM the gateway creates; `None` keeps the template's.
+    /// One of `libs/domain/src/session/session-machine-type.types.ts` for a VM the gateway creates; `None` keeps the template's.
     pub machine_type: Option<&'a str>,
 }
 
@@ -236,6 +238,12 @@ impl GatewayApi {
         Ok(Some(started.vm))
     }
 
+    /// Stops the VM of session `id` unless it is off or shuts down already; fails when the session has no VM.
+    pub async fn stop_vm(&self, id: Uuid) -> Result<(), String> {
+        let _: IgnoredAny = self.call("vms.stop", &json!({ "id": id })).await?;
+        Ok(())
+    }
+
     /// Deletes the VM of session `id` with its disks; a VM that is gone already counts as deleted.
     pub async fn delete_vm(&self, id: Uuid) -> Result<(), String> {
         let _: IgnoredAny = self.call("vms.delete", &json!({ "id": id })).await?;
@@ -261,7 +269,7 @@ impl GatewayApi {
     }
 }
 
-/// Why a call failed: an error the gateway reported, with its code (`libs/domain/src/gatewayApi.ts`), or a failure of
+/// Why a call failed: an error the gateway reported, with its code (`libs/domain/src/gateway-api/gateway-api.types.ts`), or a failure of
 /// the call itself without one. The message explains either.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CallError {

@@ -14,7 +14,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use uuid::Uuid;
 
-use crate::accounts;
+use crate::agent::accounts;
 use crate::graph::{self, DiagramType};
 use crate::session::store::SessionRecord;
 
@@ -68,7 +68,7 @@ pub async fn generate(
     let _claim = RunClaim { runs: &runs, key };
 
     graph::prepare_dir(&record.worktree_path)?;
-    let language = crate::preferences::ai_language(app);
+    let language = crate::platform::preferences::ai_language(app);
     let prompt = graph::refresh_prompt(diagram_type, &language, record.diff_base(), instructions.trim());
     let mut command = Command::new("claude");
     if let Some(token) = accounts::active_token(app).await? {

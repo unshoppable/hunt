@@ -13,7 +13,7 @@ paths:
   `Page.addScriptToEvaluateOnNewDocument` setting `window.__TAURI_INTERNALS__` (plus
   `__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener`); mocked rows need the full `SessionView`/`createEmptyChat()`
   shape, or the tree paints blank. Seed the store through the module URL the page loaded (with its `?t=` after HMR),
-  never a bare `import('/src/state/store.ts')`, which creates a second store. Enable
+  never a bare `import('/src/sessions/hunt.store.ts')`, which creates a second store. Enable
   `Emulation.setFocusEmulationEnabled` for focus-dependent behaviour (quick suggestions, commit on blur).
 - **Input**: Monaco reads EditContext, so click `.view-lines` and send CDP key events with `key`, `code`, `text` and
   `windowsVirtualKeyCode`. Send app shortcuts that Chrome takes itself (⌘R, ⌘E) as in-page `KeyboardEvent`s, and mouse

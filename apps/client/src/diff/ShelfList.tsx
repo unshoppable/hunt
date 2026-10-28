@@ -1,14 +1,16 @@
 import { useState } from "react";
 import { commands } from "../ipc/commands";
-import type { Shelf } from "../ipc/types";
-import { useFileIconUrl } from "./fileIcons";
-import { STATUS_NAME_CLASS } from "./styles";
-import { DANGER, ICON_BUTTON_BASE_SM, SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { ChevronIcon, CloseIcon } from "../ui/icons";
-import { confirmDestructive } from "../ui/confirm";
-import { baseName, dirName } from "../ui/path";
-import { errorText, useLoad } from "../ui/useLoad";
-import { useTreeNavigation } from "../ui/useTreeNavigation";
+import type { Shelf } from "./diff.types";
+import { useFileIconUrl } from "../ui/file-icons/file-icons.hook";
+import { STATUS_NAME_CLASS } from "../ui/styles.constants";
+import { DANGER, ICON_BUTTON_BASE_SM, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { ChevronIcon, CloseIcon } from "../ui/Icons";
+import { Collapsible } from "../ui/Collapsible";
+import { confirmDestructive } from "../ui/confirm.utils";
+import { baseName, dirName } from "../common/path/path.utils";
+import { useLoad } from "../ui/load.hook";
+import { errorText } from "../ui/error-text.utils";
+import { useTreeNavigation } from "../ui/tree-navigation.hook";
 
 /**
  * Shelves of the session with unshelve and delete actions; a shelf opens to list its files. The arrow keys move through
@@ -113,7 +115,7 @@ export function ShelfList({ sessionId, version, onChanged }: { sessionId: string
                   <CloseIcon />
                 </button>
               </div>
-              {isExpanded ? (
+              <Collapsible isOpen={isExpanded}>
                 <ul className="pb-1">
                   {shelf.files.map((file) => (
                     <li
@@ -130,7 +132,7 @@ export function ShelfList({ sessionId, version, onChanged }: { sessionId: string
                     </li>
                   ))}
                 </ul>
-              ) : null}
+              </Collapsible>
             </li>
           );
         })}

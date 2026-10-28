@@ -39,9 +39,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use super::channel::{self, Channel, Content, FileWrite, LinkWrite, RemoteChange};
-use super::shell_command;
 use super::ssh::Ssh;
 use crate::git;
+use crate::platform::shell::shell_command;
 
 /// The rsync the VM runs: as the agent's user, who owns the session's worktree.
 const REMOTE_RSYNC: &str = "sudo -n -u agent rsync";

@@ -3,26 +3,25 @@ import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { emit, emitTo } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useBackendEvents, usePaneStyles, useSettingsSync } from "../app/bootstrap";
 import { ImageWindowContent } from "../chat/ChatImages";
 import { ScreenshotsWindowContent } from "../chat/ScreenshotPicker";
-import { SubChatWindowContent } from "../chat/SubChatPopover";
-import { FileSearchWindowContent } from "../ide/FileSearchDialog";
-import { FindInFilesWindowContent } from "../ide/FindInFilesDialog";
-import { RenamePreviewWindowContent } from "../ide/RenameDialog";
-import { UsagesWindowContent } from "../ide/UsagesPopover";
+import { SubChatWindowContent } from "../chat/sub-chat/SubChatPopover";
+import { FileSearchWindowContent } from "../ide/search/FileSearchDialog";
+import { FindInFilesWindowContent } from "../ide/search/FindInFilesDialog";
+import { RenamePreviewWindowContent } from "../ide/language/RenameDialog";
+import { UsagesWindowContent } from "../ide/language/UsagesPopover";
 import { listenTo } from "../ipc/events";
-import type { PopupShowRequest, ScreenRect } from "../ipc/types";
-import { useSettingsStore } from "../state/settings";
-import { useHuntStore } from "../state/store";
-import { useWindowCloseKeys } from "../ui/nativeWindow";
-import type { PopupActions, PopupKind, PopupRequest } from "./protocol";
+import type { PopupShowRequest, ScreenRect } from "../ui/popup.types";
+import { useSettingsStore } from "../settings/settings.store";
+import { useHuntStore } from "../sessions/hunt.store";
+import { useWindowCloseKeys } from "../ui/secondary-window.hook";
+import type { PopupActions, PopupKind, PopupRequest } from "../ui/popup-protocol.utils";
 
 /** Delay between the last resize of the window and remembering its size. */
 const REMEMBER_DELAY_MS = 300;
 
 /**
- * The window of a detachable popup (see useDetachedPopup.ts): one per popup kind, shared by every host window. It
+ * The window of a detachable popup (see detached-popup.hook.ts): one per popup kind, shared by every host window. It
  * boots hidden, shows the content a host sends with `popup:show` and opens at the host's placement when it was hidden.
  * Escape, ⌘W and the traffic light only hide it, so the next popup opens at once; a click elsewhere leaves it open.
  * It also hides when its host window hides or goes, and when the popup kind is put back into the app window. It reports
@@ -37,10 +36,6 @@ export function PopupWindow({ kind }: { kind: PopupKind }) {
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isListening, setIsListening] = useState(false);
-
-  usePaneStyles();
-  useSettingsSync();
-  useBackendEvents();
 
   /** Hides the window and drops its content; with `notifyHost` the host learns that its popup is gone. */
   const hide = useCallback(async (notifyHost: boolean) => {

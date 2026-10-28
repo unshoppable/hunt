@@ -1,9 +1,9 @@
-import { useStatusToastStore } from "../state/statusToasts";
-import { ICON_BUTTON_XS } from "./buttons";
-import { AlertIcon, CheckIcon, CloseIcon } from "./icons";
+import { useStatusToastStore } from "./status-toasts.store";
+import { ICON_BUTTON_XS } from "./buttons.constants";
+import { AlertIcon, CheckIcon, CloseIcon } from "./Icons";
 
 /**
- * The outcomes of async actions (`reportSuccess`, `reportFailure` in `state/statusToasts.ts`), stacked in the window's
+ * The outcomes of async actions (`reportSuccess`, `reportFailure` in `ui/status-toasts.store.ts`), stacked in the window's
  * bottom right corner, the newest at the bottom. A success closes itself, a failure stays until its × is clicked. Each
  * card carries its tone as a colored bar at the left and a tinted icon badge.
  */

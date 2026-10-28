@@ -1,17 +1,19 @@
 import { useMemo, useState } from "react";
-import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
-import { useFileIconUrl } from "../diff/fileIcons";
+import { SubChatPopover } from "../chat/sub-chat/SubChatPopover";
+import { useSubChatPopover } from "../chat/sub-chat/sub-chat-popover.hook";
+import { useFileIconUrl } from "../ui/file-icons/file-icons.hook";
 import { commands } from "../ipc/commands";
-import type { LintConfig, LintRuleOrigin, LintRules, LintSeverity } from "../ipc/types";
-import { useHuntStore } from "../state/store";
+import type { LintConfig, LintRuleOrigin, LintRules, LintSeverity } from "./lint-rules.types";
+import { useHuntStore } from "../sessions/hunt.store";
 import { AgentButton } from "../ui/AgentButton";
 import { Chip } from "../ui/Chip";
-import { ChevronIcon } from "../ui/icons";
-import { dirName } from "../ui/path";
+import { ChevronIcon } from "../ui/Icons";
+import { dirName } from "../common/path/path.utils";
 import { SearchField } from "../ui/SearchField";
-import { errorText, useLoad } from "../ui/useLoad";
-import { useTreeNavigation } from "../ui/useTreeNavigation";
-import { filterLintEntries, lintRuleChat, lintRuleEntries, lintRuleRows, lintTask, optionsText, ORIGIN_GROUPS, scopeOf, type LintRuleEntry } from "./lintRules";
+import { useLoad } from "../ui/load.hook";
+import { errorText } from "../ui/error-text.utils";
+import { useTreeNavigation } from "../ui/tree-navigation.hook";
+import { filterLintEntries, lintRuleChat, lintRuleEntries, lintRuleRows, lintTask, optionsText, ORIGIN_GROUPS, scopeOf, type LintRuleEntry } from "./lint-rules.utils";
 
 const SEVERITY_CHIP: Record<LintSeverity, string> = {
   error: "border-red-400/40 bg-red-400/10 text-red-300",
@@ -28,7 +30,7 @@ function groupKey(origin: LintRuleOrigin): string {
  * The Guardrails window's tab over the ESLint rules of the session's worktree (see `read_lint_rules`): every rule a
  * config sets, once, grouped by where it comes from and filtered by the search field, and on the right the selected
  * rule with its description and every config and file glob that sets it. The tab only reads; "Agent" opens a sub chat
- * (see chat/SubChatPopover.tsx) whose agent changes the rule from the user's instructions, and reopens it once it
+ * (see chat/sub-chat/SubChatPopover.tsx) whose agent changes the rule from the user's instructions, and reopens it once it
  * exists. The rules are read again whenever `reloadVersion` changes.
  */
 export function LintRulesPane({ sessionId, reloadVersion }: { sessionId: string; reloadVersion: number }) {
@@ -166,6 +168,7 @@ function RuleDetails({ sessionId, entry, onOpenAgent }: { sessionId: string; ent
   const sessions = useHuntStore((state) => state.sessions);
   const ruleChat = useMemo(() => lintRuleChat(sessions, sessionId, task), [sessions, sessionId, task]);
   const isRuleChatBusy = useHuntStore((state) => (ruleChat ? (state.chats[ruleChat.sessionId]?.isBusy ?? false) : false));
+  const isRuleChatUnseen = useHuntStore((state) => (ruleChat ? (state.chats[ruleChat.sessionId]?.hasUnseenActivity ?? false) : false));
   const originLabel = ORIGIN_GROUPS.find((group) => group.origin === entry.origin)?.label;
 
   /** Opens the sub chat about the rule below `button`: the existing one, or a new one about the first config that sets it. */
@@ -196,6 +199,7 @@ function RuleDetails({ sessionId, entry, onOpenAgent }: { sessionId: string; ent
           labelClassName="hidden @xl:inline"
           onClick={(event) => openAgent(event.currentTarget)}
           isBusy={isRuleChatBusy}
+          hasUnseenReply={isRuleChatUnseen}
           title={ruleChat ? "Show the agent's chat about this rule" : "Let the agent change this rule from your instructions"}
           aria-label={ruleChat ? "Show the agent's chat about this rule" : "Let the agent change this rule from your instructions"}
         />

@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { useSettingsStore } from "../state/settings";
-import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
+import { useSettingsStore } from "../settings/settings.store";
+import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons.constants";
 import { Modal } from "../ui/Modal";
-import { useDialogSize } from "../ui/useDialogSize";
+import { useDialogSize } from "../ui/dialog-size.hook";
 
 /**
  * Asks whether to delete a session, or with `isRemoval` whether to remove a remote one from the sidebar; "Don't ask

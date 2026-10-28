@@ -1,4 +1,4 @@
-//! The live channel of a remote session's file sync: the sync helper on its VM (`apps/session/src/sync/helper.ts`, run
+//! The live channel of a remote session's file sync: the sync helper on its VM (`apps/session/src/sync/sync-helper.main.ts`, run
 //! over the shared SSH connection as the agent's user) reports each change in the VM's worktree as it happens, with the
 //! content of small files, and applies the writes, links and deletions this side sends, answering with the states they
 //! left. Messages are JSON lines both ways; modification times travel as decimal strings of nanoseconds, which exceed
@@ -15,9 +15,9 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::oneshot;
 
-use super::shell_command;
 use super::ssh::Ssh;
 use super::sync::{FileState, Listing};
+use crate::platform::shell::shell_command;
 
 /// The sync helper of the installed session release and the Node that runs it.
 const HELPER: &str = "/srv/hunt/current/session/syncHelper.mjs";

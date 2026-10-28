@@ -13,8 +13,9 @@ use uuid::Uuid;
 
 use super::retrieve;
 use super::ssh::Ssh;
-use super::{hunt_ctl, shell_command, RemoteTarget};
+use super::{hunt_ctl, RemoteTarget};
 use crate::git::{self, ResetMode};
+use crate::platform::shell::shell_command;
 
 /// Which side's branch moved since both pointed at the same commit, and who follows whom.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

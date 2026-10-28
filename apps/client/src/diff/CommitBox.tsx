@@ -1,10 +1,10 @@
 import { useRef, useState } from "react";
 import { commands } from "../ipc/commands";
-import { WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
-import { BUTTON_BASE, PRIMARY, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { ChevronDownIcon, PaperPlaneIcon, Spinner } from "../ui/icons";
+import { WORKTREE_LOCKED_MESSAGE } from "../sessions/remote/remote-session.utils";
+import { BUTTON_BASE, PRIMARY, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { ChevronDownIcon, PaperPlaneIcon, Spinner } from "../ui/Icons";
 import { ResizeGrips } from "../ui/ResizeGrips";
-import { useDismiss } from "../ui/useDismiss";
+import { useDismiss } from "../ui/dismiss.hook";
 import { PushPopover, type PushMode } from "./PushPopover";
 
 const MENU_ITEM = "flex w-full items-center gap-6 rounded whitespace-nowrap px-2 py-1 text-left text-neutral-200 hover:bg-(--row-hover)";

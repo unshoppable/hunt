@@ -3,7 +3,8 @@
 //! passes on to the gateway only requests from Hunt's origins (`tauri://localhost`, the dev server's
 //! `http://localhost:1420`). Hunt reaches that port through a forward of the shared SSH connection from a free port on
 //! this Mac's loopback address, opened once per session and kept until the session's agent or the session ends; the
-//! panel's WebSockets connect to it directly. Knows nothing about Tauri; `session/commands.rs` owns the command.
+//! panel's WebSockets connect to it directly. Knows nothing about Tauri; `session/commands/browser.rs` owns the
+//! command.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -31,7 +32,7 @@ const HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
 /// The bytes of a health check's response that are read; the status line is all that counts.
 const MAX_RESPONSE_BYTES: u64 = 4096;
 
-/// Where the remote desktop of a session answers on this Mac (mirror of `DesktopEndpoint` in src/ipc/types.ts).
+/// Where the remote desktop of a session answers on this Mac (mirror of `DesktopEndpoint` in src/desktop/desktop.types.ts).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopEndpoint {

@@ -2,7 +2,7 @@
 // and prints `{ "installed": false }` when no Prettier resolves from the file, `{ "installed": true, "formatted": null }`
 // when Prettier ignores the file (`.prettierignore`, `.gitignore`) or has no parser for it, the formatted text as
 // `formatted` otherwise, or `{ "error": <first line of the message> }`. Runs with the worktree as cwd, where Prettier
-// resolves the plugins of the config. Spawned by `format_with_prettier` in formatter.rs.
+// resolves the plugins of the config. Spawned by `format_with_prettier` in ide/formatter.rs.
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";

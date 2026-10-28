@@ -2,12 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { commands } from "../ipc/commands";
 import { listenTo } from "../ipc/events";
-import type { TerminalTarget } from "../ipc/types";
-import { SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { Spinner } from "../ui/icons";
-import { errorText } from "../ui/useLoad";
-import { createResizeSync, decodeBase64, describeExit, encodeBinaryInput, encodeTextInput } from "./terminalStream";
-import { useXterm } from "./useXterm";
+import type { TerminalTarget } from "./terminal.types";
+import { SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { Spinner } from "../ui/Icons";
+import { errorText } from "../ui/error-text.utils";
+import { createResizeSync, decodeBase64, describeExit, encodeBinaryInput, encodeTextInput } from "./terminal-stream.utils";
+import { useXterm } from "./xterm.hook";
 
 /** Waits this long after the last size change before the remote programs learn the new size and redraw. */
 const RESIZE_DELAY_MS = 80;

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { filterOptions, findTypeahead, placeMenu, stepEnabled, type DropdownOption } from "./floatingMenu";
-import { SECONDARY_BUTTON_XS } from "./buttons";
-import { CheckIcon, ChevronDownIcon, PlusIcon, SearchIcon } from "./icons";
-import { useDismiss } from "./useDismiss";
+import { filterOptions, findTypeahead, placeMenu, stepEnabled, type DropdownOption } from "./floating-menu.utils";
+import { SECONDARY_BUTTON_XS } from "./buttons.constants";
+import { CheckIcon, ChevronDownIcon, PlusIcon, SearchIcon } from "./Icons";
+import { useDismiss } from "./dismiss.hook";
 
 /** How long after the last key press typing starts a new typeahead search. */
 const TYPEAHEAD_RESET_MS = 700;

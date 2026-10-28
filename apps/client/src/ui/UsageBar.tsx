@@ -1,4 +1,4 @@
-import { usageColor } from "../state/planUsage";
+import { usageColor } from "./usage-color.utils";
 
 /** A thin fill bar for a percentage (0–100), colored along the pastel green-to-red scale of `usageColor`. Callers set the width. */
 export function UsageBar({ percent, className = "" }: { percent: number; className?: string }) {

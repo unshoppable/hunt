@@ -12,7 +12,9 @@ use std::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 
-use super::{gcloud, shell_quote, VmRef};
+use super::gcloud::gcloud;
+use super::VmRef;
+use crate::platform::shell::shell_quote;
 
 /// OS Login user names by gcloud project, looked up once per app run.
 static USERS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);

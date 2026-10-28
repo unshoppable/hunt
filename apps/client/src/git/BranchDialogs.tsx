@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
 import { commands } from "../ipc/commands";
-import type { GitScope } from "../ipc/types";
-import { reportSuccess } from "../state/statusToasts";
-import { INPUT } from "../diff/styles";
-import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD } from "../ui/buttons";
-import { PlusIcon, Spinner } from "../ui/icons";
+import type { GitScope } from "./git.types";
+import { reportSuccess } from "../ui/status-toasts.store";
+import { INPUT } from "../ui/styles.constants";
+import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD, SECONDARY_BUTTON_MD } from "../ui/buttons.constants";
+import { PlusIcon, Spinner } from "../ui/Icons";
 import { Modal } from "../ui/Modal";
-import { useDialogSize } from "../ui/useDialogSize";
+import { useDialogSize } from "../ui/dialog-size.hook";
 
 /** Smallest size the push target dialog shrinks to: the list keeps a few rows. */
 const PUSH_TARGET_MIN_SIZE = { width: 360, height: 300 };

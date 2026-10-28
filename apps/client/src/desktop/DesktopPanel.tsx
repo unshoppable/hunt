@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { WaymoteSession, type VideoState } from "@rockorager/waymote";
 import { commands } from "../ipc/commands";
-import type { DesktopEndpoint } from "../ipc/types";
-import { HEADER_BAR } from "../ui/bars";
-import { GHOST_BUTTON_XS } from "../ui/buttons";
-import { Spinner } from "../ui/icons";
-import { REMOTE_INPUT_ATTRIBUTE } from "../ui/shortcuts";
-import { errorText, useLoad } from "../ui/useLoad";
-import { describeDesktop, hasLostConnection, type Tone } from "./desktopStatus";
-import { KeyTranslator } from "./keyTranslation";
+import type { DesktopEndpoint } from "./desktop.types";
+import { HEADER_BAR } from "../ui/bars.constants";
+import { GHOST_BUTTON_XS } from "../ui/buttons.constants";
+import { Spinner } from "../ui/Icons";
+import { REMOTE_INPUT_ATTRIBUTE } from "../ui/shortcuts.utils";
+import { useLoad } from "../ui/load.hook";
+import { errorText } from "../ui/error-text.utils";
+import { describeDesktop, hasLostConnection, type Tone } from "./desktop-status.utils";
+import { KeyTranslator } from "./key-translator.domain";
 
 const TONE_COLOR: Record<Tone, string> = {
   ok: "text-green-300",
@@ -23,7 +24,7 @@ const TONE_COLOR: Record<Tone, string> = {
  * output stays at its own size, scaled into the panel; audio stays off. Clicking the stream gives it the keyboard, Escape
  * and ⌘ shortcuts included: the stage is a remote input, which Hunt's shortcuts skip (`isRemoteInput`), and its keys go
  * no further than the stage, past the window's Escape listeners. Ahead of the SDK, the stage turns the Mac's keys into the
- * VM's in the capture phase (`keyTranslation.ts`: ⌘ as Ctrl, ⌥ characters as text, letter shortcuts on their US key).
+ * VM's in the capture phase (`key-translator.domain.ts`: ⌘ as Ctrl, ⌥ characters as text, letter shortcuts on their US key).
  * Clicking outside gives the keys back to Hunt. The panel connects the first time it shows and stays mounted while
  * another tab shows, so the stream survives tab switches; another session unmounts it.
  */
@@ -64,7 +65,7 @@ export function DesktopPanel({ sessionId, isVisible }: { sessionId: string; isVi
     if (!endpoint || !stage || !canvas || !textInput) return;
     const session = new WaymoteSession({ endpoint: endpoint.url, audio: false, remoteDisplay: { mode: "observe", element: stage } });
     session.attachSurface({ canvas, textInputElement: textInput, controlOnFocus: true });
-    const translator = new KeyTranslator();
+    const translator = KeyTranslator.start();
     const replacements = new WeakSet<Event>();
     const translateKey = (event: KeyboardEvent) => {
       if (replacements.has(event) || event.isComposing) return;

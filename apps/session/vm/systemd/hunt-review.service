@@ -1,4 +1,4 @@
-# The review server of the preview proxy (session/reviewServer.mjs, apps/session/src/review/server.ts) on 127.0.0.1:9232:
+# The review server of the preview proxy (session/reviewServer.mjs, apps/session/src/review/review-server.main.ts) on 127.0.0.1:9232:
 # hunt-proxy sends it the page loads of the guarded preview hosts, and it adds the review widget to their HTML, serves
 # the widget and stores each annotation the widget posts in /run/hunt-review/annotations, where the status helper picks
 # it up for the desktop client. `hunt-ctl start` enables it together with the proxy, `stop` disables it, which removes

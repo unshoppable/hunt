@@ -7,5 +7,5 @@
     "verbatimModuleSyntax": true
   },
   "include": ["src", "vm"],
-  "exclude": ["src/review/widget.ts"]
+  "exclude": ["src/review/review-widget.main.ts"]
 }

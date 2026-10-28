@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { commands } from "../ipc/commands";
-import type { Machine, PreviewService, ScriptRunRequest, TmuxWindow } from "../ipc/types";
-import { ownerLabel } from "../diff/attribution";
-import { describeService, isServiceInUse } from "../preview/services";
-import { sessionMarks } from "../sessions/sessionLabels";
-import { usePreviewStore } from "../state/preview";
-import { useHuntStore } from "../state/store";
-import { NO_SESSION_WINDOWS, useTerminalStore } from "../state/terminals";
-import { ICON_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { confirmDestructive } from "../ui/confirm";
-import { PlusIcon, Spinner } from "../ui/icons";
-import { errorText } from "../ui/useLoad";
-import { describeLocalExit } from "./terminalStream";
-import { endedScriptWindow, nextActiveKey, tabOwner, terminalTabs, windowState, windowTabKey, type TerminalTab } from "./terminalTabs";
+import type { PreviewService } from "../preview/preview.types";
+import type { Machine, ScriptRunRequest, TmuxWindow } from "./terminal.types";
+import { ownerLabel } from "../diff/attribution.utils";
+import { describeService, isServiceInUse } from "../preview/preview-services.utils";
+import { sessionMarks } from "../sessions/session-labels.utils";
+import { usePreviewStore } from "../preview/preview.store";
+import { useHuntStore } from "../sessions/hunt.store";
+import { NO_SESSION_WINDOWS, useTerminalStore } from "./terminals.store";
+import { ICON_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { confirmDestructive } from "../ui/confirm.utils";
+import { PlusIcon, Spinner } from "../ui/Icons";
+import { errorText } from "../ui/error-text.utils";
+import { describeLocalExit } from "./terminal-stream.utils";
+import { endedScriptWindow, nextActiveKey, tabOwner, terminalTabs, windowState, windowTabKey, type TerminalTab } from "./terminal-tabs.utils";
 import { TerminalTabButton } from "./TerminalTabButton";
 import { TerminalView } from "./TerminalView";
 
@@ -152,7 +153,7 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
     [sessionId, shellMachine, loadWindows, activate],
   );
 
-  // A script run from an editor's play button (see terminal/scriptRuns.ts) waits in the store until this panel takes it.
+  // A script run from an editor's play button (see terminal/script-runs.hook.ts) waits in the store until this panel takes it.
   useEffect(() => {
     if (!pendingRun) return;
     const run = useTerminalStore.getState().takePendingRun(sessionId);

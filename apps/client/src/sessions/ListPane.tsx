@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import { ICON_BUTTON_SM } from "../ui/buttons";
-import { CloseIcon } from "../ui/icons";
+import { ICON_BUTTON_SM } from "../ui/buttons.constants";
+import { CloseIcon } from "../ui/Icons";
 import { SearchField } from "../ui/SearchField";
 
 type ListPaneProps = {

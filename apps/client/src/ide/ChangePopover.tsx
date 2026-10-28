@@ -1,17 +1,18 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import * as monaco from "monaco-editor";
-import { computeInnerChanges, rangeLength } from "../diff/lineDiff";
-import { PREVIEW_EDITOR_OPTIONS } from "../diff/monaco";
-import type { ChangeMarkers, Marker } from "./changeMarkers";
-import { CopyIcon } from "../ui/icons";
+import { computeInnerChanges, rangeLength } from "../editor/line-diff.utils";
+import { PREVIEW_EDITOR_OPTIONS } from "../editor/monaco.constants";
+import type { ChangeMarkers, Marker } from "./change-markers.monaco";
+import { CopyIcon } from "../ui/Icons";
 import { ResizeGrips } from "../ui/ResizeGrips";
-import { useDismiss } from "../ui/useDismiss";
-import { usePopupSize } from "../ui/usePopupSize";
+import { useDismiss } from "../ui/dismiss.hook";
+import { usePopupSize } from "../ui/popup-size.hook";
 
 const MIN_SIZE = { width: 320, height: 120 };
 const EDGE_GAP = 12;
 
-type Position = { top: number; left: number; maxWidth: number };
+/** `top` and `bottom` are the block's edges in editor coordinates; a deletion has both on its line edge. */
+type Position = { top: number; bottom: number; left: number; maxWidth: number };
 
 type ChangePopoverProps = {
   editor: monaco.editor.IStandaloneCodeEditor;
@@ -24,18 +25,26 @@ type ChangePopoverProps = {
 
 /**
  * WebStorm's change popup for one gutter marker: a toolbar (previous / next change, rollback, copy) above the lines
- * the block had at HEAD, shown read-only on the deletion tint with the original line numbers. It sits over the
- * block's first line, follows the editor's scrolling and closes on Esc, a click outside or when the line leaves
- * the viewport. It is as tall as the lines up to the remembered height; dragging its right or bottom edge resizes it.
- * A block of inserted lines has no original lines: its popup is just the toolbar, as wide as its buttons and placed
- * above the block so that the inserted lines stay visible.
+ * the block had at HEAD, shown read-only on the deletion tint with the original line numbers. Its bottom edge sits on
+ * the block's top edge so the current lines stay visible next to the original ones (below the block when there is no
+ * room above), it follows the editor's scrolling and closes on Esc, a click outside or when the block's first line
+ * leaves the viewport. It is as tall as the lines up to the remembered height; dragging its right edge or the edge
+ * away from the block resizes it. A block of inserted lines has no original lines: its popup is just the toolbar, as
+ * wide as its buttons.
  */
 export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }: ChangePopoverProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const codeRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<Position | null>(() => anchorOf(editor, marker));
+  const [isBelow, setIsBelow] = useState(false);
   const layout = editor.getLayoutInfo();
-  const { size, isHeightSet, grips } = usePopupSize("change", { min: MIN_SIZE, max: { width: position?.maxWidth ?? layout.width, height: layout.height - 2 } });
+  // The dragged edge stops at the editor's edge, so a resize never pushes the popup over the block.
+  const room = (rendered: { height: number }) => {
+    if (!position) return {};
+    if (isBelow) return { bottom: Math.max(0, layout.height - 2 - position.bottom - rendered.height) };
+    return { top: Math.max(0, position.top - rendered.height) };
+  };
+  const { size, isHeightSet, grips } = usePopupSize("change", { min: MIN_SIZE, max: { width: position?.maxWidth ?? layout.width, height: layout.height - 2 }, room });
   const { block } = marker;
   const originalLines = markers.headLines.slice(block.original.start - 1, block.original.end - 1);
   const index = markers.markers.indexOf(marker);
@@ -61,14 +70,23 @@ export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }
     };
   }, [editor, marker, onClose]);
 
-  // Keeps the popup inside the editor when the block is near the bottom; a toolbar alone sits above the block.
+  // Puts the popup above the block, or below it when it fits only there; decided when the block moves, not on a resize.
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root || !position) return;
+    const popupHeight = root.getBoundingClientRect().height;
+    setIsBelow(position.top - popupHeight < 0 && position.bottom + popupHeight <= editor.getLayoutInfo().height);
+  }, [editor, position]);
+
+  // Keeps the popup's edge on the block's edge and the popup inside the editor.
   useLayoutEffect(() => {
     const root = rootRef.current;
     if (!root || !position) return;
     const height = editor.getLayoutInfo().height;
-    const top = isInsert ? position.top - root.offsetHeight : position.top;
-    root.style.top = `${Math.max(0, Math.min(top, height - root.offsetHeight - 2))}px`;
-  }, [editor, position, isInsert, originalLines.length, size.height, isHeightSet]);
+    const popupHeight = root.getBoundingClientRect().height;
+    const top = isBelow ? position.bottom : position.top - popupHeight;
+    root.style.top = `${Math.max(0, Math.min(top, height - popupHeight - 2))}px`;
+  }, [editor, position, isBelow, originalLines.length, size.height, isHeightSet]);
 
   useDismiss(rootRef, onClose);
 
@@ -158,18 +176,19 @@ export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }
         <span className="ml-auto pr-1 pl-3 text-[12px] whitespace-nowrap text-neutral-500">{summary ?? `${count ? index + 1 : 0} / ${count}`}</span>
       </div>
       {originalLines.length ? <div ref={codeRef} className="min-h-0 shrink" style={{ height: originalLines.length * lineHeight }} /> : null}
-      {isInsert ? null : <ResizeGrips edges={{ right: true, bottom: true }} {...grips} />}
+      {isInsert ? null : <ResizeGrips edges={{ right: true, top: !isBelow, bottom: isBelow }} {...grips} />}
     </div>
   );
 }
 
-/** Position over the marker's first line, or null when that line is outside the viewport. */
+/** Edges of the marker's block, or null when its first line is outside the viewport. */
 function anchorOf(editor: monaco.editor.ICodeEditor, marker: Marker): Position | null {
   const layout = editor.getLayoutInfo();
   const line = editor.getScrolledVisiblePosition({ lineNumber: marker.startLine, column: 1 });
   if (!line || line.top + line.height < 0 || line.top > layout.height) return null;
   const top = marker.edge === "bottom" ? line.top + line.height : line.top;
-  return { top, left: layout.contentLeft, maxWidth: layout.width - layout.contentLeft - EDGE_GAP };
+  const bottom = marker.edge ? top : editor.getBottomForLineNumber(marker.endLine) - editor.getScrollTop();
+  return { top, bottom, left: layout.contentLeft, maxWidth: layout.width - layout.contentLeft - EDGE_GAP };
 }
 
 function ToolbarButton({ title, disabled, onClick, children }: { title: string; disabled?: boolean; onClick: () => void; children: ReactNode }) {

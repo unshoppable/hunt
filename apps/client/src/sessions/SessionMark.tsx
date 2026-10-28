@@ -1,6 +1,6 @@
-import { useHuntStore, type HuntState } from "../state/store";
-import { runsOnVm } from "./remoteOrigin";
-import { sessionMarkState, type MarkState } from "./sessionMarkState";
+import { useHuntStore, type HuntState } from "./hunt.store";
+import { runsOnVm } from "./remote/remote-origin.utils";
+import { sessionMarkState, type MarkState } from "./session-mark-state.utils";
 
 const HEIGHT = 18;
 /** Extra width per character beyond the first, so `B2` stretches the circle into a pill. */

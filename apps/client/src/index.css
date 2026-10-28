@@ -11,7 +11,7 @@
 
 /*
  * Per-pane appearance. These are the fallbacks for the first paint and match DEFAULT_PANES (with UI_FONT_FAMILY and
- * CODE_FONT_FAMILY) in state/settings.ts; usePaneStyles (app/bootstrap.ts) overwrites every one of them at runtime
+ * CODE_FONT_FAMILY) in settings/settings.store.ts; usePaneStyles (app/window-bootstrap.hook.ts) overwrites every one of them at runtime
  * from the settings store, so a changed default has to be changed in both places.
  */
 :root {
@@ -113,7 +113,7 @@
 
 /*
  * Panes glide to their new width while a pane toggle collapses or restores one (`data-pane-animating` on the group,
- * see layout/ResizablePanes.tsx); dragging a separator stays immediate. Content that a toggle shows fades in.
+ * see ui/ResizablePanes.tsx); dragging a separator stays immediate. Content that a toggle shows fades in.
  */
 @theme {
   --animate-pane-in: pane-in 260ms ease-out;
@@ -202,7 +202,7 @@ body,
   color: #f7e9ba;
 }
 
-/* Syntax colors of the chat's inline diffs follow the WebStorm scheme in diff/webstormScheme.ts. */
+/* Syntax colors of the chat's inline diffs follow the WebStorm scheme in editor/webstorm-scheme.monaco.ts. */
 .diff-tailwindcss-wrapper[data-theme="dark"] .diff-line-syntax-raw {
   .hljs-keyword { color: #c08cff; font-style: italic; }
   .hljs-literal, .hljs-type { color: #abb8ff; font-style: italic; }
@@ -235,7 +235,13 @@ body,
   vertical-align: baseline;
 }
 
-/* Word under the cursor while Cmd is held in an editor (see diff/ideLink.ts): ⌘click navigates, ⇧⌘click opens WebStorm. */
+/* Unused code (markers tagged Unnecessary: unused members, imports, locals) gets the grey wave of the WebStorm scheme's
+   NOT_USED_ELEMENT_ATTRIBUTES, drawn like Monaco's error squiggle; the theme keeps its color (setup.monaco.ts). */
+.monaco-editor.showUnused .squiggly-unnecessary {
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 6 3' height='3' width='6'%3E%3Cg fill='%23808080'%3E%3Cpolygon points='5.5,0 2.5,3 1.1,3 4.1,0'/%3E%3Cpolygon points='4,0 6,2 6,0.6 5.4,0'/%3E%3Cpolygon points='0,2 1,3 2.4,3 0,0.6'/%3E%3C/g%3E%3C/svg%3E") repeat-x bottom left;
+}
+
+/* Word under the cursor while Cmd is held in an editor (see editor/ide-link.monaco.ts): ⌘click navigates, ⇧⌘click opens WebStorm. */
 .monaco-editor .hunt-ide-link {
   color: #7cb7ff;
   background: #7cb7ff1f;
@@ -244,7 +250,7 @@ body,
   cursor: pointer !important;
 }
 
-/* Change markers next to the line numbers (see ide/changeMarkers.ts): a stripe for inserted (green) and modified
+/* Change markers next to the line numbers (see ide/change-markers.monaco.ts): a stripe for inserted (green) and modified
    (blue) lines, a triangle at the seam of a deletion; a click opens the change popup with the HEAD lines. */
 .monaco-editor .margin-view-overlays .hunt-change {
   cursor: pointer;
@@ -288,7 +294,7 @@ body,
   background: #55302f;
 }
 
-/* Agent button (ui/AgentButton.tsx, ide/selectionAskButton.ts): a small square surface with the agent sparkle in the
+/* Agent button (ui/AgentButton.tsx, ide/selection/selection-ask-button.monaco.ts): a small square surface with the agent sparkle in the
    blue-violet agent gradient; it glows on hover and breathes while the agent it stands for is working. The gutter
    sub chat button below paints the same look on Monaco's decoration node. `--agent-button-size` and
    `--agent-sparkle-size` scale a host's instance. */
@@ -346,7 +352,16 @@ body,
   border-color: #7c6cff;
   animation: agent-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
-/* The agent button's violet glow on an ordinary button (ui/buttons.ts AGENT_GLOW), e.g. the Guardrails "New" button. */
+/* An agent button whose chat replied since the user last looked at it: a pastel mint ring with a soft glow. */
+.hunt-agent-button.hunt-agent-button-unseen {
+  border-color: rgba(110, 231, 183, 0.7);
+  box-shadow: 0 0 0 2px rgba(167, 243, 208, 0.16), 0 0 8px rgba(110, 231, 183, 0.35), 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+.hunt-agent-button.hunt-agent-button-unseen:hover {
+  border-color: #6ee7b7;
+  box-shadow: 0 0 0 3px rgba(167, 243, 208, 0.24), 0 0 10px rgba(110, 231, 183, 0.45), 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+/* The agent button's violet glow on an ordinary button (ui/buttons.constants.ts AGENT_GLOW), e.g. the Guardrails "New" button. */
 .hunt-agent-glow {
   box-shadow: 0 0 0 3px rgba(124, 108, 255, 0.22), 0 1px 4px rgba(0, 0, 0, 0.3);
   transition: background-color 120ms ease, box-shadow 120ms ease;
@@ -355,7 +370,7 @@ body,
 .hunt-agent-glow:focus-visible {
   box-shadow: 0 0 0 4px rgba(124, 108, 255, 0.4), 0 1px 4px rgba(0, 0, 0, 0.3);
 }
-/* The "Guardrail" button above the prompt box while the agent suggests a guardrail (chat/SaveGuardrailButton.tsx): a violet
+/* The "Guardrail" button above the prompt box while the agent suggests a guardrail (chat/guardrail/SaveGuardrailButton.tsx): a violet
    surface and ring that pulse three times when the suggestion appears. */
 .hunt-guardrail-suggested {
   background: rgba(124, 108, 255, 0.18);
@@ -386,7 +401,7 @@ body,
   }
 }
 
-/* Sub chat button right of the line numbers (see ide/selectionChatMarkers.ts): a small icon button with the agent
+/* Sub chat button right of the line numbers (see ide/selection/selection-chat-markers.monaco.ts): a small icon button with the agent
    sparkle in the blue-violet agent gradient on the first line of a selection a sub chat was opened from; a click
    reopens the chat in its popover. Monaco stretches the node over the whole line decorations column; the button
    takes 22px of it after the change stripe zone (the column's plain 10px, 18px with a code diff's "+" and "-") so the
@@ -440,6 +455,10 @@ body,
   border-color: #7c6cff;
   animation: agent-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
+.monaco-editor .margin-view-overlays .hunt-chat-glyph.hunt-chat-glyph-unseen::before {
+  border-color: rgba(110, 231, 183, 0.7);
+  box-shadow: 0 0 0 2px rgba(167, 243, 208, 0.16), 0 0 8px rgba(110, 231, 183, 0.35), 0 1px 4px rgba(0, 0, 0, 0.3);
+}
 .monaco-editor .margin-view-overlays .hunt-chat-glyph:hover::before {
   border-color: #7c6cff;
   box-shadow: 0 0 0 3px rgba(124, 108, 255, 0.22), 0 1px 4px rgba(0, 0, 0, 0.3);
@@ -448,7 +467,7 @@ body,
   transform: scale(1.12);
 }
 
-/* Mark of the session that overwrote own lines on disk (see diff/overwriteMarkers.ts): an amber pill with the session's
+/* Mark of the session that overwrote own lines on disk (see diff/overwrite-markers.monaco.ts): an amber pill with the session's
    mark in the glyph margin of the run's first line. The mouse passes through to the glyph cell, whose hover shows the
    lines on disk. */
 .monaco-editor .hunt-overwrite-glyph {
@@ -473,7 +492,7 @@ body,
   white-space: nowrap;
 }
 
-/* "+" of a pull request review (see review/addCommentGlyph.ts): GitHub's blue square on the hovered line, in the
+/* "+" of a pull request review (see review/add-comment-glyph.monaco.ts): GitHub's blue square on the hovered line, in the
    glyph margin left of the line numbers, centred on the cell; grey when the comment lands in the review summary as
    a note instead of inline. Glyph-margin decorations (`glyphMarginClassName`) render in `.glyph-margin-widgets`, not
    `.margin-view-overlays`; select them as `.monaco-editor .<class>`. */
@@ -509,7 +528,7 @@ body,
 .monaco-editor .hunt-review-add--note::before {
   background: #6e7681;
 }
-/* WebStorm's green run triangle on each script of a package.json (see ide/scriptRunMarkers.ts), centred in the glyph
+/* WebStorm's green run triangle on each script of a package.json (see ide/package-scripts/script-run-markers.monaco.ts), centred in the glyph
    margin cell; a click runs the script. */
 .monaco-editor .hunt-script-run {
   cursor: pointer;
@@ -537,7 +556,7 @@ body,
 .monaco-editor .margin-view-overlays .hunt-review-range ~ .hunt-change::before {
   display: none;
 }
-/* Bar right of the line numbers beside those lines (see reviewBarLeft in review/addCommentGlyph.ts) and the line
+/* Bar right of the line numbers beside those lines (see reviewBarLeft in review/add-comment-glyph.monaco.ts) and the line
    joining the two "+" of a drag (see review/spanLine.ts), in the color of the "+": blue inline, grey for a note. Both
    run across view zones and over comment cards; the open comment box and the card of a comment continue the bar. */
 .monaco-editor .hunt-review-span-line {
@@ -568,7 +587,7 @@ body,
   background: #6e7681;
 }
 
-/* Comment cards and the comment box under a line (see review/lineZone.ts): an overlay widget that the zone places
+/* Comment cards and the comment box under a line (see review/line-zone.monaco.ts): an overlay widget that the zone places
    itself; it starts hidden until the first top arrives. */
 .monaco-editor .hunt-review-zone {
   position: absolute;
@@ -578,7 +597,7 @@ body,
   font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
-/* "Ask Claude" button at the active end of a selection (see ide/selectionAskButton.ts): the agent sparkle in the
+/* "Ask Claude" button at the active end of a selection (see ide/selection/selection-ask-button.monaco.ts): the agent sparkle in the
    blue-violet agent gradient on a small floating surface, right of the end of a forward selection, left of the start
    of a backward one or above the start when there is no room on its left. Monaco sets the node's display itself; the
    node spans the line height and the button centres on it. */
@@ -602,13 +621,13 @@ body,
   transform: translateY(-50%);
 }
 
-/* The selected usage's name in the preview of the usages popup (see ide/UsagesPopover.tsx): WebStorm's search result tint. */
+/* The selected usage's name in the preview of the usages popup (see ide/language/UsagesPopover.tsx): WebStorm's search result tint. */
 .monaco-editor .hunt-usage-match {
   background: #32593d;
   border-radius: 2px;
 }
 
-/* Completion list and its docs column (see setUpCompletionList in diff/monaco.ts, ide/lsp/providers.ts): floating cards
+/* Completion list and its docs column (see setUpCompletionList in editor/setup.monaco.ts, ide/lsp/lsp-providers.monaco.ts): floating cards
    like ui/Dropdown.tsx. A row shows the kind badge, the name with a callable's parameters in grey and the type at the
    right; the active row is the blue rounded row of every list, inset 4px. The docs column shows the declaring type,
    the signature as a colored code block and the docs; it cannot be closed. Paddings sit on the rows and on the
@@ -767,7 +786,7 @@ body,
   will-change: transform;
 }
 
-/* Side-by-side diff (see diff/splitDiff.ts): editor | original line numbers | connector gutter | editor. Clipped, so
+/* Side-by-side diff (see diff/split-diff.monaco.ts): editor | original line numbers | connector gutter | editor. Clipped, so
    that revert arrows positioned past the gutter never make the enclosing pane (an overflow: auto panel) scrollable.
    The own compositing layer keeps the empty columns (original gutter, line numbers, connectors) color-matched like the
    editor text: on macOS WebKit with a non-sRGB display they otherwise paint the raw sRGB value, visibly lighter. */
@@ -808,7 +827,7 @@ body,
   width: 36px;
   cursor: col-resize;
 }
-/* The seam shows like a pane separator (see layout/ResizablePanes.tsx): a 1px blue line down the gutter's middle. */
+/* The seam shows like a pane separator (see ui/ResizablePanes.tsx): a 1px blue line down the gutter's middle. */
 .split-diff__gutter::after {
   content: "";
   position: absolute;
@@ -940,7 +959,7 @@ body,
   color: #d6d9de;
   overflow-wrap: anywhere;
 }
-.markdown :is(p, ul, ol, pre, blockquote, table) {
+.markdown :is(p, ul, ol, pre, blockquote, table:where(:not(.diff-tailwindcss-wrapper *))) {
   margin: 1em 0;
 }
 .markdown :is(h1, h2, h3, h4) {
@@ -1054,36 +1073,40 @@ body,
 }
 .markdown .file-link {
   cursor: pointer;
-}
-.markdown .file-link > code {
   color: #8ab4f8;
 }
-.markdown .file-link:hover > code,
-.markdown .file-link:focus-visible > code {
+.markdown .file-link code {
+  color: #8ab4f8;
+}
+.markdown .file-link:hover,
+.markdown .file-link:focus-visible {
   text-decoration: underline;
   text-underline-offset: 0.15em;
 }
-.markdown table {
+/* Tables of the Markdown itself; the table of a diff (see HighlightedDiff) keeps git-diff-view's layout. */
+.markdown table:where(:not(.diff-tailwindcss-wrapper *)) {
   display: block;
   max-width: 100%;
   overflow-x: auto;
   border-collapse: collapse;
   font-size: 0.92em;
 }
-.markdown th {
+.markdown th:where(:not(.diff-tailwindcss-wrapper *)) {
   background: rgba(255, 255, 255, 0.04);
   font-weight: 600;
   text-align: left;
 }
-.markdown td,
-.markdown th {
+/* `break-word` instead of the inherited `anywhere`: the auto table layout then sizes a column to its longest word
+   rather than squeezing it to one letter per line. */
+.markdown :is(td, th):where(:not(.diff-tailwindcss-wrapper *)) {
   padding: 0.3rem 0.6rem;
   border: 1px solid var(--line);
+  overflow-wrap: break-word;
 }
 
 /* Markdown laid out like a GitHub comment (pull request descriptions): ruled h1/h2, a 16px paragraph rhythm,
    task lists with the checkbox in place of the bullet. */
-.markdown-document :is(p, ul, ol, pre, blockquote, table) {
+.markdown-document :is(p, ul, ol, pre, blockquote, table:where(:not(.diff-tailwindcss-wrapper *))) {
   margin: 0 0 16px;
 }
 .markdown-document :is(h1, h2, h3, h4) {
@@ -1127,14 +1150,14 @@ body,
   font-size: 85%;
   line-height: 1;
 }
-.markdown-document table {
+.markdown-document table:where(:not(.diff-tailwindcss-wrapper *)) {
   font-size: 1em;
 }
-.markdown-document :is(td, th) {
+.markdown-document :is(td, th):where(:not(.diff-tailwindcss-wrapper *)) {
   padding: 6px 13px;
 }
 
-/* Changelist checkbox (see diff/Checkbox.tsx): custom-drawn so the checked state keeps its accent color even while the window is inactive. */
+/* Changelist checkbox (see ui/Checkbox.tsx): custom-drawn so the checked state keeps its accent color even while the window is inactive. */
 .hunt-checkbox {
   appearance: none;
   width: 16px;

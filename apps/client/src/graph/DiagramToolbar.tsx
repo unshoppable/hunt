@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { formatRelativeTime } from "../chat/ScreenshotPicker";
-import type { DiagramType, GraphStatus } from "../ipc/types";
-import { useSettingsStore } from "../state/settings";
-import { BUTTON_BASE, PRIMARY, PRIMARY_BUTTON_LG, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
+import { formatRelativeTime } from "../common/time/relative-time.utils";
+import type { DiagramType } from "../common/diagram/diagram.types";
+import type { GraphStatus } from "./graph.types";
+import { useSettingsStore } from "../settings/settings.store";
+import { BUTTON_BASE, PRIMARY, PRIMARY_BUTTON_LG, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
 import { Dropdown } from "../ui/Dropdown";
-import { ChevronDownIcon } from "../ui/icons";
-import { useDismiss } from "../ui/useDismiss";
-import { DIAGRAM_TYPES } from "./diagramTypes";
+import { ChevronDownIcon } from "../ui/Icons";
+import { useDismiss } from "../ui/dismiss.hook";
+import { DIAGRAM_TYPES } from "./diagram-types.constants";
 
 const BADGE_BASE = "absolute top-3 left-3 z-10 rounded-md border px-2 py-0.5 text-[12px] font-medium";
 

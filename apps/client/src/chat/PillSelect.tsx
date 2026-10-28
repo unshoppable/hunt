@@ -1,5 +1,5 @@
 import { Dropdown } from "../ui/Dropdown";
-import type { DropdownOption } from "../ui/floatingMenu";
+import type { DropdownOption } from "../ui/floating-menu.utils";
 
 /** Borderless dropdown pill for the prompt toolbar, e.g. model, effort or mode. */
 export function PillSelect({

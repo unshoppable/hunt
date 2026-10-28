@@ -1,24 +1,24 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useHuntStore } from "../state/store";
+import { useHuntStore } from "../sessions/hunt.store";
 import { SessionSidebar } from "../sessions/SessionSidebar";
-import { NewSessionView, useStartRepoPath } from "../sessions/NewSessionView";
-import { useShowSessionRequests } from "../sessions/showSession";
+import { NewSessionView } from "../sessions/NewSessionView";
+import { useStartRepoPath } from "../sessions/start-repo-path.hook";
+import { useShowSessionRequests } from "../sessions/show-session.hook";
 import { ChatPanel } from "../chat/ChatPanel";
 import { CHANGE_LIST_MIN_WIDTH, DiffPanel } from "../diff/DiffPanel";
 import { GitPanel } from "../git/GitPanel";
 import { ArchitecturePanel } from "../graph/ArchitecturePanel";
 import { IdePanel } from "../ide/IdePanel";
 import { PullRequestPanel } from "../review/PullRequestPanel";
-import { useReviewCommentTotal } from "../review/reviewComments";
-import { keepDiffWindowWarm } from "../graph/diffWindows";
-import { keepGuardrailsWindowWarm } from "../guardrails/openGuardrailsWindow";
-import { keepSettingsWindowWarm } from "../settings/openSettingsWindow";
-import { keepEditorWindowWarm, openInEditorWindow } from "../ide/editorWindows";
-import { FileSearchPopup, useFileSearchShortcut } from "../ide/FileSearchDialog";
-import { FindInFilesPopup, useFindInFilesShortcut } from "../ide/FindInFilesDialog";
-import { EMPTY_IDE_SESSION, useIdeStore } from "../ide/ideStore";
-import { allPanes } from "../ide/paneGrid";
+import { useReviewCommentTotal } from "../review/review-comments.hook";
+import { keepDiffWindowWarm } from "../diff/diff-window.utils";
+import { keepGuardrailsWindowWarm } from "../guardrails/guardrails-window.utils";
+import { keepSettingsWindowWarm } from "../settings/settings-window.utils";
+import { keepEditorWindowWarm, openInEditorWindow } from "../ide/editor-window.utils";
+import { FileSearchPopup, useFileSearchShortcut } from "../ide/search/FileSearchDialog";
+import { FindInFilesPopup, useFindInFilesShortcut } from "../ide/search/FindInFilesDialog";
+import { EMPTY_IDE_SESSION, useIdeStore } from "../ide/ide.store";
 import {
   PANE_TOGGLE_ROW,
   PaneRail,
@@ -31,29 +31,34 @@ import {
   runPaneToggle,
   useGroupRef,
   usePanelRef,
-} from "../layout/ResizablePanes";
+} from "../ui/ResizablePanes";
 import { ChecksPanel } from "../checks/ChecksPanel";
-import { isAnyCheckRunning } from "../checks/checks";
-import type { ChecksStatus } from "../ipc/types";
+import { isAnyCheckRunning } from "../checks/checks.utils";
+import type { ChecksStatus } from "../checks/checks.types";
 import { DesktopPanel } from "../desktop/DesktopPanel";
 import { PreviewPanel } from "../preview/PreviewPanel";
-import { isPreviewActive } from "../preview/services";
-import { keepPopupWindowsWarm } from "../popup/useDetachedPopup";
-import { usePopupRequest } from "../popup/usePopupRequest";
-import { useChecksStore } from "../state/checks";
-import { usePreviewStore } from "../state/preview";
-import { NO_SESSION_WINDOWS, useTerminalStore } from "../state/terminals";
-import { rememberEditors, useRightTab, useSessionViewStore, type RightTab } from "../state/sessionViews";
-import { useScriptRunRequests } from "../terminal/scriptRuns";
+import { isPreviewActive } from "../preview/preview-services.utils";
+import { keepPopupWindowsWarm } from "../ui/detached-popup.utils";
+import { usePopupRequest } from "../ui/popup-request.hook";
+import { useChecksStore } from "../checks/checks.store";
+import { usePreviewStore } from "../preview/preview.store";
+import { NO_SESSION_WINDOWS, useTerminalStore } from "../terminal/terminals.store";
+import { rememberEditors, useRightTab, useSessionViewStore, type RightTab } from "../sessions/inspector.store";
+import { hasInspectorTab } from "../sessions/inspector.utils";
+import { useControlCommands } from "../control/control-commands.hook";
+import { useScriptRunRequests } from "../terminal/script-runs.hook";
 import { TerminalPanel } from "../terminal/TerminalPanel";
-import { isTerminalActive } from "../terminal/terminalTabs";
-import { HEADER_BAR } from "../ui/bars";
-import { TAB_ACTIVE, TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons";
-import { BranchIcon, CodeIcon, DiagramIcon, DiffIcon, EyeIcon, GlobeIcon, MonitorIcon, PullRequestIcon, TaskListIcon, TerminalIcon } from "../ui/icons";
-import { shortcutCommand } from "../ui/shortcuts";
+import { isTerminalActive } from "../terminal/terminal-tabs.utils";
+import { HEADER_BAR } from "../ui/bars.constants";
+import { TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons.constants";
+import { BranchIcon, CodeIcon, DiagramIcon, DiffIcon, EyeIcon, GlobeIcon, MonitorIcon, PullRequestIcon, TaskListIcon, TerminalIcon } from "../ui/Icons";
+import { shortcutCommand } from "../ui/shortcuts.utils";
 import { StatusToasts } from "../ui/StatusToasts";
-import { restoreWindowBounds, useRememberWindowBounds } from "../ui/windowBounds";
-import { useAccountsSync, useAgentPreferencesSync, useBackendEvents, usePaneStyles, useRemoteSettingsSync, useSettingsSync } from "./bootstrap";
+import { TabButton, type TabDot } from "../ui/TabButton";
+import { restoreWindowBounds } from "../ui/window-bounds.utils";
+import { useRememberWindowBounds } from "../ui/window-bounds.hook";
+import { useAccountsSync, useAgentPreferencesSync, useBackendEvents, usePaneStyles, useRemoteSettingsSync, useSettingsSync } from "./window-bootstrap.hook";
+import { NoLocalWorktree } from "./NoLocalWorktree";
 
 /** How often the sidebar re-reads the gateway's listing, as often as the gateway's poller updates the agent states in it. */
 const REMOTE_AGENT_POLL_MS = 30_000;
@@ -101,7 +106,7 @@ export function App() {
   const openFile = useIdeStore((state) => state.openFile);
   const openBrowser = useHuntStore((state) => state.openBrowser);
   const ideLayout = useIdeStore((state) => (activeSessionId ? state.sessions[activeSessionId]?.layout : null) ?? EMPTY_IDE_SESSION.layout);
-  const openPaths = useMemo(() => [...new Set(allPanes(ideLayout).flatMap((pane) => pane.tabs))], [ideLayout]);
+  const openPaths = useMemo(() => [...new Set(ideLayout.panes.flatMap((pane) => pane.tabs))], [ideLayout]);
   const fileSearch = usePopupRequest<null>();
   const mainGroup = useGroupRef();
   const sessionsPanel = usePanelRef();
@@ -145,8 +150,7 @@ export function App() {
   const hasLocalWorktree = !isCreatingActive && hasActiveWorktree;
   const canSearchFiles = Boolean(activeSessionId) && !draft && hasLocalWorktree;
   /** A local session has no preview or desktop, a session without a pull request no description; they show the diff instead. */
-  const isRemoteOnlyTab = storedTab === "preview" || storedTab === "desktop";
-  const rightTab = (!activeRemoteInstance && isRemoteOnlyTab) || (!isReviewingPullRequest && storedTab === "pullRequest") ? "diff" : storedTab;
+  const rightTab = hasInspectorTab(storedTab, { isOnVm: Boolean(activeRemoteInstance), isReviewingPullRequest }) ? storedTab : "diff";
 
   // ⌘P / double shift: "Go to File" for the active session's worktree.
   useFileSearchShortcut(() => {
@@ -170,6 +174,7 @@ export function App() {
   useBackendEvents();
   useShowSessionRequests();
   useScriptRunRequests();
+  useControlCommands();
   useRememberWindowBounds("main");
 
   // Each session's editor shows the tabs, carets and scroll positions it was left with, also after a restart.
@@ -203,26 +208,27 @@ export function App() {
     return () => window.removeEventListener("focus", refresh);
   }, [refreshSessions]);
 
-  // The active session's editor window boots hidden, so ⌘click in the diff only has to show it (see ide/editorWindows.ts).
+  // The active session's editor window boots hidden, so ⌘click in the diff only has to show it (see ide/editor-window.utils.ts).
   useEffect(() => keepEditorWindowWarm(hasLocalWorktree ? activeSessionId : null), [activeSessionId, hasLocalWorktree]);
 
   // Likewise the guardrails window, so the "Guardrails" button in the chat header (shown for local sessions) only has to show it.
   const hasGuardrails = hasLocalWorktree && !activeRemoteInstance;
   useEffect(() => keepGuardrailsWindowWarm(hasGuardrails ? activeSessionId : null), [activeSessionId, hasGuardrails]);
 
-  // A diff window boots hidden ahead of time, so a click on a changed file in the diagram only has to fill and show it (see graph/diffWindows.ts).
+  // A diff window boots hidden ahead of time, so a click on a changed file in the diagram only has to fill and show it (see diff/diff-window.utils.ts).
   useEffect(() => keepDiffWindowWarm(), []);
 
-  // The settings window boots hidden too, so ⌘, and the gear button only have to show it (see settings/openSettingsWindow.ts).
+  // The settings window boots hidden too, so ⌘, and the gear button only have to show it (see settings/settings-window.utils.ts).
   useEffect(() => keepSettingsWindowWarm(), []);
 
-  // The popup windows of the detached popups boot hidden as well, so the first ⇧⌘F or ⌘P only has to show one (see popup/useDetachedPopup.ts).
+  // The popup windows of the detached popups boot hidden as well, so the first ⇧⌘F or ⌘P only has to show one (see ui/detached-popup.utils.ts).
   useEffect(() => keepPopupWindowsWarm(), []);
 
   return (
     <>
       <PersistentGroup
         id="hunt-panes"
+        fillPane="inspector"
         groupRef={mainGroup}
         toggleOnlyPanes={{ sessions: SESSIONS_MIN_WIDTH, chat: CHAT_MIN_WIDTH }}
         className="h-full"
@@ -390,20 +396,6 @@ export function App() {
   );
 }
 
-/** What the worktree tabs of a remote session show until Hunt copied its files here. */
-function NoLocalWorktree({ sessionId }: { sessionId: string }) {
-  const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId));
-  const message =
-    session?.remote && !session.repoPath
-      ? `There is no local checkout of ${session.remote.repo}. Start a session in one, then refresh the remote sessions in the sidebar; ` +
-        "Hunt then copies this session's files here."
-      : "Hunt copies the session's files here once it reached the VM; your next prompt starts the VM.";
-  return <div className="flex h-full items-center justify-center px-8 text-center text-[14px] text-neutral-500">{message}</div>;
-}
-
-/** A status dot on a tab: green while something runs there, red when something failed. */
-type TabDot = { tone: "running" | "failed"; title: string };
-
 const VM_BUSY_DOT: TabDot = { tone: "running", title: "Something runs on the VM" };
 const PROCESS_RUNNING_DOT: TabDot = { tone: "running", title: "A process runs" };
 const CHECK_RUNNING_DOT: TabDot = { tone: "running", title: "A check runs" };
@@ -412,61 +404,4 @@ const CHECK_FAILED_DOT: TabDot = { tone: "failed", title: "A check failed" };
 function checksTabDot(status: ChecksStatus | null): TabDot | null {
   if (isAnyCheckRunning(status)) return CHECK_RUNNING_DOT;
   return status?.runs.some((run) => run.state === "failed" && !status.outdated.includes(run.name)) ? CHECK_FAILED_DOT : null;
-}
-
-/**
- * A tab of the inspector; `dot` adds a small status dot after the label, a `commentCount` above 0 a blue badge with
- * that count of review comments, raised to the label's top right corner.
- */
-function TabButton({
-  isActive,
-  onClick,
-  icon,
-  label,
-  dot = null,
-  commentCount = 0,
-}: {
-  isActive: boolean;
-  onClick: () => void;
-  icon: ReactNode;
-  label: string;
-  dot?: TabDot | null;
-  commentCount?: number;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`${TAB_BUTTON} gap-1.5 ${isActive ? TAB_ACTIVE : TAB_INACTIVE}`}
-    >
-      {icon}
-      {label}
-      {dot ? <span className={`size-1.5 shrink-0 rounded-full ${dot.tone === "running" ? "bg-green-400" : "bg-red-400"}`} title={dot.title} /> : null}
-      {commentCount ? <CountBadge count={commentCount} label={`${commentCount} review ${commentCount === 1 ? "comment" : "comments"}`} /> : null}
-    </button>
-  );
-}
-
-const BADGE_HEIGHT = 16;
-/** Extra width per digit beyond the first, so `12` stretches the circle into a pill. */
-const BADGE_DIGIT_WIDTH = 6;
-/** Baseline that centres digits: half the height plus half their height (~0.7 em at 10px). */
-const BADGE_BASELINE = BADGE_HEIGHT / 2 + 3.5;
-
-/**
- * A count in a blue circle, raised like a superscript; more than one digit stretch it into a pill. Drawn as one SVG
- * so circle and digits share the same sub-pixel offset; HTML text snaps its baseline to whole pixels and drifts.
- */
-function CountBadge({ count, label }: { count: number; label: string }) {
-  const text = count > 99 ? "99+" : String(count);
-  const width = BADGE_HEIGHT + (text.length - 1) * BADGE_DIGIT_WIDTH;
-  return (
-    <svg width={width} height={BADGE_HEIGHT} viewBox={`0 0 ${width} ${BADGE_HEIGHT}`} className="relative -top-1.5 -ml-0.5 shrink-0" role="img" aria-label={label}>
-      <title>{label}</title>
-      <rect width={width} height={BADGE_HEIGHT} rx={BADGE_HEIGHT / 2} className="fill-blue-600" />
-      <text x={width / 2} y={BADGE_BASELINE} textAnchor="middle" className="fill-white text-[10px] font-semibold">
-        {text}
-      </text>
-    </svg>
-  );
 }

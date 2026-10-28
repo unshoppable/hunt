@@ -63,7 +63,8 @@ struct RelayActivityEvent {
 }
 
 /// An annotation of the review widget for the composer of the session `hunt_session_id`, from the status channel of its
-/// VM or from the Chrome of a local session (`crate::browser`); mirror of `AnnotationEvent` in src/ipc/types.ts.
+/// VM or from the Chrome of a local session (`crate::agent::browser`); mirror of `AnnotationEvent` in
+/// src/sessions/session.types.ts.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnnotationEvent {

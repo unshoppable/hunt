@@ -8,16 +8,16 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::vm::short_id;
+use crate::session::session_id::SessionId;
 
 /// The longest preview domain: `<short>-<port>-open.` in front of it must fit into the 253 characters of a host name.
 const MAX_DOMAIN_LENGTH: usize = 253 - "01234567-65535-open.".len();
 
-/// The longest service name; `apps/session/src/config.ts` and `hunt-ctl` allow the same.
+/// The longest service name; `apps/session/src/session-config/hunt-json.rules.ts` and `hunt-ctl` allow the same.
 const MAX_SERVICE_NAME_LENGTH: usize = 32;
 
 /// The preview domain the gateway reports, lowercased, or an error unless it is a host name of at least two labels whose
-/// last label consists of 2 to 63 letters. `hunt-ctl` (`DOMAIN_PATTERN`) and `apps/session/src/config.ts` check the
+/// last label consists of 2 to 63 letters. `hunt-ctl` (`DOMAIN_PATTERN`) and `libs/domain/src/session/preview-domain.rules.ts` check the
 /// same.
 pub fn validate_domain(domain: &str) -> Result<String, String> {
     let domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
@@ -42,13 +42,13 @@ pub fn validate_domain(domain: &str) -> Result<String, String> {
 
 /// The URL of `port` of session `id`'s VM on `domain`, behind Google login.
 pub fn port_url(id: Uuid, domain: &str, port: u16) -> String {
-    format!("https://{}-{port}.{domain}", short_id(id))
+    format!("https://{}-{port}.{domain}", SessionId(id).short())
 }
 
 /// The URL of the service on `port` of session `id`'s VM on `domain` that only the app's own login protects; the
 /// gateway serves it only for a service marked `"guarded": false`.
 pub fn open_url(id: Uuid, domain: &str, port: u16) -> String {
-    format!("https://{}-{port}-open.{domain}", short_id(id))
+    format!("https://{}-{port}-open.{domain}", SessionId(id).short())
 }
 
 /// Whether `name` matches `^[a-z][a-z0-9-]{0,31}$`, the names hunt.json allows for services.

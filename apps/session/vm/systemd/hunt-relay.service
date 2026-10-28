@@ -1,4 +1,4 @@
-# The relay of the session on this VM (apps/session/src/relay/main.ts): it runs the ACP adapter with Claude Code as the user agent
+# The relay of the session on this VM (apps/session/src/relay/relay.main.ts): it runs the ACP adapter with Claude Code as the user agent
 # and serves it on /run/hunt/relay.sock, which Hunt reaches with `sudo -n -u agent socat - UNIX-CONNECT:…`; the idle
 # check reads /run/hunt/status.json. Its environment: agent.env of the installed release, the session's variables
 # (`hunt-ctl session-config`; the `env` of a service in hunt.json reaches only that service) and the Claude token and

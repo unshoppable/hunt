@@ -1,33 +1,17 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type {
-  AnnotationEvent,
-  AttributionEvent,
-  CheckOutputEvent,
-  ClosedEvent,
-  DiffOpenRequest,
-  DocumentChangedEvent,
-  DocumentDirtyEvent,
-  EditorOpenRequest,
-  GraphChangedEvent,
-  LspDiagnosticsEvent,
-  LspExitedEvent,
-  MessageTimesEvent,
-  PermissionEvent,
-  PermissionWithdrawnEvent,
-  PopupShowRequest,
-  RelayActivityEvent,
-  RemoteLinkEvent,
-  RemoteProgressEvent,
-  RemoteSyncEvent,
-  ReplayEvent,
-  ScriptRunRequest,
-  SummaryEvent,
-  TerminalExitEvent,
-  TerminalOutputEvent,
-  UpdateEvent,
-  WorktreeChangedEvent,
-} from "./types";
+import type { ClosedEvent, MessageTimesEvent, PermissionEvent, PermissionWithdrawnEvent, ReplayEvent, UpdateEvent } from "../chat/chat.types";
+import type { CheckOutputEvent } from "../checks/checks.types";
+import type { ControlCommandEvent } from "../control/control-command.types";
+import type { DiffOpenRequest } from "../diff/diff.types";
+import type { GraphChangedEvent } from "../graph/graph.types";
+import type { DocumentChangedEvent, DocumentDirtyEvent } from "../ide/documents/documents.types";
+import type { EditorOpenRequest } from "../ide/ide.types";
+import type { LspDiagnosticsEvent, LspExitedEvent } from "../ide/lsp/lsp.types";
+import type { PopupShowRequest } from "../ui/popup.types";
+import type { RelayActivityEvent, RemoteLinkEvent, RemoteProgressEvent, RemoteSyncEvent } from "../sessions/remote/remote-session.types";
+import type { AnnotationEvent, AttributionEvent, SummaryEvent, WorktreeChangedEvent } from "../sessions/session.types";
+import type { ScriptRunRequest, TerminalExitEvent, TerminalOutputEvent } from "../terminal/terminal.types";
 
 type EventPayloads = {
   "acp:update": UpdateEvent;
@@ -53,33 +37,37 @@ type EventPayloads = {
   "worktree:changed": WorktreeChangedEvent;
   /** The backend added or removed sessions; every window reloads its list. */
   "sessions:changed": undefined;
-  /** The backend added, removed or switched the Claude account (see settings/SettingsWindow.tsx). */
+  /** Sent by the window in which the user looked at a session's chat; every window clears its unseen activity (see `markChatSeen`). */
+  "chat:seen": { sessionId: string };
+  /** The backend added, removed or switched the Claude account (see settings/AccountRow.tsx). */
   "accounts:changed": undefined;
-  /** Sent by the main window to a session's editor window (see ide/editorWindows.ts). */
+  /** Sent by the main window to a session's editor window (see ide/editor-window.utils.ts). */
   "editor:open": EditorOpenRequest;
   /** Sent by an editor window to every window once it takes `editor:open` events. */
   "editor:ready": { label: string };
-  /** Sent by a secondary window to the main window to show a session there (see sessions/showSession.ts). */
+  /** Sent by a secondary window to the main window to show a session there (see sessions/show-session.hook.ts). */
   "session:show": { sessionId: string };
-  /** Sent by the main window to a diff window booted ahead of time (see graph/diffWindows.ts). */
+  /** Sent by the main window to a diff window booted ahead of time (see diff/diff-window.utils.ts). */
   "diff:open": DiffOpenRequest;
   /** Sent by a diff window to every window once it takes `diff:open` events and knows the sessions. */
   "diff:ready": { label: string };
-  /** Sent by a host window to a popup window: what to show (see popup/useDetachedPopup.ts). */
+  /** Sent by a host window to a popup window: what to show (see ui/detached-popup.hook.ts). */
   "popup:show": PopupShowRequest;
   /** Sent by a host window to a popup window when the popup it owns (`token`) goes. */
   "popup:hide": { token: string };
   /** Sent by a popup window to every window once it takes `popup:show` events. */
   "popup:ready": { label: string };
-  /** Sent by a popup window to its host window: what the user did in the popup `token` (see popup/protocol.ts). */
+  /** Sent by a popup window to its host window: what the user did in the popup `token` (see ui/popup-protocol.utils.ts). */
   "popup:action": { token: string; action: unknown };
   /** Sent by a popup window to its host window when the user closed the popup `token` or another window took it over. */
   "popup:closed": { token: string };
-  /** A window hid itself (see ui/nativeWindow.ts) or the main window's traffic light hid it; its popup windows hide too. */
+  /** A window hid itself (see ui/native-window.utils.ts) or the main window's traffic light hid it; its popup windows hide too. */
   "window:hidden": { label: string };
-  /** Sent by the window whose settings store changed (see app/bootstrap.ts); `source` is its label. */
+  /** Sent by the window whose settings store changed (see app/window-bootstrap.hook.ts); `source` is its label. */
   "settings:changed": { source: string };
-  /** Sent by the main window to the open settings window (see settings/openSettingsWindow.ts) to switch its page. */
+  /** Sent by the window whose agent defaults store changed (see app/window-bootstrap.hook.ts); `source` is its label. */
+  "agent-defaults:changed": { source: string };
+  /** Sent by the main window to the open settings window (see settings/settings-window.utils.ts) to switch its page. */
   "settings:show-page": { page: "updates" };
   "lsp:diagnostics": LspDiagnosticsEvent;
   "lsp:exited": LspExitedEvent;
@@ -93,8 +81,10 @@ type EventPayloads = {
   "checks:changed": { sessionId: string };
   /** Output of a check's run, sent to the main window. */
   "checks:output": CheckOutputEvent;
-  /** Sent by any window to the main window to run a package.json script in its Terminal tab (see terminal/scriptRuns.ts). */
+  /** Sent by any window to the main window to run a package.json script in its Terminal tab (see terminal/script-runs.hook.ts). */
   "terminal:run-script": ScriptRunRequest;
+  /** A `hunt-client` command of an agent, sent to the main window, which answers it (see control/control-commands.hook.ts). */
+  "control:command": ControlCommandEvent;
 };
 
 /**

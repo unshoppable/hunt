@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { commands } from "../ipc/commands";
-import type { Commit, GitScope, ResetMode } from "../ipc/types";
-import { reportSuccess } from "../state/statusToasts";
-import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
+import type { Commit, GitScope, ResetMode } from "./git.types";
+import { reportSuccess } from "../ui/status-toasts.store";
+import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons.constants";
 import { Modal } from "../ui/Modal";
-import { useDialogSize } from "../ui/useDialogSize";
+import { useDialogSize } from "../ui/dialog-size.hook";
 
 const RESET_MODES: { mode: ResetMode; label: string; description: string }[] = [
   { mode: "soft", label: "Soft", description: "Files won't change, differences will be staged for commit." },

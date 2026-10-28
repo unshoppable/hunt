@@ -1,8 +1,8 @@
 //! The live channel of a remote session's transcript stream: the transcript helper on its VM
-//! (`apps/session/src/sync/transcripts.ts`, run over the shared SSH connection as the agent's user) reports the files of
+//! (`apps/session/src/sync/transcript-helper.main.ts`, run over the shared SSH connection as the agent's user) reports the files of
 //! the agent's Claude Code project folder as they grow, from the offsets this side holds, and appends what this side
 //! sends to the files this side owns, answering with the size they have afterwards. Messages are JSON lines both ways
-//! (`apps/session/src/sync/transcriptProtocol.ts`). Knows nothing about Tauri.
+//! (`apps/session/src/sync/transcript-protocol.types.ts`). Knows nothing about Tauri.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,8 +15,8 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::oneshot;
 
-use super::shell_command;
 use super::ssh::Ssh;
+use crate::platform::shell::shell_command;
 
 /// The transcript helper of the installed session release and the Node that runs it.
 const HELPER: &str = "/srv/hunt/current/session/transcriptHelper.mjs";

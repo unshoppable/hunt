@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Decides every minute (hunt-idle.timer) whether the session on this VM is idle. Once it has been idle for IDLE_MINUTES
-# the script reports it, and the gateway's sweeper (`apps/gateway/src/idle.ts`), which runs it with --dry-run over SSH,
+# the script reports it, and the gateway's sweeper (`apps/gateway/src/session-vm/idle-sweeper.service.ts`), which runs it with --dry-run over SSH,
 # suspends the VM: a VM cannot suspend itself. The VM powers itself off only when SUSPEND_WAIT_MINUTES pass idle without
 # a suspend, so that a gateway that cannot suspend (an outage, a missing permission) does not leave it running. The disk
 # keeps everything; Hunt or the gateway resumes or starts the VM again when the session is needed. With --dry-run it

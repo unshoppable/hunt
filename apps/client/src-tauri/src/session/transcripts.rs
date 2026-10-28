@@ -21,7 +21,7 @@ use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, Recom
 use tauri::AppHandle;
 use uuid::Uuid;
 
-use crate::remote::claude_dir;
+use crate::agent::claude_config::claude_dir;
 use crate::remote::handoff::REMOTE_LOGS_DIR;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::transcript::{local_project, remote_project, Replacements};
@@ -29,7 +29,7 @@ use crate::remote::transcript_channel::{Event, Refused, TranscriptChannel};
 use crate::remote::transcript_sync::{Applied, Ownership, StreamKind, TranscriptSync};
 use crate::session::store;
 use crate::session::sync::{manifest_path, CHANNEL_RETRY};
-use crate::tmux::{DESKTOP_LOGS, LOGS_DIR};
+use crate::terminal::tmux::{DESKTOP_LOGS, LOGS_DIR};
 
 /// How long the watcher gathers local changes before they are pushed.
 const LOCAL_DEBOUNCE: Duration = Duration::from_millis(50);

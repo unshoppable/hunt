@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, type KeyboardEvent, type RefObject } from "react";
 import { useReactFlow } from "@xyflow/react";
-import { ICON_BUTTON_XS } from "../ui/buttons";
-import { ChevronDownIcon, CloseIcon, SearchIcon } from "../ui/icons";
-import { MATCH_KIND_RANK, type MatchKind } from "./graphSearch";
-import type { DiagramFlowNode } from "./layout";
+import { ICON_BUTTON_XS } from "../ui/buttons.constants";
+import { ChevronDownIcon, CloseIcon, SearchIcon } from "../ui/Icons";
+import { MATCH_KIND_RANK, type MatchKind } from "./graph-search.utils";
+import type { DiagramFlowNode } from "./layout.utils";
 
 /**
  * The ⌘F field of the dependency diagram, floating in the canvas' top-right corner. The diagram highlights every file
- * in `matches` (see graphSearch.ts) and the view moves to the active one: to the first match while the active one
+ * in `matches` (see graph-search.utils.ts) and the view moves to the active one: to the first match while the active one
  * stops matching or a better kind of match turns up, to the next with Enter or ↓, to the previous with ⇧Enter or ↑.
  * Matches are visited by kind (name, path, symbol), each kind from top to bottom, left to right. Escape closes the field.
  * `minZoom` is the zoom the view comes in to at least, so the file's name is readable.

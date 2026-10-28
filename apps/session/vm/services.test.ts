@@ -39,7 +39,8 @@ install -m 0755 /fixtures/systemctl /usr/local/bin/systemctl
 
 /**
  * Resets the VM to a session ID whose worktree /home/agent/app holds the hunt.json and hunt.agent.md given ($2, $3;
- * none when empty), without units, services or logs.
+ * none when empty) and the skill file `.claude/skills/<name>/SKILL.md` of each name in $4 (separated by spaces), without
+ * units, services or logs.
  */
 const SEED = String.raw`
 set -euo pipefail
@@ -54,11 +55,19 @@ fi
 if [[ -n $3 ]]; then
   printf '%s' "$3" | runuser -u agent -- tee /home/agent/app/hunt.agent.md >/dev/null
 fi
+for skill in $4; do
+  runuser -u agent -- mkdir -p "/home/agent/app/.claude/skills/$skill"
+  printf -- '---\nname: %s\n---\n' "$skill" | runuser -u agent -- tee "/home/agent/app/.claude/skills/$skill/SKILL.md" >/dev/null
+done
 `;
 
 const HUNT_JSON = {
   version: 3,
-  swf: { model: "claude-opus-5-5" },
+  swf: {
+    model: "claude-opus-5-5",
+    humanReviewPaths: ["**/migrations/**"],
+    skills: { plan: "swf-plan", implement: "swf-implement", verify: "swf-verify", gate: "acme-gate", pr: "swf-pr" },
+  },
   services: {
     api: { command: "node server.js", port: 3000, guarded: false, env: { ADMIN_URL: "${services.admin.publicUrl}" } },
     admin: { command: "npm start", cwd: "admin", port: 4200, env: { API_URL: "${services.api.publicUrl}" } },
@@ -70,6 +79,8 @@ const HUNT_JSON = {
   },
 };
 const AGENT_MD = "# Services\nStart api and admin together.\n";
+/** The skill of every agent step as HUNT_JSON names them under `swf.skills`. */
+const SKILLS = HUNT_JSON.swf.skills;
 
 /** The services of HUNT_JSON as meta.json records them. */
 const DECLARED = {
@@ -125,8 +136,8 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     return calls.split("\n").filter((line) => line !== "");
   }
 
-  function seed(huntJson: unknown = HUNT_JSON, agentMd = AGENT_MD) {
-    const seeded = sh(SEED, [ID, huntJson ? JSON.stringify(huntJson) : "", agentMd]);
+  function seed(huntJson: unknown = HUNT_JSON, agentMd = AGENT_MD, skills: readonly string[] = Object.values(SKILLS)) {
+    const seeded = sh(SEED, [ID, huntJson ? JSON.stringify(huntJson) : "", agentMd, skills.join(" ")]);
     expect(seeded.stderr).toBe("");
     expect(seeded.status).toBe(0);
   }
@@ -249,10 +260,16 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     }
   });
 
-  it("writes each service's environment, records the services and prints the prompt's services, hunt.agent.md and the swf model", () => {
+  it("writes each service's environment, records the services and prints the prompt's services, hunt.agent.md and the swf settings", () => {
     sh("mkdir -p /etc/hunt/services && touch /etc/hunt/services/gone.env");
     const result = sessionConfig();
-    expect(result).toEqual({ agent_md: AGENT_MD.trim(), services_prompt: expect.stringMatching(/^### The repository's services\n/), swf_model: "claude-opus-5-5" });
+    expect(result).toEqual({
+      agent_md: AGENT_MD.trim(),
+      services_prompt: expect.stringMatching(/^### The repository's services\n/),
+      swf_model: "claude-opus-5-5",
+      swf_human_review_paths: ["**/migrations/**"],
+      swf_skills: SKILLS,
+    });
     expect(result.services_prompt).toContain("https://7c0c6f2e-3000-open.hunt.example.com");
 
     expect(sh("ls /etc/hunt/services").stdout).toBe("admin.env\napi.env\nui.env\n");
@@ -300,9 +317,15 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     );
   });
 
-  it("prints null for a repository without hunt.agent.md, no services and no swf model without hunt.json", () => {
-    seed(null, "");
-    expect(sessionConfig()).toEqual({ agent_md: null, services_prompt: expect.stringContaining("declares no services"), swf_model: null });
+  it("prints null for a repository without hunt.agent.md, no services and no swf settings without hunt.json", () => {
+    seed(null, "", []);
+    expect(sessionConfig()).toEqual({
+      agent_md: null,
+      services_prompt: expect.stringContaining("declares no services"),
+      swf_model: null,
+      swf_human_review_paths: [],
+      swf_skills: {},
+    });
     expect(sh("ls -A /etc/hunt/services 2>/dev/null").stdout).toBe("");
     expect(JSON.parse(sh(`cat /srv/hunt/sessions/${ID}/meta.json`).stdout).preview).toEqual({ domain: DOMAIN, services: [] });
     expect(huntCtlJson("service", "status")).toEqual({ services: [] });
@@ -315,6 +338,41 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(result.stderr).toContain("services.Bad");
     expect(result.stderr).toContain("hunt-ctl: hunt.json or hunt.agent.md is not valid (see above)");
     expect(result.stdout).toBe("");
+    expect(JSON.parse(sh(`cat /srv/hunt/sessions/${ID}/meta.json`).stdout).preview).toBeUndefined();
+  });
+
+  it("refuses a swf section whose skill files the worktree lacks, one problem per step, and checks none without the section", () => {
+    seed(HUNT_JSON, AGENT_MD, ["swf-plan", "swf-implement", "swf-verify"]);
+    const result = huntCtl("session-config", ID, "--domain", DOMAIN);
+    expect(result.status).toBe(3);
+    for (const [step, name] of [["gate", "acme-gate"], ["pr", "swf-pr"]]) {
+      expect(result.stderr).toContain(
+        `swf.skills.${step}: no skill file .claude/skills/${name}/SKILL.md; Hunt offers to create it when a session of the repository opens`,
+      );
+    }
+    expect(result.stderr).not.toContain("swf.skills.plan");
+    expect(result.stderr).toContain("hunt-ctl: hunt.json or hunt.agent.md is not valid (see above)");
+    expect(JSON.parse(sh(`cat /srv/hunt/sessions/${ID}/meta.json`).stdout).preview).toBeUndefined();
+
+    seed({ version: 3, services: HUNT_JSON.services }, AGENT_MD, []);
+    expect(sessionConfig()).toMatchObject({ swf_model: null, swf_skills: {} });
+  });
+
+  it("refuses a swf section that names no skill for an agent step, since Hunt has no default skill", () => {
+    seed({ ...HUNT_JSON, swf: { model: "claude-opus-5-5" } }, AGENT_MD, Object.values(SKILLS));
+    const withoutSkills = huntCtl("session-config", ID, "--domain", DOMAIN);
+    expect(withoutSkills.status).toBe(3);
+    expect(withoutSkills.stderr).toContain(
+      "swf.skills: must name the skill of every agent step (plan, implement, verify, gate, pr); Hunt asks to add them when a session of the repository opens",
+    );
+
+    seed({ ...HUNT_JSON, swf: { skills: { plan: "swf-plan", gate: "acme-gate" } } }, AGENT_MD, Object.values(SKILLS));
+    const withoutSteps = huntCtl("session-config", ID, "--domain", DOMAIN);
+    expect(withoutSteps.status).toBe(3);
+    for (const step of ["implement", "verify", "pr"]) {
+      expect(withoutSteps.stderr).toContain(`swf.skills.${step}: must name the skill of the step; Hunt asks to add it when a session of the repository opens`);
+    }
+    expect(withoutSteps.stderr).not.toContain("no skill file");
     expect(JSON.parse(sh(`cat /srv/hunt/sessions/${ID}/meta.json`).stdout).preview).toBeUndefined();
   });
 

@@ -1,39 +1,41 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import * as monaco from "monaco-editor";
 import { commands } from "../ipc/commands";
-import { attachIdeLink } from "../diff/ideLink";
-import { useFileIconUrl } from "../diff/fileIcons";
-import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, setupMonaco } from "../diff/monaco";
-import { anchorBelowLine, type SelectionRequest } from "../diff/selectionContext";
-import { STATUS_NAME_CLASS } from "../diff/styles";
-import { useSettingsStore } from "../state/settings";
-import { useHuntStore } from "../state/store";
-import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
-import { ChangeMarkers, type Marker } from "./changeMarkers";
+import { attachIdeLink } from "../editor/ide-link.monaco";
+import { useFileIconUrl } from "../ui/file-icons/file-icons.hook";
+import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS } from "../editor/monaco.constants";
+import { setupMonaco } from "../editor/setup.monaco";
+import { anchorBelowLine, type SelectionRequest } from "../editor/selection-request.monaco";
+import { STATUS_NAME_CLASS } from "../ui/styles.constants";
+import { useSettingsStore } from "../settings/settings.store";
+import { useHuntStore } from "../sessions/hunt.store";
+import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../sessions/remote/remote-session.utils";
+import { ChangeMarkers, type Marker } from "./change-markers.monaco";
 import { ChangePopover } from "./ChangePopover";
-import type { Workspace } from "./documents";
-import { noteCaret, noteViewState, useIdeStore, viewStateOf, type PendingPosition } from "./ideStore";
-import { findUsages, navigationAt, symbolPathAt, type RenameTarget, type SymbolCrumb } from "./languageService";
-import type { Pane } from "./paneGrid";
-import { attachRefactorings } from "./refactorings";
-import { RenameDialog } from "./RenameDialog";
-import type { ChangeBlock } from "../diff/lineDiff";
-import { AddCommentGlyph, type CommentTarget } from "../review/addCommentGlyph";
+import type { DocumentWorkspace } from "./documents/documents.service";
+import { noteCaret, noteViewState, useIdeStore, viewStateOf, type PendingPosition } from "./ide.store";
+import { findUsages, navigationAt, symbolPathAt, type RenameTarget, type SymbolCrumb } from "./language/language-service.utils";
+import type { Pane } from "./pane-layout.value-object";
+import { attachRefactorings } from "./language/refactorings.monaco";
+import { RenameDialog } from "./language/RenameDialog";
+import type { ChangeBlock } from "../editor/line-diff.utils";
+import { AddCommentGlyph, type CommentTarget } from "../review/add-comment-glyph.monaco";
 import { ReviewCommentZones } from "../review/ReviewCommentZones";
-import { isInsideHunk, useReviewedPullRequest } from "../review/reviewComments";
-import { attachSelectionAgent } from "./selectionAgent";
-import { ScriptRunMarkers } from "./scriptRunMarkers";
-import { UnusedMemberMarkers } from "./unusedMemberMarkers";
-import { SelectionChatMarkers } from "./selectionChatMarkers";
-import { useBusyChatIds, useSelectionChats } from "./selectionChats";
-import { isUsagesPopupInApp, UsagesPopup, type UsagesQuery } from "./UsagesPopover";
-import type { Usage } from "./usages";
-import { runPackageScript } from "../terminal/scriptRuns";
-import { STATUS_BAR } from "../ui/bars";
-import { CloseIcon } from "../ui/icons";
+import { useReviewedPullRequest } from "../review/review-comments.hook";
+import { attachSelectionAgent } from "./selection/selection-agent.monaco";
+import { ScriptRunMarkers } from "./package-scripts/script-run-markers.monaco";
+import { UnusedMemberMarkers } from "./language/unused-member-markers.monaco";
+import { SelectionChatMarkers } from "./selection/selection-chat-markers.monaco";
+import { useBusyChatIds, useSelectionChats, useUnseenChatIds } from "./selection/selection-chats.hook";
+import { isUsagesPopupInApp, UsagesPopup, type UsagesQuery } from "./language/UsagesPopover";
+import type { Usage } from "./language/usages.utils";
+import { runPackageScript } from "../terminal/script-runs.hook";
+import { STATUS_BAR } from "../ui/bars.constants";
+import { CloseIcon } from "../ui/Icons";
 import { UnsavedDot } from "../ui/UnsavedDot";
-import { baseName, dirName } from "../ui/path";
-import { errorText, useLoad } from "../ui/useLoad";
+import { baseName, dirName } from "../common/path/path.utils";
+import { useLoad } from "../ui/load.hook";
+import { errorText } from "../ui/error-text.utils";
 
 const SYMBOL_PATH_DELAY_MS = 150;
 /** The caret and scroll position are remembered once they rested this long. */
@@ -43,7 +45,7 @@ const EDITOR_OVERSCROLL_PX = 400;
 
 type EditorPaneProps = {
   sessionId: string;
-  workspace: Workspace;
+  workspace: DocumentWorkspace;
   pane: Pane;
   /** The pane keyboard shortcuts act on; its active tab is marked in the accent color. */
   isActive: boolean;
@@ -56,7 +58,7 @@ type EditorPaneProps = {
    * from a click on a sub chat's gutter glyph with that sub session (`subSessionId`).
    */
   onOpenSubChat?: (request: SelectionRequest, subSessionId?: string) => void;
-  /** Toggles the sub chat popover from the floating button at the end of a selection (see selectionAskButton.ts). */
+  /** Toggles the sub chat popover from the floating button at the end of a selection (see selection-ask-button.monaco.ts). */
   onToggleSubChat?: (request: SelectionRequest) => void;
 };
 
@@ -97,6 +99,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, s
   const [shownMarker, setShownMarker] = useState<Marker | null>(null);
   const selectionChats = useSelectionChats(sessionId, pane.activePath);
   const busyChatIds = useBusyChatIds();
+  const unseenChatIds = useUnseenChatIds();
   /** Declaration whose usages popup is open. */
   const [usagesQuery, setUsagesQuery] = useState<UsagesQuery | null>(null);
   /** Symbol whose Rename dialog is open, with the model it was started in. */
@@ -202,7 +205,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, s
     const addCommentGlyph = new AddCommentGlyph(
       editor,
       (model) => (latest.current.isReview ? latest.current.workspace.pathOf(model.uri) : null),
-      (span) => isInsideHunk(markers.blocks, span.startLine, span.line),
+      (span) => span.isInsideHunk(markers.blocks),
     );
     // The review's "+" takes the glyph margin of every hovered line, so a review shows no run triangles.
     const scriptRunMarkers = new ScriptRunMarkers(editor, (model) => {
@@ -324,8 +327,8 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, s
   }, [isReview]);
 
   useEffect(() => {
-    chatMarkersRef.current?.set(pane.activePath, selectionChats, busyChatIds);
-  }, [pane.activePath, selectionChats, busyChatIds]);
+    chatMarkersRef.current?.set(pane.activePath, selectionChats, busyChatIds, unseenChatIds);
+  }, [pane.activePath, selectionChats, busyChatIds, unseenChatIds]);
 
   // Shows the active tab's model and applies a pending caret position once the model is in place.
   const activePath = pane.activePath;
@@ -463,13 +466,22 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, s
   );
 }
 
-/** The file name followed by the declarations around the caret, like WebStorm's editor breadcrumbs. */
+/**
+ * The worktree-relative file path followed by the declarations around the caret, like WebStorm's editor breadcrumbs.
+ * A path too long for the row cuts its directory, never the file name.
+ */
 function Breadcrumb({ path, crumbs }: { path: string | null; crumbs: SymbolCrumb[] }) {
   const fileIconUrl = useFileIconUrl();
+  const directory = path ? dirName(path) : "";
   return (
     <div className={`${STATUS_BAR} gap-1.5 bg-(--surface-inspector)`} title={path ?? undefined}>
       {path ? <img src={fileIconUrl(path)} alt="" className="size-4 shrink-0" /> : null}
-      {path ? <span className="text-neutral-400">{baseName(path)}</span> : null}
+      {path ? (
+        <span className="flex min-w-0">
+          {directory ? <span className="truncate text-neutral-500">{directory}/</span> : null}
+          <span className="shrink-0 text-neutral-400">{baseName(path)}</span>
+        </span>
+      ) : null}
       {crumbs.map((crumb, index) => (
         <span key={`${index}:${crumb.name}`} className="flex items-center gap-1">
           <span className="text-neutral-600">›</span>

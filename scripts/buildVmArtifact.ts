@@ -1,8 +1,8 @@
 /**
  * Builds the release artifact a VM runs, in the layout `hunt-ctl` and the systemd units expect below
  * `/srv/hunt/current`: `gateway/`, `relay/`, `session/` and `vm/`. Every Node entry point becomes one self-contained
- * ES module (`.mjs`) without third-party packages, so the VM needs nothing but Node; the review widget, which the review
- * server hands to web pages, one minified script (`.js`, see `buildReviewWidget.ts`).
+ * ES module (`.mjs`) with the few packages it may use bundled in (BUNDLED_PACKAGES), so the VM needs nothing but Node;
+ * the review widget, which the review server hands to web pages, one minified script (`.js`, see `buildReviewWidget.ts`).
  *
  *   node scripts/buildVmArtifact.ts <session|gateway>
  *
@@ -33,12 +33,12 @@ interface Artifact {
 const ARTIFACTS: Record<string, Artifact> = {
   session: {
     entries: {
-      "relay/main": "apps/session/src/relay/main.ts",
-      "session/configCli": "apps/session/src/configCli.ts",
-      "session/syncHelper": "apps/session/src/sync/helper.ts",
-      "session/transcriptHelper": "apps/session/src/sync/transcripts.ts",
-      "session/statusHelper": "apps/session/src/relay/statusHelper.ts",
-      "session/reviewServer": "apps/session/src/review/server.ts",
+      "relay/main": "apps/session/src/relay/relay.main.ts",
+      "session/configCli": "apps/session/src/session-config/session-config.main.ts",
+      "session/syncHelper": "apps/session/src/sync/sync-helper.main.ts",
+      "session/transcriptHelper": "apps/session/src/sync/transcript-helper.main.ts",
+      "session/statusHelper": "apps/session/src/relay/status-helper.main.ts",
+      "session/reviewServer": "apps/session/src/review/review-server.main.ts",
     },
     reviewWidget: "session/review.js",
     files: [
@@ -60,10 +60,10 @@ const ARTIFACTS: Record<string, Artifact> = {
   },
   gateway: {
     entries: {
-      "gateway/swf": "apps/gateway/src/swf.ts",
-      "gateway/wake": "apps/gateway/src/wake.ts",
-      "gateway/api": "apps/gateway/src/api.ts",
-      "gateway/apiClient": "apps/gateway/src/apiClient.ts",
+      "gateway/swf": "apps/gateway/src/swf/swf.main.ts",
+      "gateway/wake": "apps/gateway/src/wake/wake.main.ts",
+      "gateway/api": "apps/gateway/src/gateway-api/gateway-api.main.ts",
+      "gateway/apiClient": "apps/gateway/src/gateway-api/gateway-api-forwarder.main.ts",
     },
     files: [
       ["libs/vm/hunt-ctl", "vm/hunt-ctl"],
@@ -75,13 +75,21 @@ const ARTIFACTS: Record<string, Artifact> = {
   },
 };
 
-/** Only Node's built-ins exist on the VM; any other package import fails the build instead of the service. */
-const builtinsOnly: Plugin = {
-  name: "builtins-only",
+/** The packages an entry point may import besides Node's built-ins; esbuild bundles them into the `.mjs`. */
+const BUNDLED_PACKAGES = new Set(["zod"]);
+
+/**
+ * Only Node's built-ins exist on the VM: they stay external, the packages of BUNDLED_PACKAGES are bundled, and any
+ * other package import fails the build instead of the service.
+ */
+const allowedPackages: Plugin = {
+  name: "allowed-packages",
   setup(context) {
-    context.onResolve({ filter: /^[^./]/ }, (args) =>
-      isBuiltin(args.path) ? { path: args.path, external: true } : { errors: [{ text: `${args.path} is not a Node built-in; the VM has no node_modules` }] },
-    );
+    context.onResolve({ filter: /^[^./]/ }, (args) => {
+      if (isBuiltin(args.path)) return { path: args.path, external: true };
+      if (BUNDLED_PACKAGES.has(args.path.split("/")[0])) return undefined;
+      return { errors: [{ text: `${args.path} is neither a Node built-in nor one of the bundled packages (${[...BUNDLED_PACKAGES].join(", ")}); the VM has no node_modules` }] };
+    });
   },
 };
 
@@ -128,7 +136,7 @@ async function buildArtifact(name: string): Promise<void> {
     platform: "node",
     format: "esm",
     target: "node24",
-    plugins: [builtinsOnly, rawText],
+    plugins: [allowedPackages, rawText],
     logLevel: "warning",
   });
   if (artifact.reviewWidget) {

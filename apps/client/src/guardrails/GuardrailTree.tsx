@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
-import { ChevronIcon, PlusIcon, TrashIcon } from "../ui/icons";
+import { useFileIconUrl, useFolderIconUrl } from "../ui/file-icons/file-icons.hook";
+import { ChevronIcon, PlusIcon, TrashIcon } from "../ui/Icons";
 import { UnsavedDot } from "../ui/UnsavedDot";
-import { toggleInExpanded } from "../ui/treeExpansion";
-import { useEscapeToClose } from "../ui/useEscapeToClose";
-import { useTreeNavigation } from "../ui/useTreeNavigation";
-import { isInsideFolder } from "../ui/path";
-import { expandedForTree, folderOf, guardrailTreeRows, KIND_LABELS, treeParentOf, type Guardrail, type GuardrailKind } from "./guardrails";
+import { toggleInExpanded } from "../common/tree/tree-expansion.utils";
+import { useEscapeToClose } from "../ui/escape-to-close.hook";
+import { useTreeNavigation } from "../ui/tree-navigation.hook";
+import { isInsideFolder } from "../common/path/path.utils";
+import type { Guardrail, GuardrailKind } from "./guardrail.types";
+import { KIND_LABELS } from "./guardrail-kind.utils";
+import { expandedForTree, folderOf, guardrailTreeRows, treeParentOf } from "./guardrail-tree.utils";
 
 /** Indentation of a tree row per folder level, in pixels. */
 const ROW_INDENT = 14;

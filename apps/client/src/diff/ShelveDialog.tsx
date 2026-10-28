@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { commands } from "../ipc/commands";
-import { INPUT } from "./styles";
-import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons";
+import { INPUT } from "../ui/styles.constants";
+import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../ui/buttons.constants";
 import { Modal } from "../ui/Modal";
-import { useDialogSize } from "../ui/useDialogSize";
+import { useDialogSize } from "../ui/dialog-size.hook";
 
 /** Asks for a shelf name and parks the given files on the shelf. Dragging an edge resizes the dialog. */
 export function ShelveDialog({

@@ -1,41 +1,50 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useIdeStore } from "../ide/ideStore";
-import { hasPendingQuestion, useHuntStore } from "../state/store";
-import { findSelectOption, listChoiceOptions, listModes } from "./configOptions";
-import { MessageList } from "./MessageList";
+import { useIdeStore } from "../ide/ide.store";
+import { useAgentDefaultsStore } from "./agent-defaults.store";
+import { useHuntStore } from "../sessions/hunt.store";
+import { hasPendingQuestion } from "./chat.store-slice";
+import { findSelectOption, listChoiceOptions, listModes } from "./config-options.utils";
+import { MessageList } from "./messages/MessageList";
 import { PermissionPrompt } from "./PermissionPrompt";
-import { PromptInput, type ConfigSelect } from "./PromptInput";
-import { CLEAR_COMMAND } from "./slashCommands";
+import { PromptInput, type ConfigSelect } from "./prompt/PromptInput";
+import { CLEAR_COMMAND } from "./prompt/slash-commands.utils";
 import { SelectionCard } from "./SelectionCard";
-import type { FileTarget } from "./changeReferences";
-import { useFileIndex } from "./fileLinks";
-import { useFollowScroll } from "./useFollowScroll";
+import type { FileTarget } from "./change-references.utils";
+import { useFileIndex } from "./file-index.hook";
+import { useFileModelLoader } from "./file-model.hook";
+import { FileModelContext } from "../editor/highlighted-code.hook";
+import { useFollowScroll } from "./follow-scroll.hook";
 import { SessionSummary, SessionSummaryToggle } from "./SessionSummary";
-import type { SelectionRequest } from "../diff/selectionContext";
-import { useSessionViewStore } from "../state/sessionViews";
-import { useSettingsStore } from "../state/settings";
-import { openGuardrailsWindow } from "../guardrails/openGuardrailsWindow";
-import { ensureInstructionSections } from "../guardrails/instructionSections";
-import { ensureGuardrailReadmes } from "../guardrails/guardrailReadmes";
-import { GUARDRAIL_CHAT_PATH, KIND_LABELS, readGuardrailDirs, readGuardrailSkill } from "../guardrails/guardrails";
-import { buildGuardrailRequest, buildTranscript, findGuardrailSuggestion, guardrailChatTask, transcriptTail, type GuardrailSuggestion } from "./guardrailSuggestion";
-import { SubChatPopover, useSubChatPopover } from "./SubChatPopover";
-import { SaveGuardrailButton } from "./SaveGuardrailButton";
+import type { SelectionRequest } from "../editor/selection-request.monaco";
+import { useSessionViewStore } from "../sessions/inspector.store";
+import { useSettingsStore } from "../settings/settings.store";
+import { openGuardrailsWindow } from "../guardrails/guardrails-window.utils";
+import { ensureInstructionSections } from "../guardrails/instruction-sections.utils";
+import { ensureSwfSkills } from "../guardrails/swf-skills.utils";
+import { ensureGuardrailReadmes } from "../guardrails/guardrail-readmes.utils";
+import { KIND_LABELS } from "../guardrails/guardrail-kind.utils";
+import { readGuardrailDirs, readGuardrailSkill } from "../guardrails/guardrail-listing.service";
+import { GUARDRAIL_CHAT_PATH } from "../guardrails/guardrail-tasks.utils";
+import { buildGuardrailRequest, buildTranscript, findGuardrailSuggestion, guardrailChatTask, transcriptTail, type GuardrailSuggestion } from "./guardrail/guardrail-suggestion.utils";
+import { SubChatPopover } from "./sub-chat/SubChatPopover";
+import { useSubChatPopover } from "./sub-chat/sub-chat-popover.hook";
+import { SaveGuardrailButton } from "./guardrail/SaveGuardrailButton";
 import { ContextMeter } from "./ContextMeter";
-import { HEADER_BAR } from "../ui/bars";
-import { isShortcut } from "../ui/shortcuts";
-import { repoName } from "../ui/path";
+import { HEADER_BAR } from "../ui/bars.constants";
+import { isShortcut } from "../ui/shortcuts.utils";
+import { repoName } from "../common/path/path.utils";
 import { AGENT_CHIP, Chip } from "../ui/Chip";
-import { DANGER, ICON_BUTTON_BASE_SM, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { BranchIcon, FolderIcon, ShieldIcon, TrashIcon } from "../ui/icons";
+import { DANGER, ICON_BUTTON_BASE_SM, SECONDARY_BUTTON_MD, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { BranchIcon, FolderIcon, ShieldIcon, TrashIcon } from "../ui/Icons";
 import { OpenInWebstormButton } from "./OpenInWebstormButton";
-import { RemoteToggle } from "./RemoteToggle";
-import { remoteDeleteQuestion } from "../sessions/remoteOrigin";
+import { commands } from "../ipc/commands";
+import { RemoteToggle } from "../sessions/remote/RemoteToggle";
+import { remoteDeleteQuestion } from "../sessions/remote/remote-origin.utils";
 import { QuestionIcon } from "../sessions/SessionMark";
-import { confirmDestructive } from "../ui/confirm";
-import { continueLocallyQuestion, moveStatus, remoteOf } from "./remoteSession";
-import { RemoteStepProgress } from "./RemoteProgress";
-import { useVmConnect } from "./useVmConnect";
+import { confirmDestructive } from "../ui/confirm.utils";
+import { continueLocallyQuestion, moveStatus, remoteOf } from "../sessions/remote/remote-session.utils";
+import { RemoteStepProgress } from "../sessions/remote/RemoteProgress";
+import { useVmConnect } from "../sessions/remote/vm-connect.hook";
 
 /** Order in which shift+tab cycles the session mode, as in the terminal; modes the agent does not offer are skipped. */
 const MODE_CYCLE = ["default", "acceptEdits", "plan", "auto"];
@@ -67,6 +76,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   /** The connect to the VM of a locked worktree, which runs on its own (see `useVmConnect`); `lock` says why it is locked. */
   const { ownerId, lock, isConnecting, hasConnectFailed, stepLabel } = useVmConnect(sessionId);
   const chat = useHuntStore((state) => state.chats[sessionId]);
+  const unreadAfterMessageId = useHuntStore((state) => (state.unreadLine?.sessionId === sessionId ? state.unreadLine.afterMessageId : null));
   const isCreating = useHuntStore((state) => state.creatingIds.includes(sessionId));
   const sendPrompt = useHuntStore((state) => state.sendPrompt);
   const sendPromptNow = useHuntStore((state) => state.sendPromptNow);
@@ -83,6 +93,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const continueLocally = useHuntStore((state) => state.continueLocally);
   const setMode = useHuntStore((state) => state.setMode);
   const setConfigOption = useHuntStore((state) => state.setConfigOption);
+  const setPreferred = useAgentDefaultsStore((state) => state.setPreferred);
   const answerPermission = useHuntStore((state) => state.answerPermission);
   const selectSession = useHuntStore((state) => state.selectSession);
   const setTab = useSessionViewStore((state) => state.setTab);
@@ -142,12 +153,13 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   });
 
   // Opening a session checks once that its CLAUDE.md explains the guardrails and points the agent at the ADR folder,
-  // and offers to add the missing sections. A session still being created has no record in the backend yet; an agent on
-  // a VM reads CLAUDE.md there only when it starts, so the offer waits until the session runs here again.
+  // and then that a repository using Hunt's software factory keeps a skill for every swf step; each check offers to add
+  // what is missing, one dialog after the other. A session still being created has no record in the backend yet; an
+  // agent on a VM reads CLAUDE.md there only when it starts, so the offers wait until the session runs here again.
   const worktreePath = remote ? undefined : session?.worktreePath;
   useEffect(() => {
     if (!worktreePath || isCreating) return;
-    void ensureInstructionSections(sessionId, worktreePath);
+    void ensureInstructionSections(sessionId, worktreePath).then(() => ensureSwfSkills(sessionId, worktreePath));
   }, [sessionId, worktreePath, isCreating]);
 
   // Once an agent of this worktree (the session's own or a sub chat's) wrote the first rule or ADR, its folder gets the README.
@@ -169,7 +181,9 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     },
     [sessionId, setTab, openFile],
   );
+  const readFile = useCallback((path: string) => commands.readFile(sessionId, path), [sessionId]);
   const fileIndex = useFileIndex(sessionId);
+  const loadFileModel = useFileModelLoader(sessionId, worktreePath);
 
   /** Deletes the remote session with its VM after confirmation (the trash button beside the title); the sidebar's × only takes it out of the sidebar. */
   async function deleteRemoteSession() {
@@ -240,15 +254,19 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
               <SelectionCard selection={session.selection} isOpen onOpen={openInEditor} />
             </div>
           ) : null}
-          <MessageList
-            items={chat?.items ?? []}
-            plan={chat?.plan ?? []}
-            isBusy={(isBusy && !chat?.isHiddenTurn) || (isCreating && Boolean(chat?.items.length))}
-            isVerbose={isVerbose}
-            basePath={remote?.worktreePath ?? session.worktreePath}
-            fileIndex={fileIndex}
-            onOpenFile={openInEditor}
-          />
+          <FileModelContext value={loadFileModel}>
+            <MessageList
+              items={chat?.items ?? []}
+              plan={chat?.plan ?? []}
+              isBusy={(isBusy && !chat?.isHiddenTurn) || (isCreating && Boolean(chat?.items.length))}
+              isVerbose={isVerbose}
+              basePath={remote?.worktreePath ?? session.worktreePath}
+              fileIndex={fileIndex}
+              onOpenFile={openInEditor}
+              readFile={readFile}
+              unreadAfterMessageId={unreadAfterMessageId}
+            />
+          </FileModelContext>
           {chat?.isLoading ? (
             <div className="text-neutral-500">{chat.remoteStep ? <RemoteStepProgress chat={chat} showsDetail /> : <p>Loading session…</p>}</div>
           ) : null}
@@ -369,7 +387,10 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         }}
         onCycleMode={cycleMode}
         onModeChange={(nextModeId) => void setMode(sessionId, nextModeId)}
-        onConfigChange={(configId, value) => void setConfigOption(sessionId, configId, value)}
+        onConfigChange={(configId, value) => {
+          setPreferred(configId, value);
+          void setConfigOption(sessionId, configId, value);
+        }}
         pullRequest={session.pullRequest}
         extension={<SessionTargetBar repoPath={session.repoPath} branch={session.branch} />}
         dropZoneRef={panelRef}

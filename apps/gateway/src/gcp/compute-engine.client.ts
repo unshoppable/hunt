@@ -1,0 +1,399 @@
+/**
+ * Compute Engine in the gateway's project, with the access token of the gateway's service account from the metadata
+ * server (`gcp/metadata-server.client.ts`): the session VMs in any of the project's zones, their disks, the snapshots a
+ * move between zones takes and the operations of the calls that change them. Plain REST through `fetch`; no
+ * dependencies.
+ */
+import { messageOf } from "../../../../libs/domain/src/shared/errors.utils.ts";
+import type { Log } from "../../../../libs/domain/src/shared/journal.utils.ts";
+import { failure } from "../shared/http-failure.utils.ts";
+import { authorization, type Metadata } from "./metadata-server.client.ts";
+
+const COMPUTE = "https://compute.googleapis.com/compute/v1";
+/** The device name of the boot disk the session template attaches. */
+export const BOOT_DEVICE_NAME = "persistent-disk-0";
+
+/** A VM as Compute Engine lists it. */
+export interface Instance {
+  name: string;
+  /** The zone's name, e.g. `europe-west3-a`; empty when the resource names none. */
+  zone: string;
+  /** E.g. `PROVISIONING`, `RUNNING`, `STOPPING`, `TERMINATED`. */
+  status: string;
+  /** RFC 3339, as Compute Engine writes it; empty when the resource names none. */
+  creationTimestamp: string;
+  /** When the VM was last stopped, RFC 3339; empty for one that never was. */
+  lastStopTimestamp: string;
+  /** When the VM was last suspended, RFC 3339; empty for one that never was. */
+  lastSuspendedTimestamp: string;
+  labels: Record<string, string>;
+  metadata: { fingerprint: string; items: MetadataItem[] };
+  disks: AttachedDisk[];
+  /** The machine type's name, e.g. `c4d-standard-8`; empty when the resource names none. */
+  machineType: string;
+}
+
+export interface AttachedDisk {
+  deviceName: string;
+  /** Whether Compute Engine deletes the disk with the VM. */
+  autoDelete: boolean;
+  boot: boolean;
+  /** The disk's name, in the VM's zone; empty when the resource names none. */
+  source: string;
+}
+
+/** A disk resource in the shape the gateway reads: its type's name, e.g. `hyperdisk-balanced`, and its size. */
+export interface Disk {
+  type: string;
+  sizeGb: number;
+}
+
+export interface MetadataItem {
+  key: string;
+  value: string;
+}
+
+/** An operation of Compute Engine, as the calls that change a resource return it; `zone` is null for a global one. */
+export interface Operation {
+  name: string;
+  zone: string | null;
+}
+
+export interface OperationError {
+  /** E.g. `ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS` or `QUOTA_EXCEEDED`. */
+  code: string;
+  message: string;
+  /** The machine type a capacity error names (`errorInfo.metadatas.vmType`); null without one. */
+  machineType: string | null;
+}
+
+export interface OperationState {
+  isDone: boolean;
+  /** The first error of a finished operation; null while it runs and when it succeeded. */
+  error: OperationError | null;
+}
+
+/** Whether `text`, an error code or message, says the zone has no capacity for the VM (a stockout). */
+export function isStockout(text: string): boolean {
+  return text.includes("ZONE_RESOURCE_POOL_EXHAUSTED");
+}
+
+/** What `instances.insert` gets besides the instance template. */
+export interface InstanceRequest {
+  name: string;
+  template: string;
+  /** Replace the template's labels, so they repeat its `hunt-role`. */
+  labels: Record<string, string>;
+  machineType: string | null;
+  /** Replace the template's metadata items; absent keeps the template's. */
+  metadata?: MetadataItem[];
+  /**
+   * A boot disk Compute Engine creates with the VM from a snapshot of the project, of this type and size, named like
+   * the VM and deleted with it, in place of the template's; absent keeps the template's.
+   */
+  bootDisk?: BootDiskFromSnapshot | null;
+}
+
+export interface BootDiskFromSnapshot {
+  snapshot: string;
+  type: string;
+  sizeGb: number;
+}
+
+/**
+ * The Compute Engine calls of the gateway's services, on VMs in the gateway's project; per-VM calls name the VM's zone.
+ * Calls that change a VM return once Compute Engine accepted the request; their operation or the VM's status shows when
+ * it is done.
+ */
+export interface Compute {
+  /** The VMs of every zone of the gateway's project that match the list filter `filter`. */
+  list(filter: string): Promise<Instance[]>;
+  /** The VMs of every zone of the gateway's project whose label `key` is `value`. */
+  listByLabel(key: string, value: string): Promise<Instance[]>;
+  /** The VM `name` in whichever zone of the gateway's project holds it; null when none does. */
+  locate(name: string): Promise<Instance | null>;
+  /** The VM `name` in `zone`; null when it does not exist there. */
+  get(zone: string, name: string): Promise<Instance | null>;
+  /** Requests the VM from the instance template in `zone`. */
+  insert(zone: string, request: InstanceRequest): Promise<Operation>;
+  /**
+   * Waits until `operation` is done, or until Compute Engine's own deadline of about two minutes passes, and returns its
+   * state; a state that is not done means the deadline passed.
+   */
+  waitOperation(operation: Operation): Promise<OperationState>;
+  /** Renames the VM, which must be `TERMINATED`; `newName` must be free in the project. */
+  setName(zone: string, name: string, newName: string): Promise<Operation>;
+  /** The disk `name` in `zone`; fails when it does not exist. */
+  getDisk(zone: string, name: string): Promise<Disk>;
+  /** Requests a snapshot `snapshot` of the disk, stored in the zone's region. */
+  createSnapshot(zone: string, disk: string, snapshot: string): Promise<Operation>;
+  /** Requests the deletion of the snapshot; a global operation. Fails with `HTTP 404` for one that does not exist. */
+  deleteSnapshot(snapshot: string): Promise<Operation>;
+  /** Replaces the VM's metadata items; `fingerprint` is the one of the metadata read before. */
+  setMetadata(zone: string, name: string, fingerprint: string, items: MetadataItem[]): Promise<void>;
+  /** Starts a `TERMINATED` (or `STOPPED`) VM. */
+  start(zone: string, name: string): Promise<Operation>;
+  /** Resumes a `SUSPENDED` VM. */
+  resume(zone: string, name: string): Promise<Operation>;
+  /** Suspends a `RUNNING` VM: Compute Engine saves its memory and keeps its processes for a resume. */
+  suspend(zone: string, name: string): Promise<Operation>;
+  stop(zone: string, name: string): Promise<void>;
+  /** Makes Compute Engine delete the disk `deviceName` with the VM. */
+  setDiskAutoDelete(zone: string, name: string, deviceName: string): Promise<void>;
+  /** Deletes the VM and the disks whose `autoDelete` is set. */
+  delete(zone: string, name: string): Promise<void>;
+}
+
+/** `entries` set in `items`: existing keys get the new value, the other items stay as they are. */
+export function mergeMetadataItems(items: MetadataItem[], entries: Record<string, string>): MetadataItem[] {
+  const merged = items.filter((item) => !Object.hasOwn(entries, item.key));
+  for (const [key, value] of Object.entries(entries)) {
+    merged.push({ key, value });
+  }
+  return merged;
+}
+
+/** The last segment of a resource URL such as `https://…/projects/p/zones/europe-west3-a`. */
+function lastSegment(value: unknown): string {
+  return typeof value === "string" ? (value.split("/").pop() ?? "") : "";
+}
+
+/** The region of a zone: `europe-west1` for `europe-west1-c`. */
+export function regionOf(zone: string): string {
+  return zone.replace(/-[a-z]$/, "");
+}
+
+/** An instance resource of the Compute Engine API in the shape the gateway reads. */
+export function parseInstance(value: unknown): Instance {
+  const raw = (value ?? {}) as {
+    name?: unknown;
+    zone?: unknown;
+    status?: unknown;
+    creationTimestamp?: unknown;
+    lastStopTimestamp?: unknown;
+    lastSuspendedTimestamp?: unknown;
+    labels?: unknown;
+    metadata?: { fingerprint?: unknown; items?: unknown };
+    disks?: unknown;
+    machineType?: unknown;
+  };
+  const labels: Record<string, string> = {};
+  if (raw.labels && typeof raw.labels === "object") {
+    for (const [key, label] of Object.entries(raw.labels)) {
+      if (typeof label === "string") {
+        labels[key] = label;
+      }
+    }
+  }
+  const items = Array.isArray(raw.metadata?.items) ? (raw.metadata.items as { key?: unknown; value?: unknown }[]) : [];
+  const disks = Array.isArray(raw.disks) ? (raw.disks as { deviceName?: unknown; autoDelete?: unknown; boot?: unknown; source?: unknown }[]) : [];
+  return {
+    name: typeof raw.name === "string" ? raw.name : "",
+    zone: lastSegment(raw.zone),
+    status: typeof raw.status === "string" ? raw.status : "",
+    creationTimestamp: typeof raw.creationTimestamp === "string" ? raw.creationTimestamp : "",
+    lastStopTimestamp: typeof raw.lastStopTimestamp === "string" ? raw.lastStopTimestamp : "",
+    lastSuspendedTimestamp: typeof raw.lastSuspendedTimestamp === "string" ? raw.lastSuspendedTimestamp : "",
+    labels,
+    metadata: {
+      fingerprint: typeof raw.metadata?.fingerprint === "string" ? raw.metadata.fingerprint : "",
+      items: items
+        .filter((item) => typeof item.key === "string")
+        .map((item) => ({ key: item.key as string, value: typeof item.value === "string" ? item.value : "" })),
+    },
+    disks: disks
+      .filter((disk) => typeof disk.deviceName === "string")
+      .map((disk) => ({ deviceName: disk.deviceName as string, autoDelete: disk.autoDelete === true, boot: disk.boot === true, source: lastSegment(disk.source) })),
+    machineType: lastSegment(raw.machineType),
+  };
+}
+
+/** A disk resource of the Compute Engine API in the shape the gateway reads. */
+export function parseDisk(value: unknown): Disk {
+  const raw = (value ?? {}) as { type?: unknown; sizeGb?: unknown };
+  const sizeGb = Number(raw.sizeGb);
+  return { type: lastSegment(raw.type), sizeGb: Number.isFinite(sizeGb) && sizeGb > 0 ? sizeGb : 0 };
+}
+
+/** An operation resource of the Compute Engine API; `zone` stands in when the resource names none, null for a global one. */
+export function parseOperation(value: unknown, zone: string | null): Operation & OperationState {
+  const raw = (value ?? {}) as { name?: unknown; zone?: unknown; status?: unknown; error?: { errors?: unknown } };
+  const errors = Array.isArray(raw.error?.errors) ? (raw.error.errors as { code?: unknown; message?: unknown; errorDetails?: unknown }[]) : [];
+  const first = errors[0];
+  let error: OperationError | null = null;
+  if (first) {
+    const details = Array.isArray(first.errorDetails) ? (first.errorDetails as { errorInfo?: { metadatas?: { vmType?: unknown } } }[]) : [];
+    const machineType = details.map((detail) => detail.errorInfo?.metadatas?.vmType).find((type) => typeof type === "string" && type);
+    error = {
+      code: typeof first.code === "string" ? first.code : "",
+      message: typeof first.message === "string" ? first.message : "",
+      machineType: typeof machineType === "string" ? machineType : null,
+    };
+  }
+  return {
+    name: typeof raw.name === "string" ? raw.name : "",
+    zone: lastSegment(raw.zone) || zone,
+    isDone: raw.status === "DONE",
+    error,
+  };
+}
+
+/**
+ * The resource and filter of the Compute Engine call `url` for the log, without the API's base and the project: e.g.
+ * `zones/europe-west1-c/instances/vm-hunt-s-ab12cd34/start` or `aggregated/instances, filter labels.hunt-role = "session"`.
+ */
+export function describeComputeCall(url: string): string {
+  const parsed = new URL(url);
+  const path = decodeURIComponent(parsed.pathname.replace(/^\/compute\/v1\/projects\/[^/]+\//, ""));
+  const filter = parsed.searchParams.get("filter");
+  return filter ? `${path}, filter ${filter}` : path;
+}
+
+/** `log` hears one line per API call: method, resource, HTTP status (or why the call failed) and duration. */
+export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetch, log: Log = () => {}): Compute {
+  async function projectUrl(): Promise<string> {
+    return `${COMPUTE}/projects/${encodeURIComponent(await metadata.project())}`;
+  }
+
+  async function zoneUrl(zone: string): Promise<string> {
+    return `${await projectUrl()}/zones/${encodeURIComponent(zone)}`;
+  }
+
+  async function call(method: "GET" | "POST" | "DELETE", url: string, body?: unknown): Promise<Response> {
+    const headers = await authorization(metadata);
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+    }
+    const what = `Compute Engine ${method} ${describeComputeCall(url)}`;
+    const startedAt = Date.now();
+    try {
+      const response = await fetchImpl(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      log(`${what}: HTTP ${response.status} in ${Date.now() - startedAt} ms`);
+      return response;
+    } catch (error) {
+      log(`${what}: failed after ${Date.now() - startedAt} ms: ${messageOf(error)}`, "error");
+      throw error;
+    }
+  }
+
+  async function instanceUrl(zone: string, name: string): Promise<string> {
+    return `${await zoneUrl(zone)}/instances/${encodeURIComponent(name)}`;
+  }
+
+  async function diskUrl(zone: string, name: string): Promise<string> {
+    return `${await zoneUrl(zone)}/disks/${encodeURIComponent(name)}`;
+  }
+
+  async function post(zone: string, name: string, verb: string, what: string, query = ""): Promise<Response> {
+    const response = await call("POST", `${await instanceUrl(zone, name)}/${verb}${query}`);
+    if (!response.ok) throw await failure(response, what);
+    return response;
+  }
+
+  /** The operation a successful call answered with. */
+  async function operationOf(response: Response, zone: string | null): Promise<Operation> {
+    const { name } = parseOperation(await response.json(), zone);
+    return { name, zone };
+  }
+
+  /** Every page of the list at `base` with `filter`; `itemsOf` takes the instances out of one page. */
+  async function pages(base: string, filter: string, what: string, itemsOf: (page: Record<string, unknown>) => unknown[]): Promise<Instance[]> {
+    const instances: Instance[] = [];
+    let pageToken = "";
+    do {
+      const url = `${base}${base.includes("?") ? "&" : "?"}filter=${encodeURIComponent(filter)}${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`;
+      const response = await call("GET", url);
+      if (!response.ok) throw await failure(response, what);
+      const page = (await response.json()) as Record<string, unknown>;
+      instances.push(...itemsOf(page).map(parseInstance));
+      pageToken = typeof page.nextPageToken === "string" ? page.nextPageToken : "";
+    } while (pageToken);
+    return instances;
+  }
+
+  async function list(filter: string, what: string): Promise<Instance[]> {
+    const base = `${await projectUrl()}/aggregated/instances?returnPartialSuccess=true`;
+    // `items` maps each zone (`zones/<zone>`) to its instances, or to a warning for a zone without any.
+    return pages(base, filter, what, (page) => Object.values((page.items ?? {}) as Record<string, { instances?: unknown[] }>).flatMap((scope) => scope.instances ?? []));
+  }
+
+  return {
+    list: (filter) => list(filter, `list the VMs matching ${filter}`),
+    async listByLabel(key, value) {
+      const instances = await list(`labels.${key} = "${value}"`, `list the VMs labelled ${key}=${value}`);
+      return instances.filter((instance) => instance.labels[key] === value);
+    },
+    async locate(name) {
+      const instances = await list(`name = "${name}"`, `look up ${name}`);
+      return instances.find((instance) => instance.name === name) ?? null;
+    },
+    async get(zone, name) {
+      const response = await call("GET", await instanceUrl(zone, name));
+      if (response.status === 404) return null;
+      if (!response.ok) throw await failure(response, `look up ${name}`);
+      return parseInstance(await response.json());
+    },
+    async insert(zone, request) {
+      const template = `projects/${await metadata.project()}/global/instanceTemplates/${request.template}`;
+      const body: Record<string, unknown> = { name: request.name, labels: request.labels };
+      if (request.machineType) {
+        body.machineType = `zones/${zone}/machineTypes/${request.machineType}`;
+      }
+      if (request.metadata) {
+        body.metadata = { items: request.metadata };
+      }
+      if (request.bootDisk) {
+        const { snapshot, type, sizeGb } = request.bootDisk;
+        const initializeParams = { diskName: request.name, sourceSnapshot: `global/snapshots/${snapshot}`, diskType: `zones/${zone}/diskTypes/${type}`, diskSizeGb: String(sizeGb) };
+        body.disks = [{ boot: true, autoDelete: true, deviceName: BOOT_DEVICE_NAME, initializeParams }];
+      }
+      const response = await call("POST", `${await zoneUrl(zone)}/instances?sourceInstanceTemplate=${encodeURIComponent(template)}`, body);
+      if (!response.ok) throw await failure(response, `create ${request.name} from ${request.template} in ${zone}`);
+      return operationOf(response, zone);
+    },
+    async waitOperation({ name, zone }) {
+      const base = zone ? `${await zoneUrl(zone)}/operations` : `${await projectUrl()}/global/operations`;
+      const response = await call("POST", `${base}/${encodeURIComponent(name)}/wait`);
+      if (!response.ok) throw await failure(response, `wait for the operation ${name}`);
+      const { isDone, error } = parseOperation(await response.json(), zone);
+      return { isDone, error };
+    },
+    async setName(zone, name, newName) {
+      const response = await call("POST", `${await instanceUrl(zone, name)}/setName`, { name: newName, currentName: name });
+      if (!response.ok) throw await failure(response, `rename ${name} to ${newName}`);
+      return operationOf(response, zone);
+    },
+    async getDisk(zone, name) {
+      const response = await call("GET", await diskUrl(zone, name));
+      if (!response.ok) throw await failure(response, `look up the disk ${name} in ${zone}`);
+      return parseDisk(await response.json());
+    },
+    async createSnapshot(zone, disk, snapshot) {
+      const response = await call("POST", `${await diskUrl(zone, disk)}/createSnapshot`, { name: snapshot, storageLocations: [regionOf(zone)] });
+      if (!response.ok) throw await failure(response, `snapshot the disk ${disk} in ${zone} as ${snapshot}`);
+      return operationOf(response, zone);
+    },
+    async deleteSnapshot(snapshot) {
+      const response = await call("DELETE", `${await projectUrl()}/global/snapshots/${encodeURIComponent(snapshot)}`);
+      if (!response.ok) throw await failure(response, `delete the snapshot ${snapshot}`);
+      return operationOf(response, null);
+    },
+    async setMetadata(zone, name, fingerprint, items) {
+      const response = await call("POST", `${await instanceUrl(zone, name)}/setMetadata`, { fingerprint, items });
+      if (!response.ok) throw await failure(response, `set the metadata of ${name}`);
+    },
+    start: async (zone, name) => operationOf(await post(zone, name, "start", `start ${name}`), zone),
+    resume: async (zone, name) => operationOf(await post(zone, name, "resume", `resume ${name}`), zone),
+    suspend: async (zone, name) => operationOf(await post(zone, name, "suspend", `suspend ${name}`), zone),
+    async stop(zone, name) {
+      await post(zone, name, "stop", `stop ${name}`);
+    },
+    async setDiskAutoDelete(zone, name, deviceName) {
+      await post(zone, name, "setDiskAutoDelete", `make ${name} delete its disk ${deviceName}`, `?autoDelete=true&deviceName=${encodeURIComponent(deviceName)}`);
+    },
+    async delete(zone, name) {
+      const response = await call("DELETE", await instanceUrl(zone, name));
+      if (!response.ok) throw await failure(response, `delete ${name}`);
+    },
+  };
+}

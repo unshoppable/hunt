@@ -1,12 +1,12 @@
 #!/bin/bash
-# hunt-api: the gateway API's command (apps/gateway/src/api.ts). sshd forces it on every user outside google-sudoers
+# hunt-api: the gateway API's command (apps/gateway/src/gateway-api/gateway-api.main.ts). sshd forces it on every user outside google-sudoers
 # (/etc/ssh/sshd_config.d/20-hunt-api.conf), which then can run nothing but `hunt-api <method>`, with the method's
 # params as JSON on stdin and NDJSON events on stdout. Admins call /usr/local/bin/hunt-api <method> the same way. It
 # hands the request to the forwarder apiClient.mjs as hunt-gw through sudo (/etc/sudoers.d/hunt-api), which names the
 # caller to the API through SUDO_USER.
 set -euo pipefail
 
-# The whole command; the method part is METHOD_PATTERN of apps/gateway/src/apiProtocol.ts.
+# The whole command; the method part is METHOD_PATTERN of apps/gateway/src/gateway-api/gateway-api-protocol.utils.ts.
 readonly COMMAND_PATTERN='^hunt-api ([a-z]+(\.[a-zA-Z]+)?)$'
 
 # An admin whom the Match block catches anyway (OS Login grants sudo per user, which need not show up as membership of

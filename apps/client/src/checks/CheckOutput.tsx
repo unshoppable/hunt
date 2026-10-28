@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import { commands } from "../ipc/commands";
 import { listenTo } from "../ipc/events";
-import type { CheckOutputEvent } from "../ipc/types";
-import { decodeBase64 } from "../terminal/terminalStream";
-import { useXterm } from "../terminal/useXterm";
+import type { CheckOutputEvent } from "./checks.types";
+import { decodeBase64 } from "../terminal/terminal-stream.utils";
+import { useXterm } from "../terminal/xterm.hook";
 
 /** Hides the cursor: the output takes no input, so a cursor would suggest that it does. */
 const HIDE_CURSOR = "\u001b[?25l";

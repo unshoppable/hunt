@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import type { Commit } from "../ipc/types";
-import { useSettingsStore, type GitLogColumns } from "../state/settings";
-import { trackDrag } from "../ui/pointerDrag";
+import type { Commit } from "./git.types";
+import { useSettingsStore, type GitLogColumns } from "../settings/settings.store";
+import { trackDrag } from "../ui/pointer-drag.utils";
 import type { LogFilter } from "./GitPanel";
-import { layoutGraph, type GraphRow } from "./commitGraph";
-import { BranchIcon, CloseIcon, TagIcon } from "../ui/icons";
-import { logLabels, type LogLabel } from "./logLabels";
+import { layoutGraph, type GraphRow } from "./commit-graph.utils";
+import { BranchIcon, CloseIcon, TagIcon } from "../ui/Icons";
+import { logLabels, type LogLabel } from "./log-labels.utils";
 
 /** Horizontal distance between two lanes of the graph, in px. */
 const LANE_WIDTH = 14;

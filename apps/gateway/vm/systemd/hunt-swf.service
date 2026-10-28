@@ -1,9 +1,10 @@
-# Starts remote sessions for GitHub issues labelled swf (apps/gateway/src/swf.ts): polls the repositories that the
-# gateway's instance metadata hunt-swf-repos lists every 30 seconds and sets each session up on a VM of its own with
+# Starts remote sessions for GitHub issues labelled swf (apps/gateway/src/swf/swf.main.ts): polls the repositories that the
+# gateway's instance metadata hunt-swf-repos lists every 30 seconds, sets each session up on a VM of its own with
 # `gcloud compute ssh --internal-ip` and the gateway's service account, as hunt-gw, the one user next to root that
-# reaches the metadata server (hunt-firewall.service). gcloud and ssh keep their configuration and key in the state
-# directory. Once a minute it suspends session VMs whose session is idle (idle.ts), and once an hour it deletes session
-# VMs that have been off for more than a week (reaper.ts). A
+# reaches the metadata server (hunt-firewall.service), and drives each session through the steps of its pipeline up to
+# the merge of its pull request (swf/pipeline.domain.ts). gcloud and ssh keep their configuration and key in the state
+# directory. Once a minute it suspends session VMs whose session is idle (session-vm/idle-sweeper.service.ts), and once
+# an hour it deletes session VMs that have been off for more than a week (session-vm/reaper.service.ts). A
 # reload (after `hunt-ctl install`) makes the poller exit once the sessions it sets up run, and systemd starts the new
 # release.
 [Unit]

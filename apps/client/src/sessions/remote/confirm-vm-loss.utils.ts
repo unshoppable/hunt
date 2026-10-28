@@ -1,0 +1,14 @@
+import type { SessionView } from "../session.types";
+import { confirmDestructive } from "../../ui/confirm.utils";
+import { adoptedBringBackQuestion, adoptedDeleteQuestion, isAdopted } from "./remote-origin.utils";
+
+/**
+ * Asks before an action that deletes the VM of the adopted `session` for everybody working on it: deleting the session
+ * or bringing it back. Resolves true without asking for any other session.
+ */
+export function confirmVmLoss(session: SessionView, action: "delete" | "bringBack"): Promise<boolean> {
+  if (!isAdopted(session)) return Promise.resolve(true);
+  return action === "delete"
+    ? confirmDestructive(adoptedDeleteQuestion(session), "Delete")
+    : confirmDestructive(adoptedBringBackQuestion(session), "Bring back");
+}

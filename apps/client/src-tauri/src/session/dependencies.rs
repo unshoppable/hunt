@@ -17,7 +17,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::process::Command;
 
-use crate::lsp::{self, LspRegistry};
+use crate::ide::lsp::{self, LspRegistry};
 
 /// Lockfiles and the package manager that wrote them, with its install command and the one that never writes the
 /// lockfile.

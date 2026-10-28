@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { editor } from "monaco-editor";
-import { SplitDiffController } from "./splitDiff";
-import { useSettingsStore } from "../state/settings";
+import { SplitDiffController } from "./split-diff.monaco";
+import { useSettingsStore } from "../settings/settings.store";
 
 /**
  * React host for the side-by-side diff. The editors are created once per mount; `original` / `modified`

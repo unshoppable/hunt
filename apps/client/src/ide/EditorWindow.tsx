@@ -1,24 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useBackendEvents, usePaneStyles, useSettingsSync } from "../app/bootstrap";
 import { listenTo } from "../ipc/events";
-import { computeChangeBlocks } from "../diff/lineDiff";
-import type { EditorOpenRequest } from "../ipc/types";
-import { useHuntStore } from "../state/store";
-import { hideCurrentWindow, useSecondaryWindow } from "../ui/nativeWindow";
-import { workspaceFor, type Workspace } from "./documents";
-import { FileSearchPopup, useFileSearchShortcut } from "./FileSearchDialog";
-import { FindInFilesPopup, useFindInFilesShortcut } from "./FindInFilesDialog";
+import { computeChangeBlocks } from "../editor/line-diff.utils";
+import type { EditorOpenRequest } from "./ide.types";
+import { useHuntStore } from "../sessions/hunt.store";
+import { hideCurrentWindow } from "../ui/native-window.utils";
+import { useSecondaryWindow } from "../ui/secondary-window.hook";
+import { workspaceFor, type DocumentWorkspace } from "./documents/documents.service";
+import { FileSearchPopup, useFileSearchShortcut } from "./search/FileSearchDialog";
+import { FindInFilesPopup, useFindInFilesShortcut } from "./search/FindInFilesDialog";
 import { IdePanel } from "./IdePanel";
-import { useIdeSession, useIdeStore } from "./ideStore";
-import { resolveDefinition } from "./languageService";
-import { allPanes } from "./paneGrid";
-import { usePopupRequest } from "../popup/usePopupRequest";
-import { HEADER_BAR } from "../ui/bars";
+import { useIdeSession, useIdeStore } from "./ide.store";
+import { resolveDefinition } from "./language/language-service.utils";
+import { usePopupRequest } from "../ui/popup-request.hook";
+import { HEADER_BAR } from "../ui/bars.constants";
 
 /**
- * The built-in editor as a window of its own (see editorWindows.ts), opened by ⌘click on a name in the diff (it
+ * The built-in editor as a window of its own (see editor-window.utils.ts), opened by ⌘click on a name in the diff (it
  * shows the name's declaration) or "Go to File" while the inspector shows another tab. It boots hidden, usually
  * ahead of its first request, and appears with the first file; it keeps its own tabs, takes further files as the
  * `editor:open` event and, closed on ⌘W, Escape or the traffic light, only hides so the next request is instant;
@@ -34,7 +33,7 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
   const revealFolder = useIdeStore((state) => state.revealFolder);
   const closeAllTabs = useIdeStore((state) => state.closeAllTabs);
   const ide = useIdeSession(sessionId);
-  const openPaths = useMemo(() => [...new Set(allPanes(ide.layout).flatMap((pane) => pane.tabs))], [ide.layout]);
+  const openPaths = useMemo(() => [...new Set(ide.layout.panes.flatMap((pane) => pane.tabs))], [ide.layout]);
   const fileSearch = usePopupRequest<null>();
   /** Find in Files, starting with the text that was selected in the editor (`null`: the last query). */
   const findInFiles = usePopupRequest<string | null>();
@@ -43,9 +42,6 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
   /** Number of open requests so far; the window shows itself (again) with each one. */
   const [requestCount, setRequestCount] = useState(initialRequest ? 1 : 0);
 
-  usePaneStyles();
-  useSettingsSync();
-  useBackendEvents();
   useFileSearchShortcut(() => fileSearch.show(null));
   useFindInFilesShortcut((initialText) => findInFiles.show(initialText));
 
@@ -110,7 +106,7 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
     return () => void subscription.then((unlisten) => unlisten());
   }, [sessionId, initialRequest, openFile, revealActiveFile, revealFolder]);
 
-  // The window that opened this one queues requests until the page listens and knows its sessions (see editorWindows.ts).
+  // The window that opened this one queues requests until the page listens and knows its sessions (see editor-window.utils.ts).
   useEffect(() => {
     if (!isLoaded || !isListening) return;
     void emit("editor:ready", { label: getCurrentWindow().label });
@@ -130,7 +126,7 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
   // window does not show itself on readiness: it starts hidden and appears with each request (see below).
   useSecondaryWindow("editor", closeWindow, { isReady: false });
 
-  // The window starts hidden (see editorWindows.ts) and appears with its first requested file; it is pointless once
+  // The window starts hidden (see editor-window.utils.ts) and appears with its first requested file; it is pointless once
   // its session is gone (removed together with its worktree).
   const hasSession = !!session;
   useEffect(() => {
@@ -181,7 +177,7 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
  * First line of the first block where the file's current content (unsaved edits included) differs from its diff base,
  * as the change markers show it; undefined when the file has no change or lies outside the changes.
  */
-async function firstChangedLine(workspace: Workspace, path: string): Promise<number | undefined> {
+async function firstChangedLine(workspace: DocumentWorkspace, path: string): Promise<number | undefined> {
   const [headText, document] = await Promise.all([workspace.headText(path), workspace.open(path)]);
   if (headText === null) return undefined;
   const firstBlock = computeChangeBlocks(headText, document.model.getValue())[0];

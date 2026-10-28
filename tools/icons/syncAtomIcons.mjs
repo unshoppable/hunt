@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Vendors the Atom Material Icons (github.com/mallowigi/iconGenerator for the SVGs, github.com/AtomMaterialUI/a-file-icon-vscode
- * for the file and folder associations) into src/diff/atomIcons, with every color turned pastel.
+ * for the file and folder associations) into src/ui/file-icons/atom-icons, with every color turned pastel.
  *
  * Usage: node tools/icons/syncAtomIcons.mjs <iconGenerator-clone> <a-file-icon-vscode-clone> [pastel]
  *   pastel  0..1, default 0.6; 0 keeps the upstream Material colors
@@ -14,7 +14,7 @@
  * Names: file icons keep their upstream name, lowercased ("typescript", "nestservice"). Folder icons become
  * `folder_<name>` and `folder_<name>_open`. The fallbacks are `_file`, `_folder`, `_folder_open`, `_root`, `_root_open`.
  * Associations gated behind an icon pack (`enabledFor`, e.g. Angular or NestJS file kinds) are left out; the file icon
- * rules in src/state/settings.ts assign those by path. Icons with a light variant use their `_dark` SVG, as upstream
+ * rules in src/settings/settings.store.ts assign those by path. Icons with a light variant use their `_dark` SVG, as upstream
  * does for dark themes.
  *
  * Hunt-specific icons (Atom style, saturated Material colors) live in tools/icons/custom/icons and are made pastel the
@@ -56,7 +56,7 @@ const ASSOCIATION_CLONE = resolve(associationClonePath);
 const ASSETS = join(SVG_CLONE, "assets/icons");
 const TOOLS = dirname(fileURLToPath(import.meta.url));
 const CUSTOM = join(TOOLS, "custom");
-const OUT = resolve(TOOLS, "../../src/diff/atomIcons");
+const OUT = resolve(TOOLS, "../../src/ui/file-icons/atom-icons");
 const ICONS_OUT = join(OUT, "icons");
 
 /** Upstream SVG paths of one asset folder by lowercased basename. */

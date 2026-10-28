@@ -1,9 +1,13 @@
-import type { ReactNode } from "react";
-import type { SessionView } from "../ipc/types";
-import { useSettingsStore } from "../state/settings";
-import { SECONDARY, SURFACE_BUTTON_MD } from "../ui/buttons";
-import type { FileLocation } from "./changeReferences";
-import { FileReferenceList } from "./FileReferenceList";
+import { useState, type ReactNode } from "react";
+import { CodeBlock } from "../editor/CodeBlock";
+import { monacoLanguage } from "../editor/language-id.utils";
+import type { SelectionContext } from "../editor/selection-context.types";
+import type { SessionView } from "../sessions/session.types";
+import { useSettingsStore } from "../settings/settings.store";
+import { SECONDARY, SURFACE_BUTTON_MD } from "../ui/buttons.constants";
+import { Collapsible } from "../ui/Collapsible";
+import type { FileLocation } from "./change-references.utils";
+import { FileReferenceList, FileReferenceRow } from "./FileReferenceList";
 
 /**
  * Box above the messages with the session's title followed by `titleActions`; while the "Summary" setting is on, it
@@ -20,7 +24,11 @@ export function SessionSummary({ session, titleActions, onOpenFile }: { session:
         </div>
         {showSummary ? (
           <div className="mt-2">
-            {session.selection ? <FileReferenceList locations={[session.selection]} onOpen={onOpenFile} className="mb-2.5" /> : null}
+            {session.selection?.text ? (
+              <SelectionCodeCard key={session.id} selection={session.selection} onOpen={onOpenFile} />
+            ) : session.selection ? (
+              <FileReferenceList locations={[session.selection]} onOpen={onOpenFile} className="mb-2.5" />
+            ) : null}
             {session.summary.length ? (
               <ul className="space-y-1 text-[14px] leading-snug text-neutral-300">
                 {session.summary.map((line, index) => (
@@ -36,6 +44,33 @@ export function SessionSummary({ session, titleActions, onOpenFile }: { session:
           </div>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/** Lines above which the selected code starts collapsed in the summary; 16 lines of the card's code are 300 px high. */
+const MAX_INITIALLY_EXPANDED_LINES = 16;
+
+/**
+ * Card with the file row of the code a sub chat was opened from and the code below it, which the row's chevron shows
+ * or hides. The code starts shown unless it has more than `MAX_INITIALLY_EXPANDED_LINES` lines; shown, it scrolls
+ * beyond half the window height so the chat below stays visible.
+ */
+function SelectionCodeCard({ selection, onOpen }: { selection: SelectionContext; onOpen: (location: FileLocation) => void }) {
+  const [isExpanded, setIsExpanded] = useState(() => selection.text.split("\n").length <= MAX_INITIALLY_EXPANDED_LINES);
+  return (
+    <div className="mb-2.5 overflow-hidden rounded-lg border border-(--line) bg-(--surface-inset) text-[13px]">
+      <FileReferenceRow location={selection} onOpen={onOpen} isExpanded={isExpanded} onToggle={() => setIsExpanded(!isExpanded)} />
+      <Collapsible isOpen={isExpanded}>
+        <div className="max-h-[50vh] overflow-auto border-t border-(--line)">
+          <CodeBlock
+            text={selection.text}
+            language={monacoLanguage(selection.path)}
+            path={selection.path}
+            className="px-3 py-2 font-mono text-[13px] leading-snug text-neutral-300"
+          />
+        </div>
+      </Collapsible>
     </div>
   );
 }

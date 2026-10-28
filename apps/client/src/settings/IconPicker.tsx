@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ICON_NAMES, iconUrl } from "../diff/fileIcons";
-import { useEscapeToClose } from "../ui/useEscapeToClose";
+import { ICON_NAMES, iconUrl } from "../ui/file-icons/file-icons.utils";
+import { useEscapeToClose } from "../ui/escape-to-close.hook";
 
 const POPOVER_WIDTH = 288;
 const POPOVER_MAX_HEIGHT = 360;

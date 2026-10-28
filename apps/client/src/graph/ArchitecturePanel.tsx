@@ -1,7 +1,7 @@
-import { useSettingsStore } from "../state/settings";
-import { isShapeDiagramType } from "./diagramTypes";
+import { useSettingsStore } from "../settings/settings.store";
+import { isShapeDiagramType } from "./diagram-types.constants";
 import { GraphPanel } from "./GraphPanel";
-import { ShapeDiagramPanel } from "./ShapeDiagramPanel";
+import { ShapeDiagramPanel } from "./shapes/ShapeDiagramPanel";
 
 /**
  * The Architecture tab: shows the diagram type chosen for the session in its toolbar, the file-level dependency

@@ -1,4 +1,4 @@
-import type { DecorationChip } from "./logLabels";
+import type { DecorationChip } from "./log-labels.utils";
 
 const CHIP_CLASS: Record<DecorationChip["kind"], string> = {
   head: "bg-blue-400/20 text-blue-100",

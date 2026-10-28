@@ -11,10 +11,11 @@ use uuid::Uuid;
 
 use super::api::{GatewayApi, ProvisionRequest};
 use super::ssh::{self, Ssh};
-use super::{hunt_ctl, hunt_ctl_with_input, release, tar_create, Progress, RemoteOrigin, RemoteStep, RemoteTarget, VmRef};
+use super::archive::tar_create;
+use super::{hunt_ctl, hunt_ctl_with_input, release, Progress, RemoteOrigin, RemoteStep, RemoteTarget, VmRef};
 use super::{memory, transcript};
 use crate::git;
-use crate::private_files::{self, compile_patterns, list_ignored};
+use crate::git::private_files::{self, compile_patterns, list_ignored};
 
 /// Where the agent's `~/.claude` lives on the VM; transcripts there name this path.
 pub const REMOTE_CLAUDE_DIR: &str = "/home/agent/.claude";
@@ -25,6 +26,25 @@ pub const REMOTE_LOGS_DIR: &str = "/home/agent/logs";
 
 /// The permission mode the relay runs the agent in: nobody is there to answer permission requests.
 pub const REMOTE_MODE: &str = "bypassPermissions";
+
+/// The most of a repository's hunt.agent.md that goes into a remote session's system prompt;
+/// `apps/session/src/session-config/session-config.main.ts` takes as much on the VM.
+const AGENT_MD_MAX_BYTES: u64 = 20 * 1024;
+
+/// The text of the hunt.agent.md in `worktree`, the repository's instructions for Hunt sessions, or None when it has
+/// none.
+pub fn read_agent_md(worktree: &Path) -> Result<Option<String>, String> {
+    let path = worktree.join("hunt.agent.md");
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("failed to read hunt.agent.md: {error}")),
+    };
+    if !metadata.is_file() || metadata.len() > AGENT_MD_MAX_BYTES {
+        return Err(format!("failed to read hunt.agent.md: it must be a file of at most {AGENT_MD_MAX_BYTES} bytes"));
+    }
+    std::fs::read_to_string(&path).map(Some).map_err(|error| format!("failed to read hunt.agent.md: {error}"))
+}
 
 /// Everything a handoff needs from the session and the settings.
 pub struct HandoffRequest<'a> {
@@ -451,7 +471,7 @@ async fn upload_claude_dir(request: &HandoffRequest<'_>, ssh: &Ssh, remote_workt
     result
 }
 
-/// The configuration a relay on the VM starts its conversation with (`apps/session/src/relay/config.ts`): the Hunt
+/// The configuration a relay on the VM starts its conversation with (`apps/session/src/relay/hunt-session-config.value-object.ts`): the Hunt
 /// session it serves, the conversation to load (a new one without), its working directory, what Hunt appends to the
 /// system prompt, the permission mode and the agent's config values.
 fn relay_config(id: Uuid, acp_session_id: Option<&str>, remote_worktree: &str, system_prompt: &str, config_values: &[(String, String)]) -> serde_json::Value {
@@ -518,6 +538,22 @@ mod tests {
         assert_eq!(github_https_url("https://github.com/team/repo/tree/main"), None);
         assert_eq!(github_https_url("https://github.com/team/.hidden"), None);
         assert_eq!(github_https_url("/Users/me/repo"), None);
+    }
+
+    #[test]
+    fn read_agent_md_reads_the_file_ignores_hunt_md_and_rejects_a_large_one() {
+        let directory = std::env::temp_dir().join(format!("hunt-agent-md-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        assert_eq!(read_agent_md(&directory), Ok(None));
+        std::fs::write(directory.join("HUNT.md"), "# Old instructions\n").unwrap();
+        assert_eq!(read_agent_md(&directory), Ok(None));
+
+        std::fs::write(directory.join("hunt.agent.md"), "# Services\n").unwrap();
+        assert_eq!(read_agent_md(&directory), Ok(Some("# Services\n".to_string())));
+
+        std::fs::write(directory.join("hunt.agent.md"), "x".repeat(20 * 1024 + 1)).unwrap();
+        assert_eq!(read_agent_md(&directory), Err("failed to read hunt.agent.md: it must be a file of at most 20480 bytes".to_string()));
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import type { ReviewLevel } from "../ipc/types";
+import type { ReviewLevel } from "../common/diagram/diagram.types";
 
 /** Bar color per review level: red for files that need little review up to green for those that need a close look. */
 const REVIEW_COLORS: Record<ReviewLevel, string> = { 1: "#f87171", 2: "#fb923c", 3: "#facc15", 4: "#4ade80" };

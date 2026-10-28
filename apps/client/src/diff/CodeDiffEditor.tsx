@@ -1,28 +1,32 @@
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref, type RefObject } from "react";
 import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
-import type { FileDiff } from "../ipc/types";
-import { attachIdeLink } from "./ideLink";
-import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, changeMark, monacoLanguage, onShortcut, setupMonaco } from "./monaco";
-import { anchorBelowLine, type SelectionRequest } from "./selectionContext";
-import { workspaceFor } from "../ide/documents";
-import { findUsages, navigationAt, type RenameTarget } from "../ide/languageService";
-import { attachRefactorings } from "../ide/refactorings";
-import { RenameDialog } from "../ide/RenameDialog";
-import { isUsagesPopupInApp, UsagesPopup, type UsagesQuery } from "../ide/UsagesPopover";
-import type { Usage } from "../ide/usages";
-import { attachSelectionAgent } from "../ide/selectionAgent";
-import { SelectionChatMarkers } from "../ide/selectionChatMarkers";
-import { useBusyChatIds, useSelectionChats } from "../ide/selectionChats";
-import { computeChangeBlocks, mapLine, type Side } from "./lineDiff";
-import { AddCommentGlyph, type CommentTarget } from "../review/addCommentGlyph";
+import type { FileDiff } from "./diff.types";
+import { attachIdeLink } from "../editor/ide-link.monaco";
+import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, changeMark } from "../editor/monaco.constants";
+import { monacoLanguage } from "../editor/language-id.utils";
+import { onShortcut } from "../editor/shortcuts.monaco";
+import { setupMonaco } from "../editor/setup.monaco";
+import { anchorBelowLine, type SelectionRequest } from "../editor/selection-request.monaco";
+import { workspaceFor } from "../ide/documents/documents.service";
+import { findUsages, navigationAt, type RenameTarget } from "../ide/language/language-service.utils";
+import { attachRefactorings } from "../ide/language/refactorings.monaco";
+import { RenameDialog } from "../ide/language/RenameDialog";
+import { isUsagesPopupInApp, UsagesPopup, type UsagesQuery } from "../ide/language/UsagesPopover";
+import type { Usage } from "../ide/language/usages.utils";
+import { attachSelectionAgent } from "../ide/selection/selection-agent.monaco";
+import { SelectionChatMarkers } from "../ide/selection/selection-chat-markers.monaco";
+import { useBusyChatIds, useSelectionChats, useUnseenChatIds } from "../ide/selection/selection-chats.hook";
+import { computeChangeBlocks, mapLine, type Side } from "../editor/line-diff.utils";
+import { AddCommentGlyph, type CommentTarget } from "../review/add-comment-glyph.monaco";
 import { ReviewCommentZones } from "../review/ReviewCommentZones";
-import { FILE_SPAN, isInsideHunk, useReviewedPullRequest } from "../review/reviewComments";
-import { useHuntStore } from "../state/store";
+import { LineSpan } from "../review/line-span.value-object";
+import { useReviewedPullRequest } from "../review/review-comments.hook";
+import { useHuntStore } from "../sessions/hunt.store";
 import { SplitDiffView } from "./SplitDiffView";
-import { OverwriteMarkers, type OverwriteMark } from "./overwriteMarkers";
-import { WORKTREE_LOCKED_MESSAGE } from "../chat/remoteSession";
-import { errorText } from "../ui/useLoad";
+import { OverwriteMarkers, type OverwriteMark } from "./overwrite-markers.monaco";
+import { WORKTREE_LOCKED_MESSAGE } from "../sessions/remote/remote-session.utils";
+import { errorText } from "../ui/error-text.utils";
 
 setupMonaco();
 
@@ -75,14 +79,14 @@ type CodeDiffEditorProps = {
    * of that session in the glyph margin, whose hover shows the lines on disk.
    */
   overwrites?: OverwriteMark[];
-  /** Called with the current editor content on ⌘S; the host saves every other file with unsaved edits too (`Workspace.saveAll`). */
+  /** Called with the current editor content on ⌘S; the host saves every other file with unsaved edits too (`DocumentWorkspace.saveAll`). */
   onSave: (content: string) => void;
   /** Reports whether the editor content differs from `diff.newContent`. */
   onDirtyChange: (isDirty: boolean) => void;
   /**
    * Called on ⌘click on a name in either side (go to its declaration) with the name and its 1-based position in the
    * saved right side (`diff.newContent`); a click on a changed line of the left side reports the nearest line of the
-   * right side, and the receiver locates the name from there (see `resolveDefinition` in ide/languageService.ts).
+   * right side, and the receiver locates the name from there (see `resolveDefinition` in ide/language/language-service.utils.ts).
    */
   onNavigate: (line: number, column: number, name: string) => void;
   /** Called with the clicked 1-based position on ⇧⌘click in either side (open in WebStorm). */
@@ -109,7 +113,7 @@ type CodeDiffEditorProps = {
 /**
  * Side-by-side (WebStorm-style, see SplitDiffView) or inline diff whose right side is editable; the left side
  * is the committed version and read-only. The editable side shows the worktree document of the file (see
- * ide/documents.ts), shared with the editor tab and served by the language server: completion, hover, signature help
+ * ide/documents/documents.service.ts), shared with the editor tab and served by the language server: completion, hover, signature help
  * and diagnostics while typing, and unsaved edits that show in both. `diff.newContent` is the saved state: changing it
  * (after a save or an external reload) replaces the text and resets the dirty flag. Switching the mode keeps unsaved
  * edits. Sub chats opened from lines of
@@ -143,9 +147,10 @@ export function CodeDiffEditor({
   onLineNumbersLeftChange,
 }: CodeDiffEditorProps) {
   const modifiedEditorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
-  const chatMarkersRef = useRef<SelectionChatMarkers | null>(null);
+  const chatMarkersRef = useRef<SelectionChatMarkers[]>([]);
   const selectionChats = useSelectionChats(sessionId, diff.path);
   const busyChatIds = useBusyChatIds();
+  const unseenChatIds = useUnseenChatIds();
   /** The editable right side once it exists; the review comment zones render into it. */
   const [modifiedEditor, setModifiedEditor] = useState<monaco.editor.ICodeEditor | null>(null);
   const worktreePath = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId)?.worktreePath);
@@ -185,6 +190,8 @@ export function CodeDiffEditor({
   selectionChatsRef.current = selectionChats;
   const busyChatIdsRef = useRef(busyChatIds);
   busyChatIdsRef.current = busyChatIds;
+  const unseenChatIdsRef = useRef(unseenChatIds);
+  unseenChatIdsRef.current = unseenChatIds;
   const overwritesRef = useRef(overwrites);
   overwritesRef.current = overwrites;
   const overwriteMarkersRef = useRef<OverwriteMarkers | null>(null);
@@ -220,7 +227,7 @@ export function CodeDiffEditor({
       const editor = modifiedEditorRef.current;
       if (readOnly || !isReviewRef.current || !editor) return;
       editor.setScrollTop(0);
-      setComposer({ span: FILE_SPAN, underLine: 0 });
+      setComposer({ span: LineSpan.FILE, underLine: 0 });
     },
     save: () => {
       const editor = modifiedEditorRef.current;
@@ -231,8 +238,10 @@ export function CodeDiffEditor({
   }));
 
   useEffect(() => {
-    chatMarkersRef.current?.set(diff.path, selectionChats, busyChatIds);
-  }, [diff.path, selectionChats, busyChatIds]);
+    for (const chatMarkers of chatMarkersRef.current) {
+      chatMarkers.set(diff.path, selectionChats, busyChatIds, unseenChatIds);
+    }
+  }, [diff.path, selectionChats, busyChatIds, unseenChatIds]);
 
   useEffect(() => {
     overwriteMarkersRef.current?.set(overwrites ?? []);
@@ -326,17 +335,33 @@ export function CodeDiffEditor({
             onError: (message) => onErrorRef.current(message),
           })
         : null;
+    const withSide = (request: SelectionRequest): SelectionRequest =>
+      side === "original" ? { ...request, selection: { ...request.selection, isOriginal: true } } : request;
     const agent = onOpenSubChatRef.current
       ? attachSelectionAgent(sideEditor, {
           pathOf: () => diff.path,
-          onOpen: (request) => onOpenSubChatRef.current?.(request),
-          onToggle: (request) => onToggleSubChatRef.current?.(request),
+          onOpen: (request) => onOpenSubChatRef.current?.(withSide(request)),
+          onToggle: (request) => onToggleSubChatRef.current?.(withSide(request)),
         })
       : null;
     sideEditor.onDidDispose(() => {
       link.dispose();
       refactorings?.dispose();
       agent?.dispose();
+    });
+  };
+
+  /** Sub chat buttons in the gutter of `sideEditor` for the selections made on `side`; a click reopens the chat. */
+  const attachChatMarkers = (sideEditor: monaco.editor.ICodeEditor, side: Side) => {
+    const chatMarkers = new SelectionChatMarkers(sideEditor, () => diff.path, side);
+    chatMarkers.set(diff.path, selectionChatsRef.current, busyChatIdsRef.current, unseenChatIdsRef.current);
+    chatMarkersRef.current = [...chatMarkersRef.current, chatMarkers];
+    chatMarkers.onDidClickChat((chat) =>
+      onOpenSubChatRef.current?.({ selection: chat.selection, anchor: anchorBelowLine(sideEditor, chat.selection.startLine) }, chat.sessionId),
+    );
+    sideEditor.onDidDispose(() => {
+      chatMarkers.dispose();
+      chatMarkersRef.current = chatMarkersRef.current.filter((current) => current !== chatMarkers);
     });
   };
 
@@ -355,21 +380,16 @@ export function CodeDiffEditor({
     attachSideFeatures(originalEditor, "original");
     if (readOnly) return;
     attachSideFeatures(modifiedEditor, "modified");
-    // The right side always shows the working-tree version of `diff.path`, which the selections' lines refer to.
-    const chatMarkers = new SelectionChatMarkers(modifiedEditor, () => diff.path);
-    chatMarkers.set(diff.path, selectionChatsRef.current, busyChatIdsRef.current);
-    chatMarkersRef.current = chatMarkers;
-    chatMarkers.onDidClickChat((chat) =>
-      onOpenSubChatRef.current?.({ selection: chat.selection, anchor: anchorBelowLine(modifiedEditor, chat.selection.startLine) }, chat.sessionId),
-    );
-    const addCommentGlyph = isReviewRef.current ? new AddCommentGlyph(modifiedEditor, () => diff.path, (span) => isInsideHunk(blocksRef.current, span.startLine, span.line)) : null;
+    // The right side always shows the working-tree version of `diff.path`, the left one the version it is compared
+    // against. The inline diff shows the left side's lines only as zones without a gutter, so it has no buttons for them.
+    attachChatMarkers(modifiedEditor, "modified");
+    if (mode === "split") {
+      attachChatMarkers(originalEditor, "original");
+    }
+    const addCommentGlyph = isReviewRef.current ? new AddCommentGlyph(modifiedEditor, () => diff.path, (span) => span.isInsideHunk(blocksRef.current)) : null;
     addCommentGlyph?.onDidClick((target) => setComposer(target));
     setModifiedEditor(modifiedEditor);
     modifiedEditor.onDidDispose(() => {
-      chatMarkers.dispose();
-      if (chatMarkersRef.current === chatMarkers) {
-        chatMarkersRef.current = null;
-      }
       addCommentGlyph?.dispose();
       setModifiedEditor((current) => (current === modifiedEditor ? null : current));
     });

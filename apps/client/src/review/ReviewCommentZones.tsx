@@ -2,33 +2,30 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type * as monaco from "monaco-editor";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { MarkdownText } from "../chat/MessageList";
-import { formatRelativeTime } from "../chat/ScreenshotPicker";
-import type { ChangeBlock } from "../diff/lineDiff";
+import { MarkdownText } from "../chat/messages/MessageList";
+import { formatRelativeTime } from "../common/time/relative-time.utils";
+import type { ChangeBlock } from "../editor/line-diff.utils";
 import { commands } from "../ipc/commands";
-import type { ReviewComment, ReviewThread } from "../ipc/types";
-import { GHOST_BUTTON_XS, ICON_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { confirmDestructive } from "../ui/confirm";
-import { ExternalIcon } from "../ui/icons";
-import { rangeBar, rangeDecoration, type CommentTarget } from "./addCommentGlyph";
-import { Avatar, useGithubViewer, ViewerAvatar } from "./Avatar";
-import { LineZone } from "./lineZone";
+import type { ReviewComment, ReviewThread } from "./review.types";
+import { GHOST_BUTTON_XS, ICON_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { confirmDestructive } from "../ui/confirm.utils";
+import { ExternalIcon } from "../ui/Icons";
+import { rangeBar, rangeDecoration, type CommentTarget } from "./add-comment-glyph.monaco";
+import { ViewerAvatar } from "./ViewerAvatar";
+import { useGithubViewer } from "./github-viewer.hook";
+import { Avatar } from "../ui/Avatar";
+import { LineZone } from "./line-zone.monaco";
 import { CommentEditorPanel, NOTE_HINT, ReviewCommentComposer } from "./ReviewCommentComposer";
+import { LineSpan } from "./line-span.value-object";
 import {
   draftCards,
   draftMark,
-  isFileSpan,
-  isPostedOnDiff,
-  mergeSpans,
   reloadReviewThreads,
   threadAnchorLine,
   threadMark,
-  useReviewComments,
-  useReviewDraftCount,
-  useReviewThreads,
-  type LineSpan,
   type MarkedSpan,
-} from "./reviewComments";
+} from "./review-comments.utils";
+import { useReviewComments, useReviewDraftCount, useReviewThreads } from "./review-comments.hook";
 
 const COMPOSER_KEY = "composer";
 const THREADS_ERROR_KEY = "threads-error";
@@ -41,7 +38,7 @@ type ReviewCommentZonesProps = {
   /** Change blocks of the file against the diff base, for telling inline comments from notes. */
   blocks: ChangeBlock[];
   /**
-   * Lines a new comment is being written for and the line its box opens under (`FILE_SPAN` and 0 for a comment on
+   * Lines a new comment is being written for and the line its box opens under (`LineSpan.FILE` and 0 for a comment on
    * the whole file), or null while no box is open.
    */
   composer: CommentTarget | null;
@@ -110,18 +107,18 @@ export function ReviewCommentZones({ editor, sessionId, path, blocks, composer, 
 
   // Tints the lines of every open comment and of the comment box, as GitHub does, each line once, with a bar beside
   // each span in the color of the "+"; the card or box under the span continues the bar. `marksSignature` stands for `marks`.
-  const isComposerInline = composer ? isPostedOnDiff(blocks, composer.span) : false;
+  const isComposerInline = composer ? composer.span.isPostedOnDiff(blocks) : false;
   const marks = [
     ...threads.map(threadMark),
-    ...roots.map((comment) => draftMark(blocks, comment)),
+    ...roots.map((comment) => draftMark(blocks, LineSpan.ofComment(comment))),
     composer ? draftMark(blocks, composer.span) : null,
   ].filter((mark) => mark !== null);
-  const marksSignature = marks.map((mark) => `${mark.startLine}-${mark.line}${mark.isInline ? "" : " note"}`).join("\n");
+  const marksSignature = marks.map((mark) => `${mark.span.startLine}-${mark.span.endLine}${mark.isInline ? "" : " note"}`).join("\n");
   useEffect(() => {
-    const tint = editor.createDecorationsCollection(mergeSpans(marks).map((span) => rangeDecoration(span)));
+    const tint = editor.createDecorationsCollection(LineSpan.merge(marks.map((mark) => mark.span)).map((span) => rangeDecoration(span)));
     const bars = marks.map((mark) => {
       const bar = rangeBar(editor);
-      bar.show(mark, mark.isInline);
+      bar.show(mark.span, mark.isInline);
       return bar;
     });
     return () => {
@@ -157,13 +154,14 @@ export function ReviewCommentZones({ editor, sessionId, path, blocks, composer, 
       {roots.map((comment) => {
         const zone = zones.get(comment.id);
         if (!zone) return null;
+        const span = LineSpan.ofComment(comment);
         const card = (
           <ReviewCommentCard
             sessionId={sessionId}
             comment={comment}
             replies={replies.get(comment.id) ?? []}
-            isInline={isPostedOnDiff(blocks, comment)}
-            mark={draftMark(blocks, comment)}
+            isInline={span.isPostedOnDiff(blocks)}
+            mark={draftMark(blocks, span)}
           />
         );
         return createPortal(card, zone.domNode, comment.id);
@@ -179,7 +177,7 @@ export function ReviewCommentZones({ editor, sessionId, path, blocks, composer, 
               sessionId={sessionId}
               span={composer.span}
               isInline={isComposerInline}
-              onSubmit={(body) => commands.addReviewComment(sessionId, path, composer.span.startLine, composer.span.line, body)}
+              onSubmit={(body) => commands.addReviewComment(sessionId, path, composer.span.startLine, composer.span.endLine, body)}
               onClose={onCloseComposer}
             />,
             composerZone.domNode,
@@ -190,15 +188,10 @@ export function ReviewCommentZones({ editor, sessionId, path, blocks, composer, 
   );
 }
 
-function lineLabel(span: LineSpan): string {
-  if (isFileSpan(span)) return "File";
-  return span.startLine === span.line ? `L${span.line}` : `L${span.startLine}–L${span.line}`;
-}
-
-/** `lineLabel` of a thread; lines of the base version are marked as such. */
+/** The lines of a thread as its card names them (see `LineSpan.label`); lines of the base version are marked as such. */
 function threadLabel(thread: ReviewThread): string {
-  const label = lineLabel(thread);
-  return thread.side === "left" && !isFileSpan(thread) ? `Base ${label}` : label;
+  const span = LineSpan.ofComment(thread);
+  return thread.side === "left" && !span.isFile ? `Base ${span.label}` : span.label;
 }
 
 const PENDING_BADGE = "rounded-full border border-amber-400/40 px-2 text-[13px] text-amber-300";
@@ -445,7 +438,7 @@ function ReviewCommentCard({ sessionId, comment, replies, isInline, mark }: Revi
   return (
     <ZoneFrame
       avatar={<ViewerAvatar sessionId={sessionId} size="size-5" />}
-      label={lineLabel(comment)}
+      label={LineSpan.ofComment(comment).label}
       hint={isInline ? null : NOTE_HINT}
       mark={mark}
       actions={actions}
@@ -463,7 +456,7 @@ function ReviewCommentCard({ sessionId, comment, replies, isInline, mark }: Revi
 function OrphanReplyCard({ sessionId, comment }: { sessionId: string; comment: ReviewComment }) {
   const { actions, content } = useDraftActions(sessionId, comment, "Delete this reply?");
   return (
-    <ZoneFrame avatar={<ViewerAvatar sessionId={sessionId} size="size-5" />} label={lineLabel(comment)} hint="Reply · the thread it answers was not found" actions={actions}>
+    <ZoneFrame avatar={<ViewerAvatar sessionId={sessionId} size="size-5" />} label={LineSpan.ofComment(comment).label} hint="Reply · the thread it answers was not found" actions={actions}>
       <div className="px-3 py-2">{content}</div>
     </ZoneFrame>
   );

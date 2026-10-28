@@ -1,5 +1,30 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { ChangedFileView, ChangeStat, CheckOutput, ChecksStatus, ClaudeAccounts, Commit, CommitDetails, DiagramType, DesktopEndpoint, DirEntry, DocumentContentChange, DocumentEditAck, DocumentState, FileDiff, FileVersion, GitScope, GithubTokenStatus, GuardrailDeclineReason, GithubViewer, GraphStatus, LanguageServerKind, LintRules, LogQuery, Machine, PlanUsage, PrettierOutput, PreviewStatus, PullRequest, PullRequestDetails, PullRequestRef, PullRequestState, RefList, RemoteLink, ResetMode, RemoteSecretSummary, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread, Screenshot, SelectionContext, SessionEnding, SessionNotification, SessionView, SessionVm, Shelf, TerminalTarget, TextQuery, TextSearchResult, TmuxWindow, VmSettings, Workspace } from "./types";
+import type { SessionNotification } from "@agentclientprotocol/sdk";
+import type { ClaudeAccounts } from "../accounts/accounts.types";
+import type { PlanUsage } from "../accounts/plan-usage.types";
+import type { Screenshot } from "../chat/chat.types";
+import type { GuardrailDeclineReason } from "../chat/guardrail/guardrail-suggestion.types";
+import type { CheckOutput, ChecksStatus } from "../checks/checks.types";
+import type { DiagramType } from "../common/diagram/diagram.types";
+import type { DesktopEndpoint } from "../desktop/desktop.types";
+import type { ChangeStat, ChangedFileView, FileDiff, FileVersion, Shelf } from "../diff/diff.types";
+import type { SelectionContext } from "../editor/selection-context.types";
+import type { Commit, CommitDetails, GitScope, LogQuery, RefList, ResetMode } from "../git/git.types";
+import type { GraphStatus } from "../graph/graph.types";
+import type { SwfStepSkill } from "../guardrails/guardrail.types";
+import type { LintRules } from "../guardrails/lint-rules.types";
+import type { DocumentContentChange, DocumentEditAck, DocumentState } from "../ide/documents/documents.types";
+import type { PrettierOutput } from "../ide/ide.types";
+import type { LanguageServerKind } from "../ide/lsp/lsp.types";
+import type { DirEntry } from "../ide/project-tree/project-tree.types";
+import type { TextQuery, TextSearchResult } from "../ide/search/find-in-files.types";
+import type { PreviewStatus } from "../preview/preview.types";
+import type { GithubViewer, PullRequestDetails, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread } from "../review/review.types";
+import type { PullRequest, PullRequestState } from "../sessions/pull-requests.types";
+import type { RemoteLink, SessionVm } from "../sessions/remote/remote-session.types";
+import type { PullRequestRef, SessionEnding, SessionView, Workspace } from "../sessions/session.types";
+import type { CliInstall, GithubTokenStatus, RemoteSecretSummary, VmSettings } from "../settings/settings.types";
+import type { Machine, TerminalTarget, TmuxWindow } from "../terminal/terminal.types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
 export function assetUrl(path: string): string {
@@ -33,6 +58,8 @@ export const commands = {
   gitForcePullBranch: (scope: GitScope, branch: string) => invoke<void>("git_force_pull_branch", { scope, branch }),
   /** Pushes a local branch other than the session's to the branch of the same name on `origin`. */
   gitPushLocalBranch: (scope: GitScope, branch: string) => invoke<void>("git_push_local_branch", { scope, branch }),
+  /** Force pushes a local branch other than the session's to `origin`; the commits `origin` has that it lacks are dropped, unless `origin` moved since the last fetch. */
+  gitForcePushLocalBranch: (scope: GitScope, branch: string) => invoke<void>("git_force_push_local_branch", { scope, branch }),
   /** Renames a local branch; the sessions on it follow, a remote one refuses. */
   gitRenameBranch: (scope: GitScope, branch: string, newName: string) => invoke<void>("git_rename_branch", { scope, branch, newName }),
   /** Makes `target` on `origin` the branch a push of the session lands on, here and on the session's VM; a poller session refuses. */
@@ -68,7 +95,7 @@ export const commands = {
     invoke<void>("submit_pull_request_review", { id: sessionId, event, body }),
   /**
    * Drafts a review comment on lines `startLine..line` of the new version of `path`, or on the whole file when both are
-   * 0 (`FILE_SPAN`); it goes out with the next review. With `replyTo` it answers a thread or draft, and `path` and the
+   * 0 (`LineSpan.FILE`); it goes out with the next review. With `replyTo` it answers a thread or draft, and `path` and the
    * lines are those of what it answers.
    */
   addReviewComment: (sessionId: string, path: string, startLine: number, line: number, body: string, replyTo: ReplyTarget | null = null) =>
@@ -201,6 +228,8 @@ export const commands = {
   setSessionConfigOption: (id: string, configId: string, value: string) =>
     invoke<void>("set_session_config_option", { id, configId, value }),
   answerPermission: (requestId: string, optionId: string) => invoke<void>("answer_permission", { requestId, optionId }),
+  /** Answers the `control:command` `requestId` (see control/control-commands.hook.ts): `null` once it ran, else why it did not. */
+  answerControlCommand: (requestId: string, error: string | null) => invoke<void>("answer_control_command", { requestId, error }),
   listChangedFiles: (id: string) => invoke<ChangedFileView[]>("list_changed_files", { id }),
   /** Added and removed line counts of every uncommitted change, sorted by path. */
   changeStats: (id: string) => invoke<ChangeStat[]>("change_stats", { id }),
@@ -208,6 +237,13 @@ export const commands = {
   /** Versions of `path` in the edit log of the session's worktree, oldest first. */
   readFileHistory: (id: string, path: string) => invoke<FileVersion[]>("read_file_history", { id, path }),
   writeFile: (id: string, path: string, content: string) => invoke<void>("write_file", { id, path, content }),
+  /**
+   * Writes the skills of the swf steps `skills` from Hunt's templates into the session's worktree, leaving existing skill
+   * files alone, and adds the entry `swf.skills.<step>` of the worktree's hunt.json for each with `addEntry` whose entry
+   * is missing; resolves with the worktree-relative paths it wrote, `hunt.json` among them when it changed, which count
+   * as the session's own changes. Fails, writing nothing, for an unknown step, a bad name or a hunt.json without an `swf` object.
+   */
+  createSwfSkills: (sessionId: string, skills: SwfStepSkill[]) => invoke<string[]>("create_swf_skills", { id: sessionId, skills }),
   revertFile: (id: string, path: string) => invoke<void>("revert_file", { id, path }),
   /** Deletes a worktree file, or a folder with everything in it. */
   deletePath: (id: string, path: string) => invoke<void>("delete_path", { id, path }),
@@ -221,7 +257,7 @@ export const commands = {
   /** Commits exactly `paths` with `message` on the session's current branch; other staged changes stay out. */
   commitFiles: (id: string, paths: string[], message: string) => invoke<void>("commit_files", { id, paths, message }),
   /**
-   * Pushes the session's commits to the branch it was created from on `origin` (`pushTarget` in `chat/remoteSession.ts`),
+   * Pushes the session's commits to the branch it was created from on `origin` (`pushTarget` in `sessions/remote/remote-session.utils.ts`),
    * rebased onto it first when it moved on; the session's own branch never reaches `origin`.
    */
   pushBranch: (id: string) => invoke<void>("push_branch", { id }),
@@ -231,6 +267,10 @@ export const commands = {
   setAiLanguage: (language: string) => invoke<void>("set_ai_language", { language }),
   /** System prompt addition for every agent session started afterwards; empty switches it off. */
   setSystemPrompt: (prompt: string) => invoke<void>("set_system_prompt", { prompt }),
+  /** Whether `~/.local/bin/hunt` links to the `hunt-cli` beside the app binary and whether that folder is on the PATH. */
+  cliInstallStatus: () => invoke<CliInstall>("cli_install_status"),
+  /** Links `~/.local/bin/hunt` to the `hunt-cli` beside the app binary, replacing an earlier symlink; rejects for a file or folder there. */
+  installCli: () => invoke<CliInstall>("install_cli"),
   /** Appends the declined guardrail suggestion to `.claude/declined-guardrails.jsonl` of the session's worktree, which its CLAUDE.md points agents at. */
   declineGuardrail: (sessionId: string, kind: string, summary: string, reason: GuardrailDeclineReason) =>
     invoke<void>("decline_guardrail", { id: sessionId, kind, summary, reason }),

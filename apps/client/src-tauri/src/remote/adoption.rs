@@ -11,9 +11,12 @@ use uuid::Uuid;
 
 use super::api::SessionSummary;
 use super::ssh::Ssh;
-use super::{handoff, shell_command, vm, RemoteOrigin, RemoteTarget, VmRef};
+use super::{handoff, RemoteOrigin, RemoteTarget, VmRef};
+use crate::platform::shell::shell_command;
+use crate::session::session_id::SessionId;
 
-/// A session VM Hunt adopts or lists, as the gateway lists it (mirror of `SessionVm` in src/ipc/types.ts).
+/// A session VM Hunt adopts or lists, as the gateway lists it (mirror of `SessionVm` in
+/// src/sessions/remote/remote-session.types.ts).
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AdoptableSession {
@@ -34,7 +37,8 @@ pub struct AdoptableSession {
     pub status: String,
     pub is_running: bool,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// The state of the session's agent as the gateway recorded it: `running`, `question` (waits for an answer), `done`
+    /// The state of the session's agent as the gateway recorded it: the step of the poller's pipeline (`plan`,
+    /// `implement`, `verify`, `gate`, `pr`, `review`, `human-review`, `merge`), `question` (waits for an answer), `done`
     /// or `failed`; empty when unknown.
     pub agent: String,
 }
@@ -63,7 +67,7 @@ fn region_of(zone: &str) -> &str {
 
 fn adoptable(listed: &SessionSummary, project: &str) -> Option<AdoptableSession> {
     let id = Uuid::parse_str(listed.id.trim()).ok()?;
-    if listed.vm != vm::session_vm_name(id) {
+    if listed.vm != SessionId(id).vm_name() {
         return None;
     }
     let repo = listed.repo.trim().to_string();

@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ResizeGrips, type ResizeHandlers } from "./ResizeGrips";
-import { useEscapeToClose } from "./useEscapeToClose";
+import { useEscapeToClose } from "./escape-to-close.hook";
 
 type ModalProps = {
   /** Name of the dialog for assistive technology. */

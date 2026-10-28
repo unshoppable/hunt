@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { buildChangeTree, folderPaths, type FolderNode, type TreeNode } from "../diff/changeTree";
-import { Checkbox, type CheckState } from "../diff/Checkbox";
-import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
-import { STATUS_NAME_CLASS } from "../diff/styles";
-import type { ChangedFile } from "../ipc/types";
+import { buildChangeTree, folderPaths, type FolderNode, type TreeNode } from "../common/tree/change-tree.utils";
+import { Checkbox, type CheckState } from "../ui/Checkbox";
+import { useFileIconUrl, useFolderIconUrl } from "../ui/file-icons/file-icons.hook";
+import { STATUS_NAME_CLASS } from "../ui/styles.constants";
+import type { ChangedFile } from "../common/changes/changed-file.types";
 import { ResizeGrips } from "../ui/ResizeGrips";
-import { toggleInCollapsed } from "../ui/treeExpansion";
-import type { TreeNavRow } from "../ui/treeNavigation";
-import { useTreeNavigation } from "../ui/useTreeNavigation";
-import { useDismiss } from "../ui/useDismiss";
-import { usePopupSize } from "../ui/usePopupSize";
-import { useViewportSize } from "../ui/useViewportSize";
+import { toggleInCollapsed } from "../common/tree/tree-expansion.utils";
+import type { TreeNavRow } from "../common/tree/tree-navigation.utils";
+import { useTreeNavigation } from "../ui/tree-navigation.hook";
+import { useDismiss } from "../ui/dismiss.hook";
+import { usePopupSize } from "../ui/popup-size.hook";
+import { useViewportSize } from "../ui/viewport-size.hook";
 
 /** One visible row of the tree; `depth` is the indentation level. */
 type Row = { node: TreeNode; depth: number };

@@ -1,13 +1,13 @@
 import { useMemo, useState } from "react";
-import type { Commit, CommitDetails, CommitFile } from "../ipc/types";
-import { buildChangeTree, folderPaths, type FolderNode, type TreeNode } from "../diff/changeTree";
-import { useFileIconUrl, useFolderIconUrl } from "../diff/fileIcons";
-import { STATUS_NAME_CLASS } from "../diff/styles";
-import { ChevronIcon } from "../ui/icons";
-import { toggleInCollapsed } from "../ui/treeExpansion";
-import type { TreeNavRow } from "../ui/treeNavigation";
-import { useTreeNavigation } from "../ui/useTreeNavigation";
-import { parseDecoration } from "./logLabels";
+import type { Commit, CommitDetails, CommitFile } from "./git.types";
+import { buildChangeTree, folderPaths, type FolderNode, type TreeNode } from "../common/tree/change-tree.utils";
+import { useFileIconUrl, useFolderIconUrl } from "../ui/file-icons/file-icons.hook";
+import { STATUS_NAME_CLASS } from "../ui/styles.constants";
+import { ChevronIcon } from "../ui/Icons";
+import { toggleInCollapsed } from "../common/tree/tree-expansion.utils";
+import type { TreeNavRow } from "../common/tree/tree-navigation.utils";
+import { useTreeNavigation } from "../ui/tree-navigation.hook";
+import { parseDecoration } from "./log-labels.utils";
 import { RefChip } from "./RefChip";
 
 type Row = { node: TreeNode; depth: number };

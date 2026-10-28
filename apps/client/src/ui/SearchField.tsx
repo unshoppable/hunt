@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { CloseIcon, SearchIcon } from "./icons";
+import { CloseIcon, SearchIcon } from "./Icons";
 
 type SearchFieldProps = {
   value: string;

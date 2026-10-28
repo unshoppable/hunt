@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-/** Monaco ships this worker entry without typings; only what diff/semantic.worker.ts needs is declared. */
+/** Monaco ships this worker entry without typings; only what editor/semantic.worker.ts needs is declared. */
 declare module "monaco-editor/languages/features/typescript/ts.worker.js" {
   import type { worker } from "monaco-editor";
 
@@ -13,7 +13,7 @@ declare module "monaco-editor/languages/features/typescript/ts.worker.js" {
   export const ts: { typescript: typeof import("typescript") };
 }
 
-/** Monaco's tokenizer registry has no typings on its module path; only what code/highlight.ts needs is declared. */
+/** Monaco's tokenizer registry has no typings on its module path; only what editor/highlight.monaco.ts needs is declared. */
 declare module "monaco-editor/editor/common/languages.js" {
   export type TokenizationSupport = {
     getInitialState(): unknown;
@@ -36,7 +36,7 @@ declare module "monaco-editor/editor/standalone/common/themes.js" {
   export const vs_dark: editor.IStandaloneThemeData;
 }
 
-/** Monaco's service registry has no typings on its module path; only what diff/monaco.ts needs is declared. */
+/** Monaco's service registry has no typings on its module path; only what editor/setup.monaco.ts and editor/shortcuts.monaco.ts need is declared. */
 declare module "monaco-editor/editor/standalone/browser/standaloneServices.js" {
   import type { ServiceIdentifier } from "monaco-editor/platform/storage/common/storage.js";
 

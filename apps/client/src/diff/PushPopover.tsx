@@ -1,10 +1,10 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { BranchIcon } from "../ui/icons";
+import { PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { BranchIcon } from "../ui/Icons";
 import { ResizeGrips } from "../ui/ResizeGrips";
-import { useDismiss } from "../ui/useDismiss";
-import { usePopupSize } from "../ui/usePopupSize";
-import { useViewportSize } from "../ui/useViewportSize";
+import { useDismiss } from "../ui/dismiss.hook";
+import { usePopupSize } from "../ui/popup-size.hook";
+import { useViewportSize } from "../ui/viewport-size.hook";
 
 const MIN_SIZE = { width: 300, height: 140 };
 /** The largest share of the window's width and height the popover may take. */

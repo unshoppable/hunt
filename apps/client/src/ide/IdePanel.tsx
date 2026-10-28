@@ -1,23 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fillPrompt } from "../../../../libs/domain/src/prompts.ts";
+import { fillPrompt } from "../../../../libs/domain/src/shared/prompts.utils.ts";
 import projectTreeFilePrompt from "../../prompts/project-tree-file.system-prompt.md?raw";
 import projectTreeFolderPrompt from "../../prompts/project-tree-folder.system-prompt.md?raw";
-import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
+import { SubChatPopover } from "../chat/sub-chat/SubChatPopover";
+import { useSubChatPopover } from "../chat/sub-chat/sub-chat-popover.hook";
 import { commands } from "../ipc/commands";
-import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
-import { useHuntStore } from "../state/store";
-import { repoName } from "../ui/path";
-import { isShortcut, shortcutCommand } from "../ui/shortcuts";
-import { errorText } from "../ui/useLoad";
+import { PaneSeparator, Panel, PersistentGroup } from "../ui/ResizablePanes";
+import { useHuntStore } from "../sessions/hunt.store";
+import { repoName } from "../common/path/path.utils";
+import { isShortcut, shortcutCommand } from "../ui/shortcuts.utils";
+import { errorText } from "../ui/error-text.utils";
 import { DependencyBanner } from "./DependencyBanner";
-import { workspaceFor } from "./documents";
+import { workspaceFor } from "./documents/documents.service";
 import { EditorGrid } from "./EditorGrid";
-import { EMPTY_IDE_SESSION, useIdeSession, useIdeStore } from "./ideStore";
-import { findPane } from "./paneGrid";
-import { ProjectTree, type ProjectTreeTarget } from "./ProjectTree";
-import { selectionChatsFor } from "./selectionChats";
-import { useDirtyPaths } from "./useDirtyPaths";
-import { useFileStatuses } from "./useFileStatuses";
+import { EMPTY_IDE_SESSION, useIdeSession, useIdeStore } from "./ide.store";
+import { ProjectTree, type ProjectTreeTarget } from "./project-tree/ProjectTree";
+import { selectionChatsFor } from "./selection/selection-chats.utils";
+import { useDirtyPaths } from "./documents/dirty-paths.hook";
+import { useFileStatuses } from "./file-statuses.hook";
 
 /** Events of the mouse's extra buttons that the editor and the webview must not act on. */
 const MOUSE_BUTTON_EVENTS = ["mousedown", "mouseup", "auxclick"] as const;
@@ -49,7 +49,7 @@ function isForeignTextField(root: HTMLElement | null): boolean {
  * ⌘W closes the active tab (and its pane when it was the last one), ⇧⌘W closes every tab; the empty editor area
  * stays until ⌘W is pressed once more, which calls `onCloseEmpty` (the editor window closes then). ⇧⌘2 selects the active file in the project
  * tree. The tree selection follows ⇧⌘2 only, never the active pane. ⌘S saves every file with unsaved edits, also with the
- * focus in the project tree (see `Workspace.saveAll`). ⌘[ / ⌘] (also ⌥⌘← / ⌥⌘→) and the mouse's back / forward buttons step through the
+ * focus in the project tree (see `DocumentWorkspace.saveAll`). ⌘[ / ⌘] (also ⌥⌘← / ⌥⌘→) and the mouse's back / forward buttons step through the
  * navigation history. ⌃⇧C copies the active file's absolute path, in the project tree the paths of the selected rows.
  */
 export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onCloseEmpty?: () => void }) {
@@ -85,7 +85,7 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
 
   const closeActiveTab = () => {
     const { layout, activePaneId } = useIdeStore.getState().sessions[sessionId] ?? EMPTY_IDE_SESSION;
-    const pane = activePaneId ? findPane(layout, activePaneId) : null;
+    const pane = activePaneId ? layout.findPane(activePaneId) : null;
     if (!pane?.activePath) {
       onCloseEmpty?.();
       return;
@@ -139,7 +139,7 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
     function onKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented || !isShortcut(event, "changes.copyPath") || isForeignTextField(rootRef.current)) return;
       const { layout, activePaneId } = useIdeStore.getState().sessions[sessionId] ?? EMPTY_IDE_SESSION;
-      const activePath = activePaneId ? findPane(layout, activePaneId)?.activePath : null;
+      const activePath = activePaneId ? layout.findPane(activePaneId)?.activePath : null;
       if (!activePath) return;
       event.preventDefault();
       void navigator.clipboard.writeText(`${workspace.worktreePath}/${activePath}`).catch((reason) => setError(`failed to copy the path: ${errorText(reason)}`));
@@ -207,7 +207,7 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
   return (
     // Popups floating over the editor (see UsagesPopover.tsx) are portaled here, so they can be dragged over the whole panel.
     <div ref={rootRef} data-ide-root="" className="relative h-full min-h-0">
-      <PersistentGroup id="hunt-ide" className="h-full min-h-0">
+      <PersistentGroup id="hunt-ide" fillPane="editors" className="h-full min-h-0">
         <Panel id="project" defaultSize={240} minSize={160} maxSize={520} className="flex">
           <ProjectTree
             key={sessionId}

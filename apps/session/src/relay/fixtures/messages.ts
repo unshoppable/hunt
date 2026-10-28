@@ -1,5 +1,5 @@
 /** Helpers for asserting on the messages the relay sends, shared by its unit and integration tests. */
-import { isRecord } from "../../../../../libs/domain/src/jsonRpc.ts";
+import { isRecord } from "../../../../../libs/domain/src/shared/json-rpc.utils.ts";
 
 /** The `update` of a `session/update` notification; undefined for any other message. */
 export function updateOf(message: unknown): Record<string, unknown> | undefined {

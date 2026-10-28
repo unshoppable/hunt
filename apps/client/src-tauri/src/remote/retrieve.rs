@@ -17,9 +17,12 @@ use super::transcript::{local_project, Replacements};
 use super::ssh::Ssh;
 use super::sync::{self, SyncTarget};
 use super::{adoption, memory, transcript};
-use super::{hunt_ctl, shell_command, start_session_vm, tar_extract, vm, Progress, RemoteStep, RemoteTarget, VmRef};
+use super::archive::tar_extract;
+use super::{hunt_ctl, start_session_vm, Progress, RemoteStep, RemoteTarget, VmRef};
+use crate::git::private_files;
 use crate::git::{self, TreeChange};
-use crate::private_files;
+use crate::platform::shell::shell_command;
+use crate::session::session_id::SessionId;
 
 /// Everything a retrieval needs from the session.
 pub struct RetrieveRequest<'a> {
@@ -279,7 +282,7 @@ pub async fn check_out_adopted(
     let id_text = id.to_string();
     let retrieve_ref = format!("refs/hunt/{id_text}/retrieve");
     let checked_out = remote_branch(ssh, remote_worktree).await;
-    let fallback = git::session_branch(&vm::short_id(id));
+    let fallback = git::session_branch(&SessionId(id).short());
     let branch = unused_branch_name(repo, &[checked_out.as_deref(), Some(target_branch), Some(fallback.as_str())]).await?;
     hunt_ctl(ssh, &["snapshot", &id_text]).await?;
     fetch(repo, ssh, remote_worktree, &retrieve_ref).await?;
@@ -332,7 +335,7 @@ async fn retrieve_adopted(request: &RetrieveRequest<'_>, repo: &Path, progress: 
     };
     let remote_worktree = remote_worktree(request, &ssh).await?;
     let checked_out = remote_branch(&ssh, &remote_worktree).await;
-    let fallback = git::session_branch(&vm::short_id(request.hunt_session_id));
+    let fallback = git::session_branch(&SessionId(request.hunt_session_id).short());
     let branch = local_branch_name(repo, &[checked_out.as_deref(), Some(target.branch.as_str()), Some(fallback.as_str())]).await?;
     progress.step(RemoteStep::StoppingAgent);
     hunt_ctl(&ssh, &["stop", &id]).await?;
@@ -655,8 +658,8 @@ async fn merge_memory(request: &RetrieveRequest<'_>, remote_dir: &Path, replacem
     let local_dir = memory::local_dir(request.claude_dir, request.worktree).await?;
     let local = memory::read_files(&local_dir)?;
     let base = memory::read_base(request.memory_base);
-    let tag = &request.hunt_session_id.simple().to_string()[..8];
-    memory::apply(&local_dir, &memory::merge(base.as_ref(), &local, &remote, tag))
+    let tag = SessionId(request.hunt_session_id).short();
+    memory::apply(&local_dir, &memory::merge(base.as_ref(), &local, &remote, &tag))
 }
 
 /// The ACP session id in the relay's `hunt-session.json`, a regular file of the archive the VM sent.

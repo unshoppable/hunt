@@ -18,16 +18,17 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
-use crate::acp::message_time;
+use crate::agent::acp::message_time;
+use crate::agent::claude_config::claude_dir;
 use crate::git;
+use crate::platform::shell::shell_quote;
 use crate::remote::handoff::REMOTE_LOGS_DIR;
-use crate::remote::shell_quote;
 use crate::remote::sync::Direction;
 use crate::remote::transcript::{local_project, remote_project};
-use crate::remote::{claude_dir, RemoteTarget};
+use crate::remote::RemoteTarget;
 use crate::session::store::{self, SessionRecord};
 use crate::session::sync;
-use crate::tmux::{self, DESKTOP_LOGS, LOGS_DIR};
+use crate::terminal::tmux::{self, DESKTOP_LOGS, LOGS_DIR};
 
 /// The file, inside the worktree's `.hunt` folder.
 pub const SESSIONS_FILE: &str = ".hunt/sessions.md";
@@ -411,10 +412,10 @@ mod tests {
         owner.acp_session_id = Some("abc".into());
         owner.summary = vec!["Found the bug in auth.ts".into()];
         owner.remote = Some(remote_target());
-        let selection = SelectionContext { path: "src/auth.ts".into(), start_line: 3, end_line: 9, text: "x".into(), task: None, is_folder: false };
+        let selection = SelectionContext { path: "src/auth.ts".into(), start_line: 3, end_line: 9, text: "x".into(), task: None, is_folder: false, is_original: false };
         let mut sub = SessionRecord::sub_session(sub_id, "Why this check?".into(), &owner, Some(selection));
         sub.acp_session_id = Some("def".into());
-        let task = SelectionContext { path: "README.md".into(), start_line: 1, end_line: 1, text: String::new(), task: Some("Write the file".into()), is_folder: false };
+        let task = SelectionContext { path: "README.md".into(), start_line: 1, end_line: 1, text: String::new(), task: Some("Write the file".into()), is_folder: false, is_original: false };
         let task_sub = SessionRecord::sub_session(task_id, "README".into(), &owner, Some(task));
         let state_of = |record: &SessionRecord| if record.id == sub_id { AgentState::Working } else if record.id == owner_id { AgentState::Idle } else { AgentState::NotRunning };
 

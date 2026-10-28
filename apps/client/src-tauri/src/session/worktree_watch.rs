@@ -29,7 +29,7 @@ struct WorktreeWatch {
     _debouncer: Debouncer<RecommendedWatcher, NoCache>,
 }
 
-/// Payload of `worktree:changed` (mirror of `WorktreeChangedEvent` in src/ipc/types.ts).
+/// Payload of `worktree:changed` (mirror of `WorktreeChangedEvent` in src/sessions/session.types.ts).
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WorktreeChangedEvent {

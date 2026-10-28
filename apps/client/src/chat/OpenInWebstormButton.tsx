@@ -1,8 +1,8 @@
 import { useRef, useState } from "react";
 import { commands } from "../ipc/commands";
-import { BUTTON_BASE } from "../ui/buttons";
-import { ChevronIcon, WebstormIcon } from "../ui/icons";
-import { useDismiss } from "../ui/useDismiss";
+import { BUTTON_BASE } from "../ui/buttons.constants";
+import { ChevronIcon, WebstormIcon } from "../ui/Icons";
+import { useDismiss } from "../ui/dismiss.hook";
 
 const MENU_ITEM = "block w-full rounded px-2 py-1 text-left hover:bg-(--row-hover)";
 

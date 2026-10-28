@@ -14,8 +14,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use uuid::Uuid;
 
-use crate::accounts;
-use crate::preferences::ENGLISH_TERMS;
+use crate::agent::accounts;
+use crate::platform::preferences::ENGLISH_TERMS;
 use crate::session::store;
 
 const MODEL: &str = "haiku";
@@ -90,7 +90,7 @@ async fn summarize(app: &AppHandle, hunt_session_id: Uuid, turn: &[SessionNotifi
         return Ok(());
     }
     let record = store::find_session(app, hunt_session_id)?;
-    let language = crate::preferences::ai_language(app);
+    let language = crate::platform::preferences::ai_language(app);
     let prompt = build_prompt(&record.title, &record.summary, &transcript, &language);
     let output = run_claude(app, &prompt, &language).await?;
 

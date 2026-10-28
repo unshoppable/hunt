@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
-import { EMPTY_CHECKS, useChecksStore } from "../state/checks";
-import { useHuntStore } from "../state/store";
+import { EMPTY_CHECKS, useChecksStore } from "./checks.store";
+import { useHuntStore } from "../sessions/hunt.store";
 import { AgentButton } from "../ui/AgentButton";
-import { HEADER_BAR } from "../ui/bars";
-import { GHOST_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { CheckIcon, CloseIcon, Spinner } from "../ui/icons";
-import type { Tone } from "../preview/services";
+import { HEADER_BAR } from "../ui/bars.constants";
+import { GHOST_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { CheckIcon, CloseIcon, Spinner } from "../ui/Icons";
+import type { Tone } from "../preview/preview-services.utils";
 import { CheckOutput } from "./CheckOutput";
-import { checkRows, describeCheck, describeChecks, isAnyCheckRunning, type CheckRow } from "./checks";
+import { checkRows, describeCheck, describeChecks, isAnyCheckRunning, type CheckRow } from "./checks.utils";
 
 /** How often the durations of running checks count up. */
 const CLOCK_TICK_MS = 1000;

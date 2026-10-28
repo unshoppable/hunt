@@ -1,39 +1,37 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import * as monaco from "monaco-editor";
+import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useBackendEvents, usePaneStyles, useSettingsSync } from "../app/bootstrap";
-import { SubChatPopover, useSubChatPopover } from "../chat/SubChatPopover";
-import { useFileIconUrl } from "../diff/fileIcons";
-import { EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, onShortcut, setupMonaco } from "../diff/monaco";
-import { workspaceFor, type Workspace } from "../ide/documents";
-import { selectionChatsFor, useSelectionChats, type SelectionChat } from "../ide/selectionChats";
+import { SubChatPopover } from "../chat/sub-chat/SubChatPopover";
+import { useFileIconUrl } from "../ui/file-icons/file-icons.hook";
+import { workspaceFor } from "../ide/documents/documents.service";
+import { selectionChatsFor } from "../ide/selection/selection-chats.utils";
 import { commands } from "../ipc/commands";
-import { useSettingsStore } from "../state/settings";
-import { useHuntStore } from "../state/store";
+import { useHuntStore } from "../sessions/hunt.store";
 import { AgentButton } from "../ui/AgentButton";
-import { HEADER_BAR } from "../ui/bars";
-import { useShortcutLabel } from "../ui/shortcuts";
-import { AGENT_GLOW, BUTTON_XS, DANGER_BUTTON_XS, PRIMARY_BUTTON_LG, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { confirmDestructive } from "../ui/confirm";
-import { useHoverAnchor, type HoverAnchor } from "../ui/hoverAnchor";
-import { ChevronIcon, PlusIcon, SparkleIcon, TrashIcon } from "../ui/icons";
-import { UnsavedDot } from "../ui/UnsavedDot";
-import { hideCurrentWindow, useSecondaryWindow } from "../ui/nativeWindow";
-import { baseName, isInsideFolder } from "../ui/path";
-import { toggleInCollapsed } from "../ui/treeExpansion";
-import { useTreeNavigation } from "../ui/useTreeNavigation";
-import { errorText, useLoad } from "../ui/useLoad";
-import { creationTask, generationTask, GUARDRAIL_CHAT_PATH, guardrailDeleteTarget, guardrailListRows, guardrailPath, guardrailTask, guardrailTemplate, KIND_LABELS, kindHelp, listGuardrails, newGuardrailLocation, ownerFolderOf, treeFolders, type Guardrail, type GuardrailKind, type GuardrailListing, type GuardrailLocation } from "./guardrails";
+import { HEADER_BAR } from "../ui/bars.constants";
+import { useShortcutLabel } from "../ui/shortcut-label.hook";
+import { AGENT_GLOW, BUTTON_XS, DANGER_BUTTON_XS, PRIMARY_BUTTON_LG, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { confirmDestructive } from "../ui/confirm.utils";
+import { useHoverAnchor } from "../ui/hover-anchor.hook";
+import { PlusIcon, SparkleIcon, TrashIcon } from "../ui/Icons";
+import { hideCurrentWindow } from "../ui/native-window.utils";
+import { useSecondaryWindow } from "../ui/secondary-window.hook";
+import { baseName, isInsideFolder } from "../common/path/path.utils";
+import { toggleInCollapsed } from "../common/tree/tree-expansion.utils";
+import { useTreeNavigation } from "../ui/tree-navigation.hook";
+import { errorText } from "../ui/error-text.utils";
+import type { Guardrail, GuardrailKind, GuardrailLocation } from "./guardrail.types";
+import { KIND_LABELS, KINDS } from "./guardrail-kind.utils";
+import { guardrailDeleteTarget, guardrailPath, guardrailTemplate } from "./guardrail-paths.utils";
+import { guardrailListRows, newGuardrailLocation, treeFolders } from "./guardrail-tree.utils";
 import { GuardrailTree } from "./GuardrailTree";
-import { ensureGuardrailReadmes } from "./guardrailReadmes";
-import { LINT_HELP, LINT_TAB_LABEL } from "./lintRules";
+import { GuardrailList } from "./GuardrailList";
+import { GuardrailHelpTooltip, HELP_OPEN_DELAY, type GuardrailTab } from "./GuardrailHelpTooltip";
+import { MarkdownEditor } from "./MarkdownEditor";
+import { DraftEditor } from "./DraftEditor";
+import { useGuardrailListing } from "./guardrail-listing.hook";
+import { useGuardrailAgentChats, type GuardrailDraft } from "./guardrail-agent-chats.hook";
+import { LINT_TAB_LABEL } from "./lint-rules.utils";
 import { LintRulesPane } from "./LintRulesPane";
-
-const KINDS: GuardrailKind[] = ["instruction", "rule", "skill", "agent", "adr"];
-
-/** A tab of the window: a guardrail kind, or the ESLint rules (see LintRulesPane.tsx). */
-type GuardrailTab = GuardrailKind | "lint";
 
 /**
  * The repository's guardrails as a window of its own (see guardrailsWindow.ts), opened from the chat header: the
@@ -51,7 +49,7 @@ type GuardrailTab = GuardrailKind | "lint";
  * with everything in it, and a CLAUDE.md or rule dragged onto another folder moves there. The page of a new file
  * ("New …" or "+") shows the kind's template in the editor, with an optional name for all but a CLAUDE.md, and
  * opens its agent chat: "Create" (or ⌘S) writes the template once it was edited (an unedited one is never written,
- * leaving the page drops it), and the sub chat (see chat/SubChatPopover.tsx) lets an agent write the file, under
+ * leaving the page drops it), and the sub chat (see chat/sub-chat/SubChatPopover.tsx) lets an agent write the file, under
  * the name or one the agent chooses; the file opens as soon as it appears. "Agent" in the editor header opens a sub chat whose agent writes the open file
  * from the user's instructions; once that sub chat exists, the button shows whether its agent is working and
  * reopens the same chat after the popover was closed. The editor reloads the file after every edit an agent of the
@@ -69,34 +67,18 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
   const workspace = workspaceFor(sessionId, worktreePath);
   const [kind, setKind] = useState<GuardrailKind>("instruction");
   const [isLintTab, setIsLintTab] = useState(false);
-  // Times the window was brought back, so that the lint rules tab reads the configs again.
-  const [focusCount, setFocusCount] = useState(0);
-  const [listing, setListing] = useState<GuardrailListing | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [dirtyPaths, setDirtyPaths] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [collapsedFolders, setCollapsedFolders] = useState<ReadonlySet<string>>(new Set());
   const helpHover = useHoverAnchor<GuardrailTab>(HELP_OPEN_DELAY);
-  const agentChat = useSubChatPopover();
   // The page of a new file of this tab's kind ("New …" or the "+" of a tree folder): where it goes (for a CLAUDE.md
   // `dir` is its folder), its name, and the creation chats that existed before it. Its content starts as the
   // template and follows the name until it is edited; it is written only once edited.
-  const [draft, setDraft] = useState<(GuardrailLocation & { name: string; content: string; earlierChats: ReadonlySet<string> }) | null>(null);
-  const draftAgentRef = useRef<HTMLButtonElement>(null);
-  // The creation chat whose agent wrote a file, per path, so that the file's "Agent" button shows and reopens it.
-  const [creatorChats, setCreatorChats] = useState<Record<string, SelectionChat>>({});
-  // Set before the file an agent just created is selected, so that the chat which created it stays open.
-  const keepsAgentChat = useRef(false);
-  // Every guardrail path of the last listing, to notice a file an agent added.
-  const knownPaths = useRef<Set<string> | null>(null);
+  const [draft, setDraft] = useState<GuardrailDraft | null>(null);
   // Edits finished by any agent working in this worktree (the session's own or a sub chat's), to reload the open file.
   const editVersion = useHuntStore((state) =>
     state.sessions.filter((candidate) => candidate.worktreePath === worktreePath).reduce((sum, candidate) => sum + (state.chats[candidate.id]?.editVersion ?? 0), 0),
   );
-
-  usePaneStyles();
-  useSettingsSync();
-  useBackendEvents();
 
   useEffect(() => {
     void refreshSessions()
@@ -111,48 +93,10 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
     void getCurrentWindow().destroy();
   }, [isLoaded, hasSession]);
 
-  const refresh = useCallback(() => {
-    return listGuardrails(sessionId)
-      .then((next) => {
-        setListing(next);
-        setError(null);
-        void ensureGuardrailReadmes(sessionId, next.dirs);
-        return next;
-      })
-      .catch((reason) => {
-        setError(String(reason));
-        return null;
-      });
-  }, [sessionId]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  // A window booted ahead of time or hidden by its close reads the listing again whenever it is brought back.
-  useEffect(() => {
-    const subscription = getCurrentWindow().onFocusChanged(({ payload: isFocused }) => {
-      if (isFocused) {
-        void refresh();
-        setFocusCount((count) => count + 1);
-      }
-    });
-    return () => void subscription.then((unlisten) => unlisten());
-  }, [refresh]);
-
-  // Unsaved edits are marked in the list; the workspace reports every change of a document's dirty state.
-  useEffect(() => {
-    const subscription = workspace.onDirtyChange((path, isDirty) => {
-      setDirtyPaths((current) => (isDirty ? (current.includes(path) ? current : [...current, path]) : current.filter((candidate) => candidate !== path)));
-    });
-    return () => subscription.dispose();
-  }, [workspace]);
+  const { listing, dirtyPaths, focusCount, refresh } = useGuardrailListing(sessionId, workspace, setError);
 
   const entries = listing?.[kind] ?? [];
   const selected = entries.find((entry) => entry.path === selectedPath) ?? null;
-  // The newest sub chat about the open file, kept across popover closes; the "Agent" button reopens it.
-  const fileChat = useSelectionChats(sessionId, selectedPath)[0] ?? (selectedPath ? creatorChats[selectedPath] : undefined) ?? null;
-  const isFileChatBusy = useHuntStore((state) => (fileChat ? (state.chats[fileChat.sessionId]?.isBusy ?? false) : false));
   /** The title the draft's path and template derive from: a CLAUDE.md's folder, otherwise the typed name. */
   const draftTitle = draft ? (kind === "instruction" ? draft.dir : draft.name) : "";
   const draftPath = draft && listing ? guardrailPath(kind, draftTitle, listing, draft) : null;
@@ -161,58 +105,43 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
   const canCreate = isDraftEdited && (kind === "instruction" || !!draft?.name.trim());
   // Sub chats that create the draft's file; their selection names the file (a CLAUDE.md, whose path is fixed) or the directory.
   const draftChatPath = draft ? (kind === "instruction" ? draftPath : draft.dir) : null;
-  const creationChats = useSelectionChats(sessionId, draftChatPath);
-  const draftChat = draft ? (creationChats.find((chat) => !draft.earlierChats.has(chat.sessionId)) ?? null) : null;
-  const isDraftChatBusy = useHuntStore((state) => (draftChat ? (state.chats[draftChat.sessionId]?.isBusy ?? false) : false));
 
-  // The agent popover is about the open file; another file (or tab) closes it, except the file its agent created.
-  const closeAgentChat = agentChat.close;
-  useEffect(() => {
-    if (keepsAgentChat.current) {
-      keepsAgentChat.current = false;
-      return;
-    }
-    closeAgentChat();
-  }, [selectedPath, closeAgentChat]);
-
-  /** Whether the open sub chat creates a new file of this tab's kind: its selection names one of the kind's directories, or the draft CLAUDE.md. */
-  const shownChatPath = agentChat.shown?.request.selection.path;
-  const isCreationChat =
-    !!listing && !!shownChatPath && (kind === "instruction" ? shownChatPath === draftChatPath : ownerFolderOf(shownChatPath, listing.dirs[kind]) !== null);
-  /** Whether the open sub chat is the "New" button's, which creates a guardrail of any kind. */
-  const isGuardrailChat = agentChat.shown?.request.selection.path === GUARDRAIL_CHAT_PATH;
-  const guardrailChat = useSelectionChats(sessionId, GUARDRAIL_CHAT_PATH)[0] ?? null;
+  const {
+    agentChat,
+    draftAgentRef,
+    fileChat,
+    isFileChatBusy,
+    isFileChatUnseen,
+    draftChat,
+    isDraftChatBusy,
+    isDraftChatUnseen,
+    isCreationChat,
+    isGuardrailChat,
+    shownRequest,
+    openAgent,
+    openCreateAgent,
+    openGuardrailAgent,
+  } = useGuardrailAgentChats({
+    sessionId,
+    workspace,
+    kind,
+    listing,
+    selectedPath,
+    draft,
+    draftChatPath,
+    onCreated: (entry) => {
+      setDraft(null);
+      setKind(entry.kind);
+      setSelectedPath(entry.path);
+    },
+    onGuardrailChatOpen: () => setIsLintTab(false),
+  });
 
   /** Opens `path` in the editor; the page of a new file closes. */
   const select = (path: string | null) => {
     setDraft(null);
     setSelectedPath(path);
   };
-
-  // A file the creation chat's agent added is selected while that chat stays open; the "New" chat's file may be of any
-  // kind, whose tab is shown then.
-  useEffect(() => {
-    if (!listing) return;
-    const paths = new Set(KINDS.flatMap((candidate) => listing[candidate].map((entry) => entry.path)));
-    const previous = knownPaths.current;
-    knownPaths.current = paths;
-    if (!previous || (!isCreationChat && !isGuardrailChat)) return;
-    const added = (isGuardrailChat ? KINDS.flatMap((candidate) => listing[candidate]) : listing[kind]).filter((entry) => !previous.has(entry.path));
-    if (added.length !== 1) return;
-    const { path } = added[0];
-    const creator =
-      (isGuardrailChat ? guardrailChat : draftChat) ??
-      (agentChat.shown?.subSessionId ? { sessionId: agentChat.shown.subSessionId, selection: agentChat.shown.request.selection } : null);
-    if (creator) {
-      setCreatorChats((current) => ({ ...current, [path]: creator }));
-    }
-    keepsAgentChat.current = true;
-    setDraft(null);
-    setKind(added[0].kind);
-    setSelectedPath(path);
-    // Runs when the listing changes; the chat that wrote the file is read as it is then.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listing, kind, isCreationChat, isGuardrailChat]);
 
   useEffect(() => {
     if (!editVersion) return;
@@ -246,7 +175,7 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
     setCollapsedFolders(new Set());
   };
 
-  // A warm window stays hidden until the main window shows it (see openGuardrailsWindow.ts); hiding keeps unsaved edits.
+  // A warm window stays hidden until the main window shows it (see guardrails-window.utils.ts); hiding keeps unsaved edits.
   useSecondaryWindow("guardrails", hideCurrentWindow, { isReady: !isWarm });
 
   /** Writes a new file named after `title` at `location` with `content`, by default the kind's template, and opens it. */
@@ -332,21 +261,6 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
   };
 
   /**
-   * Opens the sub chat about `entry`'s file below the "Agent" button: the existing one with its whole conversation,
-   * or a new one whose agent sees the file's current content.
-   */
-  const openAgent = (entry: Guardrail, button: HTMLElement) => {
-    const rect = button.getBoundingClientRect();
-    const anchor = { x: rect.left, y: rect.bottom + 6 };
-    if (fileChat) {
-      agentChat.open({ selection: fileChat.selection, anchor }, fileChat.sessionId);
-      return;
-    }
-    const text = workspace.get(entry.path)?.model.getValue() ?? "";
-    agentChat.open({ selection: { path: entry.path, startLine: 1, endLine: Math.max(1, text.split("\n").length), text, task: generationTask(entry.kind, entry.path) }, anchor });
-  };
-
-  /**
    * Opens the page of a new file of this tab's kind at `location` (by default the kind's configured directory; for a
    * CLAUDE.md the folder it goes into); its agent chat opens below its "Agent" button once it is shown.
    */
@@ -359,40 +273,6 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
     const earlierChats = new Set(selectionChatsFor(useHuntStore.getState().sessions, sessionId, chatPath).map((chat) => chat.sessionId));
     setDraft({ ...target, name: "", content: guardrailTemplate(kind, title, listing), earlierChats });
   };
-
-  /** Opens the draft's sub chat below `button`: the one already started for this draft, or a new one. */
-  const openCreateAgent = (button: HTMLElement) => {
-    if (!draft || !listing || !draftChatPath) return;
-    const rect = button.getBoundingClientRect();
-    const anchor = { x: rect.left, y: rect.bottom + 6 };
-    if (draftChat) {
-      agentChat.open({ selection: draftChat.selection, anchor }, draftChat.sessionId);
-      return;
-    }
-    agentChat.open({ selection: { path: draftChatPath, startLine: 1, endLine: 1, text: "", task: creationTask(kind, listing, "", draft) }, anchor });
-  };
-
-  /** Opens a new "New" chat below `button`, whose agent decides from the user's description which guardrail to create. */
-  const openGuardrailAgent = (button: HTMLElement) => {
-    if (!listing) return;
-    setIsLintTab(false);
-    const rect = button.getBoundingClientRect();
-    agentChat.open({ selection: { path: GUARDRAIL_CHAT_PATH, startLine: 1, endLine: 1, text: "", task: guardrailTask(listing) }, anchor: { x: rect.left, y: rect.bottom + 6 } });
-  };
-
-  // A new draft page starts with its agent chat open.
-  const draftEarlierChats = draft?.earlierChats;
-  useEffect(() => {
-    if (!draftEarlierChats || !draftAgentRef.current) return;
-    openCreateAgent(draftAgentRef.current);
-    // Runs once per draft; the chat is anchored to the button rendered with it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draftEarlierChats]);
-
-  /** The open chat's request; a new draft's agent learns the name typed so far when the first question is sent. */
-  const shownRequest = agentChat.shown && draft && isCreationChat && !agentChat.shown.subSessionId
-    ? { ...agentChat.shown.request, selection: { ...agentChat.shown.request.selection, task: creationTask(kind, listing, draft.name, draft) } }
-    : agentChat.shown?.request;
 
   const save = async (path: string) => {
     try {
@@ -459,7 +339,7 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
           New
         </button>
       </div>
-      {helpHover.anchor ? <HelpTooltip anchor={helpHover.anchor} onEnter={helpHover.keep} onLeave={helpHover.leave} /> : null}
+      {helpHover.anchor ? <GuardrailHelpTooltip anchor={helpHover.anchor} onEnter={helpHover.keep} onLeave={helpHover.leave} /> : null}
 
       {error ? <p className="border-b border-(--line) px-4 py-1.5 text-[13px] text-red-400">{error}</p> : null}
 
@@ -501,38 +381,16 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
               <p className="px-4 py-2 text-[13px] text-neutral-500">{error ? null : "Loading…"}</p>
             )
           ) : (
-            <>
-              <ul {...listNav.listProps} className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 text-[13px] outline-none">
-                {rows.map((row) =>
-                  row.type === "folder" ? (
-                    <FolderRow
-                      key={`folder:${row.folder}`}
-                      folder={row.folder}
-                      name={row.name}
-                      depth={row.depth}
-                      isExpanded={!collapsedFolders.has(row.folder)}
-                      isSelected={listNav.cursor === `${row.folder}/`}
-                      onToggle={() => {
-                        toggleFolder(row.folder);
-                        listNav.select(`${row.folder}/`);
-                      }}
-                    />
-                  ) : (
-                    <GuardrailRow
-                      key={row.entry.path}
-                      entry={row.entry}
-                      depth={row.depth}
-                      isSelected={listNav.cursor === row.entry.path}
-                      isDirty={dirtyPaths.includes(row.entry.path)}
-                      onSelect={() => listNav.select(row.entry.path)}
-                      onDelete={() => void remove(row.entry)}
-                    />
-                  ),
-                )}
-                {listing && !entries.length ? <li className="px-2 py-2 text-[13px] text-neutral-500">No {labels.plural.toLowerCase()} in this repository yet.</li> : null}
-                {!listing && !error ? <li className="px-2 py-2 text-[13px] text-neutral-500">Loading…</li> : null}
-              </ul>
-            </>
+            <GuardrailList
+              rows={rows}
+              collapsedFolders={collapsedFolders}
+              navigation={listNav}
+              dirtyPaths={dirtyPaths}
+              emptyText={listing && !entries.length ? `No ${labels.plural.toLowerCase()} in this repository yet.` : null}
+              isLoading={!listing && !error}
+              onToggleFolder={toggleFolder}
+              onDelete={(entry) => void remove(entry)}
+            />
           )}
         </aside>
 
@@ -550,6 +408,7 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
                   labelClassName="hidden @xl:inline"
                   onClick={(event) => openAgent(selected, event.currentTarget)}
                   isBusy={isFileChatBusy}
+                  hasUnseenReply={isFileChatUnseen}
                   title={fileChat ? "Show the agent's chat about this file" : "Let the agent write this file from your instructions"}
                   aria-label={fileChat ? "Show the agent's chat about this file" : "Let the agent write this file from your instructions"}
                 />
@@ -594,6 +453,7 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
                   labelClassName="hidden @xl:inline"
                   onClick={(event) => openCreateAgent(event.currentTarget)}
                   isBusy={isDraftChatBusy}
+                  hasUnseenReply={isDraftChatUnseen}
                   title={draftChat ? "Show the agent's chat about this file" : "Let the agent write this file from your instructions"}
                   aria-label={draftChat ? "Show the agent's chat about this file" : "Let the agent write this file from your instructions"}
                 />
@@ -640,207 +500,6 @@ export function GuardrailsWindow({ sessionId, isWarm }: { sessionId: string; isW
           ) : null}
         </section>
       </div>
-    </div>
-  );
-}
-
-/** Indentation of a list row per folder level, in pixels. */
-const ROW_INDENT = 14;
-
-/** Collapsible folder of the list; the rows below it are indented one level further. */
-function FolderRow({ folder, name, depth, isExpanded, isSelected, onToggle }: { folder: string; name: string; depth: number; isExpanded: boolean; isSelected: boolean; onToggle: () => void }) {
-  return (
-    <li data-tree-key={`${folder}/`}>
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={isExpanded}
-        style={{ paddingLeft: 4 + depth * ROW_INDENT }}
-        className={`flex w-full items-center gap-1 rounded py-1.5 pr-2 text-left ${isSelected ? "bg-(--row-selected) text-white" : "text-neutral-400 hover:bg-(--row-hover) hover:text-white"}`}
-      >
-        <ChevronIcon expanded={isExpanded} className="size-3.5 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">{name}</span>
-      </button>
-    </li>
-  );
-}
-
-/** One guardrail of the list; its delete button shows up while the row is hovered or focused. */
-function GuardrailRow({ entry, depth, isSelected, isDirty, onSelect, onDelete }: { entry: Guardrail; depth: number; isSelected: boolean; isDirty: boolean; onSelect: () => void; onDelete: () => void }) {
-  return (
-    <li className="group relative" data-tree-key={entry.path}>
-      <button
-        type="button"
-        onClick={onSelect}
-        title={entry.path}
-        style={{ paddingLeft: 8 + depth * ROW_INDENT }}
-        className={`flex w-full items-center gap-2 rounded py-1.5 pr-8 text-left ${isSelected ? "bg-(--row-selected) text-white" : "text-neutral-300 hover:bg-(--row-hover) hover:text-white"}`}
-      >
-        <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-        {isDirty ? <UnsavedDot /> : null}
-      </button>
-      <button
-        type="button"
-        onClick={onDelete}
-        title={`Delete ${entry.name}`}
-        aria-label={`Delete ${entry.name}`}
-        className="absolute top-1/2 right-0.5 inline-flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-red-400 opacity-0 transition-colors group-hover:opacity-100 hover:bg-red-400/15 hover:text-red-300 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-blue-400/60 outline-none"
-      >
-        <TrashIcon />
-      </button>
-    </li>
-  );
-}
-
-/** How long the mouse rests on a tab before its kind's explanation shows. */
-const HELP_OPEN_DELAY = 700;
-const HELP_WIDTH = 480;
-const HELP_MARGIN = 8;
-
-/** Explanation of the hovered tab's kind below it (`anchor`); the mouse may move into it to select its text. */
-function HelpTooltip({ anchor, onEnter, onLeave }: { anchor: HoverAnchor<GuardrailTab>; onEnter: () => void; onLeave: () => void }) {
-  const title = anchor.key === "lint" ? LINT_TAB_LABEL : KIND_LABELS[anchor.key].plural;
-  const help = anchor.key === "lint" ? LINT_HELP : kindHelp(anchor.key);
-  const width = Math.min(HELP_WIDTH, window.innerWidth - 2 * HELP_MARGIN);
-  const left = Math.max(HELP_MARGIN, Math.min(anchor.rect.left, window.innerWidth - width - HELP_MARGIN));
-
-  return createPortal(
-    <div
-      role="tooltip"
-      aria-label={title}
-      onMouseEnter={onEnter}
-      onMouseLeave={onLeave}
-      className="fixed z-50 overflow-y-auto rounded-md border border-neutral-600 bg-(--surface-inset) p-3.5 text-[14px] leading-relaxed text-neutral-200 shadow-lg shadow-black/40"
-      style={{ width, left, top: anchor.rect.bottom + 4, maxHeight: window.innerHeight - anchor.rect.bottom - 4 - HELP_MARGIN }}
-    >
-      <h3 className="mb-1 font-semibold text-neutral-100">{title}</h3>
-      <p>{help.what}</p>
-      <h4 className="mt-2.5 font-semibold text-neutral-100">How it is loaded</h4>
-      <p>{help.loading}</p>
-      <h4 className="mt-2.5 font-semibold text-neutral-100">When to use it</h4>
-      <p>{help.use}</p>
-    </div>,
-    document.body,
-  );
-}
-
-/**
- * Monaco editor for Markdown with soft wrapping, sized like the editor panes, created without a model in the host
- * `hostRef` points to; ⌘S calls `onSave` with the editor.
- */
-function useMarkdownMonaco(onSave: (editor: monaco.editor.IStandaloneCodeEditor) => void) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
-  const fontSize = useSettingsStore((state) => state.panes.diff.fontSize);
-  const lineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
-  const fontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
-  const latestOnSave = useRef(onSave);
-  latestOnSave.current = onSave;
-
-  useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-    setupMonaco();
-    const editor = monaco.editor.create(host, {
-      ...EDITOR_APPEARANCE_OPTIONS,
-      theme: MONACO_THEME,
-      model: null,
-      fontSize,
-      lineHeight,
-      fontFamily,
-      automaticLayout: true,
-      minimap: { enabled: false },
-      scrollBeyondLastLine: false,
-      overviewRulerLanes: 0,
-      hideCursorInOverviewRuler: true,
-      overviewRulerBorder: false,
-      renderLineHighlight: "line",
-      scrollbar: { alwaysConsumeMouseWheel: false },
-      wordWrap: "on",
-      links: false,
-      dragAndDrop: false,
-      padding: { top: 12, bottom: 12 },
-    });
-    onShortcut(editor, "editor.save", () => latestOnSave.current(editor));
-    editorRef.current = editor;
-    return () => {
-      editorRef.current = null;
-      editor.setModel(null);
-      editor.dispose();
-    };
-    // Created once; the font options follow the settings below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    editorRef.current?.updateOptions({ fontSize, lineHeight, fontFamily });
-  }, [fontSize, lineHeight, fontFamily]);
-
-  return { hostRef, editorRef };
-}
-
-/** Markdown editor on the workspace document of `path`; ⌘S saves it. */
-function MarkdownEditor({ workspace, path, onSave, onError }: { workspace: Workspace; path: string; onSave: (path: string) => void; onError: (error: string | null) => void }) {
-  const { hostRef, editorRef } = useMarkdownMonaco((editor) => {
-    const shownPath = workspace.pathOf(editor.getModel()?.uri ?? monaco.Uri.parse("inmemory://none"));
-    if (shownPath) {
-      onSave(shownPath);
-    }
-  });
-
-  useLoad(
-    () => workspace.open(path),
-    {
-      onValue: (document) => {
-        const editor = editorRef.current;
-        if (!editor) return;
-        editor.setModel(document.model);
-        editor.setScrollTop(0);
-        editor.focus();
-        onError(null);
-      },
-      onError: (reason) => onError(errorText(reason)),
-    },
-    [workspace, path, onError],
-  );
-
-  return (
-    <div className="relative min-h-0 flex-1 bg-(--diff-bg)">
-      <div ref={hostRef} className="absolute inset-0" />
-    </div>
-  );
-}
-
-/** Markdown editor on the content of a file not written yet; it takes over `value` whenever that changes, ⌘S calls `onSave`. */
-function DraftEditor({ value, onChange, onSave }: { value: string; onChange: (value: string) => void; onSave: () => void }) {
-  const { hostRef, editorRef } = useMarkdownMonaco(() => onSave());
-  const latestOnChange = useRef(onChange);
-  latestOnChange.current = onChange;
-
-  useEffect(() => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const model = monaco.editor.createModel(value, "markdown");
-    const subscription = model.onDidChangeContent(() => latestOnChange.current(model.getValue()));
-    editor.setModel(model);
-    return () => {
-      subscription.dispose();
-      editor.setModel(null);
-      model.dispose();
-    };
-    // One model per draft; later values reach it below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editorRef]);
-
-  useEffect(() => {
-    const model = editorRef.current?.getModel();
-    if (!model || model.getValue() === value) return;
-    model.setValue(value);
-  }, [editorRef, value]);
-
-  return (
-    <div className="relative min-h-0 flex-1 bg-(--diff-bg)">
-      <div ref={hostRef} className="absolute inset-0" />
     </div>
   );
 }

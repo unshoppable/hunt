@@ -1,10 +1,10 @@
 // The Playwright MCP server of a local session's agent, started by Hunt as `node browserMcp.mjs --port <port>` with
-// HUNT_BROWSER_SOCKET (Hunt's browser control socket) and HUNT_SESSION_ID in the environment. It runs
+// HUNT_CONTROL_SOCKET (Hunt's control socket) and HUNT_SESSION_ID in the environment. It runs
 // `@playwright/mcp --cdp-endpoint http://127.0.0.1:<port>`, whose output files (snapshots, screenshots) go to a
 // per-session temp folder instead of `.playwright-mcp/` in the agent's worktree, and which may open `file://` URLs
 // (the browser is the user's own Chrome profile anyway). It passes the NDJSON lines of stdio
 // through both ways unchanged, except that it holds the first `tools/call` and every message after it until Hunt opened
-// the session's Chrome: it sends `{"open":"<session id>"}` as one line to the socket and reads one line back,
+// the session's Chrome: it sends `{"type":"openBrowser","session":"<session id>"}` as one line to the socket and reads one line back,
 // `{"ok":true}` or `{"error":"<message>"}`. A failure answers that call with a JSON-RPC error, and the next call asks
 // again. It exits when stdin ends or the server exits, with the server's exit code; the server's stderr passes through.
 // HUNT_BROWSER_MCP_CLI replaces the server's script, for the tests.
@@ -103,9 +103,9 @@ async function openBrowser() {
 
 /** Asks Hunt over its socket to open the session's Chrome; resolves once it runs, rejects with Hunt's error. */
 function requestOpen() {
-  const socketPath = process.env.HUNT_BROWSER_SOCKET;
+  const socketPath = process.env.HUNT_CONTROL_SOCKET;
   const sessionId = process.env.HUNT_SESSION_ID;
-  if (!socketPath || !sessionId) return Promise.reject(new Error("failed to open the browser: Hunt passed no HUNT_BROWSER_SOCKET and HUNT_SESSION_ID"));
+  if (!socketPath || !sessionId) return Promise.reject(new Error("failed to open the browser: Hunt passed no HUNT_CONTROL_SOCKET and HUNT_SESSION_ID"));
   return new Promise((resolve, reject) => {
     const socket = connect(socketPath);
     openSocket = socket;
@@ -124,7 +124,7 @@ function requestOpen() {
     };
     socket.setEncoding("utf8");
     socket.setTimeout(OPEN_TIMEOUT_MS, () => settle(new Error("failed to open the browser: Hunt did not answer in time")));
-    socket.on("connect", () => socket.write(`${JSON.stringify({ open: sessionId })}\n`));
+    socket.on("connect", () => socket.write(`${JSON.stringify({ type: "openBrowser", session: sessionId })}\n`));
     socket.on("data", (chunk) => {
       received += chunk;
       const newline = received.indexOf("\n");

@@ -27,7 +27,7 @@ readonly ACTIVITY_FILE=/var/lib/hunt/activity
 readonly INSTALLED_HASH_FILE=/var/lib/hunt/installed-hash
 readonly UNIT_DIR=/etc/systemd/system
 # A preview domain: at least two labels, the last of letters only, and room for `<short>-<port>-open.` in front of it
-# within the 253 characters of a host name. apps/client/src-tauri/src/remote/preview.rs, apps/session/src/config.ts and
+# within the 253 characters of a host name. apps/client/src-tauri/src/remote/preview.rs, libs/domain/src/session/preview-domain.rules.ts and
 # Hunt's settings check the same.
 readonly DOMAIN_PATTERN='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
 readonly MAX_DOMAIN_LENGTH=233
@@ -90,7 +90,7 @@ readonly TMUX_CONFIG=/etc/tmux.conf
 readonly HEARTBEAT_MAX_AGE_MS=120000
 # Ports preview-status never lists: Caddy's admin API, the Docker API, LLMNR of systemd-resolved, the preview proxy, the
 # desktop, the preview proxy's review server and the Google Ops Agent's OpenTelemetry collector and Fluent Bit;
-# apps/session/src/config.ts reserves the same.
+# apps/session/src/session-config/hunt-json.rules.ts reserves the same.
 readonly RESERVED_PORTS='2019 2375 2376 5355 8080 9222 9230 9231 9232 20201 20202'
 # Pinned x86_64 downloads, like the VMs.
 readonly GH_VERSION=2.102.0
@@ -114,11 +114,11 @@ readonly -a DESKTOP_PACKAGES=(sway ffmpeg fonts-noto-cjk)
 # ---- Gateway ----
 # The preview domain of the edge proxy: `install --domain` sets it, later installs keep it.
 readonly DOMAIN_FILE=/etc/hunt/preview-domain
-# The zones session VMs may go into, one per line in order of preference (apps/gateway/src/sessionZones.ts): the install
+# The zones session VMs may go into, one per line in order of preference (apps/gateway/src/shared/session-zones.utils.ts): the install
 # writes them from the gateway's instance metadata SESSION_ZONES_ATTRIBUTE, and the edge looks session VMs up in them.
 readonly SESSION_ZONES_FILE=/etc/hunt/session-zones
 readonly SESSION_ZONES_ATTRIBUTE=hunt-session-zones
-# The session release the gateway installs on session VMs (apps/gateway/src/sessionVm.ts): `stage-session` keeps it and
+# The session release the gateway installs on session VMs (apps/gateway/src/session-vm/session-vm-ssh.client.ts): `stage-session` keeps it and
 # the one before below SESSION_RELEASES and points SESSION_CURRENT at it.
 readonly SESSION_RELEASES=/srv/hunt/session-releases
 readonly SESSION_CURRENT=/srv/hunt/session-current
@@ -142,7 +142,7 @@ readonly EDGE_IMAGE=caddy:2-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e
 readonly -a LB_RANGES=(35.191.0.0/16 130.211.0.0/22)
 # Where a session VM's preview proxy (hunt-proxy.service) listens.
 readonly SESSION_PROXY_PORT=8080
-# hunt-wake.service (apps/gateway/src/wake.ts).
+# hunt-wake.service (apps/gateway/src/wake/wake.main.ts).
 readonly WAKE_ADDRESS=127.0.0.1:9180
 
 # Removed when hunt-ctl exits.
@@ -211,7 +211,9 @@ Session VM:
                          remoteSecrets name (each must exist), and the configuration of the VM's preview proxy,
                          /etc/hunt/caddy.json, and (re)start the proxy; stops and disables the services hunt.json no
                          longer declares; prints the services' section of the agent's prompt, the text of the
-                         repository's hunt.agent.md and the model hunt.json sets for swf sessions (swf.model)
+                         repository's hunt.agent.md, the model hunt.json sets for swf sessions (swf.model) and the
+                         glob patterns of the files whose change makes an swf pull request need a human reviewer
+                         (swf.humanReviewPaths)
   check <worktree> <name>
                          run the check <name> of the hunt.json in the session's worktree <worktree> as the agent in a
                          login shell, in the worktree or the check's cwd, with FORCE_COLOR=1 and no stdin; passes its
@@ -1376,7 +1378,8 @@ cmd_session_config() {
   systemctl enable --quiet "$PROXY_UNIT"
   systemctl reload-or-restart "$PROXY_UNIT"
   emit --argjson result "$result" \
-    '{agent_md: ($result.agent_md // null), services_prompt: ($result.services_prompt // ""), swf_model: ($result.swf_model // null)}'
+    '{agent_md: ($result.agent_md // null), services_prompt: ($result.services_prompt // ""), swf_model: ($result.swf_model // null),
+      swf_human_review_paths: ($result.swf_human_review_paths // []), swf_skills: ($result.swf_skills // {})}'
 }
 
 # Runs the check $2 of the hunt.json in the session worktree $1; see the usage. The check's output goes straight to

@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { commands } from "../ipc/commands";
-import type { Commit, CommitDetails, CommitFile, FileDiff, GitRef, GitScope, RefList } from "../ipc/types";
-import { useHuntStore } from "../state/store";
-import { reportFailure, reportSuccess } from "../state/statusToasts";
-import { remoteOf } from "../chat/remoteSession";
-import { useSettingsStore } from "../state/settings";
-import { PaneSeparator, Panel, PersistentGroup } from "../layout/ResizablePanes";
+import type { FileDiff } from "../diff/diff.types";
+import type { Commit, CommitDetails, CommitFile, GitRef, GitScope, RefList } from "./git.types";
+import { useHuntStore } from "../sessions/hunt.store";
+import { reportFailure, reportSuccess } from "../ui/status-toasts.store";
+import { remoteOf } from "../sessions/remote/remote-session.utils";
+import { useSettingsStore } from "../settings/settings.store";
+import { PaneSeparator, Panel, PersistentGroup } from "../ui/ResizablePanes";
 import { CodeDiffEditor } from "../diff/CodeDiffEditor";
-import { monacoLanguage } from "../diff/monaco";
+import { monacoLanguage } from "../editor/language-id.utils";
 import { SplitDiffView } from "../diff/SplitDiffView";
-import { openInEditorWindow } from "../ide/editorWindows";
-import { SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { confirmDestructive } from "../ui/confirm";
-import { errorText, useLoad } from "../ui/useLoad";
-import { BUSY_LABELS, branchActions, localBranchesWithoutOrigin, originBranchName, type BranchAction } from "./branchActions";
+import { openInEditorWindow } from "../ide/editor-window.utils";
+import { SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { confirmDestructive } from "../ui/confirm.utils";
+import { useLoad } from "../ui/load.hook";
+import { errorText } from "../ui/error-text.utils";
+import { BUSY_LABELS, branchActions, localBranchesWithoutOrigin, originBranchName, type BranchAction } from "./branch-actions.utils";
 import { PushTargetDialog, RenameBranchDialog } from "./BranchDialogs";
 import { CommitFiles } from "./CommitFiles";
 import { CommitLog } from "./CommitLog";
@@ -258,7 +260,7 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   };
 
   return (
-    <PersistentGroup id="hunt-git" className="h-full min-h-0">
+    <PersistentGroup id="hunt-git" fillPane="log" className="h-full min-h-0">
       <Panel id="refs" defaultSize="18%" minSize={160} maxSize={520} className="flex">
         <RefTree
           refs={refs}
@@ -293,7 +295,7 @@ export function GitPanel({ scope }: { scope: GitScope }) {
       </Panel>
       <PaneSeparator />
       <Panel id="commit" defaultSize="34%" minSize={240} className="flex">
-        <PersistentGroup id="hunt-git-commit" orientation="vertical" className="h-full min-h-0 flex-1">
+        <PersistentGroup id="hunt-git-commit" fillPane="diff" orientation="vertical" className="h-full min-h-0 flex-1">
           <Panel id="files" defaultSize="45%" minSize={120} className="flex">
             <CommitFiles commit={selectedCommit} details={details} localBranches={localBranches} selectedPath={selectedFile?.path ?? null} onSelect={setSelectedFile} />
           </Panel>
@@ -393,9 +395,10 @@ export function GitPanel({ scope }: { scope: GitScope }) {
 
 /**
  * Runs the Git command behind `action` for the branch `ref` of `scope` and resolves to what it did, for the status
- * toast; `null` when it did not run (a delete or force pull the user did not confirm, or an action of a session's own
- * branch outside a session). A local branch whose commits no other branch has is deleted only after a confirmation, and
- * a force pull is confirmed since it drops the commits the upstream lacks.
+ * toast; `null` when it did not run (a delete, force pull or force push the user did not confirm, or an action of a
+ * session's own branch outside a session). A local branch whose commits no other branch has is deleted only after a
+ * confirmation, a force pull is confirmed since it drops the commits the upstream lacks, and a force push since it
+ * drops the commits of origin the branch lacks.
  */
 async function performAction(scope: GitScope, ref: GitRef, action: BranchAction): Promise<string | null> {
   const upstream = ref.upstream ?? "its upstream";
@@ -435,6 +438,13 @@ async function performAction(scope: GitScope, ref: GitRef, action: BranchAction)
     case "pushBranch":
       await commands.gitPushLocalBranch(scope, ref.name);
       return `Pushed ${ref.name} to origin/${ref.name}`;
+    case "forcePushBranch": {
+      const remote = `origin/${ref.name}`;
+      const lost = ref.behind ? `The ${ref.behind} ${ref.behind === 1 ? "commit" : "commits"} ${remote} has that ${ref.name} lacks are lost.` : `Commits ${remote} has that ${ref.name} lacks are lost.`;
+      if (!(await confirmDestructive(`Force push ${ref.name}?\n\n${remote} is set to ${ref.name}. ${lost}`, "Force push"))) return null;
+      await commands.gitForcePushLocalBranch(scope, ref.name);
+      return `Force pushed ${ref.name} to ${remote}`;
+    }
     case "delete":
       return (await deleteLocalBranch(scope, ref.name)) ? `Deleted ${ref.name}` : null;
     case "deleteRemote": {

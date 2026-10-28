@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ComponentType, type KeyboardEvent, type MouseEvent } from "react";
-import { MarkdownText } from "../chat/MessageList";
-import { ICON_BUTTON_XS, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
+import { MarkdownText } from "../chat/messages/MessageList";
+import { ICON_BUTTON_XS, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
 import {
   BoldIcon,
   BulletListIcon,
@@ -12,18 +12,19 @@ import {
   NumberedListIcon,
   QuoteIcon,
   TaskListIcon,
-} from "../ui/icons";
-import { useAutoGrow } from "../ui/useAutoGrow";
-import { ViewerAvatar } from "./Avatar";
-import { applyMarkdownAction, type MarkdownAction } from "./markdownEdits";
-import { isFileSpan, useReviewDraftCount, type LineSpan } from "./reviewComments";
+} from "../ui/Icons";
+import { useAutoGrow } from "../ui/auto-grow.hook";
+import { ViewerAvatar } from "./ViewerAvatar";
+import { applyMarkdownAction, type MarkdownAction } from "./markdown-edits.utils";
+import type { LineSpan } from "./line-span.value-object";
+import { useReviewDraftCount } from "./review-comments.hook";
 
 /** Hint on a comment whose lines lie outside the diff hunks. */
 export const NOTE_HINT = "Outside the diff · posted as a note in the review summary";
 
 type ReviewCommentComposerProps = {
   sessionId: string;
-  /** Lines of the new file version the comment is for, or `FILE_SPAN` for the whole file. */
+  /** Lines of the new file version the comment is for, or `LineSpan.FILE` for the whole file. */
   span: LineSpan;
   /**
    * Whether the comment is posted on the diff (lines inside a hunk, or a changed file); otherwise it becomes a note,
@@ -43,11 +44,11 @@ type ReviewCommentComposerProps = {
  */
 export function ReviewCommentComposer({ sessionId, span, isInline, onSubmit, onClose }: ReviewCommentComposerProps) {
   const hasDrafts = useReviewDraftCount(sessionId) > 0;
-  const title = isFileSpan(span)
+  const title = span.isFile
     ? "Add a comment on this file"
-    : span.startLine === span.line
-      ? `Add a comment on line R${span.line}`
-      : `Add a comment on lines R${span.startLine} to R${span.line}`;
+    : span.startLine === span.endLine
+      ? `Add a comment on line R${span.endLine}`
+      : `Add a comment on lines R${span.startLine} to R${span.endLine}`;
   const hint = isInline ? null : NOTE_HINT;
   return (
     <div

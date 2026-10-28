@@ -31,6 +31,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
+use crate::agent::claude_config::claude_dir;
 use crate::git;
 use crate::graph::{self, WatcherRegistry};
 use crate::remote::channel::{Channel, Event, RemoteChange};
@@ -39,7 +40,7 @@ use crate::remote::retrieve;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::sync::{self as file_sync, Direction, Live, Outcome, SyncTarget};
 use crate::remote::transcript_sync::StreamKind;
-use crate::remote::{claude_dir, RemoteTarget};
+use crate::remote::RemoteTarget;
 use crate::session::dependencies::{self, Install};
 use crate::session::link::{self, Link};
 use crate::session::related;

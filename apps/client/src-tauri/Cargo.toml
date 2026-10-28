@@ -6,6 +6,8 @@ description = "Hunt — desktop client for Claude Code"
 authors = ["Yannick Boetzkes"]
 license = "MIT"
 edition = "2024"
+# `tauri dev` and `tauri build` run the app; `src/bin/hunt-cli.rs` is the `hunt` command line (`src/cli/`).
+default-run = "hunt"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -23,7 +25,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order`: hunt.json is read, extended and written back as a `Value` (`agent/swf_skills.rs`), keeping its key order.
+serde_json = { version = "1", features = ["preserve_order"] }
 agent-client-protocol = { version = "3", features = ["process"] }
 tokio = { version = "1", features = ["full"] }
 notify-debouncer-full = "0.7"
@@ -32,6 +35,8 @@ tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 chrono = { version = "0.4", features = ["serde"] }
+# The arguments of the `hunt` command line (`src/cli/`).
+clap = { version = "4", features = ["derive"] }
 base64 = "0.22"
 glob = "0.3"
 regex = "1"
@@ -40,10 +45,10 @@ sha2 = "0.10"
 libc = "0.2"
 fix-path-env = { git = "https://github.com/tauri-apps/fix-path-env-rs", version = "0.0.0" }
 portable-pty = "0.9"
-# The CDP connection to the Chrome of a local session (`browser.rs`); loopback only, so no TLS.
+# The CDP connection to the Chrome of a local session (`agent/browser.rs`); loopback only, so no TLS.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
-# Brings the Chrome of a local session to the front (`browser.rs`).
+# Brings the Chrome of a local session to the front (`agent/browser.rs`).
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSRunningApplication"] }
 
 

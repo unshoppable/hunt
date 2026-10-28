@@ -1,27 +1,32 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { commands } from "../ipc/commands";
-import { useHuntStore, type AgentSetup, type PromptDraft, type SessionStart, type WorktreeTarget } from "../state/store";
-import { commandsFor, useAgentDefaultsStore } from "../state/agentDefaults";
-import { useSessionViewStore } from "../state/sessionViews";
-import { configuredVmSettings, useSettingsStore } from "../state/settings";
-import { findSelectOption, listChoiceOptions, listModes } from "../chat/configOptions";
-import { PromptInput, type ConfigSelect } from "../chat/PromptInput";
-import type { PullRequest, Screenshot, Workspace } from "../ipc/types";
-import { dirName, repoName } from "../ui/path";
-import { errorText, useLoad } from "../ui/useLoad";
-import { HEADER_BAR } from "../ui/bars";
-import { PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
+import { useHuntStore } from "./hunt.store";
+import type { AgentSetup, SessionStart, WorktreeTarget } from "./session.store-slice";
+import type { PromptDraft } from "../chat/chat.store-slice";
+import { commandsFor, useAgentDefaultsStore } from "../chat/agent-defaults.store";
+import { useSessionViewStore } from "./inspector.store";
+import { configuredVmSettings, useSettingsStore } from "../settings/settings.store";
+import { findSelectOption, listChoiceOptions, listModes } from "../chat/config-options.utils";
+import { PromptInput, type ConfigSelect } from "../chat/prompt/PromptInput";
+import type { Screenshot } from "../chat/chat.types";
+import type { PullRequest } from "./pull-requests.types";
+import type { Workspace } from "./session.types";
+import { repoName } from "../common/path/path.utils";
+import { useLoad } from "../ui/load.hook";
+import { errorText } from "../ui/error-text.utils";
+import { HEADER_BAR } from "../ui/bars.constants";
+import { SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
 import { Dropdown } from "../ui/Dropdown";
-import type { DropdownOption } from "../ui/floatingMenu";
-import { BranchIcon, CheckIcon, ChevronDownIcon, CloseIcon, CloudIcon, FolderIcon, GitHubIcon, PlusIcon } from "../ui/icons";
-import { useDismiss } from "../ui/useDismiss";
-import { INPUT } from "../diff/styles";
-import { newBranchProblem } from "./newBranch";
+import type { DropdownOption } from "../ui/floating-menu.utils";
+import { BranchIcon, ChevronDownIcon, CloseIcon, CloudIcon, FolderIcon, GitHubIcon, PlusIcon } from "../ui/Icons";
+import { NewBranchPopover } from "./NewBranchPopover";
 import { PullRequestList } from "./PullRequestList";
-import { findPullRequestBranch } from "./pullRequests";
-import { SessionVmList } from "./SessionVmList";
-import { latestTopLevelSession, titleFromPrompt } from "./sessionLabels";
+import { RepositoryMenu } from "./RepositoryMenu";
+import { findPullRequestBranch } from "./pull-requests.utils";
+import { SessionVmList } from "./remote/SessionVmList";
+import { titleFromPrompt } from "./session-labels.utils";
+import { useStartRepoPath } from "./start-repo-path.hook";
 
 /** Where a session can work. */
 const WORKSPACE_OPTIONS: DropdownOption[] = [
@@ -55,17 +60,6 @@ type View = "start" | "pullRequests" | "sessionVms";
 
 /** A header button that opens one of the lists; pressed while its list shows. */
 const LIST_TOGGLE = `${SECONDARY_BUTTON_XS} aria-pressed:border-white/15 aria-pressed:bg-(--row-active) aria-pressed:text-white`;
-
-/**
- * The repository of the start view: the one the user chose, else the one used last, else the newest top-level
- * session's, which is listed only once the stored sessions are loaded after launch; empty while there is none.
- */
-export function useStartRepoPath(): string {
-  const chosen = useHuntStore((state) => state.startRepoPath);
-  const recent = useAgentDefaultsStore((state) => state.recentRepoPaths[0] ?? null);
-  const latest = useHuntStore((state) => latestTopLevelSession(state.sessions)?.repoPath ?? null);
-  return chosen ?? recent ?? latest ?? "";
-}
 
 /**
  * Start view for a new session, shown in the chat pane instead of a dialog. The repository used last is preselected;
@@ -115,6 +109,8 @@ export function NewSessionView({
   const workspace: Workspace = preferred.workspace === "checkout" ? "checkout" : DEFAULT_WORKSPACE;
   const isCheckout = workspace === "checkout";
   const [error, setError] = useState<string | null>(initialError);
+  /** Why the repository's branches could not be listed; kept apart from `error`, which a listing must not clear. */
+  const [branchError, setBranchError] = useState<string | null>(null);
   /** Set when the user chose a repository: the session starts as soon as the repository's branches are known. */
   const [startsWhenLoaded, setStartsWhenLoaded] = useState(false);
   const [view, setView] = useState<View>("start");
@@ -142,7 +138,7 @@ export function NewSessionView({
       onValue: ([names, current]) => {
         setBranches(names);
         setCurrentBranch(current);
-        setError(null);
+        setBranchError(null);
         const next = names.includes(baseRef) ? baseRef : (DEFAULT_BASE_REFS.find((name) => names.includes(name)) ?? names[0] ?? "");
         setBaseRef(next);
         if (!startsWhenLoaded) return;
@@ -159,7 +155,7 @@ export function NewSessionView({
         setBaseRef("");
         setCurrentBranch("");
         setStartsWhenLoaded(false);
-        setError(errorText(reason));
+        setBranchError(errorText(reason));
       },
     },
     [repoPath],
@@ -195,9 +191,10 @@ export function NewSessionView({
 
   /**
    * Starts the review session of a pull request right away, without a prompt: a worktree on the pull request's own
-   * branch (a local branch of that name, created from its copy on a remote when missing), titled after the pull
-   * request and marked as its review, with the diff pane showing the pull request's changes against its target branch.
-   * A branch the repository lacks is fetched from `origin` first.
+   * branch (a local branch of that name, created from its copy on a remote when missing; a session branch off it while
+   * another worktree has it checked out), titled after the pull request and marked as its review, with the diff pane
+   * showing the pull request's changes against its target branch. A branch the repository lacks is fetched from
+   * `origin` first.
    */
   async function selectPullRequest(selected: PullRequest) {
     setView("start");
@@ -517,140 +514,14 @@ export function NewSessionView({
                     : "enter starts the session · shift+enter adds a line · choosing a repository or a base branch starts one right away"
               }
             />
-            {error ? (
+            {error || branchError ? (
               <div className="chat-column px-5">
-                <p className="mt-3 rounded-lg border border-red-400/40 bg-red-400/10 px-3 py-2 text-sm text-red-300 break-words">{error}</p>
+                <p className="mt-3 rounded-lg border border-red-400/40 bg-red-400/10 px-3 py-2 text-sm text-red-300 break-words">{error ?? branchError}</p>
               </div>
             ) : null}
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-/**
- * Menu anchored below `anchorRef` listing the recently used repositories, with the folder dialog as last entry; choosing
- * a repository starts a session in it. `className` places the menu relative to its positioned parent.
- */
-function RepositoryMenu({
-  anchorRef,
-  repoPath,
-  recentRepoPaths,
-  onSelect,
-  onPick,
-  onClose,
-  className,
-}: {
-  anchorRef: RefObject<HTMLElement | null>;
-  repoPath: string;
-  recentRepoPaths: string[];
-  onSelect: (path: string) => void;
-  onPick: () => void;
-  onClose: () => void;
-  className: string;
-}) {
-  const menuRef = useRef<HTMLDivElement>(null);
-  useDismiss(menuRef, onClose, { anchorRefs: [anchorRef] });
-
-  return (
-    <div
-      ref={menuRef}
-      role="menu"
-      aria-label="Repositories"
-      className={`absolute z-50 mt-1.5 w-72 max-w-[calc(100cqw-2rem)] rounded-xl border border-neutral-600 bg-(--surface-chat) p-1 text-sm text-neutral-400 shadow-2xl shadow-black/50 ${className}`}
-    >
-      {recentRepoPaths.map((path) => (
-        <button
-          key={path}
-          type="button"
-          role="menuitem"
-          onClick={() => onSelect(path)}
-          title={`Start a session in ${path}`}
-          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-(--row-hover) hover:text-neutral-200"
-        >
-          <FolderIcon />
-          <span className="flex min-w-0 flex-1 flex-col">
-            <span className="truncate text-neutral-200">{repoName(path)}</span>
-            <span className="truncate text-[12px] text-neutral-500">{dirName(path)}</span>
-          </span>
-          {path === repoPath ? <CheckIcon className="size-3.5 shrink-0 text-neutral-400" /> : null}
-        </button>
-      ))}
-      {recentRepoPaths.length ? <div className="mx-1 my-1 border-t border-(--line)" /> : null}
-      <button
-        type="button"
-        role="menuitem"
-        onClick={onPick}
-        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-(--row-hover) hover:text-neutral-200"
-      >
-        <FolderIcon />
-        Choose another repository…
-      </button>
-    </div>
-  );
-}
-
-/**
- * Popover below the branch menu asking for the name of the branch the session creates, prefilled with `initialName`
- * when renaming it; `origin` says where the branch starts. Enter or OK submit the name once it is valid and new to the
- * repository, Escape or a click outside closes without a change.
- */
-function NewBranchPopover({
-  initialName,
-  branches,
-  origin,
-  onSubmit,
-  onClose,
-}: {
-  initialName: string;
-  branches: string[];
-  origin: string;
-  onSubmit: (name: string) => void;
-  onClose: () => void;
-}) {
-  const rootRef = useRef<HTMLDivElement>(null);
-  useDismiss(rootRef, onClose);
-  const [name, setName] = useState(initialName);
-  const trimmed = name.trim();
-  const problem = newBranchProblem(trimmed, branches);
-
-  function submit() {
-    if (problem !== null) return;
-    onSubmit(trimmed);
-  }
-
-  return (
-    <div
-      ref={rootRef}
-      role="dialog"
-      aria-label="New branch"
-      className="absolute top-full right-0 z-50 mt-1.5 w-80 max-w-[calc(100cqw-2rem)] rounded-xl border border-neutral-600 bg-(--surface-chat) p-3 text-sm text-neutral-400 shadow-2xl shadow-black/50"
-    >
-      <label htmlFor="new-branch-name" className="mb-1.5 block text-[13px] text-neutral-300">
-        New branch
-      </label>
-      <div className="flex items-center gap-2">
-        <input
-          id="new-branch-name"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              submit();
-            }
-          }}
-          autoFocus
-          spellCheck={false}
-          placeholder="feat/general/name"
-          className={`${INPUT} font-mono`}
-        />
-        <button type="button" onClick={submit} disabled={problem !== null} className={`${PRIMARY_BUTTON_XS} shrink-0`}>
-          OK
-        </button>
-      </div>
-      <p className={`mt-2 text-[12px] ${problem ? "text-red-400" : "text-neutral-500"}`}>{problem || `Created ${origin} when the session starts`}</p>
     </div>
   );
 }

@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { PreviewService } from "../ipc/types";
-import { EMPTY_PREVIEW, usePreviewStore } from "../state/preview";
-import { useHuntStore } from "../state/store";
-import { HEADER_BAR } from "../ui/bars";
-import { GHOST_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons";
-import { Spinner } from "../ui/icons";
-import { errorText } from "../ui/useLoad";
-import { describePreview, describeService, hasRespondingService, isServiceInUse, offersStart, shouldPollFast, type Tone } from "./services";
+import type { PreviewService } from "./preview.types";
+import { EMPTY_PREVIEW, usePreviewStore } from "./preview.store";
+import { useHuntStore } from "../sessions/hunt.store";
+import { HEADER_BAR } from "../ui/bars.constants";
+import { GHOST_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { Spinner } from "../ui/Icons";
+import { errorText } from "../ui/error-text.utils";
+import { describePreview, describeService, hasRespondingService, isServiceInUse, offersStart, shouldPollFast, type Tone } from "./preview-services.utils";
 
 /** How often the panel asks the VM about its services: often while it waits for one to start, rarely otherwise. */
 const WAITING_POLL_MS = 3000;

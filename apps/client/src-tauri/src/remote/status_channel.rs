@@ -14,8 +14,8 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::oneshot;
 
-use super::shell_command;
 use super::ssh::Ssh;
+use crate::platform::shell::shell_command;
 
 /// The status helper of the installed session release and the Node that runs it.
 const HELPER: &str = "/srv/hunt/current/session/statusHelper.mjs";
@@ -45,7 +45,7 @@ pub struct Report {
 }
 
 /// An annotation a person made with the review widget on a preview page of the VM, as the review server stored it
-/// (mirror of `StoredBrowserAnnotation` in `libs/domain/src/browserAnnotation.ts`); unknown fields are ignored.
+/// (mirror of `StoredBrowserAnnotation` in `libs/domain/src/review/browser-annotation.utils.ts`); unknown fields are ignored.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Annotation {

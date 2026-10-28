@@ -1,0 +1,40 @@
+import { useEffect } from "react";
+import { emitTo } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listenTo } from "../ipc/events";
+import type { ScriptRunRequest } from "./terminal.types";
+import { useSessionViewStore } from "../sessions/inspector.store";
+import { useHuntStore } from "../sessions/hunt.store";
+import { useTerminalStore } from "./terminals.store";
+
+const MAIN_WINDOW_LABEL = "main";
+
+/**
+ * Runs a package.json script in the Terminal tab of the main window, from any window: in a tmux window of its own, on
+ * this Mac for a local session and on its VM for a remote one. The main window shows the session and its Terminal tab.
+ */
+export function runPackageScript(request: ScriptRunRequest): void {
+  if (getCurrentWindow().label === MAIN_WINDOW_LABEL) {
+    startScriptRun(request);
+    return;
+  }
+  void emitTo(MAIN_WINDOW_LABEL, "terminal:run-script", request);
+}
+
+/** Lets the main window take the `terminal:run-script` requests of every window. */
+export function useScriptRunRequests(): void {
+  useEffect(() => {
+    const subscription = listenTo("terminal:run-script", startScriptRun, { target: MAIN_WINDOW_LABEL });
+    return () => void subscription.then((unlisten) => unlisten());
+  }, []);
+}
+
+function startScriptRun(request: ScriptRunRequest): void {
+  const { sessionId } = request;
+  const huntState = useHuntStore.getState();
+  if (huntState.activeSessionId !== sessionId || huntState.draft) {
+    void huntState.selectSession(sessionId);
+  }
+  useSessionViewStore.getState().setTab(sessionId, "terminal");
+  useTerminalStore.getState().requestScript(request);
+}

@@ -19,5 +19,5 @@ paths:
 - **WebKit colors**: a surface whose computed color is right but shows lighter on screen sits in its own compositing
   layer (Monaco's `translate3d` hints, `position: fixed`, `will-change`, scrollers), which WebKit does not
   color-match on a non-sRGB display. Take it out of its own layer or paint the color in a big shared layer, as
-  `.split-diff` (`src/index.css`) and `disableLayerHinting` (`diff/splitDiff.ts`) do. Only a real Tauri window shows
+  `.split-diff` (`src/index.css`) and `disableLayerHinting` (`diff/split-diff.monaco.ts`) do. Only a real Tauri window shows
   it; headless Chrome and Safari do not.

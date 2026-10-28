@@ -1,5 +1,5 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { trackDrag } from "./pointerDrag";
+import { trackDrag } from "./pointer-drag.utils";
 
 /** Width of the invisible strips along the edges that resize the host. */
 const GRIP = 5;

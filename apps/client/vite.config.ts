@@ -13,16 +13,19 @@ export default defineConfig(() => ({
   // Tauri copies its bundle resources (node_modules packages, the VM artifact) into src-tauri/target; never test those.
   test: { exclude: [...configDefaults.exclude, "src-tauri/**"] },
 
-  // ELK is loaded lazily by the architecture panel; pre-bundling it avoids a dev reload on first use.
-  optimizeDeps: { include: ["elkjs/lib/elk-api.js"] },
+  // ELK is loaded lazily by the architecture panel and Monaco's TypeScript worker by the first TypeScript editor;
+  // pre-bundling them avoids a dev reload on first use. The worker's dependency must also survive every re-optimization
+  // of this shared cache (a second Vite server on this root rewrites it with the dependencies it has seen): a worker
+  // whose import answers 504 "Outdated Optimize Dep" dies silently, and with it every semantic color.
+  optimizeDeps: { include: ["elkjs/lib/elk-api.js", "monaco-editor/languages/features/typescript/ts.worker.js"] },
 
   build: {
     outDir: "../../dist/apps/client",
     emptyOutDir: true,
-    // The main window, the editor, diff, guardrails and settings windows and the popup windows (see ui/nativeWindow.ts) are separate pages.
+    // The main window, the editor, diff, guardrails and settings windows and the popup windows (see ui/native-window.utils.ts) are separate pages.
     rollupOptions: { input: ["index.html", "editor.html", "diff.html", "guardrails.html", "settings.html", "popup.html"] },
-    // Keep the ~2,500 Atom Material icon SVGs (src/diff/atomIcons) as separate asset files instead of inlining them
-    assetsInlineLimit: (filePath: string) => (filePath.includes("atomIcons") ? false : undefined),
+    // Keep the ~2,500 Atom Material icon SVGs (src/ui/file-icons/atom-icons) as separate asset files instead of inlining them
+    assetsInlineLimit: (filePath: string) => (filePath.includes("atom-icons") ? false : undefined),
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

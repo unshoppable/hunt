@@ -1,3 +1,9 @@
+## 0.131.0 (2026-10-28)
+
+### 🚀 Features
+
+- organise the code by domain concept and tell the agent the workspace the user chose for its session ([5831cb8](https://github.com/unshoppable/hunt/commit/5831cb8))
+
 ## 0.130.1 (2026-10-26)
 
 ### 🩹 Fixes

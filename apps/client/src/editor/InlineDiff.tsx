@@ -1,10 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useContext, useEffect, useMemo, useState } from "react";
 import { DiffFile, DiffModeEnum, DiffView } from "@git-diff-view/react";
 import { generateDiffFile } from "@git-diff-view/file";
 import type { DiffFileHighlighter } from "@git-diff-view/core";
 import { prepareDiffHighlighter } from "./diff-highlighter.utils";
+import { FileModelContext } from "./highlighted-code.hook";
+import { hasSemanticColors } from "./highlight.monaco";
+import { onDidRefreshSemanticTokens } from "./semantic-tokens.monaco";
 import { useSettingsStore } from "../settings/settings.store";
 import { monacoLanguage } from "./language-id.utils";
+import { useFileIconUrl } from "../ui/file-icons/file-icons.hook";
 
 /** Compact diff for one tool call: old and new text come straight from the ACP `diff` content block. */
 export function InlineDiff({
@@ -19,10 +23,14 @@ export function InlineDiff({
   /** The chat hides the path header because the tool line above already names the file. */
   showHeader?: boolean;
 }) {
+  const fileIconUrl = useFileIconUrl();
   return (
     <div className="overflow-hidden rounded border border-(--line)">
       {showHeader ? (
-        <div className="truncate border-b border-(--line) bg-(--surface-inset) px-3 py-1.5 font-mono text-[13px] text-neutral-300">{path}</div>
+        <div className="flex items-center gap-1.5 border-b border-(--line) bg-(--surface-inset) px-3 py-1.5 font-mono text-[13px] text-neutral-300">
+          <img src={fileIconUrl(path)} alt="" className="size-4 shrink-0" />
+          <span className="min-w-0 truncate">{path}</span>
+        </div>
       ) : null}
       <div className="max-h-80 overflow-auto">
         <HighlightedDiff path={path} oldText={oldText} newText={newText} />
@@ -45,6 +53,7 @@ export function HighlightedDiff({
   // Tool activity in the chat is monospace at 0.85em of the chat font (see .chat-mono in index.css).
   const diffFontSize = useSettingsStore((state) => Math.round(state.panes.chat.fontSize * 0.85));
   const language = monacoLanguage(path);
+  const loadFileModel = useContext(FileModelContext);
   const [highlighter, setHighlighter] = useState<DiffFileHighlighter | null>(null);
 
   const file = useMemo(() => {
@@ -64,15 +73,28 @@ export function HighlightedDiff({
 
   useEffect(() => {
     let isLive = true;
-    void prepareDiffHighlighter(language, path, [oldContent, newContent]).then((prepared) => {
+    const fileModel = loadFileModel && path && hasSemanticColors(language) ? loadFileModel(path).catch(() => null) : null;
+    const prepare = async () => {
+      const prepared = await prepareDiffHighlighter(language, path, [oldContent, newContent], await fileModel);
       if (isLive) {
         setHighlighter(prepared);
       }
-    });
+    };
+    void prepare();
+    // The file's imports resolve in the background; their roles arrive with a refresh, in bursts.
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = fileModel
+      ? onDidRefreshSemanticTokens(() => {
+          clearTimeout(refreshTimer);
+          refreshTimer = setTimeout(() => void prepare(), 250);
+        })
+      : null;
     return () => {
       isLive = false;
+      clearTimeout(refreshTimer);
+      refresh?.dispose();
     };
-  }, [language, path, oldContent, newContent]);
+  }, [language, path, oldContent, newContent, loadFileModel]);
 
   return (
     <DiffView

@@ -15,12 +15,20 @@ type AgentDefaultsState = {
    * `workspace` (`worktree` or `checkout`) of the start view; every new session and sub chat starts with them.
    */
   preferred: Record<string, string>;
+  /** Effort picked last with each model, by model ID; picking the model again brings it back. */
+  effortByModel: Record<string, string>;
   /** Repositories top-level sessions were started in, most recent first; the start view preselects the first and offers the rest. */
   recentRepoPaths: string[];
   rememberOptions: (options: SessionConfigOption[]) => void;
   rememberCommands: (repoPath: string, commands: AvailableCommand[]) => void;
   rememberRepoPath: (repoPath: string) => void;
   setPreferred: (id: string, value: string) => void;
+  /**
+   * Remembers `value` picked for the config option `configId` and returns the changes the pick makes, as `[configId,
+   * value]` pairs in the order they apply. An effort is remembered together with `model`, the model it was picked with;
+   * a model brings back the effort picked last with it.
+   */
+  pickConfig: (configId: string, value: string, model: string | null) => [string, string][];
 };
 
 /** How many recently used repositories the start view offers. */
@@ -34,10 +42,11 @@ export function withRecentRepoPath(paths: string[], repoPath: string): string[] 
 /** Agent settings applied to every new session; survives restarts under `hunt-agent-defaults`, kept in step across windows by `useSettingsSync`. */
 export const useAgentDefaultsStore = create<AgentDefaultsState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       knownOptions: [],
       knownCommands: {},
       preferred: {},
+      effortByModel: {},
       recentRepoPaths: [],
       rememberOptions: (options) => {
         if (options.length) {
@@ -56,6 +65,16 @@ export const useAgentDefaultsStore = create<AgentDefaultsState>()(
       },
       setPreferred: (id, value) =>
         set((state) => ({ preferred: { ...state.preferred, [id]: value } })),
+      pickConfig: (configId, value, model) => {
+        if (configId === "effort" && model) {
+          set((state) => ({ preferred: { ...state.preferred, model, effort: value }, effortByModel: { ...state.effortByModel, [model]: value } }));
+          return [[configId, value]];
+        }
+        const effort = configId === "model" ? get().effortByModel[value] : undefined;
+        const changes: [string, string][] = effort ? [[configId, value], ["effort", effort]] : [[configId, value]];
+        set((state) => ({ preferred: { ...state.preferred, ...Object.fromEntries(changes) } }));
+        return changes;
+      },
     }),
     { name: "hunt-agent-defaults" },
   ),

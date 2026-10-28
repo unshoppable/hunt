@@ -229,6 +229,11 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
   const runningTurnIds = new Set<string>();
   /** Sessions whose running turn `sendPromptNow` interrupted; the queue goes on after the interrupted turn. */
   const interruptedToSendIds = new Set<string>();
+  /**
+   * Sessions whose running turn the model streams, so Claude Code took its prompt in: a usage update reports that at the
+   * start of the model's message, before any output, which a thinking model holds back for long.
+   */
+  const streamingTurnIds = new Set<string>();
   /** Message ids of the prompts this window shows itself; the backend's echo of them goes to the other windows. */
   const ownMessageIds = new Set<string>();
 
@@ -254,6 +259,9 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
       if (notification.update.sessionUpdate === "config_option_update") {
         useAgentDefaultsStore.getState().rememberOptions(notification.update.configOptions);
       }
+    }
+    if (runningTurnIds.has(id) && applied.some((notification) => notification.update.sessionUpdate === "usage_update")) {
+      streamingTurnIds.add(id);
     }
     if (!applied.length) return;
     updateChat(id, (chat) => applied.reduce((current, notification) => reduceChat(current.isStale ? replacedChat(current) : current, notification), chat));
@@ -297,6 +305,7 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
     } finally {
       runningTurnIds.delete(id);
       interruptedToSendIds.delete(id);
+      streamingTurnIds.delete(id);
     }
     noteTurnEnded(id);
     usePlanUsageStore.getState().refresh();
@@ -409,6 +418,7 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
   return {
     runningTurnIds,
     interruptedToSendIds,
+    streamingTurnIds,
     updateChat,
     applyUpdates,
     rememberCommandsOf,
@@ -424,7 +434,7 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
 }
 
 export function createChatSlice(set: HuntSet, get: HuntGet, turns: ChatTurns): ChatSlice {
-  const { runningTurnIds, interruptedToSendIds, updateChat, applyUpdates, rememberCommandsOf, noteTurnEnded, updateChatTakingQueue, runPrompt } = turns;
+  const { runningTurnIds, interruptedToSendIds, streamingTurnIds, updateChat, applyUpdates, rememberCommandsOf, noteTurnEnded, updateChatTakingQueue, runPrompt } = turns;
 
   /** Drops the "unread" line of the session `id`; a prompt the user sends there shows they read what the line marked. */
   function dropUnreadLine(id: string) {
@@ -483,7 +493,7 @@ export function createChatSlice(set: HuntSet, get: HuntGet, turns: ChatTurns): C
       dropUnreadLine(id);
       updateChat(id, (current) => ({ ...current, queue: [{ id: nextItemId(), text, images }, ...current.queue] }));
       // claude-agent-acp drops the prompt of a cancelled turn that Claude Code has not started, e.g. while it still starts its MCP servers.
-      if (!hasAnsweredLastPrompt(chat.items)) return;
+      if (!hasAnsweredLastPrompt(chat.items) && !streamingTurnIds.has(id)) return;
       interruptedToSendIds.add(id);
       await get().cancelPrompt(id);
     },

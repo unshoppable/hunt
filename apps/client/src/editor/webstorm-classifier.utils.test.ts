@@ -45,6 +45,7 @@ function globalFn(param: number): void {
   outer: for (const x of [1]) { if (x) break outer; }
   console.log(Math.max(param, counter), Promise.resolve(a));
   const pending: Promise<number> | null = null;
+  const version = APP_VERSION;
   const anyValue: any = null;
   anyValue.whatever;
   const em = 1;
@@ -70,12 +71,19 @@ const IMPORT_ROLES = {
   "@scope/missing\0Missing": WEBSTORM_ROLES.indexOf("enum"),
 };
 
+const GLOBALS = `
+declare global {
+  const APP_VERSION: string;
+}
+export {};
+`;
+
 /**
- * Classifies `main.ts` (importing `other.ts`) with a program over in-memory sources and the ES2020 and DOM libs; the
- * imports from `@scope/missing` take their roles from `IMPORT_ROLES`.
+ * Classifies `main.ts` (importing `other.ts`, with the globals of `globals.d.ts`) with a program over in-memory sources and
+ * the ES2020 and DOM libs; the imports from `@scope/missing` take their roles from `IMPORT_ROLES`.
  */
 function classify(): { classified: Classified[]; unresolvedImports: { key: string; text: string }[] } {
-  const files: Record<string, string> = { "/project/main.ts": MAIN, "/project/other.ts": OTHER };
+  const files: Record<string, string> = { "/project/main.ts": MAIN, "/project/other.ts": OTHER, "/project/globals.d.ts": GLOBALS };
   const options: ts.CompilerOptions = {
     target: ts.ScriptTarget.ES2020,
     module: ts.ModuleKind.ESNext,
@@ -199,12 +207,16 @@ describe("classifyWebstorm", () => {
     expect(classified.filter((entry) => entry.text === "outer")).toEqual([{ text: "outer", role: "label" }, { text: "outer", role: "label" }]);
   });
 
-  it("colors built-ins as global variables, capitalized ones as classes, and their interfaces where a type is expected", () => {
+  it("colors built-ins as global variables, those merged with an interface as classes, and their interfaces where a type is expected", () => {
     expect(rolesOf("console")).toEqual(["globalVariable"]);
     expect(rolesOf("Promise")).toEqual(["class", "interface"]);
     expect(rolesOf("pending")).toEqual(["localVariable"]);
     expect(rolesOf("Math")).toEqual(["class"]);
     expect(rolesOf("log")).toEqual(["instanceMethod"]);
+  });
+
+  it("colors variables of declaration files as global variables, capitalized or not", () => {
+    expect(rolesOf("APP_VERSION")).toEqual(["globalVariable"]);
   });
 
   it("skips property access on any", () => {

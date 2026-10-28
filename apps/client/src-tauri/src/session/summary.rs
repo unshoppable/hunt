@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::agent::accounts;
 use crate::platform::preferences::ENGLISH_TERMS;
-use crate::session::store;
+use crate::session::store::{self, SessionRecord};
 
 const MODEL: &str = "haiku";
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -38,10 +38,18 @@ whatever language the user writes in. {ENGLISH_TERMS} You answer only with the r
 
 const OUTPUT_SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"array","items":{"type":"string"}},"title":{"type":["string","null"]}},"required":["summary","title"]}"#;
 
-/// Per-session locks so overlapping turns are summarized one after the other, each seeing the previous result.
+/// Per-session locks so overlapping turns are summarized one after the other, each seeing the previous result, and how
+/// often each session's conversation was started over (`/clear`), so a turn from before a clear leaves the summary alone.
 #[derive(Default)]
 pub struct SummaryRegistry {
     locks: tokio::sync::Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
+    clear_counts: std::sync::Mutex<HashMap<Uuid, u64>>,
+}
+
+impl SummaryRegistry {
+    fn clear_count(&self, hunt_session_id: Uuid) -> u64 {
+        self.clear_counts.lock().unwrap().get(&hunt_session_id).copied().unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -69,8 +77,10 @@ struct CliResult {
 }
 
 /// Summarizes `turn` (the user prompt and everything the agent sent until it finished) in the background and
-/// publishes the new summary and title as `session:summary`. Failures are logged; the summary is best effort.
+/// publishes the new summary and title as `session:summary`; a `/clear` in the meantime drops the result. Failures are
+/// logged; the summary is best effort.
 pub fn schedule(app: AppHandle, hunt_session_id: Uuid, turn: Vec<SessionNotification>) {
+    let clear_count = app.state::<SummaryRegistry>().clear_count(hunt_session_id);
     tauri::async_runtime::spawn(async move {
         let lock = {
             let registry = app.state::<SummaryRegistry>();
@@ -78,13 +88,29 @@ pub fn schedule(app: AppHandle, hunt_session_id: Uuid, turn: Vec<SessionNotifica
             locks.entry(hunt_session_id).or_default().clone()
         };
         let _guard = lock.lock().await;
-        if let Err(error) = summarize(&app, hunt_session_id, &turn).await {
+        if let Err(error) = summarize(&app, hunt_session_id, &turn, clear_count).await {
             eprintln!("session summary for {hunt_session_id} failed: {error}");
         }
     });
 }
 
-async fn summarize(app: &AppHandle, hunt_session_id: Uuid, turn: &[SessionNotification]) -> Result<(), String> {
+/// Empties the summary of `hunt_session_id` for its new conversation (`/clear`) and publishes it; the title stays.
+pub fn clear(app: &AppHandle, hunt_session_id: Uuid) -> Result<(), String> {
+    let registry = app.state::<SummaryRegistry>();
+    // Raised and stored under one lock, so a running summarizer either stores before the clear or not at all.
+    let cleared = {
+        let mut clear_counts = registry.clear_counts.lock().unwrap();
+        *clear_counts.entry(hunt_session_id).or_default() += 1;
+        store::update_session(app, hunt_session_id, |stored| stored.summary.clear())?
+    };
+    match cleared {
+        Some(record) => publish(app, record),
+        None => Ok(()),
+    }
+}
+
+/// `clear_count` is the session's count of `/clear`s when the turn ended.
+async fn summarize(app: &AppHandle, hunt_session_id: Uuid, turn: &[SessionNotification], clear_count: u64) -> Result<(), String> {
     let transcript = transcribe(turn);
     if transcript.trim().is_empty() {
         return Ok(());
@@ -97,19 +123,31 @@ async fn summarize(app: &AppHandle, hunt_session_id: Uuid, turn: &[SessionNotifi
     let summary: Vec<String> = output.summary.into_iter().map(|line| line.trim().to_string()).filter(|line| !line.is_empty()).take(MAX_BULLETS).collect();
     let title = output.title.map(|title| title.trim().to_string()).filter(|title| !title.is_empty());
 
-    // The session may have been deleted while the summarizer ran; then there is nothing to update.
-    let Some(updated) = store::update_session(app, hunt_session_id, |stored| {
-        stored.summary = summary;
-        if let Some(title) = title {
-            stored.title = title;
+    // The conversation may have been started over, or the session deleted, while the summarizer ran; then the turn
+    // updates nothing.
+    let registry = app.state::<SummaryRegistry>();
+    let updated = {
+        let clear_counts = registry.clear_counts.lock().unwrap();
+        if clear_counts.get(&hunt_session_id).copied().unwrap_or_default() != clear_count {
+            return Ok(());
         }
-    })?
-    else {
-        return Ok(());
+        store::update_session(app, hunt_session_id, |stored| {
+            stored.summary = summary;
+            if let Some(title) = title {
+                stored.title = title;
+            }
+        })?
     };
+    match updated {
+        Some(record) => publish(app, record),
+        None => Ok(()),
+    }
+}
 
-    crate::session::related::refresh_family(app, hunt_session_id);
-    app.emit("session:summary", SummaryEvent { hunt_session_id, title: updated.title, summary: updated.summary })
+/// Has the family file and every window show the summary and title of `record`.
+fn publish(app: &AppHandle, record: SessionRecord) -> Result<(), String> {
+    crate::session::related::refresh_family(app, record.id);
+    app.emit("session:summary", SummaryEvent { hunt_session_id: record.id, title: record.title, summary: record.summary })
         .map_err(|error| error.to_string())
 }
 

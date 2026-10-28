@@ -398,6 +398,24 @@ describe("prompt queue", () => {
     expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "two", images: [], messageId: expect.any(String) });
   });
 
+  it("interrupts a turn whose model streams without output yet, as a thinking model does", async () => {
+    const first = deferredTurn();
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "cancel_prompt") {
+        first.finish("Cancelled");
+        return Promise.resolve(null);
+      }
+      return vi.mocked(invoke).mock.calls.filter(([name]) => name === "send_prompt").length === 1 ? first.turn : Promise.resolve("EndTurn");
+    });
+
+    const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
+    useHuntStore.getState().applyUpdate(SESSION, notification({ sessionUpdate: "usage_update", used: 42_300, size: 200_000 }));
+    await useHuntStore.getState().sendPromptNow(SESSION, "now");
+    await firstSend;
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("cancel_prompt", { id: SESSION });
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "now", images: [], messageId: expect.any(String) });
+  });
+
   it("lets a turn the agent has not answered yet go on and sends the prompt after it, ahead of the queue", async () => {
     const first = deferredTurn();
     vi.mocked(invoke).mockImplementation((command) => {

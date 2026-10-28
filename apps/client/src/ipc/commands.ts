@@ -7,7 +7,7 @@ import type { GuardrailDeclineReason } from "../chat/guardrail/guardrail-suggest
 import type { CheckOutput, ChecksStatus } from "../checks/checks.types";
 import type { DiagramType } from "../common/diagram/diagram.types";
 import type { DesktopEndpoint } from "../desktop/desktop.types";
-import type { ChangeStat, ChangedFileView, FileDiff, FileVersion, Shelf } from "../diff/diff.types";
+import type { ChangeStat, ChangedFileView, Comparison, FileDiff, FileVersion, Shelf } from "../diff/diff.types";
 import type { SelectionContext } from "../editor/selection-context.types";
 import type { Commit, CommitDetails, GitScope, LogQuery, RefList, ResetMode } from "../git/git.types";
 import type { GraphStatus } from "../graph/graph.types";
@@ -230,10 +230,10 @@ export const commands = {
   answerPermission: (requestId: string, optionId: string) => invoke<void>("answer_permission", { requestId, optionId }),
   /** Answers the `control:command` `requestId` (see control/control-commands.hook.ts): `null` once it ran, else why it did not. */
   answerControlCommand: (requestId: string, error: string | null) => invoke<void>("answer_control_command", { requestId, error }),
-  listChangedFiles: (id: string) => invoke<ChangedFileView[]>("list_changed_files", { id }),
+  listChangedFiles: (id: string, comparison: Comparison = "diffBase") => invoke<ChangedFileView[]>("list_changed_files", { id, comparison }),
   /** Added and removed line counts of every uncommitted change, sorted by path. */
   changeStats: (id: string) => invoke<ChangeStat[]>("change_stats", { id }),
-  readFileDiff: (id: string, path: string) => invoke<FileDiff>("read_file_diff", { id, path }),
+  readFileDiff: (id: string, path: string, comparison: Comparison = "diffBase") => invoke<FileDiff>("read_file_diff", { id, path, comparison }),
   /** Versions of `path` in the edit log of the session's worktree, oldest first. */
   readFileHistory: (id: string, path: string) => invoke<FileVersion[]>("read_file_history", { id, path }),
   writeFile: (id: string, path: string, content: string) => invoke<void>("write_file", { id, path, content }),
@@ -244,7 +244,8 @@ export const commands = {
    * as the session's own changes. Fails, writing nothing, for an unknown step, a bad name or a hunt.json without an `swf` object.
    */
   createSwfSkills: (sessionId: string, skills: SwfStepSkill[]) => invoke<string[]>("create_swf_skills", { id: sessionId, skills }),
-  revertFile: (id: string, path: string) => invoke<void>("revert_file", { id, path }),
+  /** Restores `path` to its content at the base of `comparison`, or deletes it when it did not exist there. */
+  revertFile: (id: string, path: string, comparison: Comparison = "diffBase") => invoke<void>("revert_file", { id, path, comparison }),
   /** Deletes a worktree file, or a folder with everything in it. */
   deletePath: (id: string, path: string) => invoke<void>("delete_path", { id, path }),
   /** Moves a worktree file to a path nothing exists at yet, creating its folders. */
@@ -308,7 +309,8 @@ export const commands = {
   /** Opens a worktree file in WebStorm with the caret on `line`:`column` (1-based). */
   openFileInWebstorm: (id: string, path: string, line: number, column: number) =>
     invoke<void>("open_file_in_webstorm", { id, path, line, column }),
-  openChangedFilesDiffInWebstorm: (id: string) => invoke<void>("open_changed_files_diff_in_webstorm", { id }),
+  openChangedFilesDiffInWebstorm: (id: string, comparison: Comparison = "diffBase") =>
+    invoke<void>("open_changed_files_diff_in_webstorm", { id, comparison }),
   /** Opens a shell in the session's worktree: a new WezTerm tab when WezTerm is installed, else a Terminal.app window. */
   openWorktreeInTerminal: (id: string) => invoke<void>("open_worktree_in_terminal", { id }),
   /** Raw content of the session's diagram file of `diagramType`, `null` while there is none; validate with `parseGraph` or `parseShapeDiagram`. */

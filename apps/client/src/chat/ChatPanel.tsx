@@ -93,7 +93,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const continueLocally = useHuntStore((state) => state.continueLocally);
   const setMode = useHuntStore((state) => state.setMode);
   const setConfigOption = useHuntStore((state) => state.setConfigOption);
-  const setPreferred = useAgentDefaultsStore((state) => state.setPreferred);
+  const pickConfig = useAgentDefaultsStore((state) => state.pickConfig);
   const answerPermission = useHuntStore((state) => state.answerPermission);
   const selectSession = useHuntStore((state) => state.selectSession);
   const setTab = useSessionViewStore((state) => state.setTab);
@@ -126,6 +126,14 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     if (!option) return [];
     return [{ id, name: option.name, value: option.currentValue, choices: listChoiceOptions(option) }];
   });
+
+  /** Applies a toolbar pick to the session one change after the other, so a model switch lands before the effort it brings back. */
+  async function changeConfig(configId: string, value: string) {
+    const model = configSelects.find((select) => select.id === "model")?.value ?? null;
+    for (const [changedId, changedValue] of pickConfig(configId, value, model)) {
+      await setConfigOption(sessionId, changedId, changedValue);
+    }
+  }
 
   function cycleMode() {
     if (!session?.isLive || remote) return;
@@ -387,10 +395,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         }}
         onCycleMode={cycleMode}
         onModeChange={(nextModeId) => void setMode(sessionId, nextModeId)}
-        onConfigChange={(configId, value) => {
-          setPreferred(configId, value);
-          void setConfigOption(sessionId, configId, value);
-        }}
+        onConfigChange={(configId, value) => void changeConfig(configId, value)}
         pullRequest={session.pullRequest}
         extension={<SessionTargetBar repoPath={session.repoPath} branch={session.branch} />}
         dropZoneRef={panelRef}
@@ -406,6 +411,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           title="New guardrail"
           placeholder="Describe the guardrail you want: what should Claude know or do, and where?"
           context={{ label: "This conversation", text: guardrailContext }}
+          suggestedGuardrail={guardrailOffer ? { kind: guardrailOffer.kind, conversationSummary: session.summary } : undefined}
           initialText={guardrailRequest}
           onPlaced={(offset) => {
             const { x, y } = useSettingsStore.getState().guardrailChatOffset;

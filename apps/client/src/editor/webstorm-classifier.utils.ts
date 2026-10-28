@@ -178,11 +178,12 @@ function roleOf(ts: TypeScriptApi, symbol: tsTypes.Symbol, node: tsTypes.Node): 
   const flags = symbol.flags;
   if (flags & ts.SymbolFlags.Class) return ROLE.class;
   const valueDeclaration = symbol.valueDeclaration ?? symbol.declarations![0];
-  // Built-in values (`console`, `Math`, `Promise`) are variables merged with interfaces in the lib files; where a
-  // type is expected (`Promise<T>`, `implements Iterable<T>`) the merged interface is meant.
+  // Built-in classes (`Math`, `Promise`) are variables merged with an interface of the same name in the lib files; where a
+  // type is expected (`Promise<T>`, `implements Iterable<T>`) the merged interface is meant. Other variables of
+  // declaration files (`console`, `declare global { const APP_VERSION: string }`) are global variables.
   if (flags & ts.SymbolFlags.Interface && isTypePosition(ts, node)) return ROLE.interface;
   if (flags & ts.SymbolFlags.Variable && valueDeclaration.getSourceFile().isDeclarationFile && !ts.isParameter(valueDeclaration)) {
-    return isCapitalized(node) ? ROLE.class : ROLE.globalVariable;
+    return flags & ts.SymbolFlags.Interface ? ROLE.class : ROLE.globalVariable;
   }
   if (flags & ts.SymbolFlags.Interface) return ROLE.interface;
   if (flags & ts.SymbolFlags.Enum) return ROLE.enum;
@@ -228,10 +229,4 @@ function variableRole(ts: TypeScriptApi, declaration: tsTypes.Node): number {
   if (ts.isParameter(root)) return ROLE.parameter;
   if (ts.isVariableDeclaration(root) && ts.isVariableStatement(root.parent.parent) && isTopLevel(ts, root.parent.parent)) return ROLE.globalVariable;
   return ROLE.localVariable;
-}
-
-/** Whether the identifier starts with an uppercase ASCII letter (`Promise`, `Math`, `JSON`). */
-function isCapitalized(node: tsTypes.Node): boolean {
-  const first = node.getSourceFile().text.charCodeAt(node.getStart());
-  return first >= 65 && first <= 90;
 }

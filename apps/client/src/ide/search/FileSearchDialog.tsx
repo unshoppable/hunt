@@ -309,7 +309,7 @@ function FileSearchView({
                 data-selected={index === selected}
                 className="tree-row flex cursor-pointer items-center gap-2 px-3 py-1.5"
               >
-                {row.type === "file" ? <FileRow match={row.match} iconUrl={fileIconUrl(row.match.path)} /> : <SymbolRow match={row.match} />}
+                {row.type === "file" ? <FileRow match={row.match} iconUrl={fileIconUrl(row.match.path)} /> : <SymbolRow match={row.match} iconUrl={fileIconUrl(row.match.path)} />}
               </li>
             </Fragment>
           ))}
@@ -397,15 +397,16 @@ function FileRow({ match, iconUrl }: { match: FileMatch; iconUrl: string }) {
 }
 
 /** A symbol result: its kind badge, its name with the matched characters marked, its container and its file. */
-function SymbolRow({ match }: { match: SymbolMatch }) {
+function SymbolRow({ match, iconUrl }: { match: SymbolMatch; iconUrl: string }) {
   return (
     <>
       <KindIcon kind={match.kind} />
       <span className="shrink-0 text-neutral-100">
         <Highlighted text={match.name} positions={match.positions} offset={0} />
       </span>
+      {match.containerName ? <span className="shrink-0 text-neutral-500">{match.containerName} ·</span> : null}
+      <img src={iconUrl} alt="" className="size-4 shrink-0" />
       <span className="truncate text-neutral-500">
-        {match.containerName ? `${match.containerName} · ` : ""}
         {match.path}:{match.line}
       </span>
     </>

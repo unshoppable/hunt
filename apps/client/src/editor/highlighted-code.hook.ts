@@ -13,8 +13,8 @@ export const FileModelContext = createContext<((path: string) => Promise<monaco.
  * Lines of `text` colored like the Monaco editors: grammar colors as soon as the grammar is loaded, semantic
  * colors for TypeScript and JavaScript once the worker answered. Text copied from the lines of a worktree file starting
  * at `startLine` of `path` takes its semantic colors from the whole file when `FileModelContext` provides it and the
- * lines still match, so imported names get the colors of their declarations. Null while the grammar loads or when the
- * language has none, so the caller shows plain text.
+ * lines still match, so imported names get the colors of their declarations; other text about `path` takes the roles of
+ * its imports from that file. Null while the grammar loads or when the language has none, so the caller shows plain text.
  */
 export function useHighlightedCode(text: string, language: string, path?: string, startLine?: number): HighlightedLine[] | null {
   const loadFileModel = useContext(FileModelContext);
@@ -40,10 +40,10 @@ export function useHighlightedCode(text: string, language: string, path?: string
   useEffect(() => {
     if (!isLoaded) return;
     let isLive = true;
-    const fileModel = loadFileModel && path && startLine && hasSemanticColors(language) ? loadFileModel(path).catch(() => null) : null;
+    const fileModel = loadFileModel && path && hasSemanticColors(language) ? loadFileModel(path).catch(() => null) : null;
     const classify = async () => {
       const model = await fileModel;
-      const spans = (model && startLine ? await classifyExcerpt(text, model, startLine) : null) ?? (await classifyCode(text, language, path));
+      const spans = (model && startLine ? await classifyExcerpt(text, model, startLine) : null) ?? (await classifyCode(text, language, path, model));
       if (isLive && spans.length) {
         setSemantic({ text, spans });
       }

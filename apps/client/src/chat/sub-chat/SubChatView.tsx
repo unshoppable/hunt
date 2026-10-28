@@ -18,6 +18,7 @@ import type { ConfigSelect } from "../prompt/PromptInput";
 import { PermissionPrompt } from "../PermissionPrompt";
 import { appendPromptTexts, useReturnedPrompts } from "../prompt/QueuedPrompts";
 import { ContextCard, describeLines, describeSelection, SelectionCard } from "../SelectionCard";
+import { SuggestedGuardrailCard } from "../guardrail/SuggestedGuardrailCard";
 import { useFollowScroll } from "../follow-scroll.hook";
 import { useVmConnect } from "../../sessions/remote/vm-connect.hook";
 import { titleFromPrompt } from "../../sessions/session-labels.utils";
@@ -76,6 +77,7 @@ export function SubChatView({
   title,
   placeholder,
   context,
+  suggestedGuardrail,
   initialText = "",
   isDetached,
   parentAgent,
@@ -132,7 +134,7 @@ export function SubChatView({
   // the parent's chat the options the agent announced last.
   const configOptions = [chat?.configOptions, parentChat?.configOptions, knownOptions].find((options) => options?.length) ?? [];
   const preferred = useAgentDefaultsStore((state) => state.preferred);
-  const setPreferred = useAgentDefaultsStore((state) => state.setPreferred);
+  const pickConfig = useAgentDefaultsStore((state) => state.pickConfig);
   // An existing sub chat shows its own values; a new one the values picked last anywhere while the agent still offers
   // them, else the parent's.
   const configSelects: ConfigSelect[] = FOOTER_CONFIG_IDS.flatMap((id) => {
@@ -144,10 +146,13 @@ export function SubChatView({
     return [{ id, name: option.name, value, choices }];
   });
 
-  function changeConfig(configId: string, value: string) {
-    setPreferred(configId, value);
-    if (subSessionId) {
-      void setConfigOption(subSessionId, configId, value);
+  /** Remembers a footer pick and applies it to an existing sub session one change after the other, the model switch first. */
+  async function changeConfig(configId: string, value: string) {
+    const model = configSelects.find((select) => select.id === "model")?.value ?? null;
+    const changes = pickConfig(configId, value, model);
+    if (!subSessionId) return;
+    for (const [changedId, changedValue] of changes) {
+      await setConfigOption(subSessionId, changedId, changedValue);
     }
   }
 
@@ -355,7 +360,8 @@ export function SubChatView({
    */
   const showsSelection = !title && !isFolder;
   const showsContext = !subSessionId && Boolean(context?.text);
-  const hasBody = showsSelection || showsContext || Boolean(chat && (chat.isLoading || chat.items.length || chat.permission || chat.error)) || Boolean(error);
+  const showsSuggestedGuardrail = !subSessionId && Boolean(suggestedGuardrail);
+  const hasBody = showsSelection || showsSuggestedGuardrail || showsContext || Boolean(chat && (chat.isLoading || chat.items.length || chat.permission || chat.error)) || Boolean(error);
   const heading = (
     <>
       {title ? (
@@ -417,6 +423,7 @@ export function SubChatView({
       <div ref={scrollRef} className={`min-h-0 flex-1 overflow-y-auto px-12 ${hasBody ? "py-3" : ""}`}>
         <div ref={contentRef} className="flex flex-col gap-3">
           {showsSelection ? <SelectionCard selection={request.selection} isOpen={!initialSubSessionId} label={subject} /> : null}
+          {showsSuggestedGuardrail && suggestedGuardrail ? <SuggestedGuardrailCard {...suggestedGuardrail} /> : null}
           {showsContext && context ? <ContextCard label={context.label} text={context.text} /> : null}
           {chat?.isLoading ? <p className="text-neutral-500">Loading session…</p> : null}
           {chat ? (
@@ -460,7 +467,7 @@ export function SubChatView({
           onSendQueuedNow={sendQueuedNow}
           onTakeBack={(prompt) => takeBack(prompt.id, prompt.text)}
           configSelects={configSelects}
-          onConfigChange={changeConfig}
+          onConfigChange={(configId, value) => void changeConfig(configId, value)}
           onDecline={onDecline}
           onDelete={requestDelete}
           onSubmit={() => void submit()}

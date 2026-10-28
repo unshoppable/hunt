@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } fr
 import { commands } from "../ipc/commands";
 import type { ChangedFile } from "../common/changes/changed-file.types";
 import type { GraphNode } from "../graph/graph.types";
-import type { ChangedFileView, FileDiff, FileVersion } from "./diff.types";
+import type { ChangedFileView, Comparison, FileDiff, FileVersion } from "./diff.types";
 import { useHuntStore } from "../sessions/hunt.store";
 import { PaneSeparator, Panel, PersistentGroup } from "../ui/ResizablePanes";
-import { useSessionViewStore } from "../sessions/inspector.store";
+import { useSessionViewStore, type ChangeListTab } from "../sessions/inspector.store";
 import { useSettingsStore, type ChangelistScope } from "../settings/settings.store";
 import { countByScope, isInScope, otherTouchers, ownerLabel, scopeOwnerIds } from "./attribution.utils";
 import { ownView } from "./own-changes.utils";
@@ -30,6 +30,7 @@ import { useShortcutLabel } from "../ui/shortcut-label.hook";
 import { WebstormIcon } from "../ui/Icons";
 import { baseName } from "../common/path/path.utils";
 import { UnsavedDot } from "../ui/UnsavedDot";
+import { useFileIconUrl } from "../ui/file-icons/file-icons.hook";
 import { useDismiss } from "../ui/dismiss.hook";
 import { useLoad } from "../ui/load.hook";
 import { errorText } from "../ui/error-text.utils";
@@ -70,6 +71,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const graphVersion = useHuntStore((state) => state.chats[sessionId]?.graphVersion ?? 0);
   const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
   const pullRequest = useReviewedPullRequest(sessionId);
+  const fileIconUrl = useFileIconUrl();
   const diffFontSize = useSettingsStore((state) => state.panes.diff.fontSize);
   const diffLineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
   const diffFontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
@@ -91,16 +93,31 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const [files, setFiles] = useState<ChangedFileView[]>([]);
   const parentId = session?.parentId ?? null;
   const workspace = session?.workspace ?? "worktree";
-  const scope = useSettingsStore((state) => state.changelistScopes[sessionId] ?? "own");
+  /** The changelist's tab is remembered per parent session and shared with its sub sessions. */
+  const familyId = parentId ?? sessionId;
+  const storedTab = useSessionViewStore((state) => state.views[familyId]?.changeListTab);
+  const setChangeListTab = useSessionViewStore((state) => state.setChangeListTab);
+  const setTab = useCallback((next: ChangeListTab) => setChangeListTab(familyId, next), [setChangeListTab, familyId]);
+  /** A pull request review opens on the review tab; the review tab exists only while a pull request is under review. */
+  const defaultTab: ChangeListTab = pullRequest ? "review" : "changelist";
+  const tab = !storedTab || (storedTab === "review" && !pullRequest) ? defaultTab : storedTab;
+  /**
+   * In a pull request review the review tab compares against the pull request's merge base and the changes and shelf
+   * tabs against the branch its push lands on; elsewhere every tab shows the uncommitted changes.
+   */
+  const comparison: Comparison = pullRequest && tab !== "review" ? "pushTarget" : "diffBase";
+  const scope =useSettingsStore((state) => state.changelistScopes[sessionId] ?? "own");
   const setChangelistScope = useSettingsStore((state) => state.setChangelistScope);
   const setScope = useCallback((next: ChangelistScope) => setChangelistScope(sessionId, next), [setChangelistScope, sessionId]);
   const ownerIds = useMemo(() => scopeOwnerIds(scope, sessionId, parentId), [scope, sessionId, parentId]);
   /** The own changes include those of the parent session. */
   const includesParent = ownerIds.length > 1;
+  /** The review tab lists every change of the pull request, whichever session made it. */
+  const isScoped = isSharedWorktree && tab !== "review";
   const scopedFiles = useMemo(() => {
-    if (!isSharedWorktree) return files;
+    if (!isScoped) return files;
     return files.filter((file) => isInScope(file, scope, sessionId, parentId, workspace));
-  }, [files, scope, isSharedWorktree, sessionId, parentId, workspace]);
+  }, [files, scope, isScoped, sessionId, parentId, workspace]);
   const scopeCounts = useMemo(() => countByScope(files, sessionId, parentId, workspace), [files, sessionId, parentId, workspace]);
   /** The files in scope minus those matching one of the changelist's hidden globs. */
   const hiddenGlobsText = useSettingsStore((state) => state.changelistHiddenGlobs);
@@ -212,7 +229,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     () => {
       hasLoadedRef.current = true;
       setIsListLoading(true);
-      return commands.listChangedFiles(sessionId);
+      return commands.listChangedFiles(sessionId, comparison);
     },
     {
       onValue: (result) => {
@@ -226,7 +243,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
         setError(errorText(reason));
       },
     },
-    [sessionId, editVersion, localVersion],
+    [sessionId, comparison, editVersion, localVersion],
     { delayMs: hasLoadedRef.current ? 300 : 0 },
   );
 
@@ -262,7 +279,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
 
   // `diff` is intentionally not a dependency: it is only compared, never a trigger.
   useLoad(
-    () => commands.readFileDiff(sessionId, selectedPath ?? ""),
+    () => commands.readFileDiff(sessionId, selectedPath ?? "", comparison),
     {
       onValue: (result) => {
         if (isDirtyRef.current && result.path === diff?.path && result.newContent !== diff.newContent) {
@@ -274,7 +291,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
       },
       onError: (reason) => setError(errorText(reason)),
     },
-    [sessionId, selectedPath, editVersion, localVersion],
+    [sessionId, selectedPath, comparison, editVersion, localVersion],
     { isEnabled: !!selectedPath && isListLoaded },
   );
 
@@ -370,7 +387,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     }
     const [file] = target.files;
     commands
-      .readFileDiff(sessionId, file.path)
+      .readFileDiff(sessionId, file.path, comparison)
       .then((result) => {
         const text = result.newContent ?? result.oldContent ?? "";
         subChat.open({ selection: { path: file.path, startLine: 1, endLine: Math.max(1, text.split("\n").length), text, task: wholeFileTask(file) }, anchor });
@@ -395,7 +412,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
         workspaceFor(sessionId, worktreePath).revert(file.path);
       }
       try {
-        await commands.revertFile(sessionId, file.path);
+        await commands.revertFile(sessionId, file.path, comparison);
       } catch (reason) {
         failure = String(reason);
         break;
@@ -417,11 +434,13 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
       <Panel id="files" defaultSize="16%" minSize={CHANGE_LIST_MIN_WIDTH} maxSize={520} className="flex">
       <ChangeList
         sessionId={sessionId}
+        tab={tab}
+        onTabChange={setTab}
         files={visibleFiles}
         isLoading={isListLoading}
         hiddenByGlobsCount={scopedFiles.length - visibleFiles.length}
         reviewRatings={reviewRatings}
-        scope={isSharedWorktree ? { value: scope, counts: scopeCounts, hasParent: !!parentId, onChange: setScope } : null}
+        scope={isScoped ? { value: scope, counts: scopeCounts, hasParent: !!parentId, onChange: setScope } : null}
         ownerIds={ownerIds}
         selectedPath={selectedPath}
         unsavedPaths={unsavedPaths}
@@ -444,6 +463,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
             className="flex min-w-0 items-center pr-2 pl-3 font-mono text-neutral-300"
             style={commentButtonLeft === null ? { flex: "1 1 0%" } : { width: commentButtonLeft, flexShrink: 0 }}
           >
+            {selectedPath ? <img src={fileIconUrl(selectedPath)} alt="" className="mr-1.5 size-4 shrink-0" /> : null}
             <span className="truncate">{selectedPath ?? "No file selected"}</span>
             {isDirty ? <UnsavedDot className="ml-1.5" /> : null}
           </span>
@@ -463,7 +483,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
             <button
               type="button"
               disabled={!files.length}
-              onClick={() => void commands.openChangedFilesDiffInWebstorm(sessionId)}
+              onClick={() => void commands.openChangedFilesDiffInWebstorm(sessionId, comparison)}
               className={SECONDARY_BUTTON_XS}
               title="Open all changed files in WebStorm's directory diff"
             >
@@ -526,7 +546,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
             <p className="p-3 text-[13px] text-neutral-500">{includesParent ? "This session and its parent did not change this file." : "This session did not change this file."}</p>
           ) : shownDiff ? (
             <CodeDiffEditor
-              key={`${sessionId}:${shownDiff.path}:${isOwnView ? "own" : "all"}`}
+              key={`${sessionId}:${comparison}:${shownDiff.path}:${isOwnView ? "own" : "all"}`}
               ref={editorRef}
               sessionId={sessionId}
               diff={shownDiff}

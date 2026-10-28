@@ -12,7 +12,8 @@ import { buildChangeTree, folderPaths, type FolderNode, type TreeNode } from "..
 import { Checkbox, type CheckState } from "../ui/Checkbox";
 import { CommitBox, LIST_ROOM } from "./CommitBox";
 import { useFileIconUrl, useFolderIconUrl } from "../ui/file-icons/file-icons.hook";
-import { useReviewCommentCounts, useReviewDraftCount } from "../review/review-comments.hook";
+import { useReviewCommentCounts, useReviewDraftCount, useReviewedPullRequest } from "../review/review-comments.hook";
+import type { ChangeListTab } from "../sessions/inspector.store";
 import { useLoad } from "../ui/load.hook";
 import { ReviewDialog } from "../review/ReviewDialog";
 import { CommentCount } from "../review/CommentCount";
@@ -28,7 +29,7 @@ import { isWorktreeLocked, remoteOf } from "../sessions/remote/remote-session.ut
 import { ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons.constants";
 import { confirmDestructive } from "../ui/confirm.utils";
 import { GlobFilterInput } from "../ui/GlobFilterInput";
-import { ArchiveIcon, PencilIcon, Spinner, WebstormIcon } from "../ui/Icons";
+import { ArchiveIcon, PencilIcon, PullRequestIcon, Spinner } from "../ui/Icons";
 import { Dropdown } from "../ui/Dropdown";
 import type { DropdownOption } from "../ui/floating-menu.utils";
 import { UnsavedDot } from "../ui/UnsavedDot";
@@ -37,8 +38,6 @@ import { toggleInCollapsed } from "../common/tree/tree-expansion.utils";
 import type { TreeNavRow } from "../common/tree/tree-navigation.utils";
 import { useTreeNavigation } from "../ui/tree-navigation.hook";
 import { useVirtualRows } from "../ui/virtual-rows.hook";
-
-type Tab = "changes" | "shelf";
 
 type Dialog = { kind: "shelve"; paths: string[] } | { kind: "review" } | null;
 
@@ -81,8 +80,9 @@ function scopeOptions(scope: ScopeControl): DropdownOption[] {
 }
 
 /**
- * The changelist: changed files as a flat list or folder tree with checkboxes, plus the shelf tab and either the commit
- * and shelve actions for the checked files or, in a pull request review, the submission of the review. The glob field in
+ * The changelist: changed files as a flat list or folder tree with checkboxes and the commit and shelve actions for the
+ * checked files, plus the shelf tab and, in a pull request review, the review tab with the pull request's changes and the
+ * submission of the review; the owner loads `files` for the shown `tab`. The glob field in
  * the header hides files from the list (the owner applies it to `files`, `hiddenByGlobsCount` says how many it left out);
  * a file the agent rated in the dependency graph (`reviewRatings`) shows its review relevance behind its name, a file
  * with review comments their count before that. Every file and folder row has an agent button that opens a sub chat
@@ -92,6 +92,8 @@ function scopeOptions(scope: ScopeControl): DropdownOption[] {
  */
 export function ChangeList({
   sessionId,
+  tab,
+  onTabChange,
   files,
   isLoading,
   hiddenByGlobsCount,
@@ -107,6 +109,8 @@ export function ChangeList({
   onWorktreeChanged,
 }: {
   sessionId: string;
+  tab: ChangeListTab;
+  onTabChange: (tab: ChangeListTab) => void;
   files: ChangedFileView[];
   /** Whether `files` are being (re)loaded; the header shows a spinner meanwhile. */
   isLoading: boolean;
@@ -127,7 +131,7 @@ export function ChangeList({
   onCopyPath: (path: string) => void;
   /** Opens the sub chat about the whole file or folder next to its agent button; without it there is none. */
   onAskAgent?: (target: ChangeListTarget, button: HTMLElement) => void;
-  /** Called after a shelve or unshelve so the owner reloads the worktree state. */
+  /** Called after a commit, push, shelve or unshelve so the owner reloads the worktree state and the file list. */
   onWorktreeChanged: () => void;
 }) {
   const fileIconUrl = useFileIconUrl();
@@ -139,7 +143,7 @@ export function ChangeList({
   const sessions = useHuntStore((state) => state.sessions);
   const session = sessions.find((candidate) => candidate.id === sessionId);
   const parentId = session?.parentId ?? null;
-  const pullRequest = session?.pullRequest ?? null;
+  const pullRequest = useReviewedPullRequest(sessionId);
   /** The worktree and Git history of a remote session and its sub chats live on its VM, which commits for them. */
   const remote = session ? remoteOf(session, sessions) : null;
   const isRemote = Boolean(remote);
@@ -150,7 +154,6 @@ export function ChangeList({
   const isLocked = useHuntStore((state) => isWorktreeLocked(state.sessions, state.remoteLinks, sessionId));
   const draftCount = useReviewDraftCount(sessionId);
   const commentCounts = useReviewCommentCounts(sessionId);
-  const [tab, setTab] = useState<Tab>("changes");
   /** Files start unchecked; the checked paths survive a switch to another session and back and are shared with the parent and its sub sessions. */
   const checkedKey = parentId ?? sessionId;
   const [checked, setCheckedState] = useState<Set<string>>(() => checkedByFamily.get(checkedKey) ?? new Set());
@@ -258,7 +261,7 @@ export function ChangeList({
 
   // ⌘Space (keymap default) toggles the checkbox of the selected file; bubble phase, so a focused editor or dialog keeps its own binding.
   useEffect(() => {
-    if (tab !== "changes" || dialog) return;
+    if (tab === "shelf" || dialog) return;
     const selected = selectedPath ? filesByPath.get(selectedPath) : undefined;
     if (!selected) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -435,29 +438,33 @@ export function ChangeList({
   return (
     <div className="changelist flex min-w-0 flex-1 flex-col bg-(--changelist-bg)">
       <div className="flex items-center gap-1 border-b border-(--line) px-2 py-2.5 text-[13px] text-neutral-400">
-        <button type="button" onClick={() => setTab("changes")} className={`${TAB_BUTTON_SM} gap-1.5 ${tab === "changes" ? TAB_ACTIVE : TAB_INACTIVE}`}>
+        <button
+          type="button"
+          onClick={() => onTabChange("changelist")}
+          className={`${TAB_BUTTON_SM} gap-1.5 ${tab === "changelist" ? TAB_ACTIVE : TAB_INACTIVE}`}
+          title={pullRequest ? `Changes not yet pushed to ${target}, plus the uncommitted ones` : "Uncommitted changes"}
+        >
           <PencilIcon />
-          Changes
+          Changelist
         </button>
-        <button type="button" onClick={() => setTab("shelf")} className={`${TAB_BUTTON_SM} gap-1.5 ${tab === "shelf" ? TAB_ACTIVE : TAB_INACTIVE}`}>
+        <button type="button" onClick={() => onTabChange("shelf")} className={`${TAB_BUTTON_SM} gap-1.5 ${tab === "shelf" ? TAB_ACTIVE : TAB_INACTIVE}`}>
           <ArchiveIcon />
           Shelf
         </button>
-        {isLoading ? <Spinner className="ml-1.5 size-4 shrink-0 text-neutral-400" /> : null}
-        <span className="flex-1" />
-        {isRemote ? null : (
+        {pullRequest ? (
           <button
             type="button"
-            onClick={() => void commands.openWorktreeInWebstorm(sessionId)}
-            className={SECONDARY_BUTTON_XS}
-            title="Open worktree in WebStorm"
+            onClick={() => onTabChange("review")}
+            className={`${TAB_BUTTON_SM} gap-1.5 ${tab === "review" ? TAB_ACTIVE : TAB_INACTIVE}`}
+            title={`Every change of pull request #${pullRequest.number} against its target branch`}
           >
-            <WebstormIcon className="size-3.5" />
-            WebStorm
+            <PullRequestIcon />
+            Review
           </button>
-        )}
+        ) : null}
+        {isLoading ? <Spinner className="ml-1.5 size-4 shrink-0 text-neutral-400" /> : null}
       </div>
-      {tab === "changes" ? (
+      {tab !== "shelf" ? (
         <div className="flex items-center gap-1 border-b border-(--line) px-2 py-1.5 text-[13px] text-neutral-400">
           <GlobFilterInput value={hiddenGlobs} onApply={setHiddenGlobs} placeholder="Hide files, e.g. *.spec.ts" className="min-w-0 flex-1" />
           <button
@@ -517,7 +524,7 @@ export function ChangeList({
               </div>
             </div>
           </div>
-          {pullRequest ? (
+          {tab === "review" && pullRequest ? (
             <div className="flex items-center gap-2 border-t border-(--line) px-3 py-2.5 text-[13px]">
               <button type="button" onClick={openReviewDialog} className={PRIMARY_BUTTON_XS} title={`Submit a review of pull request #${pullRequest.number}`}>
                 {draftCount ? `Submit review (${draftCount})…` : "Submit review…"}
@@ -543,7 +550,7 @@ export function ChangeList({
               }}
               onPushed={() => {
                 setNotice(`Pushed to ${target}`);
-                setShelfVersion((version) => version + 1);
+                worktreeChanged();
               }}
               onShelve={() => void openShelveDialog()}
             />

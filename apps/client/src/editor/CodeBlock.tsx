@@ -4,9 +4,9 @@ import { useHighlightedCode } from "./highlighted-code.hook";
 
 /**
  * Preformatted code colored like the Monaco editors (see useHighlightedCode). `language` is a Monaco language id
- * (see monacoLanguage / monacoLanguageForFence); `path` refines TypeScript parsing (TSX) and, with `startLine` (the
- * 1-based line of `path` the text was copied from), lets the names take their colors from the whole file. Plain text
- * until the grammar is loaded and for languages without one.
+ * (see monacoLanguage / monacoLanguageForFence); `path` refines TypeScript parsing (TSX), lends the text the roles of the
+ * file's imports and, with `startLine` (the 1-based line of `path` the text was copied from), lets the names take their
+ * colors from the whole file. Plain text until the grammar is loaded and for languages without one.
  */
 export function CodeBlock({ text, language, path, startLine, className }: { text: string; language: string; path?: string; startLine?: number; className?: string }) {
   const lines = useHighlightedCode(text, language, path, startLine);

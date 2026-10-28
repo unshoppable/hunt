@@ -11,17 +11,19 @@ const STRIPE_HIT_WIDTH = 10;
 
 /**
  * One decoration per line of the marker: Monaco renders a line decoration per line, so the first and last line
- * carry `--start` / `--end` for the rounded ends of a stripe while the lines between join seamlessly.
+ * carry `--start` / `--end` for the rounded ends of a stripe while the lines between join seamlessly; a hovered marker
+ * carries `--hover` on every line, which widens its stripe.
  */
-function toDecorations(marker: Marker): monaco.editor.IModelDeltaDecoration[] {
+function toDecorations(marker: Marker, isHovered: boolean): monaco.editor.IModelDeltaDecoration[] {
   const edge = marker.edge ? ` hunt-change--${marker.edge}` : "";
+  const hover = isHovered ? " hunt-change--hover" : "";
   const decorations: monaco.editor.IModelDeltaDecoration[] = [];
   for (let line = marker.startLine; line <= marker.endLine; line++) {
     const start = line === marker.startLine ? " hunt-change--start" : "";
     const end = line === marker.endLine ? " hunt-change--end" : "";
     decorations.push({
       range: { startLineNumber: line, startColumn: 1, endLineNumber: line, endColumn: 1 },
-      options: { linesDecorationsClassName: `hunt-change hunt-change--${marker.kind}${edge}${start}${end}`, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
+      options: { linesDecorationsClassName: `hunt-change hunt-change--${marker.kind}${edge}${hover}${start}${end}`, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
     });
   }
   return decorations;
@@ -30,8 +32,8 @@ function toDecorations(marker: Marker): monaco.editor.IModelDeltaDecoration[] {
 /**
  * WebStorm-style change stripes next to the line numbers of an editor, each repeated as a mark in the scroll track
  * (see `changeMark`): the editor's model is diffed against the file's HEAD content (`headTextOf`), recomputed shortly
- * after every edit and whenever the shown model changes. A click on a stripe reports its marker; `revert` puts a block
- * back to its HEAD lines.
+ * after every edit and whenever the shown model changes. The stripe under the mouse widens, a click on it reports its
+ * marker; `revert` puts a block back to its HEAD lines.
  */
 export class ChangeMarkers {
   private readonly decorations: monaco.editor.IEditorDecorationsCollection;
@@ -47,6 +49,8 @@ export class ChangeMarkers {
   private isHeadLoaded = false;
   private currentBlocks: ChangeBlock[] = [];
   private currentMarkers: Marker[] = [];
+  /** Marker whose stripe is under the mouse. */
+  private hoveredMarker: Marker | null = null;
 
   constructor(
     private readonly editor: monaco.editor.ICodeEditor,
@@ -57,6 +61,8 @@ export class ChangeMarkers {
     this.disposables.push(
       editor.onDidChangeModel(() => this.trackModel()),
       editor.onMouseDown((event) => this.onMouseDown(event)),
+      editor.onMouseMove((event) => this.hover(this.markerUnder(event.target))),
+      editor.onMouseLeave(() => this.hover(null)),
     );
     this.trackModel();
   }
@@ -156,6 +162,7 @@ export class ChangeMarkers {
 
   private applyDiff(): void {
     const model = this.editor.getModel();
+    this.hoveredMarker = null;
     if (!model || !this.isHeadLoaded || this.headText === null) {
       this.currentBlocks = [];
       this.currentMarkers = [];
@@ -163,24 +170,41 @@ export class ChangeMarkers {
     } else {
       this.currentBlocks = computeChangeBlocks(this.headText, model.getValue());
       this.currentMarkers = markersFor(this.currentBlocks, model.getLineCount());
-      this.decorations.set([...this.currentMarkers.flatMap(toDecorations), ...this.currentMarkers.map((marker) => changeMark(marker.startLine, marker.endLine))]);
+      this.render();
     }
     for (const listener of this.changeListeners) {
       listener();
     }
   }
 
-  /** A click on the stripe (the left edge of the line decorations area) reports the marker covering that line. */
+  private render(): void {
+    this.decorations.set([
+      ...this.currentMarkers.flatMap((marker) => toDecorations(marker, marker === this.hoveredMarker)),
+      ...this.currentMarkers.map((marker) => changeMark(marker.startLine, marker.endLine)),
+    ]);
+  }
+
+  private hover(marker: Marker | null): void {
+    if (marker === this.hoveredMarker) return;
+    this.hoveredMarker = marker;
+    this.render();
+  }
+
+  /** A click on the stripe reports its marker. */
   private onMouseDown(event: monaco.editor.IEditorMouseEvent): void {
-    const { target } = event;
-    if (target.type !== monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS || !target.position) return;
-    const stripeLeft = target.detail.glyphMarginWidth + target.detail.lineNumbersWidth;
-    if (target.detail.offsetX < stripeLeft || target.detail.offsetX > stripeLeft + STRIPE_HIT_WIDTH) return;
-    const line = target.position.lineNumber;
-    const marker = this.currentMarkers.find((candidate) => candidate.startLine <= line && line <= candidate.endLine);
+    const marker = this.markerUnder(event.target);
     if (!marker) return;
     for (const listener of this.clickListeners) {
       listener(marker);
     }
+  }
+
+  /** Marker of the stripe (the left edge of the line decorations area) at `target`, or null outside every stripe. */
+  private markerUnder(target: monaco.editor.IMouseTarget): Marker | null {
+    if (target.type !== monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS || !target.position) return null;
+    const stripeLeft = target.detail.glyphMarginWidth + target.detail.lineNumbersWidth;
+    if (target.detail.offsetX < stripeLeft || target.detail.offsetX > stripeLeft + STRIPE_HIT_WIDTH) return null;
+    const line = target.position.lineNumber;
+    return this.currentMarkers.find((candidate) => candidate.startLine <= line && line <= candidate.endLine) ?? null;
   }
 }

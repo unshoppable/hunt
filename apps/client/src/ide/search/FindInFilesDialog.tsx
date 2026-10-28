@@ -2,7 +2,10 @@ import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent as R
 import * as monaco from "monaco-editor";
 import { SubChatPopover } from "../../chat/sub-chat/SubChatPopover";
 import { useSubChatPopover } from "../../chat/sub-chat/sub-chat-popover.hook";
-import { tokenizeCode, type HighlightedLine } from "../../editor/highlight.monaco";
+import { colorFileLine, tokenizeCode, type FileClassification, type HighlightedLine } from "../../editor/highlight.monaco";
+import { useFileClassifications } from "../../editor/file-classifications.hook";
+import { useFileModelLoader } from "../../chat/file-model.hook";
+import { useVisibleRows } from "../../ui/visible-rows.hook";
 import { useLoadedTokenizers } from "../../editor/highlighted-code.hook";
 import { useFileIconUrl } from "../../ui/file-icons/file-icons.hook";
 import { monacoLanguage } from "../../editor/language-id.utils";
@@ -195,7 +198,14 @@ function FindInFilesView({
   const selected = Math.min(selectedIndex, Math.max(matches.length - 1, 0));
   const selectedMatch = matches[selected] as TextMatch | undefined;
   const tokenizers = useLoadedTokenizers(matches.map((match) => monacoLanguage(match.path)));
-  const previews = useMemo(() => matches.map((match) => previewRuns(match, tokenizers)), [matches, tokenizers]);
+  const visibleRows = useVisibleRows(listRef, matches);
+  const visiblePaths = [...visibleRows].flatMap((rowIndex) => (matches[rowIndex] ? [matches[rowIndex].path] : []));
+  const loadFileModel = useFileModelLoader(sessionId, worktreePath);
+  const classifications = useFileClassifications(loadFileModel, visiblePaths);
+  const previews = useMemo(
+    () => matches.map((match) => previewRuns(match, tokenizers, classifications.get(match.path))),
+    [matches, tokenizers, classifications],
+  );
 
   useEffect(() => {
     listRef.current?.children[selected]?.scrollIntoView({ block: "nearest" });
@@ -257,6 +267,7 @@ function FindInFilesView({
         return (
           <li
             key={`${match.path}:${match.line}`}
+            data-row={index}
             // Keeps the focus in the query field, so the keys still reach the dialog after a click.
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => setSelectedIndex(index)}
@@ -410,11 +421,14 @@ function OptionToggle({ label, isOn, onToggle, children }: { label: string; isOn
   );
 }
 
-/** The preview of `match` colored with the grammar of its file like WebStorm's list, or plain while that grammar is not loaded. */
-function previewRuns(match: TextMatch, tokenizers: ReadonlySet<string>): HighlightedLine {
+/**
+ * The preview of `match` colored like the editor: with the grammar of its file, and with the roles its names have in the
+ * whole file once `classification` is in. Plain while the grammar is not loaded.
+ */
+function previewRuns(match: TextMatch, tokenizers: ReadonlySet<string>, classification: FileClassification | undefined): HighlightedLine {
   const language = monacoLanguage(match.path);
   const runs = tokenizers.has(language) ? tokenizeCode(match.preview, language)?.[0] : undefined;
-  return runs ?? [{ text: match.preview, style: PLAIN_STYLE }];
+  return runs ? colorFileLine(runs, match.preview, match.line, classification) : [{ text: match.preview, style: PLAIN_STYLE }];
 }
 
 /**

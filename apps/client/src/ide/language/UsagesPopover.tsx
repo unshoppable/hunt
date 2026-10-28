@@ -11,7 +11,9 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import * as monaco from "monaco-editor";
-import { tokenizeCode, type HighlightedLine } from "../../editor/highlight.monaco";
+import { colorFileLine, tokenizeCode, type FileClassification, type HighlightedLine } from "../../editor/highlight.monaco";
+import { useFileClassifications } from "../../editor/file-classifications.hook";
+import { useVisibleRows } from "../../ui/visible-rows.hook";
 import { tokenStyleDeclarations } from "../../editor/token-style.utils";
 import { useFileIconUrl } from "../../ui/file-icons/file-icons.hook";
 import { PREVIEW_EDITOR_OPTIONS } from "../../editor/monaco.constants";
@@ -279,6 +281,10 @@ function UsagesView({ rootRef, className, style, workspace, query, font, isDetac
   const selectedUsage = usages?.[selected] ?? null;
   const fileIconUrl = useFileIconUrl();
   const { fontSize, fontFamily, lineHeight } = font;
+  const visibleRows = useVisibleRows(listRef, usages);
+  const visiblePaths = [...visibleRows].flatMap((rowIndex) => (usages?.[rowIndex] ? [usages[rowIndex].path] : []));
+  const loadFileModel = useMemo(() => async (path: string) => (await workspace.open(path)).model, [workspace]);
+  const classifications = useFileClassifications(loadFileModel, visiblePaths);
 
   /** ↑ / ↓ and Enter act on the list while the focus is anywhere in the popup; the preview keeps the keys it handled. */
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -357,7 +363,9 @@ function UsagesView({ rootRef, className, style, workspace, query, font, isDetac
       {usages?.map((usage, index) => (
         <UsageRow
           key={usageKey(usage)}
+          rowIndex={index}
           usage={usage}
+          classification={classifications.get(usage.path)}
           language={workspace.get(usage.path)?.model.getLanguageId() ?? monacoLanguage(usage.path)}
           isSelected={index === selected}
           onSelect={() => setSelectedKey(usageKey(usage))}
@@ -442,15 +450,29 @@ function UsagesView({ rootRef, className, style, workspace, query, font, isDetac
   );
 }
 
-type UsageRowProps = { usage: Usage; language: string; isSelected: boolean; onSelect: () => void; onOpen: () => void };
+type UsageRowProps = {
+  rowIndex: number;
+  usage: Usage;
+  /** The semantic classification of the usage's file, once it is in (see `useFileClassifications`). */
+  classification: FileClassification | undefined;
+  language: string;
+  isSelected: boolean;
+  onSelect: () => void;
+  onOpen: () => void;
+};
 
 /** One usage: file, enclosing declaration, line number and the line colored like the editor with the name in bold. */
-function UsageRow({ usage, language, isSelected, onSelect, onOpen }: UsageRowProps) {
+function UsageRow({ rowIndex, usage, classification, language, isSelected, onSelect, onOpen }: UsageRowProps) {
   const fileIconUrl = useFileIconUrl();
   const fileName = baseName(usage.path);
-  const runs = useMemo<HighlightedLine>(() => tokenizeCode(usage.text, language)?.[0] ?? [{ text: usage.text, style: { foreground: "#d6d6d6", fontStyle: 0 } }], [usage.text, language]);
+  const runs = useMemo<HighlightedLine>(() => {
+    const grammarRuns = tokenizeCode(usage.text, language)?.[0];
+    if (!grammarRuns) return [{ text: usage.text, style: { foreground: "#d6d6d6", fontStyle: 0 } }];
+    return colorFileLine(grammarRuns, usage.text, usage.line, classification);
+  }, [usage.text, usage.line, language, classification]);
   return (
     <div
+      data-row={rowIndex}
       role="option"
       aria-selected={isSelected}
       title={`${usage.path}:${usage.line}`}

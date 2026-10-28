@@ -1,4 +1,5 @@
 import type { DiffAST, DiffFileHighlighter, SyntaxLine, SyntaxNode } from "@git-diff-view/core";
+import type * as monaco from "monaco-editor";
 import type { SemanticSpan } from "./semantic-tokens.monaco";
 import { applySemanticSpans, classifyCode, loadTokenizer, tokenizeCode, type HighlightedLine } from "./highlight.monaco";
 import { tokenStyleAttribute } from "./token-style.utils";
@@ -59,13 +60,21 @@ function createDiffHighlighter(semanticSpans: Map<string, SemanticSpan[]>): Diff
   };
 }
 
-/** Loads the grammar of `language` and classifies each text (see classifyCode), then builds the highlighter for them. */
-export async function prepareDiffHighlighter(language: string, path: string, texts: string[]): Promise<DiffFileHighlighter> {
+/**
+ * Loads the grammar of `language` and classifies each text (see classifyCode), then builds the highlighter for them.
+ * Imports the texts share with `importRoleSource`, the model of the file now, take their roles from it.
+ */
+export async function prepareDiffHighlighter(
+  language: string,
+  path: string,
+  texts: string[],
+  importRoleSource?: monaco.editor.ITextModel | null,
+): Promise<DiffFileHighlighter> {
   await loadTokenizer(language);
   const semanticSpans = new Map<string, SemanticSpan[]>();
   for (const text of texts) {
     if (semanticSpans.has(text)) continue;
-    semanticSpans.set(text, await classifyCode(text, language, path));
+    semanticSpans.set(text, await classifyCode(text, language, path, importRoleSource));
   }
   return createDiffHighlighter(semanticSpans);
 }

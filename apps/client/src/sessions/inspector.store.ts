@@ -9,8 +9,14 @@ import { PaneLayout } from "../ide/pane-layout.value-object";
  */
 export type RightTab = "diff" | "git" | "editor" | "graph" | "pullRequest" | "preview" | "desktop" | "checks" | "terminal";
 
-/** What the inspector of a session showed when it was left: the tab, the file selected in the Diff tab and the Editor tab's panes. */
-export type InspectorView = { tab?: RightTab; diffPath?: string | null; editor?: IdeSnapshot };
+/** The changelist's tabs; `review` exists only for a pull request under review. */
+export type ChangeListTab = "changelist" | "shelf" | "review";
+
+/**
+ * What the inspector of a session showed when it was left: the tab, the file selected in the Diff tab, the changelist's
+ * tab (stored under the parent session only, for it and its sub sessions) and the Editor tab's panes.
+ */
+export type InspectorView = { tab?: RightTab; diffPath?: string | null; changeListTab?: ChangeListTab; editor?: IdeSnapshot };
 
 /** How many sessions' views are kept; the least recently changed fall off beyond this. */
 export const SESSION_VIEW_LIMIT = 200;
@@ -26,6 +32,8 @@ type SessionViewState = {
   /** Picks `tab` for the session `sessionId`, or for the next session without one when `sessionId` is `null`. */
   setTab: (sessionId: string | null, tab: RightTab) => void;
   setDiffPath: (sessionId: string, path: string | null) => void;
+  /** Picks the changelist's `tab` for the parent session `familyId` and its sub sessions. */
+  setChangeListTab: (familyId: string, tab: ChangeListTab) => void;
   setEditor: (sessionId: string, editor: IdeSnapshot) => void;
 };
 
@@ -63,6 +71,8 @@ export const useSessionViewStore = create<SessionViewState>()(
         set((state) => ({ lastTab: tab, views: sessionId && state.views[sessionId]?.tab !== tab ? withSessionView(state.views, sessionId, { tab }) : state.views })),
       setDiffPath: (sessionId, path) =>
         set((state) => (state.views[sessionId]?.diffPath === path ? state : { views: withSessionView(state.views, sessionId, { diffPath: path }) })),
+      setChangeListTab: (familyId, tab) =>
+        set((state) => (state.views[familyId]?.changeListTab === tab ? state : { views: withSessionView(state.views, familyId, { changeListTab: tab }) })),
       setEditor: (sessionId, editor) => set((state) => ({ views: withSessionView(state.views, sessionId, { editor }) })),
     }),
     { name: "hunt-session-views", merge: mergeSessionViews },

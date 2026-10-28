@@ -24,9 +24,9 @@ export const LIST_ROOM = 80;
 let draggedHeight: number | null = null;
 
 /**
- * Footer of the changelist: a small, vertically resizable commit message box with the commit and shelve actions for
- * the checked files below it and a push button on the right, enabled while the branch has commits `origin`'s `target`
- * lacks. The commit button's chevron also offers "Commit and Push". ⌘⏎ commits in place; the push button, "Commit and
+ * Footer of the changelist: a small commit message box, resizable from its edges and from the divider above the footer,
+ * with the commit and shelve actions for the checked files below it and a push button on the right, enabled while the
+ * branch has commits `origin`'s `target` lacks. A long error scrolls inside a capped area, so the file list keeps its room. The commit button's chevron also offers "Commit and Push". ⌘⏎ commits in place; the push button, "Commit and
  * Push" and ⇧⌘⏎ first open a `PushPopover` that names `origin/<target>` and pushes on confirm. The message stays in the
  * box after a commit. `onCommit` and `onShelve` return false when the owner declined the action, e.g. after a warning
  * about unsaved edits.
@@ -138,10 +138,13 @@ export function CommitBox({
     setStep(null);
   }
 
+  /** Resize the message box from the divider above the footer and from the box's top and bottom edge; the file list gives or takes the room. */
   const grips = {
-    onStart: ({ height: rendered }: { height: number }) => {
-      const list = boxRef.current?.parentElement?.previousElementSibling;
+    onStart: () => {
+      const box = boxRef.current;
+      const list = box?.parentElement?.previousElementSibling;
       const room = list instanceof HTMLElement ? Math.max(0, list.clientHeight - LIST_ROOM) : 0;
+      const rendered = box?.offsetHeight ?? MIN_HEIGHT;
       drag.current = { start: rendered, max: rendered + room };
     },
     onDrag: ({ dy }: { dy: number }) => {
@@ -152,7 +155,8 @@ export function CommitBox({
   };
 
   return (
-    <div className="flex flex-col border-t border-(--line) px-3 py-4 text-[13px]">
+    <div className="relative flex min-h-0 flex-col border-t border-(--line) px-3 py-4 text-[13px]">
+      <ResizeGrips edges={{ top: true }} {...grips} />
       <div ref={boxRef} className="relative mb-2.5" style={{ height: height ?? undefined, minHeight: MIN_HEIGHT }}>
         <textarea
           value={message}
@@ -171,9 +175,9 @@ export function CommitBox({
           rows={3}
           className="block h-full min-h-[calc(2lh+18px)] w-full resize-none rounded border border-neutral-600 bg-(--surface-input) px-2.5 py-2 text-[13px] disabled:opacity-50"
         />
-        <ResizeGrips edges={{ top: true }} {...grips} />
+        <ResizeGrips edges={{ top: true, bottom: true }} {...grips} />
       </div>
-      {error ? <p className="mb-2 shrink-0 whitespace-pre-wrap text-red-400">{error}</p> : null}
+      {error ? <p className="mb-2 max-h-32 shrink-0 overflow-y-auto whitespace-pre-wrap text-red-400">{error}</p> : null}
       <div className="relative flex shrink-0 items-center gap-2">
         <div className={`relative flex ${isLocked ? "opacity-40" : ""}`}>
           <button

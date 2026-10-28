@@ -1,5 +1,8 @@
 import type { SemanticSpan } from "./semantic-tokens.monaco";
 
+/** Marks where a list cut a line it shows (see ide/find_in_files.rs). */
+const ELLIPSIS = "…";
+
 /**
  * Moves the semantic `spans` of a whole file (offsets into `fileText`) onto `excerpt`, a copy of the file's lines from
  * `startLine` (1-based) on that may be dedented; spans outside the excerpt are dropped. Null when an excerpt line is not
@@ -42,6 +45,38 @@ export function excerptSpans(fileText: string, spans: readonly SemanticSpan[], e
     const column = span.start - fileLineStarts[firstIndex + index] - indents[index];
     if (column < 0) continue;
     result.push({ start: excerptLineStarts[index] + column, length: span.length, role: span.role });
+  }
+  return result;
+}
+
+/**
+ * Moves the semantic `spans` of a whole file (offsets into `fileText`) onto `text`, a stretch of the file's line
+ * `lineNumber` (1-based) as a list shows it: without leading whitespace, or cut with an ellipsis at either end. Spans
+ * outside the stretch are dropped. Null when the line no longer contains the stretch.
+ */
+export function lineSpans(fileText: string, spans: readonly SemanticSpan[], lineNumber: number, text: string): SemanticSpan[] | null {
+  let lineStart = 0;
+  for (let line = 1; line < lineNumber; line++) {
+    const lineBreak = fileText.indexOf("\n", lineStart);
+    if (lineBreak < 0) return null;
+    lineStart = lineBreak + 1;
+  }
+  const lineEnd = fileText.indexOf("\n", lineStart);
+  const fileLine = fileText.slice(lineStart, lineEnd < 0 ? fileText.length : lineEnd).replace(/\r$/, "");
+
+  const isCutAtStart = text.startsWith(ELLIPSIS);
+  const isCutAtEnd = text.length > 1 && text.endsWith(ELLIPSIS);
+  const stretch = text.slice(isCutAtStart ? 1 : 0, isCutAtEnd ? -1 : undefined);
+  const column = fileLine.indexOf(stretch);
+  if (column < 0) return null;
+
+  const from = lineStart + column;
+  const to = from + stretch.length;
+  const shift = (isCutAtStart ? 1 : 0) - from;
+  const result: SemanticSpan[] = [];
+  for (const span of spans) {
+    if (span.start < from || span.start >= to) continue;
+    result.push({ start: span.start + shift, length: Math.min(span.length, to - span.start), role: span.role });
   }
   return result;
 }

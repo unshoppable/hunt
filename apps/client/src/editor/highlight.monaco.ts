@@ -2,10 +2,10 @@ import * as monaco from "monaco-editor";
 import { TokenizationRegistry } from "monaco-editor/editor/common/languages.js";
 import { vs_dark } from "monaco-editor/editor/standalone/common/themes.js";
 import { setupMonaco } from "./setup.monaco";
-import { classifyModel, semanticTokenName, type SemanticSpan } from "./semantic-tokens.monaco";
+import { borrowImportRoles, classifyModel, semanticTokenName, type SemanticSpan } from "./semantic-tokens.monaco";
 import { WEBSTORM, WEBSTORM_TOKEN_RULES } from "./webstorm-scheme.monaco";
 import { createTokenStyleResolver, type TokenStyle } from "./token-style.utils";
-import { excerptSpans } from "./excerpt.utils";
+import { excerptSpans, lineSpans } from "./excerpt.utils";
 
 setupMonaco();
 
@@ -118,12 +118,17 @@ export function hasSemanticColors(language: string): boolean {
 
 /**
  * Semantic classifications of a TypeScript or JavaScript `text` (see semantic-tokens.monaco.ts), computed on a throwaway
- * model; `path` decides between TS and TSX parsing. Empty for other languages or when the worker fails.
+ * model; `path` decides between TS and TSX parsing. Imports the worker cannot resolve take the roles of the same names in
+ * `importRoleSource`, the model of the file `text` comes from (see `borrowImportRoles`). Empty for other languages or when
+ * the worker fails.
  */
-export async function classifyCode(text: string, language: string, path?: string): Promise<SemanticSpan[]> {
+export async function classifyCode(text: string, language: string, path?: string, importRoleSource?: monaco.editor.ITextModel | null): Promise<SemanticSpan[]> {
   if (!hasSemanticColors(language)) return [];
   const extension = path?.match(/\.(tsx|jsx|ts|js|mts|cts|mjs|cjs)$/)?.[1] ?? (language === "typescript" ? "ts" : "js");
   const model = monaco.editor.createModel(text, language, monaco.Uri.parse(`inmemory://highlight/${++modelCount}.${extension}`));
+  if (importRoleSource) {
+    borrowImportRoles(model, importRoleSource);
+  }
   try {
     return (await classifyModel(model)) ?? [];
   } finally {
@@ -176,4 +181,17 @@ export function applySemanticSpans(lines: HighlightedLine[], text: string, spans
     result[lineIndex] = restyle(result[lineIndex], from, from + span.length, resolveStyle(semanticTokenName(span)));
   }
   return result;
+}
+
+/** The semantic classification of a worktree file: the text it was made on and its spans (see `useFileClassifications`). */
+export type FileClassification = { text: string; spans: SemanticSpan[] };
+
+/**
+ * `runs`, the grammar colors of `text`, with the semantic colors of `classification`; `text` is the line `lineNumber` of
+ * the classified file as a list shows it (see `lineSpans`). Unchanged without a classification or when the line changed.
+ */
+export function colorFileLine(runs: HighlightedLine, text: string, lineNumber: number, classification: FileClassification | undefined): HighlightedLine {
+  if (!classification) return runs;
+  const spans = lineSpans(classification.text, classification.spans, lineNumber, text);
+  return spans ? applySemanticSpans([runs], text, spans)[0] : runs;
 }

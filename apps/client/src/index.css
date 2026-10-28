@@ -266,6 +266,13 @@ body,
   bottom: 0;
   width: 5px;
 }
+/* The stripe under the mouse grows by 2px to the left, so it is easier to hit; its right edge stays put so it never
+   covers the folding chevron. */
+.monaco-editor .margin-view-overlays .hunt-change--hover.hunt-change--insert::before,
+.monaco-editor .margin-view-overlays .hunt-change--hover.hunt-change--modify::before {
+  left: 1px;
+  width: 7px;
+}
 .monaco-editor .margin-view-overlays .hunt-change--start::before {
   border-top-left-radius: 2px;
   border-top-right-radius: 2px;
@@ -946,7 +953,7 @@ body,
 }
 .chat-column {
   width: 100%;
-  max-width: 52rem;
+  max-width: 73.5rem;
   margin: 0 auto;
 }
 .chat-mono {
@@ -1071,12 +1078,24 @@ body,
   text-decoration: underline;
   text-underline-offset: 0.15em;
 }
+/* No line break between a file link's icon and its label, so the icon never ends a line alone; the label itself wraps. */
 .markdown .file-link {
   cursor: pointer;
   color: #8ab4f8;
+  white-space: nowrap;
+}
+.markdown .file-link-label {
+  white-space: normal;
 }
 .markdown .file-link code {
   color: #8ab4f8;
+}
+.markdown .file-link-icon {
+  display: inline-block;
+  width: 1.15em;
+  height: 1.15em;
+  margin-right: 0.25em;
+  vertical-align: -0.2em;
 }
 .markdown .file-link:hover,
 .markdown .file-link:focus-visible {

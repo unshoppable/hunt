@@ -163,6 +163,18 @@ pub async fn merge_base(repo: &Path, base: &str, head: &str) -> Result<String, S
     Ok(run_git(repo, &["merge-base", base, head]).await?.trim().to_string())
 }
 
+/// The commit `HEAD` shares with the branch `target` on `origin`: against it a worktree shows the commits a push would
+/// publish plus its uncommitted changes, and none of the commits others pushed meanwhile. `HEAD` while the worktree
+/// knows no `origin/<target>`.
+pub async fn push_base(worktree: &Path, target: &str) -> Result<String, String> {
+    ensure_branch_name(worktree, target).await?;
+    let remote_ref = format!("refs/remotes/origin/{target}");
+    if rev_parse(worktree, &remote_ref).await.is_err() {
+        return Ok(DIFF_BASE.to_string());
+    }
+    merge_base(worktree, &remote_ref, DIFF_BASE).await
+}
+
 /// Whether the commit `ancestor` is `descendant` or one of its ancestors; also false when git knows either of them not.
 /// Both refs are validated like in `rev_parse`.
 pub async fn is_ancestor(repo: &Path, ancestor: &str, descendant: &str) -> bool {
@@ -2164,6 +2176,26 @@ mod tests {
         std::fs::write(repo.join("tracked.txt"), "four\n").unwrap();
         commit_files(&repo, &["tracked.txt".into()], "three").await.unwrap();
         assert_eq!(unpushed_commit_count(&repo, "develop").await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn push_base_is_the_commit_head_shares_with_the_push_target_on_origin() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+        let fork_point = run_git(&repo, &["rev-parse", "HEAD"]).await.unwrap().trim().to_string();
+        assert_eq!(push_base(&repo, "develop").await.unwrap(), fork_point);
+        assert_eq!(push_base(&repo, "feature/new").await.unwrap(), DIFF_BASE);
+        assert!(push_base(&repo, "-develop").await.is_err());
+
+        std::fs::write(repo.join("tracked.txt"), "two\n").unwrap();
+        commit_files(&repo, &["tracked.txt".into()], "one").await.unwrap();
+        commit_on_origin_develop(origin.path(), "elsewhere\n").await;
+        fetch_branch(&repo, "develop").await.unwrap();
+        assert_eq!(push_base(&repo, "develop").await.unwrap(), fork_point);
+
+        let changed: Vec<String> = changed_files(&repo, &fork_point).await.unwrap().into_iter().map(|file| file.path).collect();
+        assert_eq!(changed, vec!["tracked.txt".to_string()]);
     }
 
     #[tokio::test]

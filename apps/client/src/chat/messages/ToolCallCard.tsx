@@ -4,6 +4,7 @@ import type { ToolCallView } from "../chat.types";
 import { InlineDiff } from "../../editor/InlineDiff";
 import { ChatImages } from "../ChatImages";
 import { Collapsible } from "../../ui/Collapsible";
+import { useFileIconUrl } from "../../ui/file-icons/file-icons.hook";
 import { describeToolResult, formatToolTitle } from "./tool-display.utils";
 
 /** Status dot per tool state: green done, red failed, pulsing while running. */
@@ -28,6 +29,10 @@ export const ToolCallCard = memo(function ToolCallCard({ toolCall, isVerbose, ba
   const hasBody = Boolean(result.text) || result.diffs.length > 0;
   const isExpanded = hasBody && (expandedOverride ?? isVerbose);
   const argument = title.argument === null ? null : stripBasePath(title.argument, basePath);
+  // Only Read, Write and Update name a file; the location's path is absolute, icon globs match worktree-relative ones.
+  const location = toolCall.kind === "read" || toolCall.kind === "edit" ? toolCall.locations[0] : undefined;
+  const filePath = location ? stripBasePath(location.path, basePath) : null;
+  const fileIconUrl = useFileIconUrl();
 
   return (
     <div className="chat-mono">
@@ -40,7 +45,14 @@ export const ToolCallCard = memo(function ToolCallCard({ toolCall, isVerbose, ba
       >
         <span className={`size-1.5 shrink-0 rounded-full ${STATUS_DOT[toolCall.status] ?? "bg-neutral-500"}`} />
         <span className={`shrink-0 font-medium ${isFailed ? "text-red-300" : "text-neutral-200"}`}>{title.name}</span>
-        {argument !== null ? <span className="min-w-0 flex-1 truncate text-neutral-400">{argument}</span> : <span className="flex-1" />}
+        {argument !== null ? (
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 text-neutral-400">
+            {filePath ? <img src={fileIconUrl(filePath)} alt="" className="size-4 shrink-0" /> : null}
+            <span className="truncate">{argument}</span>
+          </span>
+        ) : (
+          <span className="flex-1" />
+        )}
         {result.summary ? <span className={`shrink-0 ${isFailed ? "text-red-300" : "text-neutral-500"}`}>{result.summary}</span> : null}
         {hasBody ? <Chevron expanded={isExpanded} /> : null}
       </button>

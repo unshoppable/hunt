@@ -5,6 +5,7 @@ import { monacoLanguage } from "../editor/language-id.utils";
 import { ChevronIcon } from "../ui/Icons";
 import { Collapsible } from "../ui/Collapsible";
 import type { FileLocation } from "./change-references.utils";
+import { useFileIconUrl } from "../ui/file-icons/file-icons.hook";
 
 /** `L3-L9` label of a selection's lines. */
 export function describeLines(selection: Pick<FileLocation, "startLine" | "endLine">): string {
@@ -31,29 +32,33 @@ export function SelectionCard({
   label?: string;
   onOpen?: (location: FileLocation) => void;
 }) {
+  const fileIconUrl = useFileIconUrl();
   const summary = label ?? describeSelection(selection);
   return (
     <CollapsibleCard
       kind="Selection"
       isInitiallyOpen={isOpen}
       summary={
-        onOpen ? (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onOpen(selection);
-            }}
-            className="min-w-0 truncate text-left font-mono text-neutral-300 hover:underline"
-            title={`Show ${describeSelection(selection)} in the Editor tab`}
-          >
-            {summary}
-          </button>
-        ) : (
-          <span className="min-w-0 truncate font-mono text-neutral-300" title={describeSelection(selection)}>
-            {summary}
-          </span>
-        )
+        <>
+          {label ? null : <img src={fileIconUrl(selection.path)} alt="" className="size-4 shrink-0" />}
+          {onOpen ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpen(selection);
+              }}
+              className="min-w-0 truncate text-left font-mono text-neutral-300 hover:underline"
+              title={`Show ${describeSelection(selection)} in the Editor tab`}
+            >
+              {summary}
+            </button>
+          ) : (
+            <span className="min-w-0 truncate font-mono text-neutral-300" title={describeSelection(selection)}>
+              {summary}
+            </span>
+          )}
+        </>
       }
     >
       <CodeBlock
@@ -66,11 +71,11 @@ export function SelectionCard({
   );
 }
 
-/** Collapsible card showing text a sub chat's agent gets as context besides the question, e.g. the parent chat's end. */
+/** Collapsible card, closed at first, showing text a sub chat's agent gets as context besides the question, e.g. the parent chat's end. */
 export function ContextCard({ label, text }: { label: string; text: string }) {
   return (
-    <CollapsibleCard kind="Context" isInitiallyOpen summary={<span className="min-w-0 truncate text-neutral-300">{label}</span>}>
-      <div className="max-h-48 overflow-auto whitespace-pre-wrap border-t border-(--line) px-3 py-2 text-[13px] leading-snug text-neutral-300">{text}</div>
+    <CollapsibleCard kind="Context" isInitiallyOpen={false} summary={<span className="min-w-0 truncate text-neutral-300">{label}</span>}>
+      <div className="max-h-48 overflow-auto whitespace-pre-wrap border-t border-(--line) px-3 py-2 text-[13px] leading-snug text-neutral-400">{text}</div>
     </CollapsibleCard>
   );
 }

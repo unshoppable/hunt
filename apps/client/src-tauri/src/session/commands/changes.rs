@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use uuid::Uuid;
 
@@ -29,10 +29,32 @@ pub struct ChangedFileView {
     pub touched_by: Vec<Uuid>,
 }
 
+/// What the changelist and its diffs compare the worktree against.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Comparison {
+    /// The session's diff base: `HEAD`, or the merge base of the pull request it reviews.
+    DiffBase,
+    /// The commit `HEAD` shares with the branch its push lands on (`git::push_base`).
+    PushTarget,
+}
+
+/// The commit or ref `comparison` compares the worktree of `record` against.
+pub(super) async fn comparison_base(app: &AppHandle, record: &store::SessionRecord, comparison: Comparison) -> Result<String, String> {
+    match comparison {
+        Comparison::DiffBase => Ok(record.diff_base().to_string()),
+        Comparison::PushTarget => {
+            let remote = remote_host(app, record).map(|(_, target)| target);
+            git::push_base(&record.worktree_path, &push_target(record, remote.as_ref()).await).await
+        }
+    }
+}
+
 #[tauri::command]
-pub async fn list_changed_files(app: AppHandle, id: Uuid) -> Result<Vec<ChangedFileView>, String> {
+pub async fn list_changed_files(app: AppHandle, id: Uuid, comparison: Comparison) -> Result<Vec<ChangedFileView>, String> {
     let record = worktree_session(&app, id)?;
-    let files = git::changed_files(&record.worktree_path, record.diff_base()).await?;
+    let base = comparison_base(&app, &record, comparison).await?;
+    let files = git::changed_files(&record.worktree_path, &base).await?;
     let mut touched_by = store::touched_by(&app, &record.worktree_path)?;
     Ok(files
         .into_iter()
@@ -48,9 +70,10 @@ pub async fn change_stats(app: AppHandle, id: Uuid) -> Result<Vec<git::ChangeSta
 }
 
 #[tauri::command]
-pub async fn read_file_diff(app: AppHandle, id: Uuid, path: String) -> Result<FileDiff, String> {
+pub async fn read_file_diff(app: AppHandle, id: Uuid, path: String, comparison: Comparison) -> Result<FileDiff, String> {
     let (record, _) = session_file(&app, id, &path)?;
-    git::file_diff(&record.worktree_path, record.diff_base(), &path).await
+    let base = comparison_base(&app, &record, comparison).await?;
+    git::file_diff(&record.worktree_path, &base, &path).await
 }
 
 /// The versions of `path` in the edit log of the session's worktree, oldest first, each with the session that wrote it.
@@ -162,10 +185,11 @@ fn collect_files_below(dir: &Path, worktree: &Path, out: &mut Vec<String>) {
 }
 
 #[tauri::command]
-pub async fn revert_file(app: AppHandle, id: Uuid, path: String) -> Result<(), String> {
+pub async fn revert_file(app: AppHandle, id: Uuid, path: String, comparison: Comparison) -> Result<(), String> {
     link::ensure_writable(&app, id, &format!("revert {path}"))?;
     let (record, _) = session_file(&app, id, &path)?;
-    git::revert_file(&record.worktree_path, record.diff_base(), &path).await?;
+    let base = comparison_base(&app, &record, comparison).await?;
+    git::revert_file(&record.worktree_path, &base, &path).await?;
     store::forget_touched_files(&app, &record.worktree_path, std::slice::from_ref(&path))?;
     sync::note_local_change(&app, id);
     store::note_worktree_changed(&app, id)

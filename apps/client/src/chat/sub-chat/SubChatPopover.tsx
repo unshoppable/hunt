@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { SelectionRequest } from "../../editor/selection-request.monaco";
 import type { GuardrailDeclineReason } from "../guardrail/guardrail-suggestion.types";
+import type { GuardrailKind } from "../../guardrails/guardrail.types";
 import { useSettingsStore } from "../../settings/settings.store";
 import { useHuntStore } from "../../sessions/hunt.store";
 import type { PopupActions } from "../../ui/popup-protocol.utils";
@@ -17,8 +18,13 @@ export type SubChatPopoverProps = {
   title?: string;
   /** Placeholder of the first question's textarea. */
   placeholder?: string;
-  /** Context the new sub chat's agent gets besides the question, shown as a card until the first question is sent. */
+  /** Context the new sub chat's agent gets besides the question, shown as a collapsed card until the first question is sent. */
   context?: { label: string; text: string };
+  /**
+   * The suggested guardrail the popover was opened to take up: its kind and the summary of the conversation it comes
+   * from, shown as a card until the first question is sent.
+   */
+  suggestedGuardrail?: { kind: GuardrailKind; conversationSummary: string[] };
   /** Text the first question's textarea starts with; the caret is placed after it. */
   initialText?: string;
   /** Called after the user moved or resized the popover, with how far its anchored corner now sits from the anchor. */
@@ -34,7 +40,7 @@ export type SubChatPopoverProps = {
 };
 
 /** What the sub chat window shows (see detached-popup.hook.ts); `canDecline` stands for the host's `onDecline`. */
-export type SubChatContent = Pick<SubChatPopoverProps, "parentSessionId" | "request" | "subSessionId" | "title" | "placeholder" | "context" | "initialText"> & {
+export type SubChatContent = Pick<SubChatPopoverProps, "parentSessionId" | "request" | "subSessionId" | "title" | "placeholder" | "context" | "suggestedGuardrail" | "initialText"> & {
   parentAgent: ParentAgent | null;
   canDecline: boolean;
   unreadAfterMessageId: string | null;
@@ -77,6 +83,7 @@ function DetachedSubChat({
   title,
   placeholder,
   context,
+  suggestedGuardrail,
   initialText,
   unreadAfterMessageId = null,
   onDecline,
@@ -94,6 +101,7 @@ function DetachedSubChat({
     title,
     placeholder,
     context,
+    suggestedGuardrail,
     initialText,
     parentAgent,
     canDecline: !!onDecline,
@@ -131,6 +139,7 @@ export function SubChatWindowContent({ content, onAction, onClose }: { content: 
       title={content.title}
       placeholder={content.placeholder}
       context={content.context}
+      suggestedGuardrail={content.suggestedGuardrail}
       initialText={content.initialText}
       parentAgent={content.parentAgent}
       unreadAfterMessageId={content.unreadAfterMessageId}

@@ -15,6 +15,14 @@ export type Shelf = {
   files: ChangedFile[];
 };
 
+/**
+ * What the changelist and its diffs compare the worktree against (mirrors `Comparison` in `session/commands/changes.rs`):
+ * `diffBase` is the session's diff base (`HEAD`, or the merge base of a pull request under review), `pushTarget` the
+ * commit `HEAD` shares with the branch its push lands on, so the list holds what a push would publish plus the
+ * uncommitted changes.
+ */
+export type Comparison = "diffBase" | "pushTarget";
+
 export type FileDiff = {
   path: string;
   oldContent: string | null;

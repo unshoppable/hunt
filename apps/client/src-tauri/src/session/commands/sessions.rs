@@ -24,6 +24,7 @@ use crate::remote;
 use crate::session::attribution;
 use crate::session::dependencies::{self, DependencyRegistry, Install};
 use crate::session::store::{self, announce_sessions_changed, SelectionContext, SessionRecord, Workspace};
+use crate::session::summary;
 use crate::session::sync;
 use crate::session::vm_cleanup::delete_session_vm;
 use crate::terminal::tmux;
@@ -244,6 +245,10 @@ pub async fn clear_session(
     }
     if !registry.claim_start(id).await {
         return Err("failed to clear session: its agent was started again meanwhile".into());
+    }
+    // The summary described the conversation that just ended.
+    if let Err(error) = summary::clear(&app, id) {
+        eprintln!("clearing the summary of session {id} failed: {error}");
     }
     if let Some(target) = record.remote.clone() {
         let activated = async {

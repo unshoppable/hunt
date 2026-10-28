@@ -91,6 +91,7 @@ export function NewSessionView({
   const knownCommands = useAgentDefaultsStore((state) => state.knownCommands);
   const preferred = useAgentDefaultsStore((state) => state.preferred);
   const setPreferred = useAgentDefaultsStore((state) => state.setPreferred);
+  const pickConfig = useAgentDefaultsStore((state) => state.pickConfig);
   const recentRepoPaths = useAgentDefaultsStore((state) => state.recentRepoPaths);
   /** The repository of the view; the inspector's Git tab shows its checkout meanwhile. */
   /** Whether the remote settings name a gateway; without one there are no remote sessions to list. */
@@ -499,7 +500,9 @@ export function NewSessionView({
               onSend={start}
               onCycleMode={() => {}}
               onModeChange={(value) => setPreferred("mode", value)}
-              onConfigChange={setPreferred}
+              onConfigChange={(configId, value) => {
+                pickConfig(configId, value, configSelects.find((select) => select.id === "model")?.value ?? null);
+              }}
               extension={targetBar}
               placeholder="Describe what to build or change"
               initialDraft={initialPrompt}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { excerptSpans } from "./excerpt.utils";
+import { excerptSpans, lineSpans } from "./excerpt.utils";
 import type { SemanticSpan } from "./semantic-tokens.monaco";
 
 /** A span of `role` over every occurrence of `name` in `text`. */
@@ -56,5 +56,24 @@ describe("excerptSpans", () => {
   it("returns null when the excerpt runs past the end of the file", () => {
     expect(excerptSpans(FILE, FILE_SPANS, "}\nmore", 9)).toBeNull();
     expect(excerptSpans(FILE, FILE_SPANS, "class Policy {", 0)).toBeNull();
+  });
+});
+
+describe("lineSpans", () => {
+  it("keeps the spans of a line shown without its indentation", () => {
+    const text = "return [SsrBaseConfig.ORIGIN];";
+    expect(named(text, lineSpans(FILE, FILE_SPANS, 7, text))).toEqual([["SsrBaseConfig", 12]]);
+  });
+
+  it("shifts the spans behind the ellipsis of a line cut at the start and drops those cut off", () => {
+    const text = "…aseConfig.LOCAL) return [];";
+    expect(lineSpans(FILE, FILE_SPANS, 5, text)).toEqual([]);
+    const cut = "…(SsrBaseConfig.LOCAL…";
+    expect(named(cut, lineSpans(FILE, FILE_SPANS, 5, cut))).toEqual([["SsrBaseConfig", 12]]);
+  });
+
+  it("is null when the line no longer contains the text", () => {
+    expect(lineSpans(FILE, FILE_SPANS, 4, "return [SsrBaseConfig.ORIGIN];")).toBeNull();
+    expect(lineSpans(FILE, FILE_SPANS, 42, "class Policy {")).toBeNull();
   });
 });

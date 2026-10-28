@@ -8,6 +8,7 @@ use std::path::Path;
 use tauri::{AppHandle, State};
 use uuid::Uuid;
 
+use super::changes::{comparison_base, Comparison};
 use super::{session_file, worktree_session};
 use crate::agent::acp::bundled_script_path;
 use crate::git;
@@ -35,9 +36,10 @@ pub async fn open_file_in_webstorm(app: AppHandle, id: Uuid, path: String, line:
 /// WebStorm's directory diff on them, which lists all changed files in a tree next to the diff.
 /// The current side is a read-only copy: edits belong in the worktree, not in the snapshot.
 #[tauri::command]
-pub async fn open_changed_files_diff_in_webstorm(app: AppHandle, id: Uuid) -> Result<(), String> {
+pub async fn open_changed_files_diff_in_webstorm(app: AppHandle, id: Uuid, comparison: Comparison) -> Result<(), String> {
     let record = worktree_session(&app, id)?;
-    let files = git::changed_files(&record.worktree_path, record.diff_base()).await?;
+    let base = comparison_base(&app, &record, comparison).await?;
+    let files = git::changed_files(&record.worktree_path, &base).await?;
 
     let snapshot_dir = std::env::temp_dir().join("hunt").join(id.to_string());
     let base_dir = snapshot_dir.join("base");
@@ -50,7 +52,7 @@ pub async fn open_changed_files_diff_in_webstorm(app: AppHandle, id: Uuid) -> Re
     }
 
     for file in &files {
-        if let Some(base_content) = git::show(&record.worktree_path, record.diff_base(), &file.path).await {
+        if let Some(base_content) = git::show(&record.worktree_path, &base, &file.path).await {
             let target = base_dir.join(&file.path);
             create_parent_dir(&target)?;
             std::fs::write(&target, base_content).map_err(|error| error.to_string())?;

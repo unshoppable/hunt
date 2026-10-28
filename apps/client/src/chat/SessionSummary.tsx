@@ -30,14 +30,7 @@ export function SessionSummary({ session, titleActions, onOpenFile }: { session:
               <FileReferenceList locations={[session.selection]} onOpen={onOpenFile} className="mb-2.5" />
             ) : null}
             {session.summary.length ? (
-              <ul className="space-y-1 text-[14px] leading-snug text-neutral-300">
-                {session.summary.map((line, index) => (
-                  <li key={index} className="flex gap-2">
-                    <span className="mt-[0.55em] size-1 shrink-0 select-none rounded-full bg-neutral-500" />
-                    <span>{line}</span>
-                  </li>
-                ))}
-              </ul>
+              <SummaryList lines={session.summary} />
             ) : (
               <div className="text-[14px] text-neutral-500">No summary yet. It is written after the first finished prompt.</div>
             )}
@@ -45,6 +38,20 @@ export function SessionSummary({ session, titleActions, onOpenFile }: { session:
         ) : null}
       </div>
     </div>
+  );
+}
+
+/** A session summary's lines as a bullet list; `className` adds to its spacing and type. */
+export function SummaryList({ lines, className = "" }: { lines: string[]; className?: string }) {
+  return (
+    <ul className={`space-y-1 text-[14px] leading-snug text-neutral-300 ${className}`}>
+      {lines.map((line, index) => (
+        <li key={index} className="flex gap-2">
+          <span className="mt-[0.55em] size-1 shrink-0 select-none rounded-full bg-neutral-500" />
+          <span>{line}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 

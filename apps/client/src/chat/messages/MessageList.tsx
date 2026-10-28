@@ -20,6 +20,7 @@ import { useLoad } from "../../ui/load.hook";
 import { ToolCallCard } from "./ToolCallCard";
 import { WorkingIndicator } from "../WorkingIndicator";
 import { Collapsible } from "../../ui/Collapsible";
+import { useFileIconUrl } from "../../ui/file-icons/file-icons.hook";
 
 /** Consecutive tool calls and thoughts render as one activity card between the chat messages. */
 type Block = { kind: "message"; item: ChatItem } | { kind: "activity"; id: string; items: ChatItem[] };
@@ -387,6 +388,7 @@ function MarkdownCodeBlock({
 
 /** Inline code or a link's label naming a worktree file, shown as a link that opens it; keyboard users open it with Enter. */
 function FileLink({ target, onOpen, children }: { target: FileTarget; onOpen: (target: FileTarget) => void; children: ReactNode }) {
+  const fileIconUrl = useFileIconUrl();
   const lines = target.startLine ? `:${target.startLine}${target.endLine && target.endLine !== target.startLine ? `-${target.endLine}` : ""}` : "";
   return (
     <span
@@ -401,7 +403,8 @@ function FileLink({ target, onOpen, children }: { target: FileTarget; onOpen: (t
         onOpen(target);
       }}
     >
-      {children}
+      <img src={fileIconUrl(target.path)} alt="" className="file-link-icon" />
+      <span className="file-link-label">{children}</span>
     </span>
   );
 }

@@ -1,3 +1,9 @@
+## 0.132.0 (2026-10-28)
+
+### 🚀 Features
+
+- **client:** compare the changelist against the push target and color quoted code like the editor ([7d73ce1](https://github.com/unshoppable/hunt/commit/7d73ce1))
+
 ## 0.131.0 (2026-10-28)
 
 ### 🚀 Features

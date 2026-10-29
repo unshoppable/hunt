@@ -5,13 +5,18 @@ date and the sections Context, Decision and Consequences.
 
 ## When to write an ADR
 
-An ADR is worth writing only when all four apply:
+An ADR keeps the reason for a decision that shapes the source code, so that no one reverses the decision by accident.
+Only a decision of real weight and reach gets one; otherwise every decision would become an ADR. Before writing one,
+judge two things:
 
-- The decision is still in force and binds future changes.
-- The code does not show it, or looks wrong without the reason.
-- Someone would likely "fix" it or question it again.
-- It affects more than one place. For a single place a comment in the code suffices: the agent reads it exactly when it
-  changes that place, whereas it never loads an ADR on its own.
+- How likely another agent is to reverse it: the code looks wrong or roundabout without the reason, or a simpler
+  alternative invites a "fix".
+- How hard it is to work out why it was made: the reason lies outside the code (a regulation, an incident, a
+  measurement, a rejected alternative) or only shows across several modules.
+
+When both are low, write no ADR. The decision must also still be in force and bind future changes. A decision that
+affects a single place gets a comment in the code instead: the agent reads it exactly when it changes that place,
+whereas it never loads an ADR on its own.
 
 ## Replacing an ADR
 
@@ -20,11 +25,13 @@ new record names the earlier one by number and title in its Context and says why
 are never reused: a new record takes the number after the highest one in `ls {{adrDir}}/` and
 `git log --name-only --format= -- {{adrDir}}/`.
 
-## ADR or rule
+## ADR, rule or skill
 
-- An ADR records a decision made once between alternatives, such as a data model or a boundary between modules: why it
-  was made and what follows from it. Claude Code does not load ADRs on its own; they explain the architecture to
+- An ADR records a weighty decision that shapes the source code, such as a data model or a boundary between modules:
+  why it was made and what follows from it. Claude Code does not load ADRs on its own; they explain the architecture to
   whoever asks why it is built this way.
-- A rule in `{{ruleDir}}/` tells how code in one part of the repository is written and applies to every change there.
-  Claude Code loads it while it works on that code.
+- A rule in `{{ruleDir}}/` is an instruction whose scope follows from file paths or names; Claude Code loads it while it
+  works on a matching file.
+- A skill in `.claude/skills/` is an instruction whose scope only the situation tells; Claude Code loads it when its
+  description matches the task.
 - A convention that follows from a decision is a rule that names this ADR as its reason, not a second ADR.

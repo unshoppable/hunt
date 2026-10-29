@@ -23,8 +23,8 @@ Yes only if it is one of:
 - a convention for a whole part of the code or a whole kind of task,
 - a recurring problem together with its solution,
 - a workflow later sessions will repeat,
-- an architectural decision that still binds future changes, affects more than one place, is recorded nowhere yet and
-  would otherwise look wrong, be "fixed" or be questioned again.
+- a decision that shapes the source code, still binds future changes, carries weight and reach and is recorded nowhere
+  yet, judged by how likely another agent is to reverse it and how hard it is to work out from the code why it was made.
 
 No if it concerns one piece of code, file, migration, data set, bug or task, or describes how a single change was
 carried out or verified. Knowledge that only the code shows is not recorded yet; what a CLAUDE.md, rule, skill, agent or
@@ -58,23 +58,31 @@ grep -ril '<key word>' CLAUDE.md .claude/rules .claude/skills .claude/agents {{a
 Also read the rule whose `paths:` match the files the lesson concerns. If a guardrail already says it, stop and name it.
 If one says part of it, extend that one instead of adding a new one.
 
-## 5. Pick the kind by content
+## 5. Pick the kind
 
-| The lesson is …                                                    | Kind        | Where                                              |
-|--------------------------------------------------------------------|-------------|----------------------------------------------------|
-| what every task in the repository or a folder needs to know first  | instruction | `CLAUDE.md` at the root or in that folder          |
-| how code in a part of the repository is written                    | rule        | `.claude/rules/` (see below)                       |
-| a workflow of several steps that recurs                            | skill       | `.claude/skills/<name>/SKILL.md`                   |
-| a specialist task worth delegating with its own prompt             | agent       | `.claude/agents/<name>.md`                         |
-| a decision made once between alternatives (criteria in step 2)     | ADR         | `{{adrDir}}/NNNN-title.md`                         |
+Each kind reaches the agent in its own way, so the kind follows from what tells when the guardrail applies:
+
+- **Rule** (`.claude/rules/`): the files it concerns tell when it applies. Its `paths:` globs over file paths and names
+  load it only while the agent works on a matching file. Pick a rule only when such globs can scope the instruction, or
+  in the rare case that it must be in the context of every turn: a rule without `paths:` costs context in every task.
+- **Skill** (`.claude/skills/<name>/SKILL.md`): no path or file name tells when it applies, only the situation. Claude
+  Code matches the skill's `description` against the task by meaning, so the description says what the skill does and
+  what it is for. A workflow of several steps that recurs is a skill as well.
+- **ADR** (`{{adrDir}}/NNNN-title.md`): the reason for a decision that shapes the source code, kept so that no one
+  reverses the decision by accident. It instructs no one and is not loaded on its own. Write one only for a decision of
+  real weight and reach, or every decision would become an ADR. Weigh how likely another agent is to reverse it and how
+  hard it is to work out from the code why it was made; when both are low, a code comment or nothing suffices.
+- **Agent** (`.claude/agents/<name>.md`): a specialist task worth delegating with its own prompt.
+- **Instruction** (`CLAUDE.md` at the root or in a folder): what every task in the repository or that folder needs to
+  know first. A CLAUDE.md takes no convention; it says where the guardrails live.
 
 A convention a linter can check also gets a lint rule, so the hooks report it. A convention that follows from an ADR is a
-rule naming the ADR as its reason, not a second ADR. A CLAUDE.md takes no convention; it says where the guardrails live.
+rule naming the ADR as its reason, not a second ADR.
 
 Rule placement: a rule for the whole repository goes to `.claude/rules/`; a rule for one part of the code goes into a
 subfolder named after that part, and when it extends a root rule for that part it keeps the root rule's file name there
 (`code-style.md` → `frontend/code-style.md`). Add to an existing topic file when one fits; create a new file only for a
-new topic. Derive `paths:` from the files the lesson concerns; omit `paths:` only for a rule that applies to every turn.
+new topic. Derive `paths:` from the files the lesson concerns.
 
 ## 6. Write it
 

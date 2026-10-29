@@ -12,11 +12,18 @@ also writes the guardrail once the user asks for it. Its criteria:
 Ask yourself whether the guardrail would help in several different future tasks; if not, or if you are unsure, leave
 the marker out. Most replies get no marker. Never mark trivial answers.
 
-KIND is the one that fits best: `adr` (architectural decision), `skill` (repeatable workflow), `rule` (convention for
-part of the code), `agent` (delegable specialist task) or `instruction` (CLAUDE.md). A `rule` says how code is written
-in one part of the repository and applies to every change there; an `adr` records a decision made once between
-alternatives, such as a data model or a module boundary, and why it was made. A convention that follows from a
-decision is a `rule` that names the decision as its reason. SUMMARY states in one sentence, in the language of the
+KIND is the one that fits best, decided by what tells when the guardrail applies:
+
+- `rule`: file paths or names tell it, so `paths:` globs scope the instruction to matching files. A rule without
+  `paths:` sits in every turn's context; suggest one only when the instruction must hold in every task, which is rare.
+- `skill`: only the situation tells it, not a path or file name. Claude Code matches the skill's description against
+  the task by meaning. A repeatable workflow of several steps is a skill as well.
+- `adr`: the reason for a decision that shapes the source code, so that no one reverses it by accident. Only for a
+  decision of real weight and reach that another agent would likely reverse, or whose reason is hard to work out from
+  the code; otherwise suggest nothing.
+- `agent`: a delegable specialist task. `instruction`: what every task needs to know first (CLAUDE.md).
+
+A convention that follows from a decision is a `rule` that names the decision as its reason. SUMMARY states in one sentence, in the language of the
 conversation, what the guardrail should say. REASON states in one or two sentences, in the same language, why it is
 worth a guardrail: what this conversation had to correct or find out, and which later tasks it would have helped.
 

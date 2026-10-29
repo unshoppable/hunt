@@ -410,8 +410,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           request={guardrailChat.shown.request}
           title="New guardrail"
           placeholder="Describe the guardrail you want: what should Claude know or do, and where?"
-          context={{ label: "This conversation", text: guardrailContext }}
-          suggestedGuardrail={guardrailOffer ? { kind: guardrailOffer.kind, conversationSummary: session.summary } : undefined}
+          context={{ label: "This conversation", text: guardrailContext, summary: session.summary }}
+          suggestedGuardrail={guardrailOffer ? { kind: guardrailOffer.kind, reason: guardrailOffer.reason } : undefined}
           initialText={guardrailRequest}
           onPlaced={(offset) => {
             const { x, y } = useSettingsStore.getState().guardrailChatOffset;

@@ -632,15 +632,18 @@ export function createChatSlice(set: HuntSet, get: HuntGet, turns: ChatTurns): C
 
     applyUpdate: (huntSessionId, notification) => {
       const update = notification.update;
-      // A turn this window runs ends with its prompt call (see `runTurn`), which notes it then.
+      // A turn this window runs ends with its prompt call (see `runTurn`), which notes it and sends the queue then.
       const endsTurn =
         update.sessionUpdate === "session_info_update" &&
         huntTurnOf(update._meta) === "idle" &&
         !runningTurnIds.has(huntSessionId) &&
         (get().chats[huntSessionId]?.isBusy ?? false);
       applyUpdates(huntSessionId, [notification]);
-      if (endsTurn) {
-        noteTurnEnded(huntSessionId);
+      if (!endsTurn) return;
+      noteTurnEnded(huntSessionId);
+      const next = updateChatTakingQueue(huntSessionId, (chat) => chat, true);
+      if (next) {
+        void runPrompt(huntSessionId, next);
       }
     },
 

@@ -10,14 +10,23 @@ describe("findGuardrailSuggestion", () => {
     expect(findGuardrailSuggestion([user("q"), agent("Use ports.\n<!-- hunt:guardrail adr: Adapters wrap every external API. -->")])).toEqual({
       kind: "adr",
       summary: "Adapters wrap every external API.",
+      reason: "",
       replyId: "Use ports.\n<!-- hunt:guardrail adr: Adapters wrap every external API. -->",
     });
+  });
+
+  it("splits the reason off the summary, also on a line of its own", () => {
+    const sameLine = "Done.\n<!-- hunt:guardrail rule: Wrap `Base<T>` fields. Why: The build failed twice. -->";
+    expect(findGuardrailSuggestion([user("q"), agent(sameLine)])).toEqual({ kind: "rule", summary: "Wrap `Base<T>` fields.", reason: "The build failed twice.", replyId: sameLine });
+    const ownLine = "Done.\n<!-- hunt:guardrail skill: Seed first.\nWhy: Tests broke. -->";
+    expect(findGuardrailSuggestion([user("q"), agent(ownLine)])).toEqual({ kind: "skill", summary: "Seed first.", reason: "Tests broke.", replyId: ownLine });
   });
 
   it("finds the marker before the question marker", () => {
     expect(findGuardrailSuggestion([user("q"), agent("Shall I go on?\n\n<!-- hunt:guardrail rule: Exclude new types. -->\n<!-- hunt:question -->")])).toEqual({
       kind: "rule",
       summary: "Exclude new types.",
+      reason: "",
       replyId: "Shall I go on?\n\n<!-- hunt:guardrail rule: Exclude new types. -->\n<!-- hunt:question -->",
     });
   });
@@ -48,7 +57,7 @@ describe("stripGuardrailMarker", () => {
 
 describe("buildGuardrailRequest", () => {
   it("invokes the guardrail skill with the suggestion or leaves the request open", () => {
-    expect(buildGuardrailRequest({ kind: "adr", summary: "Use ports.", replyId: "a1" }, "ADR", "guardrail")).toBe("/guardrail ADR: Use ports.");
+    expect(buildGuardrailRequest({ kind: "adr", summary: "Use ports.", reason: "", replyId: "a1" }, "ADR", "guardrail")).toBe("/guardrail ADR: Use ports.");
     expect(buildGuardrailRequest(null, "", "team-lessons")).toBe("/team-lessons ");
   });
 });

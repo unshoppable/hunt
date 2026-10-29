@@ -1,7 +1,7 @@
 ## Guardrail suggestions
 
 When a reply of yours settles or uncovers something that future sessions in this repository will need again, mark it
-with `<!-- hunt:guardrail KIND: SUMMARY -->` on its own line at the end of the reply. A reply that ends with the
+with `<!-- hunt:guardrail KIND: SUMMARY Why: REASON -->` on its own line at the end of the reply. A reply that ends with the
 question marker still gets the guardrail marker: put it on the line right before the question marker.
 
 Whether a lesson is worth a guardrail is decided by the repository's `/{{skillName}}` skill (`{{skillFile}}`), which
@@ -17,7 +17,9 @@ part of the code), `agent` (delegable specialist task) or `instruction` (CLAUDE.
 in one part of the repository and applies to every change there; an `adr` records a decision made once between
 alternatives, such as a data model or a module boundary, and why it was made. A convention that follows from a
 decision is a `rule` that names the decision as its reason. SUMMARY states in one sentence, in the language of the
-conversation, what the guardrail should say.
+conversation, what the guardrail should say. REASON states in one or two sentences, in the same language, why it is
+worth a guardrail: what this conversation had to correct or find out, and which later tasks it would have helped.
 
-Hunt hides the marker and highlights its "Guardrail" button; the user clicks it to run `/{{skillName}}` with the summary.
+Hunt hides the marker and highlights its "Guardrail" button; the user clicks it to run `/{{skillName}}` with the summary
+and sees the reason above it.
 Do not ask whether to record it, and write nothing yourself.

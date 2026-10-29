@@ -18,13 +18,16 @@ export type SubChatPopoverProps = {
   title?: string;
   /** Placeholder of the first question's textarea. */
   placeholder?: string;
-  /** Context the new sub chat's agent gets besides the question, shown as a collapsed card until the first question is sent. */
-  context?: { label: string; text: string };
   /**
-   * The suggested guardrail the popover was opened to take up: its kind and the summary of the conversation it comes
-   * from, shown as a card until the first question is sent.
+   * Context the new sub chat's agent gets besides the question, shown as a collapsed card until the first question is
+   * sent; its `summary` bullets as an open card above it.
    */
-  suggestedGuardrail?: { kind: GuardrailKind; conversationSummary: string[] };
+  context?: { label: string; text: string; summary?: string[] };
+  /**
+   * The suggested guardrail the popover was opened to take up: its kind and why it is worth recording, shown as a card
+   * until the first question is sent.
+   */
+  suggestedGuardrail?: { kind: GuardrailKind; reason: string };
   /** Text the first question's textarea starts with; the caret is placed after it. */
   initialText?: string;
   /** Called after the user moved or resized the popover, with how far its anchored corner now sits from the anchor. */

@@ -23,6 +23,7 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use super::message_time::{self, Transcript};
+use super::turn::{self, OwnTurn, TurnTracker};
 use crate::agent::accounts;
 use crate::agent::browser::BrowserRegistry;
 use crate::agent::claude_config::claude_dir;
@@ -48,6 +49,8 @@ pub struct LiveSession {
     /// Every `session/update` received so far plus the user's own prompts, in order. The UI
     /// rebuilds the chat of a still-running session from it after a webview reload.
     pub history: Arc<Mutex<Vec<SessionNotification>>>,
+    /// Which turn the agent runs, to report the turns Claude Code runs on its own.
+    pub turns: Arc<Mutex<TurnTracker>>,
     shutdown: Option<oneshot::Sender<()>>,
     finished: Option<oneshot::Receiver<()>>,
 }
@@ -57,12 +60,18 @@ pub struct LiveHandles {
     pub connection: ConnectionTo<Agent>,
     pub acp_session_id: SessionId,
     pub history: Arc<Mutex<Vec<SessionNotification>>>,
+    pub turns: Arc<Mutex<TurnTracker>>,
 }
 
 impl LiveSession {
     /// The handles of the session, cloned so a command can work with them outside the registry lock.
     pub fn handles(&self) -> LiveHandles {
-        LiveHandles { connection: self.connection.clone(), acp_session_id: self.acp_session_id.clone(), history: self.history.clone() }
+        LiveHandles {
+            connection: self.connection.clone(),
+            acp_session_id: self.acp_session_id.clone(),
+            history: self.history.clone(),
+            turns: self.turns.clone(),
+        }
     }
 
     /// Ends the connection; the agent process is killed when the connection is dropped.
@@ -227,6 +236,7 @@ struct AgentTask {
     /// The remote session whose sync the agent's tool calls and turns drive (`AgentTransport::sync_owner`).
     sync_owner: Option<Uuid>,
     history: Arc<Mutex<Vec<SessionNotification>>>,
+    turns: Arc<Mutex<TurnTracker>>,
     start: SessionStart,
     system_prompt: String,
     /// The MCP servers the agent session gets: the browser wrapper for an agent on this Mac, none for a relay, which
@@ -322,6 +332,7 @@ pub async fn connect(
         SessionStart::New { cwd } | SessionStart::Load { cwd, .. } => is_local.then(|| cwd.clone()),
     };
     let history: Arc<Mutex<Vec<SessionNotification>>> = Arc::default();
+    let turns: Arc<Mutex<TurnTracker>> = Arc::default();
     let system_prompt = system_prompt_append(&app, hunt_session_id, context_prompt, worktree.as_deref());
     let task = AgentTask {
         app: app.clone(),
@@ -329,6 +340,7 @@ pub async fn connect(
         worktree,
         sync_owner,
         history: history.clone(),
+        turns: turns.clone(),
         start,
         system_prompt,
         mcp_servers,
@@ -347,14 +359,27 @@ pub async fn connect(
     let options_update = SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(config_options));
     publish_update(&app, hunt_session_id, &history, SessionNotification::new(acp_session_id.clone(), options_update));
 
-    Ok(LiveSession { connection, acp_session_id, history, shutdown: Some(shutdown_sender), finished: Some(finished_receiver) })
+    Ok(LiveSession { connection, acp_session_id, history, turns, shutdown: Some(shutdown_sender), finished: Some(finished_receiver) })
 }
 
 /// Runs the agent process until it exits or the session is shut down: forwards its notifications and permission
 /// requests, hands the established session to `connect`, and announces the end to the registries and the UI.
 async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
-    let AgentTask { app, hunt_session_id, worktree, sync_owner, history, start, system_prompt, mcp_servers, may_start_over, ready, shutdown, finished } =
-        task;
+    let AgentTask {
+        app,
+        hunt_session_id,
+        worktree,
+        sync_owner,
+        history,
+        turns,
+        start,
+        system_prompt,
+        mcp_servers,
+        may_start_over,
+        ready,
+        shutdown,
+        finished,
+    } = task;
     let notify_app = app.clone();
     let permission_app = app.clone();
     let session_ready = ready.clone();
@@ -375,16 +400,28 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
         .on_receive_notification(
             async move |mut notification: SessionNotification, _connection| {
                 graph::hide_replayed_refresh(&mut notification);
-                if let Some(replay) = notify_replay.lock().unwrap().as_ref() {
-                    message_time::stamp_replayed(&mut notification, &replay.transcript);
-                }
+                let is_replaying = match notify_replay.lock().unwrap().as_ref() {
+                    Some(replay) => {
+                        message_time::stamp_replayed(&mut notification, &replay.transcript);
+                        true
+                    }
+                    None => false,
+                };
                 if let Some(worktree) = &worktree {
                     attribution::observe(&notify_app, hunt_session_id, worktree, &notification);
                 }
                 if let Some(owner) = sync_owner {
                     crate::session::sync::observe(&notify_app, owner, hunt_session_id, &notification);
                 }
+                let own_turn = if is_replaying { None } else { turns.lock().unwrap().observe(&notification.update) };
+                let acp_session_id = notification.session_id.clone();
+                if own_turn == Some(OwnTurn::Started) {
+                    turn::report_turn(&notify_app, hunt_session_id, &history, &acp_session_id, true);
+                }
                 hold_or_publish(&notify_app, hunt_session_id, &history, &notify_replay, notification);
+                if own_turn == Some(OwnTurn::Ended) {
+                    turn::report_turn(&notify_app, hunt_session_id, &history, &acp_session_id, false);
+                }
                 Ok(())
             },
             on_receive_notification!(),

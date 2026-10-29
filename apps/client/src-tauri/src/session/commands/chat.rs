@@ -7,7 +7,7 @@ use std::path::Path;
 
 use agent_client_protocol::schema::v1::{
     CancelNotification, ConfigOptionUpdate, ContentBlock, ContentChunk, EmbeddedResource, EmbeddedResourceResource, ImageContent, Meta,
-    MessageId, PromptRequest, SessionConfigId, SessionConfigOption, SessionId, SessionInfoUpdate, SessionNotification, SessionUpdate,
+    MessageId, PromptRequest, SessionConfigId, SessionConfigOption, SessionId, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, TextContent, TextResourceContents,
 };
 use agent_client_protocol::{Agent, ConnectionTo};
@@ -16,12 +16,11 @@ use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use super::{drop_pending_permissions, live_session, note_remote_activity, set_mode, worktree_file, worktree_session};
-use crate::agent::acp::{message_time, publish_update, LiveHandles, PermissionRegistry, SessionRegistry};
+use crate::agent::acp::{message_time, publish_update, turn, LiveHandles, PermissionRegistry, SessionRegistry};
 use crate::agent::declined_guardrails;
 use crate::platform::screenshots::{self, Screenshot};
 use crate::session::attribution;
 use crate::session::link;
-use crate::session::related;
 use crate::session::store;
 use crate::session::summary;
 use crate::session::sync;
@@ -83,7 +82,7 @@ async fn run_turn(
     hidden_meta: Option<Meta>,
     message_id: Option<String>,
 ) -> Result<String, String> {
-    let LiveHandles { connection, acp_session_id, history } = live_session(registry, id).await?;
+    let LiveHandles { connection, acp_session_id, history, turns } = live_session(registry, id).await?;
     note_remote_activity(app, id, chrono::Utc::now());
 
     // The agent never echoes the prompt back, so the prompt and the turn's state go into the history and to every window
@@ -94,13 +93,13 @@ async fn run_turn(
         chunk.message_id = message_id.clone().map(MessageId::new);
         publish_update(app, id, &history, SessionNotification::new(acp_session_id.clone(), SessionUpdate::UserMessageChunk(chunk)));
     }
-    publish_update(app, id, &history, turn_update(&acp_session_id, "running"));
+    turns.lock().unwrap().prompt_started();
+    turn::report_turn(app, id, &history, &acp_session_id, true);
 
-    related::set_turn(app, id, true);
     let request = PromptRequest::new(acp_session_id.clone(), blocks).meta(hidden_meta.clone());
     let response = connection.send_request(request).block_task().await;
-    related::set_turn(app, id, false);
-    publish_update(app, id, &history, turn_update(&acp_session_id, "idle"));
+    turns.lock().unwrap().prompt_ended();
+    turn::report_turn(app, id, &history, &acp_session_id, false);
     message_time::resolve(app.clone(), id, acp_session_id.to_string(), history.clone(), turn_start);
     let response = response.map_err(|error| format!("failed to send the prompt: {error}"))?;
 
@@ -111,14 +110,6 @@ async fn run_turn(
     }
 
     Ok(format!("{:?}", response.stop_reason))
-}
-
-/// The `session_info_update` saying whether the session runs a turn (`turn` is `running` or `idle`), in the
-/// `_meta.hunt.turn` shape the relay of a remote session reports it in.
-fn turn_update(acp_session_id: &SessionId, turn: &str) -> SessionNotification {
-    let mut meta = Meta::new();
-    meta.insert("hunt".into(), serde_json::json!({ "turn": turn }));
-    SessionNotification::new(acp_session_id.clone(), SessionUpdate::SessionInfoUpdate(SessionInfoUpdate::new().meta(meta)))
 }
 
 /// The content blocks of one prompt: the text (left out when blank) followed by one image block per file.
@@ -156,19 +147,25 @@ pub async fn session_history(registry: State<'_, SessionRegistry>, id: Uuid) -> 
     Ok(history)
 }
 
+/// Cancels the turn the agent runs. A turn Claude Code runs on its own ends in the chat at once, since its end is known
+/// only from its result, which a cancel may cut off.
 #[tauri::command]
 pub async fn cancel_prompt(
+    app: AppHandle,
     registry: State<'_, SessionRegistry>,
     permissions: State<'_, PermissionRegistry>,
     id: Uuid,
 ) -> Result<(), String> {
     drop_pending_permissions(&permissions, id);
 
-    let session = live_session(&registry, id).await?;
-    session
-        .connection
-        .send_notification(CancelNotification::new(session.acp_session_id))
-        .map_err(|error| format!("failed to cancel the prompt: {error}"))
+    let LiveHandles { connection, acp_session_id, history, turns } = live_session(&registry, id).await?;
+    connection
+        .send_notification(CancelNotification::new(acp_session_id.clone()))
+        .map_err(|error| format!("failed to cancel the prompt: {error}"))?;
+    if turns.lock().unwrap().stop_own_turn() {
+        turn::report_turn(&app, id, &history, &acp_session_id, false);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -186,7 +183,7 @@ pub async fn set_session_config_option(
     config_id: String,
     value: String,
 ) -> Result<(), String> {
-    let LiveHandles { connection, acp_session_id, history } = live_session(&registry, id).await?;
+    let LiveHandles { connection, acp_session_id, history, .. } = live_session(&registry, id).await?;
 
     let options = set_config_option(&connection, &acp_session_id, &config_id, &value).await?;
     let update = SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(options));

@@ -17,7 +17,7 @@ import { commands } from "../../ipc/commands";
 import type { ConfigSelect } from "../prompt/PromptInput";
 import { PermissionPrompt } from "../PermissionPrompt";
 import { appendPromptTexts, useReturnedPrompts } from "../prompt/QueuedPrompts";
-import { ContextCard, describeLines, describeSelection, SelectionCard } from "../SelectionCard";
+import { ContextCard, ContextSummaryCard, describeLines, describeSelection, SelectionCard } from "../SelectionCard";
 import { SuggestedGuardrailCard } from "../guardrail/SuggestedGuardrailCard";
 import { useFollowScroll } from "../follow-scroll.hook";
 import { useVmConnect } from "../../sessions/remote/vm-connect.hook";
@@ -424,6 +424,7 @@ export function SubChatView({
         <div ref={contentRef} className="flex flex-col gap-3">
           {showsSelection ? <SelectionCard selection={request.selection} isOpen={!initialSubSessionId} label={subject} /> : null}
           {showsSuggestedGuardrail && suggestedGuardrail ? <SuggestedGuardrailCard {...suggestedGuardrail} /> : null}
+          {showsContext && context?.summary?.length ? <ContextSummaryCard label={context.label} lines={context.summary} /> : null}
           {showsContext && context ? <ContextCard label={context.label} text={context.text} /> : null}
           {chat?.isLoading ? <p className="text-neutral-500">Loading session…</p> : null}
           {chat ? (

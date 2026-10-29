@@ -15,14 +15,17 @@ export const DECLINE_REASONS: { id: GuardrailDeclineReason; name: string; descri
   { id: "notWanted", name: "Not wanted", description: "Wrong, or not worth recording" },
 ];
 
-/** A guardrail the agent proposed at the end of a reply: its kind, what it should say and the id of the reply. */
-export type GuardrailSuggestion = { kind: GuardrailKind; summary: string; replyId: string };
+/**
+ * A guardrail the agent proposed at the end of a reply: its kind, what it should say, why it is worth recording (empty
+ * when the marker gives no reason) and the id of the reply.
+ */
+export type GuardrailSuggestion = { kind: GuardrailKind; summary: string; reason: string; replyId: string };
 
 /**
- * `<!-- hunt:guardrail adr: Summary -->` on a line of its own, which the agent ends a reply with when it holds a guardrail,
- * before the question marker if the reply has one (see `prompts/guardrail-offer.system-prompt.md`).
+ * `<!-- hunt:guardrail adr: Summary Why: Reason -->` on a line of its own, which the agent ends a reply with when it holds
+ * a guardrail, before the question marker if the reply has one (see `prompts/guardrail-offer.system-prompt.md`).
  */
-const MARKER = /^[ \t]*<!--\s*hunt:guardrail\s+(\w+)\s*:?\s*([\s\S]*?)\s*-->[ \t]*$/m;
+const MARKER = /^[ \t]*<!--\s*hunt:guardrail\s+(\w+)\s*:?\s*([\s\S]*?)(?:\s+Why:\s*([\s\S]*?))?\s*-->[ \t]*$/m;
 /** A comment at the end of a reply (its text may hold `>`), also any prefix of one while the marker is still streaming in. */
 const TRAILING_MARKER = /\s*<(?:!(?:-(?:-(?:(?!-->)[\s\S])*(?:-->)?)?)?)?\s*$/;
 /** Characters of the conversation handed to the guardrail agent; older messages are cut off beyond that. */
@@ -36,7 +39,7 @@ export function findGuardrailSuggestion(items: ChatItem[]): GuardrailSuggestion 
     if (item.kind !== "agent") continue;
     const match = item.text.match(MARKER);
     const kind = KINDS.find((candidate) => candidate === match?.[1]);
-    return kind ? { kind, summary: match?.[2] ?? "", replyId: item.id } : null;
+    return kind ? { kind, summary: match?.[2] ?? "", reason: match?.[3] ?? "", replyId: item.id } : null;
   }
   return null;
 }

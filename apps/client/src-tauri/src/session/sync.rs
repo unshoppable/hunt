@@ -438,7 +438,7 @@ fn owner_of(app: &AppHandle, id: Uuid) -> Uuid {
 }
 
 /// The turn state the relay reports in `_meta.hunt.turn` of a `session_info_update`.
-fn relay_turn(meta: Option<&Meta>) -> Option<&str> {
+pub fn relay_turn(meta: Option<&Meta>) -> Option<&str> {
     meta?.get("hunt")?.get("turn")?.as_str()
 }
 

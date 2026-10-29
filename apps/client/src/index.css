@@ -407,6 +407,27 @@ body,
     box-shadow: 0 0 0 4px rgba(124, 108, 255, 0.4), 0 1px 4px rgba(0, 0, 0, 0.3);
   }
 }
+/* The agent sparkle without a button (chat/WorkingIndicator.tsx), breathing while the agent works on a turn. */
+.hunt-agent-sparkle {
+  display: inline-block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  background: var(--agent-gradient);
+  mask: var(--sparkle-mask) center / contain no-repeat;
+  animation: agent-sparkle 1.6s ease-in-out infinite;
+}
+@keyframes agent-sparkle {
+  0%,
+  100% {
+    opacity: 0.6;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
 
 /* Sub chat button right of the line numbers (see ide/selection/selection-chat-markers.monaco.ts): a small icon button with the agent
    sparkle in the blue-violet agent gradient on the first line of a selection a sub chat was opened from; a click

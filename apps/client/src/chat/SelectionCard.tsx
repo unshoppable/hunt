@@ -6,6 +6,7 @@ import { ChevronIcon } from "../ui/Icons";
 import { Collapsible } from "../ui/Collapsible";
 import type { FileLocation } from "./change-references.utils";
 import { useFileIconUrl } from "../ui/file-icons/file-icons.hook";
+import { SummaryList } from "./SessionSummary";
 
 /** `L3-L9` label of a selection's lines. */
 export function describeLines(selection: Pick<FileLocation, "startLine" | "endLine">): string {
@@ -76,6 +77,15 @@ export function ContextCard({ label, text }: { label: string; text: string }) {
   return (
     <CollapsibleCard kind="Context" isInitiallyOpen={false} summary={<span className="min-w-0 truncate text-neutral-300">{label}</span>}>
       <div className="max-h-48 overflow-auto whitespace-pre-wrap border-t border-(--line) px-3 py-2 text-[13px] leading-snug text-neutral-400">{text}</div>
+    </CollapsibleCard>
+  );
+}
+
+/** Collapsible card, open at first, listing the summary bullets of the context a sub chat's agent gets. */
+export function ContextSummaryCard({ label, lines }: { label: string; lines: string[] }) {
+  return (
+    <CollapsibleCard kind="Summary" isInitiallyOpen summary={<span className="min-w-0 truncate text-neutral-300">{label}</span>}>
+      <SummaryList lines={lines} className="border-t border-(--line) px-3 py-2" />
     </CollapsibleCard>
   );
 }

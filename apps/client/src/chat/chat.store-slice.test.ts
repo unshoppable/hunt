@@ -254,6 +254,19 @@ describe("turns of every window", () => {
     await send;
     expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(false);
   });
+
+  it("queues a prompt during a turn it did not start, such as one the agent runs on its own, and sends it once that turn ends", async () => {
+    vi.mocked(invoke).mockReturnValue(new Promise(() => {}));
+    const { applyUpdate, sendPrompt } = useHuntStore.getState();
+    applyUpdate(SESSION, turn("running"));
+    await sendPrompt(SESSION, "next");
+    expect(useHuntStore.getState().chats[SESSION].queue.map((prompt) => prompt.text)).toEqual(["next"]);
+    expect(invoke).not.toHaveBeenCalledWith("send_prompt", expect.anything());
+
+    applyUpdate(SESSION, turn("idle"));
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ isBusy: true, queue: [] });
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("send_prompt", { id: SESSION, text: "next", images: [], messageId: expect.any(String) }));
+  });
 });
 
 describe("prompt queue", () => {

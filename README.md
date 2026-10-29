@@ -491,9 +491,9 @@ an existing one. The skill says when a lesson qualifies as a guardrail, how to c
 guardrails and where each kind goes. Its qualification criteria, the text between its `<!-- hunt:criteria -->` and
 `<!-- /hunt:criteria -->` comments, are quoted in every agent's system prompt (`guardrail-offer.system-prompt.md`), so
 the button lights up by the repository's own criteria: the agent ends a reply that holds such a lesson with
-`<!-- hunt:guardrail KIND: SUMMARY -->`, which the chat hides and turns into a violet "Guardrail" button with the kind. A
-click opens a sub chat whose first message is prefilled with `/<name> KIND: SUMMARY` (or `/<name> ` without a
-suggestion) and whose task (`guardrail-chat.system-prompt.md`) carries the conversation as context. "Decline" appends
+`<!-- hunt:guardrail KIND: SUMMARY Why: REASON -->`, which the chat hides and turns into a violet "Guardrail" button with
+the kind. A click opens a sub chat that shows the kind with the reason, the session summary and the end of the
+conversation, whose first message is prefilled with `/<name> KIND: SUMMARY` (or `/<name> ` without a suggestion) and whose task (`guardrail-chat.system-prompt.md`) carries the conversation as context. "Decline" appends
 the suggestion to `.claude/declined-guardrails.jsonl`, which the skill greps before it writes.
 
 The "Lint rules" tab lists the ESLint rules of every `eslint.config.*` in the worktree (`read_lint_rules`,

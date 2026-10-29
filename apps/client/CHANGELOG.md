@@ -1,3 +1,9 @@
+## 0.134.0 (2026-10-29)
+
+### 🚀 Features
+
+- **client:** pick a guardrail's kind by what tells when it applies ([83c5584](https://github.com/unshoppable/hunt/commit/83c5584))
+
 ## 0.133.0 (2026-10-29)
 
 ### 🚀 Features

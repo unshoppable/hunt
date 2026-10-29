@@ -1,5 +1,5 @@
-import adrReadme from "../../prompts/adr.readme.md?raw";
-import rulesReadme from "../../prompts/rules.readme.md?raw";
+import adrReadme from "../../prompts/guardrails/adr.readme.md?raw";
+import rulesReadme from "../../prompts/guardrails/rules.readme.md?raw";
 import { commands } from "../ipc/commands";
 import type { GuardrailDirs } from "./guardrail.types";
 

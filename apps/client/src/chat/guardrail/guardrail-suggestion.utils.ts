@@ -1,4 +1,4 @@
-import guardrailChatPrompt from "../../../prompts/guardrail-chat.system-prompt.md?raw";
+import guardrailChatPrompt from "../../../prompts/guardrails/guardrail-chat.system-prompt.md?raw";
 import type { ChatItem } from "../chat.types";
 import type { GuardrailDeclineReason } from "./guardrail-suggestion.types";
 import type { GuardrailKind } from "../../guardrails/guardrail.types";
@@ -23,7 +23,7 @@ export type GuardrailSuggestion = { kind: GuardrailKind; summary: string; reason
 
 /**
  * `<!-- hunt:guardrail adr: Summary Why: Reason -->` on a line of its own, which the agent ends a reply with when it holds
- * a guardrail, before the question marker if the reply has one (see `prompts/guardrail-offer.system-prompt.md`).
+ * a guardrail, before the question marker if the reply has one (see `prompts/guardrails/guardrail-offer.system-prompt.md`).
  */
 const MARKER = /^[ \t]*<!--\s*hunt:guardrail\s+(\w+)\s*:?\s*([\s\S]*?)(?:\s+Why:\s*([\s\S]*?))?\s*-->[ \t]*$/m;
 /** A comment at the end of a reply (its text may hold `>`), also any prefix of one while the marker is still streaming in. */
@@ -57,7 +57,7 @@ export function buildGuardrailRequest(suggestion: GuardrailSuggestion | null, ki
   return suggestion ? `/${skill} ${kindLabel}: ${suggestion.summary}` : `/${skill} `;
 }
 
-/** The task of the guardrail chat (`prompts/guardrail-chat.system-prompt.md`): follow the skill, with the conversation as context. */
+/** The task of the guardrail chat (`prompts/guardrails/guardrail-chat.system-prompt.md`): follow the skill, with the conversation as context. */
 export function guardrailChatTask(skill: string, transcript: string): string {
   return fillPrompt(guardrailChatPrompt, { skillName: skill, skillFile: `.claude/skills/${skill}/SKILL.md`, transcript });
 }

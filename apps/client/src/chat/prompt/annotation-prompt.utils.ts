@@ -1,5 +1,5 @@
 import { fillPrompt } from "../../../../../libs/domain/src/shared/prompts.utils.ts";
-import browserAnnotationsPrompt from "../../../prompts/browser-annotations.user-prompt.md?raw";
+import browserAnnotationsPrompt from "../../../prompts/chat/browser-annotations.user-prompt.md?raw";
 import type { StoredBrowserAnnotation } from "../../../../../libs/domain/src/review/browser-annotation.utils.ts";
 import { baseName } from "../../common/path/path.utils";
 

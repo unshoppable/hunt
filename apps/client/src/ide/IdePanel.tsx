@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fillPrompt } from "../../../../libs/domain/src/shared/prompts.utils.ts";
-import projectTreeFilePrompt from "../../prompts/project-tree-file.system-prompt.md?raw";
-import projectTreeFolderPrompt from "../../prompts/project-tree-folder.system-prompt.md?raw";
+import projectTreeFilePrompt from "../../prompts/ide/project-tree-file.system-prompt.md?raw";
+import projectTreeFolderPrompt from "../../prompts/ide/project-tree-folder.system-prompt.md?raw";
 import { SubChatPopover } from "../chat/sub-chat/SubChatPopover";
 import { useSubChatPopover } from "../chat/sub-chat/sub-chat-popover.hook";
 import { commands } from "../ipc/commands";

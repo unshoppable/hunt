@@ -69,7 +69,7 @@ problem per step `swf.skills` leaves out (`swf.skills.<step>: must name the skil
 worktree lacks (`swf.skills.<step>: no skill file …`), and reports the skill of every step as `swf_skills`; the poller
 fails the setup itself when the answer names no skill for a step (`missingSkillsError` in `swf-comments.utils.ts`). The
 client asks once, when a session of the repository opens, whether to add the missing entries (`swf-<step>`) to hunt.json
-and to create the missing skill files from its templates (`apps/client/prompts/swf-<step>.skill.md`). The poller keeps the
+and to create the missing skill files from its templates (`apps/client/prompts/swf/swf-<step>.skill.md`). The poller keeps the
 skills in the record (`skills`; a record without the skill of every step is unusable) and fills each step's prompt with
 its skill as `{{skill}}`: the prompts of plan, implement, verify and pr tell the agent
 to invoke the skill first; the gate prompt hands it to the judging subagent, which reads the repository's rubric for the

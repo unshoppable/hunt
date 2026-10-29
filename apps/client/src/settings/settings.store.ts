@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import responseStylePrompt from "../../prompts/response-style.system-prompt.md?raw";
+import responseStylePrompt from "../../prompts/session/response-style.system-prompt.md?raw";
 import { isSessionMachineType } from "../../../../libs/domain/src/session/session-machine-type.types.ts";
 import type { DiagramType, ReviewLevel } from "../common/diagram/diagram.types";
 import type { VmSettings } from "./settings.types";

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 pub const DECLINES_FILE: &str = ".claude/declined-guardrails.jsonl";
 
 /// Points the agents at `DECLINES_FILE`; appended to the repository's CLAUDE.md unless it names the file already.
-const CLAUDE_MD_SECTION: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/declined-guardrails.claude-md.md"));
+const CLAUDE_MD_SECTION: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/guardrails/declined-guardrails.claude-md.md"));
 
 /// The kinds `<!-- hunt:guardrail KIND: … -->` may name (`KINDS` in `src/chat/guardrail/guardrail-suggestion.utils.ts`).
 pub const KINDS: [&str; 5] = ["instruction", "rule", "skill", "agent", "adr"];

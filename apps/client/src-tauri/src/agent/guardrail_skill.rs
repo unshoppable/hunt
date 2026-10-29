@@ -11,10 +11,10 @@ const DEFAULT_ADR_DIR: &str = ".claude/resources/adrs";
 const MAX_SKILL_NAME_LENGTH: usize = 64;
 
 /// The skill Hunt writes into a repository without one; `{{skillName}}` and `{{adrDir}}` are the repository's.
-const TEMPLATE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/guardrail.skill.md"));
+const TEMPLATE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/guardrails/guardrail.skill.md"));
 
 /// The guardrail offer of the system prompt; `{{skillName}}`, `{{skillFile}}` and `{{criteria}}` are the repository's.
-const OFFER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/guardrail-offer.system-prompt.md"));
+const OFFER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/guardrails/guardrail-offer.system-prompt.md"));
 
 /// The comments the skill's qualification criteria stand between.
 const CRITERIA_START: &str = "<!-- hunt:criteria -->";

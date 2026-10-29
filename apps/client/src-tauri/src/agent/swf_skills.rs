@@ -13,11 +13,11 @@ use crate::agent::guardrail_skill::{is_skill_name, skill_file};
 
 /// The template of each agent step's skill, in the order of `AGENT_STEPS`; `{{skillName}}` is the repository's name of it.
 const TEMPLATES: [(&str, &str); 5] = [
-    ("plan", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf-plan.skill.md"))),
-    ("implement", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf-implement.skill.md"))),
-    ("verify", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf-verify.skill.md"))),
-    ("gate", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf-gate.skill.md"))),
-    ("pr", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf-pr.skill.md"))),
+    ("plan", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf/swf-plan.skill.md"))),
+    ("implement", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf/swf-implement.skill.md"))),
+    ("verify", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf/swf-verify.skill.md"))),
+    ("gate", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf/swf-gate.skill.md"))),
+    ("pr", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf/swf-pr.skill.md"))),
 ];
 
 /// The repository's Hunt configuration at the root of the worktree, whose `swf.skills` names the skill of each agent step.

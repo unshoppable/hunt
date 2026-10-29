@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { fillPrompt } from "../../../../libs/domain/src/shared/prompts.utils.ts";
-import checkFailedPrompt from "../../prompts/check-failed.user-prompt.md?raw";
-import checksSetupPrompt from "../../prompts/checks-setup.user-prompt.md?raw";
+import checkFailedPrompt from "../../prompts/checks/check-failed.user-prompt.md?raw";
+import checksSetupPrompt from "../../prompts/checks/checks-setup.user-prompt.md?raw";
 import { failureExcerpt } from "./checks.utils";
 import { commands } from "../ipc/commands";
 import type { ChecksStatus } from "./checks.types";

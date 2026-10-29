@@ -9,7 +9,7 @@ const MAX_REFERENCES = 4;
 
 /**
  * `<!-- hunt:changes … -->` with one `path:line` or `path:start-end` per line, which the agent puts after the text of a
- * reply that changed files (see `prompts/change-references.system-prompt.md`).
+ * reply that changed files (see `prompts/session/change-references.system-prompt.md`).
  */
 const MARKER = /^[ \t]*<!--\s*hunt:changes\b([\s\S]*?)-->[ \t]*$/m;
 /** One place: the path, then the first and optionally the last line, each with an optional `L` prefix. */

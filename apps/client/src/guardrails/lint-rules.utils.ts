@@ -1,5 +1,5 @@
 import { fillPrompt } from "../../../../libs/domain/src/shared/prompts.utils.ts";
-import lintRulePrompt from "../../prompts/lint-rule.system-prompt.md?raw";
+import lintRulePrompt from "../../prompts/guardrails/lint-rule.system-prompt.md?raw";
 import type { SelectionChat } from "../ide/selection/selection-chats.utils";
 import type { SessionView } from "../sessions/session.types";
 import type { LintRuleOrigin, LintRules, LintSeverity } from "./lint-rules.types";

@@ -1,5 +1,5 @@
 import type { PreviewService, PreviewServiceState, PreviewStatus } from "./preview.types";
-import handoffStartPrompt from "../../prompts/handoff-start.user-prompt.md?raw";
+import handoffStartPrompt from "../../prompts/chat/handoff-start.user-prompt.md?raw";
 
 /** How a state reads in the Preview tab: answering, on its way, needing a look, broken, or at rest. */
 export type Tone = "ok" | "pending" | "warning" | "error" | "idle";

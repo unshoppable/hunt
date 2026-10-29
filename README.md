@@ -184,7 +184,7 @@ a Chrome, since Playwright MCP takes over every tab of the Chrome it connects to
   run by the `node` on the PATH with the session's CDP port (reserved at the agent's start) and the control socket of
   this Hunt process in `HUNT_CONTROL_SOCKET` (see "Steering the UI", `agent/acp/connection.rs`). The wrapper runs
   `@playwright/mcp --cdp-endpoint` on that port and writes its output files to a temp folder per session, not into the
-  worktree. `apps/client/prompts/browser.system-prompt.md` points the agent at these tools for the app it works on.
+  worktree. `apps/client/prompts/session/browser.system-prompt.md` points the agent at these tools for the app it works on.
 - **On demand**: Chrome starts with the agent's first browser tool call (the wrapper sends
   `{"type":"openBrowser","session":"<session id>"}` to the control socket and waits for `{"ok":true}`) or with
   "Browser" beside the inspector's Terminal tab
@@ -256,7 +256,7 @@ sub chat in its popover; the sub session's chat pane offers "Open in editor" for
 The "Agent" page of the settings dialog holds what Hunt tells the agent on its own: the language of every output
 Hunt asks for itself (session summaries and titles in `apps/client/src-tauri/src/session/summary.rs`, the dependency
 graph), German by default, and the system prompt addition of every new session, by default the response-style
-instructions in `apps/client/prompts/response-style.system-prompt.md` (plain language for software engineers). The frontend pushes
+instructions in `apps/client/prompts/session/response-style.system-prompt.md` (plain language for software engineers). The frontend pushes
 both to `apps/client/src-tauri/src/platform/preferences.rs` at start and on change; `apps/client/src-tauri/src/agent/acp/connection.rs`
 appends the prompt and the selection context of a sub session to Claude Code's system prompt via the ACP `systemPrompt`
 meta; the diagram instructions go only to the diagram agent (see "Architecture diagrams").
@@ -272,7 +272,7 @@ command of `hunt-client`.
 
 - **`hunt-client`**: `apps/client/scripts/huntClient.mjs`, which the agent runs through the worktree's
   `.hunt/hunt-client` (written when the agent starts, like `.hunt/tmux`) and which
-  `apps/client/prompts/client.system-prompt.md` names, each for the agent's own session (`HUNT_SESSION_ID`) unless
+  `apps/client/prompts/session/client.system-prompt.md` names, each for the agent's own session (`HUNT_SESSION_ID`) unless
   `--session` names another; `--help` lists them. It prints a command's result on stdout, a string as it is and
   anything else as JSON.
   - *Read*: `state` reports what the main window shows of the session: whether it is selected, whether the window is
@@ -486,7 +486,7 @@ or the agent wrote it, so no template file and no empty folder is ever left behi
 The "Guardrail" button in the composer's header records a lesson of the conversation through the repository's
 guardrail skill, `.claude/skills/<name>/SKILL.md` with the name `guardrailSkill` of `hunt.json` (`guardrail` without
 it; `apps/client/src-tauri/src/agent/guardrail_skill.rs`). Every session start writes the skill from
-`apps/client/prompts/guardrail.skill.md` into a worktree that lacks it, as a change of the session, and never touches
+`apps/client/prompts/guardrails/guardrail.skill.md` into a worktree that lacks it, as a change of the session, and never touches
 an existing one. The skill says when a lesson qualifies as a guardrail, how to check the declines and the existing
 guardrails and where each kind goes. Its qualification criteria, the text between its `<!-- hunt:criteria -->` and
 `<!-- /hunt:criteria -->` comments, are quoted in every agent's system prompt (`guardrail-offer.system-prompt.md`), so
@@ -503,7 +503,7 @@ shows every rule a config switches on, once, grouped by its origin: a plugin tha
 or an installed plugin. Selecting a rule shows what it checks and every place that sets it: the config, the file globs,
 the severity and the options. A config that spreads another one adds only its own blocks, and a rule switched off after
 an earlier block switched it on shows as `off` there. The tab only reads. Its "Agent" button opens a sub chat whose agent
-changes the selected rule (`apps/client/prompts/lint-rule.system-prompt.md`). The rules are read again after every
+changes the selected rule (`apps/client/prompts/guardrails/lint-rule.system-prompt.md`). The rules are read again after every
 agent edit in the worktree and whenever the window comes back.
 
 Opening a session checks that the worktree's root `CLAUDE.md` names the ADR folder and otherwise offers once to
@@ -513,7 +513,7 @@ remembered until the app restarts.
 Then, when the worktree's `hunt.json` has an `swf` section whose `swf.skills` names no skill for an agent step of the
 poller's swf pipeline (see "Remote sessions"), or names one whose skill file is missing, it asks once whether to add the
 missing entries to `hunt.json` (`swf-<step>`) and to create the missing skill files from
-`apps/client/prompts/swf-<step>.skill.md` (`apps/client/src/guardrails/swf-skills.utils.ts`,
+`apps/client/prompts/swf/swf-<step>.skill.md` (`apps/client/src/guardrails/swf-skills.utils.ts`,
 `apps/client/src-tauri/src/agent/swf_skills.rs`): Hunt has no default skill, so a session of the poller cannot start
 until every step has one. Each file lands at `.claude/skills/<name>/SKILL.md` under the step's name as a change of the
 session, says what its step does and leaves the repository's part as `TODO:` lines; the gate skill starts with Hunt's
@@ -795,7 +795,7 @@ hunt.json, a single page with the response header `x-hunt-review-widget: off`. T
 annotation as a file in `/run/hunt-review/annotations`; the status helper (below) takes them out and sends each once
 to Hunt, which emits `review:annotation` and shows it as a chip above the session's composer
 (`apps/client/src/chat/prompt/PromptInput.tsx`). Nothing is sent by itself: the next prompt the user sends carries every chip,
-formatted by `apps/client/src/chat/prompt/annotation-prompt.utils.ts` into `apps/client/prompts/browser-annotations.user-prompt.md`,
+formatted by `apps/client/src/chat/prompt/annotation-prompt.utils.ts` into `apps/client/prompts/chat/browser-annotations.user-prompt.md`,
 also with an empty text, and clears them. Annotations that arrive while Hunt does not run wait on the VM until the
 session's status channel opens; `hunt-ctl stop` drops them.
 
@@ -905,7 +905,7 @@ Hunt writes the worktree's `.hunt/tmux`, a wrapper that starts that binary on th
 starts with Hunt's configuration. A server that outlived an app run that ended without quitting (a crash, a restart of
 `tauri dev`) loads the configuration the first time the app writes it in a run, and each of its live panes without a log
 pipe gets one. The agents on this Mac get its path in their system prompt
-(`apps/client/prompts/terminals.system-prompt.md`) and run their long-running processes as windows of its session `app`.
+(`apps/client/prompts/session/terminals.system-prompt.md`) and run their long-running processes as windows of its session `app`.
 The configuration's hooks give every pane without a log pipe one into `.hunt/logs/desktop/<window name>.log`, after a
 new window, pane or session and after any `pipe-pane`, so that a `pipe-pane -o`, which closes an open pipe, never ends
 a log; a log moves to `.log.1` beyond 20 MiB when its window starts. Every window on this Mac names the Hunt session it

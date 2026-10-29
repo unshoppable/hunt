@@ -55,7 +55,7 @@ export function guardrailSkillOf(huntJson: string): string {
 }
 
 /**
- * The name of Hunt's template for the skill of the agent step `step` (`prompts/swf-<step>.skill.md`): the name the
+ * The name of Hunt's template for the skill of the agent step `step` (`prompts/swf/swf-<step>.skill.md`): the name the
  * "Software factory skills" dialog proposes to write into `swf.skills` of hunt.json for a step without an entry. It is no
  * runtime default: a step without an entry has no skill, which the session VM reports as a problem of hunt.json.
  */

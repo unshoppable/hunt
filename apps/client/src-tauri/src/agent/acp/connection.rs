@@ -555,11 +555,11 @@ async fn new_session(
 
 /// Asks the agent to end a reply that changed files with the `<!-- hunt:changes -->` marker listing the most important
 /// places, which the chat shows below the reply.
-const CHANGE_REFERENCES_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/change-references.system-prompt.md"));
+const CHANGE_REFERENCES_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/session/change-references.system-prompt.md"));
 
 /// Asks the agent to put the file place of a code block that shows a file's lines on its opening fence, which the chat
 /// shows as a header above the code, and to link the files and declarations it names to their places.
-const CODE_LOCATIONS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/code-locations.system-prompt.md"));
+const CODE_LOCATIONS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/session/code-locations.system-prompt.md"));
 
 /// Asks the agent to end a reply that waits for the user's answer with the `<!-- hunt:question -->` marker; shared
 /// with the gateway's poller, so a remote session marks its questions the same way.
@@ -571,22 +571,22 @@ const SESSIONS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "
 
 /// Tells an agent on this Mac how to run long-running processes in the worktree's tmux (`crate::terminal::tmux`), with
 /// the quoted path of its `.hunt/tmux` filled in.
-const TERMINALS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/terminals.system-prompt.md"));
+const TERMINALS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/session/terminals.system-prompt.md"));
 
 /// Tells an agent on this Mac to use the Playwright tools of its session's Chrome (`crate::agent::browser`) for the app
 /// it works on.
-const BROWSER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/browser.system-prompt.md"));
+const BROWSER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/session/browser.system-prompt.md"));
 
 /// Tells an agent on this Mac how to show the user something in Hunt through `hunt-client` (`crate::platform::control`),
 /// with the quoted path of its `.hunt/hunt-client` filled in.
-const CLIENT_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/client.system-prompt.md"));
+const CLIENT_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/session/client.system-prompt.md"));
 
 /// Tells an agent on this Mac whose session works in a worktree Hunt created to keep all work in it, with the branch
 /// filled in.
-const WORKTREE_WORKSPACE_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/workspace-worktree.system-prompt.md"));
+const WORKTREE_WORKSPACE_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/session/workspace-worktree.system-prompt.md"));
 
 /// Tells an agent on this Mac whose session works in the repository's own checkout to keep all work in it.
-const CHECKOUT_WORKSPACE_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/workspace-checkout.system-prompt.md"));
+const CHECKOUT_WORKSPACE_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/session/workspace-checkout.system-prompt.md"));
 
 /// Everything Hunt appends to the system prompt of the agent of the Hunt session `hunt_session_id`: the user's
 /// response-style prompt from the settings (if not cleared), the guardrail offer (with the criteria of the repository's

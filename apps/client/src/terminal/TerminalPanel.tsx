@@ -13,7 +13,7 @@ import { confirmDestructive } from "../ui/confirm.utils";
 import { PlusIcon, Spinner } from "../ui/Icons";
 import { errorText } from "../ui/error-text.utils";
 import { describeLocalExit } from "./terminal-stream.utils";
-import { endedScriptWindow, nextActiveKey, tabOwner, terminalTabs, windowState, windowTabKey, type TerminalTab } from "./terminal-tabs.utils";
+import { endedScriptWindow, isTerminalWindow, nextActiveKey, tabOwner, terminalTabs, windowState, windowTabKey, type TerminalTab } from "./terminal-tabs.utils";
 import { TerminalTabButton } from "./TerminalTabButton";
 import { TerminalView } from "./TerminalView";
 
@@ -165,7 +165,7 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
   useEffect(() => {
     if (isRemote || !isVisible || !windows.desktop || hasOfferedShellRef.current) return;
     hasOfferedShellRef.current = true;
-    if (!windows.desktop.length && !pendingRun) {
+    if (!windows.desktop.some(isTerminalWindow) && !pendingRun) {
       void openShell();
     }
   }, [isRemote, isVisible, windows.desktop, pendingRun, openShell]);

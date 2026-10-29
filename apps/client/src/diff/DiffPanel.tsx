@@ -102,10 +102,10 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const defaultTab: ChangeListTab = pullRequest ? "review" : "changelist";
   const tab = !storedTab || (storedTab === "review" && !pullRequest) ? defaultTab : storedTab;
   /**
-   * In a pull request review the review tab compares against the pull request's merge base and the changes and shelf
-   * tabs against the branch its push lands on; elsewhere every tab shows the uncommitted changes.
+   * The review tab compares against the pull request's merge base; the changelist and shelf tabs show only the
+   * uncommitted changes, so committed files never appear there.
    */
-  const comparison: Comparison = pullRequest && tab !== "review" ? "pushTarget" : "diffBase";
+  const comparison: Comparison = tab === "review" ? "diffBase" : "head";
   const scope =useSettingsStore((state) => state.changelistScopes[sessionId] ?? "own");
   const setChangelistScope = useSettingsStore((state) => state.setChangelistScope);
   const setScope = useCallback((next: ChangelistScope) => setChangelistScope(sessionId, next), [setChangelistScope, sessionId]);

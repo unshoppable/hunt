@@ -111,6 +111,11 @@ enum HeadMove {
     UpdateFrom(String),
     /// `git reset` to a commit of the log in the given mode.
     Reset(String, git::ResetMode),
+    /// A fast-forward of the checked-out branch to its upstream, fetched first (`git::fast_forward_branch`).
+    Pull(String),
+    /// A reset of the checked-out branch to its upstream, fetched first, that keeps the uncommitted changes
+    /// (`git::reset_branch_to_upstream`).
+    ForcePull(String),
 }
 
 impl HeadMove {
@@ -120,6 +125,8 @@ impl HeadMove {
             HeadMove::Merge(_) => "merge",
             HeadMove::UpdateFrom(_) => "update",
             HeadMove::Reset(..) => "reset",
+            HeadMove::Pull(_) => "pull",
+            HeadMove::ForcePull(_) => "force pull",
         }
     }
 
@@ -135,6 +142,8 @@ impl HeadMove {
                 Ok(())
             }
             HeadMove::Reset(commit, mode) => git::reset(worktree, commit, *mode).await,
+            HeadMove::Pull(branch) => git::fast_forward_branch(worktree, branch).await.map(|_| ()),
+            HeadMove::ForcePull(branch) => git::reset_branch_to_upstream(worktree, branch).await,
         }
     }
 
@@ -215,20 +224,39 @@ pub async fn git_update_branch(app: AppHandle, id: Uuid) -> Result<(), String> {
     move_head(&app, &record, HeadMove::UpdateFrom(target)).await
 }
 
+/// The top-level session whose worktree has the local branch `branch` of `repo` checked out; `None` when no worktree
+/// or one outside Hunt's sessions has it.
+async fn session_of_branch(app: &AppHandle, repo: &Path, branch: &str) -> Result<Option<SessionRecord>, String> {
+    let Some(worktree) = git::worktree_of_branch(repo, branch).await? else {
+        return Ok(None);
+    };
+    let worktree = Path::new(&worktree);
+    Ok(store::load_sessions(app)?.into_iter().find(|record| record.parent_id.is_none() && record.worktree_path == worktree))
+}
+
 /// Fast-forwards the local branch `branch`, another one than the session's, to its upstream as fetched now; `false`
-/// when the upstream has no commits the branch lacks.
+/// when the upstream has no commits the branch lacks. The branch of another session moves in its worktree through
+/// `move_head`.
 #[tauri::command]
 pub async fn git_pull_branch(app: AppHandle, scope: GitScope, branch: String) -> Result<bool, String> {
     let (directory, _) = git_scope(&app, &scope).await?;
-    git::fast_forward_branch(&directory, &branch).await
+    let Some(record) = session_of_branch(&app, &directory, &branch).await? else {
+        return git::fast_forward_branch(&directory, &branch).await;
+    };
+    let before = git::rev_parse(&record.worktree_path, "HEAD").await?;
+    move_head(&app, &record, HeadMove::Pull(branch)).await?;
+    Ok(git::rev_parse(&record.worktree_path, "HEAD").await? != before)
 }
 
 /// Resets the local branch `branch`, another one than the session's, to its upstream as fetched now; the commits the
-/// upstream lacks are lost.
+/// upstream lacks are lost. The branch of another session moves in its worktree through `move_head`.
 #[tauri::command]
 pub async fn git_force_pull_branch(app: AppHandle, scope: GitScope, branch: String) -> Result<(), String> {
     let (directory, _) = git_scope(&app, &scope).await?;
-    git::reset_branch_to_upstream(&directory, &branch).await
+    match session_of_branch(&app, &directory, &branch).await? {
+        Some(record) => move_head(&app, &record, HeadMove::ForcePull(branch)).await,
+        None => git::reset_branch_to_upstream(&directory, &branch).await,
+    }
 }
 
 /// Pushes the local branch `branch`, another one than the session's (see `push_branch`), to the branch of the same

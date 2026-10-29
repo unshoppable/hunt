@@ -8,7 +8,7 @@ function service(name: string, state: PreviewService["state"] = "running"): Prev
 }
 
 function window(id: string, name: string, overrides: Partial<TmuxWindow> = {}): TmuxWindow {
-  return { id, name, script: null, isDead: false, exitCode: null, owner: null, ...overrides };
+  return { id, name, script: null, check: null, isDead: false, exitCode: null, owner: null, ...overrides };
 }
 
 function status(services: PreviewService[]): PreviewStatus {
@@ -41,6 +41,11 @@ describe("terminalTabs", () => {
   it("tells windows of the same name on one machine apart by their order", () => {
     const tabs = terminalTabs([], [window("@1", "shell"), window("@2", "vite"), window("@5", "shell")], [window("@3", "shell")], false);
     expect(tabs.map((tab) => tab.label)).toEqual(["shell", "vite", "shell 2", "shell"]);
+  });
+
+  it("leaves out the windows of checks, which the Checks tab shows", () => {
+    const tabs = terminalTabs([], [window("@1", "check-lint", { check: "lint" }), window("@2", "vite")], [window("@3", "check-test", { check: "test" })], true);
+    expect(tabs.map((tab) => tab.key)).toEqual(["window:vm:@2"]);
   });
 
   it("says when Hunt does not know which session a window on this Mac belongs to", () => {
@@ -85,6 +90,7 @@ describe("isProcessWindow and isTerminalActive", () => {
     expect(isProcessWindow(window("@3", "vite"))).toBe(true);
     expect(isProcessWindow(window("@4", "shell", { script: "shell" }))).toBe(true);
     expect(isProcessWindow(window("@5", "start", { script: "start", isDead: true, exitCode: 0 }))).toBe(false);
+    expect(isProcessWindow(window("@6", "check-lint", { check: "lint" }))).toBe(false);
   });
 
   it("marks the tab while a service or a process in either machine's windows runs", () => {

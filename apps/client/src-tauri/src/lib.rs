@@ -120,7 +120,6 @@ pub fn run() {
             // first.
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 app.state::<TerminalRegistry>().close_all();
-                app.state::<checks::CheckRegistry>().cancel_everything();
                 let registry = app.state::<SessionRegistry>();
                 let lsp_registry = app.state::<lsp::LspRegistry>();
                 let desktops = app.state::<DesktopRegistry>();

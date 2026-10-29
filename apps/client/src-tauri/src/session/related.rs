@@ -272,7 +272,8 @@ fn logs_section(worktree: &Path, is_remote: bool) -> String {
     let services = if is_remote { ", every service of hunt.json to `<service name>.log`," } else { "" };
     let mut text = format!(
         "\n## Terminal logs\n\nEvery tmux window of this family writes its output to `<window name>.log`{services} in the folders below. \
-         To see what a process of another session printed, read the end of its log, for example with `tail -n 200`.\n\n"
+         To see what a process of another session printed, read the end of its log, for example with `tail -n 200`. A check of \
+         hunt.json that the Checks tab ran writes to `check-<check name>.log`; its window names the check in the tmux option `@hunt-check`.\n\n"
     );
     let desktop = tmux::desktop_logs(worktree);
     let wrapper = shell_quote(&tmux::wrapper_path(worktree).to_string_lossy());
@@ -453,6 +454,7 @@ mod tests {
         owner.acp_session_id = Some("abc".into());
         let text = render_with(&owner, &[], &|_| AgentState::NotRunning, &[], &[]);
         assert!(text.contains("- Agent runs on: the desktop\n- Transcript on the desktop: `/Users/jane/.claude/projects/-Users-jane-wt/abc.jsonl`\n"));
+        assert!(text.contains("A check of hunt.json that the Checks tab ran writes to `check-<check name>.log`;"));
         assert!(text.contains("- Windows on the desktop: `/Users/jane/wt/.hunt/logs/desktop/`\n\nEvery window on the desktop names the Hunt session"));
         assert!(text.ends_with("`/Users/jane/wt/.hunt/tmux list-windows -t app -F '#{window_name} #{@hunt-session}'` lists them.\n"));
         assert!(!text.contains("on the VM"));

@@ -51,9 +51,34 @@ pub async fn open_script_window(ssh: &Ssh, folder: &str, script: &str) -> Result
         }
         return Ok(window.id.clone());
     }
-    let name = tmux::free_window_name(&windows, &tmux::script_window_name(script));
+    let name = tmux::free_window_name(&windows, &tmux::safe_window_name(script));
     let output = run_script(ssh, &tmux::script_window_script("tmux", &name, folder, script, &script_command(script), None)).await?;
     window_id_from(&output, "run the script")
+}
+
+/// Runs the hunt.json check `check` with the command line `command` in the folder `folder` on the VM and returns the ID
+/// of its window, `check-<check>` when it is new. The check's window that exists already runs it again, ending what
+/// still runs there; the window stays open with the exit code once the check ends.
+pub async fn run_check_window(ssh: &Ssh, folder: &str, check: &str, command: &str) -> Result<String, String> {
+    let windows = list_windows(ssh).await?;
+    let command = login_shell_command(command);
+    if let Some(window) = tmux::check_window(&windows, check, None) {
+        run_script(ssh, &tmux::rerun_script("tmux", &window.id, folder, &command, None)?).await?;
+        return Ok(window.id.clone());
+    }
+    let name = tmux::free_window_name(&windows, &tmux::safe_window_name(&format!("check-{check}")));
+    let output = run_script(ssh, &tmux::check_window_script("tmux", &name, folder, check, &command, None)).await?;
+    window_id_from(&output, "run the check")
+}
+
+/// Ends the program of the window `id` on the VM and keeps the window with its output (`tmux::stop_script`).
+pub async fn stop_window(ssh: &Ssh, id: &str) -> Result<(), String> {
+    run_script(ssh, &tmux::stop_script("tmux", id)?).await.map(|_| ())
+}
+
+/// The history and the screen of the window `id` on the VM as plain text.
+pub async fn capture_window(ssh: &Ssh, id: &str) -> Result<String, String> {
+    run_script(ssh, &tmux::capture_script("tmux", id)?).await
 }
 
 /// Runs the script of the script window `id` on the VM again in the same window, which logs it as before.
@@ -63,10 +88,15 @@ pub async fn rerun_window(ssh: &Ssh, id: &str) -> Result<(), String> {
     run_script(ssh, &tmux::rerun_script("tmux", id, folder, &script_command(script), None)?).await.map(|_| ())
 }
 
-/// The command a package.json script window on the VM runs: the script through npm in a login shell of the user
-/// `agent`, which takes the agent's environment from `/etc/profile.d/hunt.sh`.
+/// The command a package.json script window on the VM runs: the script through npm (`login_shell_command`).
 fn script_command(script: &str) -> String {
-    shell_command("bash", &["-l", "-c", &shell_command("npm", &["run", script])])
+    login_shell_command(&shell_command("npm", &["run", script]))
+}
+
+/// The command a window on the VM runs for the shell command line `command_line`: the line in a login shell of the user
+/// `agent`, which takes the agent's environment from `/etc/profile.d/hunt.sh`.
+fn login_shell_command(command_line: &str) -> String {
+    shell_command("bash", &["-l", "-c", command_line])
 }
 
 /// Runs the `sh` script `script` on the VM as the user `agent` and returns what it printed.

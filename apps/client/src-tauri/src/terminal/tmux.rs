@@ -57,11 +57,14 @@ const HISTORY_LINES: u32 = 50_000;
 const PLACEHOLDER_COMMAND: &str = "exec sleep 2147483647";
 
 /// The fields `parse_windows` reads, separated by tabs: names may hold spaces.
-const LIST_FORMAT: &str = "#{window_id}\t#{pane_dead}\t#{pane_dead_status}\t#{@hunt-script}\t#{@hunt-dir}\t#{@hunt-session}\t#{window_name}";
+const LIST_FORMAT: &str = "#{window_id}\t#{pane_dead}\t#{pane_dead_status}\t#{@hunt-script}\t#{@hunt-dir}\t#{@hunt-session}\t#{@hunt-check}\t#{window_name}";
 
 /// The window options of a script window: the package.json script and the folder it runs in.
 const SCRIPT_OPTION: &str = "@hunt-script";
 const FOLDER_OPTION: &str = "@hunt-dir";
+
+/// The window option of a check window: the hunt.json check it runs.
+const CHECK_OPTION: &str = "@hunt-check";
 
 /// The window option that names the Hunt session a window on this Mac belongs to: the session whose Terminal tab opened
 /// it or last ran its script, or whose agent created it (`wrapper_text`).
@@ -94,7 +97,9 @@ pub struct TmuxWindow {
     pub name: String,
     /// The package.json script a script window runs; `None` for a shell or a process an agent started.
     pub script: Option<String>,
-    /// Whether the window's program has ended; only a script window stays open after that.
+    /// The hunt.json check a check window runs (`CHECK_OPTION`); `None` for every other window.
+    pub check: Option<String>,
+    /// Whether the window's program has ended; only a script or check window stays open after that.
     pub is_dead: bool,
     /// The exit code of an ended program, `None` while it runs or when a signal ended it.
     pub exit_code: Option<i32>,
@@ -126,8 +131,8 @@ pub fn parse_windows(output: &str) -> Vec<TmuxWindow> {
     output
         .lines()
         .filter_map(|line| {
-            let mut fields = line.splitn(7, '\t');
-            let [id, dead, status, script, folder, owner, name] = [(); 7].map(|_| fields.next());
+            let mut fields = line.splitn(8, '\t');
+            let [id, dead, status, script, folder, owner, check, name] = [(); 8].map(|_| fields.next());
             let (id, name) = (id?, name?);
             ensure_window_id(id).ok()?;
             let given = |field: Option<&str>| field.filter(|value| !value.is_empty()).map(str::to_string);
@@ -135,6 +140,7 @@ pub fn parse_windows(output: &str) -> Vec<TmuxWindow> {
                 id: id.to_string(),
                 name: name.to_string(),
                 script: given(script),
+                check: given(check),
                 is_dead: dead == Some("1"),
                 exit_code: status.and_then(|status| status.parse().ok()),
                 owner: owner.and_then(|owner| Uuid::parse_str(owner).ok()),
@@ -154,10 +160,10 @@ pub fn free_window_name(windows: &[TmuxWindow], base: &str) -> String {
     (2..).map(|number| format!("{base}-{number}")).find(|name| !is_taken(name)).unwrap_or_default()
 }
 
-/// The window name of the package.json script `script`, usable as the name of its log file.
-pub fn script_window_name(script: &str) -> String {
+/// The window name of `label`, a package.json script or `check-<check>`, usable as the name of its log file.
+pub fn safe_window_name(label: &str) -> String {
     let name: String =
-        script.chars().map(|character| if character.is_ascii_alphanumeric() || "._:-".contains(character) { character } else { '-' }).collect();
+        label.chars().map(|character| if character.is_ascii_alphanumeric() || "._:-".contains(character) { character } else { '-' }).collect();
     if name.is_empty() { "script".to_string() } else { name }
 }
 
@@ -180,19 +186,33 @@ pub fn new_window_script(tmux: &str, name: &str, folder: Option<&str>, command: 
 /// `remain-on-exit` is set before the script can end, and keeps the log pipe the configuration opened for it. `owner`
 /// is the Hunt session the window belongs to on this Mac (`OWNER_OPTION`).
 pub fn script_window_script(tmux: &str, name: &str, folder: &str, script: &str, command: &str, owner: Option<Uuid>) -> String {
+    kept_window_script(tmux, name, folder, &[(SCRIPT_OPTION, script), (FOLDER_OPTION, folder)], command, owner)
+}
+
+/// The `sh` script that creates the window `name` for the hunt.json check `check`, runs `command` there in `folder` and
+/// prints the window's ID; like a script window, it stays open with the exit code once the command ends.
+pub fn check_window_script(tmux: &str, name: &str, folder: &str, check: &str, command: &str, owner: Option<Uuid>) -> String {
+    kept_window_script(tmux, name, folder, &[(CHECK_OPTION, check)], command, owner)
+}
+
+/// The `sh` script of a window that stays open once `command` ended: it creates the window `name` with
+/// `PLACEHOLDER_COMMAND`, sets `remain-on-exit`, the window options `options` and `owner`, then runs `command` in
+/// `folder` and prints the window's ID.
+fn kept_window_script(tmux: &str, name: &str, folder: &str, options: &[(&str, &str)], command: &str, owner: Option<Uuid>) -> String {
     let created = new_window_script(tmux, name, Some(folder), Some(PLACEHOLDER_COMMAND));
-    let mut options = vec![("remain-on-exit", "on".to_string()), (SCRIPT_OPTION, script.to_string()), (FOLDER_OPTION, folder.to_string())];
-    options.extend(owner.map(|owner| (OWNER_OPTION, owner.to_string())));
+    let mut settings = vec![("remain-on-exit", "on".to_string())];
+    settings.extend(options.iter().map(|(option, value)| (*option, value.to_string())));
+    settings.extend(owner.map(|owner| (OWNER_OPTION, owner.to_string())));
     let options: Vec<String> =
-        options.iter().map(|(option, value)| format!("set-option -w -t \"$id\" {} {} ';' ", shell_quote(option), shell_quote(value))).collect();
+        settings.iter().map(|(option, value)| format!("set-option -w -t \"$id\" {} {} ';' ", shell_quote(option), shell_quote(value))).collect();
     let respawn = format!("respawn-pane -k -t \"$id\" -c {} {}", shell_quote(folder), shell_quote(command));
     format!("{created}{tmux} {}{respawn} && echo \"$id\"", options.concat())
 }
 
-/// The `sh` script that runs `command` in `folder` again in the ended script window `window_id`, which then belongs to
-/// `owner` when that is given. Its `pipe-pane` without a command closes what is left of the window's log pipe (tmux 3.8
-/// closes it when the program ends, 3.3a keeps it), so that the configuration's `after-pipe-pane` hook opens the log
-/// again.
+/// The `sh` script that runs `command` in `folder` again in the script or check window `window_id`, ending what still
+/// runs there; the window then belongs to `owner` when that is given. Its `pipe-pane` without a command closes what is
+/// left of the window's log pipe (tmux 3.8 closes it when the program ends, 3.3a keeps it), so that the configuration's
+/// `after-pipe-pane` hook opens the log again.
 pub fn rerun_script(tmux: &str, window_id: &str, folder: &str, command: &str, owner: Option<Uuid>) -> Result<String, String> {
     ensure_window_id(window_id)?;
     let owner = owner.map(|owner| format!("set-option -w -t {window_id} {OWNER_OPTION} {owner} ';' ")).unwrap_or_default();
@@ -206,6 +226,27 @@ pub fn rerun_script(tmux: &str, window_id: &str, folder: &str, command: &str, ow
 /// The window of `windows` that runs the package.json script `script` in `folder`.
 pub fn script_window<'a>(windows: &'a [TmuxWindow], script: &str, folder: &str) -> Option<&'a TmuxWindow> {
     windows.iter().find(|window| window.script.as_deref() == Some(script) && window.folder.as_deref() == Some(folder))
+}
+
+/// The window of `windows` that runs the hunt.json check `check` for the Hunt session `owner`.
+pub fn check_window<'a>(windows: &'a [TmuxWindow], check: &str, owner: Option<Uuid>) -> Option<&'a TmuxWindow> {
+    windows.iter().find(|window| window.check.as_deref() == Some(check) && window.owner == owner)
+}
+
+/// The `sh` script that ends the program of the window `window_id` as a closed terminal would: SIGHUP to the process
+/// group of the pane's program, which an interactive shell passes on to its jobs. The window stays open with its output;
+/// a program that ended already is no error.
+pub fn stop_script(tmux: &str, window_id: &str) -> Result<String, String> {
+    ensure_window_id(window_id)?;
+    Ok(format!(
+        "set -- $({tmux} display-message -p -t {window_id} '#{{pane_dead}} #{{pane_pid}}') && [ \"$1\" = 0 ] && kill -HUP -- \"-$2\"; exit 0"
+    ))
+}
+
+/// The `sh` script that prints the history and the screen of the window `window_id` as plain text, wrapped lines joined.
+pub fn capture_script(tmux: &str, window_id: &str) -> Result<String, String> {
+    ensure_window_id(window_id)?;
+    Ok(format!("exec {tmux} capture-pane -p -J -S - -E - -t {window_id}"))
 }
 
 /// The package.json script and the folder of the script window `window_id` of `windows`.
@@ -305,7 +346,7 @@ impl LocalTmux {
             }
             return Ok(window.id.clone());
         }
-        let name = free_window_name(&windows, &script_window_name(script));
+        let name = free_window_name(&windows, &safe_window_name(script));
         window_id_from(&self.run(&script_window_script(&self.tmux(), &name, &folder, script, &script_command(script), Some(owner))).await?)
     }
 
@@ -315,6 +356,30 @@ impl LocalTmux {
         let windows = self.list_windows().await?;
         let (script, folder) = script_of(&windows, window_id)?;
         self.run(&rerun_script(&self.tmux(), window_id, folder, &script_command(script), Some(owner))?).await.map(|_| ())
+    }
+
+    /// Runs the hunt.json check `check` with the command line `command` in the folder `folder` for the Hunt session
+    /// `owner` and returns the ID of its window, `check-<check>` when it is new. The check's window that exists already
+    /// runs it again, ending what still runs there; the window stays open with the exit code once the check ends.
+    pub async fn run_check_window(&self, folder: &Path, check: &str, command: &str, owner: Uuid) -> Result<String, String> {
+        let windows = self.list_windows().await?;
+        let (folder, command) = (folder.to_string_lossy(), login_shell_command(command));
+        if let Some(window) = check_window(&windows, check, Some(owner)) {
+            self.run(&rerun_script(&self.tmux(), &window.id, &folder, &command, Some(owner))?).await?;
+            return Ok(window.id.clone());
+        }
+        let name = free_window_name(&windows, &safe_window_name(&format!("check-{check}")));
+        window_id_from(&self.run(&check_window_script(&self.tmux(), &name, &folder, check, &command, Some(owner))).await?)
+    }
+
+    /// Ends the program of the window `window_id` and keeps the window with its output (`stop_script`).
+    pub async fn stop_window(&self, window_id: &str) -> Result<(), String> {
+        self.run(&stop_script(&self.tmux(), window_id)?).await.map(|_| ())
+    }
+
+    /// The history and the screen of the window `window_id` as plain text.
+    pub async fn capture_window(&self, window_id: &str) -> Result<String, String> {
+        self.run(&capture_script(&self.tmux(), window_id)?).await
     }
 
     /// Ends the window `window_id` and the processes in it.
@@ -425,10 +490,15 @@ fn socket_path(family_id: Uuid) -> Result<PathBuf, String> {
     Ok(socket)
 }
 
-/// The command a package.json script window runs: the script through npm in the user's interactive login shell, as
-/// checks run, so that the profile files put Node on the `PATH`.
+/// The command a package.json script window runs: the script through npm in the user's interactive login shell.
 fn script_command(script: &str) -> String {
-    let (program, args) = crate::terminal::local_command(&shell_command("npm", &["run", script]));
+    login_shell_command(&shell_command("npm", &["run", script]))
+}
+
+/// The command a window runs for the shell command line `command_line`: the line in the user's interactive login shell,
+/// so that the profile files put Node on the `PATH`.
+fn login_shell_command(command_line: &str) -> String {
+    let (program, args) = crate::terminal::local_command(command_line);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     shell_command(&program, &args)
 }
@@ -502,22 +572,25 @@ mod tests {
     use crate::terminal::interactive::{Terminal, TerminalEvent, TerminalSize};
 
     fn window(id: &str, name: &str) -> TmuxWindow {
-        TmuxWindow { id: id.into(), name: name.into(), script: None, is_dead: false, exit_code: None, owner: None, folder: None }
+        TmuxWindow { id: id.into(), name: name.into(), script: None, check: None, is_dead: false, exit_code: None, owner: None, folder: None }
     }
 
     #[test]
-    fn parse_windows_reads_names_with_spaces_scripts_and_exit_codes_and_skips_other_lines() {
-        let output = "@1\t0\t\t\t\t\tweb\n@7\t1\t3\tbuild\t/w/app\t9b2f6c1e-0d4a-4c1f-8e2b-3a5d7f9e1c20\tmy build\n@8\t0\t\t\t\tnot a uuid\tvm\nWelcome to the VM\n@x\t0\t\t\t\t\tbad\n\n";
+    fn parse_windows_reads_names_with_spaces_scripts_checks_and_exit_codes_and_skips_other_lines() {
+        let output = "@1\t0\t\t\t\t\t\tweb\n@7\t1\t3\tbuild\t/w/app\t9b2f6c1e-0d4a-4c1f-8e2b-3a5d7f9e1c20\t\tmy build\n\
+                      @9\t1\t0\t\t\t\tlint\tcheck-lint\n@8\t0\t\t\t\tnot a uuid\t\tvm\nWelcome to the VM\n@x\t0\t\t\t\t\t\tbad\n\n";
         let build = TmuxWindow {
             id: "@7".into(),
             name: "my build".into(),
             script: Some("build".into()),
+            check: None,
             is_dead: true,
             exit_code: Some(3),
             owner: Some(Uuid::parse_str("9b2f6c1e-0d4a-4c1f-8e2b-3a5d7f9e1c20").unwrap()),
             folder: Some("/w/app".into()),
         };
-        assert_eq!(parse_windows(output), [window("@1", "web"), build, window("@8", "vm")]);
+        let lint = TmuxWindow { check: Some("lint".into()), is_dead: true, exit_code: Some(0), ..window("@9", "check-lint") };
+        assert_eq!(parse_windows(output), [window("@1", "web"), build, lint, window("@8", "vm")]);
     }
 
     #[test]
@@ -528,10 +601,11 @@ mod tests {
     }
 
     #[test]
-    fn script_window_name_keeps_what_a_file_name_takes() {
-        assert_eq!(script_window_name("start:server"), "start:server");
-        assert_eq!(script_window_name("test/unit e2e"), "test-unit-e2e");
-        assert_eq!(script_window_name(""), "script");
+    fn safe_window_name_keeps_what_a_file_name_takes() {
+        assert_eq!(safe_window_name("start:server"), "start:server");
+        assert_eq!(safe_window_name("test/unit e2e"), "test-unit-e2e");
+        assert_eq!(safe_window_name("check-../lint"), "check-..-lint");
+        assert_eq!(safe_window_name(""), "script");
     }
 
     #[test]
@@ -592,6 +666,39 @@ mod tests {
             rerun_script("tmux", "@4", "/w", "npm run build", Some(owner)).unwrap(),
             "tmux set-option -w -t @4 @hunt-session 9b2f6c1e-0d4a-4c1f-8e2b-3a5d7f9e1c20 ';' respawn-pane -k -t @4 -c /w 'npm run build' ';' pipe-pane -t @4"
         );
+    }
+
+    #[test]
+    fn a_check_window_keeps_its_check_and_stays_once_the_check_ended() {
+        let owner = Uuid::parse_str("9b2f6c1e-0d4a-4c1f-8e2b-3a5d7f9e1c20").unwrap();
+        let script = check_window_script("tmux", "check-lint", "/w", "lint", "npm run lint", Some(owner));
+        assert!(
+            script.ends_with(
+                "|| exit 1; tmux set-option -w -t \"$id\" remain-on-exit on ';' set-option -w -t \"$id\" @hunt-check lint ';' \
+                 set-option -w -t \"$id\" @hunt-session 9b2f6c1e-0d4a-4c1f-8e2b-3a5d7f9e1c20 ';' respawn-pane -k -t \"$id\" -c /w \
+                 'npm run lint' && echo \"$id\""
+            ),
+            "{script}"
+        );
+        assert!(script.contains("-n check-lint -c /w -P -F '#{window_id}' 'exec sleep 2147483647'"), "{script}");
+
+        let lint = TmuxWindow { check: Some("lint".into()), owner: Some(owner), ..window("@2", "check-lint") };
+        let other = TmuxWindow { check: Some("lint".into()), ..window("@3", "check-lint-2") };
+        let windows = [window("@1", "lint"), lint.clone(), other.clone()];
+        assert_eq!(check_window(&windows, "lint", Some(owner)), Some(&lint));
+        assert_eq!(check_window(&windows, "lint", None), Some(&other));
+        assert_eq!(check_window(&windows, "test", Some(owner)), None);
+    }
+
+    #[test]
+    fn a_window_is_stopped_through_the_process_group_of_its_pane_and_captured_as_plain_text() {
+        assert_eq!(
+            stop_script("tmux", "@4").unwrap(),
+            "set -- $(tmux display-message -p -t @4 '#{pane_dead} #{pane_pid}') && [ \"$1\" = 0 ] && kill -HUP -- \"-$2\"; exit 0"
+        );
+        assert_eq!(capture_script("tmux", "@4").unwrap(), "exec tmux capture-pane -p -J -S - -E - -t @4");
+        assert!(stop_script("tmux", "@4;kill-server").is_err());
+        assert!(capture_script("tmux", "=app").is_err());
     }
 
     #[test]
@@ -756,6 +863,46 @@ mod tests {
         assert_eq!(owners, expected.map(|(name, owner)| (name.to_string(), owner)));
         let environment = tmux.run(&call(None, &["show-environment", "-g"])).await.unwrap();
         assert!(!environment.contains(&format!("{SESSION_ENV}=")), "the agent's session reached the panes: {environment}");
+        kill_server(family_id).await.unwrap();
+    }
+
+    /// Waits until the program of the window `window_id` ended and returns the window.
+    async fn wait_for_end(tmux: &LocalTmux, window_id: &str) -> TmuxWindow {
+        for _ in 0..200 {
+            if let Some(window) = tmux.list_windows().await.unwrap().into_iter().find(|window| window.id == window_id && window.is_dead) {
+                return window;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let screen = tmux.capture_window(window_id).await.unwrap_or_default();
+        panic!("the program of the window {window_id} never ended: {:?}\n{screen}", tmux.list_windows().await);
+    }
+
+    #[tokio::test]
+    async fn a_check_window_logs_its_check_runs_it_again_and_keeps_its_output_once_stopped() {
+        let worktree = tempfile::tempdir().unwrap();
+        let family_id = Uuid::new_v4();
+        let owner = Uuid::new_v4();
+        let tmux = LocalTmux::prepare(worktree.path(), family_id).await.unwrap();
+
+        let lint = tmux.run_check_window(worktree.path(), "lint", "echo failing; exit 3", owner).await.unwrap();
+        let ended = wait_for_end(&tmux, &lint).await;
+        assert_eq!((ended.name.as_str(), ended.check.as_deref(), ended.owner, ended.exit_code), ("check-lint", Some("lint"), Some(owner), Some(3)));
+        wait_for_log(worktree.path(), "check-lint", "failing").await;
+        assert!(tmux.capture_window(&lint).await.unwrap().contains("failing"));
+
+        assert_eq!(tmux.run_check_window(worktree.path(), "lint", "echo passing", owner).await.unwrap(), lint);
+        assert_eq!(wait_for_end(&tmux, &lint).await.exit_code, Some(0));
+        let log = wait_for_log(worktree.path(), "check-lint", "passing").await;
+        assert!(log.contains("failing"), "{log}");
+
+        let build = tmux.run_check_window(worktree.path(), "build", "echo building; sleep 60", owner).await.unwrap();
+        wait_for_log(worktree.path(), "check-build", "building").await;
+        tmux.stop_window(&build).await.unwrap();
+        let stopped = wait_for_end(&tmux, &build).await;
+        assert_ne!(stopped.exit_code, Some(0), "{stopped:?}");
+        assert!(tmux.capture_window(&build).await.unwrap().contains("building"));
+        tmux.stop_window(&build).await.unwrap();
         kill_server(family_id).await.unwrap();
     }
 

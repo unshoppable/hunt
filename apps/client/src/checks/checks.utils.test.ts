@@ -6,7 +6,7 @@ const START = "2026-10-24T10:00:00.000Z";
 const START_TIME = Date.parse(START);
 
 function run(name: string, patch: Partial<CheckRun> = {}): CheckRun {
-  return { name, run: 1, state: "passed", startedAt: START, finishedAt: "2026-10-24T10:00:12.000Z", exitCode: 0, ...patch };
+  return { name, run: 1, state: "passed", startedAt: START, finishedAt: "2026-10-24T10:00:12.000Z", exitCode: 0, window: null, error: null, ...patch };
 }
 
 function row(patch: Partial<CheckRow> = {}): CheckRow {

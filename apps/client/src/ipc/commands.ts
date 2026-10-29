@@ -4,7 +4,7 @@ import type { ClaudeAccounts } from "../accounts/accounts.types";
 import type { PlanUsage } from "../accounts/plan-usage.types";
 import type { Screenshot } from "../chat/chat.types";
 import type { GuardrailDeclineReason } from "../chat/guardrail/guardrail-suggestion.types";
-import type { CheckOutput, ChecksStatus } from "../checks/checks.types";
+import type { ChecksStatus } from "../checks/checks.types";
 import type { DiagramType } from "../common/diagram/diagram.types";
 import type { DesktopEndpoint } from "../desktop/desktop.types";
 import type { ChangeStat, ChangedFileView, Comparison, FileDiff, FileVersion, Shelf } from "../diff/diff.types";
@@ -206,16 +206,16 @@ export const commands = {
   closeTerminalWindow: (id: string, machine: Machine, windowId: string) => invoke<void>("close_terminal_window", { id, machine, windowId }),
   /** The checks of the worktree's hunt.json with their last runs. */
   checksStatus: (id: string) => invoke<ChecksStatus>("checks_status", { id }),
-  /** Runs the check `name`, locally or on the session's running VM; `checks:changed` and `checks:output` report the run. */
+  /** Runs the check `name` in its tmux window, locally or on the session's running VM; `checks:changed` reports the run. */
   runCheck: (id: string, name: string) => invoke<void>("run_check", { id, name }),
-  /** Runs every check at once, except those that run already; a check that cannot start fails with the error as its output. */
+  /** Runs every check at once, except those that run already; a check that cannot start fails with the error. */
   runAllChecks: (id: string) => invoke<void>("run_all_checks", { id }),
-  /** Stops the check `name`. */
+  /** Stops the check `name`; its window stays with the output so far. */
   cancelCheck: (id: string, name: string) => invoke<void>("cancel_check", { id, name }),
   /** Stops every running check of the session. */
   cancelAllChecks: (id: string) => invoke<void>("cancel_all_checks", { id }),
-  /** The output of the last run of the check `name`; `null` before its first run. */
-  checkOutput: (id: string, name: string) => invoke<CheckOutput | null>("check_output", { id, name }),
+  /** The output of the last run of the check `name` as plain text, or why it could not start; `null` before its first run. */
+  checkOutput: (id: string, name: string) => invoke<string | null>("check_output", { id, name }),
   closeSession: (id: string, ending: SessionEnding) => invoke<void>("close_session", { id, ending }),
   /** Prepares the worktree's `node_modules` again after a failed attempt; progress arrives through `sessions:changed`. */
   prepareDependencies: (id: string) => invoke<void>("prepare_dependencies", { id }),

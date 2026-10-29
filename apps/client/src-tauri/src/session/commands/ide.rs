@@ -38,7 +38,7 @@ pub async fn open_file_in_webstorm(app: AppHandle, id: Uuid, path: String, line:
 #[tauri::command]
 pub async fn open_changed_files_diff_in_webstorm(app: AppHandle, id: Uuid, comparison: Comparison) -> Result<(), String> {
     let record = worktree_session(&app, id)?;
-    let base = comparison_base(&app, &record, comparison).await?;
+    let base = comparison_base(&record, comparison);
     let files = git::changed_files(&record.worktree_path, &base).await?;
 
     let snapshot_dir = std::env::temp_dir().join("hunt").join(id.to_string());

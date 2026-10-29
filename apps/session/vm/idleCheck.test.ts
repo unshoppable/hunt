@@ -12,13 +12,15 @@ const MINUTE_MS = 60_000;
 /**
  * Commands the script runs that read the machine, replaced by scripts that read the fixture: `date` prints NOW_MS,
  * `stat -c %Y` reads the real mtime on GNU and BSD alike, `w` prints the fixture's logins, `pgrep` reports the
- * fixture's hunt-ctl and `systemctl` records its arguments.
+ * fixture's hunt-ctl, `runuser` prints the fixture's tmux windows as `tmux list-windows` would and fails like tmux
+ * without a server when there are none, and `systemctl` records its arguments.
  */
 const SHIMS: Record<string, string> = {
   date: `#!/bin/sh\necho ${NOW_MS}\n`,
   stat: `#!/bin/sh\nexec "${process.execPath}" -e 'process.stdout.write(Math.floor(require("fs").statSync(process.argv[1]).mtimeMs / 1000) + "\\n")' "$3"\n`,
   w: '#!/bin/sh\nif [ -f "$HUNT_TEST_DIR/w.txt" ]; then cat "$HUNT_TEST_DIR/w.txt"; fi\n',
   pgrep: '#!/bin/sh\n[ -f "$HUNT_TEST_DIR/hunt-ctl-running" ]\n',
+  runuser: '#!/bin/sh\nif [ -f "$HUNT_TEST_DIR/tmux.txt" ]; then cat "$HUNT_TEST_DIR/tmux.txt"; else exit 1; fi\n',
   systemctl: '#!/bin/sh\necho "$*" >>"$HUNT_TEST_DIR/systemctl.log"\n',
 };
 
@@ -37,6 +39,8 @@ interface Fixture {
   requests?: { minutesAgo: number; method: string; mode?: string }[];
   /** The `w` output after its header. */
   logins?: string[];
+  /** The windows of the agent's tmux: the check in their option @hunt-check and whether their program ended; no tmux server without it. */
+  checkWindows?: { check: string | null; isDead: boolean }[];
   /** Minutes since the last run recorded itself; no record without it (the VM booted since, or never ran). */
   lastRunMinutesAgo?: number;
   /** Minutes since the resume the last run recorded. */
@@ -98,6 +102,9 @@ describe("hunt-idle-check", () => {
     writeFileSync(join(dir, "access.log"), ["not json", ...lines].join("\n") + "\n");
     if (fixture.logins) {
       writeFileSync(join(dir, "w.txt"), ["USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT", ...fixture.logins].join("\n") + "\n");
+    }
+    if (fixture.checkWindows) {
+      writeFileSync(join(dir, "tmux.txt"), fixture.checkWindows.map(({ check, isDead }) => `${isDead ? 1 : 0} ${check ?? ""}`).join("\n") + "\n");
     }
     const state = join(dir, "state");
     mkdirSync(state);
@@ -183,6 +190,19 @@ describe("hunt-idle-check", () => {
     expect(decision({ huntCtlMinutesAgo: 12 })).toBe("keep: hunt-ctl ran 12 min ago");
     expect(decision({ huntCtlMinutesAgo: 31 })).toBe(IDLE);
     expect(decision({ isHuntCtlRunning: true })).toBe("keep: hunt-ctl is running");
+  });
+
+  it("keeps the VM up while a check of the Checks tab runs in the agent's tmux", () => {
+    expect(decision({ checkWindows: [{ check: "lint", isDead: false }] })).toBe("keep: the check lint is running");
+    expect(decision({ checkWindows: [{ check: "lint", isDead: true }] })).toBe(IDLE);
+    expect(decision({ checkWindows: [{ check: null, isDead: false }] })).toBe(IDLE);
+    const windows = [
+      { check: "lint", isDead: false },
+      { check: null, isDead: false },
+      { check: "build", isDead: true },
+      { check: "test", isDead: false },
+    ];
+    expect(decision({ checkWindows: windows })).toBe("keep: the check lint, test is running");
   });
 
   it("keeps the VM up for the relay's turns, clients and permission requests, unless its heartbeat is stale", () => {

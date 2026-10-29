@@ -6,7 +6,7 @@ import { HEADER_BAR } from "../ui/bars.constants";
 import { GHOST_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
 import { CheckIcon, CloseIcon, Spinner } from "../ui/Icons";
 import type { Tone } from "../preview/preview-services.utils";
-import { CheckOutput } from "./CheckOutput";
+import { TerminalView } from "../terminal/TerminalView";
 import { checkRows, describeCheck, describeChecks, isAnyCheckRunning, type CheckRow } from "./checks.utils";
 
 /** How often the durations of running checks count up. */
@@ -29,9 +29,9 @@ const EXAMPLE = `"checks": {
 
 /**
  * The Checks tab of a session: the checks of the worktree's hunt.json (lint, test, build, …) with the state of their
- * last run, run one by one or all at once, locally or on the session's VM; below them the output of the selected
- * check, by default of the first one that runs or failed. A result that started on another state of the worktree reads
- * as outdated. A failed check goes to the agent with the end of its output. Reads the checks again when the agent
+ * last run, run one by one or all at once, each in a tmux window, locally or on the session's VM; below them the window
+ * of the selected check, by default of the first one that runs or failed, or why it could not start. A result that
+ * started on another state of the worktree reads as outdated. A failed check goes to the agent with the end of its output. Reads the checks again when the agent
  * edits files and when the window gets the focus.
  */
 export function ChecksPanel({ sessionId }: { sessionId: string }) {
@@ -114,10 +114,18 @@ export function ChecksPanel({ sessionId }: { sessionId: string }) {
             ))}
           </div>
           <div className="flex min-h-0 flex-1 flex-col border-t border-(--line)">
-            {shownRow?.run ? (
-              <CheckOutput key={`${shownRow.definition.name}:${shownRow.run.run}`} sessionId={sessionId} name={shownRow.definition.name} run={shownRow.run.run} />
+            {shownRow?.run?.window ? (
+              <TerminalView
+                key={`${shownRow.run.window.machine}:${shownRow.run.window.id}`}
+                sessionId={sessionId}
+                target={{ kind: "window", ...shownRow.run.window }}
+                isVisible
+                focusRequest={0}
+              />
+            ) : shownRow?.run?.error ? (
+              <p className="px-4 py-3 text-[13px] leading-snug break-words text-red-300">{shownRow.run.error}</p>
             ) : (
-              <p className={`px-4 py-3 text-[13px] ${HINT}`}>{shownRow ? "This check has not run yet." : "Select a check to see its output."}</p>
+              <p className={`px-4 py-3 text-[13px] ${HINT}`}>{outputHint(shownRow)}</p>
             )}
           </div>
         </>
@@ -181,6 +189,13 @@ function CheckRowView({
       </button>
     </div>
   );
+}
+
+/** What the output area says while it shows no window: why for the check of `row`, or that none is selected. */
+function outputHint(row: CheckRow | null): string {
+  if (!row) return "Select a check to see its output.";
+  if (!row.run) return "This check has not run yet.";
+  return row.run.state === "running" ? "Opening the check's window…" : "The check was stopped before its window opened.";
 }
 
 function StateIcon({ row }: { row: CheckRow }) {

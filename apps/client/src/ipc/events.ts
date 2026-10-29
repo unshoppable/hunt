@@ -1,7 +1,6 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { ClosedEvent, MessageTimesEvent, PermissionEvent, PermissionWithdrawnEvent, ReplayEvent, UpdateEvent } from "../chat/chat.types";
-import type { CheckOutputEvent } from "../checks/checks.types";
 import type { ControlCommandEvent } from "../control/control-command.types";
 import type { DiffOpenRequest } from "../diff/diff.types";
 import type { GraphChangedEvent } from "../graph/graph.types";
@@ -79,8 +78,6 @@ type EventPayloads = {
   "terminal:exit": TerminalExitEvent;
   /** A check of the session started, ended or was cancelled; sent to the main window (see checks/ChecksPanel.tsx). */
   "checks:changed": { sessionId: string };
-  /** Output of a check's run, sent to the main window. */
-  "checks:output": CheckOutputEvent;
   /** Sent by any window to the main window to run a package.json script in its Terminal tab (see terminal/script-runs.hook.ts). */
   "terminal:run-script": ScriptRunRequest;
   /** A `hunt-client` command of an agent, sent to the main window, which answers it (see control/control-commands.hook.ts). */

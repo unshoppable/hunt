@@ -459,13 +459,18 @@ to other or additional keys, flags two commands that share one and keeps the cha
 
 The `checks` section of the worktree's `hunt.json` names the commands that check a change, such as
 `"lint": {"command": "npm run lint"}`. The Checks tab lists them in the file's order and runs one, or all of them at
-once (`run_all_checks`); a local session runs the command in an interactive login shell in the worktree, a
-remote session on its VM through `hunt-ctl check`. Each run is a pseudo terminal (`terminal/interactive.rs`), so the output
-keeps its colors; `checks/checks.rs` keeps the last run of every check with its state, exit code, the last 4 MiB of output
-and the tree object of the worktree at its start (`git::worktree_tree`). A result whose tree differs from the
-worktree's now reads as outdated. The runs live as long as Hunt; `checks:changed` and `checks:output` report them to the
-main window. *Send to agent* posts a failed check with the end of its output into the chat
-(`check-failed.user-prompt.md`); a repository without checks gets *Set up checks*, which asks the agent to declare them.
+once (`run_all_checks`). Each check runs in a tmux window `check-<name>` that stays open with its exit code
+(`checks/host.rs`): a local session's in the family's tmux server, in an interactive login shell, a remote session's in
+the tmux session `app` on its VM, in a login shell of the user `agent`. Like every window there, it logs its output to
+`check-<name>.log` (`.hunt/logs/desktop/` here, `~/logs/` on the VM), where the agents of the family read it, and the
+Checks tab shows the window like the Terminal tab, which leaves check windows out. `checks/checks.rs` keeps the last run
+of every check with its state, exit code, window and the tree object of the worktree at its start
+(`git::worktree_tree`); a result whose tree differs from the worktree's now reads as outdated. Hunt asks every second
+whether a running check's program ended; *Stop* sends SIGHUP to its process group and keeps the window. The runs live as
+long as Hunt; `checks:changed` reports them to the main window. A running check keeps its VM awake
+(`apps/session/vm/hunt-idle-check`). *Send to agent* posts a failed check with the end of its window's text into the
+chat (`check-failed.user-prompt.md`); a repository without checks gets *Set up checks*, which asks the agent to declare
+them.
 
 #### Guardrails
 
@@ -734,9 +739,9 @@ so a `hunt.json` may declare checks only. An optional `adrDir` names the folder 
 decision records (`"adrDir": "docs/adr"`, `.claude/resources/adrs` without it), which the guardrails window lists and
 writes; the VM only validates it. An optional `guardrailSkill` names the Claude Code skill the chat's "Guardrail"
 button invokes (`"guardrailSkill": "team-lessons"`, `guardrail` without it; see "Guardrails"); the VM only validates
-the name. The client's Checks tab runs the checks: in the worktree on the Mac, or on the
-session VM through `hunt-ctl check <worktree> <name>`, which runs the check as `agent` in a login shell with
-`FORCE_COLOR=1`, passes its output through and exits with its exit status.
+the name. The client's Checks tab runs the checks in tmux windows: in the worktree on the Mac, or on the session VM in
+the tmux session `app`, as `agent` in a login shell (see "Checks"). `hunt-ctl check <worktree> <name>` runs a check
+without tmux, as `agent` in a login shell with `FORCE_COLOR=1`, passes its output through and exits with its exit status.
 `session-config` writes one environment file per service to
 `/etc/hunt/services/<name>.env` (mode 0600, read by systemd only), the session's environment `/etc/hunt/session.env`
 and the configuration of the VM's preview proxy, `hunt-proxy.service` (Caddy on port 8080), which serves `<short id>-<port>.<domain>` from that port on

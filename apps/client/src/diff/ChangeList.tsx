@@ -442,7 +442,7 @@ export function ChangeList({
           type="button"
           onClick={() => onTabChange("changelist")}
           className={`${TAB_BUTTON_SM} gap-1.5 ${tab === "changelist" ? TAB_ACTIVE : TAB_INACTIVE}`}
-          title={pullRequest ? `Changes not yet pushed to ${target}, plus the uncommitted ones` : "Uncommitted changes"}
+          title="Uncommitted changes"
         >
           <PencilIcon />
           Changelist

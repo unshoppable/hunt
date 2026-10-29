@@ -29,7 +29,7 @@ export function windowTabKey(machine: Machine, id: string): string {
 
 /**
  * The tabs in their order: the services as hunt.json lists them, then the VM's windows, then this Mac's, each in
- * tmux's order. Windows of the same name on one machine are told apart as "vite", "vite 2"; with `labelsDesktop` (a
+ * tmux's order and without the windows of checks. Windows of the same name on one machine are told apart as "vite", "vite 2"; with `labelsDesktop` (a
  * remote session, whose sub chats run their processes on this Mac) the labels of this Mac's windows end in "(Mac)".
  */
 export function terminalTabs(
@@ -69,9 +69,14 @@ export function tabOwner(tab: TerminalTab, sessionId: string): string | null {
   return owner && owner !== sessionId ? owner : null;
 }
 
-/** Whether a process runs in the window: a script that has not ended or anything else than a shell Hunt opened. */
+/** Whether a process runs in the window: a script that has not ended or anything else than a shell Hunt opened or a check. */
 export function isProcessWindow(window: TmuxWindow): boolean {
-  return !window.isDead && (Boolean(window.script) || !SHELL_NAME.test(window.name));
+  return !window.check && !window.isDead && (Boolean(window.script) || !SHELL_NAME.test(window.name));
+}
+
+/** Whether the Terminal tab shows the window: every window but those of the checks, which the Checks tab shows. */
+export function isTerminalWindow(window: TmuxWindow): boolean {
+  return !window.check;
 }
 
 /** Whether the Terminal tab carries a green dot: a service of hunt.json runs or starts, or a process runs in a tmux window. */
@@ -96,7 +101,7 @@ export function nextActiveKey(previous: readonly TerminalTab[], next: readonly T
 
 function windowTabs(machine: Machine, windows: readonly TmuxWindow[], labelSuffix: string): TerminalTab[] {
   const seen = new Map<string, number>();
-  return windows.map((window): TerminalTab => {
+  return windows.filter(isTerminalWindow).map((window): TerminalTab => {
     const count = (seen.get(window.name) ?? 0) + 1;
     seen.set(window.name, count);
     const label = `${count === 1 ? window.name : `${window.name} ${count}`}${labelSuffix}`;

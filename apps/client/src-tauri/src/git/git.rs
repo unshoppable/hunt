@@ -163,18 +163,6 @@ pub async fn merge_base(repo: &Path, base: &str, head: &str) -> Result<String, S
     Ok(run_git(repo, &["merge-base", base, head]).await?.trim().to_string())
 }
 
-/// The commit `HEAD` shares with the branch `target` on `origin`: against it a worktree shows the commits a push would
-/// publish plus its uncommitted changes, and none of the commits others pushed meanwhile. `HEAD` while the worktree
-/// knows no `origin/<target>`.
-pub async fn push_base(worktree: &Path, target: &str) -> Result<String, String> {
-    ensure_branch_name(worktree, target).await?;
-    let remote_ref = format!("refs/remotes/origin/{target}");
-    if rev_parse(worktree, &remote_ref).await.is_err() {
-        return Ok(DIFF_BASE.to_string());
-    }
-    merge_base(worktree, &remote_ref, DIFF_BASE).await
-}
-
 /// Whether the commit `ancestor` is `descendant` or one of its ancestors; also false when git knows either of them not.
 /// Both refs are validated like in `rev_parse`.
 pub async fn is_ancestor(repo: &Path, ancestor: &str, descendant: &str) -> bool {
@@ -993,9 +981,10 @@ async fn fetch_upstream(repo: &Path, branch: &str) -> Result<String, String> {
     Ok(upstream.to_string())
 }
 
-/// Fast-forwards the local branch `branch`, which is not checked out here, to its upstream as fetched now, like
-/// `git pull --ff-only`; `false` when the upstream has no commits the branch lacks, which leaves it as it is. Fails
-/// without an upstream, when both have commits the other lacks, or when a worktree has the branch checked out.
+/// Fast-forwards the local branch `branch` to its upstream as fetched now, like `git pull --ff-only`; `false` when the
+/// upstream has no commits the branch lacks, which leaves it as it is. A worktree that has the branch checked out moves
+/// along; git refuses when its uncommitted changes touch a file the upstream changes. Fails without an upstream or when
+/// both have commits the other lacks.
 pub async fn fast_forward_branch(repo: &Path, branch: &str) -> Result<bool, String> {
     let upstream = fetch_upstream(repo, branch).await?;
     let local_ref = format!("refs/heads/{branch}");
@@ -1005,15 +994,24 @@ pub async fn fast_forward_branch(repo: &Path, branch: &str) -> Result<bool, Stri
     if !is_ancestor(repo, &local_ref, &upstream).await {
         return Err(format!("failed to update {branch}: it and {upstream} both have commits the other lacks; force pull, rebase or merge instead"));
     }
-    run_git(repo, &["fetch", "-q", "--", ".", &format!("refs/remotes/{upstream}:{local_ref}")]).await?;
+    let upstream_ref = format!("refs/remotes/{upstream}");
+    match worktree_of_branch(repo, branch).await? {
+        Some(worktree) => run_git(Path::new(&worktree), &["merge", "-q", "--ff-only", "--", &upstream_ref]).await?,
+        None => run_git(repo, &["fetch", "-q", "--", ".", &format!("{upstream_ref}:{local_ref}")]).await?,
+    };
     Ok(true)
 }
 
-/// Resets the local branch `branch`, which is not checked out here, to its upstream as fetched now; the commits the
-/// upstream lacks are lost with it. Fails without an upstream or when a worktree has the branch checked out.
+/// Resets the local branch `branch` to its upstream as fetched now; the commits the upstream lacks are lost with it. A
+/// worktree that has the branch checked out keeps its uncommitted changes (`git reset --keep`); git refuses when they
+/// touch a file the reset changes. Fails without an upstream.
 pub async fn reset_branch_to_upstream(repo: &Path, branch: &str) -> Result<(), String> {
     let upstream = fetch_upstream(repo, branch).await?;
-    run_git(repo, &["fetch", "-q", "--", ".", &format!("+refs/remotes/{upstream}:refs/heads/{branch}")]).await?;
+    let upstream_ref = format!("refs/remotes/{upstream}");
+    match worktree_of_branch(repo, branch).await? {
+        Some(worktree) => run_git(Path::new(&worktree), &["reset", "-q", "--keep", &upstream_ref, "--"]).await?,
+        None => run_git(repo, &["fetch", "-q", "--", ".", &format!("+{upstream_ref}:refs/heads/{branch}")]).await?,
+    };
     Ok(())
 }
 
@@ -2069,6 +2067,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pulls_move_a_branch_another_worktree_has_checked_out_and_keep_its_uncommitted_changes() {
+        let origin = fixture().await;
+        let clone_dir = tempfile::tempdir().unwrap();
+        let repo = session_clone(origin.path(), clone_dir.path()).await;
+        let other = clone_dir.path().join("other");
+        git(&repo, &["worktree", "add", "-q", "--track", "-b", "develop", other.to_str().unwrap(), "origin/develop"]).await;
+        std::fs::write(other.join("other.txt"), "uncommitted\n").unwrap();
+        let elsewhere = commit_on_origin_develop(origin.path(), "two\n").await;
+
+        assert!(fast_forward_branch(&repo, "develop").await.unwrap());
+
+        assert_eq!(run_git(&other, &["rev-parse", "HEAD"]).await.unwrap(), elsewhere);
+        assert_eq!(std::fs::read_to_string(other.join("tracked.txt")).unwrap(), "two\n");
+        assert_eq!(std::fs::read_to_string(other.join("other.txt")).unwrap(), "uncommitted\n");
+
+        std::fs::write(other.join("new.txt"), "new\n").unwrap();
+        commit_files(&other, &["new.txt".into()], "local commit").await.unwrap();
+        let theirs = commit_on_origin_develop(origin.path(), "three\n").await;
+
+        reset_branch_to_upstream(&repo, "develop").await.unwrap();
+
+        assert_eq!(run_git(&other, &["rev-parse", "HEAD"]).await.unwrap(), theirs);
+        assert!(!other.join("new.txt").exists());
+        assert_eq!(std::fs::read_to_string(other.join("other.txt")).unwrap(), "uncommitted\n");
+    }
+
+    #[tokio::test]
     async fn branches_are_renamed_pushed_and_deleted_by_name() {
         let origin = fixture().await;
         let clone_dir = tempfile::tempdir().unwrap();
@@ -2176,26 +2201,6 @@ mod tests {
         std::fs::write(repo.join("tracked.txt"), "four\n").unwrap();
         commit_files(&repo, &["tracked.txt".into()], "three").await.unwrap();
         assert_eq!(unpushed_commit_count(&repo, "develop").await.unwrap(), 2);
-    }
-
-    #[tokio::test]
-    async fn push_base_is_the_commit_head_shares_with_the_push_target_on_origin() {
-        let origin = fixture().await;
-        let clone_dir = tempfile::tempdir().unwrap();
-        let repo = session_clone(origin.path(), clone_dir.path()).await;
-        let fork_point = run_git(&repo, &["rev-parse", "HEAD"]).await.unwrap().trim().to_string();
-        assert_eq!(push_base(&repo, "develop").await.unwrap(), fork_point);
-        assert_eq!(push_base(&repo, "feature/new").await.unwrap(), DIFF_BASE);
-        assert!(push_base(&repo, "-develop").await.is_err());
-
-        std::fs::write(repo.join("tracked.txt"), "two\n").unwrap();
-        commit_files(&repo, &["tracked.txt".into()], "one").await.unwrap();
-        commit_on_origin_develop(origin.path(), "elsewhere\n").await;
-        fetch_branch(&repo, "develop").await.unwrap();
-        assert_eq!(push_base(&repo, "develop").await.unwrap(), fork_point);
-
-        let changed: Vec<String> = changed_files(&repo, &fork_point).await.unwrap().into_iter().map(|file| file.path).collect();
-        assert_eq!(changed, vec!["tracked.txt".to_string()]);
     }
 
     #[tokio::test]

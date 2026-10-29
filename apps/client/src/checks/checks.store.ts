@@ -5,7 +5,6 @@ import checksSetupPrompt from "../../prompts/checks-setup.user-prompt.md?raw";
 import { failureExcerpt } from "./checks.utils";
 import { commands } from "../ipc/commands";
 import type { ChecksStatus } from "./checks.types";
-import { decodeBase64 } from "../terminal/terminal-stream.utils";
 import { errorText } from "../ui/error-text.utils";
 import { useHuntStore } from "../sessions/hunt.store";
 
@@ -78,8 +77,7 @@ export const useChecksStore = create<ChecksState>((set, get) => {
         const definition = get().checks[id]?.status?.definitions.find((candidate) => candidate.name === name);
         const run = get().checks[id]?.status?.runs.find((candidate) => candidate.name === name);
         if (!definition || !run) throw new Error(`failed to send the check ${name}: it has no run`);
-        const output = await commands.checkOutput(id, name);
-        const text = output ? new TextDecoder().decode(decodeBase64(output.data)) : "";
+        const text = (await commands.checkOutput(id, name)) ?? "";
         const prompt = fillPrompt(checkFailedPrompt.trim(), {
           name,
           command: definition.command,

@@ -1,3 +1,9 @@
+## 0.133.0 (2026-10-29)
+
+### 🚀 Features
+
+- run checks in tmux windows, list only uncommitted changes and pull branches other worktrees have checked out ([8886aea](https://github.com/unshoppable/hunt/commit/8886aea))
+
 ## 0.132.0 (2026-10-28)
 
 ### 🚀 Features

@@ -36,13 +36,13 @@ docs, nothing).
 
 ## 3. Was it declined before?
 
-`.claude/declined-guardrails.jsonl` holds every suggestion the user declined, one JSON object per line with `kind`,
+`{{declinesFile}}` holds every suggestion the user declined, one JSON object per line with `kind`,
 `reason` (`tooSpecific`, `alreadyRecorded`, `notWanted`), `summary` and `declinedAt`; Hunt appends a line on every
 decline. Never read the whole file:
 
 ```bash
-grep -i '<key word>' .claude/declined-guardrails.jsonl
-grep '"tooSpecific"' .claude/declined-guardrails.jsonl | tail -5
+grep -i '<key word>' {{declinesFile}}
+grep '"tooSpecific"' {{declinesFile}} | tail -5
 ```
 
 Stop if a declined entry covers the lesson, or if the lesson is as narrow as the last `tooSpecific` entries.

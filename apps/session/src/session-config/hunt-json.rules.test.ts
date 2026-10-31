@@ -16,11 +16,14 @@ import {
   ZodServicePlaceholder,
   ZodServicePort,
   ZodSkillName,
+  ZodWorktreeFile,
   ZodWorktreeFolder,
 } from "./hunt-json.rules.ts";
 
 const FOLDER_RULE =
   'must be a folder relative to the worktree such as "apps/web": at most 255 characters, segments of letters, digits, ".", "_" and "-", none . or ..';
+const FILE_RULE =
+  'must be a file relative to the worktree such as ".claude/declined-guardrails.jsonl": at most 255 characters, segments of letters, digits, ".", "_" and "-", none . or ..';
 const PORT_RULE = "must be an integer from 1024 to 65535";
 
 /** The issues of `value` under `schema` as `<path>: <message>`, the path empty for the value itself. */
@@ -61,6 +64,13 @@ describe("hunt.json rules", () => {
     }
     for (const folder of ["/srv/app", "../app", "a/./b", "a/", "a b", "", "x".repeat(256), 1]) {
       expect(issuesOf(ZodWorktreeFolder, folder)).toEqual([`: ${FOLDER_RULE}`]);
+    }
+  });
+
+  it("take files relative to the worktree by the rules of folders", () => {
+    expect(issuesOf(ZodWorktreeFile, ".claude/resources/guardrails/declined-guardrails.jsonl")).toEqual([]);
+    for (const file of ["/srv/declines.jsonl", "../declines.jsonl", "a/./b.jsonl", "", 1]) {
+      expect(issuesOf(ZodWorktreeFile, file)).toEqual([`: ${FILE_RULE}`]);
     }
   });
 

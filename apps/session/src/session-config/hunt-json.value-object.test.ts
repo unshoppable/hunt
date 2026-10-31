@@ -24,6 +24,8 @@ const PORT_RULE = "must be an integer from 1024 to 65535";
 const NAME_RULE = "invalid name, must match ^[a-z][a-z0-9-]{0,31}$";
 const CWD_RULE =
   'must be a folder relative to the worktree such as "apps/web": at most 255 characters, segments of letters, digits, ".", "_" and "-", none . or ..';
+const FILE_RULE =
+  'must be a file relative to the worktree such as ".claude/declined-guardrails.jsonl": at most 255 characters, segments of letters, digits, ".", "_" and "-", none . or ..';
 const CONTRACT_2_PROBLEM = 'preview: the preview section of contract 2 is no longer read; hunt.json holds {"version": 3, "services": {…}} at its root';
 const IAP_HEADERS = ["X-Goog-Iap-Jwt-Assertion", "X-Goog-Authenticated-User-Email", "X-Goog-Authenticated-User-Id"];
 const REMOTE_SECRET_RULE = 'must be "$<NAME>", the name of a remote secret matching ^[A-Z][A-Z0-9_]{0,63}$';
@@ -152,6 +154,7 @@ describe("HuntJson services", () => {
       [{ ...web({}), environment: {}, "two words": 1 }, ["environment: unknown field", '["two words"]: unknown field']],
       ...["/srv/adr", "../adr", "a/./b", "", 1].map((adrDir): [unknown, string[]] => [{ ...web({}), adrDir }, [`adrDir: ${CWD_RULE}`]]),
       ...["", "Guardrail", "guard rail", "-guardrail", "a--b", "a".repeat(65), 1].map((guardrailSkill): [unknown, string[]] => [{ ...web({}), guardrailSkill }, [`guardrailSkill: ${SKILL_NAME_RULE}`]]),
+      ...["/srv/declines.jsonl", "../declines.jsonl", "", 1].map((declinedGuardrailsFile): [unknown, string[]] => [{ ...web({}), declinedGuardrailsFile }, [`declinedGuardrailsFile: ${FILE_RULE}`]]),
       [{ ...web({}), swf: "claude-opus-5-5" }, ["swf: must be an object"]],
       [{ ...web({}), swf: { model: "claude-opus-5-5", humanReviewPaths: ["**/migrations/**"], skills: SKILLS, effort: "high" } }, ["swf.effort: unknown field"]],
       [{ ...web({}), swf: {} }, [`swf.skills: ${SKILLS_RULE}`]],
@@ -387,7 +390,7 @@ describe("HuntJson checks", () => {
 
 describe("HuntJson", () => {
   it("has no services, checks or swf settings without hunt.json", () => {
-    expect(HuntJson.none().toJSON()).toEqual({ version: 3, adrDir: null, guardrailSkill: null, swf: null, services: [], checks: [] });
+    expect(HuntJson.none().toJSON()).toEqual({ version: 3, adrDir: null, guardrailSkill: null, declinedGuardrailsFile: null, swf: null, services: [], checks: [] });
     expect(HuntJson.fromDocument(undefined).huntJson?.isEqualTo(HuntJson.none())).toBe(true);
   });
 
@@ -476,6 +479,10 @@ describe("environments", () => {
 
   it("accepts the name of the guardrail skill", () => {
     expect(problemsOf({ ...web({}), guardrailSkill: "team-lessons-2" })).toEqual([]);
+  });
+
+  it("accepts the file of the declined guardrail suggestions", () => {
+    expect(problemsOf({ ...web({}), declinedGuardrailsFile: ".claude/resources/guardrails/declined-guardrails.jsonl" })).toEqual([]);
   });
 
   it("accepts the folder of the architectural decision records", () => {

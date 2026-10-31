@@ -2,11 +2,13 @@
  * A repository's `hunt.json` in contract version 3: the services of the repository, which Hunt runs on a session's VM
  * as systemd units that the agent starts when its task needs them, each with the ignored files it needs in a worktree,
  * the checks a person runs from the client's Checks tab, the settings of the sessions the gateway's poller starts
- * for the repository's `swf` issues, and the folder of its architectural decision records.
+ * for the repository's `swf` issues, the folder of its architectural decision records and the file of its declined
+ * guardrail suggestions.
  *
  *   {
  *     "version": 3,
  *     "adrDir": "docs/adr",
+ *     "declinedGuardrailsFile": "docs/declined-guardrails.jsonl",
  *     "swf": {
  *       "model": "claude-opus-5-5", "humanReviewPaths": ["apps/backend/migrations/**"],
  *       "skills": { "plan": "swf-plan", "implement": "swf-implement", "verify": "swf-verify", "gate": "swf-gate", "pr": "swf-pr" }
@@ -79,6 +81,9 @@
  *   "Guardrail" button invokes and whose criteria decide when the button lights up: kebab-case of letters and digits,
  *   at most 64 characters, `guardrail` without it. The client writes the skill from its template when a session
  *   starts in a worktree that lacks it; the VM only validates the name.
+ * - `declinedGuardrailsFile`: optional, the file the client appends a guardrail suggestion to when the user declines
+ *   it and that the guardrail skill greps; it follows the rules of a service's `cwd` and is
+ *   `.claude/declined-guardrails.jsonl` without it. The VM only validates it.
  *
  * `<short>` is the first 8 hex digits of the session ID. `session-config.main.ts` writes the session's environment, one
  * environment file per service and the configuration of the VM's preview proxy.
@@ -111,13 +116,14 @@ import {
   ZodServicePlaceholder,
   ZodServicePort,
   ZodSkillName,
+  ZodWorktreeFile,
   ZodWorktreeFolder,
 } from "./hunt-json.rules.ts";
 import { at, parseField, parseOptionalField, Problems, record } from "./problems.utils.ts";
 import { ServiceConfig } from "./service-config.value-object.ts";
 import { SwfSettings } from "./swf-settings.value-object.ts";
 
-const ROOT_FIELDS = ["version", "adrDir", "guardrailSkill", "swf", "services", "checks"];
+const ROOT_FIELDS = ["version", "adrDir", "guardrailSkill", "declinedGuardrailsFile", "swf", "services", "checks"];
 const SWF_FIELDS = ["model", "humanReviewPaths", "skills"];
 const SERVICE_FIELDS = ["command", "cwd", "port", "tls", "guarded", "review", "env", "remoteSecrets", "worktreeInclude"];
 const CHECK_FIELDS = ["command", "cwd"];
@@ -138,6 +144,8 @@ const ZodHuntJsonState = z
     adrDir: z._default(z.nullable(ZodWorktreeFolder), null),
     /** The skill of the client's "Guardrail" button; null for the client's default. */
     guardrailSkill: z._default(z.nullable(ZodSkillName), null),
+    /** The file of the declined guardrail suggestions relative to the worktree; null for the client's default. */
+    declinedGuardrailsFile: z._default(z.nullable(ZodWorktreeFile), null),
     /** The settings of the poller's sessions; null without the `swf` section. */
     swf: z._default(z.nullable(SwfSettings.createParser()), null),
     /** In the order of the file. */
@@ -224,6 +232,7 @@ function parseRoot(document: unknown, problems: Problems): HuntJsonDraft | undef
     version: parseField(ZodContractVersion, root.version, "version", problems),
     adrDir: parseOptionalField(ZodWorktreeFolder, root.adrDir, "adrDir", problems),
     guardrailSkill: parseOptionalField(ZodSkillName, root.guardrailSkill, "guardrailSkill", problems),
+    declinedGuardrailsFile: parseOptionalField(ZodWorktreeFile, root.declinedGuardrailsFile, "declinedGuardrailsFile", problems),
     swf: parseSwf(root.swf, problems),
     services: parseServices(root.services, problems),
     checks: parseChecks(root.checks, problems),

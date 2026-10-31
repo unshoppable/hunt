@@ -4,13 +4,16 @@
 
 use std::path::Path;
 
+use crate::agent::declined_guardrails;
+
 /// The skill of a repository whose hunt.json sets no `guardrailSkill`.
 pub const DEFAULT_SKILL: &str = "guardrail";
 /// The ADR folder of a repository whose hunt.json sets no `adrDir` (`DEFAULT_GUARDRAIL_DIRS.adr` in `src/guardrails/guardrail-config.utils.ts`).
 const DEFAULT_ADR_DIR: &str = ".claude/resources/adrs";
 const MAX_SKILL_NAME_LENGTH: usize = 64;
 
-/// The skill Hunt writes into a repository without one; `{{skillName}}` and `{{adrDir}}` are the repository's.
+/// The skill Hunt writes into a repository without one; `{{skillName}}`, `{{adrDir}}` and `{{declinesFile}}` are the
+/// repository's.
 const TEMPLATE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/guardrails/guardrail.skill.md"));
 
 /// The guardrail offer of the system prompt; `{{skillName}}`, `{{skillFile}}`, `{{criteria}}` and `{{kinds}}` are the
@@ -57,7 +60,7 @@ pub fn ensure(worktree: &Path) -> Result<Option<String>, String> {
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder).map_err(|error| format!("failed to create {}: {error}", folder.display()))?;
     }
-    std::fs::write(&path, template(&name, &adr_dir(Some(worktree)))).map_err(|error| format!("failed to write {file}: {error}"))?;
+    std::fs::write(&path, template(&name, &adr_dir(Some(worktree)), &declined_guardrails::declines_file(Some(worktree)))).map_err(|error| format!("failed to write {file}: {error}"))?;
     Ok(Some(file))
 }
 
@@ -68,7 +71,7 @@ pub fn offer_prompt(worktree: Option<&Path>) -> String {
     let name = worktree.map(skill_name).unwrap_or_else(|| DEFAULT_SKILL.to_string());
     let file = skill_file(&name);
     let skill = worktree.and_then(|worktree| std::fs::read_to_string(worktree.join(&file)).ok()).unwrap_or_default();
-    let template = template(&name, &adr_dir(worktree));
+    let template = template(&name, &adr_dir(worktree), &declined_guardrails::declines_file(worktree));
     let section = |section_name| section_of(&skill, section_name).or_else(|| section_of(&template, section_name)).unwrap_or_default();
     crate::graph::fill_prompt(
         OFFER_PROMPT,
@@ -76,9 +79,9 @@ pub fn offer_prompt(worktree: Option<&Path>) -> String {
     )
 }
 
-/// `TEMPLATE` filled for the skill `name` and the ADR folder `adr_dir`.
-fn template(name: &str, adr_dir: &str) -> String {
-    crate::graph::fill_prompt(TEMPLATE, &[("skillName", name), ("adrDir", adr_dir)])
+/// `TEMPLATE` filled for the skill `name`, the ADR folder `adr_dir` and the declines file `declines_file`.
+fn template(name: &str, adr_dir: &str, declines_file: &str) -> String {
+    crate::graph::fill_prompt(TEMPLATE, &[("skillName", name), ("adrDir", adr_dir), ("declinesFile", declines_file)])
 }
 
 /// The ADR folder of the repository in `worktree` (`adrDir` of its hunt.json), `DEFAULT_ADR_DIR` without a worktree or value.
@@ -100,8 +103,8 @@ fn section_of(skill: &str, section_name: &str) -> Option<String> {
 }
 
 /// The parsed hunt.json of `worktree`; None without a readable one. The VM validates the file fully
-/// (`apps/session/src/session-config/hunt-json.value-object.ts`); here only the two fields matter.
-fn hunt_json(worktree: &Path) -> Option<serde_json::Value> {
+/// (`apps/session/src/session-config/hunt-json.value-object.ts`); here only the fields of the guardrails matter.
+pub(crate) fn hunt_json(worktree: &Path) -> Option<serde_json::Value> {
     let text = std::fs::read_to_string(worktree.join("hunt.json")).ok()?;
     serde_json::from_str(&text).ok()
 }
@@ -138,11 +141,12 @@ mod tests {
 
     #[test]
     fn ensure_writes_the_filled_template_once() {
-        let dir = worktree(Some(r#"{ "version": 3, "guardrailSkill": "lessons", "adrDir": "docs/adr" }"#));
+        let dir = worktree(Some(r#"{ "version": 3, "guardrailSkill": "lessons", "adrDir": "docs/adr", "declinedGuardrailsFile": "docs/declines.jsonl" }"#));
         assert_eq!(ensure(dir.path()).unwrap(), Some(".claude/skills/lessons/SKILL.md".to_string()));
         let skill = std::fs::read_to_string(dir.path().join(".claude/skills/lessons/SKILL.md")).unwrap();
         assert!(skill.starts_with("---\nname: lessons\n"));
         assert!(skill.contains("docs/adr"));
+        assert!(skill.contains("grep -i '<key word>' docs/declines.jsonl"));
         assert!(!skill.contains("{{"));
 
         std::fs::write(dir.path().join(".claude/skills/lessons/SKILL.md"), "mine").unwrap();
@@ -169,7 +173,7 @@ mod tests {
 
     #[test]
     fn offer_prompt_falls_back_to_the_template_sections() {
-        let template = template(DEFAULT_SKILL, DEFAULT_ADR_DIR);
+        let template = template(DEFAULT_SKILL, DEFAULT_ADR_DIR, declined_guardrails::DEFAULT_DECLINES_FILE);
         let template_criteria = section_of(&template, CRITERIA_SECTION).unwrap();
         let template_kinds = section_of(&template, KINDS_SECTION).unwrap();
         assert!(template_criteria.starts_with("Yes only if"));

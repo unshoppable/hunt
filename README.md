@@ -494,7 +494,8 @@ guardrails and where each kind goes. Its qualification criteria and its kinds, t
 `<!-- hunt:guardrail KIND: SUMMARY Why: REASON -->`, which the chat hides and turns into a violet "Guardrail" button with
 the kind. A click opens a sub chat that shows the kind with the reason, the session summary and the end of the
 conversation, whose first message is prefilled with `/<name> KIND: SUMMARY` (or `/<name> ` without a suggestion) and whose task (`guardrail-chat.system-prompt.md`) carries the conversation as context. "Decline" appends
-the suggestion to `.claude/declined-guardrails.jsonl`, which the skill greps before it writes.
+the suggestion to the repository's declines file, which the skill greps before it writes: `declinedGuardrailsFile` of
+`hunt.json`, `.claude/declined-guardrails.jsonl` without it (`apps/client/src-tauri/src/agent/declined_guardrails.rs`).
 
 The "Lint rules" tab lists the ESLint rules of every `eslint.config.*` in the worktree (`read_lint_rules`,
 `apps/client/src-tauri/src/ide/lint_rules.rs`). `apps/client/scripts/eslintRules.mjs` imports the configs on the
@@ -739,7 +740,9 @@ so a `hunt.json` may declare checks only. An optional `adrDir` names the folder 
 decision records (`"adrDir": "docs/adr"`, `.claude/resources/adrs` without it), which the guardrails window lists and
 writes; the VM only validates it. An optional `guardrailSkill` names the Claude Code skill the chat's "Guardrail"
 button invokes (`"guardrailSkill": "team-lessons"`, `guardrail` without it; see "Guardrails"); the VM only validates
-the name. The client's Checks tab runs the checks in tmux windows: in the worktree on the Mac, or on the session VM in
+the name. An optional `declinedGuardrailsFile` names the file "Decline" appends a guardrail suggestion to
+(`"declinedGuardrailsFile": "docs/declined-guardrails.jsonl"`, `.claude/declined-guardrails.jsonl` without it); the VM
+only validates it. The client's Checks tab runs the checks in tmux windows: in the worktree on the Mac, or on the session VM in
 the tmux session `app`, as `agent` in a login shell (see "Checks"). `hunt-ctl check <worktree> <name>` runs a check
 without tmux, as `agent` in a login shell with `FORCE_COLOR=1`, passes its output through and exits with its exit status.
 `session-config` writes one environment file per service to

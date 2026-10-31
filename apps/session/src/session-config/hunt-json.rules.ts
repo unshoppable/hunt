@@ -35,11 +35,11 @@ const SERVICE_NAME_RULE = `invalid name, must match ${SERVICE_NAME.source}`;
 const NON_EMPTY_STRING_RULE = "must be a non-empty string";
 const SINGLE_LINE_RULE = "must be a single line";
 const MAX_COMMAND_LENGTH = 4096;
-const MAX_FOLDER_LENGTH = 255;
-const FOLDER = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
-const FOLDER_RULE =
-  `must be a folder relative to the worktree such as "apps/web": at most ${MAX_FOLDER_LENGTH} characters, ` +
-  'segments of letters, digits, ".", "_" and "-", none . or ..';
+const MAX_WORKTREE_PATH_LENGTH = 255;
+const WORKTREE_PATH = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
+const WORKTREE_PATH_SEGMENTS_RULE = `at most ${MAX_WORKTREE_PATH_LENGTH} characters, segments of letters, digits, ".", "_" and "-", none . or ..`;
+const FOLDER_RULE = `must be a folder relative to the worktree such as "apps/web": ${WORKTREE_PATH_SEGMENTS_RULE}`;
+const FILE_RULE = `must be a file relative to the worktree such as ".claude/declined-guardrails.jsonl": ${WORKTREE_PATH_SEGMENTS_RULE}`;
 const MIN_PORT = 1024;
 const MAX_PORT = 65535;
 const PORT_RULE = `must be an integer from ${MIN_PORT} to ${MAX_PORT}`;
@@ -77,12 +77,10 @@ export const ZodCommandLine = z.string({ error: NON_EMPTY_STRING_RULE }).check(
 );
 
 /** `cwd` and `adrDir`: a folder relative to the worktree, whose segments are none `.` or `..`. */
-export const ZodWorktreeFolder = z.string({ error: FOLDER_RULE }).check(
-  z.refine(
-    (folder) => folder.length <= MAX_FOLDER_LENGTH && FOLDER.test(folder) && !folder.split("/").some((segment) => segment === "." || segment === ".."),
-    FOLDER_RULE,
-  ),
-);
+export const ZodWorktreeFolder = z.string({ error: FOLDER_RULE }).check(z.refine(isWorktreePath, FOLDER_RULE));
+
+/** `declinedGuardrailsFile`: a file relative to the worktree, whose segments are none `.` or `..`. */
+export const ZodWorktreeFile = z.string({ error: FILE_RULE }).check(z.refine(isWorktreePath, FILE_RULE));
 
 /** `port`: an integer from 1024 to 65535 that is not reserved (RESERVED_PORTS). */
 export const ZodServicePort = z.number({ error: PORT_RULE }).check(
@@ -153,3 +151,8 @@ export const ZodModelId = z.string({ error: MODEL_RULE }).check(z.refine((model)
 export const ZodSkillName = z.string({ error: SKILL_NAME_RULE }).check(
   z.refine((skill) => skill.length <= MAX_SKILL_NAME_LENGTH && SKILL_NAME.test(skill), SKILL_NAME_RULE),
 );
+
+/** Whether `path` stays inside the worktree: relative, at most 255 characters, no segment `.` or `..`. */
+function isWorktreePath(path: string): boolean {
+  return path.length <= MAX_WORKTREE_PATH_LENGTH && WORKTREE_PATH.test(path) && !path.split("/").some((segment) => segment === "." || segment === "..");
+}

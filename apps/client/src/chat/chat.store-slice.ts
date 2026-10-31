@@ -144,7 +144,8 @@ export type ChatSlice = {
   clearAnnotations: (id: string) => void;
   /**
    * Declines the guardrail `suggestion` of `id` for `reason`: hides it (see `SessionChat.dismissedGuardrailId`) and records
-   * it in the repository's `.claude/declined-guardrails.jsonl`, which agents search before they suggest a guardrail.
+   * it in the repository's declines file (`declinedGuardrailsFile` of hunt.json), which agents search before they suggest
+   * a guardrail.
    */
   declineGuardrail: (id: string, suggestion: GuardrailSuggestion, reason: GuardrailDeclineReason) => void;
   /** Hides the guardrail `suggestion` of `id` once the user took it up (see `SessionChat.dismissedGuardrailId`). */

@@ -272,7 +272,7 @@ export const commands = {
   cliInstallStatus: () => invoke<CliInstall>("cli_install_status"),
   /** Links `~/.local/bin/hunt` to the `hunt-cli` beside the app binary, replacing an earlier symlink; rejects for a file or folder there. */
   installCli: () => invoke<CliInstall>("install_cli"),
-  /** Appends the declined guardrail suggestion to `.claude/declined-guardrails.jsonl` of the session's worktree, which its CLAUDE.md points agents at. */
+  /** Appends the declined guardrail suggestion to the declines file of the session's worktree (`declinedGuardrailsFile` of hunt.json), which its CLAUDE.md points agents at. */
   declineGuardrail: (sessionId: string, kind: string, summary: string, reason: GuardrailDeclineReason) =>
     invoke<void>("decline_guardrail", { id: sessionId, kind, summary, reason }),
   /** The claude.ai plan limits of the signed-in account; spawns a short-lived Claude Code process (~1 s). */

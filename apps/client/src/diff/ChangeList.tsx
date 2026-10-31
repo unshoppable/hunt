@@ -304,6 +304,7 @@ export function ChangeList({
     selectedKey: selectedPath,
     onSelect,
     isSelectable: (key) => !key.endsWith("/"),
+    leavesOnly: true,
     onToggle: (key) => toggleCollapsed(key.slice(0, -1)),
     onCheck: (key) => {
       const file = filesByPath.get(key);

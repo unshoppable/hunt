@@ -177,7 +177,7 @@ export function FileFilterPopover({
             </li>
           ),
         )}
-        {!files.length ? <li className="px-3 py-2 text-neutral-500">No uncommitted changes.</li> : null}
+        {!files.length ? <li className="px-3 py-2 text-neutral-500">No changes.</li> : null}
       </ul>
       <ResizeGrips edges={{ right: true, bottom: true }} {...grips} />
     </div>

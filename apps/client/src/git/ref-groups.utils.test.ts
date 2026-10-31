@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { GitRef } from "./git.types";
 import { buildRefTree, groupPaths } from "./ref-groups.utils";
 
-const ref = (name: string, kind: GitRef["kind"] = "local"): GitRef => ({ name, kind, target: "0".repeat(40), upstream: null, ahead: 0, behind: 0 });
+const ref = (name: string, kind: GitRef["kind"] = "local"): GitRef => ({ name, kind, target: "0".repeat(40), upstream: null, ahead: 0, behind: 0, worktreePath: null });
 
 describe("buildRefTree", () => {
   it("groups local branches by their slashes with the checked-out branch first", () => {

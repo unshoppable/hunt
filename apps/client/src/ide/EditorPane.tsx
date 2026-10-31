@@ -65,7 +65,7 @@ type EditorPaneProps = {
 /**
  * One editor group: a tab bar, a Monaco editor showing the active tab's model and a breadcrumb with the file path
  * and the declarations around the caret. ⌘click goes to the declaration (opened in this pane) or, on a declaration,
- * opens the usages popup; ⇧⌘click opens the position in WebStorm, ⌘G removes unused imports and formats
+ * opens the usages popup; ⇧⌘click opens the position in WebStorm, ⇧⌘G removes unused imports and formats
  * (see `reformat`), ⌘Ü or "Rename…" in the context menu opens the Rename dialog for the symbol at the caret, the
  * context menu offers "Ask Claude about selection" like the diff view. Lines that differ from HEAD get a change stripe next to the line numbers; a
  * click on it opens the popup with the old lines. A selection a sub chat was opened from gets a glyph left of its

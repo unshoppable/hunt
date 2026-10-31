@@ -481,12 +481,16 @@ export class DocumentWorkspace {
 const workspaces = new Map<string, DocumentWorkspace>();
 let isSubscribed = false;
 
-/** Routes the backend's document events to the workspace of their worktree. */
+/**
+ * Routes the backend's document events to the workspace of their worktree. A change on disk re-reads the documents this
+ * window loaded, so a popup's preview never shows an older text than the file its search just read.
+ */
 function subscribeToDocumentEvents(): void {
   if (isSubscribed) return;
   isSubscribed = true;
   void listenTo("document:changed", (event) => workspaces.get(event.worktreePath)?.applyChange(event));
   void listenTo("document:dirty", ({ worktreePath, path, isDirty }) => workspaces.get(worktreePath)?.applyDirty(path, isDirty));
+  void listenTo("worktree:changed", ({ worktreePath }) => void workspaces.get(worktreePath)?.reloadFromDisk());
 }
 
 /** The workspace of a worktree; sessions sharing a worktree (sub chats) share the documents. */

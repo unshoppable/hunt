@@ -17,7 +17,7 @@ export type RefactoringHandlers = {
 
 /**
  * Gives an editor that shows a worktree document the refactorings of the editor panes: ⌘Ü or "Rename…" in the
- * context menu finds the symbol at the caret and hands it to `onRename`, ⌘G removes unused imports and formats the
+ * context menu finds the symbol at the caret and hands it to `onRename`, ⇧⌘G removes unused imports and formats the
  * file (see `reformat`). Both do nothing while the editor is read-only.
  */
 export function attachRefactorings(editor: monaco.editor.IStandaloneCodeEditor, handlers: RefactoringHandlers): monaco.IDisposable {

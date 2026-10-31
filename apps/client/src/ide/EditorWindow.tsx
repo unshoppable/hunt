@@ -9,7 +9,7 @@ import { hideCurrentWindow } from "../ui/native-window.utils";
 import { useSecondaryWindow } from "../ui/secondary-window.hook";
 import { workspaceFor, type DocumentWorkspace } from "./documents/documents.service";
 import { FileSearchPopup, useFileSearchShortcut } from "./search/FileSearchDialog";
-import { FindInFilesPopup, useFindInFilesShortcut } from "./search/FindInFilesDialog";
+import { FindInFilesPopup, useFindInFilesShortcut, type FindInFilesRequest } from "./search/FindInFilesDialog";
 import { IdePanel } from "./IdePanel";
 import { useIdeSession, useIdeStore } from "./ide.store";
 import { resolveDefinition } from "./language/language-service.utils";
@@ -35,15 +35,15 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
   const ide = useIdeSession(sessionId);
   const openPaths = useMemo(() => [...new Set(ide.layout.panes.flatMap((pane) => pane.tabs))], [ide.layout]);
   const fileSearch = usePopupRequest<null>();
-  /** Find in Files, starting with the text that was selected in the editor (`null`: the last query). */
-  const findInFiles = usePopupRequest<string | null>();
+  /** Find or Replace in Files, starting with the text that was selected in the editor (`null`: the last query). */
+  const findInFiles = usePopupRequest<FindInFilesRequest>();
   const [isLoaded, setIsLoaded] = useState(false);
   const [isListening, setIsListening] = useState(false);
   /** Number of open requests so far; the window shows itself (again) with each one. */
   const [requestCount, setRequestCount] = useState(initialRequest ? 1 : 0);
 
   useFileSearchShortcut(() => fileSearch.show(null));
-  useFindInFilesShortcut((initialText) => findInFiles.show(initialText));
+  useFindInFilesShortcut((request) => findInFiles.show(request));
 
   // A failed session list leaves `session` empty, which destroys the window below instead of keeping it hidden.
   useEffect(() => {
@@ -163,7 +163,8 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
       {findInFiles.request ? (
         <FindInFilesPopup
           sessionId={sessionId}
-          initialText={findInFiles.request.value}
+          initialText={findInFiles.request.value.initialText}
+          isReplace={findInFiles.request.value.isReplace}
           revision={findInFiles.request.revision}
           onClose={findInFiles.close}
           onOpen={(path, line, column, inRightSplit) => openFile(sessionId, path, { line, column, inRightSplit })}

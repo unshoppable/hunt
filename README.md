@@ -450,7 +450,7 @@ to other or additional keys, flags two commands that share one and keeps the cha
 | ⇧⌘2 | Select the file in the project tree; in the change list, open it in the editor |
 | ⌃⇧C | Copy the absolute path: in the editor of the open file, in the change list and the project tree of the selected rows (also "Copy path" in their context menus) |
 | ⌘S | Save every file with unsaved edits, also those of closed tabs and other windows; also with the focus in the project tree, the changelist or the chat |
-| ⌘G | Remove unused imports (tsgo), then format with the Prettier the worktree installs, its config and plugins included (`apps/client/scripts/prettier.mjs`); without Prettier with tsgo's formatter |
+| ⇧⌘G | Remove unused imports (tsgo), then format with the Prettier the worktree installs, its config and plugins included (`apps/client/scripts/prettier.mjs`); without Prettier with tsgo's formatter |
 | ⌘Ü | "Rename…" (also in the context menu): renames the symbol at the caret across the project through tsgo, asked at its declaration so imports follow; optionally also the name in comments and strings and in non-code files, which always opens the preview with a check box per occurrence; touched files without unsaved edits are saved (`apps/client/src/ide/language/RenameDialog.tsx`) |
 | ⌘P or double shift | "Go to File": fuzzy search over `git ls-files`; `name:12` jumps to line 12; the preview edits the file like an editor tab |
 | ⇧⌘F | "Find in Files": full-text search over the project files held in memory, a file with unsaved edits in its editor text (⌥C match case, ⌥W words, ⌥X regex, file mask); starts with the editor's selection; the preview edits the file like an editor tab |
@@ -488,9 +488,9 @@ guardrail skill, `.claude/skills/<name>/SKILL.md` with the name `guardrailSkill`
 it; `apps/client/src-tauri/src/agent/guardrail_skill.rs`). Every session start writes the skill from
 `apps/client/prompts/guardrails/guardrail.skill.md` into a worktree that lacks it, as a change of the session, and never touches
 an existing one. The skill says when a lesson qualifies as a guardrail, how to check the declines and the existing
-guardrails and where each kind goes. Its qualification criteria, the text between its `<!-- hunt:criteria -->` and
-`<!-- /hunt:criteria -->` comments, are quoted in every agent's system prompt (`guardrail-offer.system-prompt.md`), so
-the button lights up by the repository's own criteria: the agent ends a reply that holds such a lesson with
+guardrails and where each kind goes. Its qualification criteria and its kinds, the text between its
+`<!-- hunt:criteria -->` and between its `<!-- hunt:kinds -->` comments, are quoted in every agent's system prompt
+(`guardrail-offer.system-prompt.md`), so the button lights up by the repository's own criteria and kinds: the agent ends a reply that holds such a lesson with
 `<!-- hunt:guardrail KIND: SUMMARY Why: REASON -->`, which the chat hides and turns into a violet "Guardrail" button with
 the kind. A click opens a sub chat that shows the kind with the reason, the session summary and the end of the
 conversation, whose first message is prefilled with `/<name> KIND: SUMMARY` (or `/<name> ` without a suggestion) and whose task (`guardrail-chat.system-prompt.md`) carries the conversation as context. "Decline" appends

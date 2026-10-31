@@ -11,6 +11,7 @@ import { useFileIconUrl } from "../../ui/file-icons/file-icons.hook";
 import { monacoLanguage } from "../../editor/language-id.utils";
 import { commands } from "../../ipc/commands";
 import type { TextMatch, TextQuery, TextRange, TextSearchResult } from "./find-in-files.types";
+import { PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../../ui/buttons.constants";
 import { PaneSeparator, Panel, PersistentGroup } from "../../ui/ResizablePanes";
 import { PopupModeButton, PopupWindowTitleBar } from "../../ui/PopupTitleBar";
 import type { PopupActions } from "../../ui/popup-protocol.utils";
@@ -22,13 +23,13 @@ import { STATUS_BAR } from "../../ui/bars.constants";
 import { SearchIcon } from "../../ui/Icons";
 import { Modal } from "../../ui/Modal";
 import { splitPath } from "../../common/path/path.utils";
-import { isShortcut } from "../../ui/shortcuts.utils";
+import { shortcutCommand } from "../../ui/shortcuts.utils";
 import { useLoad } from "../../ui/load.hook";
 import { errorText } from "../../ui/error-text.utils";
 import { usePopupSize } from "../../ui/popup-size.hook";
 import { useViewportSize } from "../../ui/viewport-size.hook";
 import { abbreviateHome, FilePreview } from "./FileSearchDialog";
-import { matchSummary, selectionQuery, splitRunsByRanges } from "./find-in-files.utils";
+import { matchSummary, replaceSummary, selectionQuery, splitRunsByRanges } from "./find-in-files.utils";
 
 const MIN_SIZE = { width: 560, height: 280 };
 /** The largest share of the window's width and height the dialog may take. */
@@ -40,8 +41,12 @@ const MIN_PREVIEW_HEIGHT = 64;
 /** The list's text color, for lines whose grammar is still loading or that have none. */
 const PLAIN_STYLE = { foreground: "#e5e5e5", fontStyle: 0 };
 
-/** The last query of this window; the dialog reopens with it like WebStorm's. */
+/** The last query and replacement of this window; the dialog reopens with them like WebStorm's. */
 let lastQuery: TextQuery = { text: "", matchCase: false, wholeWords: false, isRegex: false, fileMask: "" };
+let lastReplacement = "";
+
+/** The commands that open the dialog, in Find or in Replace mode. */
+const OPEN_COMMANDS = ["editor.findInFiles", "editor.replaceInFiles"] as const;
 
 /** The text selected in the focused Monaco editor, when it is a single line worth searching for. */
 function focusedEditorSelection(): string | null {
@@ -51,19 +56,24 @@ function focusedEditorSelection(): string | null {
   return selectionQuery(editor.getModel()?.getValueInRange(selection));
 }
 
+/** What ⇧⌘F or ⌥⌘R asks for: Find or Replace in Files, starting with the text selected in the editor (`null`: the last query). */
+export type FindInFilesRequest = { initialText: string | null; isReplace: boolean };
+
 /**
- * Calls `onTrigger` for the keymap's "Find in files" (⇧⌘F by default, like WebStorm) with the text selected in the focused editor, if any.
+ * Calls `onTrigger` for the keymap's "Find in files" (⇧⌘F by default, like WebStorm) and "Replace in files" (⌥⌘R) with
+ * the text selected in the focused editor, if any.
  */
-export function useFindInFilesShortcut(onTrigger: (selected: string | null) => void) {
+export function useFindInFilesShortcut(onTrigger: (request: FindInFilesRequest) => void) {
   const triggerRef = useRef(onTrigger);
   triggerRef.current = onTrigger;
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (!isShortcut(event, "editor.findInFiles")) return;
+      const command = shortcutCommand(event, OPEN_COMMANDS);
+      if (!command) return;
       event.preventDefault();
       event.stopPropagation();
-      triggerRef.current(focusedEditorSelection());
+      triggerRef.current({ initialText: focusedEditorSelection(), isReplace: command === "editor.replaceInFiles" });
     }
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
@@ -71,7 +81,7 @@ export function useFindInFilesShortcut(onTrigger: (selected: string | null) => v
 }
 
 /** What the Find in Files window shows (see detached-popup.hook.ts); a new `revision` starts the search over with `initialText`. */
-export type FindInFilesContent = { sessionId: string; worktreePath: string; initialText: string | null; revision: number };
+export type FindInFilesContent = { sessionId: string; worktreePath: string; initialText: string | null; isReplace: boolean; revision: number };
 
 /** 1-based position of the match; `inRightSplit` asks for the file right of the current pane. */
 type OpenMatch = (path: string, line: number, column: number, inRightSplit: boolean) => void;
@@ -80,7 +90,9 @@ type FindInFilesPopupProps = {
   sessionId: string;
   /** The text selected in the editor; `null` keeps the last query. */
   initialText: string | null;
-  /** Changes with every ⇧⌘F, which brings the Find in Files window to the front again with `initialText`. */
+  /** Opens with the replace field (⌥⌘R). */
+  isReplace: boolean;
+  /** Changes with every ⇧⌘F or ⌥⌘R, which brings the Find in Files window to the front again with `initialText`. */
   revision: number;
   onOpen: OpenMatch;
   onClose: () => void;
@@ -90,18 +102,35 @@ type FindInFilesPopupProps = {
  * "Find in Files" (see `FindInFilesView`) inside the app window or in a window of its own, as the user chose (see
  * detached-popup.hook.ts). The window stays open while matches are opened from it.
  */
-export function FindInFilesPopup({ sessionId, initialText, revision, onOpen, onClose }: FindInFilesPopupProps) {
+export function FindInFilesPopup({ sessionId, initialText, isReplace, revision, onOpen, onClose }: FindInFilesPopupProps) {
   const isDetached = useSettingsStore((state) => state.detachedPopups.findInFiles);
   const worktreePath = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.worktreePath ?? "");
   if (isDetached) {
-    return <DetachedFindInFiles sessionId={sessionId} worktreePath={worktreePath} initialText={initialText} revision={revision} onOpen={onOpen} onClose={onClose} />;
+    return (
+      <DetachedFindInFiles sessionId={sessionId} worktreePath={worktreePath} initialText={initialText} isReplace={isReplace} revision={revision} onOpen={onOpen} onClose={onClose} />
+    );
   }
-  return <FindInFilesView sessionId={sessionId} worktreePath={worktreePath} initialText={initialText} isDetached={false} onOpen={onOpen} onClose={onClose} />;
+  // A new revision starts over like the window's, so ⌥⌘R or ⇧⌘F switches an open dialog between Replace and Find.
+  return (
+    <FindInFilesView
+      key={revision}
+      sessionId={sessionId}
+      worktreePath={worktreePath}
+      initialText={initialText}
+      initialIsReplace={isReplace}
+      isDetached={false}
+      onOpen={onOpen}
+      onClose={onClose}
+    />
+  );
 }
 
 /** The Find in Files window's host side: hands the query over and opens the matches picked there in the host. */
-function DetachedFindInFiles({ sessionId, worktreePath, initialText, revision, onOpen, onClose }: FindInFilesPopupProps & { worktreePath: string }) {
-  const content = useMemo<FindInFilesContent>(() => ({ sessionId, worktreePath, initialText, revision }), [sessionId, worktreePath, initialText, revision]);
+function DetachedFindInFiles({ sessionId, worktreePath, initialText, isReplace, revision, onOpen, onClose }: FindInFilesPopupProps & { worktreePath: string }) {
+  const content = useMemo<FindInFilesContent>(
+    () => ({ sessionId, worktreePath, initialText, isReplace, revision }),
+    [sessionId, worktreePath, initialText, isReplace, revision],
+  );
   useDetachedPopup("findInFiles", content, {
     revision,
     anchor: () => "top",
@@ -127,6 +156,7 @@ export function FindInFilesWindowContent({
       sessionId={content.sessionId}
       worktreePath={content.worktreePath}
       initialText={content.initialText}
+      initialIsReplace={content.isReplace}
       isDetached
       onOpen={(path, line, column, inRightSplit) => onAction({ type: "open", path, line, column, inRightSplit })}
       onClose={onClose}
@@ -143,11 +173,14 @@ export function FindInFilesWindowContent({
  * backdrop closes, as does opening a match; its size is remembered across sessions. `isDetached` fills a popup window instead.
  * Text selected in the preview opens a sub chat about it over the dialog; while that is open, Esc closes only the sub chat.
  * The preview edits the file (see `FilePreview`); the search runs again once it loses the focus after an edit.
+ * In Replace mode (⌥⌘R; ⇧⌘F goes back) a second field takes the replacement, the list shows it after each struck-out
+ * match, "Replace" replaces the matches of the selected line and "Replace All", once confirmed, every match.
  */
 function FindInFilesView({
   sessionId,
   worktreePath,
   initialText,
+  initialIsReplace,
   isDetached,
   onOpen,
   onClose,
@@ -155,12 +188,20 @@ function FindInFilesView({
   sessionId: string;
   worktreePath: string;
   initialText: string | null;
+  initialIsReplace: boolean;
   isDetached: boolean;
   onOpen: OpenMatch;
   onClose: () => void;
 }) {
   const fileIconUrl = useFileIconUrl();
   const [query, setQuery] = useState<TextQuery>(() => (initialText ? { ...lastQuery, text: initialText } : lastQuery));
+  const [isReplace, setIsReplace] = useState(initialIsReplace);
+  const [replacement, setReplacement] = useState(lastReplacement);
+  /** "Replace All" waits for its confirmation in the status bar. */
+  const [isConfirmingAll, setIsConfirmingAll] = useState(false);
+  const [isReplacing, setIsReplacing] = useState(false);
+  /** What the last replace did, shown in the header until the query changes. */
+  const [replaced, setReplaced] = useState<string | null>(null);
   const [result, setResult] = useState<{ query: TextQuery; value: TextSearchResult } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -179,19 +220,26 @@ function FindInFilesView({
   }, [query]);
 
   useEffect(() => {
+    lastReplacement = replacement;
+  }, [replacement]);
+
+  /** The query sent to the search; with a replacement in Replace mode, so every match carries its replacement. */
+  const searchQuery = useMemo<TextQuery>(() => (isReplace ? { ...query, replacement } : query), [query, isReplace, replacement]);
+
+  useEffect(() => {
     inputRef.current?.select();
   }, []);
 
   useLoad(
-    () => commands.findInFiles(sessionId, query),
+    () => commands.findInFiles(sessionId, searchQuery),
     {
       onValue: (value) => {
         setError(null);
-        setResult({ query, value });
+        setResult({ query: searchQuery, value });
       },
       onError: (reason) => setError(errorText(reason)),
     },
-    [sessionId, query.text, query.matchCase, query.wholeWords, query.isRegex, query.fileMask, editCount],
+    [sessionId, searchQuery, editCount],
   );
 
   const matches = useMemo(() => (query.text && !error ? (result?.value.matches ?? []) : []), [query.text, error, result]);
@@ -214,6 +262,26 @@ function FindInFilesView({
   const update = (change: Partial<TextQuery>) => {
     setQuery((current) => ({ ...current, ...change }));
     setSelectedIndex(0);
+    setIsConfirmingAll(false);
+    setReplaced(null);
+  };
+
+  /** Replaces the matches of the selected line, or with `isAll` every match, then searches again; the next line takes the selection. */
+  const replace = async (isAll: boolean) => {
+    if (!selectedMatch || isReplacing) return;
+    setIsConfirmingAll(false);
+    setIsReplacing(true);
+    try {
+      const lines = isAll ? undefined : [{ path: selectedMatch.path, line: selectedMatch.line }];
+      const done = await commands.replaceInFiles(sessionId, { ...query, replacement }, lines);
+      setReplaced(replaceSummary(done));
+      setError(null);
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setIsReplacing(false);
+      setEditCount((count) => count + 1);
+    }
   };
 
   const open = (match: TextMatch | undefined, inRightSplit = false) => {
@@ -228,7 +296,13 @@ function FindInFilesView({
   /** ↑ / ↓, Enter and the ⌥ toggles act from anywhere in the dialog (the preview keeps the keys it handled). */
   const onKeyDown = (event: ReactKeyboardEvent) => {
     if (event.defaultPrevented) return;
-    if (event.altKey && !event.metaKey && !event.ctrlKey) {
+    // In a window of its own the keys of ⌥⌘R and ⇧⌘F reach the dialog, which switches between Replace and Find.
+    const openCommand = shortcutCommand(event.nativeEvent, OPEN_COMMANDS);
+    if (openCommand) {
+      setIsReplace(openCommand === "editor.replaceInFiles");
+      setIsConfirmingAll(false);
+      inputRef.current?.select();
+    } else if (event.altKey && !event.metaKey && !event.ctrlKey) {
       if (event.code === "KeyC") {
         update({ matchCase: !query.matchCase });
       } else if (event.code === "KeyW") {
@@ -243,6 +317,8 @@ function FindInFilesView({
     } else if (event.key === "ArrowUp") {
       setSelectedIndex(matches.length ? (selected - 1 + matches.length) % matches.length : 0);
     } else if (event.key === "Enter") {
+      // Enter on a button (Replace, the confirmation of Replace All) presses it.
+      if (event.target instanceof HTMLButtonElement) return;
       open(selectedMatch, event.shiftKey);
     } else {
       return;
@@ -259,7 +335,7 @@ function FindInFilesView({
   };
 
   // The last result stays on screen while the next search runs (an empty query's result only loaded the files).
-  const status = !query.text ? "" : result?.query.text ? matchSummary(result.value) : "Searching…";
+  const status = replaced ?? (!query.text ? "" : result?.query.text ? matchSummary(result.value) : "Searching…");
   const list = (
     <ul ref={listRef} className={`min-h-0 overflow-auto py-1 text-[13px] ${selectedMatch ? "flex-1" : ""}`}>
       {matches.map((match, index) => {
@@ -276,7 +352,7 @@ function FindInFilesView({
             className="tree-row flex cursor-pointer items-center gap-4 px-3 py-1"
           >
             <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-pre text-neutral-200">
-              <MatchedText runs={previews[index]} ranges={match.ranges} />
+              <MatchedText runs={previews[index]} ranges={match.ranges} replacements={isReplace ? match.replacements : undefined} />
             </span>
             <span className="flex max-w-[45%] min-w-0 shrink-0 text-neutral-500">
               {dir ? <span className="truncate">{dir}/</span> : null}
@@ -290,7 +366,7 @@ function FindInFilesView({
   );
   const header = (
     <>
-      <span className="shrink-0 font-semibold text-neutral-200">Find in Files</span>
+      <span className="shrink-0 font-semibold text-neutral-200">{isReplace ? "Replace in Files" : "Find in Files"}</span>
       <span className="min-w-0 flex-1 truncate text-neutral-500">{status}</span>
       <label className="flex shrink-0 items-center gap-2 text-neutral-400">
         File mask
@@ -337,6 +413,23 @@ function FindInFilesView({
             .*
           </OptionToggle>
         </div>
+        {isReplace ? (
+          <div className="flex shrink-0 items-center gap-2 border-b border-(--line) px-3">
+            <SearchIcon className="size-4 shrink-0 text-neutral-500" />
+            <input
+              value={replacement}
+              onChange={(event) => {
+                setReplacement(event.target.value);
+                setIsConfirmingAll(false);
+                setReplaced(null);
+              }}
+              placeholder="Replace"
+              title={query.isRegex ? "$1 or ${name} insert the groups of the match" : undefined}
+              spellCheck={false}
+              className="h-10 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-neutral-500"
+            />
+          </div>
+        ) : null}
         {error ? <p className="shrink-0 px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
         {/* With a preview the list and the preview share the height at a draggable split; without one the list takes it all. */}
         {selectedMatch ? (
@@ -366,14 +459,44 @@ function FindInFilesView({
                   {abbreviateHome(worktreePath)}/{selectedMatch.path}
                 </span>
               </span>
-              <button
-                type="button"
-                title="Open In Right Split (⇧Enter)"
-                onClick={() => open(selectedMatch, true)}
-                className="shrink-0 rounded-md px-2 py-1 text-[#548af7] hover:bg-white/10 hover:text-[#7ea6ff]"
-              >
-                Open In Right Split
-              </button>
+              {isConfirmingAll ? (
+                <>
+                  <span className="shrink-0 text-neutral-300">Replace {result ? matchSummary(result.value) : ""}?</span>
+                  <button type="button" onClick={() => setIsConfirmingAll(false)} className={SECONDARY_BUTTON_XS}>
+                    Cancel
+                  </button>
+                  <button type="button" autoFocus disabled={isReplacing} onClick={() => void replace(true)} className={PRIMARY_BUTTON_XS}>
+                    Replace All
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    title="Open In Right Split (⇧Enter)"
+                    onClick={() => open(selectedMatch, true)}
+                    className="shrink-0 rounded-md px-2 py-1 text-[#548af7] hover:bg-white/10 hover:text-[#7ea6ff]"
+                  >
+                    Open In Right Split
+                  </button>
+                  {isReplace ? (
+                    <>
+                      <button type="button" disabled={isReplacing} onClick={() => setIsConfirmingAll(true)} className={SECONDARY_BUTTON_XS}>
+                        Replace All
+                      </button>
+                      <button
+                        type="button"
+                        title="Replace the matches in the selected line"
+                        disabled={isReplacing}
+                        onClick={() => void replace(false)}
+                        className={SECONDARY_BUTTON_XS}
+                      >
+                        Replace
+                      </button>
+                    </>
+                  ) : null}
+                </>
+              )}
             </div>
           </>
         ) : (
@@ -389,7 +512,7 @@ function FindInFilesView({
 
   if (isDetached) {
     return (
-      <div role="dialog" aria-label="Find in files" className="flex h-screen flex-col bg-(--surface-inspector)">
+      <div role="dialog" aria-label={isReplace ? "Replace in files" : "Find in files"} className="flex h-screen flex-col bg-(--surface-inspector)">
         {body}
       </div>
     );
@@ -433,16 +556,19 @@ function previewRuns(match: TextMatch, tokenizers: ReadonlySet<string>, classifi
 
 /**
  * A preview's colored `runs` with the `ranges` in WebStorm's opaque amber box with black text; only the colors are
- * taken, the list keeps its upright UI font.
+ * taken, the list keeps its upright UI font. With `replacements` (one per range) each match is struck out and followed
+ * by its replacement.
  */
-function MatchedText({ runs, ranges }: { runs: HighlightedLine; ranges: TextRange[] }) {
+function MatchedText({ runs, ranges, replacements }: { runs: HighlightedLine; ranges: TextRange[]; replacements?: string[] }) {
+  let matchIndex = 0;
   return (
     <>
       {splitRunsByRanges(runs, ranges).map((part, index) =>
         part.isMatch ? (
-          <mark key={index} className="rounded-sm bg-[#b4985c] text-black">
-            {part.runs.map((run) => run.text).join("")}
-          </mark>
+          <Fragment key={index}>
+            <mark className={`rounded-sm bg-[#b4985c] text-black ${replacements ? "line-through" : ""}`}>{part.runs.map((run) => run.text).join("")}</mark>
+            {replacements ? <span className="rounded-sm bg-emerald-500/25 text-emerald-200">{replacements[matchIndex++]}</span> : null}
+          </Fragment>
         ) : (
           <Fragment key={index}>
             {part.runs.map((run, runIndex) => (

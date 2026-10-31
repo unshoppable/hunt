@@ -448,6 +448,41 @@ describe("prompt queue", () => {
     expect(sentTexts).toEqual(["one", "now", "two"]);
   });
 
+  it("interrupts a turn the agent has not answered yet once its model streams", async () => {
+    const first = deferredTurn();
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "cancel_prompt") {
+        first.finish("Cancelled");
+        return Promise.resolve(null);
+      }
+      return vi.mocked(invoke).mock.calls.filter(([name]) => name === "send_prompt").length === 1 ? first.turn : Promise.resolve("EndTurn");
+    });
+
+    const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
+    await useHuntStore.getState().sendPromptNow(SESSION, "now");
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("cancel_prompt", { id: SESSION });
+
+    useHuntStore.getState().applyUpdate(SESSION, notification({ sessionUpdate: "usage_update", used: 42_300, size: 200_000 }));
+    await firstSend;
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("cancel_prompt", { id: SESSION });
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("send_prompt", { id: SESSION, text: "now", images: [], messageId: expect.any(String) });
+  });
+
+  it("interrupts nothing for a prompt taken back from the queue before the model streams", async () => {
+    const first = deferredTurn();
+    vi.mocked(invoke).mockImplementation((command) => (command === "send_prompt" ? first.turn : Promise.resolve(null)));
+
+    const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
+    await useHuntStore.getState().sendPromptNow(SESSION, "now");
+    const [queued] = useHuntStore.getState().chats[SESSION].queue;
+    useHuntStore.getState().unqueuePrompt(SESSION, queued.id);
+    useHuntStore.getState().applyUpdate(SESSION, notification({ sessionUpdate: "usage_update", used: 42_300, size: 200_000 }));
+    expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("cancel_prompt", { id: SESSION });
+
+    first.finish("EndTurn");
+    await firstSend;
+  });
+
   it("sends a prompt at once like any other while no turn runs", async () => {
     vi.mocked(invoke).mockResolvedValue("EndTurn");
     await useHuntStore.getState().sendPromptNow(SESSION, "now");

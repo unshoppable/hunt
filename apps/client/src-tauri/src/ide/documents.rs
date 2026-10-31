@@ -609,6 +609,31 @@ pub async fn document_save(app: AppHandle, id: Uuid, path: String) -> Result<boo
     update(&app, &worktree, |documents| Ok(documents.mark_saved(&path, text))).await
 }
 
+/// Rewrites `path` of session `id` with `rewrite` from the text the editors show, unless it returns None; returns whether
+/// it did. A document a window holds changes in every window; it is saved unless it had unsaved edits, which it keeps.
+/// Any other file is rewritten on disk.
+pub async fn rewrite(app: &AppHandle, id: Uuid, path: &str, rewrite: impl FnOnce(&str) -> Option<String>) -> Result<bool, String> {
+    let worktree = worktree_of(app, id)?;
+    let entry = app.state::<DocumentRegistry>().entry(&worktree);
+    let mut entry = entry.lock().await;
+    let was_dirty = entry.documents.documents.get(path).map(Document::is_dirty);
+    let text = match was_dirty {
+        Some(_) => entry.documents.text(path)?,
+        None => read_disk(app, id, path)?,
+    };
+    let Some(text) = rewrite(&text) else {
+        return Ok(false);
+    };
+    if was_dirty != Some(true) {
+        write_file(app.clone(), id, path.to_string(), text.clone()).await?;
+    }
+    if was_dirty.is_some() {
+        let effects = entry.documents.replace(path, text, was_dirty == Some(false));
+        deliver(app, &mut entry, effects).await;
+    }
+    Ok(true)
+}
+
 /// Takes the content on disk over for every one of `paths` without unsaved edits.
 #[tauri::command]
 pub async fn document_reload(app: AppHandle, id: Uuid, paths: Vec<String>) -> Result<(), String> {

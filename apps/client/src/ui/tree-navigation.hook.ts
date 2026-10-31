@@ -12,6 +12,7 @@ export function useTreeNavigation<Container extends HTMLElement = HTMLUListEleme
   selectedKey = null,
   onSelect,
   isSelectable = () => true,
+  leavesOnly = false,
   onToggle,
   onActivate,
   onCheck,
@@ -23,6 +24,8 @@ export function useTreeNavigation<Container extends HTMLElement = HTMLUListEleme
   /** Makes a row the owner's selection; rows `isSelectable` rejects only take the cursor. */
   onSelect?: (key: string) => void;
   isSelectable?: (key: string) => boolean;
+  /** ↑/↓, Home and End skip rows with children (folders) and step from file to file. */
+  leavesOnly?: boolean;
   onToggle: (key: string) => void;
   /** Enter on a row without children. */
   onActivate?: (key: string) => void;
@@ -80,7 +83,7 @@ export function useTreeNavigation<Container extends HTMLElement = HTMLUListEleme
 
   const onKeyDown = (event: KeyboardEvent<Container>) => {
     if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || handlesOwnKey(event.target, event.key)) return;
-    const action = treeKeyAction(rows, cursor, event.key);
+    const action = treeKeyAction(rows, cursor, event.key, { leavesOnly });
     if (!action || !run(action)) return;
     event.preventDefault();
   };

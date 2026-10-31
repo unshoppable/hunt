@@ -85,6 +85,17 @@ export function containerOf<T extends { kind: string }>(crumbs: readonly T[]): T
   return undefined;
 }
 
+const IDENTIFIER = /^[\p{L}\p{N}_$]+$/u;
+
+/**
+ * The top-level declaration a file using the declaration at the end of `crumbs` (outermost first) mentions: `Ratio` for
+ * the member `Ratio.of`. Null for a top-level declaration and for a name that is no identifier (`<function>`).
+ */
+export function enclosingDeclarationName<T extends { name: string }>(crumbs: readonly T[]): string | null {
+  if (crumbs.length < 2) return null;
+  return IDENTIFIER.test(crumbs[0].name) ? crumbs[0].name : null;
+}
+
 /** Element kinds whose popup title carries the parameter types (`Method search(any, any)`), like WebStorm. */
 export const FUNCTION_KINDS = new Set(["function", "local function", "method", "constructor"]);
 

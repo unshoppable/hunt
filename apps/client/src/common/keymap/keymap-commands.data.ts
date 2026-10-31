@@ -45,10 +45,11 @@ export const KEYMAP_COMMANDS = [
     note: "in the change list, the editor's project tree and, for the open file, the editor",
   },
   { id: "editor.save", label: "Save all files with unsaved edits", group: "Editor", scope: "app", defaults: ["Meta+s"] },
-  { id: "editor.reformat", label: "Reformat file and remove unused imports", group: "Editor", scope: "app", defaults: ["Meta+g"] },
+  { id: "editor.reformat", label: "Reformat file and remove unused imports", group: "Editor", scope: "app", defaults: ["Shift+Meta+g"] },
   { id: "editor.rename", label: "Rename the symbol and its usages", group: "Editor", scope: "app", defaults: ["Meta+ü"] },
   { id: "editor.goToFile", label: "Go to file", group: "Editor", scope: "app", defaults: ["Meta+p"], note: "also ⇧⇧" },
   { id: "editor.findInFiles", label: "Find in files", group: "Editor", scope: "app", defaults: ["Shift+Meta+f"] },
+  { id: "editor.replaceInFiles", label: "Replace in files", group: "Editor", scope: "app", defaults: ["Alt+Meta+r"] },
   { id: "editor.completion", label: "Show completions", group: "Editor", scope: "app", defaults: ["Ctrl+Space", "Alt+Space"] },
   {
     id: "editor.selectAllOccurrences",

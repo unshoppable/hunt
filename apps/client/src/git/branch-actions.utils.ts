@@ -88,18 +88,19 @@ export function branchActions(ref: GitRef, { head, pushes, isRemoteSession, isPo
     actions.push(entry("forcePushBranch", `Force push to 'origin/${ref.name}'`, null, { isDanger: true }));
   }
   actions.push(entry("rename", "Rename…", isSessionBranch && isRemoteSession ? "The session's VM has the branch under this name" : null, { startsGroup: true }));
-  actions.push(entry("delete", "Delete", isHead ? "The branch is checked out" : null, { isDanger: true }));
+  actions.push(entry("delete", "Delete", isHead ? "The branch is checked out" : ref.worktreePath ? `The branch is checked out in ${ref.worktreePath}` : null, { isDanger: true }));
   return actions;
 }
 
 /**
- * The local branches that have no branch of the same name on `origin`, sorted by name; `kept` names the branches
- * that stay regardless: the checked-out one and those of the sessions in the repository, which are bound to worktrees.
+ * The local branches that have no branch of the same name on `origin` and no worktree checked out on them (git refuses
+ * to delete those), sorted by name; `kept` names the branches that stay regardless: the checked-out one and those of
+ * the sessions in the repository.
  */
 export function localBranchesWithoutOrigin(refs: readonly GitRef[], kept: ReadonlySet<string>): string[] {
   const onOrigin = new Set(refs.map((ref) => (ref.kind === "remote" ? originBranchName(ref.name) : null)));
   return refs
-    .filter((ref) => ref.kind === "local" && !onOrigin.has(ref.name) && !kept.has(ref.name))
+    .filter((ref) => ref.kind === "local" && !onOrigin.has(ref.name) && !ref.worktreePath && !kept.has(ref.name))
     .map((ref) => ref.name)
     .sort((left, right) => left.localeCompare(right));
 }

@@ -17,7 +17,7 @@ import { keepGuardrailsWindowWarm } from "../guardrails/guardrails-window.utils"
 import { keepSettingsWindowWarm } from "../settings/settings-window.utils";
 import { keepEditorWindowWarm, openInEditorWindow } from "../ide/editor-window.utils";
 import { FileSearchPopup, useFileSearchShortcut } from "../ide/search/FileSearchDialog";
-import { FindInFilesPopup, useFindInFilesShortcut } from "../ide/search/FindInFilesDialog";
+import { FindInFilesPopup, useFindInFilesShortcut, type FindInFilesRequest } from "../ide/search/FindInFilesDialog";
 import { EMPTY_IDE_SESSION, useIdeStore } from "../ide/ide.store";
 import {
   PANE_TOGGLE_ROW,
@@ -77,12 +77,16 @@ export function App() {
   const hasRemoteSessions = useHuntStore((state) => state.sessions.some((session) => session.remote));
   const activeSessionId = useHuntStore((state) => state.activeSessionId);
   const draft = useHuntStore((state) => state.draft);
-  /** The active session is still being created: it has no worktree yet, so the inspector and the file search wait. */
-  const isCreatingActive = useHuntStore((state) => Boolean(state.activeSessionId && state.creatingIds.includes(state.activeSessionId)));
-  /** The VM the active session runs on; it adds the Preview and Desktop tabs, puts the Terminal tab on the VM and hides the Browser button. */
-  const activeRemoteInstance = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.remote?.vm.instance ?? null);
   /** Whether the active session's worktree exists here; a remote session adopted from its VM gets one with its first sync. */
   const hasActiveWorktree = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.hasLocalWorktree ?? false);
+  /**
+   * The active session is still being created and its record is not stored yet, so it has no worktree: the inspector
+   * and the file search wait. The backend stores the record once the worktree exists and before its agent starts;
+   * the placeholder listed until then reports no worktree.
+   */
+  const isCreatingActive = useHuntStore((state) => Boolean(state.activeSessionId && state.creatingIds.includes(state.activeSessionId))) && !hasActiveWorktree;
+  /** The VM the active session runs on; it adds the Preview and Desktop tabs, puts the Terminal tab on the VM and hides the Browser button. */
+  const activeRemoteInstance = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.remote?.vm.instance ?? null);
   /** Whether the active session reviews a pull request; only then does the PR Description tab show. */
   const isReviewingPullRequest = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === state.activeSessionId)?.pullRequest));
   const activePreviewStatus = usePreviewStore((state) => (activeSessionId && state.previews[activeSessionId]?.status) || null);
@@ -145,8 +149,8 @@ export function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
-  /** Find in Files, starting with the text that was selected in the editor (`null`: the last query). */
-  const findInFiles = usePopupRequest<string | null>();
+  /** Find or Replace in Files, starting with the text that was selected in the editor (`null`: the last query). */
+  const findInFiles = usePopupRequest<FindInFilesRequest>();
   const hasLocalWorktree = !isCreatingActive && hasActiveWorktree;
   const canSearchFiles = Boolean(activeSessionId) && !draft && hasLocalWorktree;
   /** A local session has no preview or desktop, a session without a pull request no description; they show the diff instead. */
@@ -159,10 +163,10 @@ export function App() {
     }
   });
 
-  // ⇧⌘F: "Find in Files" for the active session's worktree.
-  useFindInFilesShortcut((initialText) => {
+  // ⇧⌘F / ⌥⌘R: "Find in Files" / "Replace in Files" for the active session's worktree.
+  useFindInFilesShortcut((request) => {
     if (canSearchFiles) {
-      findInFiles.show(initialText);
+      findInFiles.show(request);
     }
   });
 
@@ -379,7 +383,8 @@ export function App() {
       {findInFiles.request && canSearchFiles && activeSessionId ? (
         <FindInFilesPopup
           sessionId={activeSessionId}
-          initialText={findInFiles.request.value}
+          initialText={findInFiles.request.value.initialText}
+          isReplace={findInFiles.request.value.isReplace}
           revision={findInFiles.request.revision}
           onClose={findInFiles.close}
           onOpen={(path, line, column, inRightSplit) => {

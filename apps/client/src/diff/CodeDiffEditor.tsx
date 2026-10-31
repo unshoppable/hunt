@@ -121,7 +121,7 @@ type CodeDiffEditorProps = {
  * offer the agent features of the editor panes: the context menu entry and the floating button on a selection (a
  * selection on the left side hands over the committed lines). The editable side also offers the language features of
  * the editor panes: ⌘click on a declaration opens its usages popup, ⌘Ü or "Rename…" in the context menu the Rename
- * dialog, ⌘G removes unused imports and formats the file.
+ * dialog, ⇧⌘G removes unused imports and formats the file.
  */
 export function CodeDiffEditor({
   ref,

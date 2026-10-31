@@ -60,8 +60,10 @@ If one says part of it, extend that one instead of adding a new one.
 
 ## 5. Pick the kind
 
-Each kind reaches the agent in its own way, so the kind follows from what tells when the guardrail applies:
+Each kind reaches the agent in its own way, so the kind follows from what tells when the guardrail applies. Hunt's
+"Guardrail" button suggests a kind by the text between the two `hunt:kinds` comments; keep them around the list.
 
+<!-- hunt:kinds -->
 - **Rule** (`.claude/rules/`): the files it concerns tell when it applies. Its `paths:` globs over file paths and names
   load it only while the agent works on a matching file. Pick a rule only when such globs can scope the instruction, or
   in the rare case that it must be in the context of every turn: a rule without `paths:` costs context in every task.
@@ -76,8 +78,10 @@ Each kind reaches the agent in its own way, so the kind follows from what tells 
 - **Instruction** (`CLAUDE.md` at the root or in a folder): what every task in the repository or that folder needs to
   know first. A CLAUDE.md takes no convention; it says where the guardrails live.
 
-A convention a linter can check also gets a lint rule, so the hooks report it. A convention that follows from an ADR is a
-rule naming the ADR as its reason, not a second ADR.
+A convention that follows from an ADR is a rule naming the ADR as its reason, not a second ADR.
+<!-- /hunt:kinds -->
+
+A convention a linter can check also gets a lint rule, so the hooks report it.
 
 Rule placement: a rule for the whole repository goes to `.claude/rules/`; a rule for one part of the code goes into a
 subfolder named after that part, and when it extends a root rule for that part it keeps the root rule's file name there

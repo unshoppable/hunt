@@ -1,6 +1,6 @@
 //! The repository's guardrail skill: the Claude Code skill `hunt.json` names as `guardrailSkill` (`DEFAULT_SKILL` without
-//! it), which the "Guardrail" button of the chat invokes and whose qualification criteria the guardrail offer of the
-//! system prompt quotes. A session start writes the skill from `TEMPLATE` into a worktree that lacks it.
+//! it), which the "Guardrail" button of the chat invokes and whose qualification criteria and guardrail kinds the
+//! guardrail offer of the system prompt quotes. A session start writes the skill from `TEMPLATE` into a worktree that lacks it.
 
 use std::path::Path;
 
@@ -13,12 +13,13 @@ const MAX_SKILL_NAME_LENGTH: usize = 64;
 /// The skill Hunt writes into a repository without one; `{{skillName}}` and `{{adrDir}}` are the repository's.
 const TEMPLATE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/guardrails/guardrail.skill.md"));
 
-/// The guardrail offer of the system prompt; `{{skillName}}`, `{{skillFile}}` and `{{criteria}}` are the repository's.
+/// The guardrail offer of the system prompt; `{{skillName}}`, `{{skillFile}}`, `{{criteria}}` and `{{kinds}}` are the
+/// repository's.
 const OFFER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/guardrails/guardrail-offer.system-prompt.md"));
 
-/// The comments the skill's qualification criteria stand between.
-const CRITERIA_START: &str = "<!-- hunt:criteria -->";
-const CRITERIA_END: &str = "<!-- /hunt:criteria -->";
+/// The `hunt:<section>` comments of the skill that enclose its qualification criteria and its guardrail kinds.
+const CRITERIA_SECTION: &str = "criteria";
+const KINDS_SECTION: &str = "kinds";
 
 /// The guardrail skill of the repository in `worktree` (`guardrailSkill` of its hunt.json), `DEFAULT_SKILL` without a
 /// usable value or file.
@@ -53,35 +54,49 @@ pub fn ensure(worktree: &Path) -> Result<Option<String>, String> {
     if path.exists() {
         return Ok(None);
     }
-    let adr_dir = hunt_json(worktree).and_then(|root| root.get("adrDir")?.as_str().map(str::to_string)).unwrap_or_else(|| DEFAULT_ADR_DIR.to_string());
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder).map_err(|error| format!("failed to create {}: {error}", folder.display()))?;
     }
-    let content = crate::graph::fill_prompt(TEMPLATE, &[("skillName", &name), ("adrDir", &adr_dir)]);
-    std::fs::write(&path, content).map_err(|error| format!("failed to write {file}: {error}"))?;
+    std::fs::write(&path, template(&name, &adr_dir(Some(worktree)))).map_err(|error| format!("failed to write {file}: {error}"))?;
     Ok(Some(file))
 }
 
 /// The guardrail offer for the agent of a session in `worktree`: it names the repository's skill and quotes the
-/// qualification criteria of its skill file. Without a worktree (an agent on a session VM) or without readable criteria
-/// in the file, the skill is `DEFAULT_SKILL` and the criteria are those of `TEMPLATE`.
+/// qualification criteria and the guardrail kinds of its skill file. Without a worktree (an agent on a session VM) the
+/// skill is `DEFAULT_SKILL`; a section the file lacks is taken from `TEMPLATE`.
 pub fn offer_prompt(worktree: Option<&Path>) -> String {
     let name = worktree.map(skill_name).unwrap_or_else(|| DEFAULT_SKILL.to_string());
     let file = skill_file(&name);
-    let criteria = worktree
-        .and_then(|worktree| std::fs::read_to_string(worktree.join(&file)).ok())
-        .and_then(|skill| criteria_of(&skill))
-        .or_else(|| criteria_of(TEMPLATE))
-        .unwrap_or_default();
-    crate::graph::fill_prompt(OFFER_PROMPT, &[("skillName", &name), ("skillFile", &file), ("criteria", &criteria)])
+    let skill = worktree.and_then(|worktree| std::fs::read_to_string(worktree.join(&file)).ok()).unwrap_or_default();
+    let template = template(&name, &adr_dir(worktree));
+    let section = |section_name| section_of(&skill, section_name).or_else(|| section_of(&template, section_name)).unwrap_or_default();
+    crate::graph::fill_prompt(
+        OFFER_PROMPT,
+        &[("skillName", &name), ("skillFile", &file), ("criteria", &section(CRITERIA_SECTION)), ("kinds", &section(KINDS_SECTION))],
+    )
 }
 
-/// The text between the `hunt:criteria` comments of a skill file, trimmed; None when the file has no such pair.
-fn criteria_of(skill: &str) -> Option<String> {
-    let start = skill.find(CRITERIA_START)? + CRITERIA_START.len();
-    let end = start + skill[start..].find(CRITERIA_END)?;
-    let criteria = skill[start..end].trim();
-    (!criteria.is_empty()).then(|| criteria.to_string())
+/// `TEMPLATE` filled for the skill `name` and the ADR folder `adr_dir`.
+fn template(name: &str, adr_dir: &str) -> String {
+    crate::graph::fill_prompt(TEMPLATE, &[("skillName", name), ("adrDir", adr_dir)])
+}
+
+/// The ADR folder of the repository in `worktree` (`adrDir` of its hunt.json), `DEFAULT_ADR_DIR` without a worktree or value.
+fn adr_dir(worktree: Option<&Path>) -> String {
+    worktree
+        .and_then(hunt_json)
+        .and_then(|root| root.get("adrDir")?.as_str().map(str::to_string))
+        .unwrap_or_else(|| DEFAULT_ADR_DIR.to_string())
+}
+
+/// The text between the `hunt:<section_name>` comments of a skill file, trimmed; None when the file has no such pair.
+fn section_of(skill: &str, section_name: &str) -> Option<String> {
+    let start_comment = format!("<!-- hunt:{section_name} -->");
+    let end_comment = format!("<!-- /hunt:{section_name} -->");
+    let start = skill.find(&start_comment)? + start_comment.len();
+    let end = start + skill[start..].find(&end_comment)?;
+    let section = skill[start..end].trim();
+    (!section.is_empty()).then(|| section.to_string())
 }
 
 /// The parsed hunt.json of `worktree`; None without a readable one. The VM validates the file fully
@@ -136,31 +151,47 @@ mod tests {
     }
 
     #[test]
-    fn offer_prompt_quotes_the_criteria_of_the_repository_skill() {
+    fn offer_prompt_quotes_the_sections_of_the_repository_skill() {
         let dir = worktree(Some(r#"{ "version": 3, "guardrailSkill": "lessons" }"#));
         std::fs::create_dir_all(dir.path().join(".claude/skills/lessons")).unwrap();
         std::fs::write(
             dir.path().join(".claude/skills/lessons/SKILL.md"),
-            "intro\n<!-- hunt:criteria -->\nOnly lessons about ports.\n<!-- /hunt:criteria -->\nrest",
+            "intro\n<!-- hunt:criteria -->\nOnly lessons about ports.\n<!-- /hunt:criteria -->\n\
+             <!-- hunt:kinds -->\nOnly rules.\n<!-- /hunt:kinds -->\nrest",
         )
         .unwrap();
         let prompt = offer_prompt(Some(dir.path()));
         assert!(prompt.contains("`/lessons` skill (`.claude/skills/lessons/SKILL.md`)"));
         assert!(prompt.contains("\n\nOnly lessons about ports.\n\n"));
+        assert!(prompt.contains("\n\nOnly rules.\n\n"));
         assert!(!prompt.contains("{{"));
     }
 
     #[test]
-    fn offer_prompt_falls_back_to_the_template_criteria() {
-        let template_criteria = criteria_of(TEMPLATE).unwrap();
+    fn offer_prompt_falls_back_to_the_template_sections() {
+        let template = template(DEFAULT_SKILL, DEFAULT_ADR_DIR);
+        let template_criteria = section_of(&template, CRITERIA_SECTION).unwrap();
+        let template_kinds = section_of(&template, KINDS_SECTION).unwrap();
         assert!(template_criteria.starts_with("Yes only if"));
+        assert!(template_kinds.starts_with("- **Rule**"));
+        assert!(template_kinds.contains(DEFAULT_ADR_DIR));
         for prompt in [offer_prompt(None), offer_prompt(Some(worktree(None).path()))] {
             assert!(prompt.contains("`/guardrail` skill (`.claude/skills/guardrail/SKILL.md`)"));
             assert!(prompt.contains(&template_criteria));
+            assert!(prompt.contains(&template_kinds));
+            assert!(!prompt.contains("{{"));
         }
         let dir = worktree(None);
         std::fs::create_dir_all(dir.path().join(".claude/skills/guardrail")).unwrap();
         std::fs::write(dir.path().join(".claude/skills/guardrail/SKILL.md"), "no markers").unwrap();
-        assert!(offer_prompt(Some(dir.path())).contains(&template_criteria));
+        let prompt = offer_prompt(Some(dir.path()));
+        assert!(prompt.contains(&template_criteria));
+        assert!(prompt.contains(&template_kinds));
+    }
+
+    #[test]
+    fn offer_prompt_fills_the_adr_folder_of_hunt_json_into_the_template_kinds() {
+        let prompt = offer_prompt(Some(worktree(Some(r#"{ "version": 3, "adrDir": "docs/adr" }"#)).path()));
+        assert!(prompt.contains("(`docs/adr/NNNN-title.md`)"));
     }
 }

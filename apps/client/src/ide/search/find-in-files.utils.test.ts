@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchSummary, selectionQuery, splitByRanges, splitRunsByRanges } from "./find-in-files.utils";
+import { matchSummary, replaceSummary, selectionQuery, splitByRanges, splitRunsByRanges } from "./find-in-files.utils";
 
 const match = (path: string, line: number) => ({ path, line, column: 1, endColumn: 2, preview: "x", ranges: [] });
 
@@ -48,6 +48,14 @@ describe("matchSummary", () => {
     expect(matchSummary({ matches: [match("a.ts", 1)], isTruncated: false })).toBe("1 match in 1 file");
     expect(matchSummary({ matches: [match("a.ts", 1)], isTruncated: true })).toBe("1+ matches in 1+ files");
     expect(matchSummary({ matches: [], isTruncated: false })).toBe("No matches");
+  });
+});
+
+describe("replaceSummary", () => {
+  it("counts occurrences and files like WebStorm's notice", () => {
+    expect(replaceSummary({ occurrences: 3, files: 2 })).toBe("Replaced 3 occurrences in 2 files");
+    expect(replaceSummary({ occurrences: 1, files: 1 })).toBe("Replaced 1 occurrence in 1 file");
+    expect(replaceSummary({ occurrences: 0, files: 0 })).toBe("Nothing replaced");
   });
 });
 

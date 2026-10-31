@@ -37,7 +37,8 @@ const EMPTY_GRAPH: ArchitectureGraph = { nodes: [], edges: [] };
 const FILE_HOVER_DELAY = 100;
 
 /**
- * The Dependencies view of the Architecture tab: a component diagram of the session's uncommitted changes, one node per changed file, sized by its changed lines,
+ * The Dependencies view of the Architecture tab: a component diagram of the session's changes against its diff base (with a reviewed pull request, its commits
+ * plus the uncommitted changes), one node per changed file, sized by its changed lines,
  * with the imports read from the files and the dependencies the agent wrote to `.hunt/graph.json` as labeled
  * edges; hovering an edge shows what the dependency is used for, hovering a file lights up the files it depends on
  * and lists them in a card. Unchanged files the agent added for context are dimmed, and files of the same folder
@@ -326,7 +327,7 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
             </CommentCountsContext>
           ) : (
             <div className="flex h-full items-center justify-center p-6 text-center text-sm text-neutral-500">
-              {files.length ? "Every changed file is hidden by the filters." : "No uncommitted changes. The diagram shows the changed files of this session once there are some."}
+              {files.length ? "Every changed file is hidden by the filters." : "No changes. The diagram shows the changed files of this session once there are some."}
             </div>
           )}
           {isSearchOpen && diagram.nodes.length ? (

@@ -17,7 +17,7 @@ import type { DocumentContentChange, DocumentEditAck, DocumentState } from "../i
 import type { PrettierOutput } from "../ide/ide.types";
 import type { LanguageServerKind } from "../ide/lsp/lsp.types";
 import type { DirEntry } from "../ide/project-tree/project-tree.types";
-import type { TextQuery, TextSearchResult } from "../ide/search/find-in-files.types";
+import type { FileLine, ReplaceResult, TextQuery, TextSearchResult } from "../ide/search/find-in-files.types";
 import type { PreviewStatus } from "../preview/preview.types";
 import type { GithubViewer, PullRequestDetails, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread } from "../review/review.types";
 import type { PullRequest, PullRequestState } from "../sessions/pull-requests.types";
@@ -345,6 +345,11 @@ export const commands = {
    */
   findInFiles: (id: string, query: TextQuery) =>
     invoke<TextSearchResult>("find_in_files", { id, query, issuedAt: performance.timeOrigin + performance.now() }),
+  /**
+   * Replaces the matches of `query` with its `replacement`: those on `lines`, or without them every match in the files
+   * the mask takes. Files open in an editor change there and stay unsaved if they were.
+   */
+  replaceInFiles: (id: string, query: TextQuery, lines?: FileLine[]) => invoke<ReplaceResult>("replace_in_files", { id, query, lines: lines ?? null }),
   /** Worktree paths the relative import specifiers of `from` point at; `null` where no file matches. */
   resolveImports: (id: string, from: string, specifiers: string[]) =>
     invoke<(string | null)[]>("resolve_imports", { id, from, specifiers }),

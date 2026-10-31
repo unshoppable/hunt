@@ -175,6 +175,7 @@ command_handler![
     ide::read_lint_rules,
     ide::search_word,
     ide::find_in_files,
+    ide::replace_in_files,
     ide::resolve_imports,
     graph::refresh_graph,
     graph::read_graph,

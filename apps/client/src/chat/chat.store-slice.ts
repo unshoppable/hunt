@@ -126,8 +126,8 @@ export type ChatSlice = {
   sendPrompt: (id: string, text: string, images?: Screenshot[]) => Promise<void>;
   /**
    * Sends `text` with `images` without waiting: a running turn is interrupted and the prompt sent before every other
-   * queued prompt; otherwise it is sent like `sendPrompt`. A running turn the agent has not answered yet goes on and
-   * the prompt follows it ahead of the queue, since cancelling a turn Claude Code has not started drops its prompt.
+   * queued prompt; otherwise it is sent like `sendPrompt`. A running turn the agent has not answered yet is interrupted
+   * once its model streams, since cancelling a turn Claude Code has not started drops its prompt.
    */
   sendPromptNow: (id: string, text: string, images?: Screenshot[]) => Promise<void>;
   /** Takes every queued prompt out of the queue and returns them, for the composer to show them again. */
@@ -234,6 +234,8 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
    * start of the model's message, before any output, which a thinking model holds back for long.
    */
   const streamingTurnIds = new Set<string>();
+  /** The queued prompt per session that `interruptToSend` interrupts the running turn for as soon as the model streams. */
+  const interruptOnStreamPromptIds = new Map<string, string>();
   /** Message ids of the prompts this window shows itself; the backend's echo of them goes to the other windows. */
   const ownMessageIds = new Set<string>();
 
@@ -262,6 +264,11 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
     }
     if (runningTurnIds.has(id) && applied.some((notification) => notification.update.sessionUpdate === "usage_update")) {
       streamingTurnIds.add(id);
+      const promptId = interruptOnStreamPromptIds.get(id);
+      if (promptId) {
+        interruptOnStreamPromptIds.delete(id);
+        void interruptToSend(id, promptId);
+      }
     }
     if (!applied.length) return;
     updateChat(id, (chat) => applied.reduce((current, notification) => reduceChat(current.isStale ? replacedChat(current) : current, notification), chat));
@@ -306,6 +313,7 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
       runningTurnIds.delete(id);
       interruptedToSendIds.delete(id);
       streamingTurnIds.delete(id);
+      interruptOnStreamPromptIds.delete(id);
     }
     noteTurnEnded(id);
     usePlanUsageStore.getState().refresh();
@@ -402,6 +410,23 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
     });
   }
 
+  /**
+   * Interrupts the running turn of `id` so that the queued prompt `promptId` goes on right after it, ahead of the rest
+   * of the queue. claude-agent-acp drops the prompt of a cancelled turn that Claude Code has not started, e.g. while it
+   * still starts its MCP servers, so a turn without output whose model does not stream yet is interrupted once it streams.
+   * A prompt taken back from the queue meanwhile interrupts nothing.
+   */
+  async function interruptToSend(id: string, promptId: string) {
+    const chat = get().chats[id];
+    if (!chat?.queue.some((prompt) => prompt.id === promptId)) return;
+    if (!hasAnsweredLastPrompt(chat.items) && !streamingTurnIds.has(id)) {
+      interruptOnStreamPromptIds.set(id, promptId);
+      return;
+    }
+    interruptedToSendIds.add(id);
+    await get().cancelPrompt(id);
+  }
+
   /** Runs the turn of `prompt`, shown as the user's message in the chat. */
   async function runPromptTurn(id: string, prompt: PromptDraft) {
     const item = ownPromptItem(prompt);
@@ -417,8 +442,6 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
 
   return {
     runningTurnIds,
-    interruptedToSendIds,
-    streamingTurnIds,
     updateChat,
     applyUpdates,
     rememberCommandsOf,
@@ -426,6 +449,7 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
     noteTurnEnded,
     updateChatTakingQueue,
     runPrompt,
+    interruptToSend,
     restartChat,
     whenIdle,
     runPromptTurn,
@@ -434,7 +458,7 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
 }
 
 export function createChatSlice(set: HuntSet, get: HuntGet, turns: ChatTurns): ChatSlice {
-  const { runningTurnIds, interruptedToSendIds, streamingTurnIds, updateChat, applyUpdates, rememberCommandsOf, noteTurnEnded, updateChatTakingQueue, runPrompt } = turns;
+  const { runningTurnIds, updateChat, applyUpdates, rememberCommandsOf, noteTurnEnded, updateChatTakingQueue, runPrompt, interruptToSend } = turns;
 
   /** Drops the "unread" line of the session `id`; a prompt the user sends there shows they read what the line marked. */
   function dropUnreadLine(id: string) {
@@ -491,11 +515,9 @@ export function createChatSlice(set: HuntSet, get: HuntGet, turns: ChatTurns): C
         return;
       }
       dropUnreadLine(id);
-      updateChat(id, (current) => ({ ...current, queue: [{ id: nextItemId(), text, images }, ...current.queue] }));
-      // claude-agent-acp drops the prompt of a cancelled turn that Claude Code has not started, e.g. while it still starts its MCP servers.
-      if (!hasAnsweredLastPrompt(chat.items) && !streamingTurnIds.has(id)) return;
-      interruptedToSendIds.add(id);
-      await get().cancelPrompt(id);
+      const prompt = { id: nextItemId(), text, images };
+      updateChat(id, (current) => ({ ...current, queue: [prompt, ...current.queue] }));
+      await interruptToSend(id, prompt.id);
     },
 
     takeQueue: (id) => {

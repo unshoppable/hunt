@@ -1,6 +1,6 @@
 import * as monaco from "monaco-editor";
 import { typeScriptWorkerFor } from "../../editor/semantic-tokens.monaco";
-import { loadProjectsMentioning } from "./language-service.utils";
+import { enclosingDeclarationAt, loadProjectsMentioning } from "./language-service.utils";
 import { lspClientForModel, type LspClient } from "../lsp/lsp-client.service";
 import { toLspRange, type Location, type Range } from "../lsp/lsp-protocol.utils";
 import { isOnlyDeclaration, siblingTemplatePath, unusedMemberMessage } from "./unused-members.utils";
@@ -97,7 +97,7 @@ async function markUnusedMembers(model: monaco.editor.ITextModel, token: monaco.
 /**
  * Whether the member declared at `declarations` has no usage: neither in the TypeScript server's loaded projects, nor
  * in a template the Angular server knows, nor (asked only when both found nothing) in the projects of the files
- * mentioning `name` or in the template beside the member's file. A failed Angular request counts as no template
+ * mentioning `name` and its class (see `loadProjectsMentioning`) or in the template beside the member's file. A failed Angular request counts as no template
  * usage, as in the usages popup.
  */
 async function isUnused(client: LspClient, model: monaco.editor.ITextModel, declarations: Range[], name: string, token: monaco.CancellationToken): Promise<boolean> {
@@ -107,7 +107,7 @@ async function isUnused(client: LspClient, model: monaco.editor.ITextModel, decl
   if (!isOnlyDeclaration(await references(), uri, declarations)) return false;
   const templateReferences = await client.request<Location[] | null>("textDocument/references", params, token, "angular").catch(() => null);
   if (!isOnlyDeclaration(templateReferences ?? [], uri, declarations)) return false;
-  const mentioningPaths = await loadProjectsMentioning(client, name);
+  const mentioningPaths = await loadProjectsMentioning(client, name, await enclosingDeclarationAt(client, uri, declarations[0].start));
   const template = siblingTemplatePath(model.uri.path.slice(client.worktreePath.length + 1));
   if (template && mentioningPaths.includes(template)) return false;
   return isOnlyDeclaration(await references(), uri, declarations);

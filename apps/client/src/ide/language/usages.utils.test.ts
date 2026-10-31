@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { containerOf, isImportLine, isSourceFile, isUsageFile, kindLabel, mergeReferences, parameterTypesOf, sliceRuns, sortUsages, stepSelection, usageCountLabel, usageKey, usageOnLine, usagesStatus } from "./usages.utils";
+import { containerOf, enclosingDeclarationName, isImportLine, isSourceFile, isUsageFile, kindLabel, mergeReferences, parameterTypesOf, sliceRuns, sortUsages, stepSelection, usageCountLabel, usageKey, usageOnLine, usagesStatus } from "./usages.utils";
 
 describe("usageOnLine", () => {
   it("trims the indentation and shifts the match offsets", () => {
@@ -166,5 +166,18 @@ describe("containerOf", () => {
   it("yields undefined at top level", () => {
     expect(containerOf([])).toBeUndefined();
     expect(containerOf([{ name: "config", kind: "const" }])).toBeUndefined();
+  });
+});
+
+describe("enclosingDeclarationName", () => {
+  it("names the top-level declaration around a member", () => {
+    expect(enclosingDeclarationName([{ name: "Ratio" }, { name: "of" }])).toBe("Ratio");
+    expect(enclosingDeclarationName([{ name: "config" }, { name: "routes" }, { name: "path" }])).toBe("config");
+  });
+
+  it("yields null for a top-level declaration and for a name that is no identifier", () => {
+    expect(enclosingDeclarationName([])).toBeNull();
+    expect(enclosingDeclarationName([{ name: "Ratio" }])).toBeNull();
+    expect(enclosingDeclarationName([{ name: "<function>" }, { name: "of" }])).toBeNull();
   });
 });

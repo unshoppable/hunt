@@ -133,15 +133,22 @@ export function NewSessionView({
     setNewBranch(null);
     setBranchDraft(null);
   }, [repoPath]);
+  /** The fetch of `origin` running for the view's repository; a pull request's own fetch waits for it, two fetches into one repository contend for its ref locks. */
+  const originFetchRef = useRef<Promise<void> | null>(null);
+  /** Shows the branches `names` and the checkout's branch `current`; the base branch stays when it is still listed, else it falls back to the default. */
+  function showBranches(names: string[], current: string): string {
+    setBranches(names);
+    setCurrentBranch(current);
+    setBranchError(null);
+    const next = names.includes(baseRef) ? baseRef : (DEFAULT_BASE_REFS.find((name) => names.includes(name)) ?? names[0] ?? "");
+    setBaseRef(next);
+    return next;
+  }
   useLoad(
     () => Promise.all([commands.listBranches(repoPath), commands.currentBranch(repoPath)]),
     {
       onValue: ([names, current]) => {
-        setBranches(names);
-        setCurrentBranch(current);
-        setBranchError(null);
-        const next = names.includes(baseRef) ? baseRef : (DEFAULT_BASE_REFS.find((name) => names.includes(name)) ?? names[0] ?? "");
-        setBaseRef(next);
+        const next = showBranches(names, current);
         if (!startsWhenLoaded) return;
         setStartsWhenLoaded(false);
         const ref = isCheckout ? current : next;
@@ -157,6 +164,26 @@ export function NewSessionView({
         setCurrentBranch("");
         setStartsWhenLoaded(false);
         setBranchError(errorText(reason));
+      },
+    },
+    [repoPath],
+    { isEnabled: !!repoPath },
+  );
+  // The listing above shows at once what the repository knows; a fetch of `origin` then brings in the branches it got
+  // or dropped since, and the list is read again with them. A failed fetch (offline, no `origin`) leaves the listing as it is.
+  useLoad(
+    () => {
+      const fetch = commands.gitFetchOrigin({ kind: "repo", path: repoPath });
+      originFetchRef.current = fetch;
+      return fetch.then(() => Promise.all([commands.listBranches(repoPath), commands.currentBranch(repoPath)]));
+    },
+    {
+      onValue: ([names, current]) => {
+        originFetchRef.current = null;
+        showBranches(names, current);
+      },
+      onError: () => {
+        originFetchRef.current = null;
       },
     },
     [repoPath],
@@ -201,6 +228,16 @@ export function NewSessionView({
     setView("start");
     setError(null);
     let knownBranches = branches;
+    try {
+      // The fetch of `origin` still running may bring the pull request's branches in; it must have ended before another fetch starts.
+      if (originFetchRef.current) {
+        await originFetchRef.current.catch(() => undefined);
+        knownBranches = await commands.listBranches(repoPath);
+      }
+    } catch (reason) {
+      setError(errorText(reason));
+      return;
+    }
     const missingBranches = [selected.headRefName, selected.baseRefName].filter((name) => !findPullRequestBranch(knownBranches, name));
     if (missingBranches.length) {
       try {

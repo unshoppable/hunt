@@ -22,7 +22,16 @@ export type ResetMode = "soft" | "mixed" | "hard" | "keep";
 export type RefKind = "local" | "remote" | "tag";
 
 /** A branch or tag; `target` is the commit it points at and `upstream` the short name of a local branch's upstream. */
-export type GitRef = { name: string; kind: RefKind; target: string; upstream: string | null; ahead: number; behind: number };
+export type GitRef = {
+  name: string;
+  kind: RefKind;
+  target: string;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  /** The worktree (main checkout or linked) that has the local branch checked out; git refuses to delete such a branch. */
+  worktreePath: string | null;
+};
 
 /** Every branch and tag, the checked-out branch (`HEAD` when detached) and the commits a push would publish. */
 export type RefList = { head: string; refs: GitRef[]; unpushed: string[] };

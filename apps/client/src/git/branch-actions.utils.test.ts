@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { GitRef } from "./git.types";
 import { branchActions, localBranchesWithoutOrigin, originBranchName } from "./branch-actions.utils";
 
-const ref = (name: string, kind: GitRef["kind"], upstream: string | null = null): GitRef => ({ name, kind, target: "0".repeat(40), upstream, ahead: 0, behind: 0 });
+const ref = (name: string, kind: GitRef["kind"], upstream: string | null = null): GitRef => ({ name, kind, target: "0".repeat(40), upstream, ahead: 0, behind: 0, worktreePath: null });
 const BOUND = "The session's worktree is bound to its branch";
 const session = { head: "feat/general/x", pushes: { branch: "feat/general/x", target: "master" }, isRemoteSession: false, isPollerSession: false, checkoutBlocked: BOUND };
 const repository = { head: "master", pushes: null, isRemoteSession: false, isPollerSession: false, checkoutBlocked: null };
@@ -107,6 +107,11 @@ describe("localBranchesWithoutOrigin", () => {
     const refs = [ref("master", "local"), ref("zed", "local"), ref("feat/b", "local"), ref("feat/a", "local"), ref("origin/master", "remote"), ref("origin/feat/a", "remote"), ref("v1", "tag")];
     expect(localBranchesWithoutOrigin(refs, new Set(["master"]))).toEqual(["feat/b", "zed"]);
     expect(localBranchesWithoutOrigin(refs, new Set(["master", "zed"]))).toEqual(["feat/b"]);
+  });
+
+  it("leaves out a branch a worktree has checked out", () => {
+    const checkedOut: GitRef = { ...ref("feat/wt", "local"), worktreePath: "/worktrees/1" };
+    expect(localBranchesWithoutOrigin([checkedOut, ref("feat/free", "local")], new Set())).toEqual(["feat/free"]);
   });
 
   it("ignores branches on other remotes", () => {

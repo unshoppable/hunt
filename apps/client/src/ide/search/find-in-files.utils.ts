@@ -1,7 +1,7 @@
 /** Display helpers for Find in Files (⇧⌘F, see FindInFilesDialog.tsx and ide/find_in_files.rs). */
 
 import type { HighlightedLine } from "../../editor/highlight.monaco";
-import type { TextRange, TextSearchResult } from "./find-in-files.types";
+import type { ReplaceResult, TextRange, TextSearchResult } from "./find-in-files.types";
 import { sliceRuns } from "../language/usages.utils";
 
 export type TextPart = { text: string; isMatch: boolean };
@@ -47,6 +47,13 @@ export function matchSummary(result: TextSearchResult): string {
   if (!lines) return "No matches";
   const files = new Set(result.matches.map((match) => match.path)).size;
   return `${lines}${more} ${lines === 1 && !more ? "match" : "matches"} in ${files}${more} ${files === 1 && !more ? "file" : "files"}`;
+}
+
+/** What a replace did, for the header: `Replaced 3 occurrences in 2 files`, or `Nothing replaced`. */
+export function replaceSummary(result: ReplaceResult): string {
+  if (!result.occurrences) return "Nothing replaced";
+  const occurrences = `${result.occurrences} ${result.occurrences === 1 ? "occurrence" : "occurrences"}`;
+  return `Replaced ${occurrences} in ${result.files} ${result.files === 1 ? "file" : "files"}`;
 }
 
 /** A selection worth searching for: a single non-blank line. */

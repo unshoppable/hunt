@@ -74,6 +74,7 @@ export function CommitFiles({
       }
     },
     isSelectable: (key) => !key.endsWith("/"),
+    leavesOnly: true,
     onToggle: (key) => toggleCollapsed(key.slice(0, -1)),
   });
 

@@ -164,7 +164,7 @@ export function RefTree({
         {rows.map(({ node, depth }) =>
           node.kind === "group" ? (
             <Fragment key={node.path}>
-              {node.path === "remote" ? <li aria-hidden="true" className="mx-2.5 my-1 border-t border-(--line)" /> : null}
+              {node.path === "remote" ? <li aria-hidden="true" className="mx-2.5 my-2.5 border-t border-(--line)" /> : null}
               <li
                 onClick={() => {
                   toggle(node.path);

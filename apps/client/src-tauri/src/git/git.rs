@@ -1153,6 +1153,8 @@ pub struct GitRef {
     pub upstream: Option<String>,
     pub ahead: u32,
     pub behind: u32,
+    /// The worktree (main checkout or linked) that has the local branch checked out; git refuses to delete such a branch.
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1372,7 +1374,7 @@ pub async fn refs(repo: &Path) -> Result<RefList, String> {
         repo,
         &[
             "for-each-ref",
-            "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(upstream:short)%1f%(upstream:track)",
+            "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(upstream:short)%1f%(upstream:track)%1f%(worktreepath)",
             "refs/heads",
             "refs/remotes",
             "refs/tags",
@@ -1391,8 +1393,8 @@ fn parse_refs(output: &str) -> Vec<GitRef> {
     output
         .lines()
         .filter_map(|line| {
-            let fields: Vec<&str> = line.splitn(5, FIELD_SEPARATOR).collect();
-            let [refname, object, peeled, upstream, track] = fields[..] else { return None };
+            let fields: Vec<&str> = line.splitn(6, FIELD_SEPARATOR).collect();
+            let [refname, object, peeled, upstream, track, worktree_path] = fields[..] else { return None };
             let (kind, name) = if let Some(name) = refname.strip_prefix("refs/heads/") {
                 (RefKind::Local, name)
             } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
@@ -1411,6 +1413,7 @@ fn parse_refs(output: &str) -> Vec<GitRef> {
                 upstream: if upstream.is_empty() { None } else { Some(upstream.to_string()) },
                 ahead,
                 behind,
+                worktree_path: if worktree_path.is_empty() { None } else { Some(worktree_path.to_string()) },
             })
         })
         .collect()
@@ -1564,13 +1567,15 @@ mod tests {
 
     #[test]
     fn parse_refs_classifies_refs_and_reads_the_upstream_state() {
-        let output = "refs/heads/master\u{1f}1111\u{1f}\u{1f}origin/master\u{1f}[ahead 1, behind 2]\nrefs/remotes/origin/HEAD\u{1f}1111\u{1f}\u{1f}\u{1f}\nrefs/remotes/origin/master\u{1f}2222\u{1f}\u{1f}\u{1f}\nrefs/tags/v1\u{1f}3333\u{1f}4444\u{1f}\u{1f}\n";
+        let output = "refs/heads/master\u{1f}1111\u{1f}\u{1f}origin/master\u{1f}[ahead 1, behind 2]\u{1f}/repo\nrefs/heads/feat/x\u{1f}5555\u{1f}\u{1f}\u{1f}\u{1f}\nrefs/remotes/origin/HEAD\u{1f}1111\u{1f}\u{1f}\u{1f}\u{1f}\nrefs/remotes/origin/master\u{1f}2222\u{1f}\u{1f}\u{1f}\u{1f}\nrefs/tags/v1\u{1f}3333\u{1f}4444\u{1f}\u{1f}\u{1f}\n";
         let refs = parse_refs(output);
-        assert_eq!(refs.len(), 3);
+        assert_eq!(refs.len(), 4);
         assert_eq!((refs[0].kind, refs[0].name.as_str(), refs[0].ahead, refs[0].behind), (RefKind::Local, "master", 1, 2));
         assert_eq!(refs[0].upstream.as_deref(), Some("origin/master"));
-        assert_eq!((refs[1].kind, refs[1].name.as_str()), (RefKind::Remote, "origin/master"));
-        assert_eq!((refs[2].kind, refs[2].target.as_str()), (RefKind::Tag, "4444"));
+        assert_eq!(refs[0].worktree_path.as_deref(), Some("/repo"));
+        assert_eq!((refs[1].name.as_str(), refs[1].worktree_path.as_deref()), ("feat/x", None));
+        assert_eq!((refs[2].kind, refs[2].name.as_str()), (RefKind::Remote, "origin/master"));
+        assert_eq!((refs[3].kind, refs[3].target.as_str()), (RefKind::Tag, "4444"));
     }
 
     #[test]

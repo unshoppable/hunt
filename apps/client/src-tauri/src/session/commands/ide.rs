@@ -1,10 +1,11 @@
 //! The commands of the built-in editor and of WebStorm: the worktree's project tree, files and deleted files, Find in
-//! Files and the usage search, import resolution, Prettier and the ESLint rules, and opening the worktree, a file or the
+//! Files, Replace in Files and the usage search, import resolution, Prettier and the ESLint rules, and opening the worktree, a file or the
 //! changed files' diff in WebStorm.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use uuid::Uuid;
 
@@ -14,7 +15,7 @@ use crate::agent::acp::bundled_script_path;
 use crate::git;
 use crate::ide;
 use crate::ide::documents::DocumentRegistry;
-use crate::ide::find_in_files::{self, FindRegistry, TextQuery, TextSearchResult};
+use crate::ide::find_in_files::{self, FindRegistry, Replacer, TextQuery, TextSearchResult};
 use crate::ide::formatter::{self, PrettierOutput};
 use crate::ide::lint_rules::{self, LintRules};
 use crate::ide::workspace;
@@ -137,7 +138,7 @@ pub async fn search_word(
     if !is_identifier {
         return Err(format!("not an identifier: {word:?}"));
     }
-    let query = TextQuery { text: word, match_case: true, whole_words: true, is_regex: false, file_mask: String::new() };
+    let query = TextQuery { text: word, match_case: true, whole_words: true, is_regex: false, file_mask: String::new(), replacement: None };
     let unsaved = documents.unsaved_texts(&record.worktree_path).await;
     find_in_files::files_containing(&registry, &record.worktree_path, &query, unsaved).await
 }
@@ -155,6 +156,69 @@ pub async fn find_in_files(
     let record = worktree_session(&app, id)?;
     let unsaved = documents.unsaved_texts(&record.worktree_path).await;
     find_in_files::search(&registry, &record.worktree_path, &query, unsaved, issued_at).await
+}
+
+/// A line whose matches "Replace in Files" replaces.
+#[derive(Debug, Deserialize)]
+pub struct FileLine {
+    path: String,
+    /// 1-based.
+    line: u32,
+}
+
+/// What "Replace in Files" replaced.
+#[derive(Debug, Default, Serialize)]
+pub struct ReplaceResult {
+    occurrences: usize,
+    files: usize,
+}
+
+/// Replaces the matches of `query` with its `replacement`: those on `lines`, or with None every match in the files its
+/// mask takes. Files open in an editor change there too (see `documents::rewrite`); a failure stops at that file.
+#[tauri::command]
+pub async fn replace_in_files(
+    app: AppHandle,
+    registry: State<'_, FindRegistry>,
+    documents: State<'_, DocumentRegistry>,
+    id: Uuid,
+    query: TextQuery,
+    lines: Option<Vec<FileLine>>,
+) -> Result<ReplaceResult, String> {
+    let record = worktree_session(&app, id)?;
+    let replacer = Replacer::new(&query)?;
+    let targets: Vec<(String, Option<Vec<u32>>)> = match lines {
+        Some(lines) => {
+            let mut by_path: Vec<(String, Option<Vec<u32>>)> = Vec::new();
+            for FileLine { path, line } in lines {
+                match by_path.iter_mut().find(|(known, _)| *known == path) {
+                    Some((_, Some(known_lines))) => known_lines.push(line),
+                    _ => by_path.push((path, Some(vec![line]))),
+                }
+            }
+            by_path
+        }
+        None => {
+            let unsaved = documents.unsaved_texts(&record.worktree_path).await;
+            let paths = find_in_files::files_containing(&registry, &record.worktree_path, &query, unsaved).await?;
+            paths.into_iter().map(|path| (path, None)).collect()
+        }
+    };
+    let mut result = ReplaceResult::default();
+    for (path, lines) in targets {
+        let mut occurrences = 0;
+        let is_rewritten = ide::documents::rewrite(&app, id, &path, |text| {
+            let (replaced, count) = replacer.replace(text, lines.as_deref());
+            occurrences = count;
+            (count > 0).then_some(replaced)
+        })
+        .await
+        .map_err(|error| format!("failed to replace in {path}: {error}"))?;
+        if is_rewritten {
+            result.occurrences += occurrences;
+            result.files += 1;
+        }
+    }
+    Ok(result)
 }
 
 /// Resolves the relative import specifiers of `from` to worktree paths (`None` where no file matches).

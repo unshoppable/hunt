@@ -7,7 +7,7 @@ import { pathLiteralAt } from "../../editor/path-literal.utils";
 import { asLocationLinks, elementKindOf, hoverSignature, rangeContains, symbolsAt, toLspPosition, toLspRange, toMonacoRange, type CodeAction, type DocumentSymbol, type Hover, type Location, type LocationLink, type Position, type Range, type TextEdit, type WorkspaceEdit, type WorkspaceSymbol } from "../lsp/lsp-protocol.utils";
 import { documentEdits } from "./reformat.utils";
 import { commentAndStringMatches, editsByUri, isPackagePath, mergeOccurrences, mergeRenameEdits, occurrenceAt, quickInfoKind, serverErrorMessage, wordMatches, wordOccurrence, type RenameOccurrence } from "./rename.utils";
-import { containerOf, FUNCTION_KINDS, isImportLine, isSourceFile, isUsageFile, mergeReferences, parameterTypesOf, sortUsages, usageOnLine, type Usage } from "./usages.utils";
+import { containerOf, enclosingDeclarationName, FUNCTION_KINDS, isImportLine, isSourceFile, isUsageFile, mergeReferences, parameterTypesOf, sortUsages, usageOnLine, type Usage } from "./usages.utils";
 
 export type DefinitionTarget = { uri: monaco.Uri; range: monaco.IRange };
 
@@ -197,7 +197,12 @@ export async function findUsages(
     report();
   };
   const name = model.getWordAtPosition(position)?.word;
-  const projectsLoaded = name ? loadProjectsMentioning(client, name).catch(() => []) : Promise.resolve([]);
+  const projectsLoaded = name
+    ? enclosingDeclarationOfSymbolAt(client, model, at)
+        .catch(() => null)
+        .then((enclosingDeclaration) => loadProjectsMentioning(client, name, enclosingDeclaration))
+        .catch(() => [])
+    : Promise.resolve([]);
   const templateSearch = client
     .request<Location[] | null>("textDocument/references", params, undefined, "angular")
     .catch(() => null)
@@ -251,13 +256,38 @@ async function usagesOf(workspace: DocumentWorkspace, client: LspClient, referen
  * Loads the TypeScript project of every worktree source file containing `name` as a whole word. tsgo searches
  * references only in the projects it has loaded, which are those of the open files, so a library's usages in an app
  * stay hidden until a file of the app is open; asked for a file's `custom/projectInfo`, it loads the file's project.
- * A server without that method answers with an error, which leaves the search to the loaded projects. Resolves with
- * the worktree paths of every file containing `name`, source files or not.
+ * A server without that method answers with an error, which leaves the search to the loaded projects. A member's name
+ * (`of`) is common, so with the `enclosingDeclaration` of the member (`Ratio`) only the files containing both load.
+ * Resolves with the worktree paths of every file containing `name`, source files or not.
  */
-export async function loadProjectsMentioning(client: LspClient, name: string): Promise<string[]> {
-  const paths = await commands.searchWord(client.sessionId, name);
-  await loadProjectsOf(client, paths);
+export async function loadProjectsMentioning(client: LspClient, name: string, enclosingDeclaration: string | null = null): Promise<string[]> {
+  const [paths, enclosingPaths] = await Promise.all([
+    commands.searchWord(client.sessionId, name),
+    enclosingDeclaration ? commands.searchWord(client.sessionId, enclosingDeclaration) : null,
+  ]);
+  const using = enclosingPaths ? new Set(enclosingPaths) : null;
+  await loadProjectsOf(client, using ? paths.filter((path) => using.has(path)) : paths);
   return paths;
+}
+
+/**
+ * The `enclosingDeclarationName` of the declaration at `position` of the source file `uri`: `Ratio` for `Ratio.of`,
+ * null for a top-level declaration.
+ */
+export async function enclosingDeclarationAt(client: LspClient, uri: string, position: Position): Promise<string | null> {
+  if (!isSourceFile(monaco.Uri.parse(uri).path)) return null;
+  const symbols = await client.request<DocumentSymbol[] | null>("textDocument/documentSymbol", { textDocument: { uri } }).catch(() => null);
+  return enclosingDeclarationName(symbolsAt(symbols ?? [], position));
+}
+
+/** The `enclosingDeclarationAt` of the worktree declaration the symbol at `position` of `model` refers to; null outside the worktree. */
+async function enclosingDeclarationOfSymbolAt(client: LspClient, model: monaco.editor.ITextModel, position: Position): Promise<string | null> {
+  const links = asLocationLinks(await client.request<LocationLink[] | Location[] | null>("textDocument/definition", documentPosition(model, position)));
+  const declaration = links.find((link) => {
+    const uri = monaco.Uri.parse(link.targetUri);
+    return isInside(uri, client) && !isPackagePath(uri.path);
+  });
+  return declaration ? enclosingDeclarationAt(client, declaration.targetUri, declaration.targetSelectionRange.start) : null;
 }
 
 /** Loads the TypeScript project of every source file among `paths` (worktree paths) into the server, as `loadProjectsMentioning` does. */
@@ -378,7 +408,8 @@ export async function planRename(workspace: DocumentWorkspace, model: monaco.edi
   const client = lspClientForModel(model);
   if (!client) throw new Error("Rename needs the TypeScript language server, which does not serve this file.");
   const word = target.name.replace(/^#/, "");
-  await loadProjectsMentioning(client, word).catch(() => {});
+  const enclosingDeclaration = await enclosingDeclarationAt(client, target.uri, target.position);
+  await loadProjectsMentioning(client, word, enclosingDeclaration).catch(() => {});
   const params = { textDocument: { uri: target.uri }, position: target.position, newName };
   const [edit, angularEdit] = await Promise.all([
     client.request<WorkspaceEdit | null>("textDocument/rename", params).catch((reason) => {

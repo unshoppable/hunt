@@ -48,6 +48,19 @@ describe("treeKeyAction", () => {
     expect(treeKeyAction(rows, "README.md", "ArrowLeft")).toBeNull();
   });
 
+  it("steps over rows with children with leavesOnly", () => {
+    const leavesOnly = { leavesOnly: true };
+    expect(treeKeyAction(rows, "src/app/main.ts", "ArrowDown", leavesOnly)).toEqual({ type: "move", key: "src/index.ts" });
+    expect(treeKeyAction(rows, "src/index.ts", "ArrowDown", leavesOnly)).toEqual({ type: "move", key: "README.md" });
+    expect(treeKeyAction(rows, "README.md", "ArrowUp", leavesOnly)).toEqual({ type: "move", key: "src/index.ts" });
+    expect(treeKeyAction(rows, "src/app/main.ts", "ArrowUp", leavesOnly)).toEqual({ type: "move", key: "src/app/main.ts" });
+    expect(treeKeyAction(rows, "src/app", "ArrowDown", leavesOnly)).toEqual({ type: "move", key: "src/app/main.ts" });
+    expect(treeKeyAction(rows, null, "ArrowDown", leavesOnly)).toEqual({ type: "move", key: "src/app/main.ts" });
+    expect(treeKeyAction(rows, "README.md", "Home", leavesOnly)).toEqual({ type: "move", key: "src/app/main.ts" });
+    expect(treeKeyAction(rows.slice(0, 5), "src", "End", leavesOnly)).toEqual({ type: "move", key: "src/index.ts" });
+    expect(treeKeyAction(rows, "src/app/main.ts", "ArrowLeft", leavesOnly)).toEqual({ type: "move", key: "src/app" });
+  });
+
   it("toggles a row with children on Enter, activates any other and checks on Space", () => {
     expect(treeKeyAction(rows, "src/lib", "Enter")).toEqual({ type: "toggle", key: "src/lib" });
     expect(treeKeyAction(rows, "src/index.ts", "Enter")).toEqual({ type: "activate", key: "src/index.ts" });

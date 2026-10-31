@@ -1,3 +1,9 @@
+## 0.33.0 (2026-10-31)
+
+### 🚀 Features
+
+- name the file of declined guardrail suggestions in hunt.json ([c5ecbca](https://github.com/unshoppable/hunt/commit/c5ecbca))
+
 ## 0.32.0 (2026-10-29)
 
 ### 🚀 Features

@@ -1,3 +1,9 @@
+## 0.135.0 (2026-10-31)
+
+### 🚀 Features
+
+- **client:** replace in files, pick the commit type in a menu and quote a guardrail's kinds in the offer ([b3b1bef](https://github.com/unshoppable/hunt/commit/b3b1bef))
+
 ## 0.134.0 (2026-10-29)
 
 ### 🚀 Features

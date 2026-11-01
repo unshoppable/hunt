@@ -24,6 +24,8 @@ import { errorText } from "../../ui/error-text.utils";
 import { usePopupSize } from "../../ui/popup-size.hook";
 import { useViewportSize } from "../../ui/viewport-size.hook";
 import { searchFiles, parseQuery, type FileMatch } from "./file-search.utils";
+import { workspaceChangeMarkers, type ChangeMarkers, type Marker } from "../change-markers.monaco";
+import { ChangePopover } from "../ChangePopover";
 import { KindIcon } from "../KindIcon";
 import { loadProjectsOf } from "../language/language-service.utils";
 import { lspClientFor } from "../lsp/lsp-client.service";
@@ -428,7 +430,8 @@ export function abbreviateHome(path: string): string {
  * an editor tab; ⌘S saves every file with unsaved edits. `isReadOnly` and a locked worktree only show it. `line` (from a
  * `name:12` query) is placed in the middle of the view and highlighted, and the 1-based columns `column..endColumn` of
  * that line (a Find in Files match) are selected. Selecting text shows the floating button that toggles the sub chat
- * popover for the selected lines (see selection-ask-button.monaco.ts); the selected match does not.
+ * popover for the selected lines (see selection-ask-button.monaco.ts); the selected match does not. The changed lines
+ * carry the editor's change stripes (see change-markers.monaco.ts), whose click opens the change popup.
  */
 export function FilePreview({
   sessionId,
@@ -468,6 +471,9 @@ export function FilePreview({
   const fontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
   const [loaded, setLoaded] = useState<{ path: string; model: monaco.editor.ITextModel } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const markersRef = useRef<ChangeMarkers | null>(null);
+  /** Change marker whose popup is open. */
+  const [shownMarker, setShownMarker] = useState<Marker | null>(null);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -475,6 +481,10 @@ export function FilePreview({
     setupMonaco();
     const editor = monaco.editor.create(host, { ...PREVIEW_EDITOR_OPTIONS, model: null, fontSize, lineHeight, fontFamily });
     editorRef.current = editor;
+    const markers = workspaceChangeMarkers(editor, () => latest.current.workspace);
+    markersRef.current = markers;
+    markers.onDidClickMarker((marker) => setShownMarker(marker));
+    editor.onDidChangeModel(() => setShownMarker(null));
     const agent = latest.current.onOpenSubChat
       ? attachSelectionAgent(editor, {
           pathOf: (model) => latest.current.workspace?.pathOf(model.uri) ?? null,
@@ -484,6 +494,7 @@ export function FilePreview({
       : null;
     let isEdited = false;
     editor.onDidChangeModelContent(() => {
+      setShownMarker(null);
       if (editor.hasTextFocus()) {
         isEdited = true;
       }
@@ -497,6 +508,8 @@ export function FilePreview({
     });
     return () => {
       agent?.dispose();
+      markers.dispose();
+      markersRef.current = null;
       editorRef.current = null;
       // The model is the shared document, which outlives the preview.
       editor.dispose();
@@ -570,6 +583,9 @@ export function FilePreview({
   return (
     <div className="relative min-h-0 flex-1" onKeyDown={onKeyDown}>
       <div ref={hostRef} className={`absolute inset-0 ${isStale ? "invisible" : ""}`} />
+      {shownMarker && !isStale && editorRef.current && markersRef.current ? (
+        <ChangePopover editor={editorRef.current} markers={markersRef.current} marker={shownMarker} onShowMarker={setShownMarker} onClose={() => setShownMarker(null)} />
+      ) : null}
       {error ? <p className="absolute inset-x-0 top-0 px-3 py-2 text-[13px] text-red-400">{error}</p> : null}
       {isStale && !error ? <p className="absolute inset-x-0 top-0 px-3 py-2 text-[13px] text-neutral-500">Loading…</p> : null}
     </div>

@@ -2,6 +2,7 @@ import * as monaco from "monaco-editor";
 import type { ChangeBlock } from "../editor/line-diff.types";
 import { computeRevertEdit } from "../editor/line-diff.utils";
 import { changeMark } from "../editor/monaco.constants";
+import type { DocumentWorkspace } from "./documents/documents.service";
 import { markersFor, type Marker } from "./marker-layout.utils";
 
 export type { Marker, MarkerKind } from "./marker-layout.utils";
@@ -28,6 +29,23 @@ function toDecorations(marker: Marker, isHovered: boolean): monaco.editor.IModel
     });
   }
   return decorations;
+}
+
+/**
+ * Change markers of an editor that shows the documents of `workspaceOf()` (null while the workspace is not known yet):
+ * the editor panes, and every preview of a project file (file search, Find in Files, usages), so a change is marked
+ * wherever its code is shown.
+ */
+export function workspaceChangeMarkers(editor: monaco.editor.ICodeEditor, workspaceOf: () => DocumentWorkspace | null): ChangeMarkers {
+  return new ChangeMarkers(
+    editor,
+    (model) => {
+      const workspace = workspaceOf();
+      const path = workspace?.pathOf(model.uri);
+      return workspace && path ? workspace.headText(path) : Promise.resolve(null);
+    },
+    (model, headText) => workspaceOf()?.changeBlocks(model, headText) ?? Promise.resolve([]),
+  );
 }
 
 /**

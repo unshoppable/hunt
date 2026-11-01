@@ -10,7 +10,7 @@ import { STATUS_NAME_CLASS } from "../ui/styles.constants";
 import { useSettingsStore } from "../settings/settings.store";
 import { useHuntStore } from "../sessions/hunt.store";
 import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../sessions/remote/remote-session.utils";
-import { ChangeMarkers, type Marker } from "./change-markers.monaco";
+import { workspaceChangeMarkers, type ChangeMarkers, type Marker } from "./change-markers.monaco";
 import { ChangePopover } from "./ChangePopover";
 import type { DocumentWorkspace } from "./documents/documents.service";
 import { noteCaret, noteViewState, useIdeStore, viewStateOf, type PendingPosition } from "./ide.store";
@@ -194,15 +194,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, s
       },
     });
 
-    const markers = new ChangeMarkers(
-      editor,
-      (model) => {
-        const { workspace: current } = latest.current;
-        const path = current.pathOf(model.uri);
-        return path ? current.headText(path) : Promise.resolve(null);
-      },
-      (model, headText) => latest.current.workspace.changeBlocks(model, headText),
-    );
+    const markers = workspaceChangeMarkers(editor, () => latest.current.workspace);
     markersRef.current = markers;
     const chatMarkers = new SelectionChatMarkers(editor, (model) => latest.current.workspace.pathOf(model.uri));
     chatMarkersRef.current = chatMarkers;

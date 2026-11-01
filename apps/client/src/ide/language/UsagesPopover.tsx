@@ -19,6 +19,8 @@ import { tokenStyleDeclarations } from "../../editor/token-style.utils";
 import { useFileIconUrl } from "../../ui/file-icons/file-icons.hook";
 import { PREVIEW_EDITOR_OPTIONS } from "../../editor/monaco.constants";
 import { monacoLanguage } from "../../editor/language-id.utils";
+import { workspaceChangeMarkers, type ChangeMarkers, type Marker } from "../change-markers.monaco";
+import { ChangePopover } from "../ChangePopover";
 import { commands } from "../../ipc/commands";
 import { PaneSeparator, Panel, PersistentGroup } from "../../ui/ResizablePanes";
 import { PopupModeButton, PopupWindowTitleBar } from "../../ui/PopupTitleBar";
@@ -277,6 +279,10 @@ function UsagesView({ rootRef, className, style, workspace, query, font, isDetac
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [showPreview, setShowPreview] = useState(true);
   const [previewModel, setPreviewModel] = useState<monaco.editor.ITextModel | null>(null);
+  /** The preview editor once created, with its change markers, for the change popup rendered into it. */
+  const [preview, setPreview] = useState<{ editor: monaco.editor.IStandaloneCodeEditor; markers: ChangeMarkers } | null>(null);
+  /** Change marker whose popup is open. */
+  const [shownMarker, setShownMarker] = useState<Marker | null>(null);
   const usages = query.usages;
   const selected = Math.max(0, usages?.findIndex((usage) => usageKey(usage) === selectedKey) ?? 0);
   const selectedUsage = usages?.[selected] ?? null;
@@ -317,6 +323,9 @@ function UsagesView({ rootRef, className, style, workspace, query, font, isDetac
     const host = previewRef.current;
     if (!host || !previewModel || !selectedUsage || !showPreview || previewModel.isDisposed()) return;
     const preview = monaco.editor.create(host, { ...PREVIEW_EDITOR_OPTIONS, model: previewModel, fontSize, fontFamily, lineHeight });
+    const markers = workspaceChangeMarkers(preview, () => workspace);
+    markers.onDidClickMarker((marker) => setShownMarker(marker));
+    setPreview({ editor: preview, markers });
     const { line, column, endColumn } = selectedUsage;
     preview.createDecorationsCollection([{ range: new monaco.Range(line, column, line, endColumn), options: { inlineClassName: "hunt-usage-match" } }]);
     const reveal = () => preview.revealPositionInCenter({ lineNumber: line, column: endColumn });
@@ -330,9 +339,12 @@ function UsagesView({ rootRef, className, style, workspace, query, font, isDetac
     });
     return () => {
       layoutSubscription.dispose();
+      setShownMarker(null);
+      setPreview(null);
+      markers.dispose();
       preview.dispose();
     };
-  }, [previewModel, selectedUsage, fontSize, fontFamily, lineHeight, showPreview]);
+  }, [workspace, previewModel, selectedUsage, fontSize, fontFamily, lineHeight, showPreview]);
 
   const copyUsages = () => {
     if (!usages?.length) return;
@@ -436,7 +448,12 @@ function UsagesView({ rootRef, className, style, workspace, query, font, isDetac
           </Panel>
           <PaneSeparator orientation="vertical" />
           <Panel id="preview" defaultSize="60" minSize={lineHeight * 3} className="flex min-h-0 flex-col">
-            <div ref={previewRef} className="min-h-0 flex-1" />
+            <div className="relative min-h-0 flex-1">
+              <div ref={previewRef} className="absolute inset-0" />
+              {shownMarker && preview ? (
+                <ChangePopover editor={preview.editor} markers={preview.markers} marker={shownMarker} onShowMarker={setShownMarker} onClose={() => setShownMarker(null)} />
+              ) : null}
+            </div>
           </Panel>
         </PersistentGroup>
       ) : (

@@ -50,6 +50,8 @@ export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }
   const index = markers.markers.indexOf(marker);
   const count = markers.markers.length;
   const lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight);
+  // A read-only preview (a locked worktree, the usages popup) shows the change but cannot roll it back.
+  const isReadOnly = editor.getOption(monaco.editor.EditorOption.readOnly);
   const isInsert = marker.kind === "insert";
 
   useEffect(() => {
@@ -165,7 +167,7 @@ export function ChangePopover({ editor, markers, marker, onShowMarker, onClose }
           <ArrowIcon direction="down" />
         </ToolbarButton>
         <span className="mx-1 h-4 w-px bg-(--line)" />
-        <ToolbarButton title="Rollback" onClick={rollback}>
+        <ToolbarButton title="Rollback" disabled={isReadOnly} onClick={rollback}>
           <RollbackIcon />
         </ToolbarButton>
         {isInsert ? null : (

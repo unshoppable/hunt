@@ -39,6 +39,7 @@ export function Dropdown({
   value,
   options,
   onChange,
+  onReselect = false,
   title,
   disabled = false,
   placeholder = "",
@@ -51,6 +52,8 @@ export function Dropdown({
   value: string;
   options: DropdownOption[];
   onChange: (id: string) => void;
+  /** Call `onChange` for the selected option too, e.g. when picking an option is an action and not a choice. */
+  onReselect?: boolean;
   /** Tooltip and accessible name of the trigger and its list. */
   title: string;
   disabled?: boolean;
@@ -103,7 +106,7 @@ export function Dropdown({
     const option = shownOptions[index];
     if (!option || option.isDisabled) return;
     close();
-    if (option.id !== value) {
+    if (onReselect || option.id !== value) {
       onChange(option.id);
     }
   }

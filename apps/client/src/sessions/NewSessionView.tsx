@@ -395,6 +395,7 @@ export function NewSessionView({
             title={branchTitle}
             value={startRef}
             options={branchOptions}
+            onReselect={isCheckout}
             onChange={(id) => {
               if (isCheckout) {
                 void startInCheckoutOn(id);

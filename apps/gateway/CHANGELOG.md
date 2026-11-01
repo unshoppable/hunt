@@ -1,3 +1,9 @@
+## 0.44.1 (2026-11-01)
+
+### 🚀 Features
+
+- **swf:** run the agent steps on the session VM and show the pipeline in a Factory tab ([6489734](https://github.com/unshoppable/hunt/commit/6489734))
+
 ## 0.44.0 (2026-10-31)
 
 ### 🧱 Updated Dependencies

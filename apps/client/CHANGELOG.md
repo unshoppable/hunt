@@ -1,3 +1,9 @@
+## 0.137.2 (2026-11-01)
+
+### 🩹 Fixes
+
+- **client:** make the editor's language servers, saves, search and git calls reliable ([e447ff7](https://github.com/unshoppable/hunt/commit/e447ff7))
+
 ## 0.137.1 (2026-11-01)
 
 ### 🚀 Features

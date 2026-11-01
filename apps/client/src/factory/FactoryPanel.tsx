@@ -33,7 +33,7 @@ const OUTCOME_CHIP: Record<Run["outcome"], string> = {
 /**
  * The Factory tab of a session of the swf poller: the pipeline of its issue as the record in `.hunt/swf/pipeline.json` of
  * the worktree tells it, pulled from the VM after every turn, so it reads without the VM too. On top the steps plan →
- * implement → verify → gate → pr → review → human-review → merge as a graph, each with its run count, the current step
+ * implement → verify → review → pr → checks → human-review → merge as a graph, each with its run count, the current step
  * marked and every return to implement as an amber edge labelled with its findings; below the runs in order with their
  * outcome and duration, and under them the step result of the selected run (by default the latest one that has one).
  * Reads the record again after every pull of `.hunt/swf/` (`swf:pulled`, wired in app/window-bootstrap.hook.ts), when the
@@ -165,13 +165,13 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
 }
 
 /** One line on where the pipeline stands, for the header: the step, the attempt and whether a person reviews. */
-function statusText(pipeline: { step: Run["step"]; attempt: number; humanReview: boolean }): string {
+function statusText(pipeline: { step: Run["step"]; attempt: number }): string {
   const parts = [`At ${STEP_LABELS[pipeline.step]}`];
   if (pipeline.attempt > 0) {
     parts.push(`attempt ${pipeline.attempt} of ${MAX_ATTEMPTS}`);
   }
-  if (pipeline.humanReview) {
-    parts.push("a person reviews before the merge");
+  if (pipeline.step === "human-review") {
+    parts.push("a person reviews");
   }
   return parts.join(" · ");
 }

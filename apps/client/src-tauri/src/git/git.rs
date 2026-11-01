@@ -49,6 +49,19 @@ pub struct Shelf {
     pub files: Vec<ChangedFile>,
 }
 
+/// A `git` command in `cwd` with the settings every git call of Hunt needs: paths printed as they are
+/// (`core.quotepath=off`, so `Prüfung.ts` is not `"Pr\303\274fung.ts"`), messages in English (`LC_ALL=C`, which
+/// `fetch_branch` and `is_index_lock_held` read), no credential prompt, and none of the repository overrides
+/// (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`) the app may have inherited; a caller that needs one sets it on the
+/// returned command.
+fn git_command(cwd: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(cwd).args(["-c", "core.quotepath=off"]);
+    command.env("LC_ALL", "C").env("GIT_TERMINAL_PROMPT", "0");
+    command.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_INDEX_FILE");
+    command
+}
+
 /// Runs git in `cwd`. Exit code 1 is accepted for `diff` and `grep` commands, where it only means "has changes"
 /// or "no match".
 pub async fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
@@ -57,15 +70,21 @@ pub async fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
 
 /// `run_git` with extra environment variables for the git process.
 pub async fn run_git_with_env<V: AsRef<OsStr>>(cwd: &Path, args: &[&str], envs: &[(&str, V)]) -> Result<String, String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
+    checked_output(args, git_output(cwd, args, envs).await?)
+}
+
+/// The finished git process of `args` in `cwd`, whatever its exit status.
+async fn git_output<V: AsRef<OsStr>>(cwd: &Path, args: &[&str], envs: &[(&str, V)]) -> Result<std::process::Output, String> {
+    git_command(cwd)
         .args(args)
         .envs(envs.iter().map(|(key, value)| (*key, value.as_ref())))
         .output()
         .await
-        .map_err(|error| format!("failed to run git: {error}"))?;
+        .map_err(|error| format!("failed to run git: {error}"))
+}
 
+/// The stdout of the git process of `args`, or its stderr as error when it failed; see `run_git`.
+fn checked_output(args: &[&str], output: std::process::Output) -> Result<String, String> {
     let is_benign_exit = matches!(args.first(), Some(&"diff") | Some(&"grep")) && output.status.code() == Some(1);
     if !output.status.success() && !is_benign_exit {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -75,13 +94,39 @@ pub async fn run_git_with_env<V: AsRef<OsStr>>(cwd: &Path, args: &[&str], envs: 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// How long an index write of Hunt waits for another git process, typically the agent's in the same worktree, to
+/// release the index lock, and how often it tries again meanwhile.
+const INDEX_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+const INDEX_LOCK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// `run_git` for a command that only writes the index and the working tree (`add`, `rm`, `reset`, `checkout <tree> --
+/// <paths>`), tried again for `INDEX_LOCK_WAIT` while another git process holds `index.lock`. Such a command takes the
+/// lock before it changes anything, so a retry never repeats part of its work; `commit` and `stash` do not qualify.
+async fn run_git_writing_index(cwd: &Path, args: &[&str]) -> Result<String, String> {
+    let deadline = tokio::time::Instant::now() + INDEX_LOCK_WAIT;
+    loop {
+        let output = git_output::<&Path>(cwd, args, &[]).await?;
+        let is_locked = is_index_lock_held(output.status.code(), &String::from_utf8_lossy(&output.stderr));
+        if !is_locked || tokio::time::Instant::now() + INDEX_LOCK_RETRY_INTERVAL > deadline {
+            return checked_output(args, output);
+        }
+        tokio::time::sleep(INDEX_LOCK_RETRY_INTERVAL).await;
+    }
+}
+
+/// Whether git exited with `code` and `stderr` because another process holds the index lock: exit code 128 and
+/// `fatal: Unable to create '<git dir>/index.lock': File exists.` as first line.
+fn is_index_lock_held(code: Option<i32>, stderr: &str) -> bool {
+    let first_line = stderr.lines().next().unwrap_or_default();
+    let locked = first_line.strip_prefix("fatal: Unable to create '").and_then(|rest| rest.strip_suffix("': File exists."));
+    code == Some(128) && locked.is_some_and(|path| path.ends_with("/index.lock"))
+}
+
 /// `run_git_with_env` that writes `input` to the git process's stdin, for the `--batch` and `--stdin` modes.
 async fn run_git_with_input(cwd: &Path, args: &[&str], envs: &[(&str, &Path)], input: &str) -> Result<String, String> {
     use tokio::io::AsyncWriteExt;
 
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
+    let mut child = git_command(cwd)
         .args(args)
         .envs(envs.iter().map(|(key, value)| (*key, value.as_os_str())))
         .stdin(std::process::Stdio::piped())
@@ -241,9 +286,7 @@ pub async fn ignore_rules(worktree: &Path, paths: &[String]) -> Result<std::coll
         return Ok(Default::default());
     }
     use tokio::io::AsyncWriteExt;
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(worktree)
+    let mut child = git_command(worktree)
         .args(["check-ignore", "-v", "-z", "--no-index", "--stdin"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -583,8 +626,8 @@ async fn tree_through_scratch_index(worktree: &Path, envs: &[(&str, &Path)]) -> 
 
 /// Paths that differ between two tree objects of `store`, as `snapshot_tree` returns them.
 pub async fn changed_paths_between(worktree: &Path, store: &SnapshotStore, before: &str, after: &str) -> Result<Vec<String>, String> {
-    let output = run_git_with_env(worktree, &["diff-tree", "-r", "--name-only", "--no-renames", before, after], &store.envs()).await?;
-    Ok(output.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect())
+    let output = run_git_with_env(worktree, &["diff-tree", "-r", "--name-only", "--no-renames", "-z", before, after], &store.envs()).await?;
+    Ok(output.split('\0').filter(|path| !path.is_empty()).map(str::to_string).collect())
 }
 
 /// Blob id of `path` in each of `trees` (objects of `store`), `None` where the tree has no such file.
@@ -627,7 +670,7 @@ pub async fn list_files(worktree: &Path) -> Result<Vec<String>, String> {
 
 /// Paths below `dir` that a commit of the checked-out history deleted, sorted and without duplicates.
 pub async fn deleted_files(worktree: &Path, dir: &str) -> Result<Vec<String>, String> {
-    let deleted = run_git(worktree, &["log", "--diff-filter=D", "--name-only", "-z", "--format=", "--", dir]).await?;
+    let deleted = run_git(worktree, &["log", "--diff-filter=D", "--name-only", "-z", "--format=", "--", &literal_pathspec(dir)]).await?;
     let mut files: Vec<String> = deleted.split('\0').map(str::trim).filter(|path| !path.is_empty()).map(str::to_string).collect();
     files.sort();
     files.dedup();
@@ -638,38 +681,30 @@ pub async fn deleted_files(worktree: &Path, dir: &str) -> Result<Vec<String>, St
 pub async fn changed_files(worktree: &Path, base: &str) -> Result<Vec<ChangedFile>, String> {
     let mut files: Vec<ChangedFile> = Vec::new();
 
-    let tracked = run_git(worktree, &["diff", "--name-status", "--no-renames", base]).await?;
+    let tracked = run_git(worktree, &["diff", "--name-status", "--no-renames", "-z", base]).await?;
     push_name_status(&mut files, &tracked);
 
-    let untracked = run_git(worktree, &["ls-files", "--others", "--exclude-standard"]).await?;
+    let untracked = run_git(worktree, &["ls-files", "--others", "--exclude-standard", "-z"]).await?;
     push_untracked(&mut files, &untracked);
 
     files.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(files)
 }
 
-/// Parses `git diff --name-status` output (`<status>\t<path>` per line) into `files`.
+/// Adds the changes of `git diff --name-status -z` output (see `parse_name_status`) to `files`.
 fn push_name_status(files: &mut Vec<ChangedFile>, output: &str) {
-    for line in output.lines() {
-        let mut parts = line.splitn(2, '\t');
-        let status = parts.next().unwrap_or("").chars().next().unwrap_or('M').to_string();
-        let Some(path) = parts.next() else { continue };
-        files.push(ChangedFile { path: path.to_string(), status });
-    }
+    files.extend(parse_name_status(output).into_iter().map(|file| ChangedFile { path: file.path, status: file.status }));
 }
 
-/// Adds one `?` entry per non-empty line of `output` to `files`. A path `files` already lists (a file removed from the
-/// index but still on disk, which `git diff` reports as deleted) stays one entry and counts as modified, so every
-/// path is listed once.
+/// Adds one `?` entry per path of NUL-separated (`-z`) `output` to `files`. A path `files` already lists (a file removed
+/// from the index but still on disk, which `git diff` reports as deleted) stays one entry and counts as modified, so
+/// every path is listed once.
 fn push_untracked(files: &mut Vec<ChangedFile>, output: &str) {
     let listed: HashMap<String, usize> = files.iter().enumerate().map(|(index, file)| (file.path.clone(), index)).collect();
-    for line in output.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        match listed.get(line) {
+    for path in output.split('\0').filter(|path| !path.is_empty()) {
+        match listed.get(path) {
             Some(&index) => files[index].status = "M".into(),
-            None => files.push(ChangedFile { path: line.to_string(), status: "?".into() }),
+            None => files.push(ChangedFile { path: path.to_string(), status: "?".into() }),
         }
     }
 }
@@ -677,30 +712,30 @@ fn push_untracked(files: &mut Vec<ChangedFile>, output: &str) {
 /// Added and removed lines per file: tracked changes against `base` plus untracked files, whose whole line
 /// count is `added`. Sorted by path.
 pub async fn change_stats(worktree: &Path, base: &str) -> Result<Vec<ChangeStat>, String> {
-    let numstat = run_git(worktree, &["diff", "--numstat", "--no-renames", base]).await?;
+    let numstat = run_git(worktree, &["diff", "--numstat", "--no-renames", "-z", base]).await?;
     let mut stats = parse_numstat(&numstat);
 
-    let untracked = run_git(worktree, &["ls-files", "--others", "--exclude-standard"]).await?;
-    for line in untracked.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
+    let untracked = run_git(worktree, &["ls-files", "--others", "--exclude-standard", "-z"]).await?;
+    for path in untracked.split('\0').filter(|path| !path.is_empty()) {
         // Binary and non-UTF-8 files fail to read as text and count as empty.
-        let added = std::fs::read_to_string(worktree.join(line)).map(|content| count_lines(&content)).unwrap_or(0);
-        stats.push(ChangeStat { path: line.to_string(), added, removed: 0 });
+        let added = std::fs::read_to_string(worktree.join(path)).map(|content| count_lines(&content)).unwrap_or(0);
+        stats.push(ChangeStat { path: path.to_string(), added, removed: 0 });
     }
 
     stats.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(stats)
 }
 
-/// Parses `git diff --numstat` output (`<added>\t<removed>\t<path>` per line). Binary files show `-` for both
-/// counts and count as 0.
+/// Parses `git diff --numstat -z` output: `<added>\t<removed>\t<path>\0` per file, a rename as
+/// `<added>\t<removed>\t\0<old>\0<new>\0`, which counts under the new path. Binary files show `-` for both counts and
+/// count as 0.
 fn parse_numstat(output: &str) -> Vec<ChangeStat> {
     let mut stats: Vec<ChangeStat> = Vec::new();
-    for line in output.lines() {
-        let mut parts = line.splitn(3, '\t');
+    let mut fields = output.split('\0');
+    while let Some(record) = fields.next() {
+        let mut parts = record.splitn(3, '\t');
         let (Some(added), Some(removed), Some(path)) = (parts.next(), parts.next(), parts.next()) else { continue };
+        let path = if path.is_empty() { fields.nth(1).unwrap_or_default() } else { path };
         stats.push(ChangeStat { path: path.to_string(), added: added.parse().unwrap_or(0), removed: removed.parse().unwrap_or(0) });
     }
     stats
@@ -719,7 +754,7 @@ pub async fn file_diff(worktree: &Path, base: &str, path: &str) -> Result<FileDi
     let new_content = std::fs::read_to_string(worktree.join(path)).ok();
 
     let unified = if old_content.is_some() {
-        run_git(worktree, &["diff", base, "--", path]).await?
+        run_git(worktree, &["diff", base, "--", &literal_pathspec(path)]).await?
     } else {
         run_git(worktree, &["diff", "--no-index", "--", "/dev/null", path]).await?
     };
@@ -731,11 +766,11 @@ pub async fn file_diff(worktree: &Path, base: &str, path: &str) -> Result<FileDi
 /// when the file did not exist there.
 pub async fn revert_file(worktree: &Path, base: &str, path: &str) -> Result<(), String> {
     if show(worktree, base, path).await.is_some() {
-        run_git(worktree, &["checkout", base, "--", path]).await?;
+        run_git_writing_index(worktree, &["checkout", base, "--", &literal_pathspec(path)]).await?;
         return Ok(());
     }
 
-    run_git(worktree, &["rm", "-f", "-q", "--ignore-unmatch", "--", path]).await?;
+    run_git_writing_index(worktree, &["rm", "-f", "-q", "--ignore-unmatch", "--", &literal_pathspec(path)]).await?;
     let on_disk = worktree.join(path);
     if on_disk.exists() {
         std::fs::remove_file(&on_disk).map_err(|error| error.to_string())?;
@@ -743,9 +778,10 @@ pub async fn revert_file(worktree: &Path, base: &str, path: &str) -> Result<(), 
     Ok(())
 }
 
-/// Content of `path` at `base`, or `None` when the file does not exist there.
+/// Content of `path` at `base`, or `None` when the file does not exist there. The closing `--` makes git fail on a
+/// missing file instead of reading `<base>:<path>` as a pathspec when the path holds glob characters (`app/[id]`).
 pub async fn show(worktree: &Path, base: &str, path: &str) -> Option<String> {
-    run_git(worktree, &["show", &format!("{base}:{path}")]).await.ok()
+    run_git(worktree, &["show", &format!("{base}:{path}"), "--"]).await.ok()
 }
 
 /// Lines of the new version that the hunks of a unified diff cover (changed lines and their context), read from the
@@ -794,6 +830,18 @@ fn with_paths<'a>(args: &[&'a str], paths: &'a [String]) -> Vec<&'a str> {
     args.iter().copied().chain(paths.iter().map(String::as_str)).collect()
 }
 
+/// `path` as a pathspec git reads literally, so that `app/[id]/page.tsx` does not also select `app/i/page.tsx`; for
+/// every path from the user. It is a per-path `:(literal)` rather than `--literal-pathspecs`, which git hands on to the
+/// hooks it runs as `GIT_LITERAL_PATHSPECS=1`, where it would break their globs.
+fn literal_pathspec(path: &str) -> String {
+    format!(":(literal){path}")
+}
+
+/// `literal_pathspec` of each of `paths`.
+fn literal_pathspecs(paths: &[String]) -> Vec<String> {
+    paths.iter().map(|path| literal_pathspec(path)).collect()
+}
+
 /// Stashes exactly `paths` (untracked files included) under `name`. Git prefixes the subject with
 /// `On <branch>: `, which is how `list_shelves` scopes entries to a branch. The index is reset first
 /// because `stash push` with a pathspec fails on staged deletions.
@@ -803,8 +851,8 @@ pub async fn shelve_files(worktree: &Path, paths: &[String], name: &str) -> Resu
         return Err("shelf name must not be empty".into());
     }
 
-    run_git(worktree, &["reset", "-q", "--"]).await?;
-    run_git(worktree, &with_paths(&["stash", "push", "-u", "-m", name, "--"], paths)).await?;
+    run_git_writing_index(worktree, &["reset", "-q", "--"]).await?;
+    run_git(worktree, &with_paths(&["stash", "push", "-u", "-m", name, "--"], &literal_pathspecs(paths))).await?;
     Ok(())
 }
 
@@ -839,10 +887,10 @@ pub async fn list_shelves(worktree: &Path, branch: &str) -> Result<Vec<Shelf>, S
 async fn stash_files(worktree: &Path, reference: &str) -> Result<Vec<ChangedFile>, String> {
     let mut files: Vec<ChangedFile> = Vec::new();
 
-    let tracked = run_git(worktree, &["diff", "--name-status", "--no-renames", &format!("{reference}^1"), reference]).await?;
+    let tracked = run_git(worktree, &["diff", "--name-status", "--no-renames", "-z", &format!("{reference}^1"), reference]).await?;
     push_name_status(&mut files, &tracked);
 
-    if let Ok(untracked) = run_git(worktree, &["ls-tree", "-r", "--name-only", &format!("{reference}^3")]).await {
+    if let Ok(untracked) = run_git(worktree, &["ls-tree", "-r", "--name-only", "-z", &format!("{reference}^3")]).await {
         push_untracked(&mut files, &untracked);
     }
 
@@ -854,7 +902,7 @@ async fn stash_files(worktree: &Path, reference: &str) -> Result<Vec<ChangedFile
 /// keeps the entry in that case.
 pub async fn unshelve(worktree: &Path, reference: &str, keep: bool) -> Result<(), String> {
     ensure_stash_reference(reference)?;
-    run_git(worktree, &["reset", "-q", "--"]).await?;
+    run_git_writing_index(worktree, &["reset", "-q", "--"]).await?;
     let action = if keep { "apply" } else { "pop" };
     run_git(worktree, &["stash", action, "-q", reference]).await?;
     Ok(())
@@ -877,12 +925,13 @@ pub async fn commit_files(worktree: &Path, paths: &[String], message: &str) -> R
         return Err("commit message must not be empty".into());
     }
 
-    run_git(worktree, &with_paths(&["reset", "-q", "--"], paths)).await?;
-    run_git(worktree, &with_paths(&["add", "-A", "--"], paths)).await?;
+    let pathspecs = literal_pathspecs(paths);
+    run_git_writing_index(worktree, &with_paths(&["reset", "-q", "--"], &pathspecs)).await?;
+    run_git_writing_index(worktree, &with_paths(&["add", "-A", "--"], &pathspecs)).await?;
     if is_merging(worktree).await {
         run_git(worktree, &["commit", "-q", "-m", message]).await?;
     } else {
-        run_git(worktree, &with_paths(&["commit", "-q", "-m", message, "--"], paths)).await?;
+        run_git(worktree, &with_paths(&["commit", "-q", "-m", message, "--"], &pathspecs)).await?;
     }
     Ok(())
 }
@@ -954,15 +1003,15 @@ pub async fn merge_into_head(worktree: &Path, reference: &str) -> Result<(), Str
     Ok(())
 }
 
-/// The files a stopped rebase or merge left with conflict markers, one per line.
-async fn conflicting_files(worktree: &Path) -> String {
-    run_git(worktree, &["diff", "--name-only", "--diff-filter=U", "--"]).await.unwrap_or_default()
+/// The files a stopped rebase or merge left with conflict markers.
+async fn conflicting_files(worktree: &Path) -> Vec<String> {
+    let output = run_git(worktree, &["diff", "--name-only", "--diff-filter=U", "-z", "--"]).await.unwrap_or_default();
+    output.split('\0').filter(|path| !path.is_empty()).map(str::to_string).collect()
 }
 
-/// The message of a failed `action` (e.g. `rebase onto origin/main`): the files `conflicts` (one per line) it
-/// stopped at, else git's own `error`.
-fn conflict_error(action: &str, conflicts: &str, error: &str) -> String {
-    let files: Vec<&str> = conflicts.lines().filter(|line| !line.is_empty()).collect();
+/// The message of a failed `action` (e.g. `rebase onto origin/main`): the conflicting `files` it stopped at, else git's
+/// own `error`.
+fn conflict_error(action: &str, files: &[String], error: &str) -> String {
     if files.is_empty() {
         return format!("failed to {action}: {error}");
     }
@@ -1364,7 +1413,9 @@ pub async fn reset(worktree: &Path, id: &str, mode: ResetMode) -> Result<(), Str
     if !is_commit_id(id) {
         return Err(format!("invalid commit id: {id:?}"));
     }
-    run_git(worktree, &["reset", "-q", mode.flag(), id, "--"]).await.map_err(|error| format!("failed to reset to {id}: {error}"))?;
+    run_git_writing_index(worktree, &["reset", "-q", mode.flag(), id, "--"])
+        .await
+        .map_err(|error| format!("failed to reset to {id}: {error}"))?;
     Ok(())
 }
 
@@ -1496,15 +1547,13 @@ pub async fn commit_file_diff(repo: &Path, id: &str, path: &str, old_path: Optio
     }
     let new_content = show(repo, id, path).await;
     let Some(parent) = first_parent(repo, id).await else {
-        let unified = run_git(repo, &["diff-tree", "-p", "--root", "--no-commit-id", id, "--", path]).await?;
+        let unified = run_git(repo, &["diff-tree", "-p", "--root", "--no-commit-id", id, "--", &literal_pathspec(path)]).await?;
         return Ok(FileDiff { path: path.to_string(), old_content: None, new_content, unified });
     };
     let old_content = show(repo, &parent, old_path.unwrap_or(path)).await;
-    let mut args = vec!["diff", "-M", parent.as_str(), id, "--", path];
-    if let Some(old_path) = old_path {
-        args.push(old_path);
-    }
-    let unified = run_git(repo, &args).await?;
+    let mut pathspecs = vec![literal_pathspec(path)];
+    pathspecs.extend(old_path.map(literal_pathspec));
+    let unified = run_git(repo, &with_paths(&["diff", "-M", parent.as_str(), id, "--"], &pathspecs)).await?;
     Ok(FileDiff { path: path.to_string(), old_content, new_content, unified })
 }
 
@@ -1559,10 +1608,22 @@ mod tests {
     #[test]
     fn push_untracked_lists_a_path_deleted_from_the_index_but_on_disk_once_as_modified() {
         let mut files = Vec::new();
-        push_name_status(&mut files, "D\teslint-suppressions.json\nM\tsrc/main.ts\n");
-        push_untracked(&mut files, "eslint-suppressions.json\nnotes.md\n");
+        push_name_status(&mut files, "D\0eslint-suppressions.json\0M\0src/main.ts\0");
+        push_untracked(&mut files, "eslint-suppressions.json\0notes.md\0");
         let entries: Vec<(&str, &str)> = files.iter().map(|file| (file.path.as_str(), file.status.as_str())).collect();
         assert_eq!(entries, vec![("eslint-suppressions.json", "M"), ("src/main.ts", "M"), ("notes.md", "?")]);
+    }
+
+    #[test]
+    fn is_index_lock_held_matches_only_gits_lock_failure() {
+        let locked = "fatal: Unable to create '/repo/.git/worktrees/x/index.lock': File exists.\n\nAnother git process seems to be running";
+        assert!(is_index_lock_held(Some(128), locked));
+        assert!(!is_index_lock_held(Some(1), locked));
+        assert!(!is_index_lock_held(None, locked));
+        assert!(!is_index_lock_held(Some(128), "fatal: Unable to create '/repo/.git/HEAD.lock': File exists."));
+        assert!(!is_index_lock_held(Some(128), "fatal: Unable to create '/repo/.git/index.lock': Permission denied"));
+        assert!(!is_index_lock_held(Some(128), "error: pathspec 'index.lock' did not match any file(s) known to git: File exists."));
+        assert!(!is_index_lock_held(Some(128), ""));
     }
 
     #[test]
@@ -2342,10 +2403,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_numstat_reads_counts_and_treats_binary_files_as_empty() {
-        let stats = parse_numstat("3\t1\tsrc/a.ts\n-\t-\tlogo.png\n0\t12\tdir with space/b.txt\n");
+    fn parse_numstat_reads_counts_renames_and_treats_binary_files_as_empty() {
+        let stats = parse_numstat("3\t1\tsrc/a.ts\0-\t-\tlogo.png\x000\t12\tdir with space/b.txt\x002\t0\t\0old.ts\0new.ts\0");
         let summary: Vec<(&str, u32, u32)> = stats.iter().map(|stat| (stat.path.as_str(), stat.added, stat.removed)).collect();
-        assert_eq!(summary, vec![("src/a.ts", 3, 1), ("logo.png", 0, 0), ("dir with space/b.txt", 0, 12)]);
+        assert_eq!(summary, vec![("src/a.ts", 3, 1), ("logo.png", 0, 0), ("dir with space/b.txt", 0, 12), ("new.ts", 2, 0)]);
         assert!(parse_numstat("").is_empty());
     }
 
@@ -2355,6 +2416,129 @@ mod tests {
         assert_eq!(count_lines("one\n"), 1);
         assert_eq!(count_lines("one\ntwo"), 2);
         assert_eq!(count_lines("one\ntwo\n"), 2);
+    }
+
+    #[tokio::test]
+    async fn changelists_report_paths_git_would_quote_as_they_are() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        for name in ["Prüfung.ts", "quote\"d.ts", "back\\slash.ts"] {
+            std::fs::write(repo.join(name), "one\n").unwrap();
+        }
+        git(repo, &["add", "."]).await;
+        git(repo, &["commit", "-q", "-m", "add files with special names"]).await;
+        for name in ["Prüfung.ts", "quote\"d.ts", "back\\slash.ts"] {
+            std::fs::write(repo.join(name), "two\n").unwrap();
+        }
+        std::fs::write(repo.join("Größe neu.ts"), "new\n").unwrap();
+
+        let files = changed_files(repo, "HEAD").await.unwrap();
+        let entries: Vec<(&str, &str)> = files.iter().map(|file| (file.path.as_str(), file.status.as_str())).collect();
+        assert_eq!(entries, vec![("Größe neu.ts", "?"), ("Prüfung.ts", "M"), ("back\\slash.ts", "M"), ("quote\"d.ts", "M")]);
+        let stats = change_stats(repo, "HEAD").await.unwrap();
+        let summary: Vec<(&str, u32, u32)> = stats.iter().map(|stat| (stat.path.as_str(), stat.added, stat.removed)).collect();
+        assert_eq!(summary, vec![("Größe neu.ts", 1, 0), ("Prüfung.ts", 1, 1), ("back\\slash.ts", 1, 1), ("quote\"d.ts", 1, 1)]);
+        assert!(file_diff(repo, "HEAD", "Prüfung.ts").await.unwrap().unified.contains("+++ b/Prüfung.ts"));
+
+        shelve_files(repo, &["Prüfung.ts".into(), "Größe neu.ts".into()], "umlauts").await.unwrap();
+        let shelves = list_shelves(repo, "main").await.unwrap();
+        let shelved: Vec<(&str, &str)> = shelves[0].files.iter().map(|file| (file.path.as_str(), file.status.as_str())).collect();
+        assert_eq!(shelved, vec![("Größe neu.ts", "?"), ("Prüfung.ts", "M")]);
+    }
+
+    #[tokio::test]
+    async fn merge_into_head_names_a_conflicting_file_with_a_non_ascii_name() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        std::fs::write(repo.join("Prüfung.ts"), "base\n").unwrap();
+        git(repo, &["add", "."]).await;
+        git(repo, &["commit", "-q", "-m", "base"]).await;
+        git(repo, &["switch", "-q", "-c", "other"]).await;
+        std::fs::write(repo.join("Prüfung.ts"), "other\n").unwrap();
+        git(repo, &["commit", "-q", "-am", "other"]).await;
+        git(repo, &["switch", "-q", "main"]).await;
+        std::fs::write(repo.join("Prüfung.ts"), "main\n").unwrap();
+        git(repo, &["commit", "-q", "-am", "main"]).await;
+
+        let error = merge_into_head(repo, "other").await.unwrap_err();
+
+        assert_eq!(error, "failed to merge other: conflicts in Prüfung.ts; resolve them in the chat or by hand");
+    }
+
+    /// A repository with the committed files `app/[id]/page.tsx` and `app/i/page.tsx`, which the glob `app/[id]/page.tsx`
+    /// both selects, each changed in the working tree.
+    async fn bracket_fixture() -> tempfile::TempDir {
+        let dir = fixture().await;
+        let repo = dir.path();
+        for folder in ["app/[id]", "app/i"] {
+            std::fs::create_dir_all(repo.join(folder)).unwrap();
+            std::fs::write(repo.join(folder).join("page.tsx"), "committed\n").unwrap();
+        }
+        git(repo, &["add", "."]).await;
+        git(repo, &["commit", "-q", "-m", "pages"]).await;
+        for folder in ["app/[id]", "app/i"] {
+            std::fs::write(repo.join(folder).join("page.tsx"), "changed\n").unwrap();
+        }
+        dir
+    }
+
+    #[tokio::test]
+    async fn revert_file_and_commit_files_read_paths_literally() {
+        let dir = bracket_fixture().await;
+        let repo = dir.path();
+        let read = |path: &str| std::fs::read_to_string(repo.join(path)).unwrap();
+
+        revert_file(repo, "HEAD", "app/[id]/page.tsx").await.unwrap();
+        assert_eq!((read("app/[id]/page.tsx").as_str(), read("app/i/page.tsx").as_str()), ("committed\n", "changed\n"));
+
+        std::fs::write(repo.join("app/[id]/page.tsx"), "changed\n").unwrap();
+        commit_files(repo, &["app/[id]/page.tsx".into()], "feat: id page").await.unwrap();
+        let committed = run_git(repo, &["show", "--name-only", "--format=", "HEAD"]).await.unwrap();
+        assert_eq!(committed.trim(), "app/[id]/page.tsx");
+        let diff = file_diff(repo, "HEAD", "app/i/page.tsx").await.unwrap().unified;
+        assert!(diff.contains("+changed"), "{diff}");
+    }
+
+    #[tokio::test]
+    async fn revert_file_removes_only_the_new_file_it_names() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        for folder in ["app/[id]", "app/i"] {
+            std::fs::create_dir_all(repo.join(folder)).unwrap();
+            std::fs::write(repo.join(folder).join("page.tsx"), "new\n").unwrap();
+        }
+        git(repo, &["add", "."]).await;
+
+        revert_file(repo, "HEAD", "app/[id]/page.tsx").await.unwrap();
+
+        assert!(!repo.join("app/[id]/page.tsx").exists());
+        assert!(repo.join("app/i/page.tsx").exists());
+        let staged = run_git(repo, &["diff", "--cached", "--name-only"]).await.unwrap();
+        assert_eq!(staged.trim(), "app/i/page.tsx");
+    }
+
+    #[tokio::test]
+    async fn index_writes_wait_for_another_process_to_release_the_index_lock() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        std::fs::write(repo.join("tracked.txt"), "changed\n").unwrap();
+        let lock = repo.join(".git/index.lock");
+        std::fs::write(&lock, "").unwrap();
+        let release = tokio::spawn({
+            let lock = lock.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                std::fs::remove_file(lock).unwrap();
+            }
+        });
+
+        revert_file(repo, "HEAD", "tracked.txt").await.unwrap();
+
+        release.await.unwrap();
+        assert_eq!(std::fs::read_to_string(repo.join("tracked.txt")).unwrap(), "one\n");
+        std::fs::write(&lock, "").unwrap();
+        let error = revert_file(repo, "HEAD", "tracked.txt").await.unwrap_err();
+        assert!(error.contains("index.lock': File exists."), "{error}");
     }
 
     #[tokio::test]

@@ -11,6 +11,7 @@ use uuid::Uuid;
 use super::{push_target, remote_host, session_file, worktree_file, worktree_session};
 use crate::agent::swf_skills;
 use crate::git::{self, ChangedFile, FileDiff, Shelf};
+use crate::ide::disk_file::{self, DiskStamp};
 use crate::remote;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::session::attribution::{self, FileVersion};
@@ -84,18 +85,27 @@ pub async fn read_file_history(app: AppHandle, id: Uuid, path: String) -> Result
 /// The change counts as the session's own, like an edit by its agent.
 #[tauri::command]
 pub async fn write_file(app: AppHandle, id: Uuid, path: String, content: String) -> Result<(), String> {
-    link::ensure_writable(&app, id, &format!("save {path}"))?;
-    let (record, target) = session_file(&app, id, &path)?;
-    attribution::record_write(&app, &record.worktree_path, id, || {
+    write_worktree_file(&app, id, &path, &content).await.map(|_| ())
+}
+
+/// Writes `content` to `path` like `write_file`, atomically (`disk_file::write_atomic`), and returns the stamp the file
+/// has afterwards.
+pub(crate) async fn write_worktree_file(app: &AppHandle, id: Uuid, path: &str, content: &str) -> Result<Option<DiskStamp>, String> {
+    link::ensure_writable(app, id, &format!("save {path}"))?;
+    let (record, target) = session_file(app, id, path)?;
+    let mut stamp = None;
+    attribution::record_write(app, &record.worktree_path, id, || {
         if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            std::fs::create_dir_all(parent).map_err(|error| format!("failed to create the folder of {path}: {error}"))?;
         }
-        std::fs::write(&target, content).map_err(|error| format!("failed to write {path}: {error}"))
+        stamp = disk_file::write_atomic(&target, content.as_bytes()).map_err(|error| format!("failed to write {path}: {error}"))?;
+        Ok(())
     })
     .await?;
-    store::add_touched_files(&app, id, std::slice::from_ref(&path))?;
-    sync::note_local_change(&app, id);
-    store::note_worktree_changed(&app, id)
+    store::add_touched_files(app, id, &[path.to_string()])?;
+    sync::note_local_change(app, id);
+    store::note_worktree_changed(app, id)?;
+    Ok(stamp)
 }
 
 /// Writes the skills of the swf steps `skills` from Hunt's templates into the session's worktree, leaving existing skill

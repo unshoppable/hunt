@@ -6,15 +6,15 @@ const CONFIGURED: SwfStepEntry[] = [
   { step: "plan", name: "swf-plan" },
   { step: "implement", name: "swf-implement" },
   { step: "verify", name: "swf-verify" },
-  { step: "gate", name: "acme-gate" },
+  { step: "review", name: "acme-review" },
   { step: "pr", name: "swf-pr" },
 ];
 const ALL_FILES = new Set(CONFIGURED.map(swfSkillName));
 
 describe("swfSkillName", () => {
   it("is the name the entry sets, else the proposed one", () => {
-    expect(swfSkillName({ step: "gate", name: "acme-gate" })).toBe("acme-gate");
-    expect(swfSkillName({ step: "gate", name: null })).toBe("swf-gate");
+    expect(swfSkillName({ step: "review", name: "acme-review" })).toBe("acme-review");
+    expect(swfSkillName({ step: "review", name: null })).toBe("swf-review");
   });
 });
 
@@ -33,14 +33,14 @@ describe("missingSwfSkills", () => {
     expect(missingSwfSkills(CONFIGURED, new Set(["swf-implement", "swf-pr", "guardrail"]))).toEqual([
       { step: "plan", name: "swf-plan", addEntry: false, missingFile: true },
       { step: "verify", name: "swf-verify", addEntry: false, missingFile: true },
-      { step: "gate", name: "acme-gate", addEntry: false, missingFile: true },
+      { step: "review", name: "acme-review", addEntry: false, missingFile: true },
     ]);
   });
 
   it("lists a step that lacks both its entry and the file of the proposed name", () => {
     const entries: SwfStepEntry[] = [...CONFIGURED];
     entries[4] = { step: "pr", name: null };
-    expect(missingSwfSkills(entries, new Set(["swf-plan", "swf-implement", "swf-verify", "acme-gate"]))).toEqual([
+    expect(missingSwfSkills(entries, new Set(["swf-plan", "swf-implement", "swf-verify", "acme-review"]))).toEqual([
       { step: "pr", name: "swf-pr", addEntry: true, missingFile: true },
     ]);
   });
@@ -49,25 +49,25 @@ describe("missingSwfSkills", () => {
     const shared: SwfStepEntry[] = [
       { step: "plan", name: "team-flow" },
       { step: "implement", name: "team-flow" },
-      { step: "gate", name: "swf-gate" },
+      { step: "review", name: "swf-review" },
     ];
     expect(missingSwfSkills(shared, new Set())).toEqual([
       { step: "plan", name: "team-flow", addEntry: false, missingFile: true },
-      { step: "gate", name: "swf-gate", addEntry: false, missingFile: true },
+      { step: "review", name: "swf-review", addEntry: false, missingFile: true },
     ]);
   });
 });
 
 describe("swfSkillsQuestion", () => {
   const entryGap: SwfSkillGap = { step: "plan", name: "swf-plan", addEntry: true, missingFile: false };
-  const fileGap: SwfSkillGap = { step: "gate", name: "acme-gate", addEntry: false, missingFile: true };
+  const fileGap: SwfSkillGap = { step: "review", name: "acme-review", addEntry: false, missingFile: true };
   const bothGap: SwfSkillGap = { step: "pr", name: "swf-pr", addEntry: true, missingFile: true };
 
   it("names each step with what it lacks and asks for both the entries and the files", () => {
     expect(swfSkillsQuestion([entryGap, fileGap, bothGap])).toBe(
       "This repository uses Hunt's software factory (the swf section of its hunt.json), but not every agent step has its skill:\n\n" +
         "• plan: no entry swf.skills.plan in hunt.json (proposed: swf-plan)\n" +
-        "• gate: no skill file .claude/skills/acme-gate/SKILL.md\n" +
+        "• review: no skill file .claude/skills/acme-review/SKILL.md\n" +
         "• pr: no entry swf.skills.pr in hunt.json (proposed: swf-pr) and no skill file .claude/skills/swf-pr/SKILL.md\n\n" +
         "Add the missing entries to hunt.json and create the missing skills from Hunt's templates? " +
         "Each template is for the repository to fill in; existing entries and skill files are kept.",

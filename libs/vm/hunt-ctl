@@ -223,8 +223,7 @@ Session VM:
                          /etc/hunt/caddy.json, and (re)start the proxy; stops and disables the services hunt.json no
                          longer declares; prints the services' section of the agent's prompt, the text of the
                          repository's hunt.agent.md, the model hunt.json sets for swf sessions (swf.model) and the
-                         glob patterns of the files whose change makes an swf pull request need a human reviewer
-                         (swf.humanReviewPaths)
+                         skill of every agent step (swf.skills)
   check <worktree> <name>
                          run the check <name> of the hunt.json in the session's worktree <worktree> as the agent in a
                          login shell, in the worktree or the check's cwd, with FORCE_COLOR=1 and no stdin; passes its
@@ -1408,7 +1407,7 @@ cmd_session_config() {
   systemctl reload-or-restart "$PROXY_UNIT"
   emit --argjson result "$result" \
     '{agent_md: ($result.agent_md // null), services_prompt: ($result.services_prompt // ""), swf_model: ($result.swf_model // null),
-      swf_human_review_paths: ($result.swf_human_review_paths // []), swf_skills: ($result.swf_skills // {})}'
+      swf_skills: ($result.swf_skills // {})}'
 }
 
 # Runs the check $2 of the hunt.json in the session worktree $1; see the usage. The check's output goes straight to

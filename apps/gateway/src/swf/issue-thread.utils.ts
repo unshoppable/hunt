@@ -1,9 +1,10 @@
 /**
- * What the poller (`swf/poller.service.ts`) reads from an issue and its comments, free of I/O: the agent's step results,
- * the answers to the agent's question and the people to mention. Its own record comment is `swf/pipeline-record.client.ts`.
+ * What the poller (`swf/poller.service.ts`) reads from an issue and its comments, free of I/O: the step results the
+ * runner mirrored onto the issue, which a replaced VM gets back, the answers to the agent's question and the people to
+ * mention. Its own record comment is `swf/pipeline-record.client.ts`.
  */
 import type { Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
-import { hasStepMarker, parseStepResult } from "../../../../libs/domain/src/swf/step-result.utils.ts";
+import { parseStepResult } from "../../../../libs/domain/src/swf/step-result.utils.ts";
 import type { SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
 import type { Issue, IssueComment } from "./github.client.ts";
 
@@ -12,14 +13,6 @@ export interface RunResult {
   n: number;
   step: SwfStep;
   body: string;
-}
-
-/**
- * The step results the agent posted since the poller last acted on one: the comments of the bot after `lastResultId`
- * that carry a step marker, oldest first.
- */
-export function newStepResults(comments: IssueComment[], botLogin: string, lastResultId: number): IssueComment[] {
-  return comments.filter((comment) => comment.author === botLogin && comment.id > lastResultId && hasStepMarker(comment.body));
 }
 
 /**

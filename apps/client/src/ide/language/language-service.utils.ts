@@ -494,9 +494,6 @@ async function serverOccurrences(workspace: DocumentWorkspace, edits: Map<string
 
 export type PathRenameOptions = { textOccurrences: boolean };
 
-/** More matching lines than Find in Files reports; the text occurrences of such a path cannot be listed. */
-const TOO_MANY_MENTIONS = "The path is mentioned on more than 500 lines. Rename without searching for text occurrences.";
-
 /**
  * Everything renaming the worktree file or folder `from` to `to` changes in file contents: the import specifiers the
  * TypeScript language server rewrites (`workspace/willRenameFiles`, asked before the move, so its edits name the old
@@ -544,9 +541,8 @@ export async function applyPathRename(workspace: DocumentWorkspace, plan: Rename
 
 /** Worktree files whose text on disk holds `path`, plus the files with unsaved edits, which may hold it only there. */
 async function filesMentioningPath(workspace: DocumentWorkspace, path: string): Promise<string[]> {
-  const found = await commands.findInFiles(workspace.sessionId, { text: path, matchCase: true, wholeWords: false, isRegex: false, fileMask: "" });
-  if (found.isTruncated) throw new Error(TOO_MANY_MENTIONS);
-  return [...new Set([...found.matches.map((match) => match.path), ...workspace.dirtyPaths()])].sort();
+  const onDisk = await commands.filesContaining(workspace.sessionId, { text: path, matchCase: true, wholeWords: false, isRegex: false, fileMask: "" });
+  return [...new Set([...onDisk, ...workspace.dirtyPaths()])].sort();
 }
 
 /** The shared text of `path` when it has unsaved edits or is loaded, otherwise the content on disk. */

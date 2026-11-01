@@ -36,4 +36,5 @@ here: which tests and where they go, which commands, which pages or flows in the
 ### What the plan says
 
 TODO: what the plan states beyond the step's prompt, such as the language it is written in, whether the change needs a
-migration and whether it touches a path of hunt.json `swf.humanReviewPaths`, so that the people know a review is coming.
+migration and whether it touches a path of hunt.json `swf.humanReviewPaths`, so that the people know the repository's
+scorer will ask for a human review.

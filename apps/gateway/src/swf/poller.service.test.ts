@@ -10,13 +10,11 @@ import type { GitHub, Issue, IssueComment } from "./github.client.ts";
 import { SessionVmService } from "../session-vm/session-vm.service.ts";
 import type { ReadyAnswer, SessionVmSsh } from "../session-vm/session-vm-ssh.client.ts";
 import type { GitHubApp } from "./github-app.client.ts";
-import { HUMAN_REVIEW_PR_LABEL, Poller, type PollerDeps } from "./poller.service.ts";
+import { Poller, type PollerDeps } from "./poller.service.ts";
 import { readSwfConfig, type SwfConfig } from "./swf-config.utils.ts";
 import { Pipeline, type PullRequestReview, type Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 import { closedComment, humanReviewComment } from "./swf-comments.utils.ts";
-import { stoppedComment } from "../../../../libs/domain/src/swf/swf-comments.utils.ts";
 import { ISSUE, SKILLS, started } from "../../../../libs/domain/src/swf/swf.fixtures.ts";
-import { badResultPrompt } from "../../../../libs/domain/src/swf/swf-prompts.utils.ts";
 
 /** The poller's clock in the tests: 2026-10-25 10:00 UTC. */
 const NOW = Date.UTC(2026, 9, 25, 10, 0, 0);
@@ -59,10 +57,8 @@ interface FakeGitHubOptions {
   /** The titles of the projects the issue moves in. */
   projects?: string[];
   projectsFail?: boolean;
-  /** The pull requests by number; label changes apply to them. */
+  /** The pull requests by number. */
   pullRequests?: Record<number, PullRequestState>;
-  /** The files every pull request changes. */
-  files?: string[];
   reviews?: PullRequestReview[];
   /** The inline comments of every review. */
   reviewComments?: string[];
@@ -77,8 +73,8 @@ type FakeGitHub = GitHub & {
 
 /**
  * A GitHub whose open issues with the label are `issues` by repository and the rest as `options` scripts it; every call
- * is recorded as one line. Labels added or removed change the stored issues and pull requests, posted comments (by the
- * bot, ids from FIRST_POSTED_ID) and edits change the threads, so a later poll sees them.
+ * is recorded as one line. Labels added or removed change the stored issues, posted comments (by the bot, ids from
+ * FIRST_POSTED_ID) and edits change the threads, so a later poll sees them.
  */
 function fakeGitHub(issues: Record<string, Issue[]>, options: FakeGitHubOptions = {}): FakeGitHub {
   const calls: string[] = [];
@@ -93,10 +89,6 @@ function fakeGitHub(issues: Record<string, Issue[]>, options: FakeGitHubOptions 
     const stored = options.lookup?.[`${repo.slug}#${number}`];
     if (stored) {
       stored.labels = change(stored.labels);
-    }
-    const pullRequest = options.pullRequests?.[number];
-    if (pullRequest) {
-      pullRequest.labels = change(pullRequest.labels);
     }
   };
   return {
@@ -151,10 +143,6 @@ function fakeGitHub(issues: Record<string, Issue[]>, options: FakeGitHubOptions 
       const pullRequest = options.pullRequests?.[number];
       return pullRequest ? new PullRequestState(pullRequest.toJSON()) : null;
     },
-    pullRequestFiles: async (repo, number) => {
-      calls.push(`files ${repo.slug}#${number}`);
-      return [...(options.files ?? [])];
-    },
     reviews: async (repo, number) => {
       calls.push(`reviews ${repo.slug}#${number}`);
       return structuredClone(options.reviews ?? []);
@@ -185,13 +173,13 @@ function fakeGitHub(issues: Record<string, Issue[]>, options: FakeGitHubOptions 
 
 /** The calls of `github` that change something on GitHub. */
 function writes(github: FakeGitHub): string[] {
-  const reads = ["issues ", "in-progress ", "issue ", "comments ", "pull ", "files ", "reviews ", "review-comments "];
+  const reads = ["issues ", "in-progress ", "issue ", "comments ", "pull ", "reviews ", "review-comments "];
   return github.calls.filter((call) => !reads.some((read) => call.startsWith(read)));
 }
 
 /** The record of the last edit of a comment without its runs, which `runsOf` gives; null without a usable one. */
 function lastRecord(github: FakeGitHub): Omit<z.infer<typeof Pipeline.schema>, "runs"> | null {
-  const pipeline = Pipeline.fromComment(github.updates.at(-1)?.body ?? "");
+  const pipeline = Pipeline.fromComment(github.updates.at(-1)?.body ?? "")?.pipeline;
   if (!pipeline) return null;
   const { runs: _runs, ...record } = pipeline.toJSON();
   return record;
@@ -205,7 +193,7 @@ function withoutRuns<T extends { runs?: unknown }>(record: T): Omit<T, "runs"> {
 
 /** The runs of the record of the last edit of a comment, each as `[n, step, outcome, cause]`. */
 function runsOf(github: FakeGitHub): [number, string, string, number | undefined][] {
-  return (Pipeline.fromComment(github.updates.at(-1)?.body ?? "")?.runs ?? []).map((run) => [run.n, run.step, run.outcome, run.cause]);
+  return (Pipeline.fromComment(github.updates.at(-1)?.body ?? "")?.pipeline?.runs ?? []).map((run) => [run.n, run.step, run.outcome, run.cause]);
 }
 
 /** A VM as Compute Engine lists it, with the template's metadata and `metadata` on top. */
@@ -305,16 +293,8 @@ async function settle(logs: string[], line: string): Promise<void> {
   }
 }
 
-/** The `hunt-ctl status` result of a relay whose last turn ended at `lastTurnEndedAt` (null: none ended yet). */
-function statusOf(turn: "running" | "idle", lastTurnEndedAt: number | null, clientConnected = false): Record<string, unknown> {
-  return { relay: "running", status: { state: "ready", acpSessionId: "acp-9", turn, clientConnected, lastTurnEndedAt }, meta: { worktree: "/home/agent/app" } };
-}
-
-/**
- * A session VM that records every hunt-ctl call with its stdin, fails the one named in `failing` and answers `status`
- * with the result of `status()`.
- */
-function fakeVm(failing?: { command: string; error: Error }, status: () => Record<string, unknown> = () => statusOf("running", null)) {
+/** A session VM that records every hunt-ctl call with its stdin and fails the one named in `failing`. */
+function fakeVm(failing?: { command: string; error: Error }) {
   const calls: string[] = [];
   const claudeFiles: Record<string, string>[] = [];
   const vm: SessionVmSsh = {
@@ -323,8 +303,6 @@ function fakeVm(failing?: { command: string; error: Error }, status: () => Recor
       calls.push(`hunt-ctl ${args.join(" ")}${input ? ` <<< ${JSON.stringify(String(input))}` : ""}`);
       if (failing?.command === args[0]) throw failing.error;
       switch (args[0]) {
-        case "status":
-          return status();
         case "clone":
           return { path: "/home/agent/app" };
         case "session-config":
@@ -332,8 +310,7 @@ function fakeVm(failing?: { command: string; error: Error }, status: () => Recor
             services_prompt: "### The repository's services\n- `ui`: port 4200\n",
             agent_md: "# Services\nStart the UIs.",
             swf_model: "claude-opus-5-5",
-            swf_human_review_paths: ["**/migrations/**", 7],
-            swf_skills: { ...SKILLS, plan: "acme-plan", review: "nope" },
+            swf_skills: { ...SKILLS, plan: "acme-plan", gate: "nope" },
           };
         case "wait":
           return { state: "ready", acpSessionId: "acp-9" };
@@ -378,7 +355,6 @@ type Overrides = Omit<Partial<PollerDeps>, "github" | "vm" | "sessionVmService" 
 
 function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fakeCompute(), githubApp = fakeGitHubApp(), ...overrides }: Overrides = {}) {
   const logs: string[] = [];
-  const prompts: { sessionId: string; cwd: string; text: string }[] = [];
   let tokenReads = 0;
   const sessionVmService = new SessionVmService({
     compute,
@@ -409,16 +385,12 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
       swfImplement: readPrompt("2-implement"),
       swfEscalate: readPrompt("2-implement-escalate"),
       swfVerify: readPrompt("3-verify"),
-      swfGate: readPrompt("4-gate"),
+      swfReview: readPrompt("4-review"),
       swfPr: readPrompt("5-pr"),
       swfNudge: readPrompt("nudge"),
       swfAnswer: readPrompt("answer"),
       swfBadResult: readPrompt("bad-result"),
     }),
-    sendPrompt: async (_transport, request) => {
-      prompts.push(request);
-      return "started";
-    },
     newId: () => SESSION_ID,
     now: () => NOW,
     log: (message) => logs.push(message),
@@ -427,18 +399,17 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
     githubApp,
     vm: () => vm,
   };
-  return { poller: new Poller(deps), logs, prompts, tokenReads: () => tokenReads };
+  return { poller: new Poller(deps), logs, tokenReads: () => tokenReads };
 }
 
-/** The pipeline record of acme/app#12 at `step`, a fresh one apart from `fields`. */
-/** A record of version 1, one the poller drives to its end, at `step` with one running run of it, apart from `fields`. */
+/** The pipeline record of acme/app#12, which names its record comment, at `step` with one running run of it, apart from `fields`. */
 function recordAt(step: SwfStep, fields: Partial<z.input<typeof Pipeline.schema>> = {}): Pipeline {
-  return new Pipeline({ ...started(NOW).toJSON(), version: 1, step, runs: [runOf(1, step)], ...fields });
+  return new Pipeline({ ...started(NOW).toJSON(), recordId: RECORD_ID, step, runs: [runOf(1, step)], ...fields });
 }
 
-/** A record the runner on the VM drives, which names its record comment, at `step` with one running run of it, apart from `fields`. */
-function runnerRecordAt(step: SwfStep, fields: Partial<z.input<typeof Pipeline.schema>> = {}): Pipeline {
-  return new Pipeline({ ...started(NOW).toJSON(), recordId: RECORD_ID, step, runs: [runOf(1, step)], ...fields });
+/** The body of a record comment of acme/app#12 at `step`, as a release that wrote records of `version` left it; without one for null. */
+function oldRecordComment(step: SwfStep, version: number | null): string {
+  return recordAt(step, { pullRequest: PULL_REQUEST }).toComment().replace(/"version":\d+,/, version === null ? "" : `"version":${version},`);
 }
 
 /** A run of `step` that started at NOW and still runs, apart from `fields`. */
@@ -456,16 +427,22 @@ function resultComment(id: number, result: Record<string, unknown>, text = "Done
   return { id, author: BOT_NAME, createdAt: "2026-10-13T09:00:00Z", body: `${text}\n\n<!-- hunt:step ${JSON.stringify(result)} -->\n` };
 }
 
-/** Pull request PULL_REQUEST at HEAD_SHA, open, blocked by GitHub, its checks passed, apart from `fields`. */
+/** Pull request PULL_REQUEST at HEAD_SHA, open, blocked by GitHub, its checks passed and approved by the scorer, apart from `fields`. */
 function pullRequestOf(fields: Partial<z.input<typeof PullRequestState.schema>> = {}): PullRequestState {
   const url = `https://github.com/acme/app/pull/${PULL_REQUEST}`;
-  return new PullRequestState({ number: PULL_REQUEST, url, title: "fix: login", headSha: HEAD_SHA, state: "open", mergeState: "BLOCKED", checks: "success", failingChecks: [], labels: [], ...fields });
-}
-
-/** The sticky comment of the Claude review on the pull request, with its verdict for `headSha`. */
-function verdictComment(id: number, headSha: string, blocking: number, findings = blocking): IssueComment {
-  const verdict = JSON.stringify({ headSha, blocking, findings });
-  return { id, author: "github-actions[bot]", createdAt: "2026-10-14T08:00:00Z", body: `## PR review\n\n1. The index lacks a test.\n\n<!-- claude-pr-review:verdict ${verdict} -->\n` };
+  return new PullRequestState({
+    number: PULL_REQUEST,
+    url,
+    title: "fix: login",
+    headSha: HEAD_SHA,
+    state: "open",
+    mergeState: "BLOCKED",
+    reviewDecision: "APPROVED",
+    checks: "success",
+    failingChecks: [],
+    labels: [],
+    ...fields,
+  });
 }
 
 function reviewOf(id: number, author: string, state: string, body = ""): PullRequestReview {
@@ -477,8 +454,6 @@ interface SessionOptions extends FakeGitHubOptions {
   labels?: string[];
   /** The comments on the issue after the record comment. */
   comments?: IssueComment[];
-  /** The relay's `hunt-ctl status`; idle since 1 000 without it. */
-  status?: () => Record<string, unknown>;
   vmStatus?: string;
 }
 
@@ -486,12 +461,12 @@ interface SessionOptions extends FakeGitHubOptions {
  * The poller following the VM of session SESSION_ID for acme/app#12, an issue assigned to carol whose thread holds the
  * record comment with `record` and then `comments`; `stored` is the issue as GitHub keeps it, `listed` the VM.
  */
-function followSession(record: Pipeline, { labels = [`swf:${record.step}`], comments = [], status = () => statusOf("idle", 1_000), vmStatus = "RUNNING", ...options }: SessionOptions = {}) {
+function followSession(record: Pipeline, { labels = [`swf:${record.step}`], comments = [], vmStatus = "RUNNING", ...options }: SessionOptions = {}) {
   const stored: Issue = { ...issue(12, "Issue 12", labels), assignees: ["carol"] };
   const github = fakeGitHub({}, { ...options, lookup: { [KEY]: stored }, threads: { ...options.threads, [KEY]: threadOf(record, ...comments) } });
   const listed = [{ ...sessionVmOf(record.step), status: vmStatus }];
   const compute = fakeCompute(listed);
-  const { vm, calls } = fakeVm(undefined, status);
+  const { vm, calls } = fakeVm();
   return { ...createPoller({ github, compute, vm }), github, compute, listed, stored, calls };
 }
 
@@ -499,7 +474,7 @@ function followSession(record: Pipeline, { labels = [`swf:${record.step}`], comm
  * The poller following acme/app#12, an issue in progress whose thread holds the record comment with `record` and then
  * `comments`, while Compute Engine lists no VM at all; a replacement VM would be VM, as the poller creates it.
  */
-function followIssueWithoutVm(record: Pipeline, { labels = [`swf:${record.step}`], comments = [], ...options }: Omit<SessionOptions, "status" | "vmStatus"> = {}) {
+function followIssueWithoutVm(record: Pipeline, { labels = [`swf:${record.step}`], comments = [], ...options }: Omit<SessionOptions, "vmStatus"> = {}) {
   const stored: Issue = { ...issue(12, "Issue 12", labels), assignees: ["carol"] };
   const github = fakeGitHub({}, { ...options, inProgress: { "acme/app": [stored] }, lookup: { [KEY]: stored }, threads: { ...options.threads, [KEY]: threadOf(record, ...comments) } });
   const compute = fakeCompute([]);
@@ -555,13 +530,13 @@ describe("Poller.cycle", () => {
     const github = fakeGitHub({ "acme/app": [issue(12, "Fix login", ["swf", "bug"])] });
     const compute = fakeCompute();
     const { vm, calls, claudeFiles } = fakeVm();
-    const { poller, logs, prompts } = createPoller({ github, compute, vm });
+    const { poller, logs } = createPoller({ github, compute, vm });
 
     await poller.cycle();
     await poller.drain();
 
-    const labels = ["plan", "implement", "verify", "gate", "pr", "review", "human-review", "merge", "question", "done", "failed"];
-    const planned = Pipeline.start({ ...ISSUE, branch: "fix/general/12-fix-login" }, ["**/migrations/**"], { ...SKILLS, plan: "acme-plan" }, NOW);
+    const labels = ["plan", "implement", "verify", "review", "pr", "checks", "human-review", "merge", "question", "done", "failed"];
+    const planned = Pipeline.start({ ...ISSUE, branch: "fix/general/12-fix-login" }, { ...SKILLS, plan: "acme-plan" }, NOW);
     expect(github.calls).toEqual([
       "in-progress acme/app",
       "issues acme/app swf",
@@ -611,12 +586,11 @@ describe("Poller.cycle", () => {
       modeId: "bypassPermissions",
       configOptions: { model: "claude-opus-5-5" },
     });
-    // The runner on the VM sends the plan prompt; the poller sends none and the record names the comment the runner edits.
-    expect(prompts).toEqual([]);
+    // The runner on the VM sends the plan prompt; the record names the comment the runner edits.
     expect(lastRecord(github)).toEqual(withoutRuns(planned.toJSON()));
-    expect(lastRecord(github)).toMatchObject({ version: 2, recordId: FIRST_POSTED_ID, promptTurn: null });
+    expect(lastRecord(github)).toMatchObject({ version: 3, recordId: FIRST_POSTED_ID, promptTurn: null });
     expect(github.updates.at(-1)?.body).toContain(
-      "\"skills\":{\"plan\":\"acme-plan\",\"implement\":\"swf-implement\",\"verify\":\"swf-verify\",\"gate\":\"swf-gate\",\"pr\":\"swf-pr\"}",
+      "\"skills\":{\"plan\":\"acme-plan\",\"implement\":\"swf-implement\",\"verify\":\"swf-verify\",\"review\":\"swf-review\",\"pr\":\"swf-pr\"}",
     );
     expect(github.threads[KEY].map((comment) => comment.id)).toEqual([1, FIRST_POSTED_ID]);
     expect(logs.at(-1)).toBe(`acme/app#12: the runner of session ${SESSION_ID} drives the issue, beginning with the plan`);
@@ -741,17 +715,17 @@ describe("Poller.cycle", () => {
 
   it("marks the issue as failed without a record when session-config names no skill for an agent step, since Hunt has no default skill", async () => {
     const answers: [Record<string, unknown>, string][] = [
-      [{ swf_skills: { plan: "acme-plan", verify: "acme-verify", review: "nope" } }, "the steps implement, gate, pr"],
-      [{ swf_skills: {} }, "the steps plan, implement, verify, gate, pr"],
-      [{}, "the steps plan, implement, verify, gate, pr"],
-      [{ swf_skills: { ...SKILLS, gate: "" } }, "the step gate"],
+      [{ swf_skills: { plan: "acme-plan", verify: "acme-verify", gate: "nope" } }, "the steps implement, review, pr"],
+      [{ swf_skills: {} }, "the steps plan, implement, verify, review, pr"],
+      [{}, "the steps plan, implement, verify, review, pr"],
+      [{ swf_skills: { ...SKILLS, review: "" } }, "the step review"],
     ];
     for (const [answer, steps] of answers) {
       const github = fakeGitHub({ "acme/app": [issue(9)] });
       const { vm, calls } = fakeVm();
       const huntCtl = vm.huntCtl;
       vm.huntCtl = async (args, input) => (args[0] === "session-config" ? answer : huntCtl(args, input));
-      const { poller, logs, prompts } = createPoller({ github, vm });
+      const { poller, logs } = createPoller({ github, vm });
 
       await poller.cycle();
       await poller.drain();
@@ -764,7 +738,6 @@ describe("Poller.cycle", () => {
       ]);
       expect(github.calls.filter((call) => call.includes("hunt:pipeline")), steps).toEqual([]);
       expect(calls.filter((call) => call.startsWith("hunt-ctl deps")), steps).toEqual([]);
-      expect(prompts, steps).toEqual([]);
       expect(logs, steps).toContain(`acme/app#9: failed: ${expected}`);
     }
   });
@@ -773,7 +746,7 @@ describe("Poller.cycle", () => {
 
 describe("Poller.cycle follows running sessions", () => {
   it("records the state the issue's labels report in the VM, once per change", async () => {
-    const session = followSession(recordAt("plan", { promptTurn: 0 }), { labels: ["swf:question"], status: () => statusOf("running", null) });
+    const session = followSession(recordAt("plan", { promptTurn: 0 }), { labels: ["swf:question"] });
 
     await session.poller.cycle();
     await session.poller.cycle();
@@ -781,12 +754,11 @@ describe("Poller.cycle follows running sessions", () => {
     expect(session.compute.metadata[0]).toContainEqual({ key: "hunt-agent", value: "question" });
     expect(session.logs).toContain(`${KEY}: the agent is question`);
     expect(session.calls).toEqual([TOKEN_CALL]);
-    expect(session.prompts).toEqual([]);
 
     session.stored.labels = ["swf:plan"];
     await session.poller.cycle();
     expect(session.compute.metadata[1]).toContainEqual({ key: "hunt-agent", value: "plan" });
-    expect(session.calls.slice(1)).toEqual([`hunt-ctl status ${SESSION_ID}`]);
+    expect(session.calls).toEqual([TOKEN_CALL]);
   });
 
   it("gives every running VM the repository's GitHub token whenever it changed, whatever the agent's state", async () => {
@@ -865,15 +837,29 @@ describe("Poller.cycle follows running sessions", () => {
 
     expect(session.calls).toEqual([TOKEN_CALL]);
     expect(writes(session.github)).toEqual([]);
-    expect(session.prompts).toEqual([]);
 
-    session.github.threads[KEY] = threadOf(recordAt("review", { pullRequest: PULL_REQUEST }));
+    session.github.threads[KEY] = threadOf(recordAt("checks", { pullRequest: PULL_REQUEST }));
     session.stored.labels = ["bug"];
     await session.poller.cycle();
     expect(session.logs.filter((line) => line.includes("no label of the workflow"))).toEqual([
-      `${KEY}: the issue carries no label of the workflow; setting swf:review from the pipeline record`,
+      `${KEY}: the issue carries no label of the workflow; setting swf:checks from the pipeline record`,
     ]);
-    expect(writes(session.github).slice(0, 1)).toEqual(["label acme/app#12 swf:review"]);
+    expect(writes(session.github).slice(0, 1)).toEqual(["label acme/app#12 swf:checks"]);
+  });
+
+  it("leaves a session alone whose record is of an older version or names no version, and says so once", async () => {
+    for (const version of [2, null]) {
+      const session = followSession(recordAt("checks", { pullRequest: PULL_REQUEST }), { labels: ["swf:checks"], pullRequests: { [PULL_REQUEST]: pullRequestOf() } });
+      session.github.threads[KEY][0].body = oldRecordComment("checks", version);
+
+      await session.poller.cycle();
+      await session.poller.cycle();
+      const warnings = session.logs.filter((line) => line.includes("left alone"));
+      expect(warnings, String(version)).toHaveLength(1);
+      expect(warnings[0], String(version)).toMatch(new RegExp(`^${KEY}: the pipeline record comment ${RECORD_ID} is left alone: .*version ${version ?? 1}`));
+      expect(session.calls, String(version)).toEqual([TOKEN_CALL]);
+      expect(writes(session.github), String(version)).toEqual([]);
+    }
   });
 
   it("moves the issue's label back to the step of the record, which is the pipeline's truth", async () => {
@@ -883,196 +869,16 @@ describe("Poller.cycle follows running sessions", () => {
     expect(writes(session.github)).toEqual(["label acme/app#12 swf:implement", "unlabel acme/app#12 swf:plan"]);
     expect(session.stored.labels).toEqual(["bug", "swf:implement"]);
     expect(session.logs).toContain(`${KEY}: the issue is labelled swf:plan but the pipeline is at implement; relabelling`);
-    expect(session.prompts).toEqual([]);
   });
 
-  it("sends the prompt of an agent step once the relay is idle and no desktop is connected, and only once", async () => {
-    let status = statusOf("running", 1_000);
-    const record = recordAt("verify", { lastResultId: 1001 });
-    const session = followSession(record, { status: () => status });
-
-    await session.poller.cycle();
-    status = statusOf("idle", 1_000, true);
-    await session.poller.cycle();
-    expect(session.prompts).toEqual([]);
-
-    status = statusOf("idle", 1_000);
-    await session.poller.cycle();
-    expect(session.prompts).toHaveLength(1);
-    expect(session.prompts[0]).toMatchObject({ sessionId: "acp-9", cwd: "/home/agent/app" });
-    expect(session.prompts[0].text.startsWith("Step `verify` for issue #12 of acme/app on the branch `feat/general/12-issue-12`.\n")).toBe(true);
-    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record, promptTurn: 1_000 }));
-    expect(session.logs).toContain(`${KEY}: sent the prompt of the step verify (prompt started)`);
-
-    await session.poller.cycle();
-    expect(session.prompts).toHaveLength(1);
-    expect(writes(session.github)).toEqual([`update acme/app ${RECORD_ID}`]);
-  });
-
-  it("sends the escalation in place of the implement prompt, and counts a relay without a finished turn as turn 0", async () => {
-    const record = recordAt("review", { attempt: 5, pullRequest: PULL_REQUEST });
-    record.sendBackToImplement(["Checks: build failed"], NOW);
-    const session = followSession(record, { status: () => statusOf("idle", null) });
-
-    await session.poller.cycle();
-    expect(session.prompts).toHaveLength(1);
-    expect(session.prompts[0].text.startsWith("Issue #12 of acme/app went back to `implement` more than 5 times.")).toBe(true);
-    expect(session.prompts[0].text).toContain("- Checks: build failed\n");
-    expect(lastRecord(session.github)).toMatchObject({ step: "implement", escalate: true, attempt: 0, promptTurn: 0 });
-    expect(session.logs).toContain(`${KEY}: sent the prompt of the step implement (escalation) (prompt started)`);
-  });
-
-  it("moves the pipeline on a new step result of the bot and sends the next step's prompt at the following poll", async () => {
-    let status = statusOf("running", null);
-    const plan = resultComment(1001, { step: "plan" }, "## Plan\n\n1. Fix the login.");
-    const session = followSession(recordAt("plan", { promptTurn: 0 }), { comments: [plan], status: () => status });
-
-    await session.poller.cycle();
-    expect(writes(session.github)).toEqual(["label acme/app#12 swf:implement", "unlabel acme/app#12 swf:plan", `update acme/app ${RECORD_ID}`]);
-    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...recordAt("implement"), lastResultId: 1001 }));
-    expect(session.stored.labels).toEqual(["swf:implement"]);
-    expect(session.logs).toContain(`${KEY}: the agent reported the step plan; the pipeline goes on with implement`);
-    expect(session.prompts).toEqual([]);
-
-    status = statusOf("idle", 2_000);
-    await session.poller.cycle();
-    expect(session.compute.metadata.at(-1)).toContainEqual({ key: "hunt-agent", value: "implement" });
-    expect(session.prompts).toHaveLength(1);
-    expect(session.prompts[0].text.startsWith("Step `implement` for issue #12 of acme/app on the branch `feat/general/12-issue-12`.")).toBe(true);
-    expect(session.prompts[0].text).toContain("## Findings to fix\n\n(none)\n");
-    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...recordAt("implement"), lastResultId: 1001, promptTurn: 2_000 }));
-  });
-
-  it("logs the runs of the steps in the record and mirrors the pipeline and the step's result into .hunt/swf of the VM", async () => {
-    let status = statusOf("running", null);
-    const plan = resultComment(1001, { step: "plan" }, "## Plan\n\n1. Fix the login.");
-    const session = followSession(recordAt("plan", { promptTurn: 0 }), { comments: [plan], status: () => status });
-
-    await session.poller.cycle();
-    expect(runsOf(session.github)).toEqual([[1, "plan", "passed", undefined], [2, "implement", "running", undefined]]);
-    const recorded = session.calls.filter((call) => call.startsWith(`hunt-ctl swf-record ${SESSION_ID}`));
-    expect(recorded).toHaveLength(1);
-    const written = JSON.parse(JSON.parse(recorded[0].slice(recorded[0].indexOf("<<< ") + 4)).trim()) as { pipeline: unknown; step: unknown };
-    expect(written.pipeline).toEqual(Pipeline.fromComment(session.github.updates.at(-1)?.body ?? "")?.toJSON());
-    expect(written.step).toEqual({ n: 1, step: "plan", body: plan.body });
-
-    status = statusOf("idle", 2_000);
-    await session.poller.cycle();
-    expect(session.prompts).toHaveLength(1);
-    expect(session.calls.filter((call) => call.startsWith("hunt-ctl swf-record"))).toHaveLength(2);
-    expect(session.calls.at(-1)).toContain('\\"promptTurn\\":2000');
-    expect(session.calls.at(-1)).not.toContain('"step":{');
-  });
-
-  it("sends the issue back to implement when verify reports findings, with the attempt counted, and ignores older results", async () => {
-    const implemented = resultComment(1002, { step: "implement", summary: "Fixed the login." });
-    const report = resultComment(1003, { step: "verify", findings: ["The logout still fails."] }, "| Criterion | Passed |\n| --- | --- |\n| Logout | no |");
-    const session = followSession(recordAt("verify", { attempt: 1, lastResultId: 1002, promptTurn: 2_000 }), { comments: [implemented, report] });
-
-    await session.poller.cycle();
-    expect(writes(session.github)).toEqual(["label acme/app#12 swf:implement", "unlabel acme/app#12 swf:verify", `update acme/app ${RECORD_ID}`]);
-    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...recordAt("implement"), attempt: 2, findings: ["Verify: The logout still fails."], lastResultId: 1003 }));
-
-    await session.poller.cycle();
-    expect(session.prompts).toHaveLength(1);
-    expect(session.prompts[0].text).toContain("(attempt 2 of 5)");
-    expect(session.prompts[0].text).toContain("## Findings to fix\n\n- Verify: The logout still fails.\n");
-  });
-
-  it("goes on from a passing verify to the gate and from the gate to the pull request with the gate's judgement", async () => {
-    const session = followSession(recordAt("verify", { lastResultId: 1002, promptTurn: 900 }), { comments: [resultComment(1003, { step: "verify", findings: [] })] });
-
-    await session.poller.cycle();
-    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...recordAt("gate"), lastResultId: 1003 }));
-    await session.poller.cycle();
-    expect(session.prompts[0].text.startsWith("Step `gate` for issue #12 of acme/app on the branch `feat/general/12-issue-12` (pull request: (not opened yet)).")).toBe(true);
-
-    session.github.threads[KEY].push(resultComment(1004, { step: "gate", humanReview: true, risk: "high", reasons: ["It changes the billing."] }));
-    await session.poller.cycle();
-    expect(session.stored.labels).toEqual(["swf:pr"]);
-    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...recordAt("pr"), humanReview: true, lastResultId: 1004 }));
-    expect(session.logs).toContain(`${KEY}: the agent reported the step gate; the pipeline goes on with pr`);
-    await session.poller.cycle();
-    expect(session.prompts[1].text).toContain("(a person reviews before the merge: yes)");
-  });
-
-  it("sends an unusable step result back to the agent once its relay is idle, without moving the pipeline", async () => {
-    let status = statusOf("running", 3_000);
-    const session = followSession(recordAt("gate", { lastResultId: 1003, promptTurn: 3_000 }), {
-      comments: [resultComment(1004, { step: "gate", humanReview: "maybe", risk: "low" })],
-      status: () => status,
-    });
-
-    await session.poller.cycle();
-    expect(session.prompts).toEqual([]);
-    expect(writes(session.github)).toEqual([]);
-
-    status = statusOf("idle", 4_000);
-    await session.poller.cycle();
-    const badResult = badResultPrompt(readPrompt("bad-result"), "humanReview of a gate result must be true or false");
-    expect(session.prompts.map((prompt) => prompt.text)).toEqual([badResult]);
-    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...recordAt("gate"), lastResultId: 1004, promptTurn: 4_000 }));
-    expect(session.logs).toContain(`${KEY}: the step result of gate is unusable (humanReview of a gate result must be true or false); told the agent (prompt started)`);
-    await session.poller.cycle();
-    expect(session.prompts).toHaveLength(1);
-
-    session.github.threads[KEY].push(resultComment(1005, { step: "plan" }));
-    status = statusOf("idle", 5_000);
-    await session.poller.cycle();
-    expect(session.prompts[1].text).toBe(badResultPrompt(readPrompt("bad-result"), "the result reports step plan, but the current step is gate"));
-    expect(session.stored.labels).toEqual(["swf:gate"]);
-    expect(writes(session.github)).toEqual([`update acme/app ${RECORD_ID}`, `update acme/app ${RECORD_ID}`]);
-  });
-
-  it("reminds an agent that ended its step's turn without a result once, then marks the issue as failed", async () => {
-    let status = statusOf("running", 1_000);
-    const session = followSession(recordAt("verify", { lastResultId: 1002, promptTurn: 1_000 }), { status: () => status });
-
-    await session.poller.cycle();
-    status = statusOf("idle", 1_000);
-    await session.poller.cycle();
-    expect(session.prompts).toEqual([]);
-
-    status = statusOf("idle", 2_000);
-    await session.poller.cycle();
-    expect(session.prompts).toHaveLength(1);
-    expect(session.prompts[0]).toMatchObject({ sessionId: "acp-9", cwd: "/home/agent/app" });
-    expect(session.prompts[0].text.startsWith("Your last turn ended, but issue #12 of acme/app still has the label `swf:verify`")).toBe(true);
-    expect(lastRecord(session.github)).toMatchObject({ step: "verify", reminded: true, promptTurn: 2_000 });
-    expect(session.logs).toContain(`${KEY}: the agent ended its turn without a result for verify; reminded it (prompt started)`);
-
-    await session.poller.cycle();
-    status = statusOf("running", 2_000);
-    await session.poller.cycle();
-    expect(session.prompts).toHaveLength(1);
-    expect(writes(session.github)).toEqual([`update acme/app ${RECORD_ID}`]);
-
-    status = statusOf("idle", 3_000);
-    await session.poller.cycle();
-    expect(session.prompts).toHaveLength(1);
-    expect(writes(session.github)).toEqual([
-      `update acme/app ${RECORD_ID}`,
-      "unlabel acme/app#12 swf:verify",
-      "unlabel acme/app#12 swf:question",
-      "label acme/app#12 swf:failed",
-      `comment acme/app#12 ${stoppedComment("verify", VM)}`,
-    ]);
-    expect(session.logs).toContain(`${KEY}: the agent ended its turn again without a result for verify; marking the issue as failed`);
-
-    await session.poller.cycle();
-    expect(session.compute.metadata.at(-1)).toContainEqual({ key: "hunt-agent", value: "failed" });
-    expect(writes(session.github)).toHaveLength(5);
-  });
-
-  it("sends no prompt to a VM that names another session's VM", async () => {
+  it("follows no VM that names another session's VM", async () => {
     const github = fakeGitHub({}, { lookup: { [KEY]: issue(12, "Issue 12", ["swf:verify"]) }, threads: { [KEY]: threadOf(recordAt("verify")) } });
     const compute = fakeCompute([sessionVmOf("verify"), { ...sessionVmOf("verify"), name: "vm-hunt-s-00000002" }]);
-    const { vm, calls } = fakeVm(undefined, () => statusOf("idle", 1_000, true));
-    const { poller, prompts } = createPoller({ github, compute, vm });
+    const { vm, calls } = fakeVm();
+    const { poller } = createPoller({ github, compute, vm });
 
     await poller.cycle();
-    expect(calls).toEqual([TOKEN_CALL, `hunt-ctl status ${SESSION_ID}`]);
-    expect(prompts).toEqual([]);
+    expect(calls).toEqual([TOKEN_CALL]);
     expect(github.calls.filter((call) => call.startsWith("issue "))).toEqual([`issue ${KEY}`]);
   });
 
@@ -1083,74 +889,7 @@ describe("Poller.cycle follows running sessions", () => {
   ];
   const bobsAnswer: IssueComment = { id: 1004, author: "bob", createdAt: "2026-10-13T10:05:00Z", body: "Postgres, please." };
 
-  it("delivers the answers that arrive on the issue to the waiting agent once each, with the step, not while the relay is busy or a desktop is connected", async () => {
-    let status = statusOf("idle", 1_000);
-    const record = recordAt("implement", { lastResultId: 1002, promptTurn: 500, reminded: true });
-    const session = followSession(record, { labels: ["swf:question"], comments: question, status: () => status });
-    const thread = session.github.threads[KEY];
-
-    await session.poller.cycle();
-    expect(session.prompts).toEqual([]);
-    expect(session.calls).toEqual([TOKEN_CALL]);
-
-    thread.push(bobsAnswer);
-    await session.poller.cycle();
-    expect(session.prompts).toHaveLength(1);
-    expect(session.prompts[0]).toMatchObject({ sessionId: "acp-9", cwd: "/home/agent/app" });
-    expect(session.prompts[0].text.startsWith("An answer to your question arrived as a comment on issue #12 of acme/app:\n\n**@bob** on 2026-10-13 10:05 UTC:\n\nPostgres, please.\n\n")).toBe(true);
-    expect(session.prompts[0].text).toContain("(`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:implement --title \"<title>\"`)");
-    expect(session.prompts[0].text).toContain("then finish the step `implement` you stopped at");
-    expect(session.prompts[0].text).not.toContain("logout");
-    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record, promptTurn: 1_000, reminded: false }));
-    expect(session.logs).toContain(`${KEY}: an answer arrived on the issue; sent it to the agent (prompt started)`);
-
-    status = statusOf("running", 1_000);
-    await session.poller.cycle();
-    status = statusOf("idle", 2_000);
-    await session.poller.cycle();
-    expect(session.prompts).toHaveLength(1);
-
-    thread.push(
-      { id: 1005, author: "carol", createdAt: "2026-10-13T10:10:00Z", body: "With pgvector." },
-      { id: 1006, author: "dave", createdAt: "2026-10-13T10:11:00Z", body: "Agreed." },
-    );
-    status = statusOf("idle", 2_000, true);
-    await session.poller.cycle();
-    expect(session.prompts).toHaveLength(1);
-    status = statusOf("idle", 2_000);
-    await session.poller.cycle();
-    expect(session.prompts).toHaveLength(2);
-    expect(session.prompts[1].text).toContain("**@carol** on 2026-10-13 10:10 UTC:\n\nWith pgvector.\n\n---\n\n**@dave** on 2026-10-13 10:11 UTC:\n\nAgreed.");
-    expect(session.prompts[1].text).not.toContain("Postgres, please.");
-    expect(session.logs).toContain(`${KEY}: 2 answers arrived on the issue; sent them to the agent (prompt started)`);
-  });
-
-  it("starts the stopped VM of a waiting agent once its answer arrived and delivers the answer when the VM runs", async () => {
-    const session = followSession(recordAt("implement", { lastResultId: 1002, promptTurn: 1_000 }), { labels: ["swf:question"], comments: question, vmStatus: "TERMINATED" });
-    const { compute, listed, logs, calls, prompts } = session;
-    startable(compute, listed);
-
-    await session.poller.cycle();
-    expect(compute.calls.filter((call) => call.startsWith("start"))).toEqual([]);
-    expect(calls).toEqual([]);
-
-    session.github.threads[KEY].push(bobsAnswer);
-    await session.poller.cycle();
-    expect(logs).toContain(`${KEY}: an answer arrived on the issue while ${VM} is terminated; starting it`);
-    await settle(logs, `${KEY}: ${VM} runs again`);
-    expect(compute.calls.filter((call) => call.startsWith("start"))).toEqual([`start ${VM}`]);
-    expect(calls.slice(0, 3)).toEqual(["wait until ready", "ensure release", `hunt-ctl put-remote-secrets <<< ${JSON.stringify("{}")}`]);
-    expect(calls).toHaveLength(4);
-    expect(calls[3]).toMatch(/^hunt-ctl swf-record [0-9a-f-]+ <<< .*\\"step\\":\\"implement\\"/);
-    expect(prompts).toEqual([]);
-
-    await session.poller.cycle();
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0].text).toContain("**@bob** on 2026-10-13 10:05 UTC:\n\nPostgres, please.");
-    expect(calls.slice(4)).toEqual([TOKEN_CALL, `hunt-ctl status ${SESSION_ID}`]);
-  });
-
-  it("starts the stopped VM of a session whose step waits for its prompt, and leaves one off whose prompt was sent", async () => {
+  it("starts the stopped VM of a session whose step waits for its prompt and hands it the pipeline, and leaves one off whose prompt was sent", async () => {
     const sent = followSession(recordAt("implement", { lastResultId: 1001, promptTurn: 1_000 }), { vmStatus: "TERMINATED" });
     await sent.poller.cycle();
     expect(sent.compute.calls).toEqual(["list hunt-origin=swf"]);
@@ -1162,12 +901,11 @@ describe("Poller.cycle follows running sessions", () => {
     expect(session.logs).toContain(`${KEY}: the step implement waits for its prompt while ${VM} is suspended; starting it`);
     await settle(session.logs, `${KEY}: ${VM} runs again`);
     expect(session.compute.calls).toContain(`resume ${VM}`);
-    expect(session.calls.filter((call) => call.startsWith("hunt-ctl swf-record"))).toHaveLength(1);
-    expect(session.calls.at(-1)).toContain('\\"step\\":\\"implement\\"');
+    expect(session.calls.filter((call) => call.startsWith("hunt-ctl swf-inbox"))).toHaveLength(1);
+    expect(session.calls.at(-1)).toMatch(/^hunt-ctl swf-inbox [0-9a-f-]+ <<< .*\\"kind\\":\\"pipeline\\".*\\"step\\":\\"implement\\"/);
 
     await session.poller.cycle();
-    expect(session.prompts).toHaveLength(1);
-    expect(session.prompts[0].text.startsWith("Step `implement` for issue #12 of acme/app")).toBe(true);
+    expect(session.calls.slice(-1)).toEqual([TOKEN_CALL]);
   });
 
   it("logs a start that keeps failing once and tries again at every poll", async () => {
@@ -1204,12 +942,11 @@ describe("Poller.cycle follows running sessions", () => {
     expect(github.calls.filter((call) => call.startsWith("comments"))).toEqual([]);
   });
 
-  it("leaves the agent steps of a session the runner on the VM drives to the runner, and says so once", async () => {
-    const session = followSession(runnerRecordAt("implement", { promptTurn: 500 }));
+  it("leaves the agent steps to the runner on the VM, and says so once", async () => {
+    const session = followSession(recordAt("implement", { promptTurn: 500 }));
     await session.poller.cycle();
     await session.poller.cycle();
     expect(session.calls).toEqual([TOKEN_CALL]);
-    expect(session.prompts).toEqual([]);
     expect(writes(session.github)).toEqual([]);
     expect(session.logs.filter((line) => line.includes("drives the step"))).toEqual([`${KEY}: the runner on ${VM} drives the step implement`]);
 
@@ -1220,8 +957,8 @@ describe("Poller.cycle follows running sessions", () => {
     expect(session.calls).toEqual([TOKEN_CALL]);
   });
 
-  it("hands the answers of a session the runner drives to its inbox once each, and starts its stopped VM for them", async () => {
-    const session = followSession(runnerRecordAt("implement", { promptTurn: 500 }), { labels: ["swf:question"], comments: question });
+  it("hands the answers to the runner's inbox once each, and starts its stopped VM for them", async () => {
+    const session = followSession(recordAt("implement", { promptTurn: 500 }), { labels: ["swf:question"], comments: question });
     const thread = session.github.threads[KEY];
     await session.poller.cycle();
     expect(session.calls).toEqual([TOKEN_CALL]);
@@ -1230,13 +967,12 @@ describe("Poller.cycle follows running sessions", () => {
     await session.poller.cycle();
     const answers = JSON.stringify({ kind: "answers", comments: [{ author: "bob", createdAt: "2026-10-13T10:05:00Z", body: "Postgres, please." }] });
     expect(session.calls).toEqual([TOKEN_CALL, `hunt-ctl swf-inbox ${SESSION_ID} <<< ${JSON.stringify(`${answers}\n`)}`]);
-    expect(session.prompts).toEqual([]);
     expect(writes(session.github)).toEqual([]);
     expect(session.logs).toContain(`${KEY}: an answer arrived on the issue; handed it to the runner on ${VM}`);
     await session.poller.cycle();
     expect(session.calls).toHaveLength(2);
 
-    const stopped = followSession(runnerRecordAt("implement", { promptTurn: 500 }), { labels: ["swf:question"], comments: [...question, bobsAnswer], vmStatus: "TERMINATED" });
+    const stopped = followSession(recordAt("implement", { promptTurn: 500 }), { labels: ["swf:question"], comments: [...question, bobsAnswer], vmStatus: "TERMINATED" });
     startable(stopped.compute, stopped.listed);
     await stopped.poller.cycle();
     expect(stopped.logs).toContain(`${KEY}: an answer arrived on the issue while ${VM} is terminated; starting it`);
@@ -1262,163 +998,97 @@ describe("Poller.cycle follows running sessions", () => {
 });
 
 describe("Poller.cycle drives the pull request", () => {
-  const prThread = `acme/app#${PULL_REQUEST}`;
-
-  it("moves the issue to In Review when the pull request opens, without a person when no file needs one", async () => {
-    const opened = resultComment(1004, { step: "pr", pullRequest: PULL_REQUEST }, "https://github.com/acme/app/pull/31");
-    const record = recordAt("pr", { humanReviewPaths: ["**/migrations/**"], lastResultId: 1003, promptTurn: 3_000 });
-    const session = followSession(record, { comments: [opened], pullRequests: { [PULL_REQUEST]: pullRequestOf() }, files: ["README.md", "src/login.ts"], projects: ["Board"] });
-
-    await session.poller.cycle();
-    expect(writes(session.github)).toEqual(["move acme/app#12 In Review", "label acme/app#12 swf:review", "unlabel acme/app#12 swf:pr", `update acme/app ${RECORD_ID}`]);
-    expect(session.github.calls).toContain(`files acme/app#${PULL_REQUEST}`);
-    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record, step: "review", promptTurn: null, pullRequest: PULL_REQUEST, lastResultId: 1004, reviewPrepared: true }));
-    expect(session.logs).toContain(`${KEY}: moved to In Review in "Board"`);
-  });
-
-  it("asks a person to review a pull request that changes a file of humanReviewPaths: PR label, reviewers and one comment", async () => {
-    const opened = resultComment(1004, { step: "pr", pullRequest: PULL_REQUEST });
-    const pullRequests = { [PULL_REQUEST]: pullRequestOf() };
-    const record = recordAt("pr", { humanReviewPaths: ["**/migrations/**"], lastResultId: 1003, promptTurn: 3_000 });
-    const session = followSession(record, { comments: [opened], pullRequests, files: ["README.md", "apps/api/src/migrations/0007-add-index.ts"] });
-
-    await session.poller.cycle();
-    expect(writes(session.github)).toEqual([
-      "move acme/app#12 In Review",
-      `ensure acme/app ${HUMAN_REVIEW_PR_LABEL}`,
-      `label acme/app#${PULL_REQUEST} ${HUMAN_REVIEW_PR_LABEL}`,
-      `request acme/app#${PULL_REQUEST} carol`,
-      `comment acme/app#${PULL_REQUEST} ${humanReviewComment(["carol"], 12)}`,
-      "label acme/app#12 swf:review",
-      "unlabel acme/app#12 swf:pr",
-      `update acme/app ${RECORD_ID}`,
-    ]);
-    expect(pullRequests[PULL_REQUEST].labels).toEqual([HUMAN_REVIEW_PR_LABEL]);
-    expect(lastRecord(session.github)).toEqual(
-      withoutRuns({ ...record, step: "review", promptTurn: null, pullRequest: PULL_REQUEST, humanReview: true, notified: true, lastResultId: 1004, reviewPrepared: true }),
-    );
-    expect(session.logs).toContain(`${KEY}: #31 changes apps/api/src/migrations/0007-add-index.ts, which always needs a person`);
-    expect(session.logs).toContain(`${KEY}: asked @carol to review #31`);
-  });
-
-  it("asks once: a later review of a pull request a person reviews keeps humanReview and neither labels nor mentions again", async () => {
-    const regated = resultComment(1010, { step: "gate", humanReview: false, risk: "low", reasons: ["A small fix."] });
-    const record = recordAt("gate", { pullRequest: PULL_REQUEST, humanReview: true, notified: true, attempt: 1, lastResultId: 1009, promptTurn: 5_000 });
-    const session = followSession(record, { comments: [regated], pullRequests: { [PULL_REQUEST]: pullRequestOf({ labels: [HUMAN_REVIEW_PR_LABEL] }) } });
-
-    await session.poller.cycle();
-    expect(writes(session.github)).toEqual(["label acme/app#12 swf:review", "unlabel acme/app#12 swf:gate", `update acme/app ${RECORD_ID}`]);
-    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record, step: "review", promptTurn: null, lastResultId: 1010, reviewPrepared: true }));
-  });
-
-  it("prepares the review of a session the runner drives once the runner reports the pull request, then watches the pull request", async () => {
-    const pullRequests = { [PULL_REQUEST]: pullRequestOf() };
+  it("moves the issue to In Review once the runner moved it to checks, then waits for the checks of the head commit without asking the VM", async () => {
+    const pullRequests = { [PULL_REQUEST]: pullRequestOf({ checks: "pending" }) };
     const ended = { endedAt: new Date(NOW).toISOString(), outcome: "passed" as const };
-    const record = runnerRecordAt("review", { pullRequest: PULL_REQUEST, humanReviewPaths: ["**/migrations/**"], runs: [runOf(1, "pr", ended), runOf(2, "review")] });
-    const session = followSession(record, { pullRequests, files: ["apps/api/src/migrations/0007-add-index.ts"], projects: ["Board"] });
+    const record = recordAt("checks", { pullRequest: PULL_REQUEST, runs: [runOf(1, "pr", ended), runOf(2, "checks")] });
+    const session = followSession(record, { pullRequests, projects: ["Board"] });
 
     await session.poller.cycle();
-    expect(writes(session.github)).toEqual([
-      "move acme/app#12 In Review",
-      `ensure acme/app ${HUMAN_REVIEW_PR_LABEL}`,
-      `label acme/app#${PULL_REQUEST} ${HUMAN_REVIEW_PR_LABEL}`,
-      `request acme/app#${PULL_REQUEST} carol`,
-      `comment acme/app#${PULL_REQUEST} ${humanReviewComment(["carol"], 12)}`,
-      `update acme/app ${RECORD_ID}`,
-    ]);
-    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record.toJSON(), humanReview: true, notified: true, reviewPrepared: true }));
+    expect(writes(session.github)).toEqual(["move acme/app#12 In Review", `update acme/app ${RECORD_ID}`]);
+    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record.toJSON(), inReview: true }));
     expect(session.calls).toHaveLength(2);
-    expect(session.calls[1]).toMatch(/^hunt-ctl swf-inbox [0-9a-f-]+ <<< .*\\"reviewPrepared\\":true/);
+    expect(session.calls[1]).toMatch(/^hunt-ctl swf-inbox [0-9a-f-]+ <<< .*\\"inReview\\":true/);
     expect(session.logs).toContain(`${KEY}: moved to In Review in "Board"`);
-    expect(session.logs).toContain(`${KEY}: review: no Claude review verdict for 0123456 yet`);
+    expect(session.logs).toContain(`${KEY}: checks: the checks of the head commit are still running`);
 
-    // Prepared once; the review itself goes on as for any record.
+    // Moved once; the checks go on without the VM.
     await session.poller.cycle();
-    expect(writes(session.github)).toHaveLength(6);
+    await session.poller.cycle();
+    expect(writes(session.github)).toHaveLength(2);
     expect(session.calls).toHaveLength(2);
+    expect(session.logs.filter((line) => line.includes("still running"))).toHaveLength(1);
   });
 
-  it("hands a pipeline the runner drives back to the runner through its inbox when the review sends it to implement, and starts a stopped VM for it", async () => {
-    const session = followSession(runnerRecordAt("review", { pullRequest: PULL_REQUEST, reviewPrepared: true }), {
-      pullRequests: { [PULL_REQUEST]: pullRequestOf({ checks: "pending" }) },
-      threads: { [prThread]: [verdictComment(2002, HEAD_SHA, 2)] },
+  it("sends the issue back to implement at checks for a failing check, through the runner's inbox, and starts a stopped VM for it", async () => {
+    const session = followSession(recordAt("checks", { pullRequest: PULL_REQUEST, inReview: true, attempt: 1 }), {
+      pullRequests: { [PULL_REQUEST]: pullRequestOf({ checks: "failure", failingChecks: ["build", "lint"] }) },
     });
     await session.poller.cycle();
-    expect(writes(session.github)).toEqual(["label acme/app#12 swf:implement", "unlabel acme/app#12 swf:review", `update acme/app ${RECORD_ID}`]);
-    expect(lastRecord(session.github)).toMatchObject({ step: "implement", attempt: 1, promptTurn: null, reviewPrepared: false });
+    expect(writes(session.github)).toEqual(["label acme/app#12 swf:implement", "unlabel acme/app#12 swf:checks", `update acme/app ${RECORD_ID}`]);
+    expect(lastRecord(session.github)).toEqual(withoutRuns({
+      ...recordAt("implement", { pullRequest: PULL_REQUEST, inReview: true }),
+      attempt: 2,
+      findings: ["Checks: build, lint failed on 0123456 (https://github.com/acme/app/pull/31/checks)"],
+    }));
+    expect(session.logs).toContain(`${KEY}: the checks of #31 failed; back to implement`);
     expect(session.calls).toHaveLength(2);
     expect(session.calls[1]).toMatch(/^hunt-ctl swf-inbox [0-9a-f-]+ <<< .*\\"kind\\":\\"pipeline\\".*\\"step\\":\\"implement\\"/);
-    expect(session.prompts).toEqual([]);
 
-    const stopped = followSession(runnerRecordAt("implement", { attempt: 1, findings: ["Checks: build failed"] }), { vmStatus: "SUSPENDED" });
+    const stopped = followSession(recordAt("implement", { attempt: 1, findings: ["Checks: build failed"] }), { vmStatus: "SUSPENDED" });
     startable(stopped.compute, stopped.listed);
     await stopped.poller.cycle();
     expect(stopped.logs).toContain(`${KEY}: the step implement waits for its prompt while ${VM} is suspended; starting it`);
     await settle(stopped.logs, `${KEY}: ${VM} runs again`);
     expect(stopped.calls.filter((call) => call.startsWith("hunt-ctl swf-inbox"))).toHaveLength(1);
     expect(stopped.calls.filter((call) => call.startsWith("hunt-ctl swf-record"))).toEqual([]);
-    await stopped.poller.cycle();
-    expect(stopped.prompts).toEqual([]);
   });
 
-  it("waits at review for the checks and a Claude verdict for the head commit, then goes on with merge, without asking the VM", async () => {
+  it("goes on with merge once the checks passed and the scorer approved the pull request", async () => {
     const pullRequests = { [PULL_REQUEST]: pullRequestOf({ checks: "pending" }) };
-    const record = recordAt("review", { pullRequest: PULL_REQUEST, lastResultId: 1004 });
-    const session = followSession(record, { pullRequests, threads: { [prThread]: [verdictComment(2001, "f".repeat(40), 0)] } });
+    const record = recordAt("checks", { pullRequest: PULL_REQUEST, inReview: true });
+    const session = followSession(record, { pullRequests });
 
     await session.poller.cycle();
-    expect(session.logs).toContain(`${KEY}: review: the checks of the head commit are still running`);
-    pullRequests[PULL_REQUEST].checks = "success";
-    await session.poller.cycle();
-    await session.poller.cycle();
-    expect(session.logs.filter((line) => line.includes("no Claude review verdict"))).toEqual([`${KEY}: review: no Claude review verdict for 0123456 yet`]);
     expect(writes(session.github)).toEqual([]);
 
-    session.github.threads[prThread].push(verdictComment(2002, HEAD_SHA, 0, 1));
+    pullRequests[PULL_REQUEST] = pullRequestOf({ reviewDecision: "APPROVED" });
     await session.poller.cycle();
-    expect(writes(session.github)).toEqual(["label acme/app#12 swf:merge", "unlabel acme/app#12 swf:review", `update acme/app ${RECORD_ID}`]);
+    expect(writes(session.github)).toEqual(["label acme/app#12 swf:merge", "unlabel acme/app#12 swf:checks", `update acme/app ${RECORD_ID}`]);
     expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record, step: "merge" }));
-    expect(session.logs).toContain(`${KEY}: #31 passed its checks and the Claude review; the pipeline goes on with merge`);
-    expect(session.calls.filter((call) => !call.startsWith("hunt-ctl swf-record"))).toEqual([TOKEN_CALL]);
+    expect(session.logs).toContain(`${KEY}: #31 passed its checks and the scorer approved it; the pipeline goes on with merge`);
+    expect(session.calls[0]).toBe(TOKEN_CALL);
     expect(session.calls.at(-1)).toContain('\\"step\\":\\"merge\\"');
-    expect(session.prompts).toEqual([]);
-
-    const human = followSession(recordAt("review", { pullRequest: PULL_REQUEST, humanReview: true, notified: true }), {
-      pullRequests: { [PULL_REQUEST]: pullRequestOf() },
-      threads: { [prThread]: [verdictComment(2002, HEAD_SHA, 0, 3)] },
-    });
-    await human.poller.cycle();
-    expect(human.stored.labels).toEqual(["swf:human-review"]);
-    expect(lastRecord(human.github)).toMatchObject({ step: "human-review", humanReview: true });
   });
 
-  it("sends the issue back to implement at review for blocking findings of the Claude review or a failing check", async () => {
-    const blocking = followSession(recordAt("review", { pullRequest: PULL_REQUEST, attempt: 1 }), {
-      pullRequests: { [PULL_REQUEST]: pullRequestOf({ checks: "pending" }) },
-      threads: { [prThread]: [verdictComment(2002, HEAD_SHA, 2)] },
-    });
-    await blocking.poller.cycle();
-    expect(writes(blocking.github)).toEqual(["label acme/app#12 swf:implement", "unlabel acme/app#12 swf:review", `update acme/app ${RECORD_ID}`]);
-    expect(lastRecord(blocking.github)).toEqual(withoutRuns({
-      ...recordAt("implement", { pullRequest: PULL_REQUEST }),
-      attempt: 2,
-      findings: ["Claude review of 0123456 with 2 blocking finding(s):\n\n## PR review\n\n1. The index lacks a test."],
-    }));
-    expect(blocking.logs).toContain(`${KEY}: the review of #31 found something; back to implement`);
+  it("asks the issue's people to review once the checks passed without the scorer's approval: reviewers and one comment, once per issue", async () => {
+    const record = recordAt("checks", { pullRequest: PULL_REQUEST, inReview: true });
+    const session = followSession(record, { pullRequests: { [PULL_REQUEST]: pullRequestOf({ reviewDecision: "REVIEW_REQUIRED" }) } });
 
-    const failing = followSession(recordAt("review", { pullRequest: PULL_REQUEST }), {
-      pullRequests: { [PULL_REQUEST]: pullRequestOf({ checks: "failure", failingChecks: ["build", "lint"] }) },
+    await session.poller.cycle();
+    expect(writes(session.github)).toEqual([
+      `request acme/app#${PULL_REQUEST} carol`,
+      `comment acme/app#${PULL_REQUEST} ${humanReviewComment(["carol"], 12)}`,
+      "label acme/app#12 swf:human-review",
+      "unlabel acme/app#12 swf:checks",
+      `update acme/app ${RECORD_ID}`,
+    ]);
+    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record, step: "human-review", notified: true }));
+    expect(session.logs).toContain(`${KEY}: #31 passed its checks without the scorer's approval; a person reviews it`);
+    expect(session.logs).toContain(`${KEY}: asked @carol to review #31`);
+
+    // Asked once: a pull request that comes back to checks and needs a person again mentions nobody again.
+    const again = followSession(recordAt("checks", { pullRequest: PULL_REQUEST, inReview: true, notified: true, attempt: 1 }), {
+      pullRequests: { [PULL_REQUEST]: pullRequestOf({ reviewDecision: "CHANGES_REQUESTED" }) },
     });
-    await failing.poller.cycle();
-    expect(lastRecord(failing.github)).toMatchObject({ step: "implement", attempt: 1, findings: ["Checks: build, lint failed on 0123456 (https://github.com/acme/app/pull/31/checks)"] });
-    await failing.poller.cycle();
-    expect(failing.prompts[0].text).toContain("## Findings to fix\n\n- Checks: build, lint failed on 0123456 (https://github.com/acme/app/pull/31/checks)\n");
+    await again.poller.cycle();
+    expect(writes(again.github)).toEqual(["label acme/app#12 swf:human-review", "unlabel acme/app#12 swf:checks", `update acme/app ${RECORD_ID}`]);
   });
 
   it("waits at human-review for a person's approval, ignoring bots and plain comments, then goes on with merge", async () => {
     const reviews = [reviewOf(501, "github-actions[bot]", "CHANGES_REQUESTED", "PR review"), reviewOf(502, "dave", "COMMENTED", "Looks fine so far.")];
-    const record = recordAt("human-review", { pullRequest: PULL_REQUEST, humanReview: true, notified: true });
-    const session = followSession(record, { pullRequests: { [PULL_REQUEST]: pullRequestOf() }, reviews });
+    const record = recordAt("human-review", { pullRequest: PULL_REQUEST, inReview: true, notified: true });
+    const session = followSession(record, { pullRequests: { [PULL_REQUEST]: pullRequestOf({ reviewDecision: "REVIEW_REQUIRED" }) }, reviews });
 
     await session.poller.cycle();
     await session.poller.cycle();
@@ -1434,8 +1104,8 @@ describe("Poller.cycle drives the pull request", () => {
 
   it("sends a person's change request at human-review back to implement with the review and its inline comments, once", async () => {
     const reviews = [reviewOf(503, "carol", "CHANGES_REQUESTED", "Please rename the index.\n")];
-    const record = recordAt("human-review", { pullRequest: PULL_REQUEST, humanReview: true, notified: true, attempt: 1 });
-    const session = followSession(record, { pullRequests: { [PULL_REQUEST]: pullRequestOf() }, reviews, reviewComments: ["db/migrations/0007.sql:3: Use a partial index."] });
+    const record = recordAt("human-review", { pullRequest: PULL_REQUEST, inReview: true, notified: true, attempt: 1 });
+    const session = followSession(record, { pullRequests: { [PULL_REQUEST]: pullRequestOf({ reviewDecision: "CHANGES_REQUESTED" }) }, reviews, reviewComments: ["db/migrations/0007.sql:3: Use a partial index."] });
 
     await session.poller.cycle();
     expect(session.github.calls).toContain(`review-comments acme/app#${PULL_REQUEST} 503`);
@@ -1449,8 +1119,6 @@ describe("Poller.cycle drives the pull request", () => {
       handledReview: 503,
     }));
     expect(session.logs).toContain(`${KEY}: carol requested changes on #31; back to implement`);
-    await session.poller.cycle();
-    expect(session.prompts[0].text).toContain("- @carol requested changes on #31:\n  Please rename the index.\n  db/migrations/0007.sql:3: Use a partial index.\n");
 
     session.github.threads[KEY][0].body = new Pipeline({ ...sentBack, step: "human-review", runs: [] }).toComment();
     session.stored.labels = ["swf:human-review"];
@@ -1520,11 +1188,36 @@ describe("Poller.cycle drives the pull request", () => {
     expect(session.logs).toContain(`${KEY}: #31 conflicts with its base; back to implement`);
   });
 
+  it("sends a blocked pull request whose checks passed without an approval from merge to a person", async () => {
+    const record = recordAt("merge", { pullRequest: PULL_REQUEST, inReview: true, mergeSha: HEAD_SHA });
+    const session = followSession(record, { pullRequests: { [PULL_REQUEST]: pullRequestOf({ headSha: "b".repeat(40), mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" }) } });
+
+    await session.poller.cycle();
+    expect(writes(session.github)).toEqual([
+      `request acme/app#${PULL_REQUEST} carol`,
+      `comment acme/app#${PULL_REQUEST} ${humanReviewComment(["carol"], 12)}`,
+      "label acme/app#12 swf:human-review",
+      "unlabel acme/app#12 swf:merge",
+      `update acme/app ${RECORD_ID}`,
+    ]);
+    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record, step: "human-review", mergeSha: null, notified: true }));
+    expect(session.logs).toContain(`${KEY}: #31 is blocked without an approval; a person reviews it`);
+  });
+
+  it("waits at merge while the checks of a mergeable pull request still run", async () => {
+    const session = followSession(recordAt("merge", { pullRequest: PULL_REQUEST, inReview: true }), { pullRequests: { [PULL_REQUEST]: pullRequestOf({ mergeState: "CLEAN", checks: "pending" }) } });
+
+    await session.poller.cycle();
+    await session.poller.cycle();
+    expect(writes(session.github)).toEqual([]);
+    expect(session.logs.filter((line) => line.includes("merge:"))).toEqual([`${KEY}: merge: the checks of the head commit are still running`]);
+  });
+
   it("marks the issue as failed when the pull request was closed without a merge or does not exist", async () => {
-    const closed = followSession(recordAt("review", { pullRequest: PULL_REQUEST }), { pullRequests: { [PULL_REQUEST]: pullRequestOf({ state: "closed" }) } });
+    const closed = followSession(recordAt("checks", { pullRequest: PULL_REQUEST }), { pullRequests: { [PULL_REQUEST]: pullRequestOf({ state: "closed" }) } });
     await closed.poller.cycle();
     expect(writes(closed.github)).toEqual([
-      "unlabel acme/app#12 swf:review",
+      "unlabel acme/app#12 swf:checks",
       "unlabel acme/app#12 swf:question",
       "label acme/app#12 swf:failed",
       `comment acme/app#12 ${closedComment(PULL_REQUEST)}`,
@@ -1537,7 +1230,7 @@ describe("Poller.cycle drives the pull request", () => {
 
   it("drives the poller steps of a session whose VM is off, which need GitHub only, and starts the VM once the pipeline is back at the agent", async () => {
     const pullRequests = { [PULL_REQUEST]: pullRequestOf() };
-    const record = recordAt("human-review", { pullRequest: PULL_REQUEST, humanReview: true, notified: true });
+    const record = recordAt("human-review", { pullRequest: PULL_REQUEST, inReview: true, notified: true });
     const session = followSession(record, { pullRequests, reviews: [reviewOf(503, "carol", "APPROVED")], vmStatus: "SUSPENDED" });
     startable(session.compute, session.listed);
 
@@ -1562,7 +1255,7 @@ describe("Poller.cycle replaces a lost VM", () => {
   const ended = { endedAt: "2026-10-13T09:00:00.000Z" };
   /** A record at implement after the plan, whose prompt went out on the lost VM. */
   const implementing = (fields: Partial<z.input<typeof Pipeline.schema>> = {}) =>
-    runnerRecordAt("implement", { lastResultId: 0, promptTurn: 1_000, runs: [runOf(1, "plan", { ...ended, outcome: "passed" }), runOf(2, "implement")], ...fields });
+    recordAt("implement", { lastResultId: 0, promptTurn: 1_000, runs: [runOf(1, "plan", { ...ended, outcome: "passed" }), runOf(2, "implement")], ...fields });
   const restartedRuns: [number, string, string, number | undefined][] = [
     [1, "plan", "passed", undefined],
     [2, "implement", "restarted", undefined],
@@ -1608,7 +1301,6 @@ describe("Poller.cycle replaces a lost VM", () => {
     expect(lastRecord(session.github)).toEqual({ ...withoutRuns(record.toJSON()), promptTurn: null, reminded: false });
     expect(runsOf(session.github)).toEqual(restartedRuns);
     expect(writes(session.github)).toEqual([`update acme/app ${RECORD_ID}`, `comment acme/app#12 Hunt found no VM for this issue any more and replaced it with \`${VM}\`; the step \`implement\` starts over there with what the steps before it left on the issue.`]);
-    expect(session.prompts).toEqual([]);
     expect(session.logs).toContain(`${KEY}: ${VM} replaces the lost VM with 1 step result(s) restored; the runner starts the step implement over`);
   });
 
@@ -1626,7 +1318,7 @@ describe("Poller.cycle replaces a lost VM", () => {
   it("drives the poller steps of an issue without a VM on GitHub alone and replaces the VM only once the pipeline is back at the agent", async () => {
     const pullRequests = { [PULL_REQUEST]: pullRequestOf() };
     const reviews: PullRequestReview[] = [];
-    const record = runnerRecordAt("human-review", { pullRequest: PULL_REQUEST, humanReview: true, notified: true, runs: [runOf(1, "pr", { ...ended, outcome: "passed" }), runOf(2, "review", { ...ended, outcome: "passed" }), runOf(3, "human-review")] });
+    const record = recordAt("human-review", { pullRequest: PULL_REQUEST, inReview: true, notified: true, runs: [runOf(1, "pr", { ...ended, outcome: "passed" }), runOf(2, "checks", { ...ended, outcome: "passed" }), runOf(3, "human-review")] });
     const session = followIssueWithoutVm(record, { pullRequests, reviews, reviewComments: [] });
 
     await session.poller.cycle();
@@ -1665,17 +1357,8 @@ describe("Poller.cycle replaces a lost VM", () => {
     expect(runsOf(session.github)).toEqual(restartedRuns);
   });
 
-  it("leaves an issue without a VM alone whose record names no branch, the poller's own, and says so once", async () => {
-    const session = followIssueWithoutVm(recordAt("implement", { branch: "" }));
-    await session.poller.cycle();
-    await session.poller.cycle();
-    expect(session.compute.inserted).toEqual([]);
-    expect(writes(session.github)).toEqual([]);
-    expect(session.logs.filter((line) => line.includes("no VM"))).toEqual([`${KEY}: the issue has no VM at the step implement and its record of version 1 names no branch to rebuild one from; left alone`]);
-  });
-
   it("follows no issue whose VM is listed or being set up", async () => {
-    const session = followSession(runnerRecordAt("implement", { promptTurn: 500 }), { inProgress: { "acme/app": [{ ...issue(12, "Issue 12", ["swf:implement"]), assignees: ["carol"] }] } });
+    const session = followSession(recordAt("implement", { promptTurn: 500 }), { inProgress: { "acme/app": [{ ...issue(12, "Issue 12", ["swf:implement"]), assignees: ["carol"] }] } });
     await session.poller.cycle();
     expect(session.compute.inserted).toEqual([]);
     expect(session.logs.filter((line) => line.includes("no VM"))).toEqual([]);

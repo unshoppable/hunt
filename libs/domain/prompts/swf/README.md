@@ -17,46 +17,49 @@ Steps 1 to 5 are the agent's: one Claude Code turn each on the session VM, in a 
 the file `.hunt/swf/result.md` of the worktree that carries `<!-- hunt:step {…} -->`. The runner keeps it as
 `.hunt/swf/steps/<nn>-<step>.md` (`nn` the number of the run) and posts it as a comment on the issue, so the next step's
 conversation reads what the earlier steps did from `.hunt/swf/steps/`. Steps 6 to 8 are the poller's: it watches the
-pull request on GitHub, no prompt is sent. A record of version 1, from before the runner existed, the poller drives
-through steps 1 to 5 itself: there the step result is a comment on the issue, read at the next poll.
+pull request on GitHub, no prompt is sent. The record is of version 3 (`RECORD_VERSION` in `pipeline.domain.ts`); a
+record of an older version, whose steps meant something else, is left alone, and the poller says so on the issue.
 
 | # | Step | Label | Prompt | What happens | Result |
 | --- | --- | --- | --- | --- | --- |
 | 0 | — | — | `0-system-prompt.md` | appended to the session's system prompt in `hunt-session.json`, so every conversation starts with it: the protocol of the steps (fresh conversations and `.hunt/swf/steps/`, how a step ends, questions to the people, giving up, the guardrails and that the agent may always propose one in the pull request, overriding contrary instructions) | — |
 | 1 | `plan` | `swf:plan` | `1-plan.user-prompt.md` (with the issue and all its comments) | invoke the step's skill (`swf.skills.plan` of hunt.json); read the issue and the repository's guardrails; ask every question only a person can answer; write the plan with the acceptance criteria for a reader who has nothing but the file | `{"step":"plan"}` |
 | 2 | `implement` | `swf:implement` | `2-implement.user-prompt.md` with the findings to fix; `2-implement-escalate.user-prompt.md` after more than `MAX_ATTEMPTS` (5) returns | invoke the step's skill (`swf.skills.implement`); read the plan `steps/01-plan.md` and the later results; carry out the plan or fix the findings; run the repository's checks; commit and push | `{"step":"implement","summary":"…"}` |
-| 3 | `verify` | `swf:verify` | `3-verify.user-prompt.md` | invoke the step's skill (`swf.skills.verify`); run hunt.json's `checks` and the repository's; verify every acceptance criterion of the plan, in the browser for anything the user sees; read the diff as a reviewer; fix nothing | `{"step":"verify","findings":[…]}`; findings → back to 2 |
-| 4 | `gate` | `swf:gate` | `4-gate.user-prompt.md` | the fresh conversation, which did not write the change, judges from the diff, the issue, the steps' results and the repository's rubric (the step's skill, `swf.skills.gate`) whether a person has to review before the merge; a change to a guardrail always needs one | `{"step":"gate","humanReview":bool,"risk":"low\|medium\|high","reasons":[…]}` |
+| 3 | `verify` | `swf:verify` | `3-verify.user-prompt.md` | invoke the step's skill (`swf.skills.verify`); run hunt.json's `checks` and the repository's; verify every acceptance criterion of the plan, in the browser for anything the user sees; fix nothing | `{"step":"verify","findings":[…]}`; findings → back to 2 |
+| 4 | `review` | `swf:review` | `4-review.user-prompt.md` | invoke the step's skill (`swf.skills.review`, the repository's review criteria); the fresh conversation, which did not write the change, reviews the diff against the issue, the plan, the steps' results, the guardrails and, on a re-review, the pull request's comments: correctness, security, the guardrails and the tests they demand, duplication, leftovers, scope; fix nothing | `{"step":"review","findings":[…]}`; findings → back to 2 |
 | 5 | `pr` | `swf:pr` | `5-pr.user-prompt.md` (first pass only) | invoke the step's skill (`swf.skills.pr`); open the pull request (`Closes #n`, decisions, how it was checked) from the plan, the results and the diff; clean the VM up; the result carries the link | `{"step":"pr","pullRequest":n}` |
-| 6 | `review` | `swf:review` | — | the poller prepares the review once (`In Review` in the projects, `swf.humanReviewPaths`, the reviewers), then waits for the head commit's checks and the Claude review's verdict (`<!-- claude-pr-review:verdict {"headSha","blocking","findings"} -->`); a failing check or blocking findings → back to 2 | both clean |
-| 7 | `human-review` | `swf:human-review` | — | only when the gate (or `swf.humanReviewPaths`) asked for a person: label the pull request `hunt:human-review`, request the issue's assignees as reviewers, mention them once; wait for an approval; a change request → back to 2 | a person's approval |
-| 8 | `merge` | `swf:merge` | — | update the branch when it is behind, squash-merge when GitHub reports it mergeable; conflicts → back to 2 | `swf:done`, project status `Done` |
+| 6 | `checks` | `swf:checks` | — | the poller moves the issue to `In Review` in its projects once, then waits for the head commit's checks; a failing check → back to 2; once they passed, GitHub's `reviewDecision` decides: `APPROVED` (the scorer approved) → 8, else → 7 | checks passed |
+| 7 | `human-review` | `swf:human-review` | — | only when the scorer did not approve: request the issue's assignees as reviewers, mention them once; wait for an approval; a change request → back to 2 | a person's approval |
+| 8 | `merge` | `swf:merge` | — | update the branch when it is behind (the scorer scores the new head; the merge waits while its checks run), squash-merge when GitHub reports it mergeable; conflicts → back to 2; blocked with passed checks and no approval → 7 | `swf:done`, project status `Done` |
 
-Every return to 2 counts as an attempt and runs 3, 4 and 6 again before the pull request is reviewed once more; the
+Every return to 2 counts as an attempt and runs 3, 4 and 6 again before the pull request is checked once more; the
 poller hands the pipeline back to the runner through its inbox (`hunt-ctl swf-inbox`, `libs/domain/src/swf/swf-inbox.utils.ts`),
-starting a VM the idle check suspended first. `humanReview` stays true once set. On the first pass the issue moves to
-`In Review` in its projects when the pull request opens, and when a person has to review, that person is asked at that
-moment.
+starting a VM the idle check suspended first. On the first pass the issue moves to `In Review` in its projects when the
+pull request opens, and when a person has to review, that person is asked at that moment.
 
 ```mermaid
 flowchart LR
-    plan[1 plan] --> implement[2 implement] --> verify[3 verify] --> gate[4 gate] --> pr[5 pr] --> review[6 review]
+    plan[1 plan] --> implement[2 implement] --> verify[3 verify] --> review[4 review] --> pr[5 pr] --> checks[6 checks]
     verify -->|findings| implement
-    gate -->|PR exists| review
-    review -->|failing check / blocking findings| implement
-    review -->|clean, human needed| human[7 human-review] -->|approved| merge[8 merge]
-    review -->|clean| merge
+    review -->|findings| implement
+    review -->|PR exists| checks
+    checks -->|failing check| implement
+    checks -->|passed, not approved| human[7 human-review] -->|approved| merge[8 merge]
+    checks -->|passed, scorer approved| merge
     human -->|changes requested| implement
     merge -->|conflicts| implement
+    merge -->|blocked, not approved| human
     merge --> done([swf:done])
 
     question([swf:question<br/>❓ RÜCKFRAGE in the title,<br/>one comment with @mentions,<br/>turn ends with hunt:question])
     plan -. "only a person can answer" .-> question
     implement -. "question, or escalation after 5 returns" .-> question
     verify -. question .-> question
+    review -. question .-> question
     question -. "answer: issue comment (poller → inbox → runner)<br/>or Hunt desktop" .-> plan
     question -.-> implement
     question -.-> verify
+    question -.-> review
 ```
 
 **Questions** are possible in every agent step and happen before the step's result: the agent replaces the step's
@@ -74,7 +77,7 @@ asked again.
 
 Every agent step has a Claude Code skill that the repository keeps (`.claude/skills/<name>/SKILL.md`) and names under
 `swf.skills` of its hunt.json by the step (`"skills": {"plan": "swf-plan", "implement": "swf-implement", "verify": "swf-verify",
-"gate": "swf-gate", "pr": "swf-pr"}`; `AGENT_STEPS` in `libs/domain/src/swf/swf-step.types.ts`). Hunt has no default skill
+"review": "swf-review", "pr": "swf-pr"}`; `AGENT_STEPS` in `libs/domain/src/swf/swf-step.types.ts`). Hunt has no default skill
 and no fallback prompt for a missing one: for a repository with a `swf` section, `hunt-ctl session-config` fails with a
 problem per step `swf.skills` leaves out (`swf.skills.<step>: must name the skill of the step …`) and per skill file the
 worktree lacks (`swf.skills.<step>: no skill file …`), and reports the skill of every step as `swf_skills`; the poller
@@ -82,11 +85,10 @@ fails the setup itself when the answer names no skill for a step (`missingSkills
 client asks once, when a session of the repository opens, whether to add the missing entries (`swf-<step>`) to hunt.json
 and to create the missing skill files from its templates (`apps/client/prompts/swf/swf-<step>.skill.md`). The pipeline keeps the
 skills in the record (`skills`; a record without the skill of every step is unusable) and fills each step's prompt with
-its skill as `{{skill}}`: the prompts of plan, implement, verify and pr tell the agent to invoke the skill first; the
-gate prompt names it as the rubric for the review necessity the fresh conversation judges by.
+its skill as `{{skill}}`: every step's prompt tells the agent to invoke the skill first.
 Hunt's prompts fix what a step delivers (its result, labels and questions; "Step skills" in `0-system-prompt.md` says
 the prompt wins over a skill there); a skill adds what the repository needs in the step: which files to read, which
-services to start, which checks to run, how its pull requests are written.
+services to start, which checks to run, which review criteria to judge by, how its pull requests are written.
 
 ## Prompts outside the steps
 
@@ -104,15 +106,16 @@ labels of the workflow (`requested`, `question`, `done`, `failed`, the current `
 the question and resume commands, which put a red question mark and the word for a question back in front of the
 issue's title and take it off again. `branch` is the session's branch, `maxAttempts` the limit of returns to implement
 and `attemptNote` the ` (attempt n of m)` suffix of a return, empty for the first implementation. The plan prompt also
-gets `title`, `url`, `author`, `createdAt`, `body` and `comments`; implement gets `findings`; gate gets `pullRequest`;
-pr gets `humanReview`; every agent step's prompt gets `skill`, the name of the step's skill (`skillOf` of the
-pipeline). `bad-result.user-prompt.md` gets only `problem`.
+gets `title`, `url`, `author`, `createdAt`, `body` and `comments`; implement gets `findings`; review gets `pullRequest`
+(`(not opened yet)` on the first pass, `#n` on a re-review); every agent step's prompt gets `skill`, the name of the
+step's skill (`skillOf` of the pipeline). `bad-result.user-prompt.md` gets only `problem`.
 
 ## What the repository provides
 
-`hunt.json` (`swf.model`, `swf.humanReviewPaths`, `swf.skills`, `checks`), the skill of every agent step (named under
-`swf.skills`; the gate's holds the rubric for the review necessity), its guardrails (CLAUDE.md, rules, skills, ADRs, pull request
-template), an issue form with acceptance criteria, a Claude review workflow that runs on every push and ends its
-comment with the verdict marker, and a required check `review-gate` that passes a pull request of the bot without
-`hunt:human-review` and every other one only with a person's approval. app-framework is the reference. The GitHub App
-needs `Checks: read` for step 6.
+`hunt.json` with its `swf` section (`swf.model`, `swf.skills` with the skills of plan, implement, verify, review and pr,
+`checks`; `swf.humanReviewPaths` is read by the repository's scorer, not by Hunt), the skill of every agent step (the
+review's holds the repository's review criteria), its guardrails (CLAUDE.md, rules, skills, ADRs, pull request
+template), an issue form with acceptance criteria, a scorer workflow that scores every pull request and approves it as
+its own GitHub App when no person has to review (and dismisses its stale approval on a new head), and a ruleset that
+requires one approval, so that a pull request the scorer did not approve waits for a person. app-framework is the
+reference. The GitHub App needs `Checks: read` for step 6.

@@ -51,7 +51,6 @@ function fakeGitHub(thread: IssueComment[] = []): GitHub & { calls: string[] } {
     removeLabel: unexpected,
     addLabels: unexpected,
     pullRequest: unexpected,
-    pullRequestFiles: unexpected,
     reviews: unexpected,
     reviewComments: unexpected,
     requestReviewers: unexpected,
@@ -67,7 +66,7 @@ describe("PipelineRecordClient.find", () => {
     { id: 1, author: BOT_NAME, createdAt: "", body: pipelineAt("plan").toComment() },
     { id: 2, author: BOT_NAME, createdAt: "", body: pipelineAt("verify", { attempt: 2 }).toComment() },
     { id: 3, author: "mallory", createdAt: "", body: pipelineAt("merge", { pullRequest: PULL_REQUEST }).toComment() },
-    { id: 4, author: BOT_NAME, createdAt: "", body: "<!-- hunt:pipeline {\"step\":\"deploy\"} -->" },
+    { id: 4, author: BOT_NAME, createdAt: "", body: "Hunt started a session for this issue." },
   ];
 
   it("takes the latest record comment of the bot and ignores records anyone else posted, from the comments it is given", async () => {
@@ -78,11 +77,18 @@ describe("PipelineRecordClient.find", () => {
     expect(github.calls).toEqual([]);
   });
 
+  it("gives the id and the problem of the latest record comment of the bot when that record is unusable or of an older version", async () => {
+    const records = new PipelineRecordClient(fakeGitHub());
+    const unreadable = { id: 5, author: BOT_NAME, createdAt: "", body: "<!-- hunt:pipeline {\"step\":\"deploy\"} -->" };
+    const old = { id: 6, author: BOT_NAME, createdAt: "", body: pipelineAt("merge").toComment().replace(/"version":\d+/, '"version":2') };
+    expect(await records.find(REPO, 12, BOT_NAME, [...thread, unreadable])).toEqual({ commentId: 5, problem: expect.any(String) });
+    expect(await records.find(REPO, 12, BOT_NAME, [...thread, old])).toEqual({ commentId: 6, problem: expect.stringContaining("2") });
+  });
+
   it("reads the issue's comments when it is given none", async () => {
     const github = fakeGitHub(thread);
     const found = await new PipelineRecordClient(github).find(REPO, 12, BOT_NAME);
-    expect(found?.commentId).toBe(2);
-    expect(found?.pipeline.step).toBe("verify");
+    expect(found).toEqual({ commentId: 2, pipeline: pipelineAt("verify", { attempt: 2 }) });
     expect(github.calls).toEqual(["comments acme/app#12"]);
   });
 });
@@ -90,7 +96,7 @@ describe("PipelineRecordClient.find", () => {
 describe("PipelineRecordClient", () => {
   it("posts the record comment of a new pipeline and gives its id", async () => {
     const github = fakeGitHub();
-    const pipeline = started(NOW, ["**/migrations/**"]);
+    const pipeline = started(NOW);
     expect(await new PipelineRecordClient(github).create(REPO, 12, pipeline)).toBe(POSTED_ID);
     expect(github.calls).toEqual([`comment acme/app#12 ${pipeline.toComment()}`]);
   });

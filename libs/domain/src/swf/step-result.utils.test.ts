@@ -5,9 +5,12 @@ import { isAgentStep, isSwfStep } from "./swf-step.types.ts";
 describe("steps", () => {
   it("tells the agent steps from the poller steps and both from anything else", () => {
     expect(isAgentStep("plan")).toBe(true);
-    expect(isAgentStep("review")).toBe(false);
-    expect(isSwfStep("review")).toBe(true);
+    expect(isAgentStep("review")).toBe(true);
+    expect(isAgentStep("checks")).toBe(false);
+    expect(isAgentStep("gate")).toBe(false);
+    expect(isSwfStep("checks")).toBe(true);
     expect(isSwfStep("human-review")).toBe(true);
+    expect(isSwfStep("gate")).toBe(false);
     expect(isSwfStep("running")).toBe(false);
   });
 });
@@ -29,9 +32,12 @@ describe("parseStepResult", () => {
       result: { step: "verify", findings: findings.slice(0, LIST_LIMIT) },
     });
     expect(parseStepResult('<!-- hunt:step {"step":"verify"} -->')).toEqual({ result: { step: "verify", findings: [] } });
-    expect(parseStepResult('<!-- hunt:step {"step":"gate","humanReview":true,"risk":"high","reasons":["migration"]} -->')).toEqual({
-      result: { step: "gate", humanReview: true, risk: "high", reasons: ["migration"] },
+    expect(parseStepResult(`<!-- hunt:step ${JSON.stringify({ step: "review", findings: [...findings, "", 3] })} -->`)).toEqual({
+      result: { step: "review", findings: findings.slice(0, LIST_LIMIT) },
     });
+    expect(parseStepResult('<!-- hunt:step {"step":"review","findings":["  api.ts logs the token  "]} -->')).toEqual({ result: { step: "review", findings: ["api.ts logs the token"] } });
+    expect(parseStepResult('<!-- hunt:step {"step":"review","findings":[]} -->')).toEqual({ result: { step: "review", findings: [] } });
+    expect(parseStepResult('<!-- hunt:step {"step":"review"} -->')).toEqual({ result: { step: "review", findings: [] } });
     expect(parseStepResult('<!-- hunt:step {"step":"pr","pullRequest":42} -->')).toEqual({ result: { step: "pr", pullRequest: 42 } });
   });
 
@@ -43,10 +49,10 @@ describe("parseStepResult", () => {
   it("names the problem of an unusable marker", () => {
     expect(parseStepResult("<!-- hunt:step {not json} -->")?.problem).toMatch(/no JSON object/);
     expect(parseStepResult('<!-- hunt:step {"foo":1} -->')?.problem).toMatch(/no object with a step/);
-    expect(parseStepResult('<!-- hunt:step {"step":"review"} -->')?.problem).toMatch(/unknown step "review"/);
-    expect(parseStepResult('<!-- hunt:step {"step":"verify","findings":"one"} -->')?.problem).toMatch(/must be a list/);
-    expect(parseStepResult('<!-- hunt:step {"step":"gate","humanReview":"yes","risk":"low"} -->')?.problem).toMatch(/humanReview/);
-    expect(parseStepResult('<!-- hunt:step {"step":"gate","humanReview":false,"risk":"huge"} -->')?.problem).toMatch(/risk/);
+    expect(parseStepResult('<!-- hunt:step {"step":"checks"} -->')?.problem).toBe('unknown step "checks"; the agent steps are plan, implement, verify, review, pr');
+    expect(parseStepResult('<!-- hunt:step {"step":"gate","humanReview":true,"risk":"low"} -->')?.problem).toMatch(/unknown step "gate"/);
+    expect(parseStepResult('<!-- hunt:step {"step":"verify","findings":"one"} -->')?.problem).toBe("findings of a verify result must be a list");
+    expect(parseStepResult('<!-- hunt:step {"step":"review","findings":"one"} -->')?.problem).toBe("findings of a review result must be a list");
     expect(parseStepResult('<!-- hunt:step {"step":"pr","pullRequest":"42"} -->')?.problem).toMatch(/pullRequest/);
     expect(parseStepResult('<!-- hunt:step {"step":"pr","pullRequest":0} -->')?.problem).toMatch(/pullRequest/);
   });

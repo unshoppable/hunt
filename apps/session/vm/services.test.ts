@@ -65,8 +65,9 @@ const HUNT_JSON = {
   version: 3,
   swf: {
     model: "claude-opus-5-5",
+    // Accepted and validated, never printed: the repository's scorer workflow reads the paths, not Hunt.
     humanReviewPaths: ["**/migrations/**"],
-    skills: { plan: "swf-plan", implement: "swf-implement", verify: "swf-verify", gate: "acme-gate", pr: "swf-pr" },
+    skills: { plan: "swf-plan", implement: "swf-implement", verify: "swf-verify", review: "acme-review", pr: "swf-pr" },
   },
   services: {
     api: { command: "node server.js", port: 3000, guarded: false, env: { ADMIN_URL: "${services.admin.publicUrl}" } },
@@ -270,7 +271,6 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
       agent_md: AGENT_MD.trim(),
       services_prompt: expect.stringMatching(/^### The repository's services\n/),
       swf_model: "claude-opus-5-5",
-      swf_human_review_paths: ["**/migrations/**"],
       swf_skills: SKILLS,
     });
     expect(result.services_prompt).toContain("https://7c0c6f2e-3000-open.hunt.example.com");
@@ -326,7 +326,6 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
       agent_md: null,
       services_prompt: expect.stringContaining("declares no services"),
       swf_model: null,
-      swf_human_review_paths: [],
       swf_skills: {},
     });
     expect(sh("ls -A /etc/hunt/services 2>/dev/null").stdout).toBe("");
@@ -348,7 +347,7 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     seed(HUNT_JSON, AGENT_MD, ["swf-plan", "swf-implement", "swf-verify"]);
     const result = huntCtl("session-config", ID, "--domain", DOMAIN);
     expect(result.status).toBe(3);
-    for (const [step, name] of [["gate", "acme-gate"], ["pr", "swf-pr"]]) {
+    for (const [step, name] of [["review", "acme-review"], ["pr", "swf-pr"]]) {
       expect(result.stderr).toContain(
         `swf.skills.${step}: no skill file .claude/skills/${name}/SKILL.md; Hunt offers to create it when a session of the repository opens`,
       );
@@ -366,10 +365,10 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     const withoutSkills = huntCtl("session-config", ID, "--domain", DOMAIN);
     expect(withoutSkills.status).toBe(3);
     expect(withoutSkills.stderr).toContain(
-      "swf.skills: must name the skill of every agent step (plan, implement, verify, gate, pr); Hunt asks to add them when a session of the repository opens",
+      "swf.skills: must name the skill of every agent step (plan, implement, verify, review, pr); Hunt asks to add them when a session of the repository opens",
     );
 
-    seed({ ...HUNT_JSON, swf: { skills: { plan: "swf-plan", gate: "acme-gate" } } }, AGENT_MD, Object.values(SKILLS));
+    seed({ ...HUNT_JSON, swf: { skills: { plan: "swf-plan", review: "acme-review" } } }, AGENT_MD, Object.values(SKILLS));
     const withoutSteps = huntCtl("session-config", ID, "--domain", DOMAIN);
     expect(withoutSteps.status).toBe(3);
     for (const step of ["implement", "verify", "pr"]) {

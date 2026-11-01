@@ -6,18 +6,20 @@
  * the issue (`toComment`: a status line for the people reading the issue and `<!-- hunt:pipeline {…} -->` for the
  * services), which the gateway's poller (`apps/gateway/src/swf/poller.service.ts`, `swf/pipeline-record.client.ts`)
  * posts when it claims the issue and both services edit in place after every intent, so that a restart loses nothing.
- * `version` says who drives the agent steps: RUNNER_VERSION and above the runner on the VM, older records the poller,
- * which keeps the sessions it started before the runner existed going to their end.
+ * `version` is RECORD_VERSION for every record this release writes; a record of an older version is left alone
+ * (`fromComment` names the problem), since its steps meant something else.
  *
  * `runs` is the pipeline's log: one entry per run of a step, in the order they happened, appended only. A step that runs
  * again gets a new entry; a run that sends the issue back to implement ends as `returned` and the implement run it causes
  * names it as its `cause`. The client draws the pipeline's graph from this list.
  *
- * The steps run plan → implement → verify → gate → pr → review → human-review (when a person has to approve) → merge.
- * Findings of verify, of the review (a failing check, blocking findings of the Claude review, a human's change request)
- * or of the merge (conflicts) send the issue back to implement, which then runs verify and gate again before the
- * pull request is reviewed once more. `humanReview` stays true once set; a pull request that touches a file matching
- * `humanReviewPaths` of the repository's hunt.json (`swf/glob.utils.ts`) sets it too.
+ * The steps run plan → implement → verify → review → pr → checks → human-review (when the scorer did not approve) →
+ * merge. The agent steps end with the review, a fresh conversation that judges the change by the repository's review
+ * criteria. From checks on the poller watches the pull request: the repository's scorer workflow scores every pull
+ * request and approves it as its own GitHub App when no person has to review, and the repository's ruleset requires
+ * one approval, so a pull request whose checks passed without an approval waits for a person. Findings of verify, of
+ * the review, of the checks (a failing check) or of the merge (conflicts) send the issue back to implement, which then
+ * runs verify and review again before the pull request is checked once more.
  */
 import * as z from "zod/mini";
 import { DomainModel } from "../model/domain.model.ts";
@@ -28,14 +30,14 @@ import { UnusableStepResult } from "./unusable-step-result.error.ts";
 
 /** How often the issue may go back to implement before the agent has to ask the humans instead. */
 export const MAX_ATTEMPTS = 5;
-/** The record version from which the runner on the session VM drives the agent steps; older records the poller drives. */
-export const RUNNER_VERSION = 2;
+/** The version of the records this release writes and drives; see the module comment. */
+export const RECORD_VERSION = 3;
 /** `<!-- hunt:pipeline {…} -->` in the poller's record comment; the JSON object is the first group. */
 const RECORD_MARKER = /<!--\s*hunt:pipeline\s+(\{[\s\S]*?\})\s*-->/;
 const FINDINGS_LIMIT = 20;
 const FINDING_LIMIT = 4000;
 /** The steps whose findings send the issue back to implement. */
-const CHECKING_STEPS: readonly SwfStep[] = ["verify", "review", "human-review", "merge"];
+const CHECKING_STEPS: readonly SwfStep[] = ["verify", "review", "checks", "human-review", "merge"];
 
 /**
  * How a run of a step ended: `passed` on to the next step, `returned` back to implement with findings, `failed` when
@@ -70,15 +72,15 @@ const ZodStrings = z.pipe(
 const ZodStepSkills = z.record(z.enum(AGENT_STEPS), z.string().check(z.minLength(1)));
 
 /**
- * The record. A field that an older record lacks or holds with another type falls back to its value at the start; only
- * a record without a step of the pipeline, one without the skill of every agent step, or one that breaks a refine, is
- * unusable.
+ * The record. A field that a record lacks or holds with another type falls back to its value at the start; only a record
+ * of a version below RECORD_VERSION, one without a step of the pipeline, one without the skill of every agent step, or
+ * one that breaks a refine, is unusable.
  */
 const ZodPipelineState = z
   .object({
-    /** The record's version; 1 for a record written before the runner existed, which the poller drives to its end. */
-    version: z.catch(z.int(), 1),
-    /** The issue's repository as `<owner>/<repo>`, its number and the session's branch; empty in a record of version 1. */
+    /** The record's version, RECORD_VERSION or above; `fromComment` tells an older record apart before this schema sees it. */
+    version: z.int().check(z.gte(RECORD_VERSION)),
+    /** The issue's repository as `<owner>/<repo>`, its number and the session's branch. */
     repo: z.catch(z.string(), ""),
     issue: z.catch(z.int(), 0),
     branch: z.catch(z.string(), ""),
@@ -87,11 +89,7 @@ const ZodPipelineState = z
     step: z.enum(SWF_STEPS),
     /** How often the issue went back to implement since the last plan or escalation. */
     attempt: z.catch(z.int(), 0),
-    /** Whether a person has to approve the pull request before it is merged. */
-    humanReview: z.catch(z.boolean(), false),
     pullRequest: z.catch(z.nullable(z.number()), null),
-    /** The globs of the files whose change always needs a human, from the repository's hunt.json. */
-    humanReviewPaths: ZodStrings,
     /** The repository's skill of every agent step (`swf.skills` of its hunt.json), named in the step's prompt; exactly the five, each non-empty. */
     skills: ZodStepSkills,
     /** What the current implement step is to fix; empty for the first implementation of the plan. */
@@ -113,15 +111,15 @@ const ZodPipelineState = z
     mergeSha: z.catch(z.nullable(z.string()), null),
     /** Whether the people who have to review were mentioned on the pull request. */
     notified: z.catch(z.boolean(), false),
-    /** Whether the poller carried out what entering the current review step brings with it (`prepareReview`). */
-    reviewPrepared: z.catch(z.boolean(), false),
-    /** The log of the steps' runs, appended only; empty for a record written before Hunt kept it. */
+    /** Whether the issue was moved to In Review in its projects, which happens once, when the pull request first waits for its checks. */
+    inReview: z.catch(z.boolean(), false),
+    /** The log of the steps' runs, appended only. */
     runs: z.catch(z.array(ZodRun), () => []),
   })
   .check(
     z.refine((state) => !state.reminded || state.promptTurn !== null, { message: "the agent is reminded only after a prompt", path: ["reminded"] }),
     z.refine((state) => state.mergeSha === null || state.step === "merge", { message: "a merge is requested only at the step merge", path: ["mergeSha"] }),
-    z.refine((state) => !state.notified || state.humanReview, { message: "reviewers are notified only when a person reviews", path: ["notified"] }),
+    z.refine((state) => !state.notified || state.pullRequest !== null, { message: "reviewers are notified only on a pull request", path: ["notified"] }),
     z.refine((state) => runningRun(state.runs)?.step === undefined || runningRun(state.runs)?.step === state.step, {
       message: "the running run is the current step's",
       path: ["runs"],
@@ -153,6 +151,9 @@ export interface SwfIssue {
   branch: string;
 }
 
+/** What a record comment holds: the pipeline, or why the record is not driven (`problem`, for the people reading the issue). */
+export type ParsedRecord = { pipeline: Pipeline; problem?: undefined } | { pipeline?: undefined; problem: string };
+
 export interface Pipeline extends z.infer<typeof ZodPipelineState> {}
 
 /** What the poller knows about a session's pipeline; see the module comment. */
@@ -164,21 +165,19 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
   }
 
   /**
-   * The pipeline of the newly claimed `issue`: at plan, with nothing sent or acted on yet, of RUNNER_VERSION; `skills` is
+   * The pipeline of the newly claimed `issue`: at plan, with nothing sent or acted on yet, of RECORD_VERSION; `skills` is
    * the repository's skill of every agent step, `now` the time in ms the first run starts at.
    */
-  static start(issue: SwfIssue, humanReviewPaths: string[], skills: Record<AgentStep, string>, now: number): Pipeline {
+  static start(issue: SwfIssue, skills: Record<AgentStep, string>, now: number): Pipeline {
     return new Pipeline({
-      version: RUNNER_VERSION,
+      version: RECORD_VERSION,
       repo: issue.repo,
       issue: issue.number,
       branch: issue.branch,
       recordId: 0,
       step: "plan",
       attempt: 0,
-      humanReview: false,
       pullRequest: null,
-      humanReviewPaths,
       skills,
       findings: [],
       escalate: false,
@@ -188,22 +187,26 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
       handledReview: null,
       mergeSha: null,
       notified: false,
-      reviewPrepared: false,
+      inReview: false,
       runs: [{ n: 1, step: "plan", startedAt: isoOf(now), endedAt: null, outcome: "running" }],
     });
   }
 
-  /** The pipeline in the body of a record comment (`toComment`); null when `body` carries no usable record. */
-  static fromComment(body: string): Pipeline | null {
+  /**
+   * The pipeline in the body of a record comment (`toComment`), or the problem with the record: one of a version below
+   * RECORD_VERSION (a record without a version is of version 1, from before Hunt recorded one), whose steps meant
+   * something else, is left alone; one the schema rejects is unusable. Null when `body` carries no record marker.
+   */
+  static fromComment(body: string): ParsedRecord | null {
     const match = RECORD_MARKER.exec(body);
     if (!match) return null;
-    const parsed = ZodPipelineState.safeParse(parseJson(match[1]));
-    return parsed.success ? new Pipeline(parsed.data) : null;
-  }
-
-  /** Whether the runner on the session VM drives the agent steps; false for a record the poller drives to its end. */
-  get isRunnerDriven(): boolean {
-    return this.version >= RUNNER_VERSION;
+    const json = parseJson(match[1]);
+    const version = recordVersion(json);
+    if (typeof version === "number" && version < RECORD_VERSION) {
+      return { problem: `the record is of version ${version}; this release drives records of version ${RECORD_VERSION} and above only` };
+    }
+    const parsed = ZodPipelineState.safeParse(json);
+    return parsed.success ? { pipeline: new Pipeline(parsed.data) } : { problem: "the record is unusable" };
   }
 
   /** Whether the pipeline waits for a turn of the agent (an agent step) rather than for GitHub. */
@@ -225,7 +228,9 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     if (this.pullRequest !== null) {
       parts.push(`pull request #${this.pullRequest}`);
     }
-    parts.push(this.humanReview ? "a person reviews before the merge" : "merged without a human review unless the gate asks for one");
+    if (this.step === "human-review") {
+      parts.push("a person reviews before the merge");
+    }
     return parts.join(" · ");
   }
 
@@ -279,11 +284,11 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
 
   /**
    * Moves the pipeline on with the step result the agent reported (`parseStepResult` of its text): plan → implement;
-   * implement → verify; verify → gate, or back to implement with the findings; gate → pr while the pull request does not
-   * exist yet, else review; pr → review. `resultId` is the id of the comment that carries the result when the poller
-   * reads it from the issue, null for the result the runner reads from `.hunt/swf/result.md`. Throws UnusableStepResult
-   * with the problem for a text without a usable result and for the result of another step than the current one. `now`
-   * is the time in ms the step's run ends and the next one starts at.
+   * implement → verify; verify → review, or back to implement with the findings; review → pr while the pull request does
+   * not exist yet, else checks, or back to implement with the findings; pr → checks. `resultId` is the id of the comment
+   * that carries the result when the poller reads it from the issue, null for the result the runner reads from
+   * `.hunt/swf/result.md`. Throws UnusableStepResult with the problem for a text without a usable result and for the
+   * result of another step than the current one. `now` is the time in ms the step's run ends and the next one starts at.
    */
   acceptResult(reported: ParsedStepResult | null, resultId: number | null, now: number): void {
     if (resultId !== null) {
@@ -309,15 +314,18 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
           if (result.findings.length > 0) {
             this.returnToImplement(result.findings.map((finding) => `Verify: ${finding}`), now);
           } else {
-            this.moveTo("gate", now);
+            this.moveTo("review", now);
           }
           break;
-        case "gate":
-          this.humanReview = this.humanReview || result.humanReview;
-          this.moveTo(this.pullRequest === null ? "pr" : "review", now);
+        case "review":
+          if (result.findings.length > 0) {
+            this.returnToImplement(result.findings.map((finding) => `Review: ${finding}`), now);
+          } else {
+            this.moveTo(this.pullRequest === null ? "pr" : "checks", now);
+          }
           break;
         case "pr":
-          this.moveTo("review", now);
+          this.moveTo("checks", now);
           this.pullRequest = result.pullRequest;
           break;
       }
@@ -372,8 +380,8 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
   }
 
   /**
-   * Findings of a step that checks the implementation (verify, review, human-review, merge) send the issue back to
-   * implement: the attempt is counted, past MAX_ATTEMPTS the agent escalates to the humans and the count starts anew.
+   * Findings of a step that checks the implementation (verify, review, checks, human-review, merge) send the issue back
+   * to implement: the attempt is counted, past MAX_ATTEMPTS the agent escalates to the humans and the count starts anew.
    * Empty findings are dropped; at most FINDINGS_LIMIT of FINDING_LIMIT characters each are kept. `now` is the time in
    * ms the step's run ends at.
    */
@@ -382,10 +390,19 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     this.changeState(() => this.returnToImplement(findings, now));
   }
 
-  /** The pull request passed its checks and the Claude review: on to human-review when a person has to approve, else to merge. */
-  passReview(now: number): void {
-    this.assertStep("review", "passing the review");
-    this.changeState(() => this.moveTo(this.humanReview ? "human-review" : "merge", now));
+  /** The pull request passed its checks and the scorer approved it: on to merge. */
+  passChecks(now: number): void {
+    this.assertStep("checks", "passing the checks");
+    this.changeState(() => this.moveTo("merge", now));
+  }
+
+  /**
+   * The pull request passed its checks, but the scorer did not approve it: a person has to review before the merge. From
+   * checks, or from merge when a branch update made the scorer withdraw its approval.
+   */
+  requireHumanReview(now: number): void {
+    if (this.step !== "checks" && this.step !== "merge") throw new Error(`a human review needs the step checks or merge, but the pipeline is at ${this.step}`);
+    this.changeState(() => this.moveTo("human-review", now));
   }
 
   /** A person approved the pull request: on to merge. */
@@ -425,13 +442,6 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     this.changeState(() => this.moveTo(this.step, now, "restarted"));
   }
 
-  /** A person has to approve the pull request before it is merged, from now on. */
-  requireHumanReview(): void {
-    this.changeState(() => {
-      this.humanReview = true;
-    });
-  }
-
   /** The people who have to review were asked to on the pull request. */
   noteReviewersNotified(): void {
     this.changeState(() => {
@@ -439,11 +449,10 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     });
   }
 
-  /** The poller carried out what entering the current review step brings with it, once. */
-  noteReviewPrepared(): void {
-    this.assertStep("review", "preparing the review");
+  /** The issue was moved to In Review in its projects; that happens once per pipeline. */
+  noteInReview(): void {
     this.changeState(() => {
-      this.reviewPrepared = true;
+      this.inReview = true;
     });
   }
 
@@ -464,7 +473,7 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
 
   /**
    * Enters `step` at `now`: the current run ends as `outcome`, a run of `step` starts (with `cause`, the run that sent the
-   * issue back); no prompt sent, no reminder, no merge requested, no review prepared yet.
+   * issue back); no prompt sent, no reminder, no merge requested yet.
    */
   private moveTo(step: SwfStep, now: number, outcome: Exclude<RunOutcome, "running"> = "passed", cause?: number): void {
     this.endRun(outcome, now);
@@ -472,13 +481,12 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     this.promptTurn = null;
     this.reminded = false;
     this.mergeSha = null;
-    this.reviewPrepared = false;
     const run: Run = { n: this.runs.length + 1, step, startedAt: isoOf(now), endedAt: null, outcome: "running" };
     if (cause !== undefined) run.cause = cause;
     this.runs = [...this.runs, run];
   }
 
-  /** Ends the current run as `outcome` at `now`; a record without a running run (an old one) has nothing to end. */
+  /** Ends the current run as `outcome` at `now`; a record without a running run has nothing to end. */
   private endRun(outcome: Exclude<RunOutcome, "running">, now: number, findings?: number): void {
     const current = runningRun(this.runs);
     if (!current) return;
@@ -530,6 +538,15 @@ export function stepSkills(value: unknown): { skills: Record<AgentStep, string>;
 /** `now`, a time in ms, as ISO 8601. */
 function isoOf(now: number): string {
   return new Date(now).toISOString();
+}
+
+/**
+ * The `version` of the raw record `json`, before the schema sees it: 1 for a record without one (written before Hunt
+ * recorded a version), whatever it holds otherwise; undefined for a value that is no object.
+ */
+function recordVersion(json: unknown): unknown {
+  if (!isRecord(json)) return undefined;
+  return json.version === undefined ? 1 : json.version;
 }
 
 /** The JSON value of `text`; undefined for text that is no JSON. */

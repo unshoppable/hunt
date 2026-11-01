@@ -346,6 +346,8 @@ export const commands = {
   readLintRules: (id: string) => invoke<LintRules>("read_lint_rules", { id }),
   /** Worktree files containing `word` as a whole word (tracked and untracked, never ignored). */
   searchWord: (id: string, word: string) => invoke<string[]>("search_word", { id, word }),
+  /** Every worktree file `query` matches in, in path order: unlike `findInFiles` neither capped nor cancelled by a later search. */
+  filesContaining: (id: string, query: TextQuery) => invoke<string[]>("files_containing", { id, query }),
   /**
    * Lines of worktree files matching `query` (tracked and untracked, never ignored or binary); empty once a search of
    * the same worktree issued after this one is in progress.

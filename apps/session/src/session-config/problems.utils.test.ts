@@ -8,7 +8,7 @@ describe("problems", () => {
     expect(at("services", "web-ui")).toBe("services.web-ui");
     expect(at("services", "1web")).toBe('services["1web"]');
     expect(at("", "two words")).toBe('["two words"]');
-    expect(appendPath("swf", ["humanReviewPaths", 3])).toBe("swf.humanReviewPaths[3]");
+    expect(appendPath("services.web", ["worktreeInclude", 3])).toBe("services.web.worktreeInclude[3]");
     expect(appendPath("services.web", [])).toBe("services.web");
   });
 

@@ -1,9 +1,9 @@
 /**
  * The GitHub calls of hunt-swf (`swf/poller.service.ts`) with the installation token of the repository (`swf/github-app.client.ts`): open issues
  * with a label, their comments, labels and comments on an issue, the repository labels the poller sets, the pull
- * request of a session (its files, reviews, branch update and merge; REST), its state with the checks of its head
- * commit and the status of an issue in the projects (Projects v2) it is an item of (GraphQL). Plain `fetch`; no
- * dependencies.
+ * request of a session (its reviews, branch update and merge; REST), its state with the checks of its head commit and
+ * GitHub's review decision, and the status of an issue in the projects (Projects v2) it is an item of (GraphQL). Plain
+ * `fetch`; no dependencies.
  */
 import { isRecord } from "../../../../libs/domain/src/shared/json-rpc.utils.ts";
 import type { Repository } from "../../../../libs/domain/src/session/repository.value-object.ts";
@@ -64,10 +64,8 @@ export interface GitHub {
   comment(repo: Repository, issue: number, body: string): Promise<number>;
   /** Replaces the body of the comment `id`. */
   updateComment(repo: Repository, id: number, body: string): Promise<void>;
-  /** The pull request with the checks of its head commit; null when it does not exist. */
+  /** The pull request with the checks of its head commit and its review decision; null when it does not exist. */
   pullRequest(repo: Repository, number: number): Promise<PullRequestState | null>;
-  /** The paths of the files the pull request changes. */
-  pullRequestFiles(repo: Repository, number: number): Promise<string[]>;
   /** The reviews of the pull request, oldest first. */
   reviews(repo: Repository, number: number): Promise<PullRequestReview[]>;
   /** The inline comments of the review `review` as `path: body` lines. */
@@ -78,7 +76,7 @@ export interface GitHub {
   updateBranch(repo: Repository, number: number): Promise<void>;
   /** Squash-merges the pull request. */
   merge(repo: Repository, number: number): Promise<void>;
-  /** Creates the repository label unless it exists. */
+  /** Creates the repository label unless it exists; one that exists with another color or description is updated to the spec. */
   ensureLabel(repo: Repository, label: LabelSpec): Promise<void>;
   /**
    * Sets the `Status` field of the issue's item in every project it belongs to that has an option named `status`
@@ -118,7 +116,7 @@ const PROJECT_ITEMS_QUERY = `query($owner: String!, $name: String!, $number: Int
 const PULL_REQUEST_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      number url title state merged headRefOid mergeStateStatus
+      number url title state merged headRefOid mergeStateStatus reviewDecision
       labels(first: 50) { nodes { name } }
       commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { nodes {
         __typename
@@ -196,6 +194,7 @@ export function parsePullRequest(data: unknown): PullRequestState | null {
     headSha: typeof pullRequest.headRefOid === "string" ? pullRequest.headRefOid : "",
     state: pullRequest.merged === true ? "merged" : pullRequest.state === "CLOSED" ? "closed" : "open",
     mergeState: typeof pullRequest.mergeStateStatus === "string" ? pullRequest.mergeStateStatus : "UNKNOWN",
+    reviewDecision: typeof pullRequest.reviewDecision === "string" ? pullRequest.reviewDecision : null,
     checks,
     failingChecks,
     labels,
@@ -355,10 +354,6 @@ export function createGitHub(tokenFor: (repo: Repository) => Promise<string>, fe
       const data = await graphql(repo, PULL_REQUEST_QUERY, { owner, name, number }, `read the pull request ${repo.slug}#${number}`);
       return parsePullRequest(data);
     },
-    async pullRequestFiles(repo, number) {
-      const items = await list(repo, `/repos/${repo.path}/pulls/${number}/files?per_page=${PER_PAGE}`, `list the files of ${repo.slug}#${number}`);
-      return items.map((item) => (item as { filename?: unknown }).filename).filter((filename): filename is string => typeof filename === "string");
-    },
     async reviews(repo, number) {
       const items = await list(repo, `/repos/${repo.path}/pulls/${number}/reviews?per_page=${PER_PAGE}`, `list the reviews of ${repo.slug}#${number}`);
       return (items as { id?: unknown; user?: { login?: unknown } | null; state?: unknown; body?: unknown; submitted_at?: unknown }[])
@@ -395,7 +390,14 @@ export function createGitHub(tokenFor: (repo: Repository) => Promise<string>, fe
     },
     async ensureLabel(repo, label) {
       const existing = await call(repo, "GET", `/repos/${repo.path}/labels/${encodeURIComponent(label.name)}`);
-      if (existing.ok) return;
+      if (existing.ok) {
+        const current = (await existing.json()) as { color?: unknown; description?: unknown };
+        if (current.color === label.color && current.description === label.description) return;
+        // A label whose meaning changed with a release keeps its name; its color and description follow the spec.
+        const updated = await call(repo, "PATCH", `/repos/${repo.path}/labels/${encodeURIComponent(label.name)}`, { color: label.color, description: label.description });
+        if (!updated.ok) throw await failure(updated, `update the label ${label.name} of ${repo.slug}`);
+        return;
+      }
       if (existing.status !== 404) throw await failure(existing, `look up the label ${label.name} of ${repo.slug}`);
       const created = await call(repo, "POST", `/repos/${repo.path}/labels`, label);
       // 422: created meanwhile.

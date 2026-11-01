@@ -2,8 +2,7 @@
  * The prompts of a swf session, free of I/O: the session's system prompt and its `hunt-session.json`, which the gateway's
  * poller writes at the setup (`apps/gateway/src/swf/poller.service.ts`), and the prompts its agent gets
  * (`libs/domain/prompts/swf/*.user-prompt.md`, filled here), which the runner on the session VM sends
- * (`apps/session/src/swf-runner/swf-runner.service.ts`; the poller still sends them to the sessions of older records).
- * The labels of the workflow are `WorkflowLabels` beside this file.
+ * (`apps/session/src/swf-runner/swf-runner.service.ts`). The labels of the workflow are `WorkflowLabels` beside this file.
  */
 import type { Repository } from "../session/repository.value-object.ts";
 import type { SessionId } from "../session/session-id.value-object.ts";
@@ -46,7 +45,7 @@ export interface PromptFiles {
   swfImplement: string;
   swfEscalate: string;
   swfVerify: string;
-  swfGate: string;
+  swfReview: string;
   swfPr: string;
   swfNudge: string;
   swfAnswer: string;
@@ -145,9 +144,9 @@ function formatFindings(findings: string[]): string {
 /**
  * The prompt of the step the pipeline is at, for the agent steps: `1-plan.user-prompt.md` with the issue, all its
  * comments and the branch; `2-implement.user-prompt.md` with the findings to fix (`2-implement-escalate.user-prompt.md` when
- * the agent is to ask the humans instead); `3-verify`, `4-gate` and `5-pr`. Every prompt carries the issue, the
- * step's label, the commands that move the issue to the question label and back and, as `skill`, the repository's skill
- * for the step (`skillOf` of the pipeline).
+ * the agent is to ask the humans instead); `3-verify`, `4-review` (with the pull request, when it exists) and `5-pr`.
+ * Every prompt carries the issue, the step's label, the commands that move the issue to the question label and back and,
+ * as `skill`, the repository's skill for the step (`skillOf` of the pipeline).
  */
 export function stepPrompt(
   prompts: PromptFiles,
@@ -178,13 +177,13 @@ export function stepPrompt(
       return fillPrompt(pipeline.escalate ? prompts.swfEscalate : prompts.swfImplement, { ...values, findings: formatFindings(pipeline.findings) });
     case "verify":
       return fillPrompt(prompts.swfVerify, values);
-    case "gate":
-      return fillPrompt(prompts.swfGate, {
+    case "review":
+      return fillPrompt(prompts.swfReview, {
         ...values,
         pullRequest: pipeline.pullRequest === null ? "(not opened yet)" : `#${pipeline.pullRequest}`,
       });
     case "pr":
-      return fillPrompt(prompts.swfPr, { ...values, humanReview: pipeline.humanReview ? "yes" : "no" });
+      return fillPrompt(prompts.swfPr, values);
     default:
       throw new Error(`the step ${pipeline.step} has no prompt for the agent`);
   }

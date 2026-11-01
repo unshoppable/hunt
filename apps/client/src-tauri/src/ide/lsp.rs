@@ -12,14 +12,14 @@
 //! registers globs, and one recursive watcher on the worktree reports the changes that match them, so the server sees
 //! files the agent creates, edits or deletes without an open document.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use glob::{MatchOptions, Pattern};
 use notify_debouncer_full::notify::event::ModifyKind;
@@ -31,8 +31,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
-use tokio::sync::{oneshot, watch, OnceCell};
-use tokio::task::JoinSet;
+use tokio::sync::{oneshot, watch};
+use tokio::task::{JoinHandle, JoinSet};
 use uuid::Uuid;
 
 use crate::agent::acp::bundled_script_path;
@@ -65,6 +65,32 @@ const SCRIPT_ENDINGS: [&str; 8] = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx",
 const READ_CHUNK: usize = 64 * 1024;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a server may take to answer `initialize`: a cold start of a big worktree (node resolving the shims, the
+/// Angular server reading its packages) is slow; a process that ends meanwhile ends the wait at once.
+const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long an interactive request (hover, completion, symbols, inlay hints, …) waits for its response once sent.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a request waits that searches the project, checks a file of a cold project, or goes to the Angular server,
+/// which loads a project on its first request for it (about 8 s cold).
+const LONG_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// The methods that get `LONG_REQUEST_TIMEOUT` from tsgo too; the unused-member markers send many references requests.
+const LONG_METHODS: [&str; 5] =
+    ["textDocument/references", "textDocument/rename", "workspace/willRenameFiles", "workspace/symbol", "textDocument/diagnostic"];
+/// How long a cancel stays remembered for a token no request holds yet, and how many such tokens at most.
+const CANCEL_MEMORY: Duration = Duration::from_secs(30);
+const MAX_EARLY_CANCELS: usize = 256;
+/// A server that ran this long ran fine: the crashes before it no longer count.
+const STABLE_UPTIME: Duration = Duration::from_secs(180);
+/// The waits before the restarts after one, two and three crashes in a row; after the fourth, no restart follows
+/// until `stop_for_worktree` (a fresh `node_modules`, the end of the session).
+const RESTART_BACKOFF: [Duration; 3] = [Duration::from_millis(500), Duration::from_secs(1), Duration::from_secs(2)];
+/// The stderr lines kept for the reason of a crash, and how long the end of a process waits for the last of them.
+const STDERR_LINES: usize = 100;
+const STDERR_DRAIN: Duration = Duration::from_millis(200);
+/// The largest message body the reader accepts; a larger `Content-Length` ends the connection.
+const MAX_MESSAGE: usize = 256 * 1024 * 1024;
+/// The longest header line; a longer run of bytes without a line break is dropped as noise.
+const MAX_HEADER_LINE: usize = 8 * 1024;
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(100);
 /// Watcher globs match like VS Code's on macOS: case-insensitive, `*` stays inside one path component.
 const GLOB_OPTIONS: MatchOptions =
@@ -124,7 +150,132 @@ impl Launch {
     }
 }
 
+/// How long a `method` request to a `kind` server waits for its response once sent.
+fn response_timeout(kind: ServerKind, method: &str) -> Duration {
+    if kind == ServerKind::Angular || LONG_METHODS.contains(&method) {
+        LONG_REQUEST_TIMEOUT
+    } else {
+        REQUEST_TIMEOUT
+    }
+}
+
 type Pending = HashMap<i64, oneshot::Sender<Result<Value, String>>>;
+
+/// Notifications on their way to a server: held in order until the handshake is done, so that sending one never waits
+/// for a starting server (`documents.rs` sends them under the worktree's document lock); passed straight to the outbox
+/// after it, refused once the handshake failed or the process ended.
+enum NotificationGate {
+    Held(Vec<Vec<u8>>),
+    Open,
+    Closed,
+}
+
+impl NotificationGate {
+    fn pass(&mut self, frame: Vec<u8>, outbox: &UnboundedSender<Vec<u8>>) -> Result<(), String> {
+        match self {
+            Self::Held(frames) => {
+                frames.push(frame);
+                Ok(())
+            }
+            Self::Open => outbox.send(frame).map_err(|_| EXITED.to_string()),
+            Self::Closed => Err(EXITED.into()),
+        }
+    }
+
+    /// Writes the held notifications in order; every later one passes straight through.
+    fn open(&mut self, outbox: &UnboundedSender<Vec<u8>>) -> Result<(), String> {
+        let Self::Held(frames) = std::mem::replace(self, Self::Open) else { return Ok(()) };
+        for frame in frames {
+            outbox.send(frame).map_err(|_| EXITED.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+/// The signals that abort in-flight requests by the token the webview gave them, plus the tokens cancelled while no
+/// request held them: `lsp_cancel` can overtake its `lsp_request`, which then finds its token cancelled.
+#[derive(Default)]
+struct Cancellations {
+    next_serial: u64,
+    active: HashMap<String, (u64, oneshot::Sender<()>)>,
+    /// Oldest first, each with the time of its cancel; forgotten after `CANCEL_MEMORY`, at most `MAX_EARLY_CANCELS`.
+    early: VecDeque<(String, Instant)>,
+}
+
+impl Cancellations {
+    /// Registers the request of `token` with its serial and the receiver its cancel resolves; `None` when the token
+    /// was cancelled already.
+    fn register(&mut self, token: &str, now: Instant) -> Option<(u64, oneshot::Receiver<()>)> {
+        self.expire(now);
+        if let Some(index) = self.early.iter().position(|(early, _)| early == token) {
+            self.early.remove(index);
+            return None;
+        }
+        let (sender, receiver) = oneshot::channel();
+        self.next_serial += 1;
+        self.active.insert(token.to_owned(), (self.next_serial, sender));
+        Some((self.next_serial, receiver))
+    }
+
+    /// Aborts the request of `token`, or remembers the token when no request holds it.
+    fn cancel(&mut self, token: &str, now: Instant) {
+        if let Some((_, sender)) = self.active.remove(token) {
+            let _ = sender.send(());
+            return;
+        }
+        self.expire(now);
+        if self.early.len() == MAX_EARLY_CANCELS {
+            self.early.pop_front();
+        }
+        self.early.push_back((token.to_owned(), now));
+    }
+
+    /// Forgets the request `serial` of `token` once it ended.
+    fn release(&mut self, token: &str, serial: u64) {
+        if self.active.get(token).is_some_and(|(active, _)| *active == serial) {
+            self.active.remove(token);
+        }
+    }
+
+    fn expire(&mut self, now: Instant) {
+        while self.early.front().is_some_and(|(_, at)| now.duration_since(*at) >= CANCEL_MEMORY) {
+            self.early.pop_front();
+        }
+    }
+}
+
+/// Releases a request's cancellation token when the request ends, however it ends.
+struct TokenGuard<'a> {
+    cancellations: &'a Mutex<Cancellations>,
+    token: String,
+    serial: u64,
+}
+
+impl Drop for TokenGuard<'_> {
+    fn drop(&mut self) {
+        self.cancellations.lock().unwrap().release(&self.token, self.serial);
+    }
+}
+
+/// Removes a request's `pending` entry when its wait ends without a response (timed out, cancelled, or the future was
+/// dropped) and then tells the server with `$/cancelRequest`; a response has removed the entry already.
+struct PendingGuard<'a> {
+    server: &'a LspServer,
+    id: i64,
+}
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        let unanswered = self.server.pending.lock().unwrap().as_mut().and_then(|pending| pending.remove(&self.id));
+        if unanswered.is_some() {
+            let _ = self.server.write(&message(None, "$/cancelRequest", json!({ "id": self.id })));
+        }
+    }
+}
+
+fn cancelled(method: &str) -> String {
+    format!("failed to complete {method}: the request was cancelled")
+}
 
 /// A running language server process speaking JSON-RPC 2.0 over its stdio.
 pub struct LspServer {
@@ -138,10 +289,17 @@ pub struct LspServer {
     next_id: AtomicI64,
     /// Requests awaiting their response; `None` once the process ended, so late requests fail at once.
     pending: Mutex<Option<Pending>>,
-    /// Cancellation tokens of in-flight requests mapped to their JSON-RPC id.
-    tokens: Mutex<HashMap<String, i64>>,
-    /// Set once the `initialize` handshake finished; requests and notifications wait for it.
-    ready: OnceCell<()>,
+    /// The cancellation tokens of the requests, see `Cancellations`.
+    cancellations: Mutex<Cancellations>,
+    /// The outcome of the `initialize` handshake once it finished; requests wait for it, notifications are held.
+    ready: watch::Sender<Option<Result<(), String>>>,
+    notifications: Mutex<NotificationGate>,
+    started: Instant,
+    /// The last `STDERR_LINES` lines of stderr, and the task reading them.
+    stderr: Arc<Mutex<VecDeque<String>>>,
+    stderr_task: Mutex<Option<JoinHandle<()>>>,
+    /// Why the server failed: its handshake error, or the status the process ended with.
+    failure: Mutex<Option<String>>,
     /// Flips to `true` after the process was reaped.
     exited: watch::Sender<bool>,
     /// The worktree watcher; dropped when the process ends, which stops the forwarding of changes.
@@ -167,7 +325,8 @@ impl LspServer {
         let stdin = child.stdin.take().ok_or("language server stdin is not available")?;
         let stdout = child.stdout.take().ok_or("language server stdout is not available")?;
         let stderr = child.stderr.take().ok_or("language server stderr is not available")?;
-        tokio::spawn(forward_stderr(kind, stderr));
+        let stderr_lines = Arc::new(Mutex::new(VecDeque::new()));
+        let stderr_task = tokio::spawn(forward_stderr(kind, stderr, stderr_lines.clone()));
         let (outbox, frames) = unbounded_channel();
         tokio::spawn(write_loop(stdin, frames));
 
@@ -179,8 +338,13 @@ impl LspServer {
             outbox,
             next_id: AtomicI64::new(1),
             pending: Mutex::new(Some(HashMap::new())),
-            tokens: Mutex::default(),
-            ready: OnceCell::new(),
+            cancellations: Mutex::default(),
+            ready: watch::channel(None).0,
+            notifications: Mutex::new(NotificationGate::Held(Vec::new())),
+            started: Instant::now(),
+            stderr: stderr_lines,
+            stderr_task: Mutex::new(Some(stderr_task)),
+            failure: Mutex::default(),
             exited: watch::channel(false).0,
             watcher: Mutex::default(),
             file_watchers: Mutex::default(),
@@ -195,9 +359,7 @@ impl LspServer {
         tokio::spawn(forward_file_changes(Arc::downgrade(&server), receiver));
         tokio::spawn(read_loop(server.clone(), stdout, events));
         let handshake = server.clone();
-        tokio::spawn(async move {
-            let _ = handshake.ensure_ready().await;
-        });
+        tokio::spawn(async move { handshake.run_handshake().await });
         Ok(server)
     }
 
@@ -206,28 +368,35 @@ impl LspServer {
     }
 
     /// Sends a request once the handshake is done and resolves with its `result` (`Null` when the server returns
-    /// null) or the error as `"<code>: <message>"`. `token` lets `cancel` abort the request while it is pending.
+    /// null) or the error as `"<code>: <message>"`; fails after `response_timeout`. `token` lets `cancel` abort the
+    /// request, also before the handshake is done or before the request arrived.
     pub async fn request(&self, method: &str, params: Value, token: Option<String>) -> Result<Value, String> {
-        self.ensure_ready().await?;
-        self.send_request(method, params, token).await
-    }
-
-    /// Sends a notification once the handshake is done.
-    pub async fn notify(&self, method: &str, params: Value) -> Result<(), String> {
-        self.ensure_ready().await?;
-        self.write(&message(None, method, params))
-    }
-
-    /// Sends `$/cancelRequest` for the request registered under `token`; a no-op for unknown or answered requests.
-    pub async fn cancel(&self, token: &str) -> Result<(), String> {
-        let Some(id) = self.tokens.lock().unwrap().remove(token) else {
-            return Ok(());
+        let work = async {
+            self.ensure_ready().await?;
+            self.send_request(method, params, response_timeout(self.kind, method)).await
         };
-        let is_pending = self.pending.lock().unwrap().as_ref().is_some_and(|pending| pending.contains_key(&id));
-        if !is_pending {
-            return Ok(());
+        let Some(token) = token else { return work.await };
+        let Some((serial, cancel)) = self.cancellations.lock().unwrap().register(&token, Instant::now()) else {
+            return Err(cancelled(method));
+        };
+        let _token = TokenGuard { cancellations: &self.cancellations, token, serial };
+        tokio::select! {
+            outcome = work => outcome,
+            Ok(()) = cancel => Err(cancelled(method)),
         }
-        self.write(&message(None, "$/cancelRequest", json!({ "id": id })))
+    }
+
+    /// Sends a notification without waiting: until the handshake is done it is held, then sent in order.
+    pub async fn notify(&self, method: &str, params: Value) -> Result<(), String> {
+        let frame = encode(&message(None, method, params))?;
+        self.notifications.lock().unwrap().pass(frame, &self.outbox)
+    }
+
+    /// Aborts the request registered under `token`, which then sends `$/cancelRequest` unless it was answered; a token
+    /// no request holds yet is remembered for `CANCEL_MEMORY`.
+    pub async fn cancel(&self, token: &str) -> Result<(), String> {
+        self.cancellations.lock().unwrap().cancel(token, Instant::now());
+        Ok(())
     }
 
     /// Kills the process and waits (bounded) until it was reaped.
@@ -238,24 +407,34 @@ impl LspServer {
 
     /// Asks the server to end with `shutdown` and `exit`, each bounded, then kills whatever is still running.
     pub async fn shutdown(&self) {
-        let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, self.send_request("shutdown", Value::Null, None)).await;
+        let _ = self.send_request("shutdown", Value::Null, SHUTDOWN_TIMEOUT).await;
         let _ = self.write(&message(None, "exit", Value::Null));
         if tokio::time::timeout(SHUTDOWN_TIMEOUT, self.wait_exited()).await.is_err() {
             self.stop().await;
         }
     }
 
+    /// Waits until the handshake is done and returns its outcome.
     async fn ensure_ready(&self) -> Result<(), String> {
-        match self.ready.get_or_try_init(|| self.handshake()).await {
-            Ok(_) => Ok(()),
-            Err(error) => {
-                self.kill();
-                Err(error)
-            }
-        }
+        let mut ready = self.ready.subscribe();
+        let outcome = ready.wait_for(Option::is_some).await.map_err(|_| EXITED.to_string())?.clone();
+        outcome.unwrap_or_else(|| Err(EXITED.into()))
     }
 
-    /// `initialize` → `initialized` → `workspace/didChangeConfiguration`.
+    /// Runs the handshake once, from `start`, so no cancelled request can abort it halfway; a failed one drops the held
+    /// notifications and kills the process, which counts as a crash.
+    async fn run_handshake(&self) {
+        let outcome = self.handshake().await;
+        if let Err(error) = &outcome {
+            eprintln!("{:?} language server of {}: {error}", self.kind, self.worktree.display());
+            *self.notifications.lock().unwrap() = NotificationGate::Closed;
+            self.failure.lock().unwrap().get_or_insert_with(|| error.clone());
+            self.kill();
+        }
+        self.ready.send_replace(Some(outcome));
+    }
+
+    /// `initialize` → `initialized` → `workspace/didChangeConfiguration` → the notifications held meanwhile.
     async fn handshake(&self) -> Result<(), String> {
         let root_uri = file_uri(&self.worktree);
         let name = self.worktree.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
@@ -305,13 +484,15 @@ impl LspServer {
                 }
             }
         });
-        self.send_request("initialize", params, None).await?;
+        self.send_request("initialize", params, INITIALIZE_TIMEOUT).await?;
         self.write(&message(None, "initialized", json!({})))?;
         let settings = json!({ "settings": *SETTINGS });
-        self.write(&message(None, "workspace/didChangeConfiguration", settings))
+        self.write(&message(None, "workspace/didChangeConfiguration", settings))?;
+        self.notifications.lock().unwrap().open(&self.outbox)
     }
 
-    async fn send_request(&self, method: &str, params: Value, token: Option<String>) -> Result<Value, String> {
+    /// Sends a request now and waits at most `limit` for its response.
+    async fn send_request(&self, method: &str, params: Value, limit: Duration) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
         {
@@ -321,35 +502,18 @@ impl LspServer {
             };
             pending.insert(id, sender);
         }
-        if let Some(token) = &token {
-            self.tokens.lock().unwrap().insert(token.clone(), id);
+        let _pending = PendingGuard { server: self, id };
+        self.write(&message(Some(id), method, params))?;
+        match tokio::time::timeout(limit, receiver).await {
+            Ok(outcome) => outcome.unwrap_or_else(|_| Err(EXITED.into())),
+            Err(_) => Err(format!("failed to complete {method}: no response within {}s", limit.as_secs_f32())),
         }
-
-        let outcome = match self.write(&message(Some(id), method, params)) {
-            Ok(()) => receiver.await.unwrap_or_else(|_| Err(EXITED.into())),
-            Err(error) => {
-                if let Some(pending) = self.pending.lock().unwrap().as_mut() {
-                    pending.remove(&id);
-                }
-                Err(error)
-            }
-        };
-        if let Some(token) = token {
-            let mut tokens = self.tokens.lock().unwrap();
-            if tokens.get(&token) == Some(&id) {
-                tokens.remove(&token);
-            }
-        }
-        outcome
     }
 
     /// Queues one framed message for `write_loop`, so a server that is busy and not reading its stdin holds up neither
     /// the caller nor the document lock it may hold; fails once the process takes no more input.
     fn write(&self, message: &Value) -> Result<(), String> {
-        let body = serde_json::to_vec(message).map_err(|error| error.to_string())?;
-        let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
-        frame.extend_from_slice(&body);
-        self.outbox.send(frame).map_err(|_| EXITED.to_string())
+        self.outbox.send(encode(message)?).map_err(|_| EXITED.to_string())
     }
 
     /// Routes one incoming message: answers server requests, forwards notifications, completes responses.
@@ -420,9 +584,11 @@ impl LspServer {
         }
     }
 
-    /// Fails every pending request, reaps the process and announces the end.
+    /// Fails every pending request, drops the held notifications, reaps the process and announces the end once the
+    /// last stderr lines are read (bounded).
     async fn finish(self: &Arc<Self>, events: &dyn LspEvents) {
         self.watcher.lock().unwrap().take();
+        *self.notifications.lock().unwrap() = NotificationGate::Closed;
         let pending = self.pending.lock().unwrap().take();
         for (_, sender) in pending.into_iter().flatten() {
             let _ = sender.send(Err(EXITED.into()));
@@ -431,12 +597,30 @@ impl LspServer {
         if let Some(mut child) = child {
             if let Ok(Some(status)) = child.try_wait() {
                 eprintln!("{:?} language server of {} exited on its own with {status}", self.kind, self.worktree.display());
+                self.failure.lock().unwrap().get_or_insert_with(|| format!("ended with {status}"));
             }
             kill_group(&mut child);
             let _ = child.wait().await;
         }
+        let stderr_task = self.stderr_task.lock().unwrap().take();
+        if let Some(stderr_task) = stderr_task {
+            let _ = tokio::time::timeout(STDERR_DRAIN, stderr_task).await;
+        }
         self.exited.send_replace(true);
         events.exited(self);
+    }
+
+    /// Why the process ended on its own, followed by an excerpt of its last stderr lines.
+    fn end_reason(&self) -> String {
+        let failure = self.failure.lock().unwrap().clone().unwrap_or_else(|| "closed its output".into());
+        let stderr = self.stderr.lock().unwrap();
+        let lines: Vec<&str> = stderr.iter().map(String::as_str).collect();
+        let excerpt = crash_excerpt(&lines, 5);
+        if excerpt.is_empty() {
+            failure
+        } else {
+            format!("{failure}\n{excerpt}")
+        }
     }
 
     fn kill(&self) {
@@ -450,12 +634,45 @@ impl LspServer {
     }
 }
 
-/// Prints every stderr line of the `kind` server, which is where a crashing server leaves its reason.
-async fn forward_stderr(kind: ServerKind, stderr: ChildStderr) {
+/// Prints every stderr line of the `kind` server, which is where a crashing server leaves its reason, and keeps the
+/// last `STDERR_LINES` of them in `tail`.
+async fn forward_stderr(kind: ServerKind, stderr: ChildStderr, tail: Arc<Mutex<VecDeque<String>>>) {
     let mut lines = BufReader::new(stderr).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         eprintln!("{kind:?} language server: {line}");
+        let mut tail = tail.lock().unwrap();
+        if tail.len() == STDERR_LINES {
+            tail.pop_front();
+        }
+        tail.push_back(line);
     }
+}
+
+/// The last `count` stderr lines, led by the error headline: Node.js and Go print the error first and a stack after it,
+/// so a plain tail would show frames without saying what went wrong.
+// Ported from OpenIDEA's `crash_excerpt` (crates/ide-lsp/src/server.rs, Apache-2.0), with Go's panic headline added.
+fn crash_excerpt(lines: &[&str], count: usize) -> String {
+    const MAX_LINES: usize = 12;
+    let start = lines.len().saturating_sub(count);
+    let excerpt: Vec<&str> = match lines.iter().rposition(|line| is_error_headline(line)) {
+        Some(index) if index >= start => lines[start..].to_vec(),
+        Some(index) if lines.len() - index <= MAX_LINES => lines[index..].to_vec(),
+        Some(index) => [lines[index], "…"].into_iter().chain(lines[start..].iter().copied()).collect(),
+        None => lines[start..].to_vec(),
+    };
+    excerpt.join("\n")
+}
+
+/// Whether `line` names an error: `TypeError: …`, `SomeException: …`, a Go `panic: …` or `fatal error: …`, a Java
+/// `Exception in thread …` or a Rust `thread '…' panicked`.
+// Ported from OpenIDEA's `is_error_headline` (crates/ide-lsp/src/server.rs, Apache-2.0).
+fn is_error_headline(line: &str) -> bool {
+    let line = line.trim_start();
+    let head = line.split(':').next().unwrap_or_default();
+    let named = (head.ends_with("Error") || head.ends_with("Exception")) && !head.contains(' ') && head.len() < line.len();
+    named
+        || ["panic: ", "fatal error: ", "Exception in thread"].iter().any(|prefix| line.starts_with(prefix))
+        || (line.starts_with("thread '") && line.contains("panicked"))
 }
 
 /// Reads stdout until EOF, dispatching every complete frame, then finishes the server.
@@ -471,7 +688,10 @@ async fn read_loop(server: Arc<LspServer>, mut stdout: ChildStdout, events: Arc<
             match decoder.next_message() {
                 Ok(Some(message)) => server.dispatch(message, events.as_ref()).await,
                 Ok(None) => break,
-                Err(_) => break 'read,
+                Err(error) => {
+                    eprintln!("{:?} language server of {}: {error}", server.kind, server.worktree.display());
+                    break 'read;
+                }
             }
         }
     }
@@ -674,43 +894,95 @@ pub fn kill_group(child: &mut Child) {
     let _ = child.start_kill();
 }
 
-/// Splits a byte stream into `Content-Length`-framed JSON-RPC messages, parsing each body in place.
+/// Splits a byte stream into `Content-Length`-framed JSON-RPC messages, parsing each body in place. Header lines may
+/// end in `\r\n` or `\n`; what is no header where one is due (a launcher's own output on stdout), a header without a
+/// valid `Content-Length` and a body that is no JSON are logged and skipped.
 #[derive(Default)]
 struct FrameDecoder {
     buffer: Vec<u8>,
 }
 
 impl FrameDecoder {
-    /// Parses and removes the first complete message; `Ok(None)` while the buffer holds only part of a frame.
+    /// Parses and removes the first complete message; `Ok(None)` while the buffer holds only part of a frame, an error
+    /// for a frame longer than `MAX_MESSAGE`.
     fn next_message(&mut self) -> Result<Option<Value>, String> {
-        let Some(header_end) = find(&self.buffer, b"\r\n\r\n") else {
-            return Ok(None);
-        };
-        let header = std::str::from_utf8(&self.buffer[..header_end]).map_err(|_| "malformed frame header")?;
-        let length = header
-            .split("\r\n")
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                if !name.trim().eq_ignore_ascii_case("content-length") {
-                    return None;
-                }
-                value.trim().parse::<usize>().ok()
-            })
-            .ok_or("frame without Content-Length")?;
-        let body_start = header_end + 4;
-        let body_end = body_start + length;
-        if self.buffer.len() < body_end {
-            return Ok(None);
+        loop {
+            let Some((body_start, length)) = self.next_header()? else { return Ok(None) };
+            let body_end = body_start + length;
+            if self.buffer.len() < body_end {
+                return Ok(None);
+            }
+            let message = serde_json::from_slice(&self.buffer[body_start..body_end]);
+            self.buffer.drain(..body_end);
+            match message {
+                Ok(message) => return Ok(Some(message)),
+                Err(error) => eprintln!("failed to parse a language server message: {error}"),
+            }
         }
-        let message = serde_json::from_slice(&self.buffer[body_start..body_end])
-            .map_err(|error| format!("malformed frame body: {error}"));
-        self.buffer.drain(..body_end);
-        message.map(Some)
+    }
+
+    /// The offset of the body and its length once the header at the start of the buffer is complete; drops what comes
+    /// before it that is no header.
+    fn next_header(&mut self) -> Result<Option<(usize, usize)>, String> {
+        let mut position = 0;
+        let mut length = None;
+        loop {
+            let Some(newline) = self.buffer[position..].iter().position(|&byte| byte == b'\n') else {
+                if self.buffer.len() - position > MAX_HEADER_LINE {
+                    eprintln!("language server stdout: dropped {} bytes without a line break", self.buffer.len());
+                    self.buffer.clear();
+                }
+                return Ok(None);
+            };
+            let line_end = position + newline + 1;
+            let line = self.buffer[position..line_end].trim_ascii_end();
+            if line.is_empty() && length.is_some() {
+                return Ok(length.map(|length| (line_end, length)));
+            }
+            let field = header_field(line);
+            let is_header = match field {
+                Some((name, value)) if name.eq_ignore_ascii_case("content-length") => match value.parse::<usize>() {
+                    Ok(value) if value > MAX_MESSAGE => {
+                        return Err(format!("failed to read a language server message: {value} bytes exceed {MAX_MESSAGE}"));
+                    }
+                    Ok(value) => {
+                        length = Some(value);
+                        true
+                    }
+                    Err(_) => false,
+                },
+                Some(_) => true,
+                None => false,
+            };
+            if is_header {
+                position = line_end;
+                continue;
+            }
+            // A blank line between messages, the end of a header without a length, or noise: skipped with the header
+            // lines before it.
+            if !line.is_empty() {
+                eprintln!("language server stdout: {}", String::from_utf8_lossy(line));
+            }
+            self.buffer.drain(..line_end);
+            position = 0;
+            length = None;
+        }
     }
 }
 
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+/// The name and value of a header line (`Content-Length: 12`); `None` for anything else.
+fn header_field(line: &[u8]) -> Option<(&str, &str)> {
+    let (name, value) = std::str::from_utf8(line).ok()?.split_once(':')?;
+    let is_name = !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
+    is_name.then(|| (name, value.trim()))
+}
+
+/// The `Content-Length` frame of `message`.
+fn encode(message: &Value) -> Result<Vec<u8>, String> {
+    let body = serde_json::to_vec(message).map_err(|error| format!("failed to encode a language server message: {error}"))?;
+    let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+    frame.extend_from_slice(&body);
+    Ok(frame)
 }
 
 /// A JSON-RPC request (`id` given) or notification; `Null` params are left out.
@@ -793,16 +1065,55 @@ fn path_of_file_uri(uri: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+/// The crashes in a row of one worktree's server of one kind, each within `STABLE_UPTIME` of its start, and when the
+/// next server may start.
+#[derive(Debug)]
+struct CrashRecord {
+    crashes: usize,
+    restart_at: Instant,
+    reason: String,
+}
+
+impl CrashRecord {
+    /// The record after a server that ran `uptime` crashed at `now` with `reason`; a run of `STABLE_UPTIME` starts the
+    /// count over.
+    fn after(previous: Option<&CrashRecord>, uptime: Duration, now: Instant, reason: String) -> Self {
+        let earlier = previous.filter(|_| uptime < STABLE_UPTIME).map_or(0, |previous| previous.crashes);
+        let crashes = earlier + 1;
+        let backoff = RESTART_BACKOFF.get(crashes - 1).copied().unwrap_or_default();
+        Self { crashes, restart_at: now + backoff, reason }
+    }
+
+    /// Whether a new `kind` server may start at `now`: not during the backoff, and never again after more crashes in
+    /// a row than `RESTART_BACKOFF` has waits.
+    fn admits(&self, kind: ServerKind, now: Instant) -> Result<(), String> {
+        if self.crashes > RESTART_BACKOFF.len() {
+            return Err(format!(
+                "failed to start the {kind:?} language server: it crashed {} times in a row, last: {}",
+                self.crashes, self.reason
+            ));
+        }
+        if now < self.restart_at {
+            let wait = self.restart_at - now;
+            return Err(format!("failed to start the {kind:?} language server: restarting in {}ms after a crash", wait.as_millis()));
+        }
+        Ok(())
+    }
+}
+
 /// Running servers keyed by worktree and kind, plus the worktree of every session that used the LSP so a request
 /// needs no session store read.
 #[derive(Default)]
 pub struct LspRegistry {
     servers: Mutex<HashMap<(PathBuf, ServerKind), Arc<LspServer>>>,
     worktrees: Mutex<HashMap<Uuid, PathBuf>>,
+    /// The crash records by worktree and kind; `stop_for_worktree` clears those of its worktree.
+    crashes: Mutex<HashMap<(PathBuf, ServerKind), CrashRecord>>,
 }
 
 impl LspRegistry {
-    /// The running `kind` server of `worktree`, started with `launch` and `events` when there is none.
+    /// The running `kind` server of `worktree`, started with `launch` and `events` when there is none and its crash
+    /// record admits a start.
     pub fn get_or_start(
         &self,
         worktree: &Path,
@@ -815,28 +1126,41 @@ impl LspRegistry {
         if let Some(server) = servers.get(&key) {
             return Ok(server.clone());
         }
+        if let Some(record) = self.crashes.lock().unwrap().get(&key) {
+            record.admits(kind, Instant::now())?;
+        }
         let server = LspServer::start(worktree.to_path_buf(), kind, launch()?, events())?;
         servers.insert(key, server.clone());
         Ok(server)
     }
 
-    /// Drops `server` when it is still the registered server of its worktree and kind.
-    fn forget(&self, server: &Arc<LspServer>) {
+    /// Drops the ended `server` when it is still the registered server of its worktree and kind, which means it ended
+    /// on its own (`stop_for_worktree` and `shutdown_all` unregister first): records the crash and returns its reason.
+    fn ended(&self, server: &Arc<LspServer>) -> Option<String> {
         let mut servers = self.servers.lock().unwrap();
         let key = (server.worktree.clone(), server.kind);
-        if servers.get(&key).is_some_and(|current| Arc::ptr_eq(current, server)) {
-            servers.remove(&key);
+        if !servers.get(&key).is_some_and(|current| Arc::ptr_eq(current, server)) {
+            return None;
         }
+        servers.remove(&key);
+        let reason = server.end_reason();
+        let mut crashes = self.crashes.lock().unwrap();
+        let record = CrashRecord::after(crashes.get(&key), server.started.elapsed(), Instant::now(), reason.clone());
+        eprintln!("{:?} language server of {} crashed ({} in a row): {reason}", server.kind, server.worktree.display(), record.crashes);
+        crashes.insert(key, record);
+        Some(reason)
     }
 }
 
-/// Kills the servers of `worktree` (if any) and waits until their processes are gone.
+/// Kills the servers of `worktree` (if any) and waits until their processes are gone; the next request starts fresh
+/// ones, also after servers that crashed too often.
 pub async fn stop_for_worktree(registry: &LspRegistry, worktree: &Path) {
     let servers: Vec<Arc<LspServer>> = {
         let mut servers = registry.servers.lock().unwrap();
         ServerKind::ALL.iter().filter_map(|kind| servers.remove(&(worktree.to_path_buf(), *kind))).collect()
     };
     registry.worktrees.lock().unwrap().retain(|_, path| path != worktree);
+    registry.crashes.lock().unwrap().retain(|(path, _), _| path != worktree);
     for server in servers {
         server.stop().await;
     }
@@ -864,6 +1188,8 @@ struct DiagnosticsEvent {
 #[serde(rename_all = "camelCase")]
 struct ExitedEvent {
     worktree_path: String,
+    /// Why a crashed server ended, with an excerpt of its stderr; `None` for a server Hunt stopped.
+    reason: Option<String>,
 }
 
 /// Forwards the events of the TypeScript server to every window and unregisters ended servers. The windows know only
@@ -877,9 +1203,9 @@ impl LspEvents for TauriEvents {
     }
 
     fn exited(&self, server: &Arc<LspServer>) {
-        self.0.state::<LspRegistry>().forget(server);
+        let reason = self.0.state::<LspRegistry>().ended(server);
         let worktree_path = server.worktree.to_string_lossy().into_owned();
-        let _ = self.0.emit("lsp:exited", ExitedEvent { worktree_path });
+        let _ = self.0.emit("lsp:exited", ExitedEvent { worktree_path, reason });
     }
 }
 
@@ -890,7 +1216,7 @@ impl LspEvents for AngularEvents {
     fn diagnostics(&self, _worktree: &Path, _uri: String, _diagnostics: Value) {}
 
     fn exited(&self, server: &Arc<LspServer>) {
-        self.0.state::<LspRegistry>().forget(server);
+        self.0.state::<LspRegistry>().ended(server);
     }
 }
 
@@ -1163,7 +1489,7 @@ mod tests {
 
         let contents = result["contents"]["value"].as_str().expect("markdown hover contents");
         assert!(contents.contains("answer") && contents.contains("number"), "unexpected hover: {contents}");
-        assert!(server.tokens.lock().unwrap().is_empty());
+        assert!(server.cancellations.lock().unwrap().active.is_empty());
 
         server.stop().await;
         assert!(!process_exists(pid), "tsgo {pid} is still running");

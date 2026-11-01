@@ -61,13 +61,13 @@ describe("swfSkillsOf", () => {
       { step: "plan", name: null },
       { step: "implement", name: null },
       { step: "verify", name: null },
-      { step: "gate", name: null },
+      { step: "review", name: null },
       { step: "pr", name: null },
     ]);
   });
 
   it("takes the usable names of swf.skills and leaves the other steps without a name", () => {
-    const entries = swfSkillsOf('{ "swf": { "skills": { "plan": "team-plan", "verify": "Bad Name", "gate": 7, "pr": "swf-pr" } } }');
+    const entries = swfSkillsOf('{ "swf": { "skills": { "plan": "team-plan", "verify": "Bad Name", "review": 7, "pr": "swf-pr" } } }');
     expect(entries?.map((entry) => entry.name)).toEqual(["team-plan", null, null, null, "swf-pr"]);
   });
 

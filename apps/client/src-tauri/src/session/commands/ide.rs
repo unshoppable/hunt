@@ -143,6 +143,21 @@ pub async fn search_word(
     find_in_files::files_containing(&registry, &record.worktree_path, &query, unsaved).await
 }
 
+/// Every worktree file `query` matches in, in path order; unlike `find_in_files` neither capped nor cancelled by a later
+/// search, for lookups whose result must be complete (the text occurrences of a path rename).
+#[tauri::command]
+pub async fn files_containing(
+    app: AppHandle,
+    registry: State<'_, FindRegistry>,
+    documents: State<'_, DocumentRegistry>,
+    id: Uuid,
+    query: TextQuery,
+) -> Result<Vec<String>, String> {
+    let record = worktree_session(&app, id)?;
+    let unsaved = documents.unsaved_texts(&record.worktree_path).await;
+    find_in_files::files_containing(&registry, &record.worktree_path, &query, unsaved).await
+}
+
 /// Lines of worktree files matching `query`, for the editor's Find in Files; a file with unsaved edits is searched in its editor text.
 #[tauri::command]
 pub async fn find_in_files(

@@ -1,4 +1,4 @@
-Step `pr` for issue #{{number}} of {{repo}} on the branch `{{branch}}` (a person reviews before the merge: {{humanReview}}).
+Step `pr` for issue #{{number}} of {{repo}} on the branch `{{branch}}`.
 
 Invoke the repository's skill `{{skill}}` (`.claude/skills/{{skill}}/SKILL.md`) first and follow it; it refines this step for the repository.
 
@@ -12,8 +12,8 @@ outside the repository and leave the working tree clean: `git status` shows noth
 
 Write the step result to `.hunt/swf/result.md`: the pull request's link, ending with
 `<!-- hunt:step {"step":"pr","pullRequest":<number>} -->`; Hunt posts it on the issue, so do not comment the link
-yourself. From here on Hunt watches the pull request: its checks and the Claude review run on GitHub, a person reviews
-when the gate asked for one, and Hunt merges it. When a check, the review or a reviewer finds something, you get it as
-an `implement` step.
+yourself. From here on Hunt watches the pull request: its checks and the scorer run on GitHub; the scorer decides
+whether a person reviews before Hunt merges it. When a check or a reviewer finds something, you get it as an
+`implement` step.
 
 The issue is labelled `{{stepLabel}}` while you work on this step; to give up, run `{{relabelFailed}}` and say why.

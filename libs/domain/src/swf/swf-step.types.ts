@@ -1,12 +1,12 @@
 /**
- * The steps of the poller's issue workflow (`apps/gateway/src/swf/`), the state of a poller session's agent and the risk
- * a gate step reports. The result an agent posts at the end of a step is `step-result.utils.ts`.
+ * The steps of the swf pipeline (`apps/gateway/src/swf/`, `apps/session/src/swf-runner/`) and the state of a poller
+ * session's agent. The result an agent posts at the end of a step is `step-result.utils.ts`.
  */
 
 /** The steps an agent turn carries out, in their order; each ends with a step result on the issue. */
-export const AGENT_STEPS = ["plan", "implement", "verify", "gate", "pr"] as const;
+export const AGENT_STEPS = ["plan", "implement", "verify", "review", "pr"] as const;
 /** The steps the poller carries out itself by watching the pull request, in their order. */
-export const POLLER_STEPS = ["review", "human-review", "merge"] as const;
+export const POLLER_STEPS = ["checks", "human-review", "merge"] as const;
 export type AgentStep = (typeof AGENT_STEPS)[number];
 export type PollerStep = (typeof POLLER_STEPS)[number];
 export type SwfStep = AgentStep | PollerStep;
@@ -25,6 +25,3 @@ export function isAgentStep(step: string): step is AgentStep {
 export function isSwfStep(step: string): step is SwfStep {
   return (SWF_STEPS as readonly string[]).includes(step);
 }
-
-export const RISKS = ["low", "medium", "high"] as const;
-export type Risk = (typeof RISKS)[number];

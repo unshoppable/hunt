@@ -28,9 +28,9 @@ describe("WorkflowLabels", () => {
       "swf:plan",
       "swf:implement",
       "swf:verify",
-      "swf:gate",
-      "swf:pr",
       "swf:review",
+      "swf:pr",
+      "swf:checks",
       "swf:human-review",
       "swf:merge",
       "swf:question",
@@ -38,6 +38,8 @@ describe("WorkflowLabels", () => {
       "swf:failed",
     ]);
     expect(specs.find((spec) => spec.name === "swf:human-review")).toEqual({ name: "swf:human-review", color: "e99695", description: "A person has to review the pull request" });
+    expect(specs.find((spec) => spec.name === "swf:review")).toEqual({ name: "swf:review", color: "fbca04", description: "Hunt's agent reviews the change by the repository's review criteria" });
+    expect(specs.find((spec) => spec.name === "swf:checks")).toEqual({ name: "swf:checks", color: "fbca04", description: "The pull request waits for its checks and the scorer" });
     expect(specs.every((spec) => /^[0-9a-f]{6}$/.test(spec.color) && spec.description !== "")).toBe(true);
   });
 
@@ -46,7 +48,9 @@ describe("WorkflowLabels", () => {
     expect(labels.agentStateOf({ state: "open", labels: ["swf:human-review"] })).toBe("human-review");
     expect(labels.agentStateOf({ state: "open", labels: ["swf:verify", "swf:question"] })).toBe("question");
     expect(labels.agentStateOf({ state: "open", labels: ["swf:merge", "swf:done"] })).toBe("done");
-    expect(labels.agentStateOf({ state: "open", labels: ["swf:gate", "swf:failed"] })).toBe("failed");
+    expect(labels.agentStateOf({ state: "open", labels: ["swf:review", "swf:failed"] })).toBe("failed");
+    expect(labels.agentStateOf({ state: "open", labels: ["swf:checks"] })).toBe("checks");
+    expect(labels.agentStateOf({ state: "open", labels: ["swf:gate"] })).toBeNull();
     expect(labels.agentStateOf({ state: "closed", labels: ["swf:plan"] })).toBe("done");
     expect(labels.agentStateOf(null)).toBe("done");
     expect(labels.agentStateOf({ state: "open", labels: ["bug", "swf", "swf:running"] })).toBeNull();
@@ -57,6 +61,6 @@ describe("WorkflowLabels", () => {
   });
 
   it("names the labels of an issue in progress: the steps and the question, not the request or the outcomes", () => {
-    expect(labels.inProgress).toEqual(["swf:plan", "swf:implement", "swf:verify", "swf:gate", "swf:pr", "swf:review", "swf:human-review", "swf:merge", "swf:question"]);
+    expect(labels.inProgress).toEqual(["swf:plan", "swf:implement", "swf:verify", "swf:review", "swf:pr", "swf:checks", "swf:human-review", "swf:merge", "swf:question"]);
   });
 });

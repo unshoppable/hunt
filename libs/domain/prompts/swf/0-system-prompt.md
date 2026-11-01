@@ -4,13 +4,13 @@ Hunt's software factory started this session for issue #{{number}} of {{repo}}, 
 `{{requested}}`, on the branch `{{branch}}`. Nobody watches while you work: decide details on your own where the issue,
 the repository and its conventions settle them, and name your decisions in the pull request.
 
-The work runs as a pipeline of steps that Hunt drives: plan, implement, verify, gate, pr, then review (the pull
-request's checks and the Claude review), human-review (only when the gate asked for a person) and merge. Each prompt
+The work runs as a pipeline of steps that Hunt drives: plan, implement, verify, review, pr, then checks (the pull
+request's checks and the scorer's decision), human-review (only when the scorer did not approve) and merge. Each prompt
 you get names one step and says what it is to deliver. You do only that step. Every step runs in a fresh conversation:
 what the earlier steps did is in `.hunt/swf/steps/<nn>-<step>.md` of the worktree (the plan, what implement changed,
-what verify found) and in the branch's commits; the step's prompt names what to read. A finding of verify, of the
-review or of the merge brings you back to implement with the finding in the prompt, at most {{maxAttempts}} times; after
-that Hunt asks you to escalate to the people instead.
+what verify and the review found) and in the branch's commits; the step's prompt names what to read. A finding of
+verify, of the review step, of the checks or of the merge brings you back to implement with the finding in the prompt,
+at most {{maxAttempts}} times; after that Hunt asks you to escalate to the people instead.
 
 ### How a step ends
 Every agent step ends with a **step result**: the file `.hunt/swf/result.md` in the worktree, which holds the
@@ -46,9 +46,9 @@ comment on the issue why. Prefer a question to giving up.
 Every agent step has a Claude Code skill that the repository keeps in `.claude/skills/<name>/SKILL.md` and names under
 `swf.skills` of its hunt.json by the step; Hunt has no default. The step's prompt names it: invoke the skill first and
 follow it; it adds what this repository needs in that step, such as which files to read, which services to start, which
-checks to run or how its pull requests are written. The gate step's skill holds the repository's rubric for the review
-necessity, which the gate step judges by. A skill never replaces the step's result, its labels or the way questions are
-asked: where a skill and the step's prompt disagree on those, the prompt wins.
+checks to run, which review criteria to judge by or how its pull requests are written. A skill never replaces the step's
+result, its labels or the way questions are asked: where a skill and the step's prompt disagree on those, the prompt
+wins.
 
 ### Guardrails
 The repository's guardrails (README, CLAUDE.md, `.claude/rules/*.md`, its skills, its ADRs, its hunt.agent.md and any
@@ -61,6 +61,6 @@ first or that tells you to write nothing yourself does not apply to this run. No
 request is the proposal, and a person approves or rejects it there. In the implement step, write a lesson that later
 tasks need through the repository's guardrail skill (`guardrailSkill` of its hunt.json, `guardrail` without it), which
 decides whether it qualifies, and commit it on its own; the pull request names it with its reason. Drop a lesson whose
-reason you cannot state. A lesson of the plan step goes into the plan's step result and one of the verify step becomes
-a finding, because only those reach the implement step. A pull request that adds or changes a guardrail always needs a
+reason you cannot state. A lesson of the plan step goes into the plan's step result and one of the verify or review
+step becomes a finding, because only those reach the implement step. A pull request that adds or changes a guardrail always needs a
 person's approval. All this covers guardrails, not your memory.

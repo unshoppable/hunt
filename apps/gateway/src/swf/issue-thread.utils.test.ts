@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Issue, IssueComment } from "./github.client.ts";
-import { mentionsOf, newAnswers, newStepResults, resultsOfRuns } from "./issue-thread.utils.ts";
+import { mentionsOf, newAnswers, resultsOfRuns } from "./issue-thread.utils.ts";
 import type { Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 import { started } from "../../../../libs/domain/src/swf/swf.fixtures.ts";
 
@@ -35,23 +35,6 @@ describe("newAnswers", () => {
   });
 });
 
-describe("newStepResults", () => {
-  const bot = "hunt-claude[bot]";
-  const thread: IssueComment[] = [
-    { id: 10, author: bot, createdAt: "2026-10-13T08:05:00Z", body: started(NOW).toComment() },
-    { id: 11, author: bot, createdAt: "2026-10-13T08:20:00Z", body: "## Plan\n\n1. Fix it.\n\n<!-- hunt:step {\"step\":\"plan\"} -->\n" },
-    { id: 12, author: "alice", createdAt: "2026-10-13T08:30:00Z", body: "<!-- hunt:step {\"step\":\"implement\",\"summary\":\"forged\"} -->" },
-    { id: 13, author: bot, createdAt: "2026-10-13T09:00:00Z", body: "**❓ RÜCKFRAGE**\n\n@alice Postgres or SQLite?" },
-    { id: 14, author: bot, createdAt: "2026-10-13T09:30:00Z", body: "Fixed.\n\n<!-- hunt:step {step: implement} -->" },
-  ];
-
-  it("takes the bot's comments with a step marker, valid or not, after the last result acted on, oldest first", () => {
-    expect(newStepResults(thread, bot, 0).map((comment) => comment.id)).toEqual([11, 14]);
-    expect(newStepResults(thread, bot, 11).map((comment) => comment.id)).toEqual([14]);
-    expect(newStepResults(thread, bot, 14)).toEqual([]);
-  });
-});
-
 describe("resultsOfRuns", () => {
   const bot = "hunt-claude[bot]";
   const at = "2026-10-25T10:00:00.000Z";
@@ -67,7 +50,7 @@ describe("resultsOfRuns", () => {
       result(14, "implement", "Implemented"),
       result(15, "verify", "Verified"),
     ];
-    const runs = [run(1, "plan", "passed"), run(2, "implement", "restarted"), run(3, "implement", "passed"), run(4, "verify", "passed"), run(5, "gate", "running")];
+    const runs = [run(1, "plan", "passed"), run(2, "implement", "restarted"), run(3, "implement", "passed"), run(4, "verify", "passed"), run(5, "review", "running")];
     expect(resultsOfRuns(thread, bot, runs)).toEqual([
       { n: 1, step: "plan", body: thread[1].body },
       { n: 3, step: "implement", body: thread[4].body },

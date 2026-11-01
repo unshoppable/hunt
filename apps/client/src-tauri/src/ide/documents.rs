@@ -6,6 +6,10 @@
 //! same text and the same saved state. A document with unsaved edits outlives the windows that held it, so closing a
 //! tab or a window never loses edits; it closes once it is saved or reverted and no window holds it.
 //!
+//! Each document remembers the content and the stamp (`DiskStamp`) its file had when it was last read or written. A
+//! reload skips files whose stamp did not change; one that changed under unsaved edits keeps them and is noted. A save
+//! of unsaved edits whose file changed on disk since writes nothing and reports a conflict, unless it is forced.
+//!
 //! `WorktreeDocuments` is the Tauri-free core: every operation returns the server notifications and window events it
 //! causes. `DocumentRegistry`, `update` and the commands add the per-worktree lock, the server lookup and the emission.
 
@@ -18,9 +22,10 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Window};
 use uuid::Uuid;
 
+use crate::ide::disk_file::DiskStamp;
 use crate::ide::lsp::{self, LspServer, ServerKind};
 use crate::ide::workspace;
-use crate::session::commands::changes::write_file;
+use crate::session::commands::changes::write_worktree_file;
 use crate::session::commands::{session_file, worktree_session};
 
 /// Monaco language ids whose documents the language servers receive; `ServerKind::receives` picks the server.
@@ -84,6 +89,48 @@ pub struct DirtyEvent {
     pub is_dirty: bool,
 }
 
+/// The answer to `document_save`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum SaveOutcome {
+    /// The text is on disk; `is_dirty` when edits made meanwhile keep the document dirty.
+    Saved { is_dirty: bool },
+    /// The file changed on disk since the unsaved edits were based on it; nothing was written.
+    Conflict,
+}
+
+/// What saving a document writes.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SavePlan {
+    Write(String),
+    /// Nothing: without unsaved edits the file holds the text already, or a newer one that a reload takes over.
+    Unchanged,
+    /// Nothing: the file changed on disk since the unsaved edits were based on it.
+    Conflict,
+}
+
+/// The file of a document on disk; the commands use the worktree file, tests a fake.
+pub trait DiskFile {
+    /// The file's current stamp; None when it is missing or unknown.
+    fn stamp(&self) -> Option<DiskStamp>;
+    fn read(&self) -> Result<String, String>;
+}
+
+/// The content of a file as read or written at a time, with the stamp it had then.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiskSnapshot {
+    pub text: String,
+    pub stamp: Option<DiskStamp>,
+}
+
+impl DiskSnapshot {
+    /// Reads `disk`; the stamp is taken first, so a change during the read shows as a newer stamp later.
+    fn read(disk: &impl DiskFile) -> Result<DiskSnapshot, String> {
+        let stamp = disk.stamp();
+        Ok(DiskSnapshot { text: disk.read()?, stamp })
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum DocumentEvent {
     Changed(ChangedEvent),
@@ -106,8 +153,10 @@ impl Effects {
 
 struct Document {
     text: String,
-    /// The content on disk as last read or written.
-    saved_text: String,
+    /// The content on disk as last read or written, which unsaved edits are based on.
+    saved: DiskSnapshot,
+    /// The newer content a reload found on disk while the document had unsaved edits.
+    changed_on_disk: Option<DiskSnapshot>,
     version: i32,
     /// The language id the servers know the document by; None for documents no server receives.
     language_id: Option<String>,
@@ -117,7 +166,22 @@ struct Document {
 
 impl Document {
     fn is_dirty(&self) -> bool {
-        self.text != self.saved_text
+        self.text != self.saved.text
+    }
+
+    /// Whether the file on disk still holds the saved content: by its stamp, or when that changed, by its content.
+    fn is_saved_on(&self, disk: &impl DiskFile) -> bool {
+        DiskStamp::same(self.saved.stamp, disk.stamp()) || disk.read().is_ok_and(|text| text == self.saved.text)
+    }
+
+    /// The stamp of the newest content known on disk, which a reload need not read again; unsaved edits that went
+    /// back to the saved content leave a change noted under them to be taken over.
+    fn known_stamp(&self) -> Option<DiskStamp> {
+        match &self.changed_on_disk {
+            Some(changed) if self.is_dirty() => changed.stamp,
+            Some(_) => None,
+            None => self.saved.stamp,
+        }
     }
 
     fn state(&self) -> DocumentState {
@@ -136,20 +200,15 @@ impl WorktreeDocuments {
         Self { worktree, documents: HashMap::new() }
     }
 
-    /// Registers `owner` as a holder of `path` and returns the shared state; the first holder reads the file with `read`
+    /// Registers `owner` as a holder of `path` and returns the shared state; the first holder reads the file from `disk`
     /// and opens it in the language server.
-    pub fn open(
-        &mut self,
-        path: &str,
-        owner: &str,
-        language_id: &str,
-        read: impl FnOnce() -> Result<String, String>,
-    ) -> Result<(DocumentState, Effects), String> {
+    pub fn open(&mut self, path: &str, owner: &str, language_id: &str, disk: &impl DiskFile) -> Result<(DocumentState, Effects), String> {
         let mut effects = Effects::default();
         if !self.documents.contains_key(path) {
-            let text = read()?;
+            let saved = DiskSnapshot::read(disk)?;
             let language_id = SERVED_LANGUAGES.contains(&language_id).then(|| language_id.to_string());
-            let document = Document { saved_text: text.clone(), text, version: 1, language_id, holders: HashSet::new() };
+            let document =
+                Document { text: saved.text.clone(), saved, changed_on_disk: None, version: 1, language_id, holders: HashSet::new() };
             effects.notifications.extend(open_notification(self.uri(path), &document));
             self.documents.insert(path.to_string(), document);
         }
@@ -191,49 +250,67 @@ impl WorktreeDocuments {
         self.documents.get(path).map(|document| document.text.clone()).ok_or_else(|| "the document is not open".to_string())
     }
 
-    /// Takes the content on disk (`read`) over when the document has no unsaved edits; a file that cannot be read keeps
-    /// its document.
-    pub fn reload(&mut self, path: &str, read: impl FnOnce() -> Result<String, String>) -> Effects {
+    /// Takes the content on `disk` over (see `take_disk`) unless its stamp shows no change since it was last read or
+    /// written; a file that cannot be read keeps its document.
+    pub fn reload(&mut self, path: &str, disk: &impl DiskFile) -> Effects {
         let Some(document) = self.documents.get(path) else {
             return Effects::default();
         };
-        if document.is_dirty() {
+        if DiskStamp::same(document.known_stamp(), disk.stamp()) {
             return Effects::default();
         }
-        match read() {
-            Ok(text) if text != document.text => self.replace(path, text, true),
-            _ => Effects::default(),
+        match DiskSnapshot::read(disk) {
+            Ok(snapshot) => self.take_disk(path, snapshot),
+            Err(_) => Effects::default(),
         }
     }
 
-    /// Throws the unsaved edits of `path` away.
+    /// Throws the unsaved edits of `path` away; the document goes back to the newest content known on disk.
     pub fn revert(&mut self, path: &str) -> Effects {
-        let Some(document) = self.documents.get(path) else {
+        let Some(document) = self.documents.get_mut(path) else {
             return Effects::default();
         };
         if !document.is_dirty() {
             return Effects::default();
         }
-        let saved_text = document.saved_text.clone();
+        if let Some(changed) = document.changed_on_disk.take() {
+            document.saved = changed;
+        }
+        let saved_text = document.saved.text.clone();
         let mut effects = self.replace(path, saved_text, false);
         effects.extend(self.close_if_unused(path));
         effects
     }
 
-    /// Records that the file on disk holds `text` now and returns whether the document still has unsaved edits. A
-    /// document without unsaved edits takes `text` over, so that a later save cannot write its outdated text back.
+    /// Records that the file on disk holds `text` now (read by a diff view) and returns whether the document still has
+    /// unsaved edits; see `take_disk`.
     pub fn mark_saved(&mut self, path: &str, text: String) -> (bool, Effects) {
+        let effects = self.take_disk(path, DiskSnapshot { text, stamp: None });
+        (self.documents.get(path).is_some_and(Document::is_dirty), effects)
+    }
+
+    /// What saving `path` writes: nothing without unsaved edits, and nothing but a conflict when the file on `disk`
+    /// changed since the edits were based on it, unless `force`.
+    pub fn plan_save(&self, path: &str, force: bool, disk: &impl DiskFile) -> Result<SavePlan, String> {
+        let document = self.documents.get(path).ok_or("the document is not open")?;
+        if !document.is_dirty() {
+            return Ok(SavePlan::Unchanged);
+        }
+        if force || document.is_saved_on(disk) {
+            return Ok(SavePlan::Write(document.text.clone()));
+        }
+        Ok(SavePlan::Conflict)
+    }
+
+    /// Records that a save wrote `written` to disk and returns whether edits made meanwhile keep the document dirty.
+    pub fn mark_written(&mut self, path: &str, written: DiskSnapshot) -> (bool, Effects) {
         let worktree_path = self.worktree_path();
         let Some(document) = self.documents.get_mut(path) else {
             return (false, Effects::default());
         };
         let was_dirty = document.is_dirty();
-        if !was_dirty && document.text != text {
-            let mut effects = self.replace(path, text, true);
-            effects.extend(self.close_if_unused(path));
-            return (false, effects);
-        }
-        document.saved_text = text;
+        document.saved = written;
+        document.changed_on_disk = None;
         let is_dirty = document.is_dirty();
         let mut effects = Effects::default();
         if is_dirty != was_dirty {
@@ -241,6 +318,38 @@ impl WorktreeDocuments {
         }
         effects.extend(self.close_if_unused(path));
         (is_dirty, effects)
+    }
+
+    /// Takes `disk`, content just found on disk, over. A document without unsaved edits takes it as its text, so that a
+    /// later save cannot write its outdated text back. One with unsaved edits keeps them: it is clean when the disk
+    /// holds its text, and otherwise notes the content as changed on disk unless it is the saved one.
+    fn take_disk(&mut self, path: &str, disk: DiskSnapshot) -> Effects {
+        let worktree_path = self.worktree_path();
+        let Some(document) = self.documents.get_mut(path) else {
+            return Effects::default();
+        };
+        let mut effects = Effects::default();
+        if !document.is_dirty() && document.text != disk.text {
+            let stamp = disk.stamp;
+            effects = self.replace(path, disk.text, true);
+            let document = self.documents.get_mut(path).expect("replace keeps the document");
+            document.saved.stamp = stamp;
+            document.changed_on_disk = None;
+        } else if !document.is_dirty() || document.text == disk.text {
+            let was_dirty = document.is_dirty();
+            document.saved = disk;
+            document.changed_on_disk = None;
+            if was_dirty {
+                effects.events.push(DocumentEvent::Dirty(DirtyEvent { worktree_path, path: path.to_string(), is_dirty: false }));
+            }
+        } else if document.saved.text == disk.text {
+            document.saved = disk;
+            document.changed_on_disk = None;
+        } else {
+            document.changed_on_disk = Some(disk);
+        }
+        effects.extend(self.close_if_unused(path));
+        effects
     }
 
     /// Drops the hold of `owner` on `path`; the last holder closes the document.
@@ -297,13 +406,14 @@ impl WorktreeDocuments {
         self.documents.iter().filter_map(|(path, document)| open_notification(self.uri(path), document)).collect()
     }
 
-    /// Sets the text of `path` as one change to a new version; `is_saved` makes it the saved state too.
+    /// Sets the text of `path` as one change to a new version; `is_saved` makes it the saved state too, with an unknown
+    /// stamp that callers knowing it set.
     fn replace(&mut self, path: &str, text: String, is_saved: bool) -> Effects {
         let uri = self.uri(path);
         let worktree_path = self.worktree_path();
         let document = self.documents.get_mut(path).expect("callers checked that the document is open");
         if is_saved {
-            document.saved_text = text.clone();
+            document.saved = DiskSnapshot { text: text.clone(), stamp: None };
         }
         document.text = text;
         document.version += 1;
@@ -458,10 +568,23 @@ fn worktree_of(app: &AppHandle, id: Uuid) -> Result<PathBuf, String> {
     Ok(worktree)
 }
 
-/// The content on disk of the worktree-relative `path` of session `id`.
-fn read_disk(app: &AppHandle, id: Uuid, path: &str) -> Result<String, String> {
-    let (record, _) = session_file(app, id, path)?;
-    workspace::read_file(&record.worktree_path, path)
+/// The worktree-relative `path` of session `id` on disk; each access resolves it through `session_file`.
+struct WorktreeFile<'a> {
+    app: &'a AppHandle,
+    id: Uuid,
+    path: &'a str,
+}
+
+impl DiskFile for WorktreeFile<'_> {
+    fn stamp(&self) -> Option<DiskStamp> {
+        let (_, target) = session_file(self.app, self.id, self.path).ok()?;
+        DiskStamp::of(&target)
+    }
+
+    fn read(&self) -> Result<String, String> {
+        let (record, _) = session_file(self.app, self.id, self.path)?;
+        workspace::read_file(&record.worktree_path, self.path)
+    }
 }
 
 /// Runs `operation` on the documents of `worktree` and delivers what it caused, all under the worktree's lock, so the
@@ -577,7 +700,8 @@ fn start_angular_server(app: &AppHandle, worktree: &Path) {
 #[tauri::command]
 pub async fn document_open(app: AppHandle, window: Window, id: Uuid, path: String, language_id: String) -> Result<DocumentState, String> {
     let worktree = worktree_of(&app, id)?;
-    let state = update(&app, &worktree, |documents| documents.open(&path, window.label(), &language_id, || read_disk(&app, id, &path))).await?;
+    let file = WorktreeFile { app: &app, id, path: &path };
+    let state = update(&app, &worktree, |documents| documents.open(&path, window.label(), &language_id, &file)).await?;
     if SERVED_LANGUAGES.contains(&language_id.as_str()) && ServerKind::Angular.receives(&path) {
         start_angular_server(&app, &worktree);
     }
@@ -598,50 +722,67 @@ pub async fn document_edit(
         .map_err(|error| format!("failed to edit {path}: {error}"))
 }
 
-/// Writes the shared text of `path` to disk and returns whether edits made meanwhile keep it dirty.
+/// Writes the shared text of `path` to disk, atomically, unless it has no unsaved edits. Unsaved edits whose file changed
+/// on disk since they were based on it are written only with `force`; otherwise the answer is a conflict.
 #[tauri::command]
-pub async fn document_save(app: AppHandle, id: Uuid, path: String) -> Result<bool, String> {
+pub async fn document_save(app: AppHandle, id: Uuid, path: String, force: bool) -> Result<SaveOutcome, String> {
     let worktree = worktree_of(&app, id)?;
-    let text = update(&app, &worktree, |documents| Ok((documents.text(&path)?, Effects::default())))
+    let file = WorktreeFile { app: &app, id, path: &path };
+    let plan = update(&app, &worktree, |documents| Ok((documents.plan_save(&path, force, &file)?, Effects::default())))
         .await
         .map_err(|error| format!("failed to save {path}: {error}"))?;
-    write_file(app.clone(), id, path.clone(), text.clone()).await?;
-    update(&app, &worktree, |documents| Ok(documents.mark_saved(&path, text))).await
+    let text = match plan {
+        SavePlan::Write(text) => text,
+        SavePlan::Unchanged => return Ok(SaveOutcome::Saved { is_dirty: false }),
+        SavePlan::Conflict => return Ok(SaveOutcome::Conflict),
+    };
+    let stamp = write_worktree_file(&app, id, &path, &text).await?;
+    let is_dirty = update(&app, &worktree, |documents| Ok(documents.mark_written(&path, DiskSnapshot { text, stamp }))).await?;
+    Ok(SaveOutcome::Saved { is_dirty })
 }
 
 /// Rewrites `path` of session `id` with `rewrite` from the text the editors show, unless it returns None; returns whether
 /// it did. A document a window holds changes in every window; it is saved unless it had unsaved edits, which it keeps.
+/// One without unsaved edits first takes the content on disk over, so the rewrite never writes an outdated text back.
 /// Any other file is rewritten on disk.
 pub async fn rewrite(app: &AppHandle, id: Uuid, path: &str, rewrite: impl FnOnce(&str) -> Option<String>) -> Result<bool, String> {
     let worktree = worktree_of(app, id)?;
     let entry = app.state::<DocumentRegistry>().entry(&worktree);
     let mut entry = entry.lock().await;
+    let file = WorktreeFile { app, id, path };
+    let effects = entry.documents.reload(path, &file);
+    deliver(app, &mut entry, effects).await;
     let was_dirty = entry.documents.documents.get(path).map(Document::is_dirty);
     let text = match was_dirty {
         Some(_) => entry.documents.text(path)?,
-        None => read_disk(app, id, path)?,
+        None => file.read()?,
     };
     let Some(text) = rewrite(&text) else {
         return Ok(false);
     };
-    if was_dirty != Some(true) {
-        write_file(app.clone(), id, path.to_string(), text.clone()).await?;
-    }
-    if was_dirty.is_some() {
-        let effects = entry.documents.replace(path, text, was_dirty == Some(false));
+    let stamp = match was_dirty {
+        Some(true) => None,
+        _ => write_worktree_file(app, id, path, &text).await?,
+    };
+    if let Some(was_dirty) = was_dirty {
+        let effects = entry.documents.replace(path, text, !was_dirty);
+        if let Some(document) = entry.documents.documents.get_mut(path).filter(|_| !was_dirty) {
+            document.saved.stamp = stamp;
+        }
         deliver(app, &mut entry, effects).await;
     }
     Ok(true)
 }
 
-/// Takes the content on disk over for every one of `paths` without unsaved edits.
+/// Takes the content on disk over for every one of `paths` whose file changed since it was last read or written;
+/// documents with unsaved edits keep them.
 #[tauri::command]
 pub async fn document_reload(app: AppHandle, id: Uuid, paths: Vec<String>) -> Result<(), String> {
     let worktree = worktree_of(&app, id)?;
     update(&app, &worktree, |documents| {
         let mut effects = Effects::default();
         for path in &paths {
-            effects.extend(documents.reload(path, || read_disk(&app, id, path)));
+            effects.extend(documents.reload(path, &WorktreeFile { app: &app, id, path }));
         }
         Ok(((), effects))
     })
@@ -654,7 +795,7 @@ pub async fn document_revert(app: AppHandle, id: Uuid, path: String) -> Result<(
     update(&app, &worktree, |documents| Ok(((), documents.revert(&path)))).await
 }
 
-/// Records that the file on disk holds `text` now (written by a diff view); returns whether the document is still dirty.
+/// Records that the file on disk holds `text` now (read by a diff view); returns whether the document is still dirty.
 #[tauri::command]
 pub async fn document_mark_saved(app: AppHandle, id: Uuid, path: String, text: String) -> Result<bool, String> {
     let worktree = worktree_of(&app, id)?;
@@ -676,6 +817,9 @@ pub async fn dirty_documents(app: AppHandle, id: Uuid) -> Result<Vec<String>, St
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::time::{Duration, SystemTime};
+
     use super::*;
 
     fn position(line: u32, character: u32) -> Position {
@@ -694,8 +838,62 @@ mod tests {
         effects.notifications.iter().map(|(method, _)| *method).collect()
     }
 
-    fn read(text: &str) -> impl FnOnce() -> Result<String, String> + '_ {
-        move || Ok(text.to_string())
+    /// A file whose content and stamp a test sets; one without a stamp is read on every reload.
+    struct FakeFile {
+        text: Result<String, String>,
+        stamp: Option<DiskStamp>,
+        reads: Cell<usize>,
+    }
+
+    impl DiskFile for FakeFile {
+        fn stamp(&self) -> Option<DiskStamp> {
+            self.stamp
+        }
+
+        fn read(&self) -> Result<String, String> {
+            self.reads.set(self.reads.get() + 1);
+            self.text.clone()
+        }
+    }
+
+    fn read(text: &str) -> FakeFile {
+        FakeFile { text: Ok(text.to_string()), stamp: None, reads: Cell::new(0) }
+    }
+
+    /// `text` with a stamp of modification second `second`.
+    fn stamped(text: &str, second: u64) -> FakeFile {
+        let modified = SystemTime::UNIX_EPOCH + Duration::from_secs(second);
+        FakeFile { stamp: Some(DiskStamp { modified, len: text.len() as u64 }), ..read(text) }
+    }
+
+    fn missing() -> FakeFile {
+        FakeFile { text: Err("missing".into()), ..read("") }
+    }
+
+    /// A file that must not be touched.
+    struct Untouched(&'static str);
+
+    impl DiskFile for Untouched {
+        fn stamp(&self) -> Option<DiskStamp> {
+            panic!("{}", self.0)
+        }
+
+        fn read(&self) -> Result<String, String> {
+            panic!("{}", self.0)
+        }
+    }
+
+    /// A real file.
+    struct OnDisk(PathBuf);
+
+    impl DiskFile for OnDisk {
+        fn stamp(&self) -> Option<DiskStamp> {
+            DiskStamp::of(&self.0)
+        }
+
+        fn read(&self) -> Result<String, String> {
+            std::fs::read_to_string(&self.0).map_err(|error| error.to_string())
+        }
     }
 
     #[test]
@@ -729,13 +927,13 @@ mod tests {
     #[test]
     fn the_second_window_shares_the_open_document() {
         let mut documents = documents();
-        let (first, effects) = documents.open("a.ts", "main", "typescript", read("one")).unwrap();
+        let (first, effects) = documents.open("a.ts", "main", "typescript", &read("one")).unwrap();
         assert_eq!(first, DocumentState { text: "one".into(), version: 1, is_dirty: false });
         assert_eq!(methods(&effects), ["textDocument/didOpen"]);
         assert_eq!(effects.notifications[0].1["textDocument"]["uri"], "file:///work%20tree/a.ts");
 
         documents.edit("a.ts", 1, vec![change((0, 3), (0, 3), "!")]).unwrap();
-        let (second, effects) = documents.open("a.ts", "editor-1", "typescript", || panic!("an open document is not read again")).unwrap();
+        let (second, effects) = documents.open("a.ts", "editor-1", "typescript", &Untouched("an open document is not read again")).unwrap();
         assert_eq!(second, DocumentState { text: "one!".into(), version: 2, is_dirty: true });
         assert_eq!(effects, Effects::default());
     }
@@ -743,7 +941,7 @@ mod tests {
     #[test]
     fn an_edit_against_a_stale_version_is_refused() {
         let mut documents = documents();
-        documents.open("a.ts", "main", "typescript", read("x")).unwrap();
+        documents.open("a.ts", "main", "typescript", &read("x")).unwrap();
         let (ack, effects) = documents.edit("a.ts", 1, vec![change((0, 1), (0, 1), "y")]).unwrap();
         assert_eq!(ack, Some(EditAck { version: 2, is_dirty: true }));
         assert_eq!(methods(&effects), ["textDocument/didChange"]);
@@ -758,7 +956,7 @@ mod tests {
     #[test]
     fn documents_of_other_languages_never_reach_the_server() {
         let mut documents = documents();
-        let (_, effects) = documents.open("README.md", "main", "markdown", read("# Hi")).unwrap();
+        let (_, effects) = documents.open("README.md", "main", "markdown", &read("# Hi")).unwrap();
         assert!(effects.notifications.is_empty());
         let (_, effects) = documents.edit("README.md", 1, vec![change((0, 4), (0, 4), "!")]).unwrap();
         assert!(effects.notifications.is_empty());
@@ -770,7 +968,7 @@ mod tests {
     #[test]
     fn a_template_reaches_only_the_angular_server() {
         let mut documents = documents();
-        let (_, effects) = documents.open("app.html", "main", "html", read("<p></p>")).unwrap();
+        let (_, effects) = documents.open("app.html", "main", "html", &read("<p></p>")).unwrap();
         assert_eq!(methods(&effects), ["textDocument/didOpen"]);
         assert!(!documents.serves_any(ServerKind::Typescript));
         assert!(documents.serves_any(ServerKind::Angular));
@@ -779,25 +977,151 @@ mod tests {
     #[test]
     fn a_reload_takes_the_disk_content_once_and_keeps_unsaved_edits() {
         let mut documents = documents();
-        documents.open("a.ts", "main", "typescript", read("old")).unwrap();
-        let effects = documents.reload("a.ts", read("new"));
+        documents.open("a.ts", "main", "typescript", &read("old")).unwrap();
+        let effects = documents.reload("a.ts", &read("new"));
         assert_eq!(methods(&effects), ["textDocument/didChange"]);
         assert_eq!(effects.notifications[0].1["contentChanges"], json!([{ "text": "new" }]));
         let DocumentEvent::Changed(event) = &effects.events[0] else { panic!("expected a change event") };
         assert_eq!((event.version, event.text.as_deref(), event.is_dirty), (2, Some("new"), false));
 
-        assert_eq!(documents.reload("a.ts", read("new")), Effects::default(), "the second window's reload changes nothing");
+        assert_eq!(documents.reload("a.ts", &read("new")), Effects::default(), "the second window's reload changes nothing");
 
         documents.edit("a.ts", 2, vec![change((0, 0), (0, 0), "my ")]).unwrap();
-        assert_eq!(documents.reload("a.ts", read("newer")), Effects::default());
+        assert_eq!(documents.reload("a.ts", &read("newer")), Effects::default());
         assert_eq!(documents.text("a.ts").unwrap(), "my new");
-        assert_eq!(documents.reload("gone.ts", read("x")), Effects::default());
+        assert_eq!(documents.reload("gone.ts", &read("x")), Effects::default());
+    }
+
+    #[test]
+    fn a_reload_reads_only_files_whose_stamp_changed() {
+        let mut documents = documents();
+        documents.open("a.ts", "main", "typescript", &stamped("old", 1)).unwrap();
+        let unchanged = stamped("old", 1);
+        assert_eq!(documents.reload("a.ts", &unchanged), Effects::default());
+        assert_eq!(unchanged.reads.get(), 0, "an unchanged stamp skips the read");
+
+        let touched = stamped("old", 2);
+        assert_eq!(documents.reload("a.ts", &touched), Effects::default());
+        assert_eq!(touched.reads.get(), 1, "a new stamp is compared by content");
+        let again = stamped("old", 2);
+        documents.reload("a.ts", &again);
+        assert_eq!(again.reads.get(), 0, "the new stamp is remembered");
+
+        let effects = documents.reload("a.ts", &stamped("new", 3));
+        let DocumentEvent::Changed(event) = &effects.events[0] else { panic!("expected a change event") };
+        assert_eq!((event.text.as_deref(), event.is_dirty), (Some("new"), false));
+        assert_eq!(documents.reload("a.ts", &missing()), Effects::default(), "a vanished file keeps its document");
+    }
+
+    #[test]
+    fn a_save_writes_unsaved_edits_while_the_file_holds_their_base() {
+        let mut documents = documents();
+        documents.open("a.ts", "main", "typescript", &stamped("a", 1)).unwrap();
+        assert_eq!(documents.plan_save("a.ts", false, &Untouched("a clean document is not written")).unwrap(), SavePlan::Unchanged);
+
+        documents.edit("a.ts", 1, vec![change((0, 1), (0, 1), "b")]).unwrap();
+        assert_eq!(documents.plan_save("a.ts", false, &stamped("a", 1)).unwrap(), SavePlan::Write("ab".into()));
+        assert_eq!(documents.plan_save("a.ts", false, &stamped("a", 2)).unwrap(), SavePlan::Write("ab".into()), "touched, not changed");
+        assert!(documents.plan_save("gone.ts", false, &read("x")).is_err());
+    }
+
+    #[test]
+    fn a_save_over_a_change_on_disk_is_a_conflict_unless_forced() {
+        let mut documents = documents();
+        documents.open("a.ts", "main", "typescript", &stamped("base", 1)).unwrap();
+        documents.edit("a.ts", 1, vec![change((0, 4), (0, 4), " mine")]).unwrap();
+
+        let agent = stamped("base agent", 2);
+        assert_eq!(documents.plan_save("a.ts", false, &agent).unwrap(), SavePlan::Conflict, "also before a reload saw it");
+        assert_eq!(documents.reload("a.ts", &agent), Effects::default());
+        assert_eq!(documents.text("a.ts").unwrap(), "base mine", "the unsaved edits stay");
+        let skipped = stamped("base agent", 2);
+        documents.reload("a.ts", &skipped);
+        assert_eq!(skipped.reads.get(), 0, "the noted change is not read again");
+        assert_eq!(documents.plan_save("a.ts", false, &stamped("base agent", 2)).unwrap(), SavePlan::Conflict);
+        assert_eq!(documents.plan_save("a.ts", false, &missing()).unwrap(), SavePlan::Conflict, "a deleted file changed too");
+        assert_eq!(documents.plan_save("a.ts", true, &agent).unwrap(), SavePlan::Write("base mine".into()));
+
+        let written = DiskSnapshot { text: "base mine".into(), stamp: stamped("base mine", 3).stamp };
+        let (is_dirty, effects) = documents.mark_written("a.ts", written);
+        assert!(!is_dirty);
+        assert_eq!(effects.events.len(), 1);
+        assert_eq!(documents.plan_save("a.ts", false, &stamped("base mine", 3)).unwrap(), SavePlan::Unchanged);
+    }
+
+    #[test]
+    fn edits_made_during_a_save_stay_unsaved() {
+        let mut documents = documents();
+        documents.open("a.ts", "main", "typescript", &stamped("a", 1)).unwrap();
+        documents.edit("a.ts", 1, vec![change((0, 1), (0, 1), "b")]).unwrap();
+        let SavePlan::Write(text) = documents.plan_save("a.ts", false, &stamped("a", 1)).unwrap() else { panic!("expected a write") };
+        documents.edit("a.ts", 2, vec![change((0, 2), (0, 2), "c")]).unwrap();
+
+        let (is_dirty, effects) = documents.mark_written("a.ts", DiskSnapshot { text, stamp: stamped("ab", 2).stamp });
+        assert!(is_dirty);
+        assert_eq!(effects, Effects::default());
+        assert_eq!(documents.plan_save("a.ts", false, &stamped("ab", 2)).unwrap(), SavePlan::Write("abc".into()), "its own write is no conflict");
+    }
+
+    #[test]
+    fn a_change_on_disk_that_matches_the_unsaved_edits_makes_the_document_clean() {
+        let mut documents = documents();
+        documents.open("a.ts", "main", "typescript", &stamped("a", 1)).unwrap();
+        documents.edit("a.ts", 1, vec![change((0, 1), (0, 1), "b")]).unwrap();
+        let effects = documents.reload("a.ts", &stamped("ab", 2));
+        assert_eq!(
+            effects.events,
+            [DocumentEvent::Dirty(DirtyEvent { worktree_path: "/work tree".into(), path: "a.ts".into(), is_dirty: false })]
+        );
+        assert!(effects.notifications.is_empty());
+    }
+
+    #[test]
+    fn reverting_after_a_change_on_disk_takes_the_new_content() {
+        let mut documents = documents();
+        documents.open("a.ts", "main", "typescript", &stamped("old", 1)).unwrap();
+        documents.edit("a.ts", 1, vec![change((0, 3), (0, 3), "!")]).unwrap();
+        documents.reload("a.ts", &stamped("agent", 2));
+
+        let effects = documents.revert("a.ts");
+        let DocumentEvent::Changed(event) = &effects.events[0] else { panic!("expected a change event") };
+        assert_eq!((event.text.as_deref(), event.is_dirty), (Some("agent"), false));
+        let unchanged = stamped("agent", 2);
+        documents.reload("a.ts", &unchanged);
+        assert_eq!(unchanged.reads.get(), 0);
+    }
+
+    #[test]
+    fn undoing_back_to_the_base_takes_a_noted_change_over_at_the_next_reload() {
+        let mut documents = documents();
+        documents.open("a.ts", "main", "typescript", &stamped("old", 1)).unwrap();
+        documents.edit("a.ts", 1, vec![change((0, 3), (0, 3), "!")]).unwrap();
+        documents.reload("a.ts", &stamped("agent", 2));
+        documents.edit("a.ts", 2, vec![change((0, 3), (0, 4), "")]).unwrap();
+
+        documents.reload("a.ts", &stamped("agent", 2));
+        assert_eq!(documents.text("a.ts").unwrap(), "agent");
+    }
+
+    #[test]
+    fn a_diff_reading_other_content_never_rebases_unsaved_edits() {
+        let mut documents = documents();
+        documents.open("a.ts", "main", "typescript", &stamped("old", 1)).unwrap();
+        documents.edit("a.ts", 1, vec![change((0, 3), (0, 3), "!")]).unwrap();
+        assert_eq!(documents.mark_saved("a.ts", "agent".into()), (true, Effects::default()));
+        assert_eq!(documents.plan_save("a.ts", false, &stamped("agent", 2)).unwrap(), SavePlan::Conflict);
+    }
+
+    #[test]
+    fn a_save_outcome_serializes_with_its_kind() {
+        assert_eq!(serde_json::to_value(SaveOutcome::Saved { is_dirty: true }).unwrap(), json!({ "kind": "saved", "isDirty": true }));
+        assert_eq!(serde_json::to_value(SaveOutcome::Conflict).unwrap(), json!({ "kind": "conflict" }));
     }
 
     #[test]
     fn revert_and_save_change_the_dirty_state() {
         let mut documents = documents();
-        documents.open("a.ts", "main", "typescript", read("a")).unwrap();
+        documents.open("a.ts", "main", "typescript", &read("a")).unwrap();
         documents.edit("a.ts", 1, vec![change((0, 1), (0, 1), "b")]).unwrap();
 
         let (is_dirty, effects) = documents.mark_saved("a.ts", "ab".into());
@@ -819,7 +1143,7 @@ mod tests {
     #[test]
     fn a_clean_document_takes_the_text_written_elsewhere_over() {
         let mut documents = documents();
-        documents.open("a.ts", "main", "typescript", read("old")).unwrap();
+        documents.open("a.ts", "main", "typescript", &read("old")).unwrap();
 
         let (is_dirty, effects) = documents.mark_saved("a.ts", "new".into());
         assert!(!is_dirty);
@@ -836,7 +1160,7 @@ mod tests {
     #[test]
     fn undoing_back_to_the_saved_text_is_clean() {
         let mut documents = documents();
-        documents.open("a.ts", "main", "typescript", read("a")).unwrap();
+        documents.open("a.ts", "main", "typescript", &read("a")).unwrap();
         documents.edit("a.ts", 1, vec![change((0, 1), (0, 1), "b")]).unwrap();
         let (ack, _) = documents.edit("a.ts", 2, vec![change((0, 1), (0, 2), "")]).unwrap();
         assert_eq!(ack, Some(EditAck { version: 3, is_dirty: false }));
@@ -845,8 +1169,8 @@ mod tests {
     #[test]
     fn the_last_holder_closes_the_document() {
         let mut documents = documents();
-        documents.open("a.ts", "main", "typescript", read("a")).unwrap();
-        documents.open("a.ts", "editor-1", "typescript", read("a")).unwrap();
+        documents.open("a.ts", "main", "typescript", &read("a")).unwrap();
+        documents.open("a.ts", "editor-1", "typescript", &read("a")).unwrap();
         assert_eq!(documents.close("a.ts", "main"), Effects::default());
         assert_eq!(documents.text("a.ts").unwrap(), "a");
         assert_eq!(methods(&documents.close("a.ts", "editor-1")), ["textDocument/didClose"]);
@@ -856,9 +1180,9 @@ mod tests {
     #[test]
     fn releasing_a_window_drops_its_holds() {
         let mut documents = documents();
-        documents.open("a.ts", "main", "typescript", read("a")).unwrap();
-        documents.open("b.ts", "main", "typescript", read("b")).unwrap();
-        documents.open("b.ts", "editor-1", "typescript", read("b")).unwrap();
+        documents.open("a.ts", "main", "typescript", &read("a")).unwrap();
+        documents.open("b.ts", "main", "typescript", &read("b")).unwrap();
+        documents.open("b.ts", "editor-1", "typescript", &read("b")).unwrap();
 
         let effects = documents.release_owner("main");
         assert_eq!(methods(&effects), ["textDocument/didClose"]);
@@ -872,12 +1196,12 @@ mod tests {
     #[test]
     fn unsaved_edits_outlive_every_window_until_they_are_reverted() {
         let mut documents = documents();
-        documents.open("a.ts", "editor-1", "typescript", read("a")).unwrap();
+        documents.open("a.ts", "editor-1", "typescript", &read("a")).unwrap();
         documents.edit("a.ts", 1, vec![change((0, 1), (0, 1), "b")]).unwrap();
 
         assert_eq!(documents.release_owner("editor-1"), Effects::default());
         assert_eq!(documents.dirty_paths(), ["a.ts"]);
-        let (state, _) = documents.open("a.ts", "main", "typescript", || panic!("a kept document is not read again")).unwrap();
+        let (state, _) = documents.open("a.ts", "main", "typescript", &Untouched("a kept document is not read again")).unwrap();
         assert_eq!(state, DocumentState { text: "ab".into(), version: 2, is_dirty: true });
         documents.release_owner("main");
 
@@ -890,7 +1214,7 @@ mod tests {
     #[test]
     fn a_kept_document_closes_once_saved() {
         let mut documents = documents();
-        documents.open("a.ts", "editor-1", "typescript", read("a")).unwrap();
+        documents.open("a.ts", "editor-1", "typescript", &read("a")).unwrap();
         documents.edit("a.ts", 1, vec![change((0, 1), (0, 1), "b")]).unwrap();
         documents.release_owner("editor-1");
 
@@ -903,7 +1227,7 @@ mod tests {
     #[test]
     fn closing_a_dirty_document_reports_it_clean() {
         let mut documents = documents();
-        documents.open("a.ts", "main", "typescript", read("a")).unwrap();
+        documents.open("a.ts", "main", "typescript", &read("a")).unwrap();
         documents.edit("a.ts", 1, vec![change((0, 1), (0, 1), "b")]).unwrap();
         let effects = documents.close("a.ts", "main");
         assert_eq!(
@@ -932,7 +1256,7 @@ mod tests {
             println!("tsgo not installed, skipping");
             return;
         };
-        let read_disk = || std::fs::read_to_string(root.join("a.ts")).map_err(|error| error.to_string());
+        let read_disk = &OnDisk(root.join("a.ts"));
         let uri = lsp::file_uri(&root.join("a.ts"));
         let mut documents = WorktreeDocuments::new(root.clone());
 
@@ -966,8 +1290,8 @@ mod tests {
     #[test]
     fn a_new_server_gets_every_served_document_at_its_current_version() {
         let mut documents = documents();
-        documents.open("a.ts", "main", "typescript", read("a")).unwrap();
-        documents.open("b.md", "main", "markdown", read("b")).unwrap();
+        documents.open("a.ts", "main", "typescript", &read("a")).unwrap();
+        documents.open("b.md", "main", "markdown", &read("b")).unwrap();
         documents.edit("a.ts", 1, vec![change((0, 1), (0, 1), "!")]).unwrap();
         let notifications = documents.open_notifications();
         assert_eq!(notifications.len(), 1);

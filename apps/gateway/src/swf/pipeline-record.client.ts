@@ -14,6 +14,12 @@ export interface StoredPipeline {
   pipeline: Pipeline;
 }
 
+/** A record comment the poller cannot drive, and why: an older version, or a record it cannot read. */
+export interface UnusableRecord {
+  commentId: number;
+  problem: string;
+}
+
 export class PipelineRecordClient {
   private readonly github: GitHub;
 
@@ -22,17 +28,19 @@ export class PipelineRecordClient {
   }
 
   /**
-   * The pipeline of the issue: the latest comment of `botLogin` that carries a usable record, so that a record anyone else
-   * posts never counts; null without one. `comments` are the issue's comments, oldest first, when the caller has read
-   * them already; without them they are read.
+   * The pipeline of the issue: the latest comment of `botLogin` that carries a record, so that a record anyone else posts
+   * never counts; the comment's id and the problem instead when that record is unusable (`Pipeline.fromComment`), null
+   * without a record comment. `comments` are the issue's comments, oldest first, when the caller has read them already;
+   * without them they are read.
    */
-  async find(repo: Repository, issueNumber: number, botLogin: string, comments?: IssueComment[]): Promise<StoredPipeline | null> {
+  async find(repo: Repository, issueNumber: number, botLogin: string, comments?: IssueComment[]): Promise<StoredPipeline | UnusableRecord | null> {
     const thread = comments ?? (await this.github.comments(repo, issueNumber));
     for (let index = thread.length - 1; index >= 0; index--) {
       const comment = thread[index];
       if (comment.author !== botLogin) continue;
-      const pipeline = Pipeline.fromComment(comment.body);
-      if (pipeline) return { commentId: comment.id, pipeline };
+      const parsed = Pipeline.fromComment(comment.body);
+      if (!parsed) continue;
+      return parsed.pipeline ? { commentId: comment.id, pipeline: parsed.pipeline } : { commentId: comment.id, problem: parsed.problem };
     }
     return null;
   }

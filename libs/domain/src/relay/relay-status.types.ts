@@ -2,8 +2,8 @@
  * `status.json` in the relay's socket directory (`/run/hunt/status.json` on a session VM), rewritten on every change and
  * as a heartbeat; `hunt-ctl wait` and the VM's idle check read it, and `hunt-ctl status` reports it as `status`. Times
  * are Unix milliseconds; a heartbeat older than two minutes means the relay is gone. The relay writes it through
- * `apps/session/src/relay/relay-status.utils.ts`; the gateway's poller reads it through
- * `apps/gateway/src/swf/relay-status.utils.ts`.
+ * `apps/session/src/relay/relay-status.utils.ts`; the swf runner reads it through
+ * `apps/session/src/swf-runner/relay-status-file.utils.ts`.
  */
 
 export type RelayState = "starting" | "ready" | "failed";

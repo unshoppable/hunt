@@ -5,8 +5,8 @@
  * (`apps/session/src/swf-runner/swf-runner.service.ts`):
  *
  * - `pipeline`: the pipeline as the poller recorded it after a transition it made itself (a poller step that sent the
- *   issue back to implement, a review it prepared) or when it started the VM again; the runner adopts it when it is
- *   further than its own.
+ *   issue back to implement, the issue moved to In Review) or when it started the VM again; the runner adopts it when it
+ *   is further than its own.
  * - `answers`: the comments that answer the agent's question on the issue, for the runner to send to the agent.
  */
 import { Pipeline } from "./pipeline.domain.ts";

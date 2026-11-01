@@ -31,10 +31,10 @@ const IAP_HEADERS = ["X-Goog-Iap-Jwt-Assertion", "X-Goog-Authenticated-User-Emai
 const REMOTE_SECRET_RULE = 'must be "$<NAME>", the name of a remote secret matching ^[A-Z][A-Z0-9_]{0,63}$';
 const MODEL_RULE = 'must be the full ID of a Claude model such as "claude-opus-5-5", at most 128 characters, not an alias such as "opus"';
 const SKILL_NAME_RULE = 'must be the kebab-case name of a skill such as "guardrail": letters, digits and "-", at most 64 characters';
-const SKILLS_RULE = "must name the skill of every agent step (plan, implement, verify, gate, pr); Hunt asks to add them when a session of the repository opens";
+const SKILLS_RULE = "must name the skill of every agent step (plan, implement, verify, review, pr); Hunt asks to add them when a session of the repository opens";
 const STEP_SKILL_RULE = "must name the skill of the step; Hunt asks to add it when a session of the repository opens";
 /** The skill of every agent step as a hunt.json names them under `swf.skills`. */
-const SKILLS = { plan: "swf-plan", implement: "swf-implement", verify: "swf-verify", gate: "swf-gate", pr: "swf-pr" };
+const SKILLS = { plan: "swf-plan", implement: "swf-implement", verify: "swf-verify", review: "swf-review", pr: "swf-pr" };
 const MISSING_SECRET = "services.web.remoteSecrets.OPENAI_API_KEY: no remote secret MED_OPENAI_API_KEY; set it in Hunt under Settings → Remote VM";
 
 /** A hunt.json with every field: a forward and a self reference, a folder, TLS and two services that are not guarded. */
@@ -160,20 +160,20 @@ describe("HuntJson services", () => {
       [{ ...web({}), swf: {} }, [`swf.skills: ${SKILLS_RULE}`]],
       [{ ...web({}), swf: { model: "claude-opus-5-5", humanReviewPaths: ["**/migrations/**"] } }, [`swf.skills: ${SKILLS_RULE}`]],
       [{ ...web({}), swf: { skills: {} } }, AGENT_STEPS.map((step) => `swf.skills.${step}: ${STEP_SKILL_RULE}`)],
-      [{ ...web({}), swf: { skills: { plan: "swf-plan", implement: "swf-implement", verify: "swf-verify", gate: "swf-gate" } } }, [`swf.skills.pr: ${STEP_SKILL_RULE}`]],
-      [{ ...web({}), swf: { skills: { pr: "swf-pr", plan: "swf-plan" } } }, ["implement", "verify", "gate"].map((step) => `swf.skills.${step}: ${STEP_SKILL_RULE}`)],
+      [{ ...web({}), swf: { skills: { plan: "swf-plan", implement: "swf-implement", verify: "swf-verify", review: "swf-review" } } }, [`swf.skills.pr: ${STEP_SKILL_RULE}`]],
+      [{ ...web({}), swf: { skills: { pr: "swf-pr", plan: "swf-plan" } } }, ["implement", "verify", "review"].map((step) => `swf.skills.${step}: ${STEP_SKILL_RULE}`)],
       ...["swf-plan", ["swf-plan"], 1, null].map((skills): [unknown, string[]] => [{ ...web({}), swf: { skills } }, ["swf.skills: must be an object"]]),
       [
-        { ...web({}), swf: { skills: { plan: "swf-plan", review: "swf-review", merge: "swf-merge" } } },
-        ["swf.skills.review: unknown field", "swf.skills.merge: unknown field", ...["implement", "verify", "gate", "pr"].map((step) => `swf.skills.${step}: ${STEP_SKILL_RULE}`)],
+        { ...web({}), swf: { skills: { plan: "swf-plan", checks: "swf-checks", merge: "swf-merge" } } },
+        ["swf.skills.checks: unknown field", "swf.skills.merge: unknown field", ...["implement", "verify", "review", "pr"].map((step) => `swf.skills.${step}: ${STEP_SKILL_RULE}`)],
       ],
       ...["", "Swf-Plan", "swf plan", "-swf-plan", "a--b", "a".repeat(65), 1, null].map((plan): [unknown, string[]] => [
         { ...web({}), swf: { skills: { ...SKILLS, plan } } },
         [`swf.skills.plan: ${SKILL_NAME_RULE}`],
       ]),
       [
-        { ...web({}), swf: { skills: { plan: "swf-plan", implement: 1, verify: "swf-verify", gate: "", pr: "swf-pr" } } },
-        [`swf.skills.implement: ${SKILL_NAME_RULE}`, `swf.skills.gate: ${SKILL_NAME_RULE}`],
+        { ...web({}), swf: { skills: { plan: "swf-plan", implement: 1, verify: "swf-verify", review: "", pr: "swf-pr" } } },
+        [`swf.skills.implement: ${SKILL_NAME_RULE}`, `swf.skills.review: ${SKILL_NAME_RULE}`],
       ],
       ...["**/migrations/**", Array.from({ length: 65 }, () => "**/migrations/**")].map((humanReviewPaths): [unknown, string[]] => [
         { ...web({}), swf: { humanReviewPaths, skills: SKILLS } },
@@ -498,11 +498,8 @@ describe("environments", () => {
     }
   });
 
-  it("reads the paths whose change makes a pull request of swf sessions need a human review, none without them", () => {
-    expect(config.swfHumanReviewPaths).toEqual([]);
-    expect(buildSessionConfig(undefined, HOST, WORKTREE).swfHumanReviewPaths).toEqual([]);
-    expect(buildSessionConfig({ ...web({}), swf: { model: "claude-opus-5-5", skills: SKILLS } }, HOST, WORKTREE).swfHumanReviewPaths).toEqual([]);
-    expect(buildSessionConfig({ ...web({}), swf: { humanReviewPaths: [], skills: SKILLS } }, HOST, WORKTREE).swfHumanReviewPaths).toEqual([]);
+  it("accepts the paths whose change makes a pull request of swf sessions need a human review without reading them: the repository's scorer does", () => {
+    expect(buildSessionConfig({ ...web({}), swf: { humanReviewPaths: [], skills: SKILLS } }, HOST, WORKTREE)).not.toHaveProperty("swfHumanReviewPaths");
     const humanReviewPaths = [
       "**/migrations/**",
       "libs/shared-backend/src/auth/**",
@@ -510,21 +507,20 @@ describe("environments", () => {
       "x".repeat(255),
       ...Array.from({ length: 60 }, (_unused, index) => `apps/${index}/**`),
     ];
-    expect(buildSessionConfig({ ...web({}), swf: { humanReviewPaths, skills: SKILLS } }, HOST, WORKTREE)).toMatchObject({
-      swfModel: null,
-      swfHumanReviewPaths: humanReviewPaths,
-    });
+    const config = buildSessionConfig({ ...web({}), swf: { humanReviewPaths, skills: SKILLS } }, HOST, WORKTREE);
+    expect(config).toMatchObject({ swfModel: null, swfSkills: SKILLS });
+    expect(JSON.stringify(config)).not.toContain("migrations");
   });
 
   it("reads the skill of every agent step of swf sessions as hunt.json names them, in the order of the steps, and none without the swf section", () => {
     expect(config.swfSkills).toBeNull();
     expect(buildSessionConfig(undefined, HOST, WORKTREE).swfSkills).toBeNull();
-    const skills = { plan: "swf-plan", implement: "swf-implement-2", verify: "a".repeat(64), gate: "swf-gate", pr: "pr" };
-    expect(buildSessionConfig({ ...web({}), swf: { skills } }, HOST, WORKTREE)).toMatchObject({ swfModel: null, swfHumanReviewPaths: [], swfSkills: skills });
-    const unordered = { pr: "a-pr", gate: "a-gate", verify: "a-verify", implement: "a-implement", plan: "a-plan" };
+    const skills = { plan: "swf-plan", implement: "swf-implement-2", verify: "a".repeat(64), review: "swf-review", pr: "pr" };
+    expect(buildSessionConfig({ ...web({}), swf: { skills } }, HOST, WORKTREE)).toMatchObject({ swfModel: null, swfSkills: skills });
+    const unordered = { pr: "a-pr", review: "a-review", verify: "a-verify", implement: "a-implement", plan: "a-plan" };
     expect(Object.keys(buildSessionConfig({ ...web({}), swf: { skills: unordered } }, HOST, WORKTREE).swfSkills ?? {})).toEqual([...AGENT_STEPS]);
     expect(() => buildSessionConfig({ ...web({}), swf: { model: "claude-opus-5-5" } }, HOST, WORKTREE)).toThrow(ConfigError);
-    expect(() => buildSessionConfig({ ...web({}), swf: { skills: { gate: "acme-gate" } } }, HOST, WORKTREE)).toThrow(ConfigError);
+    expect(() => buildSessionConfig({ ...web({}), swf: { skills: { review: "acme-review" } } }, HOST, WORKTREE)).toThrow(ConfigError);
   });
 });
 
@@ -950,12 +946,12 @@ describe("configCli", () => {
   }
 
   it("writes the environments and the proxy configuration and prints the services, their prompt, hunt.agent.md and the swf settings", () => {
-    const huntJson = { ...COMPLETE, swf: { model: "claude-opus-5-5", humanReviewPaths: ["**/migrations/**", "libs/auth/**"], skills: { ...SKILLS, gate: "acme-gate" } } };
+    const huntJson = { ...COMPLETE, swf: { model: "claude-opus-5-5", humanReviewPaths: ["**/migrations/**", "libs/auth/**"], skills: { ...SKILLS, review: "acme-review" } } };
     const paths = setup({
       "hunt.json": JSON.stringify(huntJson),
       "hunt.agent.md": "\n# Services\nStart backend with ui.\n\n",
       "HUNT.md": "Old notes.",
-      ...skillFiles(["swf-plan", "swf-implement", "swf-verify", "acme-gate", "swf-pr"]),
+      ...skillFiles(["swf-plan", "swf-implement", "swf-verify", "acme-review", "swf-pr"]),
     });
     const result = runCli(paths);
     const expected = buildSessionConfig(COMPLETE, HOST, paths.worktree);
@@ -974,8 +970,7 @@ describe("configCli", () => {
         services_prompt: expected.servicesPrompt,
         agent_md: "# Services\nStart backend with ui.",
         swf_model: "claude-opus-5-5",
-        swf_human_review_paths: ["**/migrations/**", "libs/auth/**"],
-        swf_skills: { plan: "swf-plan", implement: "swf-implement", verify: "swf-verify", gate: "acme-gate", pr: "swf-pr" },
+        swf_skills: { plan: "swf-plan", implement: "swf-implement", verify: "swf-verify", review: "acme-review", pr: "swf-pr" },
       },
       lines: 2,
     });
@@ -994,7 +989,7 @@ describe("configCli", () => {
   });
 
   it("reports each agent step whose skill file the worktree lacks when hunt.json has a swf section, and checks none without one", () => {
-    const paths = setup({ "hunt.json": JSON.stringify({ ...web({}), swf: { skills: { ...SKILLS, verify: "acme-verify" } } }), ...skillFiles(["swf-plan", "swf-gate"]) });
+    const paths = setup({ "hunt.json": JSON.stringify({ ...web({}), swf: { skills: { ...SKILLS, verify: "acme-verify" } } }), ...skillFiles(["swf-plan", "swf-review"]) });
     mkdirSync(join(paths.worktree, ".claude/skills/swf-pr/SKILL.md"), { recursive: true });
     const result = runCli(paths);
 
@@ -1011,7 +1006,7 @@ describe("configCli", () => {
     const blocked = setup({ "hunt.json": JSON.stringify({ ...web({}), swf: { skills: SKILLS } }), ".claude/skills": "not a folder" });
     expect(runCli(blocked).output).toEqual({ ok: false, problems: AGENT_STEPS.map((step) => missingSkillFile(step, SKILLS[step])) });
 
-    const linked = setup({ "hunt.json": JSON.stringify({ ...web({}), swf: { skills: SKILLS } }), ...skillFiles(["swf-implement", "swf-verify", "swf-gate", "swf-pr"]) });
+    const linked = setup({ "hunt.json": JSON.stringify({ ...web({}), swf: { skills: SKILLS } }), ...skillFiles(["swf-implement", "swf-verify", "swf-review", "swf-pr"]) });
     symlinkSync(join(linked.worktree, ".claude/skills/swf-verify"), join(linked.worktree, ".claude/skills/swf-plan"));
     expect(runCli(linked).output).toMatchObject({ ok: true, swf_skills: SKILLS });
 
@@ -1023,8 +1018,8 @@ describe("configCli", () => {
   it("reports the agent steps whose skill hunt.json names none for before any skill file is checked", () => {
     const withoutSkills = runCli(setup({ "hunt.json": JSON.stringify({ ...web({}), swf: { model: "claude-opus-5-5" } }), ...skillFiles(["swf-plan"]) }));
     expect(withoutSkills).toMatchObject({ status: 1, output: { ok: false, problems: [`swf.skills: ${SKILLS_RULE}`] } });
-    const withoutGate = runCli(setup({ "hunt.json": JSON.stringify({ ...web({}), swf: { skills: { ...SKILLS, gate: undefined } } }) }));
-    expect(withoutGate.output).toEqual({ ok: false, problems: [`swf.skills.gate: ${STEP_SKILL_RULE}`] });
+    const withoutReview = runCli(setup({ "hunt.json": JSON.stringify({ ...web({}), swf: { skills: { ...SKILLS, review: undefined } } }) }));
+    expect(withoutReview.output).toEqual({ ok: false, problems: [`swf.skills.review: ${STEP_SKILL_RULE}`] });
   });
 
   it("deletes the environment files of services hunt.json no longer declares and keeps every other file", () => {

@@ -9,9 +9,9 @@ Invoke the repository's skill `{{skill}}` (`.claude/skills/{{skill}}/SKILL.md`) 
 ## Your task
 
 Read the plan in `.hunt/swf/steps/01-plan.md` and the results of the steps that ran since (`.hunt/swf/steps/`, in the
-order of their numbers: what earlier implement runs changed, what verify found), then the repository's guardrails. Carry
-out the plan, or, when the list above holds findings, fix every one of them: a finding of the verify step, a failing
-check, a blocking finding of the Claude review, a change a reviewer requested or a merge conflict with the base branch
+order of their numbers: what earlier implement runs changed, what verify and the review found), then the repository's
+guardrails. Carry out the plan, or, when the list above holds findings, fix every one of them: a finding of the verify
+step or of the review step, a failing check, a change a reviewer requested or a merge conflict with the base branch
 (then merge the base branch into your branch and resolve it). Follow the guardrails while you write, add or adjust
 tests where the repository tests code like yours, and run the repository's checks for the projects you touched (build,
 tests, linters, type checks) before you finish; a failing check, a warning or a flaky test is yours to fix, or, when it

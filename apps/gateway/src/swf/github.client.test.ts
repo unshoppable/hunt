@@ -102,11 +102,12 @@ describe("parsePullRequest", () => {
     merged: false,
     headRefOid: "0123456789abcdef0123456789abcdef01234567",
     mergeStateStatus: "BEHIND",
-    labels: { nodes: [{ name: "hunt:human-review" }] },
+    reviewDecision: "REVIEW_REQUIRED",
+    labels: { nodes: [{ name: "dependencies" }] },
     commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS", contexts: { nodes: [] } } } }] },
   };
 
-  it("reads the head, the merge state, the labels and the checks of the head commit", () => {
+  it("reads the head, the merge state, the review decision, the labels and the checks of the head commit", () => {
     expect(parsePullRequest({ repository: { pullRequest: raw } })).toEqual({
       number: 31,
       url: "https://github.com/acme/app/pull/31",
@@ -114,9 +115,10 @@ describe("parsePullRequest", () => {
       headSha: "0123456789abcdef0123456789abcdef01234567",
       state: "open",
       mergeState: "BEHIND",
+      reviewDecision: "REVIEW_REQUIRED",
       checks: "success",
       failingChecks: [],
-      labels: ["hunt:human-review"],
+      labels: ["dependencies"],
     });
   });
 
@@ -130,6 +132,7 @@ describe("parsePullRequest", () => {
       headSha: "",
       state: "open",
       mergeState: "UNKNOWN",
+      reviewDecision: null,
       checks: "none",
       failingChecks: [],
       labels: [],
@@ -250,9 +253,8 @@ describe("createGitHub", () => {
     expect(await github.pullRequest(ACME_APP, 99)).toBeNull();
   });
 
-  it("lists the files, the reviews and a review's inline comments of a pull request", async () => {
+  it("lists the reviews and a review's inline comments of a pull request", async () => {
     const { fetchImpl } = fakeFetch({
-      "GET /repos/acme/app/pulls/31/files?per_page=100": () => Response.json([{ filename: "README.md" }, { filename: "db/migrations/1.sql" }, {}]),
       "GET /repos/acme/app/pulls/31/reviews?per_page=100": () =>
         Response.json([
           { id: 501, user: { login: "carol" }, state: "CHANGES_REQUESTED", body: "Rename it.", submitted_at: "2026-10-14T08:00:00Z" },
@@ -264,7 +266,6 @@ describe("createGitHub", () => {
     });
     const github = createGitHub(async () => "ghp_token", fetchImpl);
 
-    expect(await github.pullRequestFiles(ACME_APP, 31)).toEqual(["README.md", "db/migrations/1.sql"]);
     expect(await github.reviews(ACME_APP, 31)).toEqual([
       { id: 501, author: "carol", state: "CHANGES_REQUESTED", body: "Rename it.", submittedAt: "2026-10-14T08:00:00Z" },
       { id: 502, author: "ghost", state: "APPROVED", body: "", submittedAt: "" },
@@ -300,12 +301,14 @@ describe("createGitHub", () => {
     expect(requests.map((request) => request.body)).toEqual([{}, {}, { merge_method: "squash" }, { merge_method: "squash" }]);
   });
 
-  it("creates a missing label and accepts one created meanwhile", async () => {
+  it("creates a missing label, accepts one created meanwhile and updates one whose color or description differs from the spec", async () => {
     const { fetchImpl, requests } = fakeFetch({
       "GET /repos/acme/app/labels/swf%3Aplan": () => new Response("", { status: 404 }),
       "GET /repos/acme/app/labels/swf%3Adone": () => new Response("", { status: 404 }),
-      "GET /repos/acme/app/labels/swf%3Afailed": () => Response.json({ name: "swf:failed" }),
+      "GET /repos/acme/app/labels/swf%3Afailed": () => Response.json({ name: "swf:failed", color: "fbca04", description: "Hunt's agent reads the issue and plans" }),
+      "GET /repos/acme/app/labels/swf%3Areview": () => Response.json({ name: "swf:review", color: "fbca04", description: "Hunt waits for the Claude review" }),
       "POST /repos/acme/app/labels": () => Response.json({ message: "Validation Failed" }, { status: 422 }),
+      "PATCH /repos/acme/app/labels/swf%3Areview": () => Response.json({ name: "swf:review" }),
     });
     const github = createGitHub(async () => "ghp_token", fetchImpl);
     const label = { name: "swf:plan", color: "fbca04", description: "Hunt's agent reads the issue and plans" };
@@ -313,14 +316,18 @@ describe("createGitHub", () => {
     await github.ensureLabel(ACME_APP, label);
     await github.ensureLabel(ACME_APP, { ...label, name: "swf:done" });
     await github.ensureLabel(ACME_APP, { ...label, name: "swf:failed" });
+    await github.ensureLabel(ACME_APP, { ...label, name: "swf:review", description: "Hunt's agent reviews the change" });
     expect(requests.map((request) => request.key)).toEqual([
       "GET /repos/acme/app/labels/swf%3Aplan",
       "POST /repos/acme/app/labels",
       "GET /repos/acme/app/labels/swf%3Adone",
       "POST /repos/acme/app/labels",
       "GET /repos/acme/app/labels/swf%3Afailed",
+      "GET /repos/acme/app/labels/swf%3Areview",
+      "PATCH /repos/acme/app/labels/swf%3Areview",
     ]);
     expect(requests[1].body).toEqual(label);
+    expect(requests[6].body).toEqual({ color: "fbca04", description: "Hunt's agent reviews the change" });
   });
 
   it("sets the status of the issue's item in every project with a matching option and names those projects", async () => {

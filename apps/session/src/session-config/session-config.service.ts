@@ -66,8 +66,6 @@ export interface SessionConfig {
   servicesPrompt: string;
   /** `swf.model` of hunt.json; null without one. */
   swfModel: string | null;
-  /** `swf.humanReviewPaths` of hunt.json, glob patterns relative to the worktree; empty without one. */
-  swfHumanReviewPaths: string[];
   /** The skill of every agent step, `swf.skills` of hunt.json, which names them all; null without the `swf` section. */
   swfSkills: Record<AgentStep, string> | null;
 }
@@ -80,7 +78,6 @@ export interface SessionConfigResult {
   services_prompt?: string;
   agent_md?: string;
   swf_model?: string;
-  swf_human_review_paths?: string[];
   swf_skills?: Record<AgentStep, string>;
   command?: string;
   cwd?: string | null;
@@ -223,7 +220,6 @@ export function buildSessionConfig(
     proxy: proxyConfig(services, sessionHost),
     servicesPrompt: servicesPrompt(services, sessionHost),
     swfModel: swf?.model ?? null,
-    swfHumanReviewPaths: swf?.humanReviewPaths ?? [],
     swfSkills: swf?.skills ?? null,
   };
 }
@@ -268,7 +264,6 @@ export function runSessionConfig(args: string[]): SessionConfigResult {
       services,
       services_prompt: config.servicesPrompt,
       ...(config.swfModel ? { swf_model: config.swfModel } : {}),
-      ...(config.swfHumanReviewPaths.length > 0 ? { swf_human_review_paths: config.swfHumanReviewPaths } : {}),
       ...(config.swfSkills ? { swf_skills: config.swfSkills } : {}),
     };
   } catch (error) {

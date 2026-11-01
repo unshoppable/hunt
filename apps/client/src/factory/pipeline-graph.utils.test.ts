@@ -33,10 +33,10 @@ describe("pipelineGraph", () => {
     expect(flow.map((edge) => `${edge.source}->${edge.target}`)).toEqual([
       "plan->implement",
       "implement->verify",
-      "verify->gate",
-      "gate->pr",
-      "pr->review",
-      "review->human-review",
+      "verify->review",
+      "review->pr",
+      "pr->checks",
+      "checks->human-review",
       "human-review->merge",
     ]);
     const returns = edges.filter((edge): edge is ReturnEdge => edge.kind === "return");

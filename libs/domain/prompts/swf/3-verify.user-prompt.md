@@ -15,11 +15,9 @@ you judge.
    Playwright tools: start the services the task needs, open every affected page, walk through the flow the issue
    describes, compare what you see with what the issue asks for and read the browser console for errors. Look at each
    screenshot you take; a screenshot nobody looked at proves nothing.
-3. Read the whole diff against the base branch once more with the guardrails open: does the change do everything the
-   issue asks and nothing beyond it, does every line follow the guardrails, which inputs, states or edge cases does it
-   handle wrong, is anything left over (debugging output, commented-out code, scratch files, TODOs)?
 
-Do not fix anything in this step. Write the step result to `.hunt/swf/result.md`: a table of the acceptance criteria,
+The review step that follows reads the diff as a reviewer; here, judge whether the change does what the issue asks. Do
+not fix anything in this step. Write the step result to `.hunt/swf/result.md`: a table of the acceptance criteria,
 how each was checked and whether it passed, the checks you ran with their outcome, and the findings, ending with
 `<!-- hunt:step {"step":"verify","findings":["<finding>", "…"]} -->` — an empty list when everything passed. Each
 finding is one sentence that says what is wrong and where, so that the implement step can fix it.

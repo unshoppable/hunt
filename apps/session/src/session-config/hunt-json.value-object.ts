@@ -11,7 +11,7 @@
  *     "declinedGuardrailsFile": "docs/declined-guardrails.jsonl",
  *     "swf": {
  *       "model": "claude-opus-5-5", "humanReviewPaths": ["apps/backend/migrations/**"],
- *       "skills": { "plan": "swf-plan", "implement": "swf-implement", "verify": "swf-verify", "gate": "swf-gate", "pr": "swf-pr" }
+ *       "skills": { "plan": "swf-plan", "implement": "swf-implement", "verify": "swf-verify", "review": "swf-review", "pr": "swf-pr" }
  *     },
  *     "services": {
  *       "backend": {
@@ -60,12 +60,12 @@
  *     Claude Code's releases. The poller sets it as the session's `model` config option; without it, or when the agent
  *     knows no such model (the relay logs that), Claude Code's default model applies. Sessions started from Hunt keep
  *     the model their user picks.
- *   - `humanReviewPaths`: glob patterns that follow the rules of `worktreeInclude`; a pull request of a poller session
- *     that touches a file matching one of them always needs a human reviewer. None by default; the VM only validates
- *     the list and reports it to the poller.
+ *   - `humanReviewPaths`: glob patterns that follow the rules of `worktreeInclude`: the files whose change makes a pull
+ *     request of a poller session need a human reviewer. Hunt does not read them; the repository's scorer workflow
+ *     does, from hunt.json. None by default; the VM only validates the list.
  *   - `skills`: required with the section: the Claude Code skills (`.claude/skills/<name>/SKILL.md`, names like
  *     `guardrailSkill`) with which the repository refines the agent steps of the poller's pipeline, keyed by the step
- *     (`plan`, `implement`, `verify`, `gate`, `pr`; AGENT_STEPS): the step's prompt tells the agent to invoke the skill
+ *     (`plan`, `implement`, `verify`, `review`, `pr`; AGENT_STEPS): the step's prompt tells the agent to invoke the skill
  *     first. Every agent step must have one; Hunt has no default, so a missing map and each step it leaves out are
  *     problems, which the client's dialog on opening a session of the repository offers to fix (entries `swf-<step>`
  *     and the skill files from its templates). The worktree must hold the skill file of every step, which
@@ -244,11 +244,10 @@ function parseSwf(value: unknown, problems: Problems): SwfDraft | undefined {
   if (value === undefined) return undefined;
   const fields = record(value, "swf", SWF_FIELDS, problems);
   if (!fields) return undefined;
-  return {
-    model: parseOptionalField(ZodModelId, fields.model, at("swf", "model"), problems),
-    humanReviewPaths: parseOptionalField(ZodGlobPatterns, fields.humanReviewPaths, at("swf", "humanReviewPaths"), problems),
-    skills: parseStepSkills(fields.skills, at("swf", "skills"), problems),
-  };
+  const model = parseOptionalField(ZodModelId, fields.model, at("swf", "model"), problems);
+  // Validated only: the repository's scorer workflow reads the paths, Hunt does not.
+  parseOptionalField(ZodGlobPatterns, fields.humanReviewPaths, at("swf", "humanReviewPaths"), problems);
+  return { model, skills: parseStepSkills(fields.skills, at("swf", "skills"), problems) };
 }
 
 /**

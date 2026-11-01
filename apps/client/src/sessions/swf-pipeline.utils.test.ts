@@ -11,7 +11,7 @@ describe("pipelineAgentState", () => {
     expect(pipelineAgentState({ step: "verify", runs: [run(1, "plan", "passed"), run(2, "verify", "running")] })).toBe("verify");
     expect(pipelineAgentState({ step: "implement", runs: [run(1, "plan", "passed"), run(2, "implement", "failed")] })).toBe("failed");
     expect(pipelineAgentState({ step: "merge", runs: [run(1, "merge", "passed")] })).toBe("done");
-    expect(pipelineAgentState({ step: "merge", runs: [run(1, "review", "passed")] })).toBe("merge");
-    expect(pipelineAgentState({ step: "gate", runs: [] })).toBe("gate");
+    expect(pipelineAgentState({ step: "merge", runs: [run(1, "checks", "passed")] })).toBe("merge");
+    expect(pipelineAgentState({ step: "checks", runs: [] })).toBe("checks");
   });
 });

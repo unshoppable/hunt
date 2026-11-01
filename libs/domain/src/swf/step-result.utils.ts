@@ -1,24 +1,24 @@
 /**
  * The result an agent reports at the end of one of its steps: `.hunt/swf/result.md` of the worktree, which the runner on
- * the session VM reads, or, for a session the poller drives, an issue comment; either carries `<!-- hunt:step {…} -->`
- * on a line of its own (see `libs/domain/prompts/swf/0-system-prompt.md`).
+ * the session VM reads; it carries `<!-- hunt:step {…} -->` on a line of its own (see
+ * `libs/domain/prompts/swf/0-system-prompt.md`).
  */
 import { isRecord } from "../shared/json-rpc.utils.ts";
-import { AGENT_STEPS, RISKS, type Risk } from "./swf-step.types.ts";
+import { AGENT_STEPS } from "./swf-step.types.ts";
 
-/** What the agent reports at the end of a step; the comment that carries it holds the human-readable part. */
+/** What the agent reports at the end of a step; the file that carries it holds the human-readable part. */
 export type StepResult =
   | { step: "plan" }
   | { step: "implement"; summary: string }
   | { step: "verify"; findings: string[] }
-  | { step: "gate"; humanReview: boolean; risk: Risk; reasons: string[] }
+  | { step: "review"; findings: string[] }
   | { step: "pr"; pullRequest: number };
 
-/** `<!-- hunt:step {…} -->` anywhere in a comment; the JSON object is the first group. */
+/** `<!-- hunt:step {…} -->` anywhere in a text; the JSON object is the first group. */
 const STEP_MARKER = /<!--\s*hunt:step\s+(\{[\s\S]*?\})\s*-->/g;
-/** The longest text of a finding, a summary or a reason that is kept; longer ones are cut. */
+/** The longest text of a finding or a summary that is kept; longer ones are cut. */
 export const TEXT_LIMIT = 2000;
-/** How many findings or reasons of one result are kept. */
+/** How many findings of one result are kept. */
 export const LIST_LIMIT = 20;
 
 export type ParsedStepResult = { result: StepResult; problem?: undefined } | { result?: undefined; problem: string };
@@ -48,17 +48,9 @@ export function parseStepResult(text: string): ParsedStepResult | null {
       return { result: { step: "plan" } };
     case "implement":
       return { result: { step: "implement", summary: textOf(value.summary) } };
-    case "verify": {
-      if (value.findings !== undefined && !Array.isArray(value.findings)) return { problem: "findings of a verify result must be a list" };
-      return { result: { step: "verify", findings: listOf(value.findings) } };
-    }
-    case "gate": {
-      if (typeof value.humanReview !== "boolean") return { problem: "humanReview of a gate result must be true or false" };
-      if (typeof value.risk !== "string" || !(RISKS as readonly string[]).includes(value.risk)) {
-        return { problem: `risk of a gate result must be one of ${RISKS.join(", ")}` };
-      }
-      return { result: { step: "gate", humanReview: value.humanReview, risk: value.risk as Risk, reasons: listOf(value.reasons) } };
-    }
+    case "verify":
+    case "review":
+      return findingsResult(value.step, value.findings);
     case "pr": {
       if (typeof value.pullRequest !== "number" || !Number.isInteger(value.pullRequest) || value.pullRequest <= 0) {
         return { problem: "pullRequest of a pr result must be the number of the pull request" };
@@ -68,6 +60,12 @@ export function parseStepResult(text: string): ParsedStepResult | null {
     default:
       return { problem: `unknown step ${JSON.stringify(value.step)}; the agent steps are ${AGENT_STEPS.join(", ")}` };
   }
+}
+
+/** The result of a step that reports `findings` (verify, review): a missing list means none, anything else but a list is unusable. */
+function findingsResult(step: "verify" | "review", findings: unknown): ParsedStepResult {
+  if (findings !== undefined && !Array.isArray(findings)) return { problem: `findings of a ${step} result must be a list` };
+  return { result: { step, findings: listOf(findings) } };
 }
 
 function textOf(value: unknown): string {

@@ -9,9 +9,9 @@ const STEP_DESCRIPTIONS: Record<SwfStep, string> = {
   plan: "Hunt's agent reads the issue and plans",
   implement: "Hunt's agent implements on a session VM",
   verify: "Hunt's agent checks its change against the issue",
-  gate: "Hunt's agent judges whether a person has to review",
+  review: "Hunt's agent reviews the change by the repository's review criteria",
   pr: "Hunt's agent opens the pull request",
-  review: "The pull request waits for its checks and the Claude review",
+  checks: "The pull request waits for its checks and the scorer",
   "human-review": "A person has to review the pull request",
   merge: "Hunt merges the pull request",
 };

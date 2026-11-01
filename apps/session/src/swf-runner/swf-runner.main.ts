@@ -25,7 +25,7 @@ import swfPlanPrompt from "../../../../libs/domain/prompts/swf/1-plan.user-promp
 import swfEscalatePrompt from "../../../../libs/domain/prompts/swf/2-implement-escalate.user-prompt.md?raw";
 import swfImplementPrompt from "../../../../libs/domain/prompts/swf/2-implement.user-prompt.md?raw";
 import swfVerifyPrompt from "../../../../libs/domain/prompts/swf/3-verify.user-prompt.md?raw";
-import swfGatePrompt from "../../../../libs/domain/prompts/swf/4-gate.user-prompt.md?raw";
+import swfReviewPrompt from "../../../../libs/domain/prompts/swf/4-review.user-prompt.md?raw";
 import swfPrPrompt from "../../../../libs/domain/prompts/swf/5-pr.user-prompt.md?raw";
 import swfAnswerPrompt from "../../../../libs/domain/prompts/swf/answer.user-prompt.md?raw";
 import swfBadResultPrompt from "../../../../libs/domain/prompts/swf/bad-result.user-prompt.md?raw";
@@ -75,7 +75,7 @@ function readPrompts(): PromptFiles {
     swfImplement: swfImplementPrompt,
     swfEscalate: swfEscalatePrompt,
     swfVerify: swfVerifyPrompt,
-    swfGate: swfGatePrompt,
+    swfReview: swfReviewPrompt,
     swfPr: swfPrPrompt,
     swfNudge: swfNudgePrompt,
     swfAnswer: swfAnswerPrompt,

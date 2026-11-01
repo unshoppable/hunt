@@ -16,7 +16,7 @@ const TEMPLATES: [(&str, &str); 5] = [
     ("plan", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf/swf-plan.skill.md"))),
     ("implement", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf/swf-implement.skill.md"))),
     ("verify", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf/swf-verify.skill.md"))),
-    ("gate", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf/swf-gate.skill.md"))),
+    ("review", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf/swf-review.skill.md"))),
     ("pr", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf/swf-pr.skill.md"))),
 ];
 
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn templates_follow_the_agent_steps() {
         let steps: Vec<&str> = TEMPLATES.iter().map(|(step, _)| *step).collect();
-        assert_eq!(steps, ["plan", "implement", "verify", "gate", "pr"]);
+        assert_eq!(steps, ["plan", "implement", "verify", "review", "pr"]);
     }
 
     #[test]
@@ -145,17 +145,19 @@ mod tests {
     }
 
     #[test]
-    fn the_gate_template_starts_with_the_default_rubric() {
-        let content = render(&skill("gate", "swf-gate")).unwrap();
-        let rubric = content.split("\n## Review necessity\n").nth(1).unwrap();
-        assert!(rubric.contains("A person must review when any of these holds:\n\n- it touches data migrations or schemas;"));
-        assert!(rubric.contains("No person is needed when the change consists only of:\n\n- isolated texts;"));
-        assert!(rubric.find("## This repository") > rubric.find("No person is needed"));
+    fn the_review_template_starts_with_the_default_criteria() {
+        let content = render(&skill("review", "swf-review")).unwrap();
+        let criteria = content.split("\n## Review criteria\n").nth(1).unwrap();
+        assert!(criteria.contains("- **Correctness**:"));
+        assert!(criteria.contains("- **Guardrails**:"));
+        assert!(criteria.contains("- **Leftovers**:"));
+        assert!(criteria.find("## This repository") > criteria.find("A finding is **blocking**"));
     }
 
     #[test]
     fn render_rejects_unknown_steps_and_bad_names() {
-        assert!(render(&skill("review", "swf-review")).is_err());
+        assert!(render(&skill("checks", "swf-checks")).is_err());
+        assert!(render(&skill("gate", "swf-gate")).is_err());
         assert!(render(&skill("plan", "Swf Plan")).is_err());
         assert!(render(&skill("plan", "")).is_err());
     }
@@ -166,12 +168,12 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".claude/skills/swf-plan")).unwrap();
         std::fs::write(dir.path().join(".claude/skills/swf-plan/SKILL.md"), "mine").unwrap();
 
-        let written = ensure(dir.path(), &[skill("plan", "swf-plan"), skill("gate", "review-rubric")]).unwrap();
-        assert_eq!(written, [".claude/skills/review-rubric/SKILL.md"]);
+        let written = ensure(dir.path(), &[skill("plan", "swf-plan"), skill("review", "review-criteria")]).unwrap();
+        assert_eq!(written, [".claude/skills/review-criteria/SKILL.md"]);
         assert_eq!(std::fs::read_to_string(dir.path().join(".claude/skills/swf-plan/SKILL.md")).unwrap(), "mine");
-        let gate = std::fs::read_to_string(dir.path().join(".claude/skills/review-rubric/SKILL.md")).unwrap();
-        assert!(gate.starts_with("---\nname: review-rubric\n"));
-        assert!(ensure(dir.path(), &[skill("gate", "review-rubric")]).unwrap().is_empty());
+        let review = std::fs::read_to_string(dir.path().join(".claude/skills/review-criteria/SKILL.md")).unwrap();
+        assert!(review.starts_with("---\nname: review-criteria\n"));
+        assert!(ensure(dir.path(), &[skill("review", "review-criteria")]).unwrap().is_empty());
         assert!(!dir.path().join(HUNT_JSON).exists());
     }
 
@@ -185,14 +187,14 @@ mod tests {
     #[test]
     fn ensure_adds_the_missing_entries_keeping_the_other_keys_in_their_order() {
         let dir = tempfile::tempdir().unwrap();
-        write_hunt_json(dir.path(), r#"{"version": 3, "swf": {"repository": "acme/app", "skills": {"gate": "acme-gate"}}, "checks": {}}"#);
+        write_hunt_json(dir.path(), r#"{"version": 3, "swf": {"repository": "acme/app", "skills": {"review": "acme-review"}}, "checks": {}}"#);
 
-        let written = ensure(dir.path(), &[entry("plan", "swf-plan"), entry("gate", "swf-gate"), skill("pr", "swf-pr")]).unwrap();
-        let files = [".claude/skills/swf-plan/SKILL.md", ".claude/skills/swf-gate/SKILL.md", ".claude/skills/swf-pr/SKILL.md", HUNT_JSON];
+        let written = ensure(dir.path(), &[entry("plan", "swf-plan"), entry("review", "swf-review"), skill("pr", "swf-pr")]).unwrap();
+        let files = [".claude/skills/swf-plan/SKILL.md", ".claude/skills/swf-review/SKILL.md", ".claude/skills/swf-pr/SKILL.md", HUNT_JSON];
         assert_eq!(written, files);
         let expected = concat!(
             "{\n  \"version\": 3,\n  \"swf\": {\n    \"repository\": \"acme/app\",\n    \"skills\": {\n",
-            "      \"gate\": \"acme-gate\",\n      \"plan\": \"swf-plan\"\n    }\n  },\n  \"checks\": {}\n}\n"
+            "      \"review\": \"acme-review\",\n      \"plan\": \"swf-plan\"\n    }\n  },\n  \"checks\": {}\n}\n"
         );
         assert_eq!(read_hunt_json_text(dir.path()), expected);
     }

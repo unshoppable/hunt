@@ -34,7 +34,7 @@ const PROMPTS: PromptFiles = {
   swfImplement: readPrompt("swf/2-implement.user-prompt.md"),
   swfEscalate: readPrompt("swf/2-implement-escalate.user-prompt.md"),
   swfVerify: readPrompt("swf/3-verify.user-prompt.md"),
-  swfGate: readPrompt("swf/4-gate.user-prompt.md"),
+  swfReview: readPrompt("swf/4-review.user-prompt.md"),
   swfPr: readPrompt("swf/5-pr.user-prompt.md"),
   swfNudge: readPrompt("swf/nudge.user-prompt.md"),
   swfAnswer: readPrompt("swf/answer.user-prompt.md"),
@@ -185,7 +185,7 @@ function idle(fields: Partial<RelaySessionStatus> = {}): RelaySessionStatus {
 function recorded(step: SwfStep = "plan", promptTurn: number | null = null): Pipeline {
   const pipeline = started(NOW);
   pipeline.noteRecordComment(RECORD_ID);
-  const order: SwfStep[] = ["plan", "implement", "verify", "gate", "pr", "review"];
+  const order: SwfStep[] = ["plan", "implement", "verify", "review", "pr", "checks"];
   for (const current of order.slice(0, order.indexOf(step))) {
     switch (current) {
       case "plan":
@@ -197,8 +197,8 @@ function recorded(step: SwfStep = "plan", promptTurn: number | null = null): Pip
       case "verify":
         pipeline.acceptResult({ result: { step: "verify", findings: [] } }, null, NOW);
         break;
-      case "gate":
-        pipeline.acceptResult({ result: { step: "gate", humanReview: false, risk: "low", reasons: [] } }, null, NOW);
+      case "review":
+        pipeline.acceptResult({ result: { step: "review", findings: [] } }, null, NOW);
         break;
       case "pr":
         pipeline.acceptResult({ result: { step: "pr", pullRequest: 31 } }, null, NOW);
@@ -218,7 +218,7 @@ describe("SwfRunner", () => {
     await h.runner.tick();
     expect(h.logs).toEqual(["no pipeline in .hunt/swf yet"]);
 
-    h.files.writePipeline(recorded("review"));
+    h.files.writePipeline(recorded("checks"));
     await h.runner.tick();
     h.files.writePipeline(recorded("plan"));
     h.status = null;
@@ -226,7 +226,7 @@ describe("SwfRunner", () => {
     h.status = idle({ turn: "running" });
     await h.runner.tick();
     await h.runner.tick();
-    expect(h.logs.slice(1)).toEqual(["the gateway drives the step review", "the relay serves no session", "the agent runs a turn of plan"]);
+    expect(h.logs.slice(1)).toEqual(["the gateway drives the step checks", "the relay serves no session", "the agent runs a turn of plan"]);
     expect(h.prompts).toEqual([]);
     expect(h.github.calls).toEqual([]);
   });
@@ -350,16 +350,16 @@ describe("SwfRunner", () => {
     expect(h.files.inbox).toEqual([]);
     expect(h.logs).toContain("warn: ignored 2-1.json of the inbox, which holds no message");
 
-    // At review the poller owns the transitions: its pipeline wins, prepared or sent back.
-    h.files.writePipeline(recorded("review"));
-    const prepared = recorded("review");
-    prepared.noteReviewPrepared();
+    // At checks the poller owns the transitions: its pipeline wins, in review or sent back.
+    h.files.writePipeline(recorded("checks"));
+    const prepared = recorded("checks");
+    prepared.noteInReview();
     h.files.deliver("3-1.json", pipelineMessage(prepared));
     await h.runner.tick();
-    expect(h.files.pipeline?.reviewPrepared).toBe(true);
+    expect(h.files.pipeline?.inReview).toBe(true);
     expect(h.prompts).toEqual([]);
 
-    const returned = recorded("review");
+    const returned = recorded("checks");
     returned.sendBackToImplement(["Review: the test fails"], NOW + 1);
     h.files.deliver("4-1.json", pipelineMessage(returned));
     await h.runner.tick();

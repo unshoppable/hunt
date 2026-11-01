@@ -8,9 +8,9 @@ export const STEP_LABELS: Record<SwfStep, string> = {
   plan: "Plan",
   implement: "Implement",
   verify: "Verify",
-  gate: "Gate",
-  pr: "Pull request",
   review: "Review",
+  pr: "Pull request",
+  checks: "Checks",
   "human-review": "Human review",
   merge: "Merge",
 };

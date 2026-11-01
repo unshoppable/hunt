@@ -176,6 +176,7 @@ command_handler![
     ide::format_with_prettier,
     ide::read_lint_rules,
     ide::search_word,
+    ide::files_containing,
     ide::find_in_files,
     ide::replace_in_files,
     ide::resolve_imports,

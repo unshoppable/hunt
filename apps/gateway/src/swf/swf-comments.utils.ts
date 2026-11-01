@@ -24,13 +24,12 @@ export function missingSkillsError(steps: readonly AgentStep[]): string {
   return `hunt.json names no skill for ${what} under swf.skills; Hunt has no default skill and asks to add the entries when a session of the repository opens`;
 }
 
-/** The comment that asks the people to review the pull request. */
-export function humanReviewComment(mentions: string[], issue: number, reasons: string[] = []): string {
+/** The comment that asks the people to review the pull request, which the repository's scorer did not approve. */
+export function humanReviewComment(mentions: string[], issue: number): string {
   const who = mentions.map((login) => `@${login}`).join(" ");
-  const why = reasons.length > 0 ? `\n\nWhy a person has to look at it:\n${reasons.map((reason) => `- ${reason}`).join("\n")}` : "";
   return (
-    `**👀 REVIEW** ${who}\n\nHunt's gate asks for a human review of this pull request for #${issue} before it is merged. ` +
-    `Approve it to let Hunt merge it, or request changes and Hunt's agent will work them in.${why}`
+    `**👀 REVIEW** ${who}\n\nThe scorer asks for a human review of this pull request for #${issue} before Hunt merges it; its comment on the ` +
+    "pull request says why. Approve it to let Hunt merge it, or request changes and Hunt's agent will work them in."
   );
 }
 
@@ -39,9 +38,9 @@ export function mergedComment(pullRequest: number): string {
   return `Hunt merged pull request #${pullRequest}.`;
 }
 
-/** The comment that marks an issue as failed because its pipeline reached the review without a pull request number. */
+/** The comment that marks an issue as failed because its pipeline reached the checks without a pull request number. */
 export function noPullRequestComment(): string {
-  return "Hunt reached the review without a pull request number, so this issue is marked as failed.";
+  return "Hunt reached the checks without a pull request number, so this issue is marked as failed.";
 }
 
 /** The comment that marks an issue as failed because its pull request does not exist (any more). */

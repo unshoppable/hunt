@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -227,6 +228,11 @@ async fn search_index(
 /// A compiled non-empty query: its pattern, its file mask and its replacement.
 struct Matcher {
     regex: Regex,
+    /// The regex runs on one line at a time, so that a class such as `\s` or `[^;]` never matches a line break: a regex
+    /// without an explicit one (see `holds_line_break`). A literal can span lines only when it holds a line break itself.
+    is_per_line: bool,
+    /// A match must neither start nor end inside an identifier (see `is_whole_word`).
+    is_whole_word: bool,
     includes: Vec<Mask>,
     excludes: Vec<Mask>,
     replacement: Option<Replacement>,
@@ -267,10 +273,10 @@ impl Matcher {
             return Ok(None);
         }
         let pattern = if query.is_regex { query.text.clone() } else { regex::escape(&query.text) };
-        let pattern = if query.whole_words { format!(r"\b(?:{pattern})\b") } else { pattern };
         let regex = RegexBuilder::new(&pattern)
             .case_insensitive(!query.match_case)
             .multi_line(true)
+            .crlf(true)
             .build()
             .map_err(|error| format!("failed to search: {}", error.to_string().lines().last().unwrap_or_default().trim_start_matches("error: ")))?;
 
@@ -288,7 +294,22 @@ impl Matcher {
             target.push(Mask { pattern, on_path });
         }
         let replacement = query.replacement.clone().map(|text| Replacement { text, expands_groups: query.is_regex });
-        Ok(Some(Matcher { regex, includes, excludes, replacement }))
+        let is_per_line = query.is_regex && !holds_line_break(&query.text);
+        Ok(Some(Matcher { regex, is_per_line, is_whole_word: query.whole_words, includes, excludes, replacement }))
+    }
+
+    /// The matches of the query in `text`.
+    fn matches<'a>(&'a self, text: &'a str) -> Matches<'a> {
+        let mut matches = Matches { matcher: self, text, scope: 0..text.len(), next_line: None, at: 0 };
+        if self.is_per_line {
+            // A text the regex does not match as a whole has no matching line either: most texts skip the line by line search.
+            if self.regex.is_match(text) {
+                (matches.scope, matches.next_line) = line_from(text, 0);
+            } else {
+                matches.at = text.len() + 1;
+            }
+        }
+        matches
     }
 
     fn accepts(&self, path: &str) -> bool {
@@ -296,6 +317,92 @@ impl Matcher {
         let matches = |mask: &Mask| mask.pattern.matches_with(if mask.on_path { path } else { name }, MASK_OPTIONS);
         (self.includes.is_empty() || self.includes.iter().any(matches)) && !self.excludes.iter().any(matches)
     }
+}
+
+/// A match of a `Matcher`: its byte range in the text and the part of the text its regex ran on (its line, or the
+/// whole text), in which a replacement reads the match's groups.
+struct Found {
+    start: usize,
+    end: usize,
+    scope: Range<usize>,
+}
+
+/// The non-empty matches of a `Matcher` in a text, in order.
+struct Matches<'a> {
+    matcher: &'a Matcher,
+    text: &'a str,
+    /// The part of `text` searched now: a line without its line break, or all of `text`.
+    scope: Range<usize>,
+    /// Where the line after `scope` starts, if there is one to search.
+    next_line: Option<usize>,
+    /// Where in `text` the next search starts; past `scope` once that is searched.
+    at: usize,
+}
+
+impl Iterator for Matches<'_> {
+    type Item = Found;
+
+    fn next(&mut self) -> Option<Found> {
+        loop {
+            if self.at > self.scope.end {
+                let start = self.next_line?;
+                (self.scope, self.next_line) = line_from(self.text, start);
+                self.at = start;
+            }
+            let (haystack, offset) = (&self.text[self.scope.clone()], self.scope.start);
+            let Some(found) = self.matcher.regex.find_at(haystack, self.at - offset) else {
+                self.at = self.scope.end + 1;
+                continue;
+            };
+            if !found.is_empty() && (!self.matcher.is_whole_word || is_whole_word(haystack, found.start(), found.end())) {
+                self.at = offset + found.end();
+                return Some(Found { start: offset + found.start(), end: offset + found.end(), scope: self.scope.clone() });
+            }
+            // A match starting after this one's first character may still stand as a whole word.
+            self.at = offset + found.start() + haystack[found.start()..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+}
+
+/// The line of `text` starting at byte `start` without its line break (`\n` or `\r\n`), beside where the next line starts.
+fn line_from(text: &str, start: usize) -> (Range<usize>, Option<usize>) {
+    let bytes = text.as_bytes();
+    let Some(length) = memchr::memchr(b'\n', &bytes[start..]) else { return (start..text.len(), None) };
+    let end = start + length;
+    let content_end = if end > start && bytes[end - 1] == b'\r' { end - 1 } else { end };
+    (start..content_end, Some(end + 1))
+}
+
+/// Whether the regex `pattern` holds a line break, a literal one or the escape `\n`, and may so match across lines.
+fn holds_line_break(pattern: &str) -> bool {
+    let mut chars = pattern.chars();
+    while let Some(char) = chars.next() {
+        match char {
+            '\n' => return true,
+            '\\' => {
+                if matches!(chars.next(), Some('n' | '\n')) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Whether the match `start..end` of `haystack` neither starts nor ends inside an identifier: an identifier character at
+/// either edge has none beside it outside the match.
+fn is_whole_word(haystack: &str, start: usize, end: usize) -> bool {
+    let is_part = |char: Option<char>| char.is_some_and(is_identifier_part);
+    let (before, first) = (haystack[..start].chars().next_back(), haystack[start..].chars().next());
+    let (last, after) = (haystack[..end].chars().next_back(), haystack[end..].chars().next());
+    !(is_part(before) && is_part(first)) && !(is_part(last) && is_part(after))
+}
+
+/// A character an identifier may hold, as `search_word` in `session/commands/ide.rs` and `IDENTIFIER_PART` in
+/// `ide/language/rename.utils.ts` read it: a letter, a digit, `_` or `$`.
+fn is_identifier_part(char: char) -> bool {
+    char.is_alphanumeric() || char == '_' || char == '$'
 }
 
 /// What a search collects: every matching line up to `MATCH_LIMIT`, or the first matching line of every file.
@@ -353,10 +460,10 @@ fn search_files(
                     }
                     match collect {
                         Collect::Lines if result.matches.len() <= MATCH_LIMIT => {
-                            search_text(path, &text, &matcher.regex, matcher.replacement.as_ref(), MATCH_LIMIT + 1, &mut result.matches)
+                            search_text(path, &text, matcher, matcher.replacement.as_ref(), MATCH_LIMIT + 1, &mut result.matches)
                         }
                         Collect::Lines => {}
-                        Collect::Files => search_text(path, &text, &matcher.regex, None, result.matches.len() + 1, &mut result.matches),
+                        Collect::Files => search_text(path, &text, matcher, None, result.matches.len() + 1, &mut result.matches),
                     }
                 }
                 let mut results = results.lock().unwrap();
@@ -404,28 +511,28 @@ fn load_text(file: &Path, cached: Option<&CachedText>) -> Option<CachedText> {
     Some(CachedText { modified, len, text })
 }
 
-/// Appends the lines of `text` that `regex` matches to `matches` until it holds `limit` lines, with the replacement of
+/// Appends the lines of `text` that `matcher` matches to `matches` until it holds `limit` lines, with the replacement of
 /// each match when there is one.
-fn search_text(path: &str, text: &str, regex: &Regex, replacement: Option<&Replacement>, limit: usize, matches: &mut Vec<TextMatch>) {
+fn search_text(path: &str, text: &str, matcher: &Matcher, replacement: Option<&Replacement>, limit: usize, matches: &mut Vec<TextMatch>) {
     let bytes = text.as_bytes();
     let mut line = 1u32;
     let mut counted_to = 0;
-    let mut found = regex.find_iter(text).filter(|found| !found.is_empty()).peekable();
+    let mut found = matcher.matches(text).peekable();
     while let Some(first) = found.next() {
         if matches.len() >= limit {
             return;
         }
-        let line_start = memchr::memrchr(b'\n', &bytes[..first.start()]).map_or(0, |index| index + 1);
-        let line_end = memchr::memchr(b'\n', &bytes[first.start()..]).map_or(bytes.len(), |index| first.start() + index);
+        let line_start = memchr::memrchr(b'\n', &bytes[..first.start]).map_or(0, |index| index + 1);
+        let line_end = memchr::memchr(b'\n', &bytes[first.start..]).map_or(bytes.len(), |index| first.start + index);
         line += memchr::memchr_iter(b'\n', &bytes[counted_to..line_start]).count() as u32;
         counted_to = line_start;
         let mut line_matches = vec![first];
-        while let Some(next) = found.next_if(|next| next.start() < line_end) {
+        while let Some(next) = found.next_if(|next| next.start < line_end) {
             line_matches.push(next);
         }
-        let ranges: Vec<(usize, usize)> = line_matches.iter().map(|found| (found.start() - line_start, found.end().min(line_end) - line_start)).collect();
+        let ranges: Vec<(usize, usize)> = line_matches.iter().map(|found| (found.start - line_start, found.end.min(line_end) - line_start)).collect();
         let replacements: Vec<String> = match replacement {
-            Some(replacement) => line_matches.iter().map(|found| replacement.of(regex, text, found.start())).collect(),
+            Some(replacement) => line_matches.iter().map(|found| replacement.of(&matcher.regex, &text[found.scope.clone()], found.start - found.scope.start)).collect(),
             None => Vec::new(),
         };
         matches.push(line_match(path, line, &text[line_start..line_end], &ranges, &replacements));
@@ -504,19 +611,18 @@ impl Replacer {
     /// `text` with its matches replaced, all of them or those starting on one of `lines` (1-based), beside the number of
     /// replaced matches. Empty matches stay, as the search skips them.
     pub fn replace(&self, text: &str, lines: Option<&[u32]>) -> (String, usize) {
-        let regex = &self.matcher.regex;
         let bytes = text.as_bytes();
         let mut replaced = String::with_capacity(text.len());
         let (mut count, mut copied_to, mut line, mut counted_to) = (0, 0, 1u32, 0);
-        for found in regex.find_iter(text).filter(|found| !found.is_empty()) {
-            line += memchr::memchr_iter(b'\n', &bytes[counted_to..found.start()]).count() as u32;
-            counted_to = found.start();
+        for found in self.matcher.matches(text) {
+            line += memchr::memchr_iter(b'\n', &bytes[counted_to..found.start]).count() as u32;
+            counted_to = found.start;
             if lines.is_some_and(|lines| !lines.contains(&line)) {
                 continue;
             }
-            replaced.push_str(&text[copied_to..found.start()]);
-            replaced.push_str(&self.replacement.of(regex, text, found.start()));
-            copied_to = found.end();
+            replaced.push_str(&text[copied_to..found.start]);
+            replaced.push_str(&self.replacement.of(&self.matcher.regex, &text[found.scope.clone()], found.start - found.scope.start));
+            copied_to = found.end;
             count += 1;
         }
         replaced.push_str(&text[copied_to..]);
@@ -539,6 +645,46 @@ mod tests {
 
     fn found(result: &TextSearchResult) -> Vec<(&str, u32, &str)> {
         result.matches.iter().map(|found| (found.path.as_str(), found.line, found.preview.as_str())).collect()
+    }
+
+    /// The lines and first columns `query` matches in a file `a.txt` holding `text`.
+    async fn lines_matching(text: &str, query: &TextQuery) -> Vec<(u32, u32)> {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = FindRegistry::default();
+        {
+            let index = registry.index(dir.path());
+            let mut files = index.files.lock().await;
+            files.listed_at = Some(Instant::now());
+            files.paths = Arc::new(vec!["a.txt".into()]);
+        }
+        let unsaved = HashMap::from([("a.txt".to_string(), Arc::from(text))]);
+        let result = search(&registry, dir.path(), query, unsaved, 0.0).await.unwrap();
+        result.matches.iter().map(|found| (found.line, found.column)).collect()
+    }
+
+    #[tokio::test]
+    async fn a_regex_match_stays_on_its_line_unless_the_pattern_holds_a_line_break() {
+        let regex = |text: &str| TextQuery { is_regex: true, ..query(text) };
+        assert_eq!(lines_matching("a\nb c", &regex(r"\w\s+\w")).await, vec![(2, 1)]);
+        assert_eq!(lines_matching("a\nb;", &regex(r"[^;]+;")).await, vec![(2, 1)]);
+        assert_eq!(lines_matching("foo\r\nbar foo\r\n", &regex("foo$")).await, vec![(1, 1), (2, 5)]);
+        assert_eq!(lines_matching("xa\nb", &regex(r"a\nb")).await, vec![(1, 2)]);
+        assert_eq!(lines_matching("xa\nb", &query("a\nb")).await, vec![(1, 2)]);
+
+        let spaces = TextQuery { replacement: Some("X".into()), ..regex(r"a\s+") };
+        assert_eq!(Replacer::new(&spaces).unwrap().replace("a \nb", None), ("X\nb".to_string(), 1));
+        assert_eq!(Replacer::new(&spaces).unwrap().replace("a  \r\nb", None), ("X\r\nb".to_string(), 1));
+        let rest = TextQuery { replacement: Some("X".into()), ..regex("[^;]+") };
+        assert_eq!(Replacer::new(&rest).unwrap().replace("a\nb;", None), ("X\nX;".to_string(), 2));
+    }
+
+    #[tokio::test]
+    async fn whole_words_end_at_identifier_edges_including_dollar_signs() {
+        let words = |text: &str| TextQuery { match_case: true, whole_words: true, ..query(text) };
+        assert_eq!(lines_matching("const user$ = 1;\nuser$.pipe(x);\nuser$$\nnew user$x\n", &words("user$")).await, vec![(1, 7), (2, 1)]);
+        assert_eq!(lines_matching("$user user\n", &words("user")).await, vec![(1, 7)]);
+        assert_eq!(lines_matching("f((x))\n", &words("(x)")).await, vec![(1, 3)]);
+        assert_eq!(lines_matching("xa.a.a\n", &words("a.a")).await, vec![(1, 4)]);
     }
 
     #[test]
@@ -580,9 +726,9 @@ mod tests {
 
     #[test]
     fn search_text_groups_matches_per_line() {
-        let regex = Regex::new("ab").unwrap();
+        let matcher = Matcher::new(&query("ab")).unwrap().unwrap();
         let mut matches = Vec::new();
-        search_text("a.txt", "x\nab ab\n\nzab", &regex, None, 10, &mut matches);
+        search_text("a.txt", "x\nab ab\n\nzab", &matcher, None, 10, &mut matches);
         let lines: Vec<(u32, usize)> = matches.iter().map(|found| (found.line, found.ranges.len())).collect();
         assert_eq!(lines, vec![(2, 2), (4, 1)]);
     }
@@ -694,10 +840,9 @@ mod tests {
 
     #[test]
     fn matches_carry_the_replacements_of_their_ranges() {
-        let regex = Regex::new(r"(\w)=(\d)").unwrap();
-        let replacement = Replacement { text: "$2=$1".into(), expands_groups: true };
+        let matcher = Matcher::new(&TextQuery { is_regex: true, replacement: Some("$2=$1".into()), ..query(r"(\w)=(\d)") }).unwrap().unwrap();
         let mut matches = Vec::new();
-        search_text("a.txt", "x a=1 b=2\n", &regex, Some(&replacement), 10, &mut matches);
+        search_text("a.txt", "x a=1 b=2\n", &matcher, matcher.replacement.as_ref(), 10, &mut matches);
         assert_eq!(matches[0].replacements, vec!["1=a".to_string(), "2=b".to_string()]);
         assert_eq!(matches[0].ranges.len(), 2);
     }

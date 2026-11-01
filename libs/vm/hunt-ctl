@@ -222,8 +222,9 @@ Session VM:
                          remoteSecrets name (each must exist), and the configuration of the VM's preview proxy,
                          /etc/hunt/caddy.json, and (re)start the proxy; stops and disables the services hunt.json no
                          longer declares; prints the services' section of the agent's prompt, the text of the
-                         repository's hunt.agent.md, the model hunt.json sets for swf sessions (swf.model) and the
-                         skill of every agent step (swf.skills)
+                         repository's hunt.agent.md and, with a swf section, the settings of every step of the swf
+                         pipeline with the defaults applied (swf_steps: skill, model, effort, maxReturns and gate of
+                         each step, and maxGateRuns)
   check <worktree> <name>
                          run the check <name> of the hunt.json in the session's worktree <worktree> as the agent in a
                          login shell, in the worktree or the check's cwd, with FORCE_COLOR=1 and no stdin; passes its
@@ -1406,8 +1407,7 @@ cmd_session_config() {
   systemctl enable --quiet "$PROXY_UNIT"
   systemctl reload-or-restart "$PROXY_UNIT"
   emit --argjson result "$result" \
-    '{agent_md: ($result.agent_md // null), services_prompt: ($result.services_prompt // ""), swf_model: ($result.swf_model // null),
-      swf_skills: ($result.swf_skills // {})}'
+    '{agent_md: ($result.agent_md // null), services_prompt: ($result.services_prompt // ""), swf_steps: ($result.swf_steps // null)}'
 }
 
 # Runs the check $2 of the hunt.json in the session worktree $1; see the usage. The check's output goes straight to

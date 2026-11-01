@@ -1,8 +1,9 @@
 # The runner of the software factory's agent steps on this VM (apps/session/src/swf-runner/swf-runner.main.ts): it reads
 # the pipeline from .hunt/swf/pipeline.json of the worktree, sends the relay each step's prompt in a fresh conversation
 # (`sudo -n hunt-ctl clear <id> --keep-stored`, the rule of vm/sudoers-hunt-service), reads the result the agent writes
-# to .hunt/swf/result.md, records the pipeline on the issue with gh and takes the gateway's messages from
-# .hunt/swf/inbox. `hunt-ctl start` enables it for a session of origin swf only, with its id and worktree in
+# to .hunt/swf/result.md, runs the gate checks of hunt.json on it as the agent before it accepts it, records the
+# pipeline on the issue with gh and takes the gateway's messages from .hunt/swf/inbox. Before each step's conversation it
+# sets the step's model and effort as the configOptions of ~/.claude/hunt-session.json (HUNT_CONFIG of agent.env). `hunt-ctl start` enables it for a session of origin swf only, with its id and worktree in
 # /etc/hunt/swf-runner.env; `stop` disables it. While it waits for a human it does nothing, so the idle check suspends
 # the VM; the gateway starts the VM again with news.
 [Unit]

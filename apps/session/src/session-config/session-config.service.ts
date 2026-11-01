@@ -8,7 +8,8 @@ import { closeSync, constants, fstatSync, mkdirSync, openSync, readdirSync, read
 import { join } from "node:path";
 import { messageOf } from "../../../../libs/domain/src/shared/errors.utils.ts";
 import { parseRemoteSecrets } from "../../../../libs/domain/src/remote-secrets/remote-secrets.utils.ts";
-import type { AgentStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
+import type { StepSettings } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
+import { AGENT_STEPS } from "../../../../libs/domain/src/swf/swf-step.types.ts";
 import { ConfigError } from "./config.error.ts";
 import { HuntJson } from "./hunt-json.value-object.ts";
 import type { CaddyConfig } from "./preview-proxy.types.ts";
@@ -64,10 +65,8 @@ export interface SessionConfig {
   proxy: CaddyConfig;
   /** The section of the agent's prompt that lists the services; it says so without services. */
   servicesPrompt: string;
-  /** `swf.model` of hunt.json; null without one. */
-  swfModel: string | null;
-  /** The skill of every agent step, `swf.skills` of hunt.json, which names them all; null without the `swf` section. */
-  swfSkills: Record<AgentStep, string> | null;
+  /** The settings of every step of the swf pipeline, the defaults applied (`swf-settings.value-object.ts`); null without the `swf` section. */
+  swfSteps: StepSettings | null;
 }
 
 /** What the command prints as one line of JSON. */
@@ -77,8 +76,7 @@ export interface SessionConfigResult {
   services?: ServiceSummary[];
   services_prompt?: string;
   agent_md?: string;
-  swf_model?: string;
-  swf_skills?: Record<AgentStep, string>;
+  swf_steps?: Pick<StepSettings, "maxGateRuns" | "steps">;
   command?: string;
   cwd?: string | null;
 }
@@ -152,14 +150,14 @@ function readRemoteSecrets(path: string | undefined, problems: string[]): Record
 }
 
 /**
- * Reports each agent step whose skill (`skills`, by step) has no file `.claude/skills/<name>/SKILL.md` in the worktree
- * `dir`, where Claude Code looks for it.
+ * Reports each agent step whose skill (`steps`) has no file `.claude/skills/<name>/SKILL.md` in the worktree `dir`,
+ * where Claude Code looks for it.
  */
-function reportMissingSkillFiles(dir: string, skills: Readonly<Record<AgentStep, string>>, problems: string[]): void {
-  for (const [step, name] of Object.entries(skills)) {
-    const file = `.claude/skills/${name}/SKILL.md`;
+function reportMissingSkillFiles(dir: string, steps: StepSettings, problems: string[]): void {
+  for (const step of AGENT_STEPS) {
+    const file = `.claude/skills/${steps.skillOf(step)}/SKILL.md`;
     if (statSync(join(dir, file), { throwIfNoEntry: false })?.isFile()) continue;
-    problems.push(`${at(at("swf", "skills"), step)}: no skill file ${file}; Hunt offers to create it when a session of the repository opens`);
+    problems.push(`${at(at(at("swf", "steps"), step), "skill")}: no skill file ${file}; Hunt offers to create it when a session of the repository opens`);
   }
 }
 
@@ -212,15 +210,14 @@ export function buildSessionConfig(
     throw new ConfigError([...(parsedHost.problems ?? []), ...(parsedHuntJson.problems ?? [])]);
   }
   const { sessionHost } = parsedHost;
-  const { services, swf } = parsedHuntJson.huntJson;
+  const { services, stepSettings } = parsedHuntJson.huntJson;
   return {
     services,
     env: sessionEnv(sessionHost),
     serviceEnvs: serviceEnvs(services, sessionHost, worktree, secrets),
     proxy: proxyConfig(services, sessionHost),
     servicesPrompt: servicesPrompt(services, sessionHost),
-    swfModel: swf?.model ?? null,
-    swfSkills: swf?.skills ?? null,
+    swfSteps: stepSettings,
   };
 }
 
@@ -251,8 +248,8 @@ export function runSessionConfig(args: string[]): SessionConfigResult {
   let result: SessionConfigResult;
   try {
     const config = buildSessionConfig(huntJson, { short: options.short, domain: options.domain }, options.worktree, secrets);
-    if (config.swfSkills) {
-      reportMissingSkillFiles(options.worktree, config.swfSkills, problems);
+    if (config.swfSteps) {
+      reportMissingSkillFiles(options.worktree, config.swfSteps, problems);
     }
     if (problems.length > 0) return { ok: false, problems };
     writeAtomic(options.envOut, envFile(config.env, "The session's environment, written by Hunt."));
@@ -263,8 +260,7 @@ export function runSessionConfig(args: string[]): SessionConfigResult {
       ok: true,
       services,
       services_prompt: config.servicesPrompt,
-      ...(config.swfModel ? { swf_model: config.swfModel } : {}),
-      ...(config.swfSkills ? { swf_skills: config.swfSkills } : {}),
+      ...(config.swfSteps ? { swf_steps: config.swfSteps.toJSON() } : {}),
     };
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;

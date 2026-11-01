@@ -7,9 +7,8 @@ Check the pushed change against the issue, as a tester who did not write it. The
 `*-implement.md`), the change itself the diff of the branch against its base; read the repository's guardrails before
 you judge.
 
-1. Run every check the repository's hunt.json declares (`sudo -n hunt-ctl check <name>`; `hunt.json` lists them under
-   `checks`) and the repository's own build, tests, linters and type checks for the projects the change touches, unless
-   hunt.json's checks cover them already.
+1. The gate of the implement step ran the repository's checks on the change already. Run a check yourself only where an
+   acceptance criterion needs its output, with the command that hunt.json's `checks` names for it.
 2. Go through the acceptance criteria of the plan (or of the issue) one by one and verify each: by a test, a command,
    or, for anything the user sees (a page, a component, styles, texts, a client-side flow), in the browser with the
    Playwright tools: start the services the task needs, open every affected page, walk through the flow the issue

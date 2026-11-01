@@ -7,6 +7,7 @@
 import * as z from "zod/mini";
 import { REMOTE_SECRET_NAME } from "../../../../libs/domain/src/remote-secrets/remote-secret.value-object.ts";
 import { ZodSingleLine } from "../../../../libs/domain/src/shared/text.rules.ts";
+import { EFFORTS } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
 
 /** Ports no service may use, with what holds them on the session VM; hunt-ctl's RESERVED_PORTS lists the same. */
 export const RESERVED_PORTS: ReadonlyMap<number, string> = new Map([
@@ -62,6 +63,12 @@ const MAX_SKILL_NAME_LENGTH = 64;
 /** A skill name as Claude Code accepts it (`is_skill_name` in `apps/client/src-tauri/src/agent/guardrail_skill.rs`). */
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SKILL_NAME_RULE = `must be the kebab-case name of a skill such as "guardrail": letters, digits and "-", at most ${MAX_SKILL_NAME_LENGTH} characters`;
+const EFFORT_RULE = `must be one of ${EFFORTS.join(", ")}`;
+const MAX_RETURNS = 20;
+const MAX_RETURNS_RULE = `must be an integer from 1 to ${MAX_RETURNS}`;
+const MAX_GATE_RUNS_RULE = "must be an integer of at least 1";
+const MAX_GATE_CHECKS = 32;
+const GATE_RULE = `must be "*" for every check or a list of at most ${MAX_GATE_CHECKS} names of checks`;
 
 /** `version`: the contract version, 3. */
 export const ZodContractVersion = z.literal(3, { error: "must be 3" });
@@ -144,13 +151,30 @@ export const ZodGlobPatterns = z.pipe(
   z.array(ZodGlobPattern),
 );
 
-/** `swf.model`: the full ID of a Claude model, never an alias. */
+/** `swf.model` and `swf.steps.<step>.model`: the full ID of a Claude model, never an alias. */
 export const ZodModelId = z.string({ error: MODEL_RULE }).check(z.refine((model) => model.length <= MAX_MODEL_LENGTH && MODEL_ID.test(model), MODEL_RULE));
 
-/** `guardrailSkill` and the values of `swf.skills`: the name of a Claude Code skill. */
+/** `guardrailSkill`, `swf.steps.<step>.skill` and the values of `swf.skills`: the name of a Claude Code skill. */
 export const ZodSkillName = z.string({ error: SKILL_NAME_RULE }).check(
   z.refine((skill) => skill.length <= MAX_SKILL_NAME_LENGTH && SKILL_NAME.test(skill), SKILL_NAME_RULE),
 );
+
+/** `swf.effort` and `swf.steps.<step>.effort`: an effort level of Claude Code (EFFORTS). */
+export const ZodEffort = z.enum(EFFORTS, { error: EFFORT_RULE });
+
+/** `swf.steps.<step>.maxReturns`: how often a step may send the pipeline back, an integer from 1 to 20. */
+export const ZodMaxReturns = z.number({ error: MAX_RETURNS_RULE }).check(
+  z.refine((count) => Number.isInteger(count) && count >= 1 && count <= MAX_RETURNS, MAX_RETURNS_RULE),
+);
+
+/** `swf.maxGateRuns`: how often a step's result may fail its gate, an integer of at least 1. */
+export const ZodMaxGateRuns = z.number({ error: MAX_GATE_RUNS_RULE }).check(z.refine((count) => Number.isInteger(count) && count >= 1, MAX_GATE_RUNS_RULE));
+
+/**
+ * `swf.steps.<step>.gate`: `"*"` for every check, or at most 32 names of checks; each string of the list that breaks
+ * ZodServiceName is reported at its index, any other value as GATE_RULE.
+ */
+export const ZodGate = z.union([z.literal("*"), z.pipe(z.array(z.unknown()).check(z.maxLength(MAX_GATE_CHECKS)), z.array(ZodServiceName))], { error: GATE_RULE });
 
 /** Whether `path` stays inside the worktree: relative, at most 255 characters, no segment `.` or `..`. */
 function isWorktreePath(path: string): boolean {

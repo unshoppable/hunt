@@ -6,8 +6,20 @@ import { SessionId } from "../session/session-id.value-object.ts";
 import type { SwfStep } from "./swf-step.types.ts";
 import { WorkflowLabels } from "./workflow-labels.value-object.ts";
 import { Pipeline, type Run } from "./pipeline.domain.ts";
-import { answerPrompt, badResultPrompt, huntSessionFile, nudgePrompt, remoteSystemPrompt, stepPrompt, swfSystemPrompt, type CommentText, type IssueText } from "./swf-prompts.utils.ts";
-import { SKILLS, started } from "./swf.fixtures.ts";
+import {
+  answerPrompt,
+  badResultPrompt,
+  gatePrompt,
+  huntSessionFile,
+  nudgePrompt,
+  remoteSystemPrompt,
+  stepPrompt,
+  swfSystemPrompt,
+  type CommentText,
+  type GateFailure,
+  type IssueText,
+} from "./swf-prompts.utils.ts";
+import { settingsWith, SKILLS, started } from "./swf.fixtures.ts";
 
 /** The poller's clock in the tests: 2026-10-25 10:00 UTC. */
 const NOW = Date.UTC(2026, 9, 25, 10, 0, 0);
@@ -49,6 +61,8 @@ const prompts = {
   swfNudge: readFileSync(new URL("../../prompts/swf/nudge.user-prompt.md", import.meta.url), "utf8"),
   swfAnswer: readFileSync(new URL("../../prompts/swf/answer.user-prompt.md", import.meta.url), "utf8"),
   swfBadResult: readFileSync(new URL("../../prompts/swf/bad-result.user-prompt.md", import.meta.url), "utf8"),
+  swfGateFailed: readFileSync(new URL("../../prompts/swf/gate-failed.user-prompt.md", import.meta.url), "utf8"),
+  swfGateEscalate: readFileSync(new URL("../../prompts/swf/gate-escalate.user-prompt.md", import.meta.url), "utf8"),
 };
 
 /** Joins the lines of a wrapped paragraph: a line break followed by list indentation becomes one space. */
@@ -95,7 +109,15 @@ describe("session files", () => {
     );
     expect(unwrapped).toContain("A finding of verify, of the review step, of the checks or of the merge brings you back to implement");
     expect(unwrapped).toContain("Every step runs in a fresh conversation: what the earlier steps did is in `.hunt/swf/steps/<nn>-<step>.md` of the worktree");
-    expect(unwrapped).toContain("brings you back to implement with the finding in the prompt, at most 5 times; after that Hunt asks you to escalate to the people instead.");
+    expect(unwrapped).toContain(
+      "brings you back to implement with the finding in the prompt. Every step that sends you back has its own limit of returns, which the implement prompt names; " +
+        "after it Hunt asks you to escalate to the people instead.",
+    );
+    expect(unwrapped).toContain(
+      "Hunt reads the file once your turn ended and runs the step's gate on it: the checks of hunt.json's `checks` that the repository names for the step " +
+        "(implement's gate is every check unless the repository says otherwise). A red check or a working tree that is not clean comes back to you in the same " +
+        "conversation, and the step is not finished until its gate is green.",
+    );
     expect(prompt).toContain("### How a step ends\n");
     expect(unwrapped).toContain("the file `.hunt/swf/result.md` in the worktree, which holds the human-readable part the step asks for");
     expect(unwrapped).toContain("the marker `<!-- hunt:step {…} -->` with the JSON object the step prescribes.");
@@ -112,13 +134,13 @@ describe("session files", () => {
     expect(unwrapped).toContain("replace the step's label with `swf:failed` (the prompt names the command) and comment on the issue why.");
     expect(prompt).toContain("### Step skills\n");
     expect(unwrapped).toContain(
-      "Every agent step has a Claude Code skill that the repository keeps in `.claude/skills/<name>/SKILL.md` and names under `swf.skills` of " +
-        "its hunt.json by the step; Hunt has no default.",
+      "Every agent step has a Claude Code skill that the repository keeps in `.claude/skills/<name>/SKILL.md` and names in `swf.steps.<step>.skill` of " +
+        "its hunt.json; Hunt has no default.",
     );
     expect(unwrapped).not.toContain("swf-<step>");
     expect(unwrapped).toContain("which review criteria to judge by");
     expect(unwrapped).toContain("one of the verify or review step becomes a finding");
-    expect(unwrapped).not.toContain("gate");
+    expect(unwrapped).not.toContain("attempt");
     expect(unwrapped).not.toContain("Claude review");
     expect(unwrapped).not.toContain("subagent");
     expect(unwrapped).not.toContain("A step without a skill");
@@ -127,8 +149,8 @@ describe("session files", () => {
     expect(prompt).not.toContain("{{");
   });
 
-  it("writes hunt-session.json in the desktop's shape: a new conversation without permission requests, with the model of hunt.json", () => {
-    expect(JSON.parse(huntSessionFile(SessionId.of("ab12cd34-0000-4000-8000-000000000001"), "/home/agent/app", "PROMPT", null))).toEqual({
+  it("writes hunt-session.json in the desktop's shape: a new conversation without permission requests, with the step's config options", () => {
+    expect(JSON.parse(huntSessionFile(SessionId.of("ab12cd34-0000-4000-8000-000000000001"), "/home/agent/app", "PROMPT", {}))).toEqual({
       huntSessionId: "ab12cd34-0000-4000-8000-000000000001",
       acpSessionId: null,
       cwd: "/home/agent/app",
@@ -136,7 +158,9 @@ describe("session files", () => {
       modeId: "bypassPermissions",
       configOptions: {},
     });
-    expect(JSON.parse(huntSessionFile(SessionId.of("ab12cd34-0000-4000-8000-000000000001"), "/home/agent/app", "PROMPT", "claude-opus-5-5")).configOptions).toEqual({ model: "claude-opus-5-5" });
+    const pipeline = started(NOW, settingsWith({ plan: { model: "claude-opus-5-5", effort: "xhigh" } }));
+    const file = huntSessionFile(SessionId.of("ab12cd34-0000-4000-8000-000000000001"), "/home/agent/app", "PROMPT", pipeline.configOptionsOf("plan"));
+    expect(JSON.parse(file).configOptions).toEqual({ model: "claude-opus-5-5", effort: "xhigh" });
   });
 });
 
@@ -176,25 +200,28 @@ describe("stepPrompt", () => {
     expect(text).toContain("## Comments\n\n(none)\n");
   });
 
-  it("gives the implement step the findings to fix and the attempt, none for the first implementation", () => {
+  it("gives the implement step the findings to fix and the return of the step that sent it back, none for the first implementation", () => {
     const first = stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipelineAt("implement"));
     const firstHeader = `Step \`implement\` for issue #12 of acme/app on the branch \`feat/general/12-fix-login\`.\n\n${invokeSkill("swf-implement")}\n\n`;
     expect(first.startsWith(`${firstHeader}## Findings to fix\n\n(none)\n`)).toBe(true);
     expect(unwrap(first)).toContain("`<!-- hunt:step {\"step\":\"implement\",\"summary\":\"<one sentence>\"} -->`");
     expect(unwrap(first)).toContain("The issue is labelled `swf:implement` while you work on this step.");
+    expect(unwrap(first)).toContain("The checks of the step's gate run when you write the result; run them yourself first");
     expect(first).not.toContain("{{");
 
     const pipeline = sentBack(pipelineAt("verify"), ["Verify: the logout still fails", "Verify: no test\ncovers it"]);
     const fix = stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipeline);
-    expect(fix).toContain("(attempt 1 of 5)");
+    expect(fix.startsWith("Step `implement` for issue #12 of acme/app on the branch `feat/general/12-fix-login` (return 1 of 5, sent back by verify).\n")).toBe(true);
+    const review = sentBack(pipelineAt("review", { returns: { review: 1, verify: 3 } }), ["Review: a"]);
+    expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, review)).toContain("(return 2 of 3, sent back by review).");
     expect(fix).toContain("## Findings to fix\n\n- Verify: the logout still fails\n- Verify: no test\n  covers it\n");
     expect(unwrap(fix)).toContain("with `gh issue edit 12 --repo acme/app --remove-label swf:implement --add-label swf:question --title \"❓ RÜCKFRAGE: <title>\"`");
   });
 
-  it("asks the agent to escalate to the people once the issue went back to implement more than five times", () => {
-    const pipeline = sentBack(pipelineAt("checks", { attempt: 5, pullRequest: 31 }), ["Checks: build failed"]);
+  it("asks the agent to escalate to the people once a step sent the change back more often than its limit", () => {
+    const pipeline = sentBack(pipelineAt("checks", { returns: { checks: 2, verify: 1 }, pullRequest: 31 }), ["Checks: build failed"]);
     const text = stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipeline);
-    expect(text.startsWith("Issue #12 of acme/app went back to `implement` more than 5 times.")).toBe(true);
+    expect(text.startsWith("For issue #12 of acme/app, `checks` sent the change back to `implement` more than 2 times.\n")).toBe(true);
     expect(text).toContain("## The findings that came back last\n\n- Checks: build failed\n");
     expect(unwrap(text)).toContain("with `gh issue edit 12 --repo acme/app --remove-label swf:implement --add-label swf:question --title \"❓ RÜCKFRAGE: <title>\"` to mark the issue.");
     expect(unwrap(text)).toContain("run `gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:implement --title \"<title>\"` and carry out the `implement` step");
@@ -208,6 +235,8 @@ describe("stepPrompt", () => {
     expect(unwrap(verify)).toContain("The issue is labelled `swf:verify` while you work on this step.");
     expect(unwrap(verify)).toContain("The review step that follows reads the diff as a reviewer");
     expect(verify).not.toContain("3. Read the whole diff");
+    expect(verify).not.toContain("hunt-ctl check");
+    expect(unwrap(verify)).toContain("The gate of the implement step ran the repository's checks on the change already.");
 
     const review = stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipelineAt("review"));
     expect(review.startsWith("Step `review` for issue #12 of acme/app on the branch `feat/general/12-fix-login` (pull request: (not opened yet)).\n")).toBe(true);
@@ -252,19 +281,75 @@ describe("stepPrompt", () => {
   });
 
   it("names the skill hunt.json sets for each step in its prompt", () => {
-    const skills = { ...SKILLS, plan: "acme-plan", implement: "acme-implement", review: "acme-review" };
-    expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, started(NOW, skills))).toContain(`issues/12\n\n${invokeSkill("acme-plan")}\n`);
-    expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipelineAt("review", { skills }))).toContain(`.\n\n${invokeSkill("acme-review")}\n\n`);
+    const settings = settingsWith({ plan: { skill: "acme-plan" }, implement: { skill: "acme-implement" }, review: { skill: "acme-review" } });
+    expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, started(NOW, settings))).toContain(`issues/12\n\n${invokeSkill("acme-plan")}\n`);
+    expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipelineAt("review", { settings }))).toContain(`.\n\n${invokeSkill("acme-review")}\n\n`);
     for (const step of ["verify", "pr"] as const) {
-      expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipelineAt(step, { skills })), step).toContain(invokeSkill(`swf-${step}`));
+      expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipelineAt(step, { settings })), step).toContain(invokeSkill(SKILLS[step]));
     }
-    expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, sentBack(pipelineAt("verify", { skills }), ["Verify: a"]))).toContain(
-      `\`feat/general/12-fix-login\` (attempt 1 of 5).\n\n${invokeSkill("acme-implement")}\n\n## Findings to fix`,
+    expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, sentBack(pipelineAt("verify", { settings }), ["Verify: a"]))).toContain(
+      `\`feat/general/12-fix-login\` (return 1 of 5, sent back by verify).\n\n${invokeSkill("acme-implement")}\n\n## Findings to fix`,
     );
-    const escalate = sentBack(pipelineAt("checks", { skills, attempt: 5, pullRequest: 31 }), ["Checks: build failed"]);
+    const escalate = sentBack(pipelineAt("checks", { settings, returns: { checks: 2 }, pullRequest: 31 }), ["Checks: build failed"]);
     expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, escalate)).toContain(
       `your recommendation.\n\n${invokeSkill("acme-implement")}\n\n## The findings`,
     );
+  });
+});
+
+describe("gatePrompt", () => {
+  const labels = WorkflowLabels.of("swf");
+  const lint: GateFailure = { name: "lint", exitCode: 1, output: "src/a.ts\n  3:1  error  no-unused-vars\n" };
+
+  /** The implement pipeline after `failures` failures of its gate, with `maxGateRuns`. */
+  function failedGate(failures: number, maxGateRuns = 5): Pipeline {
+    const pipeline = pipelineAt("implement", { settings: settingsWith({}, maxGateRuns) });
+    for (let run = 1; run <= failures; run++) {
+      pipeline.noteGateFailure(run);
+    }
+    return pipeline;
+  }
+
+  it("gives the agent its result back with the failed checks, the gate run and its limit", () => {
+    const text = gatePrompt(prompts, labels, failedGate(2), [lint, { name: "test", exitCode: null, output: "" }]);
+    const unwrapped = unwrap(text);
+    expect(unwrapped.startsWith("Hunt ran the gate of the step `implement` on your result, the checks of hunt.json's `checks` that the repository names for the step, and these failed:")).toBe(true);
+    expect(text).toContain("### lint (exit 1)\n\n```\nsrc/a.ts\n  3:1  error  no-unused-vars\n```\n\n### test (no exit code)\n\n(no output)\n");
+    expect(unwrapped).toContain("a failing check is yours, also a flaky test or a warning");
+    expect(unwrapped).toContain("This does not count as a return to `implement`: it is gate run 2 of 5, after which Hunt asks you to escalate to the people.");
+    expect(text).not.toContain("{{");
+  });
+
+  it("quotes the last 80 lines of a check's output in a fence longer than its backtick runs", () => {
+    const output = Array.from({ length: 100 }, (_line, index) => `line ${index + 1}`).join("\n") + "\n``` in the output\n";
+    const text = gatePrompt(prompts, labels, failedGate(1), [{ name: "test", exitCode: 2, output }]);
+    expect(text).toContain("### test (exit 2)\n\n````\nline 22\n");
+    expect(text).toContain("line 100\n``` in the output\n````\n");
+    expect(text).not.toContain("line 21\n");
+  });
+
+  it("names the files the checks left dirty as a failure of its own", () => {
+    const failures: GateFailure[] = [{ ...lint, dirty: ["src/a.ts"] }, { name: "format", exitCode: 0, output: "formatted 2 files", dirty: ["src/a.ts", "src/b.ts"] }];
+    const text = gatePrompt(prompts, labels, failedGate(1), failures);
+    expect(text).toContain("### lint (exit 1)\n");
+    expect(text).not.toContain("### format");
+    expect(text).toContain("```\n\n### working tree not clean after the checks\n\n- `src/a.ts`\n- `src/b.ts`\n");
+  });
+
+  it("asks the agent to escalate once the result failed more often than maxGateRuns, with the question command", () => {
+    const text = gatePrompt(prompts, labels, failedGate(3, 2), [lint]);
+    const unwrapped = unwrap(text);
+    expect(unwrapped.startsWith("The gate of the step `implement` failed on your result more than 2 times. Stop fixing it on your own")).toBe(true);
+    expect(unwrapped).toContain("with `gh issue edit 12 --repo acme/app --remove-label swf:implement --add-label swf:question --title \"❓ RÜCKFRAGE: <title>\"` to mark the issue.");
+    expect(text).toContain("## The checks that failed last\n\n### lint (exit 1)\n");
+    expect(unwrapped).toContain("run `gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:implement --title \"<title>\"`");
+    expect(unwrapped).toContain("To give up instead, run `gh issue edit 12 --repo acme/app --remove-label swf:implement --add-label swf:failed` and say why.");
+    expect(text).not.toContain("{{");
+    expect(unwrap(gatePrompt(prompts, labels, failedGate(2, 2), [lint]))).toContain("it is gate run 2 of 2, after which");
+  });
+
+  it("has no gate at the steps of the poller", () => {
+    expect(() => gatePrompt(prompts, labels, pipelineAt("checks", { pullRequest: 31 }), [lint])).toThrow("the step checks has no gate");
   });
 });
 

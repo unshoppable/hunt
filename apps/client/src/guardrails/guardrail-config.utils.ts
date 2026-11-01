@@ -56,7 +56,7 @@ export function guardrailSkillOf(huntJson: string): string {
 
 /**
  * The name of Hunt's template for the skill of the agent step `step` (`prompts/swf/swf-<step>.skill.md`): the name the
- * "Software factory skills" dialog proposes to write into `swf.skills` of hunt.json for a step without an entry. It is no
+ * "Software factory skills" dialog proposes to write into hunt.json for a step without an entry. It is no
  * runtime default: a step without an entry has no skill, which the session VM reports as a problem of hunt.json.
  */
 export function proposedSwfSkill(step: AgentStep): string {
@@ -64,17 +64,19 @@ export function proposedSwfSkill(step: AgentStep): string {
 }
 
 /**
- * The entries of `swf.skills` of a hunt.json with an `swf` section, one per agent step in the order of AGENT_STEPS: the
- * name the entry sets for the step, null without an entry or for a value that is no skill name. Null without the section
- * or for an unreadable file, since then the repository does not use Hunt's software factory.
+ * The skill entries of a hunt.json with an `swf` section, one per agent step in the order of AGENT_STEPS: the name the
+ * step's entry sets, `swf.steps.<step>.skill` or else the older alias `swf.skills.<step>` (each only as a non-empty
+ * string, like `with_entries` in `src-tauri/src/agent/swf_skills.rs`), null without an entry or for a value that is no
+ * skill name. Null without the section or for an unreadable file, since then the repository does not use Hunt's software factory.
  */
 export function swfSkillsOf(huntJson: string): SwfStepEntry[] | null {
   try {
     const swf: unknown = JSON.parse(huntJson)?.swf;
     if (!isRecord(swf)) return null;
-    const configured = swf.skills;
+    const { steps, skills } = swf;
+    const at = (record: unknown, key: string): unknown => (isRecord(record) ? record[key] : undefined);
     return AGENT_STEPS.map((step) => {
-      const name = isRecord(configured) ? configured[step] : undefined;
+      const name = [at(at(steps, step), "skill"), at(skills, step)].find((value) => typeof value === "string" && value !== "");
       return { step, name: typeof name === "string" && isSkillName(name) ? name : null };
     });
   } catch {

@@ -10,8 +10,15 @@
  *     "adrDir": "docs/adr",
  *     "declinedGuardrailsFile": "docs/declined-guardrails.jsonl",
  *     "swf": {
- *       "model": "claude-opus-5-5", "humanReviewPaths": ["apps/backend/migrations/**"],
- *       "skills": { "plan": "swf-plan", "implement": "swf-implement", "verify": "swf-verify", "review": "swf-review", "pr": "swf-pr" }
+ *       "model": "claude-opus-5-5", "effort": "high", "maxGateRuns": 5, "humanReviewPaths": ["apps/backend/migrations/**"],
+ *       "steps": {
+ *         "plan": { "skill": "swf-plan" },
+ *         "implement": { "skill": "swf-implement", "model": "claude-sonnet-5-5", "effort": "medium", "gate": ["format", "test"] },
+ *         "verify": { "skill": "swf-verify", "maxReturns": 5 },
+ *         "review": { "skill": "swf-review", "effort": "max" },
+ *         "pr": { "skill": "swf-pr" },
+ *         "checks": { "maxReturns": 2 }
+ *       }
  *     },
  *     "services": {
  *       "backend": {
@@ -53,23 +60,38 @@
  *   each one line of at most 255 characters that is not absolute and has no `..` segment (GLOB_PATTERN_RULE); none by
  *   default. Hunt copies the matching files of the repository's checkout into every worktree it creates and takes them
  *   along to the session VM; the VM only validates the list.
- * - `swf`: optional, the settings of the poller's sessions, with the fields `model`, `humanReviewPaths` and `skills`; a
- *   repository without it takes no part in the poller's workflow, and none of its rules applies:
- *   - `model`: the model of Claude Code in a session of the poller: the full ID of a Claude model such as
- *     `claude-opus-5-5` (ZodModelId), at most 128 characters, never an alias such as `opus`, whose model changes with
- *     Claude Code's releases. The poller sets it as the session's `model` config option; without it, or when the agent
- *     knows no such model (the relay logs that), Claude Code's default model applies. Sessions started from Hunt keep
- *     the model their user picks.
+ * - `swf`: optional, the settings of the poller's sessions, with the fields `model`, `effort`, `maxGateRuns`,
+ *   `humanReviewPaths`, `steps` and `skills`; a repository without it takes no part in the poller's workflow, and none
+ *   of its rules applies. `swf-settings.value-object.ts` resolves the defaults:
+ *   - `model`: the model of every agent step that sets none: the full ID of a Claude model such as `claude-opus-5-5`
+ *     (ZodModelId), at most 128 characters, never an alias such as `opus`, whose model changes with Claude Code's
+ *     releases. The poller sets it as the session's `model` config option; without it, or when the agent knows no such
+ *     model (the relay logs that), Claude Code's default model applies. Sessions started from Hunt keep the model their
+ *     user picks.
+ *   - `effort`: the effort of every agent step that sets none, one of EFFORTS (`low` to `max`), set as the `effort`
+ *     config option; Claude Code's default without it.
+ *   - `maxGateRuns`: how often a step's result may fail its gate before the agent escalates, an integer of at least 1;
+ *     DEFAULT_MAX_GATE_RUNS without it.
  *   - `humanReviewPaths`: glob patterns that follow the rules of `worktreeInclude`: the files whose change makes a pull
  *     request of a poller session need a human reviewer. Hunt does not read them; the repository's scorer workflow
  *     does, from hunt.json. None by default; the VM only validates the list.
- *   - `skills`: required with the section: the Claude Code skills (`.claude/skills/<name>/SKILL.md`, names like
- *     `guardrailSkill`) with which the repository refines the agent steps of the poller's pipeline, keyed by the step
- *     (`plan`, `implement`, `verify`, `review`, `pr`; AGENT_STEPS): the step's prompt tells the agent to invoke the skill
- *     first. Every agent step must have one; Hunt has no default, so a missing map and each step it leaves out are
- *     problems, which the client's dialog on opening a session of the repository offers to fix (entries `swf-<step>`
- *     and the skill files from its templates). The worktree must hold the skill file of every step, which
- *     `session-config.service.ts` checks; the VM reports the skills to the poller.
+ *   - `steps`: the settings of each step (SWF_STEPS), each optional: an agent step (`plan`, `implement`, `verify`,
+ *     `review`, `pr`) takes `skill`, `model`, `effort` and `gate`, a step that sends the pipeline back (`verify`,
+ *     `review`, `checks`, `human-review`, `merge`; RETURNING_STEPS) `maxReturns`; any other field of a step is a problem.
+ *     - `skill`: the Claude Code skill (`.claude/skills/<name>/SKILL.md`, a name like `guardrailSkill`) with which the
+ *       repository refines the step: its prompt tells the agent to invoke the skill first. Every agent step must have
+ *       one, here or in `skills`; Hunt has no default, so a step without one is a problem, which the client's dialog on
+ *       opening a session of the repository offers to fix (entries `swf-<step>` and the skill files from its
+ *       templates). The worktree must hold the skill file of every step, which `session-config.service.ts` checks.
+ *     - `model`, `effort`: the step's own, which follow the rules of the section's and win over them.
+ *     - `maxReturns`: how often the step may send the pipeline back to implement before the agent escalates, an
+ *       integer from 1 to 20; DEFAULT_MAX_RETURNS without it.
+ *     - `gate`: the checks of hunt.json that must pass before the step's result is accepted: `"*"` for every check, or
+ *       a list of at most 32 names of checks (`[]` for none), run in the order of `checks`. Without it, every check for
+ *       the steps of GATED_BY_DEFAULT (`implement`) and none for the others.
+ *   - `skills`: the alias of `steps.<step>.skill`, keyed by agent step (AGENT_STEPS), as older files write the skills.
+ *     A step may name its skill in both places only when they agree. Without `steps` and `skills` the section names
+ *     no skill, which is one problem.
  * - `checks`: optional, at most 32 commands such as the linter or the tests, in the order of the file, each named like a
  *   service, with the only fields `command` and `cwd`, which follow the rules of a service's. The client's Checks tab
  *   runs them in the worktree on the Mac, or on the session VM through `hunt-ctl check`, and shows their output and
@@ -92,23 +114,29 @@
  * parsed document by hand and reports every problem, each starting with the path of the offending value: the unknown
  * fields of an object before its fields, the fields in the order above, each scalar checked against its rule in
  * `hunt-json.rules.ts` (`problems.utils.ts` holds the walk's plumbing). zod's own objects would report unknown fields
- * last and skip the rules across fields after a type error. The two rules across services, a port of each service's
- * own and a declared service for each `${services.<name>.publicUrl}`, the walk reports where it meets them and the
- * aggregate's schema checks as well.
+ * last and skip the rules across fields after a type error. The three rules across sections, a port of each service's
+ * own, a declared service for each `${services.<name>.publicUrl}` and a declared check for each name of a gate, the
+ * walk reports where it meets them and the aggregate's schema checks as well.
  */
 import * as z from "zod/mini";
 import { ValueObject } from "../../../../libs/domain/src/model/value-object.model.ts";
-import { AGENT_STEPS, type AgentStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
+import { isRecord } from "../../../../libs/domain/src/shared/json-rpc.utils.ts";
+import { isReturningStep, type StepSettings } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
+import { AGENT_STEPS, isAgentStep, SWF_STEPS, type AgentStep, type SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
 import { CheckConfig } from "./check-config.value-object.ts";
 import { ConfigError } from "./config.error.ts";
 import {
   SERVICE_PLACEHOLDER,
   ZodCommandLine,
   ZodContractVersion,
+  ZodEffort,
   ZodEnvValue,
   ZodEnvVariableName,
   ZodFlag,
+  ZodGate,
   ZodGlobPatterns,
+  ZodMaxGateRuns,
+  ZodMaxReturns,
   ZodModelId,
   ZodNoContract2Placeholders,
   ZodRemoteSecretReference,
@@ -124,7 +152,8 @@ import { ServiceConfig } from "./service-config.value-object.ts";
 import { SwfSettings } from "./swf-settings.value-object.ts";
 
 const ROOT_FIELDS = ["version", "adrDir", "guardrailSkill", "declinedGuardrailsFile", "swf", "services", "checks"];
-const SWF_FIELDS = ["model", "humanReviewPaths", "skills"];
+const SWF_FIELDS = ["model", "effort", "maxGateRuns", "humanReviewPaths", "steps", "skills"];
+const STEP_FIELDS = ["skill", "model", "effort", "maxReturns", "gate"];
 const SERVICE_FIELDS = ["command", "cwd", "port", "tls", "guarded", "review", "env", "remoteSecrets", "worktreeInclude"];
 const CHECK_FIELDS = ["command", "cwd"];
 const MAX_SERVICES = 64;
@@ -135,6 +164,7 @@ const CONTRACT_2_PROBLEM = 'the preview section of contract 2 is no longer read;
 /** Hunt has no default skill: the client's dialog on opening a session of the repository adds the missing entries. */
 const SKILLS_RULE = `must name the skill of every agent step (${AGENT_STEPS.join(", ")}); Hunt asks to add them when a session of the repository opens`;
 const STEP_SKILL_RULE = "must name the skill of the step; Hunt asks to add it when a session of the repository opens";
+const MAX_RETURNS_STEP_RULE = "only a step that sends the pipeline back has maxReturns (verify, review, checks, human-review, merge)";
 
 const ZodHuntJsonState = z
   .object({
@@ -156,6 +186,7 @@ const ZodHuntJsonState = z
   .check(
     z.refine((state) => new Set(state.services.map((service) => service.port)).size === state.services.length, "every service has a port of its own"),
     z.refine((state) => declaresReferencedServices(state.services), "every ${services.<name>.publicUrl} names a service of hunt.json"),
+    z.refine((state) => declaresGateChecks(state.swf, state.checks), "every gate names a check of hunt.json"),
   );
 
 /** A service of the document as far as the walk could read it; it becomes a ServiceConfig when the document has no problem. */
@@ -167,11 +198,12 @@ interface ServiceDraft extends Partial<z.input<typeof ServiceConfig.schema>> {
 
 type CheckDraft = Partial<z.input<typeof CheckConfig.schema>>;
 
-/** The `swf` section as far as the walk could read it; `skills` names every agent step when the document has no problem. */
-type SwfDraft = Omit<z.input<typeof SwfSettings.schema>, "skills"> & { skills: Partial<Record<AgentStep, string>> | undefined };
+/** The `swf` section as far as the walk could read it, `swf.skills` merged into the agent steps. */
+type SwfDraft = z.input<typeof SwfSettings.schema>;
+type StepDraft = NonNullable<SwfDraft["steps"][SwfStep]>;
 
 /** The document as far as the walk could read it; it becomes a HuntJson when the document has no problem. */
-type HuntJsonDraft = Omit<z.input<typeof ZodHuntJsonState>, "services" | "swf"> & { services: ServiceDraft[]; swf: SwfDraft | undefined };
+type HuntJsonDraft = Omit<z.input<typeof ZodHuntJsonState>, "services"> & { services: ServiceDraft[] };
 
 export interface HuntJson extends z.infer<typeof ZodHuntJsonState> {}
 
@@ -207,12 +239,21 @@ export class HuntJson extends ValueObject<typeof ZodHuntJsonState> {
     return { huntJson: new HuntJson(draft) };
   }
 
+  /** The settings of every step of the swf pipeline with the defaults applied; null without the `swf` section. */
+  get stepSettings(): StepSettings | null {
+    return this.swf?.resolve(this.checks.map((check) => check.name)) ?? null;
+  }
+
   /** The check `name`; throws a ConfigError when hunt.json declares no such check. */
   findCheck(name: string): CheckConfig {
     const check = this.checks.find((candidate) => candidate.name === name);
     if (!check) throw new ConfigError([`${at("checks", name)}: no such check`]);
     return check;
   }
+}
+
+function declaresGateChecks(swf: SwfSettings | null, checks: readonly CheckConfig[]): boolean {
+  return (swf?.gateChecks ?? []).every((name) => checks.some((check) => check.name === name));
 }
 
 function declaresReferencedServices(services: readonly ServiceConfig[]): boolean {
@@ -233,38 +274,123 @@ function parseRoot(document: unknown, problems: Problems): HuntJsonDraft | undef
     adrDir: parseOptionalField(ZodWorktreeFolder, root.adrDir, "adrDir", problems),
     guardrailSkill: parseOptionalField(ZodSkillName, root.guardrailSkill, "guardrailSkill", problems),
     declinedGuardrailsFile: parseOptionalField(ZodWorktreeFile, root.declinedGuardrailsFile, "declinedGuardrailsFile", problems),
-    swf: parseSwf(root.swf, problems),
+    swf: parseSwf(root.swf, declaredNames(root.checks), problems),
     services: parseServices(root.services, problems),
     checks: parseChecks(root.checks, problems),
   };
 }
 
-/** The optional `swf` section, whose `skills` is required; undefined without the section. */
-function parseSwf(value: unknown, problems: Problems): SwfDraft | undefined {
+/** The names of the entries of the object `value` that follow ZodServiceName, for the references the walk meets before the entries. */
+function declaredNames(value: unknown): ReadonlySet<string> {
+  return new Set(Object.keys(isRecord(value) ? value : {}).filter((name) => ZodServiceName.safeParse(name).success));
+}
+
+/** The optional `swf` section, whose gates may name the checks `checkNames`; undefined without the section. */
+function parseSwf(value: unknown, checkNames: ReadonlySet<string>, problems: Problems): SwfDraft | undefined {
   if (value === undefined) return undefined;
   const fields = record(value, "swf", SWF_FIELDS, problems);
   if (!fields) return undefined;
   const model = parseOptionalField(ZodModelId, fields.model, at("swf", "model"), problems);
+  const effort = parseOptionalField(ZodEffort, fields.effort, at("swf", "effort"), problems);
+  const maxGateRuns = parseOptionalField(ZodMaxGateRuns, fields.maxGateRuns, at("swf", "maxGateRuns"), problems);
   // Validated only: the repository's scorer workflow reads the paths, Hunt does not.
   parseOptionalField(ZodGlobPatterns, fields.humanReviewPaths, at("swf", "humanReviewPaths"), problems);
-  return { model, skills: parseStepSkills(fields.skills, at("swf", "skills"), problems) };
+  const steps = parseSteps(fields.steps, checkNames, problems);
+  const aliases = parseSkillAliases(fields.skills, problems);
+  if (fields.steps === undefined && fields.skills === undefined) {
+    problems.add(at("swf", "steps"), SKILLS_RULE);
+  } else {
+    mergeSkills(fields, steps, aliases, problems);
+  }
+  return { model, effort, maxGateRuns, steps };
+}
+
+/** The steps of `swf.steps` in the order of the steps, as far as they are objects; none when the section is missing or no object. */
+function parseSteps(value: unknown, checkNames: ReadonlySet<string>, problems: Problems): Partial<Record<SwfStep, StepDraft>> {
+  const steps: Partial<Record<SwfStep, StepDraft>> = {};
+  if (value === undefined) return steps;
+  const fields = record(value, at("swf", "steps"), SWF_STEPS, problems);
+  if (!fields) return steps;
+  for (const step of SWF_STEPS) {
+    if (fields[step] === undefined) continue;
+    const entry = parseStep(step, fields[step], checkNames, problems);
+    if (!entry) continue;
+    steps[step] = entry;
+  }
+  return steps;
 }
 
 /**
- * The map of every agent step to the repository's skill at `path` (`swf.skills`): the steps whose name is usable. A
- * missing map and each step the map leaves out are problems; undefined when the map is missing or no object.
+ * The settings of `step` at `swf.steps.<step>`: `skill`, `model`, `effort` and `gate` belong to an agent step, `maxReturns`
+ * to a returning step, and each name of the gate must be one of `checkNames`; undefined when the value is no object.
  */
-function parseStepSkills(value: unknown, path: string, problems: Problems): Partial<Record<AgentStep, string>> | undefined {
-  if (value === undefined) return problems.add(path, SKILLS_RULE);
-  const fields = record(value, path, AGENT_STEPS, problems);
+function parseStep(step: SwfStep, value: unknown, checkNames: ReadonlySet<string>, problems: Problems): StepDraft | undefined {
+  const path = at(at("swf", "steps"), step);
+  const fields = record(value, path, STEP_FIELDS, problems);
   if (!fields) return undefined;
+  const isAgent = isAgentStep(step);
+  const field = <TSchema extends z.ZodMiniType>(schema: TSchema, name: string, allowed: boolean, rule: string): z.output<TSchema> | undefined => {
+    if (allowed) return parseOptionalField(schema, fields[name], at(path, name), problems);
+    if (fields[name] !== undefined) {
+      problems.add(at(path, name), rule);
+    }
+    return undefined;
+  };
+  const skill = field(ZodSkillName, "skill", isAgent, "only an agent step has a skill");
+  const model = field(ZodModelId, "model", isAgent, "only an agent step has a model");
+  const effort = field(ZodEffort, "effort", isAgent, "only an agent step has an effort");
+  const maxReturns = field(ZodMaxReturns, "maxReturns", isReturningStep(step), MAX_RETURNS_STEP_RULE);
+  const gate = field(ZodGate, "gate", isAgent, "only an agent step has a gate");
+  for (const name of Array.isArray(gate) ? gate : []) {
+    if (checkNames.has(name)) continue;
+    problems.add(at(path, "gate"), `no such check ${name}`);
+  }
+  return { skill, model, effort, maxReturns, gate };
+}
+
+/** The usable skills of `swf.skills`, the alias of `swf.steps.<step>.skill`, by agent step; none when the map is missing or no object. */
+function parseSkillAliases(value: unknown, problems: Problems): Partial<Record<AgentStep, string>> {
   const skills: Partial<Record<AgentStep, string>> = {};
+  if (value === undefined) return skills;
+  const fields = record(value, at("swf", "skills"), AGENT_STEPS, problems);
+  if (!fields) return skills;
   for (const step of AGENT_STEPS) {
-    const skill = fields[step] === undefined ? problems.add(at(path, step), STEP_SKILL_RULE) : parseField(ZodSkillName, fields[step], at(path, step), problems);
+    const skill = parseOptionalField(ZodSkillName, fields[step], at(at("swf", "skills"), step), problems);
     if (!skill) continue;
     skills[step] = skill;
   }
   return skills;
+}
+
+/**
+ * Sets the skill of every agent step in `steps` from `steps.<step>.skill` or its alias in `aliases`. Reports a step
+ * whose two skills differ, and a step for which `swf` (the section's fields) holds nothing in either place.
+ */
+function mergeSkills(
+  swf: Record<string, unknown>,
+  steps: Partial<Record<SwfStep, StepDraft>>,
+  aliases: Partial<Record<AgentStep, string>>,
+  problems: Problems,
+): void {
+  for (const step of AGENT_STEPS) {
+    const path = at(at(at("swf", "steps"), step), "skill");
+    const skill = steps[step]?.skill;
+    const alias = aliases[step];
+    if (skill && alias && skill !== alias) {
+      problems.add(path, `differs from ${at(at("swf", "skills"), step)}`);
+    }
+    if (holdsNothingAt(swf.steps, [step, "skill"]) && holdsNothingAt(swf.skills, [step])) {
+      problems.add(path, STEP_SKILL_RULE);
+    }
+    steps[step] = { ...steps[step], skill: skill ?? alias };
+  }
+}
+
+/** Whether `value` holds nothing at the path `keys`: it is undefined, or an object whose value at the first key holds nothing at the rest. */
+function holdsNothingAt(value: unknown, keys: readonly string[]): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value) || keys.length === 0) return false;
+  return holdsNothingAt(value[keys[0]], keys.slice(1));
 }
 
 /** The optional `services` section in the order of the file: the services whose name, object and port are usable. */

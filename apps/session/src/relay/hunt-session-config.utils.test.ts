@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { applyConfigChanges, readHuntSessionConfig, updateConfigFile } from "./hunt-session-config.utils.ts";
+import { applyConfigChanges, readHuntSessionConfig, replaceConfigOptions, updateConfigFile } from "./hunt-session-config.utils.ts";
 
 describe("readHuntSessionConfig", () => {
   it("names the file in the error", () => {
@@ -49,5 +49,33 @@ describe("updateConfigFile", () => {
       systemPromptAppend: "edited by another writer",
     });
     expect(readdirSync(dir)).toEqual(["hunt-session.json"]);
+  });
+});
+
+describe("replaceConfigOptions", () => {
+  let dir = "";
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("replaces the stored config options with exactly the given ones and keeps every other field", () => {
+    dir = mkdtempSync(join(tmpdir(), "hunt-config-"));
+    const path = join(dir, "hunt-session.json");
+    writeFileSync(path, JSON.stringify({ huntSessionId: "7c0c6f2e", acpSessionId: "acp-1", configOptions: { model: "haiku", effort: "low", mode: "x" } }));
+
+    replaceConfigOptions(path, { model: "opus", effort: "high" });
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ huntSessionId: "7c0c6f2e", acpSessionId: "acp-1", configOptions: { model: "opus", effort: "high" } });
+
+    replaceConfigOptions(path, {});
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ huntSessionId: "7c0c6f2e", acpSessionId: "acp-1", configOptions: {} });
+    expect(readdirSync(dir)).toEqual(["hunt-session.json"]);
+  });
+
+  it("refuses a file that holds no JSON object", () => {
+    dir = mkdtempSync(join(tmpdir(), "hunt-config-"));
+    const path = join(dir, "hunt-session.json");
+    writeFileSync(path, "[]");
+    expect(() => replaceConfigOptions(path, {})).toThrow(`failed to update ${path}: expected a JSON object`);
   });
 });

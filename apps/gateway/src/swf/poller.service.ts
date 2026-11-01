@@ -11,11 +11,12 @@
  * metadata, waits for its startup script and installs the session release staged on the gateway; then `install-tools`,
  * `clone` (onto the branch of `swf/session-branch.utils.ts`), the repository's private files (the ignored files a
  * handoff copies, such as `.env.private`) from the secret `HUNT_SWF_FILES_<owner>_<repo>` (`swf/private-files.utils.ts`)
- * through `put-files`, `session-config` (which also reports the repository's `swf.skills`; the pipeline record then goes
- * onto the issue as a comment of the poller (`swf/pipeline-record.client.ts`), and a hunt.json that names no skill for
- * an agent step fails the setup, since Hunt has no default skill), `hunt-session.json` with the model the repository's
- * hunt.json sets (`swf.model`) through `put-files --claude`, `deps`, `swf-record` with the pipeline, `start` with the
- * tokens on stdin (which enables the swf runner of the VM, `apps/session/src/swf-runner/swf-runner.main.ts`) and `wait`.
+ * through `put-files`, `session-config` (which also reports the repository's step settings, `swf_steps`, which the
+ * pipeline keeps; the pipeline record then goes onto the issue as a comment of the poller (`swf/pipeline-record.client.ts`),
+ * and a hunt.json that names no skill for an agent step fails the setup, since Hunt has no default skill),
+ * `hunt-session.json` with the model and effort of the plan step through `put-files --claude`, `deps`, `swf-record`
+ * with the pipeline, `start` with the tokens on stdin (which enables the swf runner of the VM,
+ * `apps/session/src/swf-runner/swf-runner.main.ts`) and `wait`.
  * The session's system prompt holds the protocol of the steps (`libs/domain/prompts/swf/0-system-prompt.md`,
  * `swf/swf-prompts.utils.ts`); the runner sends the prompt of the first step, `plan`. When the setup fails, the poller
  * sets `swf:failed` with the error and leaves the VM for inspection; Hunt desktops adopt the VM either way.
@@ -74,7 +75,7 @@ import type { AppCredentials, GitHubApp } from "./github-app.client.ts";
 import type { GitHub, Issue, IssueComment } from "./github.client.ts";
 import { mentionsOf, newAnswers, resultsOfRuns, type RunResult } from "./issue-thread.utils.ts";
 import { PipelineRecordClient } from "./pipeline-record.client.ts";
-import { Pipeline, stepSkills } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
+import { Pipeline, stepSettings } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 import { checkPrivateFilesArchive, privateFilesSecret } from "./private-files.utils.ts";
 import { redact } from "./redaction.utils.ts";
 import { branchName } from "./session-branch.utils.ts";
@@ -86,9 +87,9 @@ import {
   humanReviewComment,
   mergedComment,
   missingPullRequestComment,
-  missingSkillsError,
   noPullRequestComment,
   replacedVmComment,
+  stepSettingsError,
 } from "./swf-comments.utils.ts";
 import { REPOS_ATTRIBUTE, type SwfConfig } from "./swf-config.utils.ts";
 import { huntSessionFile, remoteSystemPrompt, swfSystemPrompt, type PromptFiles } from "../../../../libs/domain/src/swf/swf-prompts.utils.ts";
@@ -151,9 +152,8 @@ interface PreparedVm {
   path: string;
   servicesPrompt: string | null;
   agentMd: string | null;
-  model: string | null;
-  /** `swf_skills` of `hunt-ctl session-config`, as reported. */
-  skills: unknown;
+  /** `swf_steps` of `hunt-ctl session-config`, as reported. */
+  steps: unknown;
 }
 
 /** What the poller remembers about a session, or an issue without a VM, between polls; everything that matters survives in the record comment. */
@@ -712,9 +712,9 @@ export class Poller {
   private async setUp(setup: Setup, domain: string, claudeToken: string, branch: BranchName, issue: Issue): Promise<void> {
     const { key, repo, sessionId } = setup;
     const prepared = await this.prepareVm(setup, domain, branch, issue);
-    const skills = stepSkills(prepared.skills);
-    if (skills.missing) throw new Error(missingSkillsError(skills.missing));
-    const pipeline = Pipeline.start({ repo: repo.slug, number: issue.number, branch: branch.name }, skills.skills, this.deps.now());
+    const parsed = stepSettings(prepared.steps);
+    if (parsed.problem !== undefined) throw new Error(stepSettingsError(parsed.problem));
+    const pipeline = Pipeline.start({ repo: repo.slug, number: issue.number, branch: branch.name }, parsed.settings, this.deps.now());
     setup.recordId = await this.records.create(repo, issue.number, pipeline);
     // The runner edits the record comment itself, so the pipeline names it.
     pipeline.noteRecordComment(setup.recordId);
@@ -755,8 +755,7 @@ export class Poller {
       path: cloned.path,
       servicesPrompt: typeof sessionConfig.services_prompt === "string" ? sessionConfig.services_prompt : null,
       agentMd: typeof sessionConfig.agent_md === "string" ? sessionConfig.agent_md : null,
-      model: typeof sessionConfig.swf_model === "string" ? sessionConfig.swf_model : null,
-      skills: sessionConfig.swf_skills,
+      steps: sessionConfig.swf_steps,
     };
   }
 
@@ -771,7 +770,7 @@ export class Poller {
     const prompts = this.deps.prompts();
     const swfPrompt = swfSystemPrompt(prompts.swfSystem, repo, issue.number, branch.name, setup.labels);
     const systemPrompt = remoteSystemPrompt(prompts, sessionId, swfPrompt, prepared.servicesPrompt, prepared.agentMd);
-    await vm.putClaudeFiles(sessionId, { "hunt-session.json": huntSessionFile(sessionId, prepared.path, systemPrompt, prepared.model) });
+    await vm.putClaudeFiles(sessionId, { "hunt-session.json": huntSessionFile(sessionId, prepared.path, systemPrompt, pipeline.configOptionsOf("plan")) });
     this.deps.log(`${key}: cloned ${repo.slug} into ${prepared.path}; installing the dependencies`);
     await vm.huntCtl(["deps", sessionId.id]);
     // The pipeline is on the VM before `start` enables the runner, which drives it from here: its first prompt is the current step's.

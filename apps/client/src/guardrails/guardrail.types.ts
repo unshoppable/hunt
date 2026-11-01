@@ -53,15 +53,16 @@ export type CreatableKind = Exclude<GuardrailKind, "instruction">;
 export type GuardrailLocation = { dir: string; folder: string };
 
 /**
- * The entry of `swf.skills` of a hunt.json for the agent step `step` of Hunt's swf pipeline: the `name` of the skill
- * (`.claude/skills/<name>/SKILL.md`) with which the repository refines the step, null when the entry is missing or holds
- * no valid skill name.
+ * The skill entry of a hunt.json for the agent step `step` of Hunt's swf pipeline (`swf.steps.<step>.skill`, else the
+ * older alias `swf.skills.<step>`): the `name` of the skill (`.claude/skills/<name>/SKILL.md`) with which the repository
+ * refines the step, null when the entry is missing or holds no valid skill name.
  */
 export type SwfStepEntry = { step: AgentStep; name: string | null };
 
 /**
  * What `createSwfSkills` creates for the agent step `step`: the skill `name` (`.claude/skills/<name>/SKILL.md`) from
- * Hunt's template of the step unless the file exists and, with `addEntry`, the entry `swf.skills.<step>` of hunt.json
- * unless it exists; mirrors `StepSkill` in `src-tauri/src/agent/swf_skills.rs`.
+ * Hunt's template of the step unless the file exists and, with `addEntry`, the step's skill entry of hunt.json unless
+ * the step names a skill there (`swf.steps.<step>.skill` when `swf.steps` is an object, else `swf.skills.<step>`);
+ * mirrors `StepSkill` in `src-tauri/src/agent/swf_skills.rs`.
  */
 export type SwfStepSkill = { step: AgentStep; name: string; addEntry: boolean };

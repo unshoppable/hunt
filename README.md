@@ -523,9 +523,10 @@ Opening a session checks that the worktree's root `CLAUDE.md` names the ADR fold
 append an "Architectural decisions" section with the `ls`/`grep` lookup
 (`apps/client/src/guardrails/instruction-sections.utils.ts`); without it Claude Code never reads the records. A decline is
 remembered until the app restarts.
-Then, when the worktree's `hunt.json` has an `swf` section whose `swf.skills` names no skill for an agent step of the
-poller's swf pipeline (see "Remote sessions"), or names one whose skill file is missing, it asks once whether to add the
-missing entries to `hunt.json` (`swf-<step>`) and to create the missing skill files from
+Then, when the worktree's `hunt.json` has an `swf` section that names no skill for an agent step of the poller's swf
+pipeline (see "Remote sessions") in `swf.steps.<step>.skill` or its alias `swf.skills.<step>`, or names one whose skill
+file is missing, it asks once whether to add the missing entries to `hunt.json` (`swf-<step>`, as
+`swf.steps.<step>.skill` when the section has `steps`, else under `swf.skills`) and to create the missing skill files from
 `apps/client/prompts/swf/swf-<step>.skill.md` (`apps/client/src/guardrails/swf-skills.utils.ts`,
 `apps/client/src-tauri/src/agent/swf_skills.rs`): Hunt has no default skill, so a session of the poller cannot start
 until every step has one. Each file lands at `.claude/skills/<name>/SKILL.md` under the step's name as a change of the
@@ -749,21 +750,46 @@ default; see below) and `env`, whose values may name a service's URL as
 `${services.<name>.publicUrl}`, `remoteSecrets`, variables whose values are remote secrets (`"$<NAME>"`, see "Remote
 sessions"), and `worktreeInclude`, the ignored files the service needs, as glob patterns, which every worktree and
 session VM gets from the checkout (see "Worktrees and changes") and the VM only validates. An optional `swf` section
-sets the model of the sessions the gateway's poller starts for the repository's issues as a full model ID
-(`"swf": {"model": "claude-opus-5-5"}`; an alias such as `opus` is rejected, since its model changes with Claude Code's
-releases) and, under `humanReviewPaths`, glob patterns with the rules of `worktreeInclude`: a pull request of a poller
-session that touches a file matching one of them always needs a human reviewer
-(`"humanReviewPaths": ["**/migrations/**"]`). Hunt only validates them; the repository's scorer workflow (see "Remote
-sessions") reads them from hunt.json. Under `skills` the section names the Claude Code skills with which the repository
-refines the agent steps of the pipeline, keyed by the step (`"skills": {"plan": "swf-plan", "implement":
-"swf-implement", "verify": "swf-verify", "review": "acme-review", "pr": "swf-pr"}`, names like `guardrailSkill`). With a
-`swf` section, `skills` is required and names every agent step
-(`plan`, `implement`, `verify`, `review`, `pr`): Hunt has no default skill, so a missing map or step is a problem of
-hunt.json (`swf.skills: must name the skill of every agent step …`, `swf.skills.<step>: must name the skill of the
-step …`), as is each skill file `.claude/skills/<name>/SKILL.md` the worktree lacks; `session-config` reports the skill
-of every step as `swf_skills`. The client asks to add the missing entries (`swf-<step>`) and to create the missing
-skill files when a session of the repository opens. The step's prompt tells the agent to invoke its skill first; see
-"Step skills" in `libs/domain/prompts/swf/README.md`. An optional
+sets up the sessions the gateway's poller starts for the repository's issues and the steps of their pipeline (rules and
+defaults: `apps/session/src/session-config/swf-settings.value-object.ts`, `libs/domain/src/swf/step-settings.value-object.ts`):
+
+```json
+"swf": {
+  "model": "claude-opus-5-5", "effort": "high", "maxGateRuns": 5, "humanReviewPaths": ["**/migrations/**"],
+  "steps": {
+    "plan": { "skill": "swf-plan" },
+    "implement": { "skill": "swf-implement", "model": "claude-sonnet-5-5", "effort": "medium", "gate": ["lint", "test"] },
+    "verify": { "skill": "swf-verify", "maxReturns": 5 },
+    "review": { "skill": "acme-review", "effort": "max" },
+    "pr": { "skill": "swf-pr" },
+    "checks": { "maxReturns": 2 }
+  }
+}
+```
+
+`model` and `effort` are the config options of every agent step's conversation that sets none of its own: the model as
+a full model ID (an alias such as `opus` is rejected, since its model changes with Claude Code's releases), the effort
+one of `low`, `medium`, `high`, `xhigh`, `max`; without them Claude Code's defaults apply, also for a model Claude Code
+does not know (the relay's journal says so). `swf.steps.<step>` sets each step, each entry optional. An agent step
+(`plan`, `implement`, `verify`, `review`, `pr`) takes `skill`, `model`, `effort` and `gate`; a step that sends the issue
+back to `implement` (`verify`, `review`, `checks`, `human-review`, `merge`) takes `maxReturns`, how often it may do so
+before the agent escalates (1 to 20; Hunt's defaults `DEFAULT_MAX_RETURNS`: verify 5, review 3, checks 2, human-review 3,
+merge 2); the poller steps take nothing else, and any other field of a step is a problem. `skill` names the Claude Code
+skill with which the repository refines the step (`.claude/skills/<name>/SKILL.md`, names like `guardrailSkill`);
+`swf.skills.<step>` is its alias, as older files write it (`"skills": {"plan": "swf-plan", …}`), and a step may name its
+skill in both places only when they agree. Every agent step must name one: Hunt has no default skill, so a step without
+one is a problem of hunt.json (`swf.steps.<step>.skill: must name the skill of the step …`), as is each skill file the
+worktree lacks. The client asks to add the missing entries (`swf-<step>`) and to create the missing skill files when a
+session of the repository opens. The step's prompt tells the agent to invoke its skill first; see "Step settings" in
+`libs/domain/prompts/swf/README.md`. `gate` names the checks of hunt.json's `checks` the step's result must pass before
+the pipeline accepts it, `"*"` for every check, `[]` for none; they run in the order of `checks`. Without it,
+`implement`'s gate is every check and the other steps have none. `maxGateRuns` (at least 1, default 5) is how often one
+step result may fail its gate before the agent is told to ask the people (see "Remote sessions"). `session-config`
+reports the resolved settings, defaults applied, as `swf_steps` (`{"maxGateRuns": 5, "steps": {"plan": {"skill",
+"model", "effort", "maxReturns", "gate"}, …}}`). Under `humanReviewPaths` the section holds glob patterns with the
+rules of `worktreeInclude`: a pull request of a poller session that touches a file matching one of them always needs a
+human reviewer. Hunt only validates them; the repository's scorer workflow (see "Remote sessions") reads them from
+hunt.json. An optional
 `checks` section names up to 32 commands such as the linter or the tests, each with a `command`
 and an optional `cwd` (`"checks": {"test": {"command": "npm test", "cwd": "apps/web"}}`); `services` is optional too,
 so a `hunt.json` may declare checks only. An optional `adrDir` names the folder of the repository's architectural
@@ -1092,8 +1118,10 @@ edits in place at every transition (a status line for people, `<!-- hunt:pipelin
 `libs/domain/src/swf/pipeline.domain.ts`, stored by `pipeline-record.client.ts`), so that a restart loses nothing. The record
 keeps `runs`, one entry per run of a step in the order they ran, repeats and returns included (`n`, `step`, `startedAt`,
 `endedAt`, `outcome` — `running`, `passed`, `returned` with the number of `findings`, `failed`, `restarted` — and `cause`,
-the run whose findings sent the step back), the data of the pipeline graph the client renders. The record names its own comment
-(`recordId`) and its `version` (`RECORD_VERSION`, 3); a record of an older version is a problem the poller reports,
+the run whose findings sent the step back), the data of the pipeline graph the client renders, and the step settings the
+poller found at the claim (`settings`), the returns per step that sent the issue back (`returns`) and the gate failures of
+the current step result (`gateRuns`). The record names its own comment
+(`recordId`) and its `version` (`RECORD_VERSION`, 4); a record of an older version is a problem the poller reports,
 and its issue is left alone. On the VM `.hunt/swf/pipeline.json` in the worktree holds the pipeline and
 `.hunt/swf/steps/<nn>-<step>.md` the step result each run ended with: the **swf runner** on the session VM (below) writes
 both and the record comment mirrors `pipeline.json` (`hunt-ctl swf-record <id>` puts the pipeline there once, before the
@@ -1122,9 +1150,10 @@ a version, or one the gateway may not read, means no private files and a warning
 such archive fails the setup. Then `session-config`,
 `put-files --claude` with `hunt-session.json`, `deps`, `swf-record` with the pipeline, `start` (which enables the runner,
 `hunt-swf-runner.service`, for a session of origin `swf`) and `wait` follow as in a handoff; `hunt-session.json`
-sets the model of the repository's `hunt.json` (`swf.model`), which the relay applies as the session's `model` config
-option, and without one, or with a model Claude Code does not know (the relay's journal says so), Claude Code's
-default model applies. The system prompt is
+holds the `model` and `effort` of the plan step (`swf.steps.plan`, else `swf.model` and `swf.effort`) as its
+`configOptions`, which the relay applies to the session's conversation; before each step's fresh conversation the
+runner writes that step's options there. Without them, or with a model Claude Code does not know (the relay's journal
+says so), Claude Code's defaults apply. The system prompt is
 the remote, Git and question parts a handoff appends (`libs/domain/prompts/`, which the app and the poller compile in),
 the swf workflow `libs/domain/prompts/swf/0-system-prompt.md` with the issue's labels and branch, the repository's services and
 its `hunt.agent.md`; the parts Hunt takes from its user's settings (response style, guardrail offer, diagram language)
@@ -1152,9 +1181,14 @@ issue is marked `swf:failed` when the next turn ends the same way.
 `plan` reads the issue and the repository's guardrails (README, CLAUDE.md, rules, skills, ADRs, `hunt.agent.md`), asks
 every question only a person can answer and writes the plan with the acceptance criteria for the steps that follow.
 `implement` carries out the plan of `steps/01-plan.md` or fixes the findings the prompt names, runs the repository's
-checks, commits and pushes. `verify` runs hunt.json's `checks` and the repository's, verifies every acceptance
-criterion (in the browser with the Playwright tools for anything the user sees); its findings send the issue back to
-`implement`, which counts as an attempt. `review`, whose conversation is fresh and did not write the change, reads the
+checks, commits and pushes. An agent step with a **gate** (by default `implement`, with every check of hunt.json) is
+done only when the gate is green: once the agent wrote `result.md`, the runner runs the gate's checks and
+`git status --porcelain`, logs each check under `.hunt/swf/gate/<nn>-<name>.log` and sends a red check or a dirty
+working tree back to the agent in the same conversation (`gate-failed.user-prompt.md`) instead of moving on; that is no
+return. After more than `swf.maxGateRuns` failures of the step's result the agent is told to ask the people instead
+(`gate-escalate.user-prompt.md`). `verify` verifies every acceptance criterion (in the browser with the Playwright tools
+for anything the user sees), running a check of hunt.json only where a criterion needs its output, since the gate ran
+them; its findings send the issue back to `implement`. `review`, whose conversation is fresh and did not write the change, reads the
 diff as a code reviewer against the issue, the steps' results and the repository's review criteria (the review step's
 skill): its blocking findings send the issue back to `implement` too. `pr` opens the pull request (`Closes #<issue>`)
 and cleans up the VM; the poller then prepares the review once (`inReview` in the record): the issue moves to
@@ -1165,10 +1199,12 @@ issue's assignees (or its author) as reviewers and mentions them once when it is
 approval (a change request goes back to `implement` with the review's text). `merge` updates the branch when it is
 behind the base, squash-merges when GitHub reports it mergeable, sends conflicts back to `implement`, and goes to
 `human-review` when GitHub reports the pull request `BLOCKED` with passing checks and no approval. After every return to
-`implement` the pipeline runs `verify` and `review` again before the pull request is checked once more; after
-`MAX_ATTEMPTS` (5) returns the agent is told to ask the people instead (`2-implement-escalate.user-prompt.md`). Every
-agent step has a skill the repository keeps (`.claude/skills/<name>/SKILL.md`) and names under `swf.skills` of its
-hunt.json: the step's prompt tells the agent to invoke it first (the review's names it as the criteria), and Hunt has no
+`implement` the pipeline runs `verify` and `review` again before the pull request is checked once more. Each return
+counts for the step that sent the issue back (`returns` in the record, the status line says `return n of m (<step>)`);
+once a step's returns exceed its `maxReturns`, the implement step is an escalation: the agent is told to ask the people
+instead (`2-implement-escalate.user-prompt.md`), and that step's count starts anew, as every count does after the plan.
+Every agent step has a skill the repository keeps (`.claude/skills/<name>/SKILL.md`) and names under
+`swf.steps.<step>.skill` of its hunt.json: the step's prompt tells the agent to invoke it first (the review's names it as the criteria), and Hunt has no
 fallback prompt for a missing one; the step's result, labels and questions stay Hunt's. A merged pull request ends the
 pipeline: `swf:done`, `Done` in the projects and a comment. A pull request closed without a merge, a missing pull request or an agent that
 ends a step's turn twice without a result (one reminder in between) mark the issue `swf:failed` with a comment; a setup
@@ -1212,7 +1248,8 @@ get an answer a second time. Sessions started before the pipeline (issues labell
 are left alone with a warning in the journal.
 
 The target repository takes part with: a `swf` section in hunt.json with the skills of the five agent steps (the
-review's holds the criteria the diff is read against) and `swf.humanReviewPaths`, which the scorer reads; a **scorer**
+review's holds the criteria the diff is read against), optionally their models, efforts, gates and limits of returns,
+and `swf.humanReviewPaths`, which the scorer reads; its `checks`, which the gates run; a **scorer**
 workflow that scores every pull request and, when no human is needed, approves it as its own GitHub App and dismisses
 its stale approval when the head changes; and a ruleset of the base branch that requires one approval, so that the
 scorer's approval lets the poller merge and a withheld one sends the pull request to a person. The poller's GitHub App

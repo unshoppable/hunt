@@ -1,13 +1,13 @@
 //! The skills with which a repository refines the agent steps of Hunt's swf pipeline: `.claude/skills/<name>/SKILL.md`
-//! for each step, named in `swf.skills` of its hunt.json, which must have an entry for every agent step. Opening a session
-//! of a repository whose hunt.json has an `swf` section offers to add the missing entries (under the names of `TEMPLATES`,
-//! `swf-<step>`) and to write the missing files from `TEMPLATES` (`ensureSwfSkills` in `src/guardrails/swf-skills.utils.ts`),
-//! which the command `create_swf_skills` carries out.
+//! for each step, named in `swf.steps.<step>.skill` of its hunt.json or in the older alias `swf.skills.<step>`, one of which
+//! every agent step must set. Opening a session of a repository whose hunt.json has an `swf` section offers to add the
+//! missing entries (under the names of `TEMPLATES`, `swf-<step>`) and to write the missing files from `TEMPLATES`
+//! (`ensureSwfSkills` in `src/guardrails/swf-skills.utils.ts`), which the command `create_swf_skills` carries out.
 
 use std::path::Path;
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::agent::guardrail_skill::{is_skill_name, skill_file};
 
@@ -20,11 +20,11 @@ const TEMPLATES: [(&str, &str); 5] = [
     ("pr", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/swf/swf-pr.skill.md"))),
 ];
 
-/// The repository's Hunt configuration at the root of the worktree, whose `swf.skills` names the skill of each agent step.
+/// The repository's Hunt configuration at the root of the worktree, whose `swf` section names the skill of each agent step.
 const HUNT_JSON: &str = "hunt.json";
 
-/// The skill `name` of the agent step `step` to create unless its file exists and, with `add_entry`, the entry
-/// `swf.skills.<step>` of hunt.json to add unless it exists, as the UI asks for them (`SwfStepSkill` in
+/// The skill `name` of the agent step `step` to create unless its file exists and, with `add_entry`, the entry of the step
+/// to add to hunt.json unless the step names a skill there (`with_entries`), as the UI asks for them (`SwfStepSkill` in
 /// `src/guardrails/guardrail.types.ts`).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,9 +46,9 @@ pub fn render(skill: &StepSkill) -> Result<String, String> {
 }
 
 /// Writes each of `skills` from its template into `worktree` unless its file exists and adds the entry of each with
-/// `add_entry` to `swf.skills` of the worktree's hunt.json unless it exists, after checking them all (nothing is written
-/// when a step or name is invalid or hunt.json has no `swf` object); returns the worktree-relative paths it wrote,
-/// `hunt.json` among them when an entry was added.
+/// `add_entry` to the worktree's hunt.json unless its step names a skill there (`with_entries`), after checking them all
+/// (nothing is written when a step or name is invalid or hunt.json has no `swf` object); returns the worktree-relative
+/// paths it wrote, `hunt.json` among them when an entry was added.
 pub fn ensure(worktree: &Path, skills: &[StepSkill]) -> Result<Vec<String>, String> {
     let rendered = skills.iter().map(|skill| Ok((skill_file(&skill.name), render(skill)?))).collect::<Result<Vec<_>, String>>()?;
     let entries: Vec<&StepSkill> = skills.iter().filter(|skill| skill.add_entry).collect();
@@ -78,30 +78,52 @@ fn read_hunt_json(worktree: &Path) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|error| format!("failed to read {HUNT_JSON}: {error}"))
 }
 
-/// The text of `hunt_json`, which must hold an object `swf` (the dialog only appears for one), with the entry
-/// `swf.skills.<step>` of each of `entries` whose step has none yet, pretty-printed with two spaces and a trailing
-/// newline; None when every entry exists, so that the file keeps its formatting.
+/// The text of `hunt_json`, which must hold an object `swf` (the dialog only appears for one), with the entry of each of
+/// `entries` whose step names no skill yet (`name_skill`), pretty-printed with two spaces and a trailing newline; None when
+/// every step names one, so that the file keeps its formatting.
 fn with_entries(hunt_json: &Value, entries: &[&StepSkill]) -> Result<Option<String>, String> {
     let mut hunt_json = hunt_json.clone();
     let Some(swf) = hunt_json.get_mut("swf").and_then(Value::as_object_mut) else {
         return Err(format!("failed to add the skills to {HUNT_JSON}: it has no swf object"));
     };
-    let Some(skills) = swf.entry("skills").or_insert_with(|| Value::Object(Default::default())).as_object_mut() else {
-        return Err(format!("failed to add the skills to {HUNT_JSON}: swf.skills is no object"));
-    };
     let mut inserted = false;
     for entry in entries {
-        if skills.contains_key(&entry.step) {
-            continue;
+        if !names_skill(swf, &entry.step) {
+            name_skill(swf, entry)?;
+            inserted = true;
         }
-        skills.insert(entry.step.clone(), Value::String(entry.name.clone()));
-        inserted = true;
     }
     if !inserted {
         return Ok(None);
     }
     let text = serde_json::to_string_pretty(&hunt_json).map_err(|error| format!("failed to write {HUNT_JSON}: {error}"))?;
     Ok(Some(format!("{text}\n")))
+}
+
+/// Whether the `swf` object of a hunt.json names a skill for the agent step `step`: `swf.steps.<step>.skill` or the older
+/// alias `swf.skills.<step>` is a non-empty string.
+fn names_skill(swf: &Map<String, Value>, step: &str) -> bool {
+    let named = |value: Option<&Value>| value.and_then(Value::as_str).is_some_and(|name| !name.is_empty());
+    named(swf.get("steps").and_then(|steps| steps.get(step)).and_then(|settings| settings.get("skill")))
+        || named(swf.get("skills").and_then(|skills| skills.get(step)))
+}
+
+/// Names the skill of `entry` for its step in `swf`: as `swf.steps.<step>.skill` when `swf.steps` is an object (creating
+/// the step's object, keeping its other keys), else as `swf.skills.<step>` (creating `swf.skills`).
+fn name_skill(swf: &mut Map<String, Value>, entry: &StepSkill) -> Result<(), String> {
+    let name = Value::String(entry.name.clone());
+    if let Some(steps) = swf.get_mut("steps").and_then(Value::as_object_mut) {
+        let Some(settings) = steps.entry(entry.step.as_str()).or_insert_with(|| Value::Object(Map::new())).as_object_mut() else {
+            return Err(format!("failed to add the skills to {HUNT_JSON}: swf.steps.{} is no object", entry.step));
+        };
+        settings.insert("skill".to_string(), name);
+        return Ok(());
+    }
+    let Some(skills) = swf.entry("skills").or_insert_with(|| Value::Object(Map::new())).as_object_mut() else {
+        return Err(format!("failed to add the skills to {HUNT_JSON}: swf.skills is no object"));
+    };
+    skills.insert(entry.step.clone(), name);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -214,13 +236,62 @@ mod tests {
     }
 
     #[test]
-    fn ensure_leaves_hunt_json_alone_when_every_entry_exists() {
+    fn ensure_adds_the_missing_entries_to_swf_steps_keeping_the_keys_of_each_step() {
         let dir = tempfile::tempdir().unwrap();
-        let original = "{\n    \"swf\": {\"skills\": {\"plan\": \"acme-plan\"}}\n}";
+        let original = r#"{"swf": {"steps": {"plan": {"model": "opus"}, "verify": {"skill": "my-verify"}, "checks": {"maxReturns": 2}}}}"#;
         write_hunt_json(dir.path(), original);
 
-        let written = ensure(dir.path(), &[entry("plan", "swf-plan")]).unwrap();
-        assert_eq!(written, [".claude/skills/swf-plan/SKILL.md"]);
+        let skills = [entry("plan", "swf-plan"), entry("verify", "swf-verify"), entry("pr", "swf-pr")];
+        let written = ensure(dir.path(), &skills).unwrap();
+        let files = [".claude/skills/swf-plan/SKILL.md", ".claude/skills/swf-verify/SKILL.md", ".claude/skills/swf-pr/SKILL.md", HUNT_JSON];
+        assert_eq!(written, files);
+        let expected = concat!(
+            "{\n  \"swf\": {\n    \"steps\": {\n",
+            "      \"plan\": {\n        \"model\": \"opus\",\n        \"skill\": \"swf-plan\"\n      },\n",
+            "      \"verify\": {\n        \"skill\": \"my-verify\"\n      },\n",
+            "      \"checks\": {\n        \"maxReturns\": 2\n      },\n",
+            "      \"pr\": {\n        \"skill\": \"swf-pr\"\n      }\n    }\n  }\n}\n"
+        );
+        assert_eq!(read_hunt_json_text(dir.path()), expected);
+    }
+
+    #[test]
+    fn ensure_takes_either_form_as_the_skill_of_a_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = r#"{"swf": {"steps": {"plan": {"skill": ""}, "review": {}}, "skills": {"review": "acme-review", "plan": ""}}}"#;
+        write_hunt_json(dir.path(), original);
+
+        let written = ensure(dir.path(), &[entry("review", "swf-review"), entry("plan", "swf-plan")]).unwrap();
+        assert_eq!(written, [".claude/skills/swf-review/SKILL.md", ".claude/skills/swf-plan/SKILL.md", HUNT_JSON]);
+        let expected = concat!(
+            "{\n  \"swf\": {\n    \"steps\": {\n",
+            "      \"plan\": {\n        \"skill\": \"swf-plan\"\n      },\n",
+            "      \"review\": {}\n    },\n",
+            "    \"skills\": {\n      \"review\": \"acme-review\",\n      \"plan\": \"\"\n    }\n  }\n}\n"
+        );
+        assert_eq!(read_hunt_json_text(dir.path()), expected);
+    }
+
+    #[test]
+    fn ensure_writes_nothing_for_a_step_of_swf_steps_that_is_no_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = r#"{"swf": {"steps": {"plan": "swf-plan"}}}"#;
+        write_hunt_json(dir.path(), original);
+
+        let error = ensure(dir.path(), &[entry("plan", "swf-plan")]).unwrap_err();
+        assert!(error.contains("swf.steps.plan"), "{error}");
+        assert!(!dir.path().join(".claude").exists());
+        assert_eq!(read_hunt_json_text(dir.path()), original);
+    }
+
+    #[test]
+    fn ensure_leaves_hunt_json_alone_when_every_entry_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = "{\n    \"swf\": {\"steps\": {\"verify\": {\"skill\": \"acme-verify\"}}, \"skills\": {\"plan\": \"acme-plan\"}}\n}";
+        write_hunt_json(dir.path(), original);
+
+        let written = ensure(dir.path(), &[entry("plan", "swf-plan"), entry("verify", "swf-verify")]).unwrap();
+        assert_eq!(written, [".claude/skills/swf-plan/SKILL.md", ".claude/skills/swf-verify/SKILL.md"]);
         assert_eq!(read_hunt_json_text(dir.path()), original);
     }
 

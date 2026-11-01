@@ -7,7 +7,11 @@
  * services), which the gateway's poller (`apps/gateway/src/swf/poller.service.ts`, `swf/pipeline-record.client.ts`)
  * posts when it claims the issue and both services edit in place after every intent, so that a restart loses nothing.
  * `version` is RECORD_VERSION for every record this release writes; a record of an older version is left alone
- * (`fromComment` names the problem), since its steps meant something else.
+ * (`fromComment` names the problem), since its fields meant something else.
+ *
+ * `settings` are the repository's step settings (`step-settings.value-object.ts`) as the poller found them at the claim:
+ * the skill, model and effort of each agent step, the limit of returns of each step that sends the issue back and the
+ * gate of each agent step. The services drive the pipeline by them, never by hunt.json again.
  *
  * `runs` is the pipeline's log: one entry per run of a step, in the order they happened, appended only. A step that runs
  * again gets a new entry; a run that sends the issue back to implement ends as `returned` and the implement run it causes
@@ -19,25 +23,29 @@
  * request and approves it as its own GitHub App when no person has to review, and the repository's ruleset requires
  * one approval, so a pull request whose checks passed without an approval waits for a person. Findings of verify, of
  * the review, of the checks (a failing check) or of the merge (conflicts) send the issue back to implement, which then
- * runs verify and review again before the pull request is checked once more.
+ * runs verify and review again before the pull request is checked once more. Each returning step counts its returns
+ * (`returns`) against its own limit (`maxReturns`); past it the implement step is an escalation, the agent asks the
+ * people, and that step counts anew.
+ *
+ * An agent step whose settings name a gate is finished only when the gate's checks pass on its result: the runner runs
+ * them and, on a failure, gives the result back to the agent in the same conversation (`noteGateFailure`). `gateRuns`
+ * counts those failures of the current run; past `maxGateRuns` the agent is asked to escalate (`gateEscalates`). A gate
+ * failure is no return.
  */
 import * as z from "zod/mini";
 import { DomainModel } from "../model/domain.model.ts";
 import { isRecord } from "../shared/json-rpc.utils.ts";
 import type { ParsedStepResult } from "./step-result.utils.ts";
-import { AGENT_STEPS, isAgentStep, SWF_STEPS, type AgentStep, type SwfStep } from "./swf-step.types.ts";
+import { isReturningStep, RETURNING_STEPS, StepSettings, type ReturningStep, type StepSetting } from "./step-settings.value-object.ts";
+import { isAgentStep, SWF_STEPS, type AgentStep, type SwfStep } from "./swf-step.types.ts";
 import { UnusableStepResult } from "./unusable-step-result.error.ts";
 
-/** How often the issue may go back to implement before the agent has to ask the humans instead. */
-export const MAX_ATTEMPTS = 5;
 /** The version of the records this release writes and drives; see the module comment. */
-export const RECORD_VERSION = 3;
+export const RECORD_VERSION = 4;
 /** `<!-- hunt:pipeline {…} -->` in the poller's record comment; the JSON object is the first group. */
 const RECORD_MARKER = /<!--\s*hunt:pipeline\s+(\{[\s\S]*?\})\s*-->/;
 const FINDINGS_LIMIT = 20;
 const FINDING_LIMIT = 4000;
-/** The steps whose findings send the issue back to implement. */
-const CHECKING_STEPS: readonly SwfStep[] = ["verify", "review", "checks", "human-review", "merge"];
 
 /**
  * How a run of a step ended: `passed` on to the next step, `returned` back to implement with findings, `failed` when
@@ -68,13 +76,13 @@ const ZodStrings = z.pipe(
   z.transform((entries) => entries.filter((entry): entry is string => typeof entry === "string")),
 );
 
-/** The skill of every agent step, as `swf.skills` of the repository's hunt.json names them; Hunt has no default for a step. */
-const ZodStepSkills = z.record(z.enum(AGENT_STEPS), z.string().check(z.minLength(1)));
+/** How often each returning step sent the issue back; a value that is no such map counts as none. */
+const ZodReturns = z.catch(z.partialRecord(z.enum(RETURNING_STEPS), z.int().check(z.nonnegative())), () => ({}));
 
 /**
  * The record. A field that a record lacks or holds with another type falls back to its value at the start; only a record
- * of a version below RECORD_VERSION, one without a step of the pipeline, one without the skill of every agent step, or
- * one that breaks a refine, is unusable.
+ * of a version below RECORD_VERSION, one without a step of the pipeline, one without usable step settings, or one that
+ * breaks a refine, is unusable.
  */
 const ZodPipelineState = z
   .object({
@@ -87,11 +95,13 @@ const ZodPipelineState = z
     /** The id of the record comment on the issue, so that the runner can edit it; 0 until the poller posted it. */
     recordId: z.catch(z.int(), 0),
     step: z.enum(SWF_STEPS),
-    /** How often the issue went back to implement since the last plan or escalation. */
-    attempt: z.catch(z.int(), 0),
+    /** How often each returning step sent the issue back to implement since the plan or since that step's last escalation. */
+    returns: ZodReturns,
+    /** How often the result of the current step's run failed its gate. */
+    gateRuns: z.catch(z.int().check(z.nonnegative()), 0),
     pullRequest: z.catch(z.nullable(z.number()), null),
-    /** The repository's skill of every agent step (`swf.skills` of its hunt.json), named in the step's prompt; exactly the five, each non-empty. */
-    skills: ZodStepSkills,
+    /** The repository's step settings as the poller found them at the claim; see the module comment. */
+    settings: StepSettings.createParser(),
     /** What the current implement step is to fix; empty for the first implementation of the plan. */
     findings: ZodStrings,
     /** Whether the current implement step is an escalation: the agent is to ask the humans instead of fixing on its own. */
@@ -165,10 +175,10 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
   }
 
   /**
-   * The pipeline of the newly claimed `issue`: at plan, with nothing sent or acted on yet, of RECORD_VERSION; `skills` is
-   * the repository's skill of every agent step, `now` the time in ms the first run starts at.
+   * The pipeline of the newly claimed `issue`: at plan, with nothing sent or acted on yet, of RECORD_VERSION; `settings`
+   * are the repository's step settings, `now` the time in ms the first run starts at.
    */
-  static start(issue: SwfIssue, skills: Record<AgentStep, string>, now: number): Pipeline {
+  static start(issue: SwfIssue, settings: StepSettings, now: number): Pipeline {
     return new Pipeline({
       version: RECORD_VERSION,
       repo: issue.repo,
@@ -176,9 +186,10 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
       branch: issue.branch,
       recordId: 0,
       step: "plan",
-      attempt: 0,
+      returns: {},
+      gateRuns: 0,
       pullRequest: null,
-      skills,
+      settings,
       findings: [],
       escalate: false,
       promptTurn: null,
@@ -194,7 +205,7 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
 
   /**
    * The pipeline in the body of a record comment (`toComment`), or the problem with the record: one of a version below
-   * RECORD_VERSION (a record without a version is of version 1, from before Hunt recorded one), whose steps meant
+   * RECORD_VERSION (a record without a version is of version 1, from before Hunt recorded one), whose fields meant
    * something else, is left alone; one the schema rejects is unusable. Null when `body` carries no record marker.
    */
   static fromComment(body: string): ParsedRecord | null {
@@ -222,8 +233,11 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
   /** One line on where the pipeline stands, for the people who read the issue. */
   get statusLine(): string {
     const parts = [`**Hunt:** step \`${this.step}\``];
-    if (this.attempt > 0) {
-      parts.push(`attempt ${this.attempt} of ${MAX_ATTEMPTS}`);
+    for (const step of RETURNING_STEPS) {
+      const count = this.returnsOf(step);
+      if (count > 0) {
+        parts.push(`${this.returnCountOf(step)} (${step})`);
+      }
     }
     if (this.pullRequest !== null) {
       parts.push(`pull request #${this.pullRequest}`);
@@ -247,6 +261,25 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     return undefined;
   }
 
+  /**
+   * The step that sent the issue back to the current implement run: the step of the last run that ended as returned since
+   * the plan. Null at another step than implement, for the plan's own implementation and for a record without runs.
+   */
+  get causeOf(): ReturningStep | null {
+    if (this.step !== "implement") return null;
+    for (let index = this.runs.length - 1; index >= 0; index--) {
+      const run = this.runs[index];
+      if (run.step === "plan") return null;
+      if (run.outcome === "returned" && isReturningStep(run.step)) return run.step;
+    }
+    return null;
+  }
+
+  /** Whether the current step's result failed its gate more often than the settings allow, so that the agent is to escalate. */
+  get gateEscalates(): boolean {
+    return this.gateRuns > this.settings.maxGateRuns;
+  }
+
   /** Whether the agent ended a turn since its last prompt; `lastTurnEndedAt` is the relay's. False while no prompt was sent. */
   hasTurnEndedSincePrompt(lastTurnEndedAt: number): boolean {
     return this.promptTurn !== null && lastTurnEndedAt !== this.promptTurn;
@@ -254,7 +287,38 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
 
   /** The repository's skill for the agent step `step`, the one its hunt.json names. */
   skillOf(step: AgentStep): string {
-    return this.skills[step];
+    return this.settings.skillOf(step);
+  }
+
+  /** The settings of `step`. */
+  settingsOf(step: SwfStep): StepSetting {
+    return this.settings.of(step);
+  }
+
+  /** How often `step` sent the issue back since the plan or since its last escalation; 0 for a step that never does. */
+  returnsOf(step: SwfStep): number {
+    return isReturningStep(step) ? (this.returns[step] ?? 0) : 0;
+  }
+
+  /** The returns of `step` against its limit as the status line and the implement prompt say them: `return n of m`, `return n` without a limit. */
+  returnCountOf(step: SwfStep): string {
+    const limit = this.limitOf(step);
+    return limit === null ? `return ${this.returnsOf(step)}` : `return ${this.returnsOf(step)} of ${limit}`;
+  }
+
+  /** How often `step` may send the issue back before the agent escalates; null for a step without a limit. */
+  limitOf(step: SwfStep): number | null {
+    return this.settings.limitOf(step);
+  }
+
+  /** The checks of hunt.json that must pass on the result of `step`, in the order of hunt.json; empty for no gate. */
+  gateOf(step: SwfStep): string[] {
+    return this.settings.of(step).gate;
+  }
+
+  /** The config options of the conversation of the agent step `step`: `model` and `effort` where set. */
+  configOptionsOf(step: AgentStep): Record<string, string> {
+    return this.settings.configOptionsOf(step);
   }
 
   /**
@@ -289,6 +353,7 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
    * that carries the result when the poller reads it from the issue, null for the result the runner reads from
    * `.hunt/swf/result.md`. Throws UnusableStepResult with the problem for a text without a usable result and for the
    * result of another step than the current one. `now` is the time in ms the step's run ends and the next one starts at.
+   * The plan's result starts the counts anew: no returns, no escalation.
    */
   acceptResult(reported: ParsedStepResult | null, resultId: number | null, now: number): void {
     if (resultId !== null) {
@@ -303,7 +368,7 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
       switch (result.step) {
         case "plan":
           this.moveTo("implement", now);
-          this.attempt = 0;
+          this.returns = {};
           this.findings = [];
           this.escalate = false;
           break;
@@ -349,6 +414,20 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     });
   }
 
+  /**
+   * The result of the current agent step failed its gate and went back to the agent, whose turn had ended at
+   * `lastTurnEndedAt` (0: none had): the failure is counted, the step stays, the result is history and the agent's next
+   * turn counts as the answer to it, as after `dismissResult`. No return: the returns stay as they are.
+   */
+  noteGateFailure(lastTurnEndedAt: number): void {
+    if (!this.waitsForAgent) throw new Error(`the step ${this.step} waits for GitHub and has no gate`);
+    this.changeState(() => {
+      this.gateRuns += 1;
+      this.promptTurn = lastTurnEndedAt;
+      this.reminded = false;
+    });
+  }
+
   /** The prompt of the current agent step went to the agent, whose turn had ended at `lastTurnEndedAt` (0: none had). */
   recordPrompt(lastTurnEndedAt: number): void {
     if (!this.waitsForAgent) throw new Error(`the step ${this.step} has no prompt for the agent`);
@@ -380,13 +459,13 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
   }
 
   /**
-   * Findings of a step that checks the implementation (verify, review, checks, human-review, merge) send the issue back
-   * to implement: the attempt is counted, past MAX_ATTEMPTS the agent escalates to the humans and the count starts anew.
+   * Findings of a returning step (verify, review, checks, human-review, merge) send the issue back to implement: the
+   * return is counted for the step, past the step's limit the agent escalates to the people and the step counts anew.
    * Empty findings are dropped; at most FINDINGS_LIMIT of FINDING_LIMIT characters each are kept. `now` is the time in
    * ms the step's run ends at.
    */
   sendBackToImplement(findings: string[], now: number): void {
-    if (!CHECKING_STEPS.includes(this.step)) throw new Error(`the step ${this.step} checks nothing that could send the issue back to implement`);
+    if (!isReturningStep(this.step)) throw new Error(`the step ${this.step} checks nothing that could send the issue back to implement`);
     this.changeState(() => this.returnToImplement(findings, now));
   }
 
@@ -473,13 +552,14 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
 
   /**
    * Enters `step` at `now`: the current run ends as `outcome`, a run of `step` starts (with `cause`, the run that sent the
-   * issue back); no prompt sent, no reminder, no merge requested yet.
+   * issue back); no prompt sent, no reminder, no gate failure, no merge requested yet.
    */
   private moveTo(step: SwfStep, now: number, outcome: Exclude<RunOutcome, "running"> = "passed", cause?: number): void {
     this.endRun(outcome, now);
     this.step = step;
     this.promptTurn = null;
     this.reminded = false;
+    this.gateRuns = 0;
     this.mergeSha = null;
     const run: Run = { n: this.runs.length + 1, step, startedAt: isoOf(now), endedAt: null, outcome: "running" };
     if (cause !== undefined) run.cause = cause;
@@ -495,16 +575,20 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     this.runs = [...this.runs.slice(0, -1), ended];
   }
 
-  /** Enters implement to fix `findings`; see `sendBackToImplement`. */
+  /** Enters implement to fix `findings` of the current step, which must be a returning one; see `sendBackToImplement`. */
   private returnToImplement(findings: string[], now: number): void {
-    const attempt = this.attempt + 1;
+    const cause = this.step;
+    if (!isReturningStep(cause)) throw new Error(`the step ${cause} cannot send the issue back to implement`);
+    const count = this.returnsOf(cause) + 1;
+    const limit = this.limitOf(cause);
+    const escalate = limit !== null && count > limit;
     const kept = findings.filter((finding) => finding.trim() !== "").slice(0, FINDINGS_LIMIT).map((finding) => finding.slice(0, FINDING_LIMIT));
-    const cause = runningRun(this.runs)?.n;
+    const causeRun = runningRun(this.runs)?.n;
     this.endRun("returned", now, kept.length);
-    this.moveTo("implement", now, "passed", cause);
+    this.moveTo("implement", now, "passed", causeRun);
     this.findings = kept;
-    this.escalate = attempt > MAX_ATTEMPTS;
-    this.attempt = this.escalate ? 0 : attempt;
+    this.escalate = escalate;
+    this.returns = { ...this.returns, [cause]: escalate ? 0 : count };
   }
 
   /** Whether the review `reviewId` is newer than the last change request that went back to the agent. */
@@ -524,15 +608,20 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
 }
 
 /**
- * The skill of every agent step in `value` (`swf_skills` of `hunt-ctl session-config`), in the order of the steps, or the
- * steps `value` names no skill for (no object, no entry or an empty one); entries of other steps are dropped. Hunt has no
- * default for a step, so a session of a repository whose hunt.json leaves one out cannot start.
+ * The step settings in `value` (`swf_steps` of `hunt-ctl session-config`), or the problem with them: settings the schema
+ * rejects, or settings without the skill of every agent step. Hunt has no default skill, so a session of a repository
+ * whose hunt.json leaves one out cannot start.
  */
-export function stepSkills(value: unknown): { skills: Record<AgentStep, string>; missing?: undefined } | { skills?: undefined; missing: AgentStep[] } {
-  const named = isRecord(value) ? value : {};
-  const missing = AGENT_STEPS.filter((step) => typeof named[step] !== "string" || !named[step]);
-  if (missing.length > 0) return { missing };
-  return { skills: ZodStepSkills.parse(Object.fromEntries(AGENT_STEPS.map((step) => [step, named[step]]))) };
+export function stepSettings(value: unknown): { settings: StepSettings; problem?: undefined } | { settings?: undefined; problem: string } {
+  const parsed = StepSettings.schema.safeParse(value);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((issue) => (issue.path.length > 0 ? `${issue.path.join(".")}: ${issue.message}` : issue.message));
+    return { problem: `the step settings are unusable (${issues.join("; ")})` };
+  }
+  const settings = new StepSettings(parsed.data);
+  const missing = settings.stepsWithoutSkill;
+  if (missing.length > 0) return { problem: `the step settings name no skill for ${missing.length === 1 ? "the step" : "the steps"} ${missing.join(", ")}` };
+  return { settings };
 }
 
 /** `now`, a time in ms, as ISO 8601. */

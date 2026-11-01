@@ -64,7 +64,7 @@ function fakeGitHub(thread: IssueComment[] = []): GitHub & { calls: string[] } {
 describe("PipelineRecordClient.find", () => {
   const thread: IssueComment[] = [
     { id: 1, author: BOT_NAME, createdAt: "", body: pipelineAt("plan").toComment() },
-    { id: 2, author: BOT_NAME, createdAt: "", body: pipelineAt("verify", { attempt: 2 }).toComment() },
+    { id: 2, author: BOT_NAME, createdAt: "", body: pipelineAt("verify", { returns: { verify: 2 } }).toComment() },
     { id: 3, author: "mallory", createdAt: "", body: pipelineAt("merge", { pullRequest: PULL_REQUEST }).toComment() },
     { id: 4, author: BOT_NAME, createdAt: "", body: "Hunt started a session for this issue." },
   ];
@@ -72,7 +72,7 @@ describe("PipelineRecordClient.find", () => {
   it("takes the latest record comment of the bot and ignores records anyone else posted, from the comments it is given", async () => {
     const github = fakeGitHub();
     const records = new PipelineRecordClient(github);
-    expect(await records.find(REPO, 12, BOT_NAME, thread)).toEqual({ commentId: 2, pipeline: pipelineAt("verify", { attempt: 2 }) });
+    expect(await records.find(REPO, 12, BOT_NAME, thread)).toEqual({ commentId: 2, pipeline: pipelineAt("verify", { returns: { verify: 2 } }) });
     expect(await records.find(REPO, 12, BOT_NAME, thread.slice(2))).toBeNull();
     expect(github.calls).toEqual([]);
   });
@@ -88,7 +88,7 @@ describe("PipelineRecordClient.find", () => {
   it("reads the issue's comments when it is given none", async () => {
     const github = fakeGitHub(thread);
     const found = await new PipelineRecordClient(github).find(REPO, 12, BOT_NAME);
-    expect(found).toEqual({ commentId: 2, pipeline: pipelineAt("verify", { attempt: 2 }) });
+    expect(found).toEqual({ commentId: 2, pipeline: pipelineAt("verify", { returns: { verify: 2 } }) });
     expect(github.calls).toEqual(["comments acme/app#12"]);
   });
 });

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { AGENT_STEPS } from "../../../../libs/domain/src/swf/swf-step.types.ts";
+import { AGENT_STEPS, SWF_STEPS } from "../../../../libs/domain/src/swf/swf-step.types.ts";
 import { ConfigError } from "./config.error.ts";
 import { GLOB_PATTERN_RULE } from "./hunt-json.rules.ts";
 import { HuntJson } from "./hunt-json.value-object.ts";
@@ -35,6 +35,12 @@ const SKILLS_RULE = "must name the skill of every agent step (plan, implement, v
 const STEP_SKILL_RULE = "must name the skill of the step; Hunt asks to add it when a session of the repository opens";
 /** The skill of every agent step as a hunt.json names them under `swf.skills`. */
 const SKILLS = { plan: "swf-plan", implement: "swf-implement", verify: "swf-verify", review: "swf-review", pr: "swf-pr" };
+/** The same skills as a hunt.json names them under `swf.steps`. */
+const STEPS = Object.fromEntries(AGENT_STEPS.map((step) => [step, { skill: SKILLS[step] }]));
+const EFFORT_RULE = "must be one of low, medium, high, xhigh, max";
+const MAX_RETURNS_RULE = "must be an integer from 1 to 20";
+const MAX_RETURNS_STEP_RULE = "only a step that sends the pipeline back has maxReturns (verify, review, checks, human-review, merge)";
+const GATE_RULE = 'must be "*" for every check or a list of at most 32 names of checks';
 const MISSING_SECRET = "services.web.remoteSecrets.OPENAI_API_KEY: no remote secret MED_OPENAI_API_KEY; set it in Hunt under Settings → Remote VM";
 
 /** A hunt.json with every field: a forward and a self reference, a folder, TLS and two services that are not guarded. */
@@ -156,17 +162,65 @@ describe("HuntJson services", () => {
       ...["", "Guardrail", "guard rail", "-guardrail", "a--b", "a".repeat(65), 1].map((guardrailSkill): [unknown, string[]] => [{ ...web({}), guardrailSkill }, [`guardrailSkill: ${SKILL_NAME_RULE}`]]),
       ...["/srv/declines.jsonl", "../declines.jsonl", "", 1].map((declinedGuardrailsFile): [unknown, string[]] => [{ ...web({}), declinedGuardrailsFile }, [`declinedGuardrailsFile: ${FILE_RULE}`]]),
       [{ ...web({}), swf: "claude-opus-5-5" }, ["swf: must be an object"]],
-      [{ ...web({}), swf: { model: "claude-opus-5-5", humanReviewPaths: ["**/migrations/**"], skills: SKILLS, effort: "high" } }, ["swf.effort: unknown field"]],
-      [{ ...web({}), swf: {} }, [`swf.skills: ${SKILLS_RULE}`]],
-      [{ ...web({}), swf: { model: "claude-opus-5-5", humanReviewPaths: ["**/migrations/**"] } }, [`swf.skills: ${SKILLS_RULE}`]],
-      [{ ...web({}), swf: { skills: {} } }, AGENT_STEPS.map((step) => `swf.skills.${step}: ${STEP_SKILL_RULE}`)],
-      [{ ...web({}), swf: { skills: { plan: "swf-plan", implement: "swf-implement", verify: "swf-verify", review: "swf-review" } } }, [`swf.skills.pr: ${STEP_SKILL_RULE}`]],
-      [{ ...web({}), swf: { skills: { pr: "swf-pr", plan: "swf-plan" } } }, ["implement", "verify", "review"].map((step) => `swf.skills.${step}: ${STEP_SKILL_RULE}`)],
+      [{ ...web({}), swf: { model: "claude-opus-5-5", effort: "high", humanReviewPaths: ["**/migrations/**"], skills: SKILLS, color: "red" } }, ["swf.color: unknown field"]],
+      [{ ...web({}), swf: {} }, [`swf.steps: ${SKILLS_RULE}`]],
+      [{ ...web({}), swf: { model: "claude-opus-5-5", humanReviewPaths: ["**/migrations/**"] } }, [`swf.steps: ${SKILLS_RULE}`]],
+      [{ ...web({}), swf: { skills: {} } }, AGENT_STEPS.map((step) => `swf.steps.${step}.skill: ${STEP_SKILL_RULE}`)],
+      [{ ...web({}), swf: { steps: {} } }, AGENT_STEPS.map((step) => `swf.steps.${step}.skill: ${STEP_SKILL_RULE}`)],
+      [{ ...web({}), swf: { skills: { plan: "swf-plan", implement: "swf-implement", verify: "swf-verify", review: "swf-review" } } }, [`swf.steps.pr.skill: ${STEP_SKILL_RULE}`]],
+      [{ ...web({}), swf: { skills: { pr: "swf-pr", plan: "swf-plan" } } }, ["implement", "verify", "review"].map((step) => `swf.steps.${step}.skill: ${STEP_SKILL_RULE}`)],
+      [{ ...web({}), swf: { steps: { ...STEPS, review: { effort: "max" } }, skills: { plan: "swf-plan" } } }, [`swf.steps.review.skill: ${STEP_SKILL_RULE}`]],
       ...["swf-plan", ["swf-plan"], 1, null].map((skills): [unknown, string[]] => [{ ...web({}), swf: { skills } }, ["swf.skills: must be an object"]]),
+      ...["swf-plan", ["swf-plan"], 1, null].map((steps): [unknown, string[]] => [{ ...web({}), swf: { steps } }, ["swf.steps: must be an object"]]),
+      [{ ...web({}), swf: { steps: { ...STEPS, plan: "swf-plan" } } }, ["swf.steps.plan: must be an object"]],
       [
         { ...web({}), swf: { skills: { plan: "swf-plan", checks: "swf-checks", merge: "swf-merge" } } },
-        ["swf.skills.checks: unknown field", "swf.skills.merge: unknown field", ...["implement", "verify", "review", "pr"].map((step) => `swf.skills.${step}: ${STEP_SKILL_RULE}`)],
+        ["swf.skills.checks: unknown field", "swf.skills.merge: unknown field", ...["implement", "verify", "review", "pr"].map((step) => `swf.steps.${step}.skill: ${STEP_SKILL_RULE}`)],
       ],
+      [
+        { ...web({}), swf: { steps: { ...STEPS, deploy: {}, plan: { skill: "swf-plan", color: "red" } } } },
+        ["swf.steps.deploy: unknown field", "swf.steps.plan.color: unknown field"],
+      ],
+      [
+        { ...web({}), swf: { steps: { ...STEPS, plan: { skill: "acme-plan" }, pr: { skill: "swf-pr" } }, skills: { ...SKILLS, review: "acme-review" } } },
+        ["swf.steps.plan.skill: differs from swf.skills.plan", "swf.steps.review.skill: differs from swf.skills.review"],
+      ],
+      [
+        { ...lint({}), swf: { steps: { ...STEPS, checks: { skill: "swf-checks", model: "claude-opus-5-5", effort: "low", maxReturns: 2, gate: "*" }, merge: { skill: "swf-merge" } } } },
+        [
+          "swf.steps.checks.skill: only an agent step has a skill",
+          "swf.steps.checks.model: only an agent step has a model",
+          "swf.steps.checks.effort: only an agent step has an effort",
+          "swf.steps.checks.gate: only an agent step has a gate",
+          "swf.steps.merge.skill: only an agent step has a skill",
+        ],
+      ],
+      ...["plan", "implement", "pr"].map((step): [unknown, string[]] => [
+        { ...web({}), swf: { steps: { ...STEPS, [step]: { skill: `swf-${step}`, maxReturns: 2 } } } },
+        [`swf.steps.${step}.maxReturns: ${MAX_RETURNS_STEP_RULE}`],
+      ]),
+      ...["extreme", "High", "", 1, null].map((effort): [unknown, string[]] => [
+        { ...web({}), swf: { effort, steps: { ...STEPS, review: { skill: "swf-review", effort } } } },
+        [`swf.effort: ${EFFORT_RULE}`, `swf.steps.review.effort: ${EFFORT_RULE}`],
+      ]),
+      ...[0, -1, 1.5, "5", null].map((maxGateRuns): [unknown, string[]] => [{ ...web({}), swf: { maxGateRuns, skills: SKILLS } }, ["swf.maxGateRuns: must be an integer of at least 1"]]),
+      ...[0, 21, 2.5, "3", null].map((maxReturns): [unknown, string[]] => [
+        { ...web({}), swf: { steps: { ...STEPS, verify: { skill: "swf-verify", maxReturns }, "human-review": { maxReturns } } } },
+        [`swf.steps.verify.maxReturns: ${MAX_RETURNS_RULE}`, `swf.steps.human-review.maxReturns: ${MAX_RETURNS_RULE}`],
+      ]),
+      ...["all", "", 1, null, { lint: true }, Array.from({ length: 33 }, () => "lint")].map((gate): [unknown, string[]] => [
+        { ...lint({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", gate } } } },
+        [`swf.steps.implement.gate: ${GATE_RULE}`],
+      ]),
+      [
+        { ...lint({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", gate: ["lint", "Lint", "test"] } } } },
+        [`swf.steps.implement.gate[1]: ${NAME_RULE}`],
+      ],
+      [
+        { ...lint({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", gate: ["lint", "test"] }, review: { skill: "swf-review", gate: ["format"] } } } },
+        ["swf.steps.implement.gate: no such check test", "swf.steps.review.gate: no such check format"],
+      ],
+      [{ ...web({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", gate: ["lint"] } } } }, ["swf.steps.implement.gate: no such check lint"]],
       ...["", "Swf-Plan", "swf plan", "-swf-plan", "a--b", "a".repeat(65), 1, null].map((plan): [unknown, string[]] => [
         { ...web({}), swf: { skills: { ...SKILLS, plan } } },
         [`swf.skills.plan: ${SKILL_NAME_RULE}`],
@@ -175,6 +229,10 @@ describe("HuntJson services", () => {
         { ...web({}), swf: { skills: { plan: "swf-plan", implement: 1, verify: "swf-verify", review: "", pr: "swf-pr" } } },
         [`swf.skills.implement: ${SKILL_NAME_RULE}`, `swf.skills.review: ${SKILL_NAME_RULE}`],
       ],
+      ...["", "Swf-Plan", 1, null].map((skill): [unknown, string[]] => [
+        { ...web({}), swf: { model: "opus", steps: { ...STEPS, plan: { skill, model: "sonnet" } } } },
+        [`swf.model: ${MODEL_RULE}`, `swf.steps.plan.skill: ${SKILL_NAME_RULE}`, `swf.steps.plan.model: ${MODEL_RULE}`],
+      ]),
       ...["**/migrations/**", Array.from({ length: 65 }, () => "**/migrations/**")].map((humanReviewPaths): [unknown, string[]] => [
         { ...web({}), swf: { humanReviewPaths, skills: SKILLS } },
         ["swf.humanReviewPaths: must be a list of at most 64 glob patterns"],
@@ -394,10 +452,58 @@ describe("HuntJson", () => {
     expect(HuntJson.fromDocument(undefined).huntJson?.isEqualTo(HuntJson.none())).toBe(true);
   });
 
-  it("has swf settings only with the swf section, with the skill of every agent step as it names them", () => {
+  it("has swf settings only with the swf section, the skills of swf.skills merged into the steps", () => {
     expect(huntJsonOf(web({})).swf).toBeNull();
-    expect(huntJsonOf({ ...web({}), swf: { skills: SKILLS } }).swf?.isEqualTo(new SwfSettings({ skills: SKILLS }))).toBe(true);
-    expect(huntJsonOf({ ...web({}), swf: { skills: { ...SKILLS, verify: "acme-verify" } } }).swf?.skills).toEqual({ ...SKILLS, verify: "acme-verify" });
+    expect(huntJsonOf(web({})).stepSettings).toBeNull();
+    expect(huntJsonOf({ ...web({}), swf: { skills: SKILLS } }).swf?.isEqualTo(new SwfSettings({ steps: STEPS }))).toBe(true);
+    expect(huntJsonOf({ ...web({}), swf: { steps: STEPS, skills: SKILLS } }).swf?.isEqualTo(new SwfSettings({ steps: STEPS }))).toBe(true);
+    const mixed = { steps: { plan: { skill: "acme-plan" }, implement: { gate: [] } }, skills: { implement: "swf-implement", verify: "swf-verify", review: "swf-review", pr: "swf-pr" } };
+    expect(huntJsonOf({ ...web({}), swf: mixed }).stepSettings?.steps).toMatchObject({ plan: { skill: "acme-plan" }, implement: { skill: "swf-implement", gate: [] } });
+  });
+
+  it("resolves the settings of every step of a section that names only the skills, with every check as the gate of implement", () => {
+    const checks = Object.fromEntries(["format-check", "i18n-check", "lint", "test", "build", "generate-types"].map((name) => [name, { command: `npm run ${name}` }]));
+    const huntJson = huntJsonOf({ ...web({}), swf: { model: "claude-opus-5-5", humanReviewPaths: ["apps/*/backend/src/migrations/**", "hunt.json"], skills: SKILLS }, checks });
+    const unset = { effort: null, gate: [] };
+    expect(huntJson.stepSettings?.toJSON()).toEqual({
+      maxGateRuns: 5,
+      steps: {
+        plan: { skill: "swf-plan", model: "claude-opus-5-5", ...unset, maxReturns: null },
+        implement: { skill: "swf-implement", model: "claude-opus-5-5", ...unset, maxReturns: null, gate: Object.keys(checks) },
+        verify: { skill: "swf-verify", model: "claude-opus-5-5", ...unset, maxReturns: 5 },
+        review: { skill: "swf-review", model: "claude-opus-5-5", ...unset, maxReturns: 3 },
+        pr: { skill: "swf-pr", model: "claude-opus-5-5", ...unset, maxReturns: null },
+        checks: { skill: null, model: null, ...unset, maxReturns: 2 },
+        "human-review": { skill: null, model: null, ...unset, maxReturns: 3 },
+        merge: { skill: null, model: null, ...unset, maxReturns: 2 },
+      },
+    });
+  });
+
+  it("resolves the settings each step sets over the section's and expands its gate in the order of the checks", () => {
+    const swf = {
+      model: "claude-opus-5-5",
+      effort: "high",
+      maxGateRuns: 3,
+      steps: {
+        plan: { skill: "swf-plan" },
+        implement: { skill: "swf-implement", model: "claude-sonnet-5-5", effort: "medium", gate: ["test", "lint"] },
+        verify: { skill: "swf-verify", maxReturns: 7 },
+        review: { skill: "swf-review", effort: "max", gate: "*" },
+        pr: { skill: "swf-pr" },
+        merge: { maxReturns: 1 },
+      },
+    };
+    const settings = huntJsonOf({ ...web({}), swf, checks: { lint: { command: "npm run lint" }, test: { command: "npm test" }, build: { command: "npm run build" } } }).stepSettings;
+    expect(settings?.maxGateRuns).toBe(3);
+    expect(settings?.steps).toMatchObject({
+      plan: { model: "claude-opus-5-5", effort: "high", gate: [] },
+      implement: { model: "claude-sonnet-5-5", effort: "medium", gate: ["lint", "test"] },
+      verify: { maxReturns: 7 },
+      review: { effort: "max", maxReturns: 3, gate: ["lint", "test", "build"] },
+      merge: { maxReturns: 1 },
+    });
+    expect(huntJsonOf({ ...web({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", gate: "*" } } } }).stepSettings?.of("implement").gate).toEqual([]);
   });
 
   it("reports the remote secrets that do not exist after every other problem, only when it knows the existing ones", () => {
@@ -409,10 +515,13 @@ describe("HuntJson", () => {
     ]);
   });
 
-  it("refuses services that share a port or name a service it does not hold", () => {
+  it("refuses services that share a port or name a service it does not hold, and gates that name a check it does not hold", () => {
     const service = { name: "web", command: "npm start", port: 3000 };
     expect(() => new HuntJson({ services: [service, { ...service, name: "api" }] })).toThrow(/a port of its own/);
     expect(() => new HuntJson({ services: [{ ...service, env: { API: "${services.api.publicUrl}" } }] })).toThrow(/names a service of hunt.json/);
+    const swf = { steps: { ...STEPS, review: { skill: "swf-review", gate: ["lint"] } } };
+    expect(() => new HuntJson({ swf })).toThrow(/every gate names a check of hunt.json/);
+    expect(new HuntJson({ swf, checks: [{ name: "lint", command: "npm run lint" }] }).stepSettings?.of("review").gate).toEqual(["lint"]);
   });
 });
 
@@ -490,11 +599,11 @@ describe("environments", () => {
   });
 
   it("reads the model of swf sessions, none without the swf section or its model", () => {
-    expect(config.swfModel).toBeNull();
-    expect(buildSessionConfig(undefined, HOST, WORKTREE).swfModel).toBeNull();
-    expect(buildSessionConfig({ ...web({}), swf: { skills: SKILLS } }, HOST, WORKTREE).swfModel).toBeNull();
+    expect(config.swfSteps).toBeNull();
+    expect(buildSessionConfig(undefined, HOST, WORKTREE).swfSteps).toBeNull();
+    expect(buildSessionConfig({ ...web({}), swf: { skills: SKILLS } }, HOST, WORKTREE).swfSteps?.of("plan").model).toBeNull();
     for (const model of ["claude-opus-5-5", "claude-haiku-4-5-20251001", "claude-sonnet-5-5[1m]", "claude-3.7-sonnet", `claude-${"x".repeat(121)}`]) {
-      expect(buildSessionConfig({ ...web({}), swf: { model, skills: SKILLS } }, HOST, WORKTREE).swfModel).toBe(model);
+      expect(buildSessionConfig({ ...web({}), swf: { model, skills: SKILLS } }, HOST, WORKTREE).swfSteps?.of("plan").model).toBe(model);
     }
   });
 
@@ -508,17 +617,20 @@ describe("environments", () => {
       ...Array.from({ length: 60 }, (_unused, index) => `apps/${index}/**`),
     ];
     const config = buildSessionConfig({ ...web({}), swf: { humanReviewPaths, skills: SKILLS } }, HOST, WORKTREE);
-    expect(config).toMatchObject({ swfModel: null, swfSkills: SKILLS });
+    expect(config.swfSteps?.isEqualTo(huntJsonOf({ ...web({}), swf: { skills: SKILLS } }).stepSettings)).toBe(true);
     expect(JSON.stringify(config)).not.toContain("migrations");
   });
 
   it("reads the skill of every agent step of swf sessions as hunt.json names them, in the order of the steps, and none without the swf section", () => {
-    expect(config.swfSkills).toBeNull();
-    expect(buildSessionConfig(undefined, HOST, WORKTREE).swfSkills).toBeNull();
+    const skillsOf = (swf: unknown) => {
+      const steps = buildSessionConfig({ ...web({}), swf }, HOST, WORKTREE).swfSteps;
+      return steps && AGENT_STEPS.map((step) => steps.skillOf(step));
+    };
     const skills = { plan: "swf-plan", implement: "swf-implement-2", verify: "a".repeat(64), review: "swf-review", pr: "pr" };
-    expect(buildSessionConfig({ ...web({}), swf: { skills } }, HOST, WORKTREE)).toMatchObject({ swfModel: null, swfSkills: skills });
+    expect(skillsOf({ skills })).toEqual(Object.values(skills));
     const unordered = { pr: "a-pr", review: "a-review", verify: "a-verify", implement: "a-implement", plan: "a-plan" };
-    expect(Object.keys(buildSessionConfig({ ...web({}), swf: { skills: unordered } }, HOST, WORKTREE).swfSkills ?? {})).toEqual([...AGENT_STEPS]);
+    expect(skillsOf({ skills: unordered })).toEqual(["a-plan", "a-implement", "a-verify", "a-review", "a-pr"]);
+    expect(Object.keys(buildSessionConfig({ ...web({}), swf: { skills: unordered } }, HOST, WORKTREE).swfSteps?.steps ?? {})).toEqual([...SWF_STEPS]);
     expect(() => buildSessionConfig({ ...web({}), swf: { model: "claude-opus-5-5" } }, HOST, WORKTREE)).toThrow(ConfigError);
     expect(() => buildSessionConfig({ ...web({}), swf: { skills: { review: "acme-review" } } }, HOST, WORKTREE)).toThrow(ConfigError);
   });
@@ -925,7 +1037,7 @@ describe("configCli", () => {
 
   /** The problem of the step `step` whose skill `name` has no file in the worktree. */
   function missingSkillFile(step: string, name: string): string {
-    return `swf.skills.${step}: no skill file .claude/skills/${name}/SKILL.md; Hunt offers to create it when a session of the repository opens`;
+    return `swf.steps.${step}.skill: no skill file .claude/skills/${name}/SKILL.md; Hunt offers to create it when a session of the repository opens`;
   }
 
   type Paths = ReturnType<typeof setup>;
@@ -969,8 +1081,7 @@ describe("configCli", () => {
         ],
         services_prompt: expected.servicesPrompt,
         agent_md: "# Services\nStart backend with ui.",
-        swf_model: "claude-opus-5-5",
-        swf_skills: { plan: "swf-plan", implement: "swf-implement", verify: "swf-verify", review: "acme-review", pr: "swf-pr" },
+        swf_steps: huntJsonOf(huntJson).stepSettings?.toJSON(),
       },
       lines: 2,
     });
@@ -1008,18 +1119,18 @@ describe("configCli", () => {
 
     const linked = setup({ "hunt.json": JSON.stringify({ ...web({}), swf: { skills: SKILLS } }), ...skillFiles(["swf-implement", "swf-verify", "swf-review", "swf-pr"]) });
     symlinkSync(join(linked.worktree, ".claude/skills/swf-verify"), join(linked.worktree, ".claude/skills/swf-plan"));
-    expect(runCli(linked).output).toMatchObject({ ok: true, swf_skills: SKILLS });
+    expect(runCli(linked).output).toMatchObject({ ok: true, swf_steps: { steps: { plan: { skill: "swf-plan" }, pr: { skill: "swf-pr" } } } });
 
     const withoutSwf = runCli(setup({ "hunt.json": JSON.stringify(web({})) }));
     expect(withoutSwf.status).toBe(0);
-    expect(withoutSwf.output).not.toHaveProperty("swf_skills");
+    expect(withoutSwf.output).not.toHaveProperty("swf_steps");
   });
 
   it("reports the agent steps whose skill hunt.json names none for before any skill file is checked", () => {
     const withoutSkills = runCli(setup({ "hunt.json": JSON.stringify({ ...web({}), swf: { model: "claude-opus-5-5" } }), ...skillFiles(["swf-plan"]) }));
-    expect(withoutSkills).toMatchObject({ status: 1, output: { ok: false, problems: [`swf.skills: ${SKILLS_RULE}`] } });
+    expect(withoutSkills).toMatchObject({ status: 1, output: { ok: false, problems: [`swf.steps: ${SKILLS_RULE}`] } });
     const withoutReview = runCli(setup({ "hunt.json": JSON.stringify({ ...web({}), swf: { skills: { ...SKILLS, review: undefined } } }) }));
-    expect(withoutReview.output).toEqual({ ok: false, problems: [`swf.skills.review: ${STEP_SKILL_RULE}`] });
+    expect(withoutReview.output).toEqual({ ok: false, problems: [`swf.steps.review.skill: ${STEP_SKILL_RULE}`] });
   });
 
   it("deletes the environment files of services hunt.json no longer declares and keeps every other file", () => {

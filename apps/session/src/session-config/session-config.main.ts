@@ -14,11 +14,12 @@
  * temporary file and a rename, mode 0644; the services' files, which hold remote secrets and only systemd reads, get
  * 0600. It creates --services-dir (0755) when it is missing and deletes the `*.env` files there of services that
  * hunt.json no longer declares; other files stay. Prints one line of JSON:
- * `{"ok": true, "services": [{"name", "port", "tls", "guarded"}], "services_prompt": "…", "agent_md": "…", "swf_model": "…",
- * "swf_skills": {"plan": "…", …}}` with the services in the order of hunt.json, the section of the agent's prompt that
- * lists them (or says there are none), the text of the repository's hunt.agent.md (instructions for the agent, at most
- * 20 KiB) when it has one, the `swf.model` of hunt.json when it sets one and, when it has a `swf` section, the skill of
- * every agent step (`swf.skills`, which names them all), or `{"ok": false, "problems": […]}`, each problem starting
+ * `{"ok": true, "services": [{"name", "port", "tls", "guarded"}], "services_prompt": "…", "agent_md": "…",
+ * "swf_steps": {"maxGateRuns": 5, "steps": {"plan": {"skill", "model", "effort", "maxReturns", "gate"}, …}}}` with the
+ * services in the order of hunt.json, the section of the agent's prompt that lists them (or says there are none), the
+ * text of the repository's hunt.agent.md (instructions for the agent, at most 20 KiB) when it has one and, when
+ * hunt.json has a `swf` section, the settings of every step of the swf pipeline with the defaults applied
+ * (`libs/domain/src/swf/step-settings.value-object.ts`), or `{"ok": false, "problems": […]}`, each problem starting
  * with the path of the offending value; then it writes nothing and exits with 1. With a `swf` section, every agent
  * step's skill file `.claude/skills/<name>/SKILL.md` that the worktree lacks is a problem; its `swf.humanReviewPaths`
  * is validated only, since the repository's scorer workflow reads it, not Hunt. The agent controls the worktree, so

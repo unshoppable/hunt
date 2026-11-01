@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { changeRequestFinding, failureComment, humanReviewComment, missingPullRequestComment, missingSkillsError, noPullRequestComment, replacedVmComment } from "./swf-comments.utils.ts";
+import { changeRequestFinding, failureComment, humanReviewComment, missingPullRequestComment, noPullRequestComment, replacedVmComment, stepSettingsError } from "./swf-comments.utils.ts";
 
 describe("issue comments", () => {
   it("reports a failure in a code block and names the VM that stays", () => {
@@ -15,11 +15,11 @@ describe("issue comments", () => {
     );
   });
 
-  it("names the agent steps hunt.json names no skill for", () => {
-    expect(missingSkillsError(["review"])).toBe(
-      "hunt.json names no skill for the step review under swf.skills; Hunt has no default skill and asks to add the entries when a session of the repository opens",
+  it("says why the step settings stop the start and where hunt.json names the skills", () => {
+    expect(stepSettingsError("the step settings name no skill for the step review")).toBe(
+      "Hunt cannot start: the step settings name no skill for the step review. hunt.json's `swf.steps.<step>.skill` (or `swf.skills.<step>`) names the skill " +
+        "of every agent step; Hunt's desktop asks to add the missing ones when a session of the repository opens.",
     );
-    expect(missingSkillsError(["plan", "implement", "verify", "review", "pr"])).toContain("no skill for the steps plan, implement, verify, review, pr under swf.skills;");
   });
 });
 

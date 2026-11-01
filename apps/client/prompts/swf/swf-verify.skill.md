@@ -6,8 +6,8 @@ description: Refines the verify step of Hunt's swf pipeline for this repository 
 # Verify step in this repository
 
 Hunt's swf pipeline turns a GitHub issue into a merged pull request, one step per prompt. In the verify step the agent
-checks the pushed change as a tester who did not write it: it runs the checks, verifies every acceptance criterion by a
-test, a command or in the browser and fixes nothing; its findings go back to the implement step. The step's prompt says
+checks the pushed change as a tester who did not write it: it verifies every acceptance criterion by a test, a command
+or in the browser and fixes nothing; its findings go back to the implement step. The step's prompt says
 what the step delivers and how it ends (its result, labels and questions); where this skill disagrees with it on those,
 the prompt wins. This skill adds what this repository needs to verify a change: which checks cover what and how its
 services run with data for a check in the browser.
@@ -19,8 +19,10 @@ services run with data for a check in the browser.
 
 ### Checks
 
-TODO: the checks of hunt.json (`sudo -n hunt-ctl check <name>`) and what each covers, and any further command a change
-needs that they leave out.
+The gate of the implement step already ran the checks of hunt.json on the change; run one here only where an acceptance
+criterion needs its output. A check is a plain command, such as `npm run …`, to run from the worktree.
+
+TODO: what each check of hunt.json covers, and any further command a criterion needs that they leave out.
 
 ### In the browser
 

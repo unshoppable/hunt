@@ -2,11 +2,12 @@
  * `.hunt/swf/` of the session's worktree, the runner's state on disk (`swf-runner.service.ts`): `pipeline.json`, the
  * pipeline the runner owns from the moment the gateway started it (`hunt-ctl swf-record` wrote the first one);
  * `result.md`, the step result the agent writes at the end of a step, which the runner moves to `steps/<nn>-<step>.md`
- * once it acted on it; and `inbox/<ms>-<pid>.json`, the gateway's messages (`hunt-ctl swf-inbox`,
+ * once it acted on it; `gate/<nn>-<check>.log`, the output of each check of the latest gate run of the run `nn`; and
+ * `inbox/<ms>-<pid>.json`, the gateway's messages (`hunt-ctl swf-inbox`,
  * `libs/domain/src/swf/swf-inbox.utils.ts`), read in the order of their names and removed once handled. The Hunt client
  * reads `pipeline.json` and the steps through `hunt-ctl status` and the file sync.
  */
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Pipeline, type Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 import { parseInboxMessage, type InboxMessage } from "../../../../libs/domain/src/swf/swf-inbox.utils.ts";
@@ -29,6 +30,8 @@ export interface SwfFiles {
   keepResult(run: Run): void;
   /** Removes an unusable `result.md`, so that the agent's next one is told apart. */
   discardResult(): void;
+  /** Keeps the `output` of the gate check `name` on the result of the run `run`, `gate/<nn>-<name>.log`, replacing that of an earlier gate run. */
+  keepGateLog(run: Run, name: string, output: string): void;
   /** The inbox's entries, oldest first. */
   readInbox(): InboxEntry[];
   removeInboxEntry(name: string): void;
@@ -65,11 +68,16 @@ export class SwfDir implements SwfFiles {
 
   keepResult(run: Run): void {
     mkdirSync(join(this.dir, "steps"), { recursive: true });
-    renameSync(join(this.dir, "result.md"), join(this.dir, "steps", `${String(run.n).padStart(2, "0")}-${run.step}.md`));
+    renameSync(join(this.dir, "result.md"), join(this.dir, "steps", `${runNumber(run)}-${run.step}.md`));
   }
 
   discardResult(): void {
     rmSync(join(this.dir, "result.md"), { force: true });
+  }
+
+  keepGateLog(run: Run, name: string, output: string): void {
+    mkdirSync(join(this.dir, "gate"), { recursive: true });
+    writeFileSync(join(this.dir, "gate", `${runNumber(run)}-${name}.log`), output);
   }
 
   readInbox(): InboxEntry[] {
@@ -95,6 +103,11 @@ export class SwfDir implements SwfFiles {
   removeInboxEntry(name: string): void {
     rmSync(join(this.dir, "inbox", name), { force: true });
   }
+}
+
+/** The number of `run` as the file names in `.hunt/swf/` carry it, zero-padded to two digits. */
+function runNumber(run: Run): string {
+  return String(run.n).padStart(2, "0");
 }
 
 /** The content of the file at `path`; null when it is missing. */

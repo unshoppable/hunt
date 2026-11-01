@@ -4,7 +4,6 @@
  * the pull request, and the finding a person's change request becomes in the pipeline record. The comment on an agent
  * that stopped, which the runner on the VM writes too, is `libs/domain/src/swf/swf-comments.utils.ts`.
  */
-import type { AgentStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
 import type { PullRequestReview } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 
 /** The comment that reports why the session could not start; `error` has been redacted. */
@@ -18,10 +17,12 @@ export function replacedVmComment(step: string, vm: string): string {
   return `Hunt found no VM for this issue any more and replaced it with \`${vm}\`; the step \`${step}\` starts over there with what the steps before it left on the issue.`;
 }
 
-/** Why the session could not start when the repository's hunt.json names no skill for the agent steps `steps`; `failureComment` quotes it. */
-export function missingSkillsError(steps: readonly AgentStep[]): string {
-  const what = steps.length === 1 ? `the step ${steps[0]}` : `the steps ${steps.join(", ")}`;
-  return `hunt.json names no skill for ${what} under swf.skills; Hunt has no default skill and asks to add the entries when a session of the repository opens`;
+/** Why the session could not start when the step settings the VM reported are unusable (`stepSettings`), `problem` says how; `failureComment` quotes it. */
+export function stepSettingsError(problem: string): string {
+  return (
+    `Hunt cannot start: ${problem}. hunt.json's \`swf.steps.<step>.skill\` (or \`swf.skills.<step>\`) names the skill of every agent step; ` +
+    "Hunt's desktop asks to add the missing ones when a session of the repository opens."
+  );
 }
 
 /** The comment that asks the people to review the pull request, which the repository's scorer did not approve. */

@@ -5,8 +5,9 @@ import { DEFAULT_GUARDRAIL_DIRS, HUNT_JSON, proposedSwfSkill, swfSkillsOf } from
 import { isSkillFolder, SKILL_FILE } from "./guardrail-paths.utils";
 
 /**
- * What an agent step of the swf pipeline lacks: with `addEntry` its entry in `swf.skills` of hunt.json, for which `name`
- * is then the proposed name, with `missingFile` the skill file of `name`. A step that lacks nothing has no gap.
+ * What an agent step of the swf pipeline lacks: with `addEntry` its skill entry in hunt.json (`swf.steps.<step>.skill` or
+ * `swf.skills.<step>`), for which `name` is then the proposed name, with `missingFile` the skill file of `name`. A step
+ * that lacks nothing has no gap.
  */
 export type SwfSkillGap = SwfStepSkill & { missingFile: boolean };
 
@@ -42,7 +43,7 @@ export function missingSwfSkills(entries: readonly SwfStepEntry[], existing: Rea
 function swfSkillGapLine(gap: SwfSkillGap): string {
   const lacks: string[] = [];
   if (gap.addEntry) {
-    lacks.push(`no entry swf.skills.${gap.step} in ${HUNT_JSON} (proposed: ${gap.name})`);
+    lacks.push(`no skill for the step ${gap.step} in ${HUNT_JSON} (swf.steps.${gap.step}.skill or swf.skills.${gap.step}; proposed: ${gap.name})`);
   }
   if (gap.missingFile) {
     lacks.push(`no skill file ${swfSkillFile(gap.name)}`);
@@ -71,7 +72,7 @@ const pending = new Set<string>();
 
 /**
  * Makes sure a repository that uses Hunt's software factory (its hunt.json has an `swf` section) names a skill for every
- * agent step in `swf.skills` and keeps each skill's file: when an entry or a file is missing, the user is asked once
+ * agent step (`swf.steps.<step>.skill` or `swf.skills.<step>`) and keeps each skill's file: when an entry or a file is missing, the user is asked once
  * whether to add the entries (under the proposed names) and create the files from Hunt's templates, and on agreement Hunt
  * writes them (existing entries and skill files are never touched). A decline holds until the app restarts. Failures are
  * reported to the console only, because the check is a courtesy on opening a session and must not disturb the chat.

@@ -4,12 +4,15 @@
  * (`libs/domain/prompts/swf/*.user-prompt.md`, filled here), which the runner on the session VM sends
  * (`apps/session/src/swf-runner/swf-runner.service.ts`). The labels of the workflow are `WorkflowLabels` beside this file.
  */
-import type { Repository } from "../session/repository.value-object.ts";
+import { Repository } from "../session/repository.value-object.ts";
 import type { SessionId } from "../session/session-id.value-object.ts";
 import { fillPrompt } from "../shared/prompts.utils.ts";
 import type { WorkflowLabels } from "./workflow-labels.value-object.ts";
 import { isAgentStep, type SwfStep } from "./swf-step.types.ts";
-import { MAX_ATTEMPTS, type Pipeline } from "./pipeline.domain.ts";
+import type { Pipeline } from "./pipeline.domain.ts";
+
+/** How many of the last lines of a failed check's output the gate prompt quotes. */
+const GATE_OUTPUT_LINES = 80;
 
 /** What the plan prompt tells of the issue; the gateway's `Issue` and the runner's `gh issue view` both give it. */
 export interface IssueText {
@@ -51,6 +54,21 @@ export interface PromptFiles {
   swfAnswer: string;
   /** The prompt that tells the agent its step result is unusable, with the `{{problem}}` placeholder. */
   swfBadResult: string;
+  /** The prompt that gives the agent its step result back because the step's gate failed, and the one past `maxGateRuns`. */
+  swfGateFailed: string;
+  swfGateEscalate: string;
+}
+
+/**
+ * A check of a step's gate that failed on the step's result: its name in hunt.json, its exit code (null when it was
+ * killed or timed out) and its output. `dirty` names the files the checks changed or left uncommitted; a failure with
+ * dirty files and exit code 0 failed because of them alone.
+ */
+export interface GateFailure {
+  name: string;
+  exitCode: number | null;
+  output: string;
+  dirty?: string[];
 }
 
 /**
@@ -83,12 +101,11 @@ export function remoteSystemPrompt(
 }
 
 /**
- * `hunt-session.json` of a new poller session, in the shape the desktop's handoff writes; `model`, the `swf.model` of the
- * repository's hunt.json as `hunt-ctl session-config` reports it (`swf_model`), becomes the config option `model`, and
- * without one Claude Code's default model applies.
+ * `hunt-session.json` of a new poller session, in the shape the desktop's handoff writes; `configOptions` are the config
+ * options of the conversation (`model`, `effort`; `configOptionsOf` of the pipeline for a step), and Claude Code's default
+ * applies to each option they leave out.
  */
-export function huntSessionFile(huntSessionId: SessionId, cwd: string, systemPromptAppend: string, model: string | null): string {
-  const configOptions = model ? { model } : {};
+export function huntSessionFile(huntSessionId: SessionId, cwd: string, systemPromptAppend: string, configOptions: Record<string, string>): string {
   const session = { huntSessionId: huntSessionId.id, acpSessionId: null, cwd, systemPromptAppend, modeId: REMOTE_MODE, configOptions };
   return `${JSON.stringify(session, null, 2)}\n`;
 }
@@ -127,7 +144,7 @@ function labelValues(repo: Repository, issue: number, labels: WorkflowLabels, st
  * and branch: the protocol of the steps, how to ask a question and how to give up.
  */
 export function swfSystemPrompt(template: string, repo: Repository, issue: number, branch: string, labels: WorkflowLabels): string {
-  return fillPrompt(template, { ...labelValues(repo, issue, labels, "plan"), branch, maxAttempts: String(MAX_ATTEMPTS) });
+  return fillPrompt(template, { ...labelValues(repo, issue, labels, "plan"), branch });
 }
 
 /** `template` filled with `values`, without the final line break of its file: a prompt sent or inserted as it is. */
@@ -143,8 +160,9 @@ function formatFindings(findings: string[]): string {
 
 /**
  * The prompt of the step the pipeline is at, for the agent steps: `1-plan.user-prompt.md` with the issue, all its
- * comments and the branch; `2-implement.user-prompt.md` with the findings to fix (`2-implement-escalate.user-prompt.md` when
- * the agent is to ask the humans instead); `3-verify`, `4-review` (with the pull request, when it exists) and `5-pr`.
+ * comments and the branch; `2-implement.user-prompt.md` with the findings to fix and, after a return, which step sent the
+ * change back how often of its limit (`2-implement-escalate.user-prompt.md`, with that step and its limit, when the agent
+ * is to ask the humans instead); `3-verify`, `4-review` (with the pull request, when it exists) and `5-pr`.
  * Every prompt carries the issue, the step's label, the commands that move the issue to the question label and back and,
  * as `skill`, the repository's skill for the step (`skillOf` of the pipeline).
  */
@@ -157,8 +175,7 @@ export function stepPrompt(
   labels: WorkflowLabels,
   pipeline: Pipeline,
 ): string {
-  const attemptNote = pipeline.attempt > 0 ? ` (attempt ${pipeline.attempt} of ${MAX_ATTEMPTS})` : "";
-  const values: Record<string, string> = { ...labelValues(repo, issue.number, labels, pipeline.step), branch, attemptNote, maxAttempts: String(MAX_ATTEMPTS) };
+  const values: Record<string, string> = { ...labelValues(repo, issue.number, labels, pipeline.step), branch };
   if (isAgentStep(pipeline.step)) {
     values.skill = pipeline.skillOf(pipeline.step);
   }
@@ -173,8 +190,21 @@ export function stepPrompt(
         body: issue.body.trim() || "(no description)",
         comments: formatThread(comments),
       });
-    case "implement":
-      return fillPrompt(pipeline.escalate ? prompts.swfEscalate : prompts.swfImplement, { ...values, findings: formatFindings(pipeline.findings) });
+    case "implement": {
+      const findings = formatFindings(pipeline.findings);
+      const cause = pipeline.causeOf;
+      if (pipeline.escalate) {
+        const limit = cause === null ? null : pipeline.limitOf(cause);
+        return fillPrompt(prompts.swfEscalate, {
+          ...values,
+          findings,
+          causeStep: cause === null ? "a later step" : `\`${cause}\``,
+          maxReturns: limit === null ? "the allowed number of" : String(limit),
+        });
+      }
+      const attemptNote = cause === null ? "" : ` (${pipeline.returnCountOf(cause)}, sent back by ${cause})`;
+      return fillPrompt(prompts.swfImplement, { ...values, findings, attemptNote });
+    }
     case "verify":
       return fillPrompt(prompts.swfVerify, values);
     case "review":
@@ -209,6 +239,51 @@ export function answerPrompt(template: string, repo: Repository, issue: number, 
  */
 export function nudgePrompt(template: string, repo: Repository, issue: number, labels: WorkflowLabels, step: SwfStep): string {
   return fillPrompt(template, labelValues(repo, issue, labels, step));
+}
+
+/**
+ * The prompt the runner sends when the result of the current agent step failed its gate: `gate-failed.user-prompt.md`
+ * with the failed checks (`failures`) and the gate run of its limit, or `gate-escalate.user-prompt.md` once the result
+ * failed more often than the limit allows (`gateEscalates` of the pipeline), with the commands of the step's labels.
+ * `pipeline` has counted the failure (`noteGateFailure`) already.
+ */
+export function gatePrompt(prompts: PromptFiles, labels: WorkflowLabels, pipeline: Pipeline, failures: GateFailure[]): string {
+  if (!isAgentStep(pipeline.step)) throw new Error(`the step ${pipeline.step} has no gate`);
+  return fillPrompt(pipeline.gateEscalates ? prompts.swfGateEscalate : prompts.swfGateFailed, {
+    ...labelValues(Repository.fromSlug(pipeline.repo), pipeline.issue, labels, pipeline.step),
+    failures: formatGateFailures(failures),
+    gateRuns: String(pipeline.gateRuns),
+    maxGateRuns: String(pipeline.settings.maxGateRuns),
+  });
+}
+
+/**
+ * The failed checks as Markdown: per check a heading with its name and exit code and the last GATE_OUTPUT_LINES lines
+ * of its output in a fence, then the files the checks left dirty under a heading of their own.
+ */
+function formatGateFailures(failures: GateFailure[]): string {
+  const sections: string[] = [];
+  const dirty = new Set<string>();
+  for (const failure of failures) {
+    const files = failure.dirty ?? [];
+    files.forEach((file) => dirty.add(file));
+    if (failure.exitCode === 0 && files.length > 0) continue;
+    const exit = failure.exitCode === null ? "no exit code" : `exit ${failure.exitCode}`;
+    sections.push(`### ${failure.name} (${exit})\n\n${formatOutput(failure.output)}`);
+  }
+  if (dirty.size > 0) {
+    sections.push(`### working tree not clean after the checks\n\n${[...dirty].map((file) => `- \`${file}\``).join("\n")}`);
+  }
+  return sections.length > 0 ? sections.join("\n\n") : "(none)";
+}
+
+/** The last GATE_OUTPUT_LINES lines of a check's `output` in a fence longer than any backtick run in it; `(no output)` without any. */
+function formatOutput(output: string): string {
+  const lines = output.trimEnd().split("\n");
+  if (lines.length === 1 && lines[0].trim() === "") return "(no output)";
+  const longestRun = Math.max(0, ...(output.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  return `${fence}\n${lines.slice(-GATE_OUTPUT_LINES).join("\n")}\n${fence}`;
 }
 
 /**

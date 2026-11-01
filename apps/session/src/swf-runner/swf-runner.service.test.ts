@@ -8,7 +8,8 @@ import { stoppedComment } from "../../../../libs/domain/src/swf/swf-comments.uti
 import { answersMessage, parseInboxMessage, pipelineMessage, type InboxMessage } from "../../../../libs/domain/src/swf/swf-inbox.utils.ts";
 import { badResultPrompt, type PromptFiles } from "../../../../libs/domain/src/swf/swf-prompts.utils.ts";
 import type { SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
-import { started } from "../../../../libs/domain/src/swf/swf.fixtures.ts";
+import type { StepSettings } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
+import { SETTINGS, settingsWith, started } from "../../../../libs/domain/src/swf/swf.fixtures.ts";
 import type { IssueThread, RunnerGitHub } from "./gh.client.ts";
 import type { RelaySessionStatus } from "./relay-status-file.utils.ts";
 import type { InboxEntry, SwfFiles } from "./swf-dir.client.ts";
@@ -19,6 +20,7 @@ const RECORD_ID = 1000;
 const WORKTREE = "/home/agent/app";
 const VM = "vm-hunt-s-ab12cd34";
 const PLAN_RESULT = "## Plan\n\n1. Fix the login.\n\n<!-- hunt:step {\"step\":\"plan\"} -->\n";
+const IMPLEMENT_RESULT = "## Implemented\n\nThe login works.\n\n<!-- hunt:step {\"step\":\"implement\",\"summary\":\"done\"} -->\n";
 
 function readPrompt(path: string): string {
   return readFileSync(new URL(`../../../../libs/domain/prompts/${path}`, import.meta.url), "utf8");
@@ -39,6 +41,8 @@ const PROMPTS: PromptFiles = {
   swfNudge: readPrompt("swf/nudge.user-prompt.md"),
   swfAnswer: readPrompt("swf/answer.user-prompt.md"),
   swfBadResult: readPrompt("swf/bad-result.user-prompt.md"),
+  swfGateFailed: readPrompt("swf/gate-failed.user-prompt.md"),
+  swfGateEscalate: readPrompt("swf/gate-escalate.user-prompt.md"),
 };
 
 const THREAD: IssueThread = {
@@ -52,6 +56,7 @@ class FakeFiles implements SwfFiles {
   pipeline: Pipeline | null = null;
   result: string | null = null;
   steps = new Map<string, string>();
+  gateLogs = new Map<string, string>();
   inbox: { name: string; value: unknown }[] = [];
   /** How often the pipeline was written. */
   writes = 0;
@@ -77,6 +82,10 @@ class FakeFiles implements SwfFiles {
 
   discardResult(): void {
     this.result = null;
+  }
+
+  keepGateLog(run: Run, name: string, output: string): void {
+    this.gateLogs.set(`${String(run.n).padStart(2, "0")}-${name}.log`, output);
   }
 
   readInbox(): InboxEntry[] {
@@ -142,6 +151,14 @@ interface Harness {
   prompts: { sessionId: string; cwd: string; text: string }[];
   /** How often a fresh conversation was begun. */
   clears: number;
+  /** The result of each check by name; a check without one passes with the output `ok`. */
+  checks: Record<string, { exitCode: number | null; output: string }>;
+  /** The checks run, in order. */
+  checkRuns: string[];
+  /** What `changedFiles` gives. */
+  dirty: string[];
+  /** The config options set, the fresh conversations begun and the prompts sent, in order. */
+  events: string[];
   logs: string[];
   clock: { now: number };
 }
@@ -152,19 +169,42 @@ function harness(pipeline: Pipeline | null, status: RelaySessionStatus | null = 
   if (pipeline) files.writePipeline(pipeline);
   files.writes = 0;
   const github = new FakeGitHub();
-  const h: Harness = { runner: null as unknown as SwfRunner, files, github, status, prompts: [], clears: 0, logs: [], clock: { now: NOW } };
+  const h: Harness = {
+    runner: null as unknown as SwfRunner,
+    files,
+    github,
+    status,
+    prompts: [],
+    clears: 0,
+    checks: {},
+    checkRuns: [],
+    dirty: [],
+    events: [],
+    logs: [],
+    clock: { now: NOW },
+  };
   h.runner = new SwfRunner({
     files,
     github,
     readStatus: () => h.status,
     clearConversation: () => {
       h.clears++;
+      h.events.push("clear");
       h.status = { acpSessionId: `acp-fresh-${h.clears}`, turn: "idle", clientConnected: false, lastTurnEndedAt: null };
       return Promise.resolve(h.status);
     },
     sendPrompt: (request): Promise<PromptOutcome> => {
       h.prompts.push(request);
+      h.events.push("prompt");
       return Promise.resolve("started");
+    },
+    runCheck: (name) => {
+      h.checkRuns.push(name);
+      return Promise.resolve(h.checks[name] ?? { exitCode: 0, output: "ok" });
+    },
+    changedFiles: () => Promise.resolve([...h.dirty]),
+    setConfigOptions: (options) => {
+      h.events.push(`config ${JSON.stringify(options)}`);
     },
     prompts: PROMPTS,
     worktree: WORKTREE,
@@ -181,9 +221,9 @@ function idle(fields: Partial<RelaySessionStatus> = {}): RelaySessionStatus {
   return { acpSessionId: "acp-1", turn: "idle", clientConnected: false, lastTurnEndedAt: null, ...fields };
 }
 
-/** The pipeline of acme/app#12 with its record comment posted, at `step` after the given intents. */
-function recorded(step: SwfStep = "plan", promptTurn: number | null = null): Pipeline {
-  const pipeline = started(NOW);
+/** The pipeline of acme/app#12 with `settings` and its record comment posted, at `step` after the given intents. */
+function recorded(step: SwfStep = "plan", promptTurn: number | null = null, settings: StepSettings = SETTINGS): Pipeline {
+  const pipeline = started(NOW, settings);
   pipeline.noteRecordComment(RECORD_ID);
   const order: SwfStep[] = ["plan", "implement", "verify", "review", "pr", "checks"];
   for (const current of order.slice(0, order.indexOf(step))) {
@@ -247,6 +287,7 @@ describe("SwfRunner", () => {
     expect(h.github.calls).toEqual(["issue acme/app#12", `edit acme/app ${RECORD_ID}`]);
     expect(h.github.records).toEqual([expected.toComment()]);
     expect(h.logs).toContain("sent the prompt of the step plan in a fresh conversation (prompt started)");
+    expect(h.events).toEqual(["config {}", "clear", "prompt"]);
 
     // The prompt is out; nothing more until the turn ends.
     await h.runner.tick();
@@ -367,9 +408,121 @@ describe("SwfRunner", () => {
     expect(h.files.pipeline?.runs).toHaveLength(7);
     expect(h.clears).toBe(1);
     expect(h.prompts).toHaveLength(1);
-    expect(h.prompts[0].text).toContain("Step `implement` for issue #12 of acme/app on the branch `feat/general/12-issue-12` (attempt 1 of 5).");
+    expect(h.prompts[0].text).toContain("Step `implement` for issue #12 of acme/app on the branch `feat/general/12-issue-12` (return 1 of 2, sent back by checks).");
     expect(h.prompts[0].text).toContain("- Review: the test fails");
     expect(h.logs).toContain("took the pipeline the gateway sent: at implement after 7 runs");
+  });
+
+  it("sets the step's model and effort as the config options before it begins the fresh conversation", async () => {
+    const h = harness(recorded("plan", null, settingsWith({ plan: { model: "opus", effort: "high" } })));
+    await h.runner.tick();
+    expect(h.events).toEqual(['config {"model":"opus","effort":"high"}', "clear", "prompt"]);
+    expect(h.logs).toContain("the conversation of plan runs with model opus, effort high");
+  });
+
+  it("runs every check of the gate on the result and accepts it once all passed and the tree is clean", async () => {
+    const h = harness(recorded("implement", 0), idle({ lastTurnEndedAt: 5_000 }));
+    h.files.result = IMPLEMENT_RESULT;
+    await h.runner.tick();
+    expect(h.checkRuns).toEqual(["lint", "test"]);
+    expect([...h.files.gateLogs.entries()]).toEqual([
+      ["02-lint.log", "ok"],
+      ["02-test.log", "ok"],
+    ]);
+    expect(h.logs).toContain("the gate of implement passed (lint, test)");
+    expect([...h.files.steps.keys()]).toEqual(["02-implement.md"]);
+    expect(h.files.pipeline?.step).toBe("verify");
+    expect(h.github.calls[0]).toBe(`comment acme/app#12 ${IMPLEMENT_RESULT}`);
+    expect(h.clears).toBe(1);
+    expect(h.prompts[0].text).toContain("Step `verify`");
+  });
+
+  it("gives a result whose gate failed back to the agent in the same conversation, with every failed check, and discards it", async () => {
+    const h = harness(recorded("implement", 0), idle({ lastTurnEndedAt: 5_000 }));
+    h.files.result = IMPLEMENT_RESULT;
+    h.checks.lint = { exitCode: 1, output: "src/login.ts: unused import" };
+    await h.runner.tick();
+    expect(h.checkRuns).toEqual(["lint", "test"]);
+    expect(h.files.gateLogs.get("02-lint.log")).toBe("src/login.ts: unused import");
+    expect(h.files.result).toBeNull();
+    expect(h.files.steps.size).toBe(0);
+    expect(h.clears).toBe(0);
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].sessionId).toBe("acp-1");
+    expect(h.prompts[0].text).toContain("### lint (exit 1)\n\n```\nsrc/login.ts: unused import\n```");
+    expect(h.prompts[0].text).not.toContain("### test");
+    expect(h.prompts[0].text).toContain("gate run 1 of 5");
+    const pipeline = h.files.pipeline;
+    expect(pipeline?.step).toBe("implement");
+    expect(pipeline?.gateRuns).toBe(1);
+    expect(pipeline?.promptTurn).toBe(5_000);
+    expect(pipeline?.returns).toEqual({});
+    expect(h.github.calls).toEqual([`edit acme/app ${RECORD_ID}`]);
+    expect(h.github.records).toEqual([pipeline?.toComment()]);
+    expect(h.logs).toContain("warn: the gate of implement failed (lint; gate run 1 of 5); gave the result back to the agent (prompt started)");
+  });
+
+  it("fails the gate on a working tree the checks left dirty and lists its files", async () => {
+    const h = harness(recorded("implement", 0), idle({ lastTurnEndedAt: 5_000 }));
+    h.files.result = IMPLEMENT_RESULT;
+    h.dirty = ["src/login.ts", "notes.md"];
+    await h.runner.tick();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].text).toContain("### working tree not clean after the checks\n\n- `src/login.ts`\n- `notes.md`");
+    expect(h.prompts[0].text).not.toContain("### working tree (exit");
+    expect(h.files.pipeline?.gateRuns).toBe(1);
+    expect(h.logs).toContain("warn: the gate of implement failed (a dirty working tree; gate run 1 of 5); gave the result back to the agent (prompt started)");
+  });
+
+  it("asks the agent to escalate once the result failed its gate more often than maxGateRuns allows", async () => {
+    const h = harness(recorded("implement", 0, settingsWith({}, 1)), idle({ lastTurnEndedAt: 5_000 }));
+    h.checks.test = { exitCode: 2, output: "1 failed" };
+    h.files.result = IMPLEMENT_RESULT;
+    await h.runner.tick();
+    expect(h.prompts[0].text).toContain("gate run 1 of 1");
+
+    h.status = idle({ lastTurnEndedAt: 6_000 });
+    h.files.result = IMPLEMENT_RESULT;
+    await h.runner.tick();
+    expect(h.prompts).toHaveLength(2);
+    expect(h.prompts[1].sessionId).toBe("acp-1");
+    expect(h.prompts[1].text).toContain("The gate of the step `implement` failed on your result more than 1 times.");
+    expect(h.prompts[1].text).toContain("### test (exit 2)");
+    expect(h.files.pipeline?.gateRuns).toBe(2);
+    expect(h.files.pipeline?.promptTurn).toBe(6_000);
+    expect(h.logs.at(-1)).toBe("warn: the gate of implement failed (test; gate run 2 of 1); asked the agent to escalate (prompt started)");
+  });
+
+  it("runs no gate for a step without one", async () => {
+    const h = harness(recorded("verify", 0), idle({ lastTurnEndedAt: 5_000 }));
+    h.dirty = ["notes.md"];
+    h.files.result = "## Verified\n\n<!-- hunt:step {\"step\":\"verify\",\"findings\":[]} -->\n";
+    await h.runner.tick();
+    expect(h.checkRuns).toEqual([]);
+    expect(h.files.pipeline?.step).toBe("review");
+  });
+
+  it("runs no gate on an unusable result and tells the agent why", async () => {
+    const h = harness(recorded("implement", 0), idle({ lastTurnEndedAt: 5_000 }));
+    h.files.result = "Done, no marker.";
+    await h.runner.tick();
+    expect(h.checkRuns).toEqual([]);
+    expect(h.prompts).toEqual([{ sessionId: "acp-1", cwd: WORKTREE, text: badResultPrompt(PROMPTS.swfBadResult, "no step marker") }]);
+  });
+
+  it("leaves the gate alone while a desktop is connected and runs it once the desktop is gone", async () => {
+    const h = harness(recorded("implement", 0), idle({ lastTurnEndedAt: 5_000, clientConnected: true }));
+    h.files.result = IMPLEMENT_RESULT;
+    await h.runner.tick();
+    await h.runner.tick();
+    expect(h.checkRuns).toEqual([]);
+    expect(h.files.result).toBe(IMPLEMENT_RESULT);
+    expect(h.logs).toEqual(["the step result of implement waits for its gate (lint, test); a desktop is connected"]);
+
+    h.status = idle({ lastTurnEndedAt: 5_000 });
+    await h.runner.tick();
+    expect(h.checkRuns).toEqual(["lint", "test"]);
+    expect(h.files.pipeline?.step).toBe("verify");
   });
 
   it("looks the labels up once per turn that ended without a result: a question waits for the gateway, a failed label ends the run", async () => {

@@ -4,11 +4,15 @@ import {
   GLOB_PATTERN_RULE,
   ZodCommandLine,
   ZodContractVersion,
+  ZodEffort,
   ZodEnvValue,
   ZodEnvVariableName,
   ZodFlag,
+  ZodGate,
   ZodGlobPattern,
   ZodGlobPatterns,
+  ZodMaxGateRuns,
+  ZodMaxReturns,
   ZodModelId,
   ZodNoContract2Placeholders,
   ZodRemoteSecretReference,
@@ -133,5 +137,32 @@ describe("hunt.json rules", () => {
     expect(issuesOf(ZodModelId, "opus")).toEqual([': must be the full ID of a Claude model such as "claude-opus-5-5", at most 128 characters, not an alias such as "opus"']);
     expect(issuesOf(ZodSkillName, "a".repeat(64))).toEqual([]);
     expect(issuesOf(ZodSkillName, "a--b")).toEqual([': must be the kebab-case name of a skill such as "guardrail": letters, digits and "-", at most 64 characters']);
+  });
+
+  it("take an effort level of Claude Code and the limits of returns and gate runs", () => {
+    for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+      expect(issuesOf(ZodEffort, effort)).toEqual([]);
+    }
+    for (const effort of ["extreme", "High", "", 1, undefined]) {
+      expect(issuesOf(ZodEffort, effort)).toEqual([": must be one of low, medium, high, xhigh, max"]);
+    }
+    expect([1, 20].flatMap((count) => issuesOf(ZodMaxReturns, count))).toEqual([]);
+    for (const count of [0, 21, 2.5, "3", undefined]) {
+      expect(issuesOf(ZodMaxReturns, count)).toEqual([": must be an integer from 1 to 20"]);
+    }
+    expect([1, 100].flatMap((count) => issuesOf(ZodMaxGateRuns, count))).toEqual([]);
+    for (const count of [0, -1, 1.5, "5", undefined]) {
+      expect(issuesOf(ZodMaxGateRuns, count)).toEqual([": must be an integer of at least 1"]);
+    }
+  });
+
+  it("take * or at most 32 names of checks as a gate and report each string that is no name at its index", () => {
+    expect(ZodGate.parse("*")).toBe("*");
+    expect(ZodGate.parse([])).toEqual([]);
+    expect(ZodGate.parse(Array.from({ length: 32 }, () => "lint"))).toHaveLength(32);
+    for (const gate of ["all", "", 1, null, { lint: true }, ["lint", 1], Array.from({ length: 33 }, () => "lint")]) {
+      expect(issuesOf(ZodGate, gate)).toEqual([': must be "*" for every check or a list of at most 32 names of checks']);
+    }
+    expect(issuesOf(ZodGate, ["lint", "Lint", "-x"])).toEqual(["1: invalid name, must match ^[a-z][a-z0-9-]{0,31}$", "2: invalid name, must match ^[a-z][a-z0-9-]{0,31}$"]);
   });
 });

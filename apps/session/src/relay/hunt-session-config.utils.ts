@@ -1,7 +1,8 @@
 /**
  * The relay's access to `hunt-session.json` (`hunt-session-config.value-object.ts`): it reads the config at its start
  * and writes back the ID of a new conversation and every mode or config option a client changes. The writes go into the
- * file's object as it is, not through the value object, which drops the fields the relay does not know.
+ * file's object as it is, not through the value object, which drops the fields the relay does not know. The swf runner
+ * (`apps/session/src/swf-runner/swf-runner.main.ts`) replaces the config options before each step's fresh conversation.
  */
 import { readFileSync } from "node:fs";
 import { messageOf } from "../../../../libs/domain/src/shared/errors.utils.ts";
@@ -42,7 +43,17 @@ export function applyConfigChanges(raw: Record<string, unknown>, changes: Config
 
 /** Applies `changes` to the file as it is now, so edits of other writers in between survive, and replaces it atomically. */
 export function updateConfigFile(path: string, changes: ConfigChanges): void {
+  writeJsonAtomic(path, applyConfigChanges(readConfigObject(path), changes));
+}
+
+/** Sets the file's `configOptions` to exactly `options`, dropping every other stored one, and keeps every other field. */
+export function replaceConfigOptions(path: string, options: Record<string, string>): void {
+  writeJsonAtomic(path, { ...readConfigObject(path), configOptions: { ...options } });
+}
+
+/** The object in the file at `path` as it is now. */
+function readConfigObject(path: string): Record<string, unknown> {
   const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
   if (!isRecord(raw)) throw new Error(`failed to update ${path}: expected a JSON object`);
-  writeJsonAtomic(path, applyConfigChanges(raw, changes));
+  return raw;
 }

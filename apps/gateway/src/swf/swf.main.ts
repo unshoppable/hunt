@@ -35,6 +35,8 @@ import swfPrPrompt from "../../../../libs/domain/prompts/swf/5-pr.user-prompt.md
 import swfNudgePrompt from "../../../../libs/domain/prompts/swf/nudge.user-prompt.md?raw";
 import swfAnswerPrompt from "../../../../libs/domain/prompts/swf/answer.user-prompt.md?raw";
 import swfBadResultPrompt from "../../../../libs/domain/prompts/swf/bad-result.user-prompt.md?raw";
+import swfGateFailedPrompt from "../../../../libs/domain/prompts/swf/gate-failed.user-prompt.md?raw";
+import swfGateEscalatePrompt from "../../../../libs/domain/prompts/swf/gate-escalate.user-prompt.md?raw";
 import { createCompute } from "../gcp/compute-engine.client.ts";
 import { createMetadata } from "../gcp/metadata-server.client.ts";
 import { readOptionalSecretBytes } from "../gcp/secret-manager.client.ts";
@@ -72,6 +74,8 @@ function readPrompts(): PromptFiles {
     swfNudge: swfNudgePrompt,
     swfAnswer: swfAnswerPrompt,
     swfBadResult: swfBadResultPrompt,
+    swfGateFailed: swfGateFailedPrompt,
+    swfGateEscalate: swfGateEscalatePrompt,
   };
 }
 

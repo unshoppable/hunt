@@ -57,6 +57,16 @@ describe("SwfDir", () => {
     files.discardResult();
   });
 
+  it("keeps the output of each gate check under the run's number, replacing that of an earlier gate run", () => {
+    const files = swfDir();
+    const run = { n: 2, step: "implement" as const, startedAt: "2026-10-25T10:00:00.000Z", endedAt: null, outcome: "running" as const };
+    files.keepGateLog(run, "lint", "first");
+    files.keepGateLog(run, "lint", "error: unused import\n");
+    files.keepGateLog(run, "test", "");
+    expect(readFileSync(join(files.dir, "gate", "02-lint.log"), "utf8")).toBe("error: unused import\n");
+    expect(readFileSync(join(files.dir, "gate", "02-test.log"), "utf8")).toBe("");
+  });
+
   it("reads the inbox in the order of the file names, marks files that hold no message and removes entries", () => {
     const files = swfDir();
     const inbox = join(files.dir, "inbox");

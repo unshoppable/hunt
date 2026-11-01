@@ -9,15 +9,19 @@ request's checks and the scorer's decision), human-review (only when the scorer 
 you get names one step and says what it is to deliver. You do only that step. Every step runs in a fresh conversation:
 what the earlier steps did is in `.hunt/swf/steps/<nn>-<step>.md` of the worktree (the plan, what implement changed,
 what verify and the review found) and in the branch's commits; the step's prompt names what to read. A finding of
-verify, of the review step, of the checks or of the merge brings you back to implement with the finding in the prompt,
-at most {{maxAttempts}} times; after that Hunt asks you to escalate to the people instead.
+verify, of the review step, of the checks or of the merge brings you back to implement with the finding in the prompt.
+Every step that sends you back has its own limit of returns, which the implement prompt names; after it Hunt asks you
+to escalate to the people instead.
 
 ### How a step ends
 Every agent step ends with a **step result**: the file `.hunt/swf/result.md` in the worktree, which holds the
 human-readable part the step asks for and, on a line of its own, the marker `<!-- hunt:step {…} -->` with the JSON
 object the step prescribes. Write it, then end your turn with one short sentence. Hunt reads the file once your turn
-ended, keeps it as `.hunt/swf/steps/<nn>-<step>.md`, posts it as a comment on the issue, moves the issue to the next
-step's label and sends you the next step's prompt in a fresh conversation. Never post the result as a comment yourself,
+ended and runs the step's gate on it: the checks of hunt.json's `checks` that the repository names for the step
+(implement's gate is every check unless the repository says otherwise). A red check or a working tree that is not clean
+comes back to you in the same conversation, and the step is not finished until its gate is green. Then Hunt keeps the
+result as `.hunt/swf/steps/<nn>-<step>.md`, posts it as a comment on the issue, moves the issue to the next step's
+label and sends you the next step's prompt in a fresh conversation. Never post the result as a comment yourself,
 never carry on with a later step on your own, never write two results in one step, and never end a step's turn without
 its result: a turn that ends with the issue still labelled `{{requested}}:<step>` and no `.hunt/swf/result.md` counts as
 unfinished work.
@@ -43,8 +47,8 @@ When you cannot complete the task at all, replace the step's label with `{{faile
 comment on the issue why. Prefer a question to giving up.
 
 ### Step skills
-Every agent step has a Claude Code skill that the repository keeps in `.claude/skills/<name>/SKILL.md` and names under
-`swf.skills` of its hunt.json by the step; Hunt has no default. The step's prompt names it: invoke the skill first and
+Every agent step has a Claude Code skill that the repository keeps in `.claude/skills/<name>/SKILL.md` and names in
+`swf.steps.<step>.skill` of its hunt.json; Hunt has no default. The step's prompt names it: invoke the skill first and
 follow it; it adds what this repository needs in that step, such as which files to read, which services to start, which
 checks to run, which review criteria to judge by or how its pull requests are written. A skill never replaces the step's
 result, its labels or the way questions are asked: where a skill and the step's prompt disagree on those, the prompt

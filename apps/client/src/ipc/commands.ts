@@ -245,9 +245,9 @@ export const commands = {
   writeFile: (id: string, path: string, content: string) => invoke<void>("write_file", { id, path, content }),
   /**
    * Writes the skills of the swf steps `skills` from Hunt's templates into the session's worktree, leaving existing skill
-   * files alone, and adds the entry `swf.skills.<step>` of the worktree's hunt.json for each with `addEntry` whose entry
-   * is missing; resolves with the worktree-relative paths it wrote, `hunt.json` among them when it changed, which count
-   * as the session's own changes. Fails, writing nothing, for an unknown step, a bad name or a hunt.json without an `swf` object.
+   * files alone, and adds the skill entry of the worktree's hunt.json for each with `addEntry` whose step names none
+   * (`swf.steps.<step>.skill` when `swf.steps` is an object, else `swf.skills.<step>`); resolves with the worktree-relative
+   * paths it wrote, `hunt.json` among them when it changed, which count as the session's own changes. Fails, writing nothing, for an unknown step, a bad name or a hunt.json without an `swf` object.
    */
   createSwfSkills: (sessionId: string, skills: SwfStepSkill[]) => invoke<string[]>("create_swf_skills", { id: sessionId, skills }),
   /** Restores `path` to its content at the base of `comparison`, or deletes it when it did not exist there. */

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Background, ReactFlow, ReactFlowProvider } from "@xyflow/react";
-import { MAX_ATTEMPTS, type Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
+import type { Pipeline, Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
+import { RETURNING_STEPS } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
 import { MarkdownText } from "../chat/messages/MessageList";
 import { commands } from "../ipc/commands";
 import { useHuntStore } from "../sessions/hunt.store";
@@ -164,11 +165,13 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
   );
 }
 
-/** One line on where the pipeline stands, for the header: the step, the attempt and whether a person reviews. */
-function statusText(pipeline: { step: Run["step"]; attempt: number }): string {
+/** One line on where the pipeline stands, for the header: the step, the returns of each step that sent the issue back and whether a person reviews. */
+function statusText(pipeline: Pipeline): string {
   const parts = [`At ${STEP_LABELS[pipeline.step]}`];
-  if (pipeline.attempt > 0) {
-    parts.push(`attempt ${pipeline.attempt} of ${MAX_ATTEMPTS}`);
+  for (const step of RETURNING_STEPS) {
+    if (pipeline.returnsOf(step) > 0) {
+      parts.push(`${pipeline.returnCountOf(step)} (${STEP_LABELS[step]})`);
+    }
   }
   if (pipeline.step === "human-review") {
     parts.push("a person reviews");

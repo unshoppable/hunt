@@ -13,12 +13,17 @@
  *    pipeline when it is further (more runs) or when the local one is at a step the poller drives, since the poller owns
  *    those transitions; `answers` wait until they can be sent.
  * 2. Nothing happens while the pipeline ended, waits at a poller step, or the relay serves no session.
- * 3. `result.md`, the step result the agent writes instead of a comment, once its turn ended: a usable one moves the
- *    pipeline on, becomes `steps/<nn>-<step>.md` and goes to the issue as a comment, with the step's label and the
- *    record; an unusable one is discarded and the agent is told why, in the same conversation.
+ * 3. `result.md`, the step result the agent writes instead of a comment, once its turn ended: a usable one first passes
+ *    the step's gate, when its settings name one: every gate check of hunt.json runs in the worktree (its output kept as
+ *    `gate/<nn>-<check>.log`) and the working tree must be clean afterwards; on a failure the result is discarded and
+ *    goes back to the agent with the failures in the same conversation, past `maxGateRuns` with the request to
+ *    escalate. A result that passed moves the pipeline on, becomes `steps/<nn>-<step>.md` and goes to the issue as a
+ *    comment, with the step's label and the record; an unusable one is discarded and the agent is told why, in the same
+ *    conversation.
  * 4. With the relay idle and no desktop connected: the answers waiting go to the agent in the same conversation; a
  *    pending step prompt goes into a fresh conversation (`hunt-ctl clear <id> --keep-stored`, which restarts the relay
- *    and reports the new session); a turn that ended without a result is looked up on the issue once: the question label
+ *    and reports the new session) with the step's model and effort as the conversation's config options, which the
+ *    restarted relay applies; a turn that ended without a result is looked up on the issue once: the question label
  *    means the poller brings the answer, the failed label that the agent gave up, else the agent is reminded once and
  *    the issue is marked as failed the second time.
  */
@@ -29,8 +34,18 @@ import type { PromptOutcome } from "../../../../libs/domain/src/relay/relay-prom
 import type { Pipeline } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 import { parseStepResult } from "../../../../libs/domain/src/swf/step-result.utils.ts";
 import { stoppedComment } from "../../../../libs/domain/src/swf/swf-comments.utils.ts";
-import { answerPrompt, badResultPrompt, nudgePrompt, stepPrompt, type CommentText, type PromptFiles } from "../../../../libs/domain/src/swf/swf-prompts.utils.ts";
+import {
+  answerPrompt,
+  badResultPrompt,
+  gatePrompt,
+  nudgePrompt,
+  stepPrompt,
+  type CommentText,
+  type GateFailure,
+  type PromptFiles,
+} from "../../../../libs/domain/src/swf/swf-prompts.utils.ts";
 import { UnusableStepResult } from "../../../../libs/domain/src/swf/unusable-step-result.error.ts";
+import { isAgentStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
 import { SWF_LABEL, WorkflowLabels } from "../../../../libs/domain/src/swf/workflow-labels.value-object.ts";
 import type { RunnerGitHub } from "./gh.client.ts";
 import type { RelaySessionStatus } from "./relay-status-file.utils.ts";
@@ -45,6 +60,15 @@ export interface RunnerDeps {
   clearConversation(): Promise<RelaySessionStatus>;
   /** Sends one prompt into the relay's session and disconnects (`sendPrompt` of `libs/domain/src/relay/relay-prompt.client.ts`). */
   sendPrompt(request: { sessionId: string; cwd: string; text: string }): Promise<PromptOutcome>;
+  /**
+   * Runs the check `name` of the worktree's hunt.json to its end and gives its exit code (null when a signal ended it)
+   * with the tail of its stdout and stderr; a check hunt.json does not declare gives null with the problem as output.
+   */
+  runCheck(name: string): Promise<{ exitCode: number | null; output: string }>;
+  /** The worktree's files that differ from HEAD or are untracked (`git status`), relative to the worktree. */
+  changedFiles(): Promise<string[]>;
+  /** Sets the config options the relay applies at its next start (`configOptions` of `hunt-session.json`) to exactly `options`. */
+  setConfigOptions(options: Record<string, string>): void;
   prompts: PromptFiles;
   /** The session's worktree, the cwd of every prompt. */
   worktree: string;
@@ -188,15 +212,19 @@ export class SwfRunner {
   }
 
   /**
-   * Moves the pipeline on with the step result in `result.md`: the file becomes the ended run's `steps/<nn>-<step>.md`,
-   * the issue gets the result as a comment, the next step's label and the record; the next pass sends the next prompt.
-   * An unusable result is discarded and the agent is told why, unless a desktop is connected.
+   * Moves the pipeline on with the step result in `result.md` once the step's gate passed on it (`passGate`): the file
+   * becomes the ended run's `steps/<nn>-<step>.md`, the issue gets the result as a comment, the next step's label and the
+   * record; the next pass sends the next prompt. An unusable result is discarded and the agent is told why, unless a
+   * desktop is connected.
    */
   private async acceptResult(pipeline: Pipeline, text: string, status: RelaySessionStatus): Promise<void> {
     const from = pipeline.step;
     const repo = Repository.fromSlug(pipeline.repo);
+    const reported = parseStepResult(text);
+    const gate = reported?.result?.step === from ? pipeline.gateOf(from) : [];
+    if (gate.length > 0 && !(await this.passGate(pipeline, gate, status))) return;
     try {
-      pipeline.acceptResult(parseStepResult(text), null, this.deps.now());
+      pipeline.acceptResult(reported, null, this.deps.now());
     } catch (error) {
       if (!(error instanceof UnusableStepResult)) throw error;
       if (status.clientConnected) {
@@ -227,6 +255,46 @@ export class SwfRunner {
     this.isTickRequested = true;
   }
 
+  /**
+   * Runs the gate `gate` of the current step on its result: each check in turn, all of them, then whether the working
+   * tree is clean. True when everything passed; else the result is discarded and goes back to the agent with the
+   * failures in the same conversation, the failure counted on the pipeline, and false. While a desktop is connected the
+   * gate waits without running, since a failure could not be sent and its checks would run again at every tick.
+   */
+  private async passGate(pipeline: Pipeline, gate: string[], status: RelaySessionStatus): Promise<boolean> {
+    const step = pipeline.step;
+    const run = pipeline.currentRun;
+    if (!run) throw new Error(`the pipeline has no running step to gate at ${step}`);
+    if (status.clientConnected) {
+      this.waitOnce(`the step result of ${step} waits for its gate (${gate.join(", ")}); a desktop is connected`);
+      return false;
+    }
+    const failures: GateFailure[] = [];
+    for (const name of gate) {
+      const { exitCode, output } = await this.deps.runCheck(name);
+      this.deps.files.keepGateLog(run, name, output);
+      this.deps.log(`the check ${name} of the gate of ${step} ended with ${exitCode === null ? "no exit code" : `exit ${exitCode}`}`, "debug");
+      if (exitCode !== 0) failures.push({ name, exitCode, output });
+    }
+    const dirty = await this.deps.changedFiles();
+    if (dirty.length > 0) failures.push({ name: "working tree", exitCode: 0, output: "", dirty });
+    if (failures.length === 0) {
+      this.deps.log(`the gate of ${step} passed (${gate.join(", ")})`);
+      return true;
+    }
+    pipeline.noteGateFailure(status.lastTurnEndedAt ?? 0);
+    const text = gatePrompt(this.deps.prompts, this.labels, pipeline, failures);
+    const outcome = await this.deps.sendPrompt({ sessionId: status.acpSessionId, cwd: this.deps.worktree, text });
+    this.deps.files.discardResult();
+    this.deps.files.writePipeline(pipeline);
+    this.lastWait = "";
+    const failed = failures.map((failure) => (failure.dirty ? "a dirty working tree" : failure.name)).join(", ");
+    const told = pipeline.gateEscalates ? "asked the agent to escalate" : "gave the result back to the agent";
+    this.deps.log(`the gate of ${step} failed (${failed}; gate run ${pipeline.gateRuns} of ${pipeline.settings.maxGateRuns}); ${told} (prompt ${outcome})`, "warn");
+    await this.saveRecord(pipeline);
+    return false;
+  }
+
   /** Sends the answers waiting in the inbox to the agent in its conversation; each file's once. */
   private async deliverAnswers(pipeline: Pipeline, status: RelaySessionStatus): Promise<void> {
     const repo = Repository.fromSlug(pipeline.repo);
@@ -245,11 +313,19 @@ export class SwfRunner {
     await this.saveRecord(pipeline);
   }
 
-  /** Begins a fresh conversation and sends it the prompt of the current step, with the issue as it stands. */
+  /**
+   * Begins a fresh conversation with the current step's config options, replacing those of the previous step or a
+   * desktop's pick, and sends it the prompt of the step, with the issue as it stands.
+   */
   private async sendStepPrompt(pipeline: Pipeline): Promise<void> {
     const repo = Repository.fromSlug(pipeline.repo);
     const thread = await this.deps.github.issue(repo, pipeline.issue);
     const text = stepPrompt(this.deps.prompts, repo, thread.issue, thread.comments, pipeline.branch, this.labels, pipeline);
+    const options = isAgentStep(pipeline.step) ? pipeline.configOptionsOf(pipeline.step) : {};
+    this.deps.setConfigOptions(options);
+    if (Object.keys(options).length > 0) {
+      this.deps.log(`the conversation of ${pipeline.step} runs with ${Object.entries(options).map(([key, value]) => `${key} ${value}`).join(", ")}`);
+    }
     const status = await this.deps.clearConversation();
     const outcome = await this.deps.sendPrompt({ sessionId: status.acpSessionId, cwd: this.deps.worktree, text });
     pipeline.recordPrompt(status.lastTurnEndedAt ?? 0);

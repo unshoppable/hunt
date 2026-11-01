@@ -13,8 +13,8 @@ import type { GitHubApp } from "./github-app.client.ts";
 import { Poller, type PollerDeps } from "./poller.service.ts";
 import { readSwfConfig, type SwfConfig } from "./swf-config.utils.ts";
 import { Pipeline, type PullRequestReview, type Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
-import { closedComment, humanReviewComment } from "./swf-comments.utils.ts";
-import { ISSUE, SKILLS, started } from "../../../../libs/domain/src/swf/swf.fixtures.ts";
+import { closedComment, humanReviewComment, stepSettingsError } from "./swf-comments.utils.ts";
+import { ISSUE, settingsWith, started } from "../../../../libs/domain/src/swf/swf.fixtures.ts";
 
 /** The poller's clock in the tests: 2026-10-25 10:00 UTC. */
 const NOW = Date.UTC(2026, 9, 25, 10, 0, 0);
@@ -38,6 +38,8 @@ const RECORD_ID = 1000;
 /** The id of the first comment the fake GitHub posts. */
 const FIRST_POSTED_ID = 5000;
 const PULL_REQUEST = 31;
+/** The step settings `hunt-ctl session-config` reports for acme/app: its own plan skill, with a model and effort for plan and another model for implement. */
+const REPORTED_SETTINGS = settingsWith({ plan: { skill: "acme-plan", model: "claude-opus-5-5", effort: "high" }, implement: { model: "claude-sonnet-5" } });
 const HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
 
 function issue(number: number, title = `Issue ${number}`, labels = ["swf"]): Issue {
@@ -309,8 +311,7 @@ function fakeVm(failing?: { command: string; error: Error }) {
           return {
             services_prompt: "### The repository's services\n- `ui`: port 4200\n",
             agent_md: "# Services\nStart the UIs.",
-            swf_model: "claude-opus-5-5",
-            swf_skills: { ...SKILLS, plan: "acme-plan", gate: "nope" },
+            swf_steps: REPORTED_SETTINGS.toJSON(),
           };
         case "wait":
           return { state: "ready", acpSessionId: "acp-9" };
@@ -390,6 +391,8 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
       swfNudge: readPrompt("nudge"),
       swfAnswer: readPrompt("answer"),
       swfBadResult: readPrompt("bad-result"),
+      swfGateFailed: readPrompt("gate-failed"),
+      swfGateEscalate: readPrompt("gate-escalate"),
     }),
     newId: () => SESSION_ID,
     now: () => NOW,
@@ -536,7 +539,7 @@ describe("Poller.cycle", () => {
     await poller.drain();
 
     const labels = ["plan", "implement", "verify", "review", "pr", "checks", "human-review", "merge", "question", "done", "failed"];
-    const planned = Pipeline.start({ ...ISSUE, branch: "fix/general/12-fix-login" }, { ...SKILLS, plan: "acme-plan" }, NOW);
+    const planned = Pipeline.start({ ...ISSUE, branch: "fix/general/12-fix-login" }, REPORTED_SETTINGS, NOW);
     expect(github.calls).toEqual([
       "in-progress acme/app",
       "issues acme/app swf",
@@ -584,14 +587,12 @@ describe("Poller.cycle", () => {
         `\n\n## Remote session\n\n### Git\n\n## Questions\n\n## Sessions ${SESSION_ID}\n\n## Issue #12 on fix/general/12-fix-login\n\n### The repository's services\n- \`ui\`: port 4200\n\n` +
         "### The repository's hunt.agent.md\n# Services\nStart the UIs.\n",
       modeId: "bypassPermissions",
-      configOptions: { model: "claude-opus-5-5" },
+      configOptions: { model: "claude-opus-5-5", effort: "high" },
     });
     // The runner on the VM sends the plan prompt; the record names the comment the runner edits.
     expect(lastRecord(github)).toEqual(withoutRuns(planned.toJSON()));
-    expect(lastRecord(github)).toMatchObject({ version: 3, recordId: FIRST_POSTED_ID, promptTurn: null });
-    expect(github.updates.at(-1)?.body).toContain(
-      "\"skills\":{\"plan\":\"acme-plan\",\"implement\":\"swf-implement\",\"verify\":\"swf-verify\",\"review\":\"swf-review\",\"pr\":\"swf-pr\"}",
-    );
+    expect(lastRecord(github)).toMatchObject({ version: 4, recordId: FIRST_POSTED_ID, promptTurn: null });
+    expect(github.updates.at(-1)?.body).toContain('"plan":{"skill":"acme-plan","model":"claude-opus-5-5","effort":"high","maxReturns":null,"gate":[]}');
     expect(github.threads[KEY].map((comment) => comment.id)).toEqual([1, FIRST_POSTED_ID]);
     expect(logs.at(-1)).toBe(`acme/app#12: the runner of session ${SESSION_ID} drives the issue, beginning with the plan`);
     expect(logs.join("\n")).not.toContain(GITHUB_TOKEN);
@@ -713,14 +714,14 @@ describe("Poller.cycle", () => {
     );
   });
 
-  it("marks the issue as failed without a record when session-config names no skill for an agent step, since Hunt has no default skill", async () => {
+  it("marks the issue as failed without a record when session-config reports unusable step settings or names no skill for an agent step", async () => {
     const answers: [Record<string, unknown>, string][] = [
-      [{ swf_skills: { plan: "acme-plan", verify: "acme-verify", gate: "nope" } }, "the steps implement, review, pr"],
-      [{ swf_skills: {} }, "the steps plan, implement, verify, review, pr"],
-      [{}, "the steps plan, implement, verify, review, pr"],
-      [{ swf_skills: { ...SKILLS, review: "" } }, "the step review"],
+      [{ swf_steps: settingsWith({ implement: { skill: null }, review: { skill: null }, pr: { skill: null } }).toJSON() }, "the step settings name no skill for the steps implement, review, pr"],
+      [{ swf_steps: settingsWith({ review: { skill: null } }).toJSON() }, "the step settings name no skill for the step review"],
+      [{ swf_steps: null }, "the step settings are unusable (Invalid input)"],
+      [{}, "the step settings are unusable (Invalid input)"],
     ];
-    for (const [answer, steps] of answers) {
+    for (const [answer, problem] of answers) {
       const github = fakeGitHub({ "acme/app": [issue(9)] });
       const { vm, calls } = fakeVm();
       const huntCtl = vm.huntCtl;
@@ -729,19 +730,31 @@ describe("Poller.cycle", () => {
 
       await poller.cycle();
       await poller.drain();
-      const expected = `hunt.json names no skill for ${steps} under swf.skills; Hunt has no default skill and asks to add the entries when a session of the repository opens`;
-      expect(github.calls.slice(-4), steps).toEqual([
+      const expected = stepSettingsError(problem);
+      expect(github.calls.slice(-4), problem).toEqual([
         "unlabel acme/app#9 swf:plan",
         "unlabel acme/app#9 swf:question",
         "label acme/app#9 swf:failed",
         `comment acme/app#9 Hunt could not start a session for this issue:\n\n\`\`\`\n${expected}\n\`\`\`\n\nThe VM \`${VM}\` stays for inspection.`,
       ]);
-      expect(github.calls.filter((call) => call.includes("hunt:pipeline")), steps).toEqual([]);
-      expect(calls.filter((call) => call.startsWith("hunt-ctl deps")), steps).toEqual([]);
-      expect(logs, steps).toContain(`acme/app#9: failed: ${expected}`);
+      expect(github.calls.filter((call) => call.includes("hunt:pipeline")), problem).toEqual([]);
+      expect(calls.filter((call) => call.startsWith("hunt-ctl deps")), problem).toEqual([]);
+      expect(logs, problem).toContain(`acme/app#9: failed: ${expected}`);
     }
   });
 
+  it("starts the session with Claude Code's default model and effort when the plan step sets neither", async () => {
+    const github = fakeGitHub({ "acme/app": [issue(12)] });
+    const { vm, claudeFiles } = fakeVm();
+    const huntCtl = vm.huntCtl;
+    const answer = { swf_steps: settingsWith({ implement: { model: "claude-sonnet-5", effort: "max" } }).toJSON() };
+    vm.huntCtl = async (args, input) => (args[0] === "session-config" ? answer : huntCtl(args, input));
+    const { poller } = createPoller({ github, vm });
+
+    await poller.cycle();
+    await poller.drain();
+    expect(JSON.parse(claudeFiles[0]["hunt-session.json"])).toMatchObject({ configOptions: {} });
+  });
 });
 
 describe("Poller.cycle follows running sessions", () => {
@@ -848,7 +861,7 @@ describe("Poller.cycle follows running sessions", () => {
   });
 
   it("leaves a session alone whose record is of an older version or names no version, and says so once", async () => {
-    for (const version of [2, null]) {
+    for (const version of [2, 3, null]) {
       const session = followSession(recordAt("checks", { pullRequest: PULL_REQUEST }), { labels: ["swf:checks"], pullRequests: { [PULL_REQUEST]: pullRequestOf() } });
       session.github.threads[KEY][0].body = oldRecordComment("checks", version);
 
@@ -1021,21 +1034,21 @@ describe("Poller.cycle drives the pull request", () => {
   });
 
   it("sends the issue back to implement at checks for a failing check, through the runner's inbox, and starts a stopped VM for it", async () => {
-    const session = followSession(recordAt("checks", { pullRequest: PULL_REQUEST, inReview: true, attempt: 1 }), {
+    const session = followSession(recordAt("checks", { pullRequest: PULL_REQUEST, inReview: true, returns: { checks: 1 } }), {
       pullRequests: { [PULL_REQUEST]: pullRequestOf({ checks: "failure", failingChecks: ["build", "lint"] }) },
     });
     await session.poller.cycle();
     expect(writes(session.github)).toEqual(["label acme/app#12 swf:implement", "unlabel acme/app#12 swf:checks", `update acme/app ${RECORD_ID}`]);
     expect(lastRecord(session.github)).toEqual(withoutRuns({
       ...recordAt("implement", { pullRequest: PULL_REQUEST, inReview: true }),
-      attempt: 2,
+      returns: { checks: 2 },
       findings: ["Checks: build, lint failed on 0123456 (https://github.com/acme/app/pull/31/checks)"],
     }));
     expect(session.logs).toContain(`${KEY}: the checks of #31 failed; back to implement`);
     expect(session.calls).toHaveLength(2);
     expect(session.calls[1]).toMatch(/^hunt-ctl swf-inbox [0-9a-f-]+ <<< .*\\"kind\\":\\"pipeline\\".*\\"step\\":\\"implement\\"/);
 
-    const stopped = followSession(recordAt("implement", { attempt: 1, findings: ["Checks: build failed"] }), { vmStatus: "SUSPENDED" });
+    const stopped = followSession(recordAt("implement", { returns: { checks: 1 }, findings: ["Checks: build failed"] }), { vmStatus: "SUSPENDED" });
     startable(stopped.compute, stopped.listed);
     await stopped.poller.cycle();
     expect(stopped.logs).toContain(`${KEY}: the step implement waits for its prompt while ${VM} is suspended; starting it`);
@@ -1078,7 +1091,7 @@ describe("Poller.cycle drives the pull request", () => {
     expect(session.logs).toContain(`${KEY}: asked @carol to review #31`);
 
     // Asked once: a pull request that comes back to checks and needs a person again mentions nobody again.
-    const again = followSession(recordAt("checks", { pullRequest: PULL_REQUEST, inReview: true, notified: true, attempt: 1 }), {
+    const again = followSession(recordAt("checks", { pullRequest: PULL_REQUEST, inReview: true, notified: true, returns: { checks: 1 } }), {
       pullRequests: { [PULL_REQUEST]: pullRequestOf({ reviewDecision: "CHANGES_REQUESTED" }) },
     });
     await again.poller.cycle();
@@ -1104,7 +1117,7 @@ describe("Poller.cycle drives the pull request", () => {
 
   it("sends a person's change request at human-review back to implement with the review and its inline comments, once", async () => {
     const reviews = [reviewOf(503, "carol", "CHANGES_REQUESTED", "Please rename the index.\n")];
-    const record = recordAt("human-review", { pullRequest: PULL_REQUEST, inReview: true, notified: true, attempt: 1 });
+    const record = recordAt("human-review", { pullRequest: PULL_REQUEST, inReview: true, notified: true, returns: { "human-review": 1 } });
     const session = followSession(record, { pullRequests: { [PULL_REQUEST]: pullRequestOf({ reviewDecision: "CHANGES_REQUESTED" }) }, reviews, reviewComments: ["db/migrations/0007.sql:3: Use a partial index."] });
 
     await session.poller.cycle();
@@ -1114,7 +1127,7 @@ describe("Poller.cycle drives the pull request", () => {
     expect(sentBack).toEqual(withoutRuns({
       ...record,
       step: "implement",
-      attempt: 2,
+      returns: { "human-review": 2 },
       findings: ["@carol requested changes on #31:\nPlease rename the index.\ndb/migrations/0007.sql:3: Use a partial index."],
       handledReview: 503,
     }));
@@ -1182,7 +1195,7 @@ describe("Poller.cycle drives the pull request", () => {
     expect(writes(session.github)).toEqual(["label acme/app#12 swf:implement", "unlabel acme/app#12 swf:merge", `update acme/app ${RECORD_ID}`]);
     expect(lastRecord(session.github)).toEqual(withoutRuns({
       ...recordAt("implement", { pullRequest: PULL_REQUEST }),
-      attempt: 1,
+      returns: { merge: 1 },
       findings: ["Merge: the branch conflicts with the base branch; merge the base branch into 0123456's branch, resolve the conflicts and push"],
     }));
     expect(session.logs).toContain(`${KEY}: #31 conflicts with its base; back to implement`);
@@ -1239,7 +1252,7 @@ describe("Poller.cycle drives the pull request", () => {
 
     pullRequests[PULL_REQUEST].mergeState = "DIRTY";
     await session.poller.cycle();
-    expect(lastRecord(session.github)).toMatchObject({ step: "implement", attempt: 1, promptTurn: null });
+    expect(lastRecord(session.github)).toMatchObject({ step: "implement", returns: { merge: 1 }, promptTurn: null });
     expect(session.compute.calls.filter((call) => /^(start|resume) /.test(call))).toEqual([]);
     expect(session.calls).toEqual([]);
 
@@ -1331,7 +1344,7 @@ describe("Poller.cycle replaces a lost VM", () => {
     reviews.push(reviewOf(503, "carol", "CHANGES_REQUESTED", "Rename it"));
     await session.poller.cycle();
     expect(writes(session.github)).toEqual(["label acme/app#12 swf:implement", "unlabel acme/app#12 swf:human-review", `update acme/app ${RECORD_ID}`]);
-    expect(lastRecord(session.github)).toMatchObject({ step: "implement", attempt: 1, promptTurn: null, handledReview: 503 });
+    expect(lastRecord(session.github)).toMatchObject({ step: "implement", returns: { "human-review": 1 }, promptTurn: null, handledReview: 503 });
     expect(session.compute.inserted).toEqual([]);
 
     await session.poller.cycle();

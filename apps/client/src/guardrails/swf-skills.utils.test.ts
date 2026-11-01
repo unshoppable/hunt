@@ -66,16 +66,17 @@ describe("swfSkillsQuestion", () => {
   it("names each step with what it lacks and asks for both the entries and the files", () => {
     expect(swfSkillsQuestion([entryGap, fileGap, bothGap])).toBe(
       "This repository uses Hunt's software factory (the swf section of its hunt.json), but not every agent step has its skill:\n\n" +
-        "• plan: no entry swf.skills.plan in hunt.json (proposed: swf-plan)\n" +
+        "• plan: no skill for the step plan in hunt.json (swf.steps.plan.skill or swf.skills.plan; proposed: swf-plan)\n" +
         "• review: no skill file .claude/skills/acme-review/SKILL.md\n" +
-        "• pr: no entry swf.skills.pr in hunt.json (proposed: swf-pr) and no skill file .claude/skills/swf-pr/SKILL.md\n\n" +
+        "• pr: no skill for the step pr in hunt.json (swf.steps.pr.skill or swf.skills.pr; proposed: swf-pr) " +
+        "and no skill file .claude/skills/swf-pr/SKILL.md\n\n" +
         "Add the missing entries to hunt.json and create the missing skills from Hunt's templates? " +
         "Each template is for the repository to fill in; existing entries and skill files are kept.",
     );
   });
 
   it("asks only for the entries when every file exists", () => {
-    expect(swfSkillsQuestion([entryGap])).toContain("(proposed: swf-plan)\n\nAdd the missing entries to hunt.json? Existing entries and skill files are kept.");
+    expect(swfSkillsQuestion([entryGap])).toContain("proposed: swf-plan)\n\nAdd the missing entries to hunt.json? Existing entries and skill files are kept.");
   });
 
   it("asks only for the files when every entry exists", () => {

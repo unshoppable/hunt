@@ -71,6 +71,13 @@ describe("swfSkillsOf", () => {
     expect(entries?.map((entry) => entry.name)).toEqual(["team-plan", null, null, null, "swf-pr"]);
   });
 
+  it("prefers swf.steps.<step>.skill and falls back to swf.skills.<step> where it is no non-empty string", () => {
+    const steps = '{ "plan": { "skill": "team-plan" }, "implement": { "skill": "" }, "verify": { "model": "opus" }, "review": "acme-review", "checks": {} }';
+    const skills = '{ "plan": "old-plan", "implement": "old-implement", "verify": "old-verify", "review": "old-review" }';
+    const entries = swfSkillsOf(`{ "swf": { "steps": ${steps}, "skills": ${skills} } }`);
+    expect(entries?.map((entry) => entry.name)).toEqual(["team-plan", "old-implement", "old-verify", "old-review", null]);
+  });
+
   it("is null without the file or an swf section", () => {
     for (const huntJson of ["", "{", "null", '{ "version": 3 }', '{ "swf": null }', '{ "swf": [] }', '{ "swf": "yes" }']) {
       expect(swfSkillsOf(huntJson)).toBeNull();

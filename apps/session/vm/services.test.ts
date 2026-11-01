@@ -270,8 +270,19 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(result).toEqual({
       agent_md: AGENT_MD.trim(),
       services_prompt: expect.stringMatching(/^### The repository's services\n/),
-      swf_model: "claude-opus-5-5",
-      swf_skills: SKILLS,
+      swf_steps: {
+        maxGateRuns: 5,
+        steps: {
+          plan: { skill: "swf-plan", model: "claude-opus-5-5", effort: null, maxReturns: null, gate: [] },
+          implement: { skill: "swf-implement", model: "claude-opus-5-5", effort: null, maxReturns: null, gate: ["good", "bad"] },
+          verify: { skill: "swf-verify", model: "claude-opus-5-5", effort: null, maxReturns: 5, gate: [] },
+          review: { skill: "acme-review", model: "claude-opus-5-5", effort: null, maxReturns: 3, gate: [] },
+          pr: { skill: "swf-pr", model: "claude-opus-5-5", effort: null, maxReturns: null, gate: [] },
+          checks: { skill: null, model: null, effort: null, maxReturns: 2, gate: [] },
+          "human-review": { skill: null, model: null, effort: null, maxReturns: 3, gate: [] },
+          merge: { skill: null, model: null, effort: null, maxReturns: 2, gate: [] },
+        },
+      },
     });
     expect(result.services_prompt).toContain("https://7c0c6f2e-3000-open.hunt.example.com");
 
@@ -325,8 +336,7 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(sessionConfig()).toEqual({
       agent_md: null,
       services_prompt: expect.stringContaining("declares no services"),
-      swf_model: null,
-      swf_skills: {},
+      swf_steps: null,
     });
     expect(sh("ls -A /etc/hunt/services 2>/dev/null").stdout).toBe("");
     expect(JSON.parse(sh(`cat /srv/hunt/sessions/${ID}/meta.json`).stdout).preview).toEqual({ domain: DOMAIN, services: [] });
@@ -349,15 +359,15 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(result.status).toBe(3);
     for (const [step, name] of [["review", "acme-review"], ["pr", "swf-pr"]]) {
       expect(result.stderr).toContain(
-        `swf.skills.${step}: no skill file .claude/skills/${name}/SKILL.md; Hunt offers to create it when a session of the repository opens`,
+        `swf.steps.${step}.skill: no skill file .claude/skills/${name}/SKILL.md; Hunt offers to create it when a session of the repository opens`,
       );
     }
-    expect(result.stderr).not.toContain("swf.skills.plan");
+    expect(result.stderr).not.toContain("swf.steps.plan.skill");
     expect(result.stderr).toContain("hunt-ctl: hunt.json or hunt.agent.md is not valid (see above)");
     expect(JSON.parse(sh(`cat /srv/hunt/sessions/${ID}/meta.json`).stdout).preview).toBeUndefined();
 
     seed({ version: 3, services: HUNT_JSON.services }, AGENT_MD, []);
-    expect(sessionConfig()).toMatchObject({ swf_model: null, swf_skills: {} });
+    expect(sessionConfig()).toMatchObject({ swf_steps: null });
   });
 
   it("refuses a swf section that names no skill for an agent step, since Hunt has no default skill", () => {
@@ -365,14 +375,14 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     const withoutSkills = huntCtl("session-config", ID, "--domain", DOMAIN);
     expect(withoutSkills.status).toBe(3);
     expect(withoutSkills.stderr).toContain(
-      "swf.skills: must name the skill of every agent step (plan, implement, verify, review, pr); Hunt asks to add them when a session of the repository opens",
+      "swf.steps: must name the skill of every agent step (plan, implement, verify, review, pr); Hunt asks to add them when a session of the repository opens",
     );
 
     seed({ ...HUNT_JSON, swf: { skills: { plan: "swf-plan", review: "acme-review" } } }, AGENT_MD, Object.values(SKILLS));
     const withoutSteps = huntCtl("session-config", ID, "--domain", DOMAIN);
     expect(withoutSteps.status).toBe(3);
     for (const step of ["implement", "verify", "pr"]) {
-      expect(withoutSteps.stderr).toContain(`swf.skills.${step}: must name the skill of the step; Hunt asks to add it when a session of the repository opens`);
+      expect(withoutSteps.stderr).toContain(`swf.steps.${step}.skill: must name the skill of the step; Hunt asks to add it when a session of the repository opens`);
     }
     expect(withoutSteps.stderr).not.toContain("no skill file");
     expect(JSON.parse(sh(`cat /srv/hunt/sessions/${ID}/meta.json`).stdout).preview).toBeUndefined();

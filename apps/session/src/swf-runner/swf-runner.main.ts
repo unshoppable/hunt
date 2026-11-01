@@ -4,15 +4,17 @@
  *
  *   node /srv/hunt/current/session/swfRunner.mjs      (the bundle `nx build session` writes)
  *
- * Environment: `HUNT_SESSION_ID` and `HUNT_WORKTREE` (`/etc/hunt/swf-runner.env`, which `hunt-ctl start` writes) and
- * `HUNT_SOCKET_DIR` (agent.env), where the relay keeps `status.json` and `relay.sock`. It runs a tick whenever the
+ * Environment: `HUNT_SESSION_ID` and `HUNT_WORKTREE` (`/etc/hunt/swf-runner.env`, which `hunt-ctl start` writes),
+ * `HUNT_SOCKET_DIR` (agent.env), where the relay keeps `status.json` and `relay.sock`, and `HUNT_CONFIG` (agent.env),
+ * the relay's `hunt-session.json`, whose config options the runner sets before each step's fresh conversation. The
+ * checks of a step's gate run as the agent in a login shell in the worktree, like the agent's own commands. It runs a tick whenever the
  * socket directory or the inbox changes (`fs.watch`; the relay's systemd RuntimeDirectory is created anew with every
  * relay start, so the watch is set up again whenever it is gone) and every POLL_INTERVAL_MS anyway. It connects to the
  * relay only to send a prompt and touches nothing that counts as activity for `hunt-idle-check` while it waits, so
  * that the VM suspends while the pipeline waits for people. The prompts of the steps are compiled in through the `?raw`
  * imports, as the gateway compiles them into its poller. Runs on Node 24 through type stripping; no dependencies.
  */
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, statSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,12 +31,18 @@ import swfReviewPrompt from "../../../../libs/domain/prompts/swf/4-review.user-p
 import swfPrPrompt from "../../../../libs/domain/prompts/swf/5-pr.user-prompt.md?raw";
 import swfAnswerPrompt from "../../../../libs/domain/prompts/swf/answer.user-prompt.md?raw";
 import swfBadResultPrompt from "../../../../libs/domain/prompts/swf/bad-result.user-prompt.md?raw";
+import swfGateEscalatePrompt from "../../../../libs/domain/prompts/swf/gate-escalate.user-prompt.md?raw";
+import swfGateFailedPrompt from "../../../../libs/domain/prompts/swf/gate-failed.user-prompt.md?raw";
 import swfNudgePrompt from "../../../../libs/domain/prompts/swf/nudge.user-prompt.md?raw";
 import { connectRelaySocket, sendPrompt } from "../../../../libs/domain/src/relay/relay-prompt.client.ts";
 import { SessionId } from "../../../../libs/domain/src/session/session-id.value-object.ts";
+import { messageOf } from "../../../../libs/domain/src/shared/errors.utils.ts";
 import { journalLine, type LogLevel } from "../../../../libs/domain/src/shared/journal.utils.ts";
 import type { PromptFiles } from "../../../../libs/domain/src/swf/swf-prompts.utils.ts";
+import { replaceConfigOptions } from "../relay/hunt-session-config.utils.ts";
+import { HuntJson } from "../session-config/hunt-json.value-object.ts";
 import { GhClient } from "./gh.client.ts";
+import { changedPathsOf } from "./git-status.utils.ts";
 import { relaySessionStatusOf } from "./relay-status-file.utils.ts";
 import { SwfDir } from "./swf-dir.client.ts";
 import { SwfRunner } from "./swf-runner.service.ts";
@@ -45,6 +53,9 @@ const SETTLE_MS = 200;
 /** `hunt-ctl clear` waits up to 120 s for the relay; the runner gives it a little longer. */
 const CLEAR_TIMEOUT_MS = 150_000;
 const GH_TIMEOUT_MS = 60_000;
+const GIT_TIMEOUT_MS = 60_000;
+/** How much of the end of a gate check's output the runner keeps, in characters. */
+const CHECK_OUTPUT_MAX_CHARS = 200 * 1024;
 const HUNT_CTL = "/usr/local/bin/hunt-ctl";
 const GH = "/usr/local/bin/gh";
 /** The folder of `.hunt/swf/` in the worktree, as `hunt-ctl` names it (SWF_DIR). */
@@ -80,6 +91,8 @@ function readPrompts(): PromptFiles {
     swfNudge: swfNudgePrompt,
     swfAnswer: swfAnswerPrompt,
     swfBadResult: swfBadResultPrompt,
+    swfGateFailed: swfGateFailedPrompt,
+    swfGateEscalate: swfGateEscalatePrompt,
   };
 }
 
@@ -96,6 +109,51 @@ function run(file: string, args: string[], input: string | undefined, timeoutMs:
     });
     child.stdin?.on("error", () => {});
     child.stdin?.end(input ?? "");
+  });
+}
+
+/** The command line of the check `name` of the hunt.json in `worktree` and the folder it runs in; throws with the problems. */
+function findCheck(worktree: string, name: string): { command: string; cwd: string } {
+  const path = join(worktree, "hunt.json");
+  let document: unknown;
+  try {
+    document = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(`failed to read ${path}: ${messageOf(error)}`);
+  }
+  const parsed = HuntJson.fromDocument(document);
+  if (parsed.problems) throw new Error(`${path} has problems:\n${parsed.problems.join("\n")}`);
+  const { command, cwd } = parsed.huntJson.findCheck(name);
+  return { command, cwd: cwd === null ? worktree : join(worktree, cwd) };
+}
+
+/**
+ * Runs the check `name` of the worktree's hunt.json in a login shell to its end, without a timeout, and gives its exit
+ * code (null when a signal ended it) with the last CHECK_OUTPUT_MAX_CHARS of stdout and stderr as they came; a check it
+ * cannot find or start gives null with the problem as output.
+ */
+function runCheck(worktree: string, name: string): Promise<{ exitCode: number | null; output: string }> {
+  let check: { command: string; cwd: string };
+  try {
+    check = findCheck(worktree, name);
+  } catch (error) {
+    return Promise.resolve({ exitCode: null, output: messageOf(error) });
+  }
+  return new Promise((resolve) => {
+    let output = "";
+    function append(chunk: string): void {
+      output += chunk;
+      if (output.length > 2 * CHECK_OUTPUT_MAX_CHARS) output = output.slice(-CHECK_OUTPUT_MAX_CHARS);
+    }
+    const child = spawn("/bin/bash", ["-lc", check.command], {
+      cwd: check.cwd,
+      env: { ...process.env, FORCE_COLOR: "0", CI: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.setEncoding("utf8").on("data", append);
+    child.stderr.setEncoding("utf8").on("data", append);
+    child.on("error", (error) => resolve({ exitCode: null, output: `${output}${messageOf(error)}`.slice(-CHECK_OUTPUT_MAX_CHARS) }));
+    child.on("close", (code) => resolve({ exitCode: code, output: output.slice(-CHECK_OUTPUT_MAX_CHARS) }));
   });
 }
 
@@ -121,6 +179,7 @@ function main(): void {
   const sessionId = SessionId.of(requireEnv("HUNT_SESSION_ID"));
   const worktree = requireEnv("HUNT_WORKTREE");
   const socketDir = requireEnv("HUNT_SOCKET_DIR");
+  const configPath = requireEnv("HUNT_CONFIG");
   const statusPath = join(socketDir, "status.json");
   const socketPath = join(socketDir, "relay.sock");
   const swfDir = join(worktree, SWF_DIR);
@@ -138,6 +197,9 @@ function main(): void {
       return status;
     },
     sendPrompt: async (request) => sendPrompt(await connectRelaySocket(socketPath), request),
+    runCheck: (name) => runCheck(worktree, name),
+    changedFiles: async () => changedPathsOf(await run("git", ["-C", worktree, "status", "--porcelain", "-z", "--untracked-files=all"], undefined, GIT_TIMEOUT_MS)),
+    setConfigOptions: (options) => replaceConfigOptions(configPath, options),
     prompts: readPrompts(),
     worktree,
     vmName: sessionId.vm.name,

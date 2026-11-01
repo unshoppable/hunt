@@ -2,16 +2,17 @@ import { describe, expect, it } from "vitest";
 import type * as z from "zod/mini";
 import type { ParsedStepResult, StepResult } from "./step-result.utils.ts";
 import { AGENT_STEPS, POLLER_STEPS, type SwfStep } from "./swf-step.types.ts";
-import { MAX_ATTEMPTS, Pipeline, RECORD_VERSION, stepSkills, type PullRequestReview, type Run } from "./pipeline.domain.ts";
-import { ISSUE, SKILLS, started } from "./swf.fixtures.ts";
+import { Pipeline, RECORD_VERSION, stepSettings, type PullRequestReview, type Run } from "./pipeline.domain.ts";
+import { DEFAULT_MAX_GATE_RUNS, DEFAULT_MAX_RETURNS } from "./step-settings.value-object.ts";
+import { IMPLEMENT_GATE, ISSUE, SETTINGS, settingsWith, started } from "./swf.fixtures.ts";
 import { UnusableStepResult } from "./unusable-step-result.error.ts";
 
 /** The poller's clock in the tests: 2026-10-25 10:00 UTC. */
 const NOW = Date.UTC(2026, 9, 25, 10, 0, 0);
 
 const HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
-/** The record's `skills` of SKILLS, as the record comment spells it. */
-const SKILLS_JSON = '"skills":{"plan":"swf-plan","implement":"swf-implement","verify":"swf-verify","review":"swf-review","pr":"swf-pr"}';
+/** The record's `settings` of SETTINGS, as the record comment spells it. */
+const SETTINGS_JSON = `"settings":${JSON.stringify(SETTINGS)}`;
 /** The fields a record written by hand lacks, at their start values. */
 const BARE = { repo: "", issue: 0, branch: "" };
 
@@ -40,18 +41,20 @@ function review(id: number, author: string, state: string, body = ""): PullReque
 }
 
 describe("Pipeline.start", () => {
-  it("starts at plan with nothing sent or acted on, of the current record version, with the issue and the skill of every agent step", () => {
-    expect(RECORD_VERSION).toBe(3);
-    expect(Pipeline.start(ISSUE, { ...SKILLS, plan: "acme-plan" }, NOW).toJSON()).toEqual({
-      version: 3,
+  it("starts at plan with nothing sent or acted on, of the current record version, with the issue and the step settings", () => {
+    const settings = settingsWith({ plan: { skill: "acme-plan", model: "claude-opus-5-5" } });
+    expect(RECORD_VERSION).toBe(4);
+    expect(Pipeline.start(ISSUE, settings, NOW).toJSON()).toEqual({
+      version: 4,
       repo: "acme/app",
       issue: 12,
       branch: "feat/general/12-issue-12",
       recordId: 0,
       step: "plan",
-      attempt: 0,
+      returns: {},
+      gateRuns: 0,
       pullRequest: null,
-      skills: { plan: "acme-plan", implement: "swf-implement", verify: "swf-verify", review: "swf-review", pr: "swf-pr" },
+      settings: settings.toJSON(),
       findings: [],
       escalate: false,
       promptTurn: null,
@@ -63,36 +66,43 @@ describe("Pipeline.start", () => {
       inReview: false,
       runs: [{ n: 1, step: "plan", startedAt: "2026-10-25T10:00:00.000Z", endedAt: null, outcome: "running" }],
     });
-    const unordered = { pr: "a-pr", plan: "a-plan", implement: "a-implement", verify: "a-verify", review: "a-review" };
-    expect(Object.keys(started(NOW, unordered).skills)).toEqual([...AGENT_STEPS]);
-    expect(() => started(NOW, { ...SKILLS, pr: "" })).toThrow();
+    expect(started(NOW, settings).settings.isEqualTo(settings)).toBe(true);
   });
 });
 
 describe("the record comment", () => {
-  it("holds the status line and the record with its keys in their order, and survives the round trip", () => {
-    const fields = { attempt: 2, findings: ["Verify: a"], pullRequest: 42, promptTurn: 1760000000000 };
-    const pipeline = new Pipeline({ ...started(NOW, { ...SKILLS, review: "acme-review" }).toJSON(), step: "implement", runs: [runOf(1, "implement")], ...fields });
+  it("holds the status line and the record with its keys in their order, and survives the round trip with its settings and returns", () => {
+    const settings = settingsWith({ review: { skill: "acme-review", maxReturns: 4, effort: "high" } }, 3);
+    const fields = { returns: { verify: 2, review: 1 }, gateRuns: 1, findings: ["Verify: a"], pullRequest: 42, promptTurn: 1760000000000 };
+    const pipeline = new Pipeline({ ...started(NOW, settings).toJSON(), step: "implement", runs: [runOf(1, "implement")], ...fields });
     const body = pipeline.toComment();
     expect(body).toBe(
-      "**Hunt:** step `implement` · attempt 2 of 5 · pull request #42\n\n" +
-        '<!-- hunt:pipeline {"version":3,"repo":"acme/app","issue":12,"branch":"feat/general/12-issue-12","recordId":0,' +
-        '"step":"implement","attempt":2,"pullRequest":42,' +
-        '"skills":{"plan":"swf-plan","implement":"swf-implement","verify":"swf-verify","review":"acme-review","pr":"swf-pr"},' +
+      "**Hunt:** step `implement` · return 2 of 5 (verify) · return 1 of 4 (review) · pull request #42\n\n" +
+        '<!-- hunt:pipeline {"version":4,"repo":"acme/app","issue":12,"branch":"feat/general/12-issue-12","recordId":0,' +
+        '"step":"implement","returns":{"verify":2,"review":1},"gateRuns":1,"pullRequest":42,' +
+        `"settings":${JSON.stringify(settings)},` +
         '"findings":["Verify: a"],"escalate":false,"promptTurn":1760000000000,"reminded":false,' +
         '"lastResultId":0,"handledReview":null,"mergeSha":null,"notified":false,"inReview":false,' +
         '"runs":[{"n":1,"step":"implement","startedAt":"2026-10-25T10:00:00.000Z","endedAt":null,"outcome":"running"}]} -->\n',
     );
     expect(body.startsWith(pipeline.statusLine)).toBe(true);
     expect(Pipeline.fromComment(body)).toEqual({ pipeline });
-    expect(recordOf(body)?.toComment()).toBe(body);
+    const record = recordOf(body);
+    expect(record?.toComment()).toBe(body);
+    expect(record?.settings).toBeInstanceOf(settings.constructor);
+    expect(record?.settings.isEqualTo(settings)).toBe(true);
+    expect(record?.limitOf("review")).toBe(4);
+    expect(record?.returnsOf("verify")).toBe(2);
+    expect(record?.gateRuns).toBe(1);
   });
 
   it("says in the status line that a person reviews only at human-review and leaves out what is not there yet", () => {
     expect(started(NOW).statusLine).toBe("**Hunt:** step `plan`");
     expect(pipelineAt("checks", { pullRequest: 31 }).statusLine).toBe("**Hunt:** step `checks` · pull request #31");
     expect(pipelineAt("human-review", { pullRequest: 31 }).statusLine).toBe("**Hunt:** step `human-review` · pull request #31 · a person reviews before the merge");
-    expect(pipelineAt("merge", { pullRequest: 31, attempt: 1 }).statusLine).toBe("**Hunt:** step `merge` · attempt 1 of 5 · pull request #31");
+    expect(pipelineAt("merge", { pullRequest: 31, returns: { merge: 1 } }).statusLine).toBe("**Hunt:** step `merge` · return 1 of 2 (merge) · pull request #31");
+    const both = pipelineAt("implement", { returns: { checks: 1, verify: 3, review: 0 } });
+    expect(both.statusLine).toBe("**Hunt:** step `implement` · return 3 of 5 (verify) · return 1 of 2 (checks)");
   });
 
   it("is null for a comment without a record marker", () => {
@@ -100,57 +110,61 @@ describe("the record comment", () => {
     expect(Pipeline.fromComment("Please hurry.")).toBeNull();
   });
 
-  it("rejects records of version < 3 with the problem, a record without a version as one of version 1", () => {
-    const problem = (version: number) => ({ problem: `the record is of version ${version}; this release drives records of version 3 and above only` });
-    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"version":2,"step":"review","pullRequest":31,${SKILLS_JSON}} -->`)).toEqual(problem(2));
-    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"version":1,"step":"merge",${SKILLS_JSON}} -->`)).toEqual(problem(1));
-    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"step":"merge","humanReview":true,${SKILLS_JSON}} -->`)).toEqual(problem(1));
+  it("rejects records of version < 4 with the problem, a record without a version as one of version 1", () => {
+    const problem = (version: number) => ({ problem: `the record is of version ${version}; this release drives records of version 4 and above only` });
+    const skills = '"skills":{"plan":"swf-plan","implement":"swf-implement","verify":"swf-verify","review":"swf-review","pr":"swf-pr"}';
+    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"version":3,"step":"review","attempt":1,${skills}} -->`)).toEqual(problem(3));
+    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"version":2,"step":"review","pullRequest":31,${SETTINGS_JSON}} -->`)).toEqual(problem(2));
+    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"version":1,"step":"merge",${SETTINGS_JSON}} -->`)).toEqual(problem(1));
+    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"step":"merge","humanReview":true,${SETTINGS_JSON}} -->`)).toEqual(problem(1));
     expect(Pipeline.fromComment('<!-- hunt:pipeline {"attempt":1} -->')).toEqual(problem(1));
   });
 
   it("names the problem of a record that carries no usable pipeline, a version that is no number included", () => {
     const unusable = { problem: "the record is unusable" };
-    expect(Pipeline.fromComment('<!-- hunt:pipeline {"version":3,"step":"running"} -->')).toEqual(unusable);
-    expect(Pipeline.fromComment('<!-- hunt:pipeline {"version":3,"step":"gate"} -->')).toEqual(unusable);
-    expect(Pipeline.fromComment('<!-- hunt:pipeline {"version":3,"attempt":1} -->')).toEqual(unusable);
-    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"version":"3","step":"plan",${SKILLS_JSON}} -->`)).toEqual(unusable);
-    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"version":null,"step":"plan",${SKILLS_JSON}} -->`)).toEqual(unusable);
+    expect(Pipeline.fromComment('<!-- hunt:pipeline {"version":4,"step":"running"} -->')).toEqual(unusable);
+    expect(Pipeline.fromComment('<!-- hunt:pipeline {"version":4,"step":"gate"} -->')).toEqual(unusable);
+    expect(Pipeline.fromComment('<!-- hunt:pipeline {"version":4,"returns":{}} -->')).toEqual(unusable);
+    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"version":"4","step":"plan",${SETTINGS_JSON}} -->`)).toEqual(unusable);
+    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"version":null,"step":"plan",${SETTINGS_JSON}} -->`)).toEqual(unusable);
     expect(Pipeline.fromComment("<!-- hunt:pipeline {step: plan} -->")).toEqual(unusable);
     expect(Pipeline.fromComment("<!-- hunt:pipeline nope -->")).toBeNull();
   });
 
-  it("is unusable without the skill of every agent step, since Hunt has no default skill", () => {
+  it("is unusable without usable step settings", () => {
     const unusable = { problem: "the record is unusable" };
-    expect(Pipeline.fromComment('<!-- hunt:pipeline {"version":3,"step":"plan"} -->')).toEqual(unusable);
-    expect(Pipeline.fromComment('<!-- hunt:pipeline {"version":3,"step":"plan","skills":"swf-plan"} -->')).toEqual(unusable);
-    expect(Pipeline.fromComment('<!-- hunt:pipeline {"version":3,"step":"plan","skills":{"plan":"acme-plan"}} -->')).toEqual(unusable);
-    const withoutPr = Object.fromEntries(Object.entries(SKILLS).filter(([step]) => step !== "pr"));
-    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"version":3,"step":"plan","skills":${JSON.stringify(withoutPr)}} -->`)).toEqual(unusable);
-    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"version":3,"step":"plan","skills":${JSON.stringify({ ...SKILLS, pr: "" })}} -->`)).toEqual(unusable);
-    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"version":3,"step":"plan","skills":${JSON.stringify({ ...SKILLS, pr: 7 })}} -->`)).toEqual(unusable);
-    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"version":3,"step":"plan","skills":${JSON.stringify({ ...SKILLS, gate: "nope" })}} -->`)).toEqual(unusable);
+    const record = (settings: unknown) => Pipeline.fromComment(`<!-- hunt:pipeline {"version":4,"step":"plan","settings":${JSON.stringify(settings)}} -->`);
+    const plain = SETTINGS.toJSON();
+    expect(Pipeline.fromComment('<!-- hunt:pipeline {"version":4,"step":"plan"} -->')).toEqual(unusable);
+    expect(record("swf-plan")).toEqual(unusable);
+    expect(record({ steps: plain.steps })).toEqual(unusable);
+    expect(record({ ...plain, maxGateRuns: 0 })).toEqual(unusable);
+    const withoutPr = Object.fromEntries(Object.entries(plain.steps).filter(([step]) => step !== "pr"));
+    expect(record({ ...plain, steps: withoutPr })).toEqual(unusable);
+    expect(record({ ...plain, steps: { ...plain.steps, pr: { ...plain.steps.pr, skill: "" } } })).toEqual(unusable);
+    expect(record({ ...plain, steps: { ...plain.steps, pr: { ...plain.steps.pr, effort: "extreme" } } })).toEqual(unusable);
+    expect(record({ ...plain, steps: { ...plain.steps, gate: plain.steps.pr } })).toEqual(unusable);
   });
 
-  it("tolerates the missing fields of a bare record of the current version and orders the skills by the steps", () => {
-    const merge = recordOf(`<!-- hunt:pipeline {"version":3,"step":"merge",${SKILLS_JSON}} -->`);
+  it("tolerates the missing fields of a bare record of the current version or a later one", () => {
+    const merge = recordOf(`<!-- hunt:pipeline {"version":4,"step":"merge",${SETTINGS_JSON}} -->`);
     expect(merge?.toJSON()).toEqual({ ...started(NOW).toJSON(), ...BARE, step: "merge", runs: [] });
     expect(merge?.toComment()).toBe(pipelineAt("merge", { ...BARE, runs: [] }).toComment());
-    const unordered = recordOf('<!-- hunt:pipeline {"version":4,"step":"plan","skills":{"pr":"swf-pr","plan":"acme-plan","review":"swf-review","verify":"swf-verify","implement":"swf-implement"}} -->');
-    expect(unordered?.toJSON()).toEqual({ ...started(NOW, { ...SKILLS, plan: "acme-plan" }).toJSON(), ...BARE, version: 4, runs: [] });
-    expect(Object.keys(unordered?.skills ?? {})).toEqual([...AGENT_STEPS]);
+    const later = recordOf(`<!-- hunt:pipeline {"version":5,"step":"plan",${SETTINGS_JSON}} -->`);
+    expect(later?.toJSON()).toEqual({ ...started(NOW).toJSON(), ...BARE, version: 5, runs: [] });
   });
 
   it("takes the start value of a field with another type and keeps the strings of a list", () => {
     const body =
-      `<!-- hunt:pipeline {"version":3,"step":"verify","attempt":"2","humanReview":"yes","pullRequest":"31","humanReviewPaths":["a/**"],${SKILLS_JSON},` +
+      `<!-- hunt:pipeline {"version":4,"step":"verify","returns":{"verify":"2"},"gateRuns":-1,"attempt":2,"humanReview":"yes","pullRequest":"31","humanReviewPaths":["a/**"],${SETTINGS_JSON},` +
       '"findings":"x","escalate":1,"promptTurn":"5","reminded":"no","lastResultId":1.5,"handledReview":false,"mergeSha":7,"notified":null,"inReview":"yes","extra":true} -->';
     expect(recordOf(body)?.toJSON()).toEqual({ ...started(NOW).toJSON(), ...BARE, step: "verify", runs: [] });
   });
 
   it("drops a runs field that is no list and keeps a list of runs as it is", () => {
-    expect(recordOf(`<!-- hunt:pipeline {"version":3,"step":"verify","runs":"none",${SKILLS_JSON}} -->`)?.runs).toEqual([]);
+    expect(recordOf(`<!-- hunt:pipeline {"version":4,"step":"verify","runs":"none",${SETTINGS_JSON}} -->`)?.runs).toEqual([]);
     const runs = [runOf(1, "plan", { endedAt: "2026-10-25T10:05:00.000Z", outcome: "passed" }), runOf(2, "verify")];
-    expect(recordOf(`<!-- hunt:pipeline {"version":3,"step":"verify","runs":${JSON.stringify(runs)},${SKILLS_JSON}} -->`)?.runs).toEqual(runs);
+    expect(recordOf(`<!-- hunt:pipeline {"version":4,"step":"verify","runs":${JSON.stringify(runs)},${SETTINGS_JSON}} -->`)?.runs).toEqual(runs);
   });
 });
 
@@ -198,10 +212,10 @@ describe("the runs of the pipeline", () => {
   });
 
   it("starts an agent step over on a replaced VM: the run ends as restarted, a new run of the step waits for its prompt, the rest stays", () => {
-    const pipeline = pipelineAt("implement", { attempt: 2, findings: ["Verify: a"], promptTurn: 1_000, reminded: true, runs: [runOf(1, "verify", { ...ENDED, outcome: "returned", findings: 1 }), runOf(2, "implement", { cause: 1 })] });
+    const pipeline = pipelineAt("implement", { returns: { verify: 2 }, gateRuns: 2, findings: ["Verify: a"], promptTurn: 1_000, reminded: true, runs: [runOf(1, "verify", { ...ENDED, outcome: "returned", findings: 1 }), runOf(2, "implement", { cause: 1 })] });
     pipeline.restart(LATER);
     expect(pipeline.runs.slice(1)).toEqual([runOf(2, "implement", { ...ENDED, outcome: "restarted", cause: 1 }), { ...runOf(3, "implement"), startedAt: "2026-10-25T10:05:00.000Z" }]);
-    expect(pipeline).toMatchObject({ step: "implement", attempt: 2, findings: ["Verify: a"], promptTurn: null, reminded: false });
+    expect(pipeline).toMatchObject({ step: "implement", returns: { verify: 2 }, gateRuns: 0, findings: ["Verify: a"], promptTurn: null, reminded: false });
     expect(pipeline.isPromptPending).toBe(true);
     expect(() => pipelineAt("checks", { pullRequest: 31, runs: [runOf(1, "checks")] }).restart(LATER)).toThrow("the step checks waits for GitHub, not for the agent; nothing to restart");
   });
@@ -214,20 +228,27 @@ describe("the runs of the pipeline", () => {
   });
 });
 
-describe("stepSkills", () => {
-  it("names the skill of every agent step in the order of the steps and drops the entries of other steps", () => {
-    const everyStep = { pr: "a-pr", plan: "a-plan", implement: "a-implement", verify: "a-verify", review: "a-review", gate: "a-gate", deploy: "x" };
-    expect(stepSkills(everyStep)).toEqual({ skills: { plan: "a-plan", implement: "a-implement", verify: "a-verify", review: "a-review", pr: "a-pr" } });
-    expect(Object.keys(stepSkills(everyStep).skills ?? {})).toEqual([...AGENT_STEPS]);
+describe("stepSettings", () => {
+  it("takes the step settings session-config reports", () => {
+    const settings = stepSettings(JSON.parse(JSON.stringify(SETTINGS)));
+    expect(settings.problem).toBeUndefined();
+    expect(settings.settings?.isEqualTo(SETTINGS)).toBe(true);
   });
 
-  it("lists the steps the value names no skill for, in the order of the steps", () => {
-    for (const value of [undefined, null, "acme-plan", ["acme-plan"], {}]) {
-      expect(stepSkills(value), JSON.stringify(value)).toEqual({ missing: [...AGENT_STEPS] });
+  it("names the problem of settings the schema rejects", () => {
+    for (const value of [undefined, null, "swf-plan", [], {}]) {
+      expect(stepSettings(value).problem, JSON.stringify(value)).toMatch(/^the step settings are unusable \(.+\)$/);
     }
-    const mixed = { pr: "acme-pr", plan: "acme-plan", implement: "", verify: 7, review: null, gate: "acme-gate" };
-    expect(stepSkills(mixed)).toEqual({ missing: ["implement", "verify", "review"] });
-    expect(stepSkills({ ...SKILLS, pr: undefined })).toEqual({ missing: ["pr"] });
+    const plain = SETTINGS.toJSON();
+    expect(stepSettings({ ...plain, maxGateRuns: 0 }).problem).toMatch(/^the step settings are unusable \(maxGateRuns: .+\)$/);
+    expect(stepSettings({ ...plain, steps: { ...plain.steps, review: { ...plain.steps.review, effort: "extreme" } } }).problem).toMatch(/steps\.review\.effort: /);
+  });
+
+  it("names the agent steps without a skill, since Hunt has no default skill", () => {
+    const plain = SETTINGS.toJSON();
+    const without = (...steps: string[]) => ({ ...plain, steps: { ...plain.steps, ...Object.fromEntries(steps.map((step) => [step, { ...plain.steps.plan, skill: null }])) } });
+    expect(stepSettings(without("review"))).toEqual({ problem: "the step settings name no skill for the step review" });
+    expect(stepSettings(without("pr", "implement"))).toEqual({ problem: "the step settings name no skill for the steps implement, pr" });
   });
 });
 
@@ -259,10 +280,39 @@ describe("Pipeline queries", () => {
     }
   });
 
-  it("names the repository's skill of a step", () => {
-    const pipeline = started(NOW, { ...SKILLS, plan: "acme-plan" });
+  it("names the repository's settings of a step: skill, config options, limit of returns and gate", () => {
+    const settings = settingsWith({ plan: { skill: "acme-plan", model: "claude-opus-5-5", effort: "max" }, review: { effort: "low", gate: ["spec"] } });
+    const pipeline = started(NOW, settings);
     expect(pipeline.skillOf("plan")).toBe("acme-plan");
     expect(pipeline.skillOf("review")).toBe("swf-review");
+    expect(pipeline.settingsOf("plan")).toEqual({ skill: "acme-plan", model: "claude-opus-5-5", effort: "max", maxReturns: null, gate: [] });
+    expect(pipeline.configOptionsOf("plan")).toEqual({ model: "claude-opus-5-5", effort: "max" });
+    expect(pipeline.configOptionsOf("review")).toEqual({ effort: "low" });
+    expect(pipeline.configOptionsOf("pr")).toEqual({});
+    expect(pipeline.limitOf("verify")).toBe(DEFAULT_MAX_RETURNS.verify);
+    expect(pipeline.limitOf("merge")).toBe(DEFAULT_MAX_RETURNS.merge);
+    expect(pipeline.limitOf("implement")).toBeNull();
+    expect(pipeline.gateOf("implement")).toEqual(IMPLEMENT_GATE);
+    expect(pipeline.gateOf("review")).toEqual(["spec"]);
+    expect(pipeline.gateOf("plan")).toEqual([]);
+    expect(pipelineAt("implement", { returns: { review: 2 } }).returnsOf("review")).toBe(2);
+    expect(pipeline.returnsOf("review")).toBe(0);
+    expect(pipeline.returnsOf("plan")).toBe(0);
+  });
+
+  it("names the step that sent the issue back to the current implement run, also after a restart", () => {
+    const ended = { endedAt: new Date(NOW).toISOString() };
+    expect(started(NOW).causeOf).toBeNull();
+    const planned = pipelineAt("implement", { runs: [runOf(1, "plan", { ...ended, outcome: "passed" }), runOf(2, "implement")] });
+    expect(planned.causeOf).toBeNull();
+    expect(pipelineAt("implement", { runs: [] }).causeOf).toBeNull();
+    const returned = pipelineAt("review");
+    returned.sendBackToImplement(["Review: a"], NOW);
+    expect(returned.causeOf).toBe("review");
+    returned.restart(NOW);
+    expect(returned.causeOf).toBe("review");
+    returned.acceptResult(reported({ step: "implement", summary: "fixed" }), null, NOW);
+    expect(returned.causeOf).toBeNull();
   });
 
   it("tells a turn that ended since the prompt from the prompt's own, and none before a prompt", () => {
@@ -289,9 +339,9 @@ describe("Pipeline queries", () => {
 
 describe("Pipeline.acceptResult", () => {
   it("walks plan → implement → verify → review → pr → checks and records the result's comment id", () => {
-    const pipeline = pipelineAt("plan", { promptTurn: 5, reminded: true, attempt: 3, findings: ["old"], escalate: true });
+    const pipeline = pipelineAt("plan", { promptTurn: 5, reminded: true, returns: { verify: 3 }, gateRuns: 2, findings: ["old"], escalate: true });
     pipeline.acceptResult(reported({ step: "plan" }), 11, NOW);
-    expect(pipeline).toMatchObject({ step: "implement", lastResultId: 11, promptTurn: null, reminded: false, attempt: 0, findings: [], escalate: false });
+    expect(pipeline).toMatchObject({ step: "implement", lastResultId: 11, promptTurn: null, reminded: false, returns: {}, gateRuns: 0, findings: [], escalate: false });
     pipeline.acceptResult(reported({ step: "implement", summary: "done" }), 12, NOW);
     expect(pipeline.step).toBe("verify");
     pipeline.acceptResult(reported({ step: "verify", findings: [] }), 13, NOW);
@@ -302,17 +352,17 @@ describe("Pipeline.acceptResult", () => {
     expect(pipeline).toMatchObject({ step: "checks", pullRequest: 42, lastResultId: 15 });
   });
 
-  it("sends verify findings back to implement, prefixed, and counts the attempt", () => {
+  it("sends verify findings back to implement, prefixed, and counts the return of verify", () => {
     const pipeline = pipelineAt("verify");
     pipeline.acceptResult(reported({ step: "verify", findings: ["button missing", "test fails"] }), 20, NOW);
-    expect(pipeline).toMatchObject({ step: "implement", attempt: 1, escalate: false, lastResultId: 20 });
+    expect(pipeline).toMatchObject({ step: "implement", returns: { verify: 1 }, escalate: false, lastResultId: 20 });
     expect(pipeline.findings).toEqual(["Verify: button missing", "Verify: test fails"]);
   });
 
-  it("sends the review step's findings back to implement, prefixed, and counts the attempt", () => {
-    const pipeline = pipelineAt("review", { pullRequest: 42, attempt: 1 });
+  it("sends the review step's findings back to implement, prefixed, and counts the return of review", () => {
+    const pipeline = pipelineAt("review", { pullRequest: 42, returns: { review: 1, verify: 4 } });
     pipeline.acceptResult(reported({ step: "review", findings: ["no test covers the new rule", "debug output left in api.ts"] }), 21, NOW);
-    expect(pipeline).toMatchObject({ step: "implement", attempt: 2, escalate: false, pullRequest: 42, lastResultId: 21 });
+    expect(pipeline).toMatchObject({ step: "implement", returns: { review: 2, verify: 4 }, escalate: false, pullRequest: 42, lastResultId: 21 });
     expect(pipeline.findings).toEqual(["Review: no test covers the new rule", "Review: debug output left in api.ts"]);
     expect(pipeline.runs.map((run) => [run.step, run.outcome, run.findings])).toEqual([["review", "returned", 2], ["implement", "running", undefined]]);
   });
@@ -367,6 +417,43 @@ describe("Pipeline.dismissResult", () => {
   });
 });
 
+describe("Pipeline.noteGateFailure", () => {
+  it("counts the gate's failures of the step's result, keeps the step and counts the agent's next turn, as a dismissed result", () => {
+    const pipeline = pipelineAt("implement", { lastResultId: 7, promptTurn: 3_000, reminded: true, returns: { verify: 1 } });
+    pipeline.noteGateFailure(4_000);
+    expect(pipeline.toJSON()).toEqual(pipelineAt("implement", { lastResultId: 7, promptTurn: 4_000, returns: { verify: 1 }, gateRuns: 1 }).toJSON());
+    expect(pipeline.hasTurnEndedSincePrompt(4_000)).toBe(false);
+  });
+
+  it("asks for an escalation once the result failed more often than maxGateRuns", () => {
+    const pipeline = pipelineAt("implement", { settings: settingsWith({}, 2) });
+    pipeline.noteGateFailure(1);
+    pipeline.noteGateFailure(2);
+    expect(pipeline).toMatchObject({ gateRuns: 2, gateEscalates: false });
+    pipeline.noteGateFailure(3);
+    expect(pipeline).toMatchObject({ gateRuns: 3, gateEscalates: true });
+    expect(pipelineAt("implement", { gateRuns: DEFAULT_MAX_GATE_RUNS + 1 }).gateEscalates).toBe(true);
+  });
+
+  it("starts counting anew when the pipeline moves on, also back to implement, and on a restart", () => {
+    const pipeline = pipelineAt("implement", { gateRuns: 3 });
+    pipeline.acceptResult(reported({ step: "implement", summary: "green" }), null, NOW);
+    expect(pipeline).toMatchObject({ step: "verify", gateRuns: 0 });
+    const verify = pipelineAt("verify", { gateRuns: 2 });
+    verify.sendBackToImplement(["Verify: a"], NOW);
+    expect(verify.gateRuns).toBe(0);
+    const restarted = pipelineAt("review", { gateRuns: 2 });
+    restarted.restart(NOW);
+    expect(restarted.gateRuns).toBe(0);
+  });
+
+  it("refuses a step of the poller, which has no gate", () => {
+    const pipeline = pipelineAt("checks", { pullRequest: 31 });
+    expect(() => pipeline.noteGateFailure(1_000)).toThrow("the step checks waits for GitHub and has no gate");
+    expect(pipeline.gateRuns).toBe(0);
+  });
+});
+
 describe("Pipeline.recordPrompt", () => {
   it("records the turn at which the step's prompt went out", () => {
     const pipeline = pipelineAt("verify");
@@ -417,24 +504,41 @@ describe("Pipeline.noteAnswersDelivered", () => {
 });
 
 describe("Pipeline.sendBackToImplement", () => {
-  it("counts the attempts, escalates past MAX_ATTEMPTS and starts counting again", () => {
+  it("counts the returns of each step, escalates past the step's limit and starts counting that step again", () => {
+    const limit = DEFAULT_MAX_RETURNS.verify;
     const pipeline = pipelineAt("verify");
-    for (let round = 1; round <= MAX_ATTEMPTS; round++) {
+    for (let round = 1; round <= limit; round++) {
       pipeline.sendBackToImplement([`finding ${round}`], NOW);
-      expect(pipeline).toMatchObject({ step: "implement", attempt: round, escalate: false, findings: [`finding ${round}`] });
-      pipeline.acceptResult(reported({ step: "implement", summary: "fixed" }), round, NOW);
+      expect(pipeline).toMatchObject({ step: "implement", returns: { verify: round }, escalate: false, findings: [`finding ${round}`] });
+      pipeline.acceptResult(reported({ step: "implement", summary: "fixed" }), null, NOW);
     }
     pipeline.sendBackToImplement(["again"], NOW);
-    expect(pipeline).toMatchObject({ step: "implement", attempt: 0, escalate: true, findings: ["again"] });
-    pipeline.acceptResult(reported({ step: "implement", summary: "asked" }), MAX_ATTEMPTS + 1, NOW);
+    expect(pipeline).toMatchObject({ step: "implement", returns: { verify: 0 }, escalate: true, findings: ["again"] });
+    pipeline.acceptResult(reported({ step: "implement", summary: "asked" }), null, NOW);
     pipeline.sendBackToImplement(["once more"], NOW);
-    expect(pipeline).toMatchObject({ step: "implement", attempt: 1, escalate: false });
+    expect(pipeline).toMatchObject({ step: "implement", returns: { verify: 1 }, escalate: false });
+  });
+
+  it("keeps the count and the limit of each step apart", () => {
+    const pipeline = pipelineAt("checks", { pullRequest: 31, returns: { verify: 4, checks: DEFAULT_MAX_RETURNS.checks } });
+    pipeline.sendBackToImplement(["Checks: build failed"], NOW);
+    expect(pipeline).toMatchObject({ returns: { verify: 4, checks: 0 }, escalate: true });
+    const merge = pipelineAt("merge", { pullRequest: 31, returns: { checks: 2 } });
+    merge.sendBackToImplement(["Merge: conflicts"], NOW);
+    expect(merge).toMatchObject({ returns: { checks: 2, merge: 1 }, escalate: false });
+    const strict = pipelineAt("review", { settings: settingsWith({ review: { maxReturns: 1 } }), returns: { review: 1 } });
+    strict.sendBackToImplement(["Review: a"], NOW);
+    expect(strict).toMatchObject({ returns: { review: 0 }, escalate: true });
+    const unlimited = pipelineAt("verify", { settings: settingsWith({ verify: { maxReturns: null } }), returns: { verify: 40 } });
+    unlimited.sendBackToImplement(["Verify: a"], NOW);
+    expect(unlimited).toMatchObject({ returns: { verify: 41 }, escalate: false });
+    expect(unlimited.statusLine).toBe("**Hunt:** step `implement` · return 41 (verify)");
   });
 
   it("enters implement afresh and keeps only findings with text, at most 20 of at most 4000 characters", () => {
     const pipeline = pipelineAt("merge", { pullRequest: 31, mergeSha: HEAD_SHA, promptTurn: 0, inReview: true });
     pipeline.sendBackToImplement(["", "  ", "x".repeat(5000), ...Array.from({ length: 25 }, (_entry, index) => `finding ${index}`)], NOW);
-    expect(pipeline).toMatchObject({ step: "implement", attempt: 1, pullRequest: 31, mergeSha: null, promptTurn: null, reminded: false, inReview: true });
+    expect(pipeline).toMatchObject({ step: "implement", returns: { merge: 1 }, pullRequest: 31, mergeSha: null, promptTurn: null, reminded: false, inReview: true });
     expect(pipeline.findings).toHaveLength(20);
     expect(pipeline.findings[0]).toBe("x".repeat(4000));
     expect(pipeline.findings[19]).toBe("finding 18");
@@ -497,9 +601,9 @@ describe("Pipeline.approve", () => {
 
 describe("Pipeline.handleChangeRequest", () => {
   it("sends a person's change request back to implement and counts the review as handled", () => {
-    const pipeline = pipelineAt("human-review", { pullRequest: 31, attempt: 1 });
+    const pipeline = pipelineAt("human-review", { pullRequest: 31, returns: { "human-review": 1 } });
     pipeline.handleChangeRequest(503, "@carol requested changes on #31:\nRename the index.", NOW);
-    expect(pipeline).toMatchObject({ step: "implement", attempt: 2, findings: ["@carol requested changes on #31:\nRename the index."], handledReview: 503 });
+    expect(pipeline).toMatchObject({ step: "implement", returns: { "human-review": 2 }, findings: ["@carol requested changes on #31:\nRename the index."], handledReview: 503 });
   });
 
   it("refuses another step than human-review", () => {

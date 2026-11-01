@@ -10,6 +10,8 @@ the front with your session selected; run it only when the user asks for it.
 
 To run a check of `hunt.json`, use `{{huntClient}} checks run <name>`, or leave out the name to run all of them. It runs
 the check in the Checks tab, waits until it ended and prints how it ended, a failed check with the end of its output;
-give a long check the time it needs, for example by running the command in the background. `--no-wait` returns at once,
-and `{{huntClient}} checks` then reports the state. Never start a check in a tmux window of your own and never kill the
-window of a check: the Checks tab would not show that run, and the user would see a stale result.
+give a long check the time it needs, for example by running the command in the background. `--no-wait` returns at once.
+To see the state or the result of a check, also when the user asks about the Checks tab, run `{{huntClient}} checks`
+first; read the check's log only when you need more than the end of its output. Never start a check in a tmux window of
+your own and never kill the window of a check: the Checks tab would not show that run, and the user would see a stale
+result.

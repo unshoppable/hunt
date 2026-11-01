@@ -201,8 +201,8 @@ function outputHint(row: CheckRow | null): string {
 function StateIcon({ row }: { row: CheckRow }) {
   const state = row.run?.state;
   if (state === "running") return <Spinner className="size-3.5 shrink-0" />;
-  if (state === "passed") return <CheckIcon className={`size-3.5 shrink-0 ${row.isOutdated ? "text-neutral-500" : "text-emerald-400"}`} />;
-  if (state === "failed") return <CloseIcon className={`size-3.5 shrink-0 ${row.isOutdated ? "text-neutral-500" : "text-red-400"}`} />;
+  if (state === "passed") return <CheckIcon className="size-3.5 shrink-0 text-emerald-400" />;
+  if (state === "failed") return <CloseIcon className="size-3.5 shrink-0 text-red-400" />;
   return <span className="mx-[3px] size-2 shrink-0 rounded-full bg-neutral-600" />;
 }
 

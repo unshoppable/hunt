@@ -1,3 +1,10 @@
+## 0.138.0 (2026-11-01)
+
+### 🚀 Features
+
+- **client:** start the checkout session when its branch is chosen ([e395837](https://github.com/unshoppable/hunt/commit/e395837))
+- **client:** let a session in the checkout pick its branch ([860c19a](https://github.com/unshoppable/hunt/commit/860c19a))
+
 ## 0.137.2 (2026-11-01)
 
 ### 🩹 Fixes

@@ -1,3 +1,9 @@
+## 0.139.0 (2026-11-01)
+
+### 🚀 Features
+
+- **client:** show the change stripes in every code preview ([1b3ee51](https://github.com/unshoppable/hunt/commit/1b3ee51))
+
 ## 0.138.3 (2026-11-01)
 
 ### 🚀 Features

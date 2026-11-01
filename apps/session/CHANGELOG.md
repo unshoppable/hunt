@@ -1,3 +1,9 @@
+## 0.33.3 (2026-11-01)
+
+### 🚀 Features
+
+- **swf:** configure skill, model, effort, return limits and a gate per step in hunt.json ([cc4ac38](https://github.com/unshoppable/hunt/commit/cc4ac38))
+
 ## 0.33.2 (2026-11-01)
 
 ### 🚀 Features

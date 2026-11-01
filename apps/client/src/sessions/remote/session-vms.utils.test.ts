@@ -65,7 +65,7 @@ describe("sessionVmAgentLabel", () => {
     expect(sessionVmAgentLabel(sessionVm({ agent: "checks" }))).toEqual({
       label: "Checks",
       tone: "neutral",
-      title: "The pull request waits for its checks and the scorer",
+      title: "The pull request waits for its checks and the repository's review workflow",
     });
     expect(sessionVmAgentLabel(sessionVm({ agent: "human-review" }))).toEqual({
       label: "Human review",

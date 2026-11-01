@@ -10,6 +10,7 @@ import type { Repository } from "../../../../libs/domain/src/session/repository.
 import { PullRequestState } from "../../../../libs/domain/src/swf/pull-request-state.value-object.ts";
 import { ERROR_TEXT_LIMIT, failure } from "../shared/http-failure.utils.ts";
 import type { PullRequestReview } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
+import type { MergeMethod } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
 
 const API = "https://api.github.com";
 const PER_PAGE = 100;
@@ -74,8 +75,8 @@ export interface GitHub {
   requestReviewers(repo: Repository, number: number, logins: string[]): Promise<void>;
   /** Merges the base branch into the pull request's branch. */
   updateBranch(repo: Repository, number: number): Promise<void>;
-  /** Squash-merges the pull request. */
-  merge(repo: Repository, number: number): Promise<void>;
+  /** Merges the pull request with `method`. */
+  merge(repo: Repository, number: number, method: MergeMethod): Promise<void>;
   /** Creates the repository label unless it exists; one that exists with another color or description is updated to the spec. */
   ensureLabel(repo: Repository, label: LabelSpec): Promise<void>;
   /**
@@ -384,8 +385,8 @@ export function createGitHub(tokenFor: (repo: Repository) => Promise<string>, fe
       // 202: accepted; 422: the branch is up to date already or cannot be updated, which the next poll's merge state shows.
       if (!response.ok && response.status !== 422) throw await failure(response, `update the branch of ${repo.slug}#${number}`);
     },
-    async merge(repo, number) {
-      const response = await call(repo, "PUT", `/repos/${repo.path}/pulls/${number}/merge`, { merge_method: "squash" });
+    async merge(repo, number, method) {
+      const response = await call(repo, "PUT", `/repos/${repo.path}/pulls/${number}/merge`, { merge_method: method });
       if (!response.ok) throw await failure(response, `merge ${repo.slug}#${number}`);
     },
     async ensureLabel(repo, label) {

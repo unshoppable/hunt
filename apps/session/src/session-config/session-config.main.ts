@@ -15,14 +15,15 @@
  * 0600. It creates --services-dir (0755) when it is missing and deletes the `*.env` files there of services that
  * hunt.json no longer declares; other files stay. Prints one line of JSON:
  * `{"ok": true, "services": [{"name", "port", "tls", "guarded"}], "services_prompt": "…", "agent_md": "…",
- * "swf_steps": {"maxGateRuns": 5, "steps": {"plan": {"skill", "model", "effort", "maxReturns", "gate"}, …}}}` with the
+ * "swf_steps": {"maxGateRuns": 5, "questionPrefix": "❓ RÜCKFRAGE", "projectStatus": {"inProgress", "inReview", "done"},
+ * "mergeMethod": "squash", "steps": {"plan": {"skill", "model", "effort", "maxReturns", "minSeverity", "gate"}, …}}}` with the
  * services in the order of hunt.json, the section of the agent's prompt that lists them (or says there are none), the
  * text of the repository's hunt.agent.md (instructions for the agent, at most 20 KiB) when it has one and, when
  * hunt.json has a `swf` section, the settings of every step of the swf pipeline with the defaults applied
  * (`libs/domain/src/swf/step-settings.value-object.ts`), or `{"ok": false, "problems": […]}`, each problem starting
  * with the path of the offending value; then it writes nothing and exits with 1. With a `swf` section, every agent
  * step's skill file `.claude/skills/<name>/SKILL.md` that the worktree lacks is a problem; its `swf.humanReviewPaths`
- * is validated only, since the repository's scorer workflow reads it, not Hunt. The agent controls the worktree, so
+ * is validated only, since the repository's review workflow reads it, not Hunt. The agent controls the worktree, so
  * hunt.json and hunt.agent.md are read only as regular files, never through a symlink.
  *
  *   node /srv/hunt/current/session/configCli.mjs --worktree <dir> --check <name>

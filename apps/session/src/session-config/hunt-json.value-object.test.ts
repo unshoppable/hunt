@@ -40,7 +40,46 @@ const STEPS = Object.fromEntries(AGENT_STEPS.map((step) => [step, { skill: SKILL
 const EFFORT_RULE = "must be one of low, medium, high, xhigh, max";
 const MAX_RETURNS_RULE = "must be an integer from 1 to 20";
 const MAX_RETURNS_STEP_RULE = "only a step that sends the pipeline back has maxReturns (verify, review, checks, human-review, merge)";
+const MIN_SEVERITY_RULE = "must be an integer from 1 to 5";
+const MIN_SEVERITY_STEP_RULE = "only a step whose findings carry a severity has minSeverity (verify, review)";
 const GATE_RULE = 'must be "*" for every check or a list of at most 32 names of checks';
+const QUESTION_PREFIX_RULE = "must be one non-empty line of at most 40 characters that does not end with a colon";
+const PROJECT_STATUS_RULE = "must be one non-empty line of at most 60 characters, the name of a Status option of the GitHub Project";
+const MERGE_METHOD_RULE = "must be one of squash, merge, rebase";
+/** Hunt's workflow settings, which a section without `questionPrefix`, `projectStatus` and `mergeMethod` resolves to. */
+const DEFAULT_WORKFLOW = { questionPrefix: "❓ RÜCKFRAGE", projectStatus: { inProgress: "In Progress", inReview: "In Review", done: "Done" }, mergeMethod: "squash" };
+/** The `swf` section of app-framework's hunt.json. */
+const APP_FRAMEWORK_SWF = {
+  model: "claude-opus-5-5",
+  humanReviewPaths: [
+    "apps/*/backend/src/migrations/**",
+    "**/*auth*",
+    "apps/med/backend/src/app/api/commerce/**",
+    "libs/shared/backend/src/lib/grouper-client/**",
+    "libs/med/domain/src/lib/pepp/**",
+    ".github/**",
+    ".ci/**",
+    ".claude/**",
+    "**/CLAUDE.md",
+    "libs/workspace/eslint-plugin-code-style/**",
+    ".dependency-cruiser*",
+    "hunt.json",
+  ],
+  maxGateRuns: 5,
+  questionPrefix: "❓ RÜCKFRAGE",
+  projectStatus: { inProgress: "In Progress", inReview: "In Review", done: "Done" },
+  mergeMethod: "squash",
+  steps: {
+    plan: { skill: "swf-plan" },
+    implement: { skill: "swf-implement", gate: "*" },
+    verify: { skill: "swf-verify", maxReturns: 3, minSeverity: 3 },
+    review: { skill: "swf-review", maxReturns: 3, minSeverity: 3 },
+    pr: { skill: "swf-pr" },
+    checks: { maxReturns: 2 },
+    "human-review": { maxReturns: 3 },
+    merge: { maxReturns: 2 },
+  },
+};
 const MISSING_SECRET = "services.web.remoteSecrets.OPENAI_API_KEY: no remote secret MED_OPENAI_API_KEY; set it in Hunt under Settings → Remote VM";
 
 /** A hunt.json with every field: a forward and a self reference, a folder, TLS and two services that are not guarded. */
@@ -196,14 +235,44 @@ describe("HuntJson services", () => {
         ],
       ],
       ...["plan", "implement", "pr"].map((step): [unknown, string[]] => [
-        { ...web({}), swf: { steps: { ...STEPS, [step]: { skill: `swf-${step}`, maxReturns: 2 } } } },
-        [`swf.steps.${step}.maxReturns: ${MAX_RETURNS_STEP_RULE}`],
+        { ...web({}), swf: { steps: { ...STEPS, [step]: { skill: `swf-${step}`, maxReturns: 2, minSeverity: 2 } } } },
+        [`swf.steps.${step}.maxReturns: ${MAX_RETURNS_STEP_RULE}`, `swf.steps.${step}.minSeverity: ${MIN_SEVERITY_STEP_RULE}`],
+      ]),
+      ...["checks", "human-review", "merge"].map((step): [unknown, string[]] => [
+        { ...web({}), swf: { steps: { ...STEPS, [step]: { minSeverity: 2 } } } },
+        [`swf.steps.${step}.minSeverity: ${MIN_SEVERITY_STEP_RULE}`],
+      ]),
+      ...[0, 6, 2.5, "3", null].map((minSeverity): [unknown, string[]] => [
+        { ...web({}), swf: { steps: { ...STEPS, verify: { skill: "swf-verify", minSeverity }, review: { skill: "swf-review", minSeverity } } } },
+        [`swf.steps.verify.minSeverity: ${MIN_SEVERITY_RULE}`, `swf.steps.review.minSeverity: ${MIN_SEVERITY_RULE}`],
       ]),
       ...["extreme", "High", "", 1, null].map((effort): [unknown, string[]] => [
         { ...web({}), swf: { effort, steps: { ...STEPS, review: { skill: "swf-review", effort } } } },
         [`swf.effort: ${EFFORT_RULE}`, `swf.steps.review.effort: ${EFFORT_RULE}`],
       ]),
       ...[0, -1, 1.5, "5", null].map((maxGateRuns): [unknown, string[]] => [{ ...web({}), swf: { maxGateRuns, skills: SKILLS } }, ["swf.maxGateRuns: must be an integer of at least 1"]]),
+      ...["", " ", "❓ RÜCKFRAGE:", "Frage: ", "Frage\nbitte", "x".repeat(41), 1, null].map((questionPrefix): [unknown, string[]] => [
+        { ...web({}), swf: { questionPrefix, skills: SKILLS } },
+        [`swf.questionPrefix: ${QUESTION_PREFIX_RULE}`],
+      ]),
+      ...["In Progress", ["In Progress", "In Review", "Done"], 1, null].map((projectStatus): [unknown, string[]] => [
+        { ...web({}), swf: { projectStatus, skills: SKILLS } },
+        ["swf.projectStatus: must be an object"],
+      ]),
+      [{ ...web({}), swf: { projectStatus: { inProgress: "In Progress", inReview: "In Review" }, skills: SKILLS } }, [`swf.projectStatus.done: ${PROJECT_STATUS_RULE}`]],
+      [{ ...web({}), swf: { projectStatus: {}, skills: SKILLS } }, ["inProgress", "inReview", "done"].map((name) => `swf.projectStatus.${name}: ${PROJECT_STATUS_RULE}`)],
+      [
+        { ...web({}), swf: { projectStatus: { inProgress: "", inReview: "a\nb", done: "x".repeat(61) }, skills: SKILLS } },
+        ["inProgress", "inReview", "done"].map((name) => `swf.projectStatus.${name}: ${PROJECT_STATUS_RULE}`),
+      ],
+      [
+        { ...web({}), swf: { projectStatus: { ...DEFAULT_WORKFLOW.projectStatus, foo: "Todo" }, skills: SKILLS } },
+        ["swf.projectStatus.foo: unknown field"],
+      ],
+      ...["fast-forward", "Squash", "", 1, null].map((mergeMethod): [unknown, string[]] => [
+        { ...web({}), swf: { mergeMethod, skills: SKILLS } },
+        [`swf.mergeMethod: ${MERGE_METHOD_RULE}`],
+      ]),
       ...[0, 21, 2.5, "3", null].map((maxReturns): [unknown, string[]] => [
         { ...web({}), swf: { steps: { ...STEPS, verify: { skill: "swf-verify", maxReturns }, "human-review": { maxReturns } } } },
         [`swf.steps.verify.maxReturns: ${MAX_RETURNS_RULE}`, `swf.steps.human-review.maxReturns: ${MAX_RETURNS_RULE}`],
@@ -464,14 +533,15 @@ describe("HuntJson", () => {
   it("resolves the settings of every step of a section that names only the skills, with every check as the gate of implement", () => {
     const checks = Object.fromEntries(["format-check", "i18n-check", "lint", "test", "build", "generate-types"].map((name) => [name, { command: `npm run ${name}` }]));
     const huntJson = huntJsonOf({ ...web({}), swf: { model: "claude-opus-5-5", humanReviewPaths: ["apps/*/backend/src/migrations/**", "hunt.json"], skills: SKILLS }, checks });
-    const unset = { effort: null, gate: [] };
+    const unset = { effort: null, minSeverity: null, gate: [] };
     expect(huntJson.stepSettings?.toJSON()).toEqual({
       maxGateRuns: 5,
+      ...DEFAULT_WORKFLOW,
       steps: {
         plan: { skill: "swf-plan", model: "claude-opus-5-5", ...unset, maxReturns: null },
         implement: { skill: "swf-implement", model: "claude-opus-5-5", ...unset, maxReturns: null, gate: Object.keys(checks) },
-        verify: { skill: "swf-verify", model: "claude-opus-5-5", ...unset, maxReturns: 5 },
-        review: { skill: "swf-review", model: "claude-opus-5-5", ...unset, maxReturns: 3 },
+        verify: { skill: "swf-verify", model: "claude-opus-5-5", ...unset, maxReturns: 5, minSeverity: 3 },
+        review: { skill: "swf-review", model: "claude-opus-5-5", ...unset, maxReturns: 3, minSeverity: 3 },
         pr: { skill: "swf-pr", model: "claude-opus-5-5", ...unset, maxReturns: null },
         checks: { skill: null, model: null, ...unset, maxReturns: 2 },
         "human-review": { skill: null, model: null, ...unset, maxReturns: 3 },
@@ -488,7 +558,7 @@ describe("HuntJson", () => {
       steps: {
         plan: { skill: "swf-plan" },
         implement: { skill: "swf-implement", model: "claude-sonnet-5-5", effort: "medium", gate: ["test", "lint"] },
-        verify: { skill: "swf-verify", maxReturns: 7 },
+        verify: { skill: "swf-verify", maxReturns: 7, minSeverity: 4 },
         review: { skill: "swf-review", effort: "max", gate: "*" },
         pr: { skill: "swf-pr" },
         merge: { maxReturns: 1 },
@@ -499,11 +569,42 @@ describe("HuntJson", () => {
     expect(settings?.steps).toMatchObject({
       plan: { model: "claude-opus-5-5", effort: "high", gate: [] },
       implement: { model: "claude-sonnet-5-5", effort: "medium", gate: ["lint", "test"] },
-      verify: { maxReturns: 7 },
-      review: { effort: "max", maxReturns: 3, gate: ["lint", "test", "build"] },
+      verify: { maxReturns: 7, minSeverity: 4 },
+      review: { effort: "max", maxReturns: 3, minSeverity: 3, gate: ["lint", "test", "build"] },
       merge: { maxReturns: 1 },
     });
     expect(huntJsonOf({ ...web({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", gate: "*" } } } }).stepSettings?.of("implement").gate).toEqual([]);
+  });
+
+  it("reads the question prefix, the project statuses and the merge method of the section and resolves Hunt's without them", () => {
+    const workflow = { questionPrefix: "❓ QUESTION", projectStatus: { inProgress: "Doing", inReview: "Review", done: "Shipped" }, mergeMethod: "rebase" };
+    const huntJson = huntJsonOf({ ...web({}), swf: { ...workflow, skills: SKILLS } });
+    expect(huntJson.swf?.toJSON()).toMatchObject(workflow);
+    expect(huntJson.stepSettings?.toJSON()).toMatchObject(workflow);
+    expect(huntJsonOf({ ...web({}), swf: { skills: SKILLS } }).swf?.toJSON()).toMatchObject({ questionPrefix: null, projectStatus: null, mergeMethod: null });
+    expect(huntJsonOf({ ...web({}), swf: { skills: SKILLS } }).stepSettings?.toJSON()).toMatchObject(DEFAULT_WORKFLOW);
+    for (const questionPrefix of ["?", "Frage (bitte):x", "x".repeat(40)]) {
+      expect(huntJsonOf({ ...web({}), swf: { questionPrefix, skills: SKILLS } }).stepSettings?.questionPrefix).toBe(questionPrefix);
+    }
+    for (const mergeMethod of ["squash", "merge", "rebase"] as const) {
+      expect(huntJsonOf({ ...web({}), swf: { mergeMethod, skills: SKILLS } }).stepSettings?.mergeMethod).toBe(mergeMethod);
+    }
+  });
+
+  it("reads app-framework's swf section", () => {
+    const checks = Object.fromEntries(["format-check", "i18n-check", "lint", "test", "build", "generate-types"].map((name) => [name, { command: `npm run ${name}` }]));
+    const settings = huntJsonOf({ ...web({}), swf: APP_FRAMEWORK_SWF, checks }).stepSettings;
+    expect(settings?.toJSON()).toMatchObject({ maxGateRuns: 5, ...DEFAULT_WORKFLOW });
+    expect(settings?.steps).toMatchObject({
+      plan: { skill: "swf-plan", model: "claude-opus-5-5", effort: null, gate: [] },
+      implement: { skill: "swf-implement", gate: Object.keys(checks) },
+      verify: { skill: "swf-verify", maxReturns: 3, minSeverity: 3 },
+      review: { skill: "swf-review", maxReturns: 3, minSeverity: 3 },
+      pr: { skill: "swf-pr" },
+      checks: { maxReturns: 2 },
+      "human-review": { maxReturns: 3 },
+      merge: { maxReturns: 2 },
+    });
   });
 
   it("reports the remote secrets that do not exist after every other problem, only when it knows the existing ones", () => {
@@ -607,7 +708,7 @@ describe("environments", () => {
     }
   });
 
-  it("accepts the paths whose change makes a pull request of swf sessions need a human review without reading them: the repository's scorer does", () => {
+  it("accepts the paths whose change makes a pull request of swf sessions need a human review without reading them: the repository's review workflow does", () => {
     expect(buildSessionConfig({ ...web({}), swf: { humanReviewPaths: [], skills: SKILLS } }, HOST, WORKTREE)).not.toHaveProperty("swfHumanReviewPaths");
     const humanReviewPaths = [
       "**/migrations/**",

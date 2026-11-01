@@ -93,7 +93,8 @@ export interface ProvisionRequest {
   sessionId: SessionId;
   title: string;
   repo: Repository;
-  branch: BranchName;
+  /** The session's branch; null for a poller session, whose plan step creates the branch and whose poller records it later. */
+  branch: BranchName | null;
   /** The GitHub issue of a poller session; null for a person's session. */
   issue: number | null;
   origin: Origin;
@@ -267,7 +268,7 @@ export class SessionVmService {
     const entries: Record<string, string> = {
       [SESSION_ID_METADATA]: sessionId.id,
       [REPO_METADATA]: request.repo.slug,
-      [BRANCH_METADATA]: request.branch.name,
+      ...(request.branch === null ? {} : { [BRANCH_METADATA]: request.branch.name }),
       [TITLE_METADATA]: request.title,
     };
     if (request.issue !== null) {

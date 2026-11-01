@@ -3,15 +3,25 @@
  * the session VM reads; it carries `<!-- hunt:step {…} -->` on a line of its own (see
  * `libs/domain/prompts/swf/0-system-prompt.md`).
  */
+import { BranchName } from "../session/branch-name.value-object.ts";
 import { isRecord } from "../shared/json-rpc.utils.ts";
 import { AGENT_STEPS } from "./swf-step.types.ts";
 
+/**
+ * A finding of verify or the review step: what is wrong and where, with its severity on the scale of the step's prompt
+ * (MIN_SEVERITY to MAX_SEVERITY: 5 security, 4 bug or unmet requirement, 3 guardrail violation or missing test, 2
+ * duplication, leftovers or scope, 1 style); null for a finding written as a plain string, which Hunt treats as
+ * returning whatever the step's `minSeverity` (`step-settings.value-object.ts`).
+ */
+export type Finding = { text: string; severity: number | null };
+
 /** What the agent reports at the end of a step; the file that carries it holds the human-readable part. */
 export type StepResult =
-  | { step: "plan" }
+  /** `branch` is the session's branch, which the plan step created from the default branch and pushed. */
+  | { step: "plan"; branch: string }
   | { step: "implement"; summary: string }
-  | { step: "verify"; findings: string[] }
-  | { step: "review"; findings: string[] }
+  | { step: "verify"; findings: Finding[] }
+  | { step: "review"; findings: Finding[] }
   | { step: "pr"; pullRequest: number };
 
 /** `<!-- hunt:step {…} -->` anywhere in a text; the JSON object is the first group. */
@@ -20,6 +30,9 @@ const STEP_MARKER = /<!--\s*hunt:step\s+(\{[\s\S]*?\})\s*-->/g;
 export const TEXT_LIMIT = 2000;
 /** How many findings of one result are kept. */
 export const LIST_LIMIT = 20;
+/** The severity scale of a finding: 1 (a suggestion) to 5 (a security issue). */
+export const MIN_SEVERITY = 1;
+export const MAX_SEVERITY = 5;
 
 export type ParsedStepResult = { result: StepResult; problem?: undefined } | { result?: undefined; problem: string };
 
@@ -45,7 +58,10 @@ export function parseStepResult(text: string): ParsedStepResult | null {
   if (!isRecord(value) || typeof value.step !== "string") return { problem: "the step marker holds no object with a step" };
   switch (value.step) {
     case "plan":
-      return { result: { step: "plan" } };
+      if (typeof value.branch !== "string" || !BranchName.isValid(value.branch)) {
+        return { problem: "branch of a plan result must be the name of the branch you created and pushed, as git check-ref-format --branch accepts it" };
+      }
+      return { result: { step: "plan", branch: value.branch } };
     case "implement":
       return { result: { step: "implement", summary: textOf(value.summary) } };
     case "verify":
@@ -65,18 +81,30 @@ export function parseStepResult(text: string): ParsedStepResult | null {
 /** The result of a step that reports `findings` (verify, review): a missing list means none, anything else but a list is unusable. */
 function findingsResult(step: "verify" | "review", findings: unknown): ParsedStepResult {
   if (findings !== undefined && !Array.isArray(findings)) return { problem: `findings of a ${step} result must be a list` };
-  return { result: { step, findings: listOf(findings) } };
+  return { result: { step, findings: findingsOf(findings) } };
 }
 
 function textOf(value: unknown): string {
   return typeof value === "string" ? value.trim().slice(0, TEXT_LIMIT) : "";
 }
 
-/** The strings of `value` cut to TEXT_LIMIT, at most LIST_LIMIT of them; anything that is no list gives none. */
-function listOf(value: unknown): string[] {
+/**
+ * The findings of `value`, each `{"text", "severity"}` or a plain string (severity null), texts cut to TEXT_LIMIT, at
+ * most LIST_LIMIT of them; an entry without a text and anything that is no list give none. A severity that is no
+ * integer of the scale is null.
+ */
+function findingsOf(value: unknown): Finding[] {
   if (!Array.isArray(value)) return [];
   return value
-    .filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "")
-    .slice(0, LIST_LIMIT)
-    .map((entry) => entry.trim().slice(0, TEXT_LIMIT));
+    .map((entry): Finding | null => {
+      if (typeof entry === "string") return entry.trim() === "" ? null : { text: entry.trim().slice(0, TEXT_LIMIT), severity: null };
+      if (!isRecord(entry) || typeof entry.text !== "string" || entry.text.trim() === "") return null;
+      return { text: entry.text.trim().slice(0, TEXT_LIMIT), severity: severityOf(entry.severity) };
+    })
+    .filter((finding): finding is Finding => finding !== null)
+    .slice(0, LIST_LIMIT);
+}
+
+function severityOf(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= MIN_SEVERITY && value <= MAX_SEVERITY ? value : null;
 }

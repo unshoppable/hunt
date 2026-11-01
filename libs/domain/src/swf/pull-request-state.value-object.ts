@@ -14,7 +14,8 @@ const ZodPullRequestState = z.object({
   mergeState: z.string(),
   /**
    * GitHub's `reviewDecision`: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or null when the base branch requires no
-   * review. The repository's scorer approves as its own GitHub App when no person has to review.
+   * review. The repository's review workflow (app-framework's scorer action, for one) approves as its own GitHub App when
+   * no person has to review.
    */
   reviewDecision: z.nullable(z.string()),
   /** The combined state of the head commit's checks: success, failure, pending, or none without checks. */
@@ -59,7 +60,7 @@ export class PullRequestState extends ValueObject<typeof ZodPullRequestState> {
     return this.state === "closed";
   }
 
-  /** Whether the pull request has the approval the ruleset requires, by the scorer or a person. */
+  /** Whether the pull request has the approval the ruleset requires, by the repository's review workflow or a person. */
   get isApproved(): boolean {
     return this.reviewDecision === "APPROVED";
   }
@@ -71,7 +72,7 @@ export class PullRequestState extends ValueObject<typeof ZodPullRequestState> {
 
   /**
    * What the checks step does with the pull request: a failing check sends the agent back; running checks, or a head
-   * without checks yet, wait (the scorer has not scored it either); once the checks passed, the scorer's decision counts:
+   * without checks yet, wait (the review workflow has not judged it either); once the checks passed, its decision counts:
    * an approved pull request goes on to the merge, one without an approval to a person.
    */
   checksOutcome(): ChecksOutcome {
@@ -89,7 +90,7 @@ export class PullRequestState extends ValueObject<typeof ZodPullRequestState> {
   /**
    * What the merge step does with the pull request, from GitHub's merge state; `requestedSha` is the head the poller
    * already asked GitHub to merge or update, null without such a request. A branch update gives the pull request a new
-   * head, which the scorer scores again: a mergeable pull request waits while its checks run, and a blocked one whose
+   * head, which the review workflow judges again: a mergeable pull request waits while its checks run, and a blocked one whose
    * checks passed without an approval goes to a person.
    */
   mergeOutcome(requestedSha: string | null): MergeOutcome {

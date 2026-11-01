@@ -15,6 +15,7 @@ import { readSwfConfig, type SwfConfig } from "./swf-config.utils.ts";
 import { Pipeline, type PullRequestReview, type Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 import { closedComment, humanReviewComment, stepSettingsError } from "./swf-comments.utils.ts";
 import { ISSUE, settingsWith, started } from "../../../../libs/domain/src/swf/swf.fixtures.ts";
+import { StepSettings } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
 
 /** The poller's clock in the tests: 2026-10-25 10:00 UTC. */
 const NOW = Date.UTC(2026, 9, 25, 10, 0, 0);
@@ -40,6 +41,13 @@ const FIRST_POSTED_ID = 5000;
 const PULL_REQUEST = 31;
 /** The step settings `hunt-ctl session-config` reports for acme/app: its own plan skill, with a model and effort for plan and another model for implement. */
 const REPORTED_SETTINGS = settingsWith({ plan: { skill: "acme-plan", model: "claude-opus-5-5", effort: "high" }, implement: { model: "claude-sonnet-5" } });
+/** The step settings of a repository whose hunt.json names its own project statuses, question prefix and merge method. */
+const CUSTOM_SETTINGS = new StepSettings({
+  ...settingsWith().toJSON(),
+  questionPrefix: "QUESTION",
+  projectStatus: { inProgress: "Doing", inReview: "Reviewing", done: "Shipped" },
+  mergeMethod: "rebase",
+});
 const HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
 
 function issue(number: number, title = `Issue ${number}`, labels = ["swf"]): Issue {
@@ -159,8 +167,8 @@ function fakeGitHub(issues: Record<string, Issue[]>, options: FakeGitHubOptions 
     updateBranch: async (repo, number) => {
       calls.push(`update-branch ${repo.slug}#${number}`);
     },
-    merge: async (repo, number) => {
-      calls.push(`merge ${repo.slug}#${number}`);
+    merge: async (repo, number, method) => {
+      calls.push(`merge ${repo.slug}#${number} ${method}`);
     },
     ensureLabel: async (repo, label) => {
       calls.push(`ensure ${repo.slug} ${label.name}`);
@@ -381,7 +389,7 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
       gitPush: "### Git\n",
       question: "## Questions\n",
       sessions: "## Sessions {{huntSessionId}}\n",
-      swfSystem: "## Issue #{{number}} on {{branch}}\n",
+      swfSystem: "## Issue #{{number}}; questions start with {{questionPrefix}}\n",
       swfPlan: readPrompt("1-plan"),
       swfImplement: readPrompt("2-implement"),
       swfEscalate: readPrompt("2-implement-escalate"),
@@ -430,7 +438,7 @@ function resultComment(id: number, result: Record<string, unknown>, text = "Done
   return { id, author: BOT_NAME, createdAt: "2026-10-13T09:00:00Z", body: `${text}\n\n<!-- hunt:step ${JSON.stringify(result)} -->\n` };
 }
 
-/** Pull request PULL_REQUEST at HEAD_SHA, open, blocked by GitHub, its checks passed and approved by the scorer, apart from `fields`. */
+/** Pull request PULL_REQUEST at HEAD_SHA, open, blocked by GitHub, its checks passed and approved by the repository's review workflow, apart from `fields`. */
 function pullRequestOf(fields: Partial<z.input<typeof PullRequestState.schema>> = {}): PullRequestState {
   const url = `https://github.com/acme/app/pull/${PULL_REQUEST}`;
   return new PullRequestState({
@@ -529,7 +537,7 @@ describe("Poller.cycle", () => {
     expect(failing.calls).not.toContain("label acme/app#12 swf:failed");
   });
 
-  it("claims the issue with the plan label before anything else, sets the session up like a handoff and posts the record once hunt.json's swf settings are known", async () => {
+  it("claims the issue with the plan label before anything else, sets the session up like a handoff on the default branch and posts the record once hunt.json's swf settings are known", async () => {
     const github = fakeGitHub({ "acme/app": [issue(12, "Fix login", ["swf", "bug"])] });
     const compute = fakeCompute();
     const { vm, calls, claudeFiles } = fakeVm();
@@ -539,16 +547,17 @@ describe("Poller.cycle", () => {
     await poller.drain();
 
     const labels = ["plan", "implement", "verify", "review", "pr", "checks", "human-review", "merge", "question", "done", "failed"];
-    const planned = Pipeline.start({ ...ISSUE, branch: "fix/general/12-fix-login" }, REPORTED_SETTINGS, NOW);
+    // The plan step creates the branch; the issue moves to In Progress once the settings of hunt.json are known.
+    const planned = Pipeline.start({ ...ISSUE, branch: "" }, REPORTED_SETTINGS, NOW);
     expect(github.calls).toEqual([
       "in-progress acme/app",
       "issues acme/app swf",
       ...labels.map((label) => `ensure acme/app swf:${label}`),
       "unlabel acme/app#12 swf",
       "label acme/app#12 swf:plan",
-      "move acme/app#12 In Progress",
       `comment acme/app#12 ${planned.toComment()}`,
       `update acme/app ${FIRST_POSTED_ID}`,
+      "move acme/app#12 In Progress",
     ]);
     planned.noteRecordComment(FIRST_POSTED_ID);
     expect(compute.inserted).toEqual([
@@ -559,7 +568,6 @@ describe("Poller.cycle", () => {
         { key: "startup-script", value: "#!/bin/sh" },
         { key: "hunt-session-id", value: SESSION_ID },
         { key: "hunt-repo", value: "acme/app" },
-        { key: "hunt-branch", value: "fix/general/12-fix-login" },
         { key: "hunt-title", value: "Fix login" },
         { key: "hunt-issue", value: "12" },
         { key: "hunt-agent", value: "plan" },
@@ -570,7 +578,7 @@ describe("Poller.cycle", () => {
       "ensure release",
       `hunt-ctl put-remote-secrets <<< ${JSON.stringify("{}")}`,
       "hunt-ctl install-tools",
-      `hunt-ctl clone ${SESSION_ID} --repo acme/app --branch fix/general/12-fix-login --git-name ${BOT_NAME} --git-email ${BOT_EMAIL} <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`,
+      `hunt-ctl clone ${SESSION_ID} --repo acme/app --git-name ${BOT_NAME} --git-email ${BOT_EMAIL} <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`,
       `hunt-ctl session-config ${SESSION_ID} --domain hunt.example.com`,
       `put-files ${SESSION_ID} --claude hunt-session.json`,
       `hunt-ctl deps ${SESSION_ID}`,
@@ -584,7 +592,7 @@ describe("Poller.cycle", () => {
       acpSessionId: null,
       cwd: "/home/agent/app",
       systemPromptAppend:
-        `\n\n## Remote session\n\n### Git\n\n## Questions\n\n## Sessions ${SESSION_ID}\n\n## Issue #12 on fix/general/12-fix-login\n\n### The repository's services\n- \`ui\`: port 4200\n\n` +
+        `\n\n## Remote session\n\n### Git\n\n## Questions\n\n## Sessions ${SESSION_ID}\n\n## Issue #12; questions start with ❓ RÜCKFRAGE\n\n### The repository's services\n- \`ui\`: port 4200\n\n` +
         "### The repository's hunt.agent.md\n# Services\nStart the UIs.\n",
       modeId: "bypassPermissions",
       configOptions: { model: "claude-opus-5-5", effort: "high" },
@@ -592,7 +600,7 @@ describe("Poller.cycle", () => {
     // The runner on the VM sends the plan prompt; the record names the comment the runner edits.
     expect(lastRecord(github)).toEqual(withoutRuns(planned.toJSON()));
     expect(lastRecord(github)).toMatchObject({ version: 4, recordId: FIRST_POSTED_ID, promptTurn: null });
-    expect(github.updates.at(-1)?.body).toContain('"plan":{"skill":"acme-plan","model":"claude-opus-5-5","effort":"high","maxReturns":null,"gate":[]}');
+    expect(github.updates.at(-1)?.body).toContain('"plan":{"skill":"acme-plan","model":"claude-opus-5-5","effort":"high","maxReturns":null,"minSeverity":null,"gate":[]}');
     expect(github.threads[KEY].map((comment) => comment.id)).toEqual([1, FIRST_POSTED_ID]);
     expect(logs.at(-1)).toBe(`acme/app#12: the runner of session ${SESSION_ID} drives the issue, beginning with the plan`);
     expect(logs.join("\n")).not.toContain(GITHUB_TOKEN);
@@ -755,6 +763,22 @@ describe("Poller.cycle", () => {
     await poller.drain();
     expect(JSON.parse(claudeFiles[0]["hunt-session.json"])).toMatchObject({ configOptions: {} });
   });
+
+  it("moves the claimed issue to the In Progress status hunt.json names and tells the agent the repository's question prefix", async () => {
+    const github = fakeGitHub({ "acme/app": [issue(12)] }, { projects: ["Board"] });
+    const { vm, claudeFiles } = fakeVm();
+    const huntCtl = vm.huntCtl;
+    const answer = { swf_steps: CUSTOM_SETTINGS.toJSON() };
+    vm.huntCtl = async (args, input) => (args[0] === "session-config" ? answer : huntCtl(args, input));
+    const { poller, logs } = createPoller({ github, vm });
+
+    await poller.cycle();
+    await poller.drain();
+    expect(github.calls).toContain("move acme/app#12 Doing");
+    expect(github.calls).not.toContain("move acme/app#12 In Progress");
+    expect(logs).toContain('acme/app#12: moved to Doing in "Board"');
+    expect(JSON.parse(claudeFiles[0]["hunt-session.json"]).systemPromptAppend).toContain("## Issue #12; questions start with QUESTION\n");
+  });
 });
 
 describe("Poller.cycle follows running sessions", () => {
@@ -772,6 +796,28 @@ describe("Poller.cycle follows running sessions", () => {
     await session.poller.cycle();
     expect(session.compute.metadata[1]).toContainEqual({ key: "hunt-agent", value: "plan" });
     expect(session.calls).toEqual([TOKEN_CALL]);
+  });
+
+  it("records the branch the plan step named in the VM once the record carries it, once", async () => {
+    const session = followSession(recordAt("implement", { promptTurn: 500 }));
+    session.listed[0].metadata.items = session.listed[0].metadata.items.filter((item) => item.key !== "hunt-branch");
+
+    await session.poller.cycle();
+    expect(session.compute.calls).toEqual(["list hunt-origin=swf", `metadata ${VM} fp0`]);
+    expect(session.compute.metadata[0]).toContainEqual({ key: "hunt-branch", value: "feat/general/12-issue-12" });
+    expect(session.logs).toContain(`${KEY}: the branch is feat/general/12-issue-12`);
+
+    await session.poller.cycle();
+    expect(session.compute.calls).toHaveLength(3);
+    expect(session.compute.metadata).toHaveLength(1);
+  });
+
+  it("leaves the VM's branch alone while the record names none", async () => {
+    const session = followSession(recordAt("plan", { branch: "", promptTurn: 500 }));
+    session.listed[0].metadata.items = session.listed[0].metadata.items.filter((item) => item.key !== "hunt-branch");
+
+    await session.poller.cycle();
+    expect(session.compute.calls).toEqual(["list hunt-origin=swf"]);
   });
 
   it("gives every running VM the repository's GitHub token whenever it changed, whatever the agent's state", async () => {
@@ -1031,6 +1077,11 @@ describe("Poller.cycle drives the pull request", () => {
     expect(writes(session.github)).toHaveLength(2);
     expect(session.calls).toHaveLength(2);
     expect(session.logs.filter((line) => line.includes("still running"))).toHaveLength(1);
+
+    // The status is the one hunt.json names, which the record keeps.
+    const custom = followSession(recordAt("checks", { pullRequest: PULL_REQUEST, settings: CUSTOM_SETTINGS.toJSON() }), { pullRequests, projects: ["Board"] });
+    await custom.poller.cycle();
+    expect(writes(custom.github)).toEqual(["move acme/app#12 Reviewing", `update acme/app ${RECORD_ID}`]);
   });
 
   it("sends the issue back to implement at checks for a failing check, through the runner's inbox, and starts a stopped VM for it", async () => {
@@ -1057,7 +1108,7 @@ describe("Poller.cycle drives the pull request", () => {
     expect(stopped.calls.filter((call) => call.startsWith("hunt-ctl swf-record"))).toEqual([]);
   });
 
-  it("goes on with merge once the checks passed and the scorer approved the pull request", async () => {
+  it("goes on with merge once the checks passed and the repository's review workflow approved the pull request", async () => {
     const pullRequests = { [PULL_REQUEST]: pullRequestOf({ checks: "pending" }) };
     const record = recordAt("checks", { pullRequest: PULL_REQUEST, inReview: true });
     const session = followSession(record, { pullRequests });
@@ -1069,12 +1120,12 @@ describe("Poller.cycle drives the pull request", () => {
     await session.poller.cycle();
     expect(writes(session.github)).toEqual(["label acme/app#12 swf:merge", "unlabel acme/app#12 swf:checks", `update acme/app ${RECORD_ID}`]);
     expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record, step: "merge" }));
-    expect(session.logs).toContain(`${KEY}: #31 passed its checks and the scorer approved it; the pipeline goes on with merge`);
+    expect(session.logs).toContain(`${KEY}: #31 passed its checks and the repository's review workflow approved it; the pipeline goes on with merge`);
     expect(session.calls[0]).toBe(TOKEN_CALL);
     expect(session.calls.at(-1)).toContain('\\"step\\":\\"merge\\"');
   });
 
-  it("asks the issue's people to review once the checks passed without the scorer's approval: reviewers and one comment, once per issue", async () => {
+  it("asks the issue's people to review once the checks passed without the review workflow's approval: reviewers and one comment, once per issue", async () => {
     const record = recordAt("checks", { pullRequest: PULL_REQUEST, inReview: true });
     const session = followSession(record, { pullRequests: { [PULL_REQUEST]: pullRequestOf({ reviewDecision: "REVIEW_REQUIRED" }) } });
 
@@ -1087,7 +1138,7 @@ describe("Poller.cycle drives the pull request", () => {
       `update acme/app ${RECORD_ID}`,
     ]);
     expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record, step: "human-review", notified: true }));
-    expect(session.logs).toContain(`${KEY}: #31 passed its checks without the scorer's approval; a person reviews it`);
+    expect(session.logs).toContain(`${KEY}: #31 passed its checks without the approval of the repository's review workflow; a person reviews it`);
     expect(session.logs).toContain(`${KEY}: asked @carol to review #31`);
 
     // Asked once: a pull request that comes back to checks and needs a person again mentions nobody again.
@@ -1145,7 +1196,7 @@ describe("Poller.cycle drives the pull request", () => {
     const session = followSession(recordAt("merge", { pullRequest: PULL_REQUEST }), { pullRequests, projects: ["Board"] });
 
     await session.poller.cycle();
-    expect(writes(session.github)).toEqual([`merge acme/app#${PULL_REQUEST}`, `update acme/app ${RECORD_ID}`]);
+    expect(writes(session.github)).toEqual([`merge acme/app#${PULL_REQUEST} squash`, `update acme/app ${RECORD_ID}`]);
     expect(lastRecord(session.github)).toMatchObject({ step: "merge", mergeSha: HEAD_SHA });
     expect(session.logs).toContain(`${KEY}: merged #31`);
     await session.poller.cycle();
@@ -1170,6 +1221,19 @@ describe("Poller.cycle drives the pull request", () => {
     expect(writes(session.github)).toHaveLength(7);
   });
 
+  it("merges the way hunt.json says and moves the issue to the Done status it names", async () => {
+    const pullRequests = { [PULL_REQUEST]: pullRequestOf({ mergeState: "CLEAN" }) };
+    const session = followSession(recordAt("merge", { pullRequest: PULL_REQUEST, inReview: true, settings: CUSTOM_SETTINGS.toJSON() }), { pullRequests, projects: ["Board"] });
+
+    await session.poller.cycle();
+    expect(writes(session.github)).toEqual([`merge acme/app#${PULL_REQUEST} rebase`, `update acme/app ${RECORD_ID}`]);
+
+    pullRequests[PULL_REQUEST].state = "merged";
+    await session.poller.cycle();
+    expect(writes(session.github).at(-1)).toBe("move acme/app#12 Shipped");
+    expect(session.logs).toContain(`${KEY}: moved to Shipped in "Board"`);
+  });
+
   it("updates the branch of a pull request that is behind its base once per head and merges it once it is clean", async () => {
     const pullRequests = { [PULL_REQUEST]: pullRequestOf({ mergeState: "BEHIND" }) };
     const session = followSession(recordAt("merge", { pullRequest: PULL_REQUEST }), { pullRequests });
@@ -1184,7 +1248,7 @@ describe("Poller.cycle drives the pull request", () => {
 
     pullRequests[PULL_REQUEST] = pullRequestOf({ headSha: "b".repeat(40), mergeState: "CLEAN" });
     await session.poller.cycle();
-    expect(writes(session.github).slice(2)).toEqual([`merge acme/app#${PULL_REQUEST}`, `update acme/app ${RECORD_ID}`]);
+    expect(writes(session.github).slice(2)).toEqual([`merge acme/app#${PULL_REQUEST} squash`, `update acme/app ${RECORD_ID}`]);
     expect(lastRecord(session.github)).toMatchObject({ mergeSha: "b".repeat(40) });
   });
 
@@ -1264,7 +1328,7 @@ describe("Poller.cycle drives the pull request", () => {
 });
 
 describe("Poller.cycle replaces a lost VM", () => {
-  const planResult = resultComment(1001, { step: "plan" }, "## Plan\n\n1. Fix it.");
+  const planResult = resultComment(1001, { step: "plan", branch: ISSUE.branch }, "## Plan\n\n1. Fix it.");
   const ended = { endedAt: "2026-10-13T09:00:00.000Z" };
   /** A record at implement after the plan, whose prompt went out on the lost VM. */
   const implementing = (fields: Partial<z.input<typeof Pipeline.schema>> = {}) =>
@@ -1315,6 +1379,18 @@ describe("Poller.cycle replaces a lost VM", () => {
     expect(runsOf(session.github)).toEqual(restartedRuns);
     expect(writes(session.github)).toEqual([`update acme/app ${RECORD_ID}`, `comment acme/app#12 Hunt found no VM for this issue any more and replaced it with \`${VM}\`; the step \`implement\` starts over there with what the steps before it left on the issue.`]);
     expect(session.logs).toContain(`${KEY}: ${VM} replaces the lost VM with 1 step result(s) restored; the runner starts the step implement over`);
+  });
+
+  it("clones the default branch for an issue whose VM was lost during the plan, which then starts from scratch", async () => {
+    const session = followIssueWithoutVm(recordAt("plan", { branch: "", promptTurn: 1_000 }));
+    await session.poller.cycle();
+    await session.poller.drain();
+
+    expect(session.logs).toContain(`${KEY}: the issue has no VM at the step plan; replacing it with ${VM}, session ${SESSION_ID}, the default branch, since the plan step named no branch yet`);
+    expect(session.compute.metadata.at(-1)!.map((item) => item.key)).not.toContain("hunt-branch");
+    expect(session.calls).toContain(`hunt-ctl clone ${SESSION_ID} --repo acme/app --git-name ${BOT_NAME} --git-email ${BOT_EMAIL} <<< ${JSON.stringify(`${GITHUB_TOKEN}\n`)}`);
+    expect(runsOf(session.github)).toEqual([[1, "plan", "restarted", undefined], [2, "plan", "running", undefined]]);
+    expect(session.logs).toContain(`${KEY}: ${VM} replaces the lost VM with 0 step result(s) restored; the runner starts the step plan over`);
   });
 
   it("marks the issue as failed at its step when the replacement fails", async () => {

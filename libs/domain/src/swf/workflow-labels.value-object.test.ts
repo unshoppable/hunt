@@ -39,7 +39,7 @@ describe("WorkflowLabels", () => {
     ]);
     expect(specs.find((spec) => spec.name === "swf:human-review")).toEqual({ name: "swf:human-review", color: "e99695", description: "A person has to review the pull request" });
     expect(specs.find((spec) => spec.name === "swf:review")).toEqual({ name: "swf:review", color: "fbca04", description: "Hunt's agent reviews the change by the repository's review criteria" });
-    expect(specs.find((spec) => spec.name === "swf:checks")).toEqual({ name: "swf:checks", color: "fbca04", description: "The pull request waits for its checks and the scorer" });
+    expect(specs.find((spec) => spec.name === "swf:checks")).toEqual({ name: "swf:checks", color: "fbca04", description: "The pull request waits for its checks and the repository's review workflow" });
     expect(specs.every((spec) => /^[0-9a-f]{6}$/.test(spec.color) && spec.description !== "")).toBe(true);
   });
 

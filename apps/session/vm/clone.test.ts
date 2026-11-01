@@ -1,5 +1,5 @@
 /**
- * `hunt-ctl clone` in a Debian 12 container, the base of the session VMs; skipped without a Docker daemon. GitHub is
+ * `hunt-ctl clone` and `hunt-ctl set-branch` in a Debian 12 container, the base of the session VMs; skipped without a Docker daemon. GitHub is
  * faked inside the container: git reaches https://github.com/ through `url.<…>.insteadOf` at a busybox httpd that serves
  * bare repositories over Git's dumb HTTP protocol behind Basic authentication with the token. A system-wide credential
  * helper with a wrong password proves that the clone uses only the token from stdin. The container runs the built
@@ -95,9 +95,14 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
     return result.stdout.trim();
   }
 
-  function clone(id: string, repo: string, branch: string, token = TOKEN, name = GIT_NAME, email = GIT_EMAIL) {
-    const args = ["clone", id, "--repo", repo, "--branch", branch, "--git-name", name, "--git-email", email];
+  /** `hunt-ctl clone` as root with the token on stdin; without a `branch` the clone stays on the default branch. */
+  function clone(id: string, repo: string, branch: string | null, token = TOKEN, name = GIT_NAME, email = GIT_EMAIL) {
+    const args = ["clone", id, "--repo", repo, ...(branch === null ? [] : ["--branch", branch]), "--git-name", name, "--git-email", email];
     return docker(["exec", "-i", container, "/srv/hunt/current/vm/hunt-ctl", ...args], `${token}\n`);
+  }
+
+  function huntCtl(...args: string[]) {
+    return docker(["exec", container, "/srv/hunt/current/vm/hunt-ctl", ...args]);
   }
 
   beforeAll(() => {
@@ -160,6 +165,38 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
     expect(agentGit("/home/agent/app", "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/feat/general/7-existing");
   }, DOCKER_TIMEOUT_MS);
 
+  it("stays on the default branch without --branch and records it, until set-branch records the branch the plan step created", () => {
+    const id = "0c0c6f2e-0000-4000-8000-000000000005";
+    const result = clone(id, "acme/app", null);
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ path: "/home/agent/app" });
+    expect(agentGit("/home/agent/app", "symbolic-ref", "--short", "HEAD")).toBe("main");
+    expect(agentGit("/home/agent/app", "rev-parse", "HEAD")).toBe(mainCommit);
+    expect(agentGit("/home/agent/app", "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/main");
+    const metaOf = () => JSON.parse(sh(`cat /srv/hunt/sessions/${id}/meta.json`).stdout);
+    expect(metaOf()).toMatchObject({ repo: "acme/app", branch: "main", origin: "swf" });
+
+    const set = huntCtl("set-branch", id, "feat/general/12-x");
+    expect(set.stderr).toBe("");
+    expect(set.status).toBe(0);
+    expect(JSON.parse(set.stdout)).toEqual({ branch: "feat/general/12-x" });
+    expect(metaOf()).toMatchObject({ repo: "acme/app", worktree: "/home/agent/app", branch: "feat/general/12-x", gitName: GIT_NAME, origin: "swf" });
+
+    for (const [args, message] of [
+      [["set-branch", id, "bad..branch"], "invalid branch: bad..branch"],
+      [["set-branch", id, "-x"], "invalid branch: -x"],
+      [["set-branch", "0c0c6f2e-0000-4000-8000-000000000006", "feat/general/1-x"], "session 0c0c6f2e-0000-4000-8000-000000000006 is not initialized on this VM"],
+    ] as const) {
+      const refused = huntCtl(...args);
+      expect(refused.status, args.join(" ")).toBe(3);
+      expect(refused.stderr, args.join(" ")).toContain(`hunt-ctl: ${message}`);
+      expect(refused.stdout).toBe("");
+    }
+    expect(huntCtl("set-branch", id).status).toBe(2);
+    expect(metaOf().branch).toBe("feat/general/12-x");
+  }, DOCKER_TIMEOUT_MS);
+
   it("rejects invalid arguments and tokens and reports GitHub's refusals without the token", () => {
     const id = "0c0c6f2e-0000-4000-8000-000000000003";
     const cases: [ReturnType<typeof clone>, string][] = [
@@ -208,10 +245,10 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
               `user\\.info clone ${id}: cloning acme/app onto branch feat/general/7-existing`,
               `user\\.info clone ${id}: finished in \\d+ ms`,
               `user\\.info clone ${id}: started`,
-              `user\\.err clone ${id}: failed with exit status 3 after \\d+ ms at cmd_clone:\\d+ < main:\\d+`,
+              `user\\.err clone ${id}: failed with exit status 3 after \\d+ ms at require_branch_name:\\d+ < cmd_clone:\\d+ < main:\\d+`,
               `user\\.err clone ${id}: stderr: hunt-ctl: invalid branch: bad\\.\\.branch`,
               `user\\.info clone ${id}: started`,
-              `user\\.err clone ${id}: failed with exit status 3 after \\d+ ms at cmd_clone:\\d+ < main:\\d+`,
+              `user\\.err clone ${id}: failed with exit status 3 after \\d+ ms at require_branch_name:\\d+ < cmd_clone:\\d+ < main:\\d+`,
               `user\\.err clone ${id}: stderr: hunt-ctl: invalid branch: bad\\.\\.\\[redacted\\]`,
               `user\\.info clone ${id}: started`,
               `user\\.err clone ${id}: failed with exit status 3 after \\d+ ms at require_line:\\d+ < cmd_clone:\\d+ < main:\\d+`,

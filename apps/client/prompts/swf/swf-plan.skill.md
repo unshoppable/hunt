@@ -6,11 +6,12 @@ description: Refines the plan step of Hunt's swf pipeline for this repository â€
 # Plan step in this repository
 
 Hunt's swf pipeline turns a GitHub issue into a merged pull request, one step per prompt. In the plan step the agent
-reads the issue and the repository's guardrails, asks the questions only a person can answer and comments a plan on the
-issue: the approach, the files it touches, the acceptance criteria and how each of them is checked. The step's prompt
+reads the issue and the repository's guardrails, asks the questions only a person can answer, creates and pushes the
+session's branch and comments a plan on the issue: the approach, the files it touches, the acceptance criteria and how
+each of them is checked. The step's prompt
 says what the plan delivers and how the step ends (its result, labels and questions); where this skill disagrees with
 it on those, the prompt wins. This skill adds what this repository needs to plan well: where an issue's code lives,
-what to read before planning and how its acceptance criteria are written and checked.
+what to read before planning, how its acceptance criteria are written and checked and how its branch is named.
 
 ## This repository
 
@@ -37,4 +38,9 @@ here: which tests and where they go, which commands, which pages or flows in the
 
 TODO: what the plan states beyond the step's prompt, such as the language it is written in, whether the change needs a
 migration and whether it touches a path of hunt.json `swf.humanReviewPaths`, so that the people know the repository's
-scorer will ask for a human review.
+review workflow will ask for a human review.
+
+### Branch
+
+TODO: the repository's branch naming scheme for a Hunt session, e.g. `feat/<scope>/<issue>-<slug>`, and the branch it
+starts from; the plan step creates and pushes this branch and reports its name in the plan's result.

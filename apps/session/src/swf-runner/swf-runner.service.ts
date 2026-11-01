@@ -19,7 +19,9 @@
  *    goes back to the agent with the failures in the same conversation, past `maxGateRuns` with the request to
  *    escalate. A result that passed moves the pipeline on, becomes `steps/<nn>-<step>.md` and goes to the issue as a
  *    comment, with the step's label and the record; an unusable one is discarded and the agent is told why, in the same
- *    conversation.
+ *    conversation. The plan step's result names the branch the agent created (the VM cloned the default branch): it is
+ *    unusable unless the worktree has that branch checked out, and once accepted the branch becomes the session's
+ *    (`hunt-ctl set-branch`), so that snapshot, push and the desktop's adoption see it.
  * 4. With the relay idle and no desktop connected: the answers waiting go to the agent in the same conversation; a
  *    pending step prompt goes into a fresh conversation (`hunt-ctl clear <id> --keep-stored`, which restarts the relay
  *    and reports the new session) with the step's model and effort as the conversation's config options, which the
@@ -67,6 +69,10 @@ export interface RunnerDeps {
   runCheck(name: string): Promise<{ exitCode: number | null; output: string }>;
   /** The worktree's files that differ from HEAD or are untracked (`git status`), relative to the worktree. */
   changedFiles(): Promise<string[]>;
+  /** The branch the worktree has checked out (`git rev-parse --abbrev-ref HEAD`). */
+  currentBranch(): Promise<string>;
+  /** Records `name` as the session's branch in the VM's metadata (`sudo -n hunt-ctl set-branch <id> <name>`). */
+  setBranch(name: string): Promise<void>;
   /** Sets the config options the relay applies at its next start (`configOptions` of `hunt-session.json`) to exactly `options`. */
   setConfigOptions(options: Record<string, string>): void;
   prompts: PromptFiles;
@@ -214,8 +220,9 @@ export class SwfRunner {
   /**
    * Moves the pipeline on with the step result in `result.md` once the step's gate passed on it (`passGate`): the file
    * becomes the ended run's `steps/<nn>-<step>.md`, the issue gets the result as a comment, the next step's label and the
-   * record; the next pass sends the next prompt. An unusable result is discarded and the agent is told why, unless a
-   * desktop is connected.
+   * record; the next pass sends the next prompt. A plan result is usable only when the worktree has the branch it names
+   * checked out; accepted, that branch becomes the session's (`setBranch`). An unusable result is discarded and the
+   * agent is told why, unless a desktop is connected.
    */
   private async acceptResult(pipeline: Pipeline, text: string, status: RelaySessionStatus): Promise<void> {
     const from = pipeline.step;
@@ -223,7 +230,12 @@ export class SwfRunner {
     const reported = parseStepResult(text);
     const gate = reported?.result?.step === from ? pipeline.gateOf(from) : [];
     if (gate.length > 0 && !(await this.passGate(pipeline, gate, status))) return;
+    const branch = reported?.result?.step === "plan" ? reported.result.branch : null;
     try {
+      if (branch !== null) {
+        const checkedOut = await this.deps.currentBranch();
+        if (checkedOut !== branch) throw new UnusableStepResult(`the branch ${branch} of the result is not checked out; the worktree is on ${checkedOut}`);
+      }
       pipeline.acceptResult(reported, null, this.deps.now());
     } catch (error) {
       if (!(error instanceof UnusableStepResult)) throw error;
@@ -239,6 +251,7 @@ export class SwfRunner {
       await this.saveRecord(pipeline);
       return;
     }
+    if (branch !== null) await this.deps.setBranch(branch);
     const ended = pipeline.lastEndedRun;
     if (ended) {
       this.deps.files.keepResult(ended);
@@ -300,7 +313,7 @@ export class SwfRunner {
     const repo = Repository.fromSlug(pipeline.repo);
     const waiting = this.answers.splice(0);
     const comments = waiting.flatMap((entry) => entry.comments);
-    const text = answerPrompt(this.deps.prompts.swfAnswer, repo, pipeline.issue, comments, this.labels, pipeline.step);
+    const text = answerPrompt(this.deps.prompts.swfAnswer, repo, comments, this.labels, pipeline);
     const outcome = await this.deps.sendPrompt({ sessionId: status.acpSessionId, cwd: this.deps.worktree, text });
     for (const entry of waiting) {
       this.deps.files.removeInboxEntry(entry.name);
@@ -320,7 +333,7 @@ export class SwfRunner {
   private async sendStepPrompt(pipeline: Pipeline): Promise<void> {
     const repo = Repository.fromSlug(pipeline.repo);
     const thread = await this.deps.github.issue(repo, pipeline.issue);
-    const text = stepPrompt(this.deps.prompts, repo, thread.issue, thread.comments, pipeline.branch, this.labels, pipeline);
+    const text = stepPrompt(this.deps.prompts, repo, thread.issue, thread.comments, this.labels, pipeline);
     const options = isAgentStep(pipeline.step) ? pipeline.configOptionsOf(pipeline.step) : {};
     this.deps.setConfigOptions(options);
     if (Object.keys(options).length > 0) {
@@ -359,7 +372,7 @@ export class SwfRunner {
       return;
     }
     if (!pipeline.reminded) {
-      const text = nudgePrompt(this.deps.prompts.swfNudge, repo, pipeline.issue, this.labels, pipeline.step);
+      const text = nudgePrompt(this.deps.prompts.swfNudge, repo, this.labels, pipeline);
       const outcome = await this.deps.sendPrompt({ sessionId: (await this.requireStatus()).acpSessionId, cwd: this.deps.worktree, text });
       pipeline.remind(lastTurnEndedAt);
       this.deps.files.writePipeline(pipeline);

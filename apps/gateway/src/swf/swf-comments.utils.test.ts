@@ -24,9 +24,9 @@ describe("issue comments", () => {
 });
 
 describe("humanReviewComment", () => {
-  it("mentions the people and points them to the scorer's comment on the pull request", () => {
+  it("mentions the people and points them to the review workflow's comment on the pull request", () => {
     expect(humanReviewComment(["alice", "bob"], 12)).toBe(
-      "**👀 REVIEW** @alice @bob\n\nThe scorer asks for a human review of this pull request for #12 before Hunt merges it; its comment on the pull request says why. " +
+      "**👀 REVIEW** @alice @bob\n\nThe repository's review workflow asks for a human review of this pull request for #12 before Hunt merges it; its comment on the pull request says why. " +
         "Approve it to let Hunt merge it, or request changes and Hunt's agent will work them in.",
     );
     expect(humanReviewComment([], 12)).toContain("**👀 REVIEW** \n\n");

@@ -1,5 +1,5 @@
 The gate of the step `{{step}}` failed on your result more than {{maxGateRuns}} times. Stop fixing it on your own: ask
-the people how to go on, as "Questions to the people" says, with `{{relabelQuestion}} --title "❓ RÜCKFRAGE:
+the people how to go on, as "Questions to the people" says, with `{{relabelQuestion}} --title "{{questionPrefix}}:
 <title>"` to mark the issue. Your question names the checks that keep failing and how, what you tried and the options
 you see with your recommendation.
 

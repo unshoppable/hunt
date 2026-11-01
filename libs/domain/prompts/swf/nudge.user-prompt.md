@@ -5,9 +5,9 @@ Do one of these now, then end your turn:
 
 - finish the step `{{step}}` as its prompt says and write its result to `.hunt/swf/result.md`, ending with the marker
   `<!-- hunt:step {"step":"{{step}}", …} -->`;
-- or ask the question you need answered as "Questions to the people" says: in the language of the issue, with the red
-  question mark and the word for a question back in front of the title, `{{stepLabel}}` replaced with `{{question}}`
-  (`{{relabelQuestion}} --title "❓ RÜCKFRAGE: <title>"`) and a comment that starts with them and mentions every
+- or ask the question you need answered as "Questions to the people" says: in the language of the issue, with the
+  question prefix in front of the title, `{{stepLabel}}` replaced with `{{question}}`
+  (`{{relabelQuestion}} --title "{{questionPrefix}}: <title>"`) and a comment that starts with `**{{questionPrefix}}**` and mentions every
   current assignee (or the author) with `@login`, ending your turn with `<!-- hunt:question -->`;
 - or give up: replace `{{stepLabel}}` with `{{failed}}` (`{{relabelFailed}}`) and comment on the issue why.
 

@@ -1,5 +1,6 @@
 import * as z from "zod/mini";
 import { ValueObject } from "../model/value-object.model.ts";
+import { MAX_SEVERITY, MIN_SEVERITY } from "./step-result.utils.ts";
 import { AGENT_STEPS, SWF_STEPS, type AgentStep, type SwfStep } from "./swf-step.types.ts";
 
 /** The effort levels of Claude Code, the values of its `effort` config option. */
@@ -20,6 +21,39 @@ export function isReturningStep(step: string): step is ReturningStep {
   return (RETURNING_STEPS as readonly string[]).includes(step);
 }
 
+/**
+ * The steps whose findings carry a severity (`step-result.utils.ts`); only a finding at or above the step's
+ * `minSeverity` sends the pipeline back to implement, the others stay in the step result as suggestions.
+ */
+export const SCORING_STEPS = ["verify", "review"] as const;
+export type ScoringStep = (typeof SCORING_STEPS)[number];
+/** Hunt's `minSeverity` of a scoring step, for a repository whose hunt.json sets none: a guardrail violation and worse return. */
+export const DEFAULT_MIN_SEVERITY = 3;
+
+export function isScoringStep(step: string): step is ScoringStep {
+  return (SCORING_STEPS as readonly string[]).includes(step);
+}
+
+/** The ways GitHub merges a pull request, the values of `swf.mergeMethod`. */
+export const MERGE_METHODS = ["squash", "merge", "rebase"] as const;
+export type MergeMethod = (typeof MERGE_METHODS)[number];
+/** Hunt's merge method, for a repository whose hunt.json sets none. */
+export const DEFAULT_MERGE_METHOD: MergeMethod = "squash";
+/** Hunt's prefix of the title of an issue with an open question (`swf.questionPrefix`), for a repository whose hunt.json sets none. */
+export const DEFAULT_QUESTION_PREFIX = "❓ RÜCKFRAGE";
+/** Hunt's names of the Status options of the issue's GitHub Projects (`swf.projectStatus`), for a repository whose hunt.json sets none. */
+export const DEFAULT_PROJECT_STATUS = { inProgress: "In Progress", inReview: "In Review", done: "Done" } as const;
+
+const ZodProjectStatus = z.object({
+  /** The status of an issue the poller claimed. */
+  inProgress: z.string().check(z.minLength(1)),
+  /** The status of an issue whose pull request waits for its checks and reviews. */
+  inReview: z.string().check(z.minLength(1)),
+  /** The status of an issue whose pull request is merged. */
+  done: z.string().check(z.minLength(1)),
+});
+export type ProjectStatus = z.infer<typeof ZodProjectStatus>;
+
 const ZodStepSetting = z.object({
   /** The skill the step's prompt invokes first; null for a poller step. */
   skill: z.nullable(z.string().check(z.minLength(1))),
@@ -29,6 +63,11 @@ const ZodStepSetting = z.object({
   effort: z.nullable(z.enum(EFFORTS)),
   /** How often the step may send the pipeline back to implement before the agent escalates; null for a step that never does. */
   maxReturns: z.nullable(z.int().check(z.minimum(1))),
+  /**
+   * The severity from which a finding of the step sends the pipeline back to implement; null for a step whose findings
+   * carry none. Defaults to null so that records and `swf_steps` of VMs written before the field parse.
+   */
+  minSeverity: z._default(z.nullable(z.int().check(z.minimum(MIN_SEVERITY), z.maximum(MAX_SEVERITY))), null),
   /** The checks of hunt.json that must pass before the step's result is accepted, in the order of hunt.json; empty for no gate. */
   gate: z.array(z.string().check(z.minLength(1))),
 });
@@ -37,6 +76,14 @@ export type StepSetting = z.infer<typeof ZodStepSetting>;
 const ZodStepSettingsState = z.object({
   /** How often a step's result may fail its gate before the agent escalates. */
   maxGateRuns: z.int().check(z.minimum(1)),
+  /**
+   * The repository's workflow settings: the prefix of the title of an issue with an open question, the names of the
+   * Status options of the issue's GitHub Projects and the way its pull request is merged. Each defaults so that records
+   * and `swf_steps` of VMs written before the field parse.
+   */
+  questionPrefix: z._default(z.string().check(z.minLength(1)), DEFAULT_QUESTION_PREFIX),
+  projectStatus: z._default(ZodProjectStatus, DEFAULT_PROJECT_STATUS),
+  mergeMethod: z._default(z.enum(MERGE_METHODS), DEFAULT_MERGE_METHOD),
   /** Every step's settings, defaults applied. */
   steps: z.record(z.enum(SWF_STEPS), ZodStepSetting),
 });
@@ -44,11 +91,13 @@ const ZodStepSettingsState = z.object({
 export interface StepSettings extends z.infer<typeof ZodStepSettingsState> {}
 
 /**
- * The settings of every step of the swf pipeline, resolved from the `swf` section of the repository's hunt.json
+ * The settings of the swf pipeline, resolved from the `swf` section of the repository's hunt.json
  * (`apps/session/src/session-config/swf-settings.value-object.ts` resolves them; `hunt-ctl session-config` reports them
- * as `swf_steps`): the skill, model and effort of each agent step, the limit of returns of each returning step, the
- * gate checks of each agent step and the limit of gate runs. The pipeline record keeps them (`pipeline.domain.ts`), so
- * that the runner and the poller read them from the record, not from hunt.json again.
+ * as `swf_steps`): per step the skill, model and effort of each agent step, the limit of returns of each returning
+ * step, the severity from which a finding of verify or the review step returns and the gate checks of each agent step;
+ * for the pipeline the limit of gate runs and the repository's workflow settings (`questionPrefix`, `projectStatus`,
+ * `mergeMethod`). The pipeline record keeps them (`pipeline.domain.ts`), so that the runner and the poller read them
+ * from the record, not from hunt.json again.
  */
 export class StepSettings extends ValueObject<typeof ZodStepSettingsState> {
   static readonly schema = ZodStepSettingsState;
@@ -72,6 +121,11 @@ export class StepSettings extends ValueObject<typeof ZodStepSettingsState> {
   /** The limit of returns of `step`; null for a step that never sends the pipeline back. */
   limitOf(step: SwfStep): number | null {
     return this.steps[step].maxReturns;
+  }
+
+  /** The severity from which a finding of the scoring step `step` sends the pipeline back; DEFAULT_MIN_SEVERITY for settings reported without one. */
+  minSeverityOf(step: ScoringStep): number {
+    return this.steps[step].minSeverity ?? DEFAULT_MIN_SEVERITY;
   }
 
   /** The config options of the agent step `step`'s conversation: `model` and `effort` where set. */

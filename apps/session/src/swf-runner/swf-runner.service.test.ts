@@ -9,7 +9,7 @@ import { answersMessage, parseInboxMessage, pipelineMessage, type InboxMessage }
 import { badResultPrompt, type PromptFiles } from "../../../../libs/domain/src/swf/swf-prompts.utils.ts";
 import type { SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
 import type { StepSettings } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
-import { SETTINGS, settingsWith, started } from "../../../../libs/domain/src/swf/swf.fixtures.ts";
+import { ISSUE, SETTINGS, settingsWith, started } from "../../../../libs/domain/src/swf/swf.fixtures.ts";
 import type { IssueThread, RunnerGitHub } from "./gh.client.ts";
 import type { RelaySessionStatus } from "./relay-status-file.utils.ts";
 import type { InboxEntry, SwfFiles } from "./swf-dir.client.ts";
@@ -19,7 +19,8 @@ const NOW = Date.parse("2026-10-25T10:00:00Z");
 const RECORD_ID = 1000;
 const WORKTREE = "/home/agent/app";
 const VM = "vm-hunt-s-ab12cd34";
-const PLAN_RESULT = "## Plan\n\n1. Fix the login.\n\n<!-- hunt:step {\"step\":\"plan\"} -->\n";
+const BRANCH = "feat/general/12-fix-login";
+const PLAN_RESULT = `## Plan\n\n1. Fix the login.\n\n<!-- hunt:step {"step":"plan","branch":"${BRANCH}"} -->\n`;
 const IMPLEMENT_RESULT = "## Implemented\n\nThe login works.\n\n<!-- hunt:step {\"step\":\"implement\",\"summary\":\"done\"} -->\n";
 
 function readPrompt(path: string): string {
@@ -157,6 +158,10 @@ interface Harness {
   checkRuns: string[];
   /** What `changedFiles` gives. */
   dirty: string[];
+  /** What `currentBranch` gives. */
+  checkedOut: string;
+  /** The branches `setBranch` recorded, in order. */
+  branches: string[];
   /** The config options set, the fresh conversations begun and the prompts sent, in order. */
   events: string[];
   logs: string[];
@@ -179,6 +184,8 @@ function harness(pipeline: Pipeline | null, status: RelaySessionStatus | null = 
     checks: {},
     checkRuns: [],
     dirty: [],
+    checkedOut: BRANCH,
+    branches: [],
     events: [],
     logs: [],
     clock: { now: NOW },
@@ -203,6 +210,12 @@ function harness(pipeline: Pipeline | null, status: RelaySessionStatus | null = 
       return Promise.resolve(h.checks[name] ?? { exitCode: 0, output: "ok" });
     },
     changedFiles: () => Promise.resolve([...h.dirty]),
+    currentBranch: () => Promise.resolve(h.checkedOut),
+    setBranch: (name) => {
+      h.branches.push(name);
+      h.events.push(`set-branch ${name}`);
+      return Promise.resolve();
+    },
     setConfigOptions: (options) => {
       h.events.push(`config ${JSON.stringify(options)}`);
     },
@@ -229,7 +242,7 @@ function recorded(step: SwfStep = "plan", promptTurn: number | null = null, sett
   for (const current of order.slice(0, order.indexOf(step))) {
     switch (current) {
       case "plan":
-        pipeline.acceptResult({ result: { step: "plan" } }, null, NOW);
+        pipeline.acceptResult({ result: { step: "plan", branch: BRANCH } }, null, NOW);
         break;
       case "implement":
         pipeline.acceptResult({ result: { step: "implement", summary: "done" } }, null, NOW);
@@ -280,7 +293,7 @@ describe("SwfRunner", () => {
     expect(h.prompts[0].text).toContain("Step `plan` for GitHub issue #12 of acme/app: Issue 12");
     expect(h.prompts[0].text).toContain("Body of 12");
     expect(h.prompts[0].text).toContain("**@bob** on 2026-10-13 09:00 UTC:\n\nAlso the logout.");
-    expect(h.prompts[0].text).toContain("Work on the branch `feat/general/12-issue-12`.");
+    expect(h.prompts[0].text).toContain('<!-- hunt:step {"step":"plan","branch":"<the branch of step 3>"} -->');
     expect(h.prompts[0].text).toContain("skill `swf-plan`");
     const expected = recorded("plan", 0);
     expect(h.files.pipeline?.toJSON()).toEqual(expected.toJSON());
@@ -325,6 +338,33 @@ describe("SwfRunner", () => {
     expect(h.prompts[0].text).toContain("Step `implement` for issue #12 of acme/app");
     expect(h.github.records.at(-1)).toBe(pipeline?.toComment());
     expect(h.logs).toContain("the agent reported the step plan; the pipeline goes on with implement");
+  });
+
+  it("records the branch of a plan result as the session's once the pipeline took it", async () => {
+    const h = harness(recorded("plan", 0), idle({ lastTurnEndedAt: 5_000 }));
+    h.files.result = PLAN_RESULT;
+    await h.runner.tick();
+    expect(h.branches).toEqual([BRANCH]);
+    expect(h.files.pipeline?.step).toBe("implement");
+    expect(h.files.pipeline?.branch).toBe(BRANCH);
+    expect(h.events.indexOf(`set-branch ${BRANCH}`)).toBeLessThan(h.events.indexOf("clear"));
+  });
+
+  it("refuses a plan result whose branch the worktree has not checked out and tells the agent", async () => {
+    const h = harness(recorded("plan", 0), idle({ lastTurnEndedAt: 5_000 }));
+    h.files.result = PLAN_RESULT;
+    h.checkedOut = "main";
+    await h.runner.tick();
+    const problem = `the branch ${BRANCH} of the result is not checked out; the worktree is on main`;
+    expect(h.prompts).toEqual([{ sessionId: "acp-1", cwd: WORKTREE, text: badResultPrompt(PROMPTS.swfBadResult, problem) }]);
+    expect(h.prompts[0].text).toContain("is not checked out");
+    expect(h.files.result).toBeNull();
+    expect(h.files.steps.size).toBe(0);
+    expect(h.branches).toEqual([]);
+    expect(h.files.pipeline?.step).toBe("plan");
+    expect(h.files.pipeline?.branch).toBe(ISSUE.branch);
+    expect(h.files.pipeline?.promptTurn).toBe(5_000);
+    expect(h.logs).toContain(`warn: the step result of plan is unusable (${problem}); told the agent (prompt started)`);
   });
 
   it("tells the agent in the running conversation why its result is unusable and discards the file", async () => {
@@ -408,7 +448,7 @@ describe("SwfRunner", () => {
     expect(h.files.pipeline?.runs).toHaveLength(7);
     expect(h.clears).toBe(1);
     expect(h.prompts).toHaveLength(1);
-    expect(h.prompts[0].text).toContain("Step `implement` for issue #12 of acme/app on the branch `feat/general/12-issue-12` (return 1 of 2, sent back by checks).");
+    expect(h.prompts[0].text).toContain(`Step \`implement\` for issue #12 of acme/app on the branch \`${BRANCH}\` (return 1 of 2, sent back by checks).`);
     expect(h.prompts[0].text).toContain("- Review: the test fails");
     expect(h.logs).toContain("took the pipeline the gateway sent: at implement after 7 runs");
   });

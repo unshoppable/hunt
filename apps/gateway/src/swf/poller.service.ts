@@ -4,16 +4,19 @@
  * and follows each session through the steps of its pipeline (`swf/pipeline.domain.ts`) until the pull request is merged.
  *
  * Per issue, as long as fewer than `maxSessions` of its VMs (label `hunt-origin=swf`) are up (`swf/session-slots.utils.ts`):
- * claim the issue first (label `swf` → `swf:plan`, the issue's status in every project it belongs to →
- * IN_PROGRESS_STATUS), then do what a handoff of the desktop does (`apps/client/src-tauri/src/remote/handoff.rs`), with
- * a clone from GitHub in place of the push: the session VM service
+ * claim the issue first (label `swf` → `swf:plan`), then do what a handoff of the desktop does
+ * (`apps/client/src-tauri/src/remote/handoff.rs`), with a clone from GitHub in place of the push: the session VM service
  * (`session-vm/session-vm.service.ts`) creates the session VM from the instance template, records the session in its
  * metadata, waits for its startup script and installs the session release staged on the gateway; then `install-tools`,
- * `clone` (onto the branch of `swf/session-branch.utils.ts`), the repository's private files (the ignored files a
- * handoff copies, such as `.env.private`) from the secret `HUNT_SWF_FILES_<owner>_<repo>` (`swf/private-files.utils.ts`)
- * through `put-files`, `session-config` (which also reports the repository's step settings, `swf_steps`, which the
- * pipeline keeps; the pipeline record then goes onto the issue as a comment of the poller (`swf/pipeline-record.client.ts`),
- * and a hunt.json that names no skill for an agent step fails the setup, since Hunt has no default skill),
+ * `clone` of the repository's default branch (the plan step creates the session's branch by the repository's naming
+ * rules and reports it in its result; the runner records it in the pipeline and the VM's meta.json, and the poller
+ * copies it into the VM's metadata `hunt-branch`), the repository's private files (the ignored files a handoff copies,
+ * such as `.env.private`) from the secret `HUNT_SWF_FILES_<owner>_<repo>` (`swf/private-files.utils.ts`) through
+ * `put-files`, `session-config` (which also reports the repository's workflow settings from the `swf` section of its
+ * hunt.json, `swf_steps`, which the pipeline keeps; the pipeline record then goes onto the issue as a comment of the
+ * poller (`swf/pipeline-record.client.ts`), the issue's status in every project it belongs to moves to the settings'
+ * `projectStatus.inProgress`, and a hunt.json that names no skill for an agent step fails the setup, since Hunt has no
+ * default skill),
  * `hunt-session.json` with the model and effort of the plan step through `put-files --claude`, `deps`, `swf-record`
  * with the pipeline, `start` with the tokens on stdin (which enables the swf runner of the VM,
  * `apps/session/src/swf-runner/swf-runner.main.ts`) and `wait`.
@@ -27,13 +30,14 @@
  * VM drives the agent steps (plan, implement, verify, review, pr) and edits the record comment itself; a record of an
  * older version (`Pipeline.RECORD_VERSION`), whose steps meant something else, is left alone with a warning. The poller
  * steps are the poller's: `checks` waits for the checks of the pull request's head commit (a failing check goes back to
- * implement) and then reads GitHub's review decision, which the repository's scorer workflow sets: it scores every pull
- * request and approves it as its own GitHub App when no person has to review, and the ruleset requires one approval,
- * so an approved pull request goes on to `merge` and one without an approval to `human-review`, which asks the issue's
- * people once (`askForHumanReview`) and waits for a person's approval (a change request goes back to implement);
- * `merge` updates the branch when it is behind and squash-merges it, and sends a pull request that lost its approval
- * with a new head to `human-review`; then the issue gets `swf:done` and moves to DONE_STATUS in its projects. The first
- * poll at `checks` moves the issue to IN_REVIEW_STATUS. These steps need GitHub only, so they go on while the idle
+ * implement) and then reads GitHub's review decision, which the repository's review workflow sets: it reviews every
+ * pull request and approves it as its own GitHub App when no person has to review, and the ruleset requires one
+ * approval, so an approved pull request goes on to `merge` and one without an approval to `human-review`, which asks the
+ * issue's people once (`askForHumanReview`) and waits for a person's approval (a change request goes back to implement);
+ * `merge` updates the branch when it is behind and merges it the way the settings' `mergeMethod` says, and sends a pull
+ * request that lost its approval with a new head to `human-review`; then the issue gets `swf:done` and moves to the
+ * settings' `projectStatus.done` in its projects. The first poll at `checks` moves the issue to `projectStatus.inReview`.
+ * These steps need GitHub only, so they go on while the idle
  * sweeper keeps the session's VM suspended. While the issue is labelled `swf:question`, the poller watches it for the
  * answer: a comment by someone other than the app's bot user after the agent's question (`newAnswers` in
  * `swf/issue-thread.utils.ts`) goes to the runner's inbox (`hunt-ctl swf-inbox`, `libs/domain/src/swf/swf-inbox.utils.ts`),
@@ -47,7 +51,8 @@
  * it, or a person did) keeps going without it (`watchIssuesWithoutVm`, one search of GitHub per repository and poll):
  * its poller steps need GitHub only, and its question waits for the answer. Once the pipeline needs the agent again (an
  * agent step, or the answer arrived), the poller replaces the VM (`replaceVm`): a new session VM as in a setup, a clone
- * of the branch the record names, `.hunt/swf/` restored from the record and the step results on the issue (one
+ * of the branch the record names (of the default branch while the record names none, since the VM was lost during the
+ * plan, which then starts from scratch), `.hunt/swf/` restored from the record and the step results on the issue (one
  * `swf-record` per run that has a result comment), the step's run ended as `restarted` with a new run of the step
  * (`Pipeline.restart`), the runner started, which sends the step's prompt afresh, and a comment on the issue.
  *
@@ -69,7 +74,7 @@ import { SWF_LABEL, WorkflowLabels } from "../../../../libs/domain/src/swf/workf
 import type { Compute, Instance } from "../gcp/compute-engine.client.ts";
 import type { OptionalSecret } from "../gcp/secret-manager.client.ts";
 import type { SessionVmSsh } from "../session-vm/session-vm-ssh.client.ts";
-import { AGENT_METADATA, ORIGIN_LABEL, SessionVm } from "../session-vm/session-vm.domain.ts";
+import { AGENT_METADATA, BRANCH_METADATA, ORIGIN_LABEL, SessionVm } from "../session-vm/session-vm.domain.ts";
 import { DEFAULT_TEMPLATE, SILENT, type Origin, type Reporter, type SessionVmService } from "../session-vm/session-vm.service.ts";
 import type { AppCredentials, GitHubApp } from "./github-app.client.ts";
 import type { GitHub, Issue, IssueComment } from "./github.client.ts";
@@ -78,7 +83,6 @@ import { PipelineRecordClient } from "./pipeline-record.client.ts";
 import { Pipeline, stepSettings } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 import { checkPrivateFilesArchive, privateFilesSecret } from "./private-files.utils.ts";
 import { redact } from "./redaction.utils.ts";
-import { branchName } from "./session-branch.utils.ts";
 import { activeSessionVms, issuesToStart } from "./session-slots.utils.ts";
 import {
   changeRequestFinding,
@@ -96,11 +100,6 @@ import { huntSessionFile, remoteSystemPrompt, swfSystemPrompt, type PromptFiles 
 import { answersMessage, pipelineMessage } from "../../../../libs/domain/src/swf/swf-inbox.utils.ts";
 
 export const ORIGIN: Origin = "swf";
-/** The `Status` option a claimed issue gets in every project (Projects v2) it is an item of; matched case-insensitively. */
-export const IN_PROGRESS_STATUS = "In Progress";
-/** The `Status` options the issue gets in its projects (Projects v2) when the pull request reaches the checks and when it is merged. */
-export const IN_REVIEW_STATUS = "In Review";
-export const DONE_STATUS = "Done";
 
 /** The secrets the poller runs with: the Claude Code OAuth token of its sessions and the GitHub App's credentials. */
 export interface Secrets {
@@ -358,6 +357,11 @@ export class Poller {
       return null;
     }
     const { commentId: recordId, pipeline } = found;
+    if (sessionVm && sessionId && pipeline.branch !== "" && sessionVm.branch !== pipeline.branch) {
+      // The plan step named the branch; the VM's metadata learns it for Hunt's lists.
+      await this.deps.sessionVmService.recordSession(sessionVm.zone, sessionId, { [BRANCH_METADATA]: pipeline.branch });
+      this.deps.log(`${key}: the branch is ${pipeline.branch}`);
+    }
     const context: SessionContext = { key, github, labels, sessionVm, sessionId, repo, issue, comments, bot, recordId, pipeline, watched };
     if (state === null) {
       // A label lost on the way, or taken off by a person: the record knows the step.
@@ -418,8 +422,9 @@ export class Poller {
 
   /**
    * A poller step, from the state of the pull request: `checks` waits for the checks of the head commit and then follows
-   * the scorer's decision, `human-review` a person's, `merge` GitHub's merge state. The first poll at `checks` moves the
-   * issue to IN_REVIEW_STATUS, since the runner, not the poller, moved the pipeline into checks.
+   * the decision of the repository's review workflow, `human-review` a person's, `merge` GitHub's merge state. The first
+   * poll at `checks` moves the issue to the settings' `projectStatus.inReview`, since the runner, not the poller, moved
+   * the pipeline into checks.
    */
   private async drivePollerStep(context: SessionContext): Promise<void> {
     const { key, github, repo, recordId, issue, labels, pipeline, watched, bot } = context;
@@ -442,7 +447,7 @@ export class Poller {
       return;
     }
     if (step === "checks" && !pipeline.inReview) {
-      await this.moveToStatus(github, key, repo, issue.number, IN_REVIEW_STATUS);
+      await this.moveToStatus(github, key, repo, issue.number, pipeline.settings.projectStatus.inReview);
       pipeline.noteInReview();
       await this.records.save(repo, recordId, pipeline);
       await this.recordOnVm(context);
@@ -458,11 +463,11 @@ export class Poller {
           await this.enterStep(context);
         } else if (outcome.kind === "merge") {
           pipeline.passChecks(this.deps.now());
-          this.deps.log(`${key}: #${pullRequest.number} passed its checks and the scorer approved it; the pipeline goes on with merge`);
+          this.deps.log(`${key}: #${pullRequest.number} passed its checks and the repository's review workflow approved it; the pipeline goes on with merge`);
           await this.enterStep(context);
         } else if (outcome.kind === "human") {
           pipeline.requireHumanReview(this.deps.now());
-          this.deps.log(`${key}: #${pullRequest.number} passed its checks without the scorer's approval; a person reviews it`);
+          this.deps.log(`${key}: #${pullRequest.number} passed its checks without the approval of the repository's review workflow; a person reviews it`);
           await this.enterStep(context);
         }
         return;
@@ -494,7 +499,7 @@ export class Poller {
           await this.records.save(repo, recordId, pipeline);
           this.deps.log(`${key}: #${pullRequest.number} is behind its base; updating the branch`);
         } else if (outcome.kind === "merge") {
-          await github.merge(repo, pullRequest.number);
+          await github.merge(repo, pullRequest.number, pipeline.settings.mergeMethod);
           pipeline.noteMergeRequested(pullRequest.headSha);
           await this.records.save(repo, recordId, pipeline);
           this.deps.log(`${key}: merged #${pullRequest.number}`);
@@ -576,7 +581,7 @@ export class Poller {
     issue.labels = [...issue.labels.filter((label) => !carried.includes(label)), target];
   }
 
-  /** The merged pull request ends the pipeline: `<label>:done`, DONE_STATUS in the projects and a comment. */
+  /** The merged pull request ends the pipeline: `<label>:done`, the settings' `projectStatus.done` in the projects and a comment. */
   private async finish(context: SessionContext, pullRequest: PullRequestState): Promise<void> {
     const { key, github, repo, issue, labels, recordId, pipeline } = context;
     pipeline.complete(this.deps.now());
@@ -587,7 +592,7 @@ export class Poller {
     }
     await github.addLabels(repo, issue.number, [labels.done]);
     await github.comment(repo, issue.number, mergedComment(pullRequest.number));
-    await this.moveToStatus(github, key, repo, issue.number, DONE_STATUS);
+    await this.moveToStatus(github, key, repo, issue.number, pipeline.settings.projectStatus.done);
     this.deps.log(`${key}: done, #${pullRequest.number} is merged`);
   }
 
@@ -670,15 +675,13 @@ export class Poller {
     }
 
     const sessionId = SessionId.of(this.deps.newId());
-    const branch = branchName(issue);
-    this.deps.log(`${key}: claimed; session ${sessionId.id} on ${sessionId.vm.name}, branch ${branch.name}`);
+    this.deps.log(`${key}: claimed; session ${sessionId.id} on ${sessionId.vm.name}`);
     const setup: Setup = { key, repo, issue: issue.number, labels, sessionId, step: "plan", isVmCreated: false, recordId: 0, done: Promise.resolve() };
     this.setups.set(sessionId.vm.name, setup);
     setup.done = (async () => {
       try {
         await github.addLabels(repo, issue.number, [labels.step("plan")]);
-        await this.moveToStatus(github, key, repo, issue.number, IN_PROGRESS_STATUS);
-        await this.setUp(setup, domain, claudeToken, branch, issue);
+        await this.setUp(setup, domain, claudeToken, issue);
       } catch (error) {
         await this.markFailed(setup, this.redacted(error));
       } finally {
@@ -708,26 +711,32 @@ export class Poller {
     this.labelledRepos.add(key);
   }
 
-  /** The handoff of the desktop, from the VM to the runner that sends the first prompt; see the module comment. */
-  private async setUp(setup: Setup, domain: string, claudeToken: string, branch: BranchName, issue: Issue): Promise<void> {
+  /**
+   * The handoff of the desktop, from the VM to the runner that sends the first prompt; see the module comment. The
+   * branch is the plan step's to create, so the pipeline starts without one, and the issue moves to the settings'
+   * `projectStatus.inProgress` once the VM reported them.
+   */
+  private async setUp(setup: Setup, domain: string, claudeToken: string, issue: Issue): Promise<void> {
     const { key, repo, sessionId } = setup;
-    const prepared = await this.prepareVm(setup, domain, branch, issue);
+    const prepared = await this.prepareVm(setup, domain, null, issue);
     const parsed = stepSettings(prepared.steps);
     if (parsed.problem !== undefined) throw new Error(stepSettingsError(parsed.problem));
-    const pipeline = Pipeline.start({ repo: repo.slug, number: issue.number, branch: branch.name }, parsed.settings, this.deps.now());
+    const pipeline = Pipeline.start({ repo: repo.slug, number: issue.number, branch: "" }, parsed.settings, this.deps.now());
     setup.recordId = await this.records.create(repo, issue.number, pipeline);
     // The runner edits the record comment itself, so the pipeline names it.
     pipeline.noteRecordComment(setup.recordId);
     await this.records.save(repo, setup.recordId, pipeline);
-    await this.startSession(setup, prepared, claudeToken, issue, branch, pipeline, []);
+    await this.moveToStatus(this.deps.github, key, repo, issue.number, pipeline.settings.projectStatus.inProgress);
+    await this.startSession(setup, prepared, claudeToken, issue, pipeline, []);
     this.deps.log(`${key}: the runner of session ${sessionId.id} drives the issue, beginning with the plan`);
   }
 
   /**
-   * Brings the session's VM up with the repository cloned onto `branch`, the private files and the session's
-   * configuration: the first half of a setup, which `startSession` completes once the pipeline is known.
+   * Brings the session's VM up with the repository cloned onto `branch` (its default branch for null, which the plan
+   * step leaves for the branch it creates), the private files and the session's configuration: the first half of a
+   * setup, which `startSession` completes once the pipeline is known.
    */
-  private async prepareVm(setup: Setup, domain: string, branch: BranchName, issue: Issue): Promise<PreparedVm> {
+  private async prepareVm(setup: Setup, domain: string, branch: BranchName | null, issue: Issue): Promise<PreparedVm> {
     const { key, repo, sessionId } = setup;
     const reporter: Reporter = {
       progress: (step) => {
@@ -744,7 +753,7 @@ export class Poller {
 
     // The clone, the commits and the relay act as the app: the token of the moment, since one is valid for an hour only.
     const identity = await this.deps.githubApp.identity();
-    const cloneArgs = ["clone", sessionId.id, "--repo", repo.slug, "--branch", branch.name, "--git-name", identity.name, "--git-email", identity.email];
+    const cloneArgs = ["clone", sessionId.id, "--repo", repo.slug, ...(branch ? ["--branch", branch.name] : []), "--git-name", identity.name, "--git-email", identity.email];
     const cloned = await vm.huntCtl(cloneArgs, `${await this.deps.githubApp.tokenFor(repo)}\n`);
     if (typeof cloned.path !== "string" || !cloned.path) throw new Error("hunt-ctl clone returned no path");
     await this.putPrivateFiles(vm, key, sessionId, repo);
@@ -764,11 +773,11 @@ export class Poller {
    * `pipeline` and the step results `results` of its runs (one `swf-record` each), then `start`, which enables the
    * runner, and `wait` for the relay's session.
    */
-  private async startSession(setup: Setup, prepared: PreparedVm, claudeToken: string, issue: Issue, branch: BranchName, pipeline: Pipeline, results: RunResult[]): Promise<void> {
+  private async startSession(setup: Setup, prepared: PreparedVm, claudeToken: string, issue: Issue, pipeline: Pipeline, results: RunResult[]): Promise<void> {
     const { key, repo, sessionId } = setup;
     const { vm } = prepared;
     const prompts = this.deps.prompts();
-    const swfPrompt = swfSystemPrompt(prompts.swfSystem, repo, issue.number, branch.name, setup.labels);
+    const swfPrompt = swfSystemPrompt(prompts.swfSystem, repo, issue.number, setup.labels, pipeline.settings.questionPrefix);
     const systemPrompt = remoteSystemPrompt(prompts, sessionId, swfPrompt, prepared.servicesPrompt, prepared.agentMd);
     await vm.putClaudeFiles(sessionId, { "hunt-session.json": huntSessionFile(sessionId, prepared.path, systemPrompt, pipeline.configOptionsOf("plan")) });
     this.deps.log(`${key}: cloned ${repo.slug} into ${prepared.path}; installing the dependencies`);
@@ -847,15 +856,17 @@ export class Poller {
 
   /**
    * Replaces the lost VM of the issue in the background, as `claimAndStart` sets a new session up: a new VM with the
-   * record's branch cloned, `.hunt/swf/` restored from the record and the step results on the issue, the step's run
-   * started over (`Pipeline.restart`) and the runner started, which sends the step's prompt; then a comment on the issue.
-   * A failure marks the issue as failed at its step.
+   * record's branch cloned (the default branch while the record names none: the VM was lost during the plan, which
+   * creates the branch and starts from scratch), `.hunt/swf/` restored from the record and the step results on the
+   * issue, the step's run started over (`Pipeline.restart`) and the runner started, which sends the step's prompt; then
+   * a comment on the issue. A failure marks the issue as failed at its step.
    */
   private replaceVm(domain: string, claudeToken: string, context: SessionContext): void {
     const { key, github, labels, repo, issue, comments, bot, recordId, pipeline } = context;
     const sessionId = SessionId.of(this.deps.newId());
-    const branch = BranchName.of(pipeline.branch);
-    this.deps.log(`${key}: the issue has no VM at the step ${pipeline.step}; replacing it with ${sessionId.vm.name}, session ${sessionId.id}, branch ${branch.name}`);
+    const branch = pipeline.branch === "" ? null : BranchName.of(pipeline.branch);
+    const onto = branch ? `branch ${branch.name}` : "the default branch, since the plan step named no branch yet";
+    this.deps.log(`${key}: the issue has no VM at the step ${pipeline.step}; replacing it with ${sessionId.vm.name}, session ${sessionId.id}, ${onto}`);
     const setup: Setup = { key, repo, issue: issue.number, labels, sessionId, step: pipeline.step, isVmCreated: false, recordId, done: Promise.resolve() };
     this.setups.set(sessionId.vm.name, setup);
     setup.done = (async () => {
@@ -866,7 +877,7 @@ export class Poller {
         pipeline.restart(this.deps.now());
         await this.records.save(repo, recordId, pipeline);
         const results = resultsOfRuns(comments, bot, pipeline.runs);
-        await this.startSession(setup, prepared, claudeToken, issue, branch, pipeline, results);
+        await this.startSession(setup, prepared, claudeToken, issue, pipeline, results);
         await github.comment(repo, issue.number, replacedVmComment(pipeline.step, sessionId.vm.name));
         this.deps.log(`${key}: ${sessionId.vm.name} replaces the lost VM with ${results.length} step result(s) restored; the runner starts the step ${pipeline.step} over`);
       } catch (error) {

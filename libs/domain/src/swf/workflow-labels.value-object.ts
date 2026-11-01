@@ -11,7 +11,7 @@ const STEP_DESCRIPTIONS: Record<SwfStep, string> = {
   verify: "Hunt's agent checks its change against the issue",
   review: "Hunt's agent reviews the change by the repository's review criteria",
   pr: "Hunt's agent opens the pull request",
-  checks: "The pull request waits for its checks and the scorer",
+  checks: "The pull request waits for its checks and the repository's review workflow",
   "human-review": "A person has to review the pull request",
   merge: "Hunt merges the pull request",
 };

@@ -37,4 +37,5 @@ TODO: the checks of hunt.json or further commands that cover a change, by what i
 
 ### Commit
 
-TODO: the format of a commit message: its type and scope, and how it references the issue.
+TODO: the commit message convention, e.g. conventional commits with the type and scope this repository uses, and how a
+message references the issue.

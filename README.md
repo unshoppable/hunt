@@ -756,6 +756,9 @@ defaults: `apps/session/src/session-config/swf-settings.value-object.ts`, `libs/
 ```json
 "swf": {
   "model": "claude-opus-5-5", "effort": "high", "maxGateRuns": 5, "humanReviewPaths": ["**/migrations/**"],
+  "questionPrefix": "❓ RÜCKFRAGE",
+  "projectStatus": { "inProgress": "In Progress", "inReview": "In Review", "done": "Done" },
+  "mergeMethod": "squash",
   "steps": {
     "plan": { "skill": "swf-plan" },
     "implement": { "skill": "swf-implement", "model": "claude-sonnet-5-5", "effort": "medium", "gate": ["lint", "test"] },
@@ -774,7 +777,9 @@ does not know (the relay's journal says so). `swf.steps.<step>` sets each step, 
 (`plan`, `implement`, `verify`, `review`, `pr`) takes `skill`, `model`, `effort` and `gate`; a step that sends the issue
 back to `implement` (`verify`, `review`, `checks`, `human-review`, `merge`) takes `maxReturns`, how often it may do so
 before the agent escalates (1 to 20; Hunt's defaults `DEFAULT_MAX_RETURNS`: verify 5, review 3, checks 2, human-review 3,
-merge 2); the poller steps take nothing else, and any other field of a step is a problem. `skill` names the Claude Code
+merge 2); `verify` and `review`, whose findings carry a severity of 1 to 5, take `minSeverity`, the severity from which a
+finding sends the issue back (a lesser one stays in the step result as a suggestion; `DEFAULT_MIN_SEVERITY` 3); the
+poller steps take nothing else, and any other field of a step is a problem. `skill` names the Claude Code
 skill with which the repository refines the step (`.claude/skills/<name>/SKILL.md`, names like `guardrailSkill`);
 `swf.skills.<step>` is its alias, as older files write it (`"skills": {"plan": "swf-plan", …}`), and a step may name its
 skill in both places only when they agree. Every agent step must name one: Hunt has no default skill, so a step without
@@ -784,12 +789,20 @@ session of the repository opens. The step's prompt tells the agent to invoke its
 `libs/domain/prompts/swf/README.md`. `gate` names the checks of hunt.json's `checks` the step's result must pass before
 the pipeline accepts it, `"*"` for every check, `[]` for none; they run in the order of `checks`. Without it,
 `implement`'s gate is every check and the other steps have none. `maxGateRuns` (at least 1, default 5) is how often one
-step result may fail its gate before the agent is told to ask the people (see "Remote sessions"). `session-config`
-reports the resolved settings, defaults applied, as `swf_steps` (`{"maxGateRuns": 5, "steps": {"plan": {"skill",
-"model", "effort", "maxReturns", "gate"}, …}}`). Under `humanReviewPaths` the section holds glob patterns with the
+step result may fail its gate before the agent is told to ask the people (see "Remote sessions"). Three fields hold
+what the repository's workflow calls things: `questionPrefix` (one line of at most 40 characters without a trailing
+colon, default `❓ RÜCKFRAGE`) is what the agent puts in front of the issue's title while a question is open
+(`<prefix>: <title>`) and in bold at the start of the question's comment; `projectStatus` names the Status options the
+poller sets on the issue in its GitHub Projects (v2), `inProgress` when the issue is claimed, `inReview` when its pull
+request waits for its checks, `done` when it is merged (each one line of at most 60 characters, all three or none;
+defaults `In Progress`, `In Review`, `Done`); `mergeMethod` is how the poller merges the pull request, `squash`,
+`merge` or `rebase` (default `squash`). `session-config` reports the resolved settings, defaults applied, as
+`swf_steps` (`{"maxGateRuns": 5, "questionPrefix": "…", "projectStatus": {"inProgress", "inReview", "done"},
+"mergeMethod": "squash", "steps": {"plan": {"skill", "model", "effort", "maxReturns", "minSeverity", "gate"}, …}}`).
+Under `humanReviewPaths` the section holds glob patterns with the
 rules of `worktreeInclude`: a pull request of a poller session that touches a file matching one of them always needs a
-human reviewer. Hunt only validates them; the repository's scorer workflow (see "Remote sessions") reads them from
-hunt.json. An optional
+human reviewer. Hunt only validates them; the repository's review workflow (app-framework's scorer action, for example;
+see "Remote sessions") reads them from hunt.json. An optional
 `checks` section names up to 32 commands such as the linter or the tests, each with a `command`
 and an optional `cwd` (`"checks": {"test": {"command": "npm test", "cwd": "apps/web"}}`); `services` is optional too,
 so a `hunt.json` may declare checks only. An optional `adrDir` names the folder of the repository's architectural
@@ -1131,17 +1144,19 @@ is committed, so a client that pulls the session gets the pipeline from the VM, 
 session the mode `swf` (`SessionRecord.mode`, `store.rs`; `git-review` for a pull request review, else `edit`) and pulls
 `.hunt/swf/` into its local worktree (`apps/client/src-tauri/src/session/swf.rs`) when the session is opened, after every turn
 the status channel reports ended and with the retrieval, announcing each pull as `swf:pulled`; the Factory tab reads the
-folder there (`read_swf_pipeline`, `read_swf_step`), also once the VM is gone; the issue moves to the `In Progress` column of every project (Projects v2) it is an item of (the
+folder there (`read_swf_pipeline`, `read_swf_step`), also once the VM is gone; the issue moves to the `inProgress`
+status of `swf.projectStatus` (`In Progress` by default) in every project (Projects v2) it is an item of (the
 `Status` option matched case-insensitively; a project without one is left alone, and a failure, such as the app lacking
 the organization permission "Projects: read and write", is only logged). Then it does what a handoff does, with the gateway's service account instead
 of a Mac: the session VM service (`apps/gateway/src/session-vm/session-vm.service.ts`) creates `vm-hunt-s-<short id>`
 from the configured instance template (labelled `hunt-origin=swf`, without an owner), records the session, repository,
-branch `feat/general/<issue>-<slug of the title>` (`fix/general/…` for an issue labelled `bug`), title and issue in the
-VM's metadata, waits for the startup script and installs the staged session release, over `gcloud compute ssh
+title and issue in the VM's metadata (the branch follows once the plan step created it, through `hunt-ctl set-branch`),
+waits for the startup script and installs the staged session release, over `gcloud compute ssh
 --internal-ip` (OS Login as admin, one shared SSH connection per VM); `hunt-ctl install-tools` follows.
-`hunt-ctl clone` clones the repository from GitHub as `agent` onto the branch (the origin's branch of that name
-when it exists, else a new one from the default branch) with the App's bot as Git identity (`<slug>[bot]`,
-`<id>+<slug>[bot]@users.noreply.github.com`, passed as `--git-name` and `--git-email`). The repository's
+`hunt-ctl clone` clones the repository from GitHub as `agent` on its default branch (`--branch` checks an existing
+branch out instead, as for a VM that replaces one of an issue in progress, below) with the App's bot as Git identity
+(`<slug>[bot]`, `<id>+<slug>[bot]@users.noreply.github.com`, passed as `--git-name` and `--git-email`). Hunt names no
+branch: the plan step creates it by the repository's branch rules. The repository's
 private files follow through `put-files` when the Secret Manager secret `HUNT_SWF_FILES_<owner>_<repo>` (every
 character a secret name cannot hold becomes `_`: `HUNT_SWF_FILES_unshoppable_app-framework`) holds a version: a gzipped
 tar archive of the ignored files a handoff copies from the Mac, such as `.env.private`, with paths relative to the
@@ -1179,7 +1194,11 @@ without a result costs one `gh issue view` of the labels: `swf:question` means t
 for the poller to bring the answer, `swf:failed` that it gave up, else one reminder (`nudge.user-prompt.md`), and the
 issue is marked `swf:failed` when the next turn ends the same way.
 `plan` reads the issue and the repository's guardrails (README, CLAUDE.md, rules, skills, ADRs, `hunt.agent.md`), asks
-every question only a person can answer and writes the plan with the acceptance criteria for the steps that follow.
+every question only a person can answer, creates and pushes the session's branch by the repository's branch naming
+rules (its guardrails and the step's skill say which) and writes the plan with the acceptance criteria for the steps
+that follow; its
+result names the branch (`<!-- hunt:step {"step":"plan","branch":"<name>"} -->`), which Hunt checks the worktree is on
+and records in the pipeline and the VM's metadata.
 `implement` carries out the plan of `steps/01-plan.md` or fixes the findings the prompt names, runs the repository's
 checks, commits and pushes. An agent step with a **gate** (by default `implement`, with every check of hunt.json) is
 done only when the gate is green: once the agent wrote `result.md`, the runner runs the gate's checks and
@@ -1188,16 +1207,19 @@ working tree back to the agent in the same conversation (`gate-failed.user-promp
 return. After more than `swf.maxGateRuns` failures of the step's result the agent is told to ask the people instead
 (`gate-escalate.user-prompt.md`). `verify` verifies every acceptance criterion (in the browser with the Playwright tools
 for anything the user sees), running a check of hunt.json only where a criterion needs its output, since the gate ran
-them; its findings send the issue back to `implement`. `review`, whose conversation is fresh and did not write the change, reads the
+them; its findings at or above the step's `minSeverity` send the issue back to `implement`. `review`, whose conversation is fresh and did not write the change, reads the
 diff as a code reviewer against the issue, the steps' results and the repository's review criteria (the review step's
-skill): its blocking findings send the issue back to `implement` too. `pr` opens the pull request (`Closes #<issue>`)
-and cleans up the VM; the poller then prepares the review once (`inReview` in the record): the issue moves to
-`In Review` in its projects. `checks` waits for the checks of the head commit: a failing check sends the issue back to
+skill): its findings at or above `minSeverity` send the issue back to `implement` too, the lesser ones stay in the step
+result as suggestions. `pr` opens the pull request (`Closes #<issue>`)
+and cleans up the VM; the poller then prepares the review once (`inReview` in the record): the issue moves to the
+`inReview` status of `swf.projectStatus` (`In Review` by default) in its projects. `checks` waits for the checks of
+the head commit: a failing check sends the issue back to
 `implement` with the finding; once they pass, GitHub's `reviewDecision` of the pull request decides — `APPROVED` (the
-repository's scorer approved it, below) goes on to `merge`, anything else to `human-review`, which requests the
+repository's review workflow approved it, below) goes on to `merge`, anything else to `human-review`, which requests the
 issue's assignees (or its author) as reviewers and mentions them once when it is entered, then waits for a person's
 approval (a change request goes back to `implement` with the review's text). `merge` updates the branch when it is
-behind the base, squash-merges when GitHub reports it mergeable, sends conflicts back to `implement`, and goes to
+behind the base, merges it with `swf.mergeMethod` (`squash` by default) when GitHub reports it mergeable, sends
+conflicts back to `implement`, and goes to
 `human-review` when GitHub reports the pull request `BLOCKED` with passing checks and no approval. After every return to
 `implement` the pipeline runs `verify` and `review` again before the pull request is checked once more. Each return
 counts for the step that sent the issue back (`returns` in the record, the status line says `return n of m (<step>)`);
@@ -1206,7 +1228,8 @@ instead (`2-implement-escalate.user-prompt.md`), and that step's count starts an
 Every agent step has a skill the repository keeps (`.claude/skills/<name>/SKILL.md`) and names under
 `swf.steps.<step>.skill` of its hunt.json: the step's prompt tells the agent to invoke it first (the review's names it as the criteria), and Hunt has no
 fallback prompt for a missing one; the step's result, labels and questions stay Hunt's. A merged pull request ends the
-pipeline: `swf:done`, `Done` in the projects and a comment. A pull request closed without a merge, a missing pull request or an agent that
+pipeline: `swf:done`, the `done` status of `swf.projectStatus` (`Done` by default) in the projects and a comment. A pull
+request closed without a merge, a missing pull request or an agent that
 ends a step's turn twice without a result (one reminder in between) mark the issue `swf:failed` with a comment; a setup
 that fails does so too, and its VM stays for inspection.
 
@@ -1233,11 +1256,11 @@ the poller starts first (`sessionVmService.start`), as it does when a prompt is 
 the next poll. The poller still refreshes the GitHub token of every running VM at every poll and records the agent's
 state in the VM's metadata.
 
-Questions work at every step: the agent puts a red question mark and the word for a question back (`❓ RÜCKFRAGE: ` in
-German) in front of the issue's title and replaces the step's label with `swf:question`, so that GitHub's notification
-mail carries it in its subject, comments every question at once with a mention of the assignees and ends the turn with
-`<!-- hunt:question -->`. While the issue is labelled `swf:question`, the poller watches it for the answer: a comment by
-someone other than the app's bot user after the agent's question goes to the agent as a prompt
+Questions work at every step: the agent puts the repository's `swf.questionPrefix` and a colon (`❓ RÜCKFRAGE: ` by
+default) in front of the issue's title and replaces the step's label with `swf:question`, so that GitHub's notification
+mail carries it in its subject, comments every question at once, starting with the prefix in bold, with a mention of
+the assignees and ends the turn with `<!-- hunt:question -->`. While the issue is labelled `swf:question`, the poller
+watches it for the answer: a comment by someone other than the app's bot user after the agent's question goes to the agent as a prompt
 (`answer.user-prompt.md`) that tells it to take the label back to the step; an answer given in a Hunt desktop needs
 none of this. A VM that stopped meanwhile, or one whose step has a prompt pending, is started first through the
 session VM service, and the next poll sends the prompt. No prompt goes to a session a Hunt desktop is connected to. Every
@@ -1249,10 +1272,12 @@ are left alone with a warning in the journal.
 
 The target repository takes part with: a `swf` section in hunt.json with the skills of the five agent steps (the
 review's holds the criteria the diff is read against), optionally their models, efforts, gates and limits of returns,
-and `swf.humanReviewPaths`, which the scorer reads; its `checks`, which the gates run; a **scorer**
-workflow that scores every pull request and, when no human is needed, approves it as its own GitHub App and dismisses
-its stale approval when the head changes; and a ruleset of the base branch that requires one approval, so that the
-scorer's approval lets the poller merge and a withheld one sends the pull request to a person. The poller's GitHub App
+its `questionPrefix`, `projectStatus` and `mergeMethod`, and `swf.humanReviewPaths`, which its review workflow reads;
+its `checks`, which the gates run; branch naming rules the plan step's skill states; a **review workflow** (such as a
+scoring GitHub Action, app-framework's `ai-pr-scorer.yml` for example) that reviews every pull request and, when no
+human is needed, approves it as its own GitHub App and dismisses its stale approval when the head changes; and a
+ruleset of the base branch that requires one approval, so that the workflow's approval lets the poller merge and a
+withheld one sends the pull request to a person. The poller's GitHub App
 needs `Checks: read` to see the check runs of a head commit; without it the `checks` step treats the commit as having
 no checks.
 

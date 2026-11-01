@@ -5,7 +5,7 @@ import { PullRequestState } from "./pull-request-state.value-object.ts";
 const HEAD = "a".repeat(40);
 const SHORT = HEAD.slice(0, 7);
 
-/** An open pull request with passed checks the scorer approved, apart from `overrides`. */
+/** An open pull request with passed checks the review workflow approved, apart from `overrides`. */
 function pullRequest(overrides: Partial<z.input<typeof PullRequestState.schema>> = {}): PullRequestState {
   return new PullRequestState({
     number: 42,
@@ -43,7 +43,7 @@ describe("PullRequestState", () => {
       expect(pullRequest({ checks: "pending", reviewDecision: null }).checksOutcome().kind).toBe("wait");
     });
 
-    it("sends failing checks back, whatever the scorer decided", () => {
+    it("sends failing checks back, whatever the review workflow decided", () => {
       expect(pullRequest({ checks: "failure", failingChecks: ["build", "test-med"] }).checksOutcome()).toEqual({
         kind: "fix",
         findings: [`Checks: build, test-med failed on ${SHORT} (https://github.com/acme/app/pull/42/checks)`],
@@ -54,7 +54,7 @@ describe("PullRequestState", () => {
       });
     });
 
-    it("lets the scorer's decision decide once the checks passed: approved merges, anything else needs a person", () => {
+    it("lets the review workflow's decision decide once the checks passed: approved merges, anything else needs a person", () => {
       expect(pullRequest().checksOutcome()).toEqual({ kind: "merge" });
       expect(pullRequest({ reviewDecision: "REVIEW_REQUIRED" }).checksOutcome()).toEqual({ kind: "human" });
       expect(pullRequest({ reviewDecision: "CHANGES_REQUESTED" }).checksOutcome()).toEqual({ kind: "human" });

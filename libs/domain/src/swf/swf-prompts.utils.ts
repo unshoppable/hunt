@@ -121,8 +121,11 @@ function relabelCommand(repo: Repository, issue: number, from: string, to: strin
   return `gh issue edit ${issue} --repo ${repo.slug} --remove-label ${from} --add-label ${to}`;
 }
 
-/** The placeholders every swf prompt may use: the issue, the labels and the commands that move between them at `step`. */
-function labelValues(repo: Repository, issue: number, labels: WorkflowLabels, step: SwfStep): Record<string, string> {
+/**
+ * The placeholders every swf prompt may use: the issue, the labels and the commands that move between them at `step`,
+ * and `questionPrefix`, what the repository puts in front of the title of an issue with an open question (`swf.questionPrefix`).
+ */
+function labelValues(repo: Repository, issue: number, labels: WorkflowLabels, step: SwfStep, questionPrefix: string): Record<string, string> {
   const stepLabel = labels.step(step);
   return {
     number: String(issue),
@@ -130,6 +133,7 @@ function labelValues(repo: Repository, issue: number, labels: WorkflowLabels, st
     requested: labels.requested,
     step,
     stepLabel,
+    questionPrefix,
     question: labels.question,
     done: labels.done,
     failed: labels.failed,
@@ -140,11 +144,12 @@ function labelValues(repo: Repository, issue: number, labels: WorkflowLabels, st
 }
 
 /**
- * The swf part of a poller session's system prompt, `0-system-prompt.md` filled with the issue's number, repository
- * and branch: the protocol of the steps, how to ask a question and how to give up.
+ * The swf part of a poller session's system prompt, `0-system-prompt.md` filled with the issue's number and repository
+ * and the repository's question prefix: the protocol of the steps, how to ask a question and how to give up. The branch
+ * is not in it: the plan step creates it.
  */
-export function swfSystemPrompt(template: string, repo: Repository, issue: number, branch: string, labels: WorkflowLabels): string {
-  return fillPrompt(template, { ...labelValues(repo, issue, labels, "plan"), branch });
+export function swfSystemPrompt(template: string, repo: Repository, issue: number, labels: WorkflowLabels, questionPrefix: string): string {
+  return fillPrompt(template, labelValues(repo, issue, labels, "plan", questionPrefix));
 }
 
 /** `template` filled with `values`, without the final line break of its file: a prompt sent or inserted as it is. */
@@ -159,23 +164,16 @@ function formatFindings(findings: string[]): string {
 }
 
 /**
- * The prompt of the step the pipeline is at, for the agent steps: `1-plan.user-prompt.md` with the issue, all its
- * comments and the branch; `2-implement.user-prompt.md` with the findings to fix and, after a return, which step sent the
- * change back how often of its limit (`2-implement-escalate.user-prompt.md`, with that step and its limit, when the agent
- * is to ask the humans instead); `3-verify`, `4-review` (with the pull request, when it exists) and `5-pr`.
- * Every prompt carries the issue, the step's label, the commands that move the issue to the question label and back and,
- * as `skill`, the repository's skill for the step (`skillOf` of the pipeline).
+ * The prompt of the step the pipeline is at, for the agent steps: `1-plan.user-prompt.md` with the issue and all its
+ * comments (the plan step creates the branch and reports it); `2-implement.user-prompt.md` with the branch, the findings
+ * to fix and, after a return, which step sent the change back how often of its limit (`2-implement-escalate.user-prompt.md`,
+ * with that step and its limit, when the agent is to ask the humans instead); `3-verify`, `4-review` (with the pull
+ * request, when it exists) and `5-pr`, each with the branch of the pipeline.
+ * Every prompt carries the issue, the step's label, the commands that move the issue to the question label and back, the
+ * repository's question prefix and, as `skill`, the repository's skill for the step (`skillOf` of the pipeline).
  */
-export function stepPrompt(
-  prompts: PromptFiles,
-  repo: Repository,
-  issue: IssueText,
-  comments: CommentText[],
-  branch: string,
-  labels: WorkflowLabels,
-  pipeline: Pipeline,
-): string {
-  const values: Record<string, string> = { ...labelValues(repo, issue.number, labels, pipeline.step), branch };
+export function stepPrompt(prompts: PromptFiles, repo: Repository, issue: IssueText, comments: CommentText[], labels: WorkflowLabels, pipeline: Pipeline): string {
+  const values: Record<string, string> = { ...labelValues(repo, issue.number, labels, pipeline.step, pipeline.settings.questionPrefix), branch: pipeline.branch };
   if (isAgentStep(pipeline.step)) {
     values.skill = pipeline.skillOf(pipeline.step);
   }
@@ -227,18 +225,23 @@ function formatThread(comments: CommentText[]): string {
 
 /**
  * The prompt that brings the answers `answers` from the issue to an agent that waits with the question label:
- * `answer.user-prompt.md` filled with the comments and the command that takes the label back to the step.
+ * `answer.user-prompt.md` filled with the comments and the command that takes the label back to the pipeline's step.
  */
-export function answerPrompt(template: string, repo: Repository, issue: number, answers: CommentText[], labels: WorkflowLabels, step: SwfStep): string {
-  return fillPrompt(template, { ...labelValues(repo, issue, labels, step), comments: formatThread(answers) });
+export function answerPrompt(template: string, repo: Repository, answers: CommentText[], labels: WorkflowLabels, pipeline: Pipeline): string {
+  return fillPrompt(template, { ...pipelineValues(repo, labels, pipeline), comments: formatThread(answers) });
 }
 
 /**
- * The prompt the poller sends when the agent ended its turn with the issue still at its step (no step result, no
+ * The prompt the runner sends when the agent ended its turn with the issue still at its step (no step result, no
  * question, no failure was reported): `nudge.user-prompt.md` filled with the issue, the step and its labels.
  */
-export function nudgePrompt(template: string, repo: Repository, issue: number, labels: WorkflowLabels, step: SwfStep): string {
-  return fillPrompt(template, labelValues(repo, issue, labels, step));
+export function nudgePrompt(template: string, repo: Repository, labels: WorkflowLabels, pipeline: Pipeline): string {
+  return fillPrompt(template, pipelineValues(repo, labels, pipeline));
+}
+
+/** `labelValues` of the pipeline's issue at its step, with the repository's question prefix of its settings. */
+function pipelineValues(repo: Repository, labels: WorkflowLabels, pipeline: Pipeline): Record<string, string> {
+  return labelValues(repo, pipeline.issue, labels, pipeline.step, pipeline.settings.questionPrefix);
 }
 
 /**
@@ -250,7 +253,7 @@ export function nudgePrompt(template: string, repo: Repository, issue: number, l
 export function gatePrompt(prompts: PromptFiles, labels: WorkflowLabels, pipeline: Pipeline, failures: GateFailure[]): string {
   if (!isAgentStep(pipeline.step)) throw new Error(`the step ${pipeline.step} has no gate`);
   return fillPrompt(pipeline.gateEscalates ? prompts.swfGateEscalate : prompts.swfGateFailed, {
-    ...labelValues(Repository.fromSlug(pipeline.repo), pipeline.issue, labels, pipeline.step),
+    ...pipelineValues(Repository.fromSlug(pipeline.repo), labels, pipeline),
     failures: formatGateFailures(failures),
     gateRuns: String(pipeline.gateRuns),
     maxGateRuns: String(pipeline.settings.maxGateRuns),

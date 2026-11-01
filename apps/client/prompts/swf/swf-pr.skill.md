@@ -19,8 +19,8 @@ checks that follow.
 
 ### Title
 
-TODO: the format of a pull request's title, such as a conventional commit with the scopes of the commits, and what it
-never contains.
+TODO: the format of a pull request's title (a conventional commit header with the scopes of the commits, for example)
+and what it never contains.
 
 ### Body
 

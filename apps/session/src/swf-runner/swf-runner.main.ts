@@ -199,6 +199,10 @@ function main(): void {
     sendPrompt: async (request) => sendPrompt(await connectRelaySocket(socketPath), request),
     runCheck: (name) => runCheck(worktree, name),
     changedFiles: async () => changedPathsOf(await run("git", ["-C", worktree, "status", "--porcelain", "-z", "--untracked-files=all"], undefined, GIT_TIMEOUT_MS)),
+    currentBranch: async () => (await run("git", ["-C", worktree, "rev-parse", "--abbrev-ref", "HEAD"], undefined, GIT_TIMEOUT_MS)).trim(),
+    setBranch: async (name) => {
+      await run("sudo", ["-n", HUNT_CTL, "set-branch", sessionId.id, name], undefined, GIT_TIMEOUT_MS);
+    },
     setConfigOptions: (options) => replaceConfigOptions(configPath, options),
     prompts: readPrompts(),
     worktree,

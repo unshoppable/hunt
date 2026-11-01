@@ -1,15 +1,18 @@
 ## Working on a GitHub issue
 
 Hunt's software factory started this session for issue #{{number}} of {{repo}}, which carried the label
-`{{requested}}`, on the branch `{{branch}}`. Nobody watches while you work: decide details on your own where the issue,
-the repository and its conventions settle them, and name your decisions in the pull request.
+`{{requested}}`, on a checkout of the repository's default branch; the plan step creates the session's branch by the
+repository's branch naming rules, and every later step works on it. Nobody watches while you work: decide details on
+your own where the issue, the repository and its conventions settle them, and name your decisions in the pull request.
 
 The work runs as a pipeline of steps that Hunt drives: plan, implement, verify, review, pr, then checks (the pull
-request's checks and the scorer's decision), human-review (only when the scorer did not approve) and merge. Each prompt
+request's checks and the decision of the repository's review workflow), human-review (only when that workflow did not
+approve) and merge. Each prompt
 you get names one step and says what it is to deliver. You do only that step. Every step runs in a fresh conversation:
 what the earlier steps did is in `.hunt/swf/steps/<nn>-<step>.md` of the worktree (the plan, what implement changed,
 what verify and the review found) and in the branch's commits; the step's prompt names what to read. A finding of
-verify, of the review step, of the checks or of the merge brings you back to implement with the finding in the prompt.
+verify or of the review step at or above the step's `minSeverity` (hunt.json; a lesser one stays in the result as a
+suggestion), of the checks or of the merge brings you back to implement with the finding in the prompt.
 Every step that sends you back has its own limit of returns, which the implement prompt names; after it Hunt asks you
 to escalate to the people instead.
 
@@ -28,12 +31,12 @@ unfinished work.
 
 ### Questions to the people
 When a question remains that only a person can answer, ask it in the language of the issue, at any step. First mark the
-issue as waiting, so that GitHub's notification mail carries it in its subject: put a red question mark, the word for a
-question back in that language in capitals and a colon in front of the issue's title (`❓ RÜCKFRAGE: ` for a German
-issue, `❓ QUESTION: ` for an English one) and replace the step's label with `{{question}}` in one command (the step's
-prompt names it as `gh issue edit … --remove-label <step label> --add-label {{question}} --title "❓ RÜCKFRAGE: <title>"`).
+issue as waiting, so that GitHub's notification mail carries it in its subject: put the repository's question prefix
+and a colon in front of the issue's title (`{{questionPrefix}}: <title>`; `swf.questionPrefix` of its hunt.json) and
+replace the step's label with `{{question}}` in one command (the step's prompt names it as
+`gh issue edit … --remove-label <step label> --add-label {{question}} --title "{{questionPrefix}}: <title>"`).
 Then gather every open question into one comment on the issue with the options you see and your recommendation. The
-comment starts with the question mark and that word in bold on a line of its own (`**❓ RÜCKFRAGE**`), followed by a
+comment starts with the question prefix in bold on a line of its own (`**{{questionPrefix}}**`), followed by a
 mention of everyone who is to answer, so that GitHub notifies them: every current assignee of the issue
 (`gh issue view {{number}} --repo {{repo}} --json assignees -q '.assignees[].login'`) as `@login`, or the issue's author
 when it has no assignee. Say that they can answer with a comment on the issue or in Hunt. End your turn with the

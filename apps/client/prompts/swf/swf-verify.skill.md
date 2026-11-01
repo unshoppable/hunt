@@ -7,7 +7,8 @@ description: Refines the verify step of Hunt's swf pipeline for this repository 
 
 Hunt's swf pipeline turns a GitHub issue into a merged pull request, one step per prompt. In the verify step the agent
 checks the pushed change as a tester who did not write it: it verifies every acceptance criterion by a test, a command
-or in the browser and fixes nothing; its findings go back to the implement step. The step's prompt says
+or in the browser and fixes nothing; its findings carry a severity of 1 to 5, and those at or above the repository's
+`minSeverity` (`swf.steps.verify.minSeverity` of hunt.json, 3 without it) go back to the implement step. The step's prompt says
 what the step delivers and how it ends (its result, labels and questions); where this skill disagrees with it on those,
 the prompt wins. This skill adds what this repository needs to verify a change: which checks cover what and how its
 services run with data for a check in the browser.

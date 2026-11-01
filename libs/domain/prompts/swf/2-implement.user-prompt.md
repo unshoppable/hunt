@@ -19,10 +19,10 @@ that you do not lose a round. A failing check, a warning or a flaky test is your
 your work and is out of scope, to note for the pull request. Read your whole diff once as a critical reviewer who did
 not write it and fix what you find.
 
-Then commit to `{{branch}}` with a conventional commit message, push, leave the working tree clean and write the step
+Then commit to `{{branch}}` with a message in the repository's commit convention (its guardrails and the step's skill say which), push, leave the working tree clean and write the step
 result to `.hunt/swf/result.md`: a few lines on what you changed and which findings you fixed how, ending with
 `<!-- hunt:step {"step":"implement","summary":"<one sentence>"} -->`.
 
 The issue is labelled `{{stepLabel}}` while you work on this step. A question goes as "Questions to the people" says,
-with `{{relabelQuestion}} --title "❓ RÜCKFRAGE: <title>"` and `{{relabelResume}} --title "<title>"` once the answer
+with `{{relabelQuestion}} --title "{{questionPrefix}}: <title>"` and `{{relabelResume}} --title "<title>"` once the answer
 arrived; to give up, run `{{relabelFailed}}` and say why.

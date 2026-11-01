@@ -285,7 +285,7 @@ describe("createGitHub", () => {
     expect(requests.map((request) => request.body)).toEqual([{ reviewers: ["carol", "dave"] }, { reviewers: ["outsider"] }, { reviewers: ["carol"] }]);
   });
 
-  it("updates the branch, accepting a branch that cannot be updated, and squash-merges", async () => {
+  it("updates the branch, accepting a branch that cannot be updated, and merges with the method given", async () => {
     const updates = [Response.json({ message: "Updating pull request branch." }, { status: 202 }), Response.json({ message: "merge conflict" }, { status: 422 })];
     const merges = [Response.json({ merged: true }), Response.json({ message: "Pull Request is not mergeable" }, { status: 405 })];
     const { fetchImpl, requests } = fakeFetch({
@@ -296,9 +296,9 @@ describe("createGitHub", () => {
 
     await github.updateBranch(ACME_APP, 31);
     await github.updateBranch(ACME_APP, 31);
-    await github.merge(ACME_APP, 31);
-    await expect(github.merge(ACME_APP, 31)).rejects.toThrow('failed to merge acme/app#31: HTTP 405 {"message":"Pull Request is not mergeable"}');
-    expect(requests.map((request) => request.body)).toEqual([{}, {}, { merge_method: "squash" }, { merge_method: "squash" }]);
+    await github.merge(ACME_APP, 31, "squash");
+    await expect(github.merge(ACME_APP, 31, "rebase")).rejects.toThrow('failed to merge acme/app#31: HTTP 405 {"message":"Pull Request is not mergeable"}');
+    expect(requests.map((request) => request.body)).toEqual([{}, {}, { merge_method: "squash" }, { merge_method: "rebase" }]);
   });
 
   it("creates a missing label, accepts one created meanwhile and updates one whose color or description differs from the spec", async () => {

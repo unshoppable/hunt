@@ -240,14 +240,14 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     tmux("kill-server");
   });
 
-  it("lets the agent run only `hunt-ctl service` and `hunt-ctl clear <id> --keep-stored` through sudo", () => {
+  it("lets the agent run only `hunt-ctl service`, `hunt-ctl clear <id> --keep-stored` and `hunt-ctl set-branch` through sudo", () => {
     sessionConfig();
     const listed = sh("sudo -l -U agent").stdout;
     const commands = listed.slice(listed.indexOf("may run the following commands")).split("\n").slice(1).join(" ").replace(/\s+/g, " ").trim();
     expect(commands).toBe(
       "(root) NOPASSWD: /usr/local/bin/hunt-ctl service start *, /usr/local/bin/hunt-ctl service stop *, " +
         "/usr/local/bin/hunt-ctl service restart *, /usr/local/bin/hunt-ctl service status, /usr/local/bin/hunt-ctl service status *, " +
-        "/usr/local/bin/hunt-ctl clear * --keep-stored",
+        "/usr/local/bin/hunt-ctl clear * --keep-stored, /usr/local/bin/hunt-ctl set-branch *",
     );
 
     const asAgent = (...args: string[]) => docker(["exec", "--user", "agent", container, "sudo", "-n", ...args]);
@@ -257,6 +257,8 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(asAgent("hunt-ctl", "service", "start", "api")).toMatchObject({ status: 0, stderr: "" });
     // sudo lets `clear --keep-stored` through; hunt-ctl then refuses the session, which has no branch here.
     expect(asAgent("hunt-ctl", "clear", ID, "--keep-stored")).toMatchObject({ status: 3, stderr: `hunt-ctl: meta.json of session ${ID} has no branch\n` });
+    // sudo lets `set-branch` through too; hunt-ctl then refuses the branch name (clone.test.ts covers the names it takes).
+    expect(asAgent("hunt-ctl", "set-branch", ID, "bad..branch")).toMatchObject({ status: 3, stderr: "hunt-ctl: invalid branch: bad..branch\n" });
     for (const command of [["hunt-ctl", "clear", ID], ["hunt-ctl", "destroy", ID], ["hunt-ctl", "service"], ["hunt-ctl", "session-config", ID, "--domain", DOMAIN], ["/bin/true"]]) {
       const refused = asAgent(...command);
       expect(refused.status, command.join(" ")).toBe(1);
@@ -272,15 +274,18 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
       services_prompt: expect.stringMatching(/^### The repository's services\n/),
       swf_steps: {
         maxGateRuns: 5,
+        questionPrefix: "❓ RÜCKFRAGE",
+        projectStatus: { inProgress: "In Progress", inReview: "In Review", done: "Done" },
+        mergeMethod: "squash",
         steps: {
-          plan: { skill: "swf-plan", model: "claude-opus-5-5", effort: null, maxReturns: null, gate: [] },
-          implement: { skill: "swf-implement", model: "claude-opus-5-5", effort: null, maxReturns: null, gate: ["good", "bad"] },
-          verify: { skill: "swf-verify", model: "claude-opus-5-5", effort: null, maxReturns: 5, gate: [] },
-          review: { skill: "acme-review", model: "claude-opus-5-5", effort: null, maxReturns: 3, gate: [] },
-          pr: { skill: "swf-pr", model: "claude-opus-5-5", effort: null, maxReturns: null, gate: [] },
-          checks: { skill: null, model: null, effort: null, maxReturns: 2, gate: [] },
-          "human-review": { skill: null, model: null, effort: null, maxReturns: 3, gate: [] },
-          merge: { skill: null, model: null, effort: null, maxReturns: 2, gate: [] },
+          plan: { skill: "swf-plan", model: "claude-opus-5-5", effort: null, maxReturns: null, minSeverity: null, gate: [] },
+          implement: { skill: "swf-implement", model: "claude-opus-5-5", effort: null, maxReturns: null, minSeverity: null, gate: ["good", "bad"] },
+          verify: { skill: "swf-verify", model: "claude-opus-5-5", effort: null, maxReturns: 5, minSeverity: 3, gate: [] },
+          review: { skill: "acme-review", model: "claude-opus-5-5", effort: null, maxReturns: 3, minSeverity: 3, gate: [] },
+          pr: { skill: "swf-pr", model: "claude-opus-5-5", effort: null, maxReturns: null, minSeverity: null, gate: [] },
+          checks: { skill: null, model: null, effort: null, maxReturns: 2, minSeverity: null, gate: [] },
+          "human-review": { skill: null, model: null, effort: null, maxReturns: 3, minSeverity: null, gate: [] },
+          merge: { skill: null, model: null, effort: null, maxReturns: 2, minSeverity: null, gate: [] },
         },
       },
     });

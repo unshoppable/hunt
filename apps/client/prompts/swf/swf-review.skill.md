@@ -27,8 +27,10 @@ Read the diff against each of these; a finding names the file and line, what is 
   and introduces nothing more general than the issue needs.
 - **Leftovers**: no debugging output, commented-out code, stale comment, unused import or TODO the change leaves behind.
 
-A finding is **blocking** when the pull request must not merge with it (a bug, a security hole, a broken guardrail, a
-missing demanded test); everything else is a **suggestion**. The result says which is which.
+Every finding carries a severity of 1 to 5 on the scale of the step's prompt (5 security, 4 bug or unmet requirement,
+3 guardrail violation or missing demanded test, 2 duplication, leftover or scope, 1 style); Hunt sends back to implement
+only the findings at or above the repository's `minSeverity` (`swf.steps.review.minSeverity` of hunt.json, 3 without
+it), the others stay in the result as suggestions.
 
 ## This repository
 

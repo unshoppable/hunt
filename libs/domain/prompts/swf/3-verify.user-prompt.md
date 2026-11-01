@@ -17,10 +17,17 @@ you judge.
 
 The review step that follows reads the diff as a reviewer; here, judge whether the change does what the issue asks. Do
 not fix anything in this step. Write the step result to `.hunt/swf/result.md`: a table of the acceptance criteria,
-how each was checked and whether it passed, the checks you ran with their outcome, and the findings, ending with
-`<!-- hunt:step {"step":"verify","findings":["<finding>", "…"]} -->` — an empty list when everything passed. Each
-finding is one sentence that says what is wrong and where, so that the implement step can fix it.
+how each was checked and whether it passed, the checks you ran with their outcome, and the findings, each with its
+severity, ending with
+`<!-- hunt:step {"step":"verify","findings":[{"text":"<what is wrong and where>","severity":<1-5>}, "…"]} -->` — an
+empty list when everything passed. Each finding's text is one sentence that says what is wrong and where, so that the
+implement step can fix it; its severity is a whole number: 5 for a security issue, a loss of data or a broken build, 4
+for an acceptance criterion the change does not meet or a bug you hit on the way, 3 for a check of hunt.json that fails
+or a guardrail the change violates, 2 for a leftover or a change beyond the plan, 1 for a flaw in wording or style. A
+criterion you cannot check is no finding: report it as unchecked, with the reason. Hunt sends back to implement only the
+findings at or above the repository's `minSeverity` for this step (`swf.steps.verify.minSeverity` of hunt.json, 3
+without it); the others stay in this result as suggestions for the people and the pull request.
 
 The issue is labelled `{{stepLabel}}` while you work on this step. A question goes as "Questions to the people" says,
-with `{{relabelQuestion}} --title "❓ RÜCKFRAGE: <title>"` and `{{relabelResume}} --title "<title>"`; to give up, run
+with `{{relabelQuestion}} --title "{{questionPrefix}}: <title>"` and `{{relabelResume}} --title "<title>"`; to give up, run
 `{{relabelFailed}}` and say why.

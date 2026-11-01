@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type * as z from "zod/mini";
-import type { ParsedStepResult, StepResult } from "./step-result.utils.ts";
+import type { Finding, ParsedStepResult, StepResult } from "./step-result.utils.ts";
 import { AGENT_STEPS, POLLER_STEPS, type SwfStep } from "./swf-step.types.ts";
 import { Pipeline, RECORD_VERSION, stepSettings, type PullRequestReview, type Run } from "./pipeline.domain.ts";
 import { DEFAULT_MAX_GATE_RUNS, DEFAULT_MAX_RETURNS } from "./step-settings.value-object.ts";
@@ -29,6 +29,11 @@ function runOf(n: number, step: SwfStep, fields: Partial<Run> = {}): Run {
 /** `result` as `parseStepResult` reports a usable one. */
 function reported(result: StepResult): ParsedStepResult {
   return { result };
+}
+
+/** `texts` as findings written as plain strings, which carry no severity. */
+function unscored(...texts: string[]): Finding[] {
+  return texts.map((text) => ({ text, severity: null }));
 }
 
 /** The pipeline of the record comment `body`; undefined when the comment holds none. */
@@ -174,7 +179,7 @@ describe("the runs of the pipeline", () => {
 
   it("logs one run per step, ends a run as passed when the step's result moves the pipeline on, and starts the next", () => {
     const pipeline = started(NOW);
-    pipeline.acceptResult(reported({ step: "plan" }), 11, LATER);
+    pipeline.acceptResult(reported({ step: "plan", branch: "feat/general/12-fix-login" }), 11, LATER);
     expect(pipeline.runs).toEqual([runOf(1, "plan", { ...ENDED, outcome: "passed" }), { ...runOf(2, "implement"), startedAt: "2026-10-25T10:05:00.000Z" }]);
     expect(pipeline.currentRun).toEqual(pipeline.runs[1]);
     expect(pipeline.lastEndedRun).toEqual(pipeline.runs[0]);
@@ -182,7 +187,7 @@ describe("the runs of the pipeline", () => {
 
   it("ends a run that sends the issue back as returned with the number of findings, and names it as the cause of the implement run", () => {
     const pipeline = pipelineAt("verify", { runs: [runOf(1, "plan", { ...ENDED, outcome: "passed" }), runOf(2, "implement", { ...ENDED, outcome: "passed" }), runOf(3, "verify")] });
-    pipeline.acceptResult(reported({ step: "verify", findings: ["a", "b"] }), 20, LATER);
+    pipeline.acceptResult(reported({ step: "verify", findings: unscored("a", "b") }), 20, LATER);
     expect(pipeline.runs.slice(2)).toEqual([runOf(3, "verify", { ...ENDED, outcome: "returned", findings: 2 }), { ...runOf(4, "implement", { cause: 3 }), startedAt: "2026-10-25T10:05:00.000Z" }]);
     const checks = pipelineAt("checks", { pullRequest: 31, runs: [runOf(1, "checks")] });
     checks.sendBackToImplement(["Checks: build failed"], LATER);
@@ -285,7 +290,7 @@ describe("Pipeline queries", () => {
     const pipeline = started(NOW, settings);
     expect(pipeline.skillOf("plan")).toBe("acme-plan");
     expect(pipeline.skillOf("review")).toBe("swf-review");
-    expect(pipeline.settingsOf("plan")).toEqual({ skill: "acme-plan", model: "claude-opus-5-5", effort: "max", maxReturns: null, gate: [] });
+    expect(pipeline.settingsOf("plan")).toEqual({ skill: "acme-plan", model: "claude-opus-5-5", effort: "max", maxReturns: null, minSeverity: null, gate: [] });
     expect(pipeline.configOptionsOf("plan")).toEqual({ model: "claude-opus-5-5", effort: "max" });
     expect(pipeline.configOptionsOf("review")).toEqual({ effort: "low" });
     expect(pipeline.configOptionsOf("pr")).toEqual({});
@@ -338,10 +343,19 @@ describe("Pipeline queries", () => {
 });
 
 describe("Pipeline.acceptResult", () => {
+  it("takes the branch the plan step created, which the poller started the pipeline without", () => {
+    const pipeline = Pipeline.start({ ...ISSUE, branch: "" }, SETTINGS, NOW);
+    expect(pipeline.branch).toBe("");
+    pipeline.acceptResult(reported({ step: "plan", branch: "fix/general/12-login" }), 11, NOW);
+    expect(pipeline.branch).toBe("fix/general/12-login");
+    expect(pipeline.step).toBe("implement");
+  });
+
   it("walks plan → implement → verify → review → pr → checks and records the result's comment id", () => {
     const pipeline = pipelineAt("plan", { promptTurn: 5, reminded: true, returns: { verify: 3 }, gateRuns: 2, findings: ["old"], escalate: true });
-    pipeline.acceptResult(reported({ step: "plan" }), 11, NOW);
+    pipeline.acceptResult(reported({ step: "plan", branch: "feat/general/12-fix-login" }), 11, NOW);
     expect(pipeline).toMatchObject({ step: "implement", lastResultId: 11, promptTurn: null, reminded: false, returns: {}, gateRuns: 0, findings: [], escalate: false });
+    expect(pipeline.branch).toBe("feat/general/12-fix-login");
     pipeline.acceptResult(reported({ step: "implement", summary: "done" }), 12, NOW);
     expect(pipeline.step).toBe("verify");
     pipeline.acceptResult(reported({ step: "verify", findings: [] }), 13, NOW);
@@ -352,19 +366,53 @@ describe("Pipeline.acceptResult", () => {
     expect(pipeline).toMatchObject({ step: "checks", pullRequest: 42, lastResultId: 15 });
   });
 
-  it("sends verify findings back to implement, prefixed, and counts the return of verify", () => {
+  it("sends unscored verify findings back to implement, prefixed, and counts the return of verify", () => {
     const pipeline = pipelineAt("verify");
-    pipeline.acceptResult(reported({ step: "verify", findings: ["button missing", "test fails"] }), 20, NOW);
+    pipeline.acceptResult(reported({ step: "verify", findings: unscored("button missing", "test fails") }), 20, NOW);
     expect(pipeline).toMatchObject({ step: "implement", returns: { verify: 1 }, escalate: false, lastResultId: 20 });
     expect(pipeline.findings).toEqual(["Verify: button missing", "Verify: test fails"]);
   });
 
   it("sends the review step's findings back to implement, prefixed, and counts the return of review", () => {
     const pipeline = pipelineAt("review", { pullRequest: 42, returns: { review: 1, verify: 4 } });
-    pipeline.acceptResult(reported({ step: "review", findings: ["no test covers the new rule", "debug output left in api.ts"] }), 21, NOW);
+    pipeline.acceptResult(reported({ step: "review", findings: unscored("no test covers the new rule", "debug output left in api.ts") }), 21, NOW);
     expect(pipeline).toMatchObject({ step: "implement", returns: { review: 2, verify: 4 }, escalate: false, pullRequest: 42, lastResultId: 21 });
     expect(pipeline.findings).toEqual(["Review: no test covers the new rule", "Review: debug output left in api.ts"]);
     expect(pipeline.runs.map((run) => [run.step, run.outcome, run.findings])).toEqual([["review", "returned", 2], ["implement", "running", undefined]]);
+  });
+
+  it("sends back only the findings at or above the step's minSeverity, gravest first, with their severity, and counts only those", () => {
+    const pipeline = pipelineAt("review", { pullRequest: 42 });
+    const findings = [
+      { text: "naming of the helper", severity: 1 },
+      { text: "duplicates formatDate", severity: 2 },
+      { text: "no test for the new rule", severity: 3 },
+      { text: "token logged", severity: 5 },
+      { text: "api.ts: unscored", severity: null },
+      { text: "null date crashes", severity: 4 },
+    ];
+    pipeline.acceptResult(reported({ step: "review", findings }), 21, NOW);
+    expect(pipeline).toMatchObject({ step: "implement", returns: { review: 1 }, pullRequest: 42 });
+    expect(pipeline.findings).toEqual(["Review: api.ts: unscored", "Review (severity 5): token logged", "Review (severity 4): null date crashes", "Review (severity 3): no test for the new rule"]);
+    expect(pipeline.runs[0]).toMatchObject({ step: "review", outcome: "returned", findings: 4 });
+  });
+
+  it("moves on when every finding is below the step's minSeverity, which the repository sets per step", () => {
+    const suggestions = [{ text: "naming", severity: 1 }, { text: "duplicates formatDate", severity: 2 }];
+    const verify = pipelineAt("verify");
+    verify.acceptResult(reported({ step: "verify", findings: suggestions }), 20, NOW);
+    expect(verify).toMatchObject({ step: "review", returns: {} });
+    expect(verify.runs[0]).toMatchObject({ step: "verify", outcome: "passed" });
+    expect(verify.runs[0].findings).toBeUndefined();
+    const strict = pipelineAt("review", { settings: settingsWith({ review: { minSeverity: 4 } }) });
+    strict.acceptResult(reported({ step: "review", findings: [...suggestions, { text: "no test", severity: 3 }] }), 21, NOW);
+    expect(strict).toMatchObject({ step: "pr", returns: {} });
+    const lenient = pipelineAt("review", { settings: settingsWith({ review: { minSeverity: 1 } }) });
+    lenient.acceptResult(reported({ step: "review", findings: suggestions }), 21, NOW);
+    expect(lenient.findings).toEqual(["Review (severity 2): duplicates formatDate", "Review (severity 1): naming"]);
+    const unset = pipelineAt("verify", { settings: settingsWith({ verify: { minSeverity: null } }) });
+    unset.acceptResult(reported({ step: "verify", findings: [{ text: "no test", severity: 3 }, { text: "nit", severity: 2 }] }), 20, NOW);
+    expect(unset.findings).toEqual(["Verify (severity 3): no test"]);
   });
 
   it("skips the pr step when the pull request exists", () => {
@@ -375,8 +423,8 @@ describe("Pipeline.acceptResult", () => {
 
   it("refuses a result for another step than the current one and changes nothing", () => {
     const pipeline = pipelineAt("verify", { lastResultId: 3 });
-    expect(() => pipeline.acceptResult(reported({ step: "plan" }), 22, NOW)).toThrow(UnusableStepResult);
-    expect(() => pipeline.acceptResult(reported({ step: "plan" }), 22, NOW)).toThrow("the result reports step plan, but the current step is verify");
+    expect(() => pipeline.acceptResult(reported({ step: "plan", branch: "feat/general/12-fix-login" }), 22, NOW)).toThrow(UnusableStepResult);
+    expect(() => pipeline.acceptResult(reported({ step: "plan", branch: "feat/general/12-fix-login" }), 22, NOW)).toThrow("the result reports step plan, but the current step is verify");
     expect(pipeline.toJSON()).toEqual(pipelineAt("verify", { lastResultId: 3 }).toJSON());
   });
 
@@ -554,7 +602,7 @@ describe("Pipeline.sendBackToImplement", () => {
 });
 
 describe("Pipeline.passChecks", () => {
-  it("goes on from passed checks with the scorer's approval to merge", () => {
+  it("goes on from passed checks with the review workflow's approval to merge", () => {
     const pipeline = pipelineAt("checks", { pullRequest: 31, inReview: true });
     pipeline.passChecks(NOW);
     expect(pipeline).toMatchObject({ step: "merge", pullRequest: 31, inReview: true });
@@ -567,7 +615,7 @@ describe("Pipeline.passChecks", () => {
 });
 
 describe("Pipeline.requireHumanReview", () => {
-  it("goes on to human-review from checks the scorer did not approve, or from a merge the scorer withdrew its approval from", () => {
+  it("goes on to human-review from checks the review workflow did not approve, or from a merge the workflow withdrew its approval from", () => {
     const checks = pipelineAt("checks", { pullRequest: 31 });
     checks.requireHumanReview(NOW);
     expect(checks).toMatchObject({ step: "human-review", pullRequest: 31 });

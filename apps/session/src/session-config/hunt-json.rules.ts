@@ -7,7 +7,8 @@
 import * as z from "zod/mini";
 import { REMOTE_SECRET_NAME } from "../../../../libs/domain/src/remote-secrets/remote-secret.value-object.ts";
 import { ZodSingleLine } from "../../../../libs/domain/src/shared/text.rules.ts";
-import { EFFORTS } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
+import { MAX_SEVERITY, MIN_SEVERITY } from "../../../../libs/domain/src/swf/step-result.utils.ts";
+import { EFFORTS, MERGE_METHODS } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
 
 /** Ports no service may use, with what holds them on the session VM; hunt-ctl's RESERVED_PORTS lists the same. */
 export const RESERVED_PORTS: ReadonlyMap<number, string> = new Map([
@@ -66,7 +67,13 @@ const SKILL_NAME_RULE = `must be the kebab-case name of a skill such as "guardra
 const EFFORT_RULE = `must be one of ${EFFORTS.join(", ")}`;
 const MAX_RETURNS = 20;
 const MAX_RETURNS_RULE = `must be an integer from 1 to ${MAX_RETURNS}`;
+const MIN_SEVERITY_RULE = `must be an integer from ${MIN_SEVERITY} to ${MAX_SEVERITY}`;
 const MAX_GATE_RUNS_RULE = "must be an integer of at least 1";
+const MAX_QUESTION_PREFIX_LENGTH = 40;
+const QUESTION_PREFIX_RULE = `must be one non-empty line of at most ${MAX_QUESTION_PREFIX_LENGTH} characters that does not end with a colon`;
+const MAX_PROJECT_STATUS_LENGTH = 60;
+const PROJECT_STATUS_RULE = `must be one non-empty line of at most ${MAX_PROJECT_STATUS_LENGTH} characters, the name of a Status option of the GitHub Project`;
+const MERGE_METHOD_RULE = `must be one of ${MERGE_METHODS.join(", ")}`;
 const MAX_GATE_CHECKS = 32;
 const GATE_RULE = `must be "*" for every check or a list of at most ${MAX_GATE_CHECKS} names of checks`;
 
@@ -166,6 +173,24 @@ export const ZodEffort = z.enum(EFFORTS, { error: EFFORT_RULE });
 export const ZodMaxReturns = z.number({ error: MAX_RETURNS_RULE }).check(
   z.refine((count) => Number.isInteger(count) && count >= 1 && count <= MAX_RETURNS, MAX_RETURNS_RULE),
 );
+
+/** `swf.steps.<verify|review>.minSeverity`: the severity from which a finding sends the pipeline back, an integer from 1 to 5. */
+export const ZodMinSeverity = z.number({ error: MIN_SEVERITY_RULE }).check(
+  z.refine((severity) => Number.isInteger(severity) && severity >= MIN_SEVERITY && severity <= MAX_SEVERITY, MIN_SEVERITY_RULE),
+);
+
+/** `swf.questionPrefix`: the prefix of the title of an issue with an open question, one line of at most 40 characters without a trailing colon. */
+export const ZodQuestionPrefix = z.string({ error: QUESTION_PREFIX_RULE }).check(
+  z.refine((prefix) => prefix.trim() !== "" && !/[\r\n]/.test(prefix) && prefix.length <= MAX_QUESTION_PREFIX_LENGTH && !prefix.trimEnd().endsWith(":"), QUESTION_PREFIX_RULE),
+);
+
+/** A value of `swf.projectStatus`: the name of a Status option of a GitHub Project, one line of at most 60 characters. */
+export const ZodProjectStatusName = z.string({ error: PROJECT_STATUS_RULE }).check(
+  z.refine((name) => name.trim() !== "" && !/[\r\n]/.test(name) && name.length <= MAX_PROJECT_STATUS_LENGTH, PROJECT_STATUS_RULE),
+);
+
+/** `swf.mergeMethod`: how the poller merges the pull request, one of MERGE_METHODS. */
+export const ZodMergeMethod = z.enum(MERGE_METHODS, { error: MERGE_METHOD_RULE });
 
 /** `swf.maxGateRuns`: how often a step's result may fail its gate, an integer of at least 1. */
 export const ZodMaxGateRuns = z.number({ error: MAX_GATE_RUNS_RULE }).check(z.refine((count) => Number.isInteger(count) && count >= 1, MAX_GATE_RUNS_RULE));

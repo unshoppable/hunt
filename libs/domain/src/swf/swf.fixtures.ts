@@ -1,22 +1,23 @@
 /** Test doubles the tests of the swf slice share. Imported by tests only. */
 import { Pipeline, type SwfIssue } from "./pipeline.domain.ts";
-import { DEFAULT_MAX_GATE_RUNS, DEFAULT_MAX_RETURNS, isReturningStep, StepSettings, type StepSetting } from "./step-settings.value-object.ts";
+import { DEFAULT_MAX_GATE_RUNS, DEFAULT_MAX_RETURNS, DEFAULT_MIN_SEVERITY, isReturningStep, isScoringStep, StepSettings, type StepSetting } from "./step-settings.value-object.ts";
 import { isAgentStep, SWF_STEPS, type AgentStep, type SwfStep } from "./swf-step.types.ts";
 
 /** The skill of every agent step as a repository names them under `swf.steps.<step>.skill` of its hunt.json, here `swf-<step>`. */
 export const SKILLS: Record<AgentStep, string> = { plan: "swf-plan", implement: "swf-implement", verify: "swf-verify", review: "swf-review", pr: "swf-pr" };
 /** The gate of implement in SETTINGS: the checks `lint` and `test` of hunt.json. */
 export const IMPLEMENT_GATE = ["lint", "test"];
-/** The issue acme/app#12 on the branch the poller derives from its title "Issue 12". */
+/** The issue acme/app#12 with the branch its plan step reported (the poller starts a pipeline with an empty branch). */
 export const ISSUE: SwfIssue = { repo: "acme/app", number: 12, branch: "feat/general/12-issue-12" };
 
-/** The settings of `step` in SETTINGS: its skill of SKILLS, Claude Code's model and effort, Hunt's limit of returns and IMPLEMENT_GATE for implement. */
+/** The settings of `step` in SETTINGS: its skill of SKILLS, Claude Code's model and effort, Hunt's limit of returns and minSeverity, and IMPLEMENT_GATE for implement. */
 function defaultSetting(step: SwfStep): StepSetting {
   return {
     skill: isAgentStep(step) ? SKILLS[step] : null,
     model: null,
     effort: null,
     maxReturns: isReturningStep(step) ? DEFAULT_MAX_RETURNS[step] : null,
+    minSeverity: isScoringStep(step) ? DEFAULT_MIN_SEVERITY : null,
     gate: step === "implement" ? IMPLEMENT_GATE : [],
   };
 }

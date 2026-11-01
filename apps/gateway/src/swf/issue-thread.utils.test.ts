@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Issue, IssueComment } from "./github.client.ts";
 import { mentionsOf, newAnswers, resultsOfRuns } from "./issue-thread.utils.ts";
 import type { Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
-import { started } from "../../../../libs/domain/src/swf/swf.fixtures.ts";
+import { ISSUE, started } from "../../../../libs/domain/src/swf/swf.fixtures.ts";
 
 /** The poller's clock in the tests: 2026-10-25 10:00 UTC. */
 const NOW = Date.UTC(2026, 9, 25, 10, 0, 0);
@@ -39,7 +39,11 @@ describe("resultsOfRuns", () => {
   const bot = "hunt-claude[bot]";
   const at = "2026-10-25T10:00:00.000Z";
   const run = (n: number, step: Run["step"], outcome: Run["outcome"]): Run => ({ n, step, startedAt: at, endedAt: outcome === "running" ? null : at, outcome });
-  const result = (id: number, step: string, text: string, author = bot): IssueComment => ({ id, author, createdAt: at, body: `${text}\n\n<!-- hunt:step {"step":"${step}"} -->\n` });
+  /** A result comment of `step`; a plan result names the branch the step created. */
+  const result = (id: number, step: string, text: string, author = bot): IssueComment => {
+    const fields = step === "plan" ? `,"branch":"${ISSUE.branch}"` : "";
+    return { id, author, createdAt: at, body: `${text}\n\n<!-- hunt:step {"step":"${step}"${fields}} -->\n` };
+  };
 
   it("pairs the runs that ended with a result with the bot's usable result comments in order, skipping the runs without one", () => {
     const thread = [

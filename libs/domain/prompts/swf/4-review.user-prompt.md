@@ -13,9 +13,23 @@ cases, is it secure, does every line follow the guardrails, does it carry the te
 duplicate what the repository has, is anything left over (debugging output, commented-out code, scratch files, TODOs),
 does it go beyond the plan? Do not fix anything in this step.
 
-Write the step result to `.hunt/swf/result.md`: a few lines on what you reviewed and the findings, ending with
-`<!-- hunt:step {"step":"review","findings":["<finding>", "…"]} -->` — an empty list when the change is clean. Each
-finding is one sentence that names the file and what is wrong there, so that the implement step can fix it. A finding
-that blocks the merge is always listed; a suggestion only when the implement step can act on it.
+Write the step result to `.hunt/swf/result.md`: a few lines on what you reviewed and the findings, each with its
+severity, ending with
+`<!-- hunt:step {"step":"review","findings":[{"text":"<file>: <what is wrong>","severity":<1-5>}, "…"]} -->` — an empty
+list when the change is clean. Each finding's text is one sentence that names the file and what is wrong there, so that
+the implement step can fix it; its severity is a whole number of this scale:
+
+| severity | the finding is |
+| --- | --- |
+| 5 | a security issue, a loss of data, a broken build or deployment |
+| 4 | a bug, or a requirement of the issue the change does not meet |
+| 3 | a violation of a repository guardrail, or a test the guardrails demand but the change lacks |
+| 2 | duplication of what the repository has, a leftover (debugging output, commented-out code, scratch file, TODO), a change beyond the plan |
+| 1 | style, naming, wording, a nicer way to do it |
+
+List every finding you would raise as a reviewer. Hunt sends back to implement only the findings at or above the
+repository's `minSeverity` for this step (`swf.steps.review.minSeverity` of hunt.json, 3 without it); the others stay in
+this result as suggestions for the people and the pull request. The repository's skill may say how its review criteria
+map onto the scale; without it, use the table.
 
 The issue is labelled `{{stepLabel}}` while you work on this step; to give up, run `{{relabelFailed}}` and say why.

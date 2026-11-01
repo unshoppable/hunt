@@ -1,6 +1,6 @@
 For issue #{{number}} of {{repo}}, {{causeStep}} sent the change back to `implement` more than {{maxReturns}} times.
 Do not try again on your own: ask the people how to go on, as "Questions to the people" says, with
-`{{relabelQuestion}} --title "❓ RÜCKFRAGE: <title>"` to mark the issue. Your question names the findings that keep
+`{{relabelQuestion}} --title "{{questionPrefix}}: <title>"` to mark the issue. Your question names the findings that keep
 coming back, what was tried (the plan and the results of the earlier runs are in `.hunt/swf/steps/`, the changes in the
 branch's commits) and the options you see with your recommendation.
 

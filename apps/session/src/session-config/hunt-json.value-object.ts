@@ -61,8 +61,9 @@
  *   default. Hunt copies the matching files of the repository's checkout into every worktree it creates and takes them
  *   along to the session VM; the VM only validates the list.
  * - `swf`: optional, the settings of the poller's sessions, with the fields `model`, `effort`, `maxGateRuns`,
- *   `humanReviewPaths`, `steps` and `skills`; a repository without it takes no part in the poller's workflow, and none
- *   of its rules applies. `swf-settings.value-object.ts` resolves the defaults:
+ *   `questionPrefix`, `projectStatus`, `mergeMethod`, `humanReviewPaths`, `steps` and `skills`; a repository without it
+ *   takes no part in the poller's workflow, and none of its rules applies. `swf-settings.value-object.ts` resolves the
+ *   defaults:
  *   - `model`: the model of every agent step that sets none: the full ID of a Claude model such as `claude-opus-5-5`
  *     (ZodModelId), at most 128 characters, never an alias such as `opus`, whose model changes with Claude Code's
  *     releases. The poller sets it as the session's `model` config option; without it, or when the agent knows no such
@@ -72,12 +73,22 @@
  *     config option; Claude Code's default without it.
  *   - `maxGateRuns`: how often a step's result may fail its gate before the agent escalates, an integer of at least 1;
  *     DEFAULT_MAX_GATE_RUNS without it.
+ *   - `questionPrefix`: what the agent puts in front of the issue's title while it waits for an answer to a question
+ *     (`<prefix>: <title>`) and in bold at the start of the question's comment: one line of at most 40 characters that
+ *     does not end with a colon; DEFAULT_QUESTION_PREFIX (`❓ RÜCKFRAGE`) without it.
+ *   - `projectStatus`: the names of the Status options the poller sets on the issue in every GitHub Project (v2) it is
+ *     an item of, each one line of at most 60 characters, matched regardless of case: `inProgress` once the issue is
+ *     claimed, `inReview` once its pull request waits for its checks, `done` once it is merged. All three or none;
+ *     DEFAULT_PROJECT_STATUS (`In Progress`, `In Review`, `Done`) without it.
+ *   - `mergeMethod`: how the poller merges the pull request, `squash`, `merge` or `rebase` (MERGE_METHODS);
+ *     DEFAULT_MERGE_METHOD (`squash`) without it.
  *   - `humanReviewPaths`: glob patterns that follow the rules of `worktreeInclude`: the files whose change makes a pull
- *     request of a poller session need a human reviewer. Hunt does not read them; the repository's scorer workflow
+ *     request of a poller session need a human reviewer. Hunt does not read them; the repository's review workflow
  *     does, from hunt.json. None by default; the VM only validates the list.
  *   - `steps`: the settings of each step (SWF_STEPS), each optional: an agent step (`plan`, `implement`, `verify`,
  *     `review`, `pr`) takes `skill`, `model`, `effort` and `gate`, a step that sends the pipeline back (`verify`,
- *     `review`, `checks`, `human-review`, `merge`; RETURNING_STEPS) `maxReturns`; any other field of a step is a problem.
+ *     `review`, `checks`, `human-review`, `merge`; RETURNING_STEPS) `maxReturns`, a step whose findings carry a
+ *     severity (`verify`, `review`; SCORING_STEPS) `minSeverity`; any other field of a step is a problem.
  *     - `skill`: the Claude Code skill (`.claude/skills/<name>/SKILL.md`, a name like `guardrailSkill`) with which the
  *       repository refines the step: its prompt tells the agent to invoke the skill first. Every agent step must have
  *       one, here or in `skills`; Hunt has no default, so a step without one is a problem, which the client's dialog on
@@ -86,6 +97,9 @@
  *     - `model`, `effort`: the step's own, which follow the rules of the section's and win over them.
  *     - `maxReturns`: how often the step may send the pipeline back to implement before the agent escalates, an
  *       integer from 1 to 20; DEFAULT_MAX_RETURNS without it.
+ *     - `minSeverity`: the severity (1 to 5, the scale of the step's prompt) from which a finding of the step sends the
+ *       pipeline back to implement; a finding below it stays in the step result as a suggestion. DEFAULT_MIN_SEVERITY
+ *       (3) without it.
  *     - `gate`: the checks of hunt.json that must pass before the step's result is accepted: `"*"` for every check, or
  *       a list of at most 32 names of checks (`[]` for none), run in the order of `checks`. Without it, every check for
  *       the steps of GATED_BY_DEFAULT (`implement`) and none for the others.
@@ -121,7 +135,7 @@
 import * as z from "zod/mini";
 import { ValueObject } from "../../../../libs/domain/src/model/value-object.model.ts";
 import { isRecord } from "../../../../libs/domain/src/shared/json-rpc.utils.ts";
-import { isReturningStep, type StepSettings } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
+import { isReturningStep, isScoringStep, type ProjectStatus, type StepSettings } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
 import { AGENT_STEPS, isAgentStep, SWF_STEPS, type AgentStep, type SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
 import { CheckConfig } from "./check-config.value-object.ts";
 import { ConfigError } from "./config.error.ts";
@@ -137,8 +151,12 @@ import {
   ZodGlobPatterns,
   ZodMaxGateRuns,
   ZodMaxReturns,
+  ZodMergeMethod,
+  ZodMinSeverity,
   ZodModelId,
   ZodNoContract2Placeholders,
+  ZodProjectStatusName,
+  ZodQuestionPrefix,
   ZodRemoteSecretReference,
   ZodServiceName,
   ZodServicePlaceholder,
@@ -152,8 +170,9 @@ import { ServiceConfig } from "./service-config.value-object.ts";
 import { SwfSettings } from "./swf-settings.value-object.ts";
 
 const ROOT_FIELDS = ["version", "adrDir", "guardrailSkill", "declinedGuardrailsFile", "swf", "services", "checks"];
-const SWF_FIELDS = ["model", "effort", "maxGateRuns", "humanReviewPaths", "steps", "skills"];
-const STEP_FIELDS = ["skill", "model", "effort", "maxReturns", "gate"];
+const SWF_FIELDS = ["model", "effort", "maxGateRuns", "questionPrefix", "projectStatus", "mergeMethod", "humanReviewPaths", "steps", "skills"];
+const PROJECT_STATUS_FIELDS = ["inProgress", "inReview", "done"];
+const STEP_FIELDS = ["skill", "model", "effort", "maxReturns", "minSeverity", "gate"];
 const SERVICE_FIELDS = ["command", "cwd", "port", "tls", "guarded", "review", "env", "remoteSecrets", "worktreeInclude"];
 const CHECK_FIELDS = ["command", "cwd"];
 const MAX_SERVICES = 64;
@@ -165,6 +184,7 @@ const CONTRACT_2_PROBLEM = 'the preview section of contract 2 is no longer read;
 const SKILLS_RULE = `must name the skill of every agent step (${AGENT_STEPS.join(", ")}); Hunt asks to add them when a session of the repository opens`;
 const STEP_SKILL_RULE = "must name the skill of the step; Hunt asks to add it when a session of the repository opens";
 const MAX_RETURNS_STEP_RULE = "only a step that sends the pipeline back has maxReturns (verify, review, checks, human-review, merge)";
+const MIN_SEVERITY_STEP_RULE = "only a step whose findings carry a severity has minSeverity (verify, review)";
 
 const ZodHuntJsonState = z
   .object({
@@ -293,7 +313,10 @@ function parseSwf(value: unknown, checkNames: ReadonlySet<string>, problems: Pro
   const model = parseOptionalField(ZodModelId, fields.model, at("swf", "model"), problems);
   const effort = parseOptionalField(ZodEffort, fields.effort, at("swf", "effort"), problems);
   const maxGateRuns = parseOptionalField(ZodMaxGateRuns, fields.maxGateRuns, at("swf", "maxGateRuns"), problems);
-  // Validated only: the repository's scorer workflow reads the paths, Hunt does not.
+  const questionPrefix = parseOptionalField(ZodQuestionPrefix, fields.questionPrefix, at("swf", "questionPrefix"), problems);
+  const projectStatus = parseProjectStatus(fields.projectStatus, problems);
+  const mergeMethod = parseOptionalField(ZodMergeMethod, fields.mergeMethod, at("swf", "mergeMethod"), problems);
+  // Validated only: the repository's review workflow reads the paths, Hunt does not.
   parseOptionalField(ZodGlobPatterns, fields.humanReviewPaths, at("swf", "humanReviewPaths"), problems);
   const steps = parseSteps(fields.steps, checkNames, problems);
   const aliases = parseSkillAliases(fields.skills, problems);
@@ -302,7 +325,23 @@ function parseSwf(value: unknown, checkNames: ReadonlySet<string>, problems: Pro
   } else {
     mergeSkills(fields, steps, aliases, problems);
   }
-  return { model, effort, maxGateRuns, steps };
+  return { model, effort, maxGateRuns, questionPrefix, projectStatus, mergeMethod, steps };
+}
+
+/**
+ * The optional `swf.projectStatus`: the names of the Status options of the issue's GitHub Projects, `inProgress`,
+ * `inReview` and `done`, every one of them given; undefined without the field or when it is no object or incomplete.
+ */
+function parseProjectStatus(value: unknown, problems: Problems): ProjectStatus | undefined {
+  if (value === undefined) return undefined;
+  const path = at("swf", "projectStatus");
+  const fields = record(value, path, PROJECT_STATUS_FIELDS, problems);
+  if (!fields) return undefined;
+  const inProgress = parseField(ZodProjectStatusName, fields.inProgress, at(path, "inProgress"), problems);
+  const inReview = parseField(ZodProjectStatusName, fields.inReview, at(path, "inReview"), problems);
+  const done = parseField(ZodProjectStatusName, fields.done, at(path, "done"), problems);
+  if (inProgress === undefined || inReview === undefined || done === undefined) return undefined;
+  return { inProgress, inReview, done };
 }
 
 /** The steps of `swf.steps` in the order of the steps, as far as they are objects; none when the section is missing or no object. */
@@ -322,7 +361,8 @@ function parseSteps(value: unknown, checkNames: ReadonlySet<string>, problems: P
 
 /**
  * The settings of `step` at `swf.steps.<step>`: `skill`, `model`, `effort` and `gate` belong to an agent step, `maxReturns`
- * to a returning step, and each name of the gate must be one of `checkNames`; undefined when the value is no object.
+ * to a returning step, `minSeverity` to a scoring step, and each name of the gate must be one of `checkNames`; undefined
+ * when the value is no object.
  */
 function parseStep(step: SwfStep, value: unknown, checkNames: ReadonlySet<string>, problems: Problems): StepDraft | undefined {
   const path = at(at("swf", "steps"), step);
@@ -340,12 +380,13 @@ function parseStep(step: SwfStep, value: unknown, checkNames: ReadonlySet<string
   const model = field(ZodModelId, "model", isAgent, "only an agent step has a model");
   const effort = field(ZodEffort, "effort", isAgent, "only an agent step has an effort");
   const maxReturns = field(ZodMaxReturns, "maxReturns", isReturningStep(step), MAX_RETURNS_STEP_RULE);
+  const minSeverity = field(ZodMinSeverity, "minSeverity", isScoringStep(step), MIN_SEVERITY_STEP_RULE);
   const gate = field(ZodGate, "gate", isAgent, "only an agent step has a gate");
   for (const name of Array.isArray(gate) ? gate : []) {
     if (checkNames.has(name)) continue;
     problems.add(at(path, "gate"), `no such check ${name}`);
   }
-  return { skill, model, effort, maxReturns, gate };
+  return { skill, model, effort, maxReturns, minSeverity, gate };
 }
 
 /** The usable skills of `swf.skills`, the alias of `swf.steps.<step>.skill`, by agent step; none when the map is missing or no object. */

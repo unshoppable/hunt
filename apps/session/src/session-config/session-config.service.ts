@@ -76,7 +76,7 @@ export interface SessionConfigResult {
   services?: ServiceSummary[];
   services_prompt?: string;
   agent_md?: string;
-  swf_steps?: Pick<StepSettings, "maxGateRuns" | "steps">;
+  swf_steps?: Pick<StepSettings, "maxGateRuns" | "questionPrefix" | "projectStatus" | "mergeMethod" | "steps">;
   command?: string;
   cwd?: string | null;
 }

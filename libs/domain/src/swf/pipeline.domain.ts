@@ -17,11 +17,13 @@
  * again gets a new entry; a run that sends the issue back to implement ends as `returned` and the implement run it causes
  * names it as its `cause`. The client draws the pipeline's graph from this list.
  *
- * The steps run plan → implement → verify → review → pr → checks → human-review (when the scorer did not approve) →
- * merge. The agent steps end with the review, a fresh conversation that judges the change by the repository's review
- * criteria. From checks on the poller watches the pull request: the repository's scorer workflow scores every pull
- * request and approves it as its own GitHub App when no person has to review, and the repository's ruleset requires
- * one approval, so a pull request whose checks passed without an approval waits for a person. Findings of verify, of
+ * The steps run plan → implement → verify → review → pr → checks → human-review (when the repository's review workflow
+ * did not approve) → merge. The plan step creates the session's branch by the repository's branch naming rules and
+ * reports it in its result (`branch` is empty until then). The agent steps end with the review, a fresh conversation
+ * that judges the change by the repository's review criteria. From checks on the poller watches the pull request: the
+ * repository's review workflow (such as a scoring GitHub Action) reviews every pull request and approves it as its own
+ * GitHub App when no person has to review, and the repository's ruleset requires one approval, so a pull request whose
+ * checks passed without an approval waits for a person. Findings of verify, of
  * the review, of the checks (a failing check) or of the merge (conflicts) send the issue back to implement, which then
  * runs verify and review again before the pull request is checked once more. Each returning step counts its returns
  * (`returns`) against its own limit (`maxReturns`); past it the implement step is an escalation, the agent asks the
@@ -35,8 +37,8 @@
 import * as z from "zod/mini";
 import { DomainModel } from "../model/domain.model.ts";
 import { isRecord } from "../shared/json-rpc.utils.ts";
-import type { ParsedStepResult } from "./step-result.utils.ts";
-import { isReturningStep, RETURNING_STEPS, StepSettings, type ReturningStep, type StepSetting } from "./step-settings.value-object.ts";
+import type { Finding, ParsedStepResult } from "./step-result.utils.ts";
+import { isReturningStep, RETURNING_STEPS, StepSettings, type ReturningStep, type ScoringStep, type StepSetting } from "./step-settings.value-object.ts";
 import { isAgentStep, SWF_STEPS, type AgentStep, type SwfStep } from "./swf-step.types.ts";
 import { UnusableStepResult } from "./unusable-step-result.error.ts";
 
@@ -88,7 +90,7 @@ const ZodPipelineState = z
   .object({
     /** The record's version, RECORD_VERSION or above; `fromComment` tells an older record apart before this schema sees it. */
     version: z.int().check(z.gte(RECORD_VERSION)),
-    /** The issue's repository as `<owner>/<repo>`, its number and the session's branch. */
+    /** The issue's repository as `<owner>/<repo>`, its number and the session's branch; the branch is empty until the plan step reported it. */
     repo: z.catch(z.string(), ""),
     issue: z.catch(z.int(), 0),
     branch: z.catch(z.string(), ""),
@@ -154,7 +156,7 @@ export interface PullRequestReview {
 
 export type HumanReviewOutcome = { kind: "wait" } | { kind: "approved"; by: string[] } | { kind: "changes"; review: PullRequestReview };
 
-/** The issue a pipeline works on: its repository as `<owner>/<repo>`, its number and the session's branch. */
+/** The issue a pipeline works on: its repository as `<owner>/<repo>`, its number and the session's branch (empty until the plan step named it). */
 export interface SwfIssue {
   repo: string;
   number: number;
@@ -348,8 +350,9 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
 
   /**
    * Moves the pipeline on with the step result the agent reported (`parseStepResult` of its text): plan → implement;
-   * implement → verify; verify → review, or back to implement with the findings; review → pr while the pull request does
-   * not exist yet, else checks, or back to implement with the findings; pr → checks. `resultId` is the id of the comment
+   * implement → verify; verify → review, or back to implement with the findings at or above the step's `minSeverity`
+   * (an unscored finding always returns; the others stay in the result as suggestions); review → pr while the pull
+   * request does not exist yet, else checks, or back to implement the same way; pr → checks. `resultId` is the id of the comment
    * that carries the result when the poller reads it from the issue, null for the result the runner reads from
    * `.hunt/swf/result.md`. Throws UnusableStepResult with the problem for a text without a usable result and for the
    * result of another step than the current one. `now` is the time in ms the step's run ends and the next one starts at.
@@ -367,6 +370,7 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
       this.lastResultId = resultId ?? this.lastResultId;
       switch (result.step) {
         case "plan":
+          this.branch = result.branch;
           this.moveTo("implement", now);
           this.returns = {};
           this.findings = [];
@@ -375,20 +379,24 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
         case "implement":
           this.moveTo("verify", now);
           break;
-        case "verify":
-          if (result.findings.length > 0) {
-            this.returnToImplement(result.findings.map((finding) => `Verify: ${finding}`), now);
+        case "verify": {
+          const returning = this.returningFindings("Verify", result.findings);
+          if (returning.length > 0) {
+            this.returnToImplement(returning, now);
           } else {
             this.moveTo("review", now);
           }
           break;
-        case "review":
-          if (result.findings.length > 0) {
-            this.returnToImplement(result.findings.map((finding) => `Review: ${finding}`), now);
+        }
+        case "review": {
+          const returning = this.returningFindings("Review", result.findings);
+          if (returning.length > 0) {
+            this.returnToImplement(returning, now);
           } else {
             this.moveTo(this.pullRequest === null ? "pr" : "checks", now);
           }
           break;
+        }
         case "pr":
           this.moveTo("checks", now);
           this.pullRequest = result.pullRequest;
@@ -469,15 +477,15 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     this.changeState(() => this.returnToImplement(findings, now));
   }
 
-  /** The pull request passed its checks and the scorer approved it: on to merge. */
+  /** The pull request passed its checks and the repository's review workflow approved it: on to merge. */
   passChecks(now: number): void {
     this.assertStep("checks", "passing the checks");
     this.changeState(() => this.moveTo("merge", now));
   }
 
   /**
-   * The pull request passed its checks, but the scorer did not approve it: a person has to review before the merge. From
-   * checks, or from merge when a branch update made the scorer withdraw its approval.
+   * The pull request passed its checks, but the repository's review workflow did not approve it: a person has to review
+   * before the merge. From checks, or from merge when a branch update made the workflow withdraw its approval.
    */
   requireHumanReview(now: number): void {
     if (this.step !== "checks" && this.step !== "merge") throw new Error(`a human review needs the step checks or merge, but the pipeline is at ${this.step}`);
@@ -573,6 +581,19 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     const ended: Run = { ...current, endedAt: isoOf(now), outcome };
     if (findings !== undefined) ended.findings = findings;
     this.runs = [...this.runs.slice(0, -1), ended];
+  }
+
+  /**
+   * The findings of the current scoring step that send the pipeline back, as the implement prompt lists them: those at
+   * or above the step's `minSeverity` and the unscored ones, the gravest first, each prefixed with `prefix` and its
+   * severity (`Review (severity 4): …`; `Review: …` for an unscored one). Empty when every finding is a suggestion.
+   */
+  private returningFindings(prefix: string, findings: Finding[]): string[] {
+    const minSeverity = this.settings.minSeverityOf(this.step as ScoringStep);
+    return findings
+      .filter((finding) => finding.severity === null || finding.severity >= minSeverity)
+      .sort((a, b) => (b.severity ?? Infinity) - (a.severity ?? Infinity))
+      .map((finding) => (finding.severity === null ? `${prefix}: ${finding.text}` : `${prefix} (severity ${finding.severity}): ${finding.text}`));
   }
 
   /** Enters implement to fix `findings` of the current step, which must be a returning one; see `sendBackToImplement`. */

@@ -196,10 +196,15 @@ Session VM:
   init <id> --repo <owner>/<repo>
                          create the session's empty repository /home/agent/<repo> (removing what an earlier handoff
                          left)
-  clone <id> --repo <owner>/<repo> --branch <branch> --git-name <name> --git-email <email>
+  clone <id> --repo <owner>/<repo> [--branch <branch>] --git-name <name> --git-email <email>
                          clone https://github.com/<owner>/<repo>.git into /home/agent/<repo> with the GitHub token on
                          stdin and check <branch> out: the origin's branch of that name, else a new one from the default
-                         branch; <name> and <email> become the Git identity (removes what an earlier session left)
+                         branch; without --branch, the default branch (the swf runner sets the branch once the plan
+                         step created it with set-branch); <name> and <email> become the Git identity (removes what an
+                         earlier session left)
+  set-branch <id> <branch>
+                         record <branch> as the session's branch in its metadata, the one snapshot and push act on;
+                         the swf runner runs it once the plan step created the branch in the worktree
   receive-pack <path>    git-receive-pack into the repository of the session at <path> (streams; for git push)
   upload-pack <path>     git-upload-pack from the repository of the session at <path> (streams; for git fetch)
   lfs-put <id>           unpack the tar.gz of Git LFS objects on stdin into the session's repository
@@ -223,8 +228,8 @@ Session VM:
                          /etc/hunt/caddy.json, and (re)start the proxy; stops and disables the services hunt.json no
                          longer declares; prints the services' section of the agent's prompt, the text of the
                          repository's hunt.agent.md and, with a swf section, the settings of every step of the swf
-                         pipeline with the defaults applied (swf_steps: skill, model, effort, maxReturns and gate of
-                         each step, and maxGateRuns)
+                         pipeline with the defaults applied (swf_steps: skill, model, effort, maxReturns, minSeverity
+                         and gate of each step, and maxGateRuns, questionPrefix, projectStatus and mergeMethod)
   check <worktree> <name>
                          run the check <name> of the hunt.json in the session's worktree <worktree> as the agent in a
                          login shell, in the worktree or the check's cwd, with FORCE_COLOR=1 and no stdin; passes its
@@ -836,6 +841,11 @@ require_line() {
   [[ -n $2 && $2 != *[$'\n\r']* ]] || die "invalid $1: expected one non-empty line"
 }
 
+# A branch name git accepts that no git command takes for an option.
+require_branch_name() {
+  { [[ $1 != -* ]] && git check-ref-format --branch "$1" >/dev/null 2>&1; } || die "invalid branch: $1"
+}
+
 # Whether session $1 is one the software factory's poller cloned (`clone` records the origin swf), whose agent steps the
 # swf runner drives.
 is_swf_session() {
@@ -1150,12 +1160,16 @@ cmd_clone() {
     shift 2
   done
   require_repository_key "$repo"
-  { [[ $branch != -* ]] && git check-ref-format --branch "$branch" >/dev/null 2>&1; } || die "invalid branch: $branch"
+  [[ -z $branch ]] || require_branch_name "$branch"
   require_line "git name" "$git_name"
   require_line "git email" "$git_email"
   read_github_token token
   _=$(current_hash)
-  log info "cloning $repo onto branch $branch"
+  if [[ -n $branch ]]; then
+    log info "cloning $repo onto branch $branch"
+  else
+    log info "cloning $repo onto its default branch"
+  fi
 
   destroy_session "$id"
   worktree=$AGENT_HOME/${repo#*/}
@@ -1163,7 +1177,8 @@ cmd_clone() {
   install -d -m 0700 "$SESSIONS" "$SESSIONS/$id"
   install -d -o "$AGENT" -g "$AGENT" -m 0755 "$worktree"
   write_agent_token token_dir "$token"
-  # LFS files are fetched once the branch is checked out, by `git lfs pull` with the same credentials.
+  # LFS files are fetched once the branch is checked out, by `git lfs pull` with the same credentials. Without a
+  # branch the worktree stays on the default branch, which the metadata then names.
   as_agent env GIT_TERMINAL_PROMPT=0 GIT_LFS_SKIP_SMUDGE=1 "HUNT_TOKEN_FILE=$token_dir/token" \
     "HUNT_CREDENTIAL_HELPER=$TOKEN_CREDENTIAL_HELPER" sh -c '
     set -e
@@ -1171,7 +1186,9 @@ cmd_clone() {
     with_token clone --quiet -- "$1" "$2"
     cd "$2"
     printf ".hunt/\n" >>.git/info/exclude
-    if git rev-parse --quiet --verify "refs/remotes/origin/$3^{commit}" >/dev/null; then
+    if [ -z "$3" ]; then
+      :
+    elif git rev-parse --quiet --verify "refs/remotes/origin/$3^{commit}" >/dev/null; then
       git checkout --quiet -B "$3" --track "origin/$3"
     else
       git checkout --quiet -b "$3"
@@ -1179,6 +1196,10 @@ cmd_clone() {
     git lfs install --local >/dev/null
     with_token lfs pull' sh "https://github.com/$repo.git" "$worktree" "$branch" || die "failed to clone https://github.com/$repo.git"
   rm -rf -- "$token_dir"
+  if [[ -z $branch ]]; then
+    branch=$(as_agent git -C "$worktree" rev-parse --abbrev-ref HEAD) || die "failed to read the default branch of $repo"
+    [[ -n $branch && $branch != HEAD ]] || die "the clone of $repo has no default branch checked out"
+  fi
 
   created_at=$(now_ms)
   jq -n --arg repo "$repo" --arg worktree "$worktree" --argjson createdAt "$created_at" --arg branch "$branch" \
@@ -1187,6 +1208,18 @@ cmd_clone() {
     >"$SESSIONS/$id/meta.json.tmp"
   mv -f "$SESSIONS/$id/meta.json.tmp" "$SESSIONS/$id/meta.json"
   emit --arg path "$worktree" '{path: $path}'
+}
+
+# Records the branch the worktree works on, for a session `clone` left on the default branch: the swf runner runs it
+# once the plan step created the branch, so that snapshot, push and the desktop's adoption see it.
+cmd_set_branch() {
+  (( $# == 2 )) || usage
+  local id=$1 branch=$2
+  require_id "$id"
+  require_branch_name "$branch"
+  require_prepared "$id"
+  update_meta "$id" '. + {branch: $branch}' --arg branch "$branch"
+  emit --arg branch "$branch" '{branch: $branch}'
 }
 
 # git push and git fetch from Hunt reach a session's repository only through these.
@@ -2100,7 +2133,7 @@ main() {
   role=$(read_role)
   case $command in
     install | install-units | version) ;;
-    install-tools | init | clone | receive-pack | upload-pack | lfs-put | lfs-get | put-files | put-remote-secrets | get-claude | \
+    install-tools | init | clone | set-branch | receive-pack | upload-pack | lfs-put | lfs-get | put-files | put-remote-secrets | get-claude | \
       prepare | deps | session-config | check | service | start | wait | stop | clear | snapshot | commit | push | github-token | status | preview-status | \
       swf-record | swf-inbox | destroy)
       [[ $role == session ]] || die "hunt-ctl $command runs on session VMs only; this VM is the gateway"
@@ -2167,6 +2200,7 @@ main() {
     version) cmd_version "$@" ;;
     init) cmd_init "$@" ;;
     clone) cmd_clone "$@" ;;
+    set-branch) cmd_set_branch "$@" ;;
     lfs-put) cmd_lfs_put "$@" ;;
     put-files) cmd_put_files "$@" ;;
     put-remote-secrets) cmd_put_remote_secrets "$@" ;;

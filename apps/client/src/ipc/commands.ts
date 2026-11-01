@@ -13,7 +13,7 @@ import type { Commit, CommitDetails, GitScope, LogQuery, RefList, ResetMode } fr
 import type { GraphStatus } from "../graph/graph.types";
 import type { SwfStepSkill } from "../guardrails/guardrail.types";
 import type { LintRules } from "../guardrails/lint-rules.types";
-import type { DocumentContentChange, DocumentEditAck, DocumentState } from "../ide/documents/documents.types";
+import type { DocumentContentChange, DocumentEditAck, DocumentSaveOutcome, DocumentState } from "../ide/documents/documents.types";
 import type { PrettierOutput } from "../ide/ide.types";
 import type { LanguageServerKind } from "../ide/lsp/lsp.types";
 import type { DirEntry } from "../ide/project-tree/project-tree.types";
@@ -379,7 +379,7 @@ export const commands = {
   documentEdit: (id: string, path: string, baseVersion: number, changes: DocumentContentChange[]) =>
     invoke<DocumentEditAck | null>("document_edit", { id, path, baseVersion, changes }),
   /** Writes the shared text to disk; resolves with whether edits made meanwhile keep it dirty. */
-  documentSave: (id: string, path: string) => invoke<boolean>("document_save", { id, path }),
+  documentSave: (id: string, path: string, force: boolean) => invoke<DocumentSaveOutcome>("document_save", { id, path, force }),
   /** Takes the content on disk over for every one of `paths` without unsaved edits. */
   documentReload: (id: string, paths: string[]) => invoke<void>("document_reload", { id, paths }),
   documentRevert: (id: string, path: string) => invoke<void>("document_revert", { id, path }),

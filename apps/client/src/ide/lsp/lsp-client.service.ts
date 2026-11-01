@@ -28,6 +28,8 @@ export class LspClient {
   private readonly templates = new Set<string>();
   /** Document updates of this window in flight; a request waits for them so the server sees the edits it refers to. */
   private queue: Promise<void> = Promise.resolve();
+  /** Request tokens are unique across windows and reloads, since the backend remembers a cancel that overtook its request. */
+  private readonly tokenPrefix = crypto.randomUUID();
   private nextToken = 1;
   private reportedMissing = false;
   /** Document symbols per URI, valid for the model version they were computed for. */
@@ -86,7 +88,7 @@ export class LspClient {
   async request<Result>(method: string, params: unknown, token?: monaco.CancellationToken, server: LanguageServerKind = "typescript"): Promise<Result> {
     await this.queue;
     if (token?.isCancellationRequested) throw new Error("cancelled");
-    const name = `${this.nextToken++}`;
+    const name = `${this.tokenPrefix}:${this.nextToken++}`;
     const subscription = token?.onCancellationRequested(() => void commands.lspCancel(this.sessionId, name, server).catch(() => {}));
     try {
       return (await commands.lspRequest(this.sessionId, method, params, name, server)) as Result;
@@ -168,7 +170,10 @@ export function onPushedDiagnostics(listener: (model: monaco.editor.ITextModel, 
 function subscribeToServerEvents(): void {
   if (eventsSubscribed) return;
   eventsSubscribed = true;
-  void listenTo("lsp:exited", ({ worktreePath }) => clients.get(worktreePath)?.handleExit());
+  void listenTo("lsp:exited", ({ worktreePath, reason }) => {
+    if (reason) console.warn(`the language server of ${worktreePath} crashed: ${reason}`);
+    clients.get(worktreePath)?.handleExit();
+  });
   void listenTo("lsp:diagnostics", ({ worktreePath, uri, diagnostics }) => {
     if (!clients.has(worktreePath)) return;
     const model = monaco.editor.getModel(monaco.Uri.parse(uri));

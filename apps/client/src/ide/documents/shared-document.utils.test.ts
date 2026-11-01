@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { minimalChange, remoteChangeAction, type TextReplacement } from "./shared-document.utils";
+import { minimalChange, overwriteQuestion, remoteChangeAction, type TextReplacement } from "./shared-document.utils";
 
 function apply(text: string, change: TextReplacement | null): string {
   return change ? text.slice(0, change.start) + change.text + text.slice(change.end) : text;
@@ -41,5 +41,15 @@ describe("minimalChange", () => {
     const crlf = minimalChange("a\r\nb", "a\nb");
     expect(crlf).toEqual({ start: 1, end: 3, text: "\n" });
     expect(apply("a\r\nb", crlf)).toBe("a\nb");
+  });
+});
+
+describe("overwriteQuestion", () => {
+  it("names one file", () => {
+    expect(overwriteQuestion(["src/a.ts"])).toBe("src/a.ts changed on disk since you edited it. Overwrite?");
+  });
+
+  it("counts several files and lists them", () => {
+    expect(overwriteQuestion(["src/a.ts", "src/b.ts"])).toBe("2 files changed on disk since you edited them. Overwrite?\n\nsrc/a.ts\nsrc/b.ts");
   });
 });

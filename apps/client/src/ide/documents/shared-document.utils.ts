@@ -1,4 +1,4 @@
-/** Pure helpers of the window replicas of shared documents (`documents.service.ts`, `src-tauri/src/ide/documents.rs`). */
+/** Pure helpers of the window replicas of shared documents (`documents.service.ts`, `src-tauri/src/ide/documents.rs`) and their saves. */
 
 /** What a replica does with a change that another window or the backend made. */
 export type RemoteChangeAction = "apply" | "ignore" | "resync";
@@ -11,6 +11,12 @@ export type RemoteChangeAction = "apply" | "ignore" | "resync";
 export function remoteChangeAction(version: number, isBusy: boolean, eventVersion: number): RemoteChangeAction {
   if (eventVersion <= version || isBusy) return "ignore";
   return eventVersion === version + 1 ? "apply" : "resync";
+}
+
+/** The question before a save overwrites `paths`, files that changed on disk since their unsaved edits were made. */
+export function overwriteQuestion(paths: readonly string[]): string {
+  if (paths.length === 1) return `${paths[0]} changed on disk since you edited it. Overwrite?`;
+  return `${paths.length} files changed on disk since you edited them. Overwrite?\n\n${paths.join("\n")}`;
 }
 
 /** A replacement of `oldText.slice(start, end)` by `text`. */

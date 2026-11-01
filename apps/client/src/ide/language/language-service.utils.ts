@@ -467,7 +467,7 @@ export async function applyRename(workspace: DocumentWorkspace, plan: RenamePlan
     file.model.pushEditOperations([], edits, () => null);
     file.model.pushStackElement();
   }
-  await Promise.all(files.filter((file) => !file.wasDirty).map((file) => workspace.save(file.path)));
+  await workspace.savePaths(files.filter((file) => !file.wasDirty).map((file) => file.path));
 }
 
 /**

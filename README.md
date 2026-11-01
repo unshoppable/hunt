@@ -417,7 +417,8 @@ WebStorm's file colors; marks are kept per repository in `apps/client/src/ide/pr
 text and saved state (`apps/client/src-tauri/src/ide/documents.rs`), each window's model is a replica
 (`apps/client/src/ide/documents/documents.service.ts`), so an edit, the unsaved mark and a save show in every window at once. Closing a
 tab or a window keeps unsaved edits: the backend holds them until a save or a rollback, and the project tree and the
-change list mark the file with a blue dot.
+change list mark the file with a blue dot. A save writes atomically (temp file and rename, `apps/client/src-tauri/src/ide/disk_file.rs`)
+and never silently overwrites a file that changed on disk under unsaved edits: ⌘S asks once whether to overwrite all such files.
 
 Hover, inlay hints, diagnostics, the breadcrumb, go-to-declaration and usages come from the TypeScript 7 language
 server (`tsgo --lsp`, from the worktree's `node_modules/.bin` or the PATH), one process per worktree managed by

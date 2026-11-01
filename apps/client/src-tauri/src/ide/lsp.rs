@@ -6,7 +6,8 @@
 //! window edits.
 //!
 //! `LspServer` is the Tauri-free core (spawn, handshake, request, notify, file watching); `LspRegistry` and the commands
-//! add the per-worktree sharing and the event emission.
+//! add the per-worktree sharing, the restart budget of crashing servers and the event emission. No request waits
+//! without bound (`response_timeout`), and no notification waits for a starting server (`NotificationGate`).
 //!
 //! The server watches files through the client (`workspace/didChangeWatchedFiles` with dynamic registration): it
 //! registers globs, and one recursive watcher on the worktree reports the changes that match them, so the server sees
@@ -1320,6 +1321,131 @@ mod tests {
         assert!(decoder.buffer.is_empty());
     }
 
+    /// A frame of `body` whose header lines end in bare `\n`.
+    fn bare_frame(body: &str) -> Vec<u8> {
+        format!("Content-Length: {}\n\n{body}", body.len()).into_bytes()
+    }
+
+    #[test]
+    fn decodes_bare_newline_headers_and_skips_noise_headers_without_length_and_broken_bodies() {
+        let mut decoder = FrameDecoder::default();
+        decoder.buffer.extend_from_slice(b"Debugger listening on ws://127.0.0.1:9229/x\r\nFor help, see: https://nodejs.org\n\n");
+        decoder.buffer.extend_from_slice(&bare_frame("not json"));
+        decoder.buffer.extend_from_slice(b"Content-Type: text/plain\r\n\r\n");
+        decoder.buffer.extend_from_slice(&bare_frame(r#"{"id":1}"#));
+        decoder.buffer.extend_from_slice(b"Content-Length: many\n\n");
+        decoder.buffer.extend_from_slice(&frame(&json!({ "id": 2 }), true));
+        assert_eq!(decoder.next_message().unwrap(), Some(json!({ "id": 1 })));
+        assert_eq!(decoder.next_message().unwrap(), Some(json!({ "id": 2 })));
+        assert_eq!(decoder.next_message().unwrap(), None);
+        assert!(decoder.buffer.is_empty());
+    }
+
+    #[test]
+    fn a_message_over_the_cap_is_an_error_and_a_line_without_end_is_dropped() {
+        let mut decoder = FrameDecoder::default();
+        decoder.buffer.extend_from_slice(format!("Content-Length: {}\r\n\r\n", MAX_MESSAGE + 1).as_bytes());
+        assert!(decoder.next_message().unwrap_err().contains("exceed"));
+
+        let mut decoder = FrameDecoder::default();
+        decoder.buffer.extend_from_slice(&vec![b'x'; MAX_HEADER_LINE + 1]);
+        assert_eq!(decoder.next_message().unwrap(), None);
+        assert!(decoder.buffer.is_empty());
+        decoder.buffer.extend_from_slice(&bare_frame(r#"{"id":3}"#));
+        assert_eq!(decoder.next_message().unwrap(), Some(json!({ "id": 3 })));
+    }
+
+    #[test]
+    fn held_notifications_pass_in_order_once_the_gate_opens() {
+        let (outbox, mut frames) = unbounded_channel();
+        let mut gate = NotificationGate::Held(Vec::new());
+        gate.pass(b"a".to_vec(), &outbox).unwrap();
+        gate.pass(b"b".to_vec(), &outbox).unwrap();
+        assert!(frames.try_recv().is_err(), "nothing is written before the handshake");
+        gate.open(&outbox).unwrap();
+        gate.pass(b"c".to_vec(), &outbox).unwrap();
+        let written: Vec<Vec<u8>> = std::iter::from_fn(|| frames.try_recv().ok()).collect();
+        assert_eq!(written, [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+
+        assert_eq!(NotificationGate::Closed.pass(b"d".to_vec(), &outbox), Err(EXITED.to_string()));
+        assert!(frames.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_cancel_before_its_request_is_remembered_for_a_while() {
+        let now = Instant::now();
+        let mut cancellations = Cancellations::default();
+        cancellations.cancel("early", now);
+        assert!(cancellations.register("early", now).is_none(), "the request finds its cancel");
+        assert!(cancellations.register("early", now).is_some(), "the marker is used up");
+
+        cancellations.cancel("stale", now);
+        assert!(cancellations.register("stale", now + CANCEL_MEMORY).is_some(), "the marker expired");
+
+        for index in 0..=MAX_EARLY_CANCELS {
+            cancellations.cancel(&index.to_string(), now);
+        }
+        assert_eq!(cancellations.early.len(), MAX_EARLY_CANCELS);
+        assert!(cancellations.register("0", now).is_some(), "the oldest marker gave way");
+        assert!(cancellations.register("1", now).is_none());
+    }
+
+    #[test]
+    fn a_cancel_resolves_the_active_request_and_a_release_forgets_it() {
+        let now = Instant::now();
+        let mut cancellations = Cancellations::default();
+        let (_, mut first) = cancellations.register("a", now).unwrap();
+        cancellations.cancel("a", now);
+        assert_eq!(first.try_recv(), Ok(()));
+        assert!(cancellations.early.is_empty());
+
+        let (serial, _second) = cancellations.register("b", now).unwrap();
+        cancellations.release("b", serial + 1);
+        assert!(cancellations.active.contains_key("b"), "another request's release keeps it");
+        cancellations.release("b", serial);
+        assert!(cancellations.active.is_empty());
+    }
+
+    #[test]
+    fn crashes_back_off_give_up_and_count_again_after_a_long_run() {
+        let kind = ServerKind::Typescript;
+        let now = Instant::now();
+        let quick = Duration::from_secs(5);
+        let first = CrashRecord::after(None, quick, now, "boom".into());
+        assert!(first.admits(kind, now).unwrap_err().contains("restarting in 500ms"));
+        assert!(first.admits(kind, now + Duration::from_millis(500)).is_ok());
+        let second = CrashRecord::after(Some(&first), quick, now, "boom".into());
+        assert_eq!(second.restart_at - now, Duration::from_secs(1));
+        let third = CrashRecord::after(Some(&second), quick, now, "boom".into());
+        assert_eq!(third.restart_at - now, Duration::from_secs(2));
+        let fourth = CrashRecord::after(Some(&third), quick, now, "panic: boom".into());
+        let error = fourth.admits(kind, now + Duration::from_secs(3600)).unwrap_err();
+        assert!(error.contains("crashed 4 times in a row, last: panic: boom"), "{error}");
+
+        let after_long_run = CrashRecord::after(Some(&fourth), STABLE_UPTIME, now, "boom".into());
+        assert_eq!(after_long_run.crashes, 1);
+        assert!(after_long_run.admits(kind, now + Duration::from_secs(1)).is_ok());
+    }
+
+    #[test]
+    fn the_crash_excerpt_leads_with_the_error_headline() {
+        let mut lines = vec!["starting", "panic: runtime error: index out of range", "", "goroutine 1 [running]:"];
+        let frames: Vec<String> = (0..20).map(|index| format!("main.f{index}()")).collect();
+        lines.extend(frames.iter().map(String::as_str));
+        let excerpt = crash_excerpt(&lines, 2);
+        assert_eq!(excerpt, "panic: runtime error: index out of range\n…\nmain.f18()\nmain.f19()");
+        assert_eq!(crash_excerpt(&["TypeError: x is undefined", "    at f (a.js:1)"], 5), "TypeError: x is undefined\n    at f (a.js:1)");
+        assert_eq!(crash_excerpt(&["a", "b", "c"], 2), "b\nc");
+        assert!(!is_error_headline("Debugger listening on ws://x"));
+    }
+
+    #[test]
+    fn project_wide_and_angular_requests_wait_longer() {
+        assert_eq!(response_timeout(ServerKind::Typescript, "textDocument/hover"), REQUEST_TIMEOUT);
+        assert_eq!(response_timeout(ServerKind::Typescript, "textDocument/references"), LONG_REQUEST_TIMEOUT);
+        assert_eq!(response_timeout(ServerKind::Angular, "textDocument/hover"), LONG_REQUEST_TIMEOUT);
+    }
+
     #[test]
     fn file_uri_encodes_like_monaco() {
         assert_eq!(file_uri(Path::new("/Users/me/my project/a.ts")), "file:///Users/me/my%20project/a.ts");
@@ -1396,6 +1522,119 @@ mod tests {
         }
         assert!(started.elapsed() < Duration::from_secs(1), "writes took {:?}", started.elapsed());
         server.stop().await;
+    }
+
+    fn start_sleeping(dir: &Path) -> Arc<LspServer> {
+        let launch = Launch { program: "sleep".into(), args: vec!["30".into()] };
+        LspServer::start(dir.to_path_buf(), ServerKind::Typescript, launch, Arc::new(Silent)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_server_that_never_initializes_holds_notifications_and_requests_stay_cancellable() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = start_sleeping(dir.path());
+        let started = Instant::now();
+        server.notify("textDocument/didOpen", json!({ "textDocument": { "uri": "file:///a.ts" } })).await.unwrap();
+        server.notify("textDocument/didChange", json!({ "textDocument": { "uri": "file:///a.ts" } })).await.unwrap();
+        assert!(started.elapsed() < Duration::from_millis(100), "notify waited {:?}", started.elapsed());
+        assert!(matches!(&*server.notifications.lock().unwrap(), NotificationGate::Held(frames) if frames.len() == 2));
+
+        let canceller = server.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            canceller.cancel("hover-1").await.unwrap();
+        });
+        let outcome = tokio::time::timeout(Duration::from_secs(5), server.request("textDocument/hover", json!({}), Some("hover-1".into())))
+            .await
+            .expect("a cancel ends the wait for the handshake");
+        assert_eq!(outcome, Err(cancelled("textDocument/hover")));
+
+        server.cancel("hover-2").await.unwrap();
+        let outcome = server.request("textDocument/hover", json!({}), Some("hover-2".into())).await;
+        assert_eq!(outcome, Err(cancelled("textDocument/hover")), "a cancel that overtook its request still counts");
+        assert!(server.cancellations.lock().unwrap().active.is_empty());
+
+        let timed_out = server.send_request("textDocument/hover", json!({}), Duration::from_millis(50)).await.unwrap_err();
+        assert!(timed_out.contains("no response within 0.05s"), "{timed_out}");
+        let pending: Vec<i64> = server.pending.lock().unwrap().as_ref().unwrap().keys().copied().collect();
+        assert_eq!(pending, [1], "only `initialize` waits; the timed-out request left no entry");
+
+        server.stop().await;
+        assert!(matches!(&*server.notifications.lock().unwrap(), NotificationGate::Closed));
+        assert_eq!(server.ensure_ready().await, Err(EXITED.to_string()));
+    }
+
+    /// Records the URIs of the diagnostics a server reports, and reports its end to a registry.
+    struct Recorder {
+        uris: Mutex<Vec<String>>,
+        registry: Arc<LspRegistry>,
+        ended: tokio::sync::Notify,
+        reason: Mutex<Option<String>>,
+    }
+
+    impl Recorder {
+        fn new() -> Arc<Self> {
+            Arc::new(Self { uris: Mutex::default(), registry: Arc::default(), ended: tokio::sync::Notify::new(), reason: Mutex::default() })
+        }
+    }
+
+    impl LspEvents for Recorder {
+        fn diagnostics(&self, _worktree: &Path, uri: String, _diagnostics: Value) {
+            self.uris.lock().unwrap().push(uri);
+        }
+
+        fn exited(&self, server: &Arc<LspServer>) {
+            *self.reason.lock().unwrap() = self.registry.ended(server);
+            self.ended.notify_one();
+        }
+    }
+
+    #[tokio::test]
+    async fn notifications_held_during_the_handshake_follow_it_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        // `cat` echoes every message: `initialize` comes back as a server request, whose answer comes back as its response.
+        let launch = Launch { program: "cat".into(), args: Vec::new() };
+        let recorder = Recorder::new();
+        let server = LspServer::start(dir.path().to_path_buf(), ServerKind::Typescript, launch, recorder.clone()).unwrap();
+        let publish = |uri: &str| json!({ "uri": uri, "diagnostics": [] });
+        server.notify("textDocument/publishDiagnostics", publish("file:///1")).await.unwrap();
+        server.notify("textDocument/publishDiagnostics", publish("file:///2")).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), server.ensure_ready()).await.expect("cat completes the handshake").unwrap();
+        server.notify("textDocument/publishDiagnostics", publish("file:///3")).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while recorder.uris.lock().unwrap().len() < 3 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("every notification arrives");
+        assert_eq!(*recorder.uris.lock().unwrap(), ["file:///1", "file:///2", "file:///3"]);
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_crashed_server_restarts_only_after_its_backoff_and_reports_its_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = Recorder::new();
+        let registry = recorder.registry.clone();
+        let crashing = || Ok(Launch { program: "sh".into(), args: vec!["-c".into(), "echo 'panic: boom' >&2; exit 2".into()] });
+        let events = || -> Arc<dyn LspEvents> { recorder.clone() };
+        let ended = recorder.ended.notified();
+        registry.get_or_start(dir.path(), ServerKind::Typescript, crashing, events).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), ended).await.expect("the crash is reported");
+
+        let reason = recorder.reason.lock().unwrap().clone().expect("a crash has a reason");
+        assert!(reason.contains("exit status: 2") && reason.contains("panic: boom"), "{reason}");
+        let refused = registry.get_or_start(dir.path(), ServerKind::Typescript, crashing, events).err().unwrap();
+        assert!(refused.contains("restarting in"), "{refused}");
+
+        stop_for_worktree(&registry, dir.path()).await;
+        assert!(registry.crashes.lock().unwrap().is_empty(), "an explicit restart forgets the crashes");
+        let sleeping = || Ok(Launch { program: "sleep".into(), args: vec!["30".into()] });
+        registry.get_or_start(dir.path(), ServerKind::Typescript, sleeping, events).unwrap();
+        stop_for_worktree(&registry, dir.path()).await;
+        tokio::time::timeout(Duration::from_secs(5), recorder.ended.notified()).await.expect("the end is reported");
+        assert_eq!(*recorder.reason.lock().unwrap(), None, "a stopped server is no crash");
     }
 
     #[test]

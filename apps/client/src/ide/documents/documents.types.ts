@@ -2,6 +2,11 @@
 export type DocumentState = { text: string; version: number; isDirty: boolean };
 /** The answer to an accepted `documentEdit`. */
 export type DocumentEditAck = { version: number; isDirty: boolean };
+/**
+ * The answer to `documentSave` (`SaveOutcome`): `conflict` when the file changed on disk since the unsaved edits were based
+ * on it, which leaves it unwritten.
+ */
+export type DocumentSaveOutcome = { kind: "saved"; isDirty: boolean } | { kind: "conflict" };
 /** An LSP content change: `text` replaces `range` (zero-based lines, UTF-16 columns). */
 export type DocumentContentChange = { range: { start: { line: number; character: number }; end: { line: number; character: number } }; text: string };
 /** The document `path` of `worktreePath` reached `version`, through `changes` against `version - 1` or as a whole `text`. */

@@ -352,15 +352,19 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const saveFile = useCallback(
     (content: string) => {
       if (!selectedPath) return;
-      commands
-        .writeFile(sessionId, selectedPath, content)
-        .then(() => {
-          setDiff((current) => (current ? { ...current, newContent: content } : current));
-          setExternalDiff(null);
-          markDirty(false);
+      // ⌘S saves the other files with unsaved edits too, as in the editor tab.
+      const saved = worktreePath
+        ? workspaceFor(sessionId, worktreePath).saveView(selectedPath, content)
+        : commands.writeFile(sessionId, selectedPath, content).then(() => true);
+      saved
+        .then((isSaved) => {
+          // A declined overwrite keeps the edits; the reload shows the content on disk as an external change.
+          if (isSaved) {
+            setDiff((current) => (current ? { ...current, newContent: content } : current));
+            setExternalDiff(null);
+            markDirty(false);
+          }
           setLocalVersion((version) => version + 1);
-          // ⌘S saves the other files with unsaved edits too, as in the editor tab.
-          return worktreePath ? workspaceFor(sessionId, worktreePath).saveAll(selectedPath) : undefined;
         })
         .then(() => setError(null))
         .catch((reason) => setError(String(reason)))

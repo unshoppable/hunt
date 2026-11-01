@@ -8,7 +8,8 @@ import { isInsideFolder } from "../../common/path/path.utils";
 import { parseImportSpecifiers } from "../imports.utils";
 import { lspClientFor, type LspClient } from "../lsp/lsp-client.service";
 import { toLspRange, toMonacoRange } from "../lsp/lsp-protocol.utils";
-import { minimalChange, remoteChangeAction } from "./shared-document.utils";
+import { minimalChange, overwriteQuestion, remoteChangeAction } from "./shared-document.utils";
+import { confirmDestructive } from "../../ui/confirm.utils";
 
 /** A worktree file loaded into a Monaco model; the model is shared by every editor of this window showing the file. */
 export type Document = {
@@ -395,26 +396,66 @@ export class DocumentWorkspace {
     }
   }
 
-  /** Writes the shared text to disk, also of a document this window has not loaded; every window sees it as saved. */
-  async save(path: string): Promise<void> {
-    const isDirty = await this.lsp.enqueue(() => commands.documentSave(this.sessionId, path));
-    this.applyDirty(path, isDirty);
-    const document = this.documents.get(path);
-    if (document) {
-      void this.loadDependencies(document);
-    }
+  /** Writes the shared text to disk, also of a document this window has not loaded; see `savePaths`. */
+  save(path: string): Promise<void> {
+    return this.savePaths([path]);
   }
 
   /**
    * Saves every document with unsaved edits but `exceptPath`: those of closed tabs and other windows too, and those
-   * whose edits made in this window are still on their way. Rejects with the first failure once every save has ended.
+   * whose edits made in this window are still on their way; see `savePaths`.
    */
-  async saveAll(exceptPath?: string): Promise<void> {
+  saveAll(exceptPath?: string): Promise<void> {
     const sendingPaths = [...this.replicas].filter(([, replica]) => replica.pendingEdits > 0).map(([path]) => path);
-    const paths = [...new Set([...this.reportedDirtyPaths, ...sendingPaths])].filter((path) => path !== exceptPath);
-    const results = await Promise.allSettled(paths.map((path) => this.save(path)));
+    return this.savePaths([...new Set([...this.reportedDirtyPaths, ...sendingPaths])].filter((path) => path !== exceptPath));
+  }
+
+  /**
+   * Writes the shared texts of `paths` to disk; every window sees them as saved. Files that changed on disk since their
+   * unsaved edits were made are written only once the user agreed to overwrite them, asked once for all of them;
+   * declined, they keep their unsaved edits. Rejects with the first failure once every save has ended.
+   */
+  async savePaths(paths: readonly string[]): Promise<void> {
+    const results = await Promise.allSettled(paths.map((path) => this.write(path, false)));
+    const conflicts = paths.filter((_, index) => {
+      const result = results[index];
+      return result?.status === "fulfilled" && !result.value;
+    });
+    if (conflicts.length && (await confirmDestructive(overwriteQuestion(conflicts), "Overwrite"))) {
+      results.push(...(await Promise.allSettled(conflicts.map((path) => this.write(path, true)))));
+    }
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failure) throw failure.reason;
+  }
+
+  /**
+   * Saves what a view of `path` shows (a diff's editable side) together with every other document with unsaved edits,
+   * as ⌘S in an editor does; resolves to whether `content` is on disk now. A view of the shared document saves it like
+   * an editor, any other content is written as it is.
+   */
+  async saveView(path: string, content: string): Promise<boolean> {
+    if (this.documents.get(path)?.model.getValue() !== content) {
+      await commands.writeFile(this.sessionId, path, content);
+      await this.saveAll(path);
+      return true;
+    }
+    await this.saveAll();
+    return !this.isDirty(path);
+  }
+
+  /**
+   * Writes the shared text of `path` unless its file changed on disk under unsaved edits and `force` is off;
+   * resolves to whether it did.
+   */
+  private async write(path: string, force: boolean): Promise<boolean> {
+    const outcome = await this.lsp.enqueue(() => commands.documentSave(this.sessionId, path, force));
+    if (outcome.kind === "conflict") return false;
+    this.applyDirty(path, outcome.isDirty);
+    const document = this.documents.get(path);
+    if (document) {
+      void this.loadDependencies(document);
+    }
+    return true;
   }
 
   /**

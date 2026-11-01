@@ -1060,7 +1060,8 @@ mod tests {
         let (is_dirty, effects) = documents.mark_written("a.ts", DiskSnapshot { text, stamp: stamped("ab", 2).stamp });
         assert!(is_dirty);
         assert_eq!(effects, Effects::default());
-        assert_eq!(documents.plan_save("a.ts", false, &stamped("ab", 2)).unwrap(), SavePlan::Write("abc".into()), "its own write is no conflict");
+        let plan = documents.plan_save("a.ts", false, &stamped("ab", 2)).unwrap();
+        assert_eq!(plan, SavePlan::Write("abc".into()), "its own write is no conflict");
     }
 
     #[test]

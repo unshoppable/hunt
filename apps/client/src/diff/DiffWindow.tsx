@@ -167,13 +167,15 @@ export function DiffWindow({ sessionId, path }: { sessionId: string; path: strin
 
   const saveFile = useCallback(
     (content: string) => {
-      commands
-        .writeFile(sessionId, path, content)
-        .then(() => {
+      // ⌘S saves the other files with unsaved edits too, as in the editor tab.
+      const saved = worktreePath
+        ? workspaceFor(sessionId, worktreePath).saveView(path, content)
+        : commands.writeFile(sessionId, path, content).then(() => true);
+      saved
+        .then((isSaved) => {
+          if (!isSaved) return;
           setDiff((current) => (current ? { ...current, newContent: content } : current));
           markDirty(false);
-          // ⌘S saves the other files with unsaved edits too, as in the editor tab.
-          return worktreePath ? workspaceFor(sessionId, worktreePath).saveAll(path) : undefined;
         })
         .then(() => setError(null))
         .catch((reason) => setError(String(reason)))

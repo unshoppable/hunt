@@ -105,7 +105,8 @@ mod tests {
     use super::*;
 
     fn entries(dir: &Path) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        let mut names: Vec<String> =
+            fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         names
     }

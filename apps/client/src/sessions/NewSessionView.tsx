@@ -43,9 +43,6 @@ const TOOLBAR_CONFIG_IDS = ["model", "effort"];
 /** Base branches tried in order when the repository offers them. */
 const DEFAULT_BASE_REFS = ["master", "main"];
 
-/** Id of the branch menu's entry that asks for the name of a new branch; no branch name holds a NUL. */
-const NEW_BRANCH_ID = "\u0000new-branch";
-
 /** Mode a new session starts in unless the user picked another one; manual when the agent does not offer it. */
 const DEFAULT_MODE = "auto";
 
@@ -67,8 +64,9 @@ const LIST_TOGGLE = `${SECONDARY_BUTTON_XS} aria-pressed:border-white/15 aria-pr
  * repository until the first prompt names it, so the sidebar lists it and the diff, editor and graph panes work before
  * anything was asked. With the preselected repository the first prompt creates the session, which is listed and shown
  * at once, and is sent as soon as the agent runs with the chosen model, effort and mode. A top-level session gets a
- * worktree from the chosen base branch, or works in the repository's own checkout on its current branch; choosing a base
- * branch starts the worktree session off it right away, without a prompt. The branch menu's "New branch…" names a
+ * worktree from the chosen base branch, or works in the repository's own checkout on the branch it is on; choosing a base
+ * branch starts the worktree session off it right away, without a prompt, while choosing a branch for the checkout only
+ * checks it out there (a remote one as the local branch of its name). The branch menu's "New branch" names a
  * branch the session creates instead, off the base in a worktree or at the checkout's own
  * branch, and keeps as its own. A sub session (`parentId` set) runs in the parent's worktree. After a failed creation the view comes back with `initialError` and
  * the unsent `initialPrompt`. The header's "PR review" and "Remote sessions" buttons replace the view's body with the
@@ -193,6 +191,21 @@ export function NewSessionView({
   /** The branch the new session starts from: the chosen base branch, or the checkout's own for a session in the checkout. */
   const startRef = isCheckout ? currentBranch : baseRef;
 
+  /**
+   * Checks `name` out in the repository's checkout, a remote branch (`origin/<name>`) as the local branch of its name,
+   * and lists the branches again so the menu shows the checkout's new branch. Git refuses while working changes would be
+   * overwritten or the branch is checked out in a worktree; the refusal shows as the view's error.
+   */
+  async function checkoutBranch(name: string) {
+    try {
+      await commands.gitCheckout(repoPath, name, name.startsWith("origin/"));
+      const [names, current] = await Promise.all([commands.listBranches(repoPath), commands.currentBranch(repoPath)]);
+      showBranches(names, current);
+    } catch (reason) {
+      setError(`Could not check out ${name}: ${errorText(reason)}`);
+    }
+  }
+
   /** Where a session that reviews no pull request works: in the chosen workspace of the repository, off `ref`, on the new branch when one is named. */
   function plainTarget(ref: string): WorktreeTarget {
     return { repoPath, baseRef: ref, workspace, pullRequest: null, diffBaseRef: null, pullRequestBranch: null, newBranch };
@@ -315,12 +328,11 @@ export function NewSessionView({
 
   /** Where the new branch starts: off the chosen base in a worktree, at the checkout's own branch in the checkout. */
   const newBranchOrigin = isCheckout ? `off ${currentBranch || "the checkout's branch"} in the checkout` : `off ${baseRef || "the base branch"}`;
-  // The checkout lists only "New branch…"; a worktree lists the branches and offers a new one beside the search field.
-  const branchOptions: DropdownOption[] = isCheckout
-    ? [{ id: NEW_BRANCH_ID, name: "New branch…", description: `Created ${newBranchOrigin} when the session starts` }]
-    : branches.map((name) => ({ id: name, name }));
+  // Both workspaces list the branches and offer a new one beside the search field; for the checkout the listed one is
+  // the branch it is on, and choosing another checks it out there.
+  const branchOptions: DropdownOption[] = branches.map((name) => ({ id: name, name }));
   const branchTitle = isCheckout
-    ? "Branch the checkout is on; the session works on it as it is, or on a new branch off it"
+    ? "Branch the checkout is on; choosing another checks it out in the checkout, the session works on it as it is"
     : newBranch
       ? "Base branch the new branch is created from; choosing one starts the session"
       : "Base branch the worktree is created from; choosing one starts the session";
@@ -364,7 +376,7 @@ export function NewSessionView({
       </div>
       <div className="flex min-w-0 items-center gap-3">
         <Dropdown
-          title="Where the session works: a fresh worktree off the base branch, or the repository's checkout as it is"
+          title="Where the session works: a fresh worktree off the base branch, or the repository's checkout on the branch you pick"
           value={workspace}
           options={WORKSPACE_OPTIONS}
           onChange={(id) => setPreferred("workspace", id)}
@@ -377,16 +389,16 @@ export function NewSessionView({
             value={startRef}
             options={branchOptions}
             onChange={(id) => {
-              if (id === NEW_BRANCH_ID) {
-                setBranchDraft(newBranch ?? "");
+              if (isCheckout) {
+                if (id !== currentBranch) void checkoutBranch(id);
               } else {
                 setBaseRef(id);
                 startSession(null, plainTarget(id), null);
               }
             }}
-            disabled={!startRef}
+            disabled={!branches.length}
             placeholder={isCheckout ? "Current branch" : repoPath ? "No branches" : "Base branch"}
-            isSearchable={!isCheckout}
+            isSearchable
             searchPlaceholder="Search branches"
             searchAction={{
               label: "New branch",

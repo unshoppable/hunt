@@ -1,3 +1,9 @@
+## 0.138.2 (2026-11-01)
+
+### 🩹 Fixes
+
+- **client:** start the checkout session when its current branch is clicked ([57ae5a7](https://github.com/unshoppable/hunt/commit/57ae5a7))
+
 ## 0.138.1 (2026-11-01)
 
 ### 🔥 Performance

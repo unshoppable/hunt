@@ -1,0 +1,29 @@
+# The runner of the software factory's agent steps on this VM (apps/session/src/swf-runner/swf-runner.main.ts): it reads
+# the pipeline from .hunt/swf/pipeline.json of the worktree, sends the relay each step's prompt in a fresh conversation
+# (`sudo -n hunt-ctl clear <id> --keep-stored`, the rule of vm/sudoers-hunt-service), reads the result the agent writes
+# to .hunt/swf/result.md, records the pipeline on the issue with gh and takes the gateway's messages from
+# .hunt/swf/inbox. `hunt-ctl start` enables it for a session of origin swf only, with its id and worktree in
+# /etc/hunt/swf-runner.env; `stop` disables it. While it waits for a human it does nothing, so the idle check suspends
+# the VM; the gateway starts the VM again with news.
+[Unit]
+Description=Runner of Hunt's software factory
+After=network-online.target hunt-relay.service
+Wants=network-online.target
+ConditionPathExists=/etc/hunt/swf-runner.env
+
+[Service]
+# Names the service's journal entries; Cloud Logging shows it as the label service.
+SyslogIdentifier=hunt-swf-runner
+User=agent
+Group=agent
+WorkingDirectory=/home/agent
+EnvironmentFile=/srv/hunt/current/vm/agent.env
+EnvironmentFile=/etc/hunt/swf-runner.env
+RuntimeDirectory=hunt-swf
+RuntimeDirectoryMode=0750
+ExecStart=/opt/hunt/node/bin/node /srv/hunt/current/session/swfRunner.mjs
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

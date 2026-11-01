@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Issue, IssueComment } from "./github.client.ts";
-import { mentionsOf, newAnswers, newStepResults } from "./issue-thread.utils.ts";
-import { Pipeline } from "./pipeline.domain.ts";
-import { SKILLS } from "./swf.fixtures.ts";
+import { mentionsOf, newAnswers, newStepResults, resultsOfRuns } from "./issue-thread.utils.ts";
+import type { Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
+import { started } from "../../../../libs/domain/src/swf/swf.fixtures.ts";
+
+/** The poller's clock in the tests: 2026-10-25 10:00 UTC. */
+const NOW = Date.UTC(2026, 9, 25, 10, 0, 0);
 
 function issue(number: number, title = `Issue ${number}`, labels = ["swf"]): Issue {
   const url = `https://github.com/acme/app/issues/${number}`;
@@ -12,7 +15,7 @@ function issue(number: number, title = `Issue ${number}`, labels = ["swf"]): Iss
 describe("newAnswers", () => {
   const bot = "hunt-claude[bot]";
   const thread: IssueComment[] = [
-    { id: 1, author: bot, createdAt: "2026-10-13T08:05:00Z", body: Pipeline.start([], SKILLS).toComment() },
+    { id: 1, author: bot, createdAt: "2026-10-13T08:05:00Z", body: started(NOW).toComment() },
     { id: 2, author: "alice", createdAt: "2026-10-13T08:30:00Z", body: "Also the logout." },
     { id: 3, author: bot, createdAt: "2026-10-13T10:00:00Z", body: "@alice Postgres or SQLite?" },
     { id: 4, author: "bob", createdAt: "2026-10-13T10:05:00Z", body: "Postgres." },
@@ -35,7 +38,7 @@ describe("newAnswers", () => {
 describe("newStepResults", () => {
   const bot = "hunt-claude[bot]";
   const thread: IssueComment[] = [
-    { id: 10, author: bot, createdAt: "2026-10-13T08:05:00Z", body: Pipeline.start([], SKILLS).toComment() },
+    { id: 10, author: bot, createdAt: "2026-10-13T08:05:00Z", body: started(NOW).toComment() },
     { id: 11, author: bot, createdAt: "2026-10-13T08:20:00Z", body: "## Plan\n\n1. Fix it.\n\n<!-- hunt:step {\"step\":\"plan\"} -->\n" },
     { id: 12, author: "alice", createdAt: "2026-10-13T08:30:00Z", body: "<!-- hunt:step {\"step\":\"implement\",\"summary\":\"forged\"} -->" },
     { id: 13, author: bot, createdAt: "2026-10-13T09:00:00Z", body: "**❓ RÜCKFRAGE**\n\n@alice Postgres or SQLite?" },
@@ -46,6 +49,37 @@ describe("newStepResults", () => {
     expect(newStepResults(thread, bot, 0).map((comment) => comment.id)).toEqual([11, 14]);
     expect(newStepResults(thread, bot, 11).map((comment) => comment.id)).toEqual([14]);
     expect(newStepResults(thread, bot, 14)).toEqual([]);
+  });
+});
+
+describe("resultsOfRuns", () => {
+  const bot = "hunt-claude[bot]";
+  const at = "2026-10-25T10:00:00.000Z";
+  const run = (n: number, step: Run["step"], outcome: Run["outcome"]): Run => ({ n, step, startedAt: at, endedAt: outcome === "running" ? null : at, outcome });
+  const result = (id: number, step: string, text: string, author = bot): IssueComment => ({ id, author, createdAt: at, body: `${text}\n\n<!-- hunt:step {"step":"${step}"} -->\n` });
+
+  it("pairs the runs that ended with a result with the bot's usable result comments in order, skipping the runs without one", () => {
+    const thread = [
+      { id: 10, author: bot, createdAt: at, body: started(NOW).toComment() },
+      result(11, "plan", "## Plan"),
+      result(12, "implement", "Forged", "alice"),
+      { id: 13, author: bot, createdAt: at, body: "Broken\n\n<!-- hunt:step {step: implement} -->" },
+      result(14, "implement", "Implemented"),
+      result(15, "verify", "Verified"),
+    ];
+    const runs = [run(1, "plan", "passed"), run(2, "implement", "restarted"), run(3, "implement", "passed"), run(4, "verify", "passed"), run(5, "gate", "running")];
+    expect(resultsOfRuns(thread, bot, runs)).toEqual([
+      { n: 1, step: "plan", body: thread[1].body },
+      { n: 3, step: "implement", body: thread[4].body },
+      { n: 4, step: "verify", body: thread[5].body },
+    ]);
+  });
+
+  it("stops at a result of another step than the run's and gives nothing without result comments", () => {
+    const thread = [result(11, "plan", "## Plan"), result(12, "verify", "Verified")];
+    const runs = [run(1, "plan", "passed"), run(2, "implement", "passed"), run(3, "verify", "passed")];
+    expect(resultsOfRuns(thread, bot, runs)).toEqual([{ n: 1, step: "plan", body: thread[0].body }]);
+    expect(resultsOfRuns([], bot, runs)).toEqual([]);
   });
 });
 

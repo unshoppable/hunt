@@ -55,4 +55,8 @@ describe("WorkflowLabels", () => {
   it("lists the labels of the workflow an issue carries", () => {
     expect(labels.carriedBy({ labels: ["bug", "swf", "swf:plan", "swf:question", "other:done"] })).toEqual(["swf:plan", "swf:question"]);
   });
+
+  it("names the labels of an issue in progress: the steps and the question, not the request or the outcomes", () => {
+    expect(labels.inProgress).toEqual(["swf:plan", "swf:implement", "swf:verify", "swf:gate", "swf:pr", "swf:review", "swf:human-review", "swf:merge", "swf:question"]);
+  });
 });

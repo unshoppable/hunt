@@ -2,6 +2,9 @@ import * as z from "zod/mini";
 import { ValueObject } from "../model/value-object.model.ts";
 import { isSwfStep, SWF_STEPS, type AgentState, type SwfStep } from "./swf-step.types.ts";
 
+/** The label that asks the software factory for a session; the labels of the steps and outcomes derive from it. */
+export const SWF_LABEL = "swf";
+
 const STEP_DESCRIPTIONS: Record<SwfStep, string> = {
   plan: "Hunt's agent reads the issue and plans",
   implement: "Hunt's agent implements on a session VM",
@@ -63,6 +66,11 @@ export class WorkflowLabels extends ValueObject<typeof ZodWorkflowLabelsState> {
 
   get failed(): string {
     return `${this.label}:failed`;
+  }
+
+  /** The labels of an issue the pipeline works on: every step's and the question's. */
+  get inProgress(): string[] {
+    return [...SWF_STEPS.map((step) => this.step(step)), this.question];
   }
 
   /** `<label>:<step>` while the pipeline is at that step. */

@@ -47,8 +47,11 @@ let lastLayout: Promise<unknown> = Promise.resolve();
 export type LayoutPort = { id: string; x: number; y: number };
 /** A sized box to place; `groupId` nests it in a compound group, `ports` pins where its edges attach. */
 export type LayoutNode = { id: string; width: number; height: number; groupId?: string; ports?: LayoutPort[] };
-/** A connection between two nodes or ports; `source`/`target` are node ids or port ids. */
-export type LayoutEdge = { id: string; source: string; target: string; label?: string };
+/**
+ * A connection between two nodes or ports; `source`/`target` are node ids or port ids. In a graph with cycles ELK
+ * reverses some edges to break them: those with a higher `priority` keep their direction, so a baseline stays a line.
+ */
+export type LayoutEdge = { id: string; source: string; target: string; label?: string; priority?: number };
 /** Room between two nodes of one layer and between two layers; the layout's defaults when left out. */
 export type LayoutSpacing = { nodeNode: number; betweenLayers: number };
 /**
@@ -135,6 +138,7 @@ async function runLayout(input: LayoutInput): Promise<LayoutResult> {
       sources: [edge.source],
       targets: [edge.target],
       labels: edge.label ? [{ text: edge.label, width: labelWidth(edge.label), height: LABEL_HEIGHT, layoutOptions: INLINE_LABEL }] : [],
+      ...(edge.priority !== undefined ? { layoutOptions: { "elk.layered.priority.direction": String(edge.priority) } } : {}),
     })),
   };
 

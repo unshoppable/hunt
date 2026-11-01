@@ -337,6 +337,12 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           </div>
         </div>
       ) : null}
+      {/* The poller drives the pipeline only while no desktop is connected to the VM; the hint makes that pause visible. */}
+      {session.mode === "swf" && session.isLive && remote ? (
+        <div className="px-9 pt-2">
+          <p className="chat-column text-[13px] text-neutral-500">The pipeline pauses while Hunt is connected to the VM and goes on with its next step once Hunt disconnects.</p>
+        </div>
+      ) : null}
       {session.isLive || isStarting ? null : remote ? (
         <div className="px-9 pt-2">
           <p className="chat-column text-[13px] text-neutral-500">

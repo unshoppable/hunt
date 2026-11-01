@@ -239,13 +239,14 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     tmux("kill-server");
   });
 
-  it("lets the agent run only `hunt-ctl service` through sudo", () => {
+  it("lets the agent run only `hunt-ctl service` and `hunt-ctl clear <id> --keep-stored` through sudo", () => {
     sessionConfig();
     const listed = sh("sudo -l -U agent").stdout;
     const commands = listed.slice(listed.indexOf("may run the following commands")).split("\n").slice(1).join(" ").replace(/\s+/g, " ").trim();
     expect(commands).toBe(
       "(root) NOPASSWD: /usr/local/bin/hunt-ctl service start *, /usr/local/bin/hunt-ctl service stop *, " +
-        "/usr/local/bin/hunt-ctl service restart *, /usr/local/bin/hunt-ctl service status, /usr/local/bin/hunt-ctl service status *",
+        "/usr/local/bin/hunt-ctl service restart *, /usr/local/bin/hunt-ctl service status, /usr/local/bin/hunt-ctl service status *, " +
+        "/usr/local/bin/hunt-ctl clear * --keep-stored",
     );
 
     const asAgent = (...args: string[]) => docker(["exec", "--user", "agent", container, "sudo", "-n", ...args]);
@@ -253,7 +254,9 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(status.stderr).toBe("");
     expect(JSON.parse(status.stdout).services.map((service: { name: string }) => service.name)).toEqual(["api", "admin", "ui"]);
     expect(asAgent("hunt-ctl", "service", "start", "api")).toMatchObject({ status: 0, stderr: "" });
-    for (const command of [["hunt-ctl", "destroy", ID], ["hunt-ctl", "service"], ["hunt-ctl", "session-config", ID, "--domain", DOMAIN], ["/bin/true"]]) {
+    // sudo lets `clear --keep-stored` through; hunt-ctl then refuses the session, which has no branch here.
+    expect(asAgent("hunt-ctl", "clear", ID, "--keep-stored")).toMatchObject({ status: 3, stderr: `hunt-ctl: meta.json of session ${ID} has no branch\n` });
+    for (const command of [["hunt-ctl", "clear", ID], ["hunt-ctl", "destroy", ID], ["hunt-ctl", "service"], ["hunt-ctl", "session-config", ID, "--domain", DOMAIN], ["/bin/true"]]) {
       const refused = asAgent(...command);
       expect(refused.status, command.join(" ")).toBe(1);
       expect(refused.stderr, command.join(" ")).toMatch(/sudo: a password is required|is not allowed/);
@@ -587,5 +590,48 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
       status: 3,
       stderr: "hunt-ctl: the folder missing of the check env does not exist in the worktree\n",
     });
+  });
+
+  it("records the software factory's pipeline and a step's result in .hunt/swf of the worktree as the agent, which status reports", () => {
+    expect(huntCtlJson("status", ID).swf).toBeNull();
+    const pipeline = { step: "implement", runs: [{ n: 1, step: "plan", outcome: "passed" }, { n: 2, step: "implement", outcome: "running" }] };
+    const body = "## Plan\n\n1. Fix the login.\n<!-- hunt:step {\"step\":\"plan\"} -->";
+    sh("rm -f /var/lib/hunt/activity");
+    const recorded = huntCtlWithInput(JSON.stringify({ pipeline, step: { n: 1, step: "plan", body } }), "swf-record", ID);
+    expect(recorded).toEqual({ status: 0, stdout: "{}\n", stderr: "" });
+    expect(sh("test -e /var/lib/hunt/activity").status).toBe(1);
+    expect(JSON.parse(sh("cat /home/agent/app/.hunt/swf/pipeline.json").stdout)).toEqual(pipeline);
+    expect(sh("cat /home/agent/app/.hunt/swf/steps/01-plan.md").stdout).toBe(`${body}\n`);
+    expect(sh("stat -c %U /home/agent/app/.hunt/swf /home/agent/app/.hunt/swf/steps /home/agent/app/.hunt/swf/pipeline.json /home/agent/app/.hunt/swf/steps/01-plan.md").stdout).toBe("agent\nagent\nagent\nagent\n");
+    expect(huntCtlJson("status", ID).swf).toEqual(pipeline);
+
+    const later = { ...pipeline, step: "verify" };
+    expect(huntCtlWithInput(JSON.stringify({ pipeline: later }), "swf-record", ID).status).toBe(0);
+    expect(huntCtlJson("status", ID).swf).toEqual(later);
+    expect(sh("ls /home/agent/app/.hunt/swf/steps").stdout).toBe("01-plan.md\n");
+
+    expect(huntCtlWithInput("[]", "swf-record", ID)).toMatchObject({ status: 3, stderr: "hunt-ctl: swf-record: stdin holds no JSON object with a pipeline object\n" });
+    expect(huntCtlWithInput(JSON.stringify({ pipeline, step: { n: "x", step: "plan" } }), "swf-record", ID)).toMatchObject({
+      status: 3,
+      stderr: "hunt-ctl: swf-record: the step needs a number n and a step name\n",
+    });
+    expect(huntCtlJson("status", ID).swf).toEqual(later);
+  });
+
+  it("puts a message for the swf runner into .hunt/swf/inbox of the worktree as the agent, complete when it appears, and counts it as no activity", () => {
+    sh("rm -f /var/lib/hunt/activity");
+    const first = huntCtlWithInput(JSON.stringify({ kind: "answers", comments: [] }), "swf-inbox", ID);
+    expect(first).toMatchObject({ status: 0, stderr: "" });
+    const { name } = JSON.parse(first.stdout);
+    expect(name).toMatch(/^\d{13}-\d+\.json$/);
+    expect(sh("test -e /var/lib/hunt/activity").status).toBe(1);
+    expect(sh(`stat -c '%U %a' /home/agent/app/.hunt/swf /home/agent/app/.hunt/swf/inbox "/home/agent/app/.hunt/swf/inbox/${name}"`).stdout).toBe("agent 755\nagent 755\nagent 644\n");
+    expect(JSON.parse(sh(`cat "/home/agent/app/.hunt/swf/inbox/${name}"`).stdout)).toEqual({ kind: "answers", comments: [] });
+
+    const second = huntCtlWithInput(JSON.stringify({ kind: "pipeline", pipeline: { step: "implement" } }), "swf-inbox", ID);
+    expect(second.status).toBe(0);
+    expect(sh("ls /home/agent/app/.hunt/swf/inbox").stdout.split("\n").filter(Boolean)).toEqual([name, JSON.parse(second.stdout).name].sort());
+    expect(huntCtlWithInput("[1, 2]", "swf-inbox", ID)).toMatchObject({ status: 3, stderr: "hunt-ctl: swf-inbox: stdin holds no JSON object\n" });
+    expect(huntCtlWithInput("", "swf-inbox", ID)).toMatchObject({ status: 3, stderr: "hunt-ctl: swf-inbox: stdin holds no JSON object\n" });
   });
 });

@@ -4,7 +4,9 @@ import { createConnection } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { label, textOf, turnOf } from "./fixtures/messages.ts";
-import { FAKE_ADAPTER, MAIN, socketTempDir, WAIT_MS, waitForStatus } from "./fixtures/relay-process.ts";
+import { FAKE_ADAPTER, MAIN, socketTempDir, startRelay, WAIT_MS, waitForStatus, type RelayProcess } from "./fixtures/relay-process.ts";
+import { connectRelaySocket, sendPrompt } from "../../../../libs/domain/src/relay/relay-prompt.client.ts";
+import { requestMessage, responseMessage } from "../../../../libs/domain/src/shared/json-rpc.utils.ts";
 import { createLineDecoder, encodeLine, parseLine } from "../../../../libs/domain/src/shared/ndjson.utils.ts";
 
 type Message = Record<string, unknown>;
@@ -146,5 +148,58 @@ describe("main", () => {
     });
     expect(received.find((message) => message.id === "permission-1")).toMatchObject({ result: { outcome: { optionId: "allow" } } });
     expect(received[received.length - 1]).toEqual({ event: "stdin closed" });
+  }, 30_000);
+});
+
+describe("sendPrompt over the socket against the relay", () => {
+  let relay: RelayProcess | null = null;
+
+  afterEach(() => {
+    relay?.dispose();
+    relay = null;
+  });
+
+  it("loads the session, sends the prompt, disconnects once the turn runs, and the relay finishes the turn", async () => {
+    relay = await startRelay({ acpSessionId: "acp-1", systemPromptAppend: "Remote." });
+    const transport = await connectRelaySocket(relay.socketPath);
+
+    expect(await sendPrompt(transport, { sessionId: "acp-1", cwd: "/home/agent/app", text: "Implement #12" })).toBe("started");
+
+    const status = await waitForStatus(relay.statusPath, (candidate) => candidate.lastTurnEndedAt !== null && candidate.clientConnected === false, relay.output);
+    expect(status).toMatchObject({ state: "ready", turn: "idle" });
+    const methods = relay.adapterMessages().map((message) => message.method);
+    expect(methods).toEqual(["initialize", "session/load", "session/set_mode", "session/prompt"]);
+    expect(relay.adapterMessages()[3].params).toEqual({ sessionId: "acp-1", prompt: [{ type: "text", text: "Implement #12" }] });
+  }, 30_000);
+
+  it("keeps the prompt of a client that disconnected running, and queues behind a turn that runs", async () => {
+    relay = await startRelay({ acpSessionId: "acp-1" });
+    // "ask" makes the fake adapter wait for a permission answer, so the turn stays running after the client left.
+    const first = await connectRelaySocket(relay.socketPath);
+    expect(await sendPrompt(first, { sessionId: "acp-1", cwd: "/x", text: "ask" })).toBe("started");
+    await waitForStatus(relay.statusPath, (status) => status.turn === "running" && status.clientConnected === false && status.pendingPermissionSince !== null, relay.output);
+
+    const second = await connectRelaySocket(relay.socketPath);
+    expect(await sendPrompt(second, { sessionId: "acp-1", cwd: "/x", text: "second" })).toBe("queued");
+
+    // Another client answers the permission request; the first turn ends and the queued prompt runs.
+    const answering = await connectRelaySocket(relay.socketPath);
+    const received: unknown[] = [];
+    answering.onData((text) => {
+      for (const line of text.split("\n").filter(Boolean)) {
+        const message = JSON.parse(line) as { method?: string; id?: number };
+        received.push(message);
+        if (message.method === "session/request_permission") {
+          answering.write(encodeLine(responseMessage(message.id ?? 0, { result: { outcome: { outcome: "selected", optionId: "allow" } } })));
+        }
+      }
+    });
+    answering.write(encodeLine(requestMessage(1, "session/load", { sessionId: "acp-1", cwd: "/x", mcpServers: [] })));
+    await waitForStatus(relay.statusPath, (status) => status.turn === "idle" && status.pendingPermissionSince === null, relay.output);
+    answering.close();
+
+    const prompts = relay.adapterMessages().filter((message) => message.method === "session/prompt");
+    expect(prompts.map((message) => (message.params as { prompt: { text: string }[] }).prompt[0].text)).toEqual(["ask", "second"]);
+    expect(received.map(label)).toContain("request:session/request_permission");
   }, 30_000);
 });

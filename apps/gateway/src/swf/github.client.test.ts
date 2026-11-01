@@ -157,6 +157,19 @@ describe("createGitHub", () => {
     expect(requests[0].headers.get("X-GitHub-Api-Version")).toBe("2022-11-28");
   });
 
+  it("searches the open issues with any of the labels page by page, oldest first, and takes the items of each page", async () => {
+    const page2 = `${API}/search/issues?q=x&page=2`;
+    const terms = encodeURIComponent('repo:acme/app is:issue is:open label:"swf:plan","swf:question"');
+    const { fetchImpl } = fakeFetch({
+      [`GET /search/issues?q=${terms}&sort=created&order=asc&per_page=100`]: () =>
+        Response.json({ total_count: 2, incomplete_results: false, items: [{ number: 4, title: "Four", labels: [{ name: "swf:plan" }] }] }, { headers: { Link: `<${page2}>; rel="next"` } }),
+      "GET /search/issues?q=x&page=2": () => Response.json({ total_count: 2, incomplete_results: false, items: [{ number: 5, title: "Five" }, { number: 6, pull_request: {} }] }),
+    });
+
+    const issues = await createGitHub(async () => "ghp_token", fetchImpl).openIssuesWithAny(ACME_APP, ["swf:plan", "swf:question"]);
+    expect(issues.map((issue) => [issue.number, issue.labels])).toEqual([[4, ["swf:plan"]], [5, []]]);
+  });
+
   it("asks the token of the repository for every request, the pages of a list included", async () => {
     const page2 = `${API}/repositories/1/issues?page=2`;
     const { fetchImpl, requests } = fakeFetch({

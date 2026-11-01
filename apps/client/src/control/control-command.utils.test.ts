@@ -83,6 +83,9 @@ describe("ensureRunnable", () => {
     expect(() => ensureRunnable({ name: "tab", tab: "preview" }, remoteSession())).not.toThrow();
     const review = { ...localSession(), pullRequest: { number: 12, url: "https://github.com/unshoppable/hunt/pull/12" } };
     expect(() => ensureRunnable({ name: "tab", tab: "pullRequest" }, review)).not.toThrow();
+    expect(() => ensureRunnable({ name: "tab", tab: "factory" }, remoteSession())).toThrow("the session has no factory tab");
+    expect(() => ensureRunnable({ name: "tab", tab: "factory" }, { ...remoteSession(), mode: "swf" })).not.toThrow();
+    expect(() => ensureRunnable({ name: "tab", tab: "factory" }, { ...localSession(), mode: "swf" })).not.toThrow();
   });
 
   it("needs a local worktree for files, diffs and guardrails", () => {

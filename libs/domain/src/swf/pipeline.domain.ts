@@ -1,10 +1,17 @@
 /**
- * The pipeline of a poller session (`swf/poller.service.ts`), free of I/O: where the issue stands on its way from the plan
- * to the merge, and the transitions a step result of the agent (`libs/domain/src/swf/step-result.utils.ts`) or the state
- * of the pull request causes. Its state is the record the poller keeps in one comment of its own on the issue
- * (`toComment`: a status line for the people reading the issue and `<!-- hunt:pipeline {…} -->` for the poller), which
- * `swf/pipeline-record.client.ts` posts, finds and edits in place after every intent, so that a restart of the poller
- * loses nothing.
+ * The pipeline of a swf session, free of I/O: where the issue stands on its way from the plan to the merge, and the
+ * transitions a step result of the agent (`step-result.utils.ts`) or the state of the pull request causes. Its state
+ * lives in two places that hold the same JSON: `.hunt/swf/pipeline.json` of the session's worktree on the VM, where the
+ * runner (`apps/session/src/swf-runner/swf-runner.service.ts`) and the Hunt client read it, and the record comment on
+ * the issue (`toComment`: a status line for the people reading the issue and `<!-- hunt:pipeline {…} -->` for the
+ * services), which the gateway's poller (`apps/gateway/src/swf/poller.service.ts`, `swf/pipeline-record.client.ts`)
+ * posts when it claims the issue and both services edit in place after every intent, so that a restart loses nothing.
+ * `version` says who drives the agent steps: RUNNER_VERSION and above the runner on the VM, older records the poller,
+ * which keeps the sessions it started before the runner existed going to their end.
+ *
+ * `runs` is the pipeline's log: one entry per run of a step, in the order they happened, appended only. A step that runs
+ * again gets a new entry; a run that sends the issue back to implement ends as `returned` and the implement run it causes
+ * names it as its `cause`. The client draws the pipeline's graph from this list.
  *
  * The steps run plan → implement → verify → gate → pr → review → human-review (when a person has to approve) → merge.
  * Findings of verify, of the review (a failing check, blocking findings of the Claude review, a human's change request)
@@ -13,20 +20,45 @@
  * `humanReviewPaths` of the repository's hunt.json (`swf/glob.utils.ts`) sets it too.
  */
 import * as z from "zod/mini";
-import { DomainModel } from "../../../../libs/domain/src/model/domain.model.ts";
-import { isRecord } from "../../../../libs/domain/src/shared/json-rpc.utils.ts";
-import type { ParsedStepResult } from "../../../../libs/domain/src/swf/step-result.utils.ts";
-import { AGENT_STEPS, isAgentStep, SWF_STEPS, type AgentStep, type SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
+import { DomainModel } from "../model/domain.model.ts";
+import { isRecord } from "../shared/json-rpc.utils.ts";
+import type { ParsedStepResult } from "./step-result.utils.ts";
+import { AGENT_STEPS, isAgentStep, SWF_STEPS, type AgentStep, type SwfStep } from "./swf-step.types.ts";
 import { UnusableStepResult } from "./unusable-step-result.error.ts";
 
 /** How often the issue may go back to implement before the agent has to ask the humans instead. */
 export const MAX_ATTEMPTS = 5;
+/** The record version from which the runner on the session VM drives the agent steps; older records the poller drives. */
+export const RUNNER_VERSION = 2;
 /** `<!-- hunt:pipeline {…} -->` in the poller's record comment; the JSON object is the first group. */
 const RECORD_MARKER = /<!--\s*hunt:pipeline\s+(\{[\s\S]*?\})\s*-->/;
 const FINDINGS_LIMIT = 20;
 const FINDING_LIMIT = 4000;
 /** The steps whose findings send the issue back to implement. */
 const CHECKING_STEPS: readonly SwfStep[] = ["verify", "review", "human-review", "merge"];
+
+/**
+ * How a run of a step ended: `passed` on to the next step, `returned` back to implement with findings, `failed` when
+ * the issue was marked as failed, `restarted` when the session's VM was replaced and the step started over; `running`
+ * while it runs.
+ */
+export const RUN_OUTCOMES = ["running", "passed", "returned", "failed", "restarted"] as const;
+export type RunOutcome = (typeof RUN_OUTCOMES)[number];
+
+/** One run of a step; see the module comment. Times are ISO 8601. */
+const ZodRun = z.object({
+  /** The run's position in the pipeline's log, from 1. */
+  n: z.int(),
+  step: z.enum(SWF_STEPS),
+  startedAt: z.string(),
+  endedAt: z.nullable(z.string()),
+  outcome: z.enum(RUN_OUTCOMES),
+  /** How many findings a `returned` run reported. */
+  findings: z.optional(z.int()),
+  /** The `n` of the run whose findings caused this implement run. */
+  cause: z.optional(z.int()),
+});
+export type Run = z.infer<typeof ZodRun>;
 
 /** The strings of a list; entries that are no string are dropped, and a value that is no list gives none. */
 const ZodStrings = z.pipe(
@@ -44,6 +76,14 @@ const ZodStepSkills = z.record(z.enum(AGENT_STEPS), z.string().check(z.minLength
  */
 const ZodPipelineState = z
   .object({
+    /** The record's version; 1 for a record written before the runner existed, which the poller drives to its end. */
+    version: z.catch(z.int(), 1),
+    /** The issue's repository as `<owner>/<repo>`, its number and the session's branch; empty in a record of version 1. */
+    repo: z.catch(z.string(), ""),
+    issue: z.catch(z.int(), 0),
+    branch: z.catch(z.string(), ""),
+    /** The id of the record comment on the issue, so that the runner can edit it; 0 until the poller posted it. */
+    recordId: z.catch(z.int(), 0),
     step: z.enum(SWF_STEPS),
     /** How often the issue went back to implement since the last plan or escalation. */
     attempt: z.catch(z.int(), 0),
@@ -73,12 +113,26 @@ const ZodPipelineState = z
     mergeSha: z.catch(z.nullable(z.string()), null),
     /** Whether the people who have to review were mentioned on the pull request. */
     notified: z.catch(z.boolean(), false),
+    /** Whether the poller carried out what entering the current review step brings with it (`prepareReview`). */
+    reviewPrepared: z.catch(z.boolean(), false),
+    /** The log of the steps' runs, appended only; empty for a record written before Hunt kept it. */
+    runs: z.catch(z.array(ZodRun), () => []),
   })
   .check(
     z.refine((state) => !state.reminded || state.promptTurn !== null, { message: "the agent is reminded only after a prompt", path: ["reminded"] }),
     z.refine((state) => state.mergeSha === null || state.step === "merge", { message: "a merge is requested only at the step merge", path: ["mergeSha"] }),
     z.refine((state) => !state.notified || state.humanReview, { message: "reviewers are notified only when a person reviews", path: ["notified"] }),
+    z.refine((state) => runningRun(state.runs)?.step === undefined || runningRun(state.runs)?.step === state.step, {
+      message: "the running run is the current step's",
+      path: ["runs"],
+    }),
   );
+
+/** The run of `runs` that still runs, the last one, or undefined when the last one ended or there is none. */
+function runningRun(runs: Run[]): Run | undefined {
+  const last = runs[runs.length - 1];
+  return last?.outcome === "running" ? last : undefined;
+}
 
 /** A review of the pull request by a person or a bot. */
 export interface PullRequestReview {
@@ -92,6 +146,13 @@ export interface PullRequestReview {
 
 export type HumanReviewOutcome = { kind: "wait" } | { kind: "approved"; by: string[] } | { kind: "changes"; review: PullRequestReview };
 
+/** The issue a pipeline works on: its repository as `<owner>/<repo>`, its number and the session's branch. */
+export interface SwfIssue {
+  repo: string;
+  number: number;
+  branch: string;
+}
+
 export interface Pipeline extends z.infer<typeof ZodPipelineState> {}
 
 /** What the poller knows about a session's pipeline; see the module comment. */
@@ -103,11 +164,16 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
   }
 
   /**
-   * The pipeline of a newly claimed issue: at plan, with nothing sent or acted on yet; `skills` is the repository's skill
-   * of every agent step.
+   * The pipeline of the newly claimed `issue`: at plan, with nothing sent or acted on yet, of RUNNER_VERSION; `skills` is
+   * the repository's skill of every agent step, `now` the time in ms the first run starts at.
    */
-  static start(humanReviewPaths: string[], skills: Record<AgentStep, string>): Pipeline {
+  static start(issue: SwfIssue, humanReviewPaths: string[], skills: Record<AgentStep, string>, now: number): Pipeline {
     return new Pipeline({
+      version: RUNNER_VERSION,
+      repo: issue.repo,
+      issue: issue.number,
+      branch: issue.branch,
+      recordId: 0,
       step: "plan",
       attempt: 0,
       humanReview: false,
@@ -122,6 +188,8 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
       handledReview: null,
       mergeSha: null,
       notified: false,
+      reviewPrepared: false,
+      runs: [{ n: 1, step: "plan", startedAt: isoOf(now), endedAt: null, outcome: "running" }],
     });
   }
 
@@ -131,6 +199,11 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     if (!match) return null;
     const parsed = ZodPipelineState.safeParse(parseJson(match[1]));
     return parsed.success ? new Pipeline(parsed.data) : null;
+  }
+
+  /** Whether the runner on the session VM drives the agent steps; false for a record the poller drives to its end. */
+  get isRunnerDriven(): boolean {
+    return this.version >= RUNNER_VERSION;
   }
 
   /** Whether the pipeline waits for a turn of the agent (an agent step) rather than for GitHub. */
@@ -154,6 +227,19 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     }
     parts.push(this.humanReview ? "a person reviews before the merge" : "merged without a human review unless the gate asks for one");
     return parts.join(" · ");
+  }
+
+  /** The run of the current step while it runs; undefined for a record without runs. */
+  get currentRun(): Run | undefined {
+    return runningRun(this.runs);
+  }
+
+  /** The last run that ended, the one whose result the pipeline acted on last; undefined before the first ended. */
+  get lastEndedRun(): Run | undefined {
+    for (let index = this.runs.length - 1; index >= 0; index--) {
+      if (this.runs[index].outcome !== "running") return this.runs[index];
+    }
+    return undefined;
   }
 
   /** Whether the agent ended a turn since its last prompt; `lastTurnEndedAt` is the relay's. False while no prompt was sent. */
@@ -192,42 +278,46 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
   }
 
   /**
-   * Moves the pipeline on with the step result the agent reported in the comment `resultId` (`parseStepResult` of its
-   * body): plan → implement; implement → verify; verify → gate, or back to implement with the findings; gate → pr while
-   * the pull request does not exist yet, else review; pr → review. Throws UnusableStepResult with the problem for a
-   * comment without a usable result and for the result of another step than the current one.
+   * Moves the pipeline on with the step result the agent reported (`parseStepResult` of its text): plan → implement;
+   * implement → verify; verify → gate, or back to implement with the findings; gate → pr while the pull request does not
+   * exist yet, else review; pr → review. `resultId` is the id of the comment that carries the result when the poller
+   * reads it from the issue, null for the result the runner reads from `.hunt/swf/result.md`. Throws UnusableStepResult
+   * with the problem for a text without a usable result and for the result of another step than the current one. `now`
+   * is the time in ms the step's run ends and the next one starts at.
    */
-  acceptResult(reported: ParsedStepResult | null, resultId: number): void {
-    this.assertNewResult(resultId);
+  acceptResult(reported: ParsedStepResult | null, resultId: number | null, now: number): void {
+    if (resultId !== null) {
+      this.assertNewResult(resultId);
+    }
     if (!reported) throw new UnusableStepResult("no step marker");
     if (!reported.result) throw new UnusableStepResult(reported.problem);
     const result = reported.result;
     if (result.step !== this.step) throw new UnusableStepResult(`the result reports step ${result.step}, but the current step is ${this.step}`);
     this.changeState(() => {
-      this.lastResultId = resultId;
+      this.lastResultId = resultId ?? this.lastResultId;
       switch (result.step) {
         case "plan":
-          this.moveTo("implement");
+          this.moveTo("implement", now);
           this.attempt = 0;
           this.findings = [];
           this.escalate = false;
           break;
         case "implement":
-          this.moveTo("verify");
+          this.moveTo("verify", now);
           break;
         case "verify":
           if (result.findings.length > 0) {
-            this.returnToImplement(result.findings.map((finding) => `Verify: ${finding}`));
+            this.returnToImplement(result.findings.map((finding) => `Verify: ${finding}`), now);
           } else {
-            this.moveTo("gate");
+            this.moveTo("gate", now);
           }
           break;
         case "gate":
           this.humanReview = this.humanReview || result.humanReview;
-          this.moveTo(this.pullRequest === null ? "pr" : "review");
+          this.moveTo(this.pullRequest === null ? "pr" : "review", now);
           break;
         case "pr":
-          this.moveTo("review");
+          this.moveTo("review", now);
           this.pullRequest = result.pullRequest;
           break;
       }
@@ -235,13 +325,17 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
   }
 
   /**
-   * The unusable step result in the comment `resultId` went back to the agent, whose turn had ended at `lastTurnEndedAt`
-   * (0: none had): the step stays, the comment is history and the agent's next turn counts as the answer to it.
+   * The unusable step result went back to the agent, whose turn had ended at `lastTurnEndedAt` (0: none had): the step
+   * stays, the result is history and the agent's next turn counts as the answer to it. `resultId` is the id of the
+   * comment that carried the result when the poller read it from the issue, null for the result the runner read from
+   * `.hunt/swf/result.md`.
    */
-  dismissResult(resultId: number, lastTurnEndedAt: number): void {
-    this.assertNewResult(resultId);
+  dismissResult(resultId: number | null, lastTurnEndedAt: number): void {
+    if (resultId !== null) {
+      this.assertNewResult(resultId);
+    }
     this.changeState(() => {
-      this.lastResultId = resultId;
+      this.lastResultId = resultId ?? this.lastResultId;
       this.promptTurn = lastTurnEndedAt;
       this.reminded = false;
     });
@@ -280,33 +374,55 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
   /**
    * Findings of a step that checks the implementation (verify, review, human-review, merge) send the issue back to
    * implement: the attempt is counted, past MAX_ATTEMPTS the agent escalates to the humans and the count starts anew.
-   * Empty findings are dropped; at most FINDINGS_LIMIT of FINDING_LIMIT characters each are kept.
+   * Empty findings are dropped; at most FINDINGS_LIMIT of FINDING_LIMIT characters each are kept. `now` is the time in
+   * ms the step's run ends at.
    */
-  sendBackToImplement(findings: string[]): void {
+  sendBackToImplement(findings: string[], now: number): void {
     if (!CHECKING_STEPS.includes(this.step)) throw new Error(`the step ${this.step} checks nothing that could send the issue back to implement`);
-    this.changeState(() => this.returnToImplement(findings));
+    this.changeState(() => this.returnToImplement(findings, now));
   }
 
   /** The pull request passed its checks and the Claude review: on to human-review when a person has to approve, else to merge. */
-  passReview(): void {
+  passReview(now: number): void {
     this.assertStep("review", "passing the review");
-    this.changeState(() => this.moveTo(this.humanReview ? "human-review" : "merge"));
+    this.changeState(() => this.moveTo(this.humanReview ? "human-review" : "merge", now));
   }
 
   /** A person approved the pull request: on to merge. */
-  approve(): void {
+  approve(now: number): void {
     this.assertStep("human-review", "an approval");
-    this.changeState(() => this.moveTo("merge"));
+    this.changeState(() => this.moveTo("merge", now));
   }
 
   /** The change request `reviewId` of a person goes back to implement with `finding`, once. */
-  handleChangeRequest(reviewId: number, finding: string): void {
+  handleChangeRequest(reviewId: number, finding: string, now: number): void {
     this.assertStep("human-review", "a change request");
     if (!this.isUnhandledReview(reviewId)) throw new Error(`the review ${reviewId} was handled already`);
     this.changeState(() => {
-      this.returnToImplement([finding]);
+      this.returnToImplement([finding], now);
       this.handledReview = reviewId;
     });
+  }
+
+  /** The pull request is merged: the merge run ends as passed, and with it the pipeline. */
+  complete(now: number): void {
+    this.assertStep("merge", "completing the pipeline");
+    this.changeState(() => this.endRun("passed", now));
+  }
+
+  /** The issue was marked as failed at the current step: its run ends as failed. */
+  fail(now: number): void {
+    this.changeState(() => this.endRun("failed", now));
+  }
+
+  /**
+   * The session's VM was replaced, and with it the agent's conversation: the current agent step starts over on the new
+   * VM at `now`, its run ends as `restarted` and a new run of the step begins, whose prompt is to be sent. A step that
+   * waits for GitHub has nothing to start over.
+   */
+  restart(now: number): void {
+    if (!this.waitsForAgent) throw new Error(`the step ${this.step} waits for GitHub, not for the agent; nothing to restart`);
+    this.changeState(() => this.moveTo(this.step, now, "restarted"));
   }
 
   /** A person has to approve the pull request before it is merged, from now on. */
@@ -323,6 +439,21 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     });
   }
 
+  /** The poller carried out what entering the current review step brings with it, once. */
+  noteReviewPrepared(): void {
+    this.assertStep("review", "preparing the review");
+    this.changeState(() => {
+      this.reviewPrepared = true;
+    });
+  }
+
+  /** The record comment `recordId` on the issue holds this pipeline from now on. */
+  noteRecordComment(recordId: number): void {
+    this.changeState(() => {
+      this.recordId = recordId;
+    });
+  }
+
   /** GitHub was asked to update the branch of, or to merge, the head commit `headSha`; the merge step waits for it. */
   noteMergeRequested(headSha: string): void {
     this.assertStep("merge", "a merge request");
@@ -331,19 +462,39 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     });
   }
 
-  /** Enters `step`: no prompt sent, no reminder, no merge requested yet. */
-  private moveTo(step: SwfStep): void {
+  /**
+   * Enters `step` at `now`: the current run ends as `outcome`, a run of `step` starts (with `cause`, the run that sent the
+   * issue back); no prompt sent, no reminder, no merge requested, no review prepared yet.
+   */
+  private moveTo(step: SwfStep, now: number, outcome: Exclude<RunOutcome, "running"> = "passed", cause?: number): void {
+    this.endRun(outcome, now);
     this.step = step;
     this.promptTurn = null;
     this.reminded = false;
     this.mergeSha = null;
+    this.reviewPrepared = false;
+    const run: Run = { n: this.runs.length + 1, step, startedAt: isoOf(now), endedAt: null, outcome: "running" };
+    if (cause !== undefined) run.cause = cause;
+    this.runs = [...this.runs, run];
+  }
+
+  /** Ends the current run as `outcome` at `now`; a record without a running run (an old one) has nothing to end. */
+  private endRun(outcome: Exclude<RunOutcome, "running">, now: number, findings?: number): void {
+    const current = runningRun(this.runs);
+    if (!current) return;
+    const ended: Run = { ...current, endedAt: isoOf(now), outcome };
+    if (findings !== undefined) ended.findings = findings;
+    this.runs = [...this.runs.slice(0, -1), ended];
   }
 
   /** Enters implement to fix `findings`; see `sendBackToImplement`. */
-  private returnToImplement(findings: string[]): void {
+  private returnToImplement(findings: string[], now: number): void {
     const attempt = this.attempt + 1;
-    this.moveTo("implement");
-    this.findings = findings.filter((finding) => finding.trim() !== "").slice(0, FINDINGS_LIMIT).map((finding) => finding.slice(0, FINDING_LIMIT));
+    const kept = findings.filter((finding) => finding.trim() !== "").slice(0, FINDINGS_LIMIT).map((finding) => finding.slice(0, FINDING_LIMIT));
+    const cause = runningRun(this.runs)?.n;
+    this.endRun("returned", now, kept.length);
+    this.moveTo("implement", now, "passed", cause);
+    this.findings = kept;
     this.escalate = attempt > MAX_ATTEMPTS;
     this.attempt = this.escalate ? 0 : attempt;
   }
@@ -374,6 +525,11 @@ export function stepSkills(value: unknown): { skills: Record<AgentStep, string>;
   const missing = AGENT_STEPS.filter((step) => typeof named[step] !== "string" || !named[step]);
   if (missing.length > 0) return { missing };
   return { skills: ZodStepSkills.parse(Object.fromEntries(AGENT_STEPS.map((step) => [step, named[step]]))) };
+}
+
+/** `now`, a time in ms, as ISO 8601. */
+function isoOf(now: number): string {
+  return new Date(now).toISOString();
 }
 
 /** The JSON value of `text`; undefined for text that is no JSON. */

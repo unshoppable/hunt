@@ -12,6 +12,8 @@ import { SessionMark } from "./SessionMark";
 import { DeleteSessionDialog } from "./DeleteSessionDialog";
 import { StaleRemoteDialog } from "./remote/StaleRemoteDialog";
 import { remoteOriginLabel, remoteOriginTitle, removeFromSidebarQuestion } from "./remote/remote-origin.utils";
+import { sessionStepLabel } from "./session-mark-state.utils";
+import { pipelineAgentOf, useFactoryStore } from "./swf-pipeline.store";
 import { PlanUsageBar } from "../accounts/PlanUsageBar";
 import { PANE_TOGGLE_ROW } from "../ui/ResizablePanes";
 import { HEADER_BAR } from "../ui/bars.constants";
@@ -42,6 +44,8 @@ export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }
   const cancelPrompt = useHuntStore((state) => state.cancelPrompt);
   const chats = useHuntStore((state) => state.chats);
   const creatingIds = useHuntStore((state) => state.creatingIds);
+  /** The pipelines the Factory tab read, whose current step the chip of an swf session prefers over the gateway's record. */
+  const pipelines = useFactoryStore((state) => state.pipelines);
   const remoteSync = useHuntStore((state) => state.remoteSync);
   /** Set while a refresh the user asked for runs; the periodic refresh of the remote sessions shows nothing. */
   const [isRefreshingRemote, setIsRefreshingRemote] = useState(false);
@@ -231,6 +235,7 @@ export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }
           // A session the backend still creates has no worktree or agent yet: nothing can be started in or done to it.
           const isCreating = creatingIds.includes(session.id);
           const reference = sessionReference(session, pullRequestStates[session.id] ?? null);
+          const step = session.mode === "swf" && session.remote ? sessionStepLabel(session.remote.agent, pipelineAgentOf(pipelines[session.id])) : null;
           // The repository heads its group of sessions: a heading before the first row of every repository.
           const startsGroup = !isSubChat && (index === 0 || rows[index - 1].repository !== repository);
           return (
@@ -265,6 +270,11 @@ export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }
                         title={remoteOriginTitle(session) ?? undefined}
                       >
                         {remoteOriginLabel(session)}
+                      </span>
+                    ) : null}
+                    {step ? (
+                      <span className="shrink-0 rounded-md bg-white/6 px-1.5 text-[length:max(13px,0.875em)] leading-5 font-medium text-neutral-300" title="The step of the swf pipeline the issue is at">
+                        {step}
                       </span>
                     ) : null}
                     {!isSubChat && !isCreating ? (

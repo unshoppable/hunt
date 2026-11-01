@@ -22,7 +22,8 @@
 # Dev servers, the services of hunt.json (hunt-service@ units) included, and containers the agent left running do not
 # count. A heartbeat older than two minutes means the relay is gone; its status does not count. IDLE_MINUTES,
 # BOOT_GRACE_MINUTES, PREVIEW_MAX_MINUTES and SUSPEND_WAIT_MINUTES come from /etc/hunt/idle.conf (defaults 30, 15, 120
-# and 15). The state of the runs (when the last one ran, when the VM resumed, since when it is idle) lives in
+# and 15), which `hunt-ctl start` writes by the session's origin: 15 idle minutes for a session the software factory's
+# poller cloned, whose runner waits on people with nothing running, 30 for one someone works in. The state of the runs (when the last one ran, when the VM resumed, since when it is idle) lives in
 # /run/hunt, which a boot clears and a suspend keeps. The HUNT_IDLE_* variables point it at other files, for tests.
 set -euo pipefail
 

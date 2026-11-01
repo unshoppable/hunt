@@ -564,6 +564,23 @@ command).
 The diagrams are React Flow, not tldraw: tldraw 5 needs a paid licence bound to the host name for a production build,
 which a Tauri app cannot satisfy, and its elbow arrows cross other shapes.
 
+#### Factory
+
+A session of the gateway's swf poller (`mode: "swf"` in `sessions.json`, see "Remote sessions") has the Factory tab
+after Terminal. It shows the pipeline of the session's issue: the steps plan → implement → verify → gate → pr → review →
+human-review → merge as a graph (`@xyflow/react`, laid out by ELK like the architecture diagrams), each with its run
+count, the current step marked and every return to implement as an amber edge labelled with the findings that caused
+it; below the graph the runs in order with outcome, start and duration, and under them the step result of the selected
+run rendered as markdown. The data is the record the poller mirrors into `.hunt/swf/pipeline.json` of the worktree on
+the VM (`hunt-ctl swf-record`, schema in `libs/domain/src/swf/pipeline.domain.ts`) plus `.hunt/swf/steps/<nn>-<step>.md`
+with the result that ended run `nn`; Hunt pulls that folder into the local worktree when it opens the session, after
+every turn and before it brings the session back, so the tab reads without the VM too (`read_swf_pipeline`,
+`read_swf_step`). The tab says so when the pipeline has not reported yet. The sidebar's chip of such a session names the
+pipeline's current step once the tab read the record, else the step the gateway recorded; the chat of a connected swf
+session notes that the pipeline pauses while Hunt is connected to the VM. `apps/client/src/factory/` holds the panel and
+the pure derivation of the graph (`pipeline-graph.utils.ts`); the store of the read records and their types live in
+`apps/client/src/sessions/swf-pipeline.*`, below the sidebar that reads them.
+
 #### Remote sessions
 
 A session can move to a Compute Engine VM of its own and keep working there while Hunt is closed ("Remote" in the chat
@@ -733,7 +750,7 @@ hunt.json (`swf.skills: must name the skill of every agent step …`, `swf.skill
 step …`), as is each skill file `.claude/skills/<name>/SKILL.md` the worktree lacks; `session-config` reports the skill
 of every step as `swf_skills`. The client asks to add the missing entries (`swf-<step>`) and to create the missing
 skill files when a session of the repository opens. The step's prompt tells the agent to invoke its skill first; see
-"Step skills" in `apps/gateway/software-factory/README.md`. An optional
+"Step skills" in `libs/domain/prompts/swf/README.md`. An optional
 `checks` section names up to 32 commands such as the linter or the tests, each with a `command`
 and an optional `cwd` (`"checks": {"test": {"command": "npm test", "cwd": "apps/web"}}`); `services` is optional too,
 so a `hunt.json` may declare checks only. An optional `adrDir` names the folder of the repository's architectural
@@ -1059,7 +1076,22 @@ API and, while fewer of its VMs
 issue: `swf` becomes `swf:plan` (the labels `swf:<step>` for every step of the pipeline, `swf:question`, `swf:done` and
 `swf:failed` are created when missing) and the poller posts its **pipeline record**, one comment on the issue that it
 edits in place at every transition (a status line for people, `<!-- hunt:pipeline {…} -->` for the poller; the model
-`apps/gateway/src/swf/pipeline.domain.ts`, stored by `pipeline-record.client.ts`), so that a restart loses nothing; the issue moves to the `In Progress` column of every project (Projects v2) it is an item of (the
+`libs/domain/src/swf/pipeline.domain.ts`, stored by `pipeline-record.client.ts`), so that a restart loses nothing. The record
+keeps `runs`, one entry per run of a step in the order they ran, repeats and returns included (`n`, `step`, `startedAt`,
+`endedAt`, `outcome` — `running`, `passed`, `returned` with the number of `findings`, `failed`, `restarted` — and `cause`,
+the run whose findings sent the step back), the data of the pipeline graph the client renders. The record names its own comment
+(`recordId`) and its `version`: 2 and above means the **swf runner** on the session VM drives the agent steps (below);
+a record of version 1, written before the runner existed, the poller drives to its end as it did then. On the VM
+`.hunt/swf/pipeline.json` in the worktree holds the pipeline and `.hunt/swf/steps/<nn>-<step>.md` the step result each
+run ended with: for a runner-driven session the runner writes both and the record comment mirrors `pipeline.json`
+(`hunt-ctl swf-record <id>` puts the pipeline there once, before the runner starts); for a version-1 session the poller
+mirrors its record there at every transition (`swf-record`, which never counts as activity). `hunt-ctl status` reports
+the pipeline as `swf` (`null` without one), and `.hunt/` neither syncs nor
+is committed, so a client that pulls the session gets the pipeline from the VM, not from GitHub: Hunt gives the adopted
+session the mode `swf` (`SessionRecord.mode`, `store.rs`; `git-review` for a pull request review, else `edit`) and pulls
+`.hunt/swf/` into its local worktree (`apps/client/src-tauri/src/session/swf.rs`) when the session is opened, after every turn
+the status channel reports ended and with the retrieval, announcing each pull as `swf:pulled`; the Factory tab reads the
+folder there (`read_swf_pipeline`, `read_swf_step`), also once the VM is gone; the issue moves to the `In Progress` column of every project (Projects v2) it is an item of (the
 `Status` option matched case-insensitively; a project without one is left alone, and a failure, such as the app lacking
 the organization permission "Projects: read and write", is only logged). Then it does what a handoff does, with the gateway's service account instead
 of a Mac: the session VM service (`apps/gateway/src/session-vm/session-vm.service.ts`) creates `vm-hunt-s-<short id>`
@@ -1076,44 +1108,84 @@ tar archive of the ignored files a handoff copies from the Mac, such as `.env.pr
 repository's root and at most 64 KiB, which the infrastructure repository's README shows how to add. A secret without
 a version, or one the gateway may not read, means no private files and a warning in the journal; a version that is no
 such archive fails the setup. Then `session-config`,
-`put-files --claude` with `hunt-session.json`, `deps`, `start` and `wait` follow as in a handoff; `hunt-session.json`
+`put-files --claude` with `hunt-session.json`, `deps`, `swf-record` with the pipeline, `start` (which enables the runner,
+`hunt-swf-runner.service`, for a session of origin `swf`) and `wait` follow as in a handoff; `hunt-session.json`
 sets the model of the repository's `hunt.json` (`swf.model`), which the relay applies as the session's `model` config
 option, and without one, or with a model Claude Code does not know (the relay's journal says so), Claude Code's
 default model applies. The system prompt is
 the remote, Git and question parts a handoff appends (`libs/domain/prompts/`, which the app and the poller compile in),
-the poller's own `apps/gateway/software-factory/0-system-prompt.md` with the issue's workflow, the repository's services and
+the swf workflow `libs/domain/prompts/swf/0-system-prompt.md` with the issue's labels and branch, the repository's services and
 its `hunt.agent.md`; the parts Hunt takes from its user's settings (response style, guardrail offer, diagram language)
-do not exist on the gateway.
+do not exist on the gateway. The relay reads it from `hunt-session.json` for every conversation, so each step's fresh
+conversation starts with it.
 
-The poller then drives the session through the **steps of the pipeline**, one prompt per step
-(`apps/gateway/software-factory/`, see its README): `plan`, `implement`, `verify`, `gate`, `pr` are agent steps; `review`,
-`human-review` and `merge` are the poller's own. The agent ends an agent step with a **step result**, one comment on
-the issue that carries `<!-- hunt:step {…} -->` (`libs/domain/src/swf/step-result.utils.ts`); the poller reads it at the next poll,
-moves the label to the next step and, once the relay is idle and no desktop is connected, sends the next step's prompt.
+The **steps of the pipeline** (`libs/domain/prompts/swf/`, see its README) are split between the VM and the gateway:
+`plan`, `implement`, `verify`, `gate`, `pr` are agent steps, which the **swf runner** on the session VM drives
+(`hunt-swf-runner.service`, `apps/session/src/swf-runner/swf-runner.main.ts`, as the user `agent`, enabled by
+`hunt-ctl start` for a session of origin `swf` only); `review`, `human-review` and `merge` wait for GitHub and are the
+poller's own, as is every wait for a person. The runner sends each agent step's prompt into a **fresh conversation**
+(`sudo -n hunt-ctl clear <id> --keep-stored`, the agent's one sudo rule beside `hunt-ctl service`; the relay restarts
+with a new ACP session and the tokens the VM stores), never while a turn runs or a desktop is connected, and watches the
+relay's `/run/hunt/status.json` (`fs.watch` with a poll every ten seconds, since the relay's runtime folder is created
+anew with every restart) for the turn's end; it connects to the relay's socket only to send a prompt. What earlier
+steps did is in `.hunt/swf/steps/`, which the prompts point the agent at. The agent ends an agent step with a **step
+result**, the file `.hunt/swf/result.md` of the worktree that carries `<!-- hunt:step {…} -->`
+(`libs/domain/src/swf/step-result.utils.ts`); once the turn ended, the runner moves the pipeline on (`acceptResult`), keeps the
+file as `steps/<nn>-<step>.md`, posts it as a comment on the issue with `gh` (the wrapper reads the GitHub token the
+poller refreshes), moves the label to the next step, saves the record comment and sends the next prompt, within seconds
+instead of a poll. An unusable result is discarded and the agent told why in the same conversation. A turn that ends
+without a result costs one `gh issue view` of the labels: `swf:question` means the agent asked and the runner waits
+for the poller to bring the answer, `swf:failed` that it gave up, else one reminder (`nudge.user-prompt.md`), and the
+issue is marked `swf:failed` when the next turn ends the same way. A record of version 1 the poller drives through
+these steps itself over the relay, as before the runner existed: the step result is a comment, read at the next poll.
 `plan` reads the issue and the repository's guardrails (README, CLAUDE.md, rules, skills, ADRs, `hunt.agent.md`), asks
-every question only a person can answer and comments the plan with the acceptance criteria. `implement` carries out the
-plan or fixes the findings the prompt names, runs the repository's checks, commits and pushes. `verify` runs hunt.json's
-`checks` and the repository's, verifies every acceptance criterion (in the browser with the Playwright tools for
-anything the user sees) and reads the diff as a reviewer; its findings send the issue back to `implement`, which counts
-as an attempt. `gate` has a subagent with a fresh context judge from the diff, the issue and the repository's rubric (the
-gate step's skill, `swf-gate` by default) whether a person has to review before the merge; `humanReview` stays true once set, and a
-pull request that changes a file matching `swf.humanReviewPaths` of hunt.json sets it too. `pr` opens the pull request
-(`Closes #<issue>`), comments its link and cleans up the VM; the issue moves to `In Review` in its projects, and when a
-person has to review, the pull request gets the label `hunt:human-review`, the issue's assignees (or its author) are
-requested as reviewers and mentioned once. `review` waits for the checks of the head commit and for the verdict of the
-repository's Claude review (`<!-- claude-pr-review:verdict {"headSha","blocking","findings"} -->` at the end of its
-comment): a failing check or blocking findings send the issue back to `implement` with the finding, else it goes on
-to `human-review` (waits for a person's approval; a change request goes back to `implement` with the review's text) or
-`merge` (updates the branch when it is behind the base, squash-merges when GitHub reports it mergeable, sends conflicts
-back to `implement`). After every return to `implement` the pipeline runs `verify` and `gate` again before the pull
-request is reviewed once more; after `MAX_ATTEMPTS` (5) returns the agent is told to ask the people instead
-(`2-implement-escalate.user-prompt.md`). Every agent step has a skill the repository keeps (`.claude/skills/<name>/SKILL.md`)
-and names under `swf.skills` of its hunt.json: the step's prompt tells the agent to invoke it first (the gate step's
-prompt hands it to the judging subagent), and Hunt has no fallback prompt for a missing one; the step's result, labels and questions stay
-Hunt's. A merged pull request ends the pipeline: `swf:done`, `Done` in the projects and a
-comment. A pull request closed without a merge, a missing pull request or an agent that ends a step's turn twice
-without a result (one reminder in between) mark the issue `swf:failed` with a comment; a setup that fails does so too,
-and its VM stays for inspection.
+every question only a person can answer and writes the plan with the acceptance criteria for the steps that follow.
+`implement` carries out the plan of `steps/01-plan.md` or fixes the findings the prompt names, runs the repository's
+checks, commits and pushes. `verify` runs hunt.json's `checks` and the repository's, verifies every acceptance
+criterion (in the browser with the Playwright tools for anything the user sees) and reads the diff as a reviewer; its
+findings send the issue back to `implement`, which counts as an attempt. `gate`, whose conversation is fresh and did
+not write the change, judges from the diff, the issue, the steps' results and the repository's rubric (the gate step's
+skill) whether a person has to review before the merge; `humanReview` stays true once set, and a pull request that
+changes a file matching `swf.humanReviewPaths` of hunt.json sets it too. `pr` opens the pull request (`Closes #<issue>`)
+and cleans up the VM; the poller then prepares the review once (`reviewPrepared` in the record): the issue moves to
+`In Review` in its projects, and when a person has to review, the pull request gets the label `hunt:human-review`,
+the issue's assignees (or its author) are requested as reviewers and mentioned once. `review` waits for the checks of
+the head commit and for the verdict of the repository's Claude review (`<!-- claude-pr-review:verdict
+{"headSha","blocking","findings"} -->` at the end of its comment): a failing check or blocking findings send the issue
+back to `implement` with the finding, else it goes on to `human-review` (waits for a person's approval; a change
+request goes back to `implement` with the review's text) or `merge` (updates the branch when it is behind the base,
+squash-merges when GitHub reports it mergeable, sends conflicts back to `implement`). After every return to `implement`
+the pipeline runs `verify` and `gate` again before the pull request is reviewed once more; after `MAX_ATTEMPTS` (5)
+returns the agent is told to ask the people instead (`2-implement-escalate.user-prompt.md`). Every agent step has a
+skill the repository keeps (`.claude/skills/<name>/SKILL.md`) and names under `swf.skills` of its hunt.json: the step's
+prompt tells the agent to invoke it first (the gate's names it as the rubric), and Hunt has no fallback prompt for a
+missing one; the step's result, labels and questions stay Hunt's. A merged pull request ends the pipeline: `swf:done`,
+`Done` in the projects and a comment. A pull request closed without a merge, a missing pull request or an agent that
+ends a step's turn twice without a result (one reminder in between) mark the issue `swf:failed` with a comment; a setup
+that fails does so too, and its VM stays for inspection.
+
+A session VM may disappear while its issue is in progress: the reaper deletes a VM that was off for seven days (see
+below), which an issue waiting at `human-review` reaches, or a person deletes one. The poller finds such an issue with
+one search of GitHub per repository and poll (the labels `swf:<step>` and `swf:question`, no VM of its own listed) and
+keeps it going without the VM as far as GitHub takes it: the poller steps run as before, a question waits for its
+answer. Once the pipeline needs the agent again (an agent step, or the answer arrived), the poller replaces the VM as it
+sets a new session up, but without a new record: a new VM, a clone of the branch the record names, `.hunt/swf/` restored
+from the record and the step results on the issue (one `swf-record` per run that has a result comment, so
+`steps/<nn>-<step>.md` come back), the step's run ended as `restarted` with a new run of the step (`Pipeline.restart`),
+and the runner started, which sends the step's prompt afresh into a fresh conversation; a comment on the issue names
+the new VM. A record of version 1 names no branch, so its issue is left alone with a warning in the journal.
+
+Between the two drivers everything goes through the issue and `hunt-ctl`, never through GitHub polling on the VM, so
+that a VM waiting for people can sleep. **Runner → poller**: the record comment, which the runner edits after every
+change; the poller reads `pullRequest` and `step` from it and takes over at `review`. **Poller → runner**: `hunt-ctl
+swf-inbox <id>` (root, a JSON object on stdin, no activity) puts a message into `.hunt/swf/inbox/` of the worktree
+(`libs/domain/src/swf/swf-inbox.utils.ts`): the pipeline after a transition the poller made (findings of the review or
+the merge that send the issue back to `implement`, a review it prepared), which the runner adopts when it is further
+than its own or its own waits at a poller step, and the answers to a question (comments after the agent's
+`swf:question`), which the runner sends into the agent's conversation. A VM that the idle check suspended meanwhile
+the poller starts first (`sessionVmService.start`), as it does when a prompt is pending, and hands the message over at
+the next poll. The poller still refreshes the GitHub token of every running VM at every poll and records the agent's
+state in the VM's metadata.
 
 Questions work at every step: the agent puts a red question mark and the word for a question back (`❓ RÜCKFRAGE: ` in
 German) in front of the issue's title and replaces the step's label with `swf:question`, so that GitHub's notification
@@ -1205,7 +1277,9 @@ off, until it is retrieved or deleted. Hunt records
 when its agent last worked (a prompt it sent, a turn that ended, or the relay's last turn when it connects) and, once
 that is seven days ago, asks in the main window whether to retrieve or delete it
 (`apps/client/src/sessions/remote/StaleRemoteDialog.tsx`); "Later" asks again three days later. A session VM is suspended by
-the gateway after 30 minutes without a running turn, client activity, terminal input or `hunt-ctl` run: its idle check
+the gateway after 30 minutes without a running turn, client activity, terminal input or `hunt-ctl` run (15 minutes for
+a session the software factory's poller cloned, which waits on people with nothing running; `hunt-ctl start` writes
+`IDLE_MINUTES` of `/etc/hunt/idle.conf` by the session's origin): its idle check
 (`apps/session/vm/hunt-idle-check`, every minute through `hunt-idle.timer`) decides and the gateway's sweeper (above)
 asks it and suspends; a preview page view or a request other than GET counts too, for at most two hours after the agent
 last worked. Services, dev servers and containers left running do not count. A VM cannot suspend itself, so when the
@@ -1274,9 +1348,9 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 | `apps/client/src/ui/` | Primitives shared by every feature |
 | `apps/client/src/common/` | Logic and types several features share: paths, globs, trees, the keymap, changed files, diagram types, relative times |
 | `apps/client/src/editor/` | The Monaco layer: setup, editor options, grammars, semantic tokens, line diffs |
-| `apps/gateway/` | Nx project `gateway`: the gateway VM's API (`src/gateway-api/gateway-api.main.ts`, `src/session-vm/session-vm.service.ts`, `vm/hunt-api`), issue poller (`src/swf/swf.main.ts`, `src/swf/poller.service.ts`, the steps of its pipeline with their prompts in `software-factory/`), wake service (`src/wake/wake.main.ts`) and systemd units (`vm/systemd/`) |
-| `apps/session/` | Nx project `session`: the relay (`src/relay/`), the preview's review server and widget (`src/review/`), the `hunt.json` services contract (`src/session-config/hunt-json.value-object.ts`), the versions of the agent's tools and the session VM's files and systemd units (`vm/`) |
-| `libs/domain/` | Nx project `domain`: the concepts the apps share, one folder each (`session/`: session ID, VM name, repository, branch; `swf/`: steps, step results, workflow labels, pull request state, review verdict; `remote-secrets/`; `gateway-api/`; `review/`), the value-object and domain-model base classes in `model/`, JSON-RPC and NDJSON framing in `shared/` and the system-prompt parts of remote sessions in `prompts/` |
+| `apps/gateway/` | Nx project `gateway`: the gateway VM's API (`src/gateway-api/gateway-api.main.ts`, `src/session-vm/session-vm.service.ts`, `vm/hunt-api`), issue poller (`src/swf/swf.main.ts`, `src/swf/poller.service.ts`), wake service (`src/wake/wake.main.ts`) and systemd units (`vm/systemd/`) |
+| `apps/session/` | Nx project `session`: the relay (`src/relay/`), the swf runner that drives the agent steps of the software factory on the VM (`src/swf-runner/`), the preview's review server and widget (`src/review/`), the `hunt.json` services contract (`src/session-config/hunt-json.value-object.ts`), the versions of the agent's tools and the session VM's files and systemd units (`vm/`) |
+| `libs/domain/` | Nx project `domain`: the concepts the apps share, one folder each (`session/`: session ID, VM name, repository, branch; `swf/`: the pipeline, steps, step results, workflow labels, pull request state, review verdict, the runner's inbox; `relay/`: the relay's status and the client that sends one prompt; `remote-secrets/`; `gateway-api/`; `review/`), the value-object and domain-model base classes in `model/`, JSON-RPC and NDJSON framing in `shared/`, the system-prompt parts of remote sessions in `prompts/` and the prompts of the swf pipeline's steps in `prompts/swf/` |
 | `libs/vm/` | Nx project `vm`: `hunt-ctl`, which Hunt and the gateway run on the VMs |
 | `scripts/` | Nx project `scripts`: the build of the VM release artifacts (`buildVmArtifact.ts`) |
 | `docs/adr/` | Earlier architectural decision records, kept as history |

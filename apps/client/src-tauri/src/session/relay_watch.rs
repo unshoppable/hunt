@@ -6,7 +6,7 @@
 //! not before `SECOND_RETRY`, then not before `LATER_RETRY`. What a relay reports lands in the session's
 //! `relay_activity`, which the windows hear as `remote:relay`; the sessions are not announced, since nothing else of
 //! them changed. An annotation the channel delivers goes to the windows as `review:annotation`, for the session's
-//! composer.
+//! composer. A turn that ended has the pipeline record of a software-factory session pulled (`session::swf`).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -22,6 +22,7 @@ use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::status_channel::{Annotation, Event, Report, StatusChannel, Turn};
 use crate::remote::{RelayActivity, RemoteTarget, VmRef};
 use crate::session::store;
+use crate::session::swf;
 
 /// How long a session whose channel failed to open waits for the next try after the second failure in a row, and after
 /// every later one.
@@ -201,6 +202,10 @@ fn record_report(app: &AppHandle, id: Uuid, vm: &VmRef, report: &Report) -> Resu
         target.relay_activity = activity.or(target.relay_activity);
         target.last_active_at = target.last_active_at.max(ended_at);
     })?;
+    // The turn may have moved the pipeline on, which the gateway mirrored onto the VM.
+    if ended_at.is_some() {
+        swf::pull_later(app, id);
+    }
     let Some(activity) = activity else { return Ok(()) };
     if updated.and_then(|record| record.remote).is_some_and(|target| target.vm == *vm) {
         announce(app, id, activity);

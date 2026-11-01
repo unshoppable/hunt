@@ -1,0 +1,344 @@
+/**
+ * The runner of the software factory's agent steps on a session VM (`hunt-swf-runner.service`, `swf-runner.main.ts`):
+ * it drives the pipeline (`libs/domain/src/swf/pipeline.domain.ts`) through plan, implement, verify, gate and pr, each
+ * step one turn of the agent in a fresh conversation, and leaves the steps that wait for GitHub (review, human-review,
+ * merge) and every wait for a person to the gateway's poller (`apps/gateway/src/swf/poller.service.ts`), so that the VM
+ * can sleep meanwhile. `.hunt/swf/pipeline.json` of the worktree is the pipeline's primary copy from the moment the
+ * poller started the runner; the record comment on the issue mirrors it after every change, and the poller reads it
+ * there to take over at review.
+ *
+ * `tick` is idempotent and runs whenever the relay's `status.json` or the inbox changed, and every few seconds anyway:
+ *
+ * 1. The inbox (`hunt-ctl swf-inbox`, `libs/domain/src/swf/swf-inbox.utils.ts`): a `pipeline` message replaces the local
+ *    pipeline when it is further (more runs) or when the local one is at a step the poller drives, since the poller owns
+ *    those transitions; `answers` wait until they can be sent.
+ * 2. Nothing happens while the pipeline ended, waits at a poller step, or the relay serves no session.
+ * 3. `result.md`, the step result the agent writes instead of a comment, once its turn ended: a usable one moves the
+ *    pipeline on, becomes `steps/<nn>-<step>.md` and goes to the issue as a comment, with the step's label and the
+ *    record; an unusable one is discarded and the agent is told why, in the same conversation.
+ * 4. With the relay idle and no desktop connected: the answers waiting go to the agent in the same conversation; a
+ *    pending step prompt goes into a fresh conversation (`hunt-ctl clear <id> --keep-stored`, which restarts the relay
+ *    and reports the new session); a turn that ended without a result is looked up on the issue once: the question label
+ *    means the poller brings the answer, the failed label that the agent gave up, else the agent is reminded once and
+ *    the issue is marked as failed the second time.
+ */
+import { Repository } from "../../../../libs/domain/src/session/repository.value-object.ts";
+import { messageOf } from "../../../../libs/domain/src/shared/errors.utils.ts";
+import type { Log, LogLevel } from "../../../../libs/domain/src/shared/journal.utils.ts";
+import type { PromptOutcome } from "../../../../libs/domain/src/relay/relay-prompt.client.ts";
+import type { Pipeline } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
+import { parseStepResult } from "../../../../libs/domain/src/swf/step-result.utils.ts";
+import { stoppedComment } from "../../../../libs/domain/src/swf/swf-comments.utils.ts";
+import { answerPrompt, badResultPrompt, nudgePrompt, stepPrompt, type CommentText, type PromptFiles } from "../../../../libs/domain/src/swf/swf-prompts.utils.ts";
+import { UnusableStepResult } from "../../../../libs/domain/src/swf/unusable-step-result.error.ts";
+import { SWF_LABEL, WorkflowLabels } from "../../../../libs/domain/src/swf/workflow-labels.value-object.ts";
+import type { RunnerGitHub } from "./gh.client.ts";
+import type { RelaySessionStatus } from "./relay-status-file.utils.ts";
+import type { SwfFiles } from "./swf-dir.client.ts";
+
+export interface RunnerDeps {
+  files: SwfFiles;
+  github: RunnerGitHub;
+  /** The relay's status; null while it serves no session. */
+  readStatus(): RelaySessionStatus | null;
+  /** Begins a fresh conversation (`sudo -n hunt-ctl clear <id> --keep-stored`) and gives the relay's status once it is ready. */
+  clearConversation(): Promise<RelaySessionStatus>;
+  /** Sends one prompt into the relay's session and disconnects (`sendPrompt` of `libs/domain/src/relay/relay-prompt.client.ts`). */
+  sendPrompt(request: { sessionId: string; cwd: string; text: string }): Promise<PromptOutcome>;
+  prompts: PromptFiles;
+  /** The session's worktree, the cwd of every prompt. */
+  worktree: string;
+  /** The name of the session's VM, for the comment when the agent stopped. */
+  vmName: string;
+  /** The current time in ms, the clock of the pipeline's runs. */
+  now(): number;
+  log: Log;
+}
+
+/** The answers of one inbox file, kept until they went to the agent. */
+interface WaitingAnswers {
+  name: string;
+  comments: CommentText[];
+}
+
+export class SwfRunner {
+  private readonly deps: RunnerDeps;
+  private readonly labels = WorkflowLabels.of(SWF_LABEL);
+  private isTicking = false;
+  private isTickRequested = false;
+  private answers: WaitingAnswers[] = [];
+  /** Whether the record comment misses the last change, so that the next tick saves it again. */
+  private isRecordStale = false;
+  /** The `lastTurnEndedAt` whose labels were looked up on the issue, and what they said, so that one turn end costs one request. */
+  private lookedUpTurn: number | null = null;
+  private lookedUpLabels: string[] = [];
+  private lastWait = "";
+  private lastError = "";
+  private hasWarnedOfMissingRecord = false;
+
+  constructor(deps: RunnerDeps) {
+    this.deps = deps;
+  }
+
+  /** One pass over the state, or another one right after the pass that runs; a failing pass is logged and tried again at the next tick. */
+  async tick(): Promise<void> {
+    if (this.isTicking) {
+      this.isTickRequested = true;
+      return;
+    }
+    this.isTicking = true;
+    try {
+      do {
+        this.isTickRequested = false;
+        await this.pass();
+        this.lastError = "";
+      } while (this.isTickRequested);
+    } catch (error) {
+      const message = messageOf(error);
+      if (message !== this.lastError) {
+        this.lastError = message;
+        this.deps.log(message, "error");
+      }
+    } finally {
+      this.isTicking = false;
+    }
+  }
+
+  private async pass(): Promise<void> {
+    const pipeline = this.takeInbox(this.deps.files.readPipeline());
+    if (!pipeline) {
+      this.waitOnce("no pipeline in .hunt/swf yet");
+      return;
+    }
+    if (this.isRecordStale) {
+      await this.saveRecord(pipeline);
+    }
+    if (!pipeline.currentRun) {
+      this.waitOnce(`the pipeline ended at ${pipeline.step}`);
+      return;
+    }
+    if (!pipeline.waitsForAgent) {
+      this.waitOnce(`the gateway drives the step ${pipeline.step}`);
+      return;
+    }
+    const status = this.deps.readStatus();
+    if (!status) {
+      this.waitOnce("the relay serves no session");
+      return;
+    }
+    if (status.turn !== "idle") {
+      this.waitOnce(`the agent runs a turn of ${pipeline.step}`);
+      return;
+    }
+    const result = this.deps.files.readResult();
+    if (result !== null) {
+      await this.acceptResult(pipeline, result, status);
+      return;
+    }
+    if (status.clientConnected) {
+      this.waitOnce("a desktop is connected");
+      return;
+    }
+    if (this.answers.length > 0) {
+      await this.deliverAnswers(pipeline, status);
+      return;
+    }
+    if (pipeline.isPromptPending) {
+      await this.sendStepPrompt(pipeline);
+      return;
+    }
+    if (status.lastTurnEndedAt === null || !pipeline.hasTurnEndedSincePrompt(status.lastTurnEndedAt)) {
+      this.waitOnce(`the agent works on ${pipeline.step}`);
+      return;
+    }
+    await this.handleTurnWithoutResult(pipeline, status.lastTurnEndedAt);
+  }
+
+  /**
+   * Reads the inbox: adopts the pipeline the gateway sent when it is further than `local` or `local` is at a poller
+   * step, keeps the answers for `deliverAnswers` and removes what is handled or unreadable. Gives the pipeline to go on with.
+   */
+  private takeInbox(local: Pipeline | null): Pipeline | null {
+    let pipeline = local;
+    for (const entry of this.deps.files.readInbox()) {
+      const { name, message } = entry;
+      if (!message) {
+        this.deps.log(`ignored ${name} of the inbox, which holds no message`, "warn");
+        this.deps.files.removeInboxEntry(name);
+        continue;
+      }
+      if (message.kind === "answers") {
+        if (!this.answers.some((waiting) => waiting.name === name)) {
+          this.answers.push({ name, comments: message.comments });
+        }
+        continue;
+      }
+      const incoming = message.pipeline;
+      if (!pipeline || !pipeline.waitsForAgent || incoming.runs.length > pipeline.runs.length) {
+        this.deps.files.writePipeline(incoming);
+        this.deps.log(`took the pipeline the gateway sent: at ${incoming.step} after ${incoming.runs.length} runs`);
+        pipeline = incoming;
+        this.lastWait = "";
+      } else {
+        this.deps.log(`kept the local pipeline at ${pipeline.step}; the gateway's is no further (${incoming.runs.length} runs)`, "debug");
+      }
+      this.deps.files.removeInboxEntry(name);
+    }
+    return pipeline;
+  }
+
+  /**
+   * Moves the pipeline on with the step result in `result.md`: the file becomes the ended run's `steps/<nn>-<step>.md`,
+   * the issue gets the result as a comment, the next step's label and the record; the next pass sends the next prompt.
+   * An unusable result is discarded and the agent is told why, unless a desktop is connected.
+   */
+  private async acceptResult(pipeline: Pipeline, text: string, status: RelaySessionStatus): Promise<void> {
+    const from = pipeline.step;
+    const repo = Repository.fromSlug(pipeline.repo);
+    try {
+      pipeline.acceptResult(parseStepResult(text), null, this.deps.now());
+    } catch (error) {
+      if (!(error instanceof UnusableStepResult)) throw error;
+      if (status.clientConnected) {
+        this.waitOnce(`the step result of ${from} is unusable (${error.message}); a desktop is connected`);
+        return;
+      }
+      const outcome = await this.deps.sendPrompt({ sessionId: status.acpSessionId, cwd: this.deps.worktree, text: badResultPrompt(this.deps.prompts.swfBadResult, error.message) });
+      this.deps.files.discardResult();
+      pipeline.dismissResult(null, status.lastTurnEndedAt ?? 0);
+      this.deps.files.writePipeline(pipeline);
+      this.deps.log(`the step result of ${from} is unusable (${error.message}); told the agent (prompt ${outcome})`, "warn");
+      await this.saveRecord(pipeline);
+      return;
+    }
+    const ended = pipeline.lastEndedRun;
+    if (ended) {
+      this.deps.files.keepResult(ended);
+    } else {
+      this.deps.files.discardResult();
+    }
+    this.deps.files.writePipeline(pipeline);
+    this.lastWait = "";
+    this.deps.log(`the agent reported the step ${from}; the pipeline goes on with ${pipeline.step}`);
+    this.isRecordStale = true;
+    await this.deps.github.comment(repo, pipeline.issue, text);
+    await this.relabel(repo, pipeline);
+    await this.saveRecord(pipeline);
+    this.isTickRequested = true;
+  }
+
+  /** Sends the answers waiting in the inbox to the agent in its conversation; each file's once. */
+  private async deliverAnswers(pipeline: Pipeline, status: RelaySessionStatus): Promise<void> {
+    const repo = Repository.fromSlug(pipeline.repo);
+    const waiting = this.answers.splice(0);
+    const comments = waiting.flatMap((entry) => entry.comments);
+    const text = answerPrompt(this.deps.prompts.swfAnswer, repo, pipeline.issue, comments, this.labels, pipeline.step);
+    const outcome = await this.deps.sendPrompt({ sessionId: status.acpSessionId, cwd: this.deps.worktree, text });
+    for (const entry of waiting) {
+      this.deps.files.removeInboxEntry(entry.name);
+    }
+    pipeline.noteAnswersDelivered(status.lastTurnEndedAt ?? 0);
+    this.deps.files.writePipeline(pipeline);
+    this.lookedUpTurn = null;
+    this.lastWait = "";
+    this.deps.log(`${comments.length === 1 ? "an answer" : `${comments.length} answers`} from the issue went to the agent (prompt ${outcome})`);
+    await this.saveRecord(pipeline);
+  }
+
+  /** Begins a fresh conversation and sends it the prompt of the current step, with the issue as it stands. */
+  private async sendStepPrompt(pipeline: Pipeline): Promise<void> {
+    const repo = Repository.fromSlug(pipeline.repo);
+    const thread = await this.deps.github.issue(repo, pipeline.issue);
+    const text = stepPrompt(this.deps.prompts, repo, thread.issue, thread.comments, pipeline.branch, this.labels, pipeline);
+    const status = await this.deps.clearConversation();
+    const outcome = await this.deps.sendPrompt({ sessionId: status.acpSessionId, cwd: this.deps.worktree, text });
+    pipeline.recordPrompt(status.lastTurnEndedAt ?? 0);
+    this.deps.files.writePipeline(pipeline);
+    this.lookedUpTurn = null;
+    this.lastWait = "";
+    this.deps.log(`sent the prompt of the step ${pipeline.step}${pipeline.escalate ? " (escalation)" : ""} in a fresh conversation (prompt ${outcome})`);
+    await this.saveRecord(pipeline);
+  }
+
+  /**
+   * The agent's turn ended at `lastTurnEndedAt` without a result: the issue's labels, read once per turn, say whether it
+   * asked a question (the poller brings the answer) or gave up; else the agent is reminded once and the issue is marked
+   * as failed the second time.
+   */
+  private async handleTurnWithoutResult(pipeline: Pipeline, lastTurnEndedAt: number): Promise<void> {
+    const repo = Repository.fromSlug(pipeline.repo);
+    if (this.lookedUpTurn !== lastTurnEndedAt) {
+      this.lookedUpLabels = await this.deps.github.labels(repo, pipeline.issue);
+      this.lookedUpTurn = lastTurnEndedAt;
+    }
+    if (this.lookedUpLabels.includes(this.labels.question)) {
+      this.waitOnce(`the agent asked a question at ${pipeline.step}; the gateway brings the answer`);
+      return;
+    }
+    if (this.lookedUpLabels.includes(this.labels.failed)) {
+      pipeline.fail(this.deps.now());
+      this.deps.files.writePipeline(pipeline);
+      this.deps.log(`the agent gave up at ${pipeline.step}; the issue is marked as failed`, "warn");
+      await this.saveRecord(pipeline);
+      return;
+    }
+    if (!pipeline.reminded) {
+      const text = nudgePrompt(this.deps.prompts.swfNudge, repo, pipeline.issue, this.labels, pipeline.step);
+      const outcome = await this.deps.sendPrompt({ sessionId: (await this.requireStatus()).acpSessionId, cwd: this.deps.worktree, text });
+      pipeline.remind(lastTurnEndedAt);
+      this.deps.files.writePipeline(pipeline);
+      this.deps.log(`the agent ended its turn without a result for ${pipeline.step}; reminded it (prompt ${outcome})`);
+      await this.saveRecord(pipeline);
+      return;
+    }
+    const step = pipeline.step;
+    pipeline.fail(this.deps.now());
+    this.deps.files.writePipeline(pipeline);
+    this.deps.log(`the agent ended its turn again without a result for ${step}; marking the issue as failed`, "warn");
+    this.isRecordStale = true;
+    await this.deps.github.editLabels(repo, pipeline.issue, [this.labels.failed], this.labels.carriedBy({ labels: this.lookedUpLabels }));
+    await this.deps.github.comment(repo, pipeline.issue, stoppedComment(step, this.deps.vmName));
+    await this.saveRecord(pipeline);
+  }
+
+  /** The relay's status for a prompt into the running conversation; throws when the relay went away meanwhile. */
+  private async requireStatus(): Promise<RelaySessionStatus> {
+    const status = this.deps.readStatus();
+    if (!status) throw new Error("the relay serves no session");
+    return status;
+  }
+
+  /** Gives the issue the label of the pipeline's step and takes every other label of the workflow off, as the poller does. */
+  private async relabel(repo: Repository, pipeline: Pipeline): Promise<void> {
+    const target = this.labels.step(pipeline.step);
+    const current = await this.deps.github.labels(repo, pipeline.issue);
+    const remove = this.labels.carriedBy({ labels: current }).filter((label) => label !== target);
+    await this.deps.github.editLabels(repo, pipeline.issue, current.includes(target) ? [] : [target], remove);
+  }
+
+  /** Writes the pipeline into its record comment on the issue; without one (the poller posts it) the change waits for the next save. */
+  private async saveRecord(pipeline: Pipeline): Promise<void> {
+    if (pipeline.recordId === 0) {
+      this.isRecordStale = true;
+      if (!this.hasWarnedOfMissingRecord) {
+        this.hasWarnedOfMissingRecord = true;
+        this.deps.log("the pipeline names no record comment; the issue misses its state until the gateway sends a pipeline with one", "warn");
+      }
+      return;
+    }
+    try {
+      await this.deps.github.editComment(Repository.fromSlug(pipeline.repo), pipeline.recordId, pipeline.toComment());
+      this.isRecordStale = false;
+    } catch (error) {
+      this.isRecordStale = true;
+      throw new Error(`failed to save the record comment ${pipeline.recordId}: ${messageOf(error)}`);
+    }
+  }
+
+  /** Logs `reason` once while it lasts. */
+  private waitOnce(reason: string, level: LogLevel = "info"): void {
+    if (this.lastWait === reason) return;
+    this.lastWait = reason;
+    this.deps.log(reason, level);
+  }
+}

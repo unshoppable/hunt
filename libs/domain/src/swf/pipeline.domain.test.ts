@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type * as z from "zod/mini";
-import type { ParsedStepResult, StepResult } from "../../../../libs/domain/src/swf/step-result.utils.ts";
-import { AGENT_STEPS, POLLER_STEPS, type SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
-import { MAX_ATTEMPTS, Pipeline, stepSkills, type PullRequestReview } from "./pipeline.domain.ts";
-import { SKILLS } from "./swf.fixtures.ts";
+import type { ParsedStepResult, StepResult } from "./step-result.utils.ts";
+import { AGENT_STEPS, POLLER_STEPS, type SwfStep } from "./swf-step.types.ts";
+import { MAX_ATTEMPTS, Pipeline, stepSkills, type PullRequestReview, type Run } from "./pipeline.domain.ts";
+import { ISSUE, SKILLS, started } from "./swf.fixtures.ts";
 import { UnusableStepResult } from "./unusable-step-result.error.ts";
+
+/** The poller's clock in the tests: 2026-10-25 10:00 UTC. */
+const NOW = Date.UTC(2026, 9, 25, 10, 0, 0);
 
 const HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
 /** The record's `skills` of SKILLS, as the record comment spells it. */
@@ -12,7 +15,12 @@ const SKILLS_JSON = '"skills":{"plan":"swf-plan","implement":"swf-implement","ve
 
 /** A fresh pipeline at `step`, apart from `fields`. */
 function pipelineAt(step: SwfStep, fields: Partial<z.input<typeof Pipeline.schema>> = {}): Pipeline {
-  return new Pipeline({ ...Pipeline.start([], SKILLS).toJSON(), step, ...fields });
+  return new Pipeline({ ...started(NOW).toJSON(), step, runs: [runOf(1, step)], ...fields });
+}
+
+/** A run of `step` that started at NOW and still runs, apart from `fields`. */
+function runOf(n: number, step: SwfStep, fields: Partial<Run> = {}): Run {
+  return { n, step, startedAt: new Date(NOW).toISOString(), endedAt: null, outcome: "running", ...fields };
 }
 
 /** `result` as `parseStepResult` reports a usable one. */
@@ -25,8 +33,13 @@ function review(id: number, author: string, state: string, body = ""): PullReque
 }
 
 describe("Pipeline.start", () => {
-  it("starts at plan with nothing sent or acted on, with the repository's review paths and the skill of every agent step", () => {
-    expect(Pipeline.start(["**/migrations/**"], { ...SKILLS, plan: "acme-plan" }).toJSON()).toEqual({
+  it("starts at plan with nothing sent or acted on, driven by the runner, with the issue, the repository's review paths and the skill of every agent step", () => {
+    expect(Pipeline.start(ISSUE, ["**/migrations/**"], { ...SKILLS, plan: "acme-plan" }, NOW).toJSON()).toEqual({
+      version: 2,
+      repo: "acme/app",
+      issue: 12,
+      branch: "feat/general/12-issue-12",
+      recordId: 0,
       step: "plan",
       attempt: 0,
       humanReview: false,
@@ -41,24 +54,29 @@ describe("Pipeline.start", () => {
       handledReview: null,
       mergeSha: null,
       notified: false,
+      reviewPrepared: false,
+      runs: [{ n: 1, step: "plan", startedAt: "2026-10-25T10:00:00.000Z", endedAt: null, outcome: "running" }],
     });
+    expect(started(NOW).isRunnerDriven).toBe(true);
     const unordered = { pr: "a-pr", plan: "a-plan", implement: "a-implement", verify: "a-verify", gate: "a-gate" };
-    expect(Object.keys(Pipeline.start([], unordered).skills)).toEqual([...AGENT_STEPS]);
-    expect(() => Pipeline.start([], { ...SKILLS, pr: "" })).toThrow();
+    expect(Object.keys(started(NOW, [], unordered).skills)).toEqual([...AGENT_STEPS]);
+    expect(() => started(NOW, [], { ...SKILLS, pr: "" })).toThrow();
   });
 });
 
 describe("the record comment", () => {
   it("holds the status line and the record with its keys in their order, and survives the round trip", () => {
     const fields = { attempt: 2, findings: ["Verify: a"], pullRequest: 42, promptTurn: 1760000000000 };
-    const pipeline = new Pipeline({ ...Pipeline.start(["**/migrations/**"], { ...SKILLS, gate: "acme-gate" }).toJSON(), step: "implement", ...fields });
+    const pipeline = new Pipeline({ ...started(NOW, ["**/migrations/**"], { ...SKILLS, gate: "acme-gate" }).toJSON(), step: "implement", runs: [runOf(1, "implement")], ...fields });
     const body = pipeline.toComment();
     expect(body).toBe(
       "**Hunt:** step `implement` · attempt 2 of 5 · pull request #42 · merged without a human review unless the gate asks for one\n\n" +
-        '<!-- hunt:pipeline {"step":"implement","attempt":2,"humanReview":false,"pullRequest":42,"humanReviewPaths":["**/migrations/**"],' +
+        '<!-- hunt:pipeline {"version":2,"repo":"acme/app","issue":12,"branch":"feat/general/12-issue-12","recordId":0,' +
+        '"step":"implement","attempt":2,"humanReview":false,"pullRequest":42,"humanReviewPaths":["**/migrations/**"],' +
         '"skills":{"plan":"swf-plan","implement":"swf-implement","verify":"swf-verify","gate":"acme-gate","pr":"swf-pr"},' +
         '"findings":["Verify: a"],"escalate":false,"promptTurn":1760000000000,"reminded":false,' +
-        '"lastResultId":0,"handledReview":null,"mergeSha":null,"notified":false} -->\n',
+        '"lastResultId":0,"handledReview":null,"mergeSha":null,"notified":false,"reviewPrepared":false,' +
+        '"runs":[{"n":1,"step":"implement","startedAt":"2026-10-25T10:00:00.000Z","endedAt":null,"outcome":"running"}]} -->\n',
     );
     expect(body.startsWith(pipeline.statusLine)).toBe(true);
     expect(Pipeline.fromComment(body)).toEqual(pipeline);
@@ -66,7 +84,7 @@ describe("the record comment", () => {
   });
 
   it("tells in the status line whether a person approves and leaves out what is not there yet", () => {
-    expect(Pipeline.start([], SKILLS).statusLine).toBe("**Hunt:** step `plan` · merged without a human review unless the gate asks for one");
+    expect(started(NOW).statusLine).toBe("**Hunt:** step `plan` · merged without a human review unless the gate asks for one");
     const human = pipelineAt("human-review", { humanReview: true, pullRequest: 31 });
     expect(human.statusLine).toBe("**Hunt:** step `human-review` · pull request #31 · a person reviews before the merge");
   });
@@ -91,12 +109,16 @@ describe("the record comment", () => {
     expect(Pipeline.fromComment(`<!-- hunt:pipeline {"step":"plan","skills":${JSON.stringify({ ...SKILLS, review: "nope" })}} -->`)).toBeNull();
   });
 
-  it("tolerates the missing fields of an older record and orders the skills by the steps", () => {
+  /** The fields a record written before the runner existed lacks: version 1, which the poller drives, and no issue. */
+  const OLDER = { version: 1, repo: "", issue: 0, branch: "" };
+
+  it("tolerates the missing fields of an older record, which the poller drives, and orders the skills by the steps", () => {
     const merge = Pipeline.fromComment(`<!-- hunt:pipeline {"step":"merge","humanReview":true,${SKILLS_JSON}} -->`);
-    expect(merge?.toJSON()).toEqual({ ...Pipeline.start([], SKILLS).toJSON(), step: "merge", humanReview: true });
-    expect(merge?.toComment()).toBe(pipelineAt("merge", { humanReview: true }).toComment());
+    expect(merge?.toJSON()).toEqual({ ...started(NOW).toJSON(), ...OLDER, step: "merge", humanReview: true, runs: [] });
+    expect(merge?.isRunnerDriven).toBe(false);
+    expect(merge?.toComment()).toBe(pipelineAt("merge", { ...OLDER, humanReview: true, runs: [] }).toComment());
     const unordered = Pipeline.fromComment('<!-- hunt:pipeline {"step":"plan","skills":{"pr":"swf-pr","plan":"acme-plan","gate":"swf-gate","verify":"swf-verify","implement":"swf-implement"}} -->');
-    expect(unordered).toEqual(Pipeline.start([], { ...SKILLS, plan: "acme-plan" }));
+    expect(unordered?.toJSON()).toEqual({ ...started(NOW, [], { ...SKILLS, plan: "acme-plan" }).toJSON(), ...OLDER, runs: [] });
     expect(Object.keys(unordered?.skills ?? {})).toEqual([...AGENT_STEPS]);
   });
 
@@ -104,7 +126,69 @@ describe("the record comment", () => {
     const body =
       `<!-- hunt:pipeline {"step":"verify","attempt":"2","humanReview":"yes","pullRequest":"31","humanReviewPaths":["a/**",7],${SKILLS_JSON},` +
       '"findings":"x","escalate":1,"promptTurn":"5","reminded":"no","lastResultId":1.5,"handledReview":false,"mergeSha":7,"notified":null,"extra":true} -->';
-    expect(Pipeline.fromComment(body)?.toJSON()).toEqual({ ...Pipeline.start(["a/**"], SKILLS).toJSON(), step: "verify" });
+    expect(Pipeline.fromComment(body)?.toJSON()).toEqual({ ...started(NOW, ["a/**"]).toJSON(), ...OLDER, step: "verify", runs: [] });
+  });
+
+  it("drops a runs field that is no list and keeps a list of runs as it is", () => {
+    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"step":"verify","runs":"none",${SKILLS_JSON}} -->`)?.runs).toEqual([]);
+    const runs = [runOf(1, "plan", { endedAt: "2026-10-25T10:05:00.000Z", outcome: "passed" }), runOf(2, "verify")];
+    expect(Pipeline.fromComment(`<!-- hunt:pipeline {"step":"verify","runs":${JSON.stringify(runs)},${SKILLS_JSON}} -->`)?.runs).toEqual(runs);
+  });
+});
+
+describe("the runs of the pipeline", () => {
+  const LATER = NOW + 5 * 60_000;
+  const ENDED = { endedAt: "2026-10-25T10:05:00.000Z" };
+
+  it("logs one run per step, ends a run as passed when the step's result moves the pipeline on, and starts the next", () => {
+    const pipeline = started(NOW);
+    pipeline.acceptResult(reported({ step: "plan" }), 11, LATER);
+    expect(pipeline.runs).toEqual([runOf(1, "plan", { ...ENDED, outcome: "passed" }), { ...runOf(2, "implement"), startedAt: "2026-10-25T10:05:00.000Z" }]);
+    expect(pipeline.currentRun).toEqual(pipeline.runs[1]);
+    expect(pipeline.lastEndedRun).toEqual(pipeline.runs[0]);
+  });
+
+  it("ends a run that sends the issue back as returned with the number of findings, and names it as the cause of the implement run", () => {
+    const pipeline = pipelineAt("verify", { runs: [runOf(1, "plan", { ...ENDED, outcome: "passed" }), runOf(2, "implement", { ...ENDED, outcome: "passed" }), runOf(3, "verify")] });
+    pipeline.acceptResult(reported({ step: "verify", findings: ["a", "b"] }), 20, LATER);
+    expect(pipeline.runs.slice(2)).toEqual([runOf(3, "verify", { ...ENDED, outcome: "returned", findings: 2 }), { ...runOf(4, "implement", { cause: 3 }), startedAt: "2026-10-25T10:05:00.000Z" }]);
+    const review = pipelineAt("review", { pullRequest: 31, runs: [runOf(1, "review")] });
+    review.sendBackToImplement(["Checks: build failed"], LATER);
+    expect(review.runs[0]).toEqual(runOf(1, "review", { ...ENDED, outcome: "returned", findings: 1 }));
+    expect(review.runs[1].cause).toBe(1);
+    const human = pipelineAt("human-review", { humanReview: true, pullRequest: 31, runs: [runOf(1, "human-review")] });
+    human.handleChangeRequest(503, "Rename it", LATER);
+    expect(human.runs.map((run) => [run.step, run.outcome, run.cause])).toEqual([["human-review", "returned", undefined], ["implement", "running", 1]]);
+  });
+
+  it("logs the poller's steps too: review passed, approval, the merge completed, and a failure at any step", () => {
+    const pipeline = pipelineAt("review", { humanReview: true, pullRequest: 31, runs: [runOf(1, "review")] });
+    pipeline.passReview(LATER);
+    pipeline.approve(LATER);
+    pipeline.complete(LATER);
+    expect(pipeline.runs.map((run) => [run.n, run.step, run.outcome])).toEqual([[1, "review", "passed"], [2, "human-review", "passed"], [3, "merge", "passed"]]);
+    expect(pipeline.currentRun).toBeUndefined();
+    expect(pipeline.lastEndedRun?.n).toBe(3);
+    expect(() => pipelineAt("review", { runs: [runOf(1, "review")] }).complete(LATER)).toThrow("completing the pipeline needs the step merge, but the pipeline is at review");
+    const failed = pipelineAt("implement", { runs: [runOf(1, "implement")] });
+    failed.fail(LATER);
+    expect(failed.runs).toEqual([runOf(1, "implement", { ...ENDED, outcome: "failed" })]);
+  });
+
+  it("starts an agent step over on a replaced VM: the run ends as restarted, a new run of the step waits for its prompt, the rest stays", () => {
+    const pipeline = pipelineAt("implement", { attempt: 2, findings: ["Verify: a"], promptTurn: 1_000, reminded: true, runs: [runOf(1, "verify", { ...ENDED, outcome: "returned", findings: 1 }), runOf(2, "implement", { cause: 1 })] });
+    pipeline.restart(LATER);
+    expect(pipeline.runs.slice(1)).toEqual([runOf(2, "implement", { ...ENDED, outcome: "restarted", cause: 1 }), { ...runOf(3, "implement"), startedAt: "2026-10-25T10:05:00.000Z" }]);
+    expect(pipeline).toMatchObject({ step: "implement", attempt: 2, findings: ["Verify: a"], promptTurn: null, reminded: false });
+    expect(pipeline.isPromptPending).toBe(true);
+    expect(() => pipelineAt("review", { pullRequest: 31, runs: [runOf(1, "review")] }).restart(LATER)).toThrow("the step review waits for GitHub, not for the agent; nothing to restart");
+  });
+
+  it("goes on without a log for an older record and refuses a running run of another step than the current one", () => {
+    const old = new Pipeline({ ...pipelineAt("verify").toJSON(), runs: [] });
+    old.acceptResult(reported({ step: "verify", findings: [] }), 20, LATER);
+    expect(old.runs).toEqual([{ ...runOf(1, "gate"), startedAt: "2026-10-25T10:05:00.000Z" }]);
+    expect(() => pipelineAt("verify", { runs: [runOf(1, "plan")] })).toThrow(/the running run is the current step's/);
   });
 });
 
@@ -153,7 +237,7 @@ describe("Pipeline queries", () => {
   });
 
   it("names the repository's skill of a step", () => {
-    const pipeline = Pipeline.start([], { ...SKILLS, plan: "acme-plan" });
+    const pipeline = started(NOW, [], { ...SKILLS, plan: "acme-plan" });
     expect(pipeline.skillOf("plan")).toBe("acme-plan");
     expect(pipeline.skillOf("gate")).toBe("swf-gate");
   });
@@ -183,51 +267,51 @@ describe("Pipeline queries", () => {
 describe("Pipeline.acceptResult", () => {
   it("walks plan → implement → verify → gate → pr → review and records the result's comment id", () => {
     const pipeline = pipelineAt("plan", { promptTurn: 5, reminded: true, attempt: 3, findings: ["old"], escalate: true });
-    pipeline.acceptResult(reported({ step: "plan" }), 11);
+    pipeline.acceptResult(reported({ step: "plan" }), 11, NOW);
     expect(pipeline).toMatchObject({ step: "implement", lastResultId: 11, promptTurn: null, reminded: false, attempt: 0, findings: [], escalate: false });
-    pipeline.acceptResult(reported({ step: "implement", summary: "done" }), 12);
+    pipeline.acceptResult(reported({ step: "implement", summary: "done" }), 12, NOW);
     expect(pipeline.step).toBe("verify");
-    pipeline.acceptResult(reported({ step: "verify", findings: [] }), 13);
+    pipeline.acceptResult(reported({ step: "verify", findings: [] }), 13, NOW);
     expect(pipeline.step).toBe("gate");
-    pipeline.acceptResult(reported({ step: "gate", humanReview: false, risk: "low", reasons: [] }), 14);
+    pipeline.acceptResult(reported({ step: "gate", humanReview: false, risk: "low", reasons: [] }), 14, NOW);
     expect(pipeline).toMatchObject({ step: "pr", humanReview: false });
-    pipeline.acceptResult(reported({ step: "pr", pullRequest: 42 }), 15);
+    pipeline.acceptResult(reported({ step: "pr", pullRequest: 42 }), 15, NOW);
     expect(pipeline).toMatchObject({ step: "review", pullRequest: 42, lastResultId: 15 });
   });
 
   it("sends verify findings back to implement, prefixed, and counts the attempt", () => {
     const pipeline = pipelineAt("verify");
-    pipeline.acceptResult(reported({ step: "verify", findings: ["button missing", "test fails"] }), 20);
+    pipeline.acceptResult(reported({ step: "verify", findings: ["button missing", "test fails"] }), 20, NOW);
     expect(pipeline).toMatchObject({ step: "implement", attempt: 1, escalate: false, lastResultId: 20 });
     expect(pipeline.findings).toEqual(["Verify: button missing", "Verify: test fails"]);
   });
 
   it("skips the pr step when the pull request exists and keeps humanReview once set", () => {
     const pipeline = pipelineAt("gate", { pullRequest: 42, humanReview: true });
-    pipeline.acceptResult(reported({ step: "gate", humanReview: false, risk: "low", reasons: [] }), 21);
+    pipeline.acceptResult(reported({ step: "gate", humanReview: false, risk: "low", reasons: [] }), 21, NOW);
     expect(pipeline).toMatchObject({ step: "review", humanReview: true, pullRequest: 42 });
   });
 
   it("refuses a result for another step than the current one and changes nothing", () => {
     const pipeline = pipelineAt("verify", { lastResultId: 3 });
-    expect(() => pipeline.acceptResult(reported({ step: "plan" }), 22)).toThrow(UnusableStepResult);
-    expect(() => pipeline.acceptResult(reported({ step: "plan" }), 22)).toThrow("the result reports step plan, but the current step is verify");
+    expect(() => pipeline.acceptResult(reported({ step: "plan" }), 22, NOW)).toThrow(UnusableStepResult);
+    expect(() => pipeline.acceptResult(reported({ step: "plan" }), 22, NOW)).toThrow("the result reports step plan, but the current step is verify");
     expect(pipeline.toJSON()).toEqual(pipelineAt("verify", { lastResultId: 3 }).toJSON());
   });
 
   it("refuses a comment without a usable result with the parser's problem", () => {
     const pipeline = pipelineAt("gate");
-    expect(() => pipeline.acceptResult(null, 1)).toThrow(UnusableStepResult);
-    expect(() => pipeline.acceptResult(null, 1)).toThrow("no step marker");
+    expect(() => pipeline.acceptResult(null, 1, NOW)).toThrow(UnusableStepResult);
+    expect(() => pipeline.acceptResult(null, 1, NOW)).toThrow("no step marker");
     const problem = "humanReview of a gate result must be true or false";
-    expect(() => pipeline.acceptResult({ problem }, 1)).toThrow(problem);
+    expect(() => pipeline.acceptResult({ problem }, 1, NOW)).toThrow(problem);
     expect(pipeline.lastResultId).toBe(0);
   });
 
   it("refuses a result the poller acted on already", () => {
     const pipeline = pipelineAt("implement", { lastResultId: 12 });
     const again = reported({ step: "implement", summary: "again" });
-    expect(() => pipeline.acceptResult(again, 12)).toThrow("the step result 12 is not newer than the last one acted on, 12");
+    expect(() => pipeline.acceptResult(again, 12, NOW)).toThrow("the step result 12 is not newer than the last one acted on, 12");
     expect(pipeline.step).toBe("implement");
   });
 });
@@ -243,6 +327,12 @@ describe("Pipeline.dismissResult", () => {
     const pipeline = pipelineAt("gate", { lastResultId: 1004 });
     expect(() => pipeline.dismissResult(1003, 5_000)).toThrow("the step result 1003 is not newer than the last one acted on, 1004");
     expect(pipeline.promptTurn).toBeNull();
+  });
+
+  it("dismisses the result the runner read from the file without a comment id, keeping the last one acted on", () => {
+    const pipeline = pipelineAt("gate", { lastResultId: 1004, promptTurn: 3_000, reminded: true });
+    pipeline.dismissResult(null, 4_000);
+    expect(pipeline.toJSON()).toEqual(pipelineAt("gate", { lastResultId: 1004, promptTurn: 4_000 }).toJSON());
   });
 });
 
@@ -299,20 +389,20 @@ describe("Pipeline.sendBackToImplement", () => {
   it("counts the attempts, escalates past MAX_ATTEMPTS and starts counting again", () => {
     const pipeline = pipelineAt("verify");
     for (let round = 1; round <= MAX_ATTEMPTS; round++) {
-      pipeline.sendBackToImplement([`finding ${round}`]);
+      pipeline.sendBackToImplement([`finding ${round}`], NOW);
       expect(pipeline).toMatchObject({ step: "implement", attempt: round, escalate: false, findings: [`finding ${round}`] });
-      pipeline.acceptResult(reported({ step: "implement", summary: "fixed" }), round);
+      pipeline.acceptResult(reported({ step: "implement", summary: "fixed" }), round, NOW);
     }
-    pipeline.sendBackToImplement(["again"]);
+    pipeline.sendBackToImplement(["again"], NOW);
     expect(pipeline).toMatchObject({ step: "implement", attempt: 0, escalate: true, findings: ["again"] });
-    pipeline.acceptResult(reported({ step: "implement", summary: "asked" }), MAX_ATTEMPTS + 1);
-    pipeline.sendBackToImplement(["once more"]);
+    pipeline.acceptResult(reported({ step: "implement", summary: "asked" }), MAX_ATTEMPTS + 1, NOW);
+    pipeline.sendBackToImplement(["once more"], NOW);
     expect(pipeline).toMatchObject({ step: "implement", attempt: 1, escalate: false });
   });
 
   it("enters implement afresh and keeps only findings with text, at most 20 of at most 4000 characters", () => {
     const pipeline = pipelineAt("merge", { pullRequest: 31, mergeSha: HEAD_SHA, promptTurn: 0 });
-    pipeline.sendBackToImplement(["", "  ", "x".repeat(5000), ...Array.from({ length: 25 }, (_entry, index) => `finding ${index}`)]);
+    pipeline.sendBackToImplement(["", "  ", "x".repeat(5000), ...Array.from({ length: 25 }, (_entry, index) => `finding ${index}`)], NOW);
     expect(pipeline).toMatchObject({ step: "implement", attempt: 1, pullRequest: 31, mergeSha: null, promptTurn: null, reminded: false });
     expect(pipeline.findings).toHaveLength(20);
     expect(pipeline.findings[0]).toBe("x".repeat(4000));
@@ -322,7 +412,7 @@ describe("Pipeline.sendBackToImplement", () => {
   it("refuses a step that checks nothing", () => {
     for (const step of ["plan", "implement", "gate", "pr"] as const) {
       const pipeline = pipelineAt(step);
-      expect(() => pipeline.sendBackToImplement(["a finding"]), step).toThrow(`the step ${step} checks nothing that could send the issue back to implement`);
+      expect(() => pipeline.sendBackToImplement(["a finding"], NOW), step).toThrow(`the step ${step} checks nothing that could send the issue back to implement`);
       expect(pipeline.step).toBe(step);
     }
   });
@@ -331,45 +421,46 @@ describe("Pipeline.sendBackToImplement", () => {
 describe("Pipeline.passReview", () => {
   it("goes on from a passed review to merge, or to human-review when a person has to approve", () => {
     const merge = pipelineAt("review", { pullRequest: 31 });
-    merge.passReview();
+    merge.passReview(NOW);
     expect(merge.step).toBe("merge");
     const human = pipelineAt("review", { pullRequest: 31, humanReview: true, notified: true });
-    human.passReview();
+    human.passReview(NOW);
     expect(human).toMatchObject({ step: "human-review", humanReview: true, notified: true });
   });
 
   it("refuses another step than review", () => {
-    expect(() => pipelineAt("merge").passReview()).toThrow("passing the review needs the step review, but the pipeline is at merge");
+    expect(() => pipelineAt("merge").passReview(NOW)).toThrow("passing the review needs the step review, but the pipeline is at merge");
   });
 });
 
 describe("Pipeline.approve", () => {
   it("goes on from a person's approval to merge", () => {
     const pipeline = pipelineAt("human-review", { pullRequest: 31, humanReview: true, notified: true });
-    pipeline.approve();
-    expect(pipeline.toJSON()).toEqual(pipelineAt("merge", { pullRequest: 31, humanReview: true, notified: true }).toJSON());
+    pipeline.approve(NOW);
+    const runs = [runOf(1, "human-review", { endedAt: new Date(NOW).toISOString(), outcome: "passed" }), runOf(2, "merge")];
+    expect(pipeline.toJSON()).toEqual(pipelineAt("merge", { pullRequest: 31, humanReview: true, notified: true, runs }).toJSON());
   });
 
   it("refuses another step than human-review", () => {
-    expect(() => pipelineAt("review").approve()).toThrow("an approval needs the step human-review, but the pipeline is at review");
+    expect(() => pipelineAt("review").approve(NOW)).toThrow("an approval needs the step human-review, but the pipeline is at review");
   });
 });
 
 describe("Pipeline.handleChangeRequest", () => {
   it("sends a person's change request back to implement and counts the review as handled", () => {
     const pipeline = pipelineAt("human-review", { pullRequest: 31, humanReview: true, attempt: 1 });
-    pipeline.handleChangeRequest(503, "@carol requested changes on #31:\nRename the index.");
+    pipeline.handleChangeRequest(503, "@carol requested changes on #31:\nRename the index.", NOW);
     expect(pipeline).toMatchObject({ step: "implement", attempt: 2, findings: ["@carol requested changes on #31:\nRename the index."], handledReview: 503 });
   });
 
   it("refuses another step than human-review", () => {
     const pipeline = pipelineAt("review");
-    expect(() => pipeline.handleChangeRequest(503, "Rename it")).toThrow("a change request needs the step human-review, but the pipeline is at review");
+    expect(() => pipeline.handleChangeRequest(503, "Rename it", NOW)).toThrow("a change request needs the step human-review, but the pipeline is at review");
   });
 
   it("refuses a review that was handled already", () => {
     const pipeline = pipelineAt("human-review", { humanReview: true, handledReview: 503 });
-    expect(() => pipeline.handleChangeRequest(503, "Rename it")).toThrow("the review 503 was handled already");
+    expect(() => pipeline.handleChangeRequest(503, "Rename it", NOW)).toThrow("the review 503 was handled already");
     expect(pipeline.step).toBe("human-review");
   });
 });
@@ -378,7 +469,7 @@ describe("Pipeline.requireHumanReview", () => {
   it("lets a person approve before the merge from now on", () => {
     const pipeline = pipelineAt("review", { pullRequest: 31 });
     pipeline.requireHumanReview();
-    pipeline.passReview();
+    pipeline.passReview(NOW);
     expect(pipeline).toMatchObject({ step: "human-review", humanReview: true });
   });
 });

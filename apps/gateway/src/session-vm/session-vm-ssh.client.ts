@@ -13,7 +13,7 @@ import { join } from "node:path";
 import type { ReleaseInfo } from "../../../../libs/domain/src/gateway-api/gateway-api.types.ts";
 import type { SessionId } from "../../../../libs/domain/src/session/session-id.value-object.ts";
 import type { Log } from "../../../../libs/domain/src/shared/journal.utils.ts";
-import type { Transport } from "./relay.client.ts";
+import type { Transport } from "../../../../libs/domain/src/relay/relay-prompt.client.ts";
 import { ApiError } from "../../../../libs/domain/src/gateway-api/api.error.ts";
 
 /** The session release CI staged on the gateway, a link to `/srv/hunt/session-releases/<hash>`. */

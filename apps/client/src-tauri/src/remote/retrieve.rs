@@ -44,6 +44,9 @@ pub struct RetrieveRequest<'a> {
     /// The ACP session ids of the transcripts this Mac owns (the session's sub chats), whose copies on the VM are not
     /// brought back over them.
     pub local_ids: &'a [String],
+    /// Whether the session's pipeline record (`.hunt/swf/`, see `session::swf`) comes along, which the file sync leaves
+    /// out: set for a software-factory session.
+    pub swf_record: bool,
 }
 
 /// The ACP session id the transcript continues under, as the relay left it, and for an adopted session the branch its
@@ -90,6 +93,9 @@ pub async fn retrieve(request: RetrieveRequest<'_>, progress: Progress<'_>) -> R
     move_branch(worktree, &id, &target.branch, &target.handoff_head, &retrieve_ref).await?;
     finish_worktree(worktree, &retrieve_ref).await?;
     sync::clear_staging(worktree);
+    if request.swf_record {
+        pull_swf_record(&ssh, worktree, &remote_worktree).await;
+    }
 
     let acp_session_id = retrieve_transcript(&request, &ssh, &remote_worktree).await?;
     Ok(Retrieved { acp_session_id, branch: None })
@@ -345,12 +351,23 @@ async fn retrieve_adopted(request: &RetrieveRequest<'_>, repo: &Path, progress: 
     fetch(repo, &ssh, &remote_worktree, &retrieve_ref).await?;
     download_lfs_objects(repo, &ssh, &id, &retrieve_ref).await?;
     create_worktree_from_snapshot(repo, worktree, &branch, &retrieve_ref).await?;
+    if request.swf_record {
+        pull_swf_record(&ssh, worktree, &remote_worktree).await;
+    }
     match retrieve_transcript(request, &ssh, &remote_worktree).await {
         Ok(acp_session_id) => Ok(Retrieved { acp_session_id, branch: Some(branch) }),
         Err(error) => {
             remove_worktree(repo, worktree, &branch).await;
             Err(error)
         }
+    }
+}
+
+/// Brings the pipeline record of the software-factory session into the local `worktree` from `remote_worktree` on its VM; a
+/// failure is logged, since the retrieval does not depend on it and the record stays readable on the issue.
+async fn pull_swf_record(ssh: &Ssh, worktree: &Path, remote_worktree: &str) {
+    if let Err(error) = crate::session::swf::pull_record(ssh, worktree, remote_worktree).await {
+        eprintln!("bringing the pipeline record of the session from its VM failed: {error}");
     }
 }
 

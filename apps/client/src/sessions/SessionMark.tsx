@@ -1,4 +1,5 @@
 import { useHuntStore, type HuntState } from "./hunt.store";
+import { pipelineAgentOf, useFactoryStore } from "./swf-pipeline.store";
 import { runsOnVm } from "./remote/remote-origin.utils";
 import { sessionMarkState, type MarkState } from "./session-mark-state.utils";
 
@@ -28,18 +29,20 @@ export type MarkBadge = "question" | "unseen" | null;
  * relay last reported, or else what the gateway recorded (see `sessionMarkState`).
  */
 export function SessionMark({ sessionId, mark, title }: { sessionId: string; mark: string; title?: string }) {
-  const isBusy = useHuntStore((state) => markStateOf(state, sessionId).isBusy);
-  const hasQuestion = useHuntStore((state) => markStateOf(state, sessionId).hasQuestion);
+  const pipelineAgent = useFactoryStore((state) => pipelineAgentOf(state.pipelines[sessionId]));
+  const isBusy = useHuntStore((state) => markStateOf(state, sessionId, pipelineAgent).isBusy);
+  const hasQuestion = useHuntStore((state) => markStateOf(state, sessionId, pipelineAgent).hasQuestion);
   const isRemote = useHuntStore((state) => runsOnVm(sessionId, state.sessions));
   const hasUnseenActivity = useHuntStore((state) => state.activeSessionId !== sessionId && (state.chats[sessionId]?.hasUnseenActivity ?? false));
   const badge = hasQuestion ? "question" : hasUnseenActivity ? "unseen" : null;
   return <MarkGlyph mark={mark} isBusy={isBusy} badge={badge} tone={isRemote ? "remote" : "idle"} label={title ?? mark} title={title} />;
 }
 
-function markStateOf(state: HuntState, sessionId: string): MarkState {
+function markStateOf(state: HuntState, sessionId: string, pipelineAgent: string | null): MarkState {
   return sessionMarkState(
     state.sessions.find((session) => session.id === sessionId),
     state.chats[sessionId],
+    pipelineAgent,
   );
 }
 

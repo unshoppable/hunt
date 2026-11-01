@@ -23,7 +23,7 @@ use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::{self, RemoteTarget, VmSettings};
 use crate::session::link::{self, Link};
 use crate::session::relay_watch;
-use crate::session::store::{self, announce_sessions_changed, SelectionContext, SessionRecord, Workspace};
+use crate::session::store::{self, announce_sessions_changed, SelectionContext, SessionMode, SessionRecord, Workspace};
 use crate::session::sync;
 use crate::session::vm_cleanup::{deleted_session_vms, run_pending_cleanups};
 use crate::terminal::tmux;
@@ -418,6 +418,7 @@ pub async fn retrieve_session(
             sync_base_ref: &sync_base_ref,
             adopted_into,
             local_ids: &local_ids,
+            swf_record: record.mode == SessionMode::Swf,
         };
         let retrieved = remote::retrieve::retrieve(request, &progress_reporter(&app, id)).await?;
         finish_retrieval(&app, &registry, &watchers, id, &target, retrieved, VmEnd::Delete).await

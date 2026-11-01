@@ -4,7 +4,7 @@ import type { SessionView } from "../../sessions/session.types";
 import { selectionChatsFor } from "./selection-chats.utils";
 
 function session(id: string, worktreePath: string, parentId: string | null, selection: SelectionContext | null): SessionView {
-  return { id, title: id, repoPath: "", worktreePath, branch: "", baseRef: "", baseCommit: "", acpSessionId: null, createdAt: "", isLive: true, parentId, selection, summary: [], touchedFiles: [], worktreeChangedAt: null, pullRequest: null, diffBase: null, reviewComments: [], workspace: "worktree", keepsBranch: false, remote: null, leftoverVm: null, dependencies: null, hasLocalWorktree: true, pushTarget: "main" };
+  return { id, title: id, repoPath: "", worktreePath, branch: "", baseRef: "", baseCommit: "", acpSessionId: null, createdAt: "", isLive: true, parentId, selection, summary: [], touchedFiles: [], worktreeChangedAt: null, pullRequest: null, diffBase: null, reviewComments: [], workspace: "worktree", keepsBranch: false, remote: null, leftoverVm: null, dependencies: null, hasLocalWorktree: true, mode: "edit", pushTarget: "main" };
 }
 
 const selection: SelectionContext = { path: "src/a.ts", startLine: 16, endLine: 19, text: "code" };

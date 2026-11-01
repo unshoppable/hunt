@@ -23,6 +23,7 @@ import type { GithubViewer, PullRequestDetails, ReplyTarget, ReviewComment, Revi
 import type { PullRequest, PullRequestState } from "../sessions/pull-requests.types";
 import type { RemoteLink, SessionVm } from "../sessions/remote/remote-session.types";
 import type { PullRequestRef, SessionEnding, SessionView, Workspace } from "../sessions/session.types";
+import type { SwfPipelineFiles } from "../sessions/swf-pipeline.types";
 import type { CliInstall, GithubTokenStatus, RemoteSecretSummary, VmSettings } from "../settings/settings.types";
 import type { Machine, TerminalTarget, TmuxWindow } from "../terminal/terminal.types";
 
@@ -216,6 +217,10 @@ export const commands = {
   cancelAllChecks: (id: string) => invoke<void>("cancel_all_checks", { id }),
   /** The output of the last run of the check `name` as plain text, or why it could not start; `null` before its first run. */
   checkOutput: (id: string, name: string) => invoke<string | null>("check_output", { id, name }),
+  /** The swf pipeline's record and step results pulled into the worktree's `.hunt/swf/`; `null` while the pipeline wrote none. */
+  readSwfPipeline: (sessionId: string) => invoke<SwfPipelineFiles | null>("read_swf_pipeline", { sessionId }),
+  /** The markdown of the step result that ended the pipeline's run `n` (`.hunt/swf/steps/<nn>-<step>.md`); `null` without one. */
+  readSwfStep: (sessionId: string, n: number) => invoke<string | null>("read_swf_step", { sessionId, n }),
   closeSession: (id: string, ending: SessionEnding) => invoke<void>("close_session", { id, ending }),
   /** Prepares the worktree's `node_modules` again after a failed attempt; progress arrives through `sessions:changed`. */
   prepareDependencies: (id: string) => invoke<void>("prepare_dependencies", { id }),

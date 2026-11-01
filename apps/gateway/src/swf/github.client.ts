@@ -9,7 +9,7 @@ import { isRecord } from "../../../../libs/domain/src/shared/json-rpc.utils.ts";
 import type { Repository } from "../../../../libs/domain/src/session/repository.value-object.ts";
 import { PullRequestState } from "../../../../libs/domain/src/swf/pull-request-state.value-object.ts";
 import { ERROR_TEXT_LIMIT, failure } from "../shared/http-failure.utils.ts";
-import type { PullRequestReview } from "./pipeline.domain.ts";
+import type { PullRequestReview } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 
 const API = "https://api.github.com";
 const PER_PAGE = 100;
@@ -48,6 +48,11 @@ export interface LabelSpec {
 export interface GitHub {
   /** The open issues of `repo` with `label`, oldest first; pull requests are left out. */
   openIssues(repo: Repository, label: string): Promise<Issue[]>;
+  /**
+   * The open issues of `repo` that carry at least one of `labels`, oldest first, through GitHub's search, whose index
+   * runs a few seconds behind the issues; pull requests are left out.
+   */
+  openIssuesWithAny(repo: Repository, labels: string[]): Promise<Issue[]>;
   /** The issue with its current labels and state; null when it does not exist (any more). */
   issue(repo: Repository, issue: number): Promise<Issue | null>;
   /** Every comment of the issue, oldest first. */
@@ -288,14 +293,14 @@ export function createGitHub(tokenFor: (repo: Repository) => Promise<string>, fe
     return result.data ?? {};
   }
 
-  /** Every item of a paginated list of `repo`. */
-  async function list(repo: Repository, path: string, what: string): Promise<unknown[]> {
+  /** Every item of a paginated list of `repo`; `itemsOf` picks the items out of a page (the page itself by default). */
+  async function list(repo: Repository, path: string, what: string, itemsOf: (page: unknown) => unknown[] = (page) => page as unknown[]): Promise<unknown[]> {
     const items: unknown[] = [];
     let next: string | null = path;
     while (next) {
       const response = await call(repo, "GET", next);
       if (!response.ok) throw await failure(response, what);
-      items.push(...((await response.json()) as unknown[]));
+      items.push(...itemsOf(await response.json()));
       next = nextPageUrl(response.headers.get("link"));
     }
     return items;
@@ -305,6 +310,16 @@ export function createGitHub(tokenFor: (repo: Repository) => Promise<string>, fe
     async openIssues(repo, label) {
       const query = `state=open&labels=${encodeURIComponent(label)}&sort=created&direction=asc&per_page=${PER_PAGE}`;
       return parseIssues(await list(repo, `/repos/${repo.path}/issues?${query}`, `list the issues of ${repo.slug} labelled ${label}`));
+    },
+    async openIssuesWithAny(repo, labels) {
+      // A comma between quoted labels means any of them, where one `label:` qualifier per label would mean all of them.
+      const terms = `repo:${repo.slug} is:issue is:open label:${labels.map((label) => `"${label}"`).join(",")}`;
+      const query = `q=${encodeURIComponent(terms)}&sort=created&order=asc&per_page=${PER_PAGE}`;
+      const pages = await list(repo, `/search/issues?${query}`, `search the issues of ${repo.slug} labelled ${labels.join(", ")}`, (page) => {
+        const items = (page as { items?: unknown } | null)?.items;
+        return Array.isArray(items) ? items : [];
+      });
+      return parseIssues(pages);
     },
     async issue(repo, issue) {
       const response = await call(repo, "GET", `/repos/${repo.path}/issues/${issue}`);

@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::git::DIFF_BASE;
 use crate::github::{PullRequestRef, ReviewComment};
 use crate::remote::adoption::AdoptableSession;
-use crate::remote::{RemoteTarget, VmRef};
+use crate::remote::{RemoteOrigin, RemoteTarget, VmRef};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,6 +72,23 @@ pub struct SessionRecord {
     /// deleting the session deletes it.
     #[serde(default)]
     pub leftover_vm: Option<VmRef>,
+    /// What the session is for, which decides the tabs the UI shows for it; set when the session is created or adopted
+    /// and kept when it moves between this Mac and a VM. A record stored before modes existed reviews a pull request
+    /// when it has one (`derive_mode`), else edits.
+    #[serde(default)]
+    pub mode: SessionMode,
+}
+
+/// What a session is for. `Edit` works on the code of its worktree, `GitReview` reviews the pull request `pull_request`
+/// names, `Swf` is a session of the gateway's software-factory poller (`RemoteOrigin::Swf`), whose pipeline record the
+/// Factory tab shows (`session::swf`). Mirror of `SessionMode` in src/sessions/session.types.ts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionMode {
+    #[default]
+    Edit,
+    GitReview,
+    Swf,
 }
 
 /// Where a session works. `Worktree` is a worktree Hunt creates and deletes with the session, on a new
@@ -124,6 +141,15 @@ impl SessionRecord {
             keeps_branch: false,
             remote: None,
             leftover_vm: None,
+            mode: SessionMode::Edit,
+        }
+    }
+
+    /// Gives a record that reviews a pull request the mode `GitReview` when it still has the default `Edit`: the rule a
+    /// new review session is created by and a record stored before modes existed is read by (`Store::load`).
+    pub fn derive_mode(&mut self) {
+        if self.mode == SessionMode::Edit && self.pull_request.is_some() {
+            self.mode = SessionMode::GitReview;
         }
     }
 
@@ -154,6 +180,9 @@ impl SessionRecord {
         let mut record = Self::new(session.id, session.title.clone(), repo_path, worktree_path, branch.clone(), branch, String::new());
         record.created_at = session.created_at.unwrap_or(now);
         record.remote = Some(target);
+        if session.origin == RemoteOrigin::Swf {
+            record.mode = SessionMode::Swf;
+        }
         record
     }
 
@@ -176,6 +205,7 @@ impl SessionRecord {
         record.diff_base = parent.diff_base.clone();
         record.workspace = parent.workspace;
         record.keeps_branch = parent.keeps_branch;
+        record.mode = parent.mode;
         record
     }
 }
@@ -309,13 +339,19 @@ impl Store {
         Self { path, _guard: STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner) }
     }
 
-    /// Every stored record; an absent file counts as an empty list.
+    /// Every stored record, each with its mode derived (`SessionRecord::derive_mode`); an absent file counts as an empty
+    /// list.
     fn load(&self) -> Result<Vec<SessionRecord>, String> {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
         let content = std::fs::read_to_string(&self.path).map_err(|error| format!("failed to read sessions.json: {error}"))?;
-        serde_json::from_str(&content).map_err(|error| format!("sessions.json is corrupt: {error}"))
+        let mut sessions: Vec<SessionRecord> =
+            serde_json::from_str(&content).map_err(|error| format!("sessions.json is corrupt: {error}"))?;
+        for session in &mut sessions {
+            session.derive_mode();
+        }
+        Ok(sessions)
     }
 
     /// Replaces the stored list atomically: the content goes to a sibling temp file that is renamed over the target,
@@ -615,6 +651,40 @@ mod tests {
     }
 
     #[test]
+    fn a_record_stored_before_modes_existed_reviews_its_pull_request_or_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut review = serde_json::to_value(record("review")).unwrap();
+        review.as_object_mut().unwrap().remove("mode");
+        review["pullRequest"] = serde_json::json!({"number": 42, "url": "https://github.com/acme/app/pull/42"});
+        let mut plain = serde_json::to_value(record("plain")).unwrap();
+        plain.as_object_mut().unwrap().remove("mode");
+        // A record that says its mode keeps it, whatever else it carries.
+        let mut swf = serde_json::to_value(record("swf")).unwrap();
+        swf["mode"] = serde_json::json!("swf");
+        swf["pullRequest"] = serde_json::json!({"number": 43, "url": "https://github.com/acme/app/pull/43"});
+        std::fs::write(dir.path().join("sessions.json"), serde_json::to_vec(&vec![review, plain, swf]).unwrap()).unwrap();
+
+        let loaded = store_in(&dir).load().unwrap();
+        let modes: Vec<SessionMode> = loaded.iter().map(|session| session.mode).collect();
+        assert_eq!(modes, vec![SessionMode::GitReview, SessionMode::Edit, SessionMode::Swf]);
+    }
+
+    #[test]
+    fn modes_are_stored_in_kebab_case_and_a_sub_session_takes_its_parents() {
+        let mut parent = record("review");
+        parent.pull_request = Some(PullRequestRef { number: 42, url: "https://github.com/acme/app/pull/42".into() });
+        parent.derive_mode();
+        assert_eq!(parent.mode, SessionMode::GitReview);
+        let stored = serde_json::to_value(&parent).unwrap();
+        assert_eq!(stored["mode"], serde_json::json!("git-review"));
+        assert_eq!(serde_json::to_value(SessionMode::Edit).unwrap(), serde_json::json!("edit"));
+        assert_eq!(serde_json::to_value(SessionMode::Swf).unwrap(), serde_json::json!("swf"));
+
+        let sub = SessionRecord::sub_session(Uuid::new_v4(), "sub".into(), &parent, None);
+        assert_eq!(sub.mode, SessionMode::GitReview);
+    }
+
+    #[test]
     fn insert_keeps_an_existing_record() {
         let dir = tempfile::tempdir().unwrap();
         let store = store_in(&dir);
@@ -650,6 +720,9 @@ mod tests {
         assert_eq!((remote.branch.as_str(), adopted.branch.as_str()), ("fix/general/123-fix-login", "fix/general/123-fix-login"));
         assert_eq!((adopted.title.as_str(), adopted.created_at), ("Fix login", session.created_at.unwrap()));
         assert!(adopted.repo_path.as_os_str().is_empty() && adopted.acp_session_id.is_none());
+        assert_eq!(adopted.mode, SessionMode::Swf);
+        let desktop = AdoptableSession { origin: crate::remote::RemoteOrigin::Desktop, ..session.clone() };
+        assert_eq!(SessionRecord::adopted(&desktop, PathBuf::new(), "/worktrees/ab12cd34".into(), String::new()).mode, SessionMode::Edit);
 
         // Records stored before adoptions existed were handed off by this Mac.
         let mut stored = serde_json::to_value(&adopted).unwrap();

@@ -1,15 +1,34 @@
 /**
- * The prompts of a poller session (`swf/poller.service.ts`), free of I/O: the session's system prompt and its
- * `hunt-session.json`, and the prompts its agent gets (`apps/gateway/software-factory/*.user-prompt.md`, filled here).
- * The labels of the workflow are `WorkflowLabels` in `libs/domain/src/swf/`.
+ * The prompts of a swf session, free of I/O: the session's system prompt and its `hunt-session.json`, which the gateway's
+ * poller writes at the setup (`apps/gateway/src/swf/poller.service.ts`), and the prompts its agent gets
+ * (`libs/domain/prompts/swf/*.user-prompt.md`, filled here), which the runner on the session VM sends
+ * (`apps/session/src/swf-runner/swf-runner.service.ts`; the poller still sends them to the sessions of older records).
+ * The labels of the workflow are `WorkflowLabels` beside this file.
  */
-import type { Repository } from "../../../../libs/domain/src/session/repository.value-object.ts";
-import type { SessionId } from "../../../../libs/domain/src/session/session-id.value-object.ts";
-import { fillPrompt } from "../../../../libs/domain/src/shared/prompts.utils.ts";
-import type { WorkflowLabels } from "../../../../libs/domain/src/swf/workflow-labels.value-object.ts";
-import { isAgentStep, type SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
-import type { Issue, IssueComment } from "./github.client.ts";
+import type { Repository } from "../session/repository.value-object.ts";
+import type { SessionId } from "../session/session-id.value-object.ts";
+import { fillPrompt } from "../shared/prompts.utils.ts";
+import type { WorkflowLabels } from "./workflow-labels.value-object.ts";
+import { isAgentStep, type SwfStep } from "./swf-step.types.ts";
 import { MAX_ATTEMPTS, type Pipeline } from "./pipeline.domain.ts";
+
+/** What the plan prompt tells of the issue; the gateway's `Issue` and the runner's `gh issue view` both give it. */
+export interface IssueText {
+  number: number;
+  title: string;
+  body: string;
+  author: string;
+  /** ISO 8601. */
+  createdAt: string;
+  url: string;
+}
+
+/** A comment of the issue's thread as the prompts quote it. */
+export interface CommentText {
+  author: string;
+  createdAt: string;
+  body: string;
+}
 
 /** The permission mode of every remote session: nobody is there to answer permission requests. */
 export const REMOTE_MODE = "bypassPermissions";
@@ -133,8 +152,8 @@ function formatFindings(findings: string[]): string {
 export function stepPrompt(
   prompts: PromptFiles,
   repo: Repository,
-  issue: Issue,
-  comments: IssueComment[],
+  issue: IssueText,
+  comments: CommentText[],
   branch: string,
   labels: WorkflowLabels,
   pipeline: Pipeline,
@@ -172,7 +191,7 @@ export function stepPrompt(
 }
 
 /** The comments as a Markdown thread, each with its author and date; `(none)` without any. */
-function formatThread(comments: IssueComment[]): string {
+function formatThread(comments: CommentText[]): string {
   if (comments.length === 0) return "(none)";
   return comments.map((comment) => `**@${comment.author}** on ${formatDate(comment.createdAt)}:\n\n${comment.body.trim()}`).join("\n\n---\n\n");
 }
@@ -181,7 +200,7 @@ function formatThread(comments: IssueComment[]): string {
  * The prompt that brings the answers `answers` from the issue to an agent that waits with the question label:
  * `answer.user-prompt.md` filled with the comments and the command that takes the label back to the step.
  */
-export function answerPrompt(template: string, repo: Repository, issue: number, answers: IssueComment[], labels: WorkflowLabels, step: SwfStep): string {
+export function answerPrompt(template: string, repo: Repository, issue: number, answers: CommentText[], labels: WorkflowLabels, step: SwfStep): string {
   return fillPrompt(template, { ...labelValues(repo, issue, labels, step), comments: formatThread(answers) });
 }
 

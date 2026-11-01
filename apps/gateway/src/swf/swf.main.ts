@@ -23,23 +23,24 @@ import questionPrompt from "../../../../libs/domain/prompts/question.system-prom
 import remotePrompt from "../../../../libs/domain/prompts/remote.system-prompt.md?raw";
 import sessionsPrompt from "../../../../libs/domain/prompts/sessions.system-prompt.md?raw";
 import { messageOf } from "../../../../libs/domain/src/shared/errors.utils.ts";
+import type { PromptFiles } from "../../../../libs/domain/src/swf/swf-prompts.utils.ts";
+import { sendPrompt } from "../../../../libs/domain/src/relay/relay-prompt.client.ts";
 import type { Log } from "../../../../libs/domain/src/shared/journal.utils.ts";
-import swfSystemPromptFile from "../../software-factory/0-system-prompt.md?raw";
-import swfPlanPrompt from "../../software-factory/1-plan.user-prompt.md?raw";
-import swfImplementPrompt from "../../software-factory/2-implement.user-prompt.md?raw";
-import swfEscalatePrompt from "../../software-factory/2-implement-escalate.user-prompt.md?raw";
-import swfVerifyPrompt from "../../software-factory/3-verify.user-prompt.md?raw";
-import swfGatePrompt from "../../software-factory/4-gate.user-prompt.md?raw";
-import swfPrPrompt from "../../software-factory/5-pr.user-prompt.md?raw";
-import swfNudgePrompt from "../../software-factory/nudge.user-prompt.md?raw";
-import swfAnswerPrompt from "../../software-factory/answer.user-prompt.md?raw";
-import swfBadResultPrompt from "../../software-factory/bad-result.user-prompt.md?raw";
+import swfSystemPromptFile from "../../../../libs/domain/prompts/swf/0-system-prompt.md?raw";
+import swfPlanPrompt from "../../../../libs/domain/prompts/swf/1-plan.user-prompt.md?raw";
+import swfImplementPrompt from "../../../../libs/domain/prompts/swf/2-implement.user-prompt.md?raw";
+import swfEscalatePrompt from "../../../../libs/domain/prompts/swf/2-implement-escalate.user-prompt.md?raw";
+import swfVerifyPrompt from "../../../../libs/domain/prompts/swf/3-verify.user-prompt.md?raw";
+import swfGatePrompt from "../../../../libs/domain/prompts/swf/4-gate.user-prompt.md?raw";
+import swfPrPrompt from "../../../../libs/domain/prompts/swf/5-pr.user-prompt.md?raw";
+import swfNudgePrompt from "../../../../libs/domain/prompts/swf/nudge.user-prompt.md?raw";
+import swfAnswerPrompt from "../../../../libs/domain/prompts/swf/answer.user-prompt.md?raw";
+import swfBadResultPrompt from "../../../../libs/domain/prompts/swf/bad-result.user-prompt.md?raw";
 import { createCompute } from "../gcp/compute-engine.client.ts";
 import { createMetadata } from "../gcp/metadata-server.client.ts";
 import { readOptionalSecretBytes } from "../gcp/secret-manager.client.ts";
 import { IdleSweeper } from "../session-vm/idle-sweeper.service.ts";
 import { Reaper } from "../session-vm/reaper.service.ts";
-import { sendPrompt } from "../session-vm/relay.client.ts";
 import { createSessionVmSsh, ensureSshKey } from "../session-vm/session-vm-ssh.client.ts";
 import { createSessionVmService } from "../session-vm/session-vm.service.ts";
 import { writeLog } from "../shared/journal.utils.ts";
@@ -49,7 +50,6 @@ import { createGitHub } from "./github.client.ts";
 import { Poller } from "./poller.service.ts";
 import { redact } from "./redaction.utils.ts";
 import { readSwfConfig } from "./swf-config.utils.ts";
-import type { PromptFiles } from "./swf-prompts.utils.ts";
 import { secretsReader } from "./swf-secrets.utils.ts";
 
 export const POLL_INTERVAL_MS = 30_000;
@@ -101,6 +101,7 @@ async function main(): Promise<void> {
     prompts: readPrompts,
     sendPrompt,
     newId: randomUUID,
+    now: Date.now,
     log,
   });
   const reaper = new Reaper({ compute, sessionVmService, zone: location.zone, now: Date.now, log });

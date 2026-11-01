@@ -10,6 +10,7 @@ import type { LspDiagnosticsEvent, LspExitedEvent } from "../ide/lsp/lsp.types";
 import type { PopupShowRequest } from "../ui/popup.types";
 import type { RelayActivityEvent, RemoteLinkEvent, RemoteProgressEvent, RemoteSyncEvent } from "../sessions/remote/remote-session.types";
 import type { AnnotationEvent, AttributionEvent, SummaryEvent, WorktreeChangedEvent } from "../sessions/session.types";
+import type { SwfPulledEvent } from "../sessions/swf-pipeline.types";
 import type { ScriptRunRequest, TerminalExitEvent, TerminalOutputEvent } from "../terminal/terminal.types";
 
 type EventPayloads = {
@@ -78,6 +79,8 @@ type EventPayloads = {
   "terminal:exit": TerminalExitEvent;
   /** A check of the session started, ended or was cancelled; sent to the main window (see checks/ChecksPanel.tsx). */
   "checks:changed": { sessionId: string };
+  /** `.hunt/swf/` of the swf session was pulled from its VM (on open and at every turn end); the Factory tab reads the pipeline again (see factory/FactoryPanel.tsx). */
+  "swf:pulled": SwfPulledEvent;
   /** Sent by any window to the main window to run a package.json script in its Terminal tab (see terminal/script-runs.hook.ts). */
   "terminal:run-script": ScriptRunRequest;
   /** A `hunt-client` command of an agent, sent to the main window, which answers it (see control/control-commands.hook.ts). */

@@ -10,7 +10,6 @@ import type { Metadata } from "../gcp/metadata-server.client.ts";
 export const REPOS_ATTRIBUTE = "hunt-swf-repos";
 export const MAX_SESSIONS_ATTRIBUTE = "hunt-swf-max-sessions";
 /** The label that asks for a session; `WorkflowLabels` (`libs/domain/src/swf/`) derives the labels of its steps and outcomes. */
-export const SWF_LABEL = "swf";
 export const DEFAULT_MAX_SESSIONS = 2;
 export const MAX_SESSIONS_LIMIT = 10;
 

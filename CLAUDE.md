@@ -63,11 +63,11 @@ everything else goes here.
   Each feature folder holds its zustand stores (`*.store.ts`). `src/ui` holds primitives shared by every feature,
   `src/common` logic and types several features share (paths, globs, trees, the keymap, changed files, diagram types,
   relative times), `src/editor` the Monaco layer. Feature folders (`chat`, `diff`, `ide`, `graph`, `guardrails`,
-  `sessions`, `settings`) map 1:1 to tabs and windows.
+  `sessions`, `settings`, `factory`) map 1:1 to tabs and windows.
 - Imports point down: `common` ← `ipc` ← `ui` + `settings/settings.store.ts`/`settings.types.ts` ← `editor` ←
   `accounts` ← `sessions` ⇄ `chat` (one aggregate) ← other features ← `popup` + `control` ← `app` ← `windows`; `src/ipc` and
   `ui/popup-protocol.utils.ts` import feature types type-only. Sideways, and up from the aggregate, only
-  checks→preview/terminal, diff→ide/review, git→diff/ide, graph→ide/review, guardrails→ide, ide→review/terminal,
+  checks→preview/terminal, diff→ide/review, git→diff/ide, graph→ide/review, factory→graph, guardrails→ide, ide→review/terminal,
   terminal→diff/preview, sessions→git/ide; two-way folder pairs (no module cycles): chat ⇄ guardrails, chat ⇄ ide,
   diff ⇄ graph, editor ⇄ ide.
 - Every native window is a root HTML page (`index.html`, `editor.html`, `diff.html`, `guardrails.html`,
@@ -79,8 +79,8 @@ everything else goes here.
 - Pure logic lives in a `.ts` module with a sibling `.test.ts` next to the component or store that uses it
   (`editor/line-diff.utils.ts`, `ide/lsp/lsp-protocol.utils.ts`, `graph/schema.utils.ts`, `chat/chat-reducer.utils.ts`).
 - Prompt files live in a `prompts/` folder of the project that sends them (`libs/domain/prompts/` for the parts the
-  app and the poller share; the gateway's is `apps/gateway/software-factory/`, the steps of the swf pipeline numbered in
-  their order) and carry their role as suffix: `<name>.system-prompt.md` extends Claude Code's system
+  app, the poller and the swf runner share; `libs/domain/prompts/swf/` holds the steps of the swf pipeline numbered in
+  their order, which the gateway and the session bundle both compile in) and carry their role as suffix: `<name>.system-prompt.md` extends Claude Code's system
   prompt, `<name>.user-prompt.md` is a message Hunt sends into the chat, with `{{name}}` placeholders that code fills
   (`fillPrompt` in `libs/domain/src/shared/prompts.utils.ts`). Code never holds prompt text, and a prompt file holds nothing but
   its prompt: the `README.md` of each prompt folder says who sends which file, when and where it lands.

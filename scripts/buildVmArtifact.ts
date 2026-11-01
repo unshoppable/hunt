@@ -39,6 +39,7 @@ const ARTIFACTS: Record<string, Artifact> = {
       "session/transcriptHelper": "apps/session/src/sync/transcript-helper.main.ts",
       "session/statusHelper": "apps/session/src/relay/status-helper.main.ts",
       "session/reviewServer": "apps/session/src/review/review-server.main.ts",
+      "session/swfRunner": "apps/session/src/swf-runner/swf-runner.main.ts",
     },
     reviewWidget: "session/review.js",
     files: [

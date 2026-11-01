@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import protocolFile from "../../../../libs/domain/protocol.json" with { type: "json" };
 import type { ApiEvent } from "../../../../libs/domain/src/gateway-api/gateway-api.types.ts";
-import type { Transport } from "../session-vm/relay.client.ts";
+import type { Transport } from "../../../../libs/domain/src/relay/relay-prompt.client.ts";
 import { createApiServer, type ApiServer } from "./gateway-api.service.ts";
 import { forward } from "./gateway-api-forwarder.main.ts";
 import { parseEvent } from "./gateway-api-protocol.utils.ts";

@@ -1,16 +1,19 @@
 /**
- * hunt-swf's ACP client for the first prompt of a session: it connects to the session's relay like Hunt does (NDJSON
- * over `socat - UNIX-CONNECT:/run/hunt/relay.sock`), loads the relay's session, sends one `session/prompt` and
- * disconnects once the relay has taken the prompt, without waiting for the turn. The relay keeps running the prompts of
- * a client that disconnected (see `detach` in `apps/session/src/relay/relay.service.ts`).
+ * The ACP client that sends one prompt into a session's relay, as the gateway's poller does over SSH (NDJSON over
+ * `socat - UNIX-CONNECT:/run/hunt/relay.sock`) and the swf runner on the VM over the socket itself (`connectRelaySocket`):
+ * it connects like Hunt does, loads the relay's session, sends one `session/prompt` and disconnects once the relay has
+ * taken the prompt, without waiting for the turn. The relay keeps running the prompts of a client that disconnected
+ * (see `detach` in `apps/session/src/relay/relay.service.ts`), and a connection this short counts as a client and as
+ * activity only for the moment it lasts.
  */
-import { classify, isRecord, requestMessage, type JsonRpcError, type JsonRpcId, type JsonRpcMessage } from "../../../../libs/domain/src/shared/json-rpc.utils.ts";
-import { createLineDecoder, encodeLine, parseLine } from "../../../../libs/domain/src/shared/ndjson.utils.ts";
+import { connect } from "node:net";
+import { classify, isRecord, requestMessage, type JsonRpcError, type JsonRpcId, type JsonRpcMessage } from "../shared/json-rpc.utils.ts";
+import { createLineDecoder, encodeLine, parseLine } from "../shared/ndjson.utils.ts";
 
 const CLIENT_INFO = { name: "hunt-swf", version: "1" };
 export const STEP_TIMEOUT_MS = 60_000;
 
-/** A byte stream to the relay, such as the stdio of `gcloud compute ssh … socat`. */
+/** A byte stream to the relay, such as the stdio of `gcloud compute ssh … socat` or a connection to its Unix socket. */
 export interface Transport {
   write(text: string): void;
   /** Registers the receiver of the text that arrives. */
@@ -43,6 +46,40 @@ export function turnOf(message: JsonRpcMessage): unknown {
 
 function responseTo(id: JsonRpcId): (message: JsonRpcMessage) => boolean {
   return (message) => !("method" in message) && "id" in message && message.id === id;
+}
+
+/**
+ * A transport to the relay listening on the Unix socket `path`, for a client on the VM itself; rejects when the socket
+ * does not take the connection. `close` ends the connection; the relay then counts one client less.
+ */
+export function connectRelaySocket(path: string): Promise<Transport> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(path);
+    socket.setEncoding("utf8");
+    let closeListener: (reason?: string) => void = () => {};
+    let failure: string | undefined;
+    socket.once("error", (error) => {
+      failure = error.message;
+      reject(new Error(`failed to connect to the relay at ${path}: ${error.message}`));
+    });
+    socket.on("close", () => closeListener(failure));
+    socket.once("connect", () =>
+      resolve({
+        write: (text) => {
+          socket.write(text);
+        },
+        onData: (listener) => {
+          socket.on("data", listener);
+        },
+        onClose: (listener) => {
+          closeListener = listener;
+        },
+        close: () => {
+          socket.end();
+        },
+      }),
+    );
+  });
 }
 
 /** Sends `request.text` as a prompt to the relay behind `transport` and closes the transport; see the module comment. */

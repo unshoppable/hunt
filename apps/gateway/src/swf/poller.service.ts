@@ -15,31 +15,44 @@
  * the pipeline record then goes onto the issue as a comment of the poller (`swf/pipeline-record.client.ts`), and a
  * hunt.json that names no skill for an agent step fails the setup, since Hunt has no default skill),
  * `hunt-session.json` with the model the repository's hunt.json sets (`swf.model`) through `put-files --claude`, `deps`,
- * `start` with the tokens on stdin and `wait`. The session's system prompt holds the protocol of the steps
- * (`software-factory/0-system-prompt.md`); then the issue goes to the agent as the prompt of the first step, `plan`,
- * through the relay (`swf/swf-prompts.utils.ts`). When the setup fails, the poller sets `swf:failed` with the error and
- * leaves the VM for inspection; Hunt desktops adopt the VM either way.
+ * `swf-record` with the pipeline, `start` with the tokens on stdin (which enables the swf runner of the VM,
+ * `apps/session/src/swf-runner/swf-runner.main.ts`) and `wait`. The session's system prompt holds the protocol of the
+ * steps (`libs/domain/prompts/swf/0-system-prompt.md`, `swf/swf-prompts.utils.ts`); the runner sends the prompt of the
+ * first step, `plan`. When the setup fails, the poller sets `swf:failed` with the error and leaves the VM for
+ * inspection; Hunt desktops adopt the VM either way.
  *
- * Every poll also drives the pipeline of each session VM (`watchSession`): the issue's labels give the agent's state
+ * Every poll also follows the pipeline of each session VM (`watchSession`): the issue's labels give the agent's state
  * (the step, `question`, `done`, `failed`; `libs/domain/src/swf/workflow-labels.value-object.ts`), which the VM's
- * metadata `hunt-agent` records for Hunt's lists, and the poller's record comment holds the pipeline's state. Each poll
- * loads the pipeline from it, applies an intent of `Pipeline` and saves it back once the GitHub calls that go with the
- * intent are done. At an agent step (plan, implement, verify, gate, pr) the poller sends the step's prompt once the relay is
- * idle (`swf/relay-status.utils.ts`), then waits for the agent's step result, a comment with `<!-- hunt:step {…} -->`
- * (`libs/domain/src/swf/step-result.utils.ts`); the result moves the issue to the next step's label (`acceptResult`),
- * and findings of verify send it back to implement. A turn that ends without a result gets one reminder (`nudgePrompt`);
- * when the next turn ends the same way, the issue is marked as failed. At a poller step the poller watches the pull
- * request: `review` waits for its checks and the Claude review's verdict (a failing check or blocking findings go back
- * to implement), `human-review` for a person's approval (a change request goes back to implement) and `merge` updates
- * the branch when it is behind and squash-merges it; then the issue gets `swf:done` and moves to DONE_STATUS in its
- * projects. These steps need GitHub only, so they go on while the idle sweeper keeps the session's VM suspended. While
- * the issue is labelled `swf:question`, the poller watches it for the answer: a comment by someone other than the app's
- * bot user after the agent's question (`newAnswers` in `swf/issue-thread.utils.ts`) goes to the agent as a prompt
- * (`answerPrompt`), which tells it to take the label back to the step; a VM that stopped meanwhile, or one whose step
- * has a prompt pending, is started first through the session VM service. An answer given in a Hunt desktop needs none
+ * metadata `hunt-agent` records for Hunt's lists, and the record comment holds the pipeline's state. The record's
+ * `version` says who drives the agent steps (plan, implement, verify, gate, pr): the runner on the VM for RUNNER_VERSION
+ * and above, which edits the record comment itself, the poller for the records it wrote before the runner existed. For
+ * those the poller sends the step's prompt once the relay is idle (`swf/relay-status.utils.ts`), then waits for the
+ * agent's step result, a comment with `<!-- hunt:step {…} -->` (`libs/domain/src/swf/step-result.utils.ts`); the result
+ * moves the issue to the next step's label (`acceptResult`), and findings of verify send it back to implement. A turn
+ * that ends without a result gets one reminder (`nudgePrompt`); when the next turn ends the same way, the issue is
+ * marked as failed. The poller steps are the poller's for every record: `review` (prepared once when the runner moved
+ * the issue there, `prepareReview`) waits for the pull request's checks and the Claude review's verdict (a failing check
+ * or blocking findings go back to implement), `human-review` for a person's approval (a change request goes back to
+ * implement) and `merge` updates the branch when it is behind and squash-merges it; then the issue gets `swf:done` and
+ * moves to DONE_STATUS in its projects. These steps need GitHub only, so they go on while the idle sweeper keeps the
+ * session's VM suspended. While the issue is labelled `swf:question`, the poller watches it for the answer: a comment by
+ * someone other than the app's bot user after the agent's question (`newAnswers` in `swf/issue-thread.utils.ts`) goes
+ * to the runner's inbox (`hunt-ctl swf-inbox`, `libs/domain/src/swf/swf-inbox.utils.ts`), or for an older record to the
+ * agent as a prompt (`answerPrompt`), which tells it to take the label back to the step; a VM that stopped meanwhile, or
+ * one whose step has a prompt pending (the runner's next step after a transition the poller made), is started first
+ * through the session VM service and gets the pipeline through the inbox. An answer given in a Hunt desktop needs none
  * of this: the agent takes the label back itself. No prompt goes to a session a Hunt desktop is connected to, since a
  * person is working with the agent there. Delivered answers are remembered only in memory: after a restart of the
  * poller a session may get an answer a second time. What the poller comments on GitHub is `swf/swf-comments.utils.ts`.
+ *
+ * An issue in progress (labelled with a step or the question) whose VM Compute Engine lists no more (the reaper deleted
+ * it, or a person did) keeps going without it (`watchIssuesWithoutVm`, one search of GitHub per repository and poll):
+ * its poller steps need GitHub only, and its question waits for the answer. Once the pipeline needs the agent again (an
+ * agent step, or the answer arrived), the poller replaces the VM (`replaceVm`): a new session VM as in a setup, a clone
+ * of the branch the record names, `.hunt/swf/` restored from the record and the step results on the issue (one
+ * `swf-record` per run that has a result comment), the step's run ended as `restarted` with a new run of the step
+ * (`Pipeline.restart`), the runner started, which sends the step's prompt afresh, and a comment on the issue. A record
+ * of version 1 names no branch and is left alone with a warning, since its poller-driven session cannot be rebuilt.
  *
  * On GitHub the poller and its sessions act as a GitHub App (`swf/github-app.client.ts`). The app's installation tokens
  * are valid for one hour and limited to one repository each: a session's clone, its commits (with the app's bot
@@ -48,7 +61,7 @@
  * decision, Compute Engine call and command on a session VM goes to the log; tokens and the key never appear in logs or
  * comments (`swf/redaction.utils.ts`). `drain` waits for the setups in progress, `abort` marks their issues as failed.
  */
-import type { BranchName } from "../../../../libs/domain/src/session/branch-name.value-object.ts";
+import { BranchName } from "../../../../libs/domain/src/session/branch-name.value-object.ts";
 import { Repository } from "../../../../libs/domain/src/session/repository.value-object.ts";
 import { SessionId } from "../../../../libs/domain/src/session/session-id.value-object.ts";
 import { messageOf } from "../../../../libs/domain/src/shared/errors.utils.ts";
@@ -57,19 +70,19 @@ import type { PullRequestState } from "../../../../libs/domain/src/swf/pull-requ
 import { ReviewVerdict } from "../../../../libs/domain/src/swf/review-verdict.value-object.ts";
 import { parseStepResult } from "../../../../libs/domain/src/swf/step-result.utils.ts";
 import type { AgentState, SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
-import { WorkflowLabels } from "../../../../libs/domain/src/swf/workflow-labels.value-object.ts";
+import { SWF_LABEL, WorkflowLabels } from "../../../../libs/domain/src/swf/workflow-labels.value-object.ts";
 import type { Compute, Instance } from "../gcp/compute-engine.client.ts";
 import type { OptionalSecret } from "../gcp/secret-manager.client.ts";
-import type { Transport } from "../session-vm/relay.client.ts";
+import type { Transport } from "../../../../libs/domain/src/relay/relay-prompt.client.ts";
 import type { SessionVmSsh } from "../session-vm/session-vm-ssh.client.ts";
 import { AGENT_METADATA, ORIGIN_LABEL, SessionVm } from "../session-vm/session-vm.domain.ts";
 import { DEFAULT_TEMPLATE, SILENT, type Origin, type Reporter, type SessionVmService } from "../session-vm/session-vm.service.ts";
 import type { AppCredentials, GitHubApp } from "./github-app.client.ts";
 import type { GitHub, Issue, IssueComment } from "./github.client.ts";
 import { matchingFiles } from "./glob.utils.ts";
-import { mentionsOf, newAnswers, newStepResults } from "./issue-thread.utils.ts";
+import { mentionsOf, newAnswers, newStepResults, resultsOfRuns, type RunResult } from "./issue-thread.utils.ts";
 import { PipelineRecordClient } from "./pipeline-record.client.ts";
-import { Pipeline, stepSkills } from "./pipeline.domain.ts";
+import { Pipeline, stepSkills } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 import { checkPrivateFilesArchive, privateFilesSecret } from "./private-files.utils.ts";
 import { redact } from "./redaction.utils.ts";
 import { relayStatus } from "./relay-status.utils.ts";
@@ -84,9 +97,10 @@ import {
   missingPullRequestComment,
   missingSkillsError,
   noPullRequestComment,
-  stoppedComment,
+  replacedVmComment,
 } from "./swf-comments.utils.ts";
-import { REPOS_ATTRIBUTE, SWF_LABEL, type SwfConfig } from "./swf-config.utils.ts";
+import { stoppedComment } from "../../../../libs/domain/src/swf/swf-comments.utils.ts";
+import { REPOS_ATTRIBUTE, type SwfConfig } from "./swf-config.utils.ts";
 import {
   answerPrompt,
   badResultPrompt,
@@ -96,8 +110,9 @@ import {
   stepPrompt,
   swfSystemPrompt,
   type PromptFiles,
-} from "./swf-prompts.utils.ts";
-import { UnusableStepResult } from "./unusable-step-result.error.ts";
+} from "../../../../libs/domain/src/swf/swf-prompts.utils.ts";
+import { answersMessage, pipelineMessage } from "../../../../libs/domain/src/swf/swf-inbox.utils.ts";
+import { UnusableStepResult } from "../../../../libs/domain/src/swf/unusable-step-result.error.ts";
 
 export const ORIGIN: Origin = "swf";
 /** The `Status` option a claimed issue gets in every project (Projects v2) it is an item of; matched case-insensitively. */
@@ -137,6 +152,8 @@ export interface PollerDeps {
   prompts(): PromptFiles;
   sendPrompt(transport: Transport, request: { sessionId: string; cwd: string; text: string }): Promise<string>;
   newId(): string;
+  /** The current time in ms, the clock of the pipeline's runs. */
+  now(): number;
   log(message: string, level?: LogLevel): void;
 }
 
@@ -147,13 +164,29 @@ interface Setup {
   issue: number;
   labels: WorkflowLabels;
   sessionId: SessionId;
+  /** The step whose label a failure replaces: plan for a new session, the pipeline's step for a replaced VM. */
+  step: SwfStep;
   isVmCreated: boolean;
   /** The id of the record comment on the issue; 0 until it was created. */
   recordId: number;
   done: Promise<void>;
 }
 
-/** What the poller remembers about a session between polls; everything that matters survives in the record comment. */
+/** A session VM with the repository cloned and configured, before `hunt-session.json`, the dependencies and the start. */
+interface PreparedVm {
+  vm: SessionVmSsh;
+  zone: string;
+  /** The worktree on the VM. */
+  path: string;
+  servicesPrompt: string | null;
+  agentMd: string | null;
+  model: string | null;
+  humanReviewPaths: string[];
+  /** `swf_skills` of `hunt-ctl session-config`, as reported. */
+  skills: unknown;
+}
+
+/** What the poller remembers about a session, or an issue without a VM, between polls; everything that matters survives in the record comment. */
 interface Watched {
   /** The last error of following the session, so that a lasting one is logged once. */
   error: string;
@@ -167,13 +200,13 @@ interface Watched {
   waiting: string;
 }
 
-/** Everything one poll of a session's pipeline works with. */
+/** Everything one poll of a session's pipeline works with; the VM and session are null for an issue without a VM. */
 interface SessionContext {
   key: string;
   github: GitHub;
   labels: WorkflowLabels;
-  sessionVm: SessionVm;
-  sessionId: SessionId;
+  sessionVm: SessionVm | null;
+  sessionId: SessionId | null;
   repo: Repository;
   issue: Issue;
   comments: IssueComment[];
@@ -184,6 +217,12 @@ interface SessionContext {
   watched: Watched;
 }
 
+/** The context of a session whose VM runs, which takes the commands of the poller. */
+interface RunningContext extends SessionContext {
+  sessionVm: SessionVm;
+  sessionId: SessionId;
+}
+
 /** One poll after another; see the module comment. */
 export class Poller {
   private readonly deps: PollerDeps;
@@ -192,6 +231,8 @@ export class Poller {
   private readonly setups = new Map<string, Setup>();
   /** The sessions the poller follows, by VM name. */
   private readonly watched = new Map<string, Watched>();
+  /** The issues in progress without a VM the poller follows, by `<repo>#<issue>`. */
+  private readonly withoutVm = new Map<string, Watched>();
   /** The VMs the poller is starting for a pending prompt, by VM name. */
   private readonly starts = new Set<string>();
   /** Repositories whose labels exist, by `<repo> <label>`. */
@@ -246,10 +287,10 @@ export class Poller {
     const github = this.deps.github;
     const labels = WorkflowLabels.of(SWF_LABEL);
     await this.watchSessions(github, labels, vms);
-    const active = activeSessionVms(vms, this.setups.keys());
     const issuesByRepo: { repo: Repository; issues: Issue[] }[] = [];
     for (const repo of config.repos) {
       try {
+        await this.watchIssuesWithoutVm(domain, secrets.claude, github, labels, repo, await github.openIssuesWithAny(repo, labels.inProgress), vms);
         issuesByRepo.push({ repo, issues: await github.openIssues(repo, labels.requested) });
         this.repoErrors.delete(repo.slug);
       } catch (error) {
@@ -260,6 +301,8 @@ export class Poller {
         this.repoErrors.set(repo.slug, message);
       }
     }
+    // The VMs being replaced count like the ones being set up.
+    const active = activeSessionVms(vms, this.setups.keys());
     const { start, waiting } = issuesToStart(issuesByRepo, config.maxSessions - active.size);
     if (waiting.length > 0) {
       const keys = waiting.map(({ repo, issue }) => `${repo.slug}#${issue.number}`).join(", ");
@@ -312,12 +355,15 @@ export class Poller {
     }
   }
 
-  /** The issue, its comments, the bot's login and the pipeline; null when the session has none to drive. */
+  /**
+   * The issue, its comments, the bot's login and the pipeline; null when the session has none to drive. `sessionVm` and
+   * `sessionId` are null for an issue without a VM.
+   */
   private async loadContext(
     github: GitHub,
     labels: WorkflowLabels,
-    sessionVm: SessionVm,
-    sessionId: SessionId,
+    sessionVm: SessionVm | null,
+    sessionId: SessionId | null,
     repo: Repository,
     issueNumber: number,
     watched: Watched,
@@ -325,7 +371,7 @@ export class Poller {
     const key = `${repo.slug}#${issueNumber}`;
     const issue = await github.issue(repo, issueNumber);
     const state: AgentState | null = labels.agentStateOf(issue);
-    if (state !== null && sessionVm.agent !== state) {
+    if (state !== null && sessionVm && sessionId && sessionVm.agent !== state) {
       await this.deps.sessionVmService.recordSession(sessionVm.zone, sessionId, { [AGENT_METADATA]: state });
       this.deps.log(`${key}: the agent is ${state}`);
     }
@@ -377,9 +423,14 @@ export class Poller {
     }
     const loaded = await this.loadContext(github, labels, sessionVm, sessionId, repo, issueNumber, watched);
     if (!loaded) return;
-    const { context, state } = loaded;
+    const { state } = loaded;
+    const context: RunningContext = { ...loaded.context, sessionVm, sessionId };
     if (state === "question") {
-      await this.deliverAnswer(context);
+      if (context.pipeline.isRunnerDriven) {
+        await this.deliverAnswersToRunner(context);
+      } else {
+        await this.deliverAnswer(context);
+      }
       return;
     }
     if (state !== context.pipeline.step) {
@@ -387,10 +438,12 @@ export class Poller {
       this.deps.log(`${key}: the issue is labelled ${labels.step(state)} but the pipeline is at ${context.pipeline.step}; relabelling`, "warn");
       await this.relabel(context, context.pipeline.step);
     }
-    if (context.pipeline.waitsForAgent) {
-      await this.driveAgentStep(context);
-    } else {
+    if (!context.pipeline.waitsForAgent) {
       await this.drivePollerStep(context);
+    } else if (context.pipeline.isRunnerDriven) {
+      this.waitOnce(watched, key, `the runner on ${sessionVm.name} drives the step ${context.pipeline.step}`);
+    } else {
+      await this.driveAgentStep(context);
     }
   }
 
@@ -398,7 +451,7 @@ export class Poller {
    * An agent step: acts on a new step result (the next step, or back to implement), else sends the step's prompt when
    * none was sent, else reminds an agent whose turn ended without a result once and fails the issue the second time.
    */
-  private async driveAgentStep(context: SessionContext): Promise<void> {
+  private async driveAgentStep(context: RunningContext): Promise<void> {
     const { key, repo, recordId, issue, comments, bot, pipeline, labels, sessionVm, sessionId } = context;
     const results = newStepResults(comments, bot, pipeline.lastResultId);
     const vm = this.deps.vm(sessionVm.name, sessionVm.zone);
@@ -406,14 +459,14 @@ export class Poller {
       const last = results[results.length - 1];
       const step = pipeline.step;
       try {
-        pipeline.acceptResult(parseStepResult(last.body), last.id);
+        pipeline.acceptResult(parseStepResult(last.body), last.id, this.deps.now());
       } catch (error) {
         if (!(error instanceof UnusableStepResult)) throw error;
         await this.dismissResult(context, vm, last.id, error.message);
         return;
       }
       this.deps.log(`${key}: the agent reported the step ${step}; the pipeline goes on with ${pipeline.step}`);
-      await this.enterStep(context, step);
+      await this.enterStep(context, step, last.body);
       return;
     }
     const status = relayStatus(await vm.huntCtl(["status", sessionId.id]));
@@ -423,6 +476,7 @@ export class Poller {
       const outcome = await this.deps.sendPrompt(vm.openRelay(), { sessionId: status.acpSessionId, cwd: status.worktree, text });
       pipeline.recordPrompt(status.lastTurnEndedAt ?? 0);
       await this.records.save(repo, recordId, pipeline);
+      await this.recordOnVm(context);
       this.deps.log(`${key}: sent the prompt of the step ${pipeline.step}${pipeline.escalate ? " (escalation)" : ""} (prompt ${outcome})`);
       return;
     }
@@ -444,7 +498,7 @@ export class Poller {
    * Tells the agent on `vm`, once its relay is idle and no desktop is connected, why the step result in the comment
    * `resultId` is unusable (`problem`); the pipeline stays at its step.
    */
-  private async dismissResult(context: SessionContext, vm: SessionVmSsh, resultId: number, problem: string): Promise<void> {
+  private async dismissResult(context: RunningContext, vm: SessionVmSsh, resultId: number, problem: string): Promise<void> {
     const { key, repo, recordId, pipeline, sessionId } = context;
     const status = relayStatus(await vm.huntCtl(["status", sessionId.id]));
     if (!status || status.turn !== "idle" || status.clientConnected) return;
@@ -476,6 +530,13 @@ export class Poller {
       await this.failIssue(key, github, repo, issue.number, labels, step, closedComment(pullRequest.number));
       return;
     }
+    if (step === "review" && pipeline.isRunnerDriven && !pipeline.reviewPrepared) {
+      // The runner moved the issue to review; what entering the review brings with it on GitHub is the poller's.
+      await this.prepareReview(context, pipeline.lastEndedRun?.step === "pr");
+      pipeline.noteReviewPrepared();
+      await this.records.save(repo, recordId, pipeline);
+      await this.recordOnVm(context);
+    }
     switch (step) {
       case "review": {
         const outcome = pullRequest.reviewOutcome(ReviewVerdict.latestIn(await github.comments(repo, pullRequest.number)));
@@ -483,10 +544,10 @@ export class Poller {
           this.waitOnce(watched, key, `review: ${outcome.reason}`);
         } else if (outcome.kind === "fix") {
           this.deps.log(`${key}: the review of #${pullRequest.number} found something; back to implement`);
-          pipeline.sendBackToImplement(outcome.findings);
+          pipeline.sendBackToImplement(outcome.findings, this.deps.now());
           await this.enterStep(context, step);
         } else if (outcome.kind === "clean") {
-          pipeline.passReview();
+          pipeline.passReview(this.deps.now());
           this.deps.log(`${key}: #${pullRequest.number} passed its checks and the Claude review; the pipeline goes on with ${pipeline.step}`);
           await this.enterStep(context, step);
         }
@@ -500,11 +561,11 @@ export class Poller {
           const inline = await github.reviewComments(repo, pullRequest.number, outcome.review.id);
           const finding = changeRequestFinding(pullRequest.number, outcome.review, inline);
           this.deps.log(`${key}: ${outcome.review.author} requested changes on #${pullRequest.number}; back to implement`);
-          pipeline.handleChangeRequest(outcome.review.id, finding);
+          pipeline.handleChangeRequest(outcome.review.id, finding, this.deps.now());
           await this.enterStep(context, step);
         } else {
           this.deps.log(`${key}: #${pullRequest.number} was approved by ${outcome.by.join(", ")}; the pipeline goes on with merge`);
-          pipeline.approve();
+          pipeline.approve(this.deps.now());
           await this.enterStep(context, step);
         }
         return;
@@ -525,7 +586,7 @@ export class Poller {
           this.deps.log(`${key}: merged #${pullRequest.number}`);
         } else if (outcome.kind === "fix") {
           this.deps.log(`${key}: #${pullRequest.number} conflicts with its base; back to implement`);
-          pipeline.sendBackToImplement(outcome.findings);
+          pipeline.sendBackToImplement(outcome.findings, this.deps.now());
           await this.enterStep(context, step);
         }
         return;
@@ -537,32 +598,72 @@ export class Poller {
 
   /**
    * Carries out on GitHub what the pipeline's move from the step `from` to its current one brings with it, then saves
-   * it: the issue's label; the first review moves the issue to IN_REVIEW_STATUS; every review checks the pull request's
-   * files against the repository's `humanReviewPaths` and, when a person has to review, labels the pull request and
-   * mentions the people once.
+   * it: the issue's label and, for a move into review, `prepareReview`.
    */
-  private async enterStep(context: SessionContext, from: SwfStep): Promise<void> {
-    const { key, github, repo, recordId, issue, pipeline, watched } = context;
+  private async enterStep(context: SessionContext, from: SwfStep, resultBody?: string): Promise<void> {
+    const { repo, recordId, pipeline, watched } = context;
     if (pipeline.step === "review" && pipeline.pullRequest !== null) {
-      if (from === "pr") {
-        await this.moveToStatus(github, key, repo, issue.number, IN_REVIEW_STATUS);
-      }
-      if (!pipeline.humanReview && pipeline.humanReviewPaths.length > 0) {
-        const matched = matchingFiles(await github.pullRequestFiles(repo, pipeline.pullRequest), pipeline.humanReviewPaths);
-        if (matched.length > 0) {
-          const files = `${matched.slice(0, 5).join(", ")}${matched.length > 5 ? ", …" : ""}`;
-          this.deps.log(`${key}: #${pipeline.pullRequest} changes ${files}, which always needs a person`);
-          pipeline.requireHumanReview();
-        }
-      }
-      if (pipeline.humanReview) {
-        await this.askForHumanReview(context, pipeline.pullRequest);
-        pipeline.noteReviewersNotified();
-      }
+      await this.prepareReview(context, from === "pr");
+      pipeline.noteReviewPrepared();
     }
     await this.relabel(context, pipeline.step);
     await this.records.save(repo, recordId, pipeline);
+    const ended = pipeline.lastEndedRun;
+    await this.recordOnVm(context, resultBody !== undefined && ended ? { n: ended.n, step: ended.step, body: resultBody } : undefined);
     watched.waiting = "";
+  }
+
+  /**
+   * What entering the review brings with it on GitHub: the first review (`fromPr`) moves the issue to IN_REVIEW_STATUS;
+   * every review checks the pull request's files against the repository's `humanReviewPaths` and, when a person has to
+   * review, labels the pull request and mentions the people once. The pipeline is at review with a pull request.
+   */
+  private async prepareReview(context: SessionContext, fromPr: boolean): Promise<void> {
+    const { key, github, repo, issue, pipeline } = context;
+    if (pipeline.pullRequest === null) return;
+    if (fromPr) {
+      await this.moveToStatus(github, key, repo, issue.number, IN_REVIEW_STATUS);
+    }
+    if (!pipeline.humanReview && pipeline.humanReviewPaths.length > 0) {
+      const matched = matchingFiles(await github.pullRequestFiles(repo, pipeline.pullRequest), pipeline.humanReviewPaths);
+      if (matched.length > 0) {
+        const files = `${matched.slice(0, 5).join(", ")}${matched.length > 5 ? ", …" : ""}`;
+        this.deps.log(`${key}: #${pipeline.pullRequest} changes ${files}, which always needs a person`);
+        pipeline.requireHumanReview();
+      }
+    }
+    if (pipeline.humanReview) {
+      await this.askForHumanReview(context, pipeline.pullRequest);
+      pipeline.noteReviewersNotified();
+    }
+  }
+
+  /** `handPipelineTo` the session's VM while it runs; an issue without a VM, or with one that is off, keeps the pipeline on GitHub only. */
+  private async recordOnVm(context: SessionContext, result?: RunResult): Promise<void> {
+    const { sessionVm, sessionId } = context;
+    if (!sessionVm?.isRunning || !sessionId) return;
+    await this.handPipelineTo(context, this.deps.vm(sessionVm.name, sessionVm.zone), sessionId, result);
+  }
+
+  /**
+   * Hands the pipeline to `vm`, the VM of the session `sessionId`: for a record the poller drives, `hunt-ctl swf-record`
+   * mirrors it into `.hunt/swf/` of the worktree (`pipeline.json` and, with `result`, the body of the step result of the
+   * run `result.n` as `steps/<nn>-<step>.md`), where the Hunt client reads them; for a record the runner drives,
+   * `hunt-ctl swf-inbox` puts it into the runner's inbox, which takes it when it is further than its own
+   * (`libs/domain/src/swf/swf-inbox.utils.ts`). The record comment stays the poller's own source, so a failure here is
+   * logged and nothing more.
+   */
+  private async handPipelineTo(context: SessionContext, vm: SessionVmSsh, sessionId: SessionId, result?: RunResult): Promise<void> {
+    const { key, pipeline } = context;
+    try {
+      if (pipeline.isRunnerDriven) {
+        await vm.huntCtl(["swf-inbox", sessionId.id], `${JSON.stringify(pipelineMessage(pipeline))}\n`);
+      } else {
+        await vm.huntCtl(["swf-record", sessionId.id], `${JSON.stringify({ pipeline: pipeline.toJSON(), step: result })}\n`);
+      }
+    } catch (error) {
+      this.deps.log(`${key}: failed to record the pipeline on the VM: ${this.redacted(error)}`, "warn");
+    }
   }
 
   /** Labels the pull request, asks the issue's assignees to review and mentions them, the latter once per issue. */
@@ -598,7 +699,10 @@ export class Poller {
 
   /** The merged pull request ends the pipeline: `<label>:done`, DONE_STATUS in the projects and a comment. */
   private async finish(context: SessionContext, pullRequest: PullRequestState): Promise<void> {
-    const { key, github, repo, issue, labels } = context;
+    const { key, github, repo, issue, labels, recordId, pipeline } = context;
+    pipeline.complete(this.deps.now());
+    await this.records.save(repo, recordId, pipeline);
+    await this.recordOnVm(context);
     for (const label of labels.carriedBy(issue)) {
       await github.removeLabel(repo, issue.number, label);
     }
@@ -612,7 +716,7 @@ export class Poller {
    * Sends the answers that arrived on the issue since the agent's question to the agent, unless its relay is busy or a
    * desktop is connected; the prompt tells the agent to take the label back to the step.
    */
-  private async deliverAnswer(context: SessionContext): Promise<void> {
+  private async deliverAnswer(context: RunningContext): Promise<void> {
     const { repo, recordId, issue, comments, bot, labels, pipeline, watched, sessionVm, sessionId } = context;
     const answers = newAnswers(comments, bot, watched.answeredAt);
     if (answers.length === 0) return;
@@ -629,9 +733,24 @@ export class Poller {
   }
 
   /**
+   * Hands the answers that arrived on the issue since the agent's question to the runner on the VM (`hunt-ctl swf-inbox`),
+   * which sends them to the agent once its relay is idle and no desktop is connected; each answer once.
+   */
+  private async deliverAnswersToRunner(context: RunningContext): Promise<void> {
+    const { key, comments, bot, watched, sessionVm, sessionId } = context;
+    const answers = newAnswers(comments, bot, watched.answeredAt);
+    if (answers.length === 0) return;
+    await this.deps.vm(sessionVm.name, sessionVm.zone).huntCtl(["swf-inbox", sessionId.id], `${JSON.stringify(answersMessage(answers))}\n`);
+    watched.answeredAt = answers[answers.length - 1].createdAt;
+    const what = answers.length === 1 ? "an answer arrived on the issue; handed it" : `${answers.length} answers arrived on the issue; handed them`;
+    this.deps.log(`${key}: ${what} to the runner on ${sessionVm.name}`);
+  }
+
+  /**
    * Drives a poller step of a session whose VM is off, since it needs GitHub only, and starts the stopped VM of a session
    * whose agent has a prompt pending (an answer arrived on the issue, or the pipeline entered an agent step whose prompt
-   * was not sent), in the background; the next poll that lists the VM running sends it.
+   * was not sent), in the background; the next poll that lists the VM running sends it. The started VM gets the pipeline
+   * as it stands, since the transitions made while it was off never reached its `.hunt/swf/`.
    */
   private async watchStoppedSession(
     github: GitHub,
@@ -661,8 +780,9 @@ export class Poller {
     this.deps.log(`${key}: ${why} while ${sessionVm.name} is ${sessionVm.status.toLowerCase()}; starting it`);
     this.starts.add(sessionVm.name);
     void this.deps.sessionVmService.start(sessionId, SILENT).then(
-      () => {
+      async () => {
         watched.startError = "";
+        await this.handPipelineTo(context, this.deps.vm(sessionVm.name, sessionVm.zone), sessionId);
         this.deps.log(`${key}: ${sessionVm.name} runs again`);
       },
       (error: unknown) => {
@@ -678,10 +798,8 @@ export class Poller {
   /** Claims the issue and starts its setup in the background; an issue that cannot be claimed stays for the next poll. */
   private async claimAndStart(domain: string, claudeToken: string, github: GitHub, labels: WorkflowLabels, repo: Repository, issue: Issue): Promise<void> {
     const key = `${repo.slug}#${issue.number}`;
-    let comments: IssueComment[];
     try {
       await this.ensureLabels(github, repo, labels);
-      comments = await github.comments(repo, issue.number);
       if (!(await github.removeLabel(repo, issue.number, labels.requested))) {
         this.deps.log(`${key}: skipped, its label ${labels.requested} was removed meanwhile`);
         return;
@@ -694,13 +812,13 @@ export class Poller {
     const sessionId = SessionId.of(this.deps.newId());
     const branch = branchName(issue);
     this.deps.log(`${key}: claimed; session ${sessionId.id} on ${sessionId.vm.name}, branch ${branch.name}`);
-    const setup: Setup = { key, repo, issue: issue.number, labels, sessionId, isVmCreated: false, recordId: 0, done: Promise.resolve() };
+    const setup: Setup = { key, repo, issue: issue.number, labels, sessionId, step: "plan", isVmCreated: false, recordId: 0, done: Promise.resolve() };
     this.setups.set(sessionId.vm.name, setup);
     setup.done = (async () => {
       try {
         await github.addLabels(repo, issue.number, [labels.step("plan")]);
         await this.moveToStatus(github, key, repo, issue.number, IN_PROGRESS_STATUS);
-        await this.setUp(setup, domain, claudeToken, branch, issue, comments);
+        await this.setUp(setup, domain, claudeToken, branch, issue);
       } catch (error) {
         await this.markFailed(setup, this.redacted(error));
       } finally {
@@ -730,17 +848,34 @@ export class Poller {
     this.labelledRepos.add(key);
   }
 
-  /** The handoff of the desktop, from the VM to the first prompt; see the module comment. */
-  private async setUp(setup: Setup, domain: string, claudeToken: string, branch: BranchName, issue: Issue, comments: IssueComment[]): Promise<void> {
+  /** The handoff of the desktop, from the VM to the runner that sends the first prompt; see the module comment. */
+  private async setUp(setup: Setup, domain: string, claudeToken: string, branch: BranchName, issue: Issue): Promise<void> {
     const { key, repo, sessionId } = setup;
-    const log = (message: string) => this.deps.log(`${key}: ${message}`);
+    const prepared = await this.prepareVm(setup, domain, branch, issue);
+    const skills = stepSkills(prepared.skills);
+    if (skills.missing) throw new Error(missingSkillsError(skills.missing));
+    const pipeline = Pipeline.start({ repo: repo.slug, number: issue.number, branch: branch.name }, prepared.humanReviewPaths, skills.skills, this.deps.now());
+    setup.recordId = await this.records.create(repo, issue.number, pipeline);
+    // The runner edits the record comment itself, so the pipeline names it.
+    pipeline.noteRecordComment(setup.recordId);
+    await this.records.save(repo, setup.recordId, pipeline);
+    await this.startSession(setup, prepared, claudeToken, issue, branch, pipeline, []);
+    this.deps.log(`${key}: the runner of session ${sessionId.id} drives the issue, beginning with the plan`);
+  }
+
+  /**
+   * Brings the session's VM up with the repository cloned onto `branch`, the private files and the session's
+   * configuration: the first half of a setup, which `startSession` completes once the pipeline is known.
+   */
+  private async prepareVm(setup: Setup, domain: string, branch: BranchName, issue: Issue): Promise<PreparedVm> {
+    const { key, repo, sessionId } = setup;
     const reporter: Reporter = {
       progress: (step) => {
         if (step === "creatingVm") {
           setup.isVmCreated = true;
         }
       },
-      log,
+      log: (message) => this.deps.log(`${key}: ${message}`),
     };
     const request = { sessionId, repo, branch, title: issue.title, issue: issue.number, origin: ORIGIN, owner: "" };
     const provisioned = await this.deps.sessionVmService.provision({ ...request, template: DEFAULT_TEMPLATE, machineType: null }, reporter);
@@ -754,31 +889,140 @@ export class Poller {
     if (typeof cloned.path !== "string" || !cloned.path) throw new Error("hunt-ctl clone returned no path");
     await this.putPrivateFiles(vm, key, sessionId, repo);
     const sessionConfig = await vm.huntCtl(["session-config", sessionId.id, "--domain", domain]);
-    const servicesPrompt = typeof sessionConfig.services_prompt === "string" ? sessionConfig.services_prompt : null;
-    const agentMd = typeof sessionConfig.agent_md === "string" ? sessionConfig.agent_md : null;
-    const model = typeof sessionConfig.swf_model === "string" ? sessionConfig.swf_model : null;
-    const humanReviewPaths = Array.isArray(sessionConfig.swf_human_review_paths)
-      ? sessionConfig.swf_human_review_paths.filter((path): path is string => typeof path === "string")
-      : [];
-    const skills = stepSkills(sessionConfig.swf_skills);
-    if (skills.missing) throw new Error(missingSkillsError(skills.missing));
-    const pipeline = Pipeline.start(humanReviewPaths, skills.skills);
-    setup.recordId = await this.records.create(repo, issue.number, pipeline);
+    return {
+      vm,
+      zone: provisioned.vm.zone,
+      path: cloned.path,
+      servicesPrompt: typeof sessionConfig.services_prompt === "string" ? sessionConfig.services_prompt : null,
+      agentMd: typeof sessionConfig.agent_md === "string" ? sessionConfig.agent_md : null,
+      model: typeof sessionConfig.swf_model === "string" ? sessionConfig.swf_model : null,
+      humanReviewPaths: Array.isArray(sessionConfig.swf_human_review_paths)
+        ? sessionConfig.swf_human_review_paths.filter((path): path is string => typeof path === "string")
+        : [],
+      skills: sessionConfig.swf_skills,
+    };
+  }
+
+  /**
+   * Completes the setup of a prepared VM: `hunt-session.json` with the system prompt, the dependencies, `.hunt/swf/` with
+   * `pipeline` and the step results `results` of its runs (one `swf-record` each), then `start`, which enables the
+   * runner, and `wait` for the relay's session.
+   */
+  private async startSession(setup: Setup, prepared: PreparedVm, claudeToken: string, issue: Issue, branch: BranchName, pipeline: Pipeline, results: RunResult[]): Promise<void> {
+    const { key, repo, sessionId } = setup;
+    const { vm } = prepared;
     const prompts = this.deps.prompts();
     const swfPrompt = swfSystemPrompt(prompts.swfSystem, repo, issue.number, branch.name, setup.labels);
-    const systemPrompt = remoteSystemPrompt(prompts, sessionId, swfPrompt, servicesPrompt, agentMd);
-    await vm.putClaudeFiles(sessionId, { "hunt-session.json": huntSessionFile(sessionId, cloned.path, systemPrompt, model) });
-    log(`cloned ${repo.slug} into ${cloned.path}; installing the dependencies`);
+    const systemPrompt = remoteSystemPrompt(prompts, sessionId, swfPrompt, prepared.servicesPrompt, prepared.agentMd);
+    await vm.putClaudeFiles(sessionId, { "hunt-session.json": huntSessionFile(sessionId, prepared.path, systemPrompt, prepared.model) });
+    this.deps.log(`${key}: cloned ${repo.slug} into ${prepared.path}; installing the dependencies`);
     await vm.huntCtl(["deps", sessionId.id]);
+    // The pipeline is on the VM before `start` enables the runner, which drives it from here: its first prompt is the current step's.
+    await vm.huntCtl(["swf-record", sessionId.id], `${JSON.stringify({ pipeline: pipeline.toJSON() })}\n`);
+    for (const result of results) {
+      await vm.huntCtl(["swf-record", sessionId.id], `${JSON.stringify({ pipeline: pipeline.toJSON(), step: result })}\n`);
+    }
     await vm.huntCtl(["start", sessionId.id], `${claudeToken}\n${await this.deps.githubApp.tokenFor(repo)}\n`);
     const status = await vm.huntCtl(["wait", sessionId.id, "--timeout", "180"]);
     if (typeof status.acpSessionId !== "string" || !status.acpSessionId) throw new Error("the relay reports no ACP session");
+  }
 
-    const text = stepPrompt(prompts, repo, issue, comments, branch.name, setup.labels, pipeline);
-    const outcome = await this.deps.sendPrompt(vm.openRelay(), { sessionId: status.acpSessionId, cwd: cloned.path, text });
-    pipeline.recordPrompt(0);
-    await this.records.save(repo, setup.recordId, pipeline);
-    log(`the agent of session ${sessionId.id} plans the issue (prompt ${outcome})`);
+  /**
+   * Follows the issues of `repo` in progress (`issues`, labelled with a step or the question) that have no VM: Compute
+   * Engine lists none of theirs (`vms`) and no setup is under way for them. A lasting failure with one is logged once.
+   */
+  private async watchIssuesWithoutVm(domain: string, claudeToken: string, github: GitHub, labels: WorkflowLabels, repo: Repository, issues: Issue[], vms: Instance[]): Promise<void> {
+    const withVm = new Set<string>();
+    for (const instance of vms) {
+      const sessionVm = SessionVm.fromInstance(instance);
+      if (sessionVm && sessionVm.issue !== null) {
+        withVm.add(`${sessionVm.repo}#${sessionVm.issue}`);
+      }
+    }
+    for (const setup of this.setups.values()) {
+      withVm.add(setup.key);
+    }
+    const followed = new Set<string>();
+    for (const issue of issues) {
+      const key = `${repo.slug}#${issue.number}`;
+      if (withVm.has(key)) continue;
+      followed.add(key);
+      const watched = this.withoutVm.get(key) ?? { error: "", token: "", answeredAt: "", startError: "", waiting: "" };
+      this.withoutVm.set(key, watched);
+      try {
+        await this.watchIssueWithoutVm(domain, claudeToken, github, labels, repo, issue.number, watched);
+        watched.error = "";
+      } catch (error) {
+        const message = this.redacted(error);
+        if (watched.error !== message) {
+          this.deps.log(`${key}: ${message}`, "error");
+        }
+        watched.error = message;
+      }
+    }
+    for (const key of this.withoutVm.keys()) {
+      if (key.startsWith(`${repo.slug}#`) && !followed.has(key)) {
+        this.withoutVm.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Drives the pipeline of an issue without a VM as far as GitHub takes it: a poller step goes on without the VM, a
+   * question waits for its answer; once the pipeline needs the agent (an agent step, or the answer arrived), the VM is
+   * replaced. A record that names no branch (version 1, driven by the poller) cannot be rebuilt and is left alone.
+   */
+  private async watchIssueWithoutVm(domain: string, claudeToken: string, github: GitHub, labels: WorkflowLabels, repo: Repository, issueNumber: number, watched: Watched): Promise<void> {
+    const loaded = await this.loadContext(github, labels, null, null, repo, issueNumber, watched);
+    if (!loaded) return;
+    const { context, state } = loaded;
+    const { key, pipeline } = context;
+    if (!pipeline.waitsForAgent) {
+      await this.drivePollerStep(context);
+      return;
+    }
+    if (state === "question" && newAnswers(context.comments, context.bot, "").length === 0) {
+      this.waitOnce(watched, key, "the issue has no VM; its question waits for an answer, which needs none");
+      return;
+    }
+    if (pipeline.branch === "") {
+      this.waitOnce(watched, key, `the issue has no VM at the step ${pipeline.step} and its record of version ${pipeline.version} names no branch to rebuild one from; left alone`, "warn");
+      return;
+    }
+    await this.relabel(context, pipeline.step);
+    this.replaceVm(domain, claudeToken, context);
+  }
+
+  /**
+   * Replaces the lost VM of the issue in the background, as `claimAndStart` sets a new session up: a new VM with the
+   * record's branch cloned, `.hunt/swf/` restored from the record and the step results on the issue, the step's run
+   * started over (`Pipeline.restart`) and the runner started, which sends the step's prompt; then a comment on the issue.
+   * A failure marks the issue as failed at its step.
+   */
+  private replaceVm(domain: string, claudeToken: string, context: SessionContext): void {
+    const { key, github, labels, repo, issue, comments, bot, recordId, pipeline } = context;
+    const sessionId = SessionId.of(this.deps.newId());
+    const branch = BranchName.of(pipeline.branch);
+    this.deps.log(`${key}: the issue has no VM at the step ${pipeline.step}; replacing it with ${sessionId.vm.name}, session ${sessionId.id}, branch ${branch.name}`);
+    const setup: Setup = { key, repo, issue: issue.number, labels, sessionId, step: pipeline.step, isVmCreated: false, recordId, done: Promise.resolve() };
+    this.setups.set(sessionId.vm.name, setup);
+    setup.done = (async () => {
+      try {
+        const prepared = await this.prepareVm(setup, domain, branch, issue);
+        // A new VM records the agent at plan; this one takes over at the pipeline's step.
+        await this.deps.sessionVmService.recordSession(prepared.zone, sessionId, { [AGENT_METADATA]: pipeline.step });
+        pipeline.restart(this.deps.now());
+        await this.records.save(repo, recordId, pipeline);
+        const results = resultsOfRuns(comments, bot, pipeline.runs);
+        await this.startSession(setup, prepared, claudeToken, issue, branch, pipeline, results);
+        await github.comment(repo, issue.number, replacedVmComment(pipeline.step, sessionId.vm.name));
+        this.deps.log(`${key}: ${sessionId.vm.name} replaces the lost VM with ${results.length} step result(s) restored; the runner starts the step ${pipeline.step} over`);
+      } catch (error) {
+        await this.markFailed(setup, this.redacted(error));
+      } finally {
+        this.setups.delete(sessionId.vm.name);
+      }
+    })();
   }
 
   /**
@@ -798,11 +1042,11 @@ export class Poller {
     this.deps.log(`${key}: put the private files of ${repo.slug} from the secret ${name} (${secret.bytes.length} bytes) into the worktree`);
   }
 
-  /** Replaces `<label>:plan` with `<label>:failed` and comments the error of the setup; failures here are only logged. */
+  /** Replaces the label of the setup's step with `<label>:failed` and comments the error of the setup; failures here are only logged. */
   private async markFailed(setup: Setup, error: string): Promise<void> {
-    const { key, repo, issue, labels, sessionId } = setup;
+    const { key, repo, issue, labels, sessionId, step } = setup;
     this.deps.log(`${key}: failed: ${error}`, "error");
-    await this.failIssue(key, this.deps.github, repo, issue, labels, "plan", failureComment(error, setup.isVmCreated ? sessionId.vm.name : null));
+    await this.failIssue(key, this.deps.github, repo, issue, labels, step, failureComment(error, setup.isVmCreated ? sessionId.vm.name : null));
   }
 
   /** Replaces the label of `step` (and a question label) with `<label>:failed` and comments `comment`; failures here are only logged. */

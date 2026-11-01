@@ -2,8 +2,9 @@
 
 System-prompt parts that both the desktop app and the gateway's poller append to Claude Code's system prompt of a
 remote session. The files are compiled in verbatim (`include_str!` in `apps/client/src-tauri/src/session/commands/remote.rs` and
-`agent/acp/connection.rs`, `?raw` imports in `apps/gateway/src/swf/swf.main.ts`), so they hold nothing but the prompt text; this file
-says who sends which of them and when. Only `sessions.system-prompt.md` carries a `{{placeholder}}`, filled by
+`agent/acp/connection.rs`, `?raw` imports in `apps/gateway/src/swf/swf.main.ts` and `apps/session/src/swf-runner/swf-runner.main.ts`),
+so they hold nothing but the prompt text; this file says who sends which of them and when. The prompts of the swf
+pipeline's steps are in `swf/` (see the README there). Only `sessions.system-prompt.md` carries a `{{placeholder}}`, filled by
 `fill_prompt` in `src-tauri/src/graph/graph.rs` and `fillPrompt` in `libs/domain/src/shared/prompts.utils.ts`.
 
 | File | Sent by | When | Where it lands |
@@ -16,5 +17,6 @@ says who sends which of them and when. Only `sessions.system-prompt.md` carries 
 
 The app composes its remote system prompt as: its usual addition (`apps/client/prompts/`, see the README there), the
 remote part, the Git part, the services section `hunt-ctl session-config` writes and the repository's `hunt.agent.md`. The
-poller has no desktop settings and composes: remote part, `git-push`, question part, sessions part, its swf workflow
-(`apps/gateway/software-factory/`), services section, `hunt.agent.md`.
+poller has no desktop settings and composes: remote part, `git-push`, question part, sessions part, the swf workflow
+(`swf/0-system-prompt.md`), services section, `hunt.agent.md`; the session's `hunt-session.json` keeps it for every
+conversation the swf runner begins on the VM.

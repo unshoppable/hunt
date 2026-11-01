@@ -7,6 +7,7 @@ import { listenTo } from "../ipc/events";
 import { useAccountsStore } from "../accounts/accounts.store";
 import { useAgentDefaultsStore } from "../chat/agent-defaults.store";
 import { useChecksStore } from "../checks/checks.store";
+import { useFactoryStore } from "../sessions/swf-pipeline.store";
 import { configuredVmSettings, useSettingsStore, type PaneKey } from "../settings/settings.store";
 import { useHuntStore } from "../sessions/hunt.store";
 
@@ -114,6 +115,14 @@ function refreshShownChecks(sessionId: string): void {
   void checksStore.refresh(sessionId);
 }
 
+/**
+ * Reads the swf pipeline of the session again after its `.hunt/swf/` was pulled: for every swf session, so that the
+ * sidebar's chip knows the current step before the Factory tab was ever opened.
+ */
+function refreshPulledPipeline(sessionId: string): void {
+  void useFactoryStore.getState().refresh(sessionId);
+}
+
 /** Feeds the backend's events into the Hunt store for as long as the component is mounted. */
 export function useBackendEvents(): void {
   const refreshSessions = useHuntStore((state) => state.refreshSessions);
@@ -153,6 +162,7 @@ export function useBackendEvents(): void {
       listenTo("attribution:changed", (event) => applyWorktreeChanged(event.worktreePath)),
       listenTo("worktree:changed", (event) => applyWorktreeChanged(event.worktreePath)),
       listenTo("checks:changed", (event) => refreshShownChecks(event.sessionId)),
+      listenTo("swf:pulled", (event) => refreshPulledPipeline(event.huntSessionId)),
     ];
     return () => {
       for (const subscription of subscriptions) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { changeRequestFinding, failureComment, humanReviewComment, missingPullRequestComment, missingSkillsError, noPullRequestComment } from "./swf-comments.utils.ts";
+import { changeRequestFinding, failureComment, humanReviewComment, missingPullRequestComment, missingSkillsError, noPullRequestComment, replacedVmComment } from "./swf-comments.utils.ts";
 
 describe("issue comments", () => {
   it("reports a failure in a code block and names the VM that stays", () => {
@@ -7,6 +7,12 @@ describe("issue comments", () => {
       "Hunt could not start a session for this issue:\n\n```\nhunt-ctl: `` broken\n```\n\nThe VM `vm-hunt-s-ab12cd34` stays for inspection.",
     );
     expect(failureComment("quota exceeded", null)).not.toContain("stays");
+  });
+
+  it("names the VM that replaces the lost one and the step that starts over", () => {
+    expect(replacedVmComment("implement", "vm-hunt-s-ab12cd34")).toBe(
+      "Hunt found no VM for this issue any more and replaced it with `vm-hunt-s-ab12cd34`; the step `implement` starts over there with what the steps before it left on the issue.",
+    );
   });
 
   it("names the agent steps hunt.json names no skill for", () => {

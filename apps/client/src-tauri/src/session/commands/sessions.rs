@@ -25,6 +25,7 @@ use crate::session::attribution;
 use crate::session::dependencies::{self, DependencyRegistry, Install};
 use crate::session::store::{self, announce_sessions_changed, SelectionContext, SessionRecord, Workspace};
 use crate::session::summary;
+use crate::session::swf;
 use crate::session::sync;
 use crate::session::vm_cleanup::delete_session_vm;
 use crate::terminal::tmux;
@@ -123,6 +124,7 @@ pub async fn create_session(
 
     let mut record = SessionRecord::new(id, title, repo_path, worktree_path.clone(), branch, base_ref, base_commit);
     record.pull_request = pull_request;
+    record.derive_mode();
     record.diff_base = diff_base;
     record.workspace = workspace;
     record.keeps_branch = keeps_branch;
@@ -202,6 +204,10 @@ pub async fn open_session(
         let activated = activate_remote(&app, &registry, &watchers, record).await;
         registry.end_start(id).await;
         finish_progress(&app, id);
+        // The pipeline record of a software-factory session stays out of the file sync the connect started.
+        if activated.is_ok() {
+            swf::pull_later(&app, id);
+        }
         return activated;
     }
 

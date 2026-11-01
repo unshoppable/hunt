@@ -52,12 +52,20 @@ export type SessionView = {
   dependencies: DependencyStatus | null;
   /** Whether the session's worktree exists here; a remote session adopted from its VM gets one with its first sync. */
   hasLocalWorktree: boolean;
+  /** What the session is for, which decides the tabs its inspector has; see `SessionMode`. */
+  mode: SessionMode;
   /**
    * The branch on `origin` a push of the session lands on: the one its branch tracks, else a branch of its own name, as a
    * plain `git push` in the worktree does; a poller session's own branch. `null` without a local worktree.
    */
   pushTarget: string | null;
 };
+
+/**
+ * What a session is for (mirror of `SessionMode` in src-tauri/src/session/store.rs): `edit` works on a branch, `git-review`
+ * reviews a pull request, `swf` is a session of the gateway's poller for a GitHub issue, whose pipeline the Factory tab shows.
+ */
+export type SessionMode = "edit" | "git-review" | "swf";
 
 /** What the preparation of a worktree's `node_modules` (clone from the repository, else install) is doing or ended with. */
 export type DependencyStatus = { phase: "running" | "ready" | "failed"; message: string };

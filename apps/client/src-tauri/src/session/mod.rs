@@ -9,6 +9,7 @@ pub mod review;
 pub mod session_id;
 pub mod store;
 pub mod summary;
+pub mod swf;
 pub mod sync;
 pub mod transcripts;
 pub mod vm_cleanup;

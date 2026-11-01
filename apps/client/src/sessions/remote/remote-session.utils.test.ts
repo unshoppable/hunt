@@ -41,6 +41,7 @@ function session(id: string, patch: Partial<SessionView> = {}): SessionView {
     leftoverVm: null,
     dependencies: null,
     hasLocalWorktree: true,
+    mode: "edit",
     pushTarget: "main",
     ...patch,
   };

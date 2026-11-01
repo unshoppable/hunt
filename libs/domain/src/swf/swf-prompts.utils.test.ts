@@ -1,47 +1,54 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type * as z from "zod/mini";
-import { Repository } from "../../../../libs/domain/src/session/repository.value-object.ts";
-import { SessionId } from "../../../../libs/domain/src/session/session-id.value-object.ts";
-import type { SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
-import { WorkflowLabels } from "../../../../libs/domain/src/swf/workflow-labels.value-object.ts";
-import type { Issue, IssueComment } from "./github.client.ts";
-import { Pipeline } from "./pipeline.domain.ts";
-import { answerPrompt, badResultPrompt, huntSessionFile, nudgePrompt, remoteSystemPrompt, stepPrompt, swfSystemPrompt } from "./swf-prompts.utils.ts";
-import { SKILLS } from "./swf.fixtures.ts";
+import { Repository } from "../session/repository.value-object.ts";
+import { SessionId } from "../session/session-id.value-object.ts";
+import type { SwfStep } from "./swf-step.types.ts";
+import { WorkflowLabels } from "./workflow-labels.value-object.ts";
+import { Pipeline, type Run } from "./pipeline.domain.ts";
+import { answerPrompt, badResultPrompt, huntSessionFile, nudgePrompt, remoteSystemPrompt, stepPrompt, swfSystemPrompt, type CommentText, type IssueText } from "./swf-prompts.utils.ts";
+import { SKILLS, started } from "./swf.fixtures.ts";
+
+/** The poller's clock in the tests: 2026-10-25 10:00 UTC. */
+const NOW = Date.UTC(2026, 9, 25, 10, 0, 0);
 
 const REPO = Repository.fromSlug("acme/app");
 
-function issue(number: number, title = `Issue ${number}`, labels = ["swf"]): Issue {
-  return { number, title, body: "", author: "alice", createdAt: "2026-10-13T08:04:05Z", url: `https://github.com/acme/app/issues/${number}`, labels, state: "open", assignees: [] };
+function issue(number: number, title = `Issue ${number}`): IssueText {
+  return { number, title, body: "", author: "alice", createdAt: "2026-10-13T08:04:05Z", url: `https://github.com/acme/app/issues/${number}` };
 }
 
 /** A fresh pipeline at `step`, apart from `fields`. */
 function pipelineAt(step: SwfStep, fields: Partial<z.input<typeof Pipeline.schema>> = {}): Pipeline {
-  return new Pipeline({ ...Pipeline.start([], SKILLS).toJSON(), step, ...fields });
+  return new Pipeline({ ...started(NOW).toJSON(), step, runs: [runOf(1, step)], ...fields });
+}
+
+/** A run of `step` that started at NOW and still runs, apart from `fields`. */
+function runOf(n: number, step: SwfStep, fields: Partial<Run> = {}): Run {
+  return { n, step, startedAt: new Date(NOW).toISOString(), endedAt: null, outcome: "running", ...fields };
 }
 
 /** `pipeline` after `findings` sent it back to implement. */
 function sentBack(pipeline: Pipeline, findings: string[]): Pipeline {
-  pipeline.sendBackToImplement(findings);
+  pipeline.sendBackToImplement(findings, NOW);
   return pipeline;
 }
 
 const prompts = {
-  remote: readFileSync(new URL("../../../../libs/domain/prompts/remote.system-prompt.md", import.meta.url), "utf8"),
-  gitPush: readFileSync(new URL("../../../../libs/domain/prompts/git-push.system-prompt.md", import.meta.url), "utf8"),
-  question: readFileSync(new URL("../../../../libs/domain/prompts/question.system-prompt.md", import.meta.url), "utf8"),
-  sessions: readFileSync(new URL("../../../../libs/domain/prompts/sessions.system-prompt.md", import.meta.url), "utf8"),
-  swfSystem: readFileSync(new URL("../../software-factory/0-system-prompt.md", import.meta.url), "utf8"),
-  swfPlan: readFileSync(new URL("../../software-factory/1-plan.user-prompt.md", import.meta.url), "utf8"),
-  swfImplement: readFileSync(new URL("../../software-factory/2-implement.user-prompt.md", import.meta.url), "utf8"),
-  swfEscalate: readFileSync(new URL("../../software-factory/2-implement-escalate.user-prompt.md", import.meta.url), "utf8"),
-  swfVerify: readFileSync(new URL("../../software-factory/3-verify.user-prompt.md", import.meta.url), "utf8"),
-  swfGate: readFileSync(new URL("../../software-factory/4-gate.user-prompt.md", import.meta.url), "utf8"),
-  swfPr: readFileSync(new URL("../../software-factory/5-pr.user-prompt.md", import.meta.url), "utf8"),
-  swfNudge: readFileSync(new URL("../../software-factory/nudge.user-prompt.md", import.meta.url), "utf8"),
-  swfAnswer: readFileSync(new URL("../../software-factory/answer.user-prompt.md", import.meta.url), "utf8"),
-  swfBadResult: readFileSync(new URL("../../software-factory/bad-result.user-prompt.md", import.meta.url), "utf8"),
+  remote: readFileSync(new URL("../../prompts/remote.system-prompt.md", import.meta.url), "utf8"),
+  gitPush: readFileSync(new URL("../../prompts/git-push.system-prompt.md", import.meta.url), "utf8"),
+  question: readFileSync(new URL("../../prompts/question.system-prompt.md", import.meta.url), "utf8"),
+  sessions: readFileSync(new URL("../../prompts/sessions.system-prompt.md", import.meta.url), "utf8"),
+  swfSystem: readFileSync(new URL("../../prompts/swf/0-system-prompt.md", import.meta.url), "utf8"),
+  swfPlan: readFileSync(new URL("../../prompts/swf/1-plan.user-prompt.md", import.meta.url), "utf8"),
+  swfImplement: readFileSync(new URL("../../prompts/swf/2-implement.user-prompt.md", import.meta.url), "utf8"),
+  swfEscalate: readFileSync(new URL("../../prompts/swf/2-implement-escalate.user-prompt.md", import.meta.url), "utf8"),
+  swfVerify: readFileSync(new URL("../../prompts/swf/3-verify.user-prompt.md", import.meta.url), "utf8"),
+  swfGate: readFileSync(new URL("../../prompts/swf/4-gate.user-prompt.md", import.meta.url), "utf8"),
+  swfPr: readFileSync(new URL("../../prompts/swf/5-pr.user-prompt.md", import.meta.url), "utf8"),
+  swfNudge: readFileSync(new URL("../../prompts/swf/nudge.user-prompt.md", import.meta.url), "utf8"),
+  swfAnswer: readFileSync(new URL("../../prompts/swf/answer.user-prompt.md", import.meta.url), "utf8"),
+  swfBadResult: readFileSync(new URL("../../prompts/swf/bad-result.user-prompt.md", import.meta.url), "utf8"),
 };
 
 /** Joins the lines of a wrapped paragraph: a line break followed by list indentation becomes one space. */
@@ -84,18 +91,20 @@ describe("session files", () => {
     const unwrapped = unwrap(prompt);
     expect(
       unwrapped.startsWith(
-        "## Working on a GitHub issue\n\nHunt's poller started this session for issue #12 of acme/app, which carried the label `swf`, on the branch `feat/general/12-fix-login`.",
+        "## Working on a GitHub issue\n\nHunt's software factory started this session for issue #12 of acme/app, which carried the label `swf`, on the branch `feat/general/12-fix-login`.",
       ),
     ).toBe(true);
     expect(unwrapped).toContain(
-      "The work runs as a pipeline of steps that the poller drives: plan, implement, verify, gate, pr, then review (the pull request's checks and the Claude review), " +
+      "The work runs as a pipeline of steps that Hunt drives: plan, implement, verify, gate, pr, then review (the pull request's checks and the Claude review), " +
         "human-review (only when the gate asked for a person) and merge.",
     );
-    expect(unwrapped).toContain("brings you back to implement with the finding in the prompt, at most 5 times; after that the poller asks you to escalate to the people instead.");
+    expect(unwrapped).toContain("Every step runs in a fresh conversation: what the earlier steps did is in `.hunt/swf/steps/<nn>-<step>.md` of the worktree");
+    expect(unwrapped).toContain("brings you back to implement with the finding in the prompt, at most 5 times; after that Hunt asks you to escalate to the people instead.");
     expect(prompt).toContain("### How a step ends\n");
-    expect(unwrapped).toContain("one comment on the issue (`gh issue comment 12 --repo acme/app --body-file <file>`)");
+    expect(unwrapped).toContain("the file `.hunt/swf/result.md` in the worktree, which holds the human-readable part the step asks for");
     expect(unwrapped).toContain("the marker `<!-- hunt:step {…} -->` with the JSON object the step prescribes.");
-    expect(unwrapped).toContain("a turn that ends with the issue still labelled `swf:<step>` and no result counts as unfinished work.");
+    expect(unwrapped).toContain("Never post the result as a comment yourself");
+    expect(unwrapped).toContain("a turn that ends with the issue still labelled `swf:<step>` and no `.hunt/swf/result.md` counts as unfinished work.");
     expect(prompt).toContain("### Questions to the people\n");
     expect(unwrapped).toContain(
       "replace the step's label with `swf:question` in one command (the step's prompt names it as " +
@@ -111,7 +120,8 @@ describe("session files", () => {
         "its hunt.json by the step; Hunt has no default.",
     );
     expect(unwrapped).not.toContain("swf-<step>");
-    expect(unwrapped).toContain("which the gate's prompt hands to its judging subagent instead.");
+    expect(unwrapped).toContain("which the gate step judges by.");
+    expect(unwrapped).not.toContain("subagent");
     expect(unwrapped).not.toContain("A step without a skill");
     expect(prompt).toContain("### Guardrails\n");
     expect(prompt).not.toContain("swf:running");
@@ -137,11 +147,11 @@ describe("stepPrompt", () => {
   const fixLogin = { ...issue(12, "Fix login"), body: "The login fails." };
 
   it("gives the plan step the issue with every comment, the branch and the commands of its label", () => {
-    const comments: IssueComment[] = [
-      { id: 1, author: "bob", createdAt: "2026-10-13T09:00:00Z", body: "Also the logout.\n" },
-      { id: 2, author: "carol", createdAt: "2026-10-13T10:30:00Z", body: "Agreed." },
+    const comments: CommentText[] = [
+      { author: "bob", createdAt: "2026-10-13T09:00:00Z", body: "Also the logout.\n" },
+      { author: "carol", createdAt: "2026-10-13T10:30:00Z", body: "Agreed." },
     ];
-    const text = stepPrompt(prompts, REPO, fixLogin, comments, branch, labels, Pipeline.start([], SKILLS));
+    const text = stepPrompt(prompts, REPO, fixLogin, comments, branch, labels, started(NOW));
     const unwrapped = unwrap(text);
 
     expect(text.startsWith("Step `plan` for GitHub issue #12 of acme/app: Fix login\nhttps://github.com/acme/app/issues/12\n")).toBe(true);
@@ -151,7 +161,9 @@ describe("stepPrompt", () => {
       "with `gh issue edit 12 --repo acme/app --remove-label swf:plan --add-label swf:question --title \"❓ RÜCKFRAGE: <title>\"` to mark the issue and " +
         "`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:plan --title \"<title>\"` once the answer arrived.",
     );
-    expect(unwrapped).toContain("The comment ends with the line `<!-- hunt:step {\"step\":\"plan\"} -->`.");
+    expect(unwrapped).toContain("Write the step result to `.hunt/swf/result.md`: a short implementation plan");
+    expect(unwrapped).toContain("work from `.hunt/swf/steps/01-plan.md`, where Hunt keeps it.");
+    expect(unwrapped).toContain("The file ends with the line `<!-- hunt:step {\"step\":\"plan\"} -->`.");
     expect(unwrapped).toContain(
       "Work on the branch `feat/general/12-fix-login`. The issue is labelled `swf:plan` while you work on this step; to give up, run " +
         "`gh issue edit 12 --repo acme/app --remove-label swf:plan --add-label swf:failed` and say why.",
@@ -160,7 +172,7 @@ describe("stepPrompt", () => {
   });
 
   it("says when the issue has no description or comments", () => {
-    const text = stepPrompt(prompts, REPO, issue(3), [], "feat/general/3-issue-3", labels, Pipeline.start([], SKILLS));
+    const text = stepPrompt(prompts, REPO, issue(3), [], "feat/general/3-issue-3", labels, started(NOW));
     expect(text).toContain("(no description)");
     expect(text).toContain("## Comments\n\n(none)\n");
   });
@@ -198,7 +210,8 @@ describe("stepPrompt", () => {
 
     const gate = stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipelineAt("gate"));
     expect(gate.startsWith("Step `gate` for issue #12 of acme/app on the branch `feat/general/12-fix-login` (pull request: (not opened yet)).\n")).toBe(true);
-    expect(unwrap(gate)).toContain("Read the diff of the branch `feat/general/12-fix-login` against its base branch");
+    expect(unwrap(gate)).toContain("Read the diff of the branch against its base branch (`git diff origin/<base>...HEAD` and the untracked files)");
+    expect(unwrap(gate)).toContain("the plan and the step results in `.hunt/swf/steps/`");
     expect(unwrap(gate)).toContain("(`gh issue view 12 --repo acme/app --comments`)");
     expect(unwrap(gate)).toContain("to give up, run `gh issue edit 12 --repo acme/app --remove-label swf:gate --add-label swf:failed` and say why.");
     const regate = stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipelineAt("gate", { pullRequest: 31 }));
@@ -206,7 +219,8 @@ describe("stepPrompt", () => {
 
     const pr = stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipelineAt("pr"));
     expect(pr.startsWith("Step `pr` for issue #12 of acme/app on the branch `feat/general/12-fix-login` (a person reviews before the merge: no).\n")).toBe(true);
-    expect(pr).toContain("contains `Closes #12`");
+    expect(unwrap(pr)).toContain("contains `Closes #12`");
+    expect(unwrap(pr)).toContain("The plan in `.hunt/swf/steps/01-plan.md`, the results of the implement and verify runs beside it");
     expect(pr).toContain("`<!-- hunt:step {\"step\":\"pr\",\"pullRequest\":<number>} -->`");
     expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipelineAt("pr", { humanReview: true }))).toContain("(a person reviews before the merge: yes)");
     for (const text of [verify, gate, regate, pr]) {
@@ -220,17 +234,19 @@ describe("stepPrompt", () => {
     }
   });
 
-  it("tells the agent to invoke the skill of every step but gate first, and hands the gate's skill to the judging subagent as the rubric", () => {
-    const plan = stepPrompt(prompts, REPO, fixLogin, [], branch, labels, Pipeline.start([], SKILLS));
+  it("tells the agent to invoke the skill of every step but gate first, and names the gate's skill as the rubric the fresh conversation judges by", () => {
+    const plan = stepPrompt(prompts, REPO, fixLogin, [], branch, labels, started(NOW));
     expect(plan).toContain(`https://github.com/acme/app/issues/12\n\n${invokeSkill("swf-plan")}\n\n## Issue, opened by @alice`);
     for (const step of ["implement", "verify", "pr"] as const) {
       expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipelineAt(step)), step).toContain(`.\n\n${invokeSkill(`swf-${step}`)}\n\n`);
     }
     const gate = stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipelineAt("gate"));
     expect(unquote(gate)).toContain(
-      "and the repository's rubric for the review necessity, its skill `swf-gate` (`.claude/skills/swf-gate/SKILL.md`), and judge by that rubric. " +
-        'Answer with exactly one JSON object `{"humanReview": true|false, "risk": "low"|"medium"|"high", "reasons": ["…"]}`',
+      "and the repository's rubric for the review necessity, its skill `swf-gate` (`.claude/skills/swf-gate/SKILL.md`), and judge by that rubric: " +
+        "`humanReview` says whether a person has to review",
     );
+    expect(unwrap(gate)).toContain("This conversation is fresh: you did not write the change");
+    expect(gate).not.toContain("subagent");
     expect(gate).not.toContain("Invoke the repository's skill");
     expect(gate).not.toContain("When the repository has no rubric");
     expect(gate).not.toContain("hunt.agent.md");
@@ -238,9 +254,9 @@ describe("stepPrompt", () => {
 
   it("names the skill hunt.json sets for each step in its prompt", () => {
     const skills = { ...SKILLS, plan: "acme-plan", implement: "acme-implement", gate: "acme-gate" };
-    expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, Pipeline.start([], skills))).toContain(`issues/12\n\n${invokeSkill("acme-plan")}\n`);
+    expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, started(NOW, [], skills))).toContain(`issues/12\n\n${invokeSkill("acme-plan")}\n`);
     expect(unquote(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipelineAt("gate", { skills })))).toContain(
-      "its skill `acme-gate` (`.claude/skills/acme-gate/SKILL.md`), and judge by that rubric.",
+      "its skill `acme-gate` (`.claude/skills/acme-gate/SKILL.md`), and judge by that rubric:",
     );
     for (const step of ["verify", "pr"] as const) {
       expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, pipelineAt(step, { skills })), step).toContain(invokeSkill(`swf-${step}`));
@@ -250,23 +266,23 @@ describe("stepPrompt", () => {
     );
     const escalate = sentBack(pipelineAt("review", { skills, attempt: 5 }), ["Checks: build failed"]);
     expect(stepPrompt(prompts, REPO, fixLogin, [], branch, labels, escalate)).toContain(
-      `with your recommendation.\n\n${invokeSkill("acme-implement")}\n\n## The findings`,
+      `your recommendation.\n\n${invokeSkill("acme-implement")}\n\n## The findings`,
     );
   });
 });
 
 describe("answerPrompt", () => {
   it("brings the answers to the agent and names the command that takes the label back to the step", () => {
-    const answers: IssueComment[] = [
-      { id: 4, author: "bob", createdAt: "2026-10-13T10:05:00Z", body: "Postgres.\n" },
-      { id: 5, author: "carol", createdAt: "2026-10-13T10:10:00Z", body: "With pgvector." },
+    const answers: CommentText[] = [
+      { author: "bob", createdAt: "2026-10-13T10:05:00Z", body: "Postgres.\n" },
+      { author: "carol", createdAt: "2026-10-13T10:10:00Z", body: "With pgvector." },
     ];
     const text = answerPrompt(prompts.swfAnswer, REPO, 12, answers, WorkflowLabels.of("swf"), "implement");
     expect(text.startsWith("An answer to your question arrived as a comment on issue #12 of acme/app:\n\n**@bob** on 2026-10-13 10:05 UTC:\n\nPostgres.\n\n---\n\n**@carol** on 2026-10-13 10:10 UTC:\n\nWith pgvector.\n\n")).toBe(true);
     expect(unwrap(text)).toContain(
       "Replace `swf:question` with `swf:implement` and remove the red question mark and the word for a question back from the title " +
         "(`gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:implement --title \"<title>\"`), " +
-        "then finish the step `implement` you stopped at and post its result.",
+        "then finish the step `implement` you stopped at and write its result to `.hunt/swf/result.md`.",
     );
     expect(text).not.toContain("{{");
   });
@@ -277,7 +293,7 @@ describe("nudgePrompt", () => {
     const text = nudgePrompt(prompts.swfNudge, REPO, 12, WorkflowLabels.of("swf"), "verify");
     const unwrapped = unwrap(text);
     expect(unwrapped.startsWith(
-      "Your last turn ended, but issue #12 of acme/app still has the label `swf:verify`: no result for the step `verify` was commented on it and neither `swf:question` nor `swf:failed` is set.",
+      "Your last turn ended, but issue #12 of acme/app still has the label `swf:verify`: no result for the step `verify` was written to `.hunt/swf/result.md` and neither `swf:question` nor `swf:failed` is set.",
     )).toBe(true);
     expect(text).toContain("`<!-- hunt:step {\"step\":\"verify\", …} -->`");
     expect(unwrapped).toContain("(`gh issue edit 12 --repo acme/app --remove-label swf:verify --add-label swf:question --title \"❓ RÜCKFRAGE: <title>\"`)");
@@ -288,9 +304,10 @@ describe("nudgePrompt", () => {
 });
 
 describe("badResultPrompt", () => {
-  it("tells the agent why its step result is unusable and how to post it again", () => {
+  it("tells the agent why its step result is unusable and how to write it again", () => {
     expect(badResultPrompt(prompts.swfBadResult, "findings of a verify result must be a list")).toBe(
-      "Hunt could not read your step result: findings of a verify result must be a list. Post the step's result again as a comment with a valid `<!-- hunt:step {…} -->` marker.",
+      "Hunt could not read your step result in `.hunt/swf/result.md`: findings of a verify result must be a list. " +
+        "Write the step's result to `.hunt/swf/result.md` again, with a valid `<!-- hunt:step {…} -->` marker on a line of its own.",
     );
   });
 });

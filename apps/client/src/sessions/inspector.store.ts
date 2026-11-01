@@ -5,9 +5,10 @@ import { PaneLayout } from "../ide/pane-layout.value-object";
 
 /**
  * Views of the inspector pane: the changelist diff, the built-in editor, the component diagram, the reviewed pull
- * request, the checks of hunt.json or the terminals, and for a remote session also its preview and its VM's desktop.
+ * request, the checks of hunt.json or the terminals, for a remote session also its preview and its VM's desktop, and
+ * for a session of the swf poller the pipeline of its issue.
  */
-export type RightTab = "diff" | "git" | "editor" | "graph" | "pullRequest" | "preview" | "desktop" | "checks" | "terminal";
+export type RightTab = "diff" | "git" | "editor" | "graph" | "pullRequest" | "preview" | "desktop" | "checks" | "terminal" | "factory";
 
 /** The changelist's tabs; `review` exists only for a pull request under review. */
 export type ChangeListTab = "changelist" | "shelf" | "review";

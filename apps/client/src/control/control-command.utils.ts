@@ -15,6 +15,7 @@ const RIGHT_TABS: { [Tab in RightTab]: Tab } = {
   desktop: "desktop",
   checks: "checks",
   terminal: "terminal",
+  factory: "factory",
 };
 
 /** An empty, `.` or `..` segment of an absolute path, or a trailing slash. */
@@ -26,7 +27,7 @@ const POSITION_RULE = "must be a positive integer";
 const WINDOW_RULE = "must be true or false";
 const TAB_RULE = `must be one of ${Object.values(RIGHT_TABS).join(", ")}`;
 const PAGE_RULE = 'must be "updates"';
-const MISSING_TAB_RULE = "preview and desktop need a session on a VM, pullRequest a pull request review";
+const MISSING_TAB_RULE = "preview and desktop need a session on a VM, pullRequest a pull request review, factory a session of the swf poller";
 const NO_LOCAL_WORKTREE = "the session has no local worktree";
 
 function isNormalizedAbsolutePath(path: string): boolean {
@@ -81,7 +82,7 @@ function describeIssue(issue: z.core.$ZodIssue): string {
 export function ensureRunnable(command: ControlCommand, session: SessionView): void {
   switch (command.name) {
     case "tab": {
-      const conditions = { isOnVm: Boolean(session.remote?.vm.instance), isReviewingPullRequest: Boolean(session.pullRequest) };
+      const conditions = { isOnVm: Boolean(session.remote?.vm.instance), isReviewingPullRequest: Boolean(session.pullRequest), isFactory: session.mode === "swf" };
       if (!hasInspectorTab(command.tab, conditions)) throw new Error(`the session has no ${command.tab} tab: ${MISSING_TAB_RULE}`);
       return;
     }

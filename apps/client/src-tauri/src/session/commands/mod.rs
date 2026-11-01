@@ -16,6 +16,7 @@ mod graph;
 mod ide;
 mod remote;
 mod sessions;
+mod swf;
 mod terminal;
 
 use std::path::PathBuf;
@@ -44,7 +45,7 @@ use crate::session::dependencies::{self, DependencyRegistry, DependencyStatus, I
 use crate::session::link;
 use crate::session::related;
 use crate::session::relay_watch;
-use crate::session::store::{self, announce_sessions_changed, SelectionContext, SessionRecord, Workspace};
+use crate::session::store::{self, announce_sessions_changed, SelectionContext, SessionMode, SessionRecord, Workspace};
 use crate::session::sync;
 use crate::session::vm_cleanup::{delete_session_vm, preserve_and_delete_vm};
 use crate::session::worktree_watch::{self, WorktreeWatchers};
@@ -181,6 +182,8 @@ command_handler![
     graph::read_graph,
     graph::write_graph,
     graph::graph_status,
+    swf::read_swf_pipeline,
+    swf::read_swf_step,
     lsp::lsp_request,
     lsp::lsp_cancel,
     documents::document_open,
@@ -477,17 +480,12 @@ async fn finish_retrieval(
     retrieved: crate::remote::retrieve::Retrieved,
     vm_end: VmEnd,
 ) -> Result<SessionView, String> {
-    let record = store::update_session(app, id, |stored| {
-        stored.remote = None;
-        if let Some(acp_session_id) = &retrieved.acp_session_id {
-            stored.acp_session_id = Some(acp_session_id.clone());
-        }
-        if let Some(branch) = &retrieved.branch {
-            stored.branch = branch.clone();
-        }
-    })?
-    .ok_or_else(|| "failed to retrieve the session: it was closed meanwhile".to_string())?;
+    let record = store::update_session(app, id, |stored| apply_retrieval(stored, &retrieved))?
+        .ok_or_else(|| "failed to retrieve the session: it was closed meanwhile".to_string())?;
     announce_sessions_changed(app);
+    if record.mode == SessionMode::Swf {
+        crate::session::swf::announce_pulled(app, id);
+    }
     sync::forget(app, id);
     match vm_end {
         VmEnd::Delete => forget_remote(app, target, id, true).await,
@@ -509,6 +507,18 @@ async fn finish_retrieval(
         .await
         .map_err(|error| format!("failed to restore the permission mode {mode} of the retrieved session: {error}"))?;
     Ok(view)
+}
+
+/// Makes `stored` the record of a session that runs here again: drops its remote side and takes the conversation and
+/// branch `retrieved` brought; everything else, its mode included, stays as it was.
+fn apply_retrieval(stored: &mut SessionRecord, retrieved: &crate::remote::retrieve::Retrieved) {
+    stored.remote = None;
+    if let Some(acp_session_id) = &retrieved.acp_session_id {
+        stored.acp_session_id = Some(acp_session_id.clone());
+    }
+    if let Some(branch) = &retrieved.branch {
+        stored.branch = branch.clone();
+    }
 }
 
 /// Gives the local transcript of the retrieved session `record`, which the VM wrote in its own permission mode, the mode
@@ -882,6 +892,44 @@ mod tests {
         assert_eq!(host_of(&parent, None), Some((parent.id, target.clone())));
         assert_eq!(host_of(&sub_chat, Some(&parent)), Some((parent.id, target)));
         assert_eq!(host_of(&sub_chat, None), None);
+    }
+
+    #[test]
+    fn a_retrieved_record_keeps_its_mode_and_drops_its_remote_side() {
+        use crate::remote::retrieve::Retrieved;
+        use crate::session::store::SessionMode;
+        let (repo, worktree) = (PathBuf::from("/repo"), PathBuf::from("/worktrees/swf"));
+        let mut record = SessionRecord::new(Uuid::new_v4(), "swf".into(), repo, worktree, "feat/x".into(), "main".into(), "abc".into());
+        record.mode = SessionMode::Swf;
+        record.remote = Some(RemoteTarget {
+            vm: VmRef { project: "hunt".into(), zone: "europe-west1-c".into(), instance: "vm-hunt-s-12345678".into() },
+            worktree_path: PathBuf::from("/home/agent/app"),
+            repo: "medconomy/app".into(),
+            branch: "feat/x".into(),
+            handoff_head: String::new(),
+            handed_off_at: chrono::Utc::now(),
+            local_mode: None,
+            last_active_at: None,
+            cleanup_asked_at: None,
+            preview_domain: None,
+            origin: crate::remote::RemoteOrigin::Swf,
+            issue: Some(123),
+            agent: String::new(),
+            push_target_pending: false,
+            relay_activity: None,
+        });
+
+        let retrieved = Retrieved { acp_session_id: Some("acp-2".into()), branch: Some("feat/general/123-x".into()) };
+        apply_retrieval(&mut record, &retrieved);
+        assert_eq!(record.mode, SessionMode::Swf);
+        assert!(record.remote.is_none());
+        assert_eq!((record.acp_session_id.as_deref(), record.branch.as_str()), (Some("acp-2"), "feat/general/123-x"));
+
+        // A retrieval without a VM brings nothing and changes nothing but the remote side.
+        record.acp_session_id = Some("acp-1".into());
+        apply_retrieval(&mut record, &Retrieved { acp_session_id: None, branch: None });
+        assert_eq!((record.mode, record.acp_session_id.as_deref()), (SessionMode::Swf, Some("acp-1")));
+        assert_eq!(record.branch, "feat/general/123-x");
     }
 
     #[test]

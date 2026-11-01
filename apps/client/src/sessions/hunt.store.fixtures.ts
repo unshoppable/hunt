@@ -35,6 +35,7 @@ export function storedSession(id: string, title: string): SessionView {
     leftoverVm: null,
     dependencies: null,
     hasLocalWorktree: true,
+    mode: "edit",
     pushTarget: "main",
   };
 }

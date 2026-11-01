@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProgressStep } from "../../../../libs/domain/src/gateway-api/gateway-api.types.ts";
-import type { Transport } from "./relay.client.ts";
+import type { Transport } from "../../../../libs/domain/src/relay/relay-prompt.client.ts";
 import { ApiError } from "../../../../libs/domain/src/gateway-api/api.error.ts";
 import { BranchName } from "../../../../libs/domain/src/session/branch-name.value-object.ts";
 import { Repository } from "../../../../libs/domain/src/session/repository.value-object.ts";

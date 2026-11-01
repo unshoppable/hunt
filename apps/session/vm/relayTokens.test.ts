@@ -266,6 +266,47 @@ describe.skipIf(!hasDocker())("the tokens of a session's relay in a Debian conta
     ]);
   });
 
+  it("enables the swf runner with its environment and a shorter idle limit for a session the poller cloned, and disables it on stop and destroy", () => {
+    // A desktop's session: no runner, the idle limit of 30 minutes, nothing of the runner left behind.
+    expect(huntCtlJson(["start", ID], "sk-ant-one\ngithub_pat_1\n")).toEqual({ relay: "running" });
+    expect(sh("cat /etc/hunt/idle.conf").stdout).toBe("IDLE_MINUTES=30\nBOOT_GRACE_MINUTES=15\nPREVIEW_MAX_MINUTES=120\nSUSPEND_WAIT_MINUTES=15\n");
+    expect(systemctlCalls().filter((call) => call.includes("swf-runner"))).toEqual([]);
+    expect(sh("test -e /etc/hunt/swf-runner.env || echo none").stdout).toBe("none\n");
+    huntCtlJson(["stop", ID]);
+    expect(systemctlCalls().filter((call) => call.includes("swf-runner"))).toEqual([]);
+
+    // The poller's session (`clone` records the origin swf): the runner runs as the agent with the session and its worktree.
+    expect(sh(`jq '.origin = "swf"' "/srv/hunt/sessions/${ID}/meta.json" >/tmp/meta && mv /tmp/meta "/srv/hunt/sessions/${ID}/meta.json"`).status).toBe(0);
+    setState("hunt-relay.service", "inactive");
+    expect(huntCtlJson(["start", ID, "--keep-stored"], "\n\n")).toEqual({ relay: "running" });
+    expect(systemctlCalls()).toEqual([
+      "systemctl is-active --quiet hunt-relay.service",
+      "systemctl enable --quiet hunt-relay.service",
+      "systemctl restart hunt-relay.service",
+      "systemctl enable --quiet --now hunt-desktop.service",
+      "systemctl enable --quiet --now hunt-swf-runner.service",
+    ]);
+    expect(sh("cat /etc/hunt/idle.conf").stdout).toBe("IDLE_MINUTES=15\nBOOT_GRACE_MINUTES=15\nPREVIEW_MAX_MINUTES=120\nSUSPEND_WAIT_MINUTES=15\n");
+    expect(sh("cat /etc/hunt/swf-runner.env; stat -c %a /etc/hunt/swf-runner.env").stdout).toBe(`HUNT_SESSION_ID="${ID}"\nHUNT_WORKTREE="/home/agent/app"\n644\n`);
+    const unit = sh("cat /etc/systemd/system/hunt-swf-runner.service").stdout;
+    expect(unit).toContain("\nUser=agent\n");
+    expect(unit).toContain("\nEnvironmentFile=/srv/hunt/current/vm/agent.env\nEnvironmentFile=/etc/hunt/swf-runner.env\n");
+    expect(unit).toContain("\nExecStart=/opt/hunt/node/bin/node /srv/hunt/current/session/swfRunner.mjs\n");
+    expect(sh("test -f /srv/hunt/current/session/swfRunner.mjs && echo bundled").stdout).toBe("bundled\n");
+
+    expect(huntCtlJson(["stop", ID])).toEqual({});
+    expect(systemctlCalls()[0]).toBe("systemctl disable --quiet --now hunt-swf-runner.service");
+    expect(huntCtlJson(["destroy", ID])).toEqual({});
+    expect(systemctlCalls().slice(0, 2)).toEqual(["systemctl disable --quiet --now hunt-swf-runner.service", "systemctl reset-failed hunt-swf-runner.service"]);
+    expect(sh("test -e /etc/hunt/swf-runner.env || echo none").stdout).toBe("none\n");
+  });
+
+  it("restarts a running swf runner with a new release through install-units", () => {
+    systemctlCalls();
+    expect(docker(["exec", container, "/srv/hunt/current/vm/hunt-ctl", "install-units"])).toMatchObject({ status: 0, stderr: "" });
+    expect(systemctlCalls()).toContain("systemctl try-restart hunt-proxy.service hunt-desktop.service hunt-review.service hunt-swf-runner.service");
+  });
+
   it("removes the template unit of the sub chats' relays, which once ran on the VM, with install-units", () => {
     expect(sh("touch /etc/systemd/system/hunt-relay@.service && mkdir -p /run/fake-systemd && echo active >/run/fake-systemd/hunt-relay@x.service").status).toBe(0);
     systemctlCalls();

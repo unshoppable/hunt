@@ -1,6 +1,7 @@
 /**
- * The result an agent reports at the end of one of its steps, as an issue comment that carries `<!-- hunt:step {…} -->`
- * on a line of its own (see `apps/gateway/software-factory/0-system-prompt.md`).
+ * The result an agent reports at the end of one of its steps: `.hunt/swf/result.md` of the worktree, which the runner on
+ * the session VM reads, or, for a session the poller drives, an issue comment; either carries `<!-- hunt:step {…} -->`
+ * on a line of its own (see `libs/domain/prompts/swf/0-system-prompt.md`).
  */
 import { isRecord } from "../shared/json-rpc.utils.ts";
 import { AGENT_STEPS, RISKS, type Risk } from "./swf-step.types.ts";

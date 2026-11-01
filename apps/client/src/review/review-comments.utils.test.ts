@@ -38,6 +38,7 @@ function session(id: string, parentId: string | null, reviewComments: ReviewComm
     leftoverVm: null,
     dependencies: null,
     hasLocalWorktree: true,
+    mode: "edit",
     pushTarget: "main",
   };
 }

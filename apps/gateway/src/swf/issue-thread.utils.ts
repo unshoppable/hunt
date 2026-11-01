@@ -2,8 +2,17 @@
  * What the poller (`swf/poller.service.ts`) reads from an issue and its comments, free of I/O: the agent's step results,
  * the answers to the agent's question and the people to mention. Its own record comment is `swf/pipeline-record.client.ts`.
  */
-import { hasStepMarker } from "../../../../libs/domain/src/swf/step-result.utils.ts";
+import type { Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
+import { hasStepMarker, parseStepResult } from "../../../../libs/domain/src/swf/step-result.utils.ts";
+import type { SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
 import type { Issue, IssueComment } from "./github.client.ts";
+
+/** The step result of the run `n`, as `hunt-ctl swf-record` restores it to `.hunt/swf/steps/<nn>-<step>.md`. */
+export interface RunResult {
+  n: number;
+  step: SwfStep;
+  body: string;
+}
 
 /**
  * The step results the agent posted since the poller last acted on one: the comments of the bot after `lastResultId`
@@ -11,6 +20,25 @@ import type { Issue, IssueComment } from "./github.client.ts";
  */
 export function newStepResults(comments: IssueComment[], botLogin: string, lastResultId: number): IssueComment[] {
   return comments.filter((comment) => comment.author === botLogin && comment.id > lastResultId && hasStepMarker(comment.body));
+}
+
+/**
+ * The step results of `runs` as the bot's comments on the issue hold them: every run of an agent step that ended with a
+ * result (`passed` or `returned`) gets, in order, the bot's next usable result comment. A comment of another step than
+ * the run's ends the pairing, since the thread and the log no longer match from there on.
+ */
+export function resultsOfRuns(comments: IssueComment[], botLogin: string, runs: Run[]): RunResult[] {
+  const results = comments.filter((comment) => comment.author === botLogin).map((comment) => ({ body: comment.body, step: parseStepResult(comment.body)?.result?.step })).filter((result) => result.step);
+  const restored: RunResult[] = [];
+  let index = 0;
+  for (const run of runs) {
+    if (run.outcome !== "passed" && run.outcome !== "returned") continue;
+    const next = results[index];
+    if (next?.step !== run.step) break;
+    restored.push({ n: run.n, step: run.step, body: next.body });
+    index++;
+  }
+  return restored;
 }
 
 /**

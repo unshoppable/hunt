@@ -4,8 +4,11 @@ import { Repository } from "../../../../libs/domain/src/session/repository.value
 import type { SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
 import type { GitHub, IssueComment } from "./github.client.ts";
 import { PipelineRecordClient } from "./pipeline-record.client.ts";
-import { Pipeline } from "./pipeline.domain.ts";
-import { SKILLS } from "./swf.fixtures.ts";
+import { Pipeline, type Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
+import { started } from "../../../../libs/domain/src/swf/swf.fixtures.ts";
+
+/** The poller's clock in the tests: 2026-10-25 10:00 UTC. */
+const NOW = Date.UTC(2026, 9, 25, 10, 0, 0);
 
 const BOT_NAME = "hunt-claude[bot]";
 const REPO = Repository.fromSlug("acme/app");
@@ -15,7 +18,12 @@ const POSTED_ID = 5000;
 
 /** A fresh pipeline at `step`, apart from `fields`. */
 function pipelineAt(step: SwfStep, fields: Partial<z.input<typeof Pipeline.schema>> = {}): Pipeline {
-  return new Pipeline({ ...Pipeline.start([], SKILLS).toJSON(), step, ...fields });
+  return new Pipeline({ ...started(NOW).toJSON(), step, runs: [runOf(1, step)], ...fields });
+}
+
+/** A run of `step` that started at NOW and still runs, apart from `fields`. */
+function runOf(n: number, step: SwfStep, fields: Partial<Run> = {}): Run {
+  return { n, step, startedAt: new Date(NOW).toISOString(), endedAt: null, outcome: "running", ...fields };
 }
 
 /** A GitHub whose every issue has the comments `thread`; it records the calls of the record client, any other call fails. */
@@ -38,6 +46,7 @@ function fakeGitHub(thread: IssueComment[] = []): GitHub & { calls: string[] } {
       calls.push(`update ${repo.slug} ${id} ${body}`);
     },
     openIssues: unexpected,
+    openIssuesWithAny: unexpected,
     issue: unexpected,
     removeLabel: unexpected,
     addLabels: unexpected,
@@ -81,7 +90,7 @@ describe("PipelineRecordClient.find", () => {
 describe("PipelineRecordClient", () => {
   it("posts the record comment of a new pipeline and gives its id", async () => {
     const github = fakeGitHub();
-    const pipeline = Pipeline.start(["**/migrations/**"], SKILLS);
+    const pipeline = started(NOW, ["**/migrations/**"]);
     expect(await new PipelineRecordClient(github).create(REPO, 12, pipeline)).toBe(POSTED_ID);
     expect(github.calls).toEqual([`comment acme/app#12 ${pipeline.toComment()}`]);
   });

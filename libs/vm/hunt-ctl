@@ -48,6 +48,9 @@ readonly AGENT_HOME=/home/agent
 readonly CLAUDE_HOME=/home/agent/.claude
 # A session's worktree: a folder of the agent's home named like the repository.
 readonly WORKTREE_PATTERN='^/home/agent/[A-Za-z0-9_-][A-Za-z0-9_.-]*$'
+# The software factory's pipeline in a worktree, relative to it: pipeline.json and steps/<nn>-<step>.md (`swf-record`),
+# and inbox/<ms>-<pid>.json, the messages the gateway hands the runner (`swf-inbox`).
+readonly SWF_DIR=.hunt/swf
 # The Node the relay and hunt-ctl's tools run on, independent of the Node a repository pins.
 readonly HUNT_NODE=/opt/hunt/node/bin/node
 readonly HUNT_NPM=/opt/hunt/node/bin/npm
@@ -60,6 +63,10 @@ readonly RELAY_UNIT=hunt-relay.service
 readonly PROXY_UNIT=hunt-proxy.service
 readonly DESKTOP_UNIT=hunt-desktop.service
 readonly REVIEW_UNIT=hunt-review.service
+# The runner of the software factory's agent steps (apps/session/src/swf-runner/swf-runner.main.ts), enabled for a
+# session of origin swf only; RUNNER_ENV names it the session and the worktree, which only root reads from meta.json.
+readonly RUNNER_UNIT=hunt-swf-runner.service
+readonly RUNNER_ENV=/etc/hunt/swf-runner.env
 readonly RELAY_SOCKET=/run/hunt/relay.sock
 readonly RELAY_STATUS=/run/hunt/status.json
 readonly SESSION_ENV=/etc/hunt/session.env
@@ -73,6 +80,10 @@ readonly GH_BINARY=/usr/local/libexec/hunt/gh
 readonly WAYMOTE_DIR=/opt/hunt/agent/waymote
 readonly PROXY_CONFIG=/etc/hunt/caddy.json
 readonly IDLE_CONFIG=/etc/hunt/idle.conf
+# The idle minutes of hunt-idle-check: a session of origin swf waits on humans with nothing running, so it suspends
+# sooner than one someone works in.
+readonly IDLE_MINUTES=30
+readonly SWF_IDLE_MINUTES=15
 # The environment of each service of hunt.json, <name>.env, which `session-config` writes and hunt-service@.service
 # reads; the units' names are hunt-service@<name>.service.
 readonly SERVICES_DIR=/etc/hunt/services
@@ -243,7 +254,13 @@ Session VM:
                          GitHub token on stdin, or with --stored the one stored on this VM (a poller session's)
   github-token <id>      replace the GitHub token the session's git, Git LFS and gh act with by the one on stdin; the
                          relay keeps running
-  status <id>            relay state, relay status and session metadata
+  status <id>            relay state, relay status, session metadata and the software factory's pipeline
+                         (.hunt/swf/pipeline.json of the worktree; null without one)
+  swf-record <id>        write the software factory's pipeline from the JSON object on stdin into the worktree's
+                         .hunt/swf: {"pipeline": {…}} to pipeline.json and, with "step": {"n", "step", "body"}, the
+                         body to steps/<nn>-<step>.md
+  swf-inbox <id>         hand the JSON object on stdin to the session's swf runner: it goes to the worktree's
+                         .hunt/swf/inbox/<ms>-<pid>.json, which the runner reads and removes
   preview-status [<id>]  the services of hunt.json with their state and whether their port listens, and the ports
                          that listen
   destroy <id>           stop the session's relay, services and proxy and remove its worktree, ~/.claude and files
@@ -578,13 +595,12 @@ install_units() {
       runuser -u agent -- tmux source-file "$TMUX_CONFIG" >/dev/null 2>&1 || true
       install_sudoers "$CURRENT/vm/sudoers-hunt-service" "$SERVICE_SUDOERS_DROPIN"
       if [[ ! -f $IDLE_CONFIG ]]; then
-        install -d -m 0755 "${IDLE_CONFIG%/*}"
-        printf 'IDLE_MINUTES=30\nBOOT_GRACE_MINUTES=15\nPREVIEW_MAX_MINUTES=120\nSUSPEND_WAIT_MINUTES=15\n' >"$IDLE_CONFIG"
+        write_idle_config "$IDLE_MINUTES"
       fi
       systemctl enable --quiet --now hunt-idle.timer
-      # A running proxy takes changes of its unit only with a restart, so do the desktop and the review server with a new
-      # release; the relay keeps running until its next start.
-      systemctl try-restart "$PROXY_UNIT" "$DESKTOP_UNIT" "$REVIEW_UNIT"
+      # A running proxy takes changes of its unit only with a restart, so do the desktop, the review server and the swf
+      # runner with a new release; the relay keeps running until its next start.
+      systemctl try-restart "$PROXY_UNIT" "$DESKTOP_UNIT" "$REVIEW_UNIT" "$RUNNER_UNIT"
       ;;
     gateway)
       install_gateway_access
@@ -596,6 +612,13 @@ install_units() {
       ensure_edge
       ;;
   esac
+}
+
+# Writes IDLE_CONFIG for hunt-idle-check with $1 idle minutes.
+write_idle_config() {
+  install -d -m 0755 "${IDLE_CONFIG%/*}"
+  printf 'IDLE_MINUTES=%d\nBOOT_GRACE_MINUTES=15\nPREVIEW_MAX_MINUTES=120\nSUSPEND_WAIT_MINUTES=15\n' "$1" >"$IDLE_CONFIG.tmp"
+  mv -f "$IDLE_CONFIG.tmp" "$IDLE_CONFIG"
 }
 
 # Installs the sudo rule in file $1 as the drop-in $2, once visudo accepts it. sudo skips files whose name contains a
@@ -811,6 +834,12 @@ require_repository_key() {
 # Rejects empty values and line breaks, which an environment file cannot carry.
 require_line() {
   [[ -n $2 && $2 != *[$'\n\r']* ]] || die "invalid $1: expected one non-empty line"
+}
+
+# Whether session $1 is one the software factory's poller cloned (`clone` records the origin swf), whose agent steps the
+# swf runner drives.
+is_swf_session() {
+  [[ $(jq -r '.origin // ""' "$SESSIONS/$1/meta.json" 2>/dev/null) == swf ]]
 }
 
 # Prints field $2 of meta.json of session $1.
@@ -1405,6 +1434,8 @@ cmd_check() {
   exit "$status"
 }
 
+# Starts the relay, the proxy with its review server and the desktop of session $1, and for a session of origin swf its
+# runner with the shorter idle limit (see RUNNER_UNIT, SWF_IDLE_MINUTES).
 cmd_start() {
   local id keep_stored
   parse_relay_args 1 "$@"
@@ -1414,7 +1445,25 @@ cmd_start() {
     systemctl enable --quiet --now "$PROXY_UNIT" "$REVIEW_UNIT"
   fi
   systemctl enable --quiet --now "$DESKTOP_UNIT"
+  if is_swf_session "$id"; then
+    write_idle_config "$SWF_IDLE_MINUTES"
+    write_runner_env "$id"
+    systemctl enable --quiet --now "$RUNNER_UNIT"
+  else
+    write_idle_config "$IDLE_MINUTES"
+  fi
   emit '{relay: "running"}'
+}
+
+# Writes RUNNER_ENV, the environment of the swf runner, for session $1: its id and its worktree.
+write_runner_env() {
+  local worktree
+  worktree=$(worktree_of "$1")
+  {
+    env_line HUNT_SESSION_ID "$1"
+    env_line HUNT_WORKTREE "$worktree"
+  } >"$RUNNER_ENV.tmp"
+  mv -f "$RUNNER_ENV.tmp" "$RUNNER_ENV"
 }
 
 cmd_wait() {
@@ -1442,6 +1491,9 @@ cmd_wait() {
 cmd_stop() {
   local id keep_stored
   parse_relay_args '' "$@"
+  if is_swf_session "$id"; then
+    systemctl disable --quiet --now "$RUNNER_UNIT"
+  fi
   systemctl disable --quiet --now "$RELAY_UNIT"
   stop_services
   systemctl disable --quiet --now "$PROXY_UNIT" "$REVIEW_UNIT" "$DESKTOP_UNIT"
@@ -1585,7 +1637,7 @@ cmd_github_token() {
 
 cmd_status() {
   (( $# == 1 )) || usage
-  local id=$1 relay status meta_json
+  local id=$1 relay status meta_json worktree swf_json=null
   require_id "$id"
   case $(systemctl show --property ActiveState --value "$RELAY_UNIT" 2>/dev/null) in
     active | activating | reloading | deactivating) relay=running ;;
@@ -1594,7 +1646,59 @@ cmd_status() {
   esac
   status=$(read_object "$RELAY_STATUS")
   meta_json=$(read_object "$SESSIONS/$id/meta.json")
-  emit --arg relay "$relay" --argjson status "$status" --argjson meta "$meta_json" '{relay: $relay, status: $status, meta: $meta}'
+  worktree=$(jq -r '.worktree // ""' <<<"$meta_json")
+  if [[ $worktree =~ $WORKTREE_PATTERN && -d $worktree ]]; then
+    swf_json=$(read_object "$worktree/$SWF_DIR/pipeline.json")
+  fi
+  emit --arg relay "$relay" --argjson status "$status" --argjson meta "$meta_json" --argjson swf "$swf_json" \
+    '{relay: $relay, status: $status, meta: $meta, swf: $swf}'
+}
+
+# Writes the software factory's pipeline into $SWF_DIR of the session's worktree, as the agent, from the JSON object on
+# stdin: `pipeline` (an object) becomes pipeline.json, whole; `step` ({n, step, body}, optional) becomes
+# steps/<nn>-<step>.md with the body, the result the agent posted for that run. The gateway's poller writes the
+# pipeline of an issue it drives itself here after every change (`recordOnVm` in apps/gateway/src/swf/poller.service.ts),
+# and once before it starts the runner of an issue the runner drives; from then on the runner owns the file.
+cmd_swf_record() {
+  (( $# == 1 )) || usage
+  local id=$1 worktree input pipeline step n name dir
+  require_id "$id"
+  worktree=$(worktree_of "$id")
+  input=$(cat)
+  pipeline=$(jq -c 'select(type == "object") | .pipeline | select(type == "object")' <<<"$input" 2>/dev/null) || pipeline=
+  [[ -n $pipeline ]] || die "swf-record: stdin holds no JSON object with a pipeline object"
+  step=$(jq -c '.step | select(type == "object")' <<<"$input")
+  if [[ -n $step ]]; then
+    n=$(jq -r '.n | select(type == "number")' <<<"$step")
+    name=$(jq -r '.step | select(type == "string")' <<<"$step")
+    [[ $n =~ ^[0-9]+$ && $name =~ ^[a-z-]+$ ]] || die "swf-record: the step needs a number n and a step name"
+  fi
+  dir=$worktree/$SWF_DIR
+  as_agent install -d -m 0755 "$dir" "$dir/steps"
+  jq '.' <<<"$pipeline" | as_agent sh -c 'cat >"$1.tmp" && mv -f "$1.tmp" "$1"' sh "$dir/pipeline.json"
+  if [[ -n $step ]]; then
+    jq -r '.body // ""' <<<"$step" | as_agent sh -c 'cat >"$1"' sh "$dir/steps/$(printf '%02d' "$n")-$name.md"
+  fi
+  emit '{}'
+}
+
+# Hands the JSON object on stdin to the swf runner of the session: it becomes inbox/<ms>-<pid>.json in $SWF_DIR of the
+# worktree, owned by the agent and complete when it appears there (written next to it, then renamed). The gateway's
+# poller sends what it learned from GitHub, the answers to a question and the pipeline after a step it drove; the runner
+# reads the messages in order of their names and removes them. Delivering one is no activity for hunt-idle-check: the
+# turn the runner starts on it is.
+cmd_swf_inbox() {
+  (( $# == 1 )) || usage
+  local id=$1 worktree message dir name
+  require_id "$id"
+  worktree=$(worktree_of "$id")
+  message=$(jq -c 'select(type == "object")' 2>/dev/null) || message=
+  [[ -n $message ]] || die "swf-inbox: stdin holds no JSON object"
+  dir=$worktree/$SWF_DIR/inbox
+  name=$(now_ms)-$$.json
+  as_agent install -d -m 0755 "$worktree/$SWF_DIR" "$dir"
+  printf '%s\n' "$message" | as_agent sh -c 'cat >"$1.tmp" && mv -f "$1.tmp" "$1"' sh "$dir/$name"
+  emit --arg name "$name" '{name: $name}'
 }
 
 # Prints the ports TCP servers listen on where the preview proxy, which connects to localhost, reaches them, one per
@@ -1775,11 +1879,15 @@ cmd_service() {
 # metadata. Folders the agent wrote to are removed without following symlinks.
 destroy_session() {
   local id=$1 worktree=''
+  if is_swf_session "$id"; then
+    systemctl disable --quiet --now "$RUNNER_UNIT" 2>/dev/null || true
+    systemctl reset-failed "$RUNNER_UNIT" 2>/dev/null || true
+  fi
   systemctl disable --quiet --now "$RELAY_UNIT" 2>/dev/null || true
   systemctl reset-failed "$RELAY_UNIT" 2>/dev/null || true
   stop_services 2>/dev/null || true
   systemctl disable --quiet --now "$PROXY_UNIT" "$REVIEW_UNIT" 2>/dev/null || true
-  rm -f -- "$SECRETS_ENV" "$GITHUB_TOKEN_FILE" "$SESSION_ENV" "$PROXY_CONFIG" "$REMOTE_SECRETS_FILE"
+  rm -f -- "$SECRETS_ENV" "$GITHUB_TOKEN_FILE" "$SESSION_ENV" "$PROXY_CONFIG" "$REMOTE_SECRETS_FILE" "$RUNNER_ENV"
   rm -rf -- "$SERVICES_DIR"
   if [[ -f $SESSIONS/$id/meta.json ]]; then
     worktree=$(jq -r '.worktree // empty' "$SESSIONS/$id/meta.json" 2>/dev/null) || worktree=
@@ -1995,7 +2103,7 @@ main() {
     install | install-units | version) ;;
     install-tools | init | clone | receive-pack | upload-pack | lfs-put | lfs-get | put-files | put-remote-secrets | get-claude | \
       prepare | deps | session-config | check | service | start | wait | stop | clear | snapshot | commit | push | github-token | status | preview-status | \
-      destroy)
+      swf-record | swf-inbox | destroy)
       [[ $role == session ]] || die "hunt-ctl $command runs on session VMs only; this VM is the gateway"
       ;;
     stage-session)
@@ -2004,7 +2112,7 @@ main() {
     *) usage ;;
   esac
   case $command in
-    version | status | preview-status | install-tools | stage-session | github-token | put-remote-secrets) counts_as_activity=false ;;
+    version | status | preview-status | install-tools | stage-session | github-token | put-remote-secrets | swf-record | swf-inbox) counts_as_activity=false ;;
   esac
   case $command in
     status | preview-status) logs_success=false ;;
@@ -2076,6 +2184,8 @@ main() {
     push) cmd_push "$@" ;;
     github-token) cmd_github_token "$@" ;;
     status) cmd_status "$@" ;;
+    swf-record) cmd_swf_record "$@" ;;
+    swf-inbox) cmd_swf_inbox "$@" ;;
     preview-status) cmd_preview_status "$@" ;;
     destroy) cmd_destroy "$@" ;;
   esac

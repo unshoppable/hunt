@@ -218,6 +218,16 @@ export function MonitorIcon({ className = "size-3.5" }: { className?: string }) 
   );
 }
 
+/** A factory hall with a sawtooth roof, for the swf pipeline. */
+export function FactoryIcon({ className = "size-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M1.75 13.25V7l3.5 2.25V7l3.5 2.25V7l3.5 2.25V2.75h2v10.5z" />
+      <path d="M4.5 11h1.5M8 11h1.5" />
+    </svg>
+  );
+}
+
 /** A prompt in a window, for terminals. */
 export function TerminalIcon({ className = "size-3.5" }: { className?: string }) {
   return (

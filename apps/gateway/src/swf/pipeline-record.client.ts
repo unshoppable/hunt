@@ -6,7 +6,7 @@
  */
 import type { Repository } from "../../../../libs/domain/src/session/repository.value-object.ts";
 import type { GitHub, IssueComment } from "./github.client.ts";
-import { Pipeline } from "./pipeline.domain.ts";
+import { Pipeline } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 
 /** A pipeline with the id of the record comment that holds it. */
 export interface StoredPipeline {

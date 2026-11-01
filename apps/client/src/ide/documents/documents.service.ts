@@ -2,6 +2,7 @@ import * as monaco from "monaco-editor";
 import { commands } from "../../ipc/commands";
 import { listenTo } from "../../ipc/events";
 import type { DocumentChangedEvent, DocumentContentChange, DocumentState } from "./documents.types";
+import type { ChangeBlock } from "../../editor/line-diff.types";
 import { monacoLanguage } from "../../editor/language-id.utils";
 import { refreshSemanticTokens, typeScriptWorkerFor } from "../../editor/semantic-tokens.monaco";
 import { isInsideFolder } from "../../common/path/path.utils";
@@ -110,22 +111,34 @@ export class DocumentWorkspace {
 
   /**
    * Content of `path` at the diff base: empty for a file the changes add, null for a file outside the changes (such as an
-   * ignored one) or one that cannot be read. Cached per worktree state.
+   * ignored one) or one that cannot be read. Cached per worktree state; each read also renews the backend's copy, which
+   * `changeBlocks` diffs against.
    */
   headText(path: string): Promise<string | null> {
     let pending = this.headTexts.get(path);
     if (!pending) {
-      pending = commands
-        .readFileDiff(this.sessionId, path)
-        .then(async (diff) => {
-          if (diff.oldContent !== null) return diff.oldContent;
-          const changedFiles = await commands.listChangedFiles(this.sessionId);
-          return changedFiles.some((changedFile) => changedFile.path === path) ? "" : null;
-        })
-        .catch(() => null);
+      pending = commands.headText(this.sessionId, path).catch(() => null);
       this.headTexts.set(path, pending);
     }
     return pending;
+  }
+
+  /**
+   * Change blocks of `model` against `headText`, the `headText` of its file. The backend diffs its shared document, so
+   * no text is sent, unless that is not what the model holds (an edit is on its way, or the model is no document of
+   * this workspace or normalized the file's line breaks); then the model's text is sent along.
+   */
+  async changeBlocks(model: monaco.editor.ITextModel, headText: string): Promise<ChangeBlock[]> {
+    // Edits queued before have reached the shared document once an empty update has had its turn.
+    await this.lsp.enqueue(async () => {});
+    if (model.isDisposed()) return [];
+    const path = this.pathOf(model.uri);
+    const replica = path && this.documents.get(path)?.model === model ? this.replicas.get(path) : undefined;
+    if (path && replica && !replica.pendingEdits && !replica.isResyncing) {
+      const blocks = await commands.documentChangeBlocks(this.sessionId, path, replica.version, model.getValueLength());
+      if (blocks) return blocks;
+    }
+    return model.isDisposed() ? [] : commands.diffLines(headText, model.getValue());
   }
 
   /** Fires when the cached HEAD contents were dropped (after a commit, revert or any other worktree change). */
@@ -524,14 +537,15 @@ let isSubscribed = false;
 
 /**
  * Routes the backend's document events to the workspace of their worktree. A change on disk re-reads the documents this
- * window loaded, so a popup's preview never shows an older text than the file its search just read.
+ * window loaded (those of the changed paths when the event names them), so a popup's preview never shows an older text
+ * than the file its search just read.
  */
 function subscribeToDocumentEvents(): void {
   if (isSubscribed) return;
   isSubscribed = true;
   void listenTo("document:changed", (event) => workspaces.get(event.worktreePath)?.applyChange(event));
   void listenTo("document:dirty", ({ worktreePath, path, isDirty }) => workspaces.get(worktreePath)?.applyDirty(path, isDirty));
-  void listenTo("worktree:changed", ({ worktreePath }) => void workspaces.get(worktreePath)?.reloadFromDisk());
+  void listenTo("worktree:changed", ({ worktreePath, changes }) => void workspaces.get(worktreePath)?.reloadFromDisk(changes?.paths));
 }
 
 /** The workspace of a worktree; sessions sharing a worktree (sub chats) share the documents. */

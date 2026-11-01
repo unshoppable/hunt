@@ -89,7 +89,8 @@ async function reformat(editor: monaco.editor.ICodeEditor, sessionId: string, pa
     const prettier = await commands.formatWithPrettier(sessionId, path, model.getValue());
     if (!isCurrent()) return;
     if (prettier.installed) {
-      const edits = prettier.formatted === null ? [] : editsToText(model.getLinesContent(), model.getEOL(), prettier.formatted);
+      const edits = prettier.formatted === null ? [] : await editsToText(model.getLinesContent(), model.getEOL(), prettier.formatted, commands.diffLines);
+      if (!isCurrent()) return;
       apply(edits.map((edit) => ({ range: new monaco.Range(edit.startLine, edit.startColumn, edit.endLine, edit.endColumn), text: edit.text })));
       return;
     }

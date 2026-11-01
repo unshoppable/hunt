@@ -17,7 +17,8 @@ import type { Usage } from "../ide/language/usages.utils";
 import { attachSelectionAgent } from "../ide/selection/selection-agent.monaco";
 import { SelectionChatMarkers } from "../ide/selection/selection-chat-markers.monaco";
 import { useBusyChatIds, useSelectionChats, useUnseenChatIds } from "../ide/selection/selection-chats.hook";
-import { computeChangeBlocks, mapLine, type Side } from "../editor/line-diff.utils";
+import type { ChangeBlock } from "../editor/line-diff.types";
+import { mapLine, type Side } from "../editor/line-diff.utils";
 import { AddCommentGlyph, type CommentTarget } from "../review/add-comment-glyph.monaco";
 import { ReviewCommentZones } from "../review/ReviewCommentZones";
 import { LineSpan } from "../review/line-span.value-object";
@@ -27,6 +28,8 @@ import { SplitDiffView } from "./SplitDiffView";
 import { OverwriteMarkers, type OverwriteMark } from "./overwrite-markers.monaco";
 import { WORKTREE_LOCKED_MESSAGE } from "../sessions/remote/remote-session.utils";
 import { errorText } from "../ui/error-text.utils";
+import { useLoad } from "../ui/load.hook";
+import { commands } from "../ipc/commands";
 
 setupMonaco();
 
@@ -164,7 +167,12 @@ export function CodeDiffEditor({
   /** Symbol whose Rename dialog is open, with the model it was started in. */
   const [renameQuery, setRenameQuery] = useState<{ model: monaco.editor.ITextModel; target: RenameTarget } | null>(null);
   /** Change blocks of the saved state, which decide whether a review comment on a line is posted inline. */
-  const blocks = useMemo(() => computeChangeBlocks(diff.oldContent ?? "", diff.newContent ?? ""), [diff.oldContent, diff.newContent]);
+  const [blocks, setBlocks] = useState<ChangeBlock[]>([]);
+  useLoad(
+    () => commands.diffLines(diff.oldContent ?? "", diff.newContent ?? ""),
+    { onValue: setBlocks, onError: (reason) => onError(errorText(reason)) },
+    [diff.oldContent, diff.newContent],
+  );
   const blocksRef = useRef(blocks);
   blocksRef.current = blocks;
   const savedContentRef = useRef(diff.newContent ?? "");

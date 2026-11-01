@@ -1,10 +1,5 @@
-import { diffLines, diffWordsWithSpace } from "diff";
-
-/** Lines `start..end` (1-based, `end` exclusive). `start === end` is an empty range. */
-export type LineRange = { start: number; end: number };
-
-/** Original lines `original` became modified lines `modified`; an empty side marks a pure insertion or deletion. */
-export type ChangeBlock = { original: LineRange; modified: LineRange };
+import { diffWordsWithSpace } from "diff";
+import type { ChangeBlock, LineRange } from "./line-diff.types";
 
 /** A run of identical lines on both sides; both ranges have the same length. */
 export type UnchangedRegion = { original: LineRange; modified: LineRange };
@@ -14,35 +9,6 @@ export type CharRange = { line: number; startColumn: number; endColumn: number }
 
 export function rangeLength(range: LineRange): number {
   return range.end - range.start;
-}
-
-/** Line-level diff of two texts as change blocks in document order. */
-export function computeChangeBlocks(oldText: string, newText: string): ChangeBlock[] {
-  const blocks: ChangeBlock[] = [];
-  let oldLine = 1;
-  let newLine = 1;
-  let current: ChangeBlock | null = null;
-  for (const part of diffLines(oldText, newText)) {
-    const count = part.count ?? 0;
-    if (!part.added && !part.removed) {
-      current = null;
-      oldLine += count;
-      newLine += count;
-      continue;
-    }
-    if (!current) {
-      current = { original: { start: oldLine, end: oldLine }, modified: { start: newLine, end: newLine } };
-      blocks.push(current);
-    }
-    if (part.removed) {
-      current.original.end += count;
-      oldLine += count;
-    } else {
-      current.modified.end += count;
-      newLine += count;
-    }
-  }
-  return blocks;
 }
 
 /**

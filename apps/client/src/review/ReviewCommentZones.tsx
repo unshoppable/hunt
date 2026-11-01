@@ -4,7 +4,7 @@ import type * as monaco from "monaco-editor";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { MarkdownText } from "../chat/messages/MessageList";
 import { formatRelativeTime } from "../common/time/relative-time.utils";
-import type { ChangeBlock } from "../editor/line-diff.utils";
+import type { ChangeBlock } from "../editor/line-diff.types";
 import { commands } from "../ipc/commands";
 import type { ReviewComment, ReviewThread } from "./review.types";
 import { GHOST_BUTTON_XS, ICON_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";

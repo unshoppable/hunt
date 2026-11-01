@@ -1,18 +1,17 @@
 import * as monaco from "monaco-editor";
+import type { ChangeBlock, LineRange } from "../editor/line-diff.types";
 import {
   clipUnchangedRegion,
-  computeChangeBlocks,
   computeInnerChanges,
   computeRevertEdit,
   computeUnchangedRegions,
   mapLine,
   rangeLength,
-  type ChangeBlock,
   type CharRange,
-  type LineRange,
   type Side,
   type UnchangedRegion,
 } from "../editor/line-diff.utils";
+import { commands } from "../ipc/commands";
 import { COMPLETION_OPTIONS, EDITOR_APPEARANCE_OPTIONS, MONACO_THEME, SCROLL_TRACK_OPTIONS, changeMark } from "../editor/monaco.constants";
 import { borrowImportRoles } from "../editor/semantic-tokens.monaco";
 import { DEFAULT_SPLIT_DIFF_SHARE, clampSplitDiffShare } from "../settings/settings.store";
@@ -114,6 +113,10 @@ export class SplitDiffController {
   private isCollapsingUnchanged: boolean;
   private frame = 0;
   private rediffTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Bumped per edit and per diff, so blocks of older texts are ignored. */
+  private diffGeneration = 0;
+  /** Whether the next blocks find the unchanged stretches afresh, as a diff superseded before its answer asked. */
+  private isRegionResetPending = false;
   private isSyncingScroll = false;
   private readonly isReadOnly: boolean;
   private readonly ownsModifiedModel: boolean;
@@ -257,6 +260,7 @@ export class SplitDiffController {
   }
 
   dispose(): void {
+    this.diffGeneration += 1;
     this.cancelRediff();
     if (this.frame) {
       cancelAnimationFrame(this.frame);
@@ -276,6 +280,7 @@ export class SplitDiffController {
   }
 
   private scheduleRediff(): void {
+    this.diffGeneration += 1;
     this.cancelRediff();
     this.rediffTimer = setTimeout(() => {
       this.rediffTimer = null;
@@ -292,9 +297,24 @@ export class SplitDiffController {
 
   /** Recomputes the blocks; `resetRegions` finds the unchanged stretches afresh, otherwise existing ones only shrink. */
   private applyDiff(resetRegions: boolean): void {
+    this.isRegionResetPending ||= resetRegions;
+    this.diffGeneration += 1;
+    const generation = this.diffGeneration;
+    commands
+      .diffLines(this.originalModel.getValue(), this.modifiedModel.getValue())
+      .then((blocks) => {
+        if (generation !== this.diffGeneration) return;
+        const isReset = this.isRegionResetPending;
+        this.isRegionResetPending = false;
+        this.showBlocks(blocks, isReset);
+      })
+      .catch((error) => console.warn("failed to diff the sides:", error));
+  }
+
+  private showBlocks(blocks: ChangeBlock[], resetRegions: boolean): void {
     const originalLines = this.originalModel.getLinesContent();
     const modifiedLines = this.modifiedModel.getLinesContent();
-    this.blocks = computeChangeBlocks(this.originalModel.getValue(), this.modifiedModel.getValue());
+    this.blocks = blocks;
 
     if (resetRegions) {
       this.resetRegions();

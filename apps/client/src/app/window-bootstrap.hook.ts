@@ -160,7 +160,7 @@ export function useBackendEvents(): void {
       listenTo("sessions:changed", () => void refreshSessions()),
       listenTo("chat:seen", (event) => applyChatSeen(event.sessionId)),
       listenTo("attribution:changed", (event) => applyWorktreeChanged(event.worktreePath)),
-      listenTo("worktree:changed", (event) => applyWorktreeChanged(event.worktreePath)),
+      listenTo("worktree:changed", (event) => applyWorktreeChanged(event.worktreePath, event.changes)),
       listenTo("checks:changed", (event) => refreshShownChecks(event.sessionId)),
       listenTo("swf:pulled", (event) => refreshPulledPipeline(event.huntSessionId)),
     ];

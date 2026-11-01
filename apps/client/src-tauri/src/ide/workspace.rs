@@ -1,6 +1,8 @@
 //! Read access to a session's worktree for the built-in editor: directory listings, file contents and
 //! the resolution of relative import specifiers to files.
 
+use std::fs::File;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
@@ -34,10 +36,29 @@ pub fn list_dir(worktree: &Path, path: &str) -> Result<Vec<DirEntry>, String> {
     Ok(entries)
 }
 
-/// UTF-8 content of a worktree file; binary files are rejected.
+/// The largest file the editor reads; a larger one (a dump, a database) would cross the IPC whole and stall the editor.
+const MAX_READ_BYTES: u64 = 50 * 1024 * 1024;
+/// A NUL byte within this many leading bytes marks a file as binary, as in git (`BINARY_PROBE_BYTES` of
+/// `find_in_files.rs` likewise).
+const BINARY_PROBE_BYTES: u64 = 8000;
+
+/// UTF-8 content of a worktree file; binary files and files above `MAX_READ_BYTES` are rejected before they are read
+/// whole.
 pub fn read_file(worktree: &Path, path: &str) -> Result<String, String> {
     ensure_inside_worktree(path)?;
-    let bytes = std::fs::read(worktree.join(path)).map_err(|error| format!("failed to read {path}: {error}"))?;
+    let failed = |error: std::io::Error| format!("failed to read {path}: {error}");
+    let mut file = File::open(worktree.join(path)).map_err(failed)?;
+    let len = file.metadata().map_err(failed)?.len();
+    if len > MAX_READ_BYTES {
+        let (size, limit) = (len.div_ceil(1 << 20), MAX_READ_BYTES >> 20);
+        return Err(format!("{path} is too large to open: {size} MB, the editor opens up to {limit} MB"));
+    }
+    let mut bytes = Vec::with_capacity(len as usize);
+    (&mut file).take(BINARY_PROBE_BYTES).read_to_end(&mut bytes).map_err(failed)?;
+    if bytes.contains(&0) {
+        return Err(format!("{path} is not a text file"));
+    }
+    file.read_to_end(&mut bytes).map_err(failed)?;
     String::from_utf8(bytes).map_err(|_| format!("{path} is not a text file"))
 }
 
@@ -118,6 +139,26 @@ mod tests {
         std::fs::write(dir.path().join("src/common/index.ts"), "").unwrap();
         std::fs::write(dir.path().join("src/common/page.tsx"), "").unwrap();
         dir
+    }
+
+    #[test]
+    fn reads_text_files_and_refuses_binary_and_huge_ones_before_reading_them() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.ts"), "export const a = 1;\n").unwrap();
+        assert_eq!(read_file(dir.path(), "a.ts").unwrap(), "export const a = 1;\n");
+
+        let mut binary = vec![b'x'; 100];
+        binary.push(0);
+        std::fs::write(dir.path().join("image.png"), binary).unwrap();
+        assert_eq!(read_file(dir.path(), "image.png").unwrap_err(), "image.png is not a text file");
+        std::fs::write(dir.path().join("latin1.txt"), [b'a', 0xe4, b'b']).unwrap();
+        assert_eq!(read_file(dir.path(), "latin1.txt").unwrap_err(), "latin1.txt is not a text file");
+
+        // A sparse file: its length counts, nothing is written.
+        File::create(dir.path().join("dump.sql")).unwrap().set_len(MAX_READ_BYTES + 1).unwrap();
+        let too_large = read_file(dir.path(), "dump.sql").unwrap_err();
+        assert_eq!(too_large, "dump.sql is too large to open: 51 MB, the editor opens up to 50 MB");
+        assert!(read_file(dir.path(), "missing.ts").unwrap_err().starts_with("failed to read missing.ts: "));
     }
 
     #[test]

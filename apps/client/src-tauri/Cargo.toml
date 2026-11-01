@@ -50,6 +50,8 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["c
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 # Brings the Chrome of a local session to the front (`agent/browser.rs`).
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSRunningApplication"] }
+# The line diff of the editor's change markers and the diff views (`ide/line_diff.rs`).
+imara-diff = { version = "0.2", default-features = false }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
@@ -71,4 +73,7 @@ opt-level = 3
 [profile.dev.package.aho-corasick]
 opt-level = 3
 [profile.dev.package.memchr]
+opt-level = 3
+# So does the line diff of the change markers, ten times slower unoptimized.
+[profile.dev.package.imara-diff]
 opt-level = 3

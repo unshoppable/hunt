@@ -18,6 +18,7 @@ import { ProjectTree, type ProjectTreeTarget } from "./project-tree/ProjectTree"
 import { selectionChatsFor } from "./selection/selection-chats.utils";
 import { useDirtyPaths } from "./documents/dirty-paths.hook";
 import { useFileStatuses } from "./file-statuses.hook";
+import { changesSince } from "./worktree-changes.utils";
 
 /** Events of the mouse's extra buttons that the editor and the webview must not act on. */
 const MOUSE_BUTTON_EVENTS = ["mousedown", "mouseup", "auxclick"] as const;
@@ -55,6 +56,7 @@ function isForeignTextField(root: HTMLElement | null): boolean {
 export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onCloseEmpty?: () => void }) {
   const session = useHuntStore((state) => state.sessions.find((candidate) => candidate.id === sessionId) ?? null);
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
+  const editChanges = useHuntStore((state) => state.chats[sessionId]?.editChanges ?? null);
   const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
   const ide = useIdeSession(sessionId);
   const openFile = useIdeStore((state) => state.openFile);
@@ -79,8 +81,14 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
   const statusByPath = useFileStatuses(sessionId, editVersion);
   const [error, setError] = useState<string | null>(null);
 
+  // Only the documents of the paths behind the bump, when the worktree watch named them.
+  const reloadedVersion = useRef(editVersion);
   useEffect(() => {
-    void workspace.reloadFromDisk();
+    const changes = changesSince(reloadedVersion.current, editVersion, editChanges);
+    reloadedVersion.current = editVersion;
+    void workspace.reloadFromDisk(changes?.paths);
+    // `editChanges` is read, never a trigger: it changes together with `editVersion`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace, editVersion]);
 
   const closeActiveTab = () => {
@@ -216,6 +224,7 @@ export function IdePanel({ sessionId, onCloseEmpty }: { sessionId: string; onClo
             projectName={projectName}
             revealRequest={ide.revealRequest}
             refreshVersion={editVersion}
+            refreshChanges={editChanges}
             statusByPath={statusByPath}
             unsavedPaths={dirtyPaths}
             workspace={workspace}

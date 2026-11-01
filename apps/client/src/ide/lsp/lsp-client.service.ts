@@ -9,6 +9,8 @@ const SERVED_LANGUAGES = new Set(["typescript", "javascript"]);
 
 /** Language ids of the Angular templates, which only the Angular language server receives. */
 const TEMPLATE_LANGUAGES = new Set(["html"]);
+/** Models longer than this (in UTF-16 code units) get no language server, as in `MAX_SERVED_LENGTH` of ide/documents.rs. */
+const MAX_SERVED_LENGTH = 5 * 1024 * 1024;
 
 const clients = new Map<string, LspClient>();
 let eventsSubscribed = false;
@@ -51,8 +53,12 @@ export class LspClient {
     return this.templates.has(model.uri.toString());
   }
 
-  /** Counts a worktree model as served (or as a template) until it is disposed; models of other languages are ignored. */
+  /**
+   * Counts a worktree model as served (or as a template) until it is disposed; models of other languages and those
+   * longer than `MAX_SERVED_LENGTH`, which the backend opens in no server, are ignored.
+   */
   serve(model: monaco.editor.ITextModel): void {
+    if (model.getValueLength() > MAX_SERVED_LENGTH) return;
     const uri = model.uri.toString();
     if (TEMPLATE_LANGUAGES.has(model.getLanguageId()) && !this.templates.has(uri)) {
       this.templates.add(uri);

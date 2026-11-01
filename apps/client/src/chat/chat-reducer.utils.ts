@@ -19,6 +19,7 @@ export function createEmptyChat(): SessionChat {
     isLoading: false,
     error: null,
     editVersion: 0,
+    editChanges: null,
     graphVersion: 0,
     generatingDiagrams: [],
     diagramErrors: {},

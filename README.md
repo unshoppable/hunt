@@ -331,9 +331,13 @@ top-level session's; files other sessions touched carry those sessions' marks. C
 clears its attribution.
 
 The changelist follows the disk: `apps/client/src-tauri/src/session/worktree_watch.rs` watches every live session's
-worktree (one watch per worktree, shared by its sessions) and the reflog of its `HEAD`, and after a change made outside
-Hunt — an editor, a terminal, another agent, a commit or checkout — every session of that worktree reloads its changes
-(`worktree:changed`). Hunt's own folders and paths git ignores stay silent, so a build does not reload the changelist.
+worktree and the reflog of its `HEAD`, and after a change made outside Hunt — an editor, a terminal, another agent, a
+commit or checkout — every session of that worktree reloads its changes (`worktree:changed`). Hunt's own folders and
+paths git ignores stay silent, so a build does not reload the changelist. A worktree has one recursive file watch
+(`apps/client/src-tauri/src/git/worktree_watcher.rs`), shared by its sessions and its language servers. The event names
+the changed paths (at most 1000; none when the watcher lost track or `HEAD` moved, and then everything counts as
+changed), so the project tree lists again only the folders whose entries changed and the editor reloads only the
+documents of those paths.
 
 Every snapshot that differs from the previous one also goes into the worktree's edit log with the session that made
 the difference. Log and snapshot objects live in Hunt's app data (`edit-log/<id>/`, objects written through
@@ -419,12 +423,15 @@ text and saved state (`apps/client/src-tauri/src/ide/documents.rs`), each window
 tab or a window keeps unsaved edits: the backend holds them until a save or a rollback, and the project tree and the
 change list mark the file with a blue dot. A save writes atomically (temp file and rename, `apps/client/src-tauri/src/ide/disk_file.rs`)
 and never silently overwrites a file that changed on disk under unsaved edits: ⌘S asks once whether to overwrite all such files.
+The editor refuses files above 50 MB before reading them and binary files (a NUL byte in the first 8000 bytes, or no
+valid UTF-8; `apps/client/src-tauri/src/ide/workspace.rs`); a document longer than 5 MB (5 Mi UTF-16 code units) opens
+without language servers.
 
 Hover, inlay hints, diagnostics, the breadcrumb, go-to-declaration and usages come from the TypeScript 7 language
 server (`tsgo --lsp`, from the worktree's `node_modules/.bin` or the PATH), one process per worktree managed by
 `apps/client/src-tauri/src/ide/lsp.rs` and bridged through `apps/client/src/ide/lsp/`. The server reads loaded files from
-the shared documents, which reload from disk after every agent edit, and every other file from disk; a watcher on the
-worktree reports the changes matching the globs the server registers (`workspace/didChangeWatchedFiles`), so usages
+the shared documents, which reload from disk after every agent edit, and every other file from disk; the worktree's
+file watch reports the changes matching the globs the server registers (`workspace/didChangeWatchedFiles`), so usages
 include files the agent created. Monaco's bundled TypeScript worker
 only colors code: `apps/client/src/editor/webstorm-classifier.utils.ts` assigns every identifier the role WebStorm would (class,
 interface, instance field, static method, parameter, global/local variable, …), colored by the user's WebStorm scheme
@@ -457,7 +464,7 @@ to other or additional keys, flags two commands that share one and keeps the cha
 | ⇧⌘G | Remove unused imports (tsgo), then format with the Prettier the worktree installs, its config and plugins included (`apps/client/scripts/prettier.mjs`); without Prettier with tsgo's formatter |
 | ⌘Ü | "Rename…" (also in the context menu): renames the symbol at the caret across the project through tsgo, asked at its declaration so imports follow; optionally also the name in comments and strings and in non-code files, which always opens the preview with a check box per occurrence; touched files without unsaved edits are saved (`apps/client/src/ide/language/RenameDialog.tsx`) |
 | ⇧F6 | "Rename…" in the project tree (also in the context menu): renames the selected file or folder with its usages; "New folder…" there creates a folder inside the selected one (unbound by default) |
-| ⌘P or double shift | "Go to File": fuzzy search over `git ls-files`; `name:12` jumps to line 12; the preview edits the file like an editor tab |
+| ⌘P or double shift | "Go to File": fuzzy search over `git ls-files`, ranked by the best alignment of the query in the file name (exact name, name without extension, prefix and word starts first), then in the path; `dir/name` matches both parts, spaces are ignored; `name:12` jumps to line 12; the preview edits the file like an editor tab |
 | ⇧⌘F | "Find in Files": full-text search over the project files held in memory, a file with unsaved edits in its editor text (⌥C match case, ⌥W words, ⌥X regex, file mask); starts with the editor's selection; the preview edits the file like an editor tab |
 
 #### Checks
@@ -1343,6 +1350,7 @@ The repository is an [Nx](https://nx.dev) workspace: every project has its own `
 | `apps/client/src-tauri/src/session/` | Session commands, store, attribution, summaries, reviews |
 | `apps/client/src-tauri/src/ide/lsp.rs` | One `tsgo --lsp` process per worktree |
 | `apps/client/src-tauri/src/ide/documents.rs` | The one shared text of every loaded worktree file, for all windows and the language server |
+| `apps/client/src-tauri/src/ide/line_diff.rs` | The line diff of the change markers and the diff views, and the diff base content they compare with |
 | `apps/client/src-tauri/src/ide/workspace.rs` | Project tree and file access |
 | `apps/client/src-tauri/src/graph/graph.rs` | Architecture diagram prompts, files and status |
 | `apps/client/src-tauri/src/remote/` | Session VMs, SSH to them, handoff and retrieval of remote sessions, previews, desktops, terminals |

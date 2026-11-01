@@ -1,4 +1,4 @@
-import type { ChangeBlock } from "../editor/line-diff.utils";
+import type { ChangeBlock } from "../editor/line-diff.types";
 import type { SessionView } from "../sessions/session.types";
 import type { ReviewComment, ReviewThread } from "./review.types";
 import { useReviewThreadStore } from "./review-threads.store";

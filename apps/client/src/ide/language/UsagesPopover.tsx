@@ -13,6 +13,7 @@ import { createPortal } from "react-dom";
 import * as monaco from "monaco-editor";
 import { colorFileLine, tokenizeCode, type FileClassification, type HighlightedLine } from "../../editor/highlight.monaco";
 import { useFileClassifications } from "../../editor/file-classifications.hook";
+import { fileLineRuns } from "../search/file-tokens.monaco";
 import { useVisibleRows } from "../../ui/visible-rows.hook";
 import { tokenStyleDeclarations } from "../../editor/token-style.utils";
 import { useFileIconUrl } from "../../ui/file-icons/file-icons.hook";
@@ -461,12 +462,16 @@ type UsageRowProps = {
   onOpen: () => void;
 };
 
-/** One usage: file, enclosing declaration, line number and the line colored like the editor with the name in bold. */
+/**
+ * One usage: file, enclosing declaration, line number and the line colored like the editor with the name in bold; the
+ * line takes its grammar colors from the tokens of the whole file once `classification` brings its text.
+ */
 function UsageRow({ rowIndex, usage, classification, language, isSelected, onSelect, onOpen }: UsageRowProps) {
   const fileIconUrl = useFileIconUrl();
   const fileName = baseName(usage.path);
   const runs = useMemo<HighlightedLine>(() => {
-    const grammarRuns = tokenizeCode(usage.text, language)?.[0];
+    const fileRuns = classification ? fileLineRuns(classification.text, language, usage.line, usage.text) : null;
+    const grammarRuns = fileRuns ?? tokenizeCode(usage.text, language)?.[0];
     if (!grammarRuns) return [{ text: usage.text, style: { foreground: "#d6d6d6", fontStyle: 0 } }];
     return colorFileLine(grammarRuns, usage.text, usage.line, classification);
   }, [usage.text, usage.line, language, classification]);

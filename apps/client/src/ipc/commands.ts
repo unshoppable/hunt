@@ -8,6 +8,7 @@ import type { ChecksStatus } from "../checks/checks.types";
 import type { DiagramType } from "../common/diagram/diagram.types";
 import type { DesktopEndpoint } from "../desktop/desktop.types";
 import type { ChangeStat, ChangedFileView, Comparison, FileDiff, FileVersion, Shelf } from "../diff/diff.types";
+import type { ChangeBlock } from "../editor/line-diff.types";
 import type { SelectionContext } from "../editor/selection-context.types";
 import type { Commit, CommitDetails, GitScope, LogQuery, RefList, ResetMode } from "../git/git.types";
 import type { GraphStatus } from "../graph/graph.types";
@@ -349,8 +350,8 @@ export const commands = {
   /** Every worktree file `query` matches in, in path order: unlike `findInFiles` neither capped nor cancelled by a later search. */
   filesContaining: (id: string, query: TextQuery) => invoke<string[]>("files_containing", { id, query }),
   /**
-   * Lines of worktree files matching `query` (tracked and untracked, never ignored or binary); empty once a search of
-   * the same worktree issued after this one is in progress.
+   * Lines of worktree files matching `query` (tracked and untracked, never ignored or binary); marked `isCancelled`
+   * once a search of the same worktree issued after this one is in progress.
    */
   findInFiles: (id: string, query: TextQuery) =>
     invoke<TextSearchResult>("find_in_files", { id, query, issuedAt: performance.timeOrigin + performance.now() }),
@@ -389,4 +390,14 @@ export const commands = {
   documentClose: (id: string, path: string) => invoke<void>("document_close", { id, path }),
   /** The paths of the session's worktree whose shared documents hold unsaved edits, sorted. */
   dirtyDocuments: (id: string) => invoke<string[]>("dirty_documents", { id }),
+  /** Content of `path` at the diff base, read afresh: empty for a file the changes add, null for one outside the changes. */
+  headText: (id: string, path: string) => invoke<string | null>("head_text", { id, path }),
+  /**
+   * Change blocks of the shared document of `path` against its `headText`, diffed in the backend; null unless the document
+   * is at `version` and `length` UTF-16 code units long, or for a file outside the changes.
+   */
+  documentChangeBlocks: (id: string, path: string, version: number, length: number) =>
+    invoke<ChangeBlock[] | null>("document_change_blocks", { id, path, version, length }),
+  /** Line diff of two texts as change blocks in document order; the change markers and every diff view use it. */
+  diffLines: (oldText: string, newText: string) => invoke<ChangeBlock[]>("diff_lines", { oldText, newText }),
 };

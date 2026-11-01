@@ -99,7 +99,18 @@ export type PullRequestRef = {
 
 /** Sent after a tool call changed files in `worktreePath`; every session of that worktree reloads its changes. */
 export type AttributionEvent = { worktreePath: string };
-/** Files in `worktreePath` changed outside Hunt (an editor, a terminal, another agent) or its `HEAD` moved; every session of that worktree reloads its changes. */
-export type WorktreeChangedEvent = { worktreePath: string };
+/**
+ * The paths a `worktree:changed` names (`PathChanges` in session/worktree_watch.rs): every changed worktree-relative
+ * path outside `.git`, and those among them that were created, removed or renamed, which changes the listing of their folder.
+ */
+export type WorktreePathChanges = { paths: string[]; entryPaths: string[] };
+/**
+ * Files in `worktreePath` changed outside Hunt (an editor, a terminal, another agent) or its `HEAD` moved; every session
+ * of that worktree reloads its changes. `changes` is null when anything may have changed: the watcher lost track,
+ * `HEAD` moved or too many paths changed.
+ */
+export type WorktreeChangedEvent = { worktreePath: string; changes: WorktreePathChanges | null };
+/** The paths the worktree watch named for the bump of a chat's `editVersion` to `editVersion`. */
+export type EditChanges = { editVersion: number; changes: WorktreePathChanges };
 /** Result of the background summarizer after a finished turn; `title` is the (possibly unchanged) session title. */
 export type SummaryEvent = { huntSessionId: string; title: string; summary: string[] };

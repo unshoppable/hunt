@@ -30,6 +30,16 @@ use crate::session::commands::{session_file, worktree_session};
 
 /// Monaco language ids whose documents the language servers receive; `ServerKind::receives` picks the server.
 const SERVED_LANGUAGES: [&str; 3] = ["typescript", "javascript", "html"];
+/// Documents longer than this many UTF-16 code units (Monaco's length; `MAX_SERVED_LENGTH` in
+/// src/ide/lsp/lsp-client.service.ts likewise) open without language servers: a bundle or a dump would cost them
+/// seconds and memory for nothing.
+const MAX_SERVED_LENGTH: usize = 5 * 1024 * 1024;
+
+/// Whether a document holding `text` when it opens reaches the language servers; checked in bytes first, which are at
+/// least as many as UTF-16 code units.
+fn is_servable(text: &str) -> bool {
+    text.len() <= MAX_SERVED_LENGTH || text.encode_utf16().count() <= MAX_SERVED_LENGTH
+}
 
 /// A position as LSP counts it: zero-based line, column in UTF-16 code units.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -206,7 +216,7 @@ impl WorktreeDocuments {
         let mut effects = Effects::default();
         if !self.documents.contains_key(path) {
             let saved = DiskSnapshot::read(disk)?;
-            let language_id = SERVED_LANGUAGES.contains(&language_id).then(|| language_id.to_string());
+            let language_id = (SERVED_LANGUAGES.contains(&language_id) && is_servable(&saved.text)).then(|| language_id.to_string());
             let document =
                 Document { text: saved.text.clone(), saved, changed_on_disk: None, version: 1, language_id, holders: HashSet::new() };
             effects.notifications.extend(open_notification(self.uri(path), &document));
@@ -396,6 +406,11 @@ impl WorktreeDocuments {
         effects
     }
 
+    /// Whether the language servers receive the document of `path`.
+    pub fn serves(&self, path: &str) -> bool {
+        self.documents.get(path).is_some_and(|document| document.language_id.is_some())
+    }
+
     /// Whether the `kind` server receives any document of the worktree.
     pub fn serves_any(&self, kind: ServerKind) -> bool {
         self.documents.iter().any(|(path, document)| document.language_id.is_some() && kind.receives(path))
@@ -554,6 +569,13 @@ impl DocumentRegistry {
             None => HashMap::new(),
         }
     }
+
+    /// The text of `worktree`'s document `path` while it is at `version`, for the change markers of the editors.
+    pub async fn text_at(&self, worktree: &Path, path: &str, version: i32) -> Option<String> {
+        let entry = self.worktrees.lock().unwrap().get(worktree).cloned()?;
+        let entry = entry.lock().await;
+        entry.documents.documents.get(path).filter(|document| document.version == version).map(|document| document.text.clone())
+    }
 }
 
 /// The worktree of session `id`, remembered after the first lookup so an edit needs no session store read. Paths only
@@ -701,8 +723,12 @@ fn start_angular_server(app: &AppHandle, worktree: &Path) {
 pub async fn document_open(app: AppHandle, window: Window, id: Uuid, path: String, language_id: String) -> Result<DocumentState, String> {
     let worktree = worktree_of(&app, id)?;
     let file = WorktreeFile { app: &app, id, path: &path };
-    let state = update(&app, &worktree, |documents| documents.open(&path, window.label(), &language_id, &file)).await?;
-    if SERVED_LANGUAGES.contains(&language_id.as_str()) && ServerKind::Angular.receives(&path) {
+    let (state, is_served) = update(&app, &worktree, |documents| {
+        let (state, effects) = documents.open(&path, window.label(), &language_id, &file)?;
+        Ok(((state, documents.serves(&path)), effects))
+    })
+    .await?;
+    if is_served && ServerKind::Angular.receives(&path) {
         start_angular_server(&app, &worktree);
     }
     Ok(state)
@@ -951,6 +977,23 @@ mod tests {
         let (ack, effects) = documents.edit("a.ts", 1, vec![change((0, 0), (0, 0), "z")]).unwrap();
         assert_eq!((ack, effects), (None, Effects::default()));
         assert_eq!(documents.text("a.ts").unwrap(), "xy");
+    }
+
+    #[test]
+    fn a_document_too_long_for_the_servers_opens_without_them() {
+        let mut documents = documents();
+        let (state, effects) = documents.open("dist/main.js", "main", "javascript", &read(&"x".repeat(MAX_SERVED_LENGTH + 1))).unwrap();
+        assert_eq!(state.text.len(), MAX_SERVED_LENGTH + 1);
+        assert!(effects.notifications.is_empty());
+        assert!(!documents.serves("dist/main.js"));
+        let (_, effects) = documents.edit("dist/main.js", 1, vec![change((0, 0), (0, 0), "y")]).unwrap();
+        assert!(effects.notifications.is_empty());
+        assert!(documents.close("dist/main.js", "main").notifications.is_empty());
+
+        // Two bytes but one UTF-16 code unit each: the length counts as Monaco measures it.
+        let (_, effects) = documents.open("src/umlaut.ts", "main", "typescript", &read(&"ä".repeat(MAX_SERVED_LENGTH))).unwrap();
+        assert_eq!(methods(&effects), ["textDocument/didOpen"]);
+        assert!(documents.serves("src/umlaut.ts"));
     }
 
     #[test]

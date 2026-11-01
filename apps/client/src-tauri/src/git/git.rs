@@ -6,10 +6,12 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock};
 
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
+use super::single_flight::SingleFlight;
 use super::worktree_relative_path::ensure_inside_worktree;
 
 #[derive(Clone, Serialize)]
@@ -120,6 +122,23 @@ fn is_index_lock_held(code: Option<i32>, stderr: &str) -> bool {
     let first_line = stderr.lines().next().unwrap_or_default();
     let locked = first_line.strip_prefix("fatal: Unable to create '").and_then(|rest| rest.strip_suffix("': File exists."));
     code == Some(128) && locked.is_some_and(|path| path.ends_with("/index.lock"))
+}
+
+/// `run_git` for a `git diff` of the working tree through a scratch copy of the index. Such a diff writes the index under
+/// `index.lock` whenever a file's stat changed but its content did not (it refreshes the stat cache, also with
+/// `GIT_OPTIONAL_LOCKS=0` or `--no-optional-locks`), which fails a `git add` or `git commit` the agent runs meanwhile;
+/// on the copy, the refresh and its lock stay away from the real index.
+async fn run_git_diff_on_scratch_index(worktree: &Path, args: &[&str]) -> Result<String, String> {
+    let Some(index_path) = git_dir_of(worktree).map(|git_dir| git_dir.join("index")) else { return run_git(worktree, args).await };
+    let scratch_index = std::env::temp_dir().join(format!("hunt-diff-index-{}", uuid::Uuid::new_v4()));
+    if let Err(error) = std::fs::copy(&index_path, &scratch_index) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(format!("failed to copy the index: {error}"));
+        }
+    }
+    let result = run_git_with_env(worktree, args, &[("GIT_INDEX_FILE", scratch_index.as_path())]).await;
+    let _ = std::fs::remove_file(&scratch_index);
+    result
 }
 
 /// `run_git_with_env` that writes `input` to the git process's stdin, for the `--batch` and `--stdin` modes.
@@ -451,10 +470,45 @@ pub async fn worktree_of_branch(repo: &Path, branch: &str) -> Result<Option<Stri
     Ok(None)
 }
 
+/// Removes the worktree at `path` of `repo`, its directory included. git unregisters the worktree before it deletes the
+/// directory, and that deletion fails on macOS with "Directory not empty" while Spotlight or Finder reopen files of the
+/// tree (`node_modules` keeps them busy for a while), which leaves an unregistered directory behind; such a directory,
+/// and one a failed earlier removal left, is deleted again by Hunt and the worktree list pruned.
 pub async fn worktree_remove(repo: &Path, path: &Path) -> Result<(), String> {
-    let path = path.to_string_lossy();
-    run_git(repo, &["worktree", "remove", "--force", &path]).await?;
+    let argument = path.to_string_lossy();
+    let Err(error) = run_git(repo, &["worktree", "remove", "--force", &argument]).await else {
+        return Ok(());
+    };
+    if !repo.is_dir() || !path.exists() {
+        return Err(error);
+    }
+    remove_dir_all_retrying(path).await?;
+    run_git(repo, &["worktree", "prune"]).await?;
     Ok(())
+}
+
+/// How often, and at which interval, the deletion of a directory is tried again before its failure is reported.
+const REMOVE_DIR_ATTEMPTS: u32 = 5;
+const REMOVE_DIR_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Deletes the directory `path` with everything in it; a directory that does not exist counts as deleted. A failure is
+/// tried again `REMOVE_DIR_ATTEMPTS` times: on macOS, Spotlight and Finder reopen files of a tree while it is deleted,
+/// which fails the deletion with "Directory not empty" (ENOTEMPTY) although nothing is left to keep.
+pub(crate) async fn remove_dir_all_retrying(path: &Path) -> Result<(), String> {
+    let mut attempt = 1;
+    loop {
+        match tokio::fs::remove_dir_all(path).await {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if attempt >= REMOVE_DIR_ATTEMPTS => {
+                return Err(format!("failed to remove the directory {}: {error}", path.display()));
+            }
+            Err(_) => {
+                attempt += 1;
+                tokio::time::sleep(REMOVE_DIR_RETRY_INTERVAL).await;
+            }
+        }
+    }
 }
 
 /// Deletes the local branch `branch` whatever it contains.
@@ -677,18 +731,79 @@ pub async fn deleted_files(worktree: &Path, dir: &str) -> Result<Vec<String>, St
     Ok(files)
 }
 
-/// Tracked changes against `base` plus untracked files, sorted by path.
-pub async fn changed_files(worktree: &Path, base: &str) -> Result<Vec<ChangedFile>, String> {
-    let mut files: Vec<ChangedFile> = Vec::new();
+/// What a worktree's changelist holds against one base: the changed files with their status and with their added and
+/// removed lines (`changed_files`, `change_stats`).
+struct Changelist {
+    files: Vec<ChangedFile>,
+    stats: Vec<ChangeStat>,
+}
 
-    let tracked = run_git(worktree, &["diff", "--name-status", "--no-renames", "-z", base]).await?;
-    push_name_status(&mut files, &tracked);
+/// How long the first changelist run of an idle worktree waits for further callers: the windows that reload on the
+/// same `worktree:changed` event call within a few milliseconds of each other, and so do the changed files and the
+/// line counts of one panel.
+const CHANGELIST_GATHER: std::time::Duration = std::time::Duration::from_millis(20);
 
-    let untracked = run_git(worktree, &["ls-files", "--others", "--exclude-standard", "-z"]).await?;
+/// The changelist runs by worktree and base, which every caller of `changed_files` and `change_stats` shares.
+static CHANGELISTS: LazyLock<SingleFlight<(PathBuf, String), Arc<Changelist>>> = LazyLock::new(|| SingleFlight::new(CHANGELIST_GATHER));
+
+/// The changelist of `worktree` against `base` from a run that started after this call, shared with every concurrent
+/// caller (`SingleFlight`).
+async fn changelist(worktree: &Path, base: &str) -> Result<Arc<Changelist>, String> {
+    let key = (worktree.to_path_buf(), base.to_string());
+    let (worktree, base) = key.clone();
+    CHANGELISTS
+        .run(key, move || {
+            let (worktree, base) = (worktree.clone(), base.clone());
+            async move { read_changelist(&worktree, &base).await.map(Arc::new) }
+        })
+        .await
+}
+
+/// Reads the changelist of `worktree` against `base` with two git processes: one diff for the status and the line
+/// counts of the tracked changes, one listing of the untracked files, whose lines count as added.
+async fn read_changelist(worktree: &Path, base: &str) -> Result<Changelist, String> {
+    let diff = ["diff", "--raw", "--numstat", "--no-renames", "-z", base];
+    let (tracked, untracked) = tokio::try_join!(
+        run_git_diff_on_scratch_index(worktree, &diff),
+        run_git(worktree, &["ls-files", "--others", "--exclude-standard", "-z"]),
+    )?;
+    let (mut files, mut stats) = parse_raw_and_numstat(&tracked);
     push_untracked(&mut files, &untracked);
 
+    let untracked_paths: Vec<String> = untracked.split('\0').filter(|path| !path.is_empty()).map(str::to_string).collect();
+    let root = worktree.to_path_buf();
+    let untracked_stats = tokio::task::spawn_blocking(move || {
+        let count = |path: String| ChangeStat { added: count_untracked_lines(&root.join(&path)), path, removed: 0 };
+        untracked_paths.into_iter().map(count).collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|error| format!("failed to count the lines of the untracked files: {error}"))?;
+    stats.extend(untracked_stats);
+
     files.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(files)
+    stats.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(Changelist { files, stats })
+}
+
+/// Tracked changes against `base` plus untracked files, sorted by path.
+pub async fn changed_files(worktree: &Path, base: &str) -> Result<Vec<ChangedFile>, String> {
+    Ok(changelist(worktree, base).await?.files.clone())
+}
+
+/// Splits `git diff --raw --numstat -z` output into the changed files and their line counts: first one
+/// `:<old mode> <new mode> <old id> <new id> <status>\0<path>\0` record per file, then the `--numstat` records
+/// (`parse_numstat`).
+fn parse_raw_and_numstat(output: &str) -> (Vec<ChangedFile>, Vec<ChangeStat>) {
+    let mut files = Vec::new();
+    let mut rest = output;
+    while let Some(record) = rest.strip_prefix(':') {
+        let Some((header, after)) = record.split_once('\0') else { break };
+        let (path, after) = after.split_once('\0').unwrap_or((after, ""));
+        let status = header.rsplit(' ').next().and_then(|status| status.chars().next()).unwrap_or('M');
+        files.push(ChangedFile { path: path.to_string(), status: status.to_string() });
+        rest = after;
+    }
+    (files, parse_numstat(rest))
 }
 
 /// Adds the changes of `git diff --name-status -z` output (see `parse_name_status`) to `files`.
@@ -712,18 +827,7 @@ fn push_untracked(files: &mut Vec<ChangedFile>, output: &str) {
 /// Added and removed lines per file: tracked changes against `base` plus untracked files, whose whole line
 /// count is `added`. Sorted by path.
 pub async fn change_stats(worktree: &Path, base: &str) -> Result<Vec<ChangeStat>, String> {
-    let numstat = run_git(worktree, &["diff", "--numstat", "--no-renames", "-z", base]).await?;
-    let mut stats = parse_numstat(&numstat);
-
-    let untracked = run_git(worktree, &["ls-files", "--others", "--exclude-standard", "-z"]).await?;
-    for path in untracked.split('\0').filter(|path| !path.is_empty()) {
-        // Binary and non-UTF-8 files fail to read as text and count as empty.
-        let added = std::fs::read_to_string(worktree.join(path)).map(|content| count_lines(&content)).unwrap_or(0);
-        stats.push(ChangeStat { path: path.to_string(), added, removed: 0 });
-    }
-
-    stats.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(stats)
+    Ok(changelist(worktree, base).await?.stats.clone())
 }
 
 /// Parses `git diff --numstat -z` output: `<added>\t<removed>\t<path>\0` per file, a rename as
@@ -741,11 +845,54 @@ fn parse_numstat(output: &str) -> Vec<ChangeStat> {
     stats
 }
 
-/// Number of lines as git counts them: one per `\n`, plus one for a last line without a trailing newline.
-fn count_lines(content: &str) -> u32 {
-    let newlines = content.matches('\n').count();
-    let has_unterminated_line = !content.is_empty() && !content.ends_with('\n');
-    (newlines + usize::from(has_unterminated_line)) as u32
+/// Untracked files above this size count as empty, like binary ones, so that a log or dump left in the worktree is not
+/// read on every change.
+const UNTRACKED_LINE_COUNT_LIMIT: u64 = 16 * 1024 * 1024;
+
+/// Number of lines of the untracked file at `path` (`count_text_lines`); a file that cannot be read, is not UTF-8 text
+/// (binary files fail at their first invalid byte) or exceeds `UNTRACKED_LINE_COUNT_LIMIT` counts as empty.
+fn count_untracked_lines(path: &Path) -> u32 {
+    let Ok(file) = std::fs::File::open(path) else { return 0 };
+    if file.metadata().map_or(true, |metadata| metadata.len() > UNTRACKED_LINE_COUNT_LIMIT) {
+        return 0;
+    }
+    count_text_lines(std::io::Read::take(file, UNTRACKED_LINE_COUNT_LIMIT)).unwrap_or(0)
+}
+
+/// Number of lines of the UTF-8 text `reader` yields, as git counts them: one per `\n`, plus one for a last line
+/// without a trailing newline. Reads in chunks without holding the whole text; `None` when the text is not UTF-8 or
+/// cannot be read.
+fn count_text_lines(mut reader: impl std::io::Read) -> Option<u32> {
+    let mut buffer = vec![0u8; 64 * 1024];
+    // Bytes of a UTF-8 sequence the previous read split, moved to the start of `buffer`.
+    let mut carried = 0;
+    let mut newlines = 0usize;
+    let mut last_byte = None;
+    loop {
+        let read = match reader.read(&mut buffer[carried..]) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        };
+        let filled = carried + read;
+        let valid = match std::str::from_utf8(&buffer[..filled]) {
+            Ok(text) => text.len(),
+            Err(error) if error.error_len().is_none() => error.valid_up_to(),
+            Err(_) => return None,
+        };
+        newlines += buffer[..valid].iter().filter(|&&byte| byte == b'\n').count();
+        if valid > 0 {
+            last_byte = Some(buffer[valid - 1]);
+        }
+        buffer.copy_within(valid..filled, 0);
+        carried = filled - valid;
+    }
+    if carried > 0 {
+        return None;
+    }
+    let has_unterminated_line = last_byte.is_some_and(|byte| byte != b'\n');
+    Some((newlines + usize::from(has_unterminated_line)) as u32)
 }
 
 /// Old content (from `base`), new content (from disk) and the unified diff of one file.
@@ -754,7 +901,7 @@ pub async fn file_diff(worktree: &Path, base: &str, path: &str) -> Result<FileDi
     let new_content = std::fs::read_to_string(worktree.join(path)).ok();
 
     let unified = if old_content.is_some() {
-        run_git(worktree, &["diff", base, "--", &literal_pathspec(path)]).await?
+        run_git_diff_on_scratch_index(worktree, &["diff", base, "--", &literal_pathspec(path)]).await?
     } else {
         run_git(worktree, &["diff", "--no-index", "--", "/dev/null", path]).await?
     };
@@ -782,6 +929,17 @@ pub async fn revert_file(worktree: &Path, base: &str, path: &str) -> Result<(), 
 /// missing file instead of reading `<base>:<path>` as a pathspec when the path holds glob characters (`app/[id]`).
 pub async fn show(worktree: &Path, base: &str, path: &str) -> Option<String> {
     run_git(worktree, &["show", &format!("{base}:{path}"), "--"]).await.ok()
+}
+
+/// What the editor's change markers compare `path` with: its content at `base`, empty for a file the changes add (in
+/// the index or untracked and not ignored), or `None` for a file outside the changes. A file of `base` costs one git call.
+pub async fn base_content(worktree: &Path, base: &str, path: &str) -> Option<String> {
+    if let Some(content) = show(worktree, base, path).await {
+        return Some(content);
+    }
+    let listed =
+        run_git(worktree, &["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", &literal_pathspec(path)]).await.ok()?;
+    (!listed.is_empty()).then(String::new)
 }
 
 /// Lines of the new version that the hunks of a unified diff cover (changed lines and their context), read from the
@@ -1674,6 +1832,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn worktree_remove_deletes_the_directory_an_unregistered_worktree_left_and_prunes_it() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        let worktree = dir.path().join("left-over");
+        worktree_add(repo, "feat/general/x", &worktree, "main").await.unwrap();
+        // git unregistered the worktree but could not delete its directory (Spotlight held files of it open).
+        let registration = repo.join(".git/worktrees").join(worktree.file_name().unwrap());
+        std::fs::remove_dir_all(&registration).unwrap();
+        std::fs::write(worktree.join("node_modules.txt"), "busy\n").unwrap();
+        assert!(run_git(repo, &["worktree", "remove", "--force", worktree.to_str().unwrap()]).await.is_err());
+
+        worktree_remove(repo, &worktree).await.unwrap();
+
+        assert!(!worktree.exists());
+        assert_eq!(worktree_of_branch(repo, "feat/general/x").await.unwrap(), None);
+        assert!(local_branch_exists(repo, "feat/general/x").await);
+    }
+
+    #[tokio::test]
+    async fn worktree_remove_reports_a_repository_that_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path().join("worktree");
+        std::fs::create_dir(&worktree).unwrap();
+
+        assert!(worktree_remove(&dir.path().join("missing"), &worktree).await.is_err());
+        assert!(worktree.exists());
+    }
+
+    #[tokio::test]
+    async fn remove_dir_all_retrying_counts_a_missing_directory_as_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a/b");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("file.txt"), "x").unwrap();
+
+        remove_dir_all_retrying(&dir.path().join("a")).await.unwrap();
+        remove_dir_all_retrying(&dir.path().join("a")).await.unwrap();
+
+        assert!(!dir.path().join("a").exists());
+    }
+
+    #[tokio::test]
     async fn log_filters_by_message_or_hash_prefix() {
         let dir = fixture().await;
         let repo = dir.path();
@@ -2410,12 +2610,83 @@ mod tests {
         assert!(parse_numstat("").is_empty());
     }
 
+    /// A reader that yields one byte per read, so that every UTF-8 sequence is split across reads.
+    struct ByteByByte<'a>(&'a [u8]);
+
+    impl std::io::Read for ByteByByte<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let Some((&first, rest)) = self.0.split_first() else { return Ok(0) };
+            buffer[0] = first;
+            self.0 = rest;
+            Ok(1)
+        }
+    }
+
     #[test]
-    fn count_lines_counts_like_git() {
-        assert_eq!(count_lines(""), 0);
-        assert_eq!(count_lines("one\n"), 1);
-        assert_eq!(count_lines("one\ntwo"), 2);
-        assert_eq!(count_lines("one\ntwo\n"), 2);
+    fn count_text_lines_counts_like_git_and_rejects_what_is_not_utf8() {
+        assert_eq!(count_text_lines("".as_bytes()), Some(0));
+        assert_eq!(count_text_lines("one\n".as_bytes()), Some(1));
+        assert_eq!(count_text_lines("one\ntwo".as_bytes()), Some(2));
+        assert_eq!(count_text_lines("one\ntwo\n".as_bytes()), Some(2));
+        assert_eq!(count_text_lines(ByteByByte("Größe\nü€😀\nend".as_bytes())), Some(3));
+        let long = format!("{}ü\n", "a".repeat(64 * 1024 - 1));
+        assert_eq!(count_text_lines(long.as_bytes()), Some(1));
+        assert_eq!(count_text_lines(&[0u8, 159, 146, 150][..]), None);
+        assert_eq!(count_text_lines(ByteByByte(&[b'a', 0xc3])), None);
+    }
+
+    #[test]
+    fn parse_raw_and_numstat_reads_statuses_then_counts() {
+        let output = ":100644 100644 aaa 000 M\0src/a.ts\0:000000 100644 000 bbb A\0:odd.ts\0:100644 000000 ccc 000 D\0gone.ts\0\
+                      3\t1\tsrc/a.ts\x001\t0\t:odd.ts\x000\t2\tgone.ts\0";
+        let (files, stats) = parse_raw_and_numstat(output);
+        let entries: Vec<(&str, &str)> = files.iter().map(|file| (file.path.as_str(), file.status.as_str())).collect();
+        assert_eq!(entries, vec![("src/a.ts", "M"), (":odd.ts", "A"), ("gone.ts", "D")]);
+        let summary: Vec<(&str, u32, u32)> = stats.iter().map(|stat| (stat.path.as_str(), stat.added, stat.removed)).collect();
+        assert_eq!(summary, vec![("src/a.ts", 3, 1), (":odd.ts", 1, 0), ("gone.ts", 0, 2)]);
+        assert_eq!(parse_raw_and_numstat("").0.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn changed_files_reports_each_status_once() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        std::fs::write(repo.join("tracked.txt"), "two\n").unwrap();
+        std::fs::remove_file(repo.join("other.txt")).unwrap();
+        std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
+        git(repo, &["add", "staged.txt"]).await;
+        std::fs::write(repo.join("untracked.txt"), "new\n").unwrap();
+
+        let files = changed_files(repo, "HEAD").await.unwrap();
+        let entries: Vec<(&str, &str)> = files.iter().map(|file| (file.path.as_str(), file.status.as_str())).collect();
+        assert_eq!(entries, vec![("other.txt", "D"), ("staged.txt", "A"), ("tracked.txt", "M"), ("untracked.txt", "?")]);
+    }
+
+    /// The inode and modification time of `path`: git replaces the index through a lock file, so a write changes both.
+    fn file_identity(path: &Path) -> (u64, std::time::SystemTime) {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(path).unwrap();
+        (metadata.ino(), metadata.modified().unwrap())
+    }
+
+    #[tokio::test]
+    async fn changelists_leave_the_index_alone_and_skip_files_whose_stat_alone_changed() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        // The content stays, only the stat changes, as after a checkout or a formatter that changed nothing.
+        let touched = std::fs::File::options().write(true).open(repo.join("tracked.txt")).unwrap();
+        touched.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60)).unwrap();
+        let index = repo.join(".git/index");
+        let before = file_identity(&index);
+
+        assert!(changed_files(repo, "HEAD").await.unwrap().is_empty());
+        assert!(change_stats(repo, "HEAD").await.unwrap().is_empty());
+        assert!(file_diff(repo, "HEAD", "tracked.txt").await.unwrap().unified.is_empty());
+
+        assert_eq!(file_identity(&index), before);
+        // A plain `git diff` refreshes the stat cache and writes the index, so the check above is not vacuous.
+        run_git(repo, &["diff", "HEAD"]).await.unwrap();
+        assert_ne!(file_identity(&index), before);
     }
 
     #[tokio::test]
@@ -2653,5 +2924,23 @@ mod tests {
         assert_eq!(merge_base(repo, "main", "feature").await.unwrap(), fork_point);
         assert!(merge_base(repo, "--all", "feature").await.is_err());
         assert!(merge_base(repo, "main", "").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn base_content_tells_files_of_the_base_from_added_and_ignored_ones() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        std::fs::write(repo.join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(repo.join("tracked.txt"), "changed\n").unwrap();
+        std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+        std::fs::write(repo.join("staged.txt"), "staged\n").unwrap();
+        std::fs::write(repo.join("ignored.txt"), "ignored\n").unwrap();
+        git(repo, &["add", "staged.txt"]).await;
+
+        assert_eq!(base_content(repo, DIFF_BASE, "tracked.txt").await.as_deref(), Some("one\n"));
+        assert_eq!(base_content(repo, DIFF_BASE, "new.txt").await.as_deref(), Some(""));
+        assert_eq!(base_content(repo, DIFF_BASE, "staged.txt").await.as_deref(), Some(""));
+        assert_eq!(base_content(repo, DIFF_BASE, "ignored.txt").await, None);
+        assert_eq!(base_content(repo, DIFF_BASE, "missing.txt").await, None);
     }
 }

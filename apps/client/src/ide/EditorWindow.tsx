@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listenTo } from "../ipc/events";
-import { computeChangeBlocks } from "../editor/line-diff.utils";
 import type { EditorOpenRequest } from "./ide.types";
 import { useHuntStore } from "../sessions/hunt.store";
 import { hideCurrentWindow } from "../ui/native-window.utils";
@@ -181,7 +180,7 @@ export function EditorWindow({ sessionId, initialRequest }: { sessionId: string;
 async function firstChangedLine(workspace: DocumentWorkspace, path: string): Promise<number | undefined> {
   const [headText, document] = await Promise.all([workspace.headText(path), workspace.open(path)]);
   if (headText === null) return undefined;
-  const firstBlock = computeChangeBlocks(headText, document.model.getValue())[0];
+  const [firstBlock] = await workspace.changeBlocks(document.model, headText);
   if (!firstBlock) return undefined;
   return Math.min(firstBlock.modified.start, document.model.getLineCount());
 }

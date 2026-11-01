@@ -5,7 +5,7 @@
  */
 
 import type { TextMatch, TextQuery } from "./find-in-files.types";
-import { NAME_MATCH_BONUS, matchText, type FileMatch } from "./file-search.utils";
+import { NAME_MATCH_BONUS, matchName, type FileMatch } from "./file-search.utils";
 import { elementKindOf, type WorkspaceSymbol } from "../lsp/lsp-protocol.utils";
 
 /** A declaration found by the language server or the text search; `line` and `column` are 1-based and point at the name. */
@@ -76,15 +76,14 @@ export function workspaceSymbolsIn(symbols: readonly WorkspaceSymbol[], worktree
  * counts once. Ties go to classes, then to shorter names. The best `limit` matches come first.
  */
 export function rankSymbols(candidates: readonly SymbolCandidate[], query: string, limit = 30): SymbolMatch[] {
-  const needle = query.trim().toLowerCase();
-  if (!needle) return [];
+  if (!query.trim()) return [];
   const seen = new Set<string>();
   const matches: SymbolMatch[] = [];
   for (const candidate of candidates) {
     const key = `${candidate.path}:${candidate.line}:${candidate.name}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    const match = matchText(candidate.name, needle);
+    const match = matchName(candidate.name, query);
     if (!match) continue;
     matches.push({ ...candidate, ...match });
   }

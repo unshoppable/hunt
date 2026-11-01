@@ -18,7 +18,7 @@ import { findUsages, navigationAt, symbolPathAt, type RenameTarget, type SymbolC
 import type { Pane } from "./pane-layout.value-object";
 import { attachRefactorings } from "./language/refactorings.monaco";
 import { RenameDialog } from "./language/RenameDialog";
-import type { ChangeBlock } from "../editor/line-diff.utils";
+import type { ChangeBlock } from "../editor/line-diff.types";
 import { AddCommentGlyph, type CommentTarget } from "../review/add-comment-glyph.monaco";
 import { ReviewCommentZones } from "../review/ReviewCommentZones";
 import { useReviewedPullRequest } from "../review/review-comments.hook";
@@ -194,11 +194,15 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, s
       },
     });
 
-    const markers = new ChangeMarkers(editor, (model) => {
-      const { workspace: current } = latest.current;
-      const path = current.pathOf(model.uri);
-      return path ? current.headText(path) : Promise.resolve(null);
-    });
+    const markers = new ChangeMarkers(
+      editor,
+      (model) => {
+        const { workspace: current } = latest.current;
+        const path = current.pathOf(model.uri);
+        return path ? current.headText(path) : Promise.resolve(null);
+      },
+      (model, headText) => latest.current.workspace.changeBlocks(model, headText),
+    );
     markersRef.current = markers;
     const chatMarkers = new SelectionChatMarkers(editor, (model) => latest.current.workspace.pathOf(model.uri));
     chatMarkersRef.current = chatMarkers;

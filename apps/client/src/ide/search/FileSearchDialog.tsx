@@ -47,20 +47,23 @@ function rowKey(row: SearchResult): string {
   return row.type === "file" ? row.match.path : `symbol:${row.match.path}:${row.match.line}:${row.match.name}`;
 }
 
-/** The language server's workspace symbols and the declarations a text search finds for `text`; a failing source adds none. */
 /**
  * The symbols named like `text`: class members and the like from the TypeScript server, whose search covers only the
  * projects it has loaded, so the projects of the files mentioning `text` are loaded first; top-level declarations
- * from a text search, which also finds them in projects the server could not load.
+ * from a text search, which also finds them in projects the server could not load. The two text searches run one
+ * after the other, as a later one cancels an earlier one; `null` once a newer search (the next keystroke's, Find in
+ * Files') cancelled one of them, a failing source adds none.
  */
-async function findSymbols(sessionId: string, worktreePath: string, text: string, files: ReadonlySet<string>): Promise<SymbolCandidate[]> {
+async function findSymbols(sessionId: string, worktreePath: string, text: string, files: ReadonlySet<string>): Promise<SymbolCandidate[] | null> {
   const client = lspClientFor(sessionId, worktreePath);
+  const mentions = await commands.findInFiles(sessionId, mentionQuery(text)).catch(() => null);
+  if (mentions?.isCancelled) return null;
   const workspaceSymbols = async () => {
-    const mentions = await commands.findInFiles(sessionId, mentionQuery(text)).catch(() => null);
     await loadProjectsOf(client, [...new Set((mentions?.matches ?? []).map((match) => match.path))]);
     return client.request<WorkspaceSymbol[] | null>("workspace/symbol", { query: text });
   };
   const [symbols, declarations] = await Promise.all([workspaceSymbols().catch(() => null), commands.findInFiles(sessionId, declarationQuery(text)).catch(() => null)]);
+  if (declarations?.isCancelled) return null;
   return [...workspaceSymbolsIn(symbols ?? [], worktreePath, files), ...declarationsOf(declarations?.matches ?? [])];
 }
 
@@ -216,7 +219,7 @@ function FileSearchView({
   const isSymbolSearch = isSymbolQuery(parsed.text);
   useLoad(
     () => findSymbols(sessionId, worktreePath, parsed.text, fileSet),
-    { onValue: setSymbolCandidates, onError: () => setSymbolCandidates([]) },
+    { onValue: (candidates) => candidates && setSymbolCandidates(candidates), onError: () => setSymbolCandidates([]) },
     [sessionId, worktreePath, parsed.text, fileSet],
     { delayMs: SYMBOL_SEARCH_DELAY_MS, isEnabled: isSymbolSearch && !!files && !!worktreePath },
   );

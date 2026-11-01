@@ -1,7 +1,7 @@
 //! The Tauri commands of the app, the backend surface the React UI talks to through `src/ipc/commands.ts`. `handler()`
 //! serves all of them: the session commands, one file per concern below, and the thin commands domain modules own
-//! themselves (`ide/lsp.rs`, `ide/documents.rs`, `platform/preferences.rs`, `agent/plan_usage.rs`, `agent/accounts.rs`,
-//! `github/github_token.rs`). This module holds what several command files share: the session lookups that resolve the
+//! themselves (`ide/lsp.rs`, `ide/documents.rs`, `ide/line_diff.rs`, `platform/preferences.rs`, `agent/plan_usage.rs`,
+//! `agent/accounts.rs`, `github/github_token.rs`). This module holds what several command files share: the session lookups that resolve the
 //! UI's worktree paths (`session_file`), starting, connecting and stopping a session's agent, making a remote session a
 //! local one again, the progress of remote operations and the gateway of the remote settings.
 
@@ -35,7 +35,7 @@ use crate::agent::claude_config::claude_dir;
 use crate::agent::{accounts, guardrail_skill, plan_usage};
 use crate::github::github_token;
 use crate::graph::WatcherRegistry;
-use crate::ide::{documents, lsp};
+use crate::ide::{documents, line_diff, lsp};
 use crate::platform::{cli_install, preferences};
 use crate::remote::api::GatewayApi;
 use crate::remote::ssh::{ssh_dir, Ssh};
@@ -196,6 +196,9 @@ command_handler![
     documents::document_mark_saved,
     documents::document_close,
     documents::dirty_documents,
+    line_diff::head_text,
+    line_diff::document_change_blocks,
+    line_diff::diff_lines,
     preferences::set_ai_language,
     preferences::set_system_prompt,
     cli_install::cli_install_status,

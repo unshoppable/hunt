@@ -13,8 +13,11 @@ export type TextRange = { start: number; end: number };
  */
 export type TextMatch = { path: string; line: number; column: number; endColumn: number; preview: string; ranges: TextRange[]; replacements?: string[] };
 
-/** At most 500 matching lines in path order; `isTruncated` when more lines matched. */
-export type TextSearchResult = { matches: TextMatch[]; isTruncated: boolean };
+/**
+ * At most 500 matching lines in path order (`TextSearchResult` of ide/find_in_files.rs); `isTruncated` when more lines
+ * matched, `isCancelled` when a later search stopped this one, whose matches are then no answer to show.
+ */
+export type TextSearchResult = { matches: TextMatch[]; isTruncated: boolean; isCancelled: boolean };
 
 /** A line whose matches Replace in Files replaces; `line` is 1-based. */
 export type FileLine = { path: string; line: number };

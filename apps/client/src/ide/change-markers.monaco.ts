@@ -1,5 +1,6 @@
 import * as monaco from "monaco-editor";
-import { computeChangeBlocks, computeRevertEdit, type ChangeBlock } from "../editor/line-diff.utils";
+import type { ChangeBlock } from "../editor/line-diff.types";
+import { computeRevertEdit } from "../editor/line-diff.utils";
 import { changeMark } from "../editor/monaco.constants";
 import { markersFor, type Marker } from "./marker-layout.utils";
 
@@ -31,9 +32,10 @@ function toDecorations(marker: Marker, isHovered: boolean): monaco.editor.IModel
 
 /**
  * WebStorm-style change stripes next to the line numbers of an editor, each repeated as a mark in the scroll track
- * (see `changeMark`): the editor's model is diffed against the file's HEAD content (`headTextOf`), recomputed shortly
- * after every edit and whenever the shown model changes. The stripe under the mouse widens, a click on it reports its
- * marker; `revert` puts a block back to its HEAD lines.
+ * (see `changeMark`): the editor's model is diffed against the file's HEAD content (`headTextOf`, diffed by `blocksOf`),
+ * recomputed shortly after every edit and whenever the shown model changes; an answer that arrives after a newer edit is
+ * dropped. The stripe under the mouse widens, a click on it reports its marker; `revert` puts a block back to its HEAD
+ * lines.
  */
 export class ChangeMarkers {
   private readonly decorations: monaco.editor.IEditorDecorationsCollection;
@@ -44,6 +46,8 @@ export class ChangeMarkers {
   private readonly clickListeners = new Set<(marker: Marker) => void>();
   /** Bumped per model load so a late HEAD response of an earlier model is ignored. */
   private generation = 0;
+  /** Bumped per edit and per diff, so blocks of an older text are ignored. */
+  private diffGeneration = 0;
   private headText: string | null = null;
   /** Whether the base content of the current model has arrived (as text or as "not in the base"). */
   private isHeadLoaded = false;
@@ -56,6 +60,8 @@ export class ChangeMarkers {
     private readonly editor: monaco.editor.ICodeEditor,
     /** Base content of the model's file, empty for a file the changes add, or null for a file outside the changes (then nothing is marked). */
     private readonly headTextOf: (model: monaco.editor.ITextModel) => Promise<string | null>,
+    /** Change blocks of the model against its base content `headText`. */
+    private readonly blocksOf: (model: monaco.editor.ITextModel, headText: string) => Promise<ChangeBlock[]>,
   ) {
     this.decorations = editor.createDecorationsCollection();
     this.disposables.push(
@@ -112,6 +118,7 @@ export class ChangeMarkers {
 
   dispose(): void {
     this.generation += 1;
+    this.diffGeneration += 1;
     this.cancelRediff();
     this.contentSubscription?.dispose();
     for (const disposable of this.disposables) {
@@ -146,6 +153,7 @@ export class ChangeMarkers {
   }
 
   private scheduleRediff(): void {
+    this.diffGeneration += 1;
     this.cancelRediff();
     this.rediffTimer = setTimeout(() => {
       this.rediffTimer = null;
@@ -161,15 +169,29 @@ export class ChangeMarkers {
   }
 
   private applyDiff(): void {
+    this.diffGeneration += 1;
+    const generation = this.diffGeneration;
     const model = this.editor.getModel();
-    this.hoveredMarker = null;
     if (!model || !this.isHeadLoaded || this.headText === null) {
-      this.currentBlocks = [];
+      this.showBlocks(model, []);
+      return;
+    }
+    this.blocksOf(model, this.headText)
+      .then((blocks) => {
+        if (generation !== this.diffGeneration) return;
+        this.showBlocks(model, blocks);
+      })
+      .catch((error) => console.warn("failed to compute the change markers:", error));
+  }
+
+  private showBlocks(model: monaco.editor.ITextModel | null, blocks: ChangeBlock[]): void {
+    this.hoveredMarker = null;
+    this.currentBlocks = blocks;
+    if (!model || !blocks.length) {
       this.currentMarkers = [];
       this.decorations.clear();
     } else {
-      this.currentBlocks = computeChangeBlocks(this.headText, model.getValue());
-      this.currentMarkers = markersFor(this.currentBlocks, model.getLineCount());
+      this.currentMarkers = markersFor(blocks, model.getLineCount());
       this.render();
     }
     for (const listener of this.changeListeners) {

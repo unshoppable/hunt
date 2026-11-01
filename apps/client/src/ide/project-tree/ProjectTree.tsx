@@ -19,6 +19,8 @@ import { toggleInExpanded } from "../../common/tree/tree-expansion.utils";
 import type { TreeNavRow } from "../../common/tree/tree-navigation.utils";
 import { extendSelection, singleSelection, toggleInSelection, visibleSelection, type TreeSelection } from "../../common/tree/tree-selection.utils";
 import { useTreeNavigation } from "../../ui/tree-navigation.hook";
+import type { EditChanges } from "../../sessions/session.types";
+import { changesSince, foldersToRelist } from "../worktree-changes.utils";
 import type { DocumentWorkspace } from "../documents/documents.service";
 import { EMPTY_MARKS, FOLDER_COLORS, FOLDER_COLOR_NAMES, markedColor, useFolderColorStore, type FolderColor } from "./folder-colors.store";
 import { useIdeStore } from "../ide.store";
@@ -75,8 +77,9 @@ function deleteQuestion(entries: readonly Pick<Row, "path" | "isDir">[]): string
  * folder inside the row's folder, renames the row with its usages (⇧F6, see RenamePathDialog.tsx: its tabs, documents
  * and folder colors follow) and deletes the selected rows (⌘⌫), closing their tabs. The selection changes on click, with the arrow keys and on `revealRequest`
  * (⇧⌘2), never when the editor's active tab changes; Enter opens the selected file. `refreshVersion` relists every
- * open directory. Every file and folder row has an agent button that opens a sub chat about the whole file or folder; it
- * shows on hover, or always once such a chat exists, also one opened from the changelist.
+ * open directory, or only those whose entries changed when `refreshChanges` names the paths behind its bump. Every file
+ * and folder row has an agent button that opens a sub chat about the whole file or folder; it shows on hover, or always
+ * once such a chat exists, also one opened from the changelist.
  */
 export function ProjectTree({
   sessionId,
@@ -84,6 +87,7 @@ export function ProjectTree({
   projectName,
   revealRequest,
   refreshVersion,
+  refreshChanges,
   statusByPath,
   unsavedPaths,
   workspace,
@@ -95,6 +99,8 @@ export function ProjectTree({
   projectName: string;
   revealRequest: { path: string; nonce: number; isFolder?: boolean } | null;
   refreshVersion: number;
+  /** The paths behind a bump of `refreshVersion` when the worktree watch named them (the chat's `editChanges`). */
+  refreshChanges: EditChanges | null;
   /** Git status letter of each changed file (see file-statuses.hook.ts); it colors the file's name. */
   statusByPath: Readonly<Record<string, string>>;
   /** Files with unsaved edits; they get a blue dot. */
@@ -141,11 +147,14 @@ export function ProjectTree({
     list("").catch((reason) => setError(String(reason)));
   }, [list]);
 
-  // Agent edits, saves and reverts change listings; relist what is open instead of resetting the tree.
+  // Agent edits, saves and reverts change listings; relist what is open instead of resetting the tree, and of it only
+  // the folders whose entries changed when the worktree watch named the paths.
+  const listedVersion = useRef(refreshVersion);
   useEffect(() => {
-    const paths = Object.keys(listings);
-    Promise.allSettled(paths.map(list)).catch(() => {});
-    // `listings` is intentionally not a dependency: it is relisted, never a trigger.
+    const changes = changesSince(listedVersion.current, refreshVersion, refreshChanges);
+    listedVersion.current = refreshVersion;
+    Promise.allSettled(foldersToRelist(Object.keys(listings), changes).map(list)).catch(() => {});
+    // `listings` and `refreshChanges` are intentionally not dependencies: they are read, never a trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshVersion, list]);
 

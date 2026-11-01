@@ -10,8 +10,9 @@
 //! without bound (`response_timeout`), and no notification waits for a starting server (`NotificationGate`).
 //!
 //! The server watches files through the client (`workspace/didChangeWatchedFiles` with dynamic registration): it
-//! registers globs, and one recursive watcher on the worktree reports the changes that match them, so the server sees
-//! files the agent creates, edits or deletes without an open document.
+//! registers globs, and the worktree's file watch (`git/worktree_watcher.rs`, shared with the changelist and the other
+//! server) reports the changes that match them, so the server sees files the agent creates, edits or deletes without
+//! an open document.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ffi::OsString;
@@ -24,8 +25,8 @@ use std::time::{Duration, Instant};
 
 use glob::{MatchOptions, Pattern};
 use notify_debouncer_full::notify::event::ModifyKind;
-use notify_debouncer_full::notify::{self, EventKind, RecommendedWatcher, RecursiveMode};
-use notify_debouncer_full::{new_debouncer_opt, DebounceEventResult, Debouncer, NoCache};
+use notify_debouncer_full::notify::EventKind;
+use notify_debouncer_full::DebounceEventResult;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -37,6 +38,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use uuid::Uuid;
 
 use crate::agent::acp::bundled_script_path;
+use crate::git::worktree_watcher::{self, WatchSubscription};
 use crate::ide::documents;
 use crate::session::store;
 
@@ -92,7 +94,6 @@ const STDERR_DRAIN: Duration = Duration::from_millis(200);
 const MAX_MESSAGE: usize = 256 * 1024 * 1024;
 /// The longest header line; a longer run of bytes without a line break is dropped as noise.
 const MAX_HEADER_LINE: usize = 8 * 1024;
-const WATCH_DEBOUNCE: Duration = Duration::from_millis(100);
 /// Watcher globs match like VS Code's on macOS: case-insensitive, `*` stays inside one path component.
 const GLOB_OPTIONS: MatchOptions =
     MatchOptions { case_sensitive: false, require_literal_separator: true, require_literal_leading_dot: false };
@@ -303,8 +304,8 @@ pub struct LspServer {
     failure: Mutex<Option<String>>,
     /// Flips to `true` after the process was reaped.
     exited: watch::Sender<bool>,
-    /// The worktree watcher; dropped when the process ends, which stops the forwarding of changes.
-    watcher: Mutex<Option<Debouncer<RecommendedWatcher, NoCache>>>,
+    /// The subscription to the worktree's file watch; dropped when the process ends, which stops the forwarding of changes.
+    watcher: Mutex<Option<WatchSubscription>>,
     /// The file watchers the server registered, keyed by registration id.
     file_watchers: Mutex<HashMap<String, Vec<FileWatcher>>>,
 }
@@ -352,8 +353,8 @@ impl LspServer {
         });
         let (sender, receiver) = unbounded_channel();
         match watch_worktree(&server.worktree, sender) {
-            Ok(debouncer) => {
-                *server.watcher.lock().unwrap() = Some(debouncer);
+            Ok(subscription) => {
+                *server.watcher.lock().unwrap() = Some(subscription);
             }
             Err(error) => eprintln!("{error}"),
         }
@@ -819,14 +820,11 @@ fn watched_changes(file_watchers: &HashMap<String, Vec<FileWatcher>>, changes: i
         .collect()
 }
 
-/// Watches `worktree` recursively and sends each debounced batch of changed paths outside `.git`, each with whether
-/// the batch created it. Without a file ID cache, so the watch starts without reading the worktree.
-fn watch_worktree(
-    worktree: &Path,
-    sender: UnboundedSender<Vec<(PathBuf, bool)>>,
-) -> Result<Debouncer<RecommendedWatcher, NoCache>, String> {
+/// Subscribes to the file watch of `worktree` and sends each debounced batch of changed paths outside `.git` (the
+/// reflogs the watch also reports lie in a git dir), each with whether the batch created it.
+fn watch_worktree(worktree: &Path, sender: UnboundedSender<Vec<(PathBuf, bool)>>) -> Result<WatchSubscription, String> {
     let root = worktree.to_path_buf();
-    let on_events = move |result: DebounceEventResult| {
+    let on_events = move |result: &DebounceEventResult| {
         let events = match result {
             Ok(events) => events,
             Err(errors) => {
@@ -835,7 +833,7 @@ fn watch_worktree(
             }
         };
         let mut paths = BTreeMap::<PathBuf, bool>::new();
-        for event in &events {
+        for event in events {
             if matches!(event.kind, EventKind::Access(_)) {
                 continue;
             }
@@ -852,13 +850,7 @@ fn watch_worktree(
             let _ = sender.send(paths.into_iter().collect());
         }
     };
-    let watch = || {
-        let config = notify::Config::default();
-        let mut debouncer = new_debouncer_opt::<_, RecommendedWatcher, _>(WATCH_DEBOUNCE, None, on_events, NoCache, config)?;
-        debouncer.watch(worktree, RecursiveMode::Recursive)?;
-        Ok::<_, notify::Error>(debouncer)
-    };
-    watch().map_err(|error| format!("failed to watch {} for the language server: {error}", worktree.display()))
+    worktree_watcher::subscribe(worktree, on_events).map_err(|error| format!("{error} (for the language server)"))
 }
 
 /// Reports the batches of `watch_worktree` that match a registered watcher with `workspace/didChangeWatchedFiles`;

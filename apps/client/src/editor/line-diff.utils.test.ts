@@ -1,28 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { clipUnchangedRegion, computeChangeBlocks, computeInnerChanges, computeRevertEdit, computeUnchangedRegions, mapLine, type TextEdit } from "./line-diff.utils";
+import { changeBlocksOf } from "./line-diff.fixtures";
+import { clipUnchangedRegion, computeInnerChanges, computeRevertEdit, computeUnchangedRegions, mapLine, type TextEdit } from "./line-diff.utils";
 
 const lines = (count: number, prefix = "line") => Array.from({ length: count }, (_, index) => `${prefix} ${index + 1}`).join("\n") + "\n";
 
-describe("computeChangeBlocks", () => {
-  it("reports a pure insertion with an empty original range", () => {
-    const blocks = computeChangeBlocks("a\nb\n", "a\nx\ny\nb\n");
-    expect(blocks).toEqual([{ original: { start: 2, end: 2 }, modified: { start: 2, end: 4 } }]);
-  });
-
-  it("merges removed and added lines into one modification block", () => {
-    const blocks = computeChangeBlocks("a\nb\nc\n", "a\nB\nc\n");
-    expect(blocks).toEqual([{ original: { start: 2, end: 3 }, modified: { start: 2, end: 3 } }]);
-  });
-
-  it("reports a deletion at the end with an empty modified range", () => {
-    const blocks = computeChangeBlocks("a\nb\n", "a\n");
-    expect(blocks).toEqual([{ original: { start: 2, end: 3 }, modified: { start: 2, end: 2 } }]);
-  });
-});
-
 describe("computeUnchangedRegions", () => {
   it("keeps context lines around a block and none at the file edges", () => {
-    const blocks = computeChangeBlocks(lines(30), lines(30).replace("line 15", "LINE 15"));
+    const blocks = changeBlocksOf(lines(30), lines(30).replace("line 15", "LINE 15"));
     const regions = computeUnchangedRegions(blocks, 30, 30, 3, 3);
     expect(regions).toEqual([
       { original: { start: 1, end: 12 }, modified: { start: 1, end: 12 } },
@@ -89,7 +73,7 @@ describe("computeRevertEdit", () => {
   /** Applies the edit the way Monaco would and returns the resulting text. */
   const revertAll = (original: string, modified: string): string => {
     let text = modified;
-    for (const block of computeChangeBlocks(original, modified).reverse()) {
+    for (const block of changeBlocksOf(original, modified).reverse()) {
       const edit = computeRevertEdit(original.split("\n"), text.split("\n"), block, "\n");
       text = applyEdit(text, edit);
     }

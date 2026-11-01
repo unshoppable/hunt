@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { testLineDiff } from "../../editor/line-diff.fixtures";
 import type { TextEdit } from "../../editor/line-diff.utils";
 import { documentEdits, editsToText } from "./reformat.utils";
 
@@ -13,27 +14,27 @@ function apply(lines: string[], edits: TextEdit[]): string {
 }
 
 describe("editsToText", () => {
-  it("replaces only the changed runs of lines", () => {
+  it("replaces only the changed runs of lines", async () => {
     const lines = ["import {a} from 'a'", "", "const x   = 1", "keep()", "const y=2", ""];
     const formatted = "import { a } from 'a';\n\nconst x = 1;\nkeep()\nconst y = 2;\n";
-    const edits = editsToText(lines, "\n", formatted);
+    const edits = await editsToText(lines, "\n", formatted, testLineDiff);
     expect(edits.map((edit) => edit.startLine)).toEqual([1, 3, 5]);
     expect(apply(lines, edits)).toBe(formatted);
   });
 
-  it("removes deleted lines and adds a final line break", () => {
+  it("removes deleted lines and adds a final line break", async () => {
     const lines = ["import { b } from 'b';", "import { a } from 'a';", "a()"];
     const formatted = "import { a } from 'a';\na();\n";
-    expect(apply(lines, editsToText(lines, "\n", formatted))).toBe(formatted);
+    expect(apply(lines, await editsToText(lines, "\n", formatted, testLineDiff))).toBe(formatted);
   });
 
-  it("adds or removes only the final line break", () => {
-    expect(apply(["a;"], editsToText(["a;"], "\n", "a;\n"))).toBe("a;\n");
-    expect(apply(["a;", "", ""], editsToText(["a;", "", ""], "\n", "a;\n"))).toBe("a;\n");
+  it("adds or removes only the final line break", async () => {
+    expect(apply(["a;"], await editsToText(["a;"], "\n", "a;\n", testLineDiff))).toBe("a;\n");
+    expect(apply(["a;", "", ""], await editsToText(["a;", "", ""], "\n", "a;\n", testLineDiff))).toBe("a;\n");
   });
 
-  it("has nothing to do for formatted text", () => {
-    expect(editsToText(["a;", ""], "\n", "a;\n")).toEqual([]);
+  it("has nothing to do for formatted text", async () => {
+    expect(await editsToText(["a;", ""], "\n", "a;\n", testLineDiff)).toEqual([]);
   });
 });
 

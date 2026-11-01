@@ -13,7 +13,7 @@ mod terminal;
 use agent::acp::{PermissionRegistry, SessionRegistry};
 use agent::browser::BrowserRegistry;
 use graph::WatcherRegistry;
-use ide::{documents, find_in_files, lsp};
+use ide::{documents, find_in_files, line_diff, lsp};
 use platform::{control, external_links, legacy_identifier, menu, preferences};
 use remote::desktop::DesktopRegistry;
 use session::attribution::AttributionRegistry;
@@ -54,6 +54,7 @@ pub fn run() {
         .manage(find_in_files::FindRegistry::default())
         .manage(lsp::LspRegistry::default())
         .manage(documents::DocumentRegistry::default())
+        .manage(line_diff::BaseTexts::default())
         .manage(TerminalRegistry::default())
         .manage(DesktopRegistry::default())
         .manage(BrowserRegistry::default())

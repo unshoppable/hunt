@@ -11,7 +11,7 @@ import type { HuntGet, HuntSet, HuntState } from "../sessions/hunt.store";
 import type { RemoteStep } from "../sessions/remote/remote-session.types";
 import type { FileSync, SessionMove } from "../sessions/remote/remote-session.store-slice";
 import type { RemoteRun } from "../sessions/remote/remote-run.utils";
-import type { AnnotationEvent, SessionView } from "../sessions/session.types";
+import type { AnnotationEvent, EditChanges, SessionView, WorktreePathChanges } from "../sessions/session.types";
 import { asksQuestion } from "../../../../libs/domain/src/shared/question.utils.ts";
 import { createEmptyChat, huntTurnOf, nextItemId, reduceChat, replacedChat, type MessageItem } from "./chat-reducer.utils";
 import { createSessionNaming } from "../sessions/session.store-slice";
@@ -70,6 +70,11 @@ export type SessionChat = {
   error: string | null;
   /** Bumped whenever the agent finished an edit or a turn so the diff panel refetches. */
   editVersion: number;
+  /**
+   * The paths behind the latest `editVersion` bump when the worktree watch named them, so the project tree and the
+   * documents refresh only those (see `ide/worktree-changes.utils.ts`); any other bump may have changed anything.
+   */
+  editChanges: EditChanges | null;
   /** Bumped when the watcher reports a rewritten graph file. */
   graphVersion: number;
   /** The diagram types a background agent is generating right now (see `refreshGraph`). */
@@ -179,8 +184,11 @@ export type ChatSlice = {
   /** Gives the chat items of the event's messages their transcript times. */
   applyMessageTimes: (event: MessageTimesEvent) => void;
   applyGraphChanged: (huntSessionId: string) => void;
-  /** Reloads the changes of every open session that works in `worktreePath`, after a tool call or a change from outside Hunt changed it. */
-  applyWorktreeChanged: (worktreePath: string) => void;
+  /**
+   * Reloads the changes of every open session that works in `worktreePath`, after a tool call or a change from outside
+   * Hunt changed it; `changes` names the paths when the worktree watch knows them.
+   */
+  applyWorktreeChanged: (worktreePath: string, changes?: WorktreePathChanges | null) => void;
 };
 
 /**
@@ -696,14 +704,15 @@ export function createChatSlice(set: HuntSet, get: HuntGet, turns: ChatTurns): C
       updateChat(huntSessionId, (chat) => ({ ...chat, graphVersion: chat.graphVersion + 1 }));
     },
 
-    applyWorktreeChanged: (worktreePath) => {
+    applyWorktreeChanged: (worktreePath, changes = null) => {
       set((state) => {
         const chats = { ...state.chats };
         for (const session of state.sessions) {
           // Only sessions whose chat exists: creating one here would make `selectSession` skip the history rebuild.
           const chat = chats[session.id];
           if (session.worktreePath !== worktreePath || !chat) continue;
-          chats[session.id] = { ...chat, editVersion: chat.editVersion + 1 };
+          const editVersion = chat.editVersion + 1;
+          chats[session.id] = { ...chat, editVersion, editChanges: changes ? { editVersion, changes } : null };
         }
         return { chats };
       });

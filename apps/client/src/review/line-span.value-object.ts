@@ -1,6 +1,6 @@
 import * as z from "zod/mini";
 import { ValueObject } from "../../../../libs/domain/src/model/value-object.model.ts";
-import type { ChangeBlock } from "../editor/line-diff.utils";
+import type { ChangeBlock } from "../editor/line-diff.types";
 
 /** Lines of unchanged context git puts around every change; the diff of a pull request on GitHub has the same. */
 export const HUNK_CONTEXT_LINES = 3;

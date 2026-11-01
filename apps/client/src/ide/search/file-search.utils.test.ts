@@ -69,6 +69,42 @@ describe("searchFiles", () => {
     expect(byName?.positions[0]).toBe(byName!.path.lastIndexOf("/") + 1);
   });
 
+  it("ranks the best alignment, not the first occurrence of each letter, and marks its letters", () => {
+    const paths = ["src/contractorial.ts", "src/ui/ContentTreeRowList.tsx"];
+    const [best, second] = searchFiles(paths, "ctrl");
+    expect(best?.name).toBe("ContentTreeRowList.tsx");
+    expect(best!.positions.map((position) => best!.path[position]).join("")).toBe("CTrL");
+    expect(best!.score).toBeGreaterThan(second!.score);
+  });
+
+  it("prefers word starts over letters inside words", () => {
+    const [best, second] = searchFiles(["src/fixtureFinder.ts", "src/ide/search/FindInFilesDialog.tsx"], "fif");
+    expect(best?.name).toBe("FindInFilesDialog.tsx");
+    expect(best!.score).toBeGreaterThan(second!.score);
+  });
+
+  it("ignores whitespace in the query", () => {
+    const paths = ["src/ide/search/FindInFilesDialog.tsx", "src/ide/search/file-search.utils.ts"];
+    const [match] = searchFiles(paths, "find files");
+    expect(match?.name).toBe("FindInFilesDialog.tsx");
+    expect(match!.positions.map((position) => match!.path[position]).join("")).toBe("FindFiles");
+    expect(searchFiles(paths, parseQuery("find files:12").text)[0]?.name).toBe("FindInFilesDialog.tsx");
+  });
+
+  it("boosts an exact name, a name without its extension and the exact case of a query with capitals", () => {
+    expect(searchFiles(["a/ward-edit.ts", "b/ward.ts"], "ward.ts")[0]?.path).toBe("b/ward.ts");
+    expect(searchFiles(["a/user-list.ts", "b/user.ts"], "user")[0]?.path).toBe("b/user.ts");
+    expect(searchFiles(["a/readme.md", "b/README.md"], "README")[0]?.path).toBe("b/README.md");
+  });
+
+  it("matches the part after the last slash in the name and the rest in the directories", () => {
+    const [match] = searchFiles(PATHS, "ide/pt");
+    expect(match?.path).toBe("src/ide/ProjectTree.tsx");
+    expect(match!.positions.map((position) => match!.path[position]).join("")).toBe("idePT");
+    expect(searchFiles(PATHS, "ide/")[0]?.path).toBe("src/ide/ProjectTree.tsx");
+    expect(searchFiles(PATHS, "readme/md")).toEqual([]);
+  });
+
   it("caps the result count", () => {
     expect(searchFiles(PATHS, "s", 2)).toHaveLength(2);
   });

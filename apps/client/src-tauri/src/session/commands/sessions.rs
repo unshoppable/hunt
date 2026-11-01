@@ -389,8 +389,9 @@ async fn end_session(
     if removal.is_ok() {
         delete_created_branch(&record).await;
     } else if record.worktree_path.exists() {
-        std::fs::remove_dir_all(&record.worktree_path)
-            .map_err(|error| format!("failed to remove the worktree {}: {error}", record.worktree_path.display()))?;
+        git::remove_dir_all_retrying(&record.worktree_path)
+            .await
+            .map_err(|error| format!("failed to remove the worktree: {error}"))?;
     }
     // Handoffs and retrievals leave snapshot refs behind, which keep their commits alive.
     if let Err(error) = git::delete_refs(&record.repo_path, &format!("refs/hunt/{id}/")).await {

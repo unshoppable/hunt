@@ -81,6 +81,8 @@ pub struct TextSearchResult {
     pub matches: Vec<TextMatch>,
     /// More lines matched than `matches` holds.
     pub is_truncated: bool,
+    /// A search issued after this one started, which stopped it: `matches` may miss lines and is no answer to show.
+    pub is_cancelled: bool,
 }
 
 /// The in-memory texts of every searched worktree.
@@ -152,8 +154,8 @@ impl FindRegistry {
 /// Searches the worktree for `query`; at most `MATCH_LIMIT` lines, in path and line order. `unsaved` holds the texts
 /// of the files with unsaved edits by path, which are searched instead of the content on disk. An empty query only
 /// brings the worktree's texts into memory, so the first real search is fast too. `issued_at` is when the caller
-/// asked (milliseconds since the epoch): a search stops and returns an empty result once one of the same worktree
-/// issued after it is in progress, whatever order the two arrive in.
+/// asked (milliseconds since the epoch): a search stops and returns a result marked `is_cancelled` once one of the
+/// same worktree issued after it is in progress, whatever order the two arrive in.
 pub async fn search(
     registry: &FindRegistry,
     worktree: &Path,
@@ -163,12 +165,15 @@ pub async fn search(
 ) -> Result<TextSearchResult, String> {
     let matcher = Matcher::new(query)?;
     let index = registry.index(worktree);
-    let running = RunningSearch::start(index.clone(), issued_at);
+    let running = Arc::new(RunningSearch::start(index.clone(), issued_at));
     let mut files = index.files.lock().await;
     if !running.is_current() {
-        return Ok(TextSearchResult::default());
+        return Ok(TextSearchResult { is_cancelled: true, ..TextSearchResult::default() });
     }
-    search_index(worktree, &index, &mut files, matcher, unsaved, Collect::Lines, move || running.is_current()).await
+    let current = running.clone();
+    let mut result = search_index(worktree, &index, &mut files, matcher, unsaved, Collect::Lines, move || current.is_current()).await?;
+    result.is_cancelled = !running.is_current();
+    Ok(result)
 }
 
 /// The worktree files containing `query`, in path order, all of them: a search that neither cancels nor is cancelled
@@ -817,9 +822,12 @@ mod tests {
 
         let later = registry.index(repo);
         let in_progress = RunningSearch::start(later, 2.0);
-        assert!(search(&registry, repo, &query("hit"), HashMap::new(), 1.0).await.unwrap().matches.is_empty());
+        let superseded = search(&registry, repo, &query("hit"), HashMap::new(), 1.0).await.unwrap();
+        assert!(superseded.is_cancelled && superseded.matches.is_empty());
         drop(in_progress);
-        assert_eq!(found(&search(&registry, repo, &query("hit"), HashMap::new(), 2.0).await.unwrap()), vec![("a.txt", 1, "hit")]);
+        let current = search(&registry, repo, &query("hit"), HashMap::new(), 2.0).await.unwrap();
+        assert_eq!(found(&current), vec![("a.txt", 1, "hit")]);
+        assert!(!current.is_cancelled);
         assert!(registry.index(repo).running.lock().unwrap().is_empty());
     }
 

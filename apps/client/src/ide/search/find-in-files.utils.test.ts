@@ -44,10 +44,10 @@ describe("splitRunsByRanges", () => {
 
 describe("matchSummary", () => {
   it("counts lines and files", () => {
-    expect(matchSummary({ matches: [match("a.ts", 1), match("a.ts", 4), match("b.ts", 2)], isTruncated: false })).toBe("3 matches in 2 files");
-    expect(matchSummary({ matches: [match("a.ts", 1)], isTruncated: false })).toBe("1 match in 1 file");
-    expect(matchSummary({ matches: [match("a.ts", 1)], isTruncated: true })).toBe("1+ matches in 1+ files");
-    expect(matchSummary({ matches: [], isTruncated: false })).toBe("No matches");
+    expect(matchSummary({ matches: [match("a.ts", 1), match("a.ts", 4), match("b.ts", 2)], isTruncated: false, isCancelled: false })).toBe("3 matches in 2 files");
+    expect(matchSummary({ matches: [match("a.ts", 1)], isTruncated: false, isCancelled: false })).toBe("1 match in 1 file");
+    expect(matchSummary({ matches: [match("a.ts", 1)], isTruncated: true, isCancelled: false })).toBe("1+ matches in 1+ files");
+    expect(matchSummary({ matches: [], isTruncated: false, isCancelled: false })).toBe("No matches");
   });
 });
 

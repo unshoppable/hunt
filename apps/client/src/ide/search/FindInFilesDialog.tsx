@@ -30,6 +30,7 @@ import { usePopupSize } from "../../ui/popup-size.hook";
 import { useViewportSize } from "../../ui/viewport-size.hook";
 import { abbreviateHome, FilePreview } from "./FileSearchDialog";
 import { matchSummary, replaceSummary, selectionQuery, splitRunsByRanges } from "./find-in-files.utils";
+import { fileLineRuns } from "./file-tokens.monaco";
 
 const MIN_SIZE = { width: 560, height: 280 };
 /** The largest share of the window's width and height the dialog may take. */
@@ -234,6 +235,8 @@ function FindInFilesView({
     () => commands.findInFiles(sessionId, searchQuery),
     {
       onValue: (value) => {
+        // A later search (this dialog's next keystroke or another window's) answers instead.
+        if (value.isCancelled) return;
         setError(null);
         setResult({ query: searchQuery, value });
       },
@@ -545,12 +548,15 @@ function OptionToggle({ label, isOn, onToggle, children }: { label: string; isOn
 }
 
 /**
- * The preview of `match` colored like the editor: with the grammar of its file, and with the roles its names have in the
- * whole file once `classification` is in. Plain while the grammar is not loaded.
+ * The preview of `match` colored like the editor: with the grammar of its file, from the tokens of the whole file once
+ * `classification` brings its text (else of the line alone), and with the roles its names have in the whole file.
+ * Plain while the grammar is not loaded.
  */
 function previewRuns(match: TextMatch, tokenizers: ReadonlySet<string>, classification: FileClassification | undefined): HighlightedLine {
   const language = monacoLanguage(match.path);
-  const runs = tokenizers.has(language) ? tokenizeCode(match.preview, language)?.[0] : undefined;
+  if (!tokenizers.has(language)) return [{ text: match.preview, style: PLAIN_STYLE }];
+  const fileRuns = classification ? fileLineRuns(classification.text, language, match.line, match.preview) : null;
+  const runs = fileRuns ?? tokenizeCode(match.preview, language)?.[0];
   return runs ? colorFileLine(runs, match.preview, match.line, classification) : [{ text: match.preview, style: PLAIN_STYLE }];
 }
 

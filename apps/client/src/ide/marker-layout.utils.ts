@@ -1,4 +1,5 @@
-import { rangeLength, type ChangeBlock } from "../editor/line-diff.utils";
+import type { ChangeBlock } from "../editor/line-diff.types";
+import { rangeLength } from "../editor/line-diff.utils";
 
 export type MarkerKind = "insert" | "modify" | "delete";
 

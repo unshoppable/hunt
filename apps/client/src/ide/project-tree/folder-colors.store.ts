@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { dirName } from "../../common/path/path.utils";
+import { dirName, renamedPath } from "../../common/path/path.utils";
 
 /** The colors a folder can be marked with in the project tree (WebStorm's file colors). */
 export type FolderColor = "yellow" | "green" | "blue" | "rose" | "violet" | "orange" | "gray";
@@ -28,6 +28,8 @@ type FolderColorState = {
   marksByRepo: Record<string, FolderMarks>;
   /** Marks `path` of the repository with `color`, or removes its mark with null. */
   setFolderColor: (repoPath: string, path: string, color: FolderColor | null) => void;
+  /** Moves the marks of the renamed folder `from` and of the folders below it along to `to`. */
+  renameFolder: (repoPath: string, from: string, to: string) => void;
 };
 
 /** Folder marks that survive restarts (persisted in localStorage under `hunt-folder-colors`). */
@@ -45,10 +47,22 @@ export const useFolderColorStore = create<FolderColorState>()(
           }
           return { marksByRepo: { ...state.marksByRepo, [repoPath]: marks } };
         }),
+      renameFolder: (repoPath, from, to) =>
+        set((state) => {
+          const marks = state.marksByRepo[repoPath];
+          if (!marks) return state;
+          return { marksByRepo: { ...state.marksByRepo, [repoPath]: renamedMarks(marks, from, to) } };
+        }),
     }),
     { name: "hunt-folder-colors", partialize: (state) => ({ marksByRepo: state.marksByRepo }) },
   ),
 );
+
+/** `marks` after the folder `from` was renamed to `to`: its mark and those of the folders below it move along; the same object when none did. */
+export function renamedMarks(marks: FolderMarks, from: string, to: string): FolderMarks {
+  if (!Object.keys(marks).some((path) => renamedPath(path, from, to) !== path)) return marks;
+  return Object.fromEntries(Object.entries(marks).map(([path, color]) => [renamedPath(path, from, to), color]));
+}
 
 /** The color `path` (a folder or file) shows: its own mark or that of the nearest marked ancestor; null when none is marked. */
 export function markedColor(marks: FolderMarks, path: string): FolderColor | null {

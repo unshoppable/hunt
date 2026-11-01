@@ -87,7 +87,7 @@ export type ChangelistScope = "own" | "downstream" | "all";
 export type PopupSize = { width: number; height: number };
 
 /** The floating popups and dialogs whose size the user may drag; each remembers its last size (see ui/popup-size.hook.ts). */
-export type PopupKey = "usages" | "fileSearch" | "findInFiles" | "subChat" | "screenshots" | "fileFilter" | "change" | "pushTarget" | "image" | "review" | "shelve" | "deleteSession" | "staleRemote" | "renameBranch" | "push" | "reset" | "rename" | "renamePreview";
+export type PopupKey = "usages" | "fileSearch" | "findInFiles" | "subChat" | "screenshots" | "fileFilter" | "change" | "pushTarget" | "image" | "review" | "shelve" | "deleteSession" | "staleRemote" | "renameBranch" | "push" | "reset" | "rename" | "renamePreview" | "renamePath" | "newFolder";
 
 /**
  * Size each popup opens with until the user resizes it. A popup that is as tall as its content treats the height as
@@ -128,6 +128,8 @@ export const DEFAULT_POPUP_SIZES: Record<PopupKey, PopupSize> = {
   push: { width: 380, height: 280 },
   rename: { width: 560, height: 320 },
   renamePreview: { width: 1100, height: 760 },
+  renamePath: { width: 560, height: 320 },
+  newFolder: { width: 460, height: 320 },
 };
 
 /** The work popups that can show in a native window of their own instead of inside their app window (see ui/detached-popup.hook.ts). */

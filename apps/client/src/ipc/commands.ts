@@ -253,7 +253,9 @@ export const commands = {
   revertFile: (id: string, path: string, comparison: Comparison = "diffBase") => invoke<void>("revert_file", { id, path, comparison }),
   /** Deletes a worktree file, or a folder with everything in it. */
   deletePath: (id: string, path: string) => invoke<void>("delete_path", { id, path }),
-  /** Moves a worktree file to a path nothing exists at yet, creating its folders. */
+  /** Creates a worktree folder nothing exists at yet, with its missing parents. */
+  createDir: (id: string, path: string) => invoke<void>("create_dir", { id, path }),
+  /** Moves a worktree file or folder to a path nothing exists at yet, creating its parent folders. */
   movePath: (id: string, from: string, to: string) => invoke<void>("move_path", { id, from, to }),
   shelveFiles: (id: string, paths: string[], name: string) => invoke<void>("shelve_files", { id, paths, name }),
   listShelves: (id: string) => invoke<Shelf[]>("list_shelves", { id }),

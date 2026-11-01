@@ -186,3 +186,17 @@ describe("PaneLayout", () => {
     expect(PaneLayout.fromStored({ rows: "none" })).toBe(PaneLayout.EMPTY);
   });
 });
+
+describe("PaneLayout.withTabsRenamed", () => {
+  it("renames the tabs in place, the active one included, and keeps the panes", () => {
+    const { layout, paneId } = twoTabs();
+    const renamed = layout.withTabsRenamed((path) => (path === "b.ts" ? "c/b.ts" : path));
+    expect(shape(renamed)).toEqual([[["a.ts", "c/b.ts"]]]);
+    expect(renamed.findPane(paneId)?.activePath).toBe("c/b.ts");
+  });
+
+  it("is the same layout when no tab changes", () => {
+    const { layout } = twoTabs();
+    expect(layout.withTabsRenamed((path) => path)).toBe(layout);
+  });
+});

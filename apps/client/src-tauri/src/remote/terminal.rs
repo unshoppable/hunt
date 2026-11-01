@@ -32,12 +32,12 @@ pub async fn list_windows(ssh: &Ssh) -> Result<Vec<TmuxWindow>, String> {
     Ok(tmux::parse_windows(&ssh.run(&as_agent(&["sh", "-c", &tmux::list_windows_script("tmux")])).await?))
 }
 
-/// Starts a login shell in a new window of the tmux session `app` on the VM, created when it does not exist, and returns
-/// the window's ID. The window is called `shell`, or `shell-<n>` when that name is taken; like every window there, it
-/// logs to `~/logs/<name>.log` (the VM's `/etc/tmux.conf`).
-pub async fn open_shell_window(ssh: &Ssh) -> Result<String, String> {
+/// Starts a login shell in the folder `folder` in a new window of the tmux session `app` on the VM, created when it does
+/// not exist, and returns the window's ID. The window is called `shell`, or `shell-<n>` when that name is taken; like
+/// every window there, it logs to `~/logs/<name>.log` (the VM's `/etc/tmux.conf`).
+pub async fn open_shell_window(ssh: &Ssh, folder: &str) -> Result<String, String> {
     let name = tmux::free_window_name(&list_windows(ssh).await?, "shell");
-    window_id_from(&run_script(ssh, &format!("{}echo \"$id\"", tmux::new_window_script("tmux", &name, None, None))).await?, "open a shell")
+    window_id_from(&run_script(ssh, &format!("{}echo \"$id\"", tmux::new_window_script("tmux", &name, Some(folder), None))).await?, "open a shell")
 }
 
 /// Runs the package.json script `script` through npm in the folder `folder` on the VM and returns the ID of its window.

@@ -146,6 +146,24 @@ export class PaneLayout extends ValueObject<typeof ZodPaneLayoutState> {
   }
 
   /**
+   * The layout with every tab path replaced by what `rename` returns for it, in place and keeping the active tab, as
+   * after a file or folder was renamed; this layout when `rename` changes no path.
+   */
+  withTabsRenamed(rename: (path: string) => string): PaneLayout {
+    let hasChanged = false;
+    const rows = this.rows.map((row) => ({
+      ...row,
+      panes: row.panes.map((pane) => {
+        const tabs = pane.tabs.map(rename);
+        if (tabs.every((tab, index) => tab === pane.tabs[index])) return pane;
+        hasChanged = true;
+        return { ...pane, tabs, activePath: rename(pane.activePath) };
+      }),
+    }));
+    return hasChanged ? new PaneLayout({ rows }) : this;
+  }
+
+  /**
    * Moves the active tab of `paneId` to the neighbouring pane in `direction`, like WebStorm's "Move Right/Left/Up/Down".
    * Without a neighbour a new pane is created there (a new column of the row for left/right, a new row for up/down);
    * an existing neighbour gets the file as an additional tab. The source pane closes when it has no tabs left.

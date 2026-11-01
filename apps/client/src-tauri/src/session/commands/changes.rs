@@ -120,9 +120,26 @@ pub async fn create_swf_skills(app: AppHandle, id: Uuid, skills: Vec<swf_skills:
     Ok(written)
 }
 
-/// Moves the file at `from` to `to` inside the session's worktree, creating `to`'s folders; both paths must be
-/// relative and must not leave the worktree, and nothing may exist at `to` yet. Both count as the session's own
-/// changes, like an edit by its agent.
+/// Creates the folder `path` inside the session's worktree, with its missing parents; `path` must be relative and
+/// must not leave the worktree, and nothing may exist at it yet. Git tracks no empty folder, so nothing counts as a
+/// change, but the worktree is noted as changed so that the project tree relists.
+#[tauri::command]
+pub async fn create_dir(app: AppHandle, id: Uuid, path: String) -> Result<(), String> {
+    link::ensure_writable(&app, id, &format!("create {path}"))?;
+    let (_, target) = session_file(&app, id, &path)?;
+    if path.is_empty() {
+        return Err("refusing to create the worktree itself".to_string());
+    }
+    if target.exists() {
+        return Err(format!("{path} already exists"));
+    }
+    std::fs::create_dir_all(&target).map_err(|error| format!("failed to create {path}: {error}"))?;
+    store::note_worktree_changed(&app, id)
+}
+
+/// Moves the file or folder at `from` to `to` inside the session's worktree, creating `to`'s parent folders; both
+/// paths must be relative and must not leave the worktree, and nothing may exist at `to` yet. The moved files count as
+/// the session's own changes at their old and at their new paths, like an edit by its agent.
 #[tauri::command]
 pub async fn move_path(app: AppHandle, id: Uuid, from: String, to: String) -> Result<(), String> {
     link::ensure_writable(&app, id, &format!("move {from}"))?;
@@ -137,8 +154,16 @@ pub async fn move_path(app: AppHandle, id: Uuid, from: String, to: String) -> Re
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
+    let mut moved = Vec::new();
+    if source.is_dir() {
+        collect_files_below(&source, &record.worktree_path, &mut moved);
+    } else {
+        moved.push(from.clone());
+    }
     std::fs::rename(&source, &target).map_err(|error| format!("failed to move {from} to {to}: {error}"))?;
-    store::add_touched_files(&app, id, &[from, to])?;
+    let mut touched = moved.clone();
+    touched.extend(moved.iter().map(|path| format!("{to}{}", &path[from.len()..])));
+    store::add_touched_files(&app, id, &touched)?;
     sync::note_local_change(&app, id);
     store::note_worktree_changed(&app, id)
 }

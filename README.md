@@ -408,7 +408,10 @@ at once; a reply whose thread is gone keeps a card of its own.
 
 The "Editor" tab is a small built-in IDE for the worktree: a lazily listed project tree
 (`apps/client/src-tauri/src/ide/workspace.rs`) and Monaco editor panes with tabs and a symbol breadcrumb
-(`apps/client/src/ide/`). A folder's context menu marks it with a color that tints it and everything below it, like
+(`apps/client/src/ide/`). A row's context menu creates a folder next to it (`create_dir`) and renames the file or folder with its
+usages (⇧F6, `apps/client/src/ide/project-tree/RenamePathDialog.tsx`): tsgo's `workspace/willRenameFiles` rewrites the import
+specifiers, the old path as text in every file is found like a rename's text occurrences, and after the move (`move_path`) the
+open tabs, the documents and the folder colors follow the new path. A folder's context menu marks it with a color that tints it and everything below it, like
 WebStorm's file colors; marks are kept per repository in `apps/client/src/ide/project-tree/folder-colors.store.ts`. Files live as
 `file://<worktree>/…` models. Like an IDE's editors, every window shares one document per file: the backend holds its
 text and saved state (`apps/client/src-tauri/src/ide/documents.rs`), each window's model is a replica
@@ -452,6 +455,7 @@ to other or additional keys, flags two commands that share one and keeps the cha
 | ⌘S | Save every file with unsaved edits, also those of closed tabs and other windows; also with the focus in the project tree, the changelist or the chat |
 | ⇧⌘G | Remove unused imports (tsgo), then format with the Prettier the worktree installs, its config and plugins included (`apps/client/scripts/prettier.mjs`); without Prettier with tsgo's formatter |
 | ⌘Ü | "Rename…" (also in the context menu): renames the symbol at the caret across the project through tsgo, asked at its declaration so imports follow; optionally also the name in comments and strings and in non-code files, which always opens the preview with a check box per occurrence; touched files without unsaved edits are saved (`apps/client/src/ide/language/RenameDialog.tsx`) |
+| ⇧F6 | "Rename…" in the project tree (also in the context menu): renames the selected file or folder with its usages; "New folder…" there creates a folder inside the selected one (unbound by default) |
 | ⌘P or double shift | "Go to File": fuzzy search over `git ls-files`; `name:12` jumps to line 12; the preview edits the file like an editor tab |
 | ⇧⌘F | "Find in Files": full-text search over the project files held in memory, a file with unsaved edits in its editor text (⌥C match case, ⌥W words, ⌥X regex, file mask); starts with the editor's selection; the preview edits the file like an editor tab |
 

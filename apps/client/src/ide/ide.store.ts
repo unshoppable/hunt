@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { editor } from "monaco-editor";
-import { isInsideFolder } from "../common/path/path.utils";
+import { isInsideFolder, renamedPath } from "../common/path/path.utils";
 import { PaneLayout, type Direction, type PaneLayoutChange } from "./pane-layout.value-object";
 
 /**
@@ -140,6 +140,8 @@ type IdeState = {
   closeTab: (sessionId: string, paneId: string, path: string) => void;
   /** Closes every tab of a deleted file, or of every file below a deleted folder. */
   closeTabsOf: (sessionId: string, deletedPath: string) => void;
+  /** Points the tabs and the navigation history of the renamed file or folder `from`, and of everything below it, at `to`. */
+  renamePaths: (sessionId: string, from: string, to: string) => void;
   /** Closes every tab of every pane (⇧⌘W). */
   closeAllTabs: (sessionId: string) => void;
   /** Returns to where the last navigation came from (the mouse's back button, ⌘[); `navigateForward` undoes that. */
@@ -198,6 +200,17 @@ export const useIdeStore = create<IdeState>((set, get) => {
 
     closeTabsOf: (sessionId, deletedPath) => {
       update(sessionId, (session) => withLayout(session, session.layout.withoutTabsWhere((path) => path === deletedPath || isInsideFolder(path, deletedPath))));
+    },
+
+    renamePaths: (sessionId, from, to) => {
+      const rename = (path: string) => renamedPath(path, from, to);
+      const renameLocation = <T extends { path: string }>(location: T): T => ({ ...location, path: rename(location.path) });
+      update(sessionId, (session) => ({
+        ...session,
+        layout: session.layout.withTabsRenamed(rename),
+        pendingPosition: session.pendingPosition ? renameLocation(session.pendingPosition) : null,
+        history: { back: session.history.back.map(renameLocation), forward: session.history.forward.map(renameLocation) },
+      }));
     },
 
     closeAllTabs: (sessionId) => {

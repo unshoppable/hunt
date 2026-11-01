@@ -121,6 +121,7 @@ command_handler![
     changes::read_file_history,
     changes::write_file,
     changes::create_swf_skills,
+    changes::create_dir,
     changes::move_path,
     changes::delete_path,
     changes::revert_file,

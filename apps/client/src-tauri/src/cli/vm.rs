@@ -6,6 +6,7 @@ use std::os::unix::process::CommandExt;
 use uuid::Uuid;
 
 use super::{RemoteSession, StderrProgress};
+use crate::remote::adoption::read_session_meta;
 use crate::remote::api::GatewayApi;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::terminal::{attach_args, open_shell_window};
@@ -42,12 +43,18 @@ pub async fn stop(session: &RemoteSession, force: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Opens a shell on the VM of `session`, started unless it runs: a new window `shell` (or `shell-<n>`) of the tmux
-/// session `app`, which Hunt's Terminal tab shows too, in a view of its own that ends with the terminal. Replaces this
-/// process with `ssh`, which takes over the terminal; returns only when `ssh` cannot run.
+/// Opens a shell in the session's worktree on the VM of `session`, started unless it runs: a new window `shell` (or
+/// `shell-<n>`) of the tmux session `app`, which Hunt's Terminal tab shows too, in a view of its own that ends with the
+/// terminal. Replaces this process with `ssh`, which takes over the terminal; returns only when `ssh` cannot run.
 pub async fn shell(session: &RemoteSession) -> Result<(), String> {
     let (ssh, target) = start_vm(session).await?;
-    let window = open_shell_window(&ssh).await?;
+    // An adopted session that never reached its VM has no worktree on record yet; the VM records it.
+    let worktree = if target.worktree_path.as_os_str().is_empty() {
+        read_session_meta(&ssh, session.record.id).await?.worktree
+    } else {
+        target.worktree_path.display().to_string()
+    };
+    let window = open_shell_window(&ssh, &worktree).await?;
     let args = attach_args(&target, &TerminalTarget::Window { id: window, machine: Machine::Vm }, Uuid::new_v4(), &ssh_dir()?).await?;
     let error = std::process::Command::new("ssh").args(&args).exec();
     Err(format!("failed to run ssh: {error}"))

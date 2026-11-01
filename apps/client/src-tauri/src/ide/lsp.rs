@@ -267,7 +267,9 @@ impl LspServer {
                 "workspace": {
                     "configuration": true,
                     "didChangeConfiguration": {},
-                    "didChangeWatchedFiles": { "dynamicRegistration": true, "relativePatternSupport": true }
+                    "didChangeWatchedFiles": { "dynamicRegistration": true, "relativePatternSupport": true },
+                    // Lets `workspace/willRenameFiles` ask for the import edits of a moved file or folder.
+                    "fileOperations": { "willRename": true }
                 },
                 "textDocument": {
                     "completion": {

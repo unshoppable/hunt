@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { markedColor, type FolderMarks } from "./folder-colors.store";
+import { markedColor, renamedMarks, type FolderMarks } from "./folder-colors.store";
 
 describe("markedColor", () => {
   const marks: FolderMarks = { "apps/med": "yellow", "apps/med/admin-ui/src": "blue", "apps/backend": "rose" };
@@ -19,5 +19,17 @@ describe("markedColor", () => {
     expect(markedColor(marks, "apps/medical")).toBeNull();
     expect(markedColor(marks, "")).toBeNull();
     expect(markedColor({}, "apps/med")).toBeNull();
+  });
+});
+
+describe("renamedMarks", () => {
+  const marks: FolderMarks = { "apps/med": "yellow", "apps/med/admin-ui/src": "blue", "apps/backend": "rose" };
+
+  it("moves the marks of the folder and of the folders below it", () => {
+    expect(renamedMarks(marks, "apps/med", "apps/medical")).toEqual({ "apps/medical": "yellow", "apps/medical/admin-ui/src": "blue", "apps/backend": "rose" });
+  });
+
+  it("is the same object when no mark lies in the folder", () => {
+    expect(renamedMarks(marks, "libs", "lib")).toBe(marks);
   });
 });

@@ -151,6 +151,8 @@ type RenamePreviewProps = {
   plan: RenamePlan;
   /** Why the preview opened although Refactor was pressed; null after Preview. */
   reason: string | null;
+  /** Renames the checked occurrences; `applyRename` of the symbol rename by default, a path rename moves the file too. */
+  apply?: (included: ReadonlySet<string>) => Promise<void>;
   onBack: () => void;
   onClose: () => void;
 };
@@ -159,7 +161,7 @@ type RenamePreviewProps = {
  * The rename preview (see `RenamePreviewView`) inside the app window or in a window of its own, as the user chose (see
  * detached-popup.hook.ts); either way the host renames the checked occurrences through `workspace` and closes once done.
  */
-function RenamePreview({ workspace, plan, reason, onBack, onClose }: RenamePreviewProps) {
+export function RenamePreview({ workspace, plan, reason, apply: applyChecked, onBack, onClose }: RenamePreviewProps) {
   const isDetached = useSettingsStore((state) => state.detachedPopups.renamePreview);
   const [isApplying, setIsApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -169,7 +171,7 @@ function RenamePreview({ workspace, plan, reason, onBack, onClose }: RenamePrevi
     setIsApplying(true);
     setError(null);
     try {
-      await applyRename(workspace, plan, included);
+      await (applyChecked ? applyChecked(included) : applyRename(workspace, plan, included));
       onClose();
     } catch (failure) {
       setError(errorText(failure));

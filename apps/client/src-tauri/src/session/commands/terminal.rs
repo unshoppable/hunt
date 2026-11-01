@@ -115,8 +115,8 @@ pub async fn terminal_windows(app: AppHandle, registry: State<'_, SessionRegistr
 }
 
 /// Starts a shell in a new tmux window of the session `id` and returns the window's ID: on the VM of a remote session,
-/// in the family's tmux server on this Mac for a local one. With `script` the window runs that package.json script of
-/// the worktree folder `directory`.
+/// in the family's tmux server on this Mac for a local one, in the worktree folder `directory`. With `script` the window
+/// runs that package.json script there.
 #[tauri::command]
 pub async fn open_shell_window(
     app: AppHandle,
@@ -135,11 +135,11 @@ pub async fn open_shell_window(
     }
     let target = running_remote(&app, &registry, id, "open a shell").await?;
     let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
-    let Some(script) = script else {
-        return remote::terminal::open_shell_window(&ssh).await;
-    };
     let folder = Path::new(&remote_worktree(&app, id, &target, &ssh).await?).join(directory.as_str()).display().to_string();
-    remote::terminal::open_script_window(&ssh, &folder, &script).await
+    match script {
+        Some(script) => remote::terminal::open_script_window(&ssh, &folder, &script).await,
+        None => remote::terminal::open_shell_window(&ssh, &folder).await,
+    }
 }
 
 /// Runs the package.json script of the ended script window `window_id` of the session `id` on `machine` again.

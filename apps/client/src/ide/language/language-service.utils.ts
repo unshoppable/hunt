@@ -1,8 +1,10 @@
 import * as monaco from "monaco-editor";
 import { commands } from "../../ipc/commands";
 import type { DocumentWorkspace } from "../documents/documents.service";
-import { lspClientForModel, lspClientForTemplate, type LspClient } from "../lsp/lsp-client.service";
+import { lspClientFor, lspClientForModel, lspClientForTemplate, type LspClient } from "../lsp/lsp-client.service";
+import { baseName } from "../../common/path/path.utils";
 import { monacoLanguage } from "../../editor/language-id.utils";
+import { pathMatches } from "./path-rename.utils";
 import { pathLiteralAt } from "../../editor/path-literal.utils";
 import { asLocationLinks, elementKindOf, hoverSignature, rangeContains, symbolsAt, toLspPosition, toLspRange, toMonacoRange, type CodeAction, type DocumentSymbol, type Hover, type Location, type LocationLink, type Position, type Range, type TextEdit, type WorkspaceEdit, type WorkspaceSymbol } from "../lsp/lsp-protocol.utils";
 import { documentEdits } from "./reformat.utils";
@@ -419,20 +421,7 @@ export async function planRename(workspace: DocumentWorkspace, model: monaco.edi
   ]);
 
   const texts = new Map<string, string>();
-  const occurrences: RenameOccurrence[] = [];
-  for (const [uri, edits] of mergeRenameEdits(editsByUri(edit), editsByUri(angularEdit))) {
-    const path = workspace.pathOf(monaco.Uri.parse(uri));
-    if (!path) throw new Error(`The rename would change ${monaco.Uri.parse(uri).fsPath}, which lies outside the worktree.`);
-    if (isPackagePath(path)) throw new Error(`The rename would change ${path}, which belongs to an installed package.`);
-    const text = await fileText(workspace, path);
-    const lines = text.split(/\r?\n/);
-    texts.set(path, text);
-    for (const lspEdit of edits) {
-      const range = toMonacoRange(lspEdit.range);
-      const occurrenceRange = { line: range.startLineNumber, column: range.startColumn, endLine: range.endLineNumber, endColumn: range.endColumn };
-      occurrences.push(occurrenceAt("code", path, occurrenceRange, lspEdit.newText, lines[range.startLineNumber - 1] ?? ""));
-    }
-  }
+  const occurrences = await serverOccurrences(workspace, mergeRenameEdits(editsByUri(edit), editsByUri(angularEdit)), texts);
 
   if (options.commentsAndStrings || options.textOccurrences) {
     for (const path of await filesMentioning(workspace, word)) {
@@ -479,6 +468,85 @@ export async function applyRename(workspace: DocumentWorkspace, plan: RenamePlan
     file.model.pushStackElement();
   }
   await Promise.all(files.filter((file) => !file.wasDirty).map((file) => workspace.save(file.path)));
+}
+
+/**
+ * The code occurrences of a language server's `edits` per document URI, with the text of each edited file put into
+ * `texts`. Rejects when an edit would change a file outside the worktree or in a package.
+ */
+async function serverOccurrences(workspace: DocumentWorkspace, edits: Map<string, TextEdit[]>, texts: Map<string, string>): Promise<RenameOccurrence[]> {
+  const occurrences: RenameOccurrence[] = [];
+  for (const [uri, uriEdits] of edits) {
+    const path = workspace.pathOf(monaco.Uri.parse(uri));
+    if (!path) throw new Error(`The rename would change ${monaco.Uri.parse(uri).fsPath}, which lies outside the worktree.`);
+    if (isPackagePath(path)) throw new Error(`The rename would change ${path}, which belongs to an installed package.`);
+    const text = await fileText(workspace, path);
+    const lines = text.split(/\r?\n/);
+    texts.set(path, text);
+    for (const lspEdit of uriEdits) {
+      const range = toMonacoRange(lspEdit.range);
+      const occurrenceRange = { line: range.startLineNumber, column: range.startColumn, endLine: range.endLineNumber, endColumn: range.endColumn };
+      occurrences.push(occurrenceAt("code", path, occurrenceRange, lspEdit.newText, lines[range.startLineNumber - 1] ?? ""));
+    }
+  }
+  return occurrences;
+}
+
+export type PathRenameOptions = { textOccurrences: boolean };
+
+/** More matching lines than Find in Files reports; the text occurrences of such a path cannot be listed. */
+const TOO_MANY_MENTIONS = "The path is mentioned on more than 500 lines. Rename without searching for text occurrences.";
+
+/**
+ * Everything renaming the worktree file or folder `from` to `to` changes in file contents: the import specifiers the
+ * TypeScript language server rewrites (`workspace/willRenameFiles`, asked before the move, so its edits name the old
+ * paths; the projects of the source files mentioning the name are loaded first) and, as `options` ask, the old
+ * path as text in every file of the worktree (documents, configs, comments and strings). The plan's `name` and
+ * `newName` are the two paths. Rejects when the server would edit a file outside the worktree or in a package.
+ */
+export async function planPathRename(workspace: DocumentWorkspace, from: string, to: string, options: PathRenameOptions): Promise<RenamePlan> {
+  const client = lspClientFor(workspace.sessionId, workspace.worktreePath);
+  const uriOf = (path: string) => monaco.Uri.file(`${workspace.worktreePath}/${path}`).toString();
+  await loadProjectsMentioning(client, baseName(from).replace(/\.[^.]+$/, "")).catch(() => {});
+  const edit = await client.request<WorkspaceEdit | null>("workspace/willRenameFiles", { files: [{ oldUri: uriOf(from), newUri: uriOf(to) }] }).catch((reason) => {
+    // Without the server (no tsgo) the rename still moves the file and changes the text occurrences.
+    if (String(reason).includes("tsgo not found")) return null;
+    throw new Error(serverErrorMessage(reason));
+  });
+
+  const texts = new Map<string, string>();
+  const occurrences = await serverOccurrences(workspace, editsByUri(edit), texts);
+
+  if (options.textOccurrences) {
+    for (const path of await filesMentioningPath(workspace, from)) {
+      const text = texts.get(path) ?? (await fileText(workspace, path).catch(() => null));
+      if (text === null) continue;
+      const lines = text.split(/\r?\n/);
+      const matches = pathMatches(lines, from);
+      if (!matches.length) continue;
+      texts.set(path, text);
+      for (const match of matches) {
+        occurrences.push(wordOccurrence(isSourceFile(path) ? "comment" : "text", path, lines, match, from, to));
+      }
+    }
+  }
+  return { name: from, newName: to, occurrences: mergeOccurrences(occurrences), texts };
+}
+
+/**
+ * Renames the file or folder of `plan`: applies its occurrences whose keys are `included` (see `applyRename`), then
+ * moves it. Files below the folder must have no unsaved edits, which the move would leave behind.
+ */
+export async function applyPathRename(workspace: DocumentWorkspace, plan: RenamePlan, included: ReadonlySet<string>): Promise<void> {
+  await applyRename(workspace, plan, included);
+  await commands.movePath(workspace.sessionId, plan.name, plan.newName);
+}
+
+/** Worktree files whose text on disk holds `path`, plus the files with unsaved edits, which may hold it only there. */
+async function filesMentioningPath(workspace: DocumentWorkspace, path: string): Promise<string[]> {
+  const found = await commands.findInFiles(workspace.sessionId, { text: path, matchCase: true, wholeWords: false, isRegex: false, fileMask: "" });
+  if (found.isTruncated) throw new Error(TOO_MANY_MENTIONS);
+  return [...new Set([...found.matches.map((match) => match.path), ...workspace.dirtyPaths()])].sort();
 }
 
 /** The shared text of `path` when it has unsaved edits or is loaded, otherwise the content on disk. */

@@ -8,7 +8,7 @@ import { STATUS_NAME_CLASS } from "../../ui/styles.constants";
 import { useHuntStore } from "../../sessions/hunt.store";
 import { AgentButton } from "../../ui/AgentButton";
 import { confirmDestructive } from "../../ui/confirm.utils";
-import { dirName, outermostPaths } from "../../common/path/path.utils";
+import { dirName, outermostPaths, renamedPath } from "../../common/path/path.utils";
 import { shortcutCommand } from "../../ui/shortcuts.utils";
 import { useShortcutLabel } from "../../ui/shortcut-label.hook";
 import { UnsavedDot } from "../../ui/UnsavedDot";
@@ -24,8 +24,16 @@ import { EMPTY_MARKS, FOLDER_COLORS, FOLDER_COLOR_NAMES, markedColor, useFolderC
 import { useIdeStore } from "../ide.store";
 import { selectionChatsFor } from "../selection/selection-chats.utils";
 import { useBusyChatIds, useUnseenChatIds } from "../selection/selection-chats.hook";
+import { NewFolderDialog } from "./NewFolderDialog";
+import { RenamePathDialog } from "./RenamePathDialog";
 
 type Row = { path: string; name: string; isDir: boolean; depth: number };
+
+/** The dialog open over the tree: a new folder inside `parent` (`""` is the worktree), or the rename of a row. */
+type TreeDialog = { type: "newFolder"; parent: string } | { type: "rename"; path: string; isDir: boolean };
+
+/** The shortcuts the tree takes while it has the focus; the rest navigate it. */
+const TREE_COMMANDS = ["changes.copyPath", "editor.deleteInTree", "editor.renameInTree", "editor.newFolderInTree"] as const;
 
 /** The file or folder row whose agent button was clicked. */
 export type ProjectTreeTarget = { path: string; isFolder: boolean };
@@ -63,8 +71,9 @@ function deleteQuestion(entries: readonly Pick<Row, "path" | "isDir">[]): string
  * The project view: a lazily listed tree of the worktree with WebStorm's file icons, changelist colors and
  * file colors (a folder marked through its context menu tints itself and everything below it; the marks are
  * kept per repository, see folder-colors.store.ts). A click selects a row, ⇧-click every row from the last clicked one to it,
- * ⌘-click adds or removes a row. The context menu also copies the absolute paths of the selected rows (⌃⇧C) and
- * deletes them (⌘⌫), closing their tabs. The selection changes on click, with the arrow keys and on `revealRequest`
+ * ⌘-click adds or removes a row. The context menu also copies the absolute paths of the selected rows (⌃⇧C), creates a
+ * folder inside the row's folder, renames the row with its usages (⇧F6, see RenamePathDialog.tsx: its tabs, documents
+ * and folder colors follow) and deletes the selected rows (⌘⌫), closing their tabs. The selection changes on click, with the arrow keys and on `revealRequest`
  * (⇧⌘2), never when the editor's active tab changes; Enter opens the selected file. `refreshVersion` relists every
  * open directory. Every file and folder row has an agent button that opens a sub chat about the whole file or folder; it
  * shows on hover, or always once such a chat exists, also one opened from the changelist.
@@ -101,17 +110,22 @@ export function ProjectTree({
   const [error, setError] = useState<string | null>(null);
   const [scrollTarget, setScrollTarget] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [dialog, setDialog] = useState<TreeDialog | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const marks = useFolderColorStore((state) => state.marksByRepo[repoPath] ?? EMPTY_MARKS);
   const setFolderColor = useFolderColorStore((state) => state.setFolderColor);
+  const renameFolderMarks = useFolderColorStore((state) => state.renameFolder);
   const isLocked = useHuntStore((state) => isWorktreeLocked(state.sessions, state.remoteLinks, sessionId));
   const noteWorktreeChanged = useHuntStore((state) => state.noteWorktreeChanged);
   const sessions = useHuntStore((state) => state.sessions);
   const busyChatIds = useBusyChatIds();
   const unseenChatIds = useUnseenChatIds();
   const closeTabsOf = useIdeStore((state) => state.closeTabsOf);
+  const renamePaths = useIdeStore((state) => state.renamePaths);
   const copyPathShortcut = useShortcutLabel("changes.copyPath");
   const deleteShortcut = useShortcutLabel("editor.deleteInTree");
+  const renameShortcut = useShortcutLabel("editor.renameInTree");
+  const newFolderShortcut = useShortcutLabel("editor.newFolderInTree");
 
   useDismiss(contextMenuRef, () => setContextMenu(null), { closeOnWindowBlur: true, isEnabled: !!contextMenu });
 
@@ -220,7 +234,10 @@ export function ProjectTree({
     { isEnabled: !!revealRequest },
   );
 
-  /** A click selects the row and opens it (a folder toggles), ⇧-click selects the range up to it, ⌘-click adds or removes it. */
+  /**
+   * A click selects the row and opens it (a collapsed folder expands, an expanded one stays open — only its chevron
+   * collapses it), ⇧-click selects the range up to it, ⌘-click adds or removes it.
+   */
   const clickRow = (event: MouseEvent, row: Pick<Row, "path" | "isDir">) => {
     if (event.shiftKey) {
       setSelection(extendSelection(selection, rowKeys, row.path));
@@ -229,7 +246,9 @@ export function ProjectTree({
     } else {
       selectOnly(row.path);
       if (row.isDir) {
-        toggle(row.path);
+        if (!expanded.has(row.path)) {
+          toggle(row.path);
+        }
       } else {
         onOpen(row.path);
       }
@@ -289,6 +308,61 @@ export function ProjectTree({
     noteWorktreeChanged(sessionId);
   };
 
+  /** Opens the dialog for a new folder inside the folder `path`, or inside the folder of the file `path`. */
+  const openNewFolder = (path: string) => {
+    setContextMenu(null);
+    if (isLocked) {
+      setError(WORKTREE_LOCKED_MESSAGE);
+      return;
+    }
+    const isDir = !path || (rows.find((row) => row.path === path)?.isDir ?? false);
+    setDialog({ type: "newFolder", parent: isDir ? path : dirName(path) });
+  };
+
+  /** Opens the rename dialog for the row `path`; the project row cannot be renamed. */
+  const openRename = (path: string) => {
+    setContextMenu(null);
+    if (!path) return;
+    if (isLocked) {
+      setError(WORKTREE_LOCKED_MESSAGE);
+      return;
+    }
+    setDialog({ type: "rename", path, isDir: rows.find((row) => row.path === path)?.isDir ?? false });
+  };
+
+  /** Shows the new folder `path`: its ancestors are relisted and expanded, and it is selected. */
+  const folderCreated = async (path: string) => {
+    const folders = parentPaths(path);
+    try {
+      for (const folder of folders) {
+        await list(folder);
+      }
+    } catch (reason) {
+      setError(errorText(reason));
+    }
+    setExpanded((current) => new Set([...current, ...folders]));
+    selectOnly(path);
+    setScrollTarget(path);
+    noteWorktreeChanged(sessionId);
+  };
+
+  /**
+   * Follows the rename of `from` to `to`: the tree keeps its listings and expansion under the new path, the documents of
+   * the old path are dropped (their tabs show the new path), the folder colors move along, and the renamed row is selected.
+   */
+  const pathRenamed = (from: string, to: string) => {
+    const rename = (path: string) => renamedPath(path, from, to);
+    setListings((current) => Object.fromEntries(Object.entries(current).map(([path, entries]) => [rename(path), entries])));
+    setExpanded((current) => new Set([...current].map(rename)));
+    workspace.discardDeleted(from);
+    renamePaths(sessionId, from, to);
+    renameFolderMarks(repoPath, from, to);
+    list(dirName(to)).catch((reason) => setError(errorText(reason)));
+    selectOnly(to);
+    setScrollTarget(to);
+    noteWorktreeChanged(sessionId);
+  };
+
   useEffect(() => {
     if (!scrollTarget) return;
     const row = listRef.current?.querySelector<HTMLElement>(`[data-tree-key="${CSS.escape(scrollTarget)}"]`);
@@ -304,16 +378,22 @@ export function ProjectTree({
       <ul
         {...nav.listProps}
         onKeyDown={(event) => {
-          const command = selectedPaths.length ? shortcutCommand(event, ["changes.copyPath", "editor.deleteInTree"]) : null;
-          if (!command) {
+          const command = shortcutCommand(event, TREE_COMMANDS);
+          if (!command || (!selectedPaths.length && command !== "editor.newFolderInTree")) {
             nav.listProps.onKeyDown(event);
             return;
           }
           event.preventDefault();
           if (command === "changes.copyPath") {
             copyPaths(selectedPaths);
-          } else {
+          } else if (command === "editor.deleteInTree") {
             void deletePaths(selectedPaths);
+          } else if (command === "editor.renameInTree") {
+            if (selectedPaths.length === 1) {
+              openRename(selectedPaths[0]);
+            }
+          } else {
+            openNewFolder(selectedPaths.length === 1 ? selectedPaths[0] : "");
           }
         }}
         className="min-h-0 flex-1 overflow-auto py-1 outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size)"
@@ -330,6 +410,7 @@ export function ProjectTree({
           status={undefined}
           color={null}
           onClick={(event) => clickRow(event, { path: "", isDir: true })}
+          onToggle={() => toggle("")}
           onContextMenu={(event) => openContextMenu(event, { path: "", name: projectName, isDir: true })}
         />
         {rows.map((row) => (
@@ -345,6 +426,7 @@ export function ProjectTree({
             isAgentBusy={agentChats.get(row.path)?.isBusy ?? false}
             hasUnseenAgentReply={agentChats.get(row.path)?.hasUnseenReply ?? false}
             onClick={(event) => clickRow(event, row)}
+            onToggle={row.isDir ? () => toggle(row.path) : undefined}
             onContextMenu={(event) => openContextMenu(event, row)}
             onAskAgent={(button) => onAskAgent({ path: row.path, isFolder: row.isDir }, button)}
           />
@@ -372,6 +454,35 @@ export function ProjectTree({
             {contextMenu.paths.length > 1 ? "Copy paths" : "Copy path"}
             {copyPathShortcut ? <span className="text-neutral-500">{copyPathShortcut}</span> : null}
           </button>
+          {contextMenu.paths.length === 1 ? (
+            <>
+              <div role="separator" className="my-1 border-t border-(--line)" />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => openNewFolder(contextMenu.path)}
+                aria-disabled={isLocked}
+                title={isLocked ? WORKTREE_LOCKED_MESSAGE : undefined}
+                className={`flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left text-neutral-200 hover:bg-(--row-hover) ${isLocked ? "opacity-40" : ""}`}
+              >
+                New folder…
+                {newFolderShortcut ? <span className="text-neutral-500">{newFolderShortcut}</span> : null}
+              </button>
+              {contextMenu.path ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => openRename(contextMenu.path)}
+                  aria-disabled={isLocked}
+                  title={isLocked ? WORKTREE_LOCKED_MESSAGE : undefined}
+                  className={`flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left text-neutral-200 hover:bg-(--row-hover) ${isLocked ? "opacity-40" : ""}`}
+                >
+                  Rename…
+                  {renameShortcut ? <span className="text-neutral-500">{renameShortcut}</span> : null}
+                </button>
+              ) : null}
+            </>
+          ) : null}
           {contextMenu.isDir && contextMenu.path && contextMenu.paths.length === 1 ? (
             <>
               <div role="separator" className="my-1 border-t border-(--line)" />
@@ -413,6 +524,8 @@ export function ProjectTree({
           ) : null}
         </div>
       ) : null}
+      {dialog?.type === "newFolder" ? <NewFolderDialog sessionId={sessionId} parent={dialog.parent} onClose={() => setDialog(null)} onCreated={(path) => void folderCreated(path)} /> : null}
+      {dialog?.type === "rename" ? <RenamePathDialog workspace={workspace} path={dialog.path} isDir={dialog.isDir} onClose={() => setDialog(null)} onRenamed={pathRenamed} /> : null}
     </div>
   );
 }
@@ -436,6 +549,7 @@ function TreeRow({
   isAgentBusy = false,
   hasUnseenAgentReply = false,
   onClick,
+  onToggle,
   onContextMenu,
   onAskAgent,
 }: Row & {
@@ -448,6 +562,8 @@ function TreeRow({
   isAgentBusy?: boolean;
   hasUnseenAgentReply?: boolean;
   onClick: (event: MouseEvent) => void;
+  /** A click on the chevron of a folder — the only click that collapses it. */
+  onToggle?: () => void;
   onContextMenu?: (event: MouseEvent) => void;
   onAskAgent?: (button: HTMLElement) => void;
 }) {
@@ -465,7 +581,17 @@ function TreeRow({
       className="tree-row group flex cursor-pointer items-center gap-[5px] pr-2.5 outline-none select-none"
       style={{ paddingLeft: `calc(10px + ${depth} * var(--changelist-indent))`, backgroundColor: color ? FOLDER_COLORS[color].background : undefined }}
     >
-      {isDir ? <ChevronIcon expanded={isExpanded} /> : <span className="size-4 shrink-0" />}
+      {isDir ? (
+        <ChevronIcon
+          expanded={isExpanded}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggle?.();
+          }}
+        />
+      ) : (
+        <span className="size-4 shrink-0" />
+      )}
       <img src={!isDir ? fileIconUrl(path) : path ? folderIconUrl(path, isExpanded) : rootFolderIconUrl(isExpanded)} alt="" className="size-[17px] shrink-0" />
       <span className={`truncate ${isDir ? "text-neutral-300" : (STATUS_NAME_CLASS[status ?? ""] ?? "text-neutral-200")}`}>{name}</span>
       {isUnsaved ? <UnsavedDot /> : null}
@@ -488,11 +614,12 @@ function TreeRow({
   );
 }
 
-function ChevronIcon({ expanded }: { expanded: boolean }) {
+function ChevronIcon({ expanded, onClick }: { expanded: boolean; onClick: (event: MouseEvent) => void }) {
   return (
     <svg
       viewBox="0 0 16 16"
-      className={`size-4 shrink-0 text-neutral-500 transition-transform ${expanded ? "rotate-90" : ""}`}
+      onClick={onClick}
+      className={`size-4 shrink-0 text-neutral-500 transition-transform hover:text-neutral-300 ${expanded ? "rotate-90" : ""}`}
       fill="none"
       stroke="currentColor"
       strokeWidth="1.8"

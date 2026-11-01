@@ -1,3 +1,9 @@
+## 0.33.4 (2026-11-01)
+
+### 🚀 Features
+
+- **swf:** severity-scored findings and repository-owned workflow settings in hunt.json ([34ccbb6](https://github.com/unshoppable/hunt/commit/34ccbb6))
+
 ## 0.33.3 (2026-11-01)
 
 ### 🚀 Features

@@ -1,3 +1,9 @@
+## 0.137.0 (2026-11-01)
+
+### 🚀 Features
+
+- **client:** let the agent run the checks of the Checks tab through hunt-client ([dab24f0](https://github.com/unshoppable/hunt/commit/dab24f0))
+
 ## 0.136.2 (2026-11-01)
 
 ### 🚀 Features

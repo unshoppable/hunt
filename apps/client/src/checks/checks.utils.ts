@@ -1,4 +1,4 @@
-import type { CheckDefinition, CheckRun, ChecksStatus } from "./checks.types";
+import type { CheckDefinition, CheckRun, CheckState, ChecksStatus } from "./checks.types";
 import type { Description } from "../preview/preview-services.utils";
 
 /** A check of the worktree's hunt.json with its last run, if any, and whether that run started on another state of the worktree. */
@@ -12,6 +12,37 @@ export function checkRows(status: ChecksStatus | null): CheckRow[] {
     run: status.runs.find((run) => run.name === definition.name) ?? null,
     isOutdated: status.outdated.includes(definition.name),
   }));
+}
+
+/** A check as `hunt-client checks` reports it to the agent; `output` is the end of a failed run's output. */
+export type CheckReport = CheckDefinition &
+  Pick<CheckRun, "exitCode" | "error"> & {
+    state: CheckState | "notRun";
+    startedAt: string | null;
+    finishedAt: string | null;
+    isOutdated: boolean;
+    output?: string;
+  };
+
+/** The checks of a session as `hunt-client checks` reports them; `problem` says why hunt.json declares none. */
+export type ChecksReport = { problem: string | null; checks: CheckReport[] };
+
+/** What `status` tells the agent, with the outputs of the failed checks by name cut by `failureExcerpt`. */
+export function checksReport(status: ChecksStatus, outputs: Record<string, string>): ChecksReport {
+  const checks = checkRows(status).map(({ definition, run, isOutdated }) => {
+    const output = outputs[definition.name];
+    return {
+      ...definition,
+      state: run?.state ?? ("notRun" as const),
+      exitCode: run?.exitCode ?? null,
+      startedAt: run?.startedAt ?? null,
+      finishedAt: run?.finishedAt ?? null,
+      error: run?.error ?? null,
+      isOutdated,
+      ...(output === undefined ? {} : { output: failureExcerpt(output) }),
+    };
+  });
+  return { problem: status.problem, checks };
 }
 
 /** `milliseconds` as a short duration: `0.4s`, `12s`, `2m 05s`. */

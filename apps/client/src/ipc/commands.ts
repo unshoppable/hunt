@@ -233,8 +233,8 @@ export const commands = {
   setSessionConfigOption: (id: string, configId: string, value: string) =>
     invoke<void>("set_session_config_option", { id, configId, value }),
   answerPermission: (requestId: string, optionId: string) => invoke<void>("answer_permission", { requestId, optionId }),
-  /** Answers the `control:command` `requestId` (see control/control-commands.hook.ts): `null` once it ran, else why it did not. */
-  answerControlCommand: (requestId: string, error: string | null) => invoke<void>("answer_control_command", { requestId, error }),
+  /** Answers the `control:command` `requestId` (see control/control-commands.hook.ts): `error` is why it did not run, `result` what it returned. */
+  answerControlCommand: (requestId: string, error: string | null, result: unknown) => invoke<void>("answer_control_command", { requestId, error, result }),
   listChangedFiles: (id: string, comparison: Comparison = "diffBase") => invoke<ChangedFileView[]>("list_changed_files", { id, comparison }),
   /** Added and removed line counts of every uncommitted change, sorted by path. */
   changeStats: (id: string) => invoke<ChangeStat[]>("change_stats", { id }),

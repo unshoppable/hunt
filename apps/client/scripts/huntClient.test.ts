@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { parseCommandLine, replyOutcome } from "./huntClient.mjs";
+import { isAnyCheckRunning, parseCommandLine, replyOutcome, reportOfCheck } from "./huntClient.mjs";
 
 const CLIENT = fileURLToPath(new URL("./huntClient.mjs", import.meta.url));
 const SESSION_ID = "6f0c2a52-0b55-4c4e-9d0e-2f8b1f3c7a10";
@@ -40,11 +40,15 @@ afterEach(async () => {
   rmSync(folder, { recursive: true, force: true });
 });
 
-/** Starts Hunt's fake control socket, which answers each request line with `reply`, or closes without one for `null`. */
-function startControl(reply: string | null): Promise<void> {
+/**
+ * Starts Hunt's fake control socket, which answers each request line with `reply`, or closes without one for `null`;
+ * an array answers the requests in its order and repeats its last line.
+ */
+function startControl(replies: string | null | string[]): Promise<void> {
   const server = createServer((connection) => {
     createInterface({ input: connection }).once("line", (line) => {
       requests.push(JSON.parse(line) as Message);
+      const reply = Array.isArray(replies) ? replies[Math.min(requests.length, replies.length) - 1] : replies;
       if (reply === null) {
         connection.end();
       } else {
@@ -89,6 +93,9 @@ describe("parseCommandLine", () => {
       [["open", "settings", "--page", "updates"], { name: "openSettings", page: "updates" }],
       [["open", "guardrails"], { name: "openGuardrails" }],
       [["open", "browser"], { name: "openBrowser" }],
+      [["checks"], { name: "checks" }],
+      [["checks", "run", "--no-wait"], { name: "runChecks" }],
+      [["checks", "run", "lint", "--no-wait"], { name: "runChecks", check: "lint" }],
     ];
     for (const [argv, command] of cases) {
       expect(commandOf(argv), argv.join(" ")).toStrictEqual({ kind: "command", command, session: undefined });
@@ -193,7 +200,32 @@ describe("parseCommandLine", () => {
   });
 });
 
+describe("checks run", () => {
+  it("waits for the checks unless --no-wait", () => {
+    expect(commandOf(["checks", "run"])).toStrictEqual({ kind: "command", command: { name: "runChecks" }, session: undefined, waitsForChecks: true });
+    expect(commandOf(["checks", "run", "lint"])).toStrictEqual({ kind: "command", command: { name: "runChecks", check: "lint" }, session: undefined, waitsForChecks: true });
+  });
+
+  it("takes one check at most and only checks run takes --no-wait", () => {
+    expect(commandOf(["checks", "run", "lint", "test"])).toMatchObject({ kind: "usageError", message: "unexpected argument test" });
+    expect(commandOf(["checks", "--no-wait"])).toMatchObject({ kind: "usageError", message: "checks takes no --no-wait" });
+  });
+
+  it("follows the check it started, or all of them", () => {
+    const report = { problem: null, checks: [{ name: "lint", state: "failed" }, { name: "test", state: "running" }] };
+    expect(isAnyCheckRunning(report)).toBe(true);
+    expect(isAnyCheckRunning(reportOfCheck(report, "lint"))).toBe(false);
+    expect(reportOfCheck(report, "lint").checks).toStrictEqual([{ name: "lint", state: "failed" }]);
+    expect(reportOfCheck(report, undefined)).toBe(report);
+  });
+});
+
 describe("replyOutcome", () => {
+  it("prints the result of a command, a string as it is and anything else as JSON", () => {
+    expect(replyOutcome('{"ok":true,"result":"done"}')).toStrictEqual({ exitCode: 0, stdout: "done\n", stderr: "" });
+    expect(replyOutcome('{"ok":true,"result":{"checks":[]}}')).toStrictEqual({ exitCode: 0, stdout: '{\n  "checks": []\n}\n', stderr: "" });
+  });
+
   it("exits with 0 and prints nothing when Hunt answered ok, and with 1 and the reason otherwise", () => {
     expect(replyOutcome('{"ok":true}')).toStrictEqual({ exitCode: 0, stdout: "", stderr: "" });
     expect(replyOutcome('{"error":"failed to open the file: it is outside the worktree"}')).toStrictEqual({
@@ -207,6 +239,25 @@ describe("replyOutcome", () => {
 });
 
 describe("huntClient.mjs", () => {
+  it("checks run asks for the checks until the one it started ended and prints how it ended", async () => {
+    const report = (state: string) => JSON.stringify({ ok: true, result: { problem: null, checks: [{ name: "lint", state }, { name: "test", state: "running" }] } });
+    await startControl([JSON.stringify({ ok: true }), report("running"), report("failed")]);
+
+    const run = await runClient(["checks", "run", "lint"]);
+
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(run.stdout)).toStrictEqual({ problem: null, checks: [{ name: "lint", state: "failed" }] });
+    expect(requests.map((request) => request.command)).toStrictEqual([{ name: "runChecks", check: "lint" }, { name: "checks" }, { name: "checks" }]);
+  });
+
+  it("checks run --no-wait returns once Hunt started the checks, and a check Hunt cannot start exits with 1", async () => {
+    await startControl([JSON.stringify({ ok: true }), JSON.stringify({ error: "failed to run the check lint: it runs already" })]);
+
+    expect(await runClient(["checks", "run", "--no-wait"])).toMatchObject({ exitCode: 0, stdout: "" });
+    expect(await runClient(["checks", "run", "lint"])).toMatchObject({ exitCode: 1, stderr: "hunt-client: failed to run the check lint: it runs already\n" });
+    expect(requests).toHaveLength(2);
+  });
+
   it("sends the command of the agent's session to Hunt with paths resolved in the working directory, and exits with 0 without output", async () => {
     await startControl(JSON.stringify({ ok: true }));
 

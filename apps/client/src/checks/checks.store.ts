@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { fillPrompt } from "../../../../libs/domain/src/shared/prompts.utils.ts";
 import checkFailedPrompt from "../../prompts/checks/check-failed.user-prompt.md?raw";
 import checksSetupPrompt from "../../prompts/checks/checks-setup.user-prompt.md?raw";
-import { failureExcerpt } from "./checks.utils";
+import { checkRows, checksReport, failureExcerpt, type ChecksReport } from "./checks.utils";
 import { commands } from "../ipc/commands";
 import type { ChecksStatus } from "./checks.types";
 import { errorText } from "../ui/error-text.utils";
@@ -21,6 +21,10 @@ type ChecksState = {
   runAll: (id: string) => void;
   cancel: (id: string, name: string) => void;
   cancelAll: (id: string) => void;
+  /** Starts the check `name`, or every check, for the agent and rejects with what went wrong; the session's Checks tab and its dot show the runs. */
+  start: (id: string, name?: string) => Promise<void>;
+  /** The checks of the session for the agent, a failed one with the end of its output. */
+  readReport: (id: string) => Promise<ChecksReport>;
   /** Sends the agent the failed check `name` with the end of its output. */
   sendFailure: (id: string, name: string) => Promise<void>;
   /** Asks the agent to declare the repository's checks in hunt.json. */
@@ -30,7 +34,7 @@ type ChecksState = {
 /** Bumped per session by every read of its checks, so that only the latest one lands. */
 const statusReads = new Map<string, number>();
 
-/** The checks of every session the Checks tab showed (see checks/ChecksPanel.tsx); `checks:changed` refreshes them. */
+/** The checks of every session the Checks tab showed (see checks/ChecksPanel.tsx) or the agent ran; `checks:changed` refreshes them. */
 export const useChecksStore = create<ChecksState>((set, get) => {
   function update(id: string, change: (checks: SessionChecks) => SessionChecks) {
     set((state) => ({ checks: { ...state.checks, [id]: change(state.checks[id] ?? EMPTY_CHECKS) } }));
@@ -71,6 +75,25 @@ export const useChecksStore = create<ChecksState>((set, get) => {
     runAll: (id) => void report(id, () => commands.runAllChecks(id)),
     cancel: (id, name) => void report(id, () => commands.cancelCheck(id, name)),
     cancelAll: (id) => void report(id, () => commands.cancelAllChecks(id)),
+
+    start: async (id, name) => {
+      // `checks:changed` refreshes only the sessions this store knows, and the Checks tab may never have shown this one.
+      await get().refresh(id);
+      await (name === undefined ? commands.runAllChecks(id) : commands.runCheck(id, name));
+    },
+
+    readReport: async (id) => {
+      const status = await commands.checksStatus(id);
+      const failed = checkRows(status).filter((row) => row.run?.state === "failed");
+      const outputs = await Promise.all(
+        failed.map(async ({ definition: { name } }) => {
+          // A closed window must not cost the agent the report of the other checks.
+          const output = await commands.checkOutput(id, name).catch((reason) => `failed to read the output: ${errorText(reason)}`);
+          return [name, output ?? ""] as const;
+        }),
+      );
+      return checksReport(status, Object.fromEntries(outputs));
+    },
 
     sendFailure: (id, name) =>
       report(id, async () => {

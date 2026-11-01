@@ -1,12 +1,15 @@
-// The command line through which the agents that Hunt starts on this Mac show the user something in Hunt's UI. An
+// The command line through which the agents that Hunt starts on this Mac show the user something in Hunt's UI and run
+// the checks of its Checks tab. An
 // agent runs it from its Bash tool as `hunt-client <command>`: `.hunt/hunt-client`, a sh wrapper Hunt writes, runs
 // `node huntClient.mjs "$@"`. Hunt sets HUNT_CONTROL_SOCKET (the path of its control socket) and HUNT_SESSION_ID (the
 // agent's Hunt session) on the agent's process; `--session <id>` replaces the latter. Each call connects to the socket,
 // sends one line `{"type":"ui","session":"<session id>","command":<command>}` of at most MAX_REQUEST_LINE_BYTES and
-// reads one line back, `{"ok":true}` or `{"error":"<message>"}`; Hunt's frontend validates the command. Paths are
+// reads one line back, `{"ok":true}`, with `"result"` for a command that has one, or `{"error":"<message>"}`; Hunt's
+// frontend validates the command. `checks run` then asks for `checks` every CHECK_POLL_MS until the checks ended. Paths are
 // resolved against the working directory, so Hunt gets them absolute; `open file --match` reads the file itself to find
 // the line it sends. `hunt-client --help` lists the commands. It
-// prints nothing and exits with 0 when Hunt answered ok; it exits with 1 when Hunt answered an error or is not reachable
+// prints the result, a string as it is and anything else as JSON, and exits with 0 when Hunt answered ok, also when a
+// check failed; it exits with 1 when Hunt answered an error or is not reachable
 // (a variable is missing, nothing listens on the socket, or no answer came within ANSWER_TIMEOUT_MS), with the reason
 // on stderr, and with 2 on a usage error, with the help of the command on stderr. The tests import the exported
 // functions; only running the file as the entry point runs `main`.
@@ -14,10 +17,13 @@ import { readFileSync, realpathSync } from "node:fs";
 import { connect } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs } from "node:util";
 
 /** How long Hunt may take to answer; its main window answers a UI command within 15 s. */
 const ANSWER_TIMEOUT_MS = 20_000;
+/** How often `checks run` asks whether the checks it started ended. */
+const CHECK_POLL_MS = 2000;
 /** The longest request line Hunt's control socket reads, its newline included. */
 const MAX_REQUEST_LINE_BYTES = 4096;
 /** Why a missing variable means hunt-client cannot reach Hunt. */
@@ -39,13 +45,16 @@ const OPTIONS = {
   column: { type: "string", placeholder: "<n>", description: "put the cursor on column <n>, counting from 1" },
   window: { type: "boolean", description: "open the file in an editor window of its own instead" },
   page: { type: "string", placeholder: "<page>", description: `open the settings on <page>: ${SETTINGS_PAGES.join(", ")}` },
+  "no-wait": { type: "boolean", description: "return once the checks started instead of when they ended" },
 };
 /** The options every command takes. */
 const COMMON_OPTIONS = ["session", "help"];
 
 /**
- * The commands: the words that name one, its operands, the options it takes besides COMMON_OPTIONS, what it shows the
- * user, and `toCommand(operands, options, workingDirectory)`, which builds the command object Hunt's frontend runs.
+ * The commands: the words that name one, its operands (in brackets when optional), the options it takes besides
+ * COMMON_OPTIONS, what it does for the user, `toCommand(operands, options, workingDirectory)`, which builds the command
+ * object Hunt's frontend runs, and whether it waits for the checks it started. `findCommand` takes the first command
+ * whose words fit, so a command stands before one whose words begin it.
  */
 const COMMANDS = [
   {
@@ -97,6 +106,21 @@ const COMMANDS = [
     summary: "open the session's browser, the Chrome window that the browser tools drive",
     toCommand: () => ({ name: "openBrowser" }),
   },
+  {
+    words: ["checks", "run"],
+    operands: ["[<name>]"],
+    options: ["no-wait"],
+    summary: "run the check <name> of hunt.json, or all of them, in the Checks tab, wait until they ended and print how they ended",
+    toCommand: ([check]) => (check === undefined ? { name: "runChecks" } : { name: "runChecks", check }),
+    waitsForChecks: true,
+  },
+  {
+    words: ["checks"],
+    operands: [],
+    options: [],
+    summary: "print the checks of hunt.json with their last runs, a failed one with the end of its output",
+    toCommand: () => ({ name: "checks" }),
+  },
 ];
 
 /** An error in the arguments, reported with exit code 2 and the help of the command it concerns. */
@@ -106,7 +130,8 @@ class UsageError extends Error {}
  * Reads the arguments `argv` of hunt-client (without node and the script): `{ kind: "help", text }` with the help to
  * print, `{ kind: "usageError", message, help }` with the help of the command the error concerns, or
  * `{ kind: "command", command, session }` with the command object for Hunt and the value of `--session` (`undefined`
- * without one). Relative paths resolve against `workingDirectory`.
+ * without one), plus `waitsForChecks: true` when hunt-client waits for the checks the command starts. Relative paths
+ * resolve against `workingDirectory`.
  */
 export function parseCommandLine(argv, workingDirectory) {
   const loose = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true, strict: false });
@@ -117,7 +142,8 @@ export function parseCommandLine(argv, workingDirectory) {
     const { values, positionals } = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true });
     if (!command) throw new UsageError(unknownCommandMessage(positionals));
     if (values.session === "") throw new UsageError("--session needs the ID of a Hunt session");
-    return { kind: "command", command: commandObject(command, values, positionals.slice(command.words.length), workingDirectory), session: values.session };
+    const parsed = { kind: "command", command: commandObject(command, values, positionals.slice(command.words.length), workingDirectory), session: values.session };
+    return command.waitsForChecks && !values["no-wait"] ? { ...parsed, waitsForChecks: true } : parsed;
   } catch (error) {
     if (!(error instanceof UsageError) && !error?.code?.startsWith("ERR_PARSE_ARGS_")) throw error;
     return { kind: "usageError", message: error.message, help };
@@ -132,9 +158,25 @@ export function replyOutcome(line) {
   } catch {
     return failure(1, `Hunt answered ${line}`);
   }
-  if (reply?.ok === true) return { exitCode: 0, stdout: "", stderr: "" };
+  if (reply?.ok === true) return { exitCode: 0, stdout: resultText(reply.result), stderr: "" };
   if (typeof reply?.error === "string") return failure(1, reply.error);
   return failure(1, `Hunt answered ${line}`);
+}
+
+/** What hunt-client prints for the result of a command: nothing without one, a string as it is, anything else as JSON. */
+function resultText(result) {
+  if (result === undefined || result === null) return "";
+  return typeof result === "string" ? `${result}\n` : `${JSON.stringify(result, null, 2)}\n`;
+}
+
+/** The report `report` of `hunt-client checks` cut to the check `name`, or whole without a name. */
+export function reportOfCheck(report, name) {
+  return name === undefined ? report : { ...report, checks: report.checks.filter((check) => check.name === name) };
+}
+
+/** Whether a check of the report `report` still runs. */
+export function isAnyCheckRunning(report) {
+  return report.checks.some((check) => check.state === "running");
 }
 
 /** Runs hunt-client with `argv` in `environment` and `workingDirectory`; resolves to `{ exitCode, stdout, stderr }`. */
@@ -149,13 +191,25 @@ async function run(argv, environment, workingDirectory) {
   const line = JSON.stringify({ type: "ui", session, command: parsed.command });
   const lineBytes = Buffer.byteLength(line) + 1;
   if (lineBytes > MAX_REQUEST_LINE_BYTES) return failure(2, `the request has ${lineBytes} bytes, more than the ${MAX_REQUEST_LINE_BYTES} Hunt reads`);
-  let reply;
   try {
-    reply = await exchange(socketPath, line);
+    const outcome = replyOutcome(await exchange(socketPath, line));
+    if (outcome.exitCode !== 0 || !parsed.waitsForChecks) return outcome;
+    return await waitForChecks(() => exchange(socketPath, JSON.stringify({ type: "ui", session, command: { name: "checks" } })), parsed.command.check);
   } catch (error) {
     return failure(1, `Hunt does not run or did not answer (HUNT_CONTROL_SOCKET=${socketPath}): ${error.message}`);
   }
-  return replyOutcome(reply);
+}
+
+/** Asks for the checks with `askForChecks` until the check `name`, or every check without a name, ended; resolves to the outcome that prints how they ended. */
+async function waitForChecks(askForChecks, name) {
+  for (;;) {
+    const line = await askForChecks();
+    const outcome = replyOutcome(line);
+    if (outcome.exitCode !== 0) return outcome;
+    const report = reportOfCheck(JSON.parse(line).result, name);
+    if (!isAnyCheckRunning(report)) return { ...outcome, stdout: resultText(report) };
+    await sleep(CHECK_POLL_MS);
+  }
 }
 
 /** Sends `line` to Hunt's control socket at `socketPath`; resolves to the line Hunt answers, without its newline. */
@@ -194,7 +248,8 @@ function commandObject(command, options, operands, workingDirectory) {
   for (const option of Object.keys(options)) {
     if (!COMMON_OPTIONS.includes(option) && !command.options.includes(option)) throw new UsageError(`${name} takes no --${option}`);
   }
-  if (operands.length < command.operands.length || operands.some((operand) => !operand)) throw new UsageError(`${name} needs ${command.operands.join(" ")}`);
+  const required = command.operands.filter((operand) => !operand.startsWith("["));
+  if (operands.length < required.length || operands.some((operand) => !operand)) throw new UsageError(`${name} needs ${(required.length ? required : command.operands).join(" ")}`);
   if (operands.length > command.operands.length) throw new UsageError(`unexpected argument ${operands[command.operands.length]}`);
   return command.toCommand(operands, options, workingDirectory);
 }
@@ -271,7 +326,7 @@ function overviewHelp() {
   return [
     "usage: hunt-client [--session <id>] <command> [<arguments>]",
     "",
-    "Shows the user something in Hunt, the app that started this agent. Prints nothing when it worked.",
+    "Shows the user something in Hunt, the app that started this agent, and runs the checks of its Checks tab. Prints nothing when it worked, except for the result of a checks command.",
     "",
     "Commands:",
     ...listing(commandRows, OVERVIEW_COLUMN),
@@ -280,7 +335,7 @@ function overviewHelp() {
     ...listing(COMMON_OPTIONS.map(optionRow), OVERVIEW_COLUMN),
     "",
     "`hunt-client <command> --help` describes a command. Paths are relative to the working directory.",
-    "Exit codes: 0 done, 1 Hunt answered an error or is not reachable, 2 usage error.",
+    "Exit codes: 0 done, also when a check failed, 1 Hunt answered an error or is not reachable, 2 usage error.",
     "",
   ].join("\n");
 }

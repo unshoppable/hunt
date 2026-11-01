@@ -64,12 +64,13 @@ fn remove_stale_sockets(dir: &Path) -> std::io::Result<()> {
 }
 
 /// Serves the control socket at `socket_path`, which only this user may use: a client sends one `ControlRequest` line
-/// and gets `{"ok":true}` once `carry_out` carried it out, or `{"error":"…"}`. Sockets left by earlier runs are removed.
+/// and gets `{"ok":true}` once `carry_out` carried it out, with `"result"` when that returned anything but null, or
+/// `{"error":"…"}`. Sockets left by earlier runs are removed.
 /// Returns only when it cannot listen.
 pub async fn serve<CarryOut, CarryOutFuture>(socket_path: PathBuf, carry_out: CarryOut) -> Result<(), String>
 where
     CarryOut: Fn(ControlRequest) -> CarryOutFuture + Clone + Send + Sync + 'static,
-    CarryOutFuture: Future<Output = Result<(), String>> + Send,
+    CarryOutFuture: Future<Output = Result<Value, String>> + Send,
 {
     let failed = |error: std::io::Error| format!("failed to listen on {}: {error}", socket_path.display());
     let path_length = socket_path.as_os_str().len();
@@ -101,7 +102,7 @@ where
 async fn answer<CarryOut, CarryOutFuture>(stream: UnixStream, carry_out: CarryOut) -> Result<(), String>
 where
     CarryOut: Fn(ControlRequest) -> CarryOutFuture,
-    CarryOutFuture: Future<Output = Result<(), String>>,
+    CarryOutFuture: Future<Output = Result<Value, String>>,
 {
     let (reader, mut writer) = stream.into_split();
     let mut line = String::new();
@@ -122,9 +123,10 @@ fn parse_request(line: &str) -> Result<ControlRequest, String> {
 }
 
 /// The answer line to a request that ended with `result`.
-fn reply(result: &Result<(), String>) -> String {
+fn reply(result: &Result<Value, String>) -> String {
     let reply = match result {
-        Ok(()) => json!({ "ok": true }),
+        Ok(Value::Null) => json!({ "ok": true }),
+        Ok(result) => json!({ "ok": true, "result": result }),
         Err(error) => json!({ "error": error }),
     };
     format!("{reply}\n")
@@ -165,7 +167,8 @@ mod tests {
         assert!(parse_request(&format!("{{\"type\":\"ui\",\"session\":\"{session}\"}}")).is_err());
         assert!(parse_request(&format!("{{\"open\":\"{session}\"}}")).is_err());
         assert!(parse_request("").is_err());
-        assert_eq!(reply(&Ok(())), "{\"ok\":true}\n");
+        assert_eq!(reply(&Ok(Value::Null)), "{\"ok\":true}\n");
+        assert_eq!(reply(&Ok(json!({ "checks": [] }))), "{\"ok\":true,\"result\":{\"checks\":[]}}\n");
         assert_eq!(reply(&Err("no \"session\"".into())), "{\"error\":\"no \\\"session\\\"\"}\n");
     }
 
@@ -176,7 +179,7 @@ mod tests {
         let known = Uuid::new_v4();
         let server = tokio::spawn(serve(socket_path.clone(), move |request| async move {
             match request {
-                ControlRequest::OpenBrowser { session } if session == known => Ok(()),
+                ControlRequest::OpenBrowser { session } if session == known => Ok(Value::Null),
                 ControlRequest::OpenBrowser { session } => Err(format!("failed to open the browser: the session {session} is not stored")),
                 ControlRequest::Ui { command, .. } => Err(format!("ran {command}")),
             }
@@ -208,7 +211,7 @@ mod tests {
     #[tokio::test]
     async fn the_socket_refuses_a_path_macos_cannot_bind() {
         let long_path = PathBuf::from(format!("/tmp/{}/control.sock", "x".repeat(100)));
-        let error = serve(long_path, |_| async { Ok(()) }).await.unwrap_err();
+        let error = serve(long_path, |_| async { Ok(Value::Null) }).await.unwrap_err();
         assert!(error.contains("more than the 103 macOS allows for a socket"), "{error}");
     }
 

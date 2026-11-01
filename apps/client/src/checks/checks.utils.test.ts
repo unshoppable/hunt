@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CheckRun, ChecksStatus } from "./checks.types";
-import { checkRows, describeCheck, describeChecks, failureExcerpt, formatDuration, isAnyCheckRunning, type CheckRow } from "./checks.utils";
+import { checkRows, checksReport, describeCheck, describeChecks, failureExcerpt, formatDuration, isAnyCheckRunning, type CheckRow } from "./checks.utils";
 
 const START = "2026-10-24T10:00:00.000Z";
 const START_TIME = Date.parse(START);
@@ -12,6 +12,48 @@ function run(name: string, patch: Partial<CheckRun> = {}): CheckRun {
 function row(patch: Partial<CheckRow> = {}): CheckRow {
   return { definition: { name: "lint", command: "npm run lint", cwd: null }, run: run("lint"), isOutdated: false, ...patch };
 }
+
+describe("checksReport", () => {
+  it("reports every check of hunt.json with its last run, and the end of a failed one's output", () => {
+    const status: ChecksStatus = {
+      definitions: [
+        { name: "build", command: "vite build", cwd: null },
+        { name: "lint", command: "eslint .", cwd: "apps/web" },
+        { name: "test", command: "vitest", cwd: null },
+      ],
+      problem: null,
+      runs: [run("lint", { state: "failed", exitCode: 2 }), run("test", { state: "running", finishedAt: null, exitCode: null }), run("gone")],
+      outdated: ["lint"],
+    };
+
+    expect(checksReport(status, { lint: "\x1b[31mbroken\x1b[0m\n\n" })).toStrictEqual({
+      problem: null,
+      checks: [
+        { name: "build", command: "vite build", cwd: null, state: "notRun", exitCode: null, startedAt: null, finishedAt: null, error: null, isOutdated: false },
+        {
+          name: "lint",
+          command: "eslint .",
+          cwd: "apps/web",
+          state: "failed",
+          exitCode: 2,
+          startedAt: START,
+          finishedAt: "2026-10-24T10:00:12.000Z",
+          error: null,
+          isOutdated: true,
+          output: "broken",
+        },
+        { name: "test", command: "vitest", cwd: null, state: "running", exitCode: null, startedAt: START, finishedAt: null, error: null, isOutdated: false },
+      ],
+    });
+  });
+
+  it("reports why hunt.json declares no checks", () => {
+    expect(checksReport({ definitions: [], problem: "failed to read hunt.json", runs: [], outdated: [] }, {})).toStrictEqual({
+      problem: "failed to read hunt.json",
+      checks: [],
+    });
+  });
+});
 
 describe("checkRows", () => {
   it("lists the checks in the order of hunt.json with their last runs", () => {

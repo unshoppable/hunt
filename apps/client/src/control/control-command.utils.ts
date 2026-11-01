@@ -27,6 +27,7 @@ const POSITION_RULE = "must be a positive integer";
 const WINDOW_RULE = "must be true or false";
 const TAB_RULE = `must be one of ${Object.values(RIGHT_TABS).join(", ")}`;
 const PAGE_RULE = 'must be "updates"';
+const CHECK_RULE = "must be the name of a check";
 const MISSING_TAB_RULE = "preview and desktop need a session on a VM, pullRequest a pull request review, factory a session of the swf poller";
 const NO_LOCAL_WORKTREE = "the session has no local worktree";
 
@@ -49,6 +50,8 @@ const ZodControlCommand = z.discriminatedUnion(
     z.strictObject({ name: z.literal("openSettings"), page: z.optional(z.literal("updates", PAGE_RULE)) }),
     z.strictObject({ name: z.literal("openGuardrails") }),
     z.strictObject({ name: z.literal("openBrowser") }),
+    z.strictObject({ name: z.literal("checks") }),
+    z.strictObject({ name: z.literal("runChecks"), check: z.optional(z.string(CHECK_RULE)) }),
   ],
   COMMAND_RULE,
 );
@@ -56,7 +59,8 @@ const ZodControlCommand = z.discriminatedUnion(
 /**
  * What a `hunt-client` call asks of the UI for its session: `show` it in the main window and bring that to the front,
  * switch its inspector to `tab`, open a file in its Editor tab (or with `window` in its editor window), open the diff
- * of a file, the settings, its guardrails or its Chrome. Paths are absolute.
+ * of a file, the settings, its guardrails or its Chrome, report its checks, or run one check or all of them as the
+ * Checks tab does. Paths are absolute.
  */
 export type ControlCommand = z.infer<typeof ZodControlCommand>;
 

@@ -4,6 +4,7 @@ import { openDiffWindow } from "../diff/diff-window.utils";
 import { openGuardrailsWindow } from "../guardrails/guardrails-window.utils";
 import { openInEditorWindow } from "../ide/editor-window.utils";
 import { useIdeStore } from "../ide/ide.store";
+import { useChecksStore } from "../checks/checks.store";
 import { commands } from "../ipc/commands";
 import { listenTo } from "../ipc/events";
 import { useHuntStore } from "../sessions/hunt.store";
@@ -25,19 +26,20 @@ export function useControlCommands(): void {
   }, []);
 }
 
-/** Runs the command of `event` and answers it: with null once it ran, else with the reason it did not. */
+/** Runs the command of `event` and answers it: with what it returned once it ran, else with the reason it did not. */
 async function runAndAnswer({ requestId, sessionId, command }: ControlCommandEvent): Promise<void> {
   let error: string | null = null;
+  let result: unknown;
   try {
-    await runControlCommand(sessionId, command);
+    result = await runControlCommand(sessionId, command);
   } catch (reason) {
     error = reason instanceof Error ? reason.message : String(reason);
   }
-  await commands.answerControlCommand(requestId, error).catch((reason) => console.error(`failed to answer the control command ${requestId}: ${reason}`));
+  await commands.answerControlCommand(requestId, error, result).catch((reason) => console.error(`failed to answer the control command ${requestId}: ${reason}`));
 }
 
-/** Checks `value` as a command of the session `sessionId` and runs it; throws an Error with the reason when it cannot. */
-async function runControlCommand(sessionId: string, value: unknown): Promise<void> {
+/** Checks `value` as a command of the session `sessionId` and runs it, returning its result if it has one; throws an Error with the reason when it cannot. */
+async function runControlCommand(sessionId: string, value: unknown): Promise<unknown> {
   const session = useHuntStore.getState().sessions.find((candidate) => candidate.id === sessionId);
   if (!session) throw new Error(`unknown session ${sessionId}`);
   const command = parseControlCommand(value);
@@ -81,5 +83,9 @@ async function runControlCommand(sessionId: string, value: unknown): Promise<voi
       // The command itself, not the store's `openBrowser`, which reports a failure into the chat instead of rejecting.
       await commands.browserOpen(sessionId);
       return;
+    case "checks":
+      return useChecksStore.getState().readReport(sessionId);
+    case "runChecks":
+      return useChecksStore.getState().start(sessionId, command.check);
   }
 }

@@ -26,23 +26,23 @@ const MAIN_WINDOW: &str = "main";
 /// debug build.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The commands handed to the main window that wait for its answer: `None` when it ran the command, else the error.
+/// The commands handed to the main window that wait for its answer: the command's result, null without one, or the error.
 #[derive(Default)]
-pub struct ControlRegistry(Mutex<HashMap<Uuid, oneshot::Sender<Option<String>>>>);
+pub struct ControlRegistry(Mutex<HashMap<Uuid, oneshot::Sender<Result<Value, String>>>>);
 
 impl ControlRegistry {
     /// Registers a command waiting for its answer; returns its request ID and the receiver of the answer.
-    fn register(&self) -> (Uuid, oneshot::Receiver<Option<String>>) {
+    fn register(&self) -> (Uuid, oneshot::Receiver<Result<Value, String>>) {
         let request_id = Uuid::new_v4();
         let (answer, answer_receiver) = oneshot::channel();
         self.0.lock().unwrap().insert(request_id, answer);
         (request_id, answer_receiver)
     }
 
-    /// Hands the answer `error` (`None` when the command ran) to the command `request_id`.
-    fn answer(&self, request_id: Uuid, error: Option<String>) -> Result<(), String> {
+    /// Hands the answer `outcome` to the command `request_id`.
+    fn answer(&self, request_id: Uuid, outcome: Result<Value, String>) -> Result<(), String> {
         let answer = self.0.lock().unwrap().remove(&request_id).ok_or("failed to answer the command: it is no longer pending")?;
-        answer.send(error).map_err(|_| "failed to answer the command: the control socket stopped waiting".to_string())
+        answer.send(outcome).map_err(|_| "failed to answer the command: the control socket stopped waiting".to_string())
     }
 
     /// Forgets the command `request_id`, which gets no answer any more.
@@ -51,10 +51,9 @@ impl ControlRegistry {
     }
 
     /// Waits up to `timeout` for the answer `answer_receiver` of the command `request_id`; an unanswered one is forgotten.
-    async fn wait(&self, request_id: Uuid, answer_receiver: oneshot::Receiver<Option<String>>, timeout: Duration) -> Result<(), String> {
+    async fn wait(&self, request_id: Uuid, answer_receiver: oneshot::Receiver<Result<Value, String>>, timeout: Duration) -> Result<Value, String> {
         match tokio::time::timeout(timeout, answer_receiver).await {
-            Ok(Ok(None)) => Ok(()),
-            Ok(Ok(Some(error))) => Err(error),
+            Ok(Ok(outcome)) => outcome,
             Ok(Err(_)) => Err("failed to run the command: Hunt's main window dropped it".into()),
             Err(_) => {
                 self.forget(request_id);
@@ -74,15 +73,15 @@ struct ControlCommandEvent {
 }
 
 /// Carries out the control socket's `request`.
-pub async fn carry_out(app: &AppHandle, request: ControlRequest) -> Result<(), String> {
+pub async fn carry_out(app: &AppHandle, request: ControlRequest) -> Result<Value, String> {
     match request {
-        ControlRequest::OpenBrowser { session } => open_browser(app, session, false).await,
+        ControlRequest::OpenBrowser { session } => open_browser(app, session, false).await.map(|()| Value::Null),
         ControlRequest::Ui { session, command } => run_in_main_window(app, session, command).await,
     }
 }
 
-/// Hands `command` for the session `session_id` to the main window and waits for its answer.
-async fn run_in_main_window(app: &AppHandle, session_id: Uuid, command: Value) -> Result<(), String> {
+/// Hands `command` for the session `session_id` to the main window and waits for its answer, the command's result.
+async fn run_in_main_window(app: &AppHandle, session_id: Uuid, command: Value) -> Result<Value, String> {
     let controls = app.state::<ControlRegistry>();
     let (request_id, answer_receiver) = controls.register();
     let event = ControlCommandEvent { request_id, session_id, command };
@@ -93,11 +92,11 @@ async fn run_in_main_window(app: &AppHandle, session_id: Uuid, command: Value) -
     controls.wait(request_id, answer_receiver, ANSWER_TIMEOUT).await
 }
 
-/// The main window's answer to the command `request_id`: `None` when it ran, else the error the `hunt-client` call
-/// prints.
+/// The main window's answer to the command `request_id`: the error the `hunt-client` call prints, or without one the
+/// result it prints, if any.
 #[tauri::command]
-pub fn answer_control_command(controls: State<'_, ControlRegistry>, request_id: Uuid, error: Option<String>) -> Result<(), String> {
-    controls.answer(request_id, error)
+pub fn answer_control_command(controls: State<'_, ControlRegistry>, request_id: Uuid, error: Option<String>, result: Option<Value>) -> Result<(), String> {
+    controls.answer(request_id, error.map_or_else(|| Ok(result.unwrap_or(Value::Null)), Err))
 }
 
 /// Writes the worktree's `.hunt/hunt-client` for an agent on this Mac, which runs the bundled `hunt-client` script with
@@ -116,13 +115,17 @@ mod tests {
     async fn a_command_ends_with_the_answer_of_the_main_window() {
         let controls = ControlRegistry::default();
         let (done_id, done_receiver) = controls.register();
-        controls.answer(done_id, None).unwrap();
-        assert_eq!(controls.wait(done_id, done_receiver, ANSWER_TIMEOUT).await, Ok(()));
+        controls.answer(done_id, Ok(Value::Null)).unwrap();
+        assert_eq!(controls.wait(done_id, done_receiver, ANSWER_TIMEOUT).await, Ok(Value::Null));
+
+        let (result_id, result_receiver) = controls.register();
+        controls.answer(result_id, Ok(Value::from("report"))).unwrap();
+        assert_eq!(controls.wait(result_id, result_receiver, ANSWER_TIMEOUT).await, Ok(Value::from("report")));
 
         let (failed_id, failed_receiver) = controls.register();
-        controls.answer(failed_id, Some("failed to open the file: it is outside the worktree".into())).unwrap();
+        controls.answer(failed_id, Err("failed to open the file: it is outside the worktree".into())).unwrap();
         assert_eq!(controls.wait(failed_id, failed_receiver, ANSWER_TIMEOUT).await, Err("failed to open the file: it is outside the worktree".into()));
-        assert!(controls.answer(failed_id, None).unwrap_err().contains("no longer pending"));
+        assert!(controls.answer(failed_id, Ok(Value::Null)).unwrap_err().contains("no longer pending"));
     }
 
     #[tokio::test]
@@ -132,6 +135,6 @@ mod tests {
         let error = controls.wait(request_id, answer_receiver, Duration::from_millis(10)).await.unwrap_err();
         assert!(error.contains("did not answer"), "{error}");
         assert!(controls.0.lock().unwrap().is_empty());
-        assert!(controls.answer(request_id, None).is_err());
+        assert!(controls.answer(request_id, Ok(Value::Null)).is_err());
     }
 }

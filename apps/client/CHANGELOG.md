@@ -1,3 +1,9 @@
+## 0.138.1 (2026-11-01)
+
+### 🔥 Performance
+
+- **client:** diff lines in Rust, share one changelist run and one watcher per worktree, rank Go to File by best match ([8f46140](https://github.com/unshoppable/hunt/commit/8f46140))
+
 ## 0.138.0 (2026-11-01)
 
 ### 🚀 Features

@@ -65,8 +65,8 @@ const LIST_TOGGLE = `${SECONDARY_BUTTON_XS} aria-pressed:border-white/15 aria-pr
  * anything was asked. With the preselected repository the first prompt creates the session, which is listed and shown
  * at once, and is sent as soon as the agent runs with the chosen model, effort and mode. A top-level session gets a
  * worktree from the chosen base branch, or works in the repository's own checkout on the branch it is on; choosing a base
- * branch starts the worktree session off it right away, without a prompt, while choosing a branch for the checkout only
- * checks it out there (a remote one as the local branch of its name). The branch menu's "New branch" names a
+ * branch starts the worktree session off it right away, without a prompt, and choosing a branch for the checkout checks
+ * it out there (a remote one as the local branch of its name) and starts the session the same way. The branch menu's "New branch" names a
  * branch the session creates instead, off the base in a worktree or at the checkout's own
  * branch, and keeps as its own. A sub session (`parentId` set) runs in the parent's worktree. After a failed creation the view comes back with `initialError` and
  * the unsent `initialPrompt`. The header's "PR review" and "Remote sessions" buttons replace the view's body with the
@@ -193,17 +193,24 @@ export function NewSessionView({
 
   /**
    * Checks `name` out in the repository's checkout, a remote branch (`origin/<name>`) as the local branch of its name,
-   * and lists the branches again so the menu shows the checkout's new branch. Git refuses while working changes would be
-   * overwritten or the branch is checked out in a worktree; the refusal shows as the view's error.
+   * and starts the session on it right away, as choosing a base branch starts a worktree session. Git refuses while
+   * working changes would be overwritten or the branch is checked out in a worktree; the refusal shows as the view's
+   * error and no session starts.
    */
-  async function checkoutBranch(name: string) {
-    try {
-      await commands.gitCheckout(repoPath, name, name.startsWith("origin/"));
-      const [names, current] = await Promise.all([commands.listBranches(repoPath), commands.currentBranch(repoPath)]);
-      showBranches(names, current);
-    } catch (reason) {
-      setError(`Could not check out ${name}: ${errorText(reason)}`);
+  async function startInCheckoutOn(name: string) {
+    let current = currentBranch;
+    if (name !== currentBranch) {
+      try {
+        await commands.gitCheckout(repoPath, name, name.startsWith("origin/"));
+        const [names, checkedOut] = await Promise.all([commands.listBranches(repoPath), commands.currentBranch(repoPath)]);
+        showBranches(names, checkedOut);
+        current = checkedOut;
+      } catch (reason) {
+        setError(`Could not check out ${name}: ${errorText(reason)}`);
+        return;
+      }
     }
+    startSession(null, plainTarget(current), null);
   }
 
   /** Where a session that reviews no pull request works: in the chosen workspace of the repository, off `ref`, on the new branch when one is named. */
@@ -328,11 +335,11 @@ export function NewSessionView({
 
   /** Where the new branch starts: off the chosen base in a worktree, at the checkout's own branch in the checkout. */
   const newBranchOrigin = isCheckout ? `off ${currentBranch || "the checkout's branch"} in the checkout` : `off ${baseRef || "the base branch"}`;
-  // Both workspaces list the branches and offer a new one beside the search field; for the checkout the listed one is
-  // the branch it is on, and choosing another checks it out there.
+  // Both workspaces list the branches and offer a new one beside the search field; for the checkout the selected one is
+  // the branch it is on, and choosing one checks it out there and starts the session.
   const branchOptions: DropdownOption[] = branches.map((name) => ({ id: name, name }));
   const branchTitle = isCheckout
-    ? "Branch the checkout is on; choosing another checks it out in the checkout, the session works on it as it is"
+    ? "Branch the checkout is on; choosing one checks it out in the checkout and starts the session on it as it is"
     : newBranch
       ? "Base branch the new branch is created from; choosing one starts the session"
       : "Base branch the worktree is created from; choosing one starts the session";
@@ -390,7 +397,7 @@ export function NewSessionView({
             options={branchOptions}
             onChange={(id) => {
               if (isCheckout) {
-                if (id !== currentBranch) void checkoutBranch(id);
+                void startInCheckoutOn(id);
               } else {
                 setBaseRef(id);
                 startSession(null, plainTarget(id), null);

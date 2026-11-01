@@ -1,3 +1,13 @@
+## 0.137.1 (2026-11-01)
+
+### 🚀 Features
+
+- **swf:** review the change before the pull request and let the repository's scorer decide on the human review ([342c4f8](https://github.com/unshoppable/hunt/commit/342c4f8))
+
+### 🩹 Fixes
+
+- **client:** keep Nx state out of the agent's environment and read checks through hunt-client ([03cdb4f](https://github.com/unshoppable/hunt/commit/03cdb4f))
+
 ## 0.137.0 (2026-11-01)
 
 ### 🚀 Features

@@ -1,3 +1,9 @@
+## 0.44.2 (2026-11-01)
+
+### 🚀 Features
+
+- **swf:** review the change before the pull request and let the repository's scorer decide on the human review ([342c4f8](https://github.com/unshoppable/hunt/commit/342c4f8))
+
 ## 0.44.1 (2026-11-01)
 
 ### 🚀 Features

@@ -1,3 +1,9 @@
+## 0.136.2 (2026-11-01)
+
+### 🚀 Features
+
+- **ide:** rename files and folders with their usages and create folders in the project tree ([79807a2](https://github.com/unshoppable/hunt/commit/79807a2))
+
 ## 0.136.1 (2026-11-01)
 
 ### 🚀 Features

@@ -1,3 +1,7 @@
+## 0.44.5 (2026-11-02)
+
+This was a version bump only for gateway to align it with other projects, there were no code changes.
+
 ## 0.44.4 (2026-11-01)
 
 ### 🚀 Features

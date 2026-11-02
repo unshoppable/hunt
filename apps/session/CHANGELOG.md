@@ -1,3 +1,9 @@
+## 0.33.5 (2026-11-02)
+
+### 🚀 Features
+
+- **client:** run the services of hunt.json in the Terminal tab and open browser tabs for its frontends ([38fdd52](https://github.com/unshoppable/hunt/commit/38fdd52))
+
 ## 0.33.4 (2026-11-01)
 
 ### 🚀 Features

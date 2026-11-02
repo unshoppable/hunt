@@ -1,3 +1,10 @@
+## 0.140.0 (2026-11-02)
+
+### 🚀 Features
+
+- **client:** reveal files and folders in the Finder from the project tree ([0046f2b](https://github.com/unshoppable/hunt/commit/0046f2b))
+- **client:** run the services of hunt.json in the Terminal tab and open browser tabs for its frontends ([38fdd52](https://github.com/unshoppable/hunt/commit/38fdd52))
+
 ## 0.139.1 (2026-11-01)
 
 ### 🚀 Features

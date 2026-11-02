@@ -1,3 +1,9 @@
+## 0.140.2 (2026-11-02)
+
+### 🚀 Features
+
+- **gateway:** create session VMs in the session zones of every region, on the subnet of the zone's region ([b001903](https://github.com/unshoppable/hunt/commit/b001903))
+
 ## 0.140.1 (2026-11-02)
 
 This was a version bump only for client to align it with other projects, there were no code changes.

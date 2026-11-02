@@ -136,7 +136,7 @@ function fakeCompute(vms: Instance[] = []) {
       inserted.push(request);
       insertedZones.push(zone);
       if (request.bootDisk && !snapshots.has(request.bootDisk.snapshot)) throw new Error(`failed to create ${request.name} in ${zone}: HTTP 404 no snapshot ${request.bootDisk.snapshot}`);
-      const error = insertErrors.get(zone);
+      const error = insertErrors.get(`${zone} ${request.machineType}`) ?? insertErrors.get(zone);
       if (error instanceof Error) throw error;
       if (error) return operation(zone, error);
       const created = instance({ name: request.name, zone, status: "PROVISIONING", labels: request.labels, machineType: request.machineType ?? "c4d-standard-8" });
@@ -382,7 +382,7 @@ describe("SessionVmService.provision", () => {
     ]);
     expect(steps).toEqual(["creatingVm", "waitingForVm", "vmReady", "installingRuntime"]);
     expect(calls).toEqual([WAIT_READY, INSTALL_RELEASE, PUT_SECRETS]);
-    expect(logs[0]).toBe(`creating ${VM} from tpl-hunt-session in ${ZONE}`);
+    expect(logs[0]).toBe(`creating ${VM} from tpl-hunt-session as e2-standard-8 in ${ZONE}`);
   });
 
   it("logs why a booting VM does not answer while it waits for it", async () => {
@@ -490,7 +490,36 @@ describe("SessionVmService.provision", () => {
     expect((await service.provision(REQUEST, recorder().reporter)).vm.zone).toBe(ZONE_B);
   });
 
-  it("names the machine type and every zone when none has capacity for the VM", async () => {
+  it("creates the VM as the next series of the same shape when no zone has capacity for its C4D type", async () => {
+    const fake = fakeCompute();
+    for (const zone of [ZONE, ZONE_B]) {
+      fake.insertErrors.set(`${zone} null`, STOCKOUT);
+      fake.insertErrors.set(`${zone} c4-standard-8`, STOCKOUT);
+    }
+    const { service, vmZones } = createService(fake.compute, fakeVm().vm, [ZONE, ZONE_B]);
+    const { reporter, logs } = recorder();
+
+    const result = await service.provision(REQUEST, reporter);
+    expect(result).toMatchObject({ vm: { zone: ZONE }, created: true });
+    expect(fake.instances.get(VM)!.machineType).toBe("c3d-standard-8");
+    expect(fake.insertedZones).toEqual([ZONE, ZONE_B, ZONE, ZONE_B, ZONE]);
+    expect(vmZones).toEqual([ZONE]);
+    expect(logs).toContain(`c4d-standard-8 is unavailable in every session zone; trying c4-standard-8`);
+    expect(logs).toContain(`c4-standard-8 is unavailable in ${ZONE}; trying ${ZONE_B}`);
+    expect(logs).toContain(`c4-standard-8 is unavailable in every session zone; trying c3d-standard-8`);
+    expect(logs).toContain(`creating ${VM} from tpl-hunt-session as c3d-standard-8 in ${ZONE}`);
+  });
+
+  it("falls back from a picked C4D type to the same shape of the next series", async () => {
+    const fake = fakeCompute();
+    fake.insertErrors.set(`${ZONE} c4d-highmem-8`, { ...STOCKOUT, machineType: "c4d-highmem-8" });
+    const { service } = createService(fake.compute, fakeVm().vm, [ZONE]);
+
+    await service.provision({ ...REQUEST, machineType: "c4d-highmem-8" }, recorder().reporter);
+    expect(fake.instances.get(VM)!.machineType).toBe("c4-highmem-8");
+  });
+
+  it("names every machine type and zone when none has capacity for the VM", async () => {
     const fake = fakeCompute();
     for (const zone of [ZONE, ZONE_B, ZONE_C]) {
       fake.insertErrors.set(zone, STOCKOUT);
@@ -500,8 +529,9 @@ describe("SessionVmService.provision", () => {
     const error = await rejection(service.provision(REQUEST, recorder().reporter));
     expect(error).toMatchObject({
       code: "unavailable",
-      message: `failed to create ${VM}: c4d-standard-8 is unavailable in ${ZONE}, ${ZONE_B} and ${ZONE_C}; try again later or pick another machine type`,
+      message: `failed to create ${VM}: c4d-standard-8, c4-standard-8 and c3d-standard-8 are unavailable in ${ZONE}, ${ZONE_B} and ${ZONE_C}; try again later or pick another machine type`,
     });
+    expect(fake.insertedZones).toHaveLength(9);
   });
 
   it("stops at a failure other than a lack of capacity", async () => {

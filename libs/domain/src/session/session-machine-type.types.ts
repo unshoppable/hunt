@@ -29,3 +29,16 @@ export const SESSION_MACHINE_TYPES: readonly SessionMachineType[] = [
 export function isSessionMachineType(name: string): boolean {
   return SESSION_MACHINE_TYPES.some((type) => type.name === name);
 }
+
+/**
+ * The series a new session VM falls back to, in order, when no session zone has capacity for its C4D type: Intel C4 and
+ * AMD Genoa C3D, the next fastest per core in the benchmark of 2026-10-14. Both take Hyperdisk Balanced and offer every
+ * shape of SESSION_MACHINE_TYPES.
+ */
+const FALLBACK_SERIES = ["c4", "c3d"] as const;
+
+/** The machine types of the same shape as the C4D type `name` (`c4d-standard-8` → `c4-standard-8`, …), in order; none for any other type. */
+export function fallbackMachineTypes(name: string): string[] {
+  const shape = name.startsWith("c4d-") ? name.slice("c4d-".length) : "";
+  return shape ? FALLBACK_SERIES.map((series) => `${series}-${shape}`) : [];
+}

@@ -942,7 +942,9 @@ creates `vm-hunt-s-<short id>` from `tpl-hunt-session` unless it exists in any z
 order, `/etc/hunt/session-zones`, which `hunt-ctl install` writes from the gateway's instance metadata
 `hunt-session-zones` (comma-separated, only zones of the gateway's region count; without it the gateway's own zone), and
 moves on to the next only when Compute Engine reports a stockout (`ZONE_RESOURCE_POOL_EXHAUSTED`) for the machine type;
-any other error of the creation ends the call. Changing the list takes effect with the next install, for the gateway and
+any other error of the creation ends the call. When every zone is out of a C4D type, it tries the zones again with the
+same shape of C4 and then of C3D (`fallbackMachineTypes` in `libs/domain/src/session/session-machine-type.types.ts`),
+and fails naming every type and zone only when all are out. Changing the list takes effect with the next install, for the gateway and
 the edge alike. A stopped VM whose own zone reports a stockout for its start moves to the first other session zone with
 capacity, in list order: the gateway snapshots its boot disk (`vm-hunt-s-<short id>-move`), renames the VM to
 `vm-hunt-s-<short id>-moving` and creates a VM from the template in the other zone with a boot disk Compute Engine makes

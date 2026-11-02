@@ -31,6 +31,7 @@ import type { ProgressStep, ReleaseInfo, SessionSummary, VmRef } from "../../../
 import { messageOf } from "../../../../libs/domain/src/shared/errors.utils.ts";
 import type { Log } from "../../../../libs/domain/src/shared/journal.utils.ts";
 import { ApiError } from "../../../../libs/domain/src/gateway-api/api.error.ts";
+import { fallbackMachineTypes } from "../../../../libs/domain/src/session/session-machine-type.types.ts";
 import type { BranchName } from "../../../../libs/domain/src/session/branch-name.value-object.ts";
 import type { Repository } from "../../../../libs/domain/src/session/repository.value-object.ts";
 import type { SessionId } from "../../../../libs/domain/src/session/session-id.value-object.ts";
@@ -284,7 +285,8 @@ export class SessionVmService {
 
   /**
    * Creates the session's VM in the first session zone with capacity for it and returns that zone. Only a stockout moves
-   * on to the next zone; any other failure ends the provision.
+   * on to the next zone; any other failure ends the provision. When every zone is out of a C4D type, the same zones are
+   * tried with each of its fallbacks (`fallbackMachineTypes`).
    */
   private async create(sessionId: SessionId, request: ProvisionRequest, reporter: Reporter): Promise<string> {
     const labels: Record<string, string> = { [ROLE_LABEL]: SESSION_ROLE, [SESSION_LABEL]: sessionId.short, [ORIGIN_LABEL]: request.origin };
@@ -292,34 +294,62 @@ export class SessionVmService {
       labels[OWNER_LABEL] = labelValue(request.owner);
     }
     const zones = this.deps.zones();
-    let machineType = request.machineType;
-    let isReported = false;
+    const progress = { isReported: false };
+    let candidates: (string | null)[] = [request.machineType];
+    const unavailable: string[] = [];
+    for (let index = 0; index < candidates.length; index++) {
+      const machineType = candidates[index];
+      const outcome = await this.createInZones(sessionId, { template: request.template, machineType, labels }, zones, progress, reporter);
+      if (outcome.zone) return outcome.zone;
+      const type = machineType ?? outcome.machineType;
+      if (index === 0 && type) {
+        candidates = [machineType, ...fallbackMachineTypes(type)];
+      }
+      unavailable.push(type ?? "its machine type");
+      const next = candidates[index + 1];
+      if (next) {
+        reporter.log(`${type ?? "its machine type"} is unavailable in every session zone; trying ${next}`);
+      }
+    }
+    throw new ApiError(
+      "unavailable",
+      `failed to create ${sessionId.vm.name}: ${listed(unavailable)} ${unavailable.length > 1 ? "are" : "is"} unavailable in ${listed(zones)}; try again later or pick another machine type`,
+    );
+  }
+
+  /**
+   * Creates the session's VM of `machineType` (null for the template's) in the first of `zones` with capacity for it.
+   * Returns that zone, or no zone and the machine type the last stockout named when every zone is out of it.
+   */
+  private async createInZones(
+    sessionId: SessionId,
+    vm: { template: string; machineType: string | null; labels: Record<string, string> },
+    zones: string[],
+    progress: { isReported: boolean },
+    reporter: Reporter,
+  ): Promise<{ zone: string | null; machineType: string | null }> {
+    let machineType = vm.machineType;
     for (const [index, zone] of zones.entries()) {
       let error: OperationError | null;
       try {
-        const instanceRequest = { name: sessionId.vm.name, template: request.template, machineType: request.machineType, labels };
-        const operation = await this.deps.compute.insert(zone, instanceRequest);
-        if (!isReported) {
+        const operation = await this.deps.compute.insert(zone, { name: sessionId.vm.name, ...vm });
+        if (!progress.isReported) {
           reporter.progress("creatingVm");
-          isReported = true;
+          progress.isReported = true;
         }
-        reporter.log(`creating ${sessionId.vm.name} from ${request.template} in ${zone}`);
+        reporter.log(`creating ${sessionId.vm.name} from ${vm.template}${vm.machineType ? ` as ${vm.machineType}` : ""} in ${zone}`);
         error = await this.waitForOperation(operation, CREATE_TIMEOUT_MS, `create ${sessionId.vm.name} in ${zone}`);
       } catch (thrown) {
         if (!isStockout(messageOf(thrown))) throw thrown;
         error = { code: "ZONE_RESOURCE_POOL_EXHAUSTED", message: messageOf(thrown), machineType: null };
       }
-      if (!error) return zone;
+      if (!error) return { zone, machineType };
       if (!isStockout(error.code)) throw new ApiError("unavailable", `failed to create ${sessionId.vm.name} in ${zone}: ${error.message || error.code}`);
-      machineType = error.machineType ?? machineType;
+      machineType = vm.machineType ?? error.machineType ?? machineType;
       const next = zones[index + 1];
       reporter.log(`${machineType ?? "its machine type"} is unavailable in ${zone}${next ? `; trying ${next}` : ""}`);
     }
-    const type = machineType ?? "its machine type";
-    throw new ApiError(
-      "unavailable",
-      `failed to create ${sessionId.vm.name}: ${type} is unavailable in ${listed(zones)}; try again later or pick another machine type`,
-    );
+    return { zone: null, machineType };
   }
 
   /**

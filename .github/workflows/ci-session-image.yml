@@ -75,7 +75,7 @@ jobs:
       # Hunt and the gateway from taking the VM for a session VM. The zones are tried in order: only a stockout of the
       # machine type (ZONE_RESOURCE_POOL_EXHAUSTED) moves on to the next zone. The steps after this one use ZONE. A zone
       # may lie in another region than the template's subnet: every session region holds a subnet of the same name, and
-      # the VM gets the one of its zone's region.
+      # the VM gets the one of its zone's region. With --subnet, gcloud adds a public IP unless --no-address says otherwise.
       - name: Create the build VM
         run: |
           subnet=$(gcloud compute instance-templates describe "$TEMPLATE" --project="$GCP_PROJECT" --global \
@@ -93,7 +93,7 @@ jobs:
           for zone in $zones; do
             if output=$(gcloud compute instances create "$VM" --project="$GCP_PROJECT" --zone="$zone" \
               --source-instance-template="$TEMPLATE" \
-              --subnet="projects/$GCP_PROJECT/regions/${zone%-*}/subnetworks/$subnet" \
+              --subnet="projects/$GCP_PROJECT/regions/${zone%-*}/subnetworks/$subnet" --no-address \
               --image-family=debian-12 --image-project=debian-cloud \
               --labels=hunt-role=image-build 2>&1); then
               echo "Created $VM in $zone."

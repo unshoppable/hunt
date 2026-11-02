@@ -175,6 +175,7 @@ command_handler![
     ide::open_worktree_in_webstorm,
     ide::open_file_in_webstorm,
     ide::open_changed_files_diff_in_webstorm,
+    ide::reveal_in_finder,
     ide::list_dir,
     ide::list_files,
     ide::list_deleted_files,

@@ -1,6 +1,6 @@
 //! The commands of the built-in editor and of WebStorm: the worktree's project tree, files and deleted files, Find in
-//! Files, Replace in Files and the usage search, import resolution, Prettier and the ESLint rules, and opening the worktree, a file or the
-//! changed files' diff in WebStorm.
+//! Files, Replace in Files and the usage search, import resolution, Prettier and the ESLint rules, opening the worktree, a file or the
+//! changed files' diff in WebStorm, and showing a file in the Finder.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -31,6 +31,13 @@ pub async fn open_worktree_in_webstorm(app: AppHandle, id: Uuid) -> Result<(), S
 pub async fn open_file_in_webstorm(app: AppHandle, id: Uuid, path: String, line: u32, column: u32) -> Result<(), String> {
     let (record, target) = session_file(&app, id, &path)?;
     ide::open_path_at(&record.worktree_path, &target, line, column).await
+}
+
+/// Shows a worktree file or folder (`""` is the worktree) selected in a Finder window.
+#[tauri::command]
+pub async fn reveal_in_finder(app: AppHandle, id: Uuid, path: String) -> Result<(), String> {
+    let (_, target) = session_file(&app, id, &path)?;
+    ide::reveal_in_finder(&target).await
 }
 
 /// Mirrors the base and current version of every changed file into a temp directory pair and opens

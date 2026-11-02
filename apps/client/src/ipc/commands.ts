@@ -333,6 +333,8 @@ export const commands = {
     invoke<void>("open_file_in_webstorm", { id, path, line, column }),
   openChangedFilesDiffInWebstorm: (id: string, comparison: Comparison = "diffBase") =>
     invoke<void>("open_changed_files_diff_in_webstorm", { id, comparison }),
+  /** Shows the worktree file or folder `path` (`""` is the worktree) selected in a Finder window. */
+  revealInFinder: (id: string, path: string) => invoke<void>("reveal_in_finder", { id, path }),
   /** Opens a shell in the session's worktree: a new WezTerm tab when WezTerm is installed, else a Terminal.app window. */
   openWorktreeInTerminal: (id: string) => invoke<void>("open_worktree_in_terminal", { id }),
   /** Raw content of the session's diagram file of `diagramType`, `null` while there is none; validate with `parseGraph` or `parseShapeDiagram`. */

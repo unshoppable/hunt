@@ -285,6 +285,11 @@ export function ProjectTree({
     void navigator.clipboard.writeText(absolutePaths.join("\n")).catch((reason) => setError(`failed to copy the path: ${errorText(reason)}`));
   };
 
+  const revealInFinder = (path: string) => {
+    setContextMenu(null);
+    commands.revealInFinder(sessionId, path).catch((reason) => setError(errorText(reason)));
+  };
+
   /**
    * Deletes files, and folders with everything in them, after asking once; their tabs close and their unsaved edits
    * are dropped. The project row cannot be deleted, so a selection holding it deletes nothing.
@@ -463,6 +468,16 @@ export function ProjectTree({
             {contextMenu.paths.length > 1 ? "Copy paths" : "Copy path"}
             {copyPathShortcut ? <span className="text-neutral-500">{copyPathShortcut}</span> : null}
           </button>
+          {contextMenu.paths.length === 1 ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => revealInFinder(contextMenu.path)}
+              className="flex w-full items-center rounded px-2 py-1 text-left text-neutral-200 hover:bg-(--row-hover)"
+            >
+              Reveal in Finder
+            </button>
+          ) : null}
           {contextMenu.paths.length === 1 ? (
             <>
               <div role="separator" className="my-1 border-t border-(--line)" />

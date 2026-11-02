@@ -73,9 +73,17 @@ jobs:
 
       # The template's boot image is replaced by a fresh Debian, so every build starts from scratch. The label keeps
       # Hunt and the gateway from taking the VM for a session VM. The zones are tried in order: only a stockout of the
-      # machine type (ZONE_RESOURCE_POOL_EXHAUSTED) moves on to the next zone. The steps after this one use ZONE.
+      # machine type (ZONE_RESOURCE_POOL_EXHAUSTED) moves on to the next zone. The steps after this one use ZONE. A zone
+      # may lie in another region than the template's subnet: every session region holds a subnet of the same name, and
+      # the VM gets the one of its zone's region.
       - name: Create the build VM
         run: |
+          subnet=$(gcloud compute instance-templates describe "$TEMPLATE" --project="$GCP_PROJECT" --global \
+            --format='value(properties.networkInterfaces[0].subnetwork.basename())')
+          if [ -z "$subnet" ]; then
+            echo "::error::The template $TEMPLATE names no subnet."
+            exit 1
+          fi
           zones=$(gcloud compute instances list --project="$GCP_PROJECT" --filter='labels.hunt-role=gateway' --format=json |
             jq -r '[.[0].metadata.items[]? | select(.key == "hunt-session-zones") | .value][0] // empty' | tr ',' ' ')
           if [ -z "$zones" ]; then
@@ -85,6 +93,7 @@ jobs:
           for zone in $zones; do
             if output=$(gcloud compute instances create "$VM" --project="$GCP_PROJECT" --zone="$zone" \
               --source-instance-template="$TEMPLATE" \
+              --subnet="projects/$GCP_PROJECT/regions/${zone%-*}/subnetworks/$subnet" \
               --image-family=debian-12 --image-project=debian-cloud \
               --labels=hunt-role=image-build 2>&1); then
               echo "Created $VM in $zone."

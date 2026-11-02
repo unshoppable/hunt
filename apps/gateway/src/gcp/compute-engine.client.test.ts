@@ -14,6 +14,9 @@ import { fakeFetch, fixedMetadata } from "./gcp.fixtures.ts";
 const PROJECT_URL = "https://compute.googleapis.com/compute/v1/projects/medconomy-hunt";
 const ZONE_URL = `${PROJECT_URL}/zones/europe-west3-a`;
 const AGGREGATED_URL = `${PROJECT_URL}/aggregated/instances?returnPartialSuccess=true`;
+const TEMPLATE_URL = `${PROJECT_URL}/global/instanceTemplates/tpl-hunt-session`;
+const TEMPLATE = { properties: { networkInterfaces: [{ subnetwork: `${PROJECT_URL}/regions/europe-west1/subnetworks/subnet-hunt-medc` }] } };
+const SUBNET_A = [{ subnetwork: "regions/europe-west3/subnetworks/subnet-hunt-medc" }];
 
 describe("createCompute", () => {
   it("lists the VMs of a label in every zone, page by page, and keeps only those that carry it", async () => {
@@ -53,12 +56,13 @@ describe("createCompute", () => {
     expect(await compute.locate("vm-hunt-s-00000000")).toBeNull();
   });
 
-  it("creates a VM from the global instance template in the given zone and returns its operation", async () => {
+  it("creates a VM from the global instance template in the given zone, on the subnet of the zone's region, and returns its operation", async () => {
     const template = encodeURIComponent("projects/medconomy-hunt/global/instanceTemplates/tpl-hunt-session");
     const { fetchImpl, requests } = fakeFetch({
+      [`GET ${TEMPLATE_URL}`]: () => Response.json(TEMPLATE),
       [`POST ${ZONE_URL}/instances?sourceInstanceTemplate=${template}`]: () => Response.json({ kind: "compute#operation", name: "operation-1" }),
-      [`POST ${PROJECT_URL}/zones/europe-west3-b/instances?sourceInstanceTemplate=${template}`]: () =>
-        Response.json({ kind: "compute#operation", name: "operation-2", zone: `${PROJECT_URL}/zones/europe-west3-b` }),
+      [`POST ${PROJECT_URL}/zones/europe-west4-b/instances?sourceInstanceTemplate=${template}`]: () =>
+        Response.json({ kind: "compute#operation", name: "operation-2", zone: `${PROJECT_URL}/zones/europe-west4-b` }),
     });
     const compute = createCompute(fixedMetadata, fetchImpl);
     const labels = { "hunt-role": "session", "hunt-session": "ab12cd34", "hunt-origin": "swf" };
@@ -67,14 +71,39 @@ describe("createCompute", () => {
       name: "operation-1",
       zone: "europe-west3-a",
     });
-    expect(await compute.insert("europe-west3-b", { name: "vm-hunt-s-ab12cd34", template: "tpl-hunt-session", labels, machineType: "c4d-standard-8" })).toEqual({
+    expect(await compute.insert("europe-west4-b", { name: "vm-hunt-s-ab12cd34", template: "tpl-hunt-session", labels, machineType: "c4d-standard-8" })).toEqual({
       name: "operation-2",
-      zone: "europe-west3-b",
+      zone: "europe-west4-b",
     });
-    expect(requests.map((request) => request.body)).toEqual([
-      { name: "vm-hunt-s-ab12cd34", labels },
-      { name: "vm-hunt-s-ab12cd34", labels, machineType: "zones/europe-west3-b/machineTypes/c4d-standard-8" },
+    expect(requests.map((request) => `${request.method} ${request.url.split("?")[0].slice(PROJECT_URL.length)}`)).toEqual([
+      "GET /global/instanceTemplates/tpl-hunt-session",
+      "POST /zones/europe-west3-a/instances",
+      "POST /zones/europe-west4-b/instances",
     ]);
+    expect(requests.slice(1).map((request) => request.body)).toEqual([
+      { name: "vm-hunt-s-ab12cd34", labels, networkInterfaces: SUBNET_A },
+      {
+        name: "vm-hunt-s-ab12cd34",
+        labels,
+        networkInterfaces: [{ subnetwork: "regions/europe-west4/subnetworks/subnet-hunt-medc" }],
+        machineType: "zones/europe-west4-b/machineTypes/c4d-standard-8",
+      },
+    ]);
+  });
+
+  it("creates no VM while the template cannot be read and reads it again on the next creation", async () => {
+    const template = encodeURIComponent("projects/medconomy-hunt/global/instanceTemplates/tpl-hunt-session");
+    let isReadable = false;
+    const { fetchImpl } = fakeFetch({
+      [`GET ${TEMPLATE_URL}`]: () => (isReadable ? Response.json(TEMPLATE) : new Response("denied", { status: 403 })),
+      [`POST ${ZONE_URL}/instances?sourceInstanceTemplate=${template}`]: () => Response.json({ kind: "compute#operation", name: "operation-1" }),
+    });
+    const compute = createCompute(fixedMetadata, fetchImpl);
+    const request = { name: "vm-hunt-s-ab12cd34", template: "tpl-hunt-session", labels: { "hunt-role": "session" }, machineType: null };
+
+    await expect(compute.insert("europe-west3-a", request)).rejects.toThrow("failed to look up the instance template tpl-hunt-session: HTTP 403 denied");
+    isReadable = true;
+    expect((await compute.insert("europe-west3-a", request)).name).toBe("operation-1");
   });
 
   it("waits for an operation through its wait endpoint and reads the state and the error of a finished one", async () => {
@@ -143,6 +172,7 @@ describe("createCompute", () => {
   it("creates a moved VM from the template with a boot disk from a snapshot and the metadata given", async () => {
     const template = encodeURIComponent("projects/medconomy-hunt/global/instanceTemplates/tpl-hunt-session");
     const { fetchImpl, requests } = fakeFetch({
+      [`GET ${TEMPLATE_URL}`]: () => Response.json(TEMPLATE),
       [`POST ${ZONE_URL}/instances?sourceInstanceTemplate=${template}`]: () => Response.json({ kind: "compute#operation", name: "operation-1" }),
     });
     const compute = createCompute(fixedMetadata, fetchImpl);
@@ -151,9 +181,10 @@ describe("createCompute", () => {
 
     const bootDisk = { snapshot: "vm-hunt-s-ab12cd34-move", type: "hyperdisk-balanced", sizeGb: 50 };
     await compute.insert("europe-west3-a", { name: "vm-hunt-s-ab12cd34", template: "tpl-hunt-session", labels, machineType: "c4d-standard-8", metadata, bootDisk });
-    expect(requests[0].body).toEqual({
+    expect(requests[1].body).toEqual({
       name: "vm-hunt-s-ab12cd34",
       labels,
+      networkInterfaces: SUBNET_A,
       machineType: "zones/europe-west3-a/machineTypes/c4d-standard-8",
       metadata: { items: metadata },
       disks: [

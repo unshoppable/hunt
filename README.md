@@ -940,11 +940,13 @@ passes on.
 The VM methods go through `apps/gateway/src/session-vm/session-vm.service.ts`, which the poller uses as well: `sessions.provision`
 creates `vm-hunt-s-<short id>` from `tpl-hunt-session` unless it exists in any zone. It tries the session zones in
 order, `/etc/hunt/session-zones`, which `hunt-ctl install` writes from the gateway's instance metadata
-`hunt-session-zones` (comma-separated, only zones of the gateway's region count; without it the gateway's own zone), and
+`hunt-session-zones` (comma-separated, zones of any region; without it the gateway's own zone), and
 moves on to the next only when Compute Engine reports a stockout (`ZONE_RESOURCE_POOL_EXHAUSTED`) for the machine type;
-any other error of the creation ends the call. When every zone is out of a C4D type, it tries the zones again with the
-same shape of C4 and then of C3D (`fallbackMachineTypes` in `libs/domain/src/session/session-machine-type.types.ts`),
-and fails naming every type and zone only when all are out. Changing the list takes effect with the next install, for the gateway and
+any other error of the creation ends the call. Every VM it creates goes on the subnet of its zone's region that bears
+the name of the template's subnet (read once from the template), so each region of the list needs such a subnet with
+Cloud NAT. When every zone is out of a C4D type, it tries the zones again with the same shape of C4 and then of C3D
+(`fallbackMachineTypes` in `libs/domain/src/session/session-machine-type.types.ts`), and fails naming every type and
+zone only when all are out. Changing the list takes effect with the next install, for the gateway and
 the edge alike. A stopped VM whose own zone reports a stockout for its start moves to the first other session zone with
 capacity, in list order: the gateway snapshots its boot disk (`vm-hunt-s-<short id>-move`), renames the VM to
 `vm-hunt-s-<short id>-moving` and creates a VM from the template in the other zone with a boot disk Compute Engine makes
@@ -1341,7 +1343,7 @@ state for a session this Mac knows, else a `+` that runs an arc while the agent 
 for an answer, as the gateway recorded it; a chip names an agent that asks (amber), finished (green) or failed (red).
 A click shows the session; the user chooses this way which session VMs the sidebar lists, since nothing adopts them on
 its own. Opening a listed session this Mac does not know asks the gateway for it (`sessions.list`), keeps it when its
-VM is in the gateway's region, whose zones the gateway creates session VMs in (`adopt_session_vms`,
+VM is in the gateway's project, in any of the session zones the gateway creates session VMs in (`adopt_session_vms`,
 `apps/client/src-tauri/src/remote/adoption.rs`), is named after the session and no local session has it: VMs the
 gateway's poller started for `swf` issues (`hunt-origin=swf`, `hunt-issue`) and other people's handoffs. An adopted
 session gets a record with origin `swf` or

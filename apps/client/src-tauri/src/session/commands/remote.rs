@@ -54,7 +54,7 @@ pub async fn list_session_vms() -> Result<Vec<remote::adoption::AdoptableSession
     let gateway = gateway_api("list the remote sessions").await?;
     let listed = gateway.list_sessions().await?;
     let hello = gateway.hello();
-    Ok(remote::adoption::list_session_vms(&listed, &hello.project, &hello.zone))
+    Ok(remote::adoption::list_session_vms(&listed, &hello.project))
 }
 
 /// The remote secrets the gateway of `settings` keeps for every session VM, as names and hints.
@@ -96,7 +96,7 @@ pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths:
     known.extend(deleted_session_vms(&app));
     let hello = gateway.hello();
     let remote_targets: HashMap<Uuid, &RemoteTarget> = sessions.iter().filter_map(|session| Some((session.id, session.remote.as_ref()?))).collect();
-    let listed_vms = remote::adoption::list_session_vms(&listed, &hello.project, &hello.zone);
+    let listed_vms = remote::adoption::list_session_vms(&listed, &hello.project);
     let agent_updates = remote::adoption::agent_updates(&listed_vms, &remote_targets);
     for (id, agent) in agent_updates.iter().cloned() {
         store::update_session(&app, id, |stored| {
@@ -120,7 +120,7 @@ pub async fn adopt_session_vms(app: AppHandle, settings: VmSettings, repo_paths:
     }
     relay_watch::reconcile(&app, remote::adoption::running_session_vms(&listed_vms, &remote_targets));
     let mut has_changed = !agent_updates.is_empty() || !vm_updates.is_empty();
-    let adoptable: Vec<_> = remote::adoption::sessions_to_adopt(&listed, &hello.project, &hello.zone, &known)
+    let adoptable: Vec<_> = remote::adoption::sessions_to_adopt(&listed, &hello.project, &known)
         .into_iter()
         .filter(|session| ids.contains(&session.id))
         .collect();

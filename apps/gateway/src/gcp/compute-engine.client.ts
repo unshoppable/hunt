@@ -311,6 +311,29 @@ export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetc
     return instances;
   }
 
+  /**
+   * The name of the subnet the instance template `template` attaches its VMs to, read once per template. Every region of
+   * the session zones holds a subnet of that name, so a VM in another region than the template's gets its region's.
+   */
+  const subnetNames = new Map<string, Promise<string>>();
+  function subnetName(template: string): Promise<string> {
+    let name = subnetNames.get(template);
+    if (!name) {
+      name = (async () => {
+        const what = `look up the instance template ${template}`;
+        const response = await call("GET", `${await projectUrl()}/global/instanceTemplates/${encodeURIComponent(template)}`);
+        if (!response.ok) throw await failure(response, what);
+        const raw = (await response.json()) as { properties?: { networkInterfaces?: { subnetwork?: unknown }[] } };
+        const subnet = lastSegment(raw.properties?.networkInterfaces?.[0]?.subnetwork);
+        if (!subnet) throw new Error(`failed to ${what}: it names no subnet`);
+        return subnet;
+      })();
+      subnetNames.set(template, name);
+      name.catch(() => subnetNames.delete(template));
+    }
+    return name;
+  }
+
   async function list(filter: string, what: string): Promise<Instance[]> {
     const base = `${await projectUrl()}/aggregated/instances?returnPartialSuccess=true`;
     // `items` maps each zone (`zones/<zone>`) to its instances, or to a warning for a zone without any.
@@ -335,7 +358,8 @@ export function createCompute(metadata: Metadata, fetchImpl: typeof fetch = fetc
     },
     async insert(zone, request) {
       const template = `projects/${await metadata.project()}/global/instanceTemplates/${request.template}`;
-      const body: Record<string, unknown> = { name: request.name, labels: request.labels };
+      const subnetwork = `regions/${regionOf(zone)}/subnetworks/${await subnetName(request.template)}`;
+      const body: Record<string, unknown> = { name: request.name, labels: request.labels, networkInterfaces: [{ subnetwork }] };
       if (request.machineType) {
         body.machineType = `zones/${zone}/machineTypes/${request.machineType}`;
       }

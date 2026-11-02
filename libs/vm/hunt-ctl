@@ -2015,11 +2015,11 @@ cmd_stage_session() {
   emit --arg version "$version" --arg hash "$hash" '{version: $version, hash: $hash}'
 }
 
-# Prints the zones of the instance metadata SESSION_ZONES_ATTRIBUTE (separated by commas or whitespace) that lie in the
-# region of zone $1, one per line, in their order and once each; zone $1 alone without the attribute or without such a
-# zone in it.
+# Prints the zones of the instance metadata SESSION_ZONES_ATTRIBUTE (separated by commas or whitespace), one per line,
+# in their order and once each; zone $1 alone without the attribute or without a valid zone in it. A zone may lie in
+# another region than the gateway's: the gateway puts a VM there on that region's subnet of the template's name.
 session_zones() {
-  local listed status zone region=${1%-*}
+  local listed status zone
   local -A seen=()
   local -a candidates=() zones=()
   listed=$(metadata "instance/attributes/$SESSION_ZONES_ATTRIBUTE" 2>/dev/null) && status=0 || status=$?
@@ -2027,7 +2027,7 @@ session_zones() {
   (( status == 0 || status == 22 )) || die "failed to read the instance metadata $SESSION_ZONES_ATTRIBUTE (curl exit status $status)"
   IFS=$', \t' read -ra candidates <<<"${listed//$'\n'/ }"
   for zone in "${candidates[@]}"; do
-    if [[ $zone =~ ^[a-z]+-[a-z]+[0-9]+-[a-z]$ && ${zone%-*} == "$region" && -z ${seen[$zone]:-} ]]; then
+    if [[ $zone =~ ^[a-z]+-[a-z]+[0-9]+-[a-z]$ && -z ${seen[$zone]:-} ]]; then
       seen[$zone]=1
       zones+=("$zone")
     fi

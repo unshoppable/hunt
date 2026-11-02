@@ -43,26 +43,16 @@ pub struct AdoptableSession {
     pub agent: String,
 }
 
-/// The session VMs of `listed` Hunt can continue, in the order listed: every session whose VM is in `project` and in
-/// the region of `gateway_zone` (the gateway creates session VMs in any zone of its region), whose VM is named after it
-/// and whose repository is an `<owner>/<repo>`. Sessions that fail these checks stay alone.
-pub fn list_session_vms(listed: &[SessionSummary], project: &str, gateway_zone: &str) -> Vec<AdoptableSession> {
-    let region = region_of(gateway_zone);
-    listed
-        .iter()
-        .filter(|session| region_of(&session.zone) == region)
-        .filter_map(|session| adoptable(session, project))
-        .collect()
+/// The session VMs of `listed` Hunt can continue, in the order listed: every session whose VM is in `project` (in any
+/// zone: the gateway creates session VMs in every zone of its session zones, which may span regions), whose VM is named
+/// after it and whose repository is an `<owner>/<repo>`. Sessions that fail these checks stay alone.
+pub fn list_session_vms(listed: &[SessionSummary], project: &str) -> Vec<AdoptableSession> {
+    listed.iter().filter_map(|session| adoptable(session, project)).collect()
 }
 
 /// The sessions of `listed` to adopt: those of `list_session_vms` that none of `known` is.
-pub fn sessions_to_adopt(listed: &[SessionSummary], project: &str, gateway_zone: &str, known: &HashSet<Uuid>) -> Vec<AdoptableSession> {
-    list_session_vms(listed, project, gateway_zone).into_iter().filter(|session| !known.contains(&session.id)).collect()
-}
-
-/// The region of `zone`, e.g. `europe-west1` for `europe-west1-c`.
-fn region_of(zone: &str) -> &str {
-    zone.rsplit_once('-').map_or(zone, |(region, _)| region)
+pub fn sessions_to_adopt(listed: &[SessionSummary], project: &str, known: &HashSet<Uuid>) -> Vec<AdoptableSession> {
+    list_session_vms(listed, project).into_iter().filter(|session| !known.contains(&session.id)).collect()
 }
 
 fn adoptable(listed: &SessionSummary, project: &str) -> Option<AdoptableSession> {
@@ -256,7 +246,7 @@ mod tests {
             agent: "".into(),
             ..swf_session()
         };
-        let adopted = sessions_to_adopt(&[swf_session(), desktop], "acme-hunt", ZONE, &HashSet::new());
+        let adopted = sessions_to_adopt(&[swf_session(), desktop], "acme-hunt", &HashSet::new());
 
         assert_eq!(adopted.len(), 2);
         assert_eq!(adopted[0].id, Uuid::parse_str(ID).unwrap());
@@ -278,7 +268,7 @@ mod tests {
 
     #[test]
     fn agent_updates_names_the_known_sessions_whose_agent_state_changed() {
-        let listed = list_session_vms(&[swf_session(), SessionSummary { agent: "done".into(), ..swf_session() }], "acme-hunt", ZONE);
+        let listed = list_session_vms(&[swf_session(), SessionSummary { agent: "done".into(), ..swf_session() }], "acme-hunt");
         let id = Uuid::parse_str(ID).unwrap();
         let target = |agent: &str, instance: &str| RemoteTarget {
             vm: VmRef { project: "acme-hunt".into(), zone: ZONE.into(), instance: instance.into() },
@@ -316,7 +306,7 @@ mod tests {
 
     #[test]
     fn vm_updates_names_the_known_sessions_whose_vm_moved_to_another_zone() {
-        let listed = list_session_vms(&[swf_session()], "acme-hunt", ZONE);
+        let listed = list_session_vms(&[swf_session()], "acme-hunt");
         let id = Uuid::parse_str(ID).unwrap();
         let target = |zone: &str, instance: &str| RemoteTarget {
             vm: VmRef { project: "acme-hunt".into(), zone: zone.into(), instance: instance.into() },
@@ -371,8 +361,8 @@ mod tests {
     #[test]
     fn stopped_turns_names_the_known_sessions_whose_vm_stopped_mid_turn() {
         let id = Uuid::parse_str(ID).unwrap();
-        let stopped = list_session_vms(&[swf_session()], "acme-hunt", ZONE);
-        let running = list_session_vms(&[SessionSummary { status: "RUNNING".into(), ..swf_session() }], "acme-hunt", ZONE);
+        let stopped = list_session_vms(&[swf_session()], "acme-hunt");
+        let running = list_session_vms(&[SessionSummary { status: "RUNNING".into(), ..swf_session() }], "acme-hunt");
         let activity = |is_turn_running: bool| Some(RelayActivity { is_turn_running, is_question: None });
 
         let in_turn = known_target("europe-west1-b", "vm-hunt-s-ab12cd34", activity(true));
@@ -392,8 +382,8 @@ mod tests {
     fn running_session_vms_names_the_running_vms_of_known_sessions_in_the_zone_they_run_in() {
         let id = Uuid::parse_str(ID).unwrap();
         let moved = SessionSummary { status: "RUNNING".into(), zone: "europe-west1-b".into(), ..swf_session() };
-        let running = list_session_vms(&[moved], "acme-hunt", ZONE);
-        let stopped = list_session_vms(&[swf_session()], "acme-hunt", ZONE);
+        let running = list_session_vms(&[moved], "acme-hunt");
+        let stopped = list_session_vms(&[swf_session()], "acme-hunt");
 
         let known = known_target(ZONE, "vm-hunt-s-ab12cd34", None);
         assert_eq!(running_session_vms(&running, &HashMap::from([(id, &known)])), vec![(id, running[0].vm.clone())]);
@@ -406,10 +396,10 @@ mod tests {
     }
 
     #[test]
-    fn sessions_to_adopt_skips_known_sessions_vms_of_other_regions_and_vms_that_do_not_belong_to_their_session() {
+    fn sessions_to_adopt_skips_known_sessions_and_vms_that_do_not_belong_to_their_session() {
         let known = HashSet::from([Uuid::parse_str(ID).unwrap()]);
-        assert!(sessions_to_adopt(&[swf_session()], "acme-hunt", ZONE, &known).is_empty());
-        assert_eq!(list_session_vms(&[swf_session()], "acme-hunt", ZONE).len(), 1);
+        assert!(sessions_to_adopt(&[swf_session()], "acme-hunt", &known).is_empty());
+        assert_eq!(list_session_vms(&[swf_session()], "acme-hunt").len(), 1);
 
         let listed = [
             SessionSummary { vm: "vm-hunt-medc".into(), ..swf_session() },
@@ -418,18 +408,19 @@ mod tests {
             SessionSummary { id: "not-a-uuid".into(), ..swf_session() },
             SessionSummary { repo: "".into(), ..swf_session() },
             SessionSummary { repo: "../etc".into(), ..swf_session() },
-            SessionSummary { zone: "us-central1-a".into(), ..swf_session() },
         ];
-        assert!(sessions_to_adopt(&listed, "acme-hunt", ZONE, &HashSet::new()).is_empty());
-        assert!(sessions_to_adopt(&[swf_session()], "Acme Hunt", ZONE, &HashSet::new()).is_empty());
+        assert!(sessions_to_adopt(&listed, "acme-hunt", &HashSet::new()).is_empty());
+        let other_region = SessionSummary { zone: "europe-west4-a".into(), ..swf_session() };
+        assert_eq!(sessions_to_adopt(&[other_region], "acme-hunt", &HashSet::new())[0].vm.zone, "europe-west4-a");
+        assert!(sessions_to_adopt(&[swf_session()], "Acme Hunt", &HashSet::new()).is_empty());
     }
 
     #[test]
     fn a_swf_session_without_title_is_named_after_its_issue() {
         let untitled = SessionSummary { title: " ".into(), ..swf_session() };
-        assert_eq!(sessions_to_adopt(&[untitled], "acme-hunt", ZONE, &HashSet::new())[0].title, "Issue #123 of acme/app");
+        assert_eq!(sessions_to_adopt(&[untitled], "acme-hunt", &HashSet::new())[0].title, "Issue #123 of acme/app");
         let without_issue = SessionSummary { title: "".into(), issue: Some(0), ..swf_session() };
-        let adopted = sessions_to_adopt(&[without_issue], "acme-hunt", ZONE, &HashSet::new());
+        let adopted = sessions_to_adopt(&[without_issue], "acme-hunt", &HashSet::new());
         assert_eq!((adopted[0].title.as_str(), adopted[0].issue), ("Remote session of acme/app", None));
     }
 

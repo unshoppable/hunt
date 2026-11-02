@@ -1577,6 +1577,24 @@ pub async fn reset(worktree: &Path, id: &str, mode: ResetMode) -> Result<(), Str
     Ok(())
 }
 
+/// Points the local branch `branch` at the commit `id`: in the worktree that has it checked out with `git reset` in
+/// `mode`, otherwise by moving the branch alone, which changes no file. Fails for a branch that does not exist.
+pub async fn reset_branch(repo: &Path, branch: &str, id: &str, mode: ResetMode) -> Result<(), String> {
+    if !is_commit_id(id) {
+        return Err(format!("invalid commit id: {id:?}"));
+    }
+    ensure_branch_name(repo, branch).await?;
+    if let Some(worktree) = worktree_of_branch(repo, branch).await? {
+        return reset(Path::new(&worktree), id, mode).await;
+    }
+    let local_ref = format!("refs/heads/{branch}");
+    let current = rev_parse(repo, &local_ref).await.map_err(|_| format!("failed to reset {branch}: no such branch"))?;
+    run_git(repo, &["update-ref", "-m", &format!("reset: moving to {id}"), &local_ref, id, &current])
+        .await
+        .map_err(|error| format!("failed to reset {branch} to {id}: {error}"))?;
+    Ok(())
+}
+
 /// Every branch and tag with its upstream state, the checked-out branch and the commits no remote has.
 pub async fn refs(repo: &Path) -> Result<RefList, String> {
     let output = run_git(
@@ -1930,6 +1948,29 @@ mod tests {
         assert_eq!(run_git(repo, &["rev-parse", "HEAD"]).await.unwrap().trim(), base);
 
         assert_eq!(reset(repo, "HEAD", ResetMode::Hard).await.unwrap_err(), "invalid commit id: \"HEAD\"");
+    }
+
+    #[tokio::test]
+    async fn reset_branch_moves_the_named_branch_and_leaves_the_checked_out_one() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        let base = run_git(repo, &["rev-parse", "HEAD"]).await.unwrap().trim().to_string();
+        std::fs::write(repo.join("tracked.txt"), "two\n").unwrap();
+        git(repo, &["commit", "-q", "-am", "two"]).await;
+        let head = run_git(repo, &["rev-parse", "HEAD"]).await.unwrap().trim().to_string();
+        git(repo, &["branch", "-q", "other"]).await;
+
+        reset_branch(repo, "other", &base, ResetMode::Hard).await.unwrap();
+
+        assert_eq!(run_git(repo, &["rev-parse", "other"]).await.unwrap().trim(), base);
+        assert_eq!(run_git(repo, &["rev-parse", "HEAD"]).await.unwrap().trim(), head);
+        assert_eq!(std::fs::read_to_string(repo.join("tracked.txt")).unwrap(), "two\n");
+        assert_eq!(reset_branch(repo, "missing", &base, ResetMode::Hard).await.unwrap_err(), "failed to reset missing: no such branch");
+
+        let checked_out = current_branch(repo).await.unwrap();
+        reset_branch(repo, &checked_out, &base, ResetMode::Hard).await.unwrap();
+        assert_eq!(run_git(repo, &["rev-parse", "HEAD"]).await.unwrap().trim(), base);
+        assert_eq!(std::fs::read_to_string(repo.join("tracked.txt")).unwrap(), "one\n");
     }
 
     #[test]

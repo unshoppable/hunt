@@ -176,23 +176,39 @@ describe("remote settings", () => {
 
 });
 
-describe("persisted keymap", () => {
+/**
+ * Loads the store module afresh over an in-memory `window.localStorage`: `persist` reads it when the store is
+ * created. Returns the store and the storage entries it writes.
+ */
+async function loadPersistedStore(entries = new Map<string, string>()) {
+  const localStorage = {
+    getItem: (key: string) => entries.get(key) ?? null,
+    setItem: (key: string, value: string) => entries.set(key, value),
+    removeItem: (key: string) => entries.delete(key),
+  };
+  vi.stubGlobal("window", { localStorage });
+  vi.resetModules();
+  const { useSettingsStore } = await import("./settings.store");
+  return { useSettingsStore, entries, stored: () => JSON.parse(entries.get("hunt-settings") ?? "{}").state };
+}
+
+describe("persisted settings", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.resetModules();
   });
 
-  it("is written in its stored form and read back as an equal Keymap", async () => {
-    const entries = new Map<string, string>();
-    const localStorage = {
-      getItem: (key: string) => entries.get(key) ?? null,
-      setItem: (key: string, value: string) => entries.set(key, value),
-      removeItem: (key: string) => entries.delete(key),
-    };
-    // `persist` reads `window.localStorage` when the store is created, so the store module is loaded again with it.
-    vi.stubGlobal("window", { localStorage });
-    vi.resetModules();
-    const { useSettingsStore } = await import("./settings.store");
+  it("keeps the split diff share across a restart", async () => {
+    const { useSettingsStore, entries, stored } = await loadPersistedStore();
+    useSettingsStore.getState().setSplitDiffShare(0.3);
+    expect(stored().splitDiffShare).toBe(0.3);
+
+    const restarted = await loadPersistedStore(entries);
+    expect(restarted.useSettingsStore.getState().splitDiffShare).toBe(0.3);
+  });
+
+  it("writes the keymap in its stored form and reads it back as an equal Keymap", async () => {
+    const { useSettingsStore, stored } = await loadPersistedStore();
     const { Keymap } = await import("../common/keymap/keymap.value-object");
     const { Shortcut } = await import("../common/keymap/shortcut.value-object");
     const save = Shortcut.parse("Meta+d");
@@ -201,7 +217,7 @@ describe("persisted keymap", () => {
     useSettingsStore.getState().setKeyBindings("editor.save", [save]);
     useSettingsStore.getState().setKeyBindings("editor.closeTab", []);
     const keymap = useSettingsStore.getState().keymap;
-    expect(JSON.parse(entries.get("hunt-settings") ?? "{}").state.keymap).toEqual({ "editor.save": ["Meta+d"], "editor.closeTab": [] });
+    expect(stored().keymap).toEqual({ "editor.save": ["Meta+d"], "editor.closeTab": [] });
 
     await useSettingsStore.persist.rehydrate();
     const reloaded = useSettingsStore.getState().keymap;

@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { PreviewService, PreviewStatus } from "../preview/preview.types";
-import type { TmuxWindow } from "./terminal.types";
-import { endedScriptWindow, isProcessWindow, isTerminalActive, nextActiveKey, tabOwner, terminalTabs, windowState } from "./terminal-tabs.utils";
+import type { LocalService, TmuxWindow } from "./terminal.types";
+import { endedScriptWindow, isProcessWindow, isServiceTab, isTerminalActive, localServiceState, nextActiveKey, tabOwner, terminalTabs, windowState } from "./terminal-tabs.utils";
 
 function service(name: string, state: PreviewService["state"] = "running"): PreviewService {
   return { name, port: 3000, url: `https://${name}.example`, guarded: true, tls: false, enabled: true, state, responds: true };
 }
 
 function window(id: string, name: string, overrides: Partial<TmuxWindow> = {}): TmuxWindow {
-  return { id, name, script: null, check: null, isDead: false, exitCode: null, owner: null, ...overrides };
+  return { id, name, script: null, check: null, service: null, isDead: false, exitCode: null, owner: null, ...overrides };
+}
+
+function localService(name: string, overrides: Partial<LocalService> = {}): LocalService {
+  return { name, command: `npm run ${name}`, port: 4200, state: "stopped", exitCode: null, windowId: null, log: null, isListening: false, ...overrides };
 }
 
 function status(services: PreviewService[]): PreviewStatus {
@@ -48,6 +52,23 @@ describe("terminalTabs", () => {
     expect(tabs.map((tab) => tab.key)).toEqual(["window:vm:@2"]);
   });
 
+  it("lists a local session's services first, each with the window that runs it, which no other tab shows", () => {
+    const web = window("@2", "web", { service: "web" });
+    const tabs = terminalTabs([], [], [window("@1", "shell"), web, window("@3", "old", { service: "removed" })], false, [localService("api"), localService("web")]);
+    expect(tabs.map((tab) => [tab.key, tab.label])).toEqual([
+      ["local-service:api", "api"],
+      ["local-service:web", "web"],
+      ["window:desktop:@1", "shell"],
+      ["window:desktop:@3", "old"],
+    ]);
+    expect(tabs[0].target).toBeNull();
+    expect(tabs[0].title).toContain("not started");
+    expect(tabs[1].target).toEqual({ kind: "window", id: "@2", machine: "desktop" });
+    expect(tabs[1].window).toBe(web);
+    expect(tabs[1].title).toContain(".hunt/logs/desktop/web.log");    expect(tabs.map(isServiceTab)).toEqual([true, true, false, false]);
+    expect(terminalTabs([service("api")], [window("@1", "shell")], [], true).map(isServiceTab)).toEqual([true, false]);
+  });
+
   it("says when Hunt does not know which session a window on this Mac belongs to", () => {
     const tabs = terminalTabs([], [window("@1", "worker")], [window("@2", "vite"), window("@3", "shell", { owner: "sub" })], true);
     expect(tabs.map((tab) => tab.title.endsWith("Hunt does not know which session it belongs to"))).toEqual([false, true, false]);
@@ -68,6 +89,16 @@ describe("windowState", () => {
     expect(windowState(window("@2", "start", { script: "start" }))).toEqual({ text: "Running", tone: "ok" });
     expect(windowState(window("@2", "start", { script: "start", isDead: true, exitCode: 0 }))).toEqual({ text: "Process finished with exit code 0.", tone: "idle" });
     expect(windowState(window("@2", "start", { script: "start", isDead: true, exitCode: 2 }))?.tone).toBe("error");
+  });
+});
+
+describe("localServiceState", () => {
+  it("shows a stopped service, one whose port is not open yet, a running one and how one ended", () => {
+    expect(localServiceState(localService("web"), null)).toEqual({ text: "Stopped", tone: "idle" });
+    expect(localServiceState(localService("web"), window("@1", "web")).tone).toBe("pending");
+    expect(localServiceState(localService("web", { isListening: true }), window("@1", "web"))).toEqual({ text: "Running", tone: "ok" });
+    expect(localServiceState(localService("web", { port: null }), window("@1", "web"))).toEqual({ text: "Running", tone: "ok" });
+    expect(localServiceState(localService("web"), window("@1", "web", { isDead: true, exitCode: 1 })).tone).toBe("error");
   });
 });
 

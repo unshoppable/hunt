@@ -197,7 +197,7 @@ function harness(pipeline: Pipeline | null, status: RelaySessionStatus | null = 
     clearConversation: () => {
       h.clears++;
       h.events.push("clear");
-      h.status = { acpSessionId: `acp-fresh-${h.clears}`, turn: "idle", clientConnected: false, lastTurnEndedAt: null };
+      h.status = { acpSessionId: `acp-fresh-${h.clears}`, turn: "idle", lastTurnEndedAt: null };
       return Promise.resolve(h.status);
     },
     sendPrompt: (request): Promise<PromptOutcome> => {
@@ -231,7 +231,7 @@ function harness(pipeline: Pipeline | null, status: RelaySessionStatus | null = 
 }
 
 function idle(fields: Partial<RelaySessionStatus> = {}): RelaySessionStatus {
-  return { acpSessionId: "acp-1", turn: "idle", clientConnected: false, lastTurnEndedAt: null, ...fields };
+  return { acpSessionId: "acp-1", turn: "idle", lastTurnEndedAt: null, ...fields };
 }
 
 /** The pipeline of acme/app#12 with `settings` and its record comment posted, at `step` after the given intents. */
@@ -381,19 +381,14 @@ describe("SwfRunner", () => {
     expect(h.logs).toContain("warn: the step result of plan is unusable (the result reports step implement, but the current step is plan); told the agent (prompt started)");
   });
 
-  it("takes a result while a desktop is connected but sends no prompt until it is gone", async () => {
-    const h = harness(recorded("plan", 0), idle({ lastTurnEndedAt: 5_000, clientConnected: true }));
+  it("takes a result and sends the next step's prompt whether or not a desktop is connected", async () => {
+    const h = harness(recorded("plan", 0), idle({ lastTurnEndedAt: 5_000 }));
     h.files.result = PLAN_RESULT;
     await h.runner.tick();
     expect(h.files.pipeline?.step).toBe("implement");
-    expect(h.clears).toBe(0);
-    expect(h.prompts).toEqual([]);
-    expect(h.logs).toContain("a desktop is connected");
-
-    h.status = idle({ lastTurnEndedAt: 5_000 });
-    await h.runner.tick();
     expect(h.clears).toBe(1);
     expect(h.prompts).toHaveLength(1);
+    expect(h.logs.join("\n")).not.toContain("desktop");
   });
 
   it("sends the answers the gateway put into the inbox in the running conversation and removes them", async () => {
@@ -548,21 +543,6 @@ describe("SwfRunner", () => {
     await h.runner.tick();
     expect(h.checkRuns).toEqual([]);
     expect(h.prompts).toEqual([{ sessionId: "acp-1", cwd: WORKTREE, text: badResultPrompt(PROMPTS.swfBadResult, "no step marker") }]);
-  });
-
-  it("leaves the gate alone while a desktop is connected and runs it once the desktop is gone", async () => {
-    const h = harness(recorded("implement", 0), idle({ lastTurnEndedAt: 5_000, clientConnected: true }));
-    h.files.result = IMPLEMENT_RESULT;
-    await h.runner.tick();
-    await h.runner.tick();
-    expect(h.checkRuns).toEqual([]);
-    expect(h.files.result).toBe(IMPLEMENT_RESULT);
-    expect(h.logs).toEqual(["the step result of implement waits for its gate (lint, test); a desktop is connected"]);
-
-    h.status = idle({ lastTurnEndedAt: 5_000 });
-    await h.runner.tick();
-    expect(h.checkRuns).toEqual(["lint", "test"]);
-    expect(h.files.pipeline?.step).toBe("verify");
   });
 
   it("looks the labels up once per turn that ended without a result: a question waits for the gateway, a failed label ends the run", async () => {

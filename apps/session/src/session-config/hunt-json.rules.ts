@@ -75,7 +75,7 @@ const MAX_PROJECT_STATUS_LENGTH = 60;
 const PROJECT_STATUS_RULE = `must be one non-empty line of at most ${MAX_PROJECT_STATUS_LENGTH} characters, the name of a Status option of the GitHub Project`;
 const MERGE_METHOD_RULE = `must be one of ${MERGE_METHODS.join(", ")}`;
 const MAX_GATE_CHECKS = 32;
-const GATE_RULE = `must be "*" for every check or a list of at most ${MAX_GATE_CHECKS} names of checks`;
+const STEP_CHECKS_RULE = `must be "*" for every check or a list of at most ${MAX_GATE_CHECKS} names of checks`;
 
 /** `version`: the contract version, 3. */
 export const ZodContractVersion = z.literal(3, { error: "must be 3" });
@@ -102,7 +102,7 @@ export const ZodServicePort = z.number({ error: PORT_RULE }).check(
   z.refine((port) => !RESERVED_PORTS.has(port), { error: (issue) => `${issue.input} is reserved for ${RESERVED_PORTS.get(Number(issue.input))}` }),
 );
 
-/** `tls`, `guarded` and `review`. */
+/** `tls`, `guarded`, `review` and `frontend`. */
 export const ZodFlag = z.boolean({ error: "must be true or false" });
 
 /** A key of `env` or `remoteSecrets`: the name of a variable that Hunt's own variables leave free. */
@@ -196,10 +196,12 @@ export const ZodMergeMethod = z.enum(MERGE_METHODS, { error: MERGE_METHOD_RULE }
 export const ZodMaxGateRuns = z.number({ error: MAX_GATE_RUNS_RULE }).check(z.refine((count) => Number.isInteger(count) && count >= 1, MAX_GATE_RUNS_RULE));
 
 /**
- * `swf.steps.<step>.gate`: `"*"` for every check, or at most 32 names of checks; each string of the list that breaks
- * ZodServiceName is reported at its index, any other value as GATE_RULE.
+ * `swf.steps.<step>.checks`, the checks of the step's gate: `"*"` for every check, or at most 32 names of checks; each
+ * string of the list that breaks ZodServiceName is reported at its index, any other value as STEP_CHECKS_RULE.
  */
-export const ZodGate = z.union([z.literal("*"), z.pipe(z.array(z.unknown()).check(z.maxLength(MAX_GATE_CHECKS)), z.array(ZodServiceName))], { error: GATE_RULE });
+export const ZodStepChecks = z.union([z.literal("*"), z.pipe(z.array(z.unknown()).check(z.maxLength(MAX_GATE_CHECKS)), z.array(ZodServiceName))], {
+  error: STEP_CHECKS_RULE,
+});
 
 /** Whether `path` stays inside the worktree: relative, at most 255 characters, no segment `.` or `..`. */
 function isWorktreePath(path: string): boolean {

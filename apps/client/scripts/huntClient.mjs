@@ -1,11 +1,13 @@
-// The command line through which the agents that Hunt starts on this Mac show the user something in Hunt's UI and run
-// the checks of its Checks tab. An
+// The command line through which the agents that Hunt starts on this Mac show the user something in Hunt's UI, run
+// the checks of its Checks tab and start the services of hunt.json in its Terminal tab. An
 // agent runs it from its Bash tool as `hunt-client <command>`: `.hunt/hunt-client`, a sh wrapper Hunt writes, runs
 // `node huntClient.mjs "$@"`. Hunt sets HUNT_CONTROL_SOCKET (the path of its control socket) and HUNT_SESSION_ID (the
 // agent's Hunt session) on the agent's process; `--session <id>` replaces the latter. Each call connects to the socket,
 // sends one line `{"type":"ui","session":"<session id>","command":<command>}` of at most MAX_REQUEST_LINE_BYTES and
 // reads one line back, `{"ok":true}`, with `"result"` for a command that has one, or `{"error":"<message>"}`; Hunt's
-// frontend validates the command. `checks run` then asks for `checks` every CHECK_POLL_MS until the checks ended. Paths are
+// frontend validates the command. `checks run` then asks for `checks` every CHECK_POLL_MS until the checks ended, and
+// `services start` asks for `services` every SERVICE_POLL_MS until the services it started listen on their ports or
+// ended, at most SERVICE_WAIT_MS. Paths are
 // resolved against the working directory, so Hunt gets them absolute; `open file --match` reads the file itself to find
 // the line it sends. `hunt-client --help` lists the commands. It
 // prints the result, a string as it is and anything else as JSON, and exits with 0 when Hunt answered ok, also when a
@@ -24,6 +26,10 @@ import { parseArgs } from "node:util";
 const ANSWER_TIMEOUT_MS = 20_000;
 /** How often `checks run` asks whether the checks it started ended. */
 const CHECK_POLL_MS = 2000;
+/** How often `services start` asks whether the services it started listen on their ports. */
+const SERVICE_POLL_MS = 2000;
+/** How long `services start` waits for the services it started before it prints their state as it is. */
+const SERVICE_WAIT_MS = 5 * 60_000;
 /** The longest request line Hunt's control socket reads, its newline included. */
 const MAX_REQUEST_LINE_BYTES = 4096;
 /** Why a missing variable means hunt-client cannot reach Hunt. */
@@ -45,7 +51,7 @@ const OPTIONS = {
   column: { type: "string", placeholder: "<n>", description: "put the cursor on column <n>, counting from 1" },
   window: { type: "boolean", description: "open the file in an editor window of its own instead" },
   page: { type: "string", placeholder: "<page>", description: `open the settings on <page>: ${SETTINGS_PAGES.join(", ")}` },
-  "no-wait": { type: "boolean", description: "return once the checks started instead of when they ended" },
+  "no-wait": { type: "boolean", description: "return once the checks or services started instead of waiting for them" },
 };
 /** The options every command takes. */
 const COMMON_OPTIONS = ["session", "help"];
@@ -53,7 +59,7 @@ const COMMON_OPTIONS = ["session", "help"];
 /**
  * The commands: the words that name one, its operands (in brackets when optional), the options it takes besides
  * COMMON_OPTIONS, what it does for the user, `toCommand(operands, options, workingDirectory)`, which builds the command
- * object Hunt's frontend runs, and whether it waits for the checks it started. `findCommand` takes the first command
+ * object Hunt's frontend runs, and whether it waits for the checks or the services it started. `findCommand` takes the first command
  * whose words fit, so a command stands before one whose words begin it.
  */
 const COMMANDS = [
@@ -121,6 +127,28 @@ const COMMANDS = [
     summary: "print the checks of hunt.json with their last runs, a failed one with the end of its output",
     toCommand: () => ({ name: "checks" }),
   },
+  {
+    words: ["services", "start"],
+    operands: ["[<name>]"],
+    options: ["no-wait"],
+    summary: "start the service <name> of hunt.json, or all of them, in the Terminal tab, wait until each listens on its port or ended and print their state",
+    toCommand: ([service]) => (service === undefined ? { name: "startServices" } : { name: "startServices", service }),
+    waitsForServices: true,
+  },
+  {
+    words: ["services", "stop"],
+    operands: ["<name>"],
+    options: [],
+    summary: "stop the service <name> of hunt.json; its tab keeps the output",
+    toCommand: ([service]) => ({ name: "stopService", service }),
+  },
+  {
+    words: ["services"],
+    operands: [],
+    options: [],
+    summary: "print the services of hunt.json: state, port, whether it listens and the log of its window",
+    toCommand: () => ({ name: "services" }),
+  },
 ];
 
 /** An error in the arguments, reported with exit code 2 and the help of the command it concerns. */
@@ -130,7 +158,8 @@ class UsageError extends Error {}
  * Reads the arguments `argv` of hunt-client (without node and the script): `{ kind: "help", text }` with the help to
  * print, `{ kind: "usageError", message, help }` with the help of the command the error concerns, or
  * `{ kind: "command", command, session }` with the command object for Hunt and the value of `--session` (`undefined`
- * without one), plus `waitsForChecks: true` when hunt-client waits for the checks the command starts. Relative paths
+ * without one), plus `waitsForChecks: true` or `waitsForServices: true` when hunt-client waits for the checks or the
+ * services the command starts. Relative paths
  * resolve against `workingDirectory`.
  */
 export function parseCommandLine(argv, workingDirectory) {
@@ -143,7 +172,10 @@ export function parseCommandLine(argv, workingDirectory) {
     if (!command) throw new UsageError(unknownCommandMessage(positionals));
     if (values.session === "") throw new UsageError("--session needs the ID of a Hunt session");
     const parsed = { kind: "command", command: commandObject(command, values, positionals.slice(command.words.length), workingDirectory), session: values.session };
-    return command.waitsForChecks && !values["no-wait"] ? { ...parsed, waitsForChecks: true } : parsed;
+    if (values["no-wait"]) return parsed;
+    if (command.waitsForChecks) return { ...parsed, waitsForChecks: true };
+    if (command.waitsForServices) return { ...parsed, waitsForServices: true };
+    return parsed;
   } catch (error) {
     if (!(error instanceof UsageError) && !error?.code?.startsWith("ERR_PARSE_ARGS_")) throw error;
     return { kind: "usageError", message: error.message, help };
@@ -179,6 +211,16 @@ export function isAnyCheckRunning(report) {
   return report.checks.some((check) => check.state === "running");
 }
 
+/** The report `report` of `hunt-client services` cut to the service `name`, or whole without a name. */
+export function reportOfService(report, name) {
+  return name === undefined ? report : { ...report, services: report.services.filter((service) => service.name === name) };
+}
+
+/** Whether a service of the report `report` runs but does not listen on its port yet. */
+export function isAnyServiceStarting(report) {
+  return report.services.some((service) => service.state === "running" && service.port !== null && !service.isListening);
+}
+
 /** Runs hunt-client with `argv` in `environment` and `workingDirectory`; resolves to `{ exitCode, stdout, stderr }`. */
 async function run(argv, environment, workingDirectory) {
   const parsed = parseCommandLine(argv, workingDirectory);
@@ -193,8 +235,11 @@ async function run(argv, environment, workingDirectory) {
   if (lineBytes > MAX_REQUEST_LINE_BYTES) return failure(2, `the request has ${lineBytes} bytes, more than the ${MAX_REQUEST_LINE_BYTES} Hunt reads`);
   try {
     const outcome = replyOutcome(await exchange(socketPath, line));
-    if (outcome.exitCode !== 0 || !parsed.waitsForChecks) return outcome;
-    return await waitForChecks(() => exchange(socketPath, JSON.stringify({ type: "ui", session, command: { name: "checks" } })), parsed.command.check);
+    if (outcome.exitCode !== 0) return outcome;
+    const ask = (name) => () => exchange(socketPath, JSON.stringify({ type: "ui", session, command: { name } }));
+    if (parsed.waitsForChecks) return await waitForChecks(ask("checks"), parsed.command.check);
+    if (parsed.waitsForServices) return await waitForServices(ask("services"), parsed.command.service);
+    return outcome;
   } catch (error) {
     return failure(1, `Hunt does not run or did not answer (HUNT_CONTROL_SOCKET=${socketPath}): ${error.message}`);
   }
@@ -209,6 +254,22 @@ async function waitForChecks(askForChecks, name) {
     const report = reportOfCheck(JSON.parse(line).result, name);
     if (!isAnyCheckRunning(report)) return { ...outcome, stdout: resultText(report) };
     await sleep(CHECK_POLL_MS);
+  }
+}
+
+/**
+ * Asks for the services with `askForServices` until the service `name`, or every service without a name, listens on its
+ * port or does not run, at most SERVICE_WAIT_MS; resolves to the outcome that prints their state.
+ */
+async function waitForServices(askForServices, name) {
+  const deadline = Date.now() + SERVICE_WAIT_MS;
+  for (;;) {
+    const line = await askForServices();
+    const outcome = replyOutcome(line);
+    if (outcome.exitCode !== 0) return outcome;
+    const report = reportOfService(JSON.parse(line).result, name);
+    if (!isAnyServiceStarting(report) || Date.now() >= deadline) return { ...outcome, stdout: resultText(report) };
+    await sleep(SERVICE_POLL_MS);
   }
 }
 
@@ -326,7 +387,7 @@ function overviewHelp() {
   return [
     "usage: hunt-client [--session <id>] <command> [<arguments>]",
     "",
-    "Shows the user something in Hunt, the app that started this agent, and runs the checks of its Checks tab. Prints nothing when it worked, except for the result of a checks command.",
+    "Shows the user something in Hunt, the app that started this agent, runs the checks of its Checks tab and starts the services of hunt.json in its Terminal tab. Prints nothing when it worked, except for the result of a checks or services command.",
     "",
     "Commands:",
     ...listing(commandRows, OVERVIEW_COLUMN),

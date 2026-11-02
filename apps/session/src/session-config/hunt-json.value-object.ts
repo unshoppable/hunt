@@ -13,7 +13,7 @@
  *       "model": "claude-opus-5-5", "effort": "high", "maxGateRuns": 5, "humanReviewPaths": ["apps/backend/migrations/**"],
  *       "steps": {
  *         "plan": { "skill": "swf-plan" },
- *         "implement": { "skill": "swf-implement", "model": "claude-sonnet-5-5", "effort": "medium", "gate": ["format", "test"] },
+ *         "implement": { "skill": "swf-implement", "model": "claude-sonnet-5-5", "effort": "medium", "checks": ["format", "test"] },
  *         "verify": { "skill": "swf-verify", "maxReturns": 5 },
  *         "review": { "skill": "swf-review", "effort": "max" },
  *         "pr": { "skill": "swf-pr" },
@@ -27,7 +27,7 @@
  *         "remoteSecrets": { "OPENAI_API_KEY": "$MED_OPENAI_API_KEY" },
  *         "worktreeInclude": ["apps/backend/.env.private"]
  *       },
- *       "ui": { "command": "npm start", "cwd": "apps/ui", "port": 4200, "env": { "BACKEND_ORIGIN": "${services.backend.publicUrl}" } },
+ *       "ui": { "command": "npm start", "cwd": "apps/ui", "port": 4200, "frontend": true, "env": { "BACKEND_ORIGIN": "${services.backend.publicUrl}" } },
  *       "storybook": { "command": "npm run storybook", "port": 6006, "review": false }
  *     },
  *     "checks": {
@@ -49,6 +49,8 @@
  *   service with false also answers at `https://<short>-<port>-open.<domain>` without IAP, behind the app's own login only.
  * - `review`: true by default: the HTML pages of the service's guarded host get Hunt's review widget, with which a
  *   person comments on an element of the page for the agent (`../review/review-server.service.ts`); false leaves its pages unchanged.
+ * - `frontend`: false by default: whether the service shows pages in a browser, such as a dev server. "Browser" of a
+ *   local session in Hunt opens a tab at `http://localhost:<port>` (`https://` with `tls`) for each such service that runs.
  * - `env`: variables of this service only. Keys match `^[A-Z_][A-Z0-9_]*$` and do not start with `CLAUDE_` or `HUNT_`;
  *   values are single lines. `${services.<name>.publicUrl}` in a value becomes the URL of that service, its open URL when
  *   it is not guarded; every other `${…}` but contract 2's `${HUNT_…}` stays as it is.
@@ -86,7 +88,7 @@
  *     request of a poller session need a human reviewer. Hunt does not read them; the repository's review workflow
  *     does, from hunt.json. None by default; the VM only validates the list.
  *   - `steps`: the settings of each step (SWF_STEPS), each optional: an agent step (`plan`, `implement`, `verify`,
- *     `review`, `pr`) takes `skill`, `model`, `effort` and `gate`, a step that sends the pipeline back (`verify`,
+ *     `review`, `pr`) takes `skill`, `model`, `effort` and `checks`, a step that sends the pipeline back (`verify`,
  *     `review`, `checks`, `human-review`, `merge`; RETURNING_STEPS) `maxReturns`, a step whose findings carry a
  *     severity (`verify`, `review`; SCORING_STEPS) `minSeverity`; any other field of a step is a problem.
  *     - `skill`: the Claude Code skill (`.claude/skills/<name>/SKILL.md`, a name like `guardrailSkill`) with which the
@@ -100,9 +102,9 @@
  *     - `minSeverity`: the severity (1 to 5, the scale of the step's prompt) from which a finding of the step sends the
  *       pipeline back to implement; a finding below it stays in the step result as a suggestion. DEFAULT_MIN_SEVERITY
  *       (3) without it.
- *     - `gate`: the checks of hunt.json that must pass before the step's result is accepted: `"*"` for every check, or
- *       a list of at most 32 names of checks (`[]` for none), run in the order of `checks`. Without it, every check for
- *       the steps of GATED_BY_DEFAULT (`implement`) and none for the others.
+ *     - `checks`: the step's gate, the checks of hunt.json's `checks` that must pass before the step's result is
+ *       accepted: `"*"` for every check, or a list of at most 32 names of checks (`[]` for none), run in the order of
+ *       `checks`. Without it, every check for the steps of GATED_BY_DEFAULT (`implement`) and none for the others.
  *   - `skills`: the alias of `steps.<step>.skill`, keyed by agent step (AGENT_STEPS), as older files write the skills.
  *     A step may name its skill in both places only when they agree. Without `steps` and `skills` the section names
  *     no skill, which is one problem.
@@ -147,7 +149,7 @@ import {
   ZodEnvValue,
   ZodEnvVariableName,
   ZodFlag,
-  ZodGate,
+  ZodStepChecks,
   ZodGlobPatterns,
   ZodMaxGateRuns,
   ZodMaxReturns,
@@ -172,8 +174,8 @@ import { SwfSettings } from "./swf-settings.value-object.ts";
 const ROOT_FIELDS = ["version", "adrDir", "guardrailSkill", "declinedGuardrailsFile", "swf", "services", "checks"];
 const SWF_FIELDS = ["model", "effort", "maxGateRuns", "questionPrefix", "projectStatus", "mergeMethod", "humanReviewPaths", "steps", "skills"];
 const PROJECT_STATUS_FIELDS = ["inProgress", "inReview", "done"];
-const STEP_FIELDS = ["skill", "model", "effort", "maxReturns", "minSeverity", "gate"];
-const SERVICE_FIELDS = ["command", "cwd", "port", "tls", "guarded", "review", "env", "remoteSecrets", "worktreeInclude"];
+const STEP_FIELDS = ["skill", "model", "effort", "maxReturns", "minSeverity", "checks"];
+const SERVICE_FIELDS = ["command", "cwd", "port", "tls", "guarded", "review", "frontend", "env", "remoteSecrets", "worktreeInclude"];
 const CHECK_FIELDS = ["command", "cwd"];
 const MAX_SERVICES = 64;
 const SERVICES_RULE = `must hold 1 to ${MAX_SERVICES} services`;
@@ -360,7 +362,7 @@ function parseSteps(value: unknown, checkNames: ReadonlySet<string>, problems: P
 }
 
 /**
- * The settings of `step` at `swf.steps.<step>`: `skill`, `model`, `effort` and `gate` belong to an agent step, `maxReturns`
+ * The settings of `step` at `swf.steps.<step>`: `skill`, `model`, `effort` and `checks` belong to an agent step, `maxReturns`
  * to a returning step, `minSeverity` to a scoring step, and each name of the gate must be one of `checkNames`; undefined
  * when the value is no object.
  */
@@ -381,12 +383,12 @@ function parseStep(step: SwfStep, value: unknown, checkNames: ReadonlySet<string
   const effort = field(ZodEffort, "effort", isAgent, "only an agent step has an effort");
   const maxReturns = field(ZodMaxReturns, "maxReturns", isReturningStep(step), MAX_RETURNS_STEP_RULE);
   const minSeverity = field(ZodMinSeverity, "minSeverity", isScoringStep(step), MIN_SEVERITY_STEP_RULE);
-  const gate = field(ZodGate, "gate", isAgent, "only an agent step has a gate");
-  for (const name of Array.isArray(gate) ? gate : []) {
+  const checks = field(ZodStepChecks, "checks", isAgent, "only an agent step has checks");
+  for (const name of Array.isArray(checks) ? checks : []) {
     if (checkNames.has(name)) continue;
-    problems.add(at(path, "gate"), `no such check ${name}`);
+    problems.add(at(path, "checks"), `no such check ${name}`);
   }
-  return { skill, model, effort, maxReturns, minSeverity, gate };
+  return { skill, model, effort, maxReturns, minSeverity, checks };
 }
 
 /** The usable skills of `swf.skills`, the alias of `swf.steps.<step>.skill`, by agent step; none when the map is missing or no object. */
@@ -472,11 +474,12 @@ function parseService(name: string, value: unknown, names: ReadonlySet<string>, 
   const tls = parseOptionalField(ZodFlag, fields.tls, at(path, "tls"), problems);
   const guarded = parseOptionalField(ZodFlag, fields.guarded, at(path, "guarded"), problems);
   const review = parseOptionalField(ZodFlag, fields.review, at(path, "review"), problems);
+  const frontend = parseOptionalField(ZodFlag, fields.frontend, at(path, "frontend"), problems);
   const env = parseEnvironment(fields.env, at(path, "env"), names, problems);
   const remoteSecrets = parseRemoteSecrets(fields.remoteSecrets, at(path, "remoteSecrets"), env, problems);
   const worktreeInclude = parseOptionalField(ZodGlobPatterns, fields.worktreeInclude, at(path, "worktreeInclude"), problems);
   if (!port) return undefined;
-  return { name, command, cwd, port, tls, guarded, review, env, remoteSecrets, worktreeInclude };
+  return { name, command, cwd, port, tls, guarded, review, frontend, env, remoteSecrets, worktreeInclude };
 }
 
 /**

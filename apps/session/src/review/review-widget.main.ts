@@ -20,7 +20,7 @@ const TOAST_MS = 2_500;
 const STYLE = `
 :host { all: initial; }
 * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; }
-.launcher { position: fixed; right: 16px; bottom: 16px; z-index: 2147483647; display: flex; align-items: center; gap: 6px; height: 32px;
+.launcher { position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 2147483647; display: flex; align-items: center; gap: 6px; height: 32px;
   padding: 0 12px; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 16px; background: #1f2937; color: #f9fafb; cursor: pointer;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25); }
 .launcher:hover { background: #374151; }
@@ -40,7 +40,7 @@ button.action { height: 28px; padding: 0 12px; border-radius: 6px; border: 1px s
 button.primary { border-color: #2563eb; background: #2563eb; color: #fff; }
 button.action:disabled { opacity: 0.5; cursor: default; }
 .error { color: #b91c1c; font-size: 12px; }
-.toast { position: fixed; right: 16px; bottom: 56px; z-index: 2147483647; padding: 6px 10px; border-radius: 6px; background: #111827; color: #f9fafb;
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 56px; z-index: 2147483647; padding: 6px 10px; border-radius: 6px; background: #111827; color: #f9fafb;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25); }
 `;
 

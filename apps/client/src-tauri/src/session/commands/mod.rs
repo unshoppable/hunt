@@ -15,6 +15,7 @@ mod github;
 mod graph;
 mod ide;
 mod remote;
+mod services;
 mod sessions;
 mod swf;
 mod terminal;
@@ -98,6 +99,7 @@ command_handler![
     chat::answer_permission,
     control::answer_control_command,
     chat::decline_guardrail,
+    chat::dismiss_guardrail,
     terminal::open_terminal,
     terminal::terminal_windows,
     terminal::open_shell_window,
@@ -108,6 +110,7 @@ command_handler![
     terminal::close_terminal,
     terminal::open_worktree_in_terminal,
     browser::desktop_open,
+    browser::browser_pages,
     browser::browser_open,
     checks::checks_status,
     checks::run_check,
@@ -115,6 +118,9 @@ command_handler![
     checks::cancel_check,
     checks::cancel_all_checks,
     checks::check_output,
+    services::services_status,
+    services::start_services,
+    services::stop_service,
     changes::list_changed_files,
     changes::change_stats,
     changes::read_file_diff,

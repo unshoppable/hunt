@@ -40,6 +40,7 @@ function session(id: string, parentId: string | null, reviewComments: ReviewComm
     hasLocalWorktree: true,
     mode: "edit",
     pushTarget: "main",
+    dismissedGuardrails: [],
   };
 }
 

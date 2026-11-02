@@ -33,7 +33,8 @@ const OUTCOME_CHIP: Record<Run["outcome"], string> = {
 
 /**
  * The Factory tab of a session of the swf poller: the pipeline of its issue as the record in `.hunt/swf/pipeline.json` of
- * the worktree tells it, pulled from the VM after every turn, so it reads without the VM too. On top the steps plan →
+ * the worktree tells it, pulled from the VM whenever the runner wrote it, so it follows the pipeline live and reads
+ * without the VM too. On top the steps plan →
  * implement → verify → review → pr → checks → human-review → merge as a graph, each with its run count, the current step
  * marked and every return to implement as an amber edge labelled with its findings; below the runs in order with their
  * outcome and duration, and under them the step result of the selected run (by default the latest one that has one).

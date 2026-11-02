@@ -189,6 +189,11 @@ a Chrome, since Playwright MCP takes over every tab of the Chrome it connects to
   `{"type":"openBrowser","session":"<session id>"}` to the control socket and waits for `{"ok":true}`) or with
   "Browser" beside the inspector's Terminal tab
   (`browser_open`), which also brings a running Chrome's window to the front.
+- **App tabs**: "Browser" is enabled only while a service of the worktree's `hunt.json` marked `"frontend": true`
+  accepts connections on its `port` (`agent/app_pages.rs`, polled every 5 s by `browser_pages`). A click opens a tab at
+  `http://localhost:<port>` (`https://` with `tls`) for each such service whose origin no tab shows yet: a new Chrome
+  starts with them, a running one gets them over CDP (`Target.setDiscoverTargets` keeps each tab's URL), an empty tab
+  is reused.
 - **Profile per repository**: a new Chrome gets a copy of the repository's profile (`<app data>/browser/<repo hash>/
   profile`) in `<app data>/browser/sessions/<session id>`, without Chrome's locks and caches, so the sign-ins made in
   an earlier session of the repository are there. When the Chrome ends (its agent or session stops, Hunt quits, or the
@@ -279,7 +284,8 @@ command of `hunt-client`.
     visible and focused, the inspector tab, the file of the Editor tab's active pane with cursor and selection (the
     selected text cut to 20 000 characters) and the file of the Diff tab. An editor window is a webview of its own,
     which `state` does not see. `checks` reports the checks of hunt.json with their last runs, a failed one with the end
-    of its output (`failureExcerpt`).
+    of its output (`failureExcerpt`). `services` reports the services of hunt.json of a local session with their state,
+    port, whether something listens there and the log of their window.
   - *Show*: `show`, `tab <name>`, `open file <path>` (`--line`, `--match` finds the line by its text, `--column`,
     `--end-line` selects lines, `--window`), `open diff <path>`, `open commit <revision>` (resolved by
     `git_resolve_commit`, then selected in the Git tab),
@@ -287,7 +293,9 @@ command of `hunt-client`.
     `open settings [--page <page>]`, `open guardrails` and `open browser`.
   - *Act*: `notify <text>` shows a toast while the focused main window shows the session, else a system notification
     (`tauri-plugin-notification`; a click on it does not select the session). `checks run [<name>]` starts one or every check
-    and, unless `--no-wait`, asks for `checks` every 2 s until those ended. `subchat <prompt>` starts a sub chat beside
+    and, unless `--no-wait`, asks for `checks` every 2 s until those ended. `services start [<name>]` starts one or every
+    service of a local session and, unless `--no-wait`, asks for `services` every 2 s until each listens on its port or
+    ended, at most 5 minutes; `services stop <name>` stops one. `subchat <prompt>` starts a sub chat beside
     the session with its agent setup and prints `{"session":…}`. `title <text>` sets the title and marks it fixed
     (`titleIsFixed`), so neither the summarizer nor the naming after the first prompt changes it again.
 - **Main window**: Rust passes the command on unchecked as `control:command` to the window `main`
@@ -484,6 +492,19 @@ long as Hunt; `checks:changed` reports them to the main window. A running check 
 chat (`check-failed.user-prompt.md`); a repository without checks gets *Set up checks*, which asks the agent to declare
 them.
 
+#### Services of a local session
+
+The `services` section of the worktree's `hunt.json` names the long-running processes of the repository, such as a
+backend or a dev server. On a session VM the VM runs them (`apps/session/src/session-config/`); in a local session the
+Terminal tab lists them first, one tab each, and starts and stops them (`start_services`, `stop_service`; the agent
+through `hunt-client services`). `services/services.rs` reads the section; each service runs in a window of the family's
+tmux server named after it, with the window option `@hunt-service`, in the folder of its `cwd`, in an interactive login
+shell, with its `env` (`tmux::service_command`). A variable that holds `${services.<name>.publicUrl}` is left out, so
+that the app takes its own URL on this Mac. The window is the service's whole state: it stays open with the exit code
+once the service ended, *Start again* runs the command in it again, and *Stop* sends SIGHUP to its process group. Like
+every window, it logs to `.hunt/logs/desktop/<window name>.log`. `services_status` adds whether something accepts
+connections on the service's port; `services:changed` tells the main window about every start and stop.
+
 #### Guardrails
 
 "Guardrails" in the chat header opens a window of its own over the repository's rules (`.claude/rules/*.md`,
@@ -586,11 +607,13 @@ count, the current step marked and every return to implement as an amber edge la
 it; below the graph the runs in order with outcome, start and duration, and under them the step result of the selected
 run rendered as markdown. The data is the record the poller mirrors into `.hunt/swf/pipeline.json` of the worktree on
 the VM (`hunt-ctl swf-record`, schema in `libs/domain/src/swf/pipeline.domain.ts`) plus `.hunt/swf/steps/<nn>-<step>.md`
-with the result that ended run `nn`; Hunt pulls that folder into the local worktree when it opens the session, after
-every turn and before it brings the session back, so the tab reads without the VM too (`read_swf_pipeline`,
-`read_swf_step`). The tab says so when the pipeline has not reported yet. The sidebar's chip of such a session names the
-pipeline's current step once the tab read the record, else the step the gateway recorded; the chat of a connected swf
-session notes that the pipeline pauses while Hunt is connected to the VM. `apps/client/src/factory/` holds the panel and
+with the result that ended run `nn`; Hunt pulls that folder into the local worktree when it opens the session, whenever
+the VM's status helper reports `pipeline.json` written (`swfRecordAt` of its status, so the tab follows the pipeline live
+while Hunt is connected; after every turn with an older helper) and before it brings the session back, so the tab reads
+without the VM too (`read_swf_pipeline`, `read_swf_step`). The tab says so when the pipeline has not reported yet. The
+sidebar's chip of such a session names the pipeline's current step once the tab read the record, else the step the
+gateway recorded; the chat of a connected swf session notes that it shows the current step's conversation, which starts
+afresh with every step and reconnects by itself. `apps/client/src/factory/` holds the panel and
 the pure derivation of the graph (`pipeline-graph.utils.ts`); the store of the read records and their types live in
 `apps/client/src/sessions/swf-pipeline.*`, below the sidebar that reads them.
 
@@ -746,7 +769,8 @@ wrapper and `/etc/hunt/github-token`.
 `hunt-ctl session-config` reads the repository's `hunt.json` (contract version 3, `apps/session/src/session-config/hunt-json.value-object.ts`). It
 lists every service of the repository, a monorepo all of its apps, with its `command`, an optional `cwd`, its `port`,
 `tls` (the port speaks HTTPS), `guarded` (behind IAP, the default), `review` (the review widget on its pages, the
-default; see below) and `env`, whose values may name a service's URL as
+default; see below), `frontend` (it shows pages in a browser, such as a dev server: "Browser" of a local session opens
+a tab for it; see "Local browser") and `env`, whose values may name a service's URL as
 `${services.<name>.publicUrl}`, `remoteSecrets`, variables whose values are remote secrets (`"$<NAME>"`, see "Remote
 sessions"), and `worktreeInclude`, the ignored files the service needs, as glob patterns, which every worktree and
 session VM gets from the checkout (see "Worktrees and changes") and the VM only validates. An optional `swf` section
@@ -761,7 +785,7 @@ defaults: `apps/session/src/session-config/swf-settings.value-object.ts`, `libs/
   "mergeMethod": "squash",
   "steps": {
     "plan": { "skill": "swf-plan" },
-    "implement": { "skill": "swf-implement", "model": "claude-sonnet-5-5", "effort": "medium", "gate": ["lint", "test"] },
+    "implement": { "skill": "swf-implement", "model": "claude-sonnet-5-5", "effort": "medium", "checks": ["lint", "test"] },
     "verify": { "skill": "swf-verify", "maxReturns": 5 },
     "review": { "skill": "acme-review", "effort": "max" },
     "pr": { "skill": "swf-pr" },
@@ -774,7 +798,7 @@ defaults: `apps/session/src/session-config/swf-settings.value-object.ts`, `libs/
 a full model ID (an alias such as `opus` is rejected, since its model changes with Claude Code's releases), the effort
 one of `low`, `medium`, `high`, `xhigh`, `max`; without them Claude Code's defaults apply, also for a model Claude Code
 does not know (the relay's journal says so). `swf.steps.<step>` sets each step, each entry optional. An agent step
-(`plan`, `implement`, `verify`, `review`, `pr`) takes `skill`, `model`, `effort` and `gate`; a step that sends the issue
+(`plan`, `implement`, `verify`, `review`, `pr`) takes `skill`, `model`, `effort` and `checks`; a step that sends the issue
 back to `implement` (`verify`, `review`, `checks`, `human-review`, `merge`) takes `maxReturns`, how often it may do so
 before the agent escalates (1 to 20; Hunt's defaults `DEFAULT_MAX_RETURNS`: verify 5, review 3, checks 2, human-review 3,
 merge 2); `verify` and `review`, whose findings carry a severity of 1 to 5, take `minSeverity`, the severity from which a
@@ -786,7 +810,7 @@ skill in both places only when they agree. Every agent step must name one: Hunt 
 one is a problem of hunt.json (`swf.steps.<step>.skill: must name the skill of the step …`), as is each skill file the
 worktree lacks. The client asks to add the missing entries (`swf-<step>`) and to create the missing skill files when a
 session of the repository opens. The step's prompt tells the agent to invoke its skill first; see "Step settings" in
-`libs/domain/prompts/swf/README.md`. `gate` names the checks of hunt.json's `checks` the step's result must pass before
+`libs/domain/prompts/swf/README.md`. A step's `checks` names the checks of hunt.json's `checks` the step's result must pass before
 the pipeline accepts it, `"*"` for every check, `[]` for none; they run in the order of `checks`. Without it,
 `implement`'s gate is every check and the other steps have none. `maxGateRuns` (at least 1, default 5) is how often one
 step result may fail its gate before the agent is told to ask the people (see "Remote sessions"). Three fields hold
@@ -1181,7 +1205,9 @@ The **steps of the pipeline** (`libs/domain/prompts/swf/`, see its README) are s
 `hunt-ctl start` for a session of origin `swf` only); `checks`, `human-review` and `merge` wait for GitHub and are the
 poller's own, as is every wait for a person. The runner sends each agent step's prompt into a **fresh conversation**
 (`sudo -n hunt-ctl clear <id> --keep-stored`, the agent's one sudo rule beside `hunt-ctl service`; the relay restarts
-with a new ACP session and the tokens the VM stores), never while a turn runs or a desktop is connected, and watches the
+with a new ACP session and the tokens the VM stores), never while a turn runs; a connected desktop does not hold it
+back: the restart drops the desktop's connection, and Hunt connects again on its own and loads the new conversation, so
+that a person watches the pipeline live. It watches the
 relay's `/run/hunt/status.json` (`fs.watch` with a poll every ten seconds, since the relay's runtime folder is created
 anew with every restart) for the turn's end; it connects to the relay's socket only to send a prompt. What earlier
 steps did is in `.hunt/swf/steps/`, which the prompts point the agent at. The agent ends an agent step with a **step

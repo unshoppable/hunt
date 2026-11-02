@@ -27,3 +27,10 @@ export type PreviewService = {
 export type PreviewStatus = { vmRunning: boolean; services: PreviewService[]; listening: PreviewPort[] };
 
 export type PreviewPort = { port: number; url: string };
+
+/**
+ * A hunt.json service of a local session marked `"frontend": true` whose port accepts connections on this Mac (mirror of
+ * `AppPage` in src-tauri/src/agent/app_pages.rs); "Browser" opens a tab of the session's Chrome at `url`,
+ * `http://localhost:<port>` (`https://` with `tls`).
+ */
+export type AppPage = { name: string; url: string };

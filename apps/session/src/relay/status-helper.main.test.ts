@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,8 +22,8 @@ interface HelperProcess {
   exited: Promise<number | null>;
 }
 
-function startHelper(statusPath: string, spoolDir = join(statusPath, "..", "annotations")): HelperProcess {
-  const child = spawn(process.execPath, [HELPER, statusPath, spoolDir]);
+function startHelper(statusPath: string, spoolDir = join(statusPath, "..", "annotations"), configPath?: string): HelperProcess {
+  const child = spawn(process.execPath, [HELPER, statusPath, spoolDir, ...(configPath ? [configPath] : [])]);
   const received: Message[] = [];
   let onMessage = () => {};
   const lines = createLineDecoder((line) => {
@@ -75,19 +75,47 @@ describe("statusHelper", () => {
     helper = startHelper(statusPath);
 
     expect(await helper.next()).toEqual({ t: "ready" });
-    expect(await helper.next()).toEqual({ t: "status", turn: "idle", question: true, lastTurnEndedAt: 1_000 });
+    expect(await helper.next()).toEqual({ t: "status", turn: "idle", question: true, lastTurnEndedAt: 1_000, swfRecordAt: null });
 
     // A change the report does not show sends nothing.
     writeStatus(statusPath, { clientConnected: false });
     await new Promise((resolve) => setTimeout(resolve, 1_100));
     writeStatus(statusPath, { turn: "running", question: false });
-    expect(await helper.next()).toEqual({ t: "status", turn: "running", question: false, lastTurnEndedAt: 1_000 });
+    expect(await helper.next()).toEqual({ t: "status", turn: "running", question: false, lastTurnEndedAt: 1_000, swfRecordAt: null });
 
     rmSync(statusPath);
-    expect(await helper.next()).toEqual({ t: "status", turn: null, question: null, lastTurnEndedAt: null });
+    expect(await helper.next()).toEqual({ t: "status", turn: null, question: null, lastTurnEndedAt: null, swfRecordAt: null });
 
     helper.child.stdin.end();
     expect(await helper.exited).toBe(0);
+  }, 15_000);
+
+  it("reports when the pipeline record of the worktree named by the session's config was written, also without the relay", async () => {
+    dir = mkdtempSync(join(tmpdir(), "hunt-status-"));
+    const statusPath = join(dir, "status.json");
+    const worktree = join(dir, "worktree");
+    const recordPath = join(worktree, ".hunt", "swf", "pipeline.json");
+    const configPath = join(dir, "hunt-session.json");
+    writeStatus(statusPath, {});
+    helper = startHelper(statusPath, undefined, configPath);
+
+    // The config is read once it exists; until then there is no record.
+    expect(await helper.next()).toEqual({ t: "ready" });
+    expect(await helper.next()).toMatchObject({ t: "status", turn: "idle", swfRecordAt: null });
+    writeJsonAtomic(configPath, { cwd: worktree, acpSessionId: "acp-1" });
+    mkdirSync(join(worktree, ".hunt", "swf"), { recursive: true });
+    writeJsonAtomic(recordPath, { step: "plan" });
+    const first = await helper.next();
+    expect(first).toMatchObject({ t: "status", turn: "idle", swfRecordAt: Math.round(statSync(recordPath).mtimeMs) });
+
+    // A rewrite with a later time is reported, and the record stays while the relay is gone.
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    writeJsonAtomic(recordPath, { step: "implement" });
+    const second = await helper.next();
+    expect(second).toMatchObject({ t: "status", turn: "idle", swfRecordAt: Math.round(statSync(recordPath).mtimeMs) });
+    expect(second.swfRecordAt).not.toBe(first.swfRecordAt);
+    rmSync(statusPath);
+    expect(await helper.next()).toEqual({ t: "status", turn: null, question: null, lastTurnEndedAt: null, swfRecordAt: second.swfRecordAt });
   }, 15_000);
 
   it("sends every annotation of the spool folder once, in the order of arrival, and deletes it", async () => {
@@ -114,7 +142,7 @@ describe("statusHelper", () => {
     helper = startHelper(statusPath, spoolDir);
 
     expect(await helper.next()).toEqual({ t: "ready" });
-    expect(await helper.next()).toEqual({ t: "status", turn: "idle", question: true, lastTurnEndedAt: 1_000 });
+    expect(await helper.next()).toEqual({ t: "status", turn: "idle", question: true, lastTurnEndedAt: 1_000, swfRecordAt: null });
     expect(await helper.next()).toEqual({ t: "annotation", annotation: first });
     expect(await helper.next()).toEqual({ t: "annotation", annotation: second });
     expect(readdirSync(spoolDir)).toEqual([]);

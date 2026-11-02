@@ -42,7 +42,7 @@ const MAX_RETURNS_RULE = "must be an integer from 1 to 20";
 const MAX_RETURNS_STEP_RULE = "only a step that sends the pipeline back has maxReturns (verify, review, checks, human-review, merge)";
 const MIN_SEVERITY_RULE = "must be an integer from 1 to 5";
 const MIN_SEVERITY_STEP_RULE = "only a step whose findings carry a severity has minSeverity (verify, review)";
-const GATE_RULE = 'must be "*" for every check or a list of at most 32 names of checks';
+const STEP_CHECKS_RULE = 'must be "*" for every check or a list of at most 32 names of checks';
 const QUESTION_PREFIX_RULE = "must be one non-empty line of at most 40 characters that does not end with a colon";
 const PROJECT_STATUS_RULE = "must be one non-empty line of at most 60 characters, the name of a Status option of the GitHub Project";
 const MERGE_METHOD_RULE = "must be one of squash, merge, rebase";
@@ -71,7 +71,7 @@ const APP_FRAMEWORK_SWF = {
   mergeMethod: "squash",
   steps: {
     plan: { skill: "swf-plan" },
-    implement: { skill: "swf-implement", gate: "*" },
+    implement: { skill: "swf-implement", checks: "*" },
     verify: { skill: "swf-verify", maxReturns: 3, minSeverity: 3 },
     review: { skill: "swf-review", maxReturns: 3, minSeverity: 3 },
     pr: { skill: "swf-pr" },
@@ -99,7 +99,7 @@ const COMPLETE = {
         PLAIN: "x",
       },
     },
-    ui: { command: "npm start -- --port 4200", cwd: "apps/ui", port: 4200, env: { DEV_BACKEND_ORIGIN: "${services.backend.publicUrl}" } },
+    ui: { command: "npm start -- --port 4200", cwd: "apps/ui", port: 4200, frontend: true, env: { DEV_BACKEND_ORIGIN: "${services.backend.publicUrl}" } },
     docs: { command: "npx serve docs", port: 4400, tls: true },
     admin: { command: 'echo "$PATH" && npm run admin', port: 4800, guarded: false, review: false },
   },
@@ -114,13 +114,14 @@ const COMPLETE_SERVICES = [
     tls: true,
     guarded: false,
     review: true,
+    frontend: false,
     env: COMPLETE.services.backend.env,
     remoteSecrets: {},
     worktreeInclude: [],
   },
-  { name: "ui", command: "npm start -- --port 4200", cwd: "apps/ui", port: 4200, tls: false, guarded: true, review: true, env: COMPLETE.services.ui.env, remoteSecrets: {}, worktreeInclude: [] },
-  { name: "docs", command: "npx serve docs", cwd: null, port: 4400, tls: true, guarded: true, review: true, env: {}, remoteSecrets: {}, worktreeInclude: [] },
-  { name: "admin", command: 'echo "$PATH" && npm run admin', cwd: null, port: 4800, tls: false, guarded: false, review: false, env: {}, remoteSecrets: {}, worktreeInclude: [] },
+  { name: "ui", command: "npm start -- --port 4200", cwd: "apps/ui", port: 4200, tls: false, guarded: true, review: true, frontend: true, env: COMPLETE.services.ui.env, remoteSecrets: {}, worktreeInclude: [] },
+  { name: "docs", command: "npx serve docs", cwd: null, port: 4400, tls: true, guarded: true, review: true, frontend: false, env: {}, remoteSecrets: {}, worktreeInclude: [] },
+  { name: "admin", command: 'echo "$PATH" && npm run admin', cwd: null, port: 4800, tls: false, guarded: false, review: false, frontend: false, env: {}, remoteSecrets: {}, worktreeInclude: [] },
 ].map((state) => new ServiceConfig(state));
 
 function problemsOf(huntJson: unknown, host: Pick<SessionHost, "short" | "domain"> = HOST, secrets: Record<string, string> = {}): string[] {
@@ -168,7 +169,7 @@ describe("HuntJson services", () => {
     expect(huntJsonOf(undefined).services).toEqual([]);
     expect(huntJsonOf(web({ worktreeInclude: ["apps/web/.env.private", "config/*.local"] })).services[0].worktreeInclude).toEqual(["apps/web/.env.private", "config/*.local"]);
     expect(huntJsonOf(web({ worktreeInclude: [] })).services[0].worktreeInclude).toEqual([]);
-    expect(huntJsonOf(web({})).services).toEqual([{ name: "web", command: "npm start", cwd: null, port: 3000, tls: false, guarded: true, review: true, env: {}, remoteSecrets: {}, worktreeInclude: [] }]);
+    expect(huntJsonOf(web({})).services).toEqual([{ name: "web", command: "npm start", cwd: null, port: 3000, tls: false, guarded: true, review: true, frontend: false, env: {}, remoteSecrets: {}, worktreeInclude: [] }]);
   });
 
   it("reads the remote secrets of a service by variable, without the $", () => {
@@ -182,8 +183,8 @@ describe("HuntJson services", () => {
 
     expect(huntJsonOf(huntJson).services).toHaveLength(64);
     expect(huntJsonOf(huntJson).services.slice(62)).toEqual([
-      { name: "a".repeat(32), ...longest, tls: false, guarded: true, review: true, env: {}, remoteSecrets: {}, worktreeInclude: [] },
-      { name: "w-2", command: "npm start", cwd: ".config/a.b_c-D9", port: 1024, tls: false, guarded: true, review: true, env: {}, remoteSecrets: {}, worktreeInclude: [] },
+      { name: "a".repeat(32), ...longest, tls: false, guarded: true, review: true, frontend: false, env: {}, remoteSecrets: {}, worktreeInclude: [] },
+      { name: "w-2", command: "npm start", cwd: ".config/a.b_c-D9", port: 1024, tls: false, guarded: true, review: true, frontend: false, env: {}, remoteSecrets: {}, worktreeInclude: [] },
     ]);
   });
 
@@ -225,12 +226,12 @@ describe("HuntJson services", () => {
         ["swf.steps.plan.skill: differs from swf.skills.plan", "swf.steps.review.skill: differs from swf.skills.review"],
       ],
       [
-        { ...lint({}), swf: { steps: { ...STEPS, checks: { skill: "swf-checks", model: "claude-opus-5-5", effort: "low", maxReturns: 2, gate: "*" }, merge: { skill: "swf-merge" } } } },
+        { ...lint({}), swf: { steps: { ...STEPS, checks: { skill: "swf-checks", model: "claude-opus-5-5", effort: "low", maxReturns: 2, checks: "*" }, merge: { skill: "swf-merge" } } } },
         [
           "swf.steps.checks.skill: only an agent step has a skill",
           "swf.steps.checks.model: only an agent step has a model",
           "swf.steps.checks.effort: only an agent step has an effort",
-          "swf.steps.checks.gate: only an agent step has a gate",
+          "swf.steps.checks.checks: only an agent step has checks",
           "swf.steps.merge.skill: only an agent step has a skill",
         ],
       ],
@@ -278,18 +279,18 @@ describe("HuntJson services", () => {
         [`swf.steps.verify.maxReturns: ${MAX_RETURNS_RULE}`, `swf.steps.human-review.maxReturns: ${MAX_RETURNS_RULE}`],
       ]),
       ...["all", "", 1, null, { lint: true }, Array.from({ length: 33 }, () => "lint")].map((gate): [unknown, string[]] => [
-        { ...lint({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", gate } } } },
-        [`swf.steps.implement.gate: ${GATE_RULE}`],
+        { ...lint({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", checks: gate } } } },
+        [`swf.steps.implement.checks: ${STEP_CHECKS_RULE}`],
       ]),
       [
-        { ...lint({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", gate: ["lint", "Lint", "test"] } } } },
-        [`swf.steps.implement.gate[1]: ${NAME_RULE}`],
+        { ...lint({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", checks: ["lint", "Lint", "test"] } } } },
+        [`swf.steps.implement.checks[1]: ${NAME_RULE}`],
       ],
       [
-        { ...lint({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", gate: ["lint", "test"] }, review: { skill: "swf-review", gate: ["format"] } } } },
-        ["swf.steps.implement.gate: no such check test", "swf.steps.review.gate: no such check format"],
+        { ...lint({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", checks: ["lint", "test"] }, review: { skill: "swf-review", checks: ["format"] } } } },
+        ["swf.steps.implement.checks: no such check test", "swf.steps.review.checks: no such check format"],
       ],
-      [{ ...web({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", gate: ["lint"] } } } }, ["swf.steps.implement.gate: no such check lint"]],
+      [{ ...web({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", checks: ["lint"] } } } }, ["swf.steps.implement.checks: no such check lint"]],
       ...["", "Swf-Plan", "swf plan", "-swf-plan", "a--b", "a".repeat(65), 1, null].map((plan): [unknown, string[]] => [
         { ...web({}), swf: { skills: { ...SKILLS, plan } } },
         [`swf.skills.plan: ${SKILL_NAME_RULE}`],
@@ -365,8 +366,13 @@ describe("HuntJson services", () => {
         ["services.api.port: 3000 is the port of the service web already", "services.docs.port: 3000 is the port of the service web already"],
       ],
       [
-        web({ tls: "true", guarded: 0, review: "no" }),
-        ["services.web.tls: must be true or false", "services.web.guarded: must be true or false", "services.web.review: must be true or false"],
+        web({ tls: "true", guarded: 0, review: "no", frontend: "yes" }),
+        [
+          "services.web.tls: must be true or false",
+          "services.web.guarded: must be true or false",
+          "services.web.review: must be true or false",
+          "services.web.frontend: must be true or false",
+        ],
       ],
       [web({ env: [] }), ["services.web.env: must be an object"]],
       [web({ env: { lower: "x" } }), ["services.web.env.lower: invalid name, must match ^[A-Z_][A-Z0-9_]*$"]],
@@ -526,7 +532,7 @@ describe("HuntJson", () => {
     expect(huntJsonOf(web({})).stepSettings).toBeNull();
     expect(huntJsonOf({ ...web({}), swf: { skills: SKILLS } }).swf?.isEqualTo(new SwfSettings({ steps: STEPS }))).toBe(true);
     expect(huntJsonOf({ ...web({}), swf: { steps: STEPS, skills: SKILLS } }).swf?.isEqualTo(new SwfSettings({ steps: STEPS }))).toBe(true);
-    const mixed = { steps: { plan: { skill: "acme-plan" }, implement: { gate: [] } }, skills: { implement: "swf-implement", verify: "swf-verify", review: "swf-review", pr: "swf-pr" } };
+    const mixed = { steps: { plan: { skill: "acme-plan" }, implement: { checks: [] } }, skills: { implement: "swf-implement", verify: "swf-verify", review: "swf-review", pr: "swf-pr" } };
     expect(huntJsonOf({ ...web({}), swf: mixed }).stepSettings?.steps).toMatchObject({ plan: { skill: "acme-plan" }, implement: { skill: "swf-implement", gate: [] } });
   });
 
@@ -557,9 +563,9 @@ describe("HuntJson", () => {
       maxGateRuns: 3,
       steps: {
         plan: { skill: "swf-plan" },
-        implement: { skill: "swf-implement", model: "claude-sonnet-5-5", effort: "medium", gate: ["test", "lint"] },
+        implement: { skill: "swf-implement", model: "claude-sonnet-5-5", effort: "medium", checks: ["test", "lint"] },
         verify: { skill: "swf-verify", maxReturns: 7, minSeverity: 4 },
-        review: { skill: "swf-review", effort: "max", gate: "*" },
+        review: { skill: "swf-review", effort: "max", checks: "*" },
         pr: { skill: "swf-pr" },
         merge: { maxReturns: 1 },
       },
@@ -573,7 +579,7 @@ describe("HuntJson", () => {
       review: { effort: "max", maxReturns: 3, minSeverity: 3, gate: ["lint", "test", "build"] },
       merge: { maxReturns: 1 },
     });
-    expect(huntJsonOf({ ...web({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", gate: "*" } } } }).stepSettings?.of("implement").gate).toEqual([]);
+    expect(huntJsonOf({ ...web({}), swf: { steps: { ...STEPS, implement: { skill: "swf-implement", checks: "*" } } } }).stepSettings?.of("implement").gate).toEqual([]);
   });
 
   it("reads the question prefix, the project statuses and the merge method of the section and resolves Hunt's without them", () => {
@@ -620,7 +626,7 @@ describe("HuntJson", () => {
     const service = { name: "web", command: "npm start", port: 3000 };
     expect(() => new HuntJson({ services: [service, { ...service, name: "api" }] })).toThrow(/a port of its own/);
     expect(() => new HuntJson({ services: [{ ...service, env: { API: "${services.api.publicUrl}" } }] })).toThrow(/names a service of hunt.json/);
-    const swf = { steps: { ...STEPS, review: { skill: "swf-review", gate: ["lint"] } } };
+    const swf = { steps: { ...STEPS, review: { skill: "swf-review", checks: ["lint"] } } };
     expect(() => new HuntJson({ swf })).toThrow(/every gate names a check of hunt.json/);
     expect(new HuntJson({ swf, checks: [{ name: "lint", command: "npm run lint" }] }).stepSettings?.of("review").gate).toEqual(["lint"]);
   });

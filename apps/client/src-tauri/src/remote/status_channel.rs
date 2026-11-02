@@ -1,6 +1,7 @@
 //! The status channel of a remote session: the status helper on its VM (`session/statusHelper.mjs` of the installed
 //! session release, run over the shared SSH connection as the agent's user) reports what the session's relay records in
-//! its status whenever the turn, the question or the end of the last turn changes, and delivers each annotation a person
+//! its status whenever the turn, the question or the end of the last turn changes, when the pipeline record of a
+//! software-factory session was written, and delivers each annotation a person
 //! made with the review widget on a preview page of the VM once. Messages are JSON lines, first `{"t":"ready"}`, then one
 //! `{"t":"status",…}` per change and one `{"t":"annotation","annotation":{…}}` per annotation; the helper ends with its
 //! stdin. The helper only reads, so the channel neither starts a stopped VM nor keeps one awake. Knows nothing about
@@ -32,7 +33,7 @@ pub enum Turn {
     Idle,
 }
 
-/// What the relay records, as the helper reports it.
+/// What the relay records, as the helper reports it, and when the worktree's pipeline record was written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
@@ -42,6 +43,10 @@ pub struct Report {
     pub question: Option<bool>,
     /// When the last turn ended (Unix ms); `None` when none ended since the relay started.
     pub last_turn_ended_at: Option<i64>,
+    /// When `.hunt/swf/pipeline.json` of the worktree was last written (Unix ms); `None` while the worktree has none, and
+    /// from an older helper that does not report it.
+    #[serde(default)]
+    pub swf_record_at: Option<i64>,
 }
 
 /// An annotation a person made with the review widget on a preview page of the VM, as the review server stored it
@@ -190,20 +195,21 @@ mod tests {
     #[test]
     fn reads_ready_and_the_turn_of_a_status() {
         assert_eq!(parse_message(r#"{"t":"ready"}"#), Some(Message::Ready));
-        let running = r#"{"t":"status","turn":"running","question":false,"lastTurnEndedAt":null}"#;
-        let report = Report { turn: Some(Turn::Running), question: Some(false), last_turn_ended_at: None };
+        let running = r#"{"t":"status","turn":"running","question":false,"lastTurnEndedAt":null,"swfRecordAt":null}"#;
+        let report = Report { turn: Some(Turn::Running), question: Some(false), last_turn_ended_at: None, swf_record_at: None };
         assert_eq!(parse_message(running), Some(Message::Status(report)));
-        let idle = r#"{"t":"status","turn":"idle","question":true,"lastTurnEndedAt":1760000000000}"#;
-        let report = Report { turn: Some(Turn::Idle), question: Some(true), last_turn_ended_at: Some(1_760_000_000_000) };
+        let idle = r#"{"t":"status","turn":"idle","question":true,"lastTurnEndedAt":1760000000000,"swfRecordAt":1760000001000}"#;
+        let report = Report { turn: Some(Turn::Idle), question: Some(true), last_turn_ended_at: Some(1_760_000_000_000), swf_record_at: Some(1_760_000_001_000) };
         assert_eq!(parse_message(idle), Some(Message::Status(report)));
-        let without_relay = r#"{"t":"status","turn":null,"question":null,"lastTurnEndedAt":null}"#;
-        assert_eq!(parse_message(without_relay), Some(Message::Status(Report { turn: None, question: None, last_turn_ended_at: None })));
+        let without_relay = r#"{"t":"status","turn":null,"question":null,"lastTurnEndedAt":null,"swfRecordAt":1760000001000}"#;
+        let report = Report { turn: None, question: None, last_turn_ended_at: None, swf_record_at: Some(1_760_000_001_000) };
+        assert_eq!(parse_message(without_relay), Some(Message::Status(report)));
     }
 
     #[test]
-    fn a_status_without_question_comes_from_an_older_relay() {
+    fn a_status_without_question_or_record_time_comes_from_an_older_release() {
         let older = r#"{"t":"status","turn":"idle","lastTurnEndedAt":1760000000000}"#;
-        let report = Report { turn: Some(Turn::Idle), question: None, last_turn_ended_at: Some(1_760_000_000_000) };
+        let report = Report { turn: Some(Turn::Idle), question: None, last_turn_ended_at: Some(1_760_000_000_000), swf_record_at: None };
         assert_eq!(parse_message(older), Some(Message::Status(report)));
     }
 

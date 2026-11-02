@@ -31,7 +31,6 @@ export function createEmptyChat(): SessionChat {
     isStale: false,
     move: null,
     fileSync: { isRunning: false, syncedAt: null, error: null, conflicts: [] },
-    dismissedGuardrailId: null,
   };
 }
 

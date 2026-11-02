@@ -1,19 +1,28 @@
 import type { PreviewService, PreviewStatus } from "../preview/preview.types";
-import type { Machine, TerminalTarget, TmuxWindow } from "./terminal.types";
+import type { LocalService, Machine, TerminalTarget, TmuxWindow } from "./terminal.types";
 import { isPreviewActive, type Description } from "../preview/preview-services.utils";
 import type { SessionWindows } from "./terminals.store";
 import { describeLocalExit } from "./terminal-stream.utils";
 
-/** A tab of the Terminal panel: the log of a hunt.json service on the VM or a window of a tmux session `app`. */
+/**
+ * A tab of the Terminal panel: the log of a hunt.json service on the VM, a hunt.json service of a local session, or a
+ * window of a tmux session `app`.
+ */
 export type TerminalTab = {
-  /** Stays the same while the process exists: `service:<name>` or `window:<machine>:<tmux window ID>`. */
+  /**
+   * Stays the same while the process exists: `service:<name>`, `local-service:<name>` (also while the service is
+   * stopped) or `window:<machine>:<tmux window ID>`.
+   */
   key: string;
   label: string;
   title: string;
-  target: TerminalTarget;
-  /** The service the tab shows the log of; null for a window. */
+  /** What the tab's terminal shows; null for a local service that no window ran yet. */
+  target: TerminalTarget | null;
+  /** The service on the VM the tab shows the log of; null otherwise. */
   service: PreviewService | null;
-  /** The tmux window the tab shows; null for a service. */
+  /** The hunt.json service of a local session the tab runs; null otherwise. */
+  localService: LocalService | null;
+  /** The tmux window the tab shows; null for a service on the VM and a local service no window ran yet. */
   window: TmuxWindow | null;
 };
 
@@ -28,15 +37,18 @@ export function windowTabKey(machine: Machine, id: string): string {
 }
 
 /**
- * The tabs in their order: the services as hunt.json lists them, then the VM's windows, then this Mac's, each in
- * tmux's order and without the windows of checks. Windows of the same name on one machine are told apart as "vite", "vite 2"; with `labelsDesktop` (a
- * remote session, whose sub chats run their processes on this Mac) the labels of this Mac's windows end in "(Mac)".
+ * The tabs in their order: the services as hunt.json lists them (on the VM `services`, in a local session
+ * `localServices`, each with the window of this Mac that runs or ran it), then the VM's windows, then this Mac's other
+ * windows, each in tmux's order and without the windows of checks. Windows of the same name on one machine are told
+ * apart as "vite", "vite 2"; with `labelsDesktop` (a remote session, whose sub chats run their processes on this Mac)
+ * the labels of this Mac's windows end in "(Mac)".
  */
 export function terminalTabs(
   services: readonly PreviewService[],
   vmWindows: readonly TmuxWindow[],
   desktopWindows: readonly TmuxWindow[],
   labelsDesktop: boolean,
+  localServices: readonly LocalService[] = [],
 ): TerminalTab[] {
   const serviceTabs = services.map(
     (service): TerminalTab => ({
@@ -45,10 +57,41 @@ export function terminalTabs(
       title: `The log of the service ${service.name}, ~/logs/${service.name}.log on the VM; read-only`,
       target: { kind: "service", name: service.name },
       service,
+      localService: null,
       window: null,
     }),
   );
-  return [...serviceTabs, ...windowTabs("vm", vmWindows, ""), ...windowTabs("desktop", desktopWindows, labelsDesktop ? " (Mac)" : "")];
+  const localServiceTabs = localServices.map((localService): TerminalTab => {
+    const window = desktopWindows.find((candidate) => candidate.service === localService.name) ?? null;
+    return {
+      key: `local-service:${localService.name}`,
+      label: localService.name,
+      title: localServiceTitle(localService, window),
+      target: window ? { kind: "window", id: window.id, machine: "desktop" } : null,
+      service: null,
+      localService,
+      window,
+    };
+  });
+  const serviceWindows = new Set(localServiceTabs.flatMap((tab) => (tab.window ? [tab.window.id] : [])));
+  const otherDesktopWindows = desktopWindows.filter((window) => !serviceWindows.has(window.id));
+  return [
+    ...serviceTabs,
+    ...localServiceTabs,
+    ...windowTabs("vm", vmWindows, ""),
+    ...windowTabs("desktop", otherDesktopWindows, labelsDesktop ? " (Mac)" : ""),
+  ];
+}
+
+/**
+ * The state a local service's tab shows, read from its window `window` when one runs or ran it: stopped, starting
+ * until its port accepts connections, running, or how it ended.
+ */
+export function localServiceState(service: LocalService, window: TmuxWindow | null): Description {
+  if (!window) return { text: "Stopped", tone: "idle" };
+  if (window.isDead) return { text: describeLocalExit(window.exitCode), tone: window.exitCode === 0 ? "idle" : "error" };
+  if (service.port !== null && !service.isListening) return { text: `Starting, port ${service.port} not open yet`, tone: "pending" };
+  return RUNNING;
 }
 
 /** The state a window's tab shows: whether the package.json script of a script window runs or how it ended. */
@@ -56,6 +99,11 @@ export function windowState(window: TmuxWindow): Description | null {
   if (!window.script) return null;
   if (!window.isDead) return RUNNING;
   return { text: describeLocalExit(window.exitCode), tone: window.exitCode === 0 ? "idle" : "error" };
+}
+
+/** Whether `tab` shows a service of hunt.json, on the VM or of a local session, rather than a shell or another process. */
+export function isServiceTab(tab: TerminalTab): boolean {
+  return Boolean(tab.service || tab.localService);
 }
 
 /** The ended package.json script window that `tab` shows, which "Run again" runs again; null for any other tab. */
@@ -105,8 +153,15 @@ function windowTabs(machine: Machine, windows: readonly TmuxWindow[], labelSuffi
     const count = (seen.get(window.name) ?? 0) + 1;
     seen.set(window.name, count);
     const label = `${count === 1 ? window.name : `${window.name} ${count}`}${labelSuffix}`;
-    return { key: windowTabKey(machine, window.id), label, title: windowTitle(machine, window), target: { kind: "window", id: window.id, machine }, service: null, window };
+    const target: TerminalTarget = { kind: "window", id: window.id, machine };
+    return { key: windowTabKey(machine, window.id), label, title: windowTitle(machine, window), target, service: null, localService: null, window };
   });
+}
+
+function localServiceTitle(service: LocalService, window: TmuxWindow | null): string {
+  const what = `The service ${service.name} of hunt.json, ${service.command}`;
+  if (!window) return `${what}; not started`;
+  return `${what}, in the tmux window ${window.name} on this Mac; its output goes to .hunt/logs/desktop/${window.name}.log`;
 }
 
 function windowTitle(machine: Machine, window: TmuxWindow): string {

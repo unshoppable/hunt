@@ -16,10 +16,10 @@ export const DECLINE_REASONS: { id: GuardrailDeclineReason; name: string; descri
 ];
 
 /**
- * A guardrail the agent proposed at the end of a reply: its kind, what it should say, why it is worth recording (empty
- * when the marker gives no reason) and the id of the reply.
+ * A guardrail the agent proposed at the end of a reply: its kind, what it should say and why it is worth recording (empty
+ * when the marker gives no reason).
  */
-export type GuardrailSuggestion = { kind: GuardrailKind; summary: string; reason: string; replyId: string };
+export type GuardrailSuggestion = { kind: GuardrailKind; summary: string; reason: string };
 
 /**
  * `<!-- hunt:guardrail adr: Summary Why: Reason -->` on a line of its own, which the agent ends a reply with when it holds
@@ -31,15 +31,19 @@ const TRAILING_MARKER = /\s*<(?:!(?:-(?:-(?:(?!-->)[\s\S])*(?:-->)?)?)?)?\s*$/;
 /** Characters of the conversation handed to the guardrail agent; older messages are cut off beyond that. */
 const TRANSCRIPT_LIMIT = 60_000;
 
-/** The guardrail the agent suggested in its reply to the last user prompt; null when it suggested none. */
-export function findGuardrailSuggestion(items: ChatItem[]): GuardrailSuggestion | null {
+/**
+ * The guardrail the agent suggested in its reply to the last user prompt; null when it suggested none or the user took
+ * it up or declined it already (its summary is among `dismissed`, see `SessionView.dismissedGuardrails`).
+ */
+export function findGuardrailSuggestion(items: ChatItem[], dismissed: string[]): GuardrailSuggestion | null {
   for (let index = items.length - 1; index >= 0; index--) {
     const item = items[index];
     if (item.kind === "user") return null;
     if (item.kind !== "agent") continue;
     const match = item.text.match(MARKER);
     const kind = KINDS.find((candidate) => candidate === match?.[1]);
-    return kind ? { kind, summary: match?.[2] ?? "", reason: match?.[3] ?? "", replyId: item.id } : null;
+    const summary = match?.[2] ?? "";
+    return kind && !dismissed.includes(summary) ? { kind, summary, reason: match?.[3] ?? "" } : null;
   }
   return null;
 }

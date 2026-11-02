@@ -29,8 +29,11 @@ const PAGE_SIZE = 500;
 /** Filter of the log: the branch or tag whose history shows (every ref when empty) and the text or hash to look for. */
 export type LogFilter = { reference: string; text: string };
 
-/** The context menu of a commit in the log. */
-const COMMIT_MENU: GitMenuEntry<"reset">[] = [{ kind: "reset", label: "Reset Current Branch to Here…", disabledReason: null, isDanger: false, startsGroup: false }];
+/** The context menu of a commit in the log: resets the local branch `branch` to it; `null` while a remote branch or tag is picked. */
+function commitMenuEntries(branch: string | null): GitMenuEntry<"reset">[] {
+  const disabledReason = branch ? null : "Pick a local branch in the branch tree to reset it";
+  return [{ kind: "reset", label: `Reset ${branch ?? "Branch"} to Here…`, disabledReason, isDanger: false, startsGroup: false }];
+}
 
 /**
  * The Git tab: the branch tree, the commit log of `scope` with its graph, and the selected commit's files, details and
@@ -38,7 +41,8 @@ const COMMIT_MENU: GitMenuEntry<"reset">[] = [{ kind: "reset", label: "Reset Cur
  * branch they will be pushed to, and reloads after every turn of the agent and every local write (`editVersion`),
  * since both may commit; a repository's checkout, shown while no session is active, reloads after the tab's own
  * actions and can check branches out. A new filter selects its newest commit, so a click on a branch shows its head
- * and that commit's files; a right click on a commit offers to reset the checked-out branch to it.
+ * and that commit's files; a right click on a commit offers to reset the local branch picked in the tree to it, the
+ * checked-out one while none is picked.
  */
 export function GitPanel({ scope }: { scope: GitScope }) {
   const sessionId = scope.kind === "session" ? scope.id : null;
@@ -63,7 +67,7 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   const pushes = useMemo(() => (session?.pushTarget ? { branch: session.branch, target: session.pushTarget } : null), [session]);
   const [menu, setMenu] = useState<{ ref: GitRef; x: number; y: number } | null>(null);
   const [commitMenu, setCommitMenu] = useState<{ commit: Commit; x: number; y: number } | null>(null);
-  /** The commit the reset dialog resets the checked-out branch to; `null` while the dialog is closed. */
+  /** The commit the reset dialog resets `resetBranch` to; `null` while the dialog is closed. */
   const [resetTarget, setResetTarget] = useState<Commit | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [isRetargeting, setIsRetargeting] = useState(false);
@@ -85,6 +89,15 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** What the loaded commits belong to; a page that arrives for another key is dropped. */
+  /**
+   * The local branch a reset from the log moves and whether a worktree has it checked out: the one picked in the branch
+   * tree, the checked-out one (`HEAD` when detached) while none is; `null` while a remote branch or tag is picked.
+   */
+  const resetBranch = useMemo(() => {
+    if (!filter.reference) return refs ? { name: refs.head, isCheckedOut: true } : null;
+    const ref = refs?.refs.find((candidate) => candidate.kind === "local" && candidate.name === filter.reference);
+    return ref ? { name: ref.name, isCheckedOut: ref.worktreePath !== null } : null;
+  }, [filter.reference, refs]);
   const logKey = `${scopeKey}\n${filter.reference}\n${filter.text}\n${version}`;
   const logKeyRef = useRef(logKey);
   logKeyRef.current = logKey;
@@ -376,7 +389,7 @@ export function GitPanel({ scope }: { scope: GitScope }) {
           title={`${commitMenu.commit.id.slice(0, 8)} ${commitMenu.commit.subject}`}
           x={commitMenu.x}
           y={commitMenu.y}
-          entries={COMMIT_MENU}
+          entries={commitMenuEntries(resetBranch?.name ?? null)}
           onClose={() => setCommitMenu(null)}
           onPick={() => {
             setCommitMenu(null);
@@ -384,7 +397,9 @@ export function GitPanel({ scope }: { scope: GitScope }) {
           }}
         />
       ) : null}
-      {resetTarget ? <ResetDialog scope={scope} head={refs?.head ?? "HEAD"} commit={resetTarget} onClose={() => setResetTarget(null)} onReset={refresh} /> : null}
+      {resetTarget && resetBranch ? (
+        <ResetDialog scope={scope} branch={resetBranch.name} isCheckedOut={resetBranch.isCheckedOut} commit={resetTarget} onClose={() => setResetTarget(null)} onReset={refresh} />
+      ) : null}
       {renaming ? <RenameBranchDialog scope={scope} branch={renaming} onClose={() => setRenaming(null)} onRenamed={(newName) => onRenamed(renaming, newName)} /> : null}
       {isRetargeting && pushes && sessionId ? (
         <PushTargetDialog sessionId={sessionId} branch={pushes.branch} current={pushes.target} candidates={originBranches} onClose={() => setIsRetargeting(false)} onChanged={refresh} />

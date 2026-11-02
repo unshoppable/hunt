@@ -59,6 +59,11 @@ export type SessionView = {
    * plain `git push` in the worktree does; a poller session's own branch. `null` without a local worktree.
    */
   pushTarget: string | null;
+  /**
+   * Summaries of the guardrails the session's agent suggested that the user took up or declined; the "Guardrail" button
+   * no longer offers them.
+   */
+  dismissedGuardrails: string[];
 };
 
 /**

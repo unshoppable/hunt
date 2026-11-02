@@ -43,6 +43,10 @@ describe("parseControlCommand", () => {
       { name: "openSettings", page: "updates" },
       { name: "openGuardrails" },
       { name: "openBrowser" },
+      { name: "services" },
+      { name: "startServices" },
+      { name: "startServices", service: "web" },
+      { name: "stopService", service: "web" },
     ];
     for (const command of commands) {
       expect(parseControlCommand(command)).toEqual(command);
@@ -99,6 +103,13 @@ describe("ensureRunnable", () => {
   it("opens the browser only for a session on this Mac", () => {
     expect(() => ensureRunnable({ name: "openBrowser" }, remoteSession())).toThrow("the session runs on a VM");
     expect(() => ensureRunnable({ name: "openBrowser" }, localSession())).not.toThrow();
+  });
+
+  it("starts and stops services only for a session on this Mac", () => {
+    for (const command of [{ name: "services" }, { name: "startServices", service: "web" }, { name: "stopService", service: "web" }] as const) {
+      expect(() => ensureRunnable(command, remoteSession())).toThrow("the session runs on a VM, which starts its services itself");
+      expect(() => ensureRunnable(command, localSession())).not.toThrow();
+    }
   });
 
   it("lets every session show itself and open the settings", () => {

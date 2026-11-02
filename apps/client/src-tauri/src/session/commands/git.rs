@@ -90,15 +90,30 @@ pub async fn git_commit_file_diff(app: AppHandle, scope: GitScope, commit: Strin
 }
 
 /// Checks the branch `branch` out in the repository's own checkout, a remote one (`is_remote`, `origin/<name>`) as the
-/// local branch of its name. Refused while a session works in that checkout, whose record names the branch.
+/// local branch of its name. The sessions working in that checkout move with it: their records name the checked-out
+/// branch as their branch and base, as a session started in the checkout does.
 #[tauri::command]
 pub async fn git_checkout(app: AppHandle, repo_path: PathBuf, branch: String, is_remote: bool) -> Result<(), String> {
     git::ensure_repo_root(&repo_path).await?;
-    let holder = store::load_sessions(&app)?.into_iter().find(|stored| stored.workspace == Workspace::Checkout && stored.repo_path == repo_path);
-    if let Some(holder) = holder {
-        return Err(format!("failed to check out {branch}: the session \"{}\" works in the checkout", holder.title));
+    git::checkout_branch(&repo_path, &branch, is_remote).await?;
+    let checked_out = git::current_branch(&repo_path).await?;
+    let base_commit = git::rev_parse(&repo_path, "HEAD").await?;
+    let holders: Vec<Uuid> = store::load_sessions(&app)?
+        .into_iter()
+        .filter(|stored| stored.workspace == Workspace::Checkout && stored.repo_path == repo_path)
+        .map(|stored| stored.id)
+        .collect();
+    for id in &holders {
+        store::update_session(&app, *id, |stored| {
+            stored.branch = checked_out.clone();
+            stored.base_ref = checked_out.clone();
+            stored.base_commit = base_commit.clone();
+        })?;
     }
-    git::checkout_branch(&repo_path, &branch, is_remote).await
+    if !holders.is_empty() {
+        announce_sessions_changed(&app);
+    }
+    Ok(())
 }
 
 /// A move of the session's branch to another commit, made in its local worktree from the Git tab.
@@ -209,10 +224,19 @@ pub async fn git_merge(app: AppHandle, scope: GitScope, from: String) -> Result<
     move_scope_head(&app, &scope, HeadMove::Merge(from)).await
 }
 
-/// Resets the checked-out branch to the commit `commit` in `mode`, WebStorm's "Reset Current Branch to Here".
+/// Resets the local branch `branch` picked in the Git tab to the commit `commit` in `mode`, WebStorm's "Reset Current
+/// Branch to Here". The checked-out branch (`HEAD` when detached) moves through `move_scope_head`, the branch of another
+/// session in its worktree through `move_head`; any other branch moves where it is checked out, or alone.
 #[tauri::command]
-pub async fn git_reset(app: AppHandle, scope: GitScope, commit: String, mode: git::ResetMode) -> Result<(), String> {
-    move_scope_head(&app, &scope, HeadMove::Reset(commit, mode)).await
+pub async fn git_reset(app: AppHandle, scope: GitScope, branch: String, commit: String, mode: git::ResetMode) -> Result<(), String> {
+    let (directory, _) = git_scope(&app, &scope).await?;
+    if branch == git::current_branch(&directory).await? {
+        return move_scope_head(&app, &scope, HeadMove::Reset(commit, mode)).await;
+    }
+    match session_of_branch(&app, &directory, &branch).await? {
+        Some(record) => move_head(&app, &record, HeadMove::Reset(commit, mode)).await,
+        None => git::reset_branch(&directory, &branch, &commit, mode).await,
+    }
 }
 
 /// Rebases the session's own branch onto the branch on `origin` its push lands on, fetched first, as the push does.

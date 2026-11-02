@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { isAnyCheckRunning, parseCommandLine, replyOutcome, reportOfCheck } from "./huntClient.mjs";
+import { isAnyCheckRunning, isAnyServiceStarting, parseCommandLine, replyOutcome, reportOfCheck, reportOfService } from "./huntClient.mjs";
 
 const CLIENT = fileURLToPath(new URL("./huntClient.mjs", import.meta.url));
 const SESSION_ID = "6f0c2a52-0b55-4c4e-9d0e-2f8b1f3c7a10";
@@ -220,6 +220,38 @@ describe("checks run", () => {
   });
 });
 
+describe("services", () => {
+  it("waits for the services it starts unless --no-wait, and stops or lists them", () => {
+    expect(commandOf(["services", "start"])).toStrictEqual({ kind: "command", command: { name: "startServices" }, session: undefined, waitsForServices: true });
+    expect(commandOf(["services", "start", "web"])).toStrictEqual({
+      kind: "command",
+      command: { name: "startServices", service: "web" },
+      session: undefined,
+      waitsForServices: true,
+    });
+    expect(commandOf(["services", "start", "web", "--no-wait"])).toStrictEqual({ kind: "command", command: { name: "startServices", service: "web" }, session: undefined });
+    expect(commandOf(["services", "stop", "web"])).toStrictEqual({ kind: "command", command: { name: "stopService", service: "web" }, session: undefined });
+    expect(commandOf(["services"])).toStrictEqual({ kind: "command", command: { name: "services" }, session: undefined });
+  });
+
+  it("needs the service to stop and takes one service to start at most", () => {
+    expect(commandOf(["services", "stop"])).toMatchObject({ kind: "usageError", message: "services stop needs <name>" });
+    expect(commandOf(["services", "start", "web", "api"])).toMatchObject({ kind: "usageError", message: "unexpected argument api" });
+    expect(commandOf(["services", "--no-wait"])).toMatchObject({ kind: "usageError", message: "services takes no --no-wait" });
+  });
+
+  it("follows the service it started, or all of them, until each listens on its port or does not run", () => {
+    const service = (name: string, state: string, isListening: boolean, port: number | null = 4200) => ({ name, state, port, isListening });
+    const report = { problem: null, services: [service("web", "running", true), service("api", "running", false), service("worker", "running", false, null)] };
+    expect(isAnyServiceStarting(report)).toBe(true);
+    expect(isAnyServiceStarting(reportOfService(report, "web"))).toBe(false);
+    expect(isAnyServiceStarting(reportOfService(report, "worker"))).toBe(false);
+    expect(isAnyServiceStarting({ problem: null, services: [service("api", "ended", false)] })).toBe(false);
+    expect(reportOfService(report, "web").services).toStrictEqual([service("web", "running", true)]);
+    expect(reportOfService(report, undefined)).toBe(report);
+  });
+});
+
 describe("replyOutcome", () => {
   it("prints the result of a command, a string as it is and anything else as JSON", () => {
     expect(replyOutcome('{"ok":true,"result":"done"}')).toStrictEqual({ exitCode: 0, stdout: "done\n", stderr: "" });
@@ -248,6 +280,18 @@ describe("huntClient.mjs", () => {
     expect(run.exitCode).toBe(0);
     expect(JSON.parse(run.stdout)).toStrictEqual({ problem: null, checks: [{ name: "lint", state: "failed" }] });
     expect(requests.map((request) => request.command)).toStrictEqual([{ name: "runChecks", check: "lint" }, { name: "checks" }, { name: "checks" }]);
+  });
+
+  it("services start asks for the services until the one it started listens and prints its state", async () => {
+    const report = (isListening: boolean) =>
+      JSON.stringify({ ok: true, result: { problem: null, services: [{ name: "web", state: "running", port: 4200, isListening }, { name: "api", state: "stopped", port: 3000, isListening: false }] } });
+    await startControl([JSON.stringify({ ok: true }), report(false), report(true)]);
+
+    const run = await runClient(["services", "start", "web"]);
+
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(run.stdout)).toStrictEqual({ problem: null, services: [{ name: "web", state: "running", port: 4200, isListening: true }] });
+    expect(requests.map((request) => request.command)).toStrictEqual([{ name: "startServices", service: "web" }, { name: "services" }, { name: "services" }]);
   });
 
   it("checks run --no-wait returns once Hunt started the checks, and a check Hunt cannot start exits with 1", async () => {

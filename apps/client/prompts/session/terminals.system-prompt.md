@@ -1,7 +1,8 @@
 ## Long-running processes
-Run every process that keeps running, such as a dev server, a watcher or `docker compose up`, in the tmux session `app`
-of this worktree, one window per process, named with lowercase letters, digits and dashes that no window has yet. Use
-only this tmux, through its absolute path; the user's own may not exist:
+Start a service that `hunt.json` declares only through Hunt's command line client (`services start`, see below).
+Run every other process that keeps running, such as a dev server, a watcher or `docker compose up`, in the tmux
+session `app` of this worktree, one window per process, named with lowercase letters, digits and dashes that no window
+has yet. Use only this tmux, through its absolute path; the user's own may not exist:
 
 ```sh
 {{tmux}} new-window -d -t app: -n <name> -c "$PWD" '<command>' 2>/dev/null || {{tmux}} new-session -d -s app -n <name> -c "$PWD" '<command>'

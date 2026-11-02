@@ -106,8 +106,6 @@ export type SessionChat = {
   move: SessionMove | null;
   /** The file sync of a remote session; idle for a local one. */
   fileSync: FileSync;
-  /** The reply whose guardrail suggestion the user took up or declined; the "Guardrail" button no longer offers it. */
-  dismissedGuardrailId: string | null;
 };
 
 /** The chat slice of the Hunt store: the chat of every session, its unsent prompt and its browser annotations. */
@@ -148,12 +146,12 @@ export type ChatSlice = {
   /** Forgets every annotation of the session `id`, once the composer sent them. */
   clearAnnotations: (id: string) => void;
   /**
-   * Declines the guardrail `suggestion` of `id` for `reason`: hides it (see `SessionChat.dismissedGuardrailId`) and records
+   * Declines the guardrail `suggestion` of `id` for `reason`: hides it (see `SessionView.dismissedGuardrails`) and records
    * it in the repository's declines file (`declinedGuardrailsFile` of hunt.json), which agents search before they suggest
    * a guardrail.
    */
   declineGuardrail: (id: string, suggestion: GuardrailSuggestion, reason: GuardrailDeclineReason) => void;
-  /** Hides the guardrail `suggestion` of `id` once the user took it up (see `SessionChat.dismissedGuardrailId`). */
+  /** Hides the guardrail `suggestion` of `id` once the user took it up (see `SessionView.dismissedGuardrails`). */
   acceptGuardrail: (id: string, suggestion: GuardrailSuggestion) => void;
   /**
    * Generates the diagram of `diagramType` in a background agent, independent of the chat agent, which may run a turn
@@ -475,6 +473,15 @@ export function createChatSlice(set: HuntSet, get: HuntGet, turns: ChatTurns): C
     set({ unreadLine: null });
   }
 
+  /** Hides the guardrail suggestion `summary` of `id` right away; the backend keeps it in the session's record. */
+  function dismissGuardrail(id: string, summary: string) {
+    set((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === id && !session.dismissedGuardrails.includes(summary) ? { ...session, dismissedGuardrails: [...session.dismissedGuardrails, summary] } : session,
+      ),
+    }));
+  }
+
   return {
     chats: {},
     promptDrafts: {},
@@ -542,12 +549,13 @@ export function createChatSlice(set: HuntSet, get: HuntGet, turns: ChatTurns): C
     },
 
     declineGuardrail: (id, suggestion, reason) => {
-      updateChat(id, (chat) => ({ ...chat, dismissedGuardrailId: suggestion.replyId }));
+      dismissGuardrail(id, suggestion.summary);
       commands.declineGuardrail(id, suggestion.kind, suggestion.summary, reason).catch((error) => updateChat(id, (chat) => ({ ...chat, error: String(error) })));
     },
 
     acceptGuardrail: (id, suggestion) => {
-      updateChat(id, (chat) => ({ ...chat, dismissedGuardrailId: suggestion.replyId }));
+      dismissGuardrail(id, suggestion.summary);
+      commands.dismissGuardrail(id, suggestion.summary).catch((error) => updateChat(id, (chat) => ({ ...chat, error: String(error) })));
     },
 
     setPromptDraft: (id, draft) => {

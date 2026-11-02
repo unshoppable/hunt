@@ -57,7 +57,7 @@ const HISTORY_LINES: u32 = 50_000;
 const PLACEHOLDER_COMMAND: &str = "exec sleep 2147483647";
 
 /// The fields `parse_windows` reads, separated by tabs: names may hold spaces.
-const LIST_FORMAT: &str = "#{window_id}\t#{pane_dead}\t#{pane_dead_status}\t#{@hunt-script}\t#{@hunt-dir}\t#{@hunt-session}\t#{@hunt-check}\t#{window_name}";
+const LIST_FORMAT: &str = "#{window_id}\t#{pane_dead}\t#{pane_dead_status}\t#{@hunt-script}\t#{@hunt-dir}\t#{@hunt-session}\t#{@hunt-check}\t#{@hunt-service}\t#{window_name}";
 
 /// The window options of a script window: the package.json script and the folder it runs in.
 const SCRIPT_OPTION: &str = "@hunt-script";
@@ -65,6 +65,9 @@ const FOLDER_OPTION: &str = "@hunt-dir";
 
 /// The window option of a check window: the hunt.json check it runs.
 const CHECK_OPTION: &str = "@hunt-check";
+
+/// The window option of a service window: the hunt.json service it runs.
+const SERVICE_OPTION: &str = "@hunt-service";
 
 /// The window option that names the Hunt session a window on this Mac belongs to: the session whose Terminal tab opened
 /// it or last ran its script, or whose agent created it (`wrapper_text`).
@@ -99,6 +102,8 @@ pub struct TmuxWindow {
     pub script: Option<String>,
     /// The hunt.json check a check window runs (`CHECK_OPTION`); `None` for every other window.
     pub check: Option<String>,
+    /// The hunt.json service a service window runs (`SERVICE_OPTION`); `None` for every other window.
+    pub service: Option<String>,
     /// Whether the window's program has ended; only a script or check window stays open after that.
     pub is_dead: bool,
     /// The exit code of an ended program, `None` while it runs or when a signal ended it.
@@ -131,8 +136,8 @@ pub fn parse_windows(output: &str) -> Vec<TmuxWindow> {
     output
         .lines()
         .filter_map(|line| {
-            let mut fields = line.splitn(8, '\t');
-            let [id, dead, status, script, folder, owner, check, name] = [(); 8].map(|_| fields.next());
+            let mut fields = line.splitn(9, '\t');
+            let [id, dead, status, script, folder, owner, check, service, name] = [(); 9].map(|_| fields.next());
             let (id, name) = (id?, name?);
             ensure_window_id(id).ok()?;
             let given = |field: Option<&str>| field.filter(|value| !value.is_empty()).map(str::to_string);
@@ -141,6 +146,7 @@ pub fn parse_windows(output: &str) -> Vec<TmuxWindow> {
                 name: name.to_string(),
                 script: given(script),
                 check: given(check),
+                service: given(service),
                 is_dead: dead == Some("1"),
                 exit_code: status.and_then(|status| status.parse().ok()),
                 owner: owner.and_then(|owner| Uuid::parse_str(owner).ok()),
@@ -195,6 +201,12 @@ pub fn check_window_script(tmux: &str, name: &str, folder: &str, check: &str, co
     kept_window_script(tmux, name, folder, &[(CHECK_OPTION, check)], command, owner)
 }
 
+/// The `sh` script that creates the window `name` for the hunt.json service `service`, runs `command` there in `folder`
+/// and prints the window's ID; like a script window, it stays open with the exit code once the service ends.
+pub fn service_window_script(tmux: &str, name: &str, folder: &str, service: &str, command: &str, owner: Option<Uuid>) -> String {
+    kept_window_script(tmux, name, folder, &[(SERVICE_OPTION, service)], command, owner)
+}
+
 /// The `sh` script of a window that stays open once `command` ended: it creates the window `name` with
 /// `PLACEHOLDER_COMMAND`, sets `remain-on-exit`, the window options `options` and `owner`, then runs `command` in
 /// `folder` and prints the window's ID.
@@ -231,6 +243,22 @@ pub fn script_window<'a>(windows: &'a [TmuxWindow], script: &str, folder: &str) 
 /// The window of `windows` that runs the hunt.json check `check` for the Hunt session `owner`.
 pub fn check_window<'a>(windows: &'a [TmuxWindow], check: &str, owner: Option<Uuid>) -> Option<&'a TmuxWindow> {
     windows.iter().find(|window| window.check.as_deref() == Some(check) && window.owner == owner)
+}
+
+/// The window of `windows` that runs the hunt.json service `service`; the worktree's services are shared by its family.
+pub fn service_window<'a>(windows: &'a [TmuxWindow], service: &str) -> Option<&'a TmuxWindow> {
+    windows.iter().find(|window| window.service.as_deref() == Some(service))
+}
+
+/// The command a service window runs: `command_line` in the user's interactive login shell, with the variables `env`
+/// set for it.
+pub fn service_command(command_line: &str, env: &[(String, String)]) -> String {
+    let command = login_shell_command(command_line);
+    if env.is_empty() {
+        return command;
+    }
+    let assignments: Vec<String> = env.iter().map(|(key, value)| shell_quote(&format!("{key}={value}"))).collect();
+    format!("env {} {command}", assignments.join(" "))
 }
 
 /// The `sh` script that ends the program of the window `window_id` as a closed terminal would: SIGHUP to the process
@@ -370,6 +398,22 @@ impl LocalTmux {
         }
         let name = free_window_name(&windows, &safe_window_name(&format!("check-{check}")));
         window_id_from(&self.run(&check_window_script(&self.tmux(), &name, &folder, check, &command, Some(owner))).await?)
+    }
+
+    /// Runs the hunt.json service `service` with the command `command` (`service_command`) in the folder `folder` for the
+    /// Hunt session `owner` and returns the ID of its window, named after the service when it is new. The service's
+    /// window that runs already is left as it is; one whose service ended runs it again.
+    pub async fn start_service_window(&self, folder: &Path, service: &str, command: &str, owner: Uuid) -> Result<String, String> {
+        let windows = self.list_windows().await?;
+        let folder = folder.to_string_lossy();
+        if let Some(window) = service_window(&windows, service) {
+            if window.is_dead {
+                self.run(&rerun_script(&self.tmux(), &window.id, &folder, command, Some(owner))?).await?;
+            }
+            return Ok(window.id.clone());
+        }
+        let name = free_window_name(&windows, &safe_window_name(service));
+        window_id_from(&self.run(&service_window_script(&self.tmux(), &name, &folder, service, command, Some(owner))).await?)
     }
 
     /// Ends the program of the window `window_id` and keeps the window with its output (`stop_script`).
@@ -572,25 +616,28 @@ mod tests {
     use crate::terminal::interactive::{Terminal, TerminalEvent, TerminalSize};
 
     fn window(id: &str, name: &str) -> TmuxWindow {
-        TmuxWindow { id: id.into(), name: name.into(), script: None, check: None, is_dead: false, exit_code: None, owner: None, folder: None }
+        TmuxWindow { id: id.into(), name: name.into(), script: None, check: None, service: None, is_dead: false, exit_code: None, owner: None, folder: None }
     }
 
     #[test]
-    fn parse_windows_reads_names_with_spaces_scripts_checks_and_exit_codes_and_skips_other_lines() {
-        let output = "@1\t0\t\t\t\t\t\tweb\n@7\t1\t3\tbuild\t/w/app\t9b2f6c1e-0d4a-4c1f-8e2b-3a5d7f9e1c20\t\tmy build\n\
-                      @9\t1\t0\t\t\t\tlint\tcheck-lint\n@8\t0\t\t\t\tnot a uuid\t\tvm\nWelcome to the VM\n@x\t0\t\t\t\t\t\tbad\n\n";
+    fn parse_windows_reads_names_with_spaces_scripts_checks_services_and_exit_codes_and_skips_other_lines() {
+        let output = "@1\t0\t\t\t\t\t\t\tweb\n@7\t1\t3\tbuild\t/w/app\t9b2f6c1e-0d4a-4c1f-8e2b-3a5d7f9e1c20\t\t\tmy build\n\
+                      @9\t1\t0\t\t\t\tlint\t\tcheck-lint\n@5\t0\t\t\t\t\t\tweb-ui\tweb-ui\n@8\t0\t\t\t\tnot a uuid\t\t\tvm\n\
+                      Welcome to the VM\n@x\t0\t\t\t\t\t\t\tbad\n\n";
         let build = TmuxWindow {
             id: "@7".into(),
             name: "my build".into(),
             script: Some("build".into()),
             check: None,
+            service: None,
             is_dead: true,
             exit_code: Some(3),
             owner: Some(Uuid::parse_str("9b2f6c1e-0d4a-4c1f-8e2b-3a5d7f9e1c20").unwrap()),
             folder: Some("/w/app".into()),
         };
         let lint = TmuxWindow { check: Some("lint".into()), is_dead: true, exit_code: Some(0), ..window("@9", "check-lint") };
-        assert_eq!(parse_windows(output), [window("@1", "web"), build, lint, window("@8", "vm")]);
+        let ui = TmuxWindow { service: Some("web-ui".into()), ..window("@5", "web-ui") };
+        assert_eq!(parse_windows(output), [window("@1", "web"), build, lint, ui, window("@8", "vm")]);
     }
 
     #[test]
@@ -688,6 +735,22 @@ mod tests {
         assert_eq!(check_window(&windows, "lint", Some(owner)), Some(&lint));
         assert_eq!(check_window(&windows, "lint", None), Some(&other));
         assert_eq!(check_window(&windows, "test", Some(owner)), None);
+    }
+
+    #[test]
+    fn a_service_window_keeps_its_service_and_runs_the_command_with_the_service_variables() {
+        let script = service_window_script("tmux", "web", "/w", "web", "npm start", None);
+        assert!(script.contains("set-option -w -t \"$id\" @hunt-service web ';' respawn-pane -k -t \"$id\" -c /w 'npm start'"), "{script}");
+
+        let web = TmuxWindow { service: Some("web".into()), ..window("@2", "web") };
+        let windows = [window("@1", "web-shell"), web.clone()];
+        assert_eq!(service_window(&windows, "web"), Some(&web));
+        assert_eq!(service_window(&windows, "api"), None);
+
+        let plain = service_command("npm start", &[]);
+        assert_eq!(plain, login_shell_command("npm start"));
+        let env = [("PORT".to_string(), "4200".to_string()), ("NAME".to_string(), "a b".to_string())];
+        assert_eq!(service_command("npm start", &env), format!("env PORT=4200 'NAME=a b' {plain}"));
     }
 
     #[test]
@@ -903,6 +966,28 @@ mod tests {
         assert_ne!(stopped.exit_code, Some(0), "{stopped:?}");
         assert!(tmux.capture_window(&build).await.unwrap().contains("building"));
         tmux.stop_window(&build).await.unwrap();
+        kill_server(family_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_service_window_runs_with_its_variables_stays_while_it_runs_and_starts_again_once_it_ended() {
+        let worktree = tempfile::tempdir().unwrap();
+        let family_id = Uuid::new_v4();
+        let owner = Uuid::new_v4();
+        let tmux = LocalTmux::prepare(worktree.path(), family_id).await.unwrap();
+        let env = [("GREETING".to_string(), "hello web".to_string())];
+
+        let command = service_command("echo \"$GREETING\"; sleep 60", &env);
+        let web = tmux.start_service_window(worktree.path(), "web", &command, owner).await.unwrap();
+        wait_for_log(worktree.path(), "web", "hello web").await;
+        assert_eq!(tmux.start_service_window(worktree.path(), "web", &command, owner).await.unwrap(), web);
+        tmux.stop_window(&web).await.unwrap();
+        let stopped = wait_for_end(&tmux, &web).await;
+        assert_eq!((stopped.service.as_deref(), stopped.owner), (Some("web"), Some(owner)));
+
+        let again = service_command("echo started again", &[]);
+        assert_eq!(tmux.start_service_window(worktree.path(), "web", &again, owner).await.unwrap(), web);
+        wait_for_log(worktree.path(), "web", "started again").await;
         kill_server(family_id).await.unwrap();
     }
 

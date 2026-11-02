@@ -5,10 +5,10 @@ import { InlineDiff } from "../../editor/InlineDiff";
 import { ChatImages } from "../ChatImages";
 import { Collapsible } from "../../ui/Collapsible";
 import { useFileIconUrl } from "../../ui/file-icons/file-icons.hook";
-import { describeToolResult, formatToolTitle } from "./tool-display.utils";
+import { describeToolResult, formatToolTitle, stripBasePath } from "./tool-display.utils";
 
 /** Status dot per tool state: green done, red failed, pulsing while running. */
-const STATUS_DOT: Record<string, string> = {
+export const STATUS_DOT: Record<string, string> = {
   pending: "bg-neutral-500 animate-pulse",
   in_progress: "bg-sky-400 animate-pulse",
   completed: "bg-emerald-400",
@@ -68,12 +68,6 @@ export const ToolCallCard = memo(function ToolCallCard({ toolCall, isVerbose, ba
     </div>
   );
 });
-
-/** Replaces the session's worktree prefix in a tool argument with a repo-relative path. */
-function stripBasePath(argument: string, basePath: string): string {
-  if (!basePath) return argument;
-  return argument.split(`${basePath}/`).join("").split(basePath).join(".");
-}
 
 function Chevron({ expanded }: { expanded: boolean }) {
   return (

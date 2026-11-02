@@ -9,6 +9,7 @@ import { commands } from "../ipc/commands";
 import { listenTo } from "../ipc/events";
 import { useHuntStore } from "../sessions/hunt.store";
 import { useSessionViewStore } from "../sessions/inspector.store";
+import { useServicesStore } from "../terminal/services.store";
 import { openSettingsWindow } from "../settings/settings-window.utils";
 import type { ControlCommandEvent } from "./control-command.types";
 import { ensureRunnable, parseControlCommand, worktreeFilePath } from "./control-command.utils";
@@ -87,5 +88,11 @@ async function runControlCommand(sessionId: string, value: unknown): Promise<unk
       return useChecksStore.getState().readReport(sessionId);
     case "runChecks":
       return useChecksStore.getState().start(sessionId, command.check);
+    case "services":
+      return useServicesStore.getState().readReport(sessionId);
+    case "startServices":
+      return useServicesStore.getState().start(sessionId, command.service);
+    case "stopService":
+      return useServicesStore.getState().stop(sessionId, command.service);
   }
 }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { formatElapsed } from "./working-indicator.utils";
 
 /** Activity verbs the terminal shows while a turn runs; one is picked per turn. */
 const VERBS = [
@@ -44,7 +45,7 @@ export function WorkingIndicator() {
     <div className="flex items-center gap-2.5">
       <span className="hunt-agent-sparkle" aria-hidden="true" />
       <span className="text-neutral-300">
-        {verb}… <span className="text-neutral-500">(esc to interrupt · {elapsedSeconds}s)</span>
+        {verb}… <span className="text-neutral-500">(esc to interrupt · {formatElapsed(elapsedSeconds)})</span>
       </span>
     </div>
   );

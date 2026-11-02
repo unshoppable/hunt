@@ -30,7 +30,7 @@ texts, and where tests go and in which style.
 ### Before you commit
 
 The checks of hunt.json (`checks`) are plain commands, such as `npm run …`, to run from the worktree. When the step
-writes its result, Hunt runs the checks of the step's gate (`swf.steps.implement.gate`, every check by default) and sends
+writes its result, Hunt runs the checks of the step's gate (`swf.steps.implement.checks`, every check by default) and sends
 a red one back in the same conversation, so run them before you commit.
 
 TODO: the checks of hunt.json or further commands that cover a change, by what it touches.

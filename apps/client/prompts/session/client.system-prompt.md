@@ -15,3 +15,10 @@ To see the state or the result of a check, also when the user asks about the Che
 first; read the check's log only when you need more than the end of its output. Never start a check in a tmux window of
 your own and never kill the window of a check: the Checks tab would not show that run, and the user would see a stale
 result.
+
+To start a service of `hunt.json`, such as a backend or a dev server, use `{{huntClient}} services start <name>`, or
+leave out the name to start all of them. It runs the service in its tab of the Terminal panel, leaves one that runs
+already as it is, waits until it listens on its port or ended and prints its state; `--no-wait` returns at once.
+`{{huntClient}} services` prints every service with its state, its port, whether something listens there and its log,
+which you read with `tail -n 100 <log>`; `{{huntClient}} services stop <name>` stops one, and `services start` after
+that starts it again. Never start a service of `hunt.json` in a tmux window of your own: the user would see it twice.

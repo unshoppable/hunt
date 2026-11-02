@@ -41,8 +41,11 @@ import { useVirtualRows } from "../ui/virtual-rows.hook";
 
 type Dialog = { kind: "shelve"; paths: string[] } | { kind: "review" } | null;
 
-/** The file or folder row a context menu or a copy-path shortcut acts on; `files` are the changes it holds. */
-export type ChangeListTarget = { path: string; files: ChangedFile[]; isFolder: boolean };
+/**
+ * The file or folder row a context menu or a copy-path shortcut acts on; `files` are the changes it holds. A right-click
+ * on a checked file while several are checked targets the checked files (`isSelection`), as the file managers do.
+ */
+export type ChangeListTarget = { path: string; files: ChangedFile[]; isFolder: boolean; isSelection?: boolean };
 
 /** One visible row of the tree view; `depth` is the indentation level. */
 type Row = { node: TreeNode; depth: number };
@@ -222,7 +225,8 @@ export function ChangeList({
       </span>
     );
   };
-  const checkedPaths = useMemo(() => files.filter((file) => checked.has(file.path)).map((file) => file.path), [files, checked]);
+  const checkedFiles = useMemo(() => files.filter((file) => checked.has(file.path)), [files, checked]);
+  const checkedPaths = useMemo(() => checkedFiles.map((file) => file.path), [checkedFiles]);
 
   const rows = useMemo(() => {
     const result: Row[] = [];
@@ -386,7 +390,14 @@ export function ChangeList({
         <button
           type="button"
           onClick={() => nav.select(file.path)}
-          onContextMenu={(event) => onContextMenu(event, { path: file.path, files: [file], isFolder: false })}
+          onContextMenu={(event) =>
+            onContextMenu(
+              event,
+              checkedFiles.length > 1 && checked.has(file.path)
+                ? { path: file.path, files: checkedFiles, isFolder: false, isSelection: true }
+                : { path: file.path, files: [file], isFolder: false },
+            )
+          }
           className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
           title={`${file.path} (${file.status})`}
         >

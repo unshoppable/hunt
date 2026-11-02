@@ -77,6 +77,10 @@ pub struct SessionRecord {
     /// when it has one (`derive_mode`), else edits.
     #[serde(default)]
     pub mode: SessionMode,
+    /// Summaries of the guardrails its agent suggested that the user took up or declined; the "Guardrail" button no
+    /// longer offers them, also after the chat was rebuilt from the agent's history.
+    #[serde(default)]
+    pub dismissed_guardrails: Vec<String>,
 }
 
 /// What a session is for. `Edit` works on the code of its worktree, `GitReview` reviews the pull request `pull_request`
@@ -103,6 +107,13 @@ pub enum Workspace {
 }
 
 impl SessionRecord {
+    /// Adds `summary` to the dismissed guardrails, unless it is listed already.
+    pub fn dismiss_guardrail(&mut self, summary: &str) {
+        if !self.dismissed_guardrails.iter().any(|dismissed| dismissed == summary) {
+            self.dismissed_guardrails.push(summary.to_string());
+        }
+    }
+
     /// The ref the changelist and the diffs compare the worktree against.
     pub fn diff_base(&self) -> &str {
         self.diff_base.as_deref().unwrap_or(DIFF_BASE)
@@ -142,6 +153,7 @@ impl SessionRecord {
             remote: None,
             leftover_vm: None,
             mode: SessionMode::Edit,
+            dismissed_guardrails: Vec::new(),
         }
     }
 
@@ -455,6 +467,13 @@ pub fn update_session(app: &AppHandle, id: Uuid, update: impl FnOnce(&mut Sessio
     Store::open(app)?.update(id, update)
 }
 
+/// Notes that the user took up or declined the guardrail `summary` the agent of `id` suggested; a summary already
+/// noted is kept once.
+pub fn dismiss_guardrail(app: &AppHandle, id: Uuid, summary: &str) -> Result<(), String> {
+    update_session(app, id, |record| record.dismiss_guardrail(summary))?;
+    Ok(())
+}
+
 /// Adds `paths` to the touched files of `id`; paths already listed are kept once.
 pub fn add_touched_files(app: &AppHandle, id: Uuid, paths: &[String]) -> Result<(), String> {
     update_session(app, id, |record| {
@@ -572,6 +591,20 @@ mod tests {
         assert_eq!(loaded[0].title, "first");
         assert_eq!(loaded[1].title, "renamed");
         assert!(!dir.path().join("sessions.json.tmp").exists());
+    }
+
+    #[test]
+    fn dismiss_guardrail_lists_each_summary_once_and_survives_a_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in(&dir);
+        let session = record("first");
+        store.upsert(session.clone()).unwrap();
+
+        for summary in ["Adapters wrap every external API.", "Adapters wrap every external API.", "Ports stay pure."] {
+            store.update(session.id, |record| record.dismiss_guardrail(summary)).unwrap();
+        }
+
+        assert_eq!(store.find(session.id).unwrap().dismissed_guardrails, vec!["Adapters wrap every external API.", "Ports stay pure."]);
     }
 
     #[test]

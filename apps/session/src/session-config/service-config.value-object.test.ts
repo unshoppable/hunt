@@ -14,6 +14,7 @@ describe("ServiceConfig", () => {
       tls: false,
       guarded: true,
       review: true,
+      frontend: false,
       env: {},
       remoteSecrets: {},
       worktreeInclude: [],

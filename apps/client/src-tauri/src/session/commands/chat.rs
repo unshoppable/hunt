@@ -214,7 +214,7 @@ pub fn answer_permission(permissions: State<'_, PermissionRegistry>, request_id:
 }
 
 /// Records in the session's worktree that the user declined the guardrail its agent suggested (`declined_guardrails`);
-/// the change counts as the session's own.
+/// the change counts as the session's own. The session no longer offers the suggestion (`store::dismiss_guardrail`).
 #[tauri::command]
 pub async fn decline_guardrail(app: AppHandle, id: Uuid, kind: String, summary: String, reason: declined_guardrails::DeclineReason) -> Result<(), String> {
     if !declined_guardrails::KINDS.contains(&kind.as_str()) {
@@ -230,8 +230,15 @@ pub async fn decline_guardrail(app: AppHandle, id: Uuid, kind: String, summary: 
     })
     .await?;
     store::add_touched_files(&app, id, &changed)?;
+    store::dismiss_guardrail(&app, id, &entry.summary)?;
     sync::note_local_change(&app, id);
     store::note_worktree_changed(&app, id)
+}
+
+/// Notes that the user took up the guardrail `summary` the agent of the session suggested, so it is no longer offered.
+#[tauri::command]
+pub fn dismiss_guardrail(app: AppHandle, id: Uuid, summary: String) -> Result<(), String> {
+    store::dismiss_guardrail(&app, id, &summary)
 }
 
 #[cfg(test)]

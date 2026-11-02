@@ -8,14 +8,9 @@ function status(fields: Record<string, unknown>): string {
 }
 
 describe("relaySessionStatusOf", () => {
-  it("reads the session, the turn, the connected desktop and the last turn end of a ready relay", () => {
-    expect(relaySessionStatusOf(status({ turn: "running", clientConnected: true, lastTurnEndedAt: 5 }), NOW)).toEqual({
-      acpSessionId: "acp-1",
-      turn: "running",
-      clientConnected: true,
-      lastTurnEndedAt: 5,
-    });
-    expect(relaySessionStatusOf(status({}), NOW)).toEqual({ acpSessionId: "acp-1", turn: "idle", clientConnected: false, lastTurnEndedAt: null });
+  it("reads the session, the turn and the last turn end of a ready relay", () => {
+    expect(relaySessionStatusOf(status({ turn: "running", clientConnected: true, lastTurnEndedAt: 5 }), NOW)).toEqual({ acpSessionId: "acp-1", turn: "running", lastTurnEndedAt: 5 });
+    expect(relaySessionStatusOf(status({}), NOW)).toEqual({ acpSessionId: "acp-1", turn: "idle", lastTurnEndedAt: null });
   });
 
   it("is null without a file, for a relay that is starting or failed, without a session and for a stale heartbeat", () => {

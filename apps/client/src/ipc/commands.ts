@@ -19,14 +19,14 @@ import type { PrettierOutput } from "../ide/ide.types";
 import type { LanguageServerKind } from "../ide/lsp/lsp.types";
 import type { DirEntry } from "../ide/project-tree/project-tree.types";
 import type { FileLine, ReplaceResult, TextQuery, TextSearchResult } from "../ide/search/find-in-files.types";
-import type { PreviewStatus } from "../preview/preview.types";
+import type { AppPage, PreviewStatus } from "../preview/preview.types";
 import type { GithubViewer, PullRequestDetails, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread } from "../review/review.types";
 import type { PullRequest, PullRequestState } from "../sessions/pull-requests.types";
 import type { RemoteLink, SessionVm } from "../sessions/remote/remote-session.types";
 import type { PullRequestRef, SessionEnding, SessionView, Workspace } from "../sessions/session.types";
 import type { SwfPipelineFiles } from "../sessions/swf-pipeline.types";
 import type { CliInstall, GithubTokenStatus, RemoteSecretSummary, VmSettings } from "../settings/settings.types";
-import type { Machine, TerminalTarget, TmuxWindow } from "../terminal/terminal.types";
+import type { LocalServicesStatus, Machine, TerminalTarget, TmuxWindow } from "../terminal/terminal.types";
 
 /** URL under which the webview loads the file at the absolute `path`. */
 export function assetUrl(path: string): string {
@@ -50,8 +50,11 @@ export const commands = {
   gitRebase: (scope: GitScope, onto: string) => invoke<void>("git_rebase", { scope, onto }),
   /** Merges the branch or remote branch `from` into the checked-out branch; a conflict aborts and names the files. */
   gitMerge: (scope: GitScope, from: string) => invoke<void>("git_merge", { scope, from }),
-  /** Resets the checked-out branch to the commit in `mode`, on a session's VM too; `keep` fails when an uncommitted change is in the way. */
-  gitReset: (scope: GitScope, commit: string, mode: ResetMode) => invoke<void>("git_reset", { scope, commit, mode }),
+  /**
+   * Resets the local branch `branch` (`HEAD` when detached) to the commit in `mode` where it is checked out, on a session's VM too;
+   * a branch no worktree has moves alone. `keep` fails when an uncommitted change is in the way.
+   */
+  gitReset: (scope: GitScope, branch: string, commit: string, mode: ResetMode) => invoke<void>("git_reset", { scope, branch, commit, mode }),
   /** Rebases the session's branch onto the branch its push lands on, fetched first. */
   gitUpdateBranch: (sessionId: string) => invoke<void>("git_update_branch", { id: sessionId }),
   /** Fast-forwards another local branch to its upstream, fetched first; `false` when the upstream has no commits it lacks. */
@@ -161,9 +164,12 @@ export const commands = {
   desktopOpen: (id: string) => invoke<DesktopEndpoint>("desktop_open", { id }),
   /**
    * Opens the Chrome of the local session `id` with a copy of its repository's browser profile, or brings the running one
-   * to the front; the annotations of its review widget arrive as `review:annotation`.
+   * to the front, with a tab for each of its `browserPages` that has none yet; the annotations of its review widget arrive
+   * as `review:annotation`.
    */
   browserOpen: (id: string) => invoke<void>("browser_open", { id }),
+  /** The frontend services of a local session's hunt.json that run now, in its order; "Browser" opens a tab for each. */
+  browserPages: (id: string) => invoke<AppPage[]>("browser_pages", { id }),
   /**
    * Adopts the sessions of `ids` the gateway of `settings` lists that no local session knows, each in the local checkout
    * of its repository among `repoPaths` and the stored sessions' repositories, and brings the agent state of the remote
@@ -206,6 +212,12 @@ export const commands = {
   rerunTerminalWindow: (id: string, machine: Machine, windowId: string) => invoke<void>("rerun_terminal_window", { id, machine, windowId }),
   /** Ends the tmux window `windowId` of the session `id` on `machine` and the processes in it. */
   closeTerminalWindow: (id: string, machine: Machine, windowId: string) => invoke<void>("close_terminal_window", { id, machine, windowId }),
+  /** The services of a local session's hunt.json with the state of their windows on this Mac. */
+  servicesStatus: (id: string) => invoke<LocalServicesStatus>("services_status", { id }),
+  /** Starts the service `name`, or every service, of a local session in its tmux window; one that runs stays as it is. */
+  startServices: (id: string, name: string | null) => invoke<void>("start_services", { id, name }),
+  /** Stops the service `name` of a local session; its window stays with the output so far. */
+  stopService: (id: string, name: string) => invoke<void>("stop_service", { id, name }),
   /** The checks of the worktree's hunt.json with their last runs. */
   checksStatus: (id: string) => invoke<ChecksStatus>("checks_status", { id }),
   /** Runs the check `name` in its tmux window, locally or on the session's running VM; `checks:changed` reports the run. */
@@ -280,6 +292,8 @@ export const commands = {
   cliInstallStatus: () => invoke<CliInstall>("cli_install_status"),
   /** Links `~/.local/bin/hunt` to the `hunt-cli` beside the app binary, replacing an earlier symlink; rejects for a file or folder there. */
   installCli: () => invoke<CliInstall>("install_cli"),
+  /** Notes in the session's record that the user took up its agent's guardrail suggestion `summary`, so it is no longer offered. */
+  dismissGuardrail: (sessionId: string, summary: string) => invoke<void>("dismiss_guardrail", { id: sessionId, summary }),
   /** Appends the declined guardrail suggestion to the declines file of the session's worktree (`declinedGuardrailsFile` of hunt.json), which its CLAUDE.md points agents at. */
   declineGuardrail: (sessionId: string, kind: string, summary: string, reason: GuardrailDeclineReason) =>
     invoke<void>("decline_guardrail", { id: sessionId, kind, summary, reason }),

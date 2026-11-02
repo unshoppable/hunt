@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use super::running_remote;
 use crate::agent::acp::SessionRegistry;
+use crate::agent::app_pages::{self, AppPage};
 use crate::agent::browser::{AnnotationSink, BrowserRegistry};
 use crate::remote::desktop::{DesktopEndpoint, DesktopRegistry};
 use crate::remote::ssh::ssh_dir;
@@ -32,6 +33,17 @@ pub fn close_desktop(app: &AppHandle, id: Uuid) {
     tauri::async_runtime::spawn(async move { app.state::<DesktopRegistry>().close(id).await });
 }
 
+/// The apps of the local session `id` that show a page now (see `crate::agent::app_pages`); none for a remote session,
+/// whose apps run on its VM. "Browser" is enabled while there is one.
+#[tauri::command]
+pub async fn browser_pages(app: AppHandle, id: Uuid) -> Result<Vec<AppPage>, String> {
+    let record = store::find_session(&app, id)?;
+    if record.remote.is_some() {
+        return Ok(Vec::new());
+    }
+    Ok(app_pages::running_pages(&record.worktree_path).await)
+}
+
 /// Opens the Chrome of the local session `id` and brings it to the front (see `crate::agent::browser`).
 #[tauri::command]
 pub async fn browser_open(app: AppHandle, id: Uuid) -> Result<(), String> {
@@ -39,8 +51,9 @@ pub async fn browser_open(app: AppHandle, id: Uuid) -> Result<(), String> {
 }
 
 /// Opens the Chrome of the local session `id` with a copy of its repository's profile unless it runs; with `raises`, its
-/// window comes to the front. The annotations of its review widget go to the windows as `review:annotation`. The command
-/// and the control socket (`super::control`) use it; a remote session has its Chromium on its VM.
+/// window comes to the front with a tab for each app of the session that shows a page and has none yet. The annotations
+/// of its review widget go to the windows as `review:annotation`. The command and the control socket (`super::control`)
+/// use it; a remote session has its Chromium on its VM.
 pub async fn open_browser(app: &AppHandle, id: Uuid, raises: bool) -> Result<(), String> {
     let record = store::find_session(app, id).map_err(|error| format!("failed to open the browser: {error}"))?;
     if record.remote.is_some() {
@@ -49,7 +62,9 @@ pub async fn open_browser(app: &AppHandle, id: Uuid, raises: bool) -> Result<(),
     let browser_dir = store::browser_dir(app)?;
     let emitter = app.clone();
     let on_annotation: AnnotationSink = std::sync::Arc::new(move |annotation| relay_watch::emit_annotation(&emitter, id, annotation));
-    app.state::<BrowserRegistry>().open(id, &record.repo_path, &browser_dir, on_annotation, raises).await
+    let urls: Vec<String> =
+        if raises { app_pages::running_pages(&record.worktree_path).await.into_iter().map(|page| page.url).collect() } else { Vec::new() };
+    app.state::<BrowserRegistry>().open(id, &record.repo_path, &browser_dir, on_annotation, raises, &urls).await
 }
 
 /// Closes the Chrome of the session `id` in the background, once its agent or the session ends; its profile replaces

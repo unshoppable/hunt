@@ -38,6 +38,8 @@ import type { ChecksStatus } from "../checks/checks.types";
 import { DesktopPanel } from "../desktop/DesktopPanel";
 import { PreviewPanel } from "../preview/PreviewPanel";
 import { isPreviewActive } from "../preview/preview-services.utils";
+import { useAppPages } from "../preview/app-pages.hook";
+import { browserButtonTitle } from "../preview/app-pages.utils";
 import { keepPopupWindowsWarm } from "../ui/detached-popup.utils";
 import { usePopupRequest } from "../ui/popup-request.hook";
 import { useChecksStore } from "../checks/checks.store";
@@ -112,6 +114,8 @@ export function App() {
   const setRightTab = (tab: RightTab) => setTab(shownSessionId, tab);
   const openFile = useIdeStore((state) => state.openFile);
   const openBrowser = useHuntStore((state) => state.openBrowser);
+  /** The frontend services of the shown local session that run; "Browser" is enabled while there is one and opens a tab for each. */
+  const appPages = useAppPages(shownSessionId && !activeRemoteInstance ? shownSessionId : null);
   const ideLayout = useIdeStore((state) => (activeSessionId ? state.sessions[activeSessionId]?.layout : null) ?? EMPTY_IDE_SESSION.layout);
   const openPaths = useMemo(() => [...new Set(ideLayout.panes.flatMap((pane) => pane.tabs))], [ideLayout]);
   const fileSearch = usePopupRequest<null>();
@@ -323,9 +327,9 @@ export function App() {
                 <button
                   type="button"
                   onClick={() => void openBrowser(shownSessionId)}
-                  disabled={isCreatingActive}
-                  title="Open this session's Chrome, which its agent drives, or bring it to the front"
-                  className={`${TAB_BUTTON} gap-1.5 ${TAB_INACTIVE} disabled:pointer-events-none disabled:opacity-40`}
+                  disabled={isCreatingActive || !appPages.length}
+                  title={browserButtonTitle(appPages)}
+                  className={`${TAB_BUTTON} gap-1.5 ${TAB_INACTIVE} disabled:cursor-default disabled:bg-transparent disabled:text-neutral-400 disabled:opacity-40`}
                 >
                   <GlobeIcon />
                   Browser

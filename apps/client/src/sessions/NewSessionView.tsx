@@ -193,9 +193,9 @@ export function NewSessionView({
 
   /**
    * Checks `name` out in the repository's checkout, a remote branch (`origin/<name>`) as the local branch of its name,
-   * and starts the session on it right away, as choosing a base branch starts a worktree session. Git refuses while
-   * working changes would be overwritten or the branch is checked out in a worktree; the refusal shows as the view's
-   * error and no session starts.
+   * and starts the session on it right away, as choosing a base branch starts a worktree session. Sessions already
+   * working in the checkout move to the branch with it. Git refuses while working changes would be overwritten or the
+   * branch is checked out in a worktree; the refusal shows as the view's error and no session starts.
    */
   async function startInCheckoutOn(name: string) {
     let current = currentBranch;
@@ -395,7 +395,7 @@ export function NewSessionView({
             title={branchTitle}
             value={startRef}
             options={branchOptions}
-            onReselect={isCheckout}
+            onReselect
             onChange={(id) => {
               if (isCheckout) {
                 void startInCheckoutOn(id);

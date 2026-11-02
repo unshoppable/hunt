@@ -51,22 +51,22 @@ describe("SwfSettings", () => {
 
   it("expands a gate in the order of hunt.json's checks: * for every check, a list for the checks it names, [] for none", () => {
     const gated = (implement: "*" | string[], review: "*" | string[]) =>
-      new SwfSettings({ steps: { ...STEPS, implement: { skill: "swf-implement", gate: implement }, review: { skill: "swf-review", gate: review } } }).resolve(CHECKS);
+      new SwfSettings({ steps: { ...STEPS, implement: { skill: "swf-implement", checks: implement }, review: { skill: "swf-review", checks: review } } }).resolve(CHECKS);
     expect(gated([], "*").steps).toMatchObject({ implement: { gate: [] }, review: { gate: CHECKS } });
     expect(gated(["test", "format", "test"], ["lint"]).steps).toMatchObject({ implement: { gate: ["format", "test"] }, review: { gate: ["lint"] } });
     expect(new SwfSettings({ steps: STEPS }).gateChecks).toEqual([]);
-    expect(new SwfSettings({ steps: { ...STEPS, implement: { skill: "swf-implement", gate: "*" }, verify: { skill: "swf-verify", gate: ["lint"] } } }).gateChecks).toEqual(["lint"]);
+    expect(new SwfSettings({ steps: { ...STEPS, implement: { skill: "swf-implement", checks: "*" }, verify: { skill: "swf-verify", checks: ["lint"] } } }).gateChecks).toEqual(["lint"]);
   });
 
   it("round-trips through its JSON", () => {
-    const settings = new SwfSettings({ model: "claude-opus-5-5", steps: { ...STEPS, implement: { skill: "swf-implement", gate: ["lint"] } } });
+    const settings = new SwfSettings({ model: "claude-opus-5-5", steps: { ...STEPS, implement: { skill: "swf-implement", checks: ["lint"] } } });
     expect(new SwfSettings(settings.toJSON()).isEqualTo(settings)).toBe(true);
   });
 
   it("rejects an agent step without a skill, agent fields on a poller step and a limit of returns on a step that never sends the pipeline back", () => {
     const { review: _review, ...withoutReview } = STEPS;
     expect(() => new SwfSettings({ steps: withoutReview })).toThrow(/every agent step names its skill/);
-    for (const checks of [{ skill: "swf-checks" }, { model: "claude-opus-5-5" }, { effort: "low" as const }, { gate: "*" as const }]) {
+    for (const checks of [{ skill: "swf-checks" }, { model: "claude-opus-5-5" }, { effort: "low" as const }, { checks: "*" as const }]) {
       expect(() => new SwfSettings({ steps: { ...STEPS, checks } })).toThrow(/only an agent step/);
     }
     expect(() => new SwfSettings({ steps: { ...STEPS, implement: { skill: "swf-implement", maxReturns: 2 } } })).toThrow(/only a returning step has maxReturns/);

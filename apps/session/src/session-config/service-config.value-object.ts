@@ -33,6 +33,8 @@ const ZodServiceConfigState = z
     guarded: z._default(ZodFlag, true),
     /** Whether the HTML pages of its guarded host get the review widget. */
     review: z._default(ZodFlag, true),
+    /** Whether the service shows pages in a browser, such as a dev server: Hunt opens a tab of a local session's Chrome for it. */
+    frontend: z._default(ZodFlag, false),
     /** The service's variables as hunt.json declares them, placeholders unresolved. */
     env: z._default(z.record(ZodEnvVariableName, ZodEnvValue), () => ({})),
     /** The service's variables whose values are remote secrets: variable → name of the remote secret, without the `$`. */

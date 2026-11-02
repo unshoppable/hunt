@@ -17,7 +17,9 @@ import { locateExcerpt } from "./code-excerpt.utils";
 import { diffFenceOldText, diffFencePatch } from "./diff-fence.utils";
 import { HighlightedDiff } from "../../editor/InlineDiff";
 import { useLoad } from "../../ui/load.hook";
-import { ToolCallCard } from "./ToolCallCard";
+import { STATUS_DOT, ToolCallCard } from "./ToolCallCard";
+import { summarizeActivity } from "./activity-summary.utils";
+import { ChevronIcon } from "../../ui/Icons";
 import { WorkingIndicator } from "../WorkingIndicator";
 import { Collapsible } from "../../ui/Collapsible";
 import { useFileIconUrl } from "../../ui/file-icons/file-icons.hook";
@@ -67,23 +69,12 @@ export function MessageList({
   /** The `messageId` of the prompt below which the "unread" line runs; none when no prompt has it. */
   unreadAfterMessageId?: string | null;
 }) {
-  const lastItem = items[items.length - 1];
   const blocks = groupItems(items);
   const unreadIndex = unreadAfterMessageId ? blocks.findIndex((block) => block.kind === "message" && block.item.kind === "user" && block.item.messageId === unreadAfterMessageId) + 1 : 0;
 
   function renderBlock(block: Block): ReactNode {
     if (block.kind === "activity") {
-      return (
-        <div className="divide-y divide-(--line) overflow-hidden rounded-lg border border-(--line) bg-(--surface-inset)">
-          {block.items.map((item) =>
-            item.kind === "tool" ? (
-              <ToolCallCard key={item.id} toolCall={item.toolCall} isVerbose={isVerbose} basePath={basePath} />
-            ) : item.kind === "thought" ? (
-              <ThoughtRow key={item.id} text={item.text} isStreaming={isBusy && item === lastItem} isVerbose={isVerbose} />
-            ) : null,
-          )}
-        </div>
-      );
+      return <ActivityCard items={block.items} isLive={isBusy && block === blocks[blocks.length - 1]} isVerbose={isVerbose} basePath={basePath} onOpenFile={onOpenFile} />;
     }
     const item = block.item;
     if (item.kind === "user") {
@@ -406,6 +397,76 @@ function FileLink({ target, onOpen, children }: { target: FileTarget; onOpen: (t
       <img src={fileIconUrl(target.path)} alt="" className="file-link-icon" />
       <span className="file-link-label">{children}</span>
     </span>
+  );
+}
+
+const ACTIVITY_CARD = "overflow-hidden rounded-lg border border-(--line) bg-(--surface-inset)";
+
+/**
+ * Consecutive tool calls and thoughts as one card. Two or more fold into a header row that counts them, with the files
+ * their tools wrote or edited listed below it; the rows unfold on a click, in verbose mode and while the running turn
+ * still adds to the card.
+ */
+function ActivityCard({
+  items,
+  isLive,
+  isVerbose,
+  basePath,
+  onOpenFile,
+}: {
+  items: ChatItem[];
+  isLive: boolean;
+  isVerbose: boolean;
+  basePath: string;
+  onOpenFile?: (target: FileTarget) => void;
+}) {
+  const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
+  const fileIconUrl = useFileIconUrl();
+  const lastItem = items[items.length - 1];
+  const rows = items.map((item) =>
+    item.kind === "tool" ? (
+      <ToolCallCard key={item.id} toolCall={item.toolCall} isVerbose={isVerbose} basePath={basePath} />
+    ) : item.kind === "thought" ? (
+      <ThoughtRow key={item.id} text={item.text} isStreaming={isLive && item === lastItem} isVerbose={isVerbose} />
+    ) : null,
+  );
+  if (items.length < 2) return <div className={ACTIVITY_CARD}>{rows}</div>;
+
+  const summary = summarizeActivity(items, basePath);
+  const isExpanded = expandedOverride ?? (isLive || isVerbose);
+  return (
+    <div className={ACTIVITY_CARD}>
+      <button
+        type="button"
+        aria-expanded={isExpanded}
+        onClick={() => setExpandedOverride(!isExpanded)}
+        className="chat-mono flex w-full select-none items-center gap-2.5 px-3 py-1.5 text-left hover:bg-(--row-hover)"
+      >
+        <span className={`size-1.5 shrink-0 rounded-full ${STATUS_DOT[summary.status]}`} />
+        <span className="flex-1 font-medium text-neutral-200">{summary.label}</span>
+        <ChevronIcon expanded={isExpanded} className="size-3.5 shrink-0 text-neutral-500" />
+      </button>
+      <Collapsible isOpen={isExpanded}>
+        <div className="divide-y divide-(--line) border-t border-(--line)">{rows}</div>
+      </Collapsible>
+      <Collapsible isOpen={!isExpanded && summary.files.length > 0}>
+        <div className="divide-y divide-(--line) border-t border-(--line)">
+          {summary.files.map((path) => (
+            <button
+              key={path}
+              type="button"
+              onClick={() => onOpenFile?.({ path })}
+              disabled={!onOpenFile}
+              title={onOpenFile ? `Open ${path} in the editor` : path}
+              className="chat-mono flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-neutral-400 enabled:hover:bg-(--row-hover)"
+            >
+              <img src={fileIconUrl(path)} alt="" className="size-4 shrink-0" />
+              <span className="truncate">{path}</span>
+            </button>
+          ))}
+        </div>
+      </Collapsible>
+    </div>
   );
 }
 

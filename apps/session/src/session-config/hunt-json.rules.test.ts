@@ -8,7 +8,7 @@ import {
   ZodEnvValue,
   ZodEnvVariableName,
   ZodFlag,
-  ZodGate,
+  ZodStepChecks,
   ZodGlobPattern,
   ZodGlobPatterns,
   ZodMaxGateRuns,
@@ -157,12 +157,12 @@ describe("hunt.json rules", () => {
   });
 
   it("take * or at most 32 names of checks as a gate and report each string that is no name at its index", () => {
-    expect(ZodGate.parse("*")).toBe("*");
-    expect(ZodGate.parse([])).toEqual([]);
-    expect(ZodGate.parse(Array.from({ length: 32 }, () => "lint"))).toHaveLength(32);
+    expect(ZodStepChecks.parse("*")).toBe("*");
+    expect(ZodStepChecks.parse([])).toEqual([]);
+    expect(ZodStepChecks.parse(Array.from({ length: 32 }, () => "lint"))).toHaveLength(32);
     for (const gate of ["all", "", 1, null, { lint: true }, ["lint", 1], Array.from({ length: 33 }, () => "lint")]) {
-      expect(issuesOf(ZodGate, gate)).toEqual([': must be "*" for every check or a list of at most 32 names of checks']);
+      expect(issuesOf(ZodStepChecks, gate)).toEqual([': must be "*" for every check or a list of at most 32 names of checks']);
     }
-    expect(issuesOf(ZodGate, ["lint", "Lint", "-x"])).toEqual(["1: invalid name, must match ^[a-z][a-z0-9-]{0,31}$", "2: invalid name, must match ^[a-z][a-z0-9-]{0,31}$"]);
+    expect(issuesOf(ZodStepChecks, ["lint", "Lint", "-x"])).toEqual(["1: invalid name, must match ^[a-z][a-z0-9-]{0,31}$", "2: invalid name, must match ^[a-z][a-z0-9-]{0,31}$"]);
   });
 });

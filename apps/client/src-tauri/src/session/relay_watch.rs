@@ -6,7 +6,9 @@
 //! not before `SECOND_RETRY`, then not before `LATER_RETRY`. What a relay reports lands in the session's
 //! `relay_activity`, which the windows hear as `remote:relay`; the sessions are not announced, since nothing else of
 //! them changed. An annotation the channel delivers goes to the windows as `review:annotation`, for the session's
-//! composer. A turn that ended has the pipeline record of a software-factory session pulled (`session::swf`).
+//! composer. The pipeline record of a software-factory session is pulled (`session::swf`) whenever the helper reports it
+//! written, so that the Factory tab follows the pipeline live, also while the relay restarts for a fresh conversation;
+//! with an older helper that does not report it, after every turn that ended.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -165,16 +167,21 @@ fn spawn_watch(app: &AppHandle, id: Uuid, vm: VmRef, generation: u64) -> tauri::
 }
 
 /// Opens the status channel of session `id` on `vm`; its reports land in the session's record, its annotations go to the
-/// windows, and `closed` gets why it ended.
+/// windows, a changed pipeline record is pulled, and `closed` gets why it ended.
 async fn connect(app: &AppHandle, id: Uuid, vm: &VmRef, closed: oneshot::Sender<String>) -> Result<StatusChannel, String> {
     let ssh = Ssh::open(vm, &ssh_dir()?).await?;
     let handle = app.clone();
     let watched = vm.clone();
     let closed = Mutex::new(Some(closed));
+    // The record time the channel reported last; the first report pulls the record once.
+    let swf_record_at = Mutex::new(None::<i64>);
     StatusChannel::open(&ssh, move |event| match event {
         Event::Status(report) => {
             if let Err(error) = record_report(&handle, id, &watched, &report) {
                 eprintln!("recording the relay status of session {id} failed: {error}");
+            }
+            if is_new_record(&mut swf_record_at.lock().unwrap(), report.swf_record_at) {
+                swf::pull_later(&handle, id);
             }
         }
         Event::Annotation(annotation) => emit_annotation(&handle, id, annotation),
@@ -202,8 +209,8 @@ fn record_report(app: &AppHandle, id: Uuid, vm: &VmRef, report: &Report) -> Resu
         target.relay_activity = activity.or(target.relay_activity);
         target.last_active_at = target.last_active_at.max(ended_at);
     })?;
-    // The turn may have moved the pipeline on, which the gateway mirrored onto the VM.
-    if ended_at.is_some() {
+    // An older helper does not report the pipeline record; the turn may have moved it on.
+    if ended_at.is_some() && report.swf_record_at.is_none() {
         swf::pull_later(app, id);
     }
     let Some(activity) = activity else { return Ok(()) };
@@ -211,6 +218,17 @@ fn record_report(app: &AppHandle, id: Uuid, vm: &VmRef, report: &Report) -> Resu
         announce(app, id, activity);
     }
     Ok(())
+}
+
+/// Whether `reported`, the record time of a report, names a pipeline record `last` has not seen (`None`: none reported
+/// yet); `last` then remembers it. A report without a record (`None`) is no record.
+fn is_new_record(last: &mut Option<i64>, reported: Option<i64>) -> bool {
+    let Some(reported) = reported else { return false };
+    if *last == Some(reported) {
+        return false;
+    }
+    *last = Some(reported);
+    true
 }
 
 /// Tells the windows the relay activity of session `id`.
@@ -355,7 +373,18 @@ mod tests {
     }
 
     fn report(turn: Option<Turn>, question: Option<bool>, last_turn_ended_at: Option<i64>) -> Report {
-        Report { turn, question, last_turn_ended_at }
+        Report { turn, question, last_turn_ended_at, swf_record_at: None }
+    }
+
+    #[test]
+    fn a_record_is_new_once_per_reported_time_and_never_without_one() {
+        let mut last = None;
+        assert!(!is_new_record(&mut last, None));
+        assert!(is_new_record(&mut last, Some(1_760_000_000_000)));
+        assert!(!is_new_record(&mut last, Some(1_760_000_000_000)));
+        assert!(!is_new_record(&mut last, None));
+        assert!(is_new_record(&mut last, Some(1_760_000_001_000)));
+        assert_eq!(last, Some(1_760_000_001_000));
     }
 
     #[test]

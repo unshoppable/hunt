@@ -1,8 +1,9 @@
 //! The pipeline record of a software-factory session (`SessionMode::Swf`). The gateway's poller mirrors the record of the
 //! session's issue onto its VM into `.hunt/swf/` of the worktree (`hunt-ctl swf-record`): `pipeline.json` holds the
 //! record (`libs/domain/src/swf/pipeline.domain.ts`), `steps/<nn>-<step>.md` the body of the step result the run `nn`
-//! ended with. `.hunt/` stays out of the file sync, so the folder is pulled on its own: when the session is opened, after
-//! every turn its relay reports ended (`relay_watch`) and with the retrieval, before the remote side is dropped. The
+//! ended with. `.hunt/` stays out of the file sync, so the folder is pulled on its own: when the session is opened,
+//! whenever the VM's status helper reports the record written (`relay_watch`; after every turn that ended with an older
+//! helper) and with the retrieval, before the remote side is dropped. The
 //! Factory tab then reads the pipeline from the local worktree (`read_pipeline`, `read_step`), also once the VM is gone.
 //! A pull never fails its caller: failures are logged, a VM without the folder yet copies nothing, and the pulls of a
 //! session run one after the other.

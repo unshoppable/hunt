@@ -98,7 +98,7 @@ The `swf` section of hunt.json sets each step under `swf.steps.<step>` (`SWF_STE
 - `model`, `effort`: an agent step's config options of Claude Code, else the section's `swf.model` and `swf.effort`,
   else Claude Code's defaults.
 - `maxReturns`: a returning step's limit of returns (verify, review, checks, human-review, merge), else Hunt's default.
-- `gate`: the checks of hunt.json's `checks` an agent step's result must pass, `"*"` for every check; without one,
+- `checks`: the checks of hunt.json's `checks` an agent step's result must pass (its gate), `"*"` for every check; without one,
   implement's gate is every check and the other steps have none.
 
 `swf.maxGateRuns` limits the gate failures of one step result (Hunt's default `DEFAULT_MAX_GATE_RUNS`, 5).
@@ -120,9 +120,9 @@ services to start, which checks to run, which review criteria to judge by, how i
 
 | File | When | Where it lands |
 | --- | --- | --- |
-| `nudge.user-prompt.md` | the agent's turn ended while the issue is still at an agent step with no `result.md` and neither the question nor the failed label; once per step, never while a Hunt desktop is connected | the same conversation; reminds the agent to write the step's result, ask with the question label or give up; when the next turn ends the same way, the issue is marked as failed |
-| `answer.user-prompt.md` | the poller found a comment by someone other than the app's bot user after the agent's question while the issue is labelled `swf:question` and handed it to the runner's inbox; each answer once, sent when the relay is idle and no desktop is connected; a stopped VM is started first | the same conversation; brings the answers and tells the agent to take the label back to the step and finish it |
-| `bad-result.user-prompt.md` | `result.md` holds a result the runner cannot use (malformed, or the result of another step than the current one); once the relay is idle and no desktop is connected | the same conversation; tells the agent why (`{{problem}}`) and to write the step's result again, without the file's final line break; the file is discarded, the pipeline stays at its step |
+| `nudge.user-prompt.md` | the agent's turn ended while the issue is still at an agent step with no `result.md` and neither the question nor the failed label; once per step | the same conversation; reminds the agent to write the step's result, ask with the question label or give up; when the next turn ends the same way, the issue is marked as failed |
+| `answer.user-prompt.md` | the poller found a comment by someone other than the app's bot user after the agent's question while the issue is labelled `swf:question` and handed it to the runner's inbox; each answer once, sent when the relay is idle; a stopped VM is started first | the same conversation; brings the answers and tells the agent to take the label back to the step and finish it |
+| `bad-result.user-prompt.md` | `result.md` holds a result the runner cannot use (malformed, or the result of another step than the current one); once the relay is idle | the same conversation; tells the agent why (`{{problem}}`) and to write the step's result again, without the file's final line break; the file is discarded, the pipeline stays at its step |
 | `gate-failed.user-prompt.md` | a usable result of an agent step failed the step's gate: a check of the gate failed or the working tree is not clean; up to `maxGateRuns` times per result | the same conversation; quotes the failed checks with the end of their output and the dirty files, and tells the agent to fix them, commit, push and write the result again; the pipeline stays at its step and counts the gate run, no return |
 | `gate-escalate.user-prompt.md` | the step's result failed its gate more than `maxGateRuns` times | the same conversation; tells the agent to stop fixing and ask the people with the question label, naming what fails and what it tried |
 
@@ -146,7 +146,7 @@ of its output in a fence, then `### working tree not clean after the checks` wit
 ## What the repository provides
 
 `hunt.json` with its `swf` section (`swf.steps.<step>` with the skill of plan, implement, verify, review and pr and
-optionally their `model`, `effort`, `maxReturns` and `gate`, the alias `swf.skills`, `swf.model`, `swf.effort`,
+optionally their `model`, `effort`, `maxReturns` and `checks`, the alias `swf.skills`, `swf.model`, `swf.effort`,
 `swf.maxGateRuns`; `swf.questionPrefix`, the prefix of the title of an issue with an open question, `swf.projectStatus`,
 the names of the Status options the poller sets in the issue's projects (`inProgress`, `inReview`, `done`), and
 `swf.mergeMethod`, how the poller merges (`squash`, `merge` or `rebase`); `swf.humanReviewPaths` is read by the

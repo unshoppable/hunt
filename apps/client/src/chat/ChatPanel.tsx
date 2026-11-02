@@ -113,8 +113,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const isBusy = chat?.isBusy ?? false;
   const declineGuardrail = useHuntStore((state) => state.declineGuardrail);
   const acceptGuardrail = useHuntStore((state) => state.acceptGuardrail);
-  const foundSuggestion = isBusy ? null : findGuardrailSuggestion(chat?.items ?? []);
-  const guardrailSuggestion = foundSuggestion?.replyId === chat?.dismissedGuardrailId ? null : foundSuggestion;
+  const guardrailSuggestion = isBusy ? null : findGuardrailSuggestion(chat?.items ?? [], session?.dismissedGuardrails ?? []);
   const hasQuestion = !!chat && !isCreating && hasPendingQuestion(chat);
   const hasPermission = Boolean(chat?.permission);
   const moveText = chat ? moveStatus(chat) : null;
@@ -337,10 +336,13 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           </div>
         </div>
       ) : null}
-      {/* The poller drives the pipeline only while no desktop is connected to the VM; the hint makes that pause visible. */}
+      {/* The runner on the VM drives the pipeline whether or not a desktop is connected; each step restarts the relay, which drops and reconnects the chat. */}
       {session.mode === "swf" && session.isLive && remote ? (
         <div className="px-9 pt-2">
-          <p className="chat-column text-[13px] text-neutral-500">The pipeline pauses while Hunt is connected to the VM and goes on with its next step once Hunt disconnects.</p>
+          <p className="chat-column text-[13px] text-neutral-500">
+            The pipeline runs on while Hunt is connected: this chat shows the current step's conversation, starts afresh with every step and reconnects
+            by itself. A prompt you send here lands in that step's conversation.
+          </p>
         </div>
       ) : null}
       {session.isLive || isStarting ? null : remote ? (

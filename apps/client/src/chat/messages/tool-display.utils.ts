@@ -40,6 +40,12 @@ export function formatToolTitle(toolCall: ToolCallView): ToolTitle {
   }
 }
 
+/** Replaces the session's worktree prefix in a tool argument with a repo-relative path. */
+export function stripBasePath(argument: string, basePath: string): string {
+  if (!basePath) return argument;
+  return argument.split(`${basePath}/`).join("").split(basePath).join(".");
+}
+
 function stripPrefix(text: string, prefix: string): string | null {
   if (!text.startsWith(prefix)) return text || null;
   const rest = text.slice(prefix.length).trim();
@@ -100,6 +106,6 @@ export function countLines(text: string): number {
   return text.replace(/\n$/, "").split("\n").length;
 }
 
-function pluralize(count: number, noun: string): string {
+export function pluralize(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }

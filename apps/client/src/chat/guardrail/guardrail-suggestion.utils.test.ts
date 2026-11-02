@@ -7,33 +7,37 @@ const agent = (text: string): ChatItem => ({ kind: "agent", id: text, text, imag
 
 describe("findGuardrailSuggestion", () => {
   it("returns the kind and summary the last reply marks", () => {
-    expect(findGuardrailSuggestion([user("q"), agent("Use ports.\n<!-- hunt:guardrail adr: Adapters wrap every external API. -->")])).toEqual({
+    expect(findGuardrailSuggestion([user("q"), agent("Use ports.\n<!-- hunt:guardrail adr: Adapters wrap every external API. -->")], [])).toEqual({
       kind: "adr",
       summary: "Adapters wrap every external API.",
       reason: "",
-      replyId: "Use ports.\n<!-- hunt:guardrail adr: Adapters wrap every external API. -->",
     });
   });
 
   it("splits the reason off the summary, also on a line of its own", () => {
     const sameLine = "Done.\n<!-- hunt:guardrail rule: Wrap `Base<T>` fields. Why: The build failed twice. -->";
-    expect(findGuardrailSuggestion([user("q"), agent(sameLine)])).toEqual({ kind: "rule", summary: "Wrap `Base<T>` fields.", reason: "The build failed twice.", replyId: sameLine });
+    expect(findGuardrailSuggestion([user("q"), agent(sameLine)], [])).toEqual({ kind: "rule", summary: "Wrap `Base<T>` fields.", reason: "The build failed twice." });
     const ownLine = "Done.\n<!-- hunt:guardrail skill: Seed first.\nWhy: Tests broke. -->";
-    expect(findGuardrailSuggestion([user("q"), agent(ownLine)])).toEqual({ kind: "skill", summary: "Seed first.", reason: "Tests broke.", replyId: ownLine });
+    expect(findGuardrailSuggestion([user("q"), agent(ownLine)], [])).toEqual({ kind: "skill", summary: "Seed first.", reason: "Tests broke." });
   });
 
   it("finds the marker before the question marker", () => {
-    expect(findGuardrailSuggestion([user("q"), agent("Shall I go on?\n\n<!-- hunt:guardrail rule: Exclude new types. -->\n<!-- hunt:question -->")])).toEqual({
+    expect(findGuardrailSuggestion([user("q"), agent("Shall I go on?\n\n<!-- hunt:guardrail rule: Exclude new types. -->\n<!-- hunt:question -->")], [])).toEqual({
       kind: "rule",
       summary: "Exclude new types.",
       reason: "",
-      replyId: "Shall I go on?\n\n<!-- hunt:guardrail rule: Exclude new types. -->\n<!-- hunt:question -->",
     });
   });
 
   it("ignores a marker of a reply before the last prompt and unknown kinds", () => {
-    expect(findGuardrailSuggestion([agent("a <!-- hunt:guardrail rule: x -->"), user("next")])).toBeNull();
-    expect(findGuardrailSuggestion([user("q"), agent("a <!-- hunt:guardrail memo: x -->")])).toBeNull();
+    expect(findGuardrailSuggestion([agent("a <!-- hunt:guardrail rule: x -->"), user("next")], [])).toBeNull();
+    expect(findGuardrailSuggestion([user("q"), agent("a <!-- hunt:guardrail memo: x -->")], [])).toBeNull();
+  });
+
+  it("ignores a suggestion the user took up or declined already", () => {
+    const items = [user("q"), agent("Done.\n<!-- hunt:guardrail rule: Wrap fields. Why: It broke. -->")];
+    expect(findGuardrailSuggestion(items, ["Wrap fields."])).toBeNull();
+    expect(findGuardrailSuggestion(items, ["Other."])).toEqual({ kind: "rule", summary: "Wrap fields.", reason: "It broke." });
   });
 });
 
@@ -57,7 +61,7 @@ describe("stripGuardrailMarker", () => {
 
 describe("buildGuardrailRequest", () => {
   it("invokes the guardrail skill with the suggestion or leaves the request open", () => {
-    expect(buildGuardrailRequest({ kind: "adr", summary: "Use ports.", reason: "", replyId: "a1" }, "ADR", "guardrail")).toBe("/guardrail ADR: Use ports.");
+    expect(buildGuardrailRequest({ kind: "adr", summary: "Use ports.", reason: "" }, "ADR", "guardrail")).toBe("/guardrail ADR: Use ports.");
     expect(buildGuardrailRequest(null, "", "team-lessons")).toBe("/team-lessons ");
   });
 });

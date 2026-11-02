@@ -10,6 +10,7 @@ import { useChecksStore } from "../checks/checks.store";
 import { useFactoryStore } from "../sessions/swf-pipeline.store";
 import { configuredVmSettings, useSettingsStore, type PaneKey } from "../settings/settings.store";
 import { useHuntStore } from "../sessions/hunt.store";
+import { useServicesStore } from "../terminal/services.store";
 
 /** Writes the pane settings into the CSS variables every pane reads (`--<pane>-font-size` …, see index.css) and into Monaco's theme. */
 export function usePaneStyles(): void {
@@ -109,6 +110,13 @@ export function useAccountsSync(): void {
 }
 
 /** Reads the checks of the session again once the Checks tab has shown them. */
+/** Reads the services of the local session `sessionId` again after one started or stopped, if this window shows them. */
+function refreshShownServices(sessionId: string): void {
+  const servicesStore = useServicesStore.getState();
+  if (!servicesStore.services[sessionId]) return;
+  void servicesStore.refresh(sessionId);
+}
+
 function refreshShownChecks(sessionId: string): void {
   const checksStore = useChecksStore.getState();
   if (!checksStore.checks[sessionId]) return;
@@ -162,6 +170,7 @@ export function useBackendEvents(): void {
       listenTo("attribution:changed", (event) => applyWorktreeChanged(event.worktreePath)),
       listenTo("worktree:changed", (event) => applyWorktreeChanged(event.worktreePath, event.changes)),
       listenTo("checks:changed", (event) => refreshShownChecks(event.sessionId)),
+      listenTo("services:changed", (event) => refreshShownServices(event.sessionId)),
       listenTo("swf:pulled", (event) => refreshPulledPipeline(event.huntSessionId)),
     ];
     return () => {

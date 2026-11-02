@@ -4,8 +4,9 @@
 //! profile`) in `<browser dir>/sessions/<session id>`, so the repository's logins are there; when the Chrome ends, the
 //! copy replaces the repository's profile, so the session closed last wins. Chrome starts on demand: when the agent calls
 //! its first browser tool (the wrapper asks through the control socket, `crate::platform::control`) or the user clicks
-//! "Browser". Hunt attaches to every page over CDP, adds the binding `__huntReview` and the widget, and hands each
-//! annotation the widget reports to the caller's sink. Knows nothing about Tauri; `session/commands/browser.rs` owns the
+//! "Browser", which also opens a tab for each running app of the session that shows a page (`crate::agent::app_pages`).
+//! Hunt attaches to every page over CDP, adds the binding `__huntReview` and the widget, and hands each annotation the
+//! widget reports to the caller's sink. Knows nothing about Tauri; `session/commands/browser.rs` owns the
 //! command and the sink.
 
 use std::collections::HashMap;
@@ -85,9 +86,10 @@ struct Profile {
 }
 
 /// What the CDP task of a running Chrome is asked to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Control {
-    BringToFront,
+    /// Opens a tab for each of the URLs whose origin no page shows yet, or brings the last page to the front.
+    Show(Vec<String>),
 }
 
 impl BrowserRegistry {
@@ -104,15 +106,24 @@ impl BrowserRegistry {
     }
 
     /// Opens the Chrome of the session `id` in the repository `repo_path` unless it runs; with `raises`, its window comes
-    /// to the front of the screen. A new Chrome gets a copy of the repository's profile under `browser_dir`, listens for
-    /// CDP on the session's port and shows the review widget on every page, whose annotations go to `on_annotation`.
-    pub async fn open(&self, id: Uuid, repo_path: &Path, browser_dir: &Path, on_annotation: AnnotationSink, raises: bool) -> Result<(), String> {
+    /// to the front of the screen with a tab for each of `urls` whose origin no page shows yet. A new Chrome opens `urls`
+    /// (`about:blank` without any), gets a copy of the repository's profile under `browser_dir`, listens for CDP on the
+    /// session's port and shows the review widget on every page, whose annotations go to `on_annotation`.
+    pub async fn open(
+        &self,
+        id: Uuid,
+        repo_path: &Path,
+        browser_dir: &Path,
+        on_annotation: AnnotationSink,
+        raises: bool,
+        urls: &[String],
+    ) -> Result<(), String> {
         let slot = self.slots.lock().unwrap().entry(id).or_default().clone();
         let mut running = slot.lock().await;
         if let Some(browser) = running.as_mut() {
             if browser.is_running() {
                 if raises {
-                    let _ = browser.controls.send(Control::BringToFront);
+                    let _ = browser.controls.send(Control::Show(urls.to_vec()));
                     activate_process(browser.child.id());
                 }
                 return Ok(());
@@ -134,7 +145,7 @@ impl BrowserRegistry {
                 .map_err(|error| format!("failed to copy the browser profile: {error}"))??;
         }
         let mut child = Command::new(CHROME)
-            .args(chrome_args(&profile.session, port))
+            .args(chrome_args(&profile.session, port, urls))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -329,15 +340,32 @@ fn activate_process(pid: Option<u32>) {
     application.activateFromApplication_options(&NSRunningApplication::currentApplication(), NSApplicationActivationOptions::ActivateAllWindows);
 }
 
-/// The command line of a session's Chrome with the profile `profile_dir` and CDP on `port`.
-fn chrome_args(profile_dir: &Path, port: u16) -> Vec<String> {
-    vec![
+/// The command line of a session's Chrome with the profile `profile_dir`, CDP on `port` and a tab for each of `urls`
+/// (`about:blank` without any).
+fn chrome_args(profile_dir: &Path, port: u16, urls: &[String]) -> Vec<String> {
+    let mut args = vec![
         format!("--user-data-dir={}", profile_dir.display()),
         format!("--remote-debugging-port={port}"),
         "--no-first-run".into(),
         "--no-default-browser-check".into(),
-        "about:blank".into(),
-    ]
+    ];
+    if urls.is_empty() {
+        args.push("about:blank".into());
+    }
+    args.extend(urls.iter().cloned());
+    args
+}
+
+/// The `scheme://host[:port]` of `url`; `None` for a URL without an authority such as `about:blank`.
+fn origin(url: &str) -> Option<&str> {
+    let authority_start = url.find("://")? + 3;
+    let end = url[authority_start..].find(['/', '?', '#']).map_or(url.len(), |offset| authority_start + offset);
+    (end > authority_start).then(|| &url[..end])
+}
+
+/// Whether a page showing `url` is an empty tab another URL may take over.
+fn is_blank(url: &str) -> bool {
+    url.is_empty() || url == "about:blank" || url.starts_with("chrome://newtab")
 }
 
 /// A port of this Mac's loopback address that is free now.
@@ -427,7 +455,7 @@ async fn run_cdp<Stream>(
 {
     let (mut sink, mut source) = stream.split();
     let mut cdp = Cdp::default();
-    let mut outgoing = vec![cdp.start()];
+    let mut outgoing = cdp.start();
     'connection: loop {
         for text in outgoing.drain(..) {
             if sink.send(Message::Text(text.into())).await.is_err() {
@@ -449,7 +477,7 @@ async fn run_cdp<Stream>(
                 Some(Err(_)) | None => break,
             },
             control = controls.recv() => match control {
-                Some(control) => outgoing = vec![cdp.control(control)],
+                Some(control) => outgoing = cdp.control(control),
                 None => break,
             },
         }
@@ -466,8 +494,16 @@ async fn run_cdp<Stream>(
 #[derive(Default)]
 struct Cdp {
     next_id: u64,
-    /// The CDP sessions of the attached pages, in the order they were attached.
-    pages: Vec<String>,
+    /// The attached pages, in the order they were attached.
+    pages: Vec<Page>,
+}
+
+/// An attached page: its CDP session, its target and the URL it shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Page {
+    session_id: String,
+    target_id: String,
+    url: String,
 }
 
 /// What `Cdp::handle` makes of a message of Chrome.
@@ -490,18 +526,43 @@ impl Cdp {
         command.to_string()
     }
 
-    /// The first command: attach to every page, holding a new one until it got the binding and the widget.
-    fn start(&mut self) -> String {
-        self.command("Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }), None)
+    /// The first commands: report the URL changes of every target, and attach to every page, holding a new one until it
+    /// got the binding and the widget.
+    fn start(&mut self) -> Vec<String> {
+        vec![
+            self.command("Target.setDiscoverTargets", json!({ "discover": true }), None),
+            self.command("Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }), None),
+        ]
     }
 
-    /// The commands that carry out `control`.
-    fn control(&mut self, control: Control) -> String {
+    /// The commands that carry out `control`. `Show` puts each URL whose origin no page shows into an empty tab, else
+    /// into a new one; with none missing, it brings the last page to the front, or opens a window without any.
+    fn control(&mut self, control: Control) -> Vec<String> {
         match control {
-            Control::BringToFront => match self.pages.last().cloned() {
-                Some(page) => self.command("Page.bringToFront", json!({}), Some(&page)),
-                None => self.command("Target.createTarget", json!({ "url": "about:blank", "newWindow": true }), None),
-            },
+            Control::Show(urls) => {
+                let missing: Vec<String> =
+                    urls.into_iter().filter(|url| !self.pages.iter().any(|page| origin(&page.url).is_some_and(|shown| Some(shown) == origin(url)))).collect();
+                if missing.is_empty() {
+                    let command = match self.pages.last().map(|page| page.session_id.clone()) {
+                        Some(page) => self.command("Page.bringToFront", json!({}), Some(&page)),
+                        None => self.command("Target.createTarget", json!({ "url": "about:blank", "newWindow": true }), None),
+                    };
+                    return vec![command];
+                }
+                let mut blank_pages: std::vec::IntoIter<String> =
+                    self.pages.iter().filter(|page| is_blank(&page.url)).map(|page| page.session_id.clone()).collect::<Vec<_>>().into_iter();
+                let mut outgoing = Vec::new();
+                for url in missing {
+                    match blank_pages.next() {
+                        Some(page) => {
+                            outgoing.push(self.command("Page.navigate", json!({ "url": url }), Some(&page)));
+                            outgoing.push(self.command("Page.bringToFront", json!({}), Some(&page)));
+                        }
+                        None => outgoing.push(self.command("Target.createTarget", json!({ "url": url }), None)),
+                    }
+                }
+                outgoing
+            }
         }
     }
 
@@ -522,7 +583,11 @@ impl Cdp {
                 let Some(session_id) = params["sessionId"].as_str() else { return handled };
                 let is_waiting = params["waitingForDebugger"].as_bool().unwrap_or(false);
                 if params["targetInfo"]["type"].as_str() == Some("page") {
-                    self.pages.push(session_id.to_string());
+                    self.pages.push(Page {
+                        session_id: session_id.to_string(),
+                        target_id: params["targetInfo"]["targetId"].as_str().unwrap_or_default().to_string(),
+                        url: params["targetInfo"]["url"].as_str().unwrap_or_default().to_string(),
+                    });
                     handled.outgoing.push(self.command("Page.enable", json!({}), Some(session_id)));
                     handled.outgoing.push(self.command("Runtime.enable", json!({}), Some(session_id)));
                     handled.outgoing.push(self.command("Runtime.addBinding", json!({ "name": BINDING }), Some(session_id)));
@@ -540,7 +605,15 @@ impl Cdp {
             }
             Some("Target.detachedFromTarget") => {
                 if let Some(session_id) = params["sessionId"].as_str() {
-                    self.pages.retain(|page| page != session_id);
+                    self.pages.retain(|page| page.session_id != session_id);
+                }
+            }
+            Some("Target.targetInfoChanged") => {
+                let info = &params["targetInfo"];
+                if let (Some(target_id), Some(url)) = (info["targetId"].as_str(), info["url"].as_str()) {
+                    for page in self.pages.iter_mut().filter(|page| page.target_id == target_id) {
+                        page.url = url.to_string();
+                    }
                 }
             }
             Some("Runtime.bindingCalled") if params["name"].as_str() == Some(BINDING) => {
@@ -725,11 +798,28 @@ mod tests {
 
     #[test]
     fn chrome_gets_its_own_profile_and_port() {
-        let args = chrome_args(Path::new("/data/browser/sessions/abc"), 9333);
+        let args = chrome_args(Path::new("/data/browser/sessions/abc"), 9333, &[]);
         assert_eq!(args[0], "--user-data-dir=/data/browser/sessions/abc");
         assert_eq!(args[1], "--remote-debugging-port=9333");
         assert!(args.contains(&"--no-first-run".to_string()));
         assert_eq!(args.last().unwrap(), "about:blank");
+    }
+
+    #[test]
+    fn chrome_opens_a_tab_per_url_instead_of_a_blank_one() {
+        let urls = ["http://localhost:4200".to_string(), "http://localhost:4300".to_string()];
+        let args = chrome_args(Path::new("/data/browser/sessions/abc"), 9333, &urls);
+        assert_eq!(args[args.len() - 2..], urls);
+        assert!(!args.contains(&"about:blank".to_string()));
+    }
+
+    #[test]
+    fn origin_is_scheme_host_and_port() {
+        assert_eq!(origin("http://localhost:4200/patients?id=1"), Some("http://localhost:4200"));
+        assert_eq!(origin("http://localhost:4200"), Some("http://localhost:4200"));
+        assert_eq!(origin("https://app.example#top"), Some("https://app.example"));
+        assert_eq!(origin("about:blank"), None);
+        assert_eq!(origin("file:///tmp/a.html"), None);
     }
 
     #[test]
@@ -756,8 +846,11 @@ mod tests {
     #[test]
     fn the_connection_starts_by_attaching_to_every_page() {
         let mut cdp = Cdp::default();
-        let start = parsed(&cdp.start());
-        assert_eq!(start["id"], 1);
+        let start: Vec<Value> = cdp.start().iter().map(|text| parsed(text)).collect();
+        assert_eq!(start[0]["method"], "Target.setDiscoverTargets");
+        assert_eq!(start[0]["params"], json!({ "discover": true }));
+        let start = &start[1];
+        assert_eq!(start["id"], 2);
         assert_eq!(start["method"], "Target.setAutoAttach");
         assert_eq!(start["params"], json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }));
         assert!(start.get("sessionId").is_none());
@@ -778,7 +871,7 @@ mod tests {
         assert!(outgoing.iter().all(|command| command["sessionId"] == "S1"));
         assert_eq!(outgoing[2]["params"]["name"], BINDING);
         assert_eq!(outgoing[3]["params"]["source"], WIDGET);
-        assert_eq!(cdp.pages, ["S1"]);
+        assert_eq!(cdp.pages, [Page { session_id: "S1".into(), target_id: "T1".into(), url: String::new() }]);
     }
 
     #[test]
@@ -805,7 +898,12 @@ mod tests {
     #[test]
     fn bring_to_front_shows_the_last_page_or_opens_a_window() {
         let mut cdp = Cdp::default();
-        assert_eq!(parsed(&cdp.control(Control::BringToFront))["method"], "Target.createTarget");
+        let front = |cdp: &mut Cdp| {
+            let commands = cdp.control(Control::Show(Vec::new()));
+            assert_eq!(commands.len(), 1);
+            parsed(&commands[0])
+        };
+        assert_eq!(front(&mut cdp)["method"], "Target.createTarget");
         for session in ["S1", "S2"] {
             let attached = json!({
                 "method": "Target.attachedToTarget",
@@ -813,11 +911,52 @@ mod tests {
             });
             cdp.handle(&attached.to_string());
         }
-        let front = parsed(&cdp.control(Control::BringToFront));
-        assert_eq!(front["method"], "Page.bringToFront");
-        assert_eq!(front["sessionId"], "S2");
+        let last = front(&mut cdp);
+        assert_eq!(last["method"], "Page.bringToFront");
+        assert_eq!(last["sessionId"], "S2");
         cdp.handle(r#"{"method":"Target.detachedFromTarget","params":{"sessionId":"S2"}}"#);
-        assert_eq!(parsed(&cdp.control(Control::BringToFront))["sessionId"], "S1");
+        assert_eq!(front(&mut cdp)["sessionId"], "S1");
+    }
+
+    fn attach_page(cdp: &mut Cdp, session: &str, target: &str, url: &str) {
+        let attached = json!({
+            "method": "Target.attachedToTarget",
+            "params": { "sessionId": session, "targetInfo": { "targetId": target, "type": "page", "url": url }, "waitingForDebugger": false },
+        });
+        cdp.handle(&attached.to_string());
+    }
+
+    #[test]
+    fn show_opens_a_tab_for_each_app_no_page_shows_yet() {
+        let mut cdp = Cdp::default();
+        attach_page(&mut cdp, "S1", "T1", "about:blank");
+        attach_page(&mut cdp, "S2", "T2", "http://localhost:4200/login");
+        let urls = ["http://localhost:4200", "http://localhost:4300", "http://localhost:4400"].map(String::from).to_vec();
+        let commands: Vec<Value> = cdp.control(Control::Show(urls)).iter().map(|text| parsed(text)).collect();
+        let summary: Vec<(&str, &str, &str)> = commands
+            .iter()
+            .map(|command| {
+                (command["method"].as_str().unwrap(), command["sessionId"].as_str().unwrap_or(""), command["params"]["url"].as_str().unwrap_or(""))
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("Page.navigate", "S1", "http://localhost:4300"),
+                ("Page.bringToFront", "S1", ""),
+                ("Target.createTarget", "", "http://localhost:4400"),
+            ]
+        );
+    }
+
+    #[test]
+    fn show_follows_the_url_a_page_navigated_to() {
+        let mut cdp = Cdp::default();
+        attach_page(&mut cdp, "S1", "T1", "about:blank");
+        cdp.handle(r#"{"method":"Target.targetInfoChanged","params":{"targetInfo":{"targetId":"T1","type":"page","url":"http://localhost:4200/"}}}"#);
+        let commands = cdp.control(Control::Show(vec!["http://localhost:4200".into()]));
+        assert_eq!(commands.len(), 1);
+        assert_eq!(parsed(&commands[0])["method"], "Page.bringToFront");
     }
 
     #[test]
@@ -899,8 +1038,8 @@ mod tests {
         let sink: AnnotationSink = Arc::new(move |annotation| {
             let _ = annotations.send(annotation);
         });
-        registry.open(id, &repo_path, &browser_dir, sink.clone(), false).await.unwrap();
-        registry.open(id, &repo_path, &browser_dir, sink, true).await.unwrap();
+        registry.open(id, &repo_path, &browser_dir, sink.clone(), false, &[]).await.unwrap();
+        registry.open(id, &repo_path, &browser_dir, sink, true, &[]).await.unwrap();
         let port = registry.reserve_port(id).unwrap();
 
         let endpoint = browser_endpoint(port).await.unwrap();

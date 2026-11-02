@@ -741,6 +741,7 @@ export const useSettingsStore = create<SettingsState>()(
         popupSizes: state.popupSizes,
         detachedPopups: state.detachedPopups,
         gitLogColumns: state.gitLogColumns,
+        splitDiffShare: state.splitDiffShare,
         promptHeight: state.promptHeight,
         subChatPromptHeight: state.subChatPromptHeight,
         guardrailChatOffset: state.guardrailChatOffset,

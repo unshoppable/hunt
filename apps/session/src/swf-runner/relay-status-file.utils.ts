@@ -1,7 +1,7 @@
 /**
  * What the runner (`swf-runner.service.ts`) reads from the relay's `status.json` (`libs/domain/src/relay/relay-status.types.ts`),
- * free of I/O: the session the relay serves, whether a turn runs, whether a desktop is connected and when the last turn
- * ended. `hunt-ctl clear` prints the same status once the fresh conversation is ready.
+ * free of I/O: the session the relay serves, whether a turn runs and when the last turn ended. `hunt-ctl clear` prints
+ * the same status once the fresh conversation is ready.
  */
 import { isRecord } from "../../../../libs/domain/src/shared/json-rpc.utils.ts";
 import { parseLine } from "../../../../libs/domain/src/shared/ndjson.utils.ts";
@@ -12,7 +12,6 @@ export const HEARTBEAT_MAX_AGE_MS = 120_000;
 export interface RelaySessionStatus {
   acpSessionId: string;
   turn: "running" | "idle";
-  clientConnected: boolean;
   /** Null until a turn ended since the relay started. */
   lastTurnEndedAt: number | null;
 }
@@ -26,14 +25,13 @@ export function relaySessionStatusOf(text: string | null, now: number): RelaySes
   if (!text) return null;
   const status = parseLine(text);
   if (!isRecord(status) || status.state !== "ready") return null;
-  const { acpSessionId, turn, heartbeatAt, clientConnected, lastTurnEndedAt } = status;
+  const { acpSessionId, turn, heartbeatAt, lastTurnEndedAt } = status;
   if (typeof acpSessionId !== "string" || !acpSessionId) return null;
   if (turn !== "running" && turn !== "idle") return null;
   if ((typeof heartbeatAt === "number" ? heartbeatAt : 0) < now - HEARTBEAT_MAX_AGE_MS) return null;
   return {
     acpSessionId,
     turn,
-    clientConnected: clientConnected === true,
     lastTurnEndedAt: typeof lastTurnEndedAt === "number" ? lastTurnEndedAt : null,
   };
 }

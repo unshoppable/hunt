@@ -28,6 +28,7 @@ const WINDOW_RULE = "must be true or false";
 const TAB_RULE = `must be one of ${Object.values(RIGHT_TABS).join(", ")}`;
 const PAGE_RULE = 'must be "updates"';
 const CHECK_RULE = "must be the name of a check";
+const SERVICE_RULE = "must be the name of a service";
 const MISSING_TAB_RULE = "preview and desktop need a session on a VM, pullRequest a pull request review, factory a session of the swf poller";
 const NO_LOCAL_WORKTREE = "the session has no local worktree";
 
@@ -52,6 +53,9 @@ const ZodControlCommand = z.discriminatedUnion(
     z.strictObject({ name: z.literal("openBrowser") }),
     z.strictObject({ name: z.literal("checks") }),
     z.strictObject({ name: z.literal("runChecks"), check: z.optional(z.string(CHECK_RULE)) }),
+    z.strictObject({ name: z.literal("services") }),
+    z.strictObject({ name: z.literal("startServices"), service: z.optional(z.string(SERVICE_RULE)) }),
+    z.strictObject({ name: z.literal("stopService"), service: z.string(SERVICE_RULE) }),
   ],
   COMMAND_RULE,
 );
@@ -60,7 +64,8 @@ const ZodControlCommand = z.discriminatedUnion(
  * What a `hunt-client` call asks of the UI for its session: `show` it in the main window and bring that to the front,
  * switch its inspector to `tab`, open a file in its Editor tab (or with `window` in its editor window), open the diff
  * of a file, the settings, its guardrails or its Chrome, report its checks, or run one check or all of them as the
- * Checks tab does. Paths are absolute.
+ * Checks tab does, report the services of its hunt.json, start one or all of them or stop one as its Terminal tab does.
+ * Paths are absolute.
  */
 export type ControlCommand = z.infer<typeof ZodControlCommand>;
 
@@ -81,7 +86,7 @@ function describeIssue(issue: z.core.$ZodIssue): string {
 
 /**
  * Throws an Error with the reason when `session` cannot run `command`: a tab its inspector lacks, a file, diff or
- * guardrails command without a local worktree, a browser on a VM. `worktreeFilePath` checks a file's path.
+ * guardrails command without a local worktree, a browser or a service command on a VM. `worktreeFilePath` checks a file's path.
  */
 export function ensureRunnable(command: ControlCommand, session: SessionView): void {
   switch (command.name) {
@@ -97,6 +102,11 @@ export function ensureRunnable(command: ControlCommand, session: SessionView): v
       return;
     case "openBrowser":
       if (session.remote) throw new Error("the session runs on a VM, whose browser shows in its Desktop tab");
+      return;
+    case "services":
+    case "startServices":
+    case "stopService":
+      if (session.remote) throw new Error("the session runs on a VM, which starts its services itself");
       return;
   }
 }

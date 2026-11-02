@@ -37,6 +37,7 @@ export function storedSession(id: string, title: string): SessionView {
     hasLocalWorktree: true,
     mode: "edit",
     pushTarget: "main",
+    dismissedGuardrails: [],
   };
 }
 

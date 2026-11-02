@@ -22,12 +22,16 @@
  *    conversation. The plan step's result names the branch the agent created (the VM cloned the default branch): it is
  *    unusable unless the worktree has that branch checked out, and once accepted the branch becomes the session's
  *    (`hunt-ctl set-branch`), so that snapshot, push and the desktop's adoption see it.
- * 4. With the relay idle and no desktop connected: the answers waiting go to the agent in the same conversation; a
- *    pending step prompt goes into a fresh conversation (`hunt-ctl clear <id> --keep-stored`, which restarts the relay
- *    and reports the new session) with the step's model and effort as the conversation's config options, which the
- *    restarted relay applies; a turn that ended without a result is looked up on the issue once: the question label
- *    means the poller brings the answer, the failed label that the agent gave up, else the agent is reminded once and
- *    the issue is marked as failed the second time.
+ * 4. With the relay idle: the answers waiting go to the agent in the same conversation; a pending step prompt goes into
+ *    a fresh conversation (`hunt-ctl clear <id> --keep-stored`, which restarts the relay and reports the new session)
+ *    with the step's model and effort as the conversation's config options, which the restarted relay applies; a turn
+ *    that ended without a result is looked up on the issue once: the question label means the poller brings the answer,
+ *    the failed label that the agent gave up, else the agent is reminded once and the issue is marked as failed the
+ *    second time.
+ *
+ * A Hunt desktop connected to the VM changes nothing: the pipeline runs on so that the desktop watches it live. The
+ * restart of the relay for a fresh conversation drops the desktop's connection, and the desktop connects again on its
+ * own and loads the new conversation; a prompt the person sends meanwhile lands in the step's conversation.
  */
 import { Repository } from "../../../../libs/domain/src/session/repository.value-object.ts";
 import { messageOf } from "../../../../libs/domain/src/shared/errors.utils.ts";
@@ -165,10 +169,6 @@ export class SwfRunner {
       await this.acceptResult(pipeline, result, status);
       return;
     }
-    if (status.clientConnected) {
-      this.waitOnce("a desktop is connected");
-      return;
-    }
     if (this.answers.length > 0) {
       await this.deliverAnswers(pipeline, status);
       return;
@@ -222,7 +222,7 @@ export class SwfRunner {
    * becomes the ended run's `steps/<nn>-<step>.md`, the issue gets the result as a comment, the next step's label and the
    * record; the next pass sends the next prompt. A plan result is usable only when the worktree has the branch it names
    * checked out; accepted, that branch becomes the session's (`setBranch`). An unusable result is discarded and the
-   * agent is told why, unless a desktop is connected.
+   * agent is told why.
    */
   private async acceptResult(pipeline: Pipeline, text: string, status: RelaySessionStatus): Promise<void> {
     const from = pipeline.step;
@@ -239,10 +239,6 @@ export class SwfRunner {
       pipeline.acceptResult(reported, null, this.deps.now());
     } catch (error) {
       if (!(error instanceof UnusableStepResult)) throw error;
-      if (status.clientConnected) {
-        this.waitOnce(`the step result of ${from} is unusable (${error.message}); a desktop is connected`);
-        return;
-      }
       const outcome = await this.deps.sendPrompt({ sessionId: status.acpSessionId, cwd: this.deps.worktree, text: badResultPrompt(this.deps.prompts.swfBadResult, error.message) });
       this.deps.files.discardResult();
       pipeline.dismissResult(null, status.lastTurnEndedAt ?? 0);
@@ -271,17 +267,12 @@ export class SwfRunner {
   /**
    * Runs the gate `gate` of the current step on its result: each check in turn, all of them, then whether the working
    * tree is clean. True when everything passed; else the result is discarded and goes back to the agent with the
-   * failures in the same conversation, the failure counted on the pipeline, and false. While a desktop is connected the
-   * gate waits without running, since a failure could not be sent and its checks would run again at every tick.
+   * failures in the same conversation, the failure counted on the pipeline, and false.
    */
   private async passGate(pipeline: Pipeline, gate: string[], status: RelaySessionStatus): Promise<boolean> {
     const step = pipeline.step;
     const run = pipeline.currentRun;
     if (!run) throw new Error(`the pipeline has no running step to gate at ${step}`);
-    if (status.clientConnected) {
-      this.waitOnce(`the step result of ${step} waits for its gate (${gate.join(", ")}); a desktop is connected`);
-      return false;
-    }
     const failures: GateFailure[] = [];
     for (const name of gate) {
       const { exitCode, output } = await this.deps.runCheck(name);

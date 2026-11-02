@@ -55,13 +55,18 @@ function folderTask(path: string): string {
   return `The user opened this chat from the changelist about the folder \`${path}/\` and the changes the current work made in it. Answer questions about the folder and its changes, and edit its files when asked to.`;
 }
 
-/** Files that do not exist at the base commit are removed instead of restored; a folder reverts every listed file in it. */
+/**
+ * Files that do not exist at the base commit are removed instead of restored; a folder reverts every listed file in it,
+ * a selection every checked file.
+ */
 function revertLabel(target: ChangeListTarget): string {
+  if (target.isSelection) return `Revert ${target.files.length} selected files`;
   if (target.isFolder) return target.files.length === 1 ? "Revert 1 file" : `Revert ${target.files.length} files`;
   return target.files[0].status === "?" || target.files[0].status === "A" ? "Delete file" : "Revert changes";
 }
 
 function revertQuestion(target: ChangeListTarget): string {
+  if (target.isSelection) return `${revertLabel(target)}? This discards all changes to the selected files and deletes the new ones.`;
   if (!target.isFolder) return `${revertLabel(target)}: "${target.path}"? This discards all changes to the file.`;
   return `${revertLabel(target)} in "${target.path}"? This discards all changes to the listed files and deletes the new ones.`;
 }

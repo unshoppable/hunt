@@ -30,6 +30,7 @@ function session(id: string, title: string, branch: string, parentId: string | n
     hasLocalWorktree: true,
     mode: "edit",
     pushTarget: "main",
+    dismissedGuardrails: [],
   };
 }
 

@@ -7,6 +7,7 @@ mod graph;
 mod ide;
 mod platform;
 mod remote;
+mod services;
 mod session;
 mod terminal;
 

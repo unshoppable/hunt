@@ -43,6 +43,7 @@ function session(id: string, patch: Partial<SessionView> = {}): SessionView {
     hasLocalWorktree: true,
     mode: "edit",
     pushTarget: "main",
+    dismissedGuardrails: [],
     ...patch,
   };
 }

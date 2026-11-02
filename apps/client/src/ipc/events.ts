@@ -77,6 +77,8 @@ type EventPayloads = {
   "terminal:output": TerminalOutputEvent;
   /** The end of a terminal's program, sent only to the window that opened it. */
   "terminal:exit": TerminalExitEvent;
+  /** A service of a local session started or stopped; sent to the main window (see terminal/services.store.ts). */
+  "services:changed": { sessionId: string };
   /** A check of the session started, ended or was cancelled; sent to the main window (see checks/ChecksPanel.tsx). */
   "checks:changed": { sessionId: string };
   /** `.hunt/swf/` of the swf session was pulled from its VM (on open and at every turn end); the Factory tab reads the pipeline again (see factory/FactoryPanel.tsx). */

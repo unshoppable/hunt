@@ -1,3 +1,9 @@
+## 0.45.0 (2026-11-02)
+
+### 🚀 Features
+
+- **gateway:** fall back to C4 and C3D when no session zone has capacity for a C4D machine type ([b7dd0f2](https://github.com/unshoppable/hunt/commit/b7dd0f2))
+
 ## 0.44.5 (2026-11-02)
 
 This was a version bump only for gateway to align it with other projects, there were no code changes.

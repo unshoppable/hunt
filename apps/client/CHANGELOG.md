@@ -1,3 +1,9 @@
+## 0.141.1 (2026-11-04)
+
+### 🩹 Fixes
+
+- **gateway:** say what moving a session VM to another zone does and how long it takes ([87fd399](https://github.com/unshoppable/hunt/commit/87fd399))
+
 ## 0.141.0 (2026-11-04)
 
 ### 🚀 Features
